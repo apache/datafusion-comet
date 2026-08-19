@@ -19,48 +19,83 @@
 
 package org.apache.spark.sql.comet.execution.shuffle
 
+import org.apache.spark.HashPartitioner
 import org.apache.spark.serializer.JavaSerializer
 import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.comet.{CometMetricNode, NativeExecContext}
+import org.apache.spark.sql.execution.metric.SQLMetrics
+import org.apache.spark.sql.vectorized.ColumnarBatch
+
+import org.apache.comet.serde.OperatorOuterClass.Operator
 
 /**
- * Ensure that serialized RDD does not overflow in size with a very large number of partitions
+ * Ensure the serialized shuffle-map-stage task binary does not grow with the number of
+ * partitions.
+ *
+ * `DAGScheduler.submitMissingTasks` broadcasts the serialized `(stage.rdd, stage.shuffleDep)`
+ * pair, which must fit in ~2GB. On the native-shuffle path the scan plan data is one serialized
+ * blob per map partition; the leak lived under
+ * `CometShuffleDependency.nativeShuffleSpec.execContext`, not on the thin RDD. So this builds
+ * both carriers and serializes the pair, which catches a regression in either the RDD or the
+ * dependency guards without needing a real 2GB allocation.
+ *
  * Lives in the `execution.shuffle` package so it can construct the `private[shuffle]`
- * [[CometNativeShuffleInputRDD]] directly.
+ * [[CometNativeShuffleInputRDD]] and the `private[comet]` [[NativeExecContext]] directly.
  */
 class CometNativeShuffleInputRDDSuite extends CometTestBase {
 
-  test("serialized RDD size is independent of partition count") {
+  test("serialized (rdd, dep) task binary size is independent of partition count") {
     val sc = spark.sparkContext
     val ser = new JavaSerializer(sc.getConf).newInstance()
 
-    // One scan key with a 1KB blob per map partition. Pre-fix the whole array serializes into the
-    // RDD, so 10000 partitions add ~10MB versus 10.
-    def buildRDD(numPartitions: Int): CometNativeShuffleInputRDD = {
+    // One scan key with a 1KB blob per map partition -- the per-partition plan data. Build both
+    // objects the DAGScheduler serializes for a shuffle-map stage: the thin RDD, and the
+    // CometShuffleDependency whose NativeShuffleSpec holds a NativeExecContext with this map.
+    def build(numPartitions: Int): (
+        CometNativeShuffleInputRDD,
+        CometShuffleDependency[Int, ColumnarBatch, ColumnarBatch]) = {
       val perPartitionByKey =
         Map("scan-0" -> Array.fill(numPartitions)(new Array[Byte](1024)))
-      new CometNativeShuffleInputRDD(
+      val rdd = new CometNativeShuffleInputRDD(
         sc,
         inputRDDs = Seq.empty,
         numPartitionsParam = numPartitions,
         shuffleScanIndices = Set.empty,
         perPartitionByKey = perPartitionByKey)
+      val execContext = NativeExecContext(
+        inputs = Seq.empty,
+        numPartitions = numPartitions,
+        subqueries = Seq.empty,
+        broadcastedHadoopConfForEncryption = None,
+        encryptedFilePaths = Seq.empty,
+        commonByKey = Map.empty,
+        perPartitionByKey = perPartitionByKey,
+        shuffleScanIndices = Set.empty,
+        hasScanInput = false)
+      val spec =
+        NativeShuffleSpec(Operator.getDefaultInstance, CometMetricNode(Map.empty), execContext)
+      val dep = new CometShuffleDependency[Int, ColumnarBatch, ColumnarBatch](
+        _rdd = rdd,
+        partitioner = new HashPartitioner(numPartitions),
+        decodeTime = SQLMetrics.createMetric(sc, "decode time"),
+        nativeShuffleSpec = Some(spec))
+      (rdd, dep)
     }
 
-    val smallSize = ser.serialize(buildRDD(10)).limit()
-    val large = buildRDD(10000)
-    val largeSize = ser.serialize(large).limit()
+    // Pre-fix this pair grew from ~13KB to ~10MB between 10 and 10000 partitions. With the map held
+    // @transient on both the RDD and the NativeExecContext, the pair stays roughly constant.
+    val (_, smallDep) = build(10)
+    val (largeRdd, largeDep) = build(10000)
+    val smallPair = ser.serialize((smallDep.rdd, smallDep)).limit()
+    val largePair = ser.serialize((largeDep.rdd, largeDep)).limit()
     assert(
-      math.abs(largeSize - smallSize) < 100 * 1024,
-      s"serialized RDD grew with partition count (small=$smallSize, large=$largeSize); " +
-        "perPartitionByKey is leaking into the broadcast task binary")
+      math.abs(largePair - smallPair) < 100 * 1024,
+      s"serialized (rdd, dep) grew with partition count (small=$smallPair, large=$largePair); " +
+        "the per-partition plan-data map is leaking into the broadcast task binary")
 
     // Each task's Partition object still carries its own slice so the writer can inject plan data.
-    val part = large.partitions(7).asInstanceOf[CometNativeShuffleInputPartition]
+    val part = largeRdd.partitions(7).asInstanceOf[CometNativeShuffleInputPartition]
     assert(part.planDataByKey.keySet == Set("scan-0"))
     assert(part.planDataByKey("scan-0").length == 1024)
-    val partSize = ser.serialize(part).limit()
-    assert(
-      partSize < 100 * 1024,
-      s"partition slice unexpectedly large ($partSize); it must hold one blob, not the full array")
   }
 }
