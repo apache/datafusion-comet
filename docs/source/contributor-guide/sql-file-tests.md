@@ -294,6 +294,11 @@ common ones include:
 - **Zero, negative, and very large numbers** -- for numeric functions
 - **Boundary values** -- `INT_MIN`, `INT_MAX`, `NaN`, `Infinity`, `-Infinity` for numeric
   types
+- **Signed zero** -- Spark parses a bare `-0.0` as `decimal(1,1)`, which has no signed
+  zero, so coercion to `float`/`double` yields `+0.0`. `CAST(-0.0 AS DOUBLE)` and
+  `CAST(-0.0 AS FLOAT)` have the same problem because the cast source is still the
+  decimal literal. Use `double('-0.0')` or `float('-0.0')` (equivalently
+  `CAST('-0.0' AS DOUBLE)`).
 - **Special characters and multibyte UTF-8** -- for string functions (e.g. `'é'`, `'中文'`,
   `'\t'`)
 - **Empty arrays/maps** -- for collection functions
