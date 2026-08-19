@@ -475,6 +475,9 @@ message ParquetWriter {
   // configuration value "spark.hadoop.fs.s3a.access.key" will be stored as "fs.s3a.access.key" in
   // the map.
   map<string, string> object_store_options = 8;
+  // Catalyst's target schema, including top-level nullability and Parquet field IDs.
+  // Nested collection field IDs are carried by the corresponding DataType messages.
+  repeated SparkStructField output_schema = 9;
 }
 
 enum AggregateMode {
