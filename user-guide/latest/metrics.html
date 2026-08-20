@@ -811,15 +811,30 @@ under the License.
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">repartition</span> <span class="pre">time</span></code></p></td>
 <td><p>Time to repartition batches.</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">memory</span> <span class="pre">pool</span> <span class="pre">time</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">partition</span> <span class="pre">interleaving</span> <span class="pre">time</span></code></p></td>
+<td><p>Time to interleave partitioned batches before writing them.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">memory</span> <span class="pre">pool</span> <span class="pre">time</span></code></p></td>
 <td><p>Time interacting with memory pool.</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">encoding</span> <span class="pre">and</span> <span class="pre">compression</span> <span class="pre">time</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">encoding</span> <span class="pre">and</span> <span class="pre">compression</span> <span class="pre">time</span></code></p></td>
 <td><p>Time to encode batches in IPC format and compress using ZSTD.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">disk</span> <span class="pre">spilled</span> <span class="pre">bytes</span></code></p></td>
+<td><p>Actual bytes written to native shuffle spill files on disk.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">memory</span> <span class="pre">spilled</span> <span class="pre">bytes</span></code></p></td>
+<td><p>Uncompressed Arrow backing-buffer and partition-index data before spilling.</p></td>
 </tr>
 </tbody>
 </table>
 </div>
+<p>Disk and memory spilled bytes measure different representations of the same native shuffle spill.
+Disk spill bytes count the actual bytes written to disk: compressed when shuffle compression is
+enabled and uncompressed when <code class="docutils literal notranslate"><span class="pre">spark.shuffle.compress=false</span></code>. Memory spill bytes follow Spark’s
+<code class="docutils literal notranslate"><span class="pre">memoryBytesSpilled</span></code> semantics and include uncompressed in-memory Arrow backing-buffer and
+partition-index data rather than their on-disk size. These values also appear in Spark’s task
+metrics and Spark UI as <code class="docutils literal notranslate"><span class="pre">diskBytesSpilled</span></code> and <code class="docutils literal notranslate"><span class="pre">memoryBytesSpilled</span></code>, respectively.</p>
 </section>
 </section>
 <section id="native-metrics">
@@ -864,14 +879,26 @@ logged for each native plan (and there is one plan per task, so this is very ver
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">repart_time</span></code></p></td>
 <td><p>Time to repartition batches.</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ipc_time</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">interleave_time</span></code></p></td>
+<td><p>Time to interleave partitioned batches before writing them.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ipc_time</span></code></p></td>
 <td><p>Time to encode batches in IPC format and compress using ZSTD.</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">mempool_time</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">mempool_time</span></code></p></td>
 <td><p>Time interacting with memory pool.</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">write_time</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">write_time</span></code></p></td>
 <td><p>Time spent writing bytes to disk.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spill_count</span></code></p></td>
+<td><p>Number of native shuffle spills.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spilled_bytes</span></code></p></td>
+<td><p>Actual bytes written to native shuffle spill files on disk.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">memory_spilled_bytes</span></code></p></td>
+<td><p>Uncompressed Arrow backing-buffer and partition-index memory spilled.</p></td>
 </tr>
 </tbody>
 </table>

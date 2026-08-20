@@ -701,7 +701,7 @@ for the lightest one that fits.</p>
 </tr>
 <tr class="row-odd"><td><p><strong>Read from the offset buffer directly</strong></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">list_array.value(i)</span></code> allocating a sliced <code class="docutils literal notranslate"><span class="pre">ArrayRef</span></code> per row</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">spark_size</span></code> Map path and scalar path: <code class="docutils literal notranslate"><span class="pre">value_length</span></code> / offsets instead of materializing a sliced array</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">spark_size</span></code> scalar path: <code class="docutils literal notranslate"><span class="pre">value_length</span></code> instead of materializing a sliced array; Map array path (~6-13x): <code class="docutils literal notranslate"><span class="pre">MapArray::offsets().windows(2)</span></code> diff, <code class="docutils literal notranslate"><span class="pre">length</span></code> kernel doesn’t support Map</p></td>
 </tr>
 <tr class="row-even"><td><p><strong>Reuse Arrow <code class="docutils literal notranslate"><span class="pre">length</span></code> kernel + cheap null rewrite</strong></p></td>
 <td><p>Per-row <code class="docutils literal notranslate"><span class="pre">value_length</span></code> / builder loop, or <code class="docutils literal notranslate"><span class="pre">zip</span></code> via <code class="docutils literal notranslate"><span class="pre">MutableArrayData</span></code></p></td>
