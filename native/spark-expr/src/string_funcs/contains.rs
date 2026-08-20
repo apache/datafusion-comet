@@ -20,7 +20,7 @@
 //! Optimized for scalar pattern case by passing scalar directly to arrow_contains
 //! instead of expanding to arrays like DataFusion's built-in contains.
 
-use arrow::array::{Array, ArrayRef, BooleanArray, StringArray};
+use arrow::array::{Array, ArrayRef, BooleanArray, Scalar, StringArray};
 use arrow::compute::kernels::comparison::contains as arrow_contains;
 use arrow::datatypes::DataType;
 use datafusion::common::{exec_err, Result, ScalarValue};
@@ -146,9 +146,7 @@ fn contains_scalar_array(
         return Ok(Arc::new(BooleanArray::new_null(needle_array.len())));
     }
 
-    let haystack_str = get_string_scalar_value(haystack_scalar, "haystack")?;
-    let haystack_scalar_array = StringArray::new_scalar(haystack_str);
-
+    let haystack_scalar_array = Scalar::new(haystack_scalar.to_array()?);
     let result = arrow_contains(&haystack_scalar_array, needle_array)?;
     Ok(Arc::new(result))
 }
@@ -174,7 +172,7 @@ fn contains_scalar_scalar(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::StringArray;
+    use arrow::array::{LargeStringArray, StringArray, StringViewArray};
 
     #[test]
     fn test_contains_array_scalar() {
@@ -271,5 +269,45 @@ mod tests {
         assert!(bool_array.value(0));
         assert!(bool_array.value(1));
         assert!(!bool_array.value(2));
+    }
+
+    #[test]
+    fn test_contains_scalar_large_utf8() {
+        let haystack = ScalarValue::LargeUtf8(Some("abc".to_string()));
+        let needle = Arc::new(LargeStringArray::from(vec![
+            Some("a"),
+            Some("bc"),
+            None,
+            Some(""),
+            Some("d"),
+        ])) as ArrayRef;
+
+        let res = contains_scalar_array(&haystack, &needle).unwrap();
+        let res = res.as_any().downcast_ref::<BooleanArray>().unwrap();
+
+        let expected =
+            BooleanArray::from(vec![Some(true), Some(true), None, Some(true), Some(false)]);
+
+        assert_eq!(res, &expected);
+    }
+
+    #[test]
+    fn test_contains_scalar_utf8_view() {
+        let haystack = ScalarValue::Utf8View(Some("abc".to_string()));
+        let needle = Arc::new(StringViewArray::from(vec![
+            Some("a"),
+            Some("bc"),
+            None,
+            Some(""),
+            Some("d"),
+        ])) as ArrayRef;
+
+        let res = contains_scalar_array(&haystack, &needle).unwrap();
+        let res = res.as_any().downcast_ref::<BooleanArray>().unwrap();
+
+        let expected =
+            BooleanArray::from(vec![Some(true), Some(true), None, Some(true), Some(false)]);
+
+        assert_eq!(res, &expected);
     }
 }
