@@ -674,8 +674,15 @@ correct results.</p>
 <h4><code class="docutils literal notranslate"><span class="pre">query</span> <span class="pre">tolerance=&lt;value&gt;</span></code><a class="headerlink" href="#query-tolerance-value" title="Link to this heading">#</a></h4>
 <p>Checks results with a numeric tolerance. Useful for floating-point functions where small
 differences are acceptable.</p>
+<p>The comparison ignores the sign of zero (<code class="docutils literal notranslate"><span class="pre">+0.0</span></code> matches <code class="docutils literal notranslate"><span class="pre">-0.0</span></code>) and the sign of infinity
+(<code class="docutils literal notranslate"><span class="pre">+Infinity</span></code> matches <code class="docutils literal notranslate"><span class="pre">-Infinity</span></code>). Keep tolerance for ordinary values and add a plain
+<code class="docutils literal notranslate"><span class="pre">query</span></code> for cases whose expected result is signed zero or signed infinity.</p>
 <div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="n">query</span><span class="w"> </span><span class="n">tolerance</span><span class="o">=</span><span class="mi">0</span><span class="p">.</span><span class="mi">0001</span>
 <span class="k">SELECT</span><span class="w"> </span><span class="n">cos</span><span class="p">(</span><span class="n">v</span><span class="p">)</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">test_trig</span>
+
+<span class="c1">-- csc(-0.0) == -Infinity; a tolerance check would also accept +Infinity</span>
+<span class="n">query</span>
+<span class="k">SELECT</span><span class="w"> </span><span class="n">csc</span><span class="p">(</span><span class="n">double</span><span class="p">(</span><span class="s1">'-0.0'</span><span class="p">))</span>
 </pre></div>
 </div>
 </section>
@@ -789,6 +796,16 @@ common ones include:</p>
 <li><p><strong>Zero, negative, and very large numbers</strong> – for numeric functions</p></li>
 <li><p><strong>Boundary values</strong> – <code class="docutils literal notranslate"><span class="pre">INT_MIN</span></code>, <code class="docutils literal notranslate"><span class="pre">INT_MAX</span></code>, <code class="docutils literal notranslate"><span class="pre">NaN</span></code>, <code class="docutils literal notranslate"><span class="pre">Infinity</span></code>, <code class="docutils literal notranslate"><span class="pre">-Infinity</span></code> for numeric
 types</p></li>
+<li><p><strong>Signed zero</strong> – Spark parses a bare <code class="docutils literal notranslate"><span class="pre">-0.0</span></code> as <code class="docutils literal notranslate"><span class="pre">decimal(1,1)</span></code>, which has no signed
+zero, so coercion to <code class="docutils literal notranslate"><span class="pre">float</span></code>/<code class="docutils literal notranslate"><span class="pre">double</span></code> yields <code class="docutils literal notranslate"><span class="pre">+0.0</span></code>. <code class="docutils literal notranslate"><span class="pre">CAST(-0.0</span> <span class="pre">AS</span> <span class="pre">DOUBLE)</span></code> and
+<code class="docutils literal notranslate"><span class="pre">CAST(-0.0</span> <span class="pre">AS</span> <span class="pre">FLOAT)</span></code> have the same problem because the cast source is still the
+decimal literal. Use <code class="docutils literal notranslate"><span class="pre">double('-0.0')</span></code> or <code class="docutils literal notranslate"><span class="pre">float('-0.0')</span></code> (equivalently
+<code class="docutils literal notranslate"><span class="pre">CAST('-0.0'</span> <span class="pre">AS</span> <span class="pre">DOUBLE)</span></code>). Spark’s array comparator also treats <code class="docutils literal notranslate"><span class="pre">+0.0</span></code> and <code class="docutils literal notranslate"><span class="pre">-0.0</span></code> as
+equal, so <code class="docutils literal notranslate"><span class="pre">sort_array(...)</span></code> is not a unique projection when both signs are present
+(the SQL test comparator distinguishes the bits). Prefer a sign-aware form such as
+<code class="docutils literal notranslate"><span class="pre">sort_array(transform(arr,</span> <span class="pre">x</span> <span class="pre">-&gt;</span> <span class="pre">cast(x</span> <span class="pre">AS</span> <span class="pre">string)))</span></code>. A <code class="docutils literal notranslate"><span class="pre">query</span> <span class="pre">tolerance=...</span></code> check
+likewise treats the two zero signs as equal, and <code class="docutils literal notranslate"><span class="pre">+Infinity</span></code> / <code class="docutils literal notranslate"><span class="pre">-Infinity</span></code> as equal,
+so signed-zero and signed-infinity results need a separate plain <code class="docutils literal notranslate"><span class="pre">query</span></code>.</p></li>
 <li><p><strong>Special characters and multibyte UTF-8</strong> – for string functions (e.g. <code class="docutils literal notranslate"><span class="pre">'é'</span></code>, <code class="docutils literal notranslate"><span class="pre">'中文'</span></code>,
 <code class="docutils literal notranslate"><span class="pre">'\t'</span></code>)</p></li>
 <li><p><strong>Empty arrays/maps</strong> – for collection functions</p></li>
