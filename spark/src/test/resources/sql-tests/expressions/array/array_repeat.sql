@@ -97,6 +97,14 @@ SELECT array_repeat(int_v, -5) FROM test_array_repeat
 query
 SELECT array_repeat(int_v, CAST(NULL AS INT)) FROM test_array_repeat
 
+-- signed-zero elements currently sit on rows with cnt <= 0, which yield empty
+-- arrays. Repeat them with a positive literal count so the sign bit is observed.
+query
+SELECT array_repeat(float_v, 2) FROM test_array_repeat
+
+query
+SELECT array_repeat(double_v, 2) FROM test_array_repeat
+
 -- literal element + column count
 query
 SELECT array_repeat(42, cnt) FROM test_array_repeat
