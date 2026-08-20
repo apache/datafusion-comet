@@ -29,3 +29,11 @@ SELECT tan(d) FROM test_tan
 -- literal arguments
 query tolerance=1e-6
 SELECT tan(0.0), tan(double('-0.0')), tan(0.7853981633974483), tan(NULL)
+
+-- signed-zero: exact comparison so tan(-0.0) == -0.0 is distinguished from
+-- +0.0 (tolerance uses absolute difference).
+query
+SELECT tan(d) FROM test_tan WHERE d = 0.0
+
+query
+SELECT tan(0.0), tan(double('-0.0'))
