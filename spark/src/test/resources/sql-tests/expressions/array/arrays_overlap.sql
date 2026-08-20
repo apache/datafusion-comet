@@ -117,7 +117,7 @@ statement
 CREATE TABLE test_overlap_dbl(a array<double>, b array<double>) USING parquet
 
 statement
-INSERT INTO test_overlap_dbl VALUES (array(1.0, 2.0), array(2.0, 3.0)), (array(1.0, double('NaN')), array(double('NaN'), 2.0)), (array(double('Infinity'), 1.0), array(double('Infinity'))), (array(double('-Infinity')), array(double('Infinity'))), (array(0.0), array(-0.0)), (array(1.0, NULL), array(2.0, NULL))
+INSERT INTO test_overlap_dbl VALUES (array(1.0, 2.0), array(2.0, 3.0)), (array(1.0, double('NaN')), array(double('NaN'), 2.0)), (array(double('Infinity'), 1.0), array(double('Infinity'))), (array(double('-Infinity')), array(double('Infinity'))), (array(double('0.0')), array(double('-0.0'))), (array(1.0, NULL), array(2.0, NULL))
 
 query
 SELECT a, b, arrays_overlap(a, b) FROM test_overlap_dbl
@@ -232,6 +232,38 @@ INSERT INTO test_overlap_nested VALUES (array(array(1, 2), array(3, 4)), array(a
 
 query
 SELECT a, b, arrays_overlap(a, b) FROM test_overlap_nested
+
+-- nested double arrays: Spark's nested path uses ordering.equiv, where -0.0 == 0.0
+statement
+CREATE TABLE test_overlap_nested_dbl(a array<array<double>>, b array<array<double>>) USING parquet
+
+statement
+INSERT INTO test_overlap_nested_dbl VALUES
+  (array(array(double('-0.0'))), array(array(double('0.0')))),
+  (array(array(double('0.0'))), array(array(double('-0.0')))),
+  (array(array(1.0, double('-0.0'))), array(array(1.0, 0.0))),
+  (array(array(double('NaN'))), array(array(double('NaN')))),
+  (array(array(1.0)), array(array(2.0))),
+  (array(array(double('-0.0')), cast(NULL as array<double>)), array(array(double('0.0')))),
+  (array(cast(NULL as array<double>)), array(array(double('0.0'))))
+
+query
+SELECT a, b, arrays_overlap(a, b) FROM test_overlap_nested_dbl
+
+-- struct element with a double field
+statement
+CREATE TABLE test_overlap_struct_dbl(a array<struct<x:double>>, b array<struct<x:double>>) USING parquet
+
+statement
+INSERT INTO test_overlap_struct_dbl VALUES
+  (array(named_struct('x', double('-0.0'))), array(named_struct('x', double('0.0')))),
+  (array(named_struct('x', double('0.0'))), array(named_struct('x', double('-0.0')))),
+  (array(named_struct('x', double('NaN'))), array(named_struct('x', double('NaN')))),
+  (array(named_struct('x', 1.0)), array(named_struct('x', 2.0))),
+  (array(cast(NULL as struct<x:double>)), array(named_struct('x', double('0.0'))))
+
+query
+SELECT a, b, arrays_overlap(a, b) FROM test_overlap_struct_dbl
 
 -- struct element arrays
 statement
