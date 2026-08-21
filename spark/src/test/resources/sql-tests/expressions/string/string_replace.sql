@@ -19,7 +19,7 @@ statement
 CREATE TABLE test_str_replace(s string, search string, replace string) USING parquet
 
 statement
-INSERT INTO test_str_replace VALUES ('hello world', 'world', 'there'), ('aaa', 'a', 'bb'), ('hello', 'xyz', 'abc'), ('', 'a', 'b'), (NULL, 'a', 'b'), ('hello', '', 'x')
+INSERT INTO test_str_replace VALUES ('hello world', 'world', 'there'), ('aaa', 'a', 'bb'), ('hello', 'xyz', 'abc'), ('', 'a', 'b'), (NULL, 'a', 'b'), ('hello', '', 'x'), ('aaaa', 'aa', 'x'), ('你好你好', '你好', 'X'), ('😀a😀', '😀', 'x')
 
 query
 SELECT replace(s, search, replace) FROM test_str_replace
@@ -27,7 +27,8 @@ SELECT replace(s, search, replace) FROM test_str_replace
 -- Empty literal search: DataFusion's replace diverges from Spark
 -- (Spark short-circuits and returns the source unchanged). The custom
 -- CometStringReplace serde routes through the codegen dispatcher so
--- Spark's own doGenCode handles this case.
+-- Spark's own doGenCode handles this case. Non-empty UTF8_BINARY literal
+-- search takes the native path by default (#5354).
 -- https://github.com/apache/datafusion-comet/issues/4497
 query
 SELECT replace('hello', '', 'x')
@@ -40,6 +41,18 @@ SELECT replace(NULL, '', 'x')
 
 query
 SELECT replace('hello', '', NULL)
+
+-- Overlapping candidates: Spark replaces non-overlapping left-to-right
+-- ('aaaa' + 'aa' -> 'xx'). Column source + literal search takes the native path.
+query
+SELECT replace(s, 'aa', 'x') FROM test_str_replace WHERE s = 'aaaa'
+
+-- Multi-byte UTF-8 values. Column source + literal search takes the native path.
+query
+SELECT replace(s, '你好', 'X') FROM test_str_replace WHERE s = '你好你好'
+
+query
+SELECT replace(s, '😀', 'x') FROM test_str_replace WHERE s = '😀a😀'
 
 -- column + literal + literal
 query

@@ -21,6 +21,7 @@ package org.apache.comet.serde
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Base64, BitLength, Cast, Concat, ConcatWs, Contains, Elt, Empty2Null, EndsWith, Expression, FindInSet, FormatNumber, FormatString, GetJsonObject, InitCap, Left, Length, Levenshtein, Like, Literal, Lower, Mask, OctetLength, Overlay, RegExpExtract, RegExpExtractAll, RegExpInStr, RegExpReplace, Right, RLike, SoundEx, StartsWith, StringLocate, StringLPad, StringRepeat, StringReplace, StringRPad, StringSplit, StringTranslate, Substring, SubstringIndex, ToCharacter, ToNumber, TryToNumber, UnBase64, Upper}
 import org.apache.spark.sql.types.{BinaryType, DataTypes, IntegerType, LongType, StringType}
+import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometConf
 import org.apache.comet.serde.ExprOuterClass.Expr
@@ -178,29 +179,56 @@ object CometStringReplace
     extends CometScalarFunction[StringReplace]("replace")
     with NativeOptInAvailable {
 
+  /**
+   * Native DataFusion `replace` differs from Spark only when the search string is empty (Spark
+   * returns `src` unchanged; DataFusion inserts the replacement between every character). That
+   * case is decidable at plan time when `search` is a literal.
+   *
+   * The native kernel is also byte-level `UTF8_BINARY` only, so non-default collations stay on
+   * the dispatcher. https://github.com/apache/datafusion-comet/issues/4496
+   */
+  private def nativeSafeSearchSubset(expr: StringReplace): Boolean = {
+    val children = expr.children
+    if (children.length != 3) {
+      return false
+    }
+    val searchIsNonEmptyLiteral = children(1) match {
+      case Literal(v: UTF8String, _) => v != null && v.numBytes() > 0
+      case _ => false
+    }
+    val utf8BinaryCollation =
+      !children.exists(c => QueryPlanSerde.isStringCollationType(c.dataType))
+    utf8BinaryCollation && searchIsNonEmptyLiteral
+  }
+
+  override def getCompatibleNotes(): Seq[String] =
+    Seq(
+      "When `search` is a non-empty `UTF8_BINARY` literal, Comet evaluates `replace` natively " +
+        "by default.")
+
   override def getIncompatibleReasons(): Seq[String] =
     Seq("Produces different results from Spark when the search string is empty")
 
   override def getSupportLevel(expr: StringReplace): SupportLevel =
-    if (!CometConf.isExprAllowIncompat(getExprConfigName(expr))) {
+    if (CometConf.isExprAllowIncompat(getExprConfigName(expr)) || nativeSafeSearchSubset(expr)) {
+      Compatible()
+    } else {
       Compatible(nativeOptIn =
         Some(NativeOptIn(CometConf.getExprAllowIncompatConfigKey(getExprConfigName(expr)))))
-    } else {
-      Compatible()
     }
 
   override def convert(
       expr: StringReplace,
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
-    if (CometConf.isExprAllowIncompat(getExprConfigName(expr))) {
-      // The native DataFusion `replace` avoids the JVM allocations of the codegen
-      // dispatcher but is not Spark-compatible for an empty search string, so it is
-      // only used when incompatibility is explicitly allowed.
+    if (CometConf.isExprAllowIncompat(getExprConfigName(expr)) || nativeSafeSearchSubset(expr)) {
+      // Native DataFusion `replace` matches Spark when search is a non-empty UTF8_BINARY
+      // literal (the common case, selected by default) and when the user has opted in.
       super.convert(expr, inputs, binding)
     } else {
-      // Run Spark's own generated code inside the Comet pipeline so the result matches Spark
-      // exactly. Falls back to Spark when the codegen dispatcher is disabled.
+      // Empty literal search, non-literal search, or a non-default collation: run Spark's
+      // own generated code inside the Comet pipeline. Falls back to Spark when the
+      // codegen dispatcher is disabled.
       CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
     }
   }
