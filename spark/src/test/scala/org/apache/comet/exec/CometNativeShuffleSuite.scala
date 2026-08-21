@@ -41,7 +41,7 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
       withSQLConf(
         CometConf.COMET_EXEC_ENABLED.key -> "true",
         CometConf.COMET_SHUFFLE_MODE.key -> "native",
-        CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
+        CometConf.COMET_SHUFFLE_ENABLED.key -> "true") {
         testFun
       }
     }
@@ -84,7 +84,7 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
     Seq("false", "true").foreach { _ =>
       Seq(10, 201).foreach { numPartitions =>
         Seq("1.0", "10.0").foreach { ratio =>
-          withSQLConf(CometConf.COMET_SHUFFLE_PREFER_DICTIONARY_RATIO.key -> ratio) {
+          withSQLConf(CometConf.COMET_SHUFFLE_JVM_PREFER_DICTIONARY_RATIO.key -> ratio) {
             withParquetTable(
               (0 until 50).map(i => (i, Seq(Seq(i + 1), Seq(i + 2), Seq(i + 3)), i + 1)),
               "tbl") {
@@ -103,6 +103,34 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
               checkShuffleAnswer(df, 1)
             }
           }
+        }
+      }
+    }
+  }
+
+  test("native shuffle over a multi-partition native scan re-threads per-partition plan data") {
+    // End-to-end companion to CometNativeShuffleInputRDDSuite: that suite proves the per-partition
+    // scan plan data no longer rides the broadcast task binary; this one proves each task still
+    // gets its OWN slice at write time. Reading real Parquet files gives a CometNativeScanExec with
+    // several map partitions, so perPartitionByKey holds one file-list slice per partition and a
+    // correct result depends on task i seeing slice i (not partition 0's).
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "multi.parquet")
+      // Spread rows across 8 files so the native scan can yield multiple map partitions.
+      spark
+        .range(0, 10000, 1, numPartitions = 8)
+        .selectExpr("id AS _1", "CAST(id AS STRING) AS _2")
+        .write
+        .parquet(path.toString)
+
+      // Force one scan partition per file split so the per-partition array has multiple distinct
+      // entries; otherwise Spark coalesces the tiny files into a single partition.
+      withSQLConf(
+        "spark.sql.files.maxPartitionBytes" -> "1024",
+        "spark.sql.files.openCostInBytes" -> "0") {
+        readParquetFile(path.toString) { df =>
+          val shuffled = df.repartition(17, col("_1"))
+          checkShuffleAnswer(shuffled, 1, checkNativeOperators = true)
         }
       }
     }
@@ -146,8 +174,8 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
   test("native operator after native shuffle") {
     Seq("true", "false").zip(Seq("true", "false")).foreach { partitioning =>
       withSQLConf(
-        CometConf.COMET_EXEC_SHUFFLE_WITH_HASH_PARTITIONING_ENABLED.key -> partitioning._1,
-        CometConf.COMET_EXEC_SHUFFLE_WITH_RANGE_PARTITIONING_ENABLED.key -> partitioning._2) {
+        CometConf.COMET_SHUFFLE_NATIVE_HASH_PARTITIONING_ENABLED.key -> partitioning._1,
+        CometConf.COMET_SHUFFLE_NATIVE_RANGE_PARTITIONING_ENABLED.key -> partitioning._2) {
         withParquetTable((0 until 5).map(i => (i, (i + 1).toLong)), "tbl") {
           val df = sql("SELECT * FROM tbl")
 
@@ -309,7 +337,7 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
 
   test("range partitioning on floating-point falls back when strictFloatingPoint=true") {
     withSQLConf(
-      CometConf.COMET_EXEC_SHUFFLE_WITH_RANGE_PARTITIONING_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_NATIVE_RANGE_PARTITIONING_ENABLED.key -> "true",
       CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true",
       // Bypass the CometSortOrder-level Incompatible check so that only
       // supportedRangePartitioningDataType is exercised as the guard.
@@ -331,7 +359,7 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
   test(
     "range partitioning on floating-point uses native shuffle when strictFloatingPoint=false") {
     withSQLConf(
-      CometConf.COMET_EXEC_SHUFFLE_WITH_RANGE_PARTITIONING_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_NATIVE_RANGE_PARTITIONING_ENABLED.key -> "true",
       CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "false") {
       withParquetTable(floatingPointRangePartitionData, "tbl") {
         Seq("FLOAT", "DOUBLE").foreach { sqlType =>
@@ -386,7 +414,7 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
   // This adapts the PySpark example in https://github.com/apache/datafusion-comet/issues/1906 to
   // test for incorrect partition values after native RangePartitioning
   test("fix: range partitioning #1906") {
-    withSQLConf(CometConf.COMET_EXEC_SHUFFLE_WITH_RANGE_PARTITIONING_ENABLED.key -> "true") {
+    withSQLConf(CometConf.COMET_SHUFFLE_NATIVE_RANGE_PARTITIONING_ENABLED.key -> "true") {
       withParquetTable((0 until 100000).map(i => (i, i + 1)), "tbl") {
         val df = sql("SELECT * from tbl")
 
@@ -401,7 +429,7 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
   // This adapts the PySpark example in https://github.com/apache/datafusion-comet/issues/1906 to
   // test for incorrect partition values after native RangePartitioning
   test("fix: range partitioning #1906, two columns") {
-    withSQLConf(CometConf.COMET_EXEC_SHUFFLE_WITH_RANGE_PARTITIONING_ENABLED.key -> "true") {
+    withSQLConf(CometConf.COMET_SHUFFLE_NATIVE_RANGE_PARTITIONING_ENABLED.key -> "true") {
       withParquetTable((0 until 100000).map(i => (i, i + 1)), "tbl") {
         val df = sql("SELECT * from tbl")
 
@@ -416,7 +444,7 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
   // This adapts the PySpark example in https://github.com/apache/datafusion-comet/issues/1906 to
   // test for incorrect partition values after native RangePartitioning
   test("fix: range partitioning #1906, random sort column with duplicates") {
-    withSQLConf(CometConf.COMET_EXEC_SHUFFLE_WITH_RANGE_PARTITIONING_ENABLED.key -> "true") {
+    withSQLConf(CometConf.COMET_SHUFFLE_NATIVE_RANGE_PARTITIONING_ENABLED.key -> "true") {
       val random = new Random(42)
       withParquetTable((0 until 100000).map(i => (random.nextInt(10000), i)), "tbl") {
         val df = sql("SELECT * from tbl")
@@ -450,7 +478,7 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
     withParquetTable((0 until 20000).map(i => (i, (i + 1).toLong, s"str$i")), "tbl") {
       def spillCountWithMaxBufferBytes(maxBufferBytes: String): Long = {
         var spillCount = 0L
-        withSQLConf(CometConf.COMET_SHUFFLE_MAX_BUFFER_BYTES.key -> maxBufferBytes) {
+        withSQLConf(CometConf.COMET_SHUFFLE_NATIVE_MAX_BUFFER_BYTES.key -> maxBufferBytes) {
           val shuffled = sql("SELECT * FROM tbl").repartition(10, $"_1")
           checkShuffleAnswer(shuffled, 1)
 
@@ -481,8 +509,7 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
   }
 
   test("native shuffle: round robin partitioning") {
-    withSQLConf(
-      CometConf.COMET_EXEC_SHUFFLE_WITH_ROUND_ROBIN_PARTITIONING_ENABLED.key -> "true") {
+    withSQLConf(CometConf.COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_ENABLED.key -> "true") {
       withParquetTable((0 until 100).map(i => (i, (i + 1).toLong, s"str$i")), "tbl") {
         val df = sql("SELECT * FROM tbl")
 
@@ -498,8 +525,7 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
 
   test("native shuffle: round robin deterministic behavior") {
     // Test that round robin produces consistent results across multiple executions
-    withSQLConf(
-      CometConf.COMET_EXEC_SHUFFLE_WITH_ROUND_ROBIN_PARTITIONING_ENABLED.key -> "true") {
+    withSQLConf(CometConf.COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_ENABLED.key -> "true") {
       withParquetTable((0 until 1000).map(i => (i, (i + 1).toLong, s"str$i")), "tbl") {
         val df = sql("SELECT * FROM tbl")
 
@@ -514,8 +540,7 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
   }
 
   test("native shuffle: round robin with filter") {
-    withSQLConf(
-      CometConf.COMET_EXEC_SHUFFLE_WITH_ROUND_ROBIN_PARTITIONING_ENABLED.key -> "true") {
+    withSQLConf(CometConf.COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_ENABLED.key -> "true") {
       withParquetTable((0 until 100).map(i => (i, (i + 1).toLong)), "tbl") {
         val df = sql("SELECT * FROM tbl")
         val shuffled = df
@@ -577,8 +602,7 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
           .write
           .parquet(dir.toString)
       }
-      withSQLConf(
-        CometConf.COMET_EXEC_SHUFFLE_WITH_ROUND_ROBIN_PARTITIONING_ENABLED.key -> "true") {
+      withSQLConf(CometConf.COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_ENABLED.key -> "true") {
         val testDF = spark.read.parquet(dir.toString).repartition(10)
         // Verify CometShuffleExchangeExec is in the plan
         assert(

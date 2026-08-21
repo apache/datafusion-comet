@@ -20,12 +20,10 @@
 package org.apache.spark.sql.comet
 
 import java.util.Locale
-import java.util.ServiceLoader
 
 import scala.collection.mutable
 import scala.collection.mutable.ArrayBuffer
 import scala.jdk.CollectionConverters._
-import scala.util.control.NonFatal
 
 import org.apache.spark.{Partition, TaskContext}
 import org.apache.spark.broadcast.Broadcast
@@ -33,7 +31,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSet, Expression, ExpressionSet, Generator, NamedExpression, SortOrder}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode, CollectSet, Final, First, Last, Partial, PartialMerge, Percentile}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode, CollectList, CollectSet, Final, First, Last, Partial, PartialMerge, Percentile}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
 import org.apache.spark.sql.catalyst.plans._
 import org.apache.spark.sql.catalyst.plans.physical._
@@ -54,11 +52,11 @@ import org.apache.spark.util.io.ChunkedByteBuffer
 import com.google.common.base.Objects
 import com.google.protobuf.CodedOutputStream
 
-import org.apache.comet.{CometConf, CometExecIterator, CometRuntimeException, ConfigEntry}
+import org.apache.comet.{CometConf, CometExecIterator, CometRuntimeException, ConfigEntry, ContribServices}
 import org.apache.comet.CometSparkSessionExtensions.{isCometShuffleEnabled, withFallbackReason}
 import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.rules.CometExecRule
-import org.apache.comet.serde.{CometOperatorSerde, Compatible, Incompatible, OperatorOuterClass, SupportLevel, Unsupported}
+import org.apache.comet.serde.{CometOperatorSerde, Compatible, OperatorOuterClass, QueryContextInterner, SupportLevel, Unsupported}
 import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, Operator}
 import org.apache.comet.serde.QueryPlanSerde
 import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto, isStringCollationType, supportedSortType}
@@ -83,7 +81,13 @@ private[comet] trait PlanDataInjector {
   /** Extract the key used to look up planning data for this operator. */
   def getKey(op: Operator): Option[String]
 
-  /** Inject common + partition data into the operator node. */
+  /**
+   * Inject common + partition data into the operator node.
+   *
+   * Implementations must return the node with its child list unchanged -- `injectPlanData` walks
+   * the returned node's children, and relies on child reference identity to decide which
+   * operators need rebuilding.
+   */
   def inject(op: Operator, commonBytes: Array[Byte], partitionBytes: Array[Byte]): Operator
 }
 
@@ -102,20 +106,10 @@ private[comet] object PlanDataInjector extends Logging {
   private[comet] val injectors: Seq[PlanDataInjector] = {
     val builtin: Seq[PlanDataInjector] = Seq(IcebergPlanDataInjector, NativeScanPlanDataInjector)
     val discovered: Seq[PlanDataInjector] =
-      try {
-        ServiceLoader.load(classOf[PlanDataInjector], getClass.getClassLoader).asScala.toSeq
-      } catch {
-        // A misbuilt contrib jar -- a malformed service file, or a listed provider that can't be
-        // instantiated -- surfaces as ServiceConfigurationError while the iterator is forced.
-        // Warn so it's diagnosable, then continue with the built-ins so the planner stays alive.
-        // NonFatal covers ServiceConfigurationError (it is not a LinkageError).
-        case NonFatal(e) =>
-          logWarning(
-            "Failed to load contrib PlanDataInjector services; " +
-              "continuing with built-in injectors only",
-            e)
-          Seq.empty
-      }
+      // Defensive per-provider discovery: one misbuilt contrib jar must not take the others
+      // (or the built-ins) with it. See ContribServices for why neither `toSeq` nor a single
+      // try-around-the-whole-traversal is correct here.
+      ContribServices.load(classOf[PlanDataInjector], getClass.getClassLoader)
     builtin ++ discovered
   }
 
@@ -123,8 +117,13 @@ private[comet] object PlanDataInjector extends Logging {
   // `for (injector <- injectors if injector.canInject(op))` walk was paying N*M canInject calls
   // (N operators, M injectors) just to find no match. Keying by OpStructCase lets us skip the
   // iteration entirely for non-scan operators.
-  private val injectorsByKind: Map[Operator.OpStructCase, PlanDataInjector] =
-    injectors.map(i => i.opStructCase -> i).toMap
+  //
+  // Several injectors may share one kind: every out-of-tree contrib scan arrives as the SAME
+  // generic `CONTRIB_SCAN` envelope (distinguished by its `type_url`), so Delta and Lance both
+  // key here. Hence a Seq per kind rather than a single injector -- a `Map[kind, injector]` would
+  // silently drop all but the last contrib. Within a kind, `canInject` disambiguates.
+  private val injectorsByKind: Map[Operator.OpStructCase, Seq[PlanDataInjector]] =
+    injectors.groupBy(_.opStructCase)
 
   /**
    * Injects planning data into an Operator tree by finding nodes that need injection and applying
@@ -132,40 +131,52 @@ private[comet] object PlanDataInjector extends Logging {
    *
    * Supports joins over multiple tables by matching each operator with its corresponding data
    * based on a key (e.g., metadata_location for Iceberg).
+   *
+   * Operators are immutable protobuf messages, so any subtree needing no injection is returned by
+   * reference rather than rebuilt; only the root-to-scan paths are rebuilt.
    */
   def injectPlanData(
       op: Operator,
       commonByKey: Map[String, Array[Byte]],
       partitionByKey: Map[String, Array[Byte]]): Operator = {
-    val builder = op.toBuilder
 
     // O(1) by op kind, then a canInject confirm (which may inspect detail fields like `hasCommon`
     // / `!hasFilePartition`). Most operators in any tree are non-scan and skip the lookup body.
-    injectorsByKind.get(op.getOpStructCase) match {
-      case Some(injector) if injector.canInject(op) =>
-        injector.getKey(op) match {
-          case Some(key) =>
-            (commonByKey.get(key), partitionByKey.get(key)) match {
-              case (Some(commonBytes), Some(partitionBytes)) =>
-                val injectedOp = injector.inject(op, commonBytes, partitionBytes)
-                // Copy the injected operator's fields to our builder
-                builder.clear()
-                builder.mergeFrom(injectedOp)
-              case _ =>
-                throw new CometRuntimeException(s"Missing planning data for key: $key")
-            }
-          case None =>
+    val injectedOp =
+      injectorsByKind.get(op.getOpStructCase).flatMap(_.find(_.canInject(op))) match {
+        case Some(injector) =>
+          injector.getKey(op) match {
+            case Some(key) =>
+              (commonByKey.get(key), partitionByKey.get(key)) match {
+                case (Some(commonBytes), Some(partitionBytes)) =>
+                  injector.inject(op, commonBytes, partitionBytes)
+                case _ =>
+                  throw new CometRuntimeException(s"Missing planning data for key: $key")
+              }
+            case None => op
+          }
+        case _ => op
+      }
+
+    // Recursively process children, rebuilding this node only if one of them actually changed.
+    // Injectors preserve children, so `injectedOp` has the same child list as `op` either way.
+    // The builder is created on the first changed child, so unchanged nodes allocate nothing.
+    val children = injectedOp.getChildrenList
+    val numChildren = children.size()
+    var builder: Operator.Builder = null
+    var i = 0
+    while (i < numChildren) {
+      val child = children.get(i)
+      val injectedChild = injectPlanData(child, commonByKey, partitionByKey)
+      if (injectedChild ne child) {
+        if (builder == null) {
+          builder = injectedOp.toBuilder
         }
-      case _ =>
+        builder.setChildren(i, injectedChild)
+      }
+      i += 1
     }
-
-    // Recursively process children
-    builder.clearChildren()
-    op.getChildrenList.asScala.foreach { child =>
-      builder.addChildren(injectPlanData(child, commonByKey, partitionByKey))
-    }
-
-    builder.build()
+    if (builder == null) injectedOp else builder.build()
   }
 
   def serializeOperator(op: Operator): Array[Byte] = {
@@ -203,9 +214,17 @@ private[comet] object PlanDataInjector extends Logging {
         // the serializedPartitionData lazy val initializer (a known deadlock surface).
         iceberg.ensureSubqueriesResolved()
         if (iceberg.commonData.nonEmpty && iceberg.perPartitionData.nonEmpty) {
-          (
-            Map(iceberg.metadataLocation -> iceberg.commonData),
-            Map(iceberg.metadataLocation -> iceberg.perPartitionData))
+          // A self-join/self-merge can put two scans of the same table (same metadata_location)
+          // in one native plan. Computing the key via IcebergPlanDataInjector.getKey, the same
+          // function injectPlanData uses to look it up, keeps the two sides from drifting apart
+          // (see the scan_hash_code field comment in operator.proto for why metadata_location
+          // alone cannot distinguish them).
+          IcebergPlanDataInjector.getKey(iceberg.nativeOp) match {
+            case Some(key) =>
+              (Map(key -> iceberg.commonData), Map(key -> iceberg.perPartitionData))
+            case None =>
+              (Map.empty, Map.empty)
+          }
         } else {
           (Map.empty, Map.empty)
         }
@@ -274,8 +293,10 @@ private[comet] object IcebergPlanDataInjector extends PlanDataInjector {
       op.getIcebergScan.getFileScanTasksCount == 0 &&
       op.getIcebergScan.hasCommon
 
-  override def getKey(op: Operator): Option[String] =
-    Some(op.getIcebergScan.getCommon.getMetadataLocation)
+  override def getKey(op: Operator): Option[String] = {
+    val common = op.getIcebergScan.getCommon
+    Some(s"${common.getMetadataLocation}_${common.getScanHashCode}")
+  }
 
   override def inject(
       op: Operator,
@@ -315,17 +336,28 @@ private[comet] object NativeScanPlanDataInjector extends PlanDataInjector {
       op.getNativeScan.hasCommon &&
       !op.getNativeScan.hasFilePartition
 
-  override def getKey(op: Operator): Option[String] = {
-    // Reconstruct the same sourceKey that was used when storing the data
-    val common = op.getNativeScan.getCommon
-    val source = common.getSource
+  override def getKey(op: Operator): Option[String] = Some(sourceKey(op.getNativeScan.getCommon))
+
+  /**
+   * The key under which a native scan's planning data is stored and looked up. Called on the
+   * driver by `CometNativeScanExec.apply` to store, and on the executor by [[getKey]] to look up
+   * \- both must derive the identical string from the same scan, so this is the single definition
+   * rather than two mirrored copies.
+   *
+   * Data filters are stripped of their `QueryContext` before hashing: the executor reads them
+   * back out of the interned plan (see `QueryContextInterner`) while the driver holds the
+   * un-interned form, so including the context encoding would make the two sides disagree. Only
+   * data filters can carry a context, so the other components are hashed as-is.
+   */
+  private[comet] def sourceKey(common: OperatorOuterClass.NativeScanCommon): String = {
+    val dataFilters = common.getDataFiltersList.asScala
+      .map(QueryContextInterner.stripQueryContexts(_).toString)
     val keyComponents = Seq(
       common.getRequiredSchemaList.toString,
-      common.getDataFiltersList.toString,
+      dataFilters.mkString("[", ", ", "]"),
       common.getProjectionVectorList.toString,
       common.getFieldsList.toString)
-    val hashCode = keyComponents.mkString("|").hashCode
-    Some(s"${source}_${hashCode}")
+    s"${common.getSource}_${keyComponents.mkString("|").hashCode}"
   }
 
   override def inject(
@@ -507,7 +539,12 @@ private[comet] case class NativeExecContext(
     broadcastedHadoopConfForEncryption: Option[Broadcast[SerializableConfiguration]],
     encryptedFilePaths: Seq[String],
     commonByKey: Map[String, Array[Byte]],
-    perPartitionByKey: Map[String, Array[Array[Byte]]],
+    // @transient: this holds one serialized scan-plan-data blob per partition, so at high partition
+    // counts it is huge. It is only read on the driver (to slice per partition onto each task's
+    // Partition object - see CometNativeShuffleInputRDD / CometExecRDD); the executor reads its own
+    // slice, never this map. Keeping it off the wire stops it from bloating the broadcast task
+    // binary when this context rides on the non-transient CometShuffleDependency.nativeShuffleSpec.
+    @transient perPartitionByKey: Map[String, Array[Array[Byte]]],
     shuffleScanIndices: Set[Int],
     hasScanInput: Boolean) {
   // Catch shape divergence (e.g. broadcast scans with different partition counts after DPP
@@ -740,9 +777,9 @@ abstract class CometNativeExec extends CometExec {
     val (firstNonBroadcastPlanRDD, firstNonBroadcastPlanNumPartitions) =
       firstNonBroadcastPlan.get._1 match {
         case plan: CometNativeExec =>
-          (null, plan.outputPartitioning.numPartitions)
+          (null.asInstanceOf[RDD[Any]], plan.outputPartitioning.numPartitions)
         case plan =>
-          val rdd = asArrowStreamRDD(plan, 0, firstNonBroadcastSlot)
+          val rdd = asArrowStreamRDD(plan, 0, firstNonBroadcastSlot).asInstanceOf[RDD[Any]]
           (rdd, rdd.getNumPartitions)
       }
 
@@ -859,12 +896,10 @@ abstract class CometNativeExec extends CometExec {
   def convertBlock(): CometNativeExec = {
     def transform(arg: Any): AnyRef = arg match {
       case serializedPlan: SerializedPlan if serializedPlan.isEmpty =>
-        val size = nativeOp.getSerializedSize
-        val bytes = new Array[Byte](size)
-        val codedOutput = CodedOutputStream.newInstance(bytes)
-        nativeOp.writeTo(codedOutput)
-        codedOutput.checkNoSpaceLeft()
-        SerializedPlan(Some(bytes))
+        // Hoist duplicated QueryContext SQL text into a pool on the root operator. This is the
+        // point where the whole native block is in hand, which is what the pool indices are
+        // scoped to.
+        SerializedPlan(Some(CometExec.serializeNativePlan(QueryContextInterner.intern(nativeOp))))
       case other: AnyRef => other
       case null => null
     }
@@ -1020,7 +1055,6 @@ object CometProjectExec extends CometOperatorSerde[ProjectExec] {
         .addAllProjectList(exprs.map(_.get).asJava)
       Some(builder.setProjection(projectBuilder).build())
     } else {
-      withFallbackReason(op, op.projectList: _*)
       None
     }
   }
@@ -1080,7 +1114,6 @@ object CometFilterExec extends CometOperatorSerde[FilterExec] {
         .setPredicate(cond.get)
       Some(builder.setFilter(filterBuilder).build())
     } else {
-      withFallbackReason(op, op.condition, op.child)
       None
     }
   }
@@ -1153,7 +1186,7 @@ object CometSortExec extends CometOperatorSerde[SortExec] {
         .addAllSortOrders(sortOrders.map(_.get).asJava)
       Some(builder.setSort(sortBuilder).build())
     } else {
-      withFallbackReason(op, "sort order not supported", op.sortOrder: _*)
+      withFallbackReason(op, "sort order not supported")
       None
     }
   }
@@ -1343,11 +1376,7 @@ object CometExpandExec extends CometOperatorSerde[ExpandExec] {
       op: ExpandExec,
       builder: Operator.Builder,
       childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
-    var allProjExprs: Seq[Expression] = Seq()
-    val projExprs = op.projections.flatMap(_.map(e => {
-      allProjExprs = allProjExprs :+ e
-      exprToProto(e, op.child.output)
-    }))
+    val projExprs = op.projections.flatMap(_.map(e => exprToProto(e, op.child.output)))
 
     if (projExprs.forall(_.isDefined) && childOp.nonEmpty) {
       val expandBuilder = OperatorOuterClass.Expand
@@ -1356,7 +1385,6 @@ object CometExpandExec extends CometOperatorSerde[ExpandExec] {
         .setNumExprPerProject(op.projections.head.size)
       Some(builder.setExpand(expandBuilder).build())
     } else {
-      withFallbackReason(op, allProjExprs: _*)
       None
     }
   }
@@ -1416,11 +1444,6 @@ object CometExplodeExec extends CometOperatorSerde[GenerateExec] {
     if (nodeName != "explode" && nodeName != "posexplode") {
       return Unsupported(Some(s"Unsupported generator: ${op.generator.nodeName}"))
     }
-    if (op.outer) {
-      // DataFusion UnnestExec has different semantics to Spark for this case
-      // https://github.com/apache/datafusion/issues/19053
-      return Incompatible(Some("Empty arrays are not preserved as null outputs when outer=true"))
-    }
     op.generator.children.head.dataType match {
       case _: ArrayType =>
         Compatible()
@@ -1441,7 +1464,6 @@ object CometExplodeExec extends CometOperatorSerde[GenerateExec] {
     val childExprProto = exprToProto(childExpr, op.child.output)
 
     if (childExprProto.isEmpty) {
-      withFallbackReason(op, childExpr)
       return None
     }
 
@@ -1453,7 +1475,6 @@ object CometExplodeExec extends CometOperatorSerde[GenerateExec] {
     }
 
     if (projectExprs.exists(_.isEmpty) || childOp.isEmpty) {
-      withFallbackReason(op, op.output: _*)
       return None
     }
 
@@ -1773,10 +1794,7 @@ trait CometBaseAggregate {
       }
 
       if (aggExprs.exists(_.isEmpty)) {
-        withFallbackReason(
-          aggregate,
-          "Unsupported aggregate expression(s)",
-          aggregateExpressions ++ aggregateExpressions.map(_.aggregateFunction): _*)
+        withFallbackReason(aggregate, "Unsupported aggregate expression(s)")
         return None
       }
 
@@ -1817,9 +1835,6 @@ trait CometBaseAggregate {
           Some(builder.setHashAgg(hashAggBuilder).build())
         }
       } else {
-        val allChildren: Seq[Expression] =
-          groupingExpressions ++ aggregateExpressions ++ aggregateAttributes
-        withFallbackReason(aggregate, allChildren: _*)
         None
       }
     }
@@ -1848,8 +1863,7 @@ trait CometBaseAggregate {
     if (resultExprs.exists(_.isEmpty)) {
       withFallbackReason(
         aggregate,
-        s"Unsupported result expressions found in: $resultExpressions",
-        resultExpressions: _*)
+        s"Unsupported result expressions found in: $resultExpressions")
       return None
     }
     val planId = builder.getPlanId
@@ -1872,13 +1886,13 @@ trait CometBaseAggregate {
   }
 
   /**
-   * For partial-like aggregates containing TypedImperativeAggregate functions (like CollectSet
-   * and Percentile), the Spark-side output declares buffer columns as BinaryType because Spark
-   * serializes state to binary. Native Comet emits the actual state type, so fix the exposed
-   * output schema before shuffle/exchange code consumes it.
+   * For partial-like aggregates containing TypedImperativeAggregate functions (like CollectSet,
+   * CollectList, and Percentile), the Spark-side output declares buffer columns as BinaryType
+   * because Spark serializes state to binary. Native Comet emits the actual state type, so fix
+   * the exposed output schema before shuffle/exchange code consumes it.
    *
-   * NOTE: If a new TypedImperativeAggregate function (e.g., CollectList) is added natively, add a
-   * case branch here mapping it to the native state type.
+   * NOTE: If a new TypedImperativeAggregate function is added natively, add a case branch here
+   * mapping it to the native state type.
    */
   protected def adjustOutputForNativeState(op: BaseAggregateExec): Seq[Attribute] = {
     val modeSet = op.aggregateExpressions.map(_.mode).toSet
@@ -1896,6 +1910,10 @@ trait CometBaseAggregate {
       aggFunc match {
         case cs: CollectSet =>
           val elementType = cs.children.head.dataType
+          val nativeStateType = ArrayType(elementType, containsNull = true)
+          output(bufferIdx) = output(bufferIdx).withDataType(nativeStateType)
+        case cl: CollectList =>
+          val elementType = cl.children.head.dataType
           val nativeStateType = ArrayType(elementType, containsNull = true)
           output(bufferIdx) = output(bufferIdx).withDataType(nativeStateType)
         case _: Percentile =>
@@ -2128,7 +2146,6 @@ trait CometHashJoin {
     val condition = join.condition.map { cond =>
       val condProto = exprToProto(cond, join.left.output ++ join.right.output)
       if (condProto.isEmpty) {
-        withFallbackReason(join, cond)
         return None
       }
       condProto.get
@@ -2167,8 +2184,6 @@ trait CometHashJoin {
       condition.foreach(joinBuilder.setCondition)
       Some(builder.setHashJoin(joinBuilder).build())
     } else {
-      val allExprs: Seq[Expression] = joinKeys
-      withFallbackReason(join, allExprs: _*)
       None
     }
   }
@@ -2295,7 +2310,6 @@ object CometBroadcastNestedLoopJoinExec extends CometOperatorSerde[BroadcastNest
     val joinCondition = op.condition.map({ cond =>
       val condProto = exprToProto(cond, op.left.output ++ op.right.output)
       if (condProto.isEmpty) {
-        withFallbackReason(op, cond)
         return None
       }
       condProto.get
@@ -2613,15 +2627,13 @@ object CometSortMergeJoinExec extends CometOperatorSerde[SortMergeJoinExec] {
         .get(join.conf)) {
       withFallbackReason(
         join,
-        s"${CometConf.COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED.key} is not enabled",
-        join.condition.get)
+        s"${CometConf.COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED.key} is not enabled")
       return None
     }
 
     val condition = join.condition.map { cond =>
       val condProto = exprToProto(cond, join.left.output ++ join.right.output)
       if (condProto.isEmpty) {
-        withFallbackReason(join, cond)
         return None
       }
       condProto.get
@@ -2682,8 +2694,6 @@ object CometSortMergeJoinExec extends CometOperatorSerde[SortMergeJoinExec] {
       condition.map(joinBuilder.setCondition)
       Some(builder.setSortMergeJoin(joinBuilder).build())
     } else {
-      val allExprs: Seq[Expression] = joinKeys
-      withFallbackReason(join, allExprs: _*)
       None
     }
   }

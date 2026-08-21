@@ -20,11 +20,11 @@
 package org.apache.comet.serde
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Base64, BitLength, Cast, Concat, ConcatWs, Contains, Elt, Empty2Null, EndsWith, Expression, FindInSet, FormatNumber, FormatString, GetJsonObject, InitCap, Left, Length, Levenshtein, Like, Literal, Lower, Mask, OctetLength, Overlay, RegExpExtract, RegExpExtractAll, RegExpInStr, RegExpReplace, Right, RLike, SoundEx, StartsWith, StringLocate, StringLPad, StringRepeat, StringReplace, StringRPad, StringSplit, StringTranslate, Substring, SubstringIndex, ToCharacter, ToNumber, TryToNumber, UnBase64, Upper}
-import org.apache.spark.sql.types.{BinaryType, DataTypes, LongType, StringType}
+import org.apache.spark.sql.types.{BinaryType, DataTypes, IntegerType, LongType, StringType}
 
 import org.apache.comet.CometConf
 import org.apache.comet.serde.ExprOuterClass.Expr
-import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, optExprWithFallbackReason, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType}
+import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType}
 import org.apache.comet.shims.CometTypeShim
 
 object CometStringRepeat extends CometExpressionSerde[StringRepeat] {
@@ -43,7 +43,7 @@ object CometStringRepeat extends CometExpressionSerde[StringRepeat] {
     val leftExpr = exprToProtoInternal(leftCast, inputs, binding)
     val rightExpr = exprToProtoInternal(rightCast, inputs, binding)
     val optExpr = scalarFunctionExprToProto("repeat", leftExpr, rightExpr)
-    optExprWithFallbackReason(optExpr, expr, leftCast, rightCast)
+    optExpr
   }
 }
 
@@ -118,6 +118,29 @@ object CometStringTranslate extends CometScalarFunction[StringTranslate]("transl
 
   override def getSupportLevel(expr: StringTranslate): SupportLevel = Incompatible(
     Some(incompatReason))
+}
+
+object CometLevenshtein extends CometExpressionSerde[Levenshtein] {
+
+  override def getUnsupportedReasons(): Seq[String] = Seq(
+    "Non-default collation (non-UTF8_BINARY) is not supported")
+
+  override def getSupportLevel(expr: Levenshtein): SupportLevel =
+    if (expr.children.exists(child => QueryPlanSerde.isStringCollationType(child.dataType))) {
+      Unsupported(Some("Levenshtein with non-default collation is not supported"))
+    } else {
+      Compatible()
+    }
+
+  override def convert(
+      expr: Levenshtein,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] = {
+    val childExprs = expr.children.map(exprToProtoInternal(_, inputs, binding))
+    val optExpr =
+      scalarFunctionExprToProtoWithReturnType("levenshtein", IntegerType, false, childExprs: _*)
+    optExpr
+  }
 }
 
 object CometInitCap extends CometScalarFunction[InitCap]("initcap") with NativeOptInAvailable {
@@ -197,7 +220,7 @@ object CometSubstringIndex extends CometExpressionSerde[SubstringIndex] {
     val countExpr = exprToProtoInternal(countCast, inputs, binding)
     val optExpr =
       scalarFunctionExprToProto("substring_index", strExpr, delimExpr, countExpr)
-    optExprWithFallbackReason(optExpr, expr, expr.strExpr, expr.delimExpr, expr.countExpr)
+    optExpr
   }
 }
 
@@ -466,7 +489,7 @@ object CometRegExpExtract extends CometExpressionSerde[RegExpExtract] {
         subjectExpr,
         patternExpr,
         idxExpr)
-      optExprWithFallbackReason(optExpr, expr, expr.subject, expr.regexp, expr.idx)
+      optExpr
     } else {
       // Default: route through the codegen dispatcher so Spark's own doGenCode runs inside the
       // Comet pipeline. Falls back to Spark when the dispatcher is disabled.
@@ -504,7 +527,7 @@ object CometRegExpExtractAll extends CometExpressionSerde[RegExpExtractAll] {
         subjectExpr,
         patternExpr,
         idxExpr)
-      optExprWithFallbackReason(optExpr, expr, expr.subject, expr.regexp, expr.idx)
+      optExpr
     } else {
       // Default: route through the codegen dispatcher so Spark's own doGenCode runs inside the
       // Comet pipeline. Falls back to Spark when the dispatcher is disabled.
@@ -554,7 +577,7 @@ object CometRegExpReplace extends CometExpressionSerde[RegExpReplace] with Nativ
         patternExpr,
         replacementExpr,
         flagsExpr)
-      optExprWithFallbackReason(optExpr, expr, expr.subject, expr.regexp, expr.rep, expr.pos)
+      optExpr
     } else {
       // Default: route through the codegen dispatcher so Spark's own doGenCode runs inside the
       // Comet pipeline. Falls back to Spark when the dispatcher is disabled.
@@ -600,7 +623,7 @@ object CometStringSplit extends CometExpressionSerde[StringSplit] with NativeOpt
         strExpr,
         regexExpr,
         limitExpr)
-      optExprWithFallbackReason(optExpr, expr, expr.str, expr.regex, expr.limit)
+      optExpr
     } else {
       // Default: route through the codegen dispatcher so Spark's own doGenCode runs inside the
       // Comet pipeline. Falls back to Spark when the dispatcher is disabled.
@@ -624,7 +647,10 @@ object CometGetJsonObject extends CometCodegenDispatch[GetJsonObject] with Nativ
   override def getIncompatibleReasons(): Seq[String] =
     Seq(
       "Spark allows single-quoted JSON and unescaped control characters" +
-        " which Comet does not support")
+        " which Comet does not support",
+      "For JSON objects containing duplicate keys, Spark returns the value of the first" +
+        " occurrence while Comet's native implementation returns the last occurrence" +
+        " ([#4947](https://github.com/apache/datafusion-comet/issues/4947))")
 
   override def getSupportLevel(expr: GetJsonObject): SupportLevel =
     if (!CometConf.isExprAllowIncompat(getExprConfigName(expr))) {
@@ -647,7 +673,7 @@ object CometGetJsonObject extends CometCodegenDispatch[GetJsonObject] with Nativ
         false,
         jsonExpr,
         pathExpr)
-      optExprWithFallbackReason(optExpr, expr, expr.json, expr.path)
+      optExpr
     } else {
       super.convert(expr, inputs, binding)
     }
@@ -655,8 +681,6 @@ object CometGetJsonObject extends CometCodegenDispatch[GetJsonObject] with Nativ
 
 // Expressions routed through the JVM codegen dispatcher: no native implementation, so Spark's own
 // doGenCode runs inside the Comet pipeline, matching Spark exactly.
-object CometLevenshtein extends CometCodegenDispatch[Levenshtein]
-
 object CometElt extends CometCodegenDispatch[Elt]
 
 object CometFindInSet extends CometCodegenDispatch[FindInSet]
@@ -685,7 +709,7 @@ object CometBase64 extends CometExpressionSerde[Base64] {
         failOnError = false,
         childExpr,
         chunkExpr)
-    optExprWithFallbackReason(optExpr, expr, expr.child)
+    optExpr
   }
 }
 
