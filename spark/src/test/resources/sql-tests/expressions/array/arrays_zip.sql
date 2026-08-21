@@ -27,7 +27,7 @@ SELECT arrays_zip(array(1, 2, 3), array('a', 'b'));
 
 -- With floating points
 query
-SELECT arrays_zip(array(-.1234567E+2BD, CAST('-Infinity' AS DOUBLE), CAST('NaN' AS DOUBLE)), array(CAST('Infinity' AS FLOAT), -0.0, -0.1234567f, CAST('NaN' AS FLOAT)));
+SELECT arrays_zip(array(-.1234567E+2BD, CAST('-Infinity' AS DOUBLE), CAST('NaN' AS DOUBLE)), array(CAST('Infinity' AS FLOAT), float('-0.0'), -0.1234567f, CAST('NaN' AS FLOAT)));
 
 -- basic: two integer arrays of equal length
 query

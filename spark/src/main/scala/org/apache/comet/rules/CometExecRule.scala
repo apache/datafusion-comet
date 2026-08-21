@@ -266,6 +266,15 @@ case class CometExecRule(session: SparkSession)
   // spotless:on
   private def transform(plan: SparkPlan): SparkPlan = {
     def convertNode(op: SparkPlan): SparkPlan = op match {
+      // Scan marker produced by an optional, out-of-tree scan contrib (e.g. contrib/delta).
+      // Matched by trait (no compile-time dependency on the contrib) and present only when that
+      // contrib is on the classpath. The marker carries its own serde handler and typically wraps
+      // the original, link-bearing scan, so the produced exec's originalPlan keeps its logicalLink
+      // with no workaround. If conversion declines, the marker itself falls back to the vanilla
+      // Spark scan, so leaving it in the plan is safe.
+      case marker: CometContribScanMarker =>
+        convertToComet(marker, marker.scanHandler).getOrElse(marker)
+
       // Fully native scan for V1. CometScanExec must always convert to a native scan; the JVM
       // fallback path has been removed. If conversion fails, fall back to the original Spark scan.
       case scan: CometScanExec =>
