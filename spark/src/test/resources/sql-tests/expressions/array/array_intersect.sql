@@ -133,7 +133,7 @@ INSERT INTO test_intersect_float VALUES
   (array(1.0, 2.0), array(float('NaN'))),
   (array(float('NaN'), NULL), array(float('NaN'), NULL)),
   (array(float('Infinity'), 1.0, float('-Infinity')), array(float('Infinity'), float('-Infinity'))),
-  (array(cast(0.0 as float), cast(-0.0 as float)), array(cast(0.0 as float)))
+  (array(cast(0.0 as float), float('-0.0')), array(cast(0.0 as float)))
 
 query
 SELECT a, b, array_intersect(a, b) FROM test_intersect_float
@@ -151,7 +151,7 @@ INSERT INTO test_intersect_dbl VALUES
   (array(1.0, 2.0), array(double('NaN'))),
   (array(double('NaN'), NULL), array(double('NaN'), NULL)),
   (array(double('Infinity'), 1.0, double('-Infinity')), array(double('Infinity'), double('-Infinity'))),
-  (array(0.0, -0.0), array(0.0)),
+  (array(0.0, double('-0.0')), array(0.0)),
   (array(1.0, 2.0, NULL), array(1.0, NULL))
 
 query

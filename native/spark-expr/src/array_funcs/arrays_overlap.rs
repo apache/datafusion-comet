@@ -284,10 +284,9 @@ fn range_has_null(nulls: Option<&NullBuffer>, range: Range<usize>) -> bool {
     nulls.is_some_and(|n| n.null_count() > 0 && n.slice(range.start, range.len()).null_count() > 0)
 }
 
-/// Projects a native value onto a hashable key whose equality matches the Arrow compare kernels:
-/// the value itself for integral types, the bit pattern for floats. Arrow orders floats by total
-/// order rather than IEEE semantics (NaN equals NaN, and 0.0 does not equal -0.0), which is
-/// exactly bit equality.
+/// Projects a native value onto a Spark-compatible hashable key. Floating-point keys canonicalize
+/// every NaN representation while preserving the distinct bit patterns of positive and negative
+/// zero.
 trait OverlapKey: Copy {
     type Key: Hash + Eq + Copy;
 
@@ -311,7 +310,11 @@ impl OverlapKey for f32 {
     type Key = u32;
 
     fn overlap_key(self) -> u32 {
-        self.to_bits()
+        if self.is_nan() {
+            f32::NAN.to_bits()
+        } else {
+            self.to_bits()
+        }
     }
 }
 
@@ -319,7 +322,11 @@ impl OverlapKey for f64 {
     type Key = u64;
 
     fn overlap_key(self) -> u64 {
-        self.to_bits()
+        if self.is_nan() {
+            f64::NAN.to_bits()
+        } else {
+            self.to_bits()
+        }
     }
 }
 
@@ -554,6 +561,132 @@ mod tests {
         let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
         assert!(!result.value(0));
         assert!(result.is_valid(0));
+        Ok(())
+    }
+
+    #[test]
+    fn test_flat_float32_nan_payloads_and_signed_zero() -> Result<()> {
+        let positive_nan = f32::from_bits(0x7fc0_0001);
+        let negative_nan = f32::from_bits(0xffc0_0002);
+        let signaling_nan = f32::from_bits(0x7f80_0001);
+
+        let hash_nan_left = (1..=16)
+            .map(|value| Some(value as f32))
+            .chain([Some(positive_nan)])
+            .collect::<Vec<_>>();
+        let hash_nan_right = (17..=32)
+            .map(|value| Some(value as f32))
+            .chain([Some(negative_nan)])
+            .collect::<Vec<_>>();
+        let hash_zero_left = (1..=16)
+            .map(|value| Some(value as f32))
+            .chain([Some(0.0)])
+            .collect::<Vec<_>>();
+        let hash_zero_right = (17..=32)
+            .map(|value| Some(value as f32))
+            .chain([Some(-0.0)])
+            .collect::<Vec<_>>();
+
+        let left = ListArray::from_iter_primitive::<Float32Type, _, _>([
+            Some(vec![Some(positive_nan)]),
+            Some(vec![Some(negative_nan)]),
+            Some(vec![Some(signaling_nan)]),
+            Some(vec![Some(0.0)]),
+            Some(vec![Some(-0.0)]),
+            Some(vec![Some(positive_nan), None]),
+            Some(vec![Some(0.0), None]),
+            Some(hash_nan_left),
+            Some(hash_zero_left),
+        ]);
+        let right = ListArray::from_iter_primitive::<Float32Type, _, _>([
+            Some(vec![Some(f32::NAN)]),
+            Some(vec![Some(positive_nan)]),
+            Some(vec![Some(negative_nan)]),
+            Some(vec![Some(-0.0)]),
+            Some(vec![Some(0.0)]),
+            Some(vec![Some(negative_nan)]),
+            Some(vec![Some(-0.0)]),
+            Some(hash_nan_right),
+            Some(hash_zero_right),
+        ]);
+
+        let result = arrays_overlap_list::<i32>(&left, &right)?;
+        let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
+        let expected = BooleanArray::from(vec![
+            Some(true),
+            Some(true),
+            Some(true),
+            Some(false),
+            Some(false),
+            Some(true),
+            None,
+            Some(true),
+            Some(false),
+        ]);
+        assert_eq!(result, &expected);
+        Ok(())
+    }
+
+    #[test]
+    fn test_flat_float64_nan_payloads_and_signed_zero() -> Result<()> {
+        let positive_nan = f64::from_bits(0x7ff8_0000_0000_0001);
+        let negative_nan = f64::from_bits(0xfff8_0000_0000_0002);
+        let signaling_nan = f64::from_bits(0x7ff0_0000_0000_0001);
+
+        let hash_nan_left = (1..=16)
+            .map(|value| Some(value as f64))
+            .chain([Some(positive_nan)])
+            .collect::<Vec<_>>();
+        let hash_nan_right = (17..=32)
+            .map(|value| Some(value as f64))
+            .chain([Some(negative_nan)])
+            .collect::<Vec<_>>();
+        let hash_zero_left = (1..=16)
+            .map(|value| Some(value as f64))
+            .chain([Some(0.0)])
+            .collect::<Vec<_>>();
+        let hash_zero_right = (17..=32)
+            .map(|value| Some(value as f64))
+            .chain([Some(-0.0)])
+            .collect::<Vec<_>>();
+
+        let left = ListArray::from_iter_primitive::<Float64Type, _, _>([
+            Some(vec![Some(positive_nan)]),
+            Some(vec![Some(negative_nan)]),
+            Some(vec![Some(signaling_nan)]),
+            Some(vec![Some(0.0)]),
+            Some(vec![Some(-0.0)]),
+            Some(vec![Some(positive_nan), None]),
+            Some(vec![Some(0.0), None]),
+            Some(hash_nan_left),
+            Some(hash_zero_left),
+        ]);
+        let right = ListArray::from_iter_primitive::<Float64Type, _, _>([
+            Some(vec![Some(f64::NAN)]),
+            Some(vec![Some(positive_nan)]),
+            Some(vec![Some(negative_nan)]),
+            Some(vec![Some(-0.0)]),
+            Some(vec![Some(0.0)]),
+            Some(vec![Some(negative_nan)]),
+            Some(vec![Some(-0.0)]),
+            Some(hash_nan_right),
+            Some(hash_zero_right),
+        ]);
+
+        let result = arrays_overlap_list::<i32>(&left, &right)?;
+        let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
+        let expected = BooleanArray::from(vec![
+            Some(true),
+            Some(true),
+            Some(true),
+            Some(false),
+            Some(false),
+            Some(true),
+            None,
+            Some(true),
+            Some(false),
+        ]);
+        assert_eq!(result, &expected);
         Ok(())
     }
 
