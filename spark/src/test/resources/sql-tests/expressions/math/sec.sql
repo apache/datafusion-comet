@@ -19,7 +19,7 @@ statement
 CREATE TABLE test_sec(d double) USING parquet
 
 statement
-INSERT INTO test_sec VALUES (0.0), (-0.0), (1.5707963267948966), (-1.5707963267948966), (3.141592653589793), (NULL), (cast('NaN' as double)), (cast('Infinity' as double)), (cast('-Infinity' as double))
+INSERT INTO test_sec VALUES (0.0), (double('-0.0')), (1.5707963267948966), (-1.5707963267948966), (3.141592653589793), (NULL), (cast('NaN' as double)), (cast('Infinity' as double)), (cast('-Infinity' as double))
 
 query tolerance=1e-6
 SELECT sec(d) FROM test_sec
