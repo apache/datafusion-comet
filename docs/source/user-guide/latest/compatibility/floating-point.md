@@ -58,3 +58,11 @@ longer forces a fallback for them: scalar `FLOAT` and `DOUBLE` sort keys, window
 keys, and range partitioning keys all stay native under strict mode. Floating-point values nested
 in arrays, structs, or maps still fall back under strict mode, because their ordering is the raw
 total ordering described above.
+
+For `array_min` and `array_max`, Spark retains the first element when signed zeros compare equal.
+The native implementation instead orders `-0.0` before `+0.0`, so a tied minimum can return `-0.0`
+where Spark returns `+0.0`, and a tied maximum can return `+0.0` where Spark returns `-0.0`.
+With `spark.comet.exec.strictFloatingPoint=true`, these expressions use Spark's codegen dispatcher
+inside Comet, or fall back to Spark if that dispatcher is disabled. The native path remains available
+when the expression's `allowIncompatible` setting is explicitly enabled. Non-strict behavior is
+unchanged. Native signed-zero parity is tracked by [#5401](https://github.com/apache/datafusion-comet/issues/5401).
