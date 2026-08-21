@@ -122,12 +122,21 @@ pub(crate) struct MultiPartitionShuffleRepartitioner<T: PartitionWriter> {
     /// allocation once rather than once per slice that references it. Cleared whenever the
     /// buffered batches drain (spill / shuffle_write). See `count_new_buffers`.
     pinned_buffers: HashSet<usize>,
+    /// Backing buffers already reported as spilled while slicing the current outer input batch.
+    /// The outer batch keeps these allocations alive across spills, so clear this set only when
+    /// that input batch finishes rather than whenever the repartitioner's buffers drain.
+    spill_accounted_input_buffers: HashSet<usize>,
+    /// Bytes in the currently buffered batches that were already counted by a previous spill of
+    /// the same outer input batch. Partition-index allocations are never included here.
+    repeated_spill_buffer_bytes: usize,
 }
 
 /// Sum of the capacities of the backing buffers reachable from `batch` whose start address is
 /// not already in `seen` (recursing through child data: dictionary values, list children, and so
 /// on). `seen` is kept across every buffered batch, so this returns the bytes a batch newly
-/// pins, which is the memory the shuffle writer holds resident by buffering it.
+/// pins, which is the memory the shuffle writer holds resident by buffering it. The second return
+/// value contains the subset of those bytes whose buffers were already reported spilled while
+/// processing the current outer input batch.
 ///
 /// Cheaper measures do not match resident memory for the batches this writer sees. A partial
 /// `HashAggregate` emits one group-values buffer sliced into batch_size chunks, and every
@@ -144,28 +153,53 @@ pub(crate) struct MultiPartitionShuffleRepartitioner<T: PartitionWriter> {
 ///
 /// Counting each distinct allocation once, keyed by start address, is the measure that tracks
 /// resident memory regardless of how arrays share or slice their buffers.
-fn count_new_buffers(batch: &RecordBatch, seen: &mut HashSet<usize>) -> usize {
-    fn visit(data: &ArrayData, seen: &mut HashSet<usize>, total: &mut usize) {
+fn count_new_buffers(
+    batch: &RecordBatch,
+    seen: &mut HashSet<usize>,
+    previously_spilled: Option<&HashSet<usize>>,
+) -> (usize, usize) {
+    fn visit(
+        data: &ArrayData,
+        seen: &mut HashSet<usize>,
+        previously_spilled: Option<&HashSet<usize>>,
+        total: &mut usize,
+        repeated: &mut usize,
+    ) {
         for buffer in data.buffers() {
-            if seen.insert(buffer.data_ptr().as_ptr() as usize) {
+            let address = buffer.data_ptr().as_ptr() as usize;
+            if seen.insert(address) {
                 *total += buffer.capacity();
+                if previously_spilled.is_some_and(|buffers| buffers.contains(&address)) {
+                    *repeated += buffer.capacity();
+                }
             }
         }
         if let Some(nulls) = data.nulls() {
             let inner = nulls.inner().inner();
-            if seen.insert(inner.data_ptr().as_ptr() as usize) {
+            let address = inner.data_ptr().as_ptr() as usize;
+            if seen.insert(address) {
                 *total += inner.capacity();
+                if previously_spilled.is_some_and(|buffers| buffers.contains(&address)) {
+                    *repeated += inner.capacity();
+                }
             }
         }
         for child in data.child_data() {
-            visit(child, seen, total);
+            visit(child, seen, previously_spilled, total, repeated);
         }
     }
     let mut total = 0;
+    let mut repeated = 0;
     for column in batch.columns() {
-        visit(&column.to_data(), seen, &mut total);
+        visit(
+            &column.to_data(),
+            seen,
+            previously_spilled,
+            &mut total,
+            &mut repeated,
+        );
     }
-    total
+    (total, repeated)
 }
 
 impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
@@ -219,6 +253,8 @@ impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
             max_buffer_bytes,
             tracing_enabled,
             pinned_buffers: HashSet::new(),
+            spill_accounted_input_buffers: HashSet::new(),
+            repeated_spill_buffer_bytes: 0,
         })
     }
 
@@ -426,7 +462,12 @@ impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
     ) -> datafusion::common::Result<()> {
         // Charge both the reservation and the data_size metric for the buffers this batch newly
         // pins; `count_new_buffers` dedups buffers shared across already-buffered batches.
-        let new_buffer_bytes = count_new_buffers(&input, &mut self.pinned_buffers);
+        let (new_buffer_bytes, repeated_buffer_bytes) = count_new_buffers(
+            &input,
+            &mut self.pinned_buffers,
+            Some(&self.spill_accounted_input_buffers),
+        );
+        self.repeated_spill_buffer_bytes += repeated_buffer_bytes;
         self.metrics.data_size.add(new_buffer_bytes);
         let mut mem_growth: usize = new_buffer_bytes;
         let buffered_partition_idx = self.buffered_batches.len() as u32;
@@ -457,15 +498,25 @@ impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
             mem_growth += after_size.saturating_sub(before_size);
         }
 
-        // `try_grow` is evaluated first so the reservation accounts for this batch either way.
+        // A rejected reservation does not include this batch's memory, even though the batch
+        // and its partition indices have already been buffered and must be counted as spilled.
+        let reservation_failed = self.reservation.try_grow(mem_growth).is_err();
         // Checking after buffering lets the writer overshoot the limit by at most one batch,
         // which is how the memory-pressure trigger already behaves.
-        if self.reservation.try_grow(mem_growth).is_err()
+        if reservation_failed
             || self
                 .max_buffer_bytes
                 .is_some_and(|limit| self.reservation.size() >= limit)
         {
-            self.spill()?;
+            let unreserved_bytes = if reservation_failed { mem_growth } else { 0 };
+            count_new_buffers(
+                self.buffered_batches
+                    .last()
+                    .expect("the current input batch was buffered before spilling"),
+                &mut self.spill_accounted_input_buffers,
+                None,
+            );
+            self.spill(unreserved_bytes)?;
         }
 
         Ok(())
@@ -501,7 +552,7 @@ impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
         PartitionedBatchesProducer::new(buffered_batches, indices, self.batch_size)
     }
 
-    pub(crate) fn spill(&mut self) -> datafusion::common::Result<()> {
+    pub(crate) fn spill(&mut self, unreserved_bytes: usize) -> datafusion::common::Result<()> {
         log::info!(
             "ShuffleRepartitioner spilling shuffle data of {} to disk while inserting ({} time(s) so far)",
             self.used(),
@@ -525,8 +576,14 @@ impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
                 )?;
             }
 
-            self.reservation.free();
+            let memory_spilled_bytes = self
+                .reservation
+                .free()
+                .saturating_add(unreserved_bytes)
+                .saturating_sub(self.repeated_spill_buffer_bytes);
+            self.metrics.memory_spilled_bytes.add(memory_spilled_bytes);
             self.pinned_buffers.clear();
+            self.repeated_spill_buffer_bytes = 0;
             self.metrics.spill_count.add(1);
             Ok(())
         })
@@ -544,7 +601,8 @@ impl<T: PartitionWriter> ShufflePartitioner for MultiPartitionShuffleRepartition
     /// This function will slice input batch according to configured batch size and then
     /// shuffle rows into corresponding partition buffer.
     async fn insert_batch(&mut self, batch: RecordBatch) -> datafusion::common::Result<()> {
-        with_trace_async("shuffle_insert_batch", self.tracing_enabled, || async {
+        self.spill_accounted_input_buffers.clear();
+        let result = with_trace_async("shuffle_insert_batch", self.tracing_enabled, || async {
             let start_time = Instant::now();
             let mut start = 0;
             while start < batch.num_rows() {
@@ -560,7 +618,9 @@ impl<T: PartitionWriter> ShufflePartitioner for MultiPartitionShuffleRepartition
                 .add_duration(start_time.elapsed());
             Ok(())
         })
-        .await
+        .await;
+        self.spill_accounted_input_buffers.clear();
+        result
     }
 
     /// Writes buffered shuffled record batches into Arrow IPC bytes.

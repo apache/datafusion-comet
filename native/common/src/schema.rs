@@ -340,6 +340,57 @@ mod tests {
         ))
     }
 
+    /// The narrowing direction of the same reconciliation. Rewriting a nullable child as non-null
+    /// is only safe when the child holds no nulls, so the flag alone must not decide the outcome:
+    /// null-free data narrows, and data with a real null errors instead of producing an array whose
+    /// nullability misreports its own contents.
+    #[test]
+    fn narrowing_a_child_errors_only_when_it_holds_a_null() {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "c0",
+            DataType::List(struct_field(false)),
+            true,
+        )]));
+
+        let batch =
+            cast_and_stamp_schema("TestExec", &schema, vec![nullable_flag_list(None)], 2).unwrap();
+        assert_eq!(batch.schema(), schema);
+
+        let err = cast_and_stamp_schema("TestExec", &schema, vec![nullable_flag_list(Some(1))], 2)
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("TestExec"), "{msg}");
+        assert!(msg.contains("col[0]"), "{msg}");
+        assert!(
+            msg.contains("c0.element.flag: expected non-null Boolean, found nullable Boolean"),
+            "{msg}"
+        );
+    }
+
+    /// `[[{1,_},{2,_}], [{3,_}]]` with a *nullable* `flag` child, null at `null_at` if given.
+    fn nullable_flag_list(null_at: Option<usize>) -> ArrayRef {
+        let flags: Vec<Option<bool>> = (0..3)
+            .map(|i| if Some(i) == null_at { None } else { Some(true) })
+            .collect();
+        let entries = StructArray::new(
+            Fields::from(vec![
+                Field::new("id", DataType::Int64, true),
+                Field::new("flag", DataType::Boolean, true),
+            ]),
+            vec![
+                Arc::new(Int64Array::from(vec![1, 2, 3])) as ArrayRef,
+                Arc::new(arrow::array::BooleanArray::from(flags)),
+            ],
+            None,
+        );
+        Arc::new(ListArray::new(
+            struct_field(true),
+            OffsetBuffer::new(vec![0, 2, 3].into()),
+            Arc::new(entries),
+            None,
+        ))
+    }
+
     #[test]
     fn stamps_equal_types_without_copying() {
         let schema = Arc::new(Schema::new(vec![Field::new("c0", DataType::Int32, true)]));
