@@ -31,9 +31,11 @@
 //! `Double.parseDouble` trims before parsing, and `Decimal.stringToJavaBigDecimal` does
 //! `str.toString.trim`.
 //!
+//! `to_time` and `try_to_time` also use [`trim_all`] after detecting an optional AM/PM suffix;
+//! suffix detection itself first removes ASCII spaces only, matching Spark's `stringToTime`.
+//!
 //! \* `timestamp` and `timestamp_ntz` are listed for what Spark does; the Comet parsers for those
-//! two targets have not been migrated to these helpers and still use `str::trim`, as do `to_time`
-//! and `try_to_time` in `datetime_funcs::to_time`
+//! two targets have not been migrated to these helpers and still use `str::trim`
 //! (<https://github.com/apache/datafusion-comet/issues/5149>).
 
 /// True for the bytes trimmed by `org.apache.spark.unsafe.types.UTF8String.trimAll`, i.e. the

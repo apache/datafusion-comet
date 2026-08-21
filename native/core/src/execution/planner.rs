@@ -21,10 +21,20 @@ pub mod expression_registry;
 pub mod macros;
 pub mod operator_registry;
 
+// Glue that wires the optional Delta integration into core's plan-tree builder.
+// Compiled only under `--features contrib-delta`; default builds carry zero Delta
+// surface. The bulk of the Delta logic lives in the `comet-contrib-delta` crate --
+// this module is just the bridge that reaches into core's `pub(crate)` planner
+// helpers (`create_expr`, `init_datasource_exec`, `prepare_object_store_with_configs`)
+// and calls into that crate.
+#[cfg(feature = "contrib-delta")]
+mod delta_scan;
+
 use crate::execution::operators::init_csv_datasource_exec;
 use crate::execution::operators::AlignedArrowStreamReader;
 use crate::execution::operators::IcebergScanExec;
 use crate::execution::{
+    expressions::list_empty_to_null::ListEmptyToNullExpr,
     expressions::list_positions::ListPositionsExpr,
     expressions::subquery::Subquery,
     operators::{
@@ -137,6 +147,7 @@ use datafusion_comet_spark_expr::{
 };
 use itertools::Itertools;
 use jni::objects::{Global, JObject};
+use log::warn;
 use num::{BigInt, ToPrimitive};
 use object_store::path::Path;
 use std::cmp::max;
@@ -240,9 +251,18 @@ pub struct PhysicalPlanner {
     partition: i32,
     session_ctx: Arc<SessionContext>,
     query_context_registry: Arc<datafusion_comet_spark_expr::QueryContextMap>,
+    /// SQL texts referenced by `QueryContext.sql_text_idx`, taken from the root operator's
+    /// `sql_text_pool`. Held as `Arc`s so that every context in the plan shares one allocation
+    /// rather than each cloning the full query text out of the proto. Empty when the plan was
+    /// serialized without interning, in which case contexts carry `sql_text` inline.
+    sql_text_pool: Vec<Arc<String>>,
     /// Captured at `createPlan` time on `ExecutionContext`; see that struct for the
     /// propagation rationale. `None` when no driving Spark task is available.
     task_context: Option<Arc<Global<JObject<'static>>>>,
+    /// Context `ClassLoader` of the driving Spark task thread, captured at `createPlan` time on
+    /// `ExecutionContext`; see that struct for the propagation rationale. `None` when no driving
+    /// Spark task is available.
+    class_loader: Option<Arc<Global<JObject<'static>>>>,
 }
 
 impl Default for PhysicalPlanner {
@@ -258,8 +278,80 @@ impl PhysicalPlanner {
             session_ctx,
             partition,
             query_context_registry: datafusion_comet_spark_expr::create_query_context_map(),
+            sql_text_pool: vec![],
             task_context: None,
+            class_loader: None,
         }
+    }
+
+    /// Load the SQL text pool from the root operator of the plan about to be planned. Must be
+    /// called with the *root* operator: the JVM only populates the pool there, and
+    /// `QueryContext.sql_text_idx` values are indices into it.
+    pub fn with_sql_text_pool(mut self, root: &Operator) -> Self {
+        self.sql_text_pool = root
+            .sql_text_pool
+            .iter()
+            .map(|text| Arc::new(text.clone()))
+            .collect();
+        self
+    }
+
+    /// Register the `QueryContext` carried by a serialized expression, if any, so that native ANSI
+    /// errors raised by it can render Spark's `== SQL ... ==` block. Shared by `create_expr` and
+    /// `create_agg_expr`.
+    fn register_query_context(
+        &self,
+        expr_id: Option<u64>,
+        ctx_proto: Option<&spark_expression::QueryContext>,
+    ) {
+        if let (Some(expr_id), Some(ctx_proto)) = (expr_id, ctx_proto) {
+            self.query_context_registry
+                .register(expr_id, self.build_query_context(ctx_proto));
+        }
+    }
+
+    /// Resolve a serialized `QueryContext` into a `QueryContext`, sharing the pooled SQL text
+    /// when the context refers to the pool by index. Falls back to the inline `sql_text` for
+    /// plans serialized without interning -- the paths that serialize an operator directly rather
+    /// than through `convertBlock` (e.g. `CometNativeWriteExec`, the native shuffle writer) and
+    /// the bare-`Expr` Parquet filter path, which has no root operator to hang a pool on.
+    fn build_query_context(
+        &self,
+        ctx_proto: &spark_expression::QueryContext,
+    ) -> datafusion_comet_spark_expr::QueryContext {
+        let pooled = ctx_proto
+            .sql_text_idx
+            .map(|idx| match usize::try_from(idx).ok() {
+                Some(idx) => self.sql_text_pool.get(idx).map(Arc::clone),
+                None => None,
+            });
+
+        let sql_text: Arc<String> = match pooled {
+            Some(Some(text)) => text,
+            // An index we cannot resolve means the plan was interned against a pool this planner
+            // never saw, so `sql_text` is empty and the error block would silently come out blank.
+            // Warn rather than fail: a degraded error message is better than a failed query.
+            Some(None) => {
+                warn!(
+                    "QueryContext sql_text_idx {:?} is out of range for a SQL text pool of {} \
+                     entries; SQL context will be missing from any error raised by this expression",
+                    ctx_proto.sql_text_idx,
+                    self.sql_text_pool.len()
+                );
+                Arc::new(ctx_proto.sql_text.clone())
+            }
+            None => Arc::new(ctx_proto.sql_text.clone()),
+        };
+
+        datafusion_comet_spark_expr::QueryContext::new(
+            sql_text,
+            ctx_proto.start_index,
+            ctx_proto.stop_index,
+            ctx_proto.object_type.clone(),
+            ctx_proto.object_name.clone(),
+            ctx_proto.line,
+            ctx_proto.start_position,
+        )
     }
 
     pub fn with_exec_id(mut self, exec_context_id: i64) -> Self {
@@ -275,6 +367,17 @@ impl PhysicalPlanner {
         task_context: Option<Arc<Global<JObject<'static>>>>,
     ) -> Self {
         self.task_context = task_context;
+        self
+    }
+
+    /// Attach the driving Spark task thread's context `ClassLoader` as a global reference. Mirrors
+    /// `with_task_context`: called by the JNI `executePlan` entry with whatever was captured at
+    /// `createPlan` time, and cloned into every `JvmScalarUdfExpr` the planner builds.
+    pub fn with_class_loader(
+        mut self,
+        class_loader: Option<Arc<Global<JObject<'static>>>>,
+    ) -> Self {
+        self.class_loader = class_loader;
         self
     }
 
@@ -345,25 +448,7 @@ impl PhysicalPlanner {
         spark_expr: &Expr,
         input_schema: SchemaRef,
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
-        // Register QueryContext if present
-        if let (Some(expr_id), Some(ctx_proto)) =
-            (spark_expr.expr_id, spark_expr.query_context.as_ref())
-        {
-            // Deserialize QueryContext from protobuf
-            let query_ctx = datafusion_comet_spark_expr::QueryContext::new(
-                ctx_proto.sql_text.clone(),
-                ctx_proto.start_index,
-                ctx_proto.stop_index,
-                ctx_proto.object_type.clone(),
-                ctx_proto.object_name.clone(),
-                ctx_proto.line,
-                ctx_proto.start_position,
-            );
-
-            // Register query context for error reporting
-            let registry = &self.query_context_registry;
-            registry.register(expr_id, query_ctx);
-        }
+        self.register_query_context(spark_expr.expr_id, spark_expr.query_context.as_ref());
 
         // Try to use the modular registry first - this automatically handles any registered expression types
         if ExpressionRegistry::global().can_handle(spark_expr) {
@@ -816,12 +901,14 @@ impl PhysicalPlanner {
                     to_arrow_datatype(udf.return_type.as_ref().ok_or_else(|| {
                         GeneralError("JvmScalarUdf missing return_type".to_string())
                     })?);
-                // Invariant: task_context is propagated for every JvmScalarUdfExpr built during
-                // normal execution. The TEST_EXEC_CONTEXT_ID path is the only context in which
-                // task_context may legitimately be None (unit tests, direct native driver runs).
+                // Invariant: task_context and class_loader are propagated for every
+                // JvmScalarUdfExpr built during normal execution. The TEST_EXEC_CONTEXT_ID path is
+                // the only context in which they may legitimately be None (unit tests, direct
+                // native driver runs).
                 debug_assert!(
-                    self.task_context.is_some() || self.exec_context_id == TEST_EXEC_CONTEXT_ID,
-                    "task_context must be set for non-test execution"
+                    (self.task_context.is_some() && self.class_loader.is_some())
+                        || self.exec_context_id == TEST_EXEC_CONTEXT_ID,
+                    "task_context and class_loader must be set for non-test execution"
                 );
                 Ok(Arc::new(JvmScalarUdfExpr::new(
                     udf.class_name.clone(),
@@ -829,6 +916,7 @@ impl PhysicalPlanner {
                     return_type,
                     udf.return_nullable,
                     self.task_context.clone(),
+                    self.class_loader.clone(),
                 )))
             }
             expr => Err(GeneralError(format!("Not implemented: {expr:?}"))),
@@ -1467,12 +1555,30 @@ impl PhysicalPlanner {
                     ));
                 }
 
-                // Convert the Spark expressions to Physical expressions
-                let data_filters: Result<Vec<Arc<dyn PhysicalExpr>>, ExecutionError> = common
-                    .data_filters
-                    .iter()
-                    .map(|expr| self.create_expr(expr, Arc::clone(&required_schema)))
-                    .collect();
+                // data_filters may reference partition columns and constant metadata columns
+                // (e.g. `_metadata.file_size`), which the Parquet reader appends after
+                // required_schema's columns once partition_values are projected into the
+                // batch. Bind against the combined schema so `Bound` indices resolve
+                // correctly -- Scala's `exprToProto(filter, scan.output)`
+                // (CometNativeScan.scala) numbers columns against that same ordering.
+                let data_filters: Result<Vec<Arc<dyn PhysicalExpr>>, ExecutionError> =
+                    if common.data_filters.is_empty() {
+                        Ok(vec![])
+                    } else {
+                        let filter_schema: SchemaRef = Arc::new(Schema::new(
+                            required_schema
+                                .fields()
+                                .iter()
+                                .chain(partition_schema.fields().iter())
+                                .cloned()
+                                .collect::<Vec<FieldRef>>(),
+                        ));
+                        common
+                            .data_filters
+                            .iter()
+                            .map(|expr| self.create_expr(expr, Arc::clone(&filter_schema)))
+                            .collect()
+                    };
 
                 let default_values: Option<HashMap<Column, ScalarValue>> = if !common
                     .default_values
@@ -1679,6 +1785,26 @@ impl PhysicalPlanner {
                     )),
                 ))
             }
+            OpStruct::ContribScan(contrib) => {
+                // Extension point for optional, out-of-tree contrib scans (Delta, Lance, ...). The
+                // concrete scan message is packed into the `ContribScan` envelope on the JVM side;
+                // here we route by `type_url` to whichever contrib was compiled in. Core names no
+                // specific contrib: the type_url match + decode lives entirely inside each
+                // contrib's gated module, so a default build carries zero contrib surface. The arm
+                // itself is unconditional so a default build that receives a contrib-shaped plan
+                // from a misconfigured driver gets a clear error instead of a "no match" decode
+                // failure.
+                #[cfg(feature = "contrib-delta")]
+                if let Some(result) = delta_scan::try_plan_contrib_scan(self, spark_plan, contrib) {
+                    return result;
+                }
+                Err(GeneralError(format!(
+                    "Received a contrib_scan operator (type_url: {}) but core was built without a \
+                     contrib that handles it. Rebuild with the matching contrib feature -- e.g. \
+                     `-Pcontrib-delta` (Maven) + `--features contrib-delta` (Cargo) for Delta Lake.",
+                    contrib.type_url
+                )))
+            }
             OpStruct::ShuffleWriter(writer) => {
                 assert_eq!(children.len(), 1);
                 let (scans, shuffle_scans, child) =
@@ -1769,6 +1895,8 @@ impl PhysicalPlanner {
                     codec,
                     self.partition,
                     writer.column_names.clone(),
+                    (!writer.output_schema.is_empty())
+                        .then(|| convert_spark_types_to_arrow_schema(&writer.output_schema)),
                     object_store_options,
                 )?);
 
@@ -1802,21 +1930,7 @@ impl PhysicalPlanner {
                     Ok::<(), ExecutionError>(())
                 })?;
 
-                assert!(
-                    !projections.is_empty(),
-                    "Expand should have at least one projection"
-                );
-
-                let datatypes = projections[0]
-                    .iter()
-                    .map(|expr| expr.data_type(&child.schema()))
-                    .collect::<Result<Vec<DataType>, _>>()?;
-                let fields: Vec<Field> = datatypes
-                    .iter()
-                    .enumerate()
-                    .map(|(idx, dt)| Field::new(format!("col_{idx}"), dt.clone(), true))
-                    .collect();
-                let schema = Arc::new(Schema::new(fields));
+                let schema = ExpandExec::build_schema(&projections, &child.schema())?;
 
                 // `Expand` operator keeps the input batch and expands it to multiple output
                 // batches. However, `ScanExec` will reuse input arrays for the next
@@ -1838,13 +1952,76 @@ impl PhysicalPlanner {
                     self.create_plan(&children[0], inputs, partition_count)?;
 
                 // Create the expression for the array to explode
-                let child_expr = if let Some(child_expr) = &explode.child {
+                let raw_child_expr = if let Some(child_expr) = &explode.child {
                     self.create_expr(child_expr, child.schema())?
                 } else {
                     return Err(ExecutionError::GeneralError(
                         "Explode operator requires a child expression".to_string(),
                     ));
                 };
+
+                let child_schema = child.schema();
+                let child_field_name = raw_child_expr
+                    .return_field(&child_schema)
+                    .expect("Failed to get field from child expression")
+                    .name()
+                    .to_string();
+
+                // Bridge Spark's outer semantics: DataFusion's `UnnestExec` with
+                // `preserve_nulls = true` emits one null row for a NULL list but drops rows
+                // whose list is empty. Spark's `explode_outer`/`posexplode_outer` must emit
+                // exactly one null row in both cases, so we mark empty rows as null before
+                // unnesting. See https://github.com/apache/datafusion/issues/19053. Once
+                // Comet moves to a DataFusion release carrying
+                // https://github.com/apache/datafusion/pull/22100, `ListEmptyToNullExpr`
+                // and the pre-projection below can be removed in favor of
+                // `NullHandling::PreserveAndExpandEmpty`. See
+                // https://github.com/apache/datafusion-comet/issues/5210.
+                //
+                // For `posexplode_outer` the wrapped array is materialized in a
+                // pre-projection so `ListPositionsExpr` and the array passthrough share
+                // a single evaluation of `ListEmptyToNullExpr` instead of re-running it
+                // per branch. Plain `explode_outer` references the wrapped array exactly
+                // once, so no pre-projection is needed there.
+                let (child_expr, child_native_plan): (Arc<dyn PhysicalExpr>, _) =
+                    match (explode.outer, explode.position) {
+                        (true, true) => {
+                            let wrapped: Arc<dyn PhysicalExpr> =
+                                Arc::new(ListEmptyToNullExpr::new(raw_child_expr));
+                            let reserved_name =
+                                format!("__comet_explode_outer_{}", child_field_name);
+
+                            let mut pre_exprs: Vec<(Arc<dyn PhysicalExpr>, String)> = child_schema
+                                .fields()
+                                .iter()
+                                .enumerate()
+                                .map(|(i, f)| {
+                                    (
+                                        Arc::new(Column::new(f.name(), i)) as Arc<dyn PhysicalExpr>,
+                                        f.name().to_string(),
+                                    )
+                                })
+                                .collect();
+                            let wrapped_idx = pre_exprs.len();
+                            pre_exprs.push((wrapped, reserved_name.clone()));
+
+                            let pre_exec = Arc::new(ProjectionExec::try_new(
+                                pre_exprs,
+                                Arc::clone(&child.native_plan),
+                            )?);
+                            (
+                                Arc::new(Column::new(&reserved_name, wrapped_idx))
+                                    as Arc<dyn PhysicalExpr>,
+                                pre_exec as Arc<dyn ExecutionPlan>,
+                            )
+                        }
+                        (true, false) => (
+                            Arc::new(ListEmptyToNullExpr::new(raw_child_expr))
+                                as Arc<dyn PhysicalExpr>,
+                            Arc::clone(&child.native_plan),
+                        ),
+                        (false, _) => (raw_child_expr, Arc::clone(&child.native_plan)),
+                    };
 
                 // Create projection expressions for other columns
                 let projections: Vec<Arc<dyn PhysicalExpr>> = explode
@@ -1855,7 +2032,6 @@ impl PhysicalPlanner {
 
                 // For posexplode, a parallel List<Int32> positions column is added before the
                 // array column so UnnestExec can unnest both in parallel.
-                let child_schema = child.schema();
                 let mut project_exprs: Vec<(Arc<dyn PhysicalExpr>, String)> = projections
                     .iter()
                     .map(|expr| {
@@ -1867,22 +2043,15 @@ impl PhysicalPlanner {
                     })
                     .collect();
 
-                let array_field = child_expr
-                    .return_field(&child_schema)
-                    .expect("Failed to get field from array expression");
-                let array_col_name = array_field.name().to_string();
-
                 if explode.position {
                     let positions_expr: Arc<dyn PhysicalExpr> =
                         Arc::new(ListPositionsExpr::new(Arc::clone(&child_expr)));
                     project_exprs.push((positions_expr, "pos".to_string()));
                 }
-                project_exprs.push((Arc::clone(&child_expr), array_col_name.clone()));
+                project_exprs.push((Arc::clone(&child_expr), child_field_name.clone()));
 
-                let project_exec = Arc::new(ProjectionExec::try_new(
-                    project_exprs,
-                    Arc::clone(&child.native_plan),
-                )?);
+                let project_exec =
+                    Arc::new(ProjectionExec::try_new(project_exprs, child_native_plan)?);
 
                 let project_schema = project_exec.schema();
 
@@ -2391,25 +2560,7 @@ impl PhysicalPlanner {
         spark_expr: &AggExpr,
         schema: SchemaRef,
     ) -> Result<AggregateFunctionExpr, ExecutionError> {
-        // Register QueryContext if present
-        if let (Some(expr_id), Some(ctx_proto)) =
-            (spark_expr.expr_id, spark_expr.query_context.as_ref())
-        {
-            // Deserialize QueryContext from protobuf
-            let query_ctx = datafusion_comet_spark_expr::QueryContext::new(
-                ctx_proto.sql_text.clone(),
-                ctx_proto.start_index,
-                ctx_proto.stop_index,
-                ctx_proto.object_type.clone(),
-                ctx_proto.object_name.clone(),
-                ctx_proto.line,
-                ctx_proto.start_position,
-            );
-
-            // Register query context for error reporting
-            let registry = &self.query_context_registry;
-            registry.register(expr_id, query_ctx);
-        }
+        self.register_query_context(spark_expr.expr_id, spark_expr.query_context.as_ref());
 
         match spark_expr.expr_struct.as_ref().unwrap() {
             AggExprStruct::Count(expr) => {
@@ -3609,7 +3760,13 @@ pub fn from_protobuf_eval_mode(value: i32) -> Result<EvalMode, prost::UnknownEnu
     }
 }
 
-fn convert_spark_types_to_arrow_schema(
+/// Convert Comet's `SparkStructField` protos to an Arrow [`SchemaRef`].
+///
+/// `pub(crate)` so the optional `contrib-delta` scan module
+/// (`planner/delta_scan.rs`) can reuse the exact same Spark→Arrow schema
+/// mapping that the core scan path uses, keeping the two in lockstep. Kept
+/// crate-private — it is not part of any public API.
+pub(crate) fn convert_spark_types_to_arrow_schema(
     spark_types: &[spark_operator::SparkStructField],
 ) -> SchemaRef {
     let arrow_fields = spark_types
@@ -4481,6 +4638,7 @@ mod tests {
     fn test_unpack_dictionary_primitive() {
         let op_scan = Operator {
             plan_id: 0,
+            sql_text_pool: vec![],
             children: vec![],
             op_struct: Some(OpStruct::Scan(spark_operator::Scan {
                 fields: vec![spark_expression::DataType {
@@ -4546,6 +4704,7 @@ mod tests {
     fn test_unpack_dictionary_string() {
         let op_scan = Operator {
             plan_id: 0,
+            sql_text_pool: vec![],
             children: vec![],
             op_struct: Some(OpStruct::Scan(spark_operator::Scan {
                 fields: vec![spark_expression::DataType {
@@ -4696,6 +4855,7 @@ mod tests {
 
         Operator {
             plan_id: 0,
+            sql_text_pool: vec![],
             children: vec![child_op],
             op_struct: Some(OpStruct::Filter(spark_operator::Filter {
                 predicate: Some(expr),
@@ -4722,6 +4882,7 @@ mod tests {
         let op_scan = create_scan();
         let op_join = Operator {
             plan_id: 0,
+            sql_text_pool: vec![],
             children: vec![op_scan.clone(), op_scan.clone()],
             op_struct: Some(OpStruct::HashJoin(spark_operator::HashJoin {
                 left_join_keys: vec![create_bound_reference(0)],
@@ -4758,6 +4919,7 @@ mod tests {
     fn create_scan() -> Operator {
         Operator {
             plan_id: 0,
+            sql_text_pool: vec![],
             children: vec![],
             op_struct: Some(OpStruct::Scan(spark_operator::Scan {
                 fields: vec![create_proto_datatype()],
@@ -4787,6 +4949,7 @@ mod tests {
         // ScanExec: source=[CometScan parquet  (unknown)], schema=[col_0: Int32]
         let op_scan = Operator {
             plan_id: 0,
+            sql_text_pool: vec![],
             children: vec![],
             op_struct: Some(OpStruct::Scan(spark_operator::Scan {
                 fields: vec![
@@ -4834,6 +4997,7 @@ mod tests {
         let projection = Operator {
             children: vec![op_scan],
             plan_id: 0,
+            sql_text_pool: vec![],
             op_struct: Some(OpStruct::Projection(spark_operator::Projection {
                 project_list: vec![spark_expression::Expr {
                     expr_struct: Some(ExprStruct::ScalarFunc(spark_expression::ScalarFunc {
@@ -4908,6 +5072,7 @@ mod tests {
         // Mock scan operator with 3 INT32 columns
         let op_scan = Operator {
             plan_id: 0,
+            sql_text_pool: vec![],
             children: vec![],
             op_struct: Some(OpStruct::Scan(spark_operator::Scan {
                 fields: vec![
@@ -4958,6 +5123,7 @@ mod tests {
         let projection = Operator {
             children: vec![op_scan],
             plan_id: 0,
+            sql_text_pool: vec![],
             op_struct: Some(OpStruct::Projection(spark_operator::Projection {
                 project_list: vec![spark_expression::Expr {
                     expr_struct: Some(ExprStruct::ScalarFunc(spark_expression::ScalarFunc {
@@ -5394,6 +5560,7 @@ mod tests {
         // Create a Scan operator with Date32 (DATE) and Int8 (TINYINT) columns
         let op_scan = Operator {
             plan_id: 0,
+            sql_text_pool: vec![],
             children: vec![],
             op_struct: Some(OpStruct::Scan(spark_operator::Scan {
                 fields: vec![
@@ -5458,6 +5625,7 @@ mod tests {
         let projection = Operator {
             children: vec![op_scan],
             plan_id: 1,
+            sql_text_pool: vec![],
             op_struct: Some(OpStruct::Projection(spark_operator::Projection {
                 project_list: vec![subtract_expr],
             })),
