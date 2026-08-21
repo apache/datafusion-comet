@@ -133,6 +133,18 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(true)
 
+  val COMET_ICEBERG_SORT_MERGE_MAX_FILES_PER_PARTITION: ConfigEntry[Int] =
+    conf("spark.comet.scan.icebergNative.sortMerge.maxFilesPerPartition")
+      .category(CATEGORY_SCAN)
+      .doc(
+        "The maximum number of files in a single partition that the native Iceberg scan will " +
+          "k-way merge to preserve sort order. A merge opens one reader per file at once, so " +
+          "above this many files the scan instead reads the partition unordered and sorts it " +
+          "with a spillable sort, bounding concurrently-open readers. Both paths produce sorted " +
+          "output; this only trades merge for a full sort on partitions with many files.")
+      .intConf
+      .createWithDefault(64)
+
   val COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.write.iceberg.splitOperator.enabled")
       .category(CATEGORY_TESTING)

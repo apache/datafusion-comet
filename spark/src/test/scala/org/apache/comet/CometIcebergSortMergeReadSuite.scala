@@ -397,6 +397,24 @@ class CometIcebergSortMergeReadSuite
     }
   }
 
+  test("many small files in one partition stay correct (exercises the sort fallback)") {
+    withSortedTables(orderedReadConf)("t") { cat =>
+      spark.sql(s"CREATE TABLE $cat.db.t (id INT, data STRING) USING iceberg")
+      replaceSortOrder(cat, "db", "t", "id" -> true)
+      // 70 single-row inserts -> 70 files in one unpartitioned partition, above the default
+      // maxFilesPerPartition (64). On an ordering-reporting Iceberg build this drives the native
+      // fallback -- a single unordered read plus a spillable SortExec, not a 70-way merge -- which
+      // is the shape this feature actually targets (a sorted table with many small commits). On
+      // the published Iceberg (no reported ordering) it is a plain read. checkSparkAnswer guards
+      // correctness either way; asserting on memory-pool usage / peak concurrent readers is a
+      // TODO for #5343.
+      val rows = (1 to 70).map(i => s"($i,'v$i')")
+      insertBatches(cat, "t", rows: _*)
+
+      checkSparkAnswer(s"SELECT id, data FROM $cat.db.t ORDER BY id")
+    }
+  }
+
   test("partitioned table with several files per partition") {
     withSortedTables(spjConf)("t") { cat =>
       spark.sql(
