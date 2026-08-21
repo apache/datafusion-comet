@@ -49,8 +49,8 @@ INSERT INTO test_array_min_double VALUES
 query
 SELECT array_min(arr) FROM test_array_min_double
 
--- Spark treats +0.0 and -0.0 as equal and returns +0.0; Comet returns -0.0.
--- Surfaced by https://github.com/apache/datafusion-comet/issues/5271
+-- Spark preserves the first equal zero (+0.0 here); the native minimum returns -0.0.
+-- Native parity is tracked by https://github.com/apache/datafusion-comet/issues/5401.
 statement
 CREATE TABLE test_array_min_dbl_negzero(arr array<double>) USING parquet
 
@@ -58,7 +58,7 @@ statement
 INSERT INTO test_array_min_dbl_negzero VALUES
   (array(0.0, double('-0.0'), 1.0))
 
-query ignore(array_min signed-zero: Spark +0.0, Comet -0.0)
+query ignore(https://github.com/apache/datafusion-comet/issues/5401)
 SELECT array_min(arr) FROM test_array_min_dbl_negzero
 
 -- ===== FLOAT arrays with NaN/Infinity/-0.0 =====
@@ -79,8 +79,8 @@ INSERT INTO test_array_min_float VALUES
 query
 SELECT array_min(arr) FROM test_array_min_float
 
--- Spark treats +0.0 and -0.0 as equal and returns +0.0; Comet returns -0.0.
--- Surfaced by https://github.com/apache/datafusion-comet/issues/5271
+-- Spark preserves the first equal zero (+0.0 here); the native minimum returns -0.0.
+-- Native parity is tracked by https://github.com/apache/datafusion-comet/issues/5401.
 statement
 CREATE TABLE test_array_min_flt_negzero(arr array<float>) USING parquet
 
@@ -88,5 +88,5 @@ statement
 INSERT INTO test_array_min_flt_negzero VALUES
   (array(CAST(0.0 AS FLOAT), float('-0.0')))
 
-query ignore(array_min signed-zero: Spark +0.0, Comet -0.0)
+query ignore(https://github.com/apache/datafusion-comet/issues/5401)
 SELECT array_min(arr) FROM test_array_min_flt_negzero

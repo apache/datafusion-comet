@@ -215,7 +215,26 @@ object CometArrayIntersect
   }
 }
 
-object CometArrayMax extends CometExpressionSerde[ArrayMax] {
+private object ArrayExtremaSupport {
+  val incompatReason: String =
+    s"With `${CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key}=true`, floating-point array " +
+      "extrema are incompatible because native comparisons order `-0.0` before `+0.0`, " +
+      "while Spark preserves the first equal element " +
+      "([#5401](https://github.com/apache/datafusion-comet/issues/5401))."
+
+  def getSupportLevel(elementType: DataType): SupportLevel =
+    SupportLevel
+      .strictFloatingPointReason(elementType, "Finding floating-point array extrema")
+      .map(_ => Incompatible(Some(incompatReason)))
+      .getOrElse(Compatible())
+}
+
+object CometArrayMax extends CometExpressionSerde[ArrayMax] with CodegenDispatchFallback {
+  override def getIncompatibleReasons(): Seq[String] = Seq(ArrayExtremaSupport.incompatReason)
+
+  override def getSupportLevel(expr: ArrayMax): SupportLevel =
+    ArrayExtremaSupport.getSupportLevel(expr.dataType)
+
   override def convert(
       expr: ArrayMax,
       inputs: Seq[Attribute],
@@ -228,7 +247,12 @@ object CometArrayMax extends CometExpressionSerde[ArrayMax] {
   }
 }
 
-object CometArrayMin extends CometExpressionSerde[ArrayMin] {
+object CometArrayMin extends CometExpressionSerde[ArrayMin] with CodegenDispatchFallback {
+  override def getIncompatibleReasons(): Seq[String] = Seq(ArrayExtremaSupport.incompatReason)
+
+  override def getSupportLevel(expr: ArrayMin): SupportLevel =
+    ArrayExtremaSupport.getSupportLevel(expr.dataType)
+
   override def convert(
       expr: ArrayMin,
       inputs: Seq[Attribute],
