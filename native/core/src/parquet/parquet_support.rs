@@ -26,7 +26,7 @@ use arrow::{
         types::TimestampMillisecondType, Array, ArrayRef, ArrowNativeTypeOp, DictionaryArray,
         StructArray,
     },
-    compute::{cast_with_options, take, CastOptions},
+    compute::{cast_with_options, CastOptions},
     datatypes::{DataType, TimeUnit},
     util::display::FormatOptions,
 };
@@ -170,31 +170,6 @@ fn parquet_convert_array(
     parquet_options: &SparkParquetOptions,
 ) -> DataFusionResult<ArrayRef> {
     use DataType::*;
-    let from_type = array.data_type().clone();
-
-    let array = match &from_type {
-        Dictionary(key_type, value_type)
-            if key_type.as_ref() == &Int32
-                && (value_type.as_ref() == &Utf8 || value_type.as_ref() == &LargeUtf8) =>
-        {
-            let dict_array = array
-                .as_any()
-                .downcast_ref::<DictionaryArray<Int32Type>>()
-                .expect("Expected a dictionary array");
-
-            let casted_dictionary = DictionaryArray::<Int32Type>::new(
-                dict_array.keys().clone(),
-                parquet_convert_array(Arc::clone(dict_array.values()), to_type, parquet_options)?,
-            );
-
-            let casted_result = match to_type {
-                Dictionary(_, _) => Arc::new(casted_dictionary.clone()),
-                _ => take(casted_dictionary.values().as_ref(), dict_array.keys(), None)?,
-            };
-            return Ok(casted_result);
-        }
-        _ => array,
-    };
     let from_type = array.data_type();
 
     // Try Comet specific handlers first, then arrow-rs cast if supported,
@@ -461,12 +436,10 @@ pub(crate) fn create_hdfs_operator(url: &Url) -> Result<opendal::Operator, objec
     let name_node = get_name_node_uri(url)?;
     let builder = opendal::services::Hdfs::default().name_node(&name_node);
 
-    opendal::Operator::new(builder)
-        .map_err(|error| object_store::Error::Generic {
-            store: "hdfs-opendal",
-            source: error.into(),
-        })
-        .map(|op| op.finish())
+    opendal::Operator::new(builder).map_err(|error| object_store::Error::Generic {
+        store: "hdfs-opendal",
+        source: error.into(),
+    })
 }
 
 // Creates an HDFS object store from a URL using OpenDAL

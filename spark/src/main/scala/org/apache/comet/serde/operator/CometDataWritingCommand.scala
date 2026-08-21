@@ -135,6 +135,10 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
         .setOutputPath(outputPath)
         .setCompression(codec)
         .addAllColumnNames(cmd.query.output.map(_.name).asJava)
+        .addAllOutputSchema(schema2Proto(
+          cmd.query.schema.fields.toIndexedSeq,
+          Some(
+            op.session.sessionState.conf.getConf(SQLConf.PARQUET_FIELD_ID_WRITE_ENABLED))).asJava)
       // Note: work_dir, job_id, and task_attempt_id will be set at execution time
       // in CometNativeWriteExec, as they depend on the Spark task context
 

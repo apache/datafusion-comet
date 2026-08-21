@@ -66,18 +66,21 @@ impl SpillWriter {
                     self.write_buffer_size,
                     self.batch_size,
                 );
-                let mut bytes_written =
-                    buf_batch_writer.write(&batch?, &metrics.encode_time, &metrics.write_time)?;
+                let initial_position = buf_batch_writer.writer_stream_position()?;
+                buf_batch_writer.write(&batch?, &metrics.encode_time, &metrics.write_time)?;
                 for batch in iter.by_ref() {
                     let batch = batch?;
-                    bytes_written += buf_batch_writer.write(
-                        &batch,
-                        &metrics.encode_time,
-                        &metrics.write_time,
-                    )?;
+                    buf_batch_writer.write(&batch, &metrics.encode_time, &metrics.write_time)?;
                 }
                 buf_batch_writer.flush(&metrics.encode_time, &metrics.write_time)?;
-                bytes_written
+                let bytes_written = buf_batch_writer
+                    .writer_stream_position()?
+                    .saturating_sub(initial_position);
+                usize::try_from(bytes_written).map_err(|_| {
+                    DataFusionError::Execution(format!(
+                        "Spill file byte count exceeds platform capacity: {bytes_written}"
+                    ))
+                })?
             };
             metrics.spilled_bytes.add(total_bytes_written);
         }
