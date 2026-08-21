@@ -15,21 +15,23 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Confirms Comet falls back to Spark when a parquet scan's schema contains a
--- VariantType column. VariantType is a Spark 4.0+ data type that Comet does
--- not currently support, so any scan exposing it must be executed by Spark.
+-- Confirms direct top-level VariantType projection through Comet's ordinary
+-- native Parquet scan. Expressions, operators, nested Variant, and Iceberg
+-- remain unsupported.
 
 -- MinSparkVersion: 4.0
+-- Config: spark.sql.variant.writeShredding.enabled=false
 
 statement
 CREATE TABLE test_variant(id INT, v VARIANT, tail STRING) USING parquet
 
 statement
 INSERT INTO test_variant VALUES
-  (1, parse_json('{"a": 1, "b": "hello"}'), 'first'),
-  (2, parse_json('{"a": 2, "b": "world"}'), NULL),
-  (3, parse_json('null'), 'variant-null'),
-  (4, NULL, 'sql-null')
+  (1, parse_json('{"a": 1, "b": "hello"}'), 'object'),
+  (2, parse_json('[1, true, "x"]'), 'array'),
+  (3, parse_json('42'), 'scalar'),
+  (4, parse_json('null'), 'json-null'),
+  (5, CAST(NULL AS VARIANT), 'sql-null')
 
 -- A plain Parquet scan can remain native when its required schema prunes the
 -- Variant column completely, including both SQL NULL and Variant null values.
@@ -43,8 +45,21 @@ SELECT tail FROM test_variant ORDER BY id
 query
 SELECT id, tail FROM test_variant WHERE tail IS NOT NULL ORDER BY id
 
+-- Full-value projection is scan-only: no native expression or pass-through operator carries v.
+query
+SELECT v FROM test_variant
+
+query
+SELECT id, v, tail FROM test_variant
+
 query expect_fallback(type VariantType)
-SELECT id, v FROM test_variant ORDER BY id
+SELECT v FROM test_variant ORDER BY id
+
+query expect_fallback(type VariantType)
+SELECT v FROM test_variant LIMIT 1
+
+query expect_fallback(type VariantType)
+SELECT /*+ REPARTITION(2, id) */ id, v FROM test_variant
 
 query expect_fallback(type VariantType)
 SELECT variant_get(v, '$.a', 'int') AS a FROM test_variant ORDER BY id
@@ -54,6 +69,9 @@ SELECT id FROM test_variant WHERE variant_get(v, '$.a', 'int') = 1
 
 query expect_fallback(type VariantType)
 SELECT COUNT(*) FROM test_variant WHERE v IS NOT NULL
+
+query expect_fallback(type VariantType)
+SELECT CAST(v AS STRING) FROM test_variant
 
 statement
 CREATE TABLE test_variant_struct(id INT, s STRUCT<safe: INT, v: VARIANT>, tail STRING)

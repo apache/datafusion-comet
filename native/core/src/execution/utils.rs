@@ -19,17 +19,18 @@
 use crate::execution::operators::ExecutionError;
 use arrow::{
     array::ArrayData,
+    datatypes::Field,
     ffi::{FFI_ArrowArray, FFI_ArrowSchema},
 };
 
 pub trait SparkArrowConvert {
     /// Move Arrow Arrays to C data interface.
-    fn move_to_spark(&self, array: i64, schema: i64) -> Result<(), ExecutionError>;
+    fn move_to_spark(&self, field: &Field, array: i64, schema: i64) -> Result<(), ExecutionError>;
 }
 
 impl SparkArrowConvert for ArrayData {
     /// Move this ArrowData to pointers of Arrow C data interface.
-    fn move_to_spark(&self, array: i64, schema: i64) -> Result<(), ExecutionError> {
+    fn move_to_spark(&self, field: &Field, array: i64, schema: i64) -> Result<(), ExecutionError> {
         let array_ptr = array as *mut FFI_ArrowArray;
         let schema_ptr = schema as *mut FFI_ArrowSchema;
 
@@ -40,7 +41,7 @@ impl SparkArrowConvert for ArrayData {
         if array_ptr.align_offset(array_align) != 0 || schema_ptr.align_offset(schema_align) != 0 {
             unsafe {
                 std::ptr::write_unaligned(array_ptr, FFI_ArrowArray::new(self));
-                std::ptr::write_unaligned(schema_ptr, FFI_ArrowSchema::try_from(self.data_type())?);
+                std::ptr::write_unaligned(schema_ptr, FFI_ArrowSchema::try_from(field)?);
             }
         } else {
             // SAFETY: `array_ptr` and `schema_ptr` are aligned correctly.
@@ -56,7 +57,7 @@ impl SparkArrowConvert for ArrayData {
             );
             unsafe {
                 std::ptr::write(array_ptr, FFI_ArrowArray::new(self));
-                std::ptr::write(schema_ptr, FFI_ArrowSchema::try_from(self.data_type())?);
+                std::ptr::write(schema_ptr, FFI_ArrowSchema::try_from(field)?);
             }
         }
 

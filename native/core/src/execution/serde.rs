@@ -31,9 +31,9 @@ use datafusion_comet_proto::{
     spark_expression::DataType,
     spark_operator,
 };
-use parquet::arrow::PARQUET_FIELD_ID_META_KEY;
+use parquet::{arrow::PARQUET_FIELD_ID_META_KEY, variant::VariantType};
 use prost::Message;
-use std::{collections::HashMap, io::Cursor, sync::Arc};
+use std::{io::Cursor, sync::Arc};
 
 /// Deserialize bytes to protobuf type of expression
 pub fn deserialize_expr(buf: &[u8]) -> Result<spark_expression::Expr, ExpressionError> {
@@ -106,6 +106,10 @@ pub fn to_arrow_datatype(dt_value: &DataType) -> ArrowDataType {
         // Spark's CalendarIntervalType stores months, days, and microseconds. Arrow stores the
         // same components with nanosecond precision.
         DataTypeId::CalendarInterval => ArrowDataType::Interval(IntervalUnit::MonthDayNano),
+        DataTypeId::Variant => ArrowDataType::Struct(Fields::from(vec![
+            Field::new("value", ArrowDataType::Binary, false),
+            Field::new("metadata", ArrowDataType::Binary, false),
+        ])),
         DataTypeId::Null => ArrowDataType::Null,
         DataTypeId::List => match dt_value
             .type_info
@@ -117,9 +121,9 @@ pub fn to_arrow_datatype(dt_value: &DataType) -> ArrowDataType {
         {
             DatatypeStruct::List(info) => {
                 let field = with_parquet_field_id(
-                    Field::new(
+                    to_arrow_field(
                         "item",
-                        to_arrow_datatype(info.element_type.as_ref().unwrap()),
+                        info.element_type.as_ref().unwrap(),
                         info.contains_null,
                     ),
                     info.element_field_id,
@@ -138,17 +142,13 @@ pub fn to_arrow_datatype(dt_value: &DataType) -> ArrowDataType {
         {
             DatatypeStruct::Map(info) => {
                 let key_field = with_parquet_field_id(
-                    Field::new(
-                        "key",
-                        to_arrow_datatype(info.key_type.as_ref().unwrap()),
-                        false,
-                    ),
+                    to_arrow_field("key", info.key_type.as_ref().unwrap(), false),
                     info.key_field_id,
                 );
                 let value_field = with_parquet_field_id(
-                    Field::new(
+                    to_arrow_field(
                         "value",
-                        to_arrow_datatype(info.value_type.as_ref().unwrap()),
+                        info.value_type.as_ref().unwrap(),
                         info.value_contains_null,
                     ),
                     info.value_field_id,
@@ -176,16 +176,18 @@ pub fn to_arrow_datatype(dt_value: &DataType) -> ArrowDataType {
                     .iter()
                     .enumerate()
                     .map(|(idx, name)| {
-                        let field = Field::new(
+                        let field = to_arrow_field(
                             name,
-                            to_arrow_datatype(&info.field_datatypes[idx]),
+                            &info.field_datatypes[idx],
                             info.field_nullable[idx],
                         );
                         // Attach Spark field metadata (currently parquet.field.id) when present.
                         // field_metadata is parallel to field_names; either empty or full length.
                         if let Some(meta) = info.field_metadata.get(idx) {
                             if !meta.metadata.is_empty() {
-                                return field.with_metadata(meta.metadata.clone());
+                                let mut metadata = meta.metadata.clone();
+                                metadata.extend(field.metadata().clone());
+                                return field.with_metadata(metadata);
                             }
                         }
                         field
@@ -198,13 +200,32 @@ pub fn to_arrow_datatype(dt_value: &DataType) -> ArrowDataType {
     }
 }
 
+/// Converts a protobuf type to an Arrow field, preserving logical extension identity.
+pub fn to_arrow_field(
+    name: impl Into<std::string::String>,
+    data_type: &DataType,
+    nullable: bool,
+) -> Field {
+    let field = Field::new(name, to_arrow_datatype(data_type), nullable);
+    if DataTypeId::try_from(data_type.type_id).unwrap() == DataTypeId::Variant {
+        field.with_extension_type(VariantType)
+    } else {
+        field
+    }
+}
+
+pub fn is_variant_field(field: &Field) -> bool {
+    field.has_valid_extension_type::<VariantType>()
+}
+
 /// Attach a Parquet field ID without changing synthetic fields when Catalyst did not supply one.
 fn with_parquet_field_id(field: Field, field_id: Option<i32>) -> Field {
     match field_id {
-        Some(id) => field.with_metadata(HashMap::from([(
-            PARQUET_FIELD_ID_META_KEY.to_string(),
-            id.to_string(),
-        )])),
+        Some(id) => {
+            let mut metadata = field.metadata().clone();
+            metadata.insert(PARQUET_FIELD_ID_META_KEY.to_string(), id.to_string());
+            field.with_metadata(metadata)
+        }
         None => field,
     }
 }

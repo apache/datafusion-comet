@@ -24,6 +24,7 @@ import java.math.{BigDecimal, BigInteger}
 import java.time.{ZoneId, ZoneOffset}
 import java.util.{Base64, Collections}
 
+import scala.jdk.CollectionConverters._
 import scala.reflect.ClassTag
 import scala.reflect.runtime.universe.TypeTag
 
@@ -39,7 +40,8 @@ import org.apache.parquet.schema.MessageTypeParser
 import org.apache.spark.SparkException
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.util.DateTimeUtils
-import org.apache.spark.sql.comet.{CometNativeScanExec, CometScanExec}
+import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometNativeColumnarToRowExec, CometNativeScanExec, CometScanExec}
+import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
 import org.apache.spark.sql.internal.SQLConf
@@ -47,7 +49,8 @@ import org.apache.spark.sql.types._
 
 import com.google.common.primitives.UnsignedLong
 
-import org.apache.comet.CometConf
+import org.apache.comet.{CometConf, CometSparkSessionExtensions}
+import org.apache.comet.vector.CometStructVector
 
 abstract class ParquetReadSuite extends CometTestBase {
   import testImplicits._
@@ -82,6 +85,122 @@ abstract class ParquetReadSuite extends CometTestBase {
   test("simple count") {
     withParquetTable((0 until 10).map(i => (i, i.toString)), "tbl") {
       assert(sql("SELECT * FROM tbl WHERE _1 % 2 == 0").count() == 5)
+    }
+  }
+
+  test("native scan projects Variant through a Spark-compatible vector") {
+    assume(CometSparkSessionExtensions.isSpark40Plus, "VariantType requires Spark 4.0+")
+
+    def normalizedRows(df: DataFrame, variantOrdinal: Int): Seq[Seq[Any]] = {
+      df
+        .collect()
+        .map { row =>
+          row.toSeq.updated(
+            variantOrdinal,
+            Option(row.get(variantOrdinal)).map(_.toString).orNull)
+        }
+        .sortBy(_.map(value => Option(value).fold("0")(v => "1" + v.toString)).mkString("\u0000"))
+        .toSeq
+    }
+
+    Seq(false, true).foreach { shredded =>
+      withTable("variant_projection") {
+        withSQLConf(
+          CometConf.COMET_ENABLED.key -> "false",
+          "spark.sql.variant.writeShredding.enabled" -> shredded.toString,
+          "spark.sql.variant.forceShreddingSchemaForTest" -> "a BIGINT") {
+          sql("CREATE TABLE variant_projection(id INT, v VARIANT, tail STRING) USING parquet")
+          sql("""INSERT INTO variant_projection VALUES
+                |(1, parse_json('{"a": 10, "b": "hello"}'), 'object'),
+                |(2, parse_json('[1, true, "x"]'), 'array'),
+                |(3, parse_json('42'), 'scalar'),
+                |(4, parse_json('null'), 'json-null'),
+                |(5, CAST(NULL AS VARIANT), 'sql-null')""".stripMargin)
+        }
+
+        val queries = Seq(
+          "SELECT v FROM variant_projection" -> 0,
+          "SELECT id, v, tail FROM variant_projection" -> 1)
+        var expected = Seq.empty[Seq[Seq[Any]]]
+        withSQLConf(
+          CometConf.COMET_ENABLED.key -> "false",
+          "spark.sql.variant.allowReadingShredded" -> "true") {
+          expected = queries.map { case (query, variantOrdinal) =>
+            normalizedRows(sql(query), variantOrdinal)
+          }
+        }
+
+        // Phase A handles only whole values; Spark's pushed VariantStruct remains a fallback.
+        withSQLConf(
+          CometConf.COMET_NATIVE_COLUMNAR_TO_ROW_ENABLED.key -> "true",
+          "spark.sql.variant.allowReadingShredded" -> "true",
+          "spark.sql.variant.pushVariantIntoScan" -> "false") {
+          val plans = queries.zip(expected).map { case ((query, variantOrdinal), expectedRows) =>
+            val df = sql(query)
+            assert(normalizedRows(df, variantOrdinal) == expectedRows)
+            df.queryExecution.executedPlan
+          }
+
+          if (!shredded) {
+            queries.foreach { case (query, _) => checkSparkAnswerAndOperator(sql(query)) }
+          }
+
+          plans.foreach { cometPlan =>
+            assert(collect(cometPlan) { case _: CometNativeScanExec => true }.size == 1)
+            assert(collect(cometPlan) { case _: CometNativeColumnarToRowExec => true }.isEmpty)
+            assert(collect(cometPlan) { case _: CometColumnarToRowExec => true }.nonEmpty)
+          }
+
+          val scan = collect(plans.head) { case scan: CometNativeScanExec => scan }.head
+
+          val summaries = scan
+            .executeColumnar()
+            .mapPartitions { batches =>
+              batches.map { batch =>
+                try {
+                  val vector = batch.column(0)
+                  val struct = vector.asInstanceOf[CometStructVector]
+                  val field = struct.getValueVector.getField
+                  val getVariant = struct.getClass.getMethod("getVariant", Integer.TYPE)
+                  val values = (0 until batch.numRows()).map { rowId =>
+                    if (struct.isNullAt(rowId)) {
+                      None
+                    } else {
+                      Some(getVariant.invoke(struct, Int.box(rowId)).toString)
+                    }
+                  }
+                  (
+                    Utils.isVariantType(struct.dataType()),
+                    field.getName,
+                    field.isNullable,
+                    field.getMetadata.get("ARROW:extension:name"),
+                    field.getChildren.asScala.map(_.getName).toSeq,
+                    Seq(struct.getChild(0).dataType(), struct.getChild(1).dataType()),
+                    values)
+                } finally {
+                  batch.close()
+                }
+              }
+            }
+            .collect()
+
+          assert(summaries.nonEmpty)
+          summaries.foreach {
+            case (isVariant, name, nullable, extension, children, childTypes, _) =>
+              assert(isVariant)
+              assert(name == "v")
+              assert(nullable)
+              assert(extension == "arrow.parquet.variant")
+              assert(children == Seq("value", "metadata"))
+              assert(childTypes == Seq(BinaryType, BinaryType))
+          }
+          val values = summaries.flatMap(_._7)
+          assert(values.count(_.isEmpty) == 1)
+          assert(
+            values.flatten.toSet ==
+              Set("{\"a\":10,\"b\":\"hello\"}", "[1,true,\"x\"]", "42", "null"))
+        }
+      }
     }
   }
 

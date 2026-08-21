@@ -308,8 +308,10 @@ pub extern "system" fn Java_org_apache_comet_parquet_Native_currentColumnBatch(
             .ok_or_else(|| CometError::Execution {
                 source: ExecutionError::GeneralError("There is no more data to read".to_string()),
             });
-        let data = batch_reader?.column(column_idx as usize).into_data();
-        data.move_to_spark(array_addr, schema_addr)
+        let batch = batch_reader?;
+        let field = batch.schema().field(column_idx as usize).clone();
+        let data = batch.column(column_idx as usize).into_data();
+        data.move_to_spark(&field, array_addr, schema_addr)
             .map_err(|e| e.into())
     })
 }

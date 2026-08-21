@@ -19,17 +19,21 @@ use arrow::{
         make_array, Array, ArrayRef, LargeListArray, ListArray, MapArray, StructArray,
         TimestampMicrosecondArray, TimestampMillisecondArray,
     },
-    compute::CastOptions,
+    compute::{cast, CastOptions},
     datatypes::{DataType, FieldRef, Schema, TimeUnit},
     record_batch::RecordBatch,
 };
 
-use crate::parquet::parquet_support::{spark_parquet_convert, SparkParquetOptions};
+use crate::{
+    execution::serde::is_variant_field,
+    parquet::parquet_support::{spark_parquet_convert, SparkParquetOptions},
+};
 use datafusion::common::format::DEFAULT_CAST_OPTIONS;
-use datafusion::common::Result as DataFusionResult;
 use datafusion::common::ScalarValue;
+use datafusion::common::{DataFusionError, Result as DataFusionResult};
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::physical_expr::PhysicalExpr;
+use parquet::variant::{unshred_variant, VariantArray};
 use std::{
     fmt::{self, Display},
     hash::Hash,
@@ -176,6 +180,42 @@ fn cast_timestamp_micros_to_millis_scalar(
     ScalarValue::TimestampMillisecond(new_val, target_tz)
 }
 
+fn normalize_variant_array(
+    array: &ArrayRef,
+    target_field: &FieldRef,
+) -> DataFusionResult<ArrayRef> {
+    let DataType::Struct(fields) = target_field.data_type() else {
+        return Err(DataFusionError::Execution(
+            "Variant extension field must use Struct storage".to_string(),
+        ));
+    };
+    if fields.len() != 2
+        || fields[0].name() != "value"
+        || fields[1].name() != "metadata"
+        || fields
+            .iter()
+            .any(|field| field.data_type() != &DataType::Binary)
+    {
+        return Err(DataFusionError::Execution(
+            "Variant output must contain Binary children [value, metadata]".to_string(),
+        ));
+    }
+
+    let variant = VariantArray::try_new(array.as_ref())?;
+    let unshredded = unshred_variant(&variant)?;
+    let value = unshredded.value_field().ok_or_else(|| {
+        DataFusionError::Execution("Unshredded Variant is missing its value field".to_string())
+    })?;
+    let value = cast(value.as_ref(), &DataType::Binary)?;
+    let metadata = cast(unshredded.metadata_field().as_ref(), &DataType::Binary)?;
+    let output = StructArray::try_new(
+        fields.clone(),
+        vec![value, metadata],
+        unshredded.inner().nulls().cloned(),
+    )?;
+    Ok(Arc::new(output))
+}
+
 #[derive(Debug, Clone, Eq)]
 pub struct CometCastColumnExpr {
     /// The physical expression producing the value to cast.
@@ -259,6 +299,18 @@ impl PhysicalExpr for CometCastColumnExpr {
 
     fn evaluate(&self, batch: &RecordBatch) -> DataFusionResult<ColumnarValue> {
         let value = self.expr.evaluate(batch)?;
+
+        if is_variant_field(&self.target_field) {
+            return match value {
+                ColumnarValue::Array(array) => Ok(ColumnarValue::Array(normalize_variant_array(
+                    &array,
+                    &self.target_field,
+                )?)),
+                ColumnarValue::Scalar(_) => Err(DataFusionError::Execution(
+                    "Variant Parquet projection requires an array".to_string(),
+                )),
+            };
+        }
 
         // Use == (PartialEq) instead of equals_datatype because equals_datatype
         // ignores field names in nested types (Struct, List, Map). We need to detect
@@ -349,9 +401,70 @@ impl PhysicalExpr for CometCastColumnExpr {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{Array, Int32Array, StringArray};
+    use arrow::array::{Array, AsArray, Int32Array, Int64Array, StringArray};
     use arrow::datatypes::{Field, Fields};
     use datafusion::physical_expr::expressions::Column;
+    use parquet::variant::{Variant, VariantArrayBuilder, VariantType};
+
+    #[test]
+    fn test_normalize_shredded_variant_for_spark() {
+        let mut builder = VariantArrayBuilder::new(3);
+        builder.append_variant(Variant::from(1_i64));
+        builder.append_null();
+        builder.append_variant(Variant::from(3_i64));
+        let base = builder.build();
+        let metadata = Arc::clone(base.metadata_field());
+        let typed_value: ArrayRef = Arc::new(Int64Array::from(vec![Some(10), None, Some(30)]));
+        let physical_fields = Fields::from(vec![
+            Field::new("typed_value", DataType::Int64, true),
+            Field::new("metadata", metadata.data_type().clone(), false),
+        ]);
+        let physical = StructArray::try_new(
+            physical_fields,
+            vec![typed_value, metadata],
+            base.inner().nulls().cloned(),
+        )
+        .unwrap();
+
+        let input_field = Arc::new(Field::new("v", physical.data_type().clone(), true));
+        let target_fields = Fields::from(vec![
+            Field::new("value", DataType::Binary, false),
+            Field::new("metadata", DataType::Binary, false),
+        ]);
+        let target_field = Arc::new(
+            Field::new("v", DataType::Struct(target_fields), true).with_extension_type(VariantType),
+        );
+        let schema = Schema::new(vec![Arc::clone(&input_field)]);
+        let batch = RecordBatch::try_new(Arc::new(schema), vec![Arc::new(physical)]).unwrap();
+        let expr = CometCastColumnExpr::new(
+            Arc::new(Column::new("v", 0)),
+            input_field,
+            target_field,
+            None,
+        );
+
+        let ColumnarValue::Array(output) = expr.evaluate(&batch).unwrap() else {
+            panic!("expected array")
+        };
+        let output = output.as_struct();
+        assert_eq!(
+            output
+                .fields()
+                .iter()
+                .map(|field| field.name().as_str())
+                .collect::<Vec<_>>(),
+            vec!["value", "metadata"]
+        );
+        assert!(output
+            .columns()
+            .iter()
+            .all(|column| column.data_type() == &DataType::Binary));
+        assert!(output.is_null(1));
+
+        let variant = VariantArray::try_new(output).unwrap();
+        assert_eq!(variant.value(0), Variant::from(10_i64));
+        assert_eq!(variant.value(2), Variant::from(30_i64));
+    }
 
     #[test]
     fn test_cast_timestamp_micros_to_millis_array() {

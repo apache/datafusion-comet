@@ -55,7 +55,7 @@ import org.apache.comet.CometSparkSessionExtensions._
 import org.apache.comet.rules.CometExecRule.allExecs
 import org.apache.comet.serde._
 import org.apache.comet.serde.operator._
-import org.apache.comet.shims.{ShimCometStreaming, ShimSubqueryBroadcast}
+import org.apache.comet.shims.{CometTypeShim, ShimCometStreaming, ShimSubqueryBroadcast}
 
 object CometExecRule {
 
@@ -122,6 +122,7 @@ object CometExecRule {
  */
 case class CometExecRule(session: SparkSession)
     extends Rule[SparkPlan]
+    with CometTypeShim
     with ShimSubqueryBroadcast {
 
   private lazy val showTransformations = CometConf.COMET_EXPLAIN_TRANSFORMATIONS.get()
@@ -731,6 +732,15 @@ case class CometExecRule(session: SparkSession)
   private def tryConvertToComet(
       op: SparkPlan,
       handler: CometOperatorSerde[_]): Option[SparkPlan] = {
+    if (!op.isInstanceOf[CometScanExec] &&
+      (op.output ++ op.children.flatMap(_.output)).exists(attr =>
+        containsVariantType(attr.dataType))) {
+      withFallbackReason(
+        op,
+        "Native operators do not support schemas containing type VariantType")
+      return None
+    }
+
     val serde = handler.asInstanceOf[CometOperatorSerde[SparkPlan]]
     if (isOperatorEnabled(serde, op)) {
       // For operators that require native children (like writes), check if all data-producing

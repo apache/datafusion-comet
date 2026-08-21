@@ -43,7 +43,7 @@ use crate::execution::{
     },
     planner::expression_registry::ExpressionRegistry,
     planner::operator_registry::OperatorRegistry,
-    serde::to_arrow_datatype,
+    serde::{to_arrow_datatype, to_arrow_field},
     shuffle::{SchemaAlignExec, ShuffleWriterExec},
 };
 use crate::jvm_bridge::{jni_call, JVMClasses};
@@ -3772,15 +3772,17 @@ pub(crate) fn convert_spark_types_to_arrow_schema(
     let arrow_fields = spark_types
         .iter()
         .map(|spark_type| {
-            let field = Field::new(
+            let field = to_arrow_field(
                 String::clone(&spark_type.name),
-                to_arrow_datatype(spark_type.data_type.as_ref().unwrap()),
+                spark_type.data_type.as_ref().unwrap(),
                 spark_type.nullable,
             );
             if spark_type.metadata.is_empty() {
                 field
             } else {
-                field.with_metadata(spark_type.metadata.clone())
+                let mut metadata = spark_type.metadata.clone();
+                metadata.extend(field.metadata().clone());
+                field.with_metadata(metadata)
             }
         })
         .collect_vec();

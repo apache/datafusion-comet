@@ -29,7 +29,7 @@ import org.apache.spark.sql.comet.{CometNativeExec, CometNativeScanExec, CometSc
 import org.apache.spark.sql.execution.{FileSourceScanExec, InSubqueryExec, SubqueryAdaptiveBroadcastExec}
 import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ArrayType, DataType, MapType, StructField, StructType}
+import org.apache.spark.sql.types.{StructField, StructType}
 
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometConf.COMET_EXEC_ENABLED
@@ -50,15 +50,6 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
   // DataFusion's table_partition_cols literal substitution matches by name, so a bare name
   // like "file_size" could collide with a real column of the same name. Prefix to avoid it.
   private val constantMetadataFieldPrefix = "_comet_metadata_"
-
-  private def containsVariantType(dataType: DataType): Boolean = dataType match {
-    case dt if isVariantType(dt) => true
-    case StructType(fields) => fields.exists(field => containsVariantType(field.dataType))
-    case ArrayType(elementType, _) => containsVariantType(elementType)
-    case MapType(keyType, valueType, _) =>
-      containsVariantType(keyType) || containsVariantType(valueType)
-    case _ => false
-  }
 
   /** Determine whether the scan is supported and tag the Spark plan with any fallback reasons */
   def isSupported(scanExec: FileSourceScanExec): Boolean = {
@@ -198,8 +189,8 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
       // unrequested struct. The complete relation schema still contains that unsupported type,
       // and serializing it would throw even though the native reader never needs those bytes.
       // Keep ordinary fields unchanged and replace a requested Variant-bearing root with its
-      // already-validated, pruned required field. A requested actual Variant never reaches this
-      // point because CometScanRule keeps those scans on Spark.
+      // already-validated, pruned required field. Direct top-level Variant fields are retained;
+      // unsupported nested Variant fields are rejected by CometScanRule.
       val nativeDataSchema = StructType(scan.relation.dataSchema.fields.flatMap { field =>
         if (containsVariantType(field.dataType)) {
           scan.requiredSchema.fields.find(requiredField =>
