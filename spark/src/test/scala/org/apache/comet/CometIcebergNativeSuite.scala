@@ -34,10 +34,11 @@ import org.apache.spark.scheduler.{SparkListener, SparkListenerTaskEnd}
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.expressions.DynamicPruningExpression
 import org.apache.spark.sql.comet._
-import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
+import org.apache.spark.sql.comet.execution.shuffle.{CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{InSubqueryExec, ReusedSubqueryExec, SparkPlan, SubqueryExec}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AdaptiveSparkPlanHelper, BroadcastQueryStageExec}
 import org.apache.spark.sql.execution.exchange.{ReusedExchangeExec, ShuffleExchangeExec}
+import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{StringType, TimestampType}
 
@@ -3657,6 +3658,237 @@ class CometIcebergNativeSuite
         } finally {
           spark.sparkContext.removeSparkListener(listener)
           spark.sql("DROP TABLE test_cat.db.task_metrics_test")
+        }
+      }
+    }
+  }
+
+  /**
+   * Companion to "task-level inputMetrics.bytesRead is populated for Iceberg native scan", which
+   * runs `SELECT *` and therefore leaves the scan as the root of its native block. In that shape
+   * Spark calls `CometIcebergNativeScanExec.doExecuteColumnar` directly, and that method reports
+   * input metrics itself.
+   *
+   * This test covers the other reporting site. With an operator above the scan, the two fuse into
+   * one native block and only the block root's `compute` runs -- a parent `CometNativeExec` reads
+   * its scan children via `PlanDataInjector.findAllPlanData` instead of executing them. Reporting
+   * then comes from `CometNativeExec.executeColumnarWithContext`, whose `hasScanInput` gate used
+   * to match only `CometNativeScanExec` and so skipped Iceberg, leaving the Input column on the
+   * UI's Stages and Executors tabs blank.
+   */
+  test("task-level inputMetrics is populated when Iceberg native scan is fused into a block") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        spark.sql("""
+          CREATE TABLE test_cat.db.fused_metrics_test (
+            id INT,
+            value DOUBLE
+          ) USING iceberg
+        """)
+
+        spark
+          .range(10000)
+          .selectExpr("CAST(id AS INT)", "CAST(id * 1.5 AS DOUBLE) as value")
+          .repartition(5)
+          .write
+          .format("iceberg")
+          .mode("append")
+          .saveAsTable("test_cat.db.fused_metrics_test")
+
+        val bytesReadValues = mutable.ArrayBuffer.empty[Long]
+        val recordsReadValues = mutable.ArrayBuffer.empty[Long]
+
+        val listener = new SparkListener {
+          override def onTaskEnd(taskEnd: SparkListenerTaskEnd): Unit = {
+            val im = taskEnd.taskMetrics.inputMetrics
+            if (im.bytesRead > 0) {
+              bytesReadValues.synchronized {
+                bytesReadValues += im.bytesRead
+                recordsReadValues += im.recordsRead
+              }
+            }
+          }
+        }
+        spark.sparkContext.addSparkListener(listener)
+
+        try {
+          // Arithmetic in the projection keeps it from being collapsed into the scan, so a
+          // CometProjectExec sits above the scan and the two fuse into one native block.
+          val query =
+            "SELECT id + 1 AS id2, value * 2 AS value2 FROM test_cat.db.fused_metrics_test"
+
+          CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
+          bytesReadValues.clear()
+          recordsReadValues.clear()
+
+          val df = spark.sql(query)
+          val plan = df.queryExecution.executedPlan
+          val scanNodes = collectIcebergNativeScans(plan)
+          assert(scanNodes.nonEmpty, s"Expected CometIcebergNativeScanExec in plan:\n$plan")
+          // Assert the fusion actually happened, so this test cannot silently degrade into a
+          // duplicate of the SELECT * one if a future planner change collapses the projection
+          // into the scan. Checking the executedPlan root is not enough: with AQE on, the root
+          // is an AdaptiveSparkPlanExec either way.
+          val fusingParents = collect(plan) {
+            case p: CometNativeExec
+                if p.children.exists(_.isInstanceOf[CometIcebergNativeScanExec]) =>
+              p
+          }
+          assert(
+            fusingParents.nonEmpty,
+            s"Expected the Iceberg scan to be fused under a native parent operator:\n$plan")
+
+          df.collect()
+          CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
+
+          val cometBytes = bytesReadValues.sum
+          val cometRecords = recordsReadValues.sum
+
+          assert(cometBytes > 0, s"bytesRead should be > 0 for a fused scan, got $cometBytes")
+          assert(
+            cometRecords == 10000,
+            s"recordsRead should equal the scanned row count, got $cometRecords")
+
+          val sqlBytes = scanNodes.map(_.metrics("bytes_scanned").value).sum
+          assert(
+            sqlBytes == cometBytes,
+            s"SQL bytes_scanned ($sqlBytes) should match task bytesRead ($cometBytes)")
+        } finally {
+          spark.sparkContext.removeSparkListener(listener)
+          spark.sql("DROP TABLE test_cat.db.fused_metrics_test")
+        }
+      }
+    }
+  }
+
+  /**
+   * `CometNativeExec.buildNativeContext` is also consumed by the native shuffle path:
+   * `CometShuffleExchangeExec.nativeChildContext` builds the context from its `CometNativeExec`
+   * child, and the child's whole native subtree -- scan included -- is inlined under the
+   * `ShuffleWriter` protobuf operator and executed by `CometNativeShuffleWriter` in the
+   * ShuffleMapTask. No `CometExecRDD` runs for that subtree, so neither
+   * `CometIcebergNativeScanExec.doExecuteColumnar` nor
+   * `CometNativeExec.executeColumnarWithContext` reports anything; the writer has its own
+   * `ctx.hasScanInput` check instead.
+   *
+   * Before the fix, an Iceberg scan feeding a native shuffle left the map stage's Input column
+   * blank. The Parquet equivalent ("native shuffle reports task input metrics for its scan child"
+   * in `CometTaskMetricsSuite`) passed all along because the old gate matched
+   * `CometNativeScanExec`.
+   */
+  test("task-level inputMetrics is populated when Iceberg native scan feeds a native shuffle") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true",
+        CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+        // "auto" would also pick native here, but pin it so a future change to the auto
+        // heuristic turns this into a skip-with-assertion-failure rather than a silent
+        // switch to columnar shuffle (which reports input metrics through a different path).
+        CometConf.COMET_SHUFFLE_MODE.key -> "native") {
+
+        spark.sql("""
+          CREATE TABLE test_cat.db.shuffle_metrics_test (
+            id INT,
+            value DOUBLE
+          ) USING iceberg
+        """)
+
+        spark
+          .range(10000)
+          .selectExpr("CAST(id AS INT)", "CAST(id * 1.5 AS DOUBLE) as value")
+          .repartition(5)
+          .write
+          .format("iceberg")
+          .mode("append")
+          .saveAsTable("test_cat.db.shuffle_metrics_test")
+
+        val mapInputBytes = mutable.ArrayBuffer.empty[Long]
+        val mapInputRecords = mutable.ArrayBuffer.empty[Long]
+
+        val listener = new SparkListener {
+          override def onTaskEnd(taskEnd: SparkListenerTaskEnd): Unit = {
+            // Only the map stage runs the scan; the reduce stage reads shuffle blocks and must
+            // not contribute to inputMetrics.
+            if (taskEnd.taskType.contains("ShuffleMapTask")) {
+              val im = taskEnd.taskMetrics.inputMetrics
+              mapInputBytes.synchronized {
+                mapInputBytes += im.bytesRead
+                mapInputRecords += im.recordsRead
+              }
+            }
+          }
+        }
+        spark.sparkContext.addSparkListener(listener)
+
+        try {
+          CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
+          mapInputBytes.clear()
+          mapInputRecords.clear()
+
+          val df = spark
+            .table("test_cat.db.shuffle_metrics_test")
+            .repartition(4, col("id"))
+
+          df.collect()
+          CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
+
+          // Assert the plan shape after execution so we inspect what AQE actually ran. All three
+          // conditions are required for the writer to be the reporting site: a native (not
+          // columnar) shuffle, a CometNativeExec child so `nativeChildContext` is `Some`, and an
+          // Iceberg scan inside that child's subtree so `hasScanInput` must be true.
+          val plan = df.queryExecution.executedPlan
+          val nativeShuffles = collect(plan) {
+            case s: CometShuffleExchangeExec if s.shuffleType == CometNativeShuffle => s
+          }
+          assert(
+            nativeShuffles.nonEmpty,
+            s"Expected a CometShuffleExchangeExec with CometNativeShuffle in plan:\n$plan")
+          val scanNodes = nativeShuffles.flatMap { s =>
+            assert(
+              s.child.isInstanceOf[CometNativeExec],
+              "Expected the shuffle's child to be a CometNativeExec so its subtree is " +
+                s"inlined into the writer plan, got ${s.child.getClass.getSimpleName}:\n$plan")
+            collectIcebergNativeScans(s.child)
+          }
+          assert(
+            scanNodes.nonEmpty,
+            s"Expected the Iceberg scan to be inlined under the native shuffle:\n$plan")
+
+          assert(mapInputRecords.nonEmpty, "no ShuffleMapTask metrics captured")
+
+          val cometBytes = mapInputBytes.sum
+          val cometRecords = mapInputRecords.sum
+
+          assert(
+            cometBytes > 0,
+            s"bytesRead across map tasks should be > 0 for a shuffled scan, got $cometBytes")
+          assert(
+            cometRecords == 10000,
+            s"recordsRead across map tasks should equal the scanned row count, got $cometRecords")
+
+          val sqlBytes = scanNodes.map(_.metrics("bytes_scanned").value).sum
+          assert(
+            sqlBytes == cometBytes,
+            s"SQL bytes_scanned ($sqlBytes) should match task bytesRead ($cometBytes)")
+        } finally {
+          spark.sparkContext.removeSparkListener(listener)
+          spark.sql("DROP TABLE test_cat.db.shuffle_metrics_test")
         }
       }
     }
