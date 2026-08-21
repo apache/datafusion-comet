@@ -2423,46 +2423,34 @@ impl PhysicalPlanner {
                     // Partition keys arrive as bare exprs (no direction). Spark's WGL
                     // requires the child to be sorted by partition-keys ASCENDING then by
                     // order-by keys, so materialize partition keys with SortOptions matching
-                    // Spark's `SortOrder(_, Ascending)` (ascending, nulls_first) and
-                    // concatenate with the ORDER BY exprs into a single LexOrdering
-                    // `[partition_keys, order_keys]`.
-                    let mut sort_exprs: Vec<PhysicalSortExpr> =
-                        Vec::with_capacity(partition_prefix_len + wgl.order_by_list.len());
+                    // Spark's `SortOrder(_, Ascending)` (ascending, nulls_first).
+                    let mut partition_keys: Vec<PhysicalSortExpr> =
+                        Vec::with_capacity(partition_prefix_len);
                     for expr in &wgl.partition_by_list {
                         let phys = self.create_expr(expr, Arc::clone(&input_schema))?;
-                        sort_exprs.push(PhysicalSortExpr {
+                        partition_keys.push(PhysicalSortExpr {
                             expr: phys,
                             options: SortOptions::default(),
                         });
                     }
+                    let mut order_keys: Vec<PhysicalSortExpr> =
+                        Vec::with_capacity(wgl.order_by_list.len());
                     for expr in &wgl.order_by_list {
-                        sort_exprs.push(self.create_sort_expr(expr, Arc::clone(&input_schema))?);
+                        order_keys.push(self.create_sort_expr(expr, Arc::clone(&input_schema))?);
                     }
-
-                    let ordering = LexOrdering::new(sort_exprs).ok_or_else(|| {
-                        GeneralError("WindowGroupLimit produced empty LexOrdering".to_string())
-                    })?;
-
-                    // `LexOrdering::new` deduplicates by underlying `PhysicalExpr`, so if a
-                    // PARTITION BY column also appears in ORDER BY (e.g. `PARTITION BY t2c
-                    // ORDER BY t2c`, produced by SPARK-46526-shaped scalar-subquery
-                    // rewrites) the ORDER BY suffix collapses away. The streaming operator
-                    // handles that tie-everything degenerate case (every row shares the
-                    // K-th ORDER BY value) the same way it handles any other tie: rank
-                    // stays at 0 for RANK/DENSE_RANK, or increments per row for ROW_NUMBER.
 
                     // Always route to the streaming `PartitionedRankLimitExec`. Spark's
                     // `WindowGroupLimitExec.requiredChildOrdering` guarantees the child is
                     // sorted by `[partition_keys..., order_keys...]`, so a single pass
-                    // suffices. `PartitionedTopKExec` (heap-based) is faster asymptotically
-                    // but reorders tied rows, which breaks Spark's `SimpleLimitIterator` /
-                    // `RankLimitIterator` semantics: for `ROW_NUMBER()`, Spark assigns ranks
-                    // in input order to rows tied on the ORDER BY keys, and any deviation
-                    // shows up as a wrong-row diff in SPARK-37099-shaped tests.
+                    // suffices. A heap-based top-K would be faster asymptotically but would
+                    // reorder rows tied on the ORDER BY keys, which breaks Spark's
+                    // `SimpleLimitIterator` / `RankLimitIterator` semantics: for
+                    // `ROW_NUMBER()`, Spark assigns ranks in input order to tied rows, and
+                    // any deviation surfaces as wrong-row diffs in SPARK-37099-shaped tests.
                     Arc::new(PartitionedRankLimitExec::try_new(
                         Arc::clone(&child.native_plan),
-                        ordering,
-                        partition_prefix_len,
+                        partition_keys,
+                        order_keys,
                         fetch,
                         kind,
                     )?)

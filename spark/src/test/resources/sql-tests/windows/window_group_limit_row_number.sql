@@ -21,15 +21,15 @@
 -- against an integer literal. Threshold is toggled via ConfigMatrix to exercise both the
 -- optimized (WGL-inserted) and the naive (Window + Filter) plan shapes.
 --
--- Comet routes the ROW_NUMBER + non-empty PARTITION BY pushdown case to DataFusion's
--- PartitionedTopKExec via `CometWindowGroupLimitExec`. Every pushdown-eligible query below
--- runs natively; queries where Spark's optimizer converts to a plain Limit (global top-K)
--- or skips WGL pushdown still exercise the ORDER BY + Filter path without a fallback.
+-- Comet routes the ROW_NUMBER + non-empty PARTITION BY pushdown case to the streaming
+-- `PartitionedRankLimitExec` via `CometWindowGroupLimitExec`. Every pushdown-eligible query
+-- below runs natively; queries where Spark's optimizer converts to a plain Limit (global
+-- top-K) or skips WGL pushdown still exercise the ORDER BY + Filter path without a fallback.
 --
 -- Tie-breaking note: ROW_NUMBER is non-deterministic when ORDER BY has duplicate values.
--- Spark's stream-based SimpleLimitIterator preserves input order; DataFusion's heap-based
--- PartitionedTopKExec does not. Every ORDER BY below therefore includes `hire_yr` as a
--- secondary key so the tests exercise WGL without hitting tie-breaking non-determinism.
+-- Spark's stream-based SimpleLimitIterator preserves input order, which Comet's streaming
+-- operator matches. Every ORDER BY below still includes `hire_yr` as a secondary key so the
+-- tests are robust against future planning changes.
 
 -- MinSparkVersion: 3.5
 -- ConfigMatrix: spark.sql.optimizer.windowGroupLimitThreshold=-1,1000

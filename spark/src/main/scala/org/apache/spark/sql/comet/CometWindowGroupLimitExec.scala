@@ -46,12 +46,17 @@ import org.apache.comet.shims.ShimCometWindowGroupLimit
  */
 object CometWindowGroupLimitExec extends CometOperatorSerde[SparkPlan] {
 
-  /** Fields extracted from a Spark `WindowGroupLimitExec` (Spark 3.5+). */
+  /**
+   * Fields extracted from a Spark `WindowGroupLimitExec` (Spark 3.5+). `mode` is a Spark-agnostic
+   * string ("Partial" or "Final") because Spark's `WindowGroupLimitMode` type does not exist on
+   * Spark 3.4, and the enclosing file must compile on that profile.
+   */
   case class Fields(
       partitionSpec: Seq[Expression],
       orderSpec: Seq[SortOrder],
       rankLikeFunction: RankLikeFunction,
-      limit: Int)
+      limit: Int,
+      mode: String)
 
   override def enabledConfig: Option[ConfigEntry[Boolean]] = Some(
     CometConf.COMET_EXEC_WINDOW_GROUP_LIMIT_ENABLED)
@@ -60,9 +65,15 @@ object CometWindowGroupLimitExec extends CometOperatorSerde[SparkPlan] {
       op: SparkPlan,
       builder: Operator.Builder,
       childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
-    // `nativeExecs` only routes here for a real `WindowGroupLimitExec` on Spark 3.5+, so the
-    // shim always returns Some.
-    val fields = ShimCometWindowGroupLimit.extract(op).get
+    // Shim returns `None` for a Spark 3.4 plan (WGL does not exist) or if a future Spark
+    // introduces a rank-like function this shim does not know about. In both cases fall back
+    // to Spark rather than throwing, so a working query stays working across Spark upgrades.
+    val fields = ShimCometWindowGroupLimit.extract(op) match {
+      case Some(f) => f
+      case None =>
+        withFallbackReason(op, "WindowGroupLimit: unsupported rank-like function")
+        return None
+    }
 
     if (fields.limit <= 0) {
       // Spark's optimizer collapses limit <= 0 to an empty LocalRelation, but guard anyway.
@@ -103,16 +114,21 @@ object CometWindowGroupLimitExec extends CometOperatorSerde[SparkPlan] {
       op.output,
       fields.partitionSpec,
       fields.orderSpec,
+      fields.rankLikeFunction,
       fields.limit,
+      fields.mode,
       op.children.head,
       SerializedPlan(None))
   }
 }
 
 /**
- * Comet physical plan node for Spark `WindowGroupLimitExec`. The Spark Partial/Final split is
- * preserved unchanged in the Spark plan tree (each side is planned as its own native subtree), so
- * the case class doesn't carry a mode field.
+ * Comet physical plan node for Spark `WindowGroupLimitExec`. `rankLikeFunction` and `mode` are
+ * carried explicitly so `equals` / `hashCode` distinguish Partial vs Final and ROW_NUMBER vs RANK
+ * vs DENSE_RANK for `ReuseSubquery` / `CacheManager` semantic-hash lookups, and so `stringArgs` /
+ * explain output renders the two Partial/Final nodes in a Spark plan tree distinguishably (the
+ * golden files under `tpcds-plan-stability/` for q44 / q67 stack a Final on top of a Partial and
+ * would otherwise show identical labels for both).
  */
 case class CometWindowGroupLimitExec(
     override val nativeOp: Operator,
@@ -120,7 +136,9 @@ case class CometWindowGroupLimitExec(
     override val output: Seq[Attribute],
     partitionSpec: Seq[Expression],
     orderSpec: Seq[SortOrder],
+    rankLikeFunction: RankLikeFunction,
     limit: Int,
+    mode: String,
     child: SparkPlan,
     override val serializedPlanOpt: SerializedPlan)
     extends CometUnaryExec {
@@ -135,19 +153,28 @@ case class CometWindowGroupLimitExec(
     this.copy(child = newChild)
 
   override def stringArgs: Iterator[Any] =
-    Iterator(output, partitionSpec, orderSpec, limit, child)
+    Iterator(output, partitionSpec, orderSpec, rankLikeFunction, limit, mode, child)
 
   override def equals(obj: Any): Boolean = obj match {
     case other: CometWindowGroupLimitExec =>
       this.output == other.output &&
       this.partitionSpec == other.partitionSpec &&
       this.orderSpec == other.orderSpec &&
+      this.rankLikeFunction == other.rankLikeFunction &&
       this.limit == other.limit &&
+      this.mode == other.mode &&
       this.child == other.child &&
       this.serializedPlanOpt == other.serializedPlanOpt
     case _ => false
   }
 
   override def hashCode(): Int =
-    Objects.hashCode(output, partitionSpec, orderSpec, Integer.valueOf(limit), child)
+    Objects.hashCode(
+      output,
+      partitionSpec,
+      orderSpec,
+      rankLikeFunction,
+      Integer.valueOf(limit),
+      mode,
+      child)
 }

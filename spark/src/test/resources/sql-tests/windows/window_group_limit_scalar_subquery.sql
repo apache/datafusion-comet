@@ -20,8 +20,8 @@
 -- the ORDER BY column collapses into the correlation (e.g. ORDER BY t2c when
 -- the correlation predicate is `WHERE t2c = t1c`), the resulting Window may
 -- have an EMPTY orderSpec but non-empty partitionSpec. Comet's serde must not
--- hand DataFusion's `PartitionedTopKExec` an ordering with only partition
--- keys -- that panics at execute time.
+-- fail on that shape -- every row within a partition ties and every row
+-- survives the limit.
 --
 -- Spark 3.5 rejects this correlation form at analysis
 -- (UNSUPPORTED_SUBQUERY_EXPRESSION_CATEGORY.ACCESSING_OUTER_QUERY_COLUMN_IS_NOT_ALLOWED);

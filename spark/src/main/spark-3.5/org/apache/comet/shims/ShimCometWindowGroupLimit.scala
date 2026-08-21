@@ -40,11 +40,13 @@ object ShimCometWindowGroupLimit {
         case _: RowNumber => RankLikeFunction.RowNumber
         case _: Rank => RankLikeFunction.Rank
         case _: DenseRank => RankLikeFunction.DenseRank
-        case other =>
-          throw new IllegalStateException(
-            s"Unexpected rank-like function in WindowGroupLimitExec: ${other.getClass.getName}")
+        case _ =>
+          // Future Spark releases could add a fourth rank-like function to
+          // `InferWindowGroupLimit.support`. Return None so `convert` records a fallback
+          // reason instead of throwing, keeping a working query working across upgrades.
+          return None
       }
-      Some(Fields(w.partitionSpec, w.orderSpec, fn, w.limit))
+      Some(Fields(w.partitionSpec, w.orderSpec, fn, w.limit, w.mode.toString))
     case _ =>
       None
   }

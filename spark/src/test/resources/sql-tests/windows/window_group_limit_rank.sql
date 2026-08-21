@@ -179,10 +179,11 @@ SELECT a, b, score FROM (
 -- ================================================================================
 -- FP edge cases in the ORDER BY column (NaN / +Inf / -Inf / 0 / NULL). NaN sorts
 -- greater than any finite value in Spark, and Arrow's row-format total-ordering
--- encoding matches -- so NaN gets rank 1 under DESC. Note: -0.0 vs 0.0 is a known
--- Spark-vs-Arrow-row divergence (Spark treats them equal in ORDER BY; Arrow's
--- bitwise total_cmp treats them distinct), so this test avoids exercising that
--- boundary directly by keeping the cutoff (rk <= 3) above the 0-values.
+-- encoding matches -- so NaN gets rank 1 under DESC. -0.0 vs 0.0 is a known
+-- divergence: Spark's SQLOrderingUtil ties them, Arrow's bitwise total_cmp splits
+-- them. The primary test below keeps the cutoff (rk <= 3) above the 0-values so
+-- it runs as-is; a second test below with `query ignore(...)` pins the divergent
+-- shape directly. See docs/source/user-guide/latest/compatibility/floating-point.md.
 -- ================================================================================
 
 statement
@@ -206,6 +207,26 @@ SELECT part, v FROM (
          RANK() OVER (PARTITION BY part ORDER BY v DESC NULLS LAST) AS rk
   FROM test_rank_fp
 ) t WHERE rk <= 3 ORDER BY rk, v DESC NULLS LAST
+
+-- -0.0 vs +0.0 in the ORDER BY column: Spark ties them at rank 1 (both rows
+-- survive `rk <= 1`); Comet's row encoder splits them (only -0.0 survives ASC,
+-- only +0.0 survives DESC). Kept as `ignore(...)` so the suite passes today and
+-- lands green once the divergence is closed.
+statement
+CREATE TABLE test_rank_fp_zero(part string, v double) USING parquet
+
+statement
+INSERT INTO test_rank_fp_zero VALUES
+  ('p', 0.0),
+  ('p', -0.0),
+  ('p', 1.0)
+
+query ignore(signed-zero ORDER BY: Spark ties -0.0 with +0.0, Arrow row encoder splits them)
+SELECT part, v FROM (
+  SELECT part, v,
+         RANK() OVER (PARTITION BY part ORDER BY v ASC) AS rk
+  FROM test_rank_fp_zero
+) t WHERE rk <= 1 ORDER BY v
 
 
 -- ================================================================================
