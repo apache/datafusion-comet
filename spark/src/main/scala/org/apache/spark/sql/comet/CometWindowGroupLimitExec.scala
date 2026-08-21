@@ -31,7 +31,7 @@ import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.serde.{CometOperatorSerde, OperatorOuterClass}
 import org.apache.comet.serde.OperatorOuterClass.{Operator, RankLikeFunction}
-import org.apache.comet.serde.QueryPlanSerde.exprToProto
+import org.apache.comet.serde.QueryPlanSerde.{exprToProto, hasNonDefaultStringCollation}
 import org.apache.comet.shims.ShimCometWindowGroupLimit
 
 /**
@@ -81,6 +81,22 @@ object CometWindowGroupLimitExec extends CometOperatorSerde[SparkPlan] {
       return None
     }
 
+    // The streaming operator compares partition and order keys via the Arrow row encoder,
+    // which orders by raw bytes. A non-default `StringType` collation (e.g. `UTF8_LCASE`)
+    // makes Spark's comparison case-insensitive, so byte-ordering would drop rows that
+    // Spark considers tied. Walk nested types (StructField, ArrayType element, MapType
+    // key / value) via the shim helper and fall back if any key carries a collation.
+    val collated = (fields.partitionSpec ++ fields.orderSpec.map(_.child))
+      .filter(e => hasNonDefaultStringCollation(e.dataType))
+    if (collated.nonEmpty) {
+      withFallbackReason(
+        op,
+        collated
+          .map(_.sql)
+          .mkString("WindowGroupLimit: non-default string collation on key(s): ", ", ", ""))
+      return None
+    }
+
     val childOutput = op.children.head.output
     val partitionProtos = fields.partitionSpec.map(e => e -> exprToProto(e, childOutput))
     val orderProtos = fields.orderSpec.map(e => e -> exprToProto(e, childOutput))
@@ -103,11 +119,8 @@ object CometWindowGroupLimitExec extends CometOperatorSerde[SparkPlan] {
   }
 
   override def createExec(nativeOp: Operator, op: SparkPlan): CometNativeExec = {
-    val fields = ShimCometWindowGroupLimit
-      .extract(op)
-      .getOrElse(
-        throw new IllegalStateException(
-          "createExec called on a non-WindowGroupLimitExec operator: " + op.nodeName))
+    // `convert` above returned `Some`, so `extract` must succeed here -- `.get` is safe.
+    val fields = ShimCometWindowGroupLimit.extract(op).get
     CometWindowGroupLimitExec(
       nativeOp,
       op,
@@ -174,7 +187,7 @@ case class CometWindowGroupLimitExec(
       partitionSpec,
       orderSpec,
       rankLikeFunction,
-      Integer.valueOf(limit),
+      limit: java.lang.Integer,
       mode,
       child)
 }

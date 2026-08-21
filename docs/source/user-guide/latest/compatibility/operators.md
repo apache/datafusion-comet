@@ -74,6 +74,17 @@ incorrect result. When any single window expression in a `WindowExec` falls back
 `WindowGroupLimitExec` (window-based limit pushdown for `ROW_NUMBER`, `RANK`, and `DENSE_RANK`)
 runs natively; it is controlled by `spark.comet.exec.windowGroupLimit.enabled` (default: true).
 
+**Falls back to Spark:**
+
+- Any `PARTITION BY` or `ORDER BY` key whose type carries a non-default `StringType` collation
+  (e.g. `UTF8_LCASE`). The native operator compares keys via the Arrow row encoder, which orders
+  by raw bytes.
+
+**Known incompatibilities:**
+
+- Signed-zero ordering (`-0.0` vs `+0.0`) diverges from Spark's `RankLimitIterator`; see
+  [floating-point ordering](./floating-point.md#ordering-signed-zero-00-vs-00).
+
 ## Round-Robin Partitioning
 
 Comet's native shuffle implementation of round-robin partitioning (`df.repartition(n)`) is not compatible with

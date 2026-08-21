@@ -295,9 +295,14 @@ struct RankLimitStream {
     // Per-partition streaming state, persisted across batches.
     prev_partition: Option<OwnedRow>,
     prev_order: Option<OwnedRow>,
-    /// Rank of the most recently seen row (0-indexed). Only meaningful when `count > 0`.
+    /// Rank of the most recently seen row (0-indexed). Only meaningful when
+    /// `prev_order.is_some()` -- the two reads below both sit past the point where
+    /// `prev_order` was set for the current partition.
     rank: u64,
-    /// Total rows seen in the current partition (also 0-indexed cursor).
+    /// 0-indexed cursor into the current partition for rank arithmetic. Advances only on
+    /// non-exhausted rows -- once `partition_exhausted` fires, subsequent rows in the same
+    /// partition skip the increment. `count` is thus NOT rows-seen; it freezes at
+    /// `first_dropped_at` for the tail of an exhausted partition.
     count: u64,
     /// Set once `this_rank >= limit` inside the current partition and cleared when a new
     /// partition starts. Mirrors Spark's `GroupedLimitIterator.skipRemainingRows`: for a
@@ -307,10 +312,14 @@ struct RankLimitStream {
 }
 
 impl RankLimitStream {
-    fn process_batch(&mut self, batch: &RecordBatch) -> Result<RecordBatch> {
+    /// Filter a batch to the rows this operator keeps. `Ok(None)` means the batch produced no
+    /// output; the caller must not surface it downstream. Passing an empty batch also returns
+    /// `Ok(None)` (nothing to emit) rather than an empty pass-through, so the caller never
+    /// has to strip zero-row batches.
+    fn process_batch(&mut self, batch: &RecordBatch) -> Result<Option<RecordBatch>> {
         let num_rows = batch.num_rows();
         if num_rows == 0 {
-            return Ok(batch.clone());
+            return Ok(None);
         }
 
         let partition_rows = self
@@ -325,26 +334,28 @@ impl RankLimitStream {
 
         let mut mask_builder = BooleanBufferBuilder::new(num_rows);
         let mut kept: usize = 0;
+        // Position of the first dropped row in this batch. When `kept == first_dropped_at`,
+        // every kept row lies at positions `0..kept`, so the output is `batch.slice(0, kept)`
+        // -- one `Arc` reslice per column, no bitmap scan or per-column filter kernel.
+        let mut first_dropped_at: Option<usize> = None;
         for i in 0..num_rows {
-            let same_partition = match &partition_rows {
-                Some(pr) => matches!(&self.prev_partition, Some(prev) if prev.row() == pr.row(i)),
-                // No PARTITION BY: state accumulates across every row, resetting
-                // only on the very first row of the stream.
-                None => self.count > 0,
-            };
-            if !same_partition {
-                if let Some(pr) = &partition_rows {
+            // Only a PARTITION-BY-shaped stream has partition boundaries. With no
+            // PARTITION BY the whole stream is one partition, so state accumulates
+            // across every row and no reset is needed.
+            if let Some(pr) = &partition_rows {
+                let same_partition =
+                    matches!(&self.prev_partition, Some(prev) if prev.row() == pr.row(i));
+                if !same_partition {
                     self.prev_partition = Some(pr.row(i).owned());
+                    self.prev_order = None;
+                    self.rank = 0;
+                    self.count = 0;
+                    self.partition_exhausted = false;
                 }
-                self.prev_order = None;
-                self.rank = 0;
-                self.count = 0;
-                self.partition_exhausted = false;
             }
 
             if self.partition_exhausted {
                 mask_builder.append(false);
-                self.count += 1;
                 continue;
             }
 
@@ -362,24 +373,22 @@ impl RankLimitStream {
                 (Some(prev_o), Some(rows)) if prev_o.row() == rows.row(i)
             );
 
-            let this_rank: u64 =
-                if self.prev_order.is_none() && self.kind != WindowFnKind::RowNumber {
-                    // First row of a partition ranks 0 under RANK/DENSE_RANK.
-                    0
-                } else {
-                    match self.kind {
-                        WindowFnKind::RowNumber => self.count,
-                        _ if ties_with_prev => self.rank,
-                        WindowFnKind::DenseRank => self.rank + 1,
-                        WindowFnKind::Rank => self.count,
-                    }
-                };
+            let this_rank: u64 = match self.kind {
+                WindowFnKind::RowNumber => self.count,
+                _ if ties_with_prev => self.rank,
+                WindowFnKind::Rank => self.count,
+                WindowFnKind::DenseRank if self.prev_order.is_none() => 0,
+                WindowFnKind::DenseRank => self.rank + 1,
+            };
 
             let keep = this_rank < self.limit;
             mask_builder.append(keep);
             if keep {
                 kept += 1;
             } else {
+                if first_dropped_at.is_none() {
+                    first_dropped_at = Some(i);
+                }
                 // `this_rank` is monotonically nondecreasing within a partition for all three
                 // kinds (ROW_NUMBER: strictly, RANK / DENSE_RANK: nondecreasing), so once
                 // `keep` flips false every remaining row of this partition is dropped.
@@ -399,13 +408,19 @@ impl RankLimitStream {
         }
 
         if kept == num_rows {
-            return Ok(batch.clone());
+            return Ok(Some(batch.clone()));
         }
         if kept == 0 {
-            return Ok(RecordBatch::new_empty(Arc::clone(&self.schema)));
+            return Ok(None);
+        }
+        // Clean prefix: kept rows are `0..kept`, dropped rows are `kept..num_rows`. `slice` is
+        // O(1) per column (`Arc` reslice), skipping the bitmap `true_count` and the per-column
+        // filter kernel that `filter_record_batch` would run.
+        if first_dropped_at == Some(kept) {
+            return Ok(Some(batch.slice(0, kept)));
         }
         let mask = BooleanArray::new(mask_builder.finish(), None);
-        Ok(filter_record_batch(batch, &mask)?)
+        Ok(Some(filter_record_batch(batch, &mask)?))
     }
 }
 
@@ -414,17 +429,30 @@ impl Stream for RankLimitStream {
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         loop {
+            // With no PARTITION BY, `partition_exhausted` never clears -- one virtual
+            // partition per DF partition. Terminate early instead of pulling the rest
+            // of the child stream just to drop it (matches how `LocalLimitExec` bails
+            // once it's satisfied its fetch).
+            if self.partition_exhausted && self.partition_key.is_none() {
+                return Poll::Ready(None);
+            }
             match self.input.poll_next_unpin(cx) {
                 Poll::Ready(Some(Ok(batch))) => {
+                    // Clone the `Time` metric into a local so the `ScopedTimerGuard` borrows
+                    // the local rather than `self.baseline_metrics`. Otherwise the guard would
+                    // hold an immutable borrow of `self` for the duration of the block and
+                    // `self.process_batch(&batch)` (which needs `&mut self`) would fail with
+                    // E0502.
+                    let elapsed_compute = self.baseline_metrics.elapsed_compute().clone();
                     let processed = {
-                        let _timer = self.baseline_metrics.elapsed_compute().timer();
+                        let _timer = elapsed_compute.timer();
                         self.process_batch(&batch)
                     };
                     match processed {
-                        // Skip fully-filtered batches so downstream never sees
-                        // spurious empty batches between real ones.
-                        Ok(out) if out.num_rows() == 0 => continue,
-                        Ok(out) => {
+                        // `process_batch` returns `None` when the batch produces no output,
+                        // so downstream never sees a spurious empty batch between real ones.
+                        Ok(None) => continue,
+                        Ok(Some(out)) => {
                             return self
                                 .baseline_metrics
                                 .record_poll(Poll::Ready(Some(Ok(out))));
