@@ -68,3 +68,15 @@ INSERT INTO test_array_max_float VALUES
 
 query
 SELECT array_max(arr) FROM test_array_max_float
+
+-- Spark preserves the first equal zero (-0.0 here); the native maximum returns +0.0.
+-- Native parity is tracked by https://github.com/apache/datafusion-comet/issues/5401.
+statement
+CREATE TABLE test_array_max_negzero(d array<double>, f array<float>) USING parquet
+
+statement
+INSERT INTO test_array_max_negzero VALUES
+  (array(double('-0.0'), double('0.0')), array(float('-0.0'), float('0.0')))
+
+query ignore(https://github.com/apache/datafusion-comet/issues/5401)
+SELECT array_max(d), array_max(f) FROM test_array_max_negzero
