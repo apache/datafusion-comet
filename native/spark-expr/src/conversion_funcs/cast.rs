@@ -16,7 +16,7 @@
 // under the License.
 
 use crate::conversion_funcs::boolean::{
-    cast_boolean_to_decimal, cast_boolean_to_timestamp, is_df_cast_from_bool_spark_compatible,
+    cast_boolean_to_timestamp, is_df_cast_from_bool_spark_compatible,
 };
 use crate::conversion_funcs::numeric::{
     cast_decimal128_to_utf8, cast_decimal_to_timestamp, cast_float32_to_decimal128,
@@ -42,20 +42,17 @@ use crate::{cast_whole_num_to_binary, BinaryOutputStyle};
 use crate::{EvalMode, SparkError};
 use arrow::array::builder::{GenericStringBuilder, StringBuilder};
 use arrow::array::{
-    new_null_array, BinaryBuilder, DictionaryArray, GenericByteArray, ListArray, MapArray,
-    StringArray, StructArray,
+    new_null_array, BinaryBuilder, GenericByteArray, ListArray, MapArray, StringArray, StructArray,
 };
-use arrow::datatypes::{
-    format_decimal_str, ArrowDictionaryKeyType, ArrowNativeType, DataType, Schema,
-};
+use arrow::datatypes::{format_decimal_str, DataType, Schema};
 use arrow::datatypes::{Field, Fields, GenericBinaryType};
 use arrow::error::ArrowError;
 use arrow::{
     array::{
-        cast::AsArray, types::Decimal128Type, types::Int32Type, Array, ArrayRef, Int16Array,
-        Int32Array, Int64Array, Int8Array, OffsetSizeTrait, PrimitiveArray,
+        cast::AsArray, types::Decimal128Type, Array, ArrayRef, Int16Array, Int32Array, Int64Array,
+        Int8Array, OffsetSizeTrait,
     },
-    compute::{cast_with_options, rescale_decimal, take, CastOptions},
+    compute::{cast_with_options, rescale_decimal, CastOptions},
     record_batch::RecordBatch,
     util::display::FormatOptions,
 };
@@ -215,40 +212,6 @@ pub fn spark_cast(
     Ok(result)
 }
 
-// copied from datafusion common scalar/mod.rs
-fn dict_from_values<K: ArrowDictionaryKeyType>(
-    values_array: ArrayRef,
-) -> datafusion::common::Result<ArrayRef> {
-    // Create a key array with `size` elements of 0..array_len for all
-    // non-null value elements
-    let key_array: PrimitiveArray<K> = (0..values_array.len())
-        .map(|index| {
-            if values_array.is_valid(index) {
-                let native_index = K::Native::from_usize(index).ok_or_else(|| {
-                    DataFusionError::Internal(format!(
-                        "Can not create index of type {} from value {}",
-                        K::DATA_TYPE,
-                        index
-                    ))
-                })?;
-                Ok(Some(native_index))
-            } else {
-                Ok(None)
-            }
-        })
-        .collect::<datafusion::common::Result<Vec<_>>>()?
-        .into_iter()
-        .collect();
-
-    // create a new DictionaryArray
-    //
-    // Note: this path could be made faster by using the ArrayData
-    // APIs and skipping validation, if it every comes up in
-    // performance traces.
-    let dict_array = DictionaryArray::<K>::try_new(key_array, values_array)?;
-    Ok(Arc::new(dict_array))
-}
-
 pub(crate) fn cast_array(
     array: ArrayRef,
     to_type: &DataType,
@@ -256,6 +219,12 @@ pub(crate) fn cast_array(
 ) -> DataFusionResult<ArrayRef> {
     use DataType::*;
     let from_type = array.data_type().clone();
+
+    // Spark's SQL data-type grammar cannot express Dictionary as a cast target:
+    // https://github.com/apache/spark/blob/v4.2.0/sql/api/src/main/antlr4/org/apache/spark/sql/catalyst/parser/SqlBaseParser.g4#L1477-L1525
+    if matches!(to_type, Dictionary(_, _)) {
+        return internal_err!("Spark cannot specify dictionary types as cast targets");
+    }
 
     if &from_type == to_type {
         return Ok(Arc::new(array));
@@ -271,47 +240,18 @@ pub(crate) fn cast_array(
             .with_timestamp_format(TIMESTAMP_FORMAT),
     };
 
-    let array = match &from_type {
-        Dictionary(key_type, value_type)
-            if key_type.as_ref() == &Int32
-                && (value_type.as_ref() == &Utf8
-                    || value_type.as_ref() == &LargeUtf8
-                    || value_type.as_ref() == &Binary
-                    || value_type.as_ref() == &LargeBinary) =>
-        {
-            let dict_array = array
-                .as_any()
-                .downcast_ref::<DictionaryArray<Int32Type>>()
-                .expect("Expected a dictionary array");
-
-            let casted_result = match to_type {
-                Dictionary(_, to_value_type) => {
-                    let casted_dictionary = DictionaryArray::<Int32Type>::new(
-                        dict_array.keys().clone(),
-                        cast_array(Arc::clone(dict_array.values()), to_value_type, cast_options)?,
-                    );
-                    Arc::new(casted_dictionary.clone())
-                }
-                _ => {
-                    let casted_dictionary = DictionaryArray::<Int32Type>::new(
-                        dict_array.keys().clone(),
-                        cast_array(Arc::clone(dict_array.values()), to_type, cast_options)?,
-                    );
-                    take(casted_dictionary.values().as_ref(), dict_array.keys(), None)?
-                }
-            };
+    // Spark infers Parquet schemas from its own metadata or the Parquet MessageType, not
+    // ARROW:schema, so Arrow can expose a dictionary source while Spark requests its value type:
+    // https://github.com/apache/spark/blob/v4.2.0/sql/core/src/main/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFileFormat.scala#L585-L599
+    if let Dictionary(_, value_type) = &from_type {
+        if matches!(value_type.as_ref(), Utf8 | LargeUtf8 | Binary | LargeBinary) {
+            let dictionary = array.as_any_dictionary();
+            let values = cast_array(Arc::clone(dictionary.values()), to_type, cast_options)?;
+            let dictionary = dictionary.with_values(values);
+            let casted_result = cast_with_options(&dictionary, to_type, &native_cast_options)?;
             return Ok(spark_cast_postprocess(casted_result, &from_type, to_type));
         }
-        _ => {
-            if let Dictionary(_, _) = to_type {
-                let dict_array = dict_from_values::<Int32Type>(array)?;
-                let casted_result = cast_array(dict_array, to_type, cast_options)?;
-                return Ok(spark_cast_postprocess(casted_result, &from_type, to_type));
-            } else {
-                array
-            }
-        }
-    };
+    }
 
     let cast_result = match (&from_type, to_type) {
         // Null arrays carry no concrete values, so Arrow's native cast can change only the
@@ -471,9 +411,6 @@ pub(crate) fn cast_array(
         }
         (Int64, Binary) if (eval_mode == Legacy) => {
             cast_whole_num_to_binary!(&array, Int64Array, 8)
-        }
-        (Boolean, Decimal128(precision, scale)) => {
-            cast_boolean_to_decimal(&array, *precision, *scale)
         }
         (Int8 | Int16 | Int32 | Int64, Timestamp(_, tz)) => cast_int_to_timestamp(&array, tz),
         (Float32 | Float64, Timestamp(_, tz)) => cast_float_to_timestamp(&array, tz, eval_mode),
@@ -946,10 +883,25 @@ fn cast_binary_to_string<O: OffsetSizeTrait>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{BinaryArray, Decimal128Array, ListArray, NullArray, StringArray};
+    use arrow::array::{
+        BinaryArray, Decimal128Array, ListArray, NullArray, PrimitiveArray, StringArray,
+    };
     use arrow::buffer::OffsetBuffer;
-    use arrow::datatypes::TimestampMicrosecondType;
-    use arrow::datatypes::{Field, Fields};
+    use arrow::datatypes::{Field, Fields, Int32Type, TimestampMicrosecondType};
+
+    #[test]
+    fn test_cast_to_dictionary_is_rejected() {
+        let error = cast_array(
+            Arc::new(StringArray::from(vec!["a"])),
+            &DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8)),
+            &SparkCastOptions::new(EvalMode::Legacy, "UTC", false),
+        )
+        .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("Spark cannot specify dictionary types as cast targets"));
+    }
 
     #[test]
     fn test_cast_decimal_to_decimal_ansi_overflow_returns_spark_error() {
