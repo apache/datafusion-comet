@@ -66,6 +66,7 @@ message Operator {
     ShuffleScan shuffle_scan = 116;
     BroadcastNestedLoopJoin broadcast_nested_loop_join = 117;
     Sample sample = 118;
+    WindowGroupLimit window_group_limit = 119;
     // Extension point for optional, out-of-tree contrib scans (Delta, Lance, ...). The concrete
     // scan message (e.g. `DeltaScan`) is packed into this envelope on the JVM side and dispatched
     // by `type_url` on the native side. Using a single permanent field -- rather than a new oneof
@@ -859,4 +860,20 @@ message Window {
   repeated spark.spark_expression.Expr order_by_list = 2;
   repeated spark.spark_expression.Expr partition_by_list = 3;
   Operator child = 4;
+}
+
+// Top-K rows per partition group. Corresponds to Spark's WindowGroupLimitExec
+// (Spark 3.5+). Rank-like function drives the semantics; the operator only
+// accepts ROW_NUMBER, RANK, and DENSE_RANK.
+message WindowGroupLimit {
+  repeated spark.spark_expression.Expr partition_by_list = 1;
+  repeated spark.spark_expression.Expr order_by_list = 2;
+  int32 limit = 3;
+  RankLikeFunction rank_like_function = 4;
+}
+
+enum RankLikeFunction {
+  RowNumber = 0;
+  Rank = 1;
+  DenseRank = 2;
 }
