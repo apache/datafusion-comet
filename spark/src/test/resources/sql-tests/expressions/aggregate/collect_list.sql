@@ -163,7 +163,7 @@ INSERT INTO cl_src_float VALUES
   (CAST('NaN' AS FLOAT), 'b'), (CAST('NaN' AS FLOAT), 'b'), (1.0, 'b'),
   (CAST('Infinity' AS FLOAT), 'c'), (CAST('-Infinity' AS FLOAT), 'c'),
   (CAST('Infinity' AS FLOAT), 'c'),
-  (CAST(0.0 AS FLOAT), 'd'), (CAST(-0.0 AS FLOAT), 'd'), (1.0, 'd'), (NULL, 'd')
+  (CAST(0.0 AS FLOAT), 'd'), (float('-0.0'), 'd'), (1.0, 'd'), (NULL, 'd')
 
 query
 SELECT grp, sort_array(collect_list(v)) FROM cl_src_float GROUP BY grp ORDER BY grp
@@ -181,7 +181,7 @@ INSERT INTO cl_src_double VALUES
   (CAST('NaN' AS DOUBLE), 'b'), (CAST('NaN' AS DOUBLE), 'b'), (1.0, 'b'),
   (CAST('Infinity' AS DOUBLE), 'c'), (CAST('-Infinity' AS DOUBLE), 'c'),
   (CAST('Infinity' AS DOUBLE), 'c'),
-  (0.0,  'd'), (-0.0,  'd'), (1.0, 'd'), (NULL, 'd')
+  (0.0,  'd'), (double('-0.0'),  'd'), (1.0, 'd'), (NULL, 'd')
 
 query
 SELECT grp, sort_array(collect_list(v)) FROM cl_src_double GROUP BY grp ORDER BY grp

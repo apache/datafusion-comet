@@ -100,7 +100,7 @@ CREATE TABLE test_percentile_special(v double) USING parquet
 
 statement
 INSERT INTO test_percentile_special VALUES
-  (double('-Infinity')), (-0.0), (0.0), (1.0), (double('Infinity')), (double('NaN'))
+  (double('-Infinity')), (double('-0.0')), (0.0), (1.0), (double('Infinity')), (double('NaN'))
 
 query
 SELECT percentile(v, 0.0), percentile(v, 0.5), percentile(v, 0.8), percentile(v, 1.0) FROM test_percentile_special
