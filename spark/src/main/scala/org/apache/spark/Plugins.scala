@@ -29,6 +29,7 @@ import org.apache.spark.internal.config.{EXECUTOR_MEMORY, EXECUTOR_MEMORY_OVERHE
 import org.apache.spark.sql.internal.StaticSQLConf
 
 import org.apache.comet.{COMET_VERSION, CometSparkSessionExtensions, NativeBase}
+import org.apache.comet.CometConf
 import org.apache.comet.CometConf.{COMET_METRICS_ENABLED, COMET_ONHEAP_ENABLED}
 import org.apache.comet.annotation.Public
 
@@ -60,6 +61,10 @@ class CometDriverPlugin extends DriverPlugin with Logging with ShimCometDriverPl
       logWarning("Comet plugin is disabled because Spark is not running in off-heap mode.")
       return Collections.emptyMap[String, String]
     }
+
+    val extraConfs = new ju.HashMap[String, String]()
+
+    CometDriverPlugin.maybeSetCacheSerializer(sc.conf, extraConfs)
 
     // register CometSparkSessionExtensions if it isn't already registered
     CometDriverPlugin.registerCometSessionExtension(sc.conf)
@@ -94,7 +99,7 @@ class CometDriverPlugin extends DriverPlugin with Logging with ShimCometDriverPl
       logInfo("Comet is running in unified memory mode and sharing off-heap memory with Spark")
     }
 
-    Collections.emptyMap[String, String]
+    extraConfs
   }
 
   override def receive(message: Any): AnyRef = super.receive(message)
@@ -116,6 +121,29 @@ object CometDriverPlugin extends Logging {
 
   /** Spark config key under which the loaded Comet version is exposed at runtime. */
   val COMET_VERSION_CONFIG = "spark.comet.version"
+
+  // Use Comet's cache serializer only for the native in-memory cache path.
+  // If the application already set spark.sql.cache.serializer, leave that value
+  // unchanged so Comet does not replace a user-selected cache format.
+  private[apache] def maybeSetCacheSerializer(
+      conf: SparkConf,
+      extraConfs: ju.HashMap[String, String]): Unit = {
+    if (conf.getBoolean(CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key, false)) {
+      val serializerKey = StaticSQLConf.SPARK_CACHE_SERIALIZER.key
+      val serializerValue =
+        "org.apache.spark.sql.comet.execution.arrow.ArrowCachedBatchSerializer"
+      val defaultSerializer = StaticSQLConf.SPARK_CACHE_SERIALIZER.defaultValueString
+      val currentSerializer = conf.get(serializerKey, defaultSerializer)
+
+      if (currentSerializer == defaultSerializer) {
+        extraConfs.put(serializerKey, serializerValue)
+        conf.set(serializerKey, serializerValue)
+        logInfo(s"Auto-set $serializerKey=$serializerValue")
+      } else {
+        logInfo(s"Not overriding user-provided $serializerKey=$currentSerializer")
+      }
+    }
+  }
 
   def registerCometMetrics(sc: SparkContext): Unit = {
     if (sc.getConf.getBoolean(

@@ -19,6 +19,8 @@
 
 package org.apache.spark.sql.comet.execution.arrow
 
+import scala.util.control.NonFatal
+
 import org.apache.arrow.memory.BufferAllocator
 import org.apache.arrow.vector.VectorSchemaRoot
 import org.apache.arrow.vector.types.pojo.Schema
@@ -26,19 +28,21 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.types.StructType
-import org.apache.spark.sql.vectorized.ColumnarBatch
+import org.apache.spark.sql.vectorized.{ColumnarArray, ColumnarBatch}
 
 import org.apache.comet.vector.NativeUtil
 
 /**
- * Convert a stream of Spark `InternalRow`s to a stream of independently-owned Arrow
- * `ColumnarBatch`es: each emitted batch owns a fresh `VectorSchemaRoot` with newly allocated
- * buffers and the consumer is responsible for closing it.
+ * Convert Spark data that is not Arrow-backed (`InternalRow`s, or `ColumnarBatch`es whose columns
+ * are Spark/third-party `ColumnVector`s) into independently-owned Arrow `ColumnarBatch`es: each
+ * emitted batch owns a fresh `VectorSchemaRoot` with newly allocated buffers and the consumer is
+ * responsible for closing it.
  *
- * This differs from [[RowArrowReader]], which reuses one stable `VectorSchemaRoot`
- * (release-and-replace) so only one batch is valid at a time. Use this when multiple emitted
- * batches must be alive simultaneously (e.g. tests that buffer several batches before consuming).
- * Buffers come from the caller-provided `BufferAllocator`, whose lifecycle the caller owns.
+ * This differs from [[RowArrowReader]] and [[SparkColumnarArrowReader]], which reuse one stable
+ * `VectorSchemaRoot` (release-and-replace) so only one batch is valid at a time. Use this when
+ * multiple emitted batches must be alive simultaneously (e.g. tests that buffer several batches
+ * before consuming). Buffers come from the caller-provided `BufferAllocator`, whose lifecycle the
+ * caller owns.
  */
 object CometArrowConverters extends Logging {
 
@@ -62,16 +66,96 @@ object CometArrowConverters extends Logging {
 
       override def next(): ColumnarBatch = {
         val root = VectorSchemaRoot.create(arrowSchema, allocator)
-        val writer = ArrowWriter.create(root)
-        var rowCount = 0L
-        while (rowIter.hasNext &&
-          (maxRecordsPerBatch <= 0 || rowCount < maxRecordsPerBatch)) {
-          writer.write(rowIter.next())
-          rowCount += 1
+        // Same ownership rule as columnarBatchToArrowBatch: the caller only owns the batch that
+        // rootAsBatch returns, so a throw from writing a row has to release the root here.
+        closingRootOnFailure(root) {
+          val writer = ArrowWriter.create(root)
+          var rowCount = 0L
+          while (rowIter.hasNext &&
+            (maxRecordsPerBatch <= 0 || rowCount < maxRecordsPerBatch)) {
+            writer.write(rowIter.next())
+            rowCount += 1
+          }
+          writer.finish()
+          NativeUtil.rootAsBatch(root)
         }
-        writer.finish()
-        NativeUtil.rootAsBatch(root)
       }
+    }
+  }
+
+  /**
+   * Copy `numRows` rows starting at `startRow` from a Spark `ColumnarBatch` into `root`.
+   *
+   * Spark's `ColumnVector` implementations do not expose Arrow buffers, so values are necessarily
+   * copied element-wise. Shared by [[SparkColumnarArrowReader]], which slices into a stable root,
+   * and [[columnarBatchToArrowBatch]], which fills a fresh one.
+   */
+  private[arrow] def writeColumns(
+      root: VectorSchemaRoot,
+      batch: ColumnarBatch,
+      startRow: Int,
+      numRows: Int): Unit = {
+    val writer = ArrowWriter.create(root)
+    var col = 0
+    while (col < batch.numCols()) {
+      val column = batch.column(col)
+      val columnArray = new ColumnarArray(column, startRow, numRows)
+      if (column.hasNull) {
+        writer.writeCol(columnArray, col)
+      } else {
+        writer.writeColNoNull(columnArray, col)
+      }
+      col += 1
+    }
+    writer.finish()
+    // ArrowWriter derives the root row count from its per-column writes, so a zero-column input
+    // batch (Spark's count-from-metadata scan: numRows > 0, numCols == 0) would otherwise produce
+    // a root with rowCount == 0 and silently drop the rows.
+    root.setRowCount(numRows)
+  }
+
+  /**
+   * Copy a Spark `ColumnarBatch` whose columns are not Arrow-backed (e.g.
+   * `On/OffHeapColumnVector` from Spark's vectorized Parquet reader, or a third-party connector's
+   * vectors) into a freshly allocated Arrow `ColumnarBatch` of `CometVector`s.
+   *
+   * The input batch is not consumed or closed; the caller owns the returned batch and must close
+   * it.
+   */
+  def columnarBatchToArrowBatch(
+      batch: ColumnarBatch,
+      arrowSchema: Schema,
+      allocator: BufferAllocator): ColumnarBatch = {
+    val root = VectorSchemaRoot.create(arrowSchema, allocator)
+    // The caller only owns the returned batch, so anything that throws before `rootAsBatch` wraps
+    // the root has to release it here or the allocation leaks.
+    closingRootOnFailure(root) {
+      writeColumns(root, batch, 0, batch.numRows())
+      NativeUtil.rootAsBatch(root)
+    }
+  }
+
+  /**
+   * Run `body`, closing `root` if it throws. On success the returned batch takes ownership of
+   * `root`, so it is deliberately left open.
+   *
+   * A failing `close` is attached as a suppressed exception rather than replacing the original,
+   * following `SparkErrorUtils.tryWithSafeFinally`: releasing an Arrow root can itself throw
+   * (e.g. `IllegalStateException` for outstanding child allocations), and that is the less
+   * informative of the two failures.
+   */
+  private def closingRootOnFailure(root: VectorSchemaRoot)(
+      body: => ColumnarBatch): ColumnarBatch = {
+    try {
+      body
+    } catch {
+      case NonFatal(e) =>
+        try {
+          root.close()
+        } catch {
+          case NonFatal(closeError) => e.addSuppressed(closeError)
+        }
+        throw e
     }
   }
 }
