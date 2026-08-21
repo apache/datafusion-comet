@@ -114,7 +114,7 @@ public class CometTaskMemoryManager {
 
     @Override
     public String toString() {
-      return String.format("NativeMemoryConsumer(id=%)", id);
+      return String.format("NativeMemoryConsumer(id=%d)", id);
     }
   }
 }
