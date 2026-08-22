@@ -18,7 +18,6 @@
 use arrow::array::{Array, ArrayRef, Int32Array, LargeListArray};
 use arrow::buffer::NullBuffer;
 use arrow::compute::kernels::length::length;
-use arrow::compute::{cast_with_options, CastOptions};
 use arrow::datatypes::{DataType, Field};
 use datafusion::common::{exec_err, DataFusionError, Result as DataFusionResult, ScalarValue};
 use datafusion::logical_expr::{
@@ -119,21 +118,14 @@ fn spark_size_array(array: &ArrayRef) -> Result<ArrayRef, DataFusionError> {
 /// behavior for this UDF).
 fn spark_size_list_like(array: &ArrayRef) -> Result<ArrayRef, DataFusionError> {
     let lengths = length(array.as_ref())?;
-    let lengths = match lengths.data_type() {
-        DataType::Int32 => lengths,
-        // Unsafe cast: overflow must error, not become null then get rewritten to -1.
-        DataType::Int64 => cast_with_options(
-            lengths.as_ref(),
-            &DataType::Int32,
-            &CastOptions {
-                safe: false,
-                ..Default::default()
-            },
-        )?,
-        other => {
-            return exec_err!("unexpected type from length kernel: {other:?}");
-        }
-    };
+    // Arrow's `length` returns Int32 for List and builds an Int32Array for
+    // FixedSizeList; LargeList (the only Int64 producer) is routed elsewhere.
+    if !matches!(lengths.data_type(), DataType::Int32) {
+        return exec_err!(
+            "unexpected type from length kernel: {:?}",
+            lengths.data_type()
+        );
+    }
 
     // Fast path for the production shape: `CometSize.convert` wraps size() in a
     // `CASE WHEN isnotnull(child)` that filters null rows out before the THEN
@@ -740,6 +732,31 @@ mod tests {
     }
 
     #[test]
+    fn test_spark_size_large_list_array_no_nulls() {
+        use arrow::array::LargeListArray;
+
+        // Production shape for LargeList: no null buffer, so the offset-diff
+        // fast path in `spark_size_large_list_from_offsets` runs and
+        // `rewrite_nulls_to_minus_one` returns the values buffer untouched.
+        // Mirrors test_spark_size_array_no_nulls for the List path.
+        let value_data = Int32Array::from(vec![1, 2, 3, 4, 5, 6]);
+        let value_offsets = arrow::buffer::OffsetBuffer::new(vec![0i64, 3, 5, 5, 6].into());
+        let field = Arc::new(Field::new("item", DataType::Int32, true));
+        let large_list_array =
+            LargeListArray::try_new(field, value_offsets, Arc::new(value_data), None).unwrap();
+
+        let array_ref: ArrayRef = Arc::new(large_list_array);
+        let result = spark_size_array(&array_ref).unwrap();
+        let result = result.as_any().downcast_ref::<Int32Array>().unwrap();
+
+        assert_eq!(result.null_count(), 0);
+        assert_eq!(result.value(0), 3);
+        assert_eq!(result.value(1), 2);
+        assert_eq!(result.value(2), 0);
+        assert_eq!(result.value(3), 1);
+    }
+
+    #[test]
     fn test_spark_size_sliced_large_list_array() {
         // Same sliced-offsets invariant as the List test, for the LargeList helper
         // that reads `offsets().windows(2)` directly.
@@ -781,13 +798,26 @@ mod tests {
     fn test_spark_size_large_list_length_overflow() {
         // A non-null row whose length is i32::MAX + 1 must error (same contract
         // as the old safe: false Int64→Int32 cast / scalar try_from). Call the
-        // checked helper directly with a valid OffsetBuffer — no invalid ArrayData.
+        // checked helper directly with a valid OffsetBuffer (no invalid ArrayData).
         let offsets = arrow::buffer::OffsetBuffer::new(vec![0i64, (i32::MAX as i64) + 1].into());
         let err = spark_size_large_list_lengths_checked(&offsets, None).unwrap_err();
         assert!(
             err.to_string().contains(SIZE_OVERFLOW_MSG),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn test_spark_size_large_list_checked_span_overflow_rows_fit() {
+        // Overall span > i32::MAX triggers the checked path, but each per-row
+        // length fits: [i32::MAX, 10]. Pins that the checked helper differences
+        // per row rather than rejecting the whole batch on span overflow. This is
+        // why we loop with try_from instead of erroring outright on the span.
+        let offsets = arrow::buffer::OffsetBuffer::new(
+            vec![0i64, i32::MAX as i64, i32::MAX as i64 + 10].into(),
+        );
+        let values = spark_size_large_list_lengths_checked(&offsets, None).unwrap();
+        assert_eq!(values, vec![i32::MAX, 10]);
     }
 
     #[test]
