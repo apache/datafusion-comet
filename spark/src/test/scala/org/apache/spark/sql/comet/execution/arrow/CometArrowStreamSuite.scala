@@ -26,6 +26,7 @@ import org.scalatest.matchers.should.Matchers
 
 import org.apache.arrow.memory.{AllocationListener, RootAllocator}
 import org.apache.arrow.vector.{BaseValueVector, BigIntVector, BitVector, DecimalVector, IntervalMonthDayNanoVector, IntVector, VectorSchemaRoot}
+import org.apache.arrow.vector.complex.StructVector
 import org.apache.arrow.vector.types.pojo.{ArrowType, Field, FieldType, Schema}
 import org.apache.spark.sql.catalyst.expressions.GenericInternalRow
 import org.apache.spark.sql.comet.util.Utils
@@ -62,19 +63,19 @@ class CometArrowStreamSuite extends AnyFunSuite with Matchers {
     Utils.fromArrowField(field) shouldBe CalendarIntervalType
     val root = VectorSchemaRoot.create(new Schema(Seq(field).asJava), allocator)
     try {
-      val expected = new CalendarInterval(14, -3, 1234567L)
+      val expected = new CalendarInterval(14, -3, Long.MaxValue)
       val writer = ArrowWriter.create(root, 2)
       writer.write(new GenericInternalRow(Array[Any](expected)))
       writer.write(new GenericInternalRow(Array[Any](null)))
       writer.finish()
 
-      val arrow = root.getVector(0).asInstanceOf[IntervalMonthDayNanoVector]
-      IntervalMonthDayNanoVector.getMonths(arrow.getDataBuffer, 0) shouldBe expected.months
-      IntervalMonthDayNanoVector.getDays(arrow.getDataBuffer, 0) shouldBe expected.days
-      IntervalMonthDayNanoVector.getNanoseconds(arrow.getDataBuffer, 0) shouldBe
-        expected.microseconds * 1000L
+      val arrow = root.getVector(0).asInstanceOf[StructVector]
+      arrow.getChild("months").asInstanceOf[IntVector].get(0) shouldBe expected.months
+      arrow.getChild("days").asInstanceOf[IntVector].get(0) shouldBe expected.days
+      arrow.getChild("microseconds").asInstanceOf[BigIntVector].get(0) shouldBe
+        expected.microseconds
 
-      val comet = new CometPlainVector(arrow, false)
+      val comet = CometVector.getVector(arrow, null)
       comet.getInterval(0) shouldBe expected
       comet.getInterval(1) shouldBe null
     } finally {

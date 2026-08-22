@@ -48,6 +48,8 @@ import org.apache.comet.shims.CometTypeShim
 import org.apache.comet.vector.CometVector
 
 object Utils extends CometTypeShim with Logging {
+  private val calendarIntervalStructKey = "SPARK::calendarInterval::struct"
+
   def getConfPath(confFileName: String): String = {
     sys.env
       .get(COMET_CONF_DIR_ENV)
@@ -77,6 +79,8 @@ object Utils extends CometTypeShim with Logging {
         val elementField = field.getChildren().get(0)
         val elementType = fromArrowField(elementField)
         ArrayType(elementType, containsNull = elementField.isNullable)
+      case ArrowType.Struct.INSTANCE if isCalendarIntervalStructField(field) =>
+        CalendarIntervalType
       case ArrowType.Struct.INSTANCE =>
         val fields = field.getChildren().asScala.map { child =>
           val dt = fromArrowField(child)
@@ -165,7 +169,9 @@ object Utils extends CometTypeShim with Logging {
       // Spark stores DayTimeIntervalType as microseconds in an int64, matching Arrow
       // Duration(Microsecond) rather than the lossy Interval(DayTime) {days, millis} layout.
       case _: DayTimeIntervalType => new ArrowType.Duration(TimeUnit.MICROSECOND)
-      case CalendarIntervalType => new ArrowType.Interval(IntervalUnit.MONTH_DAY_NANO)
+      case CalendarIntervalType =>
+        throw new UnsupportedOperationException(
+          "CalendarIntervalType requires toArrowField to preserve struct fields and metadata")
       case _ =>
         throw new UnsupportedOperationException(
           s"Unsupported data type: [${dt.getClass.getName}] ${dt.catalogString}")
@@ -205,10 +211,44 @@ object Utils extends CometTypeShim with Logging {
                 .add(MapVector.VALUE_NAME, valueType, nullable = valueContainsNull),
               nullable = false,
               timeZoneId)).asJava)
+      case CalendarIntervalType =>
+        val fieldType = new FieldType(nullable, ArrowType.Struct.INSTANCE, null)
+        val monthsType = new FieldType(
+          false,
+          new ArrowType.Int(32, true),
+          null,
+          Map(calendarIntervalStructKey -> "true").asJava)
+        new Field(
+          name,
+          fieldType,
+          Seq(
+            new Field("months", monthsType, Seq.empty[Field].asJava),
+            new Field(
+              "days",
+              new FieldType(false, new ArrowType.Int(32, true), null),
+              Seq.empty[Field].asJava),
+            new Field(
+              "microseconds",
+              new FieldType(false, new ArrowType.Int(64, true), null),
+              Seq.empty[Field].asJava)).asJava)
       case dataType =>
         val fieldType = new FieldType(nullable, toArrowType(dataType, timeZoneId), null)
         new Field(name, fieldType, Seq.empty[Field].asJava)
     }
+  }
+
+  def isCalendarIntervalStructField(field: Field): Boolean = {
+    val children = field.getChildren
+    def child(index: Int, name: String, bits: Int): Boolean = {
+      val f = children.get(index)
+      f.getName == name && f.getType == new ArrowType.Int(bits, true) && !f.isNullable
+    }
+    field.getType == ArrowType.Struct.INSTANCE &&
+    children.size == 3 &&
+    child(0, "months", 32) &&
+    child(1, "days", 32) &&
+    child(2, "microseconds", 64) &&
+    children.get(0).getMetadata.getOrDefault(calendarIntervalStructKey, "false") == "true"
   }
 
   /**

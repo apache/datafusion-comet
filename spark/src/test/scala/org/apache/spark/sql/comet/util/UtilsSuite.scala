@@ -21,10 +21,17 @@ package org.apache.spark.sql.comet.util
 
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.vectorized.ConstantColumnVector
-import org.apache.spark.sql.types.{IntegerType, StringType, StructField, StructType, TimestampType}
+import org.apache.spark.sql.types.{CalendarIntervalType, IntegerType, StringType, StructField, StructType, TimestampType}
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 
 class UtilsSuite extends CometTestBase {
+
+  test("CalendarIntervalType requires field-level Arrow conversion") {
+    val error = intercept[UnsupportedOperationException] {
+      Utils.toArrowType(CalendarIntervalType, "UTC")
+    }
+    assert(error.getMessage.contains("requires toArrowField"))
+  }
 
   test("serializeBatches preserves row count for a zero-column batch") {
     val numRows = 5

@@ -165,15 +165,8 @@ object CometDatetimeExpressionBenchmark extends CometBenchmarkBase {
             consumeIntervals()
           }
         }
-        benchmark.addCase("Comet (codegen dispatch)") { _ =>
+        benchmark.addCase("Comet") { _ =>
           withSQLConf(cometConfigs.toSeq: _*) {
-            consumeIntervals()
-          }
-        }
-        benchmark.addCase("Comet (native)") { _ =>
-          val configs =
-            cometConfigs ++ Map(CometConf.getExprAllowIncompatConfigKey("MakeInterval") -> "true")
-          withSQLConf(configs.toSeq: _*) {
             consumeIntervals()
           }
         }
