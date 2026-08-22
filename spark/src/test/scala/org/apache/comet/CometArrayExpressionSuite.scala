@@ -890,6 +890,21 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     }
   }
 
+  test("array literal of empty struct falls back instead of crashing planning") {
+    // `array(array(struct()))` constant-folds to a literal whose (doubly-nested) array element
+    // type is an empty struct. `makeListLiteral` has no case for StructType at all (empty or
+    // not) -- letting this reach the literal path throws a bare `scala.MatchError` at plan
+    // time rather than a graceful fallback. See CometLiteral.isListLiteralElementSupported.
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "test.parquet")
+      spark.range(10).write.parquet(path.toString)
+      withTempView("t1") {
+        spark.read.parquet(path.toString).createOrReplaceTempView("t1")
+        checkSparkAnswer(sql("SELECT id, array(array(struct())) FROM t1"))
+      }
+    }
+  }
+
   test("array_reverse") {
     withTempDir { dir =>
       val path = new Path(dir.toURI.toString, "test.parquet")

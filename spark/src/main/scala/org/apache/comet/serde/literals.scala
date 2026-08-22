@@ -24,13 +24,12 @@ import java.lang
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Literal}
 import org.apache.spark.sql.catalyst.util.ArrayData
-import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DateType, DayTimeIntervalType, Decimal, DecimalType, DoubleType, FloatType, IntegerType, LongType, NullType, ShortType, StringType, TimestampNTZType, TimestampType}
+import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DateType, DayTimeIntervalType, Decimal, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, NullType, ShortType, StringType, StructType, TimestampNTZType, TimestampType}
 import org.apache.spark.unsafe.types.UTF8String
 
 import com.google.protobuf.ByteString
 
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
-import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.serde.{CometExpressionSerde, Compatible, ExprOuterClass, LiteralOuterClass, SupportLevel, Unsupported}
 import org.apache.comet.serde.QueryPlanSerde.{isTimeType, serializeDataType, supportedDataType}
 import org.apache.comet.serde.Types.ListLiteral
@@ -40,6 +39,20 @@ object CometLiteral extends CometExpressionSerde[Literal] with Logging {
   override def getUnsupportedReasons(): Seq[String] = Seq(
     "Not all data types are supported for literal values")
 
+  /**
+   * Whether `makeListLiteral` can serialize an array literal whose (possibly nested) element type
+   * is `dt`. It has an explicit case per primitive type and recurses through `ArrayType`, but no
+   * case for `StructType` or `MapType` at all -- passing one through throws a `MatchError` at
+   * plan time. Checking this recursively (rather than only one level of nesting, as the caller
+   * below used to) keeps e.g. `array<array<struct<...>>>` -- empty struct or not -- off the
+   * literal path until `makeListLiteral` can actually encode it.
+   */
+  private def isListLiteralElementSupported(dt: DataType): Boolean = dt match {
+    case a: ArrayType => isListLiteralElementSupported(a.elementType)
+    case _: StructType | _: MapType => false
+    case _ => true
+  }
+
   override def getSupportLevel(expr: Literal): SupportLevel = {
 
     if (supportedDataType(
@@ -48,12 +61,8 @@ object CometLiteral extends CometExpressionSerde[Literal] with Logging {
 
           // Nested literal support for native reader
           // can be tracked https://github.com/apache/datafusion-comet/issues/1937
-          (expr.dataType
-            .isInstanceOf[ArrayType] && (!isComplexType(
-            expr.dataType.asInstanceOf[ArrayType].elementType) || expr.dataType
-            .asInstanceOf[ArrayType]
-            .elementType
-            .isInstanceOf[ArrayType])))) {
+          (expr.dataType.isInstanceOf[ArrayType] &&
+            isListLiteralElementSupported(expr.dataType.asInstanceOf[ArrayType].elementType)))) {
       Compatible(None)
     } else {
       expr.dataType match {
