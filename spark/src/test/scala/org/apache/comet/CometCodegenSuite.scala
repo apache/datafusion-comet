@@ -31,6 +31,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
 
+import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
 import org.apache.comet.codegen.CometBatchKernelCodegen
 import org.apache.comet.codegen.CometBatchKernelCodegen.ArrowColumnSpec
@@ -325,6 +326,122 @@ class CometCodegenSuite
         info
           .generateExtendedInfo(plan)
           .contains("Accelerated expressions: 0 native, 0 codegen dispatch."))
+    }
+  }
+
+  test("replace routes native vs JVM codegen dispatcher based on non-empty literal search") {
+    withTable("t") {
+      sql("CREATE TABLE t (s STRING, search STRING, r STRING) USING parquet")
+      sql("INSERT INTO t VALUES ('hello world', 'world', 'comet'), ('abcabc', 'world', 'comet')")
+
+      withSQLConf(
+        CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true",
+        CometConf.COMET_EXPLAIN_CODEGEN_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_PROJECT_ENABLED.key -> "true",
+        CometConf.COMET_EXTENDED_EXPLAIN_FORMAT.key ->
+          CometConf.COMET_EXTENDED_EXPLAIN_FORMAT_VERBOSE) {
+
+        val dfNative = sql("SELECT replace(s, 'world', 'comet') FROM t")
+        checkSparkAnswerAndOperator(dfNative)
+        val explainNative =
+          new ExtendedExplainInfo().generateExtendedInfo(dfNative.queryExecution.executedPlan)
+        assert(
+          !explainNative.contains("JVM codegen dispatcher: replace"),
+          s"expected native path for non-empty literal search, got:\n$explainNative")
+
+        val dfColReplace = sql("SELECT replace(s, 'world', r) FROM t")
+        checkSparkAnswerAndOperator(dfColReplace)
+        val explainColReplace =
+          new ExtendedExplainInfo().generateExtendedInfo(dfColReplace.queryExecution.executedPlan)
+        assert(
+          !explainColReplace.contains("JVM codegen dispatcher: replace"),
+          s"expected native path for column replacement, got:\n$explainColReplace")
+
+        val dfEmptySearch = sql("SELECT replace(s, '', 'comet') FROM t")
+        checkSparkAnswerAndOperator(dfEmptySearch)
+        val explainEmptySearch =
+          new ExtendedExplainInfo().generateExtendedInfo(
+            dfEmptySearch.queryExecution.executedPlan)
+        assert(
+          explainEmptySearch.contains("JVM codegen dispatcher: replace"),
+          s"expected dispatcher path for empty literal search, got:\n$explainEmptySearch")
+
+        val dfNonLiteralSearch = sql("SELECT replace(s, search, 'comet') FROM t")
+        checkSparkAnswerAndOperator(dfNonLiteralSearch)
+        val explainNonLiteralSearch =
+          new ExtendedExplainInfo().generateExtendedInfo(
+            dfNonLiteralSearch.queryExecution.executedPlan)
+        assert(
+          explainNonLiteralSearch.contains("JVM codegen dispatcher: replace"),
+          s"expected dispatcher path for non-literal search, got:\n$explainNonLiteralSearch")
+
+        if (isSpark40Plus) {
+          val dfCollated =
+            sql("SELECT replace(CAST(s AS STRING COLLATE UTF8_LCASE), 'world', 'comet') FROM t")
+          checkSparkAnswerAndOperator(dfCollated)
+          val explainCollated =
+            new ExtendedExplainInfo().generateExtendedInfo(dfCollated.queryExecution.executedPlan)
+          assert(
+            explainCollated.contains("JVM codegen dispatcher: replace"),
+            s"expected dispatcher path for non-UTF8_BINARY collation, got:\n$explainCollated")
+        }
+      }
+    }
+  }
+
+  test("replace stays on dispatcher for expression-boundary incompatibilities") {
+    withSQLConf(
+      CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true",
+      CometConf.COMET_EXPLAIN_CODEGEN_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_PROJECT_ENABLED.key -> "true",
+      CometConf.COMET_EXTENDED_EXPLAIN_FORMAT.key ->
+        CometConf.COMET_EXTENDED_EXPLAIN_FORMAT_VERBOSE) {
+
+      def assertDispatcher(df: org.apache.spark.sql.DataFrame, clue: String): Unit = {
+        checkSparkAnswerAndOperator(df)
+        val explain =
+          new ExtendedExplainInfo().generateExtendedInfo(df.queryExecution.executedPlan)
+        assert(explain.contains("JVM codegen dispatcher: replace"), s"$clue, got:\n$explain")
+      }
+
+      // Malformed search: CometLiteral would normalize 0xFF to U+FFFD, incorrectly matching
+      // a well-formed U+FFFD in the source.
+      withTable("t") {
+        sql("CREATE TABLE t (s STRING) USING parquet")
+        sql("INSERT INTO t VALUES ('\uFFFD'), ('ok')")
+        assertDispatcher(
+          sql("SELECT replace(s, CAST(X'FF' AS STRING), 'x') FROM t"),
+          "expected dispatcher path for malformed search literal")
+      }
+
+      // Malformed replacement has the same serialization hazard.
+      withTable("t") {
+        sql("CREATE TABLE t (s STRING) USING parquet")
+        sql("INSERT INTO t VALUES ('a'), ('b')")
+        assertDispatcher(
+          sql("SELECT replace(s, 'a', CAST(X'FF' AS STRING)) FROM t"),
+          "expected dispatcher path for malformed replacement literal")
+      }
+
+      // Spark skips replacement evaluation when src is NULL; native evaluates every child.
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+        withTable("t") {
+          sql("CREATE TABLE t (s STRING, n INT) USING parquet")
+          sql("INSERT INTO t VALUES (NULL, 0), ('a', 1)")
+          assertDispatcher(
+            sql("SELECT replace(s, 'a', CAST(1 / n AS STRING)) FROM t"),
+            "expected dispatcher path for throwing replacement expression")
+        }
+      }
+
+      // A 256 KiB scalar replacement overflows Arrow Utf8 offsets when broadcast to 8192 rows.
+      withTable("t") {
+        sql("CREATE TABLE t (s STRING) USING parquet")
+        sql("INSERT INTO t VALUES ('hello')")
+        assertDispatcher(
+          sql("SELECT replace(s, 'notfound', repeat('x', 262144)) FROM t"),
+          "expected dispatcher path for oversized replacement literal")
+      }
     }
   }
 
