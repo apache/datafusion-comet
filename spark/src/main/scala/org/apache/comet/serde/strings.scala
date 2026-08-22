@@ -21,8 +21,10 @@ package org.apache.comet.serde
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Base64, BitLength, Cast, Concat, ConcatWs, Contains, Elt, Empty2Null, EndsWith, Expression, FindInSet, FormatNumber, FormatString, GetJsonObject, InitCap, Left, Length, Levenshtein, Like, Literal, Lower, Mask, OctetLength, Overlay, RegExpExtract, RegExpExtractAll, RegExpInStr, RegExpReplace, Right, RLike, SoundEx, StartsWith, StringLocate, StringLPad, StringRepeat, StringReplace, StringRPad, StringSplit, StringTranslate, Substring, SubstringIndex, ToCharacter, ToNumber, TryToNumber, UnBase64, Upper}
 import org.apache.spark.sql.types.{BinaryType, DataTypes, IntegerType, LongType, StringType}
+import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometConf
+import org.apache.comet.expressions.{CometRegex, RegexFlavor}
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType}
 import org.apache.comet.shims.CometTypeShim
@@ -359,33 +361,62 @@ object CometEndsWith
     with CollationAwareBinaryPredicate[EndsWith]
 
 /**
- * `rlike` runs Spark's own implementation through the codegen dispatcher by default, for
- * byte-exact results. The native (rust) regexp engine is faster but has different semantics from
- * Java regexp, so it is opt-in via `spark.comet.expression.RLike.allowIncompatible`; any case it
- * does not cover (a non-scalar pattern) falls through to the codegen dispatcher via
- * [[CometScalaUDF]].
+ * `rlike` uses a plan-time whitelist ([[org.apache.comet.expressions.CometRegex]]) to decide the
+ * engine. A `UTF8_BINARY` literal pattern that the analyzer proves equivalent to Java regex runs
+ * natively by default. Every other case stays on the JVM codegen dispatcher (Spark's own
+ * `doGenCode` inside the Comet pipeline) unless the user sets
+ * `spark.comet.expression.RLike.allowIncompatible=true`, which forces the native Rust path for
+ * any non-null string literal, including patterns the analyzer cannot prove equivalent. A
+ * non-literal or NULL pattern always stays on the dispatcher. Falls through to Spark when the
+ * dispatcher is disabled.
  */
-object CometRLike extends CometExpressionSerde[RLike] with NativeOptInAvailable {
+object CometRLike
+    extends CometExpressionSerde[RLike]
+    with NativeOptInAvailable
+    with CometTypeShim {
+
+  override def getCompatibleNotes(): Seq[String] =
+    Seq(
+      "When the pattern is a `UTF8_BINARY` literal that uses only constructs the plan-time " +
+        "analyzer proves equivalent to Java regex (ASCII literals, simple character classes, " +
+        "ordinary greedy quantifiers, capturing / non-capturing groups, and alternation), " +
+        "Comet evaluates `rlike` natively by default.")
 
   override def getIncompatibleReasons(): Seq[String] =
     Seq("Uses Rust regexp engine, which has different behavior to Java regexp engine")
 
-  private def nativeApplicable(expr: RLike): Boolean = expr.right match {
-    case Literal(_, DataTypes.StringType) => true
-    case _ => false
+  private def literalPattern(expr: RLike): Option[String] = expr.right match {
+    case Literal(v: UTF8String, _: StringType) => Some(v.toString)
+    case _ => None
   }
 
-  override def getSupportLevel(expr: RLike): SupportLevel =
-    if (!CometConf.isExprAllowIncompat(getExprConfigName(expr)) && nativeApplicable(expr)) {
+  private def hasNonDefaultCollation(expr: RLike): Boolean =
+    hasNonDefaultStringCollation(expr.left.dataType) ||
+      hasNonDefaultStringCollation(expr.right.dataType)
+
+  private def nativeApplicable(expr: RLike): Boolean = literalPattern(expr).isDefined
+
+  private def provablyCompatible(expr: RLike): Boolean =
+    !hasNonDefaultCollation(expr) &&
+      literalPattern(expr).exists { p =>
+        CometRegex.supportLevel(p, RegexFlavor.RLike).isInstanceOf[Compatible]
+      }
+
+  override def getSupportLevel(expr: RLike): SupportLevel = {
+    val allowIncompat = CometConf.isExprAllowIncompat(getExprConfigName(expr))
+    if (provablyCompatible(expr) || allowIncompat) {
+      Compatible()
+    } else if (nativeApplicable(expr)) {
       Compatible(nativeOptIn =
         Some(NativeOptIn(CometConf.getExprAllowIncompatConfigKey(getExprConfigName(expr)))))
     } else {
       Compatible()
     }
+  }
 
   override def convert(expr: RLike, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
-    if (CometConf.isExprAllowIncompat(getExprConfigName(expr)) && nativeApplicable(expr)) {
-      // Native path: the Rust regexp engine has different semantics from Java regexp.
+    val allowIncompat = CometConf.isExprAllowIncompat(getExprConfigName(expr))
+    if (provablyCompatible(expr) || (allowIncompat && nativeApplicable(expr))) {
       return createBinaryExpr(
         expr,
         expr.left,
@@ -394,8 +425,8 @@ object CometRLike extends CometExpressionSerde[RLike] with NativeOptInAvailable 
         binding,
         (builder, binaryExpr) => builder.setRlike(binaryExpr))
     }
-    // Default: route through the codegen dispatcher so Spark's own doGenCode runs inside the Comet
-    // pipeline. Falls back to Spark when the dispatcher is disabled.
+    // Out-of-subset literal, non-literal, NULL pattern, or non-default collation: run Spark's
+    // own doGenCode inside the Comet pipeline. Falls back to Spark when the dispatcher is off.
     CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
   }
 }
