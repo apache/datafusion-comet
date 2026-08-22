@@ -14,7 +14,6 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
-
 use arrow::array::{
     Array, ArrayBuilder, ArrayRef, BufferBuilder, GenericListArray, GenericStringArray,
     GenericStringBuilder, ListArray, NullBufferBuilder, OffsetSizeTrait,
@@ -98,26 +97,49 @@ pub fn spark_split(args: &[ColumnarValue]) -> DataFusionResult<ColumnarValue> {
             };
 
             let s = string.as_ref().unwrap();
-            let regex = Regex::new(pattern_str).map_err(|e| {
-                DataFusionError::Execution(format!(
-                    "Invalid regex pattern '{}': {}",
-                    pattern_str, e
-                ))
-            })?;
 
             let mut str_offsets = BufferBuilder::<i32>::new(8);
             let mut str_values = BufferBuilder::<u8>::new(s.len());
             str_offsets.append(0);
 
             let mut scratch = Vec::new();
-            push_split_parts(
-                s,
-                &regex,
-                limit,
-                &mut str_offsets,
-                &mut str_values,
-                &mut scratch,
-            );
+            if is_regex_literal(pattern_str) {
+                let mut chars = pattern_str.chars();
+                if let (Some(ch), None) = (chars.next(), chars.next()) {
+                    push_split_char(
+                        s,
+                        ch,
+                        limit,
+                        &mut str_offsets,
+                        &mut str_values,
+                        &mut scratch,
+                    );
+                } else {
+                    push_split_literal(
+                        s,
+                        pattern_str,
+                        limit,
+                        &mut str_offsets,
+                        &mut str_values,
+                        &mut scratch,
+                    );
+                }
+            } else {
+                let regex = Regex::new(pattern_str).map_err(|e| {
+                    DataFusionError::Execution(format!(
+                        "Invalid regex pattern '{}': {}",
+                        pattern_str, e
+                    ))
+                })?;
+                push_split_parts(
+                    s,
+                    &regex,
+                    limit,
+                    &mut str_offsets,
+                    &mut str_values,
+                    &mut scratch,
+                );
+            }
 
             let item_offsets_buffer = OffsetBuffer::new(str_offsets.finish().into());
             let item_values_buffer = str_values.finish();
@@ -282,6 +304,50 @@ fn push_split_literal<'a, O: OffsetSizeTrait>(
     }
 }
 
+#[inline]
+fn push_split_char<'a, O: OffsetSizeTrait>(
+    string: &'a str,
+    delimiter: char,
+    limit: i32,
+    offsets: &mut BufferBuilder<O>,
+    values: &mut BufferBuilder<u8>,
+    scratch: &mut Vec<&'a str>,
+) {
+    if limit == 0 {
+        scratch.clear();
+        scratch.extend(string.split(delimiter)); // std::str::split(char)
+        while scratch.last().is_some_and(|s| s.is_empty()) {
+            scratch.pop();
+        }
+        if scratch.is_empty() {
+            append_str("", offsets, values);
+        } else {
+            for &p in scratch.iter() {
+                append_str(p, offsets, values);
+            }
+        }
+    } else if limit > 0 {
+        let cap = (limit - 1) as usize;
+        let mut count = 0;
+        let mut last_end = 0;
+        // match_indices(char) в std работает через быстрый поиск символа
+        for (start, _) in string.match_indices(delimiter) {
+            if count >= cap {
+                break;
+            }
+            append_str(&string[last_end..start], offsets, values);
+            last_end = start + delimiter.len_utf8();
+            count += 1;
+        }
+        append_str(&string[last_end..], offsets, values);
+    } else {
+        // limit < 0
+        for p in string.split(delimiter) {
+            append_str(p, offsets, values);
+        }
+    }
+}
+
 fn split_generic_literal<O: OffsetSizeTrait>(
     string_array: &GenericStringArray<O>,
     pattern: &str,
@@ -300,19 +366,42 @@ fn split_generic_literal<O: OffsetSizeTrait>(
     let mut scratch = Vec::new();
     list_offsets.push(O::usize_as(0));
 
-    for i in 0..len {
-        if !string_array.is_null(i) {
-            let s = string_array.value(i);
-            push_split_literal(
-                s,
-                pattern,
-                limit,
-                &mut str_offsets,
-                &mut str_values,
-                &mut scratch,
-            );
+    let mut chars = pattern.chars();
+    let single_char = match (chars.next(), chars.next()) {
+        (Some(ch), None) => Some(ch),
+        _ => None,
+    };
+
+    if let Some(ch) = single_char {
+        for i in 0..len {
+            if !string_array.is_null(i) {
+                let s = string_array.value(i);
+                push_split_char(
+                    s,
+                    ch,
+                    limit,
+                    &mut str_offsets,
+                    &mut str_values,
+                    &mut scratch,
+                );
+            }
+            list_offsets.push(O::usize_as(str_offsets.len() - 1));
         }
-        list_offsets.push(O::usize_as(str_offsets.len() - 1));
+    } else {
+        for i in 0..len {
+            if !string_array.is_null(i) {
+                let s = string_array.value(i);
+                push_split_literal(
+                    s,
+                    pattern,
+                    limit,
+                    &mut str_offsets,
+                    &mut str_values,
+                    &mut scratch,
+                );
+            }
+            list_offsets.push(O::usize_as(str_offsets.len() - 1));
+        }
     }
 
     let item_offsets_buffer = OffsetBuffer::new(str_offsets.finish().into());
