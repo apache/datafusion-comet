@@ -273,6 +273,21 @@ when the number of columnar-to-row transitions exceeds
 `spark.comet.exec.transitionRevert.maxTransitions` (default `2`). This trades native execution of a small
 subset of operators for eliminating conversion overhead across the stage.
 
+### Experimental: Direct Columnar-to-Row Conversion
+
+When the JVM columnar-to-row operator is in use (`spark.comet.exec.columnarToRow.native.enabled=false`),
+setting `spark.comet.exec.columnarToRow.direct.enabled=true` enables an experimental converter that writes
+values straight from Arrow buffers into Spark's row format without allocating an object per value. This is
+most beneficial for decimal-heavy schemas, where the default conversion allocates a `Decimal` object per
+value (and considerably more for decimals with precision above 18); microbenchmarks show up to 2x faster
+conversion and a large reduction in garbage creation for such schemas. Schemas containing data types the
+converter does not support fall back to the default conversion automatically.
+
+Batches with fewer rows than `spark.comet.exec.columnarToRow.direct.minBatchSize` (default `128`) also fall
+back to the default conversion, since the direct converter's per-batch setup does not pay off on very small
+batches. This optimization is experimental: it only affects the operator's non-codegen paths (including
+broadcast relation builds), and the default conversion remains enabled unless explicitly opted in.
+
 ## Metrics Overhead
 
 Comet exposes rich native operator metrics for observability (see [Metrics](metrics.md)), but they are
