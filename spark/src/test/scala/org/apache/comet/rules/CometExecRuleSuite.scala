@@ -35,6 +35,7 @@ import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
 
 import org.apache.comet.{CometConf, CometExplainInfo}
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark42Plus}
+import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
 /**
@@ -417,6 +418,58 @@ class CometExecRuleSuite extends CometTestBase {
         // mixed execution is unsafe and the partial must also fall back to Spark.
         assert(countOperators(transformedPlan, classOf[HashAggregateExec]) == 2)
         assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 0)
+      }
+    }
+  }
+
+  for (distinct <- Seq(false, true)) {
+    test(
+      s"unsafe aggregate buffers fall back when native shuffle is ineligible (distinct=$distinct)") {
+      withTempView("test_data") {
+        createTestDataFrame.createOrReplaceTempView("test_data")
+        val aggregates = "AVG(CAST(id AS DECIMAL(20, 2)))" +
+          (if (distinct) ", COUNT(DISTINCT name)" else "")
+
+        for (fallback <- Seq("disabled hash partitioning", "prior shuffle fallback", "none")) {
+          withSQLConf(
+            CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+            CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+            CometConf.COMET_SHUFFLE_MODE.key -> "native",
+            CometConf.COMET_SHUFFLE_NATIVE_HASH_PARTITIONING_ENABLED.key ->
+              (fallback != "disabled hash partitioning").toString) {
+            val sparkPlan =
+              createSparkPlan(spark, s"SELECT $aggregates FROM test_data GROUP BY (id % 3)")
+            val aggregateCount = countOperators(sparkPlan, classOf[HashAggregateExec])
+            assert(aggregateCount == (if (distinct) 4 else 2))
+            if (fallback == "prior shuffle fallback") {
+              foreach(sparkPlan) {
+                case shuffle: ShuffleExchangeExec =>
+                  withFallbackReason(shuffle, "prior shuffle fallback")
+                case _ =>
+              }
+            }
+            val transformed = applyCometExecRule(sparkPlan)
+
+            // Shuffle is enabled, but a native-only shuffle can still fall back. The distinct
+            // rewrite also has intermediate PartialMerge and mixed Partial/PartialMerge stages.
+            val nativeExpected = fallback == "none"
+            for (plan <- Seq(transformed, applyCometExecRule(transformed))) {
+              assert(
+                countOperators(plan, classOf[CometHashAggregateExec]) ==
+                  (if (nativeExpected) aggregateCount else 0))
+              assert(
+                countOperators(plan, classOf[HashAggregateExec]) ==
+                  (if (nativeExpected) 0 else aggregateCount))
+            }
+            // AQE reapplies the rule to an exchange without its Final aggregate. The tagged
+            // Partial must remain in Spark in that stage-only pass too.
+            transformed.collect { case shuffle: ShuffleExchangeExec => shuffle }.foreach {
+              shuffle =>
+                val stage = applyCometExecRule(shuffle)
+                assert(countOperators(stage, classOf[CometHashAggregateExec]) == 0)
+            }
+          }
+        }
       }
     }
   }
