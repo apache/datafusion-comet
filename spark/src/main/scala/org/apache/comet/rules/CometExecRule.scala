@@ -32,7 +32,7 @@ import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution._
-import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, BroadcastQueryStageExec, ShuffleQueryStageExec}
+import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, BroadcastQueryStageExec, QueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec}
 import org.apache.spark.sql.execution.command.{DataWritingCommandExec, ExecutedCommandExec}
 import org.apache.spark.sql.execution.datasources.WriteFilesExec
@@ -115,12 +115,91 @@ object CometExecRule {
    */
   val SKIP_COMET_BROADCAST_TAG: org.apache.spark.sql.catalyst.trees.TreeNodeTag[Unit] =
     org.apache.spark.sql.catalyst.trees.TreeNodeTag[Unit]("comet.skipCometBroadcast")
+
+  /**
+   * A bounded set of keys, used for plan-only reporting state. Evicts in LRU order once `limit`
+   * keys are held, so a long-lived driver retains a fixed amount of reporting state. Same
+   * synchronized-`LinkedHashMap` pattern used by `IcebergPlanDataInjector.commonCache`.
+   */
+  private class BoundedKeySet(limit: Int) {
+    private val keys: java.util.Map[String, java.lang.Boolean] =
+      java.util.Collections.synchronizedMap(
+        new java.util.LinkedHashMap[String, java.lang.Boolean](16, 0.75f, true) {
+          override def removeEldestEntry(
+              eldest: java.util.Map.Entry[String, java.lang.Boolean]): Boolean = size() > limit
+        })
+
+    /** Adds `key`, returning true if it was not already present. */
+    def add(key: String): Boolean = keys.put(key, java.lang.Boolean.TRUE) == null
+
+    def contains(key: String): Boolean = keys.containsKey(key)
+  }
+
+  private val PLAN_ONLY_REPORTED_LIMIT = 1024
+
+  /** `executionId:planFingerprint` keys that plan-only mode has already reported. */
+  private val planOnlyReportedPlans = new BoundedKeySet(PLAN_ONLY_REPORTED_LIMIT)
+
+  /** Execution IDs whose plan-only report came from the query-stage-prep rule. */
+  private val planOnlyPrepReportedIds = new BoundedKeySet(PLAN_ONLY_REPORTED_LIMIT)
+
+  /**
+   * Whether plan-only mode should report `plan`, recording that it did so.
+   *
+   * Spark applies this rule many times during one SQL execution, and only some of those
+   * applications correspond to a plan the user is asking about:
+   *
+   *   - Each scalar subquery and DPP subquery is prepared as its own top-level plan, and that
+   *     happens *before* the outer plan reaches the conversion rules. Keying the report on the
+   *     execution ID alone therefore let a nested subquery consume the slot and suppressed the
+   *     outer plan, which is the plan being evaluated. Keying on the execution ID *and* the plan
+   *     gives the outer plan its own report and each separately prepared subquery theirs.
+   *   - Under AQE the rule also runs once per query stage (as a columnar rule) and again on every
+   *     re-optimization (as a query-stage-prep rule). Those are re-planning of a plan already
+   *     reported, so a `plan` containing query stages is skipped, and once the query-stage-prep
+   *     rule has reported an execution the columnar applications for it stay quiet.
+   *
+   * @param queryStagePrep
+   *   whether the calling rule instance is registered as a query-stage-prep rule.
+   */
+  private[comet] def shouldReportPlanOnly(
+      executionId: Option[String],
+      plan: SparkPlan,
+      queryStagePrep: Boolean): Boolean = {
+    executionId match {
+      case None =>
+        // No execution ID means the plan is being built outside an action (`df.explain`, or
+        // reading `queryExecution.executedPlan` directly). AQE creates no stages in that case, so
+        // there is nothing to dedupe against.
+        true
+      case Some(id) =>
+        if (plan.exists(_.isInstanceOf[QueryStageExec])) {
+          // An AQE stage plan or a re-optimized plan: a re-plan of what we already reported.
+          false
+        } else {
+          if (queryStagePrep) {
+            planOnlyPrepReportedIds.add(id)
+          } else if (planOnlyPrepReportedIds.contains(id)) {
+            return false
+          }
+          // The plan's structural hash identifies it: node tags are not part of it, so the same
+          // plan applied twice keys the same and is reported once.
+          planOnlyReportedPlans.add(s"$id:${plan.hashCode()}")
+        }
+    }
+  }
 }
 
 /**
  * Spark physical optimizer rule for replacing Spark operators with Comet operators.
+ *
+ * @param queryStagePrep
+ *   true for the instance registered with `injectQueryStagePrepRule`, which under AQE sees the
+ *   whole initial plan, and false for the one registered as a columnar rule, which under AQE sees
+ *   one query stage at a time. Only plan-only reporting reads this; see
+ *   [[CometExecRule.shouldReportPlanOnly]].
  */
-case class CometExecRule(session: SparkSession)
+case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
     extends Rule[SparkPlan]
     with ShimSubqueryBroadcast {
 
@@ -572,7 +651,7 @@ case class CometExecRule(session: SparkSession)
   }
 
   override def apply(plan: SparkPlan): SparkPlan = {
-    val newPlan = _apply(plan)
+    val newPlan = _apply(plan, forPreview = false)
     if (showTransformations && !newPlan.fastEquals(plan)) {
       logInfo(s"""
            |=== Applying Rule $ruleName ===
@@ -582,7 +661,31 @@ case class CometExecRule(session: SparkSession)
     newPlan
   }
 
-  private def _apply(plan: SparkPlan): SparkPlan = {
+  /**
+   * Build the Comet plan we would have executed and log it. Called from `_apply` in plan-only
+   * mode; the built plan is discarded. Passes `forPreview = true` through the nested calls so
+   * both rules run their normal transforms instead of short-circuiting.
+   *
+   * Conversion is only the first half of Comet planning. Normally Spark then inserts the columnar
+   * transitions and runs Comet's post-columnar rules (see
+   * `CometSparkSessionExtensions.CometExecColumnar.postColumnarTransitions`), which can revert
+   * whole stages back to Spark and drop redundant transitions. Those steps run here too, so the
+   * report describes the plan that would really have executed and counts the transitions that
+   * would really have been there, rather than the pre-transition conversion result.
+   *
+   * `RevertNativeForTransitionHeavyStages` is applied with `applyToAllStages` because the preview
+   * holds the whole plan at once, whereas under AQE Spark hands that rule one stage at a time.
+   */
+  private def reportPlanOnlyCoverage(plan: SparkPlan): Unit = {
+    val converted = _apply(CometScanRule(session)._apply(plan), forPreview = true)
+    val withTransitions =
+      ApplyColumnarRulesAndInsertTransitions(Seq.empty, outputsColumnar = false).apply(converted)
+    val reverted = RevertNativeForTransitionHeavyStages(session).applyToAllStages(withTransitions)
+    val preview = EliminateRedundantTransitions(session).apply(reverted)
+    logWarning(s"[Comet plan-only]\n${new ExtendedExplainInfo().generateExtendedInfo(preview)}")
+  }
+
+  private def _apply(plan: SparkPlan, forPreview: Boolean): SparkPlan = {
     // We shouldn't transform Spark query plan if Comet is not loaded.
     if (!isCometLoaded(conf)) return plan
 
@@ -598,6 +701,20 @@ case class CometExecRule(session: SparkSession)
         plan
       }
     } else {
+      // Plan-only mode: build the Comet plan Comet would have executed, log it, and return
+      // the original plan unchanged. `CometScanRule` also short-circuits in this mode, so
+      // `plan` is still pure Spark; `reportPlanOnlyCoverage` rebuilds a scan-wrapped copy for
+      // the preview. Placed before `normalizePlan`/`RewriteJoin`/`tagUnsafePartialAggregates`
+      // so their work is not wasted on the discarded outer pass.
+      if (!forPreview && CometConf.COMET_EXPLAIN_PLAN_ONLY_ENABLED.get()) {
+        val executionId = Option(
+          session.sparkContext.getLocalProperty(SQLExecution.EXECUTION_ID_KEY))
+        if (CometExecRule.shouldReportPlanOnly(executionId, plan, queryStagePrep)) {
+          reportPlanOnlyCoverage(plan)
+        }
+        return plan
+      }
+
       val normalizedPlan = normalizePlan(plan)
 
       val planWithJoinRewritten = if (CometConf.COMET_FORCE_SHJ.get()) {

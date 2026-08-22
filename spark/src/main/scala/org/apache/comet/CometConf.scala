@@ -688,6 +688,18 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_EXPLAIN_PLAN_ONLY_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.explain.planOnly.enabled")
+      .category(CATEGORY_EXEC_EXPLAIN)
+      .doc("When enabled, Comet builds the Comet plan it would have executed and logs it to " +
+        "the driver log, then discards it and lets Spark execute the query. Use this to " +
+        "evaluate how much of a workload Comet would accelerate without changing execution. " +
+        "The estimate is Scala-side only; native planning failures are not surfaced, so the " +
+        "acceleration percentage can be optimistic. Requires `spark.comet.exec.enabled=true`. " +
+        "Disabled by default.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_STRICT_FALLBACK_REASONS: ConfigEntry[Boolean] =
     conf("spark.comet.explain.fallback.strict.enabled")
       .category(CATEGORY_TESTING)
