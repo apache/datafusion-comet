@@ -38,6 +38,11 @@ use datafusion_datasource::TableSchema;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+/// Footer/page-index prefetch size for metadata reads, same as DataFusion's default. Shared
+/// with the Delta DV path so its cache-populating footer fetch issues the identical read the
+/// scan would.
+pub(crate) const METADATA_SIZE_HINT: usize = 512 * 1024;
+
 /// Initializes a DataSourceExec plan with a ParquetSource for Comet's native Parquet scan.
 ///
 ///   `required_schema`: Schema to be projected by the scan.
@@ -138,7 +143,7 @@ pub(crate) fn init_datasource_exec(
 
     let mut parquet_source = ParquetSource::new(table_schema)
         .with_table_parquet_options(table_parquet_options)
-        .with_metadata_size_hint(512 * 1024); // Same as DataFusion's default
+        .with_metadata_size_hint(METADATA_SIZE_HINT);
 
     if encryption_enabled {
         parquet_source = parquet_source.with_encryption_factory(

@@ -1,0 +1,130 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+name: Delta Contrib Tests
+
+# Reusable: invoked by ci.yml. Triggering, path filters, and concurrency
+# live in the umbrella workflow.
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+env:
+  RUST_VERSION: stable
+  RUST_BACKTRACE: 1
+  # Force GNU ld on Linux: rust-lld cannot resolve -ljvm against the Zulu JDK
+  # layout installed by setup-java (same rationale as pr_build_linux.yml).
+  RUSTFLAGS: "-Clink-arg=-fuse-ld=bfd"
+
+jobs:
+
+  contrib-delta:
+    name: Delta contrib (Spark ${{ matrix.profile.spark }})
+    runs-on: ubuntu-24.04
+    container:
+      image: amd64/rust
+    strategy:
+      matrix:
+        profile:
+          - spark: "3.5"
+            java_version: "17"
+          - spark: "4.0"
+            java_version: "17"
+          - spark: "4.1"
+            java_version: "17"
+          # spark-4.2 is intentionally absent: the contrib profile is dormant
+          # until a Delta release supports Spark 4.2.
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Rust & Java toolchain
+        uses: ./.github/actions/setup-builder
+        with:
+          rust-version: ${{ env.RUST_VERSION }}
+          jdk-version: ${{ matrix.profile.java_version }}
+
+      - name: Cache Maven dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.m2/repository
+            /root/.m2/repository
+          key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}-delta-${{ matrix.profile.spark }}
+          restore-keys: |
+            ${{ runner.os }}-java-maven-
+
+      - name: Build native library with the delta feature
+        run: |
+          cd native
+          cargo build --features delta
+
+      - name: Install Comet core jars
+        run: |
+          ./mvnw -B -q -Pspark-${{ matrix.profile.spark }} install -pl common,spark -DskipTests -Dspotless.check.skip=true
+
+      - name: Run Delta contrib test suites
+        run: |
+          SPARK_HOME=$(pwd) COMET_CONF_DIR=$(pwd)/conf ./mvnw -B -Pspark-${{ matrix.profile.spark }},delta test -pl contrib/delta-spark
+
+  # `delta` is in the default feature set, so no regular job builds without it;
+  # this keeps the feature-off build and its "built without the delta feature"
+  # error arm (planner.rs cfg(not(feature = "delta"))) from becoming dead code.
+  feature-off-build:
+    name: Feature-off native build
+    runs-on: ubuntu-24.04
+    container:
+      image: amd64/rust
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Rust & Java toolchain
+        uses: ./.github/actions/setup-builder
+        with:
+          rust-version: ${{ env.RUST_VERSION }}
+          jdk-version: "17"
+
+      - name: Test the delta-off error path
+        run: |
+          cd native
+          # The test binary links JNI; libjvm.so must be resolvable at load
+          # time (same as .github/actions/rust-test).
+          export LD_LIBRARY_PATH=${JAVA_HOME}/lib/server:${LD_LIBRARY_PATH}
+          cargo test -p datafusion-comet --no-default-features --features hdfs-opendal delta_scan
+
+  # The contrib's dev tooling (benchmark and regression-harness scripts) is
+  # Python; keep it import-clean across currently supported interpreters.
+  dev-scripts-python:
+    name: Delta dev scripts (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Byte-compile contrib dev scripts
+        run: |
+          python -m compileall -q contrib/delta-spark/dev

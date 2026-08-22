@@ -76,6 +76,11 @@ message Operator {
     // zero runtime cost.
     ContribScan contrib_scan = 200;
   }
+
+  // 119 was the JVM-planned Delta scan's oneof slot before it moved into the
+  // contrib_scan envelope; never reuse it with different wire semantics.
+  reserved 119;
+  reserved "delta_scan";
 }
 
 // A `google.protobuf.Any`-shaped envelope for out-of-tree contrib scan messages. Hand-rolled
@@ -182,6 +187,66 @@ message NativeScan {
 
   // Single partition's file list (injected at execution time)
   SparkFilePartition file_partition = 2;
+}
+
+// Delta-table-wide data shared by all partitions (sent once at planning).
+// Produced by the contrib Delta module; the native handler is compiled only
+// when the `delta` Cargo feature is enabled.
+message DeltaSparkScanCommon {
+  // Table root URL, used to resolve relative deletion-vector paths.
+  string table_root = 1;
+  // Column mapping mode: "none", "name", or "id".
+  string column_mapping_mode = 2;
+  // Key for split-mode plan-data injection. Derived from (table root, snapshot
+  // version, scan hash) so two scans of the same table in one plan (self-join,
+  // MERGE) don't collide -- same lesson as IcebergScan's
+  // (metadata_location, scan_hash_code) key.
+  string source_key = 3;
+}
+
+// Descriptor for a Delta deletion vector, derived from the Delta protocol's
+// DeletionVectorDescriptor. The JVM side (which has delta-spark on the
+// classpath) resolves UUID-relative paths to absolute URLs and Z85-decodes
+// inline bitmaps, so the native side needs neither codec. Executors fetch
+// on-disk bitmaps with a single ranged object-store read; only this small
+// descriptor crosses JNI.
+message DeltaSparkDvDescriptor {
+  // Original storage form, for diagnostics: "u" (UUID-relative), "i"
+  // (inline), "p" (absolute path).
+  string storage_type = 1;
+  // Absolute URL of the DV file (on-disk forms). At descriptor.offset the
+  // file holds [i32 BE size][bitmap data][i32 BE CRC32-of-data].
+  optional string absolute_path = 2;
+  // The bitmap data (magic + RoaringBitmapArray), already unframed and
+  // Z85-decoded (inline form).
+  optional bytes inline_data = 3;
+  // Byte offset of the size-prefixed bitmap within the DV file.
+  optional int32 offset = 4;
+  // Length of the bitmap data (excluding the size/CRC framing).
+  int32 size_in_bytes = 5;
+  // Number of deleted rows encoded in the bitmap.
+  int64 cardinality = 6;
+}
+
+// A data file plus its optional deletion vector.
+message DeltaSparkPartitionedFile {
+  SparkPartitionedFile file = 1;
+  optional DeltaSparkDvDescriptor dv = 2;
+}
+
+// Single partition's Delta file list (injected at execution time).
+// Field name matches SparkFilePartition.partitioned_file for consistency.
+message DeltaSparkFilePartition {
+  repeated DeltaSparkPartitionedFile partitioned_file = 1;
+}
+
+message DeltaSparkScan {
+  // Reuses the parquet scan's common data (schemas, filters, projections,
+  // object-store options, reader flags) -- the Delta read path delegates to
+  // the same native parquet machinery as NativeScan.
+  NativeScanCommon common = 1;
+  DeltaSparkScanCommon delta_common = 2;
+  DeltaSparkFilePartition file_partition = 3;
 }
 
 message CsvScan {
