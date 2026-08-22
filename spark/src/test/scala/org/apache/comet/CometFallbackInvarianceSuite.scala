@@ -53,17 +53,23 @@ import org.apache.spark.sql.internal.SQLConf
 class CometFallbackInvarianceSuite extends CometFuzzTestBase {
 
   /**
-   * Expressions Comet documents as not guaranteed to match Spark exactly. A divergence here is
-   * reported as EXCUSED: logged for the record, never counted as a pass.
+   * Whether a value divergence for `expr` is excusable under the configuration this suite is
+   * actually running with.
+   *
+   * Derived rather than listed. A static set of "incompatible" names goes stale silently and in
+   * the dangerous direction: it converts real failures into EXCUSED. `RLike` was the concrete
+   * case -- `CometRLike.getSupportLevel` returns `Compatible` on both branches, so the default
+   * path routes through Spark's own codegen and is required to match, yet a hardcoded exemption
+   * still waved opposite Boolean results through as green.
+   *
+   * Comet only evaluates an expression in a mode it documents as possibly-divergent when
+   * `spark.comet.expression.<Name>.allowIncompatible` is set. With it unset, the expression is
+   * either rated `Compatible` and must match, or rated `Incompatible` and never runs natively at
+   * all -- in both cases a divergence is a defect, not an exemption. Reading the live config is
+   * therefore the whole rule, and it self-updates as support levels change.
    */
-  private val incompatibleRated: Set[String] =
-    Set(
-      "DateFormatClass",
-      "FromUTCTimestamp",
-      "GetJsonObject",
-      "RLike",
-      "StringTranslate",
-      "TruncTimestamp")
+  private def divergenceExcusable(expr: String): Boolean =
+    CometConf.isExprAllowIncompat(expr)
 
   private sealed trait Outcome
   private case class Rows(rows: Seq[String]) extends Outcome
@@ -169,7 +175,7 @@ class CometFallbackInvarianceSuite extends CometFuzzTestBase {
             bump("pass")
           } else {
             val i = a.zip(b).indexWhere { case (x, y) => x != y }
-            if (incompatibleRated.contains(expr)) {
+            if (divergenceExcusable(expr)) {
               bump("excused")
               findings += s"EXCUSED [$label] $expr row=$i default=[${a(i)}] forced=[${b(i)}]"
             } else {
