@@ -1689,6 +1689,16 @@ trait CometBaseAggregate {
       return None
     }
 
+    if (groupingExpressions.exists(expr => SupportLevel.containsEmptyStruct(expr.dataType))) {
+      // DataFusion's `GroupValuesRows::emit` dictionary-encodes struct-typed group keys via
+      // `StructArray::try_new`, which errors for a zero-field struct -- see
+      // SupportLevel.containsEmptyStruct.
+      withFallbackReason(
+        aggregate,
+        "Grouping on a schema containing an empty struct is not supported")
+      return None
+    }
+
     if (groupingExpressions.exists(expr => isStringCollationType(expr.dataType))) {
       // Collation-aware grouping requires collation-aware hashing/equality; Comet only
       // compares raw bytes, which would put rows that compare equal under the collation

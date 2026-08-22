@@ -107,6 +107,44 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("collect_set declines an empty-struct input") {
+    // DataFusion's DistinctArrayAggAccumulator (backing SparkCollectSet) calls
+    // ScalarValue::compacted() per non-null input, hitting the same zero-field
+    // StructArray::new panic as First/Last -- see SupportLevel.containsEmptyStruct.
+    withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+      import scala.jdk.CollectionConverters._
+
+      import org.apache.spark.sql.functions.collect_set
+      val schema = StructType(
+        Seq(StructField("id", DataTypes.IntegerType), StructField("marker", StructType(Nil))))
+      val data = (0 until 3).map(i => Row(i, Row())).asJava
+      val df = spark.createDataFrame(data, schema)
+      checkSparkAnswer(df.agg(collect_set(col("marker"))))
+    }
+  }
+
+  test("grouping on an empty struct falls back to Spark") {
+    // DataFusion's `GroupValuesRows::emit` dictionary-encodes struct-typed group keys via
+    // `StructArray::try_new`, which errors for a zero-field struct -- see
+    // SupportLevel.containsEmptyStruct.
+    withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+      import scala.jdk.CollectionConverters._
+
+      val schema = StructType(
+        Seq(StructField("id", DataTypes.IntegerType), StructField("marker", StructType(Nil))))
+      val data = (0 until 3).map(i => Row(i, Row())).asJava
+      val df = spark.createDataFrame(data, schema)
+      df.createOrReplaceTempView("empty_struct_group")
+
+      checkSparkAnswerAndFallbackReason(
+        "SELECT marker, COUNT(id) FROM empty_struct_group GROUP BY marker",
+        "Grouping on a schema containing an empty struct is not supported")
+      checkSparkAnswerAndFallbackReason(
+        "SELECT DISTINCT marker FROM empty_struct_group",
+        "Grouping on a schema containing an empty struct is not supported")
+    }
+  }
+
   test("min/max floating point with negative zero") {
     val r = new Random(42)
     val schema = StructType(

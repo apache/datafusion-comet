@@ -419,7 +419,10 @@ object CometShuffleExchangeExec
       case dt if isTimeType(dt) =>
         true
       case StructType(fields) =>
-        fields.nonEmpty && fields.forall(f => supportedSerializableDataType(f.dataType))
+        // A struct's `fields` can be empty -- e.g. Iceberg's `_partition` metadata column is
+        // exactly that on an unpartitioned table. Arrow represents it as zero child arrays plus
+        // its own validity bitmap, which native shuffle serializes like any other struct.
+        fields.forall(f => supportedSerializableDataType(f.dataType))
       case ArrayType(elementType, _) =>
         supportedSerializableDataType(elementType)
       case MapType(keyType, valueType, _) =>
@@ -544,10 +547,12 @@ object CometShuffleExchangeExec
       case dt if isTimeType(dt) =>
         true
       case StructType(fields) =>
-        fields.nonEmpty && fields.forall(f => supportedSerializableDataType(f.dataType)) &&
+        // A struct's `fields` can be empty -- e.g. Iceberg's `_partition` metadata column is
+        // exactly that on an unpartitioned table. The distinct-name check below holds
+        // vacuously when there are no fields to compare.
+        fields.forall(f => supportedSerializableDataType(f.dataType)) &&
         // Java Arrow stream reader cannot work on duplicate field name
-        fields.map(f => f.name).distinct.length == fields.length &&
-        fields.nonEmpty
+        fields.map(f => f.name).distinct.length == fields.length
       case ArrayType(elementType, _) =>
         supportedSerializableDataType(elementType)
       case MapType(keyType, valueType, _) =>

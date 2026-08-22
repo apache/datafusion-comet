@@ -250,7 +250,9 @@ object CometJsonToStructs extends CometCodegenDispatch[JsonToStructs] with Nativ
 
   private def isSupportedSchema(dt: DataType): Boolean = dt match {
     case StructType(fields) =>
-      fields.nonEmpty && fields.forall(f => isSupportedSchema(f.dataType))
+      // A struct's `fields` can be empty -- e.g. `from_json(col, 'struct<>')`'s target schema.
+      // With no fields to check, this holds vacuously.
+      fields.forall(f => isSupportedSchema(f.dataType))
     case DataTypes.IntegerType | DataTypes.LongType | DataTypes.FloatType | DataTypes.DoubleType |
         DataTypes.BooleanType | DataTypes.StringType =>
       true

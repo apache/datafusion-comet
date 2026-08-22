@@ -34,7 +34,7 @@ import com.google.common.base.Objects
 
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
-import org.apache.comet.serde.{AggSerde, CometOperatorSerde, LiteralOuterClass, OperatorOuterClass}
+import org.apache.comet.serde.{AggSerde, CometOperatorSerde, LiteralOuterClass, OperatorOuterClass, SupportLevel}
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto, scalarFunctionExprToProto, serializeDataType}
 
@@ -261,6 +261,16 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
           // https://github.com/apache/datafusion-comet/issues/4268
           withFallbackReason(windowExpr, "Lag default value must be a literal")
           (None, None, false)
+        case lag: Lag if SupportLevel.containsEmptyStruct(lag.default.dataType) =>
+          // An omitted or plain-NULL default is untyped (`NullType`) and unaffected. Only an
+          // explicitly typed default -- e.g. `CAST(NULL AS ARRAY<STRUCT<>>)` -- carries the
+          // empty struct into DataFusion's cast of the default to the input type, which errors
+          // on a zero-field struct even when source and target agree ("no field name overlap")
+          // -- see SupportLevel.containsEmptyStruct.
+          withFallbackReason(
+            windowExpr,
+            "LAG with an empty-struct-typed default value is not supported")
+          (None, None, false)
         case lag: Lag =>
           val inputExpr = exprToProto(lag.input, output)
           val offsetExpr = exprToProto(lag.inputOffset, output)
@@ -270,6 +280,12 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
         case lead: Lead if !lead.default.isInstanceOf[Literal] =>
           // https://github.com/apache/datafusion-comet/issues/4268
           withFallbackReason(windowExpr, "Lead default value must be a literal")
+          (None, None, false)
+        case lead: Lead if SupportLevel.containsEmptyStruct(lead.default.dataType) =>
+          // Same DataFusion cast issue as the LAG case above.
+          withFallbackReason(
+            windowExpr,
+            "LEAD with an empty-struct-typed default value is not supported")
           (None, None, false)
         case lead: Lead =>
           val inputExpr = exprToProto(lead.input, output)

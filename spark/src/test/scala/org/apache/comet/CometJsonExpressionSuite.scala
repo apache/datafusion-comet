@@ -166,6 +166,51 @@ class CometJsonExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
     }
   }
 
+  test("from_json - empty struct schema") {
+    // A zero-field target schema is a legitimate value: no fields to parse into, but a real
+    // (possibly null) struct row per input, same as any other from_json result. Blank input
+    // (empty or whitespace only) is NULL per Spark's own contract (SPARK-19543), distinct from
+    // non-blank malformed input, which PERMISSIVE mode turns into a non-null struct.
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withParquetTable(
+        Seq(
+          (1, "{}"), // valid JSON object
+          (2, ""), // blank input -> NULL
+          (3, "   "), // JSON-whitespace-only input (spaces) -> NULL
+          (4, "not json"), // malformed, non-blank -> non-null struct
+          (5, null), // SQL NULL input -> NULL
+          // Spark's blank check is Jackson's tokenizer finding no first token, which skips
+          // only JSON whitespace (RFC 8259: space/tab/CR/LF). Neither of the next two chars
+          // qualifies, so both must fail to tokenize -> non-null struct, not NULL.
+          (6, "\u00A0"), // non-breaking space -> not JSON whitespace, non-null struct
+          (7, "\u000B") // vertical tab -> ASCII control, not JSON whitespace, non-null struct
+        ),
+        "tbl",
+        withDictionary = dictionaryEnabled) {
+
+        checkSparkAnswerAndOperator("SELECT _1, from_json(_2, 'struct<>') FROM tbl ORDER BY _1")
+        checkSparkAnswerAndOperator(
+          "SELECT _1, from_json(_2, 'struct<>') IS NULL FROM tbl ORDER BY _1")
+      }
+    }
+  }
+
+  test("from_json - nested empty struct schema") {
+    // The zero-field struct can also appear nested inside a non-empty outer struct, which
+    // builds the result through a different code path (the nested-field builder, not the
+    // top-level one) -- both need to construct the Arrow array correctly.
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withParquetTable(
+        (0 until 20).map(i => (i, """{"outer":{}}""")),
+        "tbl",
+        withDictionary = dictionaryEnabled) {
+
+        checkSparkAnswerAndOperator("SELECT from_json(_2, 'outer struct<>') FROM tbl")
+        checkSparkAnswerAndOperator("SELECT from_json(_2, 'outer struct<>').outer FROM tbl")
+      }
+    }
+  }
+
   test("from_json - nested struct") {
     Seq(true, false).foreach { dictionaryEnabled =>
       withParquetTable(
