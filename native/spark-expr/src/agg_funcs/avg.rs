@@ -146,8 +146,11 @@ pub struct AvgAccumulator {
 
 impl Accumulator for AvgAccumulator {
     fn state(&mut self) -> Result<Vec<ScalarValue>> {
+        // Spark's final AVG adds partial sums without coalescing nulls. Empty partials
+        // must therefore carry a zero sum, even when update_batch was never called.
+        let sum = if self.count == 0 { Some(0.0) } else { self.sum };
         Ok(vec![
-            ScalarValue::Float64(self.sum),
+            ScalarValue::Float64(sum),
             ScalarValue::from(self.count),
         ])
     }
@@ -343,5 +346,52 @@ where
     fn size(&self) -> usize {
         self.counts.capacity() * std::mem::size_of::<i64>()
             + self.sums.capacity() * std::mem::size_of::<T>()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow::array::Float64Array;
+
+    #[test]
+    fn empty_partial_state_matches_spark() -> Result<()> {
+        for values in [None, Some(vec![]), Some(vec![None, None])] {
+            let mut acc = AvgAccumulator::default();
+            if let Some(values) = values {
+                acc.update_batch(&[Arc::new(Float64Array::from(values))])?;
+            }
+            assert_eq!(
+                acc.state()?,
+                vec![ScalarValue::Float64(Some(0.0)), ScalarValue::Int64(Some(0))]
+            );
+            assert_eq!(acc.evaluate()?, ScalarValue::Float64(None));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn merge_empty_partial_states() -> Result<()> {
+        for nonempty in [false, true] {
+            let mut final_acc = AvgAccumulator::default();
+            let values = nonempty.then(|| vec![Some(2.0), Some(4.0)]);
+            for values in [None, values, Some(vec![None])] {
+                let mut partial = AvgAccumulator::default();
+                if let Some(values) = values {
+                    partial.update_batch(&[Arc::new(Float64Array::from(values))])?;
+                }
+                let state = partial
+                    .state()?
+                    .into_iter()
+                    .map(|value| value.to_array_of_size(1))
+                    .collect::<Result<Vec<_>>>()?;
+                final_acc.merge_batch(&state)?;
+            }
+            assert_eq!(
+                final_acc.evaluate()?,
+                ScalarValue::Float64(nonempty.then_some(3.0))
+            );
+        }
+        Ok(())
     }
 }
