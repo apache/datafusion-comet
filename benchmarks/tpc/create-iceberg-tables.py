@@ -119,6 +119,8 @@ def main(benchmark: str, parquet_path: str, warehouse: str, catalog: str, databa
 
     for table in table_names:
         parquet_table_path = f"{parquet_path}/{table}.parquet"
+        if not os.path.exists(parquet_table_path):
+            parquet_table_path = f"{parquet_path}/{table}"
         iceberg_table = f"{catalog}.{database}.{table}"
 
         print(f"Converting {parquet_table_path} -> {iceberg_table}")
