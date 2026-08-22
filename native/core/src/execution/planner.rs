@@ -94,6 +94,9 @@ use iceberg::expr::Bind;
 use crate::execution::operators::ExecutionError::GeneralError;
 use crate::execution::shuffle::{CometPartitioning, CompressionCodec};
 use crate::execution::spark_plan::SparkPlan;
+use crate::parquet::objectstore::blob_alias::{
+    normalize_object_store_url, normalize_object_store_url_string,
+};
 use crate::parquet::parquet_support::prepare_object_store_with_configs;
 use datafusion::common::scalar::ScalarStructBuilder;
 use datafusion::common::{
@@ -152,7 +155,6 @@ use num::{BigInt, ToPrimitive};
 use object_store::path::Path;
 use std::cmp::max;
 use std::{collections::HashMap, sync::Arc};
-use url::Url;
 
 // For clippy error on type_complexity.
 type PhyAggResult = Result<Vec<AggregateFunctionExpr>, ExecutionError>;
@@ -397,6 +399,10 @@ impl PhysicalPlanner {
         partition: &SparkFilePartition,
     ) -> Result<Vec<PartitionedFile>, ExecutionError> {
         let mut files = Vec::with_capacity(partition.partitioned_file.len());
+        // Empty object-store configs are fine here: the only thing `normalize_object_store_url`
+        // consults them for is `is_hdfs_scheme`, and blob/s3a rewriting is the only shape
+        // we care about for the object-store key. HDFS-routed schemes are handled elsewhere.
+        let empty_configs: HashMap<String, String> = HashMap::new();
         partition.partitioned_file.iter().try_for_each(|file| {
             assert!(file.start + file.length <= file.file_size);
 
@@ -407,10 +413,12 @@ impl PhysicalPlanner {
                 file.start + file.length,
             );
 
-            // Spark sends the path over as URL-encoded, parse that first.
-            let url =
-                Url::parse(file.file_path.as_ref()).map_err(|e| GeneralError(e.to_string()))?;
-            // Convert that to a Path object to use in the PartitionedFile.
+            // Apply the same blob/s3a scheme rewrite and three-slash normalization the object
+            // store construction uses, so the object-store key we hand DataFusion is stripped of
+            // the bucket prefix. Skipping this here means paths like `blob:///bucket/key` end up
+            // with `bucket/key` as the object key, and path-style S3 GETs double the bucket
+            // (`<endpoint>/bucket/bucket/key`).
+            let url = normalize_object_store_url(&file.file_path, &empty_configs)?;
             let path = Path::from_url_path(url.path()).map_err(|e| GeneralError(e.to_string()))?;
             partitioned_file.object_meta.location = path;
 
@@ -1761,7 +1769,13 @@ impl PhysicalPlanner {
                     .iter()
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect();
-                let metadata_location = common.metadata_location.clone();
+                // Normalize blob/s3a aliases (including Java's `blob:/bucket/key` single-slash
+                // form that Iceberg manifests store) to canonical `s3://bucket/key`. Without
+                // this, storage_factory_for's `contains("://")` check falls back to LocalFs and
+                // iceberg-storage-opendal's fs branch strips one char with `&path[1..]`,
+                // producing `lob:/...` errors.
+                let metadata_location =
+                    normalize_object_store_url_string(&common.metadata_location)?;
                 let catalog_name = common.catalog_name.clone();
                 let tasks = parse_file_scan_tasks_from_common(common, &scan.file_scan_tasks)?;
                 let data_file_concurrency_limit = common.data_file_concurrency_limit as usize;
@@ -3956,7 +3970,8 @@ fn parse_file_scan_tasks_from_common(
             };
 
             Ok(iceberg::scan::FileScanTaskDeleteFile {
-                file_path: del.file_path.clone(),
+                // Normalize blob/s3a aliases so iceberg-rust routes through S3, not LocalFs.
+                file_path: normalize_object_store_url_string(&del.file_path)?,
                 file_type,
                 // Not serialized; filled in by IcebergScanExec::fill_delete_file_sizes.
                 file_size_in_bytes: 0,
@@ -4177,7 +4192,8 @@ fn parse_file_scan_tasks_from_common(
 
             Ok(iceberg::scan::FileScanTask {
                 file_size_in_bytes: proto_task.file_size_in_bytes,
-                data_file_path: proto_task.data_file_path.clone(),
+                // Normalize blob/s3a aliases so iceberg-rust routes through S3, not LocalFs.
+                data_file_path: normalize_object_store_url_string(&proto_task.data_file_path)?,
                 start: proto_task.start,
                 length: proto_task.length,
                 record_count: proto_task.record_count,

@@ -16,4 +16,5 @@
 // under the License.
 
 pub mod azure;
+pub mod blob_alias;
 pub mod s3;

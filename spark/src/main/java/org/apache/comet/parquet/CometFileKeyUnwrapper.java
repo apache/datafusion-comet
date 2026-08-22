@@ -103,21 +103,27 @@ public class CometFileKeyUnwrapper {
 
   /**
    * Normalizes S3 URI schemes to a canonical form. S3 can be accessed via multiple schemes (s3://,
-   * s3a://, s3n://) that refer to the same logical filesystem. This method ensures consistent cache
-   * lookups regardless of which scheme is used.
+   * s3a://, s3n://, blob://) that refer to the same logical filesystem. This method ensures
+   * consistent cache lookups regardless of which scheme is used. The put and get sides must agree,
+   * because the JVM store side is called with the user-facing scheme (e.g. blob://) while the
+   * native side JNIs back with the scheme after `prepare_object_store_with_configs` has already
+   * rewritten aliases to s3://.
    *
    * @param filePath The file path that may contain an S3 URI
    * @return The file path with normalized S3 scheme (s3a://)
    */
   private String normalizeS3Scheme(final String filePath) {
-    // Normalize s3:// and s3n:// to s3a:// for consistent cache lookups
-    // This handles the case where ObjectStoreUrl uses s3:// but Spark uses s3a://
+    // Normalize s3://, s3n://, and blob:// to s3a:// for consistent cache lookups
+    // This handles the case where ObjectStoreUrl uses s3:// but Spark uses s3a:// or blob://
     String s3Prefix = "s3://";
     String s3nPrefix = "s3n://";
+    String blobPrefix = "blob://";
     if (filePath.startsWith(s3Prefix)) {
       return "s3a://" + filePath.substring(s3Prefix.length());
     } else if (filePath.startsWith(s3nPrefix)) {
       return "s3a://" + filePath.substring(s3nPrefix.length());
+    } else if (filePath.startsWith(blobPrefix)) {
+      return "s3a://" + filePath.substring(blobPrefix.length());
     }
     return filePath;
   }
