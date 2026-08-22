@@ -14,10 +14,9 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
-
 use arrow::array::{
-    Array, ArrayBuilder, ArrayRef, GenericListArray, GenericStringArray, GenericStringBuilder,
-    ListArray, NullBufferBuilder, OffsetSizeTrait,
+    Array, ArrayBuilder, ArrayRef, BufferBuilder, GenericListArray, GenericStringArray,
+    GenericStringBuilder, ListArray, NullBufferBuilder, OffsetSizeTrait,
 };
 use arrow::buffer::OffsetBuffer;
 use arrow::datatypes::{DataType, Field};
@@ -97,9 +96,63 @@ pub fn spark_split(args: &[ColumnarValue]) -> DataFusionResult<ColumnarValue> {
                 }
             };
 
-            let result = split_string(string.as_ref().unwrap(), pattern_str, limit)?;
-            let string_array = GenericStringArray::<i32>::from(result);
-            let list_array = create_list_array(Arc::new(string_array));
+            let s = string.as_ref().unwrap();
+
+            let mut str_offsets = BufferBuilder::<i32>::new(8);
+            let mut str_values = BufferBuilder::<u8>::new(s.len());
+            str_offsets.append(0);
+
+            let mut scratch = Vec::new();
+            if is_regex_literal(pattern_str) {
+                let mut chars = pattern_str.chars();
+                if let (Some(ch), None) = (chars.next(), chars.next()) {
+                    push_split_char(
+                        s,
+                        ch,
+                        limit,
+                        &mut str_offsets,
+                        &mut str_values,
+                        &mut scratch,
+                    );
+                } else {
+                    push_split_literal(
+                        s,
+                        pattern_str,
+                        limit,
+                        &mut str_offsets,
+                        &mut str_values,
+                        &mut scratch,
+                    );
+                }
+            } else {
+                let regex = Regex::new(pattern_str).map_err(|e| {
+                    DataFusionError::Execution(format!(
+                        "Invalid regex pattern '{}': {}",
+                        pattern_str, e
+                    ))
+                })?;
+                push_split_parts(
+                    s,
+                    &regex,
+                    limit,
+                    &mut str_offsets,
+                    &mut str_values,
+                    &mut scratch,
+                );
+            }
+
+            let item_offsets_buffer = OffsetBuffer::new(str_offsets.finish().into());
+            let item_values_buffer = str_values.finish();
+
+            let string_array_values = unsafe {
+                GenericStringArray::<i32>::new_unchecked(
+                    item_offsets_buffer,
+                    item_values_buffer,
+                    None,
+                )
+            };
+
+            let list_array = create_list_array(Arc::new(string_array_values));
 
             Ok(ColumnarValue::Scalar(ScalarValue::List(Arc::new(
                 list_array,
@@ -160,9 +213,37 @@ pub fn spark_split_sql(args: &[ColumnarValue]) -> DataFusionResult<ColumnarValue
                 _ => return exec_err!("split_sql delimiter must be a string"),
             };
 
-            let result = split_sql_string(string.as_ref().unwrap(), delimiter);
-            let string_array = GenericStringArray::<i32>::from(result);
-            let list_array = create_list_array(Arc::new(string_array));
+            let string = string.clone().unwrap();
+            let mut str_offsets = BufferBuilder::<i32>::new(8);
+            let mut str_values = BufferBuilder::<u8>::new(string.len());
+            str_offsets.append(0);
+
+            if delimiter.is_empty() {
+                for ch in string.chars() {
+                    append_str(
+                        ch.encode_utf8(&mut [0; 4]),
+                        &mut str_offsets,
+                        &mut str_values,
+                    );
+                }
+            } else {
+                for p in string.split(delimiter) {
+                    append_str(p, &mut str_offsets, &mut str_values);
+                }
+            }
+
+            let item_offsets_buffer = OffsetBuffer::new(str_offsets.finish().into());
+            let item_values_buffer = str_values.finish();
+
+            let string_array_values = unsafe {
+                GenericStringArray::<i32>::new_unchecked(
+                    item_offsets_buffer,
+                    item_values_buffer,
+                    None,
+                )
+            };
+
+            let list_array = create_list_array(Arc::new(string_array_values));
 
             Ok(ColumnarValue::Scalar(ScalarValue::List(Arc::new(
                 list_array,
@@ -172,22 +253,214 @@ pub fn spark_split_sql(args: &[ColumnarValue]) -> DataFusionResult<ColumnarValue
     }
 }
 
-fn split_array(
-    string_array: &dyn arrow::array::Array,
+fn is_regex_literal(pattern: &str) -> bool {
+    !pattern.chars().any(|c| {
+        matches!(
+            c,
+            '.' | '^' | '$' | '*' | '+' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '|' | '\\'
+        )
+    })
+}
+
+#[inline]
+fn push_split_literal<'a, O: OffsetSizeTrait>(
+    string: &'a str,
+    delimiter: &str,
+    limit: i32,
+    offsets: &mut BufferBuilder<O>,
+    values: &mut BufferBuilder<u8>,
+    scratch: &mut Vec<&'a str>,
+) {
+    if limit == 0 {
+        scratch.clear();
+        scratch.extend(string.split(delimiter));
+        while scratch.last().is_some_and(|s| s.is_empty()) {
+            scratch.pop();
+        }
+        if scratch.is_empty() {
+            append_str("", offsets, values);
+        } else {
+            for &p in scratch.iter() {
+                append_str(p, offsets, values);
+            }
+        }
+    } else if limit > 0 {
+        let cap = (limit - 1) as usize;
+        let mut count = 0;
+        let mut last_end = 0;
+        for (start, _) in string.match_indices(delimiter) {
+            if count >= cap {
+                break;
+            }
+            append_str(&string[last_end..start], offsets, values);
+            last_end = start + delimiter.len();
+            count += 1;
+        }
+        append_str(&string[last_end..], offsets, values);
+    } else {
+        for p in string.split(delimiter) {
+            append_str(p, offsets, values);
+        }
+    }
+}
+
+#[inline]
+fn push_split_char<'a, O: OffsetSizeTrait>(
+    string: &'a str,
+    delimiter: char,
+    limit: i32,
+    offsets: &mut BufferBuilder<O>,
+    values: &mut BufferBuilder<u8>,
+    scratch: &mut Vec<&'a str>,
+) {
+    if limit == 0 {
+        scratch.clear();
+        scratch.extend(string.split(delimiter));
+        while scratch.last().is_some_and(|s| s.is_empty()) {
+            scratch.pop();
+        }
+        if scratch.is_empty() {
+            append_str("", offsets, values);
+        } else {
+            for &p in scratch.iter() {
+                append_str(p, offsets, values);
+            }
+        }
+    } else if limit > 0 {
+        let cap = (limit - 1) as usize;
+        let mut count = 0;
+        let mut last_end = 0;
+        for (start, _) in string.match_indices(delimiter) {
+            if count >= cap {
+                break;
+            }
+            append_str(&string[last_end..start], offsets, values);
+            last_end = start + delimiter.len_utf8();
+            count += 1;
+        }
+        append_str(&string[last_end..], offsets, values);
+    } else {
+        // limit < 0
+        for p in string.split(delimiter) {
+            append_str(p, offsets, values);
+        }
+    }
+}
+
+fn split_generic_literal<O: OffsetSizeTrait>(
+    string_array: &GenericStringArray<O>,
     pattern: &str,
     limit: i32,
 ) -> DataFusionResult<ColumnarValue> {
-    // Compile regex once for the entire array
-    let regex = Regex::new(pattern).map_err(|e| {
-        DataFusionError::Execution(format!("Invalid regex pattern '{}': {}", pattern, e))
-    })?;
+    let len = string_array.len();
+    let mut list_offsets: Vec<O> = Vec::with_capacity(len + 1);
 
+    let estimated_items = (len * 4).max(16);
+    let bytes_capacity = string_array.value_data().len();
+
+    let mut str_offsets = BufferBuilder::<O>::new(estimated_items + 1);
+    let mut str_values = BufferBuilder::<u8>::new(bytes_capacity);
+    str_offsets.append(O::usize_as(0));
+
+    let mut scratch = Vec::new();
+    list_offsets.push(O::usize_as(0));
+
+    let mut chars = pattern.chars();
+    let single_char = match (chars.next(), chars.next()) {
+        (Some(ch), None) => Some(ch),
+        _ => None,
+    };
+
+    if let Some(ch) = single_char {
+        for i in 0..len {
+            if !string_array.is_null(i) {
+                let s = string_array.value(i);
+                push_split_char(
+                    s,
+                    ch,
+                    limit,
+                    &mut str_offsets,
+                    &mut str_values,
+                    &mut scratch,
+                );
+            }
+            list_offsets.push(O::usize_as(str_offsets.len() - 1));
+        }
+    } else {
+        for i in 0..len {
+            if !string_array.is_null(i) {
+                let s = string_array.value(i);
+                push_split_literal(
+                    s,
+                    pattern,
+                    limit,
+                    &mut str_offsets,
+                    &mut str_values,
+                    &mut scratch,
+                );
+            }
+            list_offsets.push(O::usize_as(str_offsets.len() - 1));
+        }
+    }
+
+    let item_offsets_buffer = OffsetBuffer::new(str_offsets.finish().into());
+    let item_values_buffer = str_values.finish();
+
+    let string_array_values = unsafe {
+        GenericStringArray::<O>::new_unchecked(item_offsets_buffer, item_values_buffer, None)
+    };
+    let values_array = Arc::new(string_array_values) as ArrayRef;
+
+    let item_type = if O::IS_LARGE {
+        DataType::LargeUtf8
+    } else {
+        DataType::Utf8
+    };
+    let field = Arc::new(Field::new("item", item_type, false));
+    let list_array = GenericListArray::<O>::new(
+        field,
+        OffsetBuffer::new(list_offsets.into()),
+        values_array,
+        string_array.nulls().cloned(),
+    );
+
+    Ok(ColumnarValue::Array(Arc::new(list_array)))
+}
+
+fn split_array(
+    string_array: &dyn Array,
+    pattern: &str,
+    limit: i32,
+) -> DataFusionResult<ColumnarValue> {
+    let is_literal = is_regex_literal(pattern);
     match string_array.data_type() {
         DataType::Utf8 => {
-            split_generic::<i32>(as_generic_string_array::<i32>(string_array)?, &regex, limit)
+            let string_array = as_generic_string_array::<i32>(string_array)?;
+            if is_literal {
+                split_generic_literal::<i32>(string_array, pattern, limit)
+            } else {
+                let regex = Regex::new(pattern).map_err(|e| {
+                    DataFusionError::Execution(format!(
+                        "Invalid regex pattern '{}': {}",
+                        pattern, e
+                    ))
+                })?;
+                split_generic::<i32>(string_array, &regex, limit)
+            }
         }
         DataType::LargeUtf8 => {
-            split_generic::<i64>(as_generic_string_array::<i64>(string_array)?, &regex, limit)
+            let string_array = as_generic_string_array::<i64>(string_array)?;
+            if is_literal {
+                split_generic_literal::<i64>(string_array, pattern, limit)
+            } else {
+                let regex = Regex::new(pattern).map_err(|e| {
+                    DataFusionError::Execution(format!(
+                        "Invalid regex pattern '{}': {}",
+                        pattern, e
+                    ))
+                })?;
+                split_generic::<i64>(string_array, &regex, limit)
+            }
         }
         _ => exec_err!(
             "split expects Utf8 or LargeUtf8 string array, got {:?}",
@@ -285,22 +558,41 @@ fn split_generic<O: OffsetSizeTrait>(
     limit: i32,
 ) -> DataFusionResult<ColumnarValue> {
     let len = string_array.len();
-    let mut offsets: Vec<O> = Vec::with_capacity(len + 1);
-    let mut values_builder = GenericStringBuilder::<O>::new();
-    offsets.push(O::usize_as(0));
+    let mut list_offsets: Vec<O> = Vec::with_capacity(len + 1);
 
-    // Bulk-NULL: output null mask equals input's, so reuse it instead of
-    // tracking per-row in a NullBufferBuilder. Null rows contribute no parts
-    // (offset does not advance) and the cloned NullBuffer marks them.
+    let estimated_items = (len * 4).max(16);
+    let bytes_capacity = string_array.value_data().len();
+
+    let mut str_offsets = BufferBuilder::<O>::new(estimated_items + 1);
+    let mut str_values = BufferBuilder::<u8>::new(bytes_capacity);
+    str_offsets.append(O::usize_as(0));
+
+    let mut scratch = Vec::new();
+    list_offsets.push(O::usize_as(0));
+
     for i in 0..len {
         if !string_array.is_null(i) {
             let s = string_array.value(i);
-            push_split_parts(s, regex, limit, &mut values_builder);
+            push_split_parts(
+                s,
+                regex,
+                limit,
+                &mut str_offsets,
+                &mut str_values,
+                &mut scratch,
+            );
         }
-        offsets.push(O::usize_as(values_builder.len()));
+        list_offsets.push(O::usize_as(str_offsets.len() - 1));
     }
 
-    let values_array = Arc::new(values_builder.finish()) as ArrayRef;
+    let item_offsets_buffer = OffsetBuffer::new(str_offsets.finish().into());
+    let item_values_buffer = str_values.finish();
+
+    let string_array_values = unsafe {
+        GenericStringArray::<O>::new_unchecked(item_offsets_buffer, item_values_buffer, None)
+    };
+    let values_array = Arc::new(string_array_values) as ArrayRef;
+
     let item_type = if O::IS_LARGE {
         DataType::LargeUtf8
     } else {
@@ -309,7 +601,7 @@ fn split_generic<O: OffsetSizeTrait>(
     let field = Arc::new(Field::new("item", item_type, false));
     let list_array = GenericListArray::<O>::new(
         field,
-        OffsetBuffer::new(offsets.into()),
+        OffsetBuffer::new(list_offsets.into()),
         values_array,
         string_array.nulls().cloned(),
     );
@@ -323,7 +615,12 @@ fn split_sql_generic_scalar<O: OffsetSizeTrait>(
 ) -> DataFusionResult<ColumnarValue> {
     let len = string_array.len();
     let mut offsets: Vec<O> = Vec::with_capacity(len + 1);
-    let mut values_builder = GenericStringBuilder::<O>::new();
+
+    let estimated_items = (len * 4).max(16);
+    let bytes_capacity = string_array.value_data().len();
+    let mut values_builder =
+        GenericStringBuilder::<O>::with_capacity(estimated_items, bytes_capacity);
+
     offsets.push(O::usize_as(0));
 
     for i in 0..len {
@@ -356,7 +653,12 @@ fn split_sql_generic_scalar_array<O: OffsetSizeTrait, D: OffsetSizeTrait>(
 ) -> DataFusionResult<ColumnarValue> {
     let len = delimiter_array.len();
     let mut offsets: Vec<O> = Vec::with_capacity(len + 1);
-    let mut values_builder = GenericStringBuilder::<O>::new();
+
+    let estimated_items = (len * 4).max(16);
+    let bytes_capacity = string.len() * len;
+    let mut values_builder =
+        GenericStringBuilder::<O>::with_capacity(estimated_items, bytes_capacity);
+
     let mut nulls = NullBufferBuilder::new(len);
     offsets.push(O::usize_as(0));
 
@@ -393,7 +695,12 @@ fn split_sql_generic_array<O: OffsetSizeTrait, D: OffsetSizeTrait>(
 ) -> DataFusionResult<ColumnarValue> {
     let len = string_array.len();
     let mut offsets: Vec<O> = Vec::with_capacity(len + 1);
-    let mut values_builder = GenericStringBuilder::<O>::new();
+
+    let estimated_items = (len * 4).max(16);
+    let bytes_capacity = string_array.value_data().len();
+    let mut values_builder =
+        GenericStringBuilder::<O>::with_capacity(estimated_items, bytes_capacity);
+
     let mut nulls = NullBufferBuilder::new(len);
     offsets.push(O::usize_as(0));
 
@@ -428,45 +735,52 @@ fn split_sql_generic_array<O: OffsetSizeTrait, D: OffsetSizeTrait>(
     Ok(ColumnarValue::Array(Arc::new(list_array)))
 }
 
-/// Push the splits of `string` into `builder`. Avoids materializing an
-/// intermediate `Vec<String>` — appends each `&str` slice from the regex
-/// iterator directly (the builder copies into its own buffer).
-fn push_split_parts<O: OffsetSizeTrait>(
-    string: &str,
+#[inline]
+fn append_str<O: OffsetSizeTrait>(
+    s: &str,
+    offsets: &mut BufferBuilder<O>,
+    values: &mut BufferBuilder<u8>,
+) {
+    values.append_slice(s.as_bytes());
+    offsets.append(O::usize_as(values.len()));
+}
+
+#[inline]
+fn push_split_parts<'a, O: OffsetSizeTrait>(
+    string: &'a str,
     regex: &Regex,
     limit: i32,
-    builder: &mut GenericStringBuilder<O>,
+    offsets: &mut BufferBuilder<O>,
+    values: &mut BufferBuilder<u8>,
+    scratch: &mut Vec<&'a str>,
 ) {
     if limit == 0 {
-        // limit = 0: split all, drop trailing empties. Need to know the end
-        // before pushing, so collect borrowed slices first (no string copies).
-        let mut parts: Vec<&str> = regex.split(string).collect();
-        while parts.last().is_some_and(|s| s.is_empty()) {
-            parts.pop();
+        scratch.clear();
+        scratch.extend(regex.split(string));
+        while scratch.last().is_some_and(|s| s.is_empty()) {
+            scratch.pop();
         }
-        if parts.is_empty() {
-            builder.append_value("");
+        if scratch.is_empty() {
+            append_str("", offsets, values);
         } else {
-            for p in parts {
-                builder.append_value(p);
+            for &p in scratch.iter() {
+                append_str(p, offsets, values);
             }
         }
     } else if limit > 0 {
-        // limit > 0: at most limit-1 splits.
         let mut last_end = 0;
         let cap = (limit - 1) as usize;
         for (count, mat) in regex.find_iter(string).enumerate() {
             if count >= cap {
                 break;
             }
-            builder.append_value(&string[last_end..mat.start()]);
+            append_str(&string[last_end..mat.start()], offsets, values);
             last_end = mat.end();
         }
-        builder.append_value(&string[last_end..]);
+        append_str(&string[last_end..], offsets, values);
     } else {
-        // limit < 0: split all, keep trailing empties.
         for p in regex.split(string) {
-            builder.append_value(p);
+            append_str(p, offsets, values);
         }
     }
 }
@@ -482,56 +796,6 @@ fn push_split_sql_parts<O: OffsetSizeTrait>(
         for p in string.split(delimiter) {
             builder.append_value(p);
         }
-    }
-}
-
-fn split_string(string: &str, pattern: &str, limit: i32) -> DataFusionResult<Vec<String>> {
-    let regex = Regex::new(pattern).map_err(|e| {
-        DataFusionError::Execution(format!("Invalid regex pattern '{}': {}", pattern, e))
-    })?;
-
-    Ok(split_with_regex(string, &regex, limit))
-}
-
-fn split_with_regex(string: &str, regex: &Regex, limit: i32) -> Vec<String> {
-    if limit == 0 {
-        // limit = 0: split as many times as possible, discard trailing empty strings
-        let mut parts: Vec<String> = regex.split(string).map(|s| s.to_string()).collect();
-        // Remove trailing empty strings
-        while parts.last().is_some_and(|s| s.is_empty()) {
-            parts.pop();
-        }
-        if parts.is_empty() {
-            vec!["".to_string()]
-        } else {
-            parts
-        }
-    } else if limit > 0 {
-        // limit > 0: at most limit-1 splits (array length <= limit)
-        let mut parts: Vec<String> = Vec::new();
-        let mut last_end = 0;
-
-        for (count, mat) in regex.find_iter(string).enumerate() {
-            if count >= (limit - 1) as usize {
-                break;
-            }
-            parts.push(string[last_end..mat.start()].to_string());
-            last_end = mat.end();
-        }
-        // Add the remaining string
-        parts.push(string[last_end..].to_string());
-        parts
-    } else {
-        // limit < 0: split as many times as possible, keep trailing empty strings
-        regex.split(string).map(|s| s.to_string()).collect()
-    }
-}
-
-fn split_sql_string(string: &str, delimiter: &str) -> Vec<String> {
-    if delimiter.is_empty() {
-        vec![string.to_string()]
-    } else {
-        string.split(delimiter).map(|s| s.to_string()).collect()
     }
 }
 
@@ -616,30 +880,6 @@ mod tests {
     }
 
     #[test]
-    fn test_split_regex() {
-        let parts = split_string("foo123bar456baz", r"\d+", -1).unwrap();
-        assert_eq!(parts, vec!["foo", "bar", "baz"]);
-    }
-
-    #[test]
-    fn test_split_limit_positive() {
-        let parts = split_string("a,b,c,d,e", ",", 3).unwrap();
-        assert_eq!(parts, vec!["a", "b", "c,d,e"]);
-    }
-
-    #[test]
-    fn test_split_limit_zero() {
-        let parts = split_string("a,b,c,,", ",", 0).unwrap();
-        assert_eq!(parts, vec!["a", "b", "c"]);
-    }
-
-    #[test]
-    fn test_split_limit_negative() {
-        let parts = split_string("a,b,c,,", ",", -1).unwrap();
-        assert_eq!(parts, vec!["a", "b", "c", "", ""]);
-    }
-
-    #[test]
     fn test_split_with_nulls() {
         // Test that NULL inputs produce NULL outputs (not empty arrays)
         let string_array = Arc::new(StringArray::from(vec![
@@ -667,31 +907,6 @@ mod tests {
             }
             _ => panic!("Expected Array result"),
         }
-    }
-
-    #[test]
-    fn test_split_empty_string() {
-        // Test that empty string input produces array with single empty string
-        let parts = split_string("", ",", -1).unwrap();
-        assert_eq!(parts, vec![""]);
-    }
-
-    #[test]
-    fn test_split_sql_literal_delimiter() {
-        let parts = split_sql_string("a.b.", ".");
-        assert_eq!(parts, vec!["a", "b", ""]);
-    }
-
-    #[test]
-    fn test_split_sql_empty_delimiter() {
-        let parts = split_sql_string("abc", "");
-        assert_eq!(parts, vec!["abc"]);
-    }
-
-    #[test]
-    fn test_split_sql_keeps_regex_chars_literal() {
-        let parts = split_sql_string("a.b.c", ".");
-        assert_eq!(parts, vec!["a", "b", "c"]);
     }
 
     #[test]
