@@ -1031,7 +1031,8 @@ object CometScanRule extends Logging {
    * early-fallback optimization, and a build without a working native library can't run Comet's
    * native scan anyway, so declining here would only over-restrict.
    */
-  private[rules] def isNativelyReadableScheme(uri: URI): Boolean = {
+  // private[comet] (not [rules]) so contrib scan extensions can apply the same gate.
+  private[comet] def isNativelyReadableScheme(uri: URI): Boolean = {
     val scheme = uri.getScheme
     if (scheme == null) return true
     schemeSupportCache

@@ -46,6 +46,10 @@ if __name__ == "__main__":
 
         root = Path(".")
         for path in root.rglob("*Suite.scala"):
+            # contrib suites run via their own module-level workflows
+            # (e.g. delta_contrib_test.yml), not the main PR build matrix
+            if path.parts[0] == "contrib":
+                continue
             class_name = file_to_class_name(path)
             if class_name:
                 if "Shim" in class_name:
