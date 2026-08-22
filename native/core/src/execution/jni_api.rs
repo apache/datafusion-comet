@@ -114,6 +114,7 @@ use crate::execution::spark_config::{
     COMET_TRACING_ENABLED, SPARK_EXECUTOR_CORES,
 };
 use crate::parquet::encryption_support::{CometEncryptionFactory, ENCRYPTION_FACTORY_ID};
+use crate::parquet::parquet_support::CometObjectStoreRegistry;
 use datafusion_comet_proto::spark_operator::operator::OpStruct;
 use log::info;
 use std::sync::OnceLock;
@@ -574,7 +575,9 @@ fn prepare_datafusion_session_context(
     let disk_manager = DiskManagerBuilder::default()
         .with_mode(DiskManagerMode::Directories(paths))
         .with_max_temp_directory_size(max_temp_directory_size);
-    let mut rt_config = RuntimeEnvBuilder::new().with_disk_manager_builder(disk_manager);
+    let mut rt_config = RuntimeEnvBuilder::new()
+        .with_disk_manager_builder(disk_manager)
+        .with_object_store_registry(Arc::new(CometObjectStoreRegistry::default()));
     rt_config = rt_config.with_memory_pool(memory_pool);
 
     let mut session_config = SessionConfig::new()
