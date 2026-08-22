@@ -46,6 +46,7 @@
 //! Filed upstream as apache/datafusion#23978. Revert this once the opener merges its deferred
 //! page-index load back into `FileMetadataCache` instead of bypassing it.
 
+use async_trait::async_trait;
 use bytes::Bytes;
 use datafusion::common::Result as DFResult;
 use datafusion::datasource::physical_plan::parquet::metadata::DFParquetMetadata;
@@ -53,29 +54,235 @@ use datafusion::datasource::physical_plan::parquet::{
     ParquetFileMetrics, ParquetFileReaderFactory,
 };
 use datafusion::execution::cache::cache_manager::FileMetadataCache;
-use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
+use datafusion::physical_plan::metrics::{
+    Count, ExecutionPlanMetricsSet, MetricBuilder, MetricCategory, MetricType,
+};
 use datafusion_datasource::PartitionedFile;
 use futures::future::BoxFuture;
-use futures::FutureExt;
-use object_store::ObjectStore;
+use futures::{FutureExt, StreamExt, TryStreamExt};
+use object_store::path::Path;
+use object_store::{
+    CopyOptions, GetOptions, GetRange, GetResult, GetResultPayload, ListResult, MultipartUpload,
+    ObjectMeta, ObjectStore, PutMultipartOptions, PutOptions, PutPayload, PutResult, RenameOptions,
+    Result as ObjectStoreResult,
+};
 use parquet::arrow::arrow_reader::ArrowReaderOptions;
 use parquet::arrow::async_reader::{AsyncFileReader, ParquetObjectReader};
 use parquet::file::metadata::{PageIndexPolicy, ParquetMetaData};
-use std::fmt::Debug;
+use std::fmt::{Debug, Display, Formatter};
 use std::ops::Range;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+
+/// Whether the reader's storage API represents a local file or a non-local object store.
+///
+/// The source metrics intentionally describe the API boundary, not network wire bytes. A remote
+/// backend can coalesce ranges, retry requests, or serve bytes from a cache below ObjectStore,
+/// none of which this reader can observe without backend-specific hooks.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum ScanIoSource {
+    ObjectStore,
+    Local,
+}
+
+/// Scan I/O metrics at the boundaries this reader can observe without guessing.
+///
+/// requested is the sum of byte ranges requested by the Parquet reader or metadata loader.
+/// returned is the length of successfully returned buffers at the same boundary. Metadata
+/// includes footer prefetches, footer decode follow-up reads, and page-index ranges; DataFusion
+/// does not identify those subranges separately, so we report them together instead of claiming
+/// unsupported footer-versus-page-index precision.
+///
+/// scan_io_object_store metrics count non-file storage API bytes and scan_io_local metrics count
+/// file bytes. Parsed metadata cache entries do not have a meaningful raw-byte size, so cache
+/// metrics report successful cache-eligible loads that did or did not require storage I/O rather
+/// than inventing cache-byte counts.
+#[derive(Debug, Clone)]
+struct ScanIoMetrics {
+    bytes_requested: Count,
+    bytes_returned: Count,
+    data_bytes_requested: Count,
+    data_bytes_returned: Count,
+    metadata_bytes_requested: Count,
+    metadata_bytes_returned: Count,
+    object_store_bytes_requested: Count,
+    object_store_bytes_returned: Count,
+    local_bytes_requested: Count,
+    local_bytes_returned: Count,
+    metadata_cache_hits: Count,
+    metadata_cache_misses: Count,
+    source: ScanIoSource,
+}
+
+impl ScanIoMetrics {
+    fn new(
+        partition: usize,
+        filename: &str,
+        metrics: &ExecutionPlanMetricsSet,
+        source: ScanIoSource,
+    ) -> Self {
+        Self {
+            bytes_requested: byte_counter(metrics, partition, filename, "scan_io_bytes_requested"),
+            bytes_returned: byte_counter(metrics, partition, filename, "scan_io_bytes_returned"),
+            data_bytes_requested: byte_counter(
+                metrics,
+                partition,
+                filename,
+                "scan_io_data_bytes_requested",
+            ),
+            data_bytes_returned: byte_counter(
+                metrics,
+                partition,
+                filename,
+                "scan_io_data_bytes_returned",
+            ),
+            metadata_bytes_requested: byte_counter(
+                metrics,
+                partition,
+                filename,
+                "scan_io_metadata_bytes_requested",
+            ),
+            metadata_bytes_returned: byte_counter(
+                metrics,
+                partition,
+                filename,
+                "scan_io_metadata_bytes_returned",
+            ),
+            object_store_bytes_requested: byte_counter(
+                metrics,
+                partition,
+                filename,
+                "scan_io_object_store_bytes_requested",
+            ),
+            object_store_bytes_returned: byte_counter(
+                metrics,
+                partition,
+                filename,
+                "scan_io_object_store_bytes_returned",
+            ),
+            local_bytes_requested: byte_counter(
+                metrics,
+                partition,
+                filename,
+                "scan_io_local_bytes_requested",
+            ),
+            local_bytes_returned: byte_counter(
+                metrics,
+                partition,
+                filename,
+                "scan_io_local_bytes_returned",
+            ),
+            metadata_cache_hits: count_counter(
+                metrics,
+                partition,
+                filename,
+                "scan_io_metadata_cache_hits",
+            ),
+            metadata_cache_misses: count_counter(
+                metrics,
+                partition,
+                filename,
+                "scan_io_metadata_cache_misses",
+            ),
+            source,
+        }
+    }
+
+    fn add_data_requested(&self, bytes: usize) {
+        self.data_bytes_requested.add(bytes);
+        self.add_requested(bytes);
+    }
+
+    fn add_data_returned(&self, bytes: usize) {
+        self.data_bytes_returned.add(bytes);
+        self.add_returned(bytes);
+    }
+
+    fn add_metadata_requested(&self, bytes: usize) {
+        self.metadata_bytes_requested.add(bytes);
+        self.add_requested(bytes);
+    }
+
+    fn add_metadata_returned(&self, bytes: usize) {
+        self.metadata_bytes_returned.add(bytes);
+        self.add_returned(bytes);
+    }
+
+    fn record_metadata_cache_result(&self, storage_reads: usize) {
+        if storage_reads == 0 {
+            self.metadata_cache_hits.add(1);
+        } else {
+            self.metadata_cache_misses.add(1);
+        }
+    }
+
+    fn add_requested(&self, bytes: usize) {
+        self.bytes_requested.add(bytes);
+        match self.source {
+            ScanIoSource::ObjectStore => self.object_store_bytes_requested.add(bytes),
+            ScanIoSource::Local => self.local_bytes_requested.add(bytes),
+        }
+    }
+
+    fn add_returned(&self, bytes: usize) {
+        self.bytes_returned.add(bytes);
+        match self.source {
+            ScanIoSource::ObjectStore => self.object_store_bytes_returned.add(bytes),
+            ScanIoSource::Local => self.local_bytes_returned.add(bytes),
+        }
+    }
+}
+
+fn byte_counter(
+    metrics: &ExecutionPlanMetricsSet,
+    partition: usize,
+    filename: &str,
+    name: &'static str,
+) -> Count {
+    MetricBuilder::new(metrics)
+        .with_new_label("filename", filename.to_string())
+        .with_type(MetricType::Summary)
+        .with_category(MetricCategory::Bytes)
+        .counter(name, partition)
+}
+
+fn count_counter(
+    metrics: &ExecutionPlanMetricsSet,
+    partition: usize,
+    filename: &str,
+    name: &'static str,
+) -> Count {
+    MetricBuilder::new(metrics)
+        .with_new_label("filename", filename.to_string())
+        .with_type(MetricType::Summary)
+        .counter(name, partition)
+}
+
+fn range_bytes(range: &Range<u64>) -> usize {
+    (range.end - range.start) as usize
+}
+
+fn ranges_bytes(ranges: &[Range<u64>]) -> usize {
+    ranges.iter().map(range_bytes).sum()
+}
 
 #[derive(Debug)]
 pub struct EagerPageIndexReaderFactory {
     store: Arc<dyn ObjectStore>,
     metadata_cache: Arc<dyn FileMetadataCache>,
+    source: ScanIoSource,
 }
 
 impl EagerPageIndexReaderFactory {
-    pub fn new(store: Arc<dyn ObjectStore>, metadata_cache: Arc<dyn FileMetadataCache>) -> Self {
+    pub(crate) fn new(
+        store: Arc<dyn ObjectStore>,
+        metadata_cache: Arc<dyn FileMetadataCache>,
+        source: ScanIoSource,
+    ) -> Self {
         Self {
             store,
             metadata_cache,
+            source,
         }
     }
 }
@@ -93,6 +300,12 @@ impl ParquetFileReaderFactory for EagerPageIndexReaderFactory {
             partitioned_file.object_meta.location.as_ref(),
             metrics,
         );
+        let scan_io_metrics = ScanIoMetrics::new(
+            partition_index,
+            partitioned_file.object_meta.location.as_ref(),
+            metrics,
+            self.source,
+        );
         let mut inner = ParquetObjectReader::new(
             Arc::clone(&self.store),
             partitioned_file.object_meta.location.clone(),
@@ -104,6 +317,7 @@ impl ParquetFileReaderFactory for EagerPageIndexReaderFactory {
 
         Ok(Box::new(EagerPageIndexReader {
             file_metrics,
+            scan_io_metrics,
             store: Arc::clone(&self.store),
             inner,
             partitioned_file,
@@ -115,6 +329,7 @@ impl ParquetFileReaderFactory for EagerPageIndexReaderFactory {
 
 struct EagerPageIndexReader {
     file_metrics: ParquetFileMetrics,
+    scan_io_metrics: ScanIoMetrics,
     store: Arc<dyn ObjectStore>,
     inner: ParquetObjectReader,
     partitioned_file: PartitionedFile,
@@ -124,9 +339,17 @@ struct EagerPageIndexReader {
 
 impl AsyncFileReader for EagerPageIndexReader {
     fn get_bytes(&mut self, range: Range<u64>) -> BoxFuture<'_, parquet::errors::Result<Bytes>> {
-        let bytes_scanned = range.end - range.start;
-        self.file_metrics.bytes_scanned.add(bytes_scanned as usize);
-        self.inner.get_bytes(range)
+        let requested = range_bytes(&range);
+        self.file_metrics.bytes_scanned.add(requested);
+        self.scan_io_metrics.add_data_requested(requested);
+        let scan_io_metrics = self.scan_io_metrics.clone();
+        let future = self.inner.get_bytes(range);
+        async move {
+            let bytes = future.await?;
+            scan_io_metrics.add_data_returned(bytes.len());
+            Ok(bytes)
+        }
+        .boxed()
     }
 
     fn get_byte_ranges(
@@ -136,9 +359,17 @@ impl AsyncFileReader for EagerPageIndexReader {
     where
         Self: Send,
     {
-        let total: u64 = ranges.iter().map(|r| r.end - r.start).sum();
-        self.file_metrics.bytes_scanned.add(total as usize);
-        self.inner.get_byte_ranges(ranges)
+        let requested = ranges_bytes(&ranges);
+        self.file_metrics.bytes_scanned.add(requested);
+        self.scan_io_metrics.add_data_requested(requested);
+        let scan_io_metrics = self.scan_io_metrics.clone();
+        let future = self.inner.get_byte_ranges(ranges);
+        async move {
+            let bytes = future.await?;
+            scan_io_metrics.add_data_returned(bytes.iter().map(Bytes::len).sum());
+            Ok(bytes)
+        }
+        .boxed()
     }
 
     fn get_metadata<'a>(
@@ -151,17 +382,25 @@ impl AsyncFileReader for EagerPageIndexReader {
         let metadata_cache = Arc::clone(&self.metadata_cache);
         let store = Arc::clone(&self.store);
         let metadata_size_hint = self.metadata_size_hint;
+        let scan_io_metrics = self.scan_io_metrics.clone();
         async move {
             let file_decryption_properties = options
                 .and_then(|o| o.file_decryption_properties())
                 .map(Arc::clone);
+            let cache_enabled = file_decryption_properties.is_none();
             let page_index_policy = if file_decryption_properties.is_none() {
                 Some(PageIndexPolicy::Optional)
             } else {
                 options.map(|o| o.column_index_policy())
             };
+            let metadata_storage_reads = Arc::new(AtomicUsize::new(0));
+            let metadata_store = MetadataIoObjectStore {
+                inner: store,
+                scan_io_metrics: scan_io_metrics.clone(),
+                storage_reads: Arc::clone(&metadata_storage_reads),
+            };
 
-            DFParquetMetadata::new(store.as_ref(), &object_meta)
+            let metadata = DFParquetMetadata::new(&metadata_store, &object_meta)
                 .with_decryption_properties(file_decryption_properties)
                 .with_file_metadata_cache(Some(metadata_cache))
                 .with_metadata_size_hint(metadata_size_hint)
@@ -173,9 +412,157 @@ impl AsyncFileReader for EagerPageIndexReader {
                         "Failed to fetch metadata for file {}: {e}",
                         object_meta.location,
                     ))
-                })
+                });
+
+            if cache_enabled && metadata.is_ok() {
+                scan_io_metrics
+                    .record_metadata_cache_result(metadata_storage_reads.load(Ordering::Relaxed));
+            }
+
+            metadata
         }
         .boxed()
+    }
+}
+
+/// Counts metadata storage calls while forwarding every operation to the configured store.
+///
+/// Data reads are already visible at the AsyncFileReader data methods. Metadata reads bypass
+/// those methods inside DFParquetMetadata, so only metadata uses this wrapper.
+#[derive(Debug)]
+struct MetadataIoObjectStore {
+    inner: Arc<dyn ObjectStore>,
+    scan_io_metrics: ScanIoMetrics,
+    storage_reads: Arc<AtomicUsize>,
+}
+
+impl MetadataIoObjectStore {
+    fn record_request(&self, bytes: usize) {
+        if bytes > 0 {
+            self.storage_reads.fetch_add(1, Ordering::Relaxed);
+            self.scan_io_metrics.add_metadata_requested(bytes);
+        }
+    }
+}
+
+impl Display for MetadataIoObjectStore {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "metadata-io({})", self.inner)
+    }
+}
+
+#[async_trait]
+#[deny(clippy::missing_trait_methods)]
+impl ObjectStore for MetadataIoObjectStore {
+    async fn put_opts(
+        &self,
+        location: &Path,
+        payload: PutPayload,
+        options: PutOptions,
+    ) -> ObjectStoreResult<PutResult> {
+        self.inner.put_opts(location, payload, options).await
+    }
+
+    async fn put_multipart_opts(
+        &self,
+        location: &Path,
+        options: PutMultipartOptions,
+    ) -> ObjectStoreResult<Box<dyn MultipartUpload>> {
+        self.inner.put_multipart_opts(location, options).await
+    }
+
+    async fn get_opts(&self, location: &Path, options: GetOptions) -> ObjectStoreResult<GetResult> {
+        if options.head {
+            return self.inner.get_opts(location, options).await;
+        }
+
+        let requested = match options.range.as_ref() {
+            Some(GetRange::Bounded(range)) => Some(range_bytes(range)),
+            Some(GetRange::Suffix(bytes)) => Some(*bytes as usize),
+            Some(GetRange::Offset(_)) | None => None,
+        };
+        if let Some(requested) = requested {
+            self.record_request(requested);
+        }
+
+        let result = self.inner.get_opts(location, options).await?;
+        if requested.is_none() {
+            self.record_request(range_bytes(&result.range));
+        }
+
+        let meta = result.meta.clone();
+        let range = result.range.clone();
+        let attributes = result.attributes.clone();
+        let scan_io_metrics = self.scan_io_metrics.clone();
+        let payload = GetResultPayload::Stream(
+            result
+                .into_stream()
+                .inspect_ok(move |bytes| scan_io_metrics.add_metadata_returned(bytes.len()))
+                .boxed(),
+        );
+
+        Ok(GetResult {
+            payload,
+            meta,
+            range,
+            attributes,
+        })
+    }
+
+    async fn get_ranges(
+        &self,
+        location: &Path,
+        ranges: &[Range<u64>],
+    ) -> ObjectStoreResult<Vec<Bytes>> {
+        self.record_request(ranges_bytes(ranges));
+        let bytes = self.inner.get_ranges(location, ranges).await?;
+        self.scan_io_metrics
+            .add_metadata_returned(bytes.iter().map(Bytes::len).sum());
+        Ok(bytes)
+    }
+
+    fn delete_stream(
+        &self,
+        locations: futures::stream::BoxStream<'static, ObjectStoreResult<Path>>,
+    ) -> futures::stream::BoxStream<'static, ObjectStoreResult<Path>> {
+        self.inner.delete_stream(locations)
+    }
+
+    fn list(
+        &self,
+        prefix: Option<&Path>,
+    ) -> futures::stream::BoxStream<'static, ObjectStoreResult<ObjectMeta>> {
+        self.inner.list(prefix)
+    }
+
+    fn list_with_offset(
+        &self,
+        prefix: Option<&Path>,
+        offset: &Path,
+    ) -> futures::stream::BoxStream<'static, ObjectStoreResult<ObjectMeta>> {
+        self.inner.list_with_offset(prefix, offset)
+    }
+
+    async fn list_with_delimiter(&self, prefix: Option<&Path>) -> ObjectStoreResult<ListResult> {
+        self.inner.list_with_delimiter(prefix).await
+    }
+
+    async fn copy_opts(
+        &self,
+        from: &Path,
+        to: &Path,
+        options: CopyOptions,
+    ) -> ObjectStoreResult<()> {
+        self.inner.copy_opts(from, to, options).await
+    }
+
+    async fn rename_opts(
+        &self,
+        from: &Path,
+        to: &Path,
+        options: RenameOptions,
+    ) -> ObjectStoreResult<()> {
+        self.inner.rename_opts(from, to, options).await
     }
 }
 

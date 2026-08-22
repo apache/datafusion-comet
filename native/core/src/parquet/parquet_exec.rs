@@ -16,7 +16,7 @@
 // under the License.
 
 use crate::execution::operators::ExecutionError;
-use crate::parquet::eager_page_index_reader_factory::EagerPageIndexReaderFactory;
+use crate::parquet::eager_page_index_reader_factory::{EagerPageIndexReaderFactory, ScanIoSource};
 use crate::parquet::encryption_support::{CometEncryptionConfig, ENCRYPTION_FACTORY_ID};
 use crate::parquet::parquet_support::SparkParquetOptions;
 use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
@@ -158,14 +158,16 @@ pub(crate) fn init_datasource_exec(
     // cached with the footer, at the cost of losing the skip's benefit when it would have
     // applied. Filed upstream as apache/datafusion#23978; revert this once that's fixed.
     //
-    // TODO: metadata I/O is invisible in metrics. `fetch_metadata` reads via `ObjectStore::get_ranges`,
-    // bypassing the `get_bytes` path where `bytes_scanned` is counted. A byte-counting ObjectStore
-    // wrapper would surface it.
     let runtime_env = session_ctx.runtime_env();
     let store = runtime_env.object_store(&object_store_url)?;
     let metadata_cache = runtime_env.cache_manager.get_file_metadata_cache();
+    let scan_io_source = if object_store_url == ObjectStoreUrl::local_filesystem() {
+        ScanIoSource::Local
+    } else {
+        ScanIoSource::ObjectStore
+    };
     parquet_source = parquet_source.with_parquet_file_reader_factory(Arc::new(
-        EagerPageIndexReaderFactory::new(store, metadata_cache),
+        EagerPageIndexReaderFactory::new(store, metadata_cache, scan_io_source),
     ));
 
     // Route data filters through `try_pushdown_filters` rather than calling
@@ -295,12 +297,111 @@ mod tests {
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow::record_batch::RecordBatch;
     use datafusion::datasource::physical_plan::parquet::metadata::CachedParquetMetaData;
+    use datafusion::datasource::physical_plan::parquet::ParquetFileReaderFactory;
+    use datafusion::logical_expr::Operator;
+    use datafusion::physical_expr::expressions::{BinaryExpr, Literal};
+    use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
     use datafusion::physical_plan::ExecutionPlan;
     use datafusion_comet_spark_expr::test_common::file_util::get_temp_filename;
     use futures::StreamExt;
     use parquet::arrow::ArrowWriter;
     use parquet::file::properties::{EnabledStatistics, WriterProperties};
     use std::fs::File;
+
+    fn write_scan_io_fixture() -> (String, SchemaRef) {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("a", DataType::Int32, false),
+            Field::new("b", DataType::Int32, false),
+        ]));
+        let first = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(Int32Array::from((0..500).collect::<Vec<i32>>())),
+                Arc::new(Int32Array::from((10_000..10_500).collect::<Vec<i32>>())),
+            ],
+        )
+        .unwrap();
+        let second = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(Int32Array::from((1_000..1_500).collect::<Vec<i32>>())),
+                Arc::new(Int32Array::from((11_000..11_500).collect::<Vec<i32>>())),
+            ],
+        )
+        .unwrap();
+
+        let filename = get_temp_filename()
+            .as_path()
+            .as_os_str()
+            .to_str()
+            .unwrap()
+            .to_string();
+        let props = WriterProperties::builder()
+            .set_statistics_enabled(EnabledStatistics::Page)
+            .set_data_page_row_count_limit(100)
+            .set_max_row_group_row_count(Some(500))
+            .build();
+        let file = File::create(&filename).unwrap();
+        let mut writer = ArrowWriter::try_new(file, Arc::clone(&schema), Some(props)).unwrap();
+        writer.write(&first).unwrap();
+        writer.write(&second).unwrap();
+        writer.close().unwrap();
+
+        (filename, schema)
+    }
+
+    fn init_test_scan(
+        required_schema: SchemaRef,
+        data_schema: SchemaRef,
+        partitioned_file: PartitionedFile,
+        projection: Option<Vec<usize>>,
+        filters: Option<Vec<Arc<dyn PhysicalExpr>>>,
+        session_ctx: &Arc<SessionContext>,
+    ) -> Arc<DataSourceExec> {
+        init_datasource_exec(
+            required_schema,
+            Some(data_schema),
+            None,
+            ObjectStoreUrl::local_filesystem(),
+            vec![vec![partitioned_file]],
+            projection,
+            filters,
+            None,
+            "UTC",
+            true,
+            false,
+            false,
+            false,
+            session_ctx,
+            false,
+            false,
+            false,
+        )
+        .unwrap()
+    }
+
+    async fn drain_scan(scan: &Arc<DataSourceExec>, session_ctx: &Arc<SessionContext>) {
+        let mut stream = scan.execute(0, session_ctx.task_ctx()).unwrap();
+        while let Some(batch) = stream.next().await {
+            batch.unwrap();
+        }
+    }
+
+    fn scan_metric(scan: &Arc<DataSourceExec>, name: &str) -> usize {
+        scan.metrics()
+            .unwrap()
+            .sum_by_name(name)
+            .unwrap_or_else(|| panic!("missing metric {name}"))
+            .as_usize()
+    }
+
+    fn reader_metric(metrics: &ExecutionPlanMetricsSet, name: &str) -> usize {
+        metrics
+            .clone_inner()
+            .sum_by_name(name)
+            .unwrap_or_else(|| panic!("missing metric {name}"))
+            .as_usize()
+    }
 
     // Regression test for #4990: a fresh `TableParquetOptions::new()` ignored session-level
     // `datafusion.execution.parquet.*` settings entirely, so `spark.comet.datafusion.
@@ -431,5 +532,170 @@ mod tests {
             parquet_meta.column_index().is_some() && parquet_meta.offset_index().is_some(),
             "cached metadata must include the page index"
         );
+    }
+
+    #[tokio::test]
+    async fn reports_cold_and_warm_metadata_io_without_data_reads() {
+        let (filename, _schema) = write_scan_io_fixture();
+        let partitioned_file = PartitionedFile::from_path(filename).unwrap();
+        let session_ctx = Arc::new(SessionContext::new());
+        let runtime_env = session_ctx.runtime_env();
+        let store = runtime_env
+            .object_store(ObjectStoreUrl::local_filesystem())
+            .unwrap();
+        let metadata_cache = runtime_env.cache_manager.get_file_metadata_cache();
+        let factory = EagerPageIndexReaderFactory::new(store, metadata_cache, ScanIoSource::Local);
+
+        let cold_metrics = ExecutionPlanMetricsSet::new();
+        let mut cold_reader = factory
+            .create_reader(0, partitioned_file.clone(), Some(512 * 1024), &cold_metrics)
+            .unwrap();
+        cold_reader.get_metadata(None).await.unwrap();
+
+        let cold_metadata_requested =
+            reader_metric(&cold_metrics, "scan_io_metadata_bytes_requested");
+        let cold_metadata_returned =
+            reader_metric(&cold_metrics, "scan_io_metadata_bytes_returned");
+        assert!(cold_metadata_requested > 0);
+        assert_eq!(cold_metadata_returned, cold_metadata_requested);
+        assert_eq!(
+            reader_metric(&cold_metrics, "scan_io_data_bytes_requested"),
+            0
+        );
+        assert_eq!(
+            reader_metric(&cold_metrics, "scan_io_bytes_requested"),
+            cold_metadata_requested
+        );
+        assert_eq!(
+            reader_metric(&cold_metrics, "scan_io_local_bytes_requested"),
+            cold_metadata_requested
+        );
+        assert_eq!(
+            reader_metric(&cold_metrics, "scan_io_local_bytes_returned"),
+            cold_metadata_returned
+        );
+        assert_eq!(
+            reader_metric(&cold_metrics, "scan_io_object_store_bytes_requested"),
+            0
+        );
+        assert_eq!(
+            reader_metric(&cold_metrics, "scan_io_object_store_bytes_returned"),
+            0
+        );
+        assert_eq!(
+            reader_metric(&cold_metrics, "scan_io_metadata_cache_hits"),
+            0
+        );
+        assert_eq!(
+            reader_metric(&cold_metrics, "scan_io_metadata_cache_misses"),
+            1
+        );
+
+        let warm_metrics = ExecutionPlanMetricsSet::new();
+        let mut warm_reader = factory
+            .create_reader(0, partitioned_file, Some(512 * 1024), &warm_metrics)
+            .unwrap();
+        warm_reader.get_metadata(None).await.unwrap();
+
+        assert_eq!(
+            reader_metric(&warm_metrics, "scan_io_metadata_bytes_requested"),
+            0
+        );
+        assert_eq!(
+            reader_metric(&warm_metrics, "scan_io_metadata_bytes_returned"),
+            0
+        );
+        assert_eq!(reader_metric(&warm_metrics, "scan_io_bytes_requested"), 0);
+        assert_eq!(
+            reader_metric(&warm_metrics, "scan_io_metadata_cache_hits"),
+            1
+        );
+        assert_eq!(
+            reader_metric(&warm_metrics, "scan_io_metadata_cache_misses"),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn reports_projected_and_predicate_pruned_data_io() {
+        let (filename, schema) = write_scan_io_fixture();
+        let partitioned_file = PartitionedFile::from_path(filename).unwrap();
+        let session_ctx = Arc::new(SessionContext::new());
+
+        let full_scan = init_test_scan(
+            Arc::clone(&schema),
+            Arc::clone(&schema),
+            partitioned_file.clone(),
+            None,
+            None,
+            &session_ctx,
+        );
+        drain_scan(&full_scan, &session_ctx).await;
+
+        let projected_schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let projected_scan = init_test_scan(
+            Arc::clone(&projected_schema),
+            Arc::clone(&schema),
+            partitioned_file.clone(),
+            Some(vec![0]),
+            None,
+            &session_ctx,
+        );
+        drain_scan(&projected_scan, &session_ctx).await;
+
+        let filter: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+            Arc::new(Column::new("a", 0)),
+            Operator::Lt,
+            Arc::new(Literal::new(ScalarValue::Int32(Some(500)))),
+        ));
+        let filtered_scan = init_test_scan(
+            projected_schema,
+            schema,
+            partitioned_file,
+            Some(vec![0]),
+            Some(vec![filter]),
+            &session_ctx,
+        );
+        drain_scan(&filtered_scan, &session_ctx).await;
+
+        let full_data = scan_metric(&full_scan, "scan_io_data_bytes_requested");
+        let projected_data = scan_metric(&projected_scan, "scan_io_data_bytes_requested");
+        let filtered_data = scan_metric(&filtered_scan, "scan_io_data_bytes_requested");
+        assert!(
+            projected_data < full_data,
+            "projection should request fewer data bytes: projected={projected_data}, full={full_data}"
+        );
+        assert!(
+            filtered_data < projected_data,
+            "row-group pruning should request fewer data bytes: filtered={filtered_data}, projected={projected_data}"
+        );
+
+        for scan in [&full_scan, &projected_scan, &filtered_scan] {
+            let data_requested = scan_metric(scan, "scan_io_data_bytes_requested");
+            let data_returned = scan_metric(scan, "scan_io_data_bytes_returned");
+            let metadata_requested = scan_metric(scan, "scan_io_metadata_bytes_requested");
+            let metadata_returned = scan_metric(scan, "scan_io_metadata_bytes_returned");
+            assert_eq!(scan_metric(scan, "bytes_scanned"), data_requested);
+            assert_eq!(data_returned, data_requested);
+            assert_eq!(metadata_returned, metadata_requested);
+            assert_eq!(
+                scan_metric(scan, "scan_io_bytes_requested"),
+                data_requested + metadata_requested
+            );
+            assert_eq!(
+                scan_metric(scan, "scan_io_bytes_returned"),
+                data_returned + metadata_returned
+            );
+            assert_eq!(
+                scan_metric(scan, "scan_io_local_bytes_requested"),
+                data_requested + metadata_requested
+            );
+            assert_eq!(
+                scan_metric(scan, "scan_io_local_bytes_returned"),
+                data_returned + metadata_returned
+            );
+            assert_eq!(scan_metric(scan, "scan_io_object_store_bytes_requested"), 0);
+            assert_eq!(scan_metric(scan, "scan_io_object_store_bytes_returned"), 0);
+        }
     }
 }

@@ -281,7 +281,45 @@ object CometMetricNode {
       "limit_matched_row_groups" ->
         SQLMetrics.createMetric(sc, "Number of row groups matched by limit pruning (not pruned)"),
       "bytes_scanned" ->
-        SQLMetrics.createSizeMetric(sc, "Number of bytes scanned"),
+        SQLMetrics.createSizeMetric(
+          sc,
+          "Legacy data-page bytes requested by native Parquet scan"),
+      "scan_io_bytes_requested" ->
+        SQLMetrics.createSizeMetric(
+          sc,
+          "Total data-page plus metadata byte ranges requested by native Parquet scan"),
+      "scan_io_bytes_returned" ->
+        SQLMetrics.createSizeMetric(
+          sc,
+          "Total data-page plus metadata bytes returned to native Parquet scan"),
+      "scan_io_data_bytes_requested" ->
+        SQLMetrics.createSizeMetric(sc, "Data-page byte ranges requested by native Parquet scan"),
+      "scan_io_data_bytes_returned" ->
+        SQLMetrics.createSizeMetric(sc, "Data-page bytes returned to native Parquet scan"),
+      "scan_io_metadata_bytes_requested" ->
+        SQLMetrics.createSizeMetric(
+          sc,
+          "Footer and page-index byte ranges requested through the storage API"),
+      "scan_io_metadata_bytes_returned" ->
+        SQLMetrics.createSizeMetric(
+          sc,
+          "Footer and page-index bytes returned through the storage API"),
+      "scan_io_object_store_bytes_requested" ->
+        SQLMetrics.createSizeMetric(
+          sc,
+          "Non-local ObjectStore API bytes requested, excluding metadata cache hits"),
+      "scan_io_object_store_bytes_returned" ->
+        SQLMetrics.createSizeMetric(
+          sc,
+          "Non-local ObjectStore API bytes returned, excluding metadata cache hits"),
+      "scan_io_local_bytes_requested" ->
+        SQLMetrics.createSizeMetric(sc, "Local file bytes requested by native Parquet scan"),
+      "scan_io_local_bytes_returned" ->
+        SQLMetrics.createSizeMetric(sc, "Local file bytes returned to native Parquet scan"),
+      "scan_io_metadata_cache_hits" ->
+        SQLMetrics.createMetric(sc, "Metadata loads served without storage I/O"),
+      "scan_io_metadata_cache_misses" ->
+        SQLMetrics.createMetric(sc, "Metadata loads requiring storage I/O"),
       "pushdown_rows_pruned" ->
         SQLMetrics.createMetric(sc, "Rows filtered out by predicates pushed into parquet scan"),
       "pushdown_rows_matched" ->

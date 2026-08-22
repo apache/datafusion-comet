@@ -2416,10 +2416,42 @@ class CometExecSuite extends CometTestBase {
           assert(metrics.contains("time_elapsed_opening"))
           assert(metrics.contains("time_elapsed_processing"))
           assert(metrics.contains("time_elapsed_scanning_until_data"))
+          Seq(
+            "scan_io_bytes_requested",
+            "scan_io_bytes_returned",
+            "scan_io_data_bytes_requested",
+            "scan_io_data_bytes_returned",
+            "scan_io_metadata_bytes_requested",
+            "scan_io_metadata_bytes_returned",
+            "scan_io_object_store_bytes_requested",
+            "scan_io_object_store_bytes_returned",
+            "scan_io_local_bytes_requested",
+            "scan_io_local_bytes_returned",
+            "scan_io_metadata_cache_hits",
+            "scan_io_metadata_cache_misses").foreach { name =>
+            assert(metrics.contains(name), s"Missing $name. Available: ${metrics.keys}")
+          }
           assert(
             metrics("time_elapsed_scanning_total").value > 0,
             "time_elapsed_scanning_total should be > 0")
           assert(metrics("bytes_scanned").value > 0, "bytes_scanned should be > 0")
+          assert(metrics("scan_io_data_bytes_requested").value > 0)
+          assert(metrics("scan_io_data_bytes_returned").value > 0)
+          assert(metrics("scan_io_metadata_bytes_requested").value > 0)
+          assert(metrics("scan_io_metadata_bytes_returned").value > 0)
+          assert(
+            metrics("scan_io_bytes_requested").value ==
+              metrics("scan_io_data_bytes_requested").value +
+              metrics("scan_io_metadata_bytes_requested").value)
+          assert(
+            metrics("scan_io_bytes_returned").value ==
+              metrics("scan_io_data_bytes_returned").value +
+              metrics("scan_io_metadata_bytes_returned").value)
+          assert(metrics("scan_io_local_bytes_requested").value > 0)
+          assert(metrics("scan_io_local_bytes_returned").value > 0)
+          assert(metrics("scan_io_object_store_bytes_requested").value == 0)
+          assert(metrics("scan_io_object_store_bytes_returned").value == 0)
+          assert(metrics("scan_io_metadata_cache_misses").value > 0)
           assert(metrics("output_rows").value > 0, "output_rows should be > 0")
           assert(metrics("time_elapsed_opening").value > 0, "time_elapsed_opening should be > 0")
           assert(
