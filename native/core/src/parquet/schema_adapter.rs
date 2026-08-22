@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::execution::serde::is_variant_field;
 use crate::parquet::cast_column::CometCastColumnExpr;
 use crate::parquet::parquet_support::{spark_parquet_convert, SparkParquetOptions};
 use arrow::array::new_empty_array;
@@ -586,7 +587,9 @@ impl SparkPhysicalExprAdapter {
                         Arc::clone(&e)
                     };
 
-                    if logical_field.data_type() != physical_field.data_type() {
+                    if is_variant_field(logical_field)
+                        || logical_field.data_type() != physical_field.data_type()
+                    {
                         // Mirror the same string/binary -> non-string/binary rejection in
                         // `replace_with_spark_cast`; this branch is reached when the default
                         // adapter rejected the cast and we'd otherwise build a CometCastColumnExpr
@@ -644,6 +647,19 @@ impl SparkPhysicalExprAdapter {
                 Arc::new(Field::new(cast.target_field().name(), child_type, true))
             };
             let physical_type = input_field.data_type();
+
+            if is_variant_field(cast.target_field()) {
+                let comet_cast: Arc<dyn PhysicalExpr> = Arc::new(
+                    CometCastColumnExpr::new(
+                        child,
+                        input_field,
+                        Arc::clone(cast.target_field()),
+                        None,
+                    )
+                    .with_parquet_options(self.parquet_options.clone()),
+                );
+                return Ok(Transformed::yes(comet_cast));
+            }
 
             // Identity cast: DataFusion's default adapter inserts a CastExpr
             // whenever the logical and physical Arrow Fields differ in any

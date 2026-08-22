@@ -19,8 +19,10 @@
 
 package org.apache.comet.shims
 
+import org.apache.spark.sql.catalyst.expressions.{CreateNamedStruct, Expression, Literal}
 import org.apache.spark.sql.execution.datasources.VariantMetadata
 import org.apache.spark.sql.types.{ArrayType, DataType, MapType, StringType, StructType, VariantType}
+import org.apache.spark.unsafe.types.VariantVal
 
 trait CometTypeShim {
   // A `StringType` carries collation metadata in Spark 4.0. Only non-default (non-UTF8_BINARY)
@@ -49,16 +51,41 @@ trait CometTypeShim {
 
   // Spark 4.0's `PushVariantIntoScan` rewrites `VariantType` columns into a `StructType` whose
   // fields each carry `__VARIANT_METADATA_KEY` metadata, then pushes `variant_get` paths down as
-  // ordinary struct field accesses. Comet's native scans don't understand the on-disk Parquet
-  // variant shredding layout, so reading such a struct natively returns nulls. Detect the marker
-  // and force scan fallback.
+  // ordinary struct field accesses. The direct whole-value scan path does not support that pushed
+  // VariantStruct representation. Detect the marker and force scan fallback.
   def isVariantStruct(s: StructType): Boolean = VariantMetadata.isVariantStruct(s)
 
-  // Comet has no native execution path for Spark 4's `VariantType` (introduced in
-  // SPARK-45827). Serdes call this to route casts/expressions touching the type back to Spark
-  // rather than serializing an unsupported datatype into the native plan. Stubbed to `false` in
-  // Spark 3.x where `VariantType` does not exist.
+  // Outside direct top-level Parquet projection, Comet has no native execution path for Spark 4's
+  // `VariantType` (introduced in SPARK-45827). Serdes call this to route casts and expressions
+  // touching the type back to Spark. Stubbed to `false` in Spark 3.x.
   def isVariantType(dt: DataType): Boolean = dt.isInstanceOf[VariantType]
+
+  def containsVariantType(dt: DataType): Boolean = dt match {
+    case dt if isVariantType(dt) => true
+    case StructType(fields) => fields.exists(field => containsVariantType(field.dataType))
+    case ArrayType(elementType, _) => containsVariantType(elementType)
+    case MapType(keyType, valueType, _) =>
+      containsVariantType(keyType) || containsVariantType(valueType)
+    case _ => false
+  }
+
+  def variantType: Option[DataType] = Some(VariantType)
+
+  // Expose Variant defaults to the native scan as their Arrow storage struct without enabling
+  // Variant literals in Comet's general expression serde.
+  def variantDefaultExpression(value: Any): Option[Expression] = value match {
+    case variant: VariantVal =>
+      val variantValue = variant.getValue
+      val metadata = variant.getMetadata
+      if (variantValue == null || metadata == null) {
+        None
+      } else {
+        Some(
+          CreateNamedStruct(
+            Seq(Literal("value"), Literal(variantValue), Literal("metadata"), Literal(metadata))))
+      }
+    case _ => None
+  }
 
   def isTimeType(dt: DataType): Boolean =
     dt.getClass.getSimpleName.startsWith("TimeType")

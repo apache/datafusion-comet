@@ -963,8 +963,10 @@ case class CometScanRule(session: SparkSession)
   private def isSchemaSupported(scanExec: FileSourceScanExec, r: HadoopFsRelation): Boolean = {
     val fallbackReasons = new ListBuffer[String]()
     val typeChecker = CometScanTypeChecker()
-    val schemaSupported =
-      typeChecker.isSchemaSupported(scanExec.requiredSchema, fallbackReasons)
+    val schemaSupported = scanExec.requiredSchema.fields.forall { field =>
+      isVariantType(field.dataType) ||
+      typeChecker.isTypeSupported(field.dataType, field.name, fallbackReasons)
+    }
     if (!schemaSupported) {
       withFallbackReason(
         scanExec,
