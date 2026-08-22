@@ -49,7 +49,7 @@ import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
-import org.apache.comet.{CometConf, CometExplainInfo, ExtendedExplainInfo}
+import org.apache.comet.{CometConf, CometCoverageStats, CometExplainInfo, ExtendedExplainInfo}
 import org.apache.comet.CometConf.{COMET_SPARK_TO_ARROW_ENABLED, COMET_SPARK_TO_ARROW_SUPPORTED_OPERATOR_LIST}
 import org.apache.comet.CometSparkSessionExtensions._
 import org.apache.comet.rules.CometExecRule.allExecs
@@ -626,6 +626,20 @@ case class CometExecRule(session: SparkSession)
               s"(set ${CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key}=false " +
               "to disable this logging):\n" +
               s"${info.generateExtendedInfo(newPlan)}")
+        }
+      }
+
+      // Trial mode: log how much of this query Comet would accelerate (measured from the
+      // fully-converted plan), then execute on Spark by reverting the native scans that
+      // CometScanRule produced, so nothing is actually offloaded to native. The rest of the
+      // native conversion only exists in `newPlan`, which we discard here.
+      if (CometConf.COMET_TRIAL_ENABLED.get()) {
+        logWarning(
+          s"[Comet trial] ${CometCoverageStats.forPlan(newPlan)}\n" +
+            new ExtendedExplainInfo().generateExtendedInfo(newPlan))
+        return plan.transformUp {
+          case s: CometScanExec => s.wrapped
+          case s: CometBatchScanExec => s.wrapped.copy(runtimeFilters = s.runtimeFilters)
         }
       }
 

@@ -678,6 +678,14 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_TRIAL_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.trial.enabled")
+      .category(CATEGORY_EXEC_EXPLAIN)
+      .doc("Analyze each query as if Comet were enabled and emit a coverage report, but do " +
+        "not actually offload execution to native.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_EXPLAIN_CODEGEN_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.explain.codegen.enabled")
       .withAlternative("spark.comet.explainCodegen.enabled")
