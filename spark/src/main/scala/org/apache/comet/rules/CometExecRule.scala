@@ -616,7 +616,7 @@ case class CometExecRule(session: SparkSession)
       // during the bottom-up conversion. Tags persist through AQE stage creation.
       tagUnsafePartialAggregates(planWithJoinRewritten)
 
-      var newPlan = transform(planWithJoinRewritten)
+      var newPlan = revertUnsafePartialAggregates(transform(planWithJoinRewritten))
 
       // if the plan cannot be run fully natively then explain why (when appropriate
       // config is enabled)
@@ -1017,6 +1017,63 @@ case class CometExecRule(session: SparkSession)
   }
 
   /**
+   * The early tagging pass cannot know whether a Final's child will become native. Check the
+   * actual conversion result as well, before native blocks are serialized or AQE launches stages.
+   * Restore only the feeding aggregate/exchange chain; keep native work below its Partial.
+   */
+  private def revertUnsafePartialAggregates(plan: SparkPlan): SparkPlan = {
+    def revertChain(node: SparkPlan): Option[SparkPlan] = node match {
+      case agg: CometHashAggregateExec if agg.modes == Seq(Partial) =>
+        val partial = agg.originalPlan.withNewChildren(Seq(agg.child))
+        partial.setTagValue(
+          CometExecRule.COMET_UNSAFE_PARTIAL,
+          "Partial aggregate disabled: corresponding final aggregate " +
+            "cannot be converted to Comet and intermediate buffer formats are incompatible")
+        Some(partial)
+
+      case agg: CometHashAggregateExec
+          if agg.modes.forall(m => m == Partial || m == PartialMerge) =>
+        revertChain(agg.child).map(child => agg.originalPlan.withNewChildren(Seq(child)))
+
+      case agg: BaseAggregateExec
+          if agg.aggregateExpressions.nonEmpty &&
+            agg.aggregateExpressions.forall(_.mode == Partial) =>
+        // This producer already emits Spark buffers. Do not reach through it to an unrelated
+        // aggregate below it.
+        None
+
+      case agg: BaseAggregateExec
+          if agg.aggregateExpressions.forall(e => e.mode == Partial || e.mode == PartialMerge) =>
+        revertChain(agg.child).map(child => agg.withNewChildren(Seq(child)))
+
+      case CometSinkPlaceHolder(_, _, shuffle: CometShuffleExchangeExec) =>
+        revertChain(shuffle)
+      case shuffle: CometShuffleExchangeExec =>
+        revertChain(shuffle.child).map(child => shuffle.originalPlan.withNewChildren(Seq(child)))
+      case shuffle: ShuffleExchangeExec =>
+        revertChain(shuffle.child).map(child => shuffle.withNewChildren(Seq(child)))
+
+      case _: ShuffleQueryStageExec | _: ReusedExchangeExec =>
+        // A stage owns (and may already have materialized) its buffers. Never rewrite it here.
+        // The whole-plan QueryStagePrep pass must tag the Partial before stages are created;
+        // that tag keeps it in Spark when the rule is reapplied to the exchange in isolation.
+        None
+      case _ => None
+    }
+
+    plan.transformUp {
+      case agg: BaseAggregateExec
+          if agg.aggregateExpressions.map(_.mode).distinct == Seq(Final) &&
+            !QueryPlanSerde.allAggsSupportMixedExecution(agg.aggregateExpressions) =>
+        revertChain(agg.child)
+          // Rebuild native consumers and shuffles from their original Spark operators. Merely
+          // replacing their children would leave a native protobuf reading the old buffers.
+          .map(child => transform(agg.withNewChildren(Seq(child))))
+          .getOrElse(agg)
+    }
+  }
+
+  /**
    * Look for the bottom Partial-mode aggregate that feeds into the given plan (the child of a
    * Final). Walks through exchanges and AQE stages, and continues down through intermediate
    * aggregate stages whose modes are all Partial / PartialMerge - these are the PartialMerge (and
@@ -1045,8 +1102,8 @@ case class CometExecRule(session: SparkSession)
   /**
    * Conservative check for whether an aggregate could be converted to Comet. Checks operator
    * enablement, grouping expressions, aggregate expressions, and result expressions.
-   * Intentionally skips the sparkFinalMode / child-native checks since those depend on
-   * transformation state.
+   * Intentionally skips the child-native checks since those depend on transformation state;
+   * [[revertUnsafePartialAggregates]] checks the actual conversion result before execution.
    *
    * WARNING: this intentionally mirrors the predicate checks in `CometBaseAggregate.doConvert`
    * (operators.scala). Any change to the convertibility rules there must be reflected here or
