@@ -397,7 +397,14 @@ fn finish_builder(builder: FieldBuilder) -> Result<ArrayRef> {
                 .map(finish_builder)
                 .collect::<Result<Vec<_>>>()?;
             let null_buf = arrow::buffer::NullBuffer::from(null_buffer);
-            Arc::new(StructArray::new(fields, nested_arrays, Some(null_buf)))
+            // `StructArray::new` derives its row count from the first child array; a zero-field
+            // schema (e.g. a `struct<>`-typed field nested inside a larger schema) has no child
+            // arrays to derive it from, so the count is supplied explicitly here instead.
+            if fields.is_empty() {
+                Arc::new(StructArray::new_empty_fields(null_buf.len(), Some(null_buf)))
+            } else {
+                Arc::new(StructArray::new(fields, nested_arrays, Some(null_buf)))
+            }
         }
     })
 }

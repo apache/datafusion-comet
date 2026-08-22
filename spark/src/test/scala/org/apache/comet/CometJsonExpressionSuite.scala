@@ -167,8 +167,8 @@ class CometJsonExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
   }
 
   test("from_json - empty struct schema") {
-    // A zero-field target schema is a legitimate, trivially-serializable value, not a reason to
-    // fall back to the codegen dispatcher (matches the other empty-struct fixes in this diff).
+    // A zero-field target schema is a legitimate value: no fields to parse into, but a real
+    // (possibly null) struct row per input, same as any other from_json result.
     Seq(true, false).foreach { dictionaryEnabled =>
       withParquetTable(
         (0 until 20).map(i => (i, "{}")),
@@ -177,6 +177,22 @@ class CometJsonExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
 
         checkSparkAnswerAndOperator("SELECT from_json(_2, 'struct<>') FROM tbl")
         checkSparkAnswerAndOperator("SELECT from_json(_2, 'struct<>') IS NULL FROM tbl")
+      }
+    }
+  }
+
+  test("from_json - nested empty struct schema") {
+    // The zero-field struct can also appear nested inside a non-empty outer struct, which
+    // builds the result through a different code path (the nested-field builder, not the
+    // top-level one) -- both need to construct the Arrow array correctly.
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withParquetTable(
+        (0 until 20).map(i => (i, """{"outer":{}}""")),
+        "tbl",
+        withDictionary = dictionaryEnabled) {
+
+        checkSparkAnswerAndOperator("SELECT from_json(_2, 'outer struct<>') FROM tbl")
+        checkSparkAnswerAndOperator("SELECT from_json(_2, 'outer struct<>').outer FROM tbl")
       }
     }
   }
