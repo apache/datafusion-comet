@@ -198,8 +198,27 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateBools(), DataTypes.DoubleType)
   }
 
-  test("cast BooleanType to DecimalType(10,2)") {
+  // Boolean -> Decimal has no native path and is routed through the JVM codegen dispatcher, so
+  // `CometCast.isSupported` reports it as unsupported and the matrix-consistency test above
+  // requires this one to be ignored. The test would actually pass if un-ignored; the suite
+  // predates codegen dispatch and cannot yet express "runs in Comet without a native kernel".
+  // https://github.com/apache/datafusion-comet/issues/5186 tracks teaching the suite that
+  // distinction, at which point this test can be re-enabled. Execution coverage in the meantime,
+  // including the ANSI overflow edge cases, lives in
+  // `sql-tests/expressions/cast/cast_boolean_to_decimal{,_ansi}.sql`.
+  ignore("cast BooleanType to DecimalType(10,2)") {
     castTest(generateBools(), DataTypes.createDecimalType(10, 2))
+  }
+
+  test("cast BooleanType to DecimalType is not supported natively") {
+    Seq(
+      DataTypes.createDecimalType(10, 2),
+      DataTypes.createDecimalType(14, 4),
+      DataTypes.createDecimalType(30, 0)).foreach { toType =>
+      assert(
+        CometCast.isSupported(BooleanType, toType, None, CometEvalMode.LEGACY) ==
+          Unsupported(Some(s"Cast from $BooleanType to $toType is not supported")))
+    }
   }
 
   test("cast BooleanType to DecimalType(14,4)") {

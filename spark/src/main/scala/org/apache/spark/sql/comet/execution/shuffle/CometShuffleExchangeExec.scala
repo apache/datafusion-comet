@@ -122,7 +122,8 @@ case class CometShuffleExchangeExec(
           sparkContext,
           ctx.inputs,
           ctx.numPartitions,
-          ctx.shuffleScanIndices)
+          ctx.shuffleScanIndices,
+          ctx.perPartitionByKey)
       case None =>
         // Non-native child (e.g. CometSparkToColumnarExec): no subtree to inline. The dep gets
         // built via the convenience overload below; we just need a real RDD of batches.
@@ -786,8 +787,17 @@ object CometShuffleExchangeExec
       case e: Expression => e.collect { case s: ScalarSubquery => s }
       case _ => Nil
     }
-    val augmentedSpec = spec.copy(execContext =
-      spec.execContext.copy(subqueries = spec.execContext.subqueries ++ partitioningSubqueries))
+    // Drop the per-partition plan-data map off the spec that lands on the (non-transient)
+    // CometShuffleDependency.nativeShuffleSpec. Each partition's slice now rides on the thin RDD's
+    // Partition objects (see CometNativeShuffleInputRDD.getPartitions), so the full
+    // O(numPartitions) map is dead weight here and would blow the 2GB ByteArrayOutputStream limit
+    // at stage submission on very-high-partition-count jobs. NativeExecContext.perPartitionByKey is
+    // also @transient (the structural guard against any build path), but we empty it explicitly
+    // here too so the map isn't retained on the driver via this dependency. commonByKey stays
+    // (O(#scans), not O(#partitions), and the writer still needs it).
+    val augmentedSpec = spec.copy(execContext = spec.execContext.copy(
+      subqueries = spec.execContext.subqueries ++ partitioningSubqueries,
+      perPartitionByKey = Map.empty))
 
     // The code block below is mostly brought over from
     // ShuffleExchangeExec::prepareShuffleDependency
