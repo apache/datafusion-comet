@@ -166,6 +166,21 @@ class CometJsonExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
     }
   }
 
+  test("from_json - empty struct schema") {
+    // A zero-field target schema is a legitimate, trivially-serializable value, not a reason to
+    // fall back to the codegen dispatcher (matches the other empty-struct fixes in this diff).
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withParquetTable(
+        (0 until 20).map(i => (i, "{}")),
+        "tbl",
+        withDictionary = dictionaryEnabled) {
+
+        checkSparkAnswerAndOperator("SELECT from_json(_2, 'struct<>') FROM tbl")
+        checkSparkAnswerAndOperator("SELECT from_json(_2, 'struct<>') IS NULL FROM tbl")
+      }
+    }
+  }
+
   test("from_json - nested struct") {
     Seq(true, false).foreach { dictionaryEnabled =>
       withParquetTable(

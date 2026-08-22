@@ -54,8 +54,9 @@ trait DataTypeSupport {
           CalendarIntervalType =>
         true
       case StructType(fields) =>
-        fields.nonEmpty && fields.forall(f =>
-          isTypeSupported(f.dataType, f.name, fallbackReasons))
+        // A struct's `fields` can be empty -- e.g. Iceberg's `_partition` metadata column is
+        // exactly that on an unpartitioned table. It's still a value Comet can represent.
+        fields.forall(f => isTypeSupported(f.dataType, f.name, fallbackReasons))
       case ArrayType(elementType, _) =>
         isTypeSupported(elementType, ARRAY_ELEMENT, fallbackReasons)
       case MapType(keyType, valueType, _) =>

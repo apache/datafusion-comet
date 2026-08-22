@@ -46,7 +46,9 @@ abstract class CometSink[T <: SparkPlan] extends CometOperatorSerde[T] {
   protected final def supportedSinkDataType(dt: DataType): Boolean = dt match {
     case _: YearMonthIntervalType | _: DayTimeIntervalType => true
     case StructType(fields) =>
-      fields.nonEmpty && fields.forall(f => supportedSinkDataType(f.dataType))
+      // A struct's `fields` can be empty -- e.g. Iceberg's `_partition` metadata column is
+      // exactly that on an unpartitioned table. It's still a value the sink can serialize.
+      fields.forall(f => supportedSinkDataType(f.dataType))
     case ArrayType(elementType, _) => supportedSinkDataType(elementType)
     case MapType(keyType, valueType, _) =>
       supportedSinkDataType(keyType) && supportedSinkDataType(valueType)

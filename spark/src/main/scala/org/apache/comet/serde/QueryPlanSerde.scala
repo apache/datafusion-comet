@@ -539,7 +539,9 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     case dt if isTimeType(dt) =>
       true
     case s: StructType if allowComplex =>
-      s.fields.nonEmpty && s.fields.map(_.dataType).forall(supportedDataType(_, allowComplex))
+      // A struct's `fields` can be empty -- e.g. Iceberg's `_partition` metadata column is
+      // exactly that on an unpartitioned table. It's still a value Comet can represent.
+      s.fields.map(_.dataType).forall(supportedDataType(_, allowComplex))
     case a: ArrayType if allowComplex =>
       supportedDataType(a.elementType, allowComplex)
     case m: MapType if allowComplex =>

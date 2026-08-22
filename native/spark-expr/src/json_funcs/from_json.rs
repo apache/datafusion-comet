@@ -180,11 +180,15 @@ fn json_string_to_struct(arr: &Arc<dyn Array>, schema: &DataType) -> Result<Arra
         .map(finish_builder)
         .collect::<Result<Vec<_>>>()?;
     let null_buffer = NullBuffer::from(struct_nulls);
-    Ok(Arc::new(StructArray::new(
-        fields.clone(),
-        arrays,
-        Some(null_buffer),
-    )))
+    // `StructArray::new` derives its length from the first child array, so it panics when
+    // `fields` is empty (a legitimate zero-field target schema, e.g. `from_json(_, 'struct<>')`).
+    // `new_empty_fields` takes the length explicitly instead.
+    let struct_array: ArrayRef = if fields.is_empty() {
+        Arc::new(StructArray::new_empty_fields(num_rows, Some(null_buffer)))
+    } else {
+        Arc::new(StructArray::new(fields.clone(), arrays, Some(null_buffer)))
+    };
+    Ok(struct_array)
 }
 
 /// Builder enum for different data types

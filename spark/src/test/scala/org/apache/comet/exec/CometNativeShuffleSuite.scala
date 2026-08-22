@@ -20,6 +20,7 @@
 package org.apache.comet.exec
 
 import scala.concurrent.duration.DurationInt
+import scala.jdk.CollectionConverters._
 import scala.util.Random
 
 import org.scalactic.source.Position
@@ -31,6 +32,7 @@ import org.apache.spark.sql.{CometTestBase, DataFrame, Dataset, Row}
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.{col, count, sum}
+import org.apache.spark.sql.types.{IntegerType, StructField, StructType}
 
 import org.apache.comet.CometConf
 
@@ -105,6 +107,21 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
           }
         }
       }
+    }
+  }
+
+  test("native shuffle on empty struct") {
+    // A struct with zero fields is a legitimate Arrow value (e.g. Iceberg's `_partition`
+    // metadata column on an unpartitioned table), not a reason to fall back to Spark. The
+    // shuffle's input must itself be Comet-native for this to exercise the real path -- a bare
+    // `LocalRelation` needs COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED to get a native upstream.
+    withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+      val schema =
+        StructType(Seq(StructField("id", IntegerType), StructField("marker", StructType(Nil))))
+      val data = (0 until 50).map(i => Row(i, Row())).asJava
+      val df = spark.createDataFrame(data, schema)
+      val shuffled = df.repartition(10, $"id")
+      checkShuffleAnswer(shuffled, 1, checkNativeOperators = true)
     }
   }
 
