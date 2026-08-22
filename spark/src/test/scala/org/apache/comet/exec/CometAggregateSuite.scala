@@ -23,12 +23,14 @@ import scala.util.Random
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.SparkConf
-import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
+import org.apache.spark.sql.{Column, CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.expressions.Cast
 import org.apache.spark.sql.catalyst.optimizer.EliminateSorts
 import org.apache.spark.sql.comet.CometHashAggregateExec
+import org.apache.spark.sql.execution.LocalTableScanExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
-import org.apache.spark.sql.functions.{avg, col, count_distinct, sum}
+import org.apache.spark.sql.execution.aggregate.ObjectHashAggregateExec
+import org.apache.spark.sql.functions.{avg, col, collect_list, collect_set, count_distinct, sort_array, sum}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
 
@@ -49,27 +51,18 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     super.sparkConf.set(SQLConf.ANSI_ENABLED.key, "false")
 
   test("collect_list over struct with non-nullable fields") {
-    // Building a struct from non-nullable columns yields non-nullable struct fields. The native
-    // collect_list accumulator emits a list whose element fields are all nullable, so the produced
-    // array must be reconciled with the declared aggregate output type, otherwise the grouped
-    // native aggregate fails with "column types must match schema types".
-    import org.apache.spark.sql.functions.{collect_list, expr}
-    import org.apache.spark.sql.execution.LocalTableScanExec
-    // One row per (a, b) group keeps each collected list deterministic for the answer comparison.
-    // repartition inserts a Comet exchange so the aggregate runs natively over a Comet child; the
-    // in-memory source stays a (non-Comet) LocalTableScan, which we allow via excludedClasses.
+    import org.apache.spark.sql.functions.expr
+
     val df = Seq(("1", "2", 1), ("2", "3", 3))
       .toDF("a", "b", "c")
       .repartition(col("a"))
       .withColumn("d", expr("named_struct('a', a, 'b', b, 'c', c)"))
     val include = Seq(classOf[CometHashAggregateExec])
-    // Single grouped collect_list of a struct with a non-nullable field.
+
     checkSparkAnswerAndOperator(
       df.groupBy("a", "b").agg(collect_list("d")),
       include,
       classOf[LocalTableScanExec])
-    // Multi-stage: the array<struct> result flows through a projection into a second collect_list
-    // (the SPARK-22223 plan shape), so the nested struct field nullability must round-trip.
     checkSparkAnswerAndOperator(
       df.groupBy("a", "b")
         .agg(collect_list("d").as("e"))
@@ -80,29 +73,58 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       classOf[LocalTableScanExec])
   }
 
-  test("collect_list/collect_set combined with distinct aggregate falls back safely") {
-    // SPARK-17616: a distinct aggregate combined with collect_list/collect_set produces a
-    // multi-stage plan where the buffer-producing Partial may run in Spark (e.g. over a
-    // non-native LocalTableScan). Comet cannot read Spark's serialized Binary buffer, so the
-    // dependent PartialMerge/Final stages must also fall back rather than crash. See issue #4724
-    // for enabling the fully-native distinct path.
-    import org.apache.spark.sql.functions.{collect_list, collect_set, sort_array}
-    // Non-native source (LocalTableScan): the buffer-producing Partial runs in Spark.
-    val df = Seq((1, 3, "a"), (1, 2, "b"), (3, 4, "c"), (3, 4, "c"), (3, 5, "d"))
-      .toDF("x", "y", "z")
-    checkSparkAnswer(
-      df.groupBy(col("x")).agg(count_distinct(col("y")), sort_array(collect_list(col("z")))))
-    checkSparkAnswer(
-      df.groupBy(col("x")).agg(count_distinct(col("y")), sort_array(collect_set(col("z")))))
-
-    // Native source (Parquet): the whole multi-stage distinct chain must still fall back to
-    // Spark consistently (issue #4724), rather than running a fully-native pipeline that crashes.
+  test("collect_list/collect_set combined with distinct aggregate runs fully native") {
+    // SPARK-17616: combining a distinct aggregate with collect_list/collect_set creates a
+    // multi-stage aggregate plan with a PartialMerge collect stage. These collect functions declare
+    // BinaryType JVM buffers in Spark but produce ArrayType native state in Comet; the intermediate
+    // Comet aggregate outputs must advertise the native ArrayType so that the state can round-trip
+    // through shuffle and downstream native PartialMerge/Final stages. See issue #4724.
     withParquetTable(
       Seq((1, 3, "a"), (1, 2, "b"), (3, 4, "c"), (3, 4, "c"), (3, 5, "d")),
-      "t17616") {
+      "t_collect_distinct",
+      withDictionary = false) {
       for (fn <- Seq("collect_list", "collect_set")) {
-        checkSparkAnswer(
-          sql(s"SELECT _1, count(distinct _2), sort_array($fn(_3)) FROM t17616 GROUP BY _1"))
+        val query =
+          s"SELECT _1, count(DISTINCT _2), sort_array($fn(_3)) " +
+            "FROM t_collect_distinct GROUP BY _1"
+        val (_, cometPlan) =
+          checkSparkAnswerAndOperator(sql(query), Seq(classOf[CometHashAggregateExec]))
+        assert(
+          cometPlan.toString.contains(s"merge_$fn"),
+          s"Expected $fn PartialMerge stage to run as CometHashAggregateExec; plan:\n$cometPlan")
+      }
+    }
+  }
+
+  test("collect_list/collect_set with distinct aggregate decodes Spark PartialMerge state") {
+    // This mirrors Spark's DataFrameAggregateSuite SPARK-17616 test. With LocalTableScan disabled,
+    // the lower collect partial aggregate stays on Spark and produces a BinaryType JVM buffer.
+    // Native PartialMerge decodes that UnsafeRow/UnsafeArray buffer into DataFusion's list-typed
+    // state before merging. Run the same hash-map configurations used by the inherited Spark
+    // aggregate suites that failed in CI.
+    for ((twoLevelAggMap, vectorizedHashMap) <- Seq(
+        (false, false),
+        (true, false),
+        (true, true))) {
+      withSQLConf(
+        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "false",
+        SQLConf.CODEGEN_FALLBACK.key -> "false",
+        SQLConf.ENABLE_TWOLEVEL_AGG_MAP.key -> twoLevelAggMap.toString,
+        SQLConf.ENABLE_VECTORIZED_HASH_MAP.key -> vectorizedHashMap.toString) {
+        val df = Seq((1, 3, "a"), (1, 2, "b"), (3, 4, "c"), (3, 4, "c"), (3, 5, "d"))
+          .toDF("x", "y", "z")
+        for ((name, collect) <- Seq[(String, Column => Column)](
+            "collect_list" -> (col => collect_list(col)),
+            "collect_set" -> (col => collect_set(col)))) {
+          val (_, cometPlan) = checkSparkAnswerAndOperator(
+            df.groupBy($"x").agg(count_distinct($"y"), sort_array(collect($"z"))),
+            Seq(classOf[CometHashAggregateExec]),
+            classOf[ObjectHashAggregateExec],
+            classOf[LocalTableScanExec])
+          assert(
+            cometPlan.toString.contains(s"merge_$name"),
+            s"Expected $name PartialMerge stage to run natively; plan:\n$cometPlan")
+        }
       }
     }
   }
