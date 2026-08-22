@@ -15,13 +15,12 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::array::{Array, Date32Array, Int32Array};
+use arrow::compute::cast_with_options;
 use arrow::datatypes::DataType;
-use datafusion::common::{utils::take_function_args, DataFusionError, Result, ScalarValue};
+use datafusion::common::{format::DEFAULT_CAST_OPTIONS, utils::take_function_args, Result};
 use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
 };
-use std::sync::Arc;
 
 /// Spark-compatible date_from_unix_date function.
 /// Converts an integer representing days since Unix epoch (1970-01-01) to a Date32 value.
@@ -62,32 +61,14 @@ impl ScalarUDFImpl for SparkDateFromUnixDate {
     fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
         let [unix_date] = take_function_args(self.name(), args.args)?;
         match unix_date {
-            ColumnarValue::Array(arr) => {
-                let int_array = arr.as_any().downcast_ref::<Int32Array>().ok_or_else(|| {
-                    DataFusionError::Execution(
-                        "date_from_unix_date expects Int32Array input".to_string(),
-                    )
-                })?;
-
-                // Date32 and Int32 both represent days since epoch, so we can directly
-                // reinterpret the values. The only operation needed is creating a Date32Array
-                // from the same underlying i32 values.
-                let date_array =
-                    Date32Array::new(int_array.values().clone(), int_array.nulls().cloned());
-
-                Ok(ColumnarValue::Array(Arc::new(date_array)))
+            ColumnarValue::Array(arr) => Ok(ColumnarValue::Array(cast_with_options(
+                arr.as_ref(),
+                &DataType::Date32,
+                &DEFAULT_CAST_OPTIONS,
+            )?)),
+            ColumnarValue::Scalar(scalar) => {
+                Ok(ColumnarValue::Scalar(scalar.cast_to(&DataType::Date32)?))
             }
-            ColumnarValue::Scalar(scalar) => match scalar {
-                ScalarValue::Int32(Some(days)) => {
-                    Ok(ColumnarValue::Scalar(ScalarValue::Date32(Some(days))))
-                }
-                ScalarValue::Int32(None) | ScalarValue::Null => {
-                    Ok(ColumnarValue::Scalar(ScalarValue::Date32(None)))
-                }
-                _ => Err(DataFusionError::Execution(
-                    "date_from_unix_date expects Int32 scalar input".to_string(),
-                )),
-            },
         }
     }
 
