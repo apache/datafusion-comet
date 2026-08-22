@@ -38,7 +38,8 @@ import org.apache.comet.serde.{CodegenDispatchFallback, CometAggregateExpression
  */
 object GenerateDocs {
 
-  private val publicConfigs: Set[ConfigEntry[_]] = CometConf.allConfs.filter(_.isPublic).toSet
+  private val corePublicConfigs: Set[ConfigEntry[_]] =
+    CometConf.allConfs.filter(_.isPublic).toSet
 
   /**
    * Documentation notes for a single expression.
@@ -150,6 +151,14 @@ object GenerateDocs {
     updateExpressionsPageImplementation(s"$userGuideLocation/expressions.md")
     for ((category, (filename, notesFn)) <- categoryPages) {
       generateExpressionCompatNotes(s"$compatPagesDir/$filename", category, notesFn())
+    }
+    // Optional, out-of-tree contribs document their configs on their own page. Empty on a default
+    // build, which is why core's configs.md above stays identical no matter which contrib profiles
+    // were enabled. See CometConfigProvider for why a contrib's entries are otherwise invisible.
+    for (provider <- CometConfigProvider.providers) {
+      generateConfigReference(
+        s"$userGuideLocation/${provider.docPage}",
+        provider.configs.filter(_.isPublic).toSet)
     }
   }
 
@@ -273,7 +282,14 @@ object GenerateDocs {
     buffer.toSeq
   }
 
-  private def generateConfigReference(filename: String): Unit = {
+  /**
+   * Fill the `CONFIG_TABLE` markers in `filename` from `configs`. Defaults to core's public
+   * configs; a contrib passes its own set so its entries are documented on its own page without
+   * ever entering core's tables.
+   */
+  private def generateConfigReference(
+      filename: String,
+      publicConfigs: Set[ConfigEntry[_]] = corePublicConfigs): Unit = {
     val pattern = "<!--BEGIN:CONFIG_TABLE\\[(.*)]-->".r
     val lines = readFile(filename)
     val w = new BufferedOutputStream(new FileOutputStream(filename))

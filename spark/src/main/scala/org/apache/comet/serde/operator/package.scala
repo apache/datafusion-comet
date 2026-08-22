@@ -30,14 +30,22 @@ import org.apache.comet.shims.ShimFileFormat
 
 package object operator {
 
-  def schema2Proto(fields: Seq[StructField]): Seq[OperatorOuterClass.SparkStructField] = {
+  def schema2Proto(
+      fields: Seq[StructField],
+      fieldIdWriteEnabled: Option[Boolean] = None): Seq[OperatorOuterClass.SparkStructField] = {
     val fieldBuilder = OperatorOuterClass.SparkStructField.newBuilder()
     fields.map { field =>
       fieldBuilder.setName(field.name)
-      fieldBuilder.setDataType(serializeDataType(field.dataType).get)
+      val dataType = fieldIdWriteEnabled match {
+        case Some(includeFieldIds) =>
+          serializeDataType(field.dataType, Some(field), Seq(field.name), includeFieldIds)
+        case None =>
+          serializeDataType(field.dataType)
+      }
+      fieldBuilder.setDataType(dataType.get)
       fieldBuilder.setNullable(field.nullable)
       fieldBuilder.clearMetadata()
-      if (ParquetUtils.hasFieldId(field)) {
+      if (fieldIdWriteEnabled.getOrElse(true) && ParquetUtils.hasFieldId(field)) {
         fieldBuilder.putMetadata(
           CometParquetUtils.PARQUET_FIELD_ID_META_KEY,
           ParquetUtils.getFieldId(field).toString)

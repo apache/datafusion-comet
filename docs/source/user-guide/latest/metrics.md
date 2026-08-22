@@ -33,12 +33,22 @@ Comet operators report the following metrics in the Spark SQL UI.
 
 Comet adds some additional metrics:
 
-| Metric                          | Description                                                   |
-| ------------------------------- | ------------------------------------------------------------- |
-| `native shuffle time`           | Total time in native code excluding any child operators.      |
-| `repartition time`              | Time to repartition batches.                                  |
-| `memory pool time`              | Time interacting with memory pool.                            |
-| `encoding and compression time` | Time to encode batches in IPC format and compress using ZSTD. |
+| Metric                          | Description                                                                 |
+| ------------------------------- | --------------------------------------------------------------------------- |
+| `native shuffle time`           | Total time in native code excluding any child operators.                    |
+| `repartition time`              | Time to repartition batches.                                                |
+| `partition interleaving time`   | Time to interleave partitioned batches before writing them.                 |
+| `memory pool time`              | Time interacting with memory pool.                                          |
+| `encoding and compression time` | Time to encode batches in IPC format and compress using ZSTD.               |
+| `disk spilled bytes`            | Actual bytes written to native shuffle spill files on disk.                 |
+| `memory spilled bytes`          | Uncompressed Arrow backing-buffer and partition-index data before spilling. |
+
+Disk and memory spilled bytes measure different representations of the same native shuffle spill.
+Disk spill bytes count the actual bytes written to disk: compressed when shuffle compression is
+enabled and uncompressed when `spark.shuffle.compress=false`. Memory spill bytes follow Spark's
+`memoryBytesSpilled` semantics and include uncompressed in-memory Arrow backing-buffer and
+partition-index data rather than their on-disk size. These values also appear in Spark's task
+metrics and Spark UI as `diskBytesSpilled` and `memoryBytesSpilled`, respectively.
 
 ## Native Metrics
 
@@ -57,13 +67,17 @@ Here is a guide to some of the native metrics.
 
 ### ShuffleWriterExec
 
-| Metric            | Description                                                   |
-| ----------------- | ------------------------------------------------------------- |
-| `elapsed_compute` | Total time excluding any child operators.                     |
-| `repart_time`     | Time to repartition batches.                                  |
-| `ipc_time`        | Time to encode batches in IPC format and compress using ZSTD. |
-| `mempool_time`    | Time interacting with memory pool.                            |
-| `write_time`      | Time spent writing bytes to disk.                             |
+| Metric                 | Description                                                           |
+| ---------------------- | --------------------------------------------------------------------- |
+| `elapsed_compute`      | Total time excluding any child operators.                             |
+| `repart_time`          | Time to repartition batches.                                          |
+| `interleave_time`      | Time to interleave partitioned batches before writing them.           |
+| `ipc_time`             | Time to encode batches in IPC format and compress using ZSTD.         |
+| `mempool_time`         | Time interacting with memory pool.                                    |
+| `write_time`           | Time spent writing bytes to disk.                                     |
+| `spill_count`          | Number of native shuffle spills.                                      |
+| `spilled_bytes`        | Actual bytes written to native shuffle spill files on disk.           |
+| `memory_spilled_bytes` | Uncompressed Arrow backing-buffer and partition-index memory spilled. |
 
 ## Task-Level Input Metrics on Spark 4.1+
 
