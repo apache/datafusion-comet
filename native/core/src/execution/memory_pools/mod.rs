@@ -18,6 +18,7 @@
 mod config;
 mod fair_pool;
 pub mod logging_pool;
+mod spark_client;
 mod task_shared;
 mod unified_pool;
 
@@ -27,6 +28,7 @@ use datafusion::execution::memory_pool::{
 use fair_pool::CometFairMemoryPool;
 use jni::objects::{Global, JObject};
 use once_cell::sync::OnceCell;
+use spark_client::SparkMemoryClient;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use unified_pool::CometUnifiedMemoryPool;
@@ -46,10 +48,10 @@ pub(crate) fn create_memory_pool(
             let per_task_memory_pool =
                 memory_pool_map.entry(task_attempt_id).or_insert_with(|| {
                     let pool: Arc<dyn MemoryPool> = Arc::new(TrackConsumersPool::new(
-                        CometUnifiedMemoryPool::new(
+                        CometUnifiedMemoryPool::new(SparkMemoryClient::new(
                             Arc::clone(&comet_task_memory_manager),
                             task_attempt_id,
-                        ),
+                        )),
                         NonZeroUsize::new(NUM_TRACKED_CONSUMERS).unwrap(),
                     ));
                     PerTaskMemoryPool::new(pool)
@@ -63,7 +65,10 @@ pub(crate) fn create_memory_pool(
                 memory_pool_map.entry(task_attempt_id).or_insert_with(|| {
                     let pool: Arc<dyn MemoryPool> = Arc::new(TrackConsumersPool::new(
                         CometFairMemoryPool::new(
-                            Arc::clone(&comet_task_memory_manager),
+                            SparkMemoryClient::new(
+                                Arc::clone(&comet_task_memory_manager),
+                                task_attempt_id,
+                            ),
                             memory_pool_config.pool_size,
                         ),
                         NonZeroUsize::new(NUM_TRACKED_CONSUMERS).unwrap(),
