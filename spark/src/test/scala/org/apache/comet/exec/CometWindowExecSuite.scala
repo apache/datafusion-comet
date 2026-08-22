@@ -19,6 +19,7 @@
 
 package org.apache.comet.exec
 
+import scala.jdk.CollectionConverters._
 import scala.util.Random
 
 import org.scalactic.source.Position
@@ -33,7 +34,7 @@ import org.apache.spark.sql.execution.window.{WindowExec => SparkWindowExec}
 import org.apache.spark.sql.expressions.Window
 import org.apache.spark.sql.functions.{count, lead, sum}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.DecimalType
+import org.apache.spark.sql.types.{DecimalType, IntegerType, StructField, StructType}
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
@@ -923,6 +924,24 @@ class CometWindowExecSuite extends CometTestBase {
       """)
       checkSparkAnswerAndOperator(df)
     }
+  }
+
+  test("window: FIRST_VALUE/LAST_VALUE decline an empty-struct input") {
+    // DataFusion's ScalarValue::compact panics reconstructing a zero-field StructArray, so
+    // CometFirst/CometLast must decline this schema and let the window run on Spark instead
+    // of letting CometWindowExec crash -- see AggSerde.containsEmptyStruct.
+    val schema =
+      StructType(Seq(StructField("id", IntegerType), StructField("marker", StructType(Nil))))
+    val data = (0 until 3).map(i => Row(i, Row())).asJava
+    spark.createDataFrame(data, schema).createOrReplaceTempView("empty_struct_window")
+
+    checkSparkAnswer(sql("SELECT first_value(marker) OVER () FROM empty_struct_window"))
+    checkSparkAnswer(sql("SELECT last_value(marker) OVER () FROM empty_struct_window"))
+    // NTH_VALUE goes through a different DataFusion code path (a built-in window function,
+    // not an AggregateExpression accumulator) and doesn't hit ScalarValue::compact, so it
+    // needs no equivalent guard -- pinned here so a future regression would be caught.
+    checkSparkAnswer(
+      sql("SELECT nth_value(marker, 1) OVER (ORDER BY id) FROM empty_struct_window"))
   }
 
   test("window: LAST_VALUE with ROWS frame") {

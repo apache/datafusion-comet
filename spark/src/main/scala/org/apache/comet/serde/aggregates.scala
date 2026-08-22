@@ -240,6 +240,9 @@ object CometFirst extends CometAggregateExpressionSerde[First] {
   override def getCompatibleNotes(): Seq[String] = Seq(
     "This function is not deterministic. Results may not match Spark.")
 
+  override def getSupportLevel(expr: First): SupportLevel =
+    AggSerde.firstLastSupportLevel(expr.dataType)
+
   override def convert(
       aggExpr: AggregateExpression,
       first: First,
@@ -274,6 +277,9 @@ object CometLast extends CometAggregateExpressionSerde[Last] {
 
   override def getCompatibleNotes(): Seq[String] = Seq(
     "This function is not deterministic. Results may not match Spark.")
+
+  override def getSupportLevel(expr: Last): SupportLevel =
+    AggSerde.firstLastSupportLevel(expr.dataType)
 
   override def convert(
       aggExpr: AggregateExpression,
@@ -1027,6 +1033,35 @@ object AggSerde {
     dt match {
       case ByteType | ShortType | IntegerType | LongType => true
       case _ => false
+    }
+  }
+
+  /**
+   * Whether `dt` is, or contains (recursively, through struct/array/map), a zero-field struct.
+   * DataFusion's `ScalarValue::compact` -- used by the `FirstValue`/`LastValue` accumulators that
+   * back Comet's `First`/`Last` -- calls `StructArray::new` unconditionally when reconstructing a
+   * struct, which panics for a zero-field struct (no child array to derive its row count from).
+   * `First`/`Last` decline such schemas until that's fixed upstream; see
+   * https://github.com/apache/datafusion-comet/pull/5414.
+   */
+  def containsEmptyStruct(dt: DataType): Boolean = dt match {
+    case StructType(fields) if fields.isEmpty => true
+    case StructType(fields) => fields.exists(f => containsEmptyStruct(f.dataType))
+    case ArrayType(elementType, _) => containsEmptyStruct(elementType)
+    case MapType(keyType, valueType, _) =>
+      containsEmptyStruct(keyType) || containsEmptyStruct(valueType)
+    case _ => false
+  }
+
+  /** Shared support level for `First` / `Last`, which can't accept an empty struct. */
+  def firstLastSupportLevel(dt: DataType): SupportLevel = {
+    if (containsEmptyStruct(dt)) {
+      Unsupported(
+        Some(
+          "FIRST/LAST on a schema containing an empty struct is not supported " +
+            "(DataFusion's ScalarValue::compact panics on zero-field structs)"))
+    } else {
+      Compatible()
     }
   }
 
