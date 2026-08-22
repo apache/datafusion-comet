@@ -28,10 +28,9 @@ to Spark in some cases, especially when the data contains both positive and nega
 case that is not of concern for many users. If it is a concern, setting `spark.comet.exec.strictFloatingPoint=true`
 will make relevant operations fall back to Spark.
 
-For `array_min` and `array_max`, Spark retains the first element when signed zeros compare equal.
-The native implementation instead orders `-0.0` before `+0.0`, so a tied minimum can return `-0.0`
-where Spark returns `+0.0`, and a tied maximum can return `+0.0` where Spark returns `-0.0`.
-With `spark.comet.exec.strictFloatingPoint=true`, these expressions use Spark's codegen dispatcher
-inside Comet, or fall back to Spark if that dispatcher is disabled. The native path remains available
-when the expression's `allowIncompatible` setting is explicitly enabled. Non-strict behavior is
-unchanged. Native signed-zero parity is tracked by [#5401](https://github.com/apache/datafusion-comet/issues/5401).
+`array_min` and `array_max` use Spark-compatible native comparisons in both strict and non-strict
+floating-point modes. Signed zeros compare equal, and all NaN representations compare equal and
+greater than non-NaN values. The original first equal element is retained: for example,
+`array_min(array(0.0D, -0.0D))` returns `0.0`, while reversing those elements returns `-0.0`.
+The same ordering applies recursively to floating-point fields in arrays and structs. These
+expressions do not require Spark's codegen dispatcher for floating-point compatibility.

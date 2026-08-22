@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+mod array_extrema;
 mod array_insert;
 mod array_position;
 mod array_slice;
@@ -25,6 +26,7 @@ mod get_array_struct_fields;
 mod list_extract;
 mod size;
 
+pub use array_extrema::SparkArrayExtrema;
 pub use array_insert::ArrayInsert;
 pub use array_position::SparkArrayPositionFunc;
 pub use array_slice::SparkArraySlice;

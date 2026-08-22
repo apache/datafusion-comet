@@ -23,7 +23,7 @@ import scala.util.Random
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.CometTestBase
-import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayExcept, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayRepeat}
+import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayExcept, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayRepeat}
 import org.apache.spark.sql.catalyst.expressions.{ArrayContains, ArrayRemove}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions._
@@ -555,6 +555,59 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
             "SELECT arrays_overlap(array('a', null), array('b', null)) from t1 where _1 is not null"))
           checkSparkAnswerAndOperator(spark.sql(
             "SELECT arrays_overlap((CASE WHEN _2 =_3 THEN array(_6, _7) END), array(_6, _7)) FROM t1"));
+        }
+      }
+    }
+  }
+
+  test("array extrema - runtime NaN representations") {
+    withParquetTable(Seq((Float.NaN, Double.NaN)), "floating_point_extrema") {
+      for (strict <- Seq(false, true)) {
+        withSQLConf(
+          CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> strict.toString,
+          CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false",
+          CometConf.getExprAllowIncompatConfigKey(classOf[ArrayMin]) -> "false",
+          CometConf.getExprAllowIncompatConfigKey(classOf[ArrayMax]) -> "false") {
+          for (function <- Seq("array_min", "array_max")) {
+            // Parquet canonicalizes NaNs. Negating the column after the scan supplies a
+            // different representation at runtime; ordinary SQL equality cannot check
+            // that extrema preserve the bits of the first equal NaN.
+            val query = sql(s"""
+              SELECT $function(array(-_1, _1)), $function(array(_1, -_1)),
+                     $function(array(-_2, _2)), $function(array(_2, -_2)),
+                     $function(array(-_1, CAST(1 AS FLOAT))),
+                     $function(array(-_2, CAST(1 AS DOUBLE))),
+                     $function(array(named_struct('v', -_1, 'n', 1),
+                                     named_struct('v', _1, 'n', 1))).v,
+                     $function(array(named_struct('v', -_2, 'n', 1),
+                                     named_struct('v', _2, 'n', 1))).v
+              FROM floating_point_extrema
+            """)
+            checkSparkAnswerAndOperator(query)
+            val row = query.head()
+            val floatBits = java.lang.Float.floatToRawIntBits(Float.NaN)
+            val doubleBits = java.lang.Double.doubleToRawLongBits(Double.NaN)
+            val negativeFloatBits = floatBits | Int.MinValue
+            val negativeDoubleBits = doubleBits | Long.MinValue
+            assert(java.lang.Float.floatToRawIntBits(row.getFloat(0)) == negativeFloatBits)
+            assert(java.lang.Float.floatToRawIntBits(row.getFloat(1)) == floatBits)
+            assert(java.lang.Double.doubleToRawLongBits(row.getDouble(2)) == negativeDoubleBits)
+            assert(java.lang.Double.doubleToRawLongBits(row.getDouble(3)) == doubleBits)
+            val expectedFloatBits = if (function == "array_min") {
+              java.lang.Float.floatToRawIntBits(1.0f)
+            } else {
+              negativeFloatBits
+            }
+            val expectedDoubleBits = if (function == "array_min") {
+              java.lang.Double.doubleToRawLongBits(1.0d)
+            } else {
+              negativeDoubleBits
+            }
+            assert(java.lang.Float.floatToRawIntBits(row.getFloat(4)) == expectedFloatBits)
+            assert(java.lang.Double.doubleToRawLongBits(row.getDouble(5)) == expectedDoubleBits)
+            assert(java.lang.Float.floatToRawIntBits(row.getFloat(6)) == negativeFloatBits)
+            assert(java.lang.Double.doubleToRawLongBits(row.getDouble(7)) == negativeDoubleBits)
+          }
         }
       }
     }
