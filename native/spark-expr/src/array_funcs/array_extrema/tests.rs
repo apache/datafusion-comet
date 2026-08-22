@@ -200,6 +200,135 @@ fn assert_winners(
     }
 }
 
+#[test]
+fn sparse_nested_results_bound_child_capacity() {
+    let sparse_rows = 8192;
+    let child_count = 1000;
+    let leaves: ArrayRef = Arc::new(Float64Array::from_iter_values((0..child_count).map(
+        |i| match i {
+            0 => -0.0,
+            1 => f64::from_bits(0xfff8_0000_0000_1234),
+            _ => i as f64,
+        },
+    )));
+    let inner = list(Arc::clone(&leaves), &[0, child_count], None);
+    let inner: ArrayRef = Arc::new(inner);
+    let dictionary: ArrayRef = Arc::new(DictionaryArray::<Int8Type>::new(
+        Int8Array::from(vec![127]),
+        Arc::new(Float64Array::from_iter_values((0..128).map(f64::from))),
+    ));
+    let view: ArrayRef = Arc::new(ListViewArray::new(
+        Arc::new(Field::new_list_field(DataType::Float64, false)),
+        vec![0].into(),
+        vec![child_count].into(),
+        Arc::clone(&leaves),
+        None,
+    ));
+    let fixed: ArrayRef = Arc::new(FixedSizeListArray::new(
+        Arc::new(Field::new_list_field(DataType::Float64, false)),
+        child_count,
+        leaves,
+        None,
+    ));
+    let mut sparse_offsets = vec![1; sparse_rows + 1];
+    sparse_offsets[0] = 0;
+    let sparse = list(Arc::clone(&fixed), &sparse_offsets, None);
+    let deep: ArrayRef = Arc::new(list(Arc::new(sparse), &[0, sparse_rows as i32], None));
+    let children = [
+        Arc::clone(&inner),
+        Arc::new(large_list(
+            inner.as_any().downcast_ref::<ListArray>().unwrap(),
+        )) as ArrayRef,
+        Arc::new(list(fixed, &[0, 1], None)) as ArrayRef,
+        Arc::new(FixedSizeListArray::new(
+            Arc::new(Field::new_list_field(inner.data_type().clone(), true)),
+            1,
+            Arc::clone(&inner),
+            None,
+        )) as ArrayRef,
+        Arc::new(StructArray::new(
+            vec![
+                Arc::new(Field::new("items", inner.data_type().clone(), true)),
+                Arc::new(Field::new(
+                    "dictionary",
+                    dictionary.data_type().clone(),
+                    false,
+                )),
+                Arc::new(Field::new("view", view.data_type().clone(), true)),
+            ]
+            .into(),
+            vec![inner, dictionary, view],
+            None,
+        )) as ArrayRef,
+        Arc::new(FixedSizeListArray::new(
+            Arc::new(Field::new_list_field(DataType::Float64, false)),
+            0,
+            Arc::new(Float64Array::from(Vec::<f64>::new())),
+            Some(NullBuffer::new_valid(1)),
+        )) as ArrayRef,
+        Arc::new(StructArray::new_empty_fields(1, None)) as ArrayRef,
+        deep,
+    ];
+    for children in children {
+        for row_count in [1, sparse_rows] {
+            let mut offsets = vec![1; row_count + 1];
+            offsets[0] = 0;
+            let input = list(Arc::clone(&children), &offsets, None);
+            for input in [Arc::new(large_list(&input)) as ArrayRef, Arc::new(input)] {
+                for is_min in [true, false] {
+                    let result = extrema(input.as_ref(), is_min);
+                    assert_eq!(result.len(), row_count);
+                    assert_eq!(result.null_count(), row_count - 1);
+                    assert_same_value(result.as_ref(), 0, children.as_ref(), 0);
+                    assert!(
+                        result.get_buffer_memory_size() < 256 * 1024,
+                        "{} retained {} bytes for one selected nested value",
+                        result.data_type(),
+                        result.get_buffer_memory_size(),
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn nested_results_do_not_retain_losing_values() {
+    let rows = 512;
+    for (is_min, winner) in [(true, None), (true, Some(-0.0)), (false, Some(2.0))] {
+        let mut leaves = Vec::new();
+        let mut offsets = vec![0];
+        for _ in 0..rows {
+            leaves.extend(winner);
+            offsets.push(leaves.len() as i32);
+            leaves.extend(std::iter::repeat_n(1.0, 128));
+            offsets.push(leaves.len() as i32);
+        }
+        let children = list(Arc::new(Float64Array::from(leaves)), &offsets, None);
+        for children in [
+            Arc::new(large_list(&children)) as ArrayRef,
+            Arc::new(children),
+        ] {
+            let offsets: Vec<i32> = (0..=rows).map(|row| (row * 2) as i32).collect();
+            let input = list(Arc::clone(&children), &offsets, None);
+            for input in [Arc::new(large_list(&input)) as ArrayRef, Arc::new(input)] {
+                let result = extrema(input.as_ref(), is_min);
+                assert_eq!(result.len(), rows);
+                assert_eq!(result.null_count(), 0);
+                for row in 0..rows {
+                    assert_same_value(result.as_ref(), row, children.as_ref(), row * 2);
+                }
+                assert!(
+                    result.get_buffer_memory_size() < 32 * 1024,
+                    "{} retained {} bytes for small nested winners",
+                    result.data_type(),
+                    result.get_buffer_memory_size(),
+                );
+            }
+        }
+    }
+}
+
 macro_rules! float_tests {
     ($module:ident, $arrow_type:ty, $native:ident, $positive:expr, $negative:expr, $signaling:expr, $negative_signaling:expr) => {
         mod $module {

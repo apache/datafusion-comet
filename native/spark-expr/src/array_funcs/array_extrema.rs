@@ -19,8 +19,9 @@ use std::cmp::Ordering;
 use std::sync::Arc;
 
 use arrow::array::{
-    make_comparator, new_empty_array, Array, ArrayRef, AsArray, DynComparator, GenericListArray,
-    GenericListViewArray, OffsetSizeTrait, PrimitiveArray, PrimitiveBuilder, UInt64Array,
+    make_array, make_comparator, new_empty_array, Array, ArrayRef, AsArray, DynComparator,
+    FixedSizeListArray, GenericListArray, GenericListViewArray, MutableArrayData, OffsetSizeTrait,
+    PrimitiveArray, PrimitiveBuilder, StructArray, UInt64Array,
 };
 use arrow::buffer::NullBuffer;
 use arrow::compute::{cast, take, SortOptions};
@@ -207,7 +208,75 @@ fn nested_extrema<O: OffsetSizeTrait>(
     }
     // Take from the original values, not comparator-normalized or reconstructed values.
     // This preserves nested fields, dictionary types, signed zeros, and NaN payloads.
-    Ok(take(values.as_ref(), &UInt64Array::from(indices), None)?)
+    take_extrema_values(values, &UInt64Array::from(indices))
+}
+
+fn take_extrema_values(values: &ArrayRef, indices: &UInt64Array) -> Result<ArrayRef> {
+    let nulls = || {
+        Some(
+            indices
+                .iter()
+                .map(|index| index.is_some_and(|index| values.is_valid(index as usize)))
+                .collect::<NullBuffer>(),
+        )
+    };
+    match values.data_type() {
+        DataType::List(field) | DataType::LargeList(field) => {
+            // Winners are distinct, so flat-list take cannot amplify the source here.
+            // Nested children can amplify capacity recursively even with one output row.
+            if indices.len() <= values.len() && !field.data_type().is_nested() {
+                let mut result = take(values.as_ref(), indices, None)?;
+                // Arrow estimates child capacity from all inputs, including large losers.
+                // Release unused capacity before downstream operators reserve this result.
+                result.shrink_to_fit();
+                return Ok(result);
+            }
+            let data = values.to_data();
+            // Start children empty, including fixed-width children nested inside lists.
+            let mut result = MutableArrayData::new(vec![&data], true, 0);
+            for index in indices.iter() {
+                match index.filter(|&index| values.is_valid(index as usize)) {
+                    Some(index) => result.extend(0, index as usize, index as usize + 1),
+                    None => result.extend_nulls(1),
+                }
+            }
+            Ok(make_array(result.freeze()))
+        }
+        DataType::Struct(fields) => {
+            let columns = values
+                .as_struct()
+                .columns()
+                .iter()
+                .map(|column| take_extrema_values(column, indices))
+                .collect::<Result<Vec<_>>>()?;
+            Ok(Arc::new(StructArray::try_new_with_length(
+                fields.clone(),
+                columns,
+                nulls(),
+                indices.len(),
+            )?))
+        }
+        DataType::FixedSizeList(field, size) => {
+            let child_indices: UInt64Array = indices
+                .iter()
+                .flat_map(|index| {
+                    let index = index.filter(|&index| values.is_valid(index as usize));
+                    (0..*size as u64)
+                        .map(move |offset| index.map(|index| index * *size as u64 + offset))
+                })
+                .collect();
+            let children =
+                take_extrema_values(values.as_fixed_size_list().values(), &child_indices)?;
+            Ok(Arc::new(FixedSizeListArray::try_new(
+                Arc::clone(field),
+                *size,
+                children,
+                nulls(),
+            )?))
+        }
+        // Preserve dictionary keys and shared ListView values with their existing kernels.
+        _ => Ok(take(values.as_ref(), indices, None)?),
+    }
 }
 
 /// Build one comparator per child array, not per row. This is local to extrema:
