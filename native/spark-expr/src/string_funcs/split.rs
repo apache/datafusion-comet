@@ -15,7 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::array::{Array, ArrayBuilder, ArrayRef, BufferBuilder, GenericListArray, GenericStringArray, GenericStringBuilder, ListArray, NullBufferBuilder, OffsetSizeTrait};
+use arrow::array::{
+    Array, ArrayBuilder, ArrayRef, BufferBuilder, GenericListArray, GenericStringArray,
+    GenericStringBuilder, ListArray, NullBufferBuilder, OffsetSizeTrait,
+};
 use arrow::buffer::OffsetBuffer;
 use arrow::datatypes::{DataType, Field};
 use datafusion::common::{
@@ -96,7 +99,10 @@ pub fn spark_split(args: &[ColumnarValue]) -> DataFusionResult<ColumnarValue> {
 
             let s = string.as_ref().unwrap();
             let regex = Regex::new(pattern_str).map_err(|e| {
-                DataFusionError::Execution(format!("Invalid regex pattern '{}': {}", pattern_str, e))
+                DataFusionError::Execution(format!(
+                    "Invalid regex pattern '{}': {}",
+                    pattern_str, e
+                ))
             })?;
 
             let mut str_offsets = BufferBuilder::<i32>::new(8);
@@ -104,7 +110,14 @@ pub fn spark_split(args: &[ColumnarValue]) -> DataFusionResult<ColumnarValue> {
             str_offsets.append(0);
 
             let mut scratch = Vec::new();
-            push_split_parts(s, &regex, limit, &mut str_offsets, &mut str_values, &mut scratch);
+            push_split_parts(
+                s,
+                &regex,
+                limit,
+                &mut str_offsets,
+                &mut str_values,
+                &mut scratch,
+            );
 
             let item_offsets_buffer = OffsetBuffer::new(str_offsets.finish().into());
             let item_values_buffer = str_values.finish();
@@ -185,7 +198,11 @@ pub fn spark_split_sql(args: &[ColumnarValue]) -> DataFusionResult<ColumnarValue
 
             if delimiter.is_empty() {
                 for ch in string.chars() {
-                    append_str(ch.encode_utf8(&mut [0; 4]), &mut str_offsets, &mut str_values);
+                    append_str(
+                        ch.encode_utf8(&mut [0; 4]),
+                        &mut str_offsets,
+                        &mut str_values,
+                    );
                 }
             } else {
                 for p in string.split(delimiter) {
@@ -215,9 +232,12 @@ pub fn spark_split_sql(args: &[ColumnarValue]) -> DataFusionResult<ColumnarValue
 }
 
 fn is_regex_literal(pattern: &str) -> bool {
-    !pattern.chars().any(|c| matches!(c,
-        '.' | '^' | '$' | '*' | '+' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '|' | '\\'
-    ))
+    !pattern.chars().any(|c| {
+        matches!(
+            c,
+            '.' | '^' | '$' | '*' | '+' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '|' | '\\'
+        )
+    })
 }
 
 #[inline]
@@ -246,7 +266,7 @@ fn push_split_literal<'a, O: OffsetSizeTrait>(
         let cap = (limit - 1) as usize;
         let mut count = 0;
         let mut last_end = 0;
-        for (start, part) in string.match_indices(delimiter) {
+        for (start, _) in string.match_indices(delimiter) {
             if count >= cap {
                 break;
             }
@@ -262,25 +282,97 @@ fn push_split_literal<'a, O: OffsetSizeTrait>(
     }
 }
 
-fn split_array(
-    string_array: &dyn arrow::array::Array,
+fn split_generic_literal<O: OffsetSizeTrait>(
+    string_array: &GenericStringArray<O>,
     pattern: &str,
     limit: i32,
 ) -> DataFusionResult<ColumnarValue> {
-    if is_regex_literal(pattern) {
-        spli
-    }
-    // Compile regex once for the entire array
-    let regex = Regex::new(pattern).map_err(|e| {
-        DataFusionError::Execution(format!("Invalid regex pattern '{}': {}", pattern, e))
-    })?;
+    let len = string_array.len();
+    let mut list_offsets: Vec<O> = Vec::with_capacity(len + 1);
 
+    let estimated_items = (len * 4).max(16);
+    let bytes_capacity = string_array.value_data().len();
+
+    let mut str_offsets = BufferBuilder::<O>::new(estimated_items + 1);
+    let mut str_values = BufferBuilder::<u8>::new(bytes_capacity);
+    str_offsets.append(O::usize_as(0));
+
+    let mut scratch = Vec::new();
+    list_offsets.push(O::usize_as(0));
+
+    for i in 0..len {
+        if !string_array.is_null(i) {
+            let s = string_array.value(i);
+            push_split_literal(
+                s,
+                pattern,
+                limit,
+                &mut str_offsets,
+                &mut str_values,
+                &mut scratch,
+            );
+        }
+        list_offsets.push(O::usize_as(str_offsets.len() - 1));
+    }
+
+    let item_offsets_buffer = OffsetBuffer::new(str_offsets.finish().into());
+    let item_values_buffer = str_values.finish();
+
+    let string_array_values = unsafe {
+        GenericStringArray::<O>::new_unchecked(item_offsets_buffer, item_values_buffer, None)
+    };
+    let values_array = Arc::new(string_array_values) as ArrayRef;
+
+    let item_type = if O::IS_LARGE {
+        DataType::LargeUtf8
+    } else {
+        DataType::Utf8
+    };
+    let field = Arc::new(Field::new("item", item_type, false));
+    let list_array = GenericListArray::<O>::new(
+        field,
+        OffsetBuffer::new(list_offsets.into()),
+        values_array,
+        string_array.nulls().cloned(),
+    );
+
+    Ok(ColumnarValue::Array(Arc::new(list_array)))
+}
+
+fn split_array(
+    string_array: &dyn Array,
+    pattern: &str,
+    limit: i32,
+) -> DataFusionResult<ColumnarValue> {
+    let is_literal = is_regex_literal(pattern);
     match string_array.data_type() {
         DataType::Utf8 => {
-            split_generic::<i32>(as_generic_string_array::<i32>(string_array)?, &regex, limit)
+            let string_array = as_generic_string_array::<i32>(string_array)?;
+            if is_literal {
+                split_generic_literal::<i32>(string_array, pattern, limit)
+            } else {
+                let regex = Regex::new(pattern).map_err(|e| {
+                    DataFusionError::Execution(format!(
+                        "Invalid regex pattern '{}': {}",
+                        pattern, e
+                    ))
+                })?;
+                split_generic::<i32>(string_array, &regex, limit)
+            }
         }
         DataType::LargeUtf8 => {
-            split_generic::<i64>(as_generic_string_array::<i64>(string_array)?, &regex, limit)
+            let string_array = as_generic_string_array::<i64>(string_array)?;
+            if is_literal {
+                split_generic_literal::<i64>(string_array, pattern, limit)
+            } else {
+                let regex = Regex::new(pattern).map_err(|e| {
+                    DataFusionError::Execution(format!(
+                        "Invalid regex pattern '{}': {}",
+                        pattern, e
+                    ))
+                })?;
+                split_generic::<i64>(string_array, &regex, limit)
+            }
         }
         _ => exec_err!(
             "split expects Utf8 or LargeUtf8 string array, got {:?}",
@@ -393,7 +485,14 @@ fn split_generic<O: OffsetSizeTrait>(
     for i in 0..len {
         if !string_array.is_null(i) {
             let s = string_array.value(i);
-            push_split_parts(s, regex, limit, &mut str_offsets, &mut str_values, &mut scratch);
+            push_split_parts(
+                s,
+                regex,
+                limit,
+                &mut str_offsets,
+                &mut str_values,
+                &mut scratch,
+            );
         }
         list_offsets.push(O::usize_as(str_offsets.len() - 1));
     }
@@ -402,11 +501,7 @@ fn split_generic<O: OffsetSizeTrait>(
     let item_values_buffer = str_values.finish();
 
     let string_array_values = unsafe {
-        GenericStringArray::<O>::new_unchecked(
-            item_offsets_buffer,
-            item_values_buffer,
-            None,
-        )
+        GenericStringArray::<O>::new_unchecked(item_offsets_buffer, item_values_buffer, None)
     };
     let values_array = Arc::new(string_array_values) as ArrayRef;
 
@@ -435,7 +530,8 @@ fn split_sql_generic_scalar<O: OffsetSizeTrait>(
 
     let estimated_items = (len * 4).max(16);
     let bytes_capacity = string_array.value_data().len();
-    let mut values_builder = GenericStringBuilder::<O>::with_capacity(estimated_items, bytes_capacity);
+    let mut values_builder =
+        GenericStringBuilder::<O>::with_capacity(estimated_items, bytes_capacity);
 
     offsets.push(O::usize_as(0));
 
@@ -472,7 +568,8 @@ fn split_sql_generic_scalar_array<O: OffsetSizeTrait, D: OffsetSizeTrait>(
 
     let estimated_items = (len * 4).max(16);
     let bytes_capacity = string.len() * len;
-    let mut values_builder = GenericStringBuilder::<O>::with_capacity(estimated_items, bytes_capacity);
+    let mut values_builder =
+        GenericStringBuilder::<O>::with_capacity(estimated_items, bytes_capacity);
 
     let mut nulls = NullBufferBuilder::new(len);
     offsets.push(O::usize_as(0));
@@ -513,8 +610,8 @@ fn split_sql_generic_array<O: OffsetSizeTrait, D: OffsetSizeTrait>(
 
     let estimated_items = (len * 4).max(16);
     let bytes_capacity = string_array.value_data().len();
-    let mut values_builder = GenericStringBuilder::<O>::with_capacity(estimated_items, bytes_capacity);
-
+    let mut values_builder =
+        GenericStringBuilder::<O>::with_capacity(estimated_items, bytes_capacity);
 
     let mut nulls = NullBufferBuilder::new(len);
     offsets.push(O::usize_as(0));
