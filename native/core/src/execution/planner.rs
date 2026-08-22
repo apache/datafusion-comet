@@ -4905,6 +4905,47 @@ mod tests {
         assert_eq!("ScanExec", hash_join_exec.children[1].native_plan.name());
     }
 
+    #[test]
+    fn projection_rolls_up_same_plan_id_child_metrics() {
+        let op_scan = Operator {
+            plan_id: 1,
+            ..create_scan()
+        };
+        let hash_agg = Operator {
+            plan_id: 2,
+            sql_text_pool: vec![],
+            children: vec![op_scan],
+            op_struct: Some(OpStruct::HashAgg(spark_operator::HashAggregate {
+                grouping_exprs: vec![create_bound_reference(0)],
+                agg_exprs: vec![],
+                mode: spark_operator::AggregateMode::Partial as i32,
+                expr_modes: vec![],
+                initial_input_buffer_offset: 0,
+            })),
+        };
+        let projection = Operator {
+            plan_id: 2,
+            sql_text_pool: vec![],
+            children: vec![hash_agg],
+            op_struct: Some(OpStruct::Projection(spark_operator::Projection {
+                project_list: vec![create_bound_reference(0)],
+            })),
+        };
+
+        let planner = PhysicalPlanner::default();
+        let (_scans, _shuffle_scans, projection_exec) =
+            planner.create_plan(&projection, &mut vec![], 1).unwrap();
+
+        assert_eq!("ProjectionExec", projection_exec.native_plan.name());
+        assert_eq!(1, projection_exec.additional_native_plans.len());
+        assert_eq!(
+            "AggregateExec",
+            projection_exec.additional_native_plans[0].name()
+        );
+        assert_eq!(1, projection_exec.children.len());
+        assert_eq!("ScanExec", projection_exec.children[0].native_plan.name());
+    }
+
     fn create_bound_reference(index: i32) -> Expr {
         Expr {
             expr_struct: Some(Bound(spark_expression::BoundReference {

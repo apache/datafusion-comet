@@ -25,6 +25,7 @@ import org.apache.hadoop.fs.Path
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.expressions.Cast
+import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial}
 import org.apache.spark.sql.catalyst.optimizer.EliminateSorts
 import org.apache.spark.sql.comet.CometHashAggregateExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
@@ -47,6 +48,47 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   // ANSI-mode variants opt in to ANSI explicitly via withSQLConf.
   override protected def sparkConf: SparkConf =
     super.sparkConf.set(SQLConf.ANSI_ENABLED.key, "false")
+
+  test("grouped aggregate metrics are forwarded without fabricating global metrics") {
+    val aggregateMetricNames =
+      Set("spill_count", "spilled_bytes", "spilled_rows", "peak_mem_used")
+
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "2") {
+      withParquetTable((0 until 1024).map(i => (i % 64, i)), "tbl", false) {
+        val grouped = sql("SELECT _1, SUM(_2) FROM tbl GROUP BY _1")
+        assert(grouped.collect().length == 64)
+
+        val groupedAggregates = stripAQEPlan(grouped.queryExecution.executedPlan).collect {
+          case aggregate: CometHashAggregateExec => aggregate
+        }
+        assert(groupedAggregates.exists(_.modes.contains(Partial)))
+        assert(groupedAggregates.exists(_.modes.contains(Final)))
+        groupedAggregates.foreach { aggregate =>
+          assert(aggregateMetricNames.subsetOf(aggregate.metrics.keySet))
+          assert(aggregate.metrics("spill_count").metricType == "sum")
+          assert(aggregate.metrics("spilled_bytes").metricType == "size")
+          assert(aggregate.metrics("spilled_rows").metricType == "sum")
+          assert(aggregate.metrics("peak_mem_used").metricType == "size")
+          assert(
+            aggregate.metrics("peak_mem_used").value > 0L,
+            s"Expected peak aggregate memory for modes ${aggregate.modes}")
+        }
+
+        val global = sql("SELECT SUM(_2) FROM tbl")
+        assert(global.collect().length == 1)
+
+        val globalAggregates = stripAQEPlan(global.queryExecution.executedPlan).collect {
+          case aggregate: CometHashAggregateExec => aggregate
+        }
+        assert(globalAggregates.nonEmpty)
+        globalAggregates.foreach { aggregate =>
+          assert(aggregateMetricNames.intersect(aggregate.metrics.keySet).isEmpty)
+        }
+      }
+    }
+  }
 
   test("collect_list over struct with non-nullable fields") {
     // Building a struct from non-nullable columns yields non-nullable struct fields. The native

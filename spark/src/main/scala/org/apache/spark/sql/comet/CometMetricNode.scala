@@ -203,6 +203,14 @@ object CometMetricNode {
         "total time (in ms) spent in this operator"))
   }
 
+  def aggregateMetrics(sc: SparkContext): Map[String, SQLMetric] = {
+    Map(
+      "spill_count" -> SQLMetrics.createMetric(sc, "number of spills"),
+      "spilled_bytes" -> SQLMetrics.createSizeMetric(sc, "total spilled bytes"),
+      "spilled_rows" -> SQLMetrics.createMetric(sc, "number of spilled rows"),
+      "peak_mem_used" -> SQLMetrics.createSizeMetric(sc, "peak native aggregate memory"))
+  }
+
   /**
    * Base SQL Metrics for ScanExec and BatchScanExec These are needed for various Spark systems to
    * function properly, and are calculated on the general iterator created by the scan operator,

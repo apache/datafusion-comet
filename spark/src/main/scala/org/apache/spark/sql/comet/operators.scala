@@ -2099,6 +2099,15 @@ case class CometHashAggregateExec(
   override def hashCode(): Int =
     Objects.hashCode(output, groupingExpressions, aggregateExpressions, input, modes, child)
 
+  override lazy val metrics: Map[String, SQLMetric] = {
+    val baseline = CometMetricNode.baselineMetrics(sparkContext)
+    if (groupingExpressions.nonEmpty) {
+      baseline ++ CometMetricNode.aggregateMetrics(sparkContext)
+    } else {
+      baseline
+    }
+  }
+
   override protected def outputExpressions: Seq[NamedExpression] = resultExpressions
 }
 
