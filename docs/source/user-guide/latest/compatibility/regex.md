@@ -22,16 +22,18 @@ under the License.
 Comet evaluates Spark regular-expression expressions (`rlike`, `regexp_replace`, `split`,
 `regexp_extract`, `regexp_extract_all`, `regexp_instr`) two ways:
 
-- **Codegen dispatcher (default)** — Spark's own `doGenCode` for the expression runs inside Comet's
+- **Codegen dispatcher** — Spark's own `doGenCode` for the expression runs inside Comet's
   Arrow-direct codegen dispatcher (the same dispatcher used by Comet's `ScalaUDF` codegen path).
   This is 100% compatible with Spark, at the cost of one JNI round-trip per batch. It is enabled by
   default (`spark.comet.exec.scalaUDF.codegen.enabled=true`); if the dispatcher is disabled, regex
-  expressions fall back to Spark.
+  expressions fall back to Spark. This is the default for every regex expression except an
+  in-subset `rlike` literal (see below).
 - **Native (rust) engine** — the Rust [`regex`] crate, run natively with no JNI overhead. It is
-  faster but has different semantics from Java regex (see below), so it is **opt-in per expression**
-  via that expression's `allowIncompatible` flag. `rlike`, `regexp_replace`, `split`,
-  `regexp_extract`, and `regexp_extract_all` have a native implementation; `regexp_instr` does not
-  and always runs through the codegen dispatcher.
+  faster but has different semantics from Java regex (see below). For `rlike`, a plan-time
+  analyzer admits a conservative subset of `UTF8_BINARY` literal patterns and runs those natively
+  **by default**. Every other `rlike` pattern, and every other regex expression, still requires
+  that expression's `allowIncompatible` flag. `regexp_instr` has no native implementation and
+  always runs through the codegen dispatcher.
 
 | SQL                  | Native (rust) opt-in config                                 |
 | -------------------- | ----------------------------------------------------------- |
@@ -41,9 +43,13 @@ Comet evaluates Spark regular-expression expressions (`rlike`, `regexp_replace`,
 | `regexp_extract_all` | `spark.comet.expression.RegExpExtractAll.allowIncompatible` |
 | `split`              | `spark.comet.expression.StringSplit.allowIncompatible`      |
 
-When the native path is opted in but a case has no native implementation (for example a non-scalar
-`rlike` pattern, `regexp_replace` with a non-1 offset, or `regexp_extract` with a non-literal
-pattern or idx), Comet routes that case through the codegen dispatcher.
+`spark.comet.expression.RLike.allowIncompatible` only forces the native Rust path for literal
+patterns the analyzer cannot prove equivalent to Java regex. It is not needed for in-subset
+literals, and it does not apply to non-literal or NULL patterns.
+
+When the native path is selected but a case has no native implementation (for example a
+non-scalar `rlike` pattern, `regexp_replace` with a non-1 offset, or `regexp_extract` with a
+non-literal pattern or idx), Comet routes that case through the codegen dispatcher.
 
 ## Disabling Comet for individual regex expressions
 
@@ -63,19 +69,22 @@ the engine selector:
 
 ## Choosing an engine
 
-|                      | Rust engine                                                                                                         | Codegen dispatcher (default)                                                                                        |
+|                      | Rust engine                                                                                                         | Codegen dispatcher                                                                                                  |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| **Compatibility**    | Differs from Java regex (see below)                                                                                 | 100% compatible with Spark                                                                                          |
+| **Compatibility**    | In-subset `rlike` literals match Java regex; other patterns may differ (see below)                                  | 100% compatible with Spark                                                                                          |
 | **Feature coverage** | `rlike`, `regexp_replace`, `split`, `regexp_extract`, `regexp_extract_all` natively; `regexp_instr` via fallthrough | All regexp expressions (`rlike`, `regexp_extract`, `regexp_extract_all`, `regexp_instr`, `regexp_replace`, `split`) |
 | **Performance**      | Fully native, no JNI overhead                                                                                       | One JNI round-trip per batch (Arrow vectors stay columnar)                                                          |
 | **Pattern support**  | Linear-time subset only                                                                                             | All Java regex features (backreferences, lookaround, etc.)                                                          |
+| **`rlike` default**  | Used automatically for analyzer-admitted `UTF8_BINARY` literals                                                     | Used for every other `rlike` pattern                                                                                |
 
-The **Rust engine** is faster but cannot match Java regex semantics for every pattern. Opting in per
-expression (for example `spark.comet.expression.RLike.allowIncompatible=true`) declares acceptance
-of those differences.
+The **Rust engine** is faster but cannot match Java regex semantics for every pattern. For `rlike`,
+Comet therefore runs only the analyzer-admitted subset natively by default. Setting
+`spark.comet.expression.RLike.allowIncompatible=true` forces the Rust path for other literal
+patterns and declares acceptance of any remaining differences. The other regex expressions still
+require their own `allowIncompatible` flag.
 
-The **codegen dispatcher** is the default and is enabled by `spark.comet.exec.scalaUDF.codegen.enabled`,
-so it can be disabled globally to fall back to Spark for the regex family.
+The **codegen dispatcher** is enabled by `spark.comet.exec.scalaUDF.codegen.enabled`, so it can be
+disabled globally to fall back to Spark for out-of-subset regex expressions.
 
 ## Why the engines differ
 
@@ -131,13 +140,18 @@ Even where both engines accept a construct, the matching behavior is not always 
 
 ## When the Rust engine is safe
 
-For most ASCII-only, non-anchored patterns that use only literal characters, simple character classes, and
-ordinary quantifiers, the two engines produce the same results. If you are confident your patterns fit this
-shape and want to avoid the JNI overhead of the Java engine, switching to the Rust engine with
-`allowIncompatible=true` is generally safe.
+Comet's plan-time analyzer admits a conservative whitelist of `rlike` literals and runs those on
+the Rust engine by default: printable ASCII literals, simple ASCII character classes, greedy
+quantifiers (`*`, `+`, `?`, `{n}`, `{n,}`, `{n,m}`), capturing and non-capturing groups, and
+alternation. Anchors (`^`, `$`), `.`, `\d` / `\w` / `\s`, inline flags, lookaround, and any
+unrecognized construct stay on the Java engine.
 
-For anything that uses backreferences, lookaround, or relies on Java's specific Unicode or line-handling
-defaults, use the Java engine.
+For `regexp_replace`, `split`, `regexp_extract`, and `regexp_extract_all`, the native path is
+still opt-in via `allowIncompatible`. If you are confident those patterns fit the same ASCII,
+non-anchored shape, opting in is generally safe.
+
+For anything that uses backreferences, lookaround, or relies on Java's specific Unicode or
+line-handling defaults, use the Java engine.
 
 [`java.util.regex`]: https://docs.oracle.com/javase/8/docs/api/java/util/regex/Pattern.html
 [`regex`]: https://docs.rs/regex/latest/regex/

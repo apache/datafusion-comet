@@ -3478,17 +3478,21 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     assert(Compatible().nativeOptIn.isEmpty)
   }
 
-  test("RLike literal pattern shows native opt-in, non-literal does not") {
+  test("RLike out-of-subset literal shows native opt-in, in-subset and non-literal do not") {
     withTable("t") {
       spark.sql("create table t(s string, p string) using parquet")
       spark.sql("insert into t values ('abc','a.*'), ('xyz','z')")
-      val lit = spark.sql("select s rlike 'a.*' as r from t")
+      val unsafeLit = spark.sql("select s rlike 'a.*' as r from t")
+      val safeLit = spark.sql("select s rlike 'abc[0-9]+' as r from t")
       val nonLit = spark.sql("select s rlike p as r from t")
-      val explainLit =
-        new ExtendedExplainInfo().generateExtendedInfo(lit.queryExecution.executedPlan)
+      val explainUnsafe =
+        new ExtendedExplainInfo().generateExtendedInfo(unsafeLit.queryExecution.executedPlan)
+      val explainSafe =
+        new ExtendedExplainInfo().generateExtendedInfo(safeLit.queryExecution.executedPlan)
       val explainNonLit =
         new ExtendedExplainInfo().generateExtendedInfo(nonLit.queryExecution.executedPlan)
-      assert(explainLit.contains("native implementation of RLike"))
+      assert(explainUnsafe.contains("native implementation of RLike"))
+      assert(!explainSafe.contains("native implementation of RLike"))
       assert(!explainNonLit.contains("native implementation of RLike"))
     }
   }
