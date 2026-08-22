@@ -29,18 +29,6 @@ use std::sync::Arc;
 /// Shared by the LargeList array path and `ScalarValue::LargeList` overflow guard.
 const SIZE_OVERFLOW_MSG: &str = "size(): list length exceeds i32::MAX";
 
-/// Rewrite null slots to `-1` (Spark `size` of null). Shared by List and LargeList paths.
-fn ints_with_nulls_as_neg_one(mut values: Vec<i32>, nulls: Option<&NullBuffer>) -> Int32Array {
-    if let Some(nulls) = nulls {
-        if nulls.null_count() > 0 {
-            for i in (!nulls.inner()).set_indices() {
-                values[i] = -1;
-            }
-        }
-    }
-    Int32Array::from(values)
-}
-
 /// Spark size() function that returns the size of arrays or maps.
 /// Returns -1 for null inputs (Spark behavior differs from standard SQL).
 pub fn spark_size(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
@@ -114,23 +102,9 @@ fn spark_size_array(array: &ArrayRef) -> Result<ArrayRef, DataFusionError> {
         DataType::LargeList(_) => spark_size_large_list_from_offsets(array),
         // List / FixedSizeList: reuse Arrow's vectorized length kernel.
         DataType::List(_) | DataType::FixedSizeList(..) => spark_size_list_like(array),
-        // Map is not supported by the length kernel; keep the offset-based path.
-        DataType::Map(_, _) => {
-            let map_array = array
-                .as_any()
-                .downcast_ref::<arrow::array::MapArray>()
-                .ok_or_else(|| DataFusionError::Internal("Expected MapArray".to_string()))?;
-
-            let mut builder = Int32Array::builder(map_array.len());
-            for i in 0..map_array.len() {
-                if map_array.is_null(i) {
-                    builder.append_value(-1); // Spark behavior: return -1 for null
-                } else {
-                    builder.append_value(map_array.value_length(i));
-                }
-            }
-            Ok(Arc::new(builder.finish()))
-        }
+        // Map is not supported by the length kernel; compute row lengths from
+        // the entry-offset buffer directly.
+        DataType::Map(_, _) => spark_size_map(array),
         _ => {
             exec_err!(
                 "size function only supports arrays and maps, got: {:?}",
@@ -143,10 +117,6 @@ fn spark_size_array(array: &ArrayRef) -> Result<ArrayRef, DataFusionError> {
 /// Compute Spark `size()` for List / FixedSizeList via Arrow's `length` kernel,
 /// then rewrite null inputs to `-1` (Spark's legacy/compatible size-of-null
 /// behavior for this UDF).
-///
-/// Patches the values buffer in place rather than using `zip`; `zip` goes
-/// through `MutableArrayData` and roughly doubled runtime on the `array_size`
-/// criterion shapes.
 fn spark_size_list_like(array: &ArrayRef) -> Result<ArrayRef, DataFusionError> {
     let lengths = length(array.as_ref())?;
     let lengths = match lengths.data_type() {
@@ -168,7 +138,8 @@ fn spark_size_list_like(array: &ArrayRef) -> Result<ArrayRef, DataFusionError> {
     // Fast path for the production shape: `CometSize.convert` wraps size() in a
     // `CASE WHEN isnotnull(child)` that filters null rows out before the THEN
     // branch runs, so this function only ever sees a null-free array in a real
-    // Comet plan. Return the length kernel output as-is.
+    // Comet plan. Return the length kernel output as-is; skip the downcast and
+    // `Int32Array::clone` that `rewrite_nulls_to_minus_one` would otherwise pay.
     if array.null_count() == 0 {
         return Ok(lengths);
     }
@@ -176,15 +147,9 @@ fn spark_size_list_like(array: &ArrayRef) -> Result<ArrayRef, DataFusionError> {
     let int_lengths = lengths
         .as_any()
         .downcast_ref::<Int32Array>()
-        .ok_or_else(|| DataFusionError::Internal("Expected Int32Array from length".to_string()))?;
-
-    // `into_parts` + shared null→-1 rewrite: O(n) values copy, then O(null_count)
-    // writes via inverted validity. Prefer this over scanning every validity bit.
-    let (_, values, nulls) = int_lengths.clone().into_parts();
-    Ok(Arc::new(ints_with_nulls_as_neg_one(
-        values.to_vec(),
-        nulls.as_ref(),
-    )))
+        .ok_or_else(|| DataFusionError::Internal("Expected Int32Array from length".to_string()))?
+        .clone();
+    Ok(rewrite_nulls_to_minus_one(int_lengths))
 }
 
 /// Compute Spark `size()` for LargeList by subtracting adjacent i64 offsets into
@@ -207,23 +172,13 @@ fn spark_size_large_list_from_offsets(array: &ArrayRef) -> Result<ArrayRef, Data
     // the full span. If the span fits in i32, every row length does too.
     // `OffsetBuffer` always has at least one element.
     let range = *offsets.last().unwrap() - *offsets.first().unwrap();
-    let values = if range > i32::MAX as i64 {
+    let values: Vec<i32> = if range > i32::MAX as i64 {
         spark_size_large_list_lengths_checked(offsets, list.nulls())?
     } else {
         offsets.windows(2).map(|w| (w[1] - w[0]) as i32).collect()
     };
-
-    // Fast path for the production shape: `CometSize.convert` wraps size() in a
-    // `CASE WHEN isnotnull(child)` that filters null rows out before the THEN
-    // branch runs, so this function only ever sees a null-free array in a real
-    // Comet plan.
-    if list.null_count() == 0 {
-        return Ok(Arc::new(Int32Array::from(values)));
-    }
-
-    // `null_count() > 0` implies a null buffer is present.
-    let nulls = list.nulls().unwrap();
-    Ok(Arc::new(ints_with_nulls_as_neg_one(values, Some(nulls))))
+    let lengths = Int32Array::new(values.into(), list.nulls().cloned());
+    Ok(rewrite_nulls_to_minus_one(lengths))
 }
 
 /// Per-row checked Int32 conversion used when the overall offset span exceeds
@@ -247,6 +202,45 @@ fn spark_size_large_list_lengths_checked(
         values.push(len);
     }
     Ok(values)
+}
+
+/// Compute Spark `size()` for `MapArray` by differencing the entry-offset
+/// buffer. `MapArray::offsets()` returns the sliced offsets, so `windows(2)`
+/// stays correct on sliced inputs. Applies the same null → `-1` rewrite as the
+/// list path.
+fn spark_size_map(array: &ArrayRef) -> Result<ArrayRef, DataFusionError> {
+    let map_array = array
+        .as_any()
+        .downcast_ref::<arrow::array::MapArray>()
+        .ok_or_else(|| DataFusionError::Internal("Expected MapArray".to_string()))?;
+
+    let offsets = map_array.offsets();
+    let values: Vec<i32> = offsets.windows(2).map(|w| w[1] - w[0]).collect();
+    let lengths = Int32Array::new(values.into(), map_array.nulls().cloned());
+    Ok(rewrite_nulls_to_minus_one(lengths))
+}
+
+/// Rewrite null slots to `-1` (Spark size-of-null semantics) and drop the null
+/// buffer. Returns the input untouched when there are no nulls.
+///
+/// Patches the values buffer in place rather than using `zip`; `zip` goes
+/// through `MutableArrayData` and roughly doubled runtime on the `array_size`
+/// criterion shapes. `set_indices()` on the inverted validity visits only null
+/// slots (O(null_count)); `into_parts` avoids an extra values-buffer clone
+/// beyond the `to_vec()` copy needed to write into the null slots.
+fn rewrite_nulls_to_minus_one(lengths: Int32Array) -> ArrayRef {
+    if lengths.null_count() == 0 {
+        return Arc::new(lengths);
+    }
+    let (_, values, nulls) = lengths.into_parts();
+    let Some(nulls) = nulls else {
+        return Arc::new(Int32Array::new(values, None));
+    };
+    let mut values = values.to_vec();
+    for i in (!nulls.inner()).set_indices() {
+        values[i] = -1;
+    }
+    Arc::new(Int32Array::from(values))
 }
 
 fn spark_size_scalar(scalar: &ScalarValue) -> Result<ScalarValue, DataFusionError> {
@@ -446,6 +440,122 @@ mod tests {
         assert_eq!(result.value(1), 1); // Map with 1 key-value pair
         assert_eq!(result.value(2), 0); // empty map has 0 pairs
         assert_eq!(result.value(3), -1); // null map returns -1
+    }
+
+    #[test]
+    fn test_spark_size_map_no_nulls() {
+        use arrow::array::{Int32Array, MapArray, StringArray};
+
+        // Fast path for Map: no null buffer, so rewrite_nulls_to_minus_one returns
+        // the offset-diff Int32Array as-is without touching the values buffer.
+        let keys = StringArray::from(vec![Some("a"), Some("b"), Some("c"), Some("d")]);
+        let values = Int32Array::from(vec![Some(1), Some(2), Some(3), Some(4)]);
+        let entry_offsets = arrow::buffer::OffsetBuffer::new(vec![0i32, 2, 3, 3, 4].into());
+
+        let key_field = Arc::new(Field::new("key", DataType::Utf8, false));
+        let value_field = Arc::new(Field::new("value", DataType::Int32, true));
+
+        let entries = arrow::array::StructArray::new(
+            arrow::datatypes::Fields::from(vec![key_field, value_field]),
+            vec![Arc::new(keys), Arc::new(values)],
+            None,
+        );
+
+        let map_field = Arc::new(Field::new(
+            "entries",
+            DataType::Struct(arrow::datatypes::Fields::from(vec![
+                Field::new("key", DataType::Utf8, false),
+                Field::new("value", DataType::Int32, true),
+            ])),
+            false,
+        ));
+
+        let map_array = MapArray::try_new(map_field, entry_offsets, entries, None, false).unwrap();
+
+        let array_ref: ArrayRef = Arc::new(map_array);
+        let result = spark_size_array(&array_ref).unwrap();
+        let result = result.as_any().downcast_ref::<Int32Array>().unwrap();
+
+        // No nulls on input; no null buffer on output.
+        assert_eq!(result.null_count(), 0);
+        assert_eq!(result.value(0), 2);
+        assert_eq!(result.value(1), 1);
+        assert_eq!(result.value(2), 0);
+        assert_eq!(result.value(3), 1);
+    }
+
+    #[test]
+    fn test_spark_size_sliced_map_array() {
+        use arrow::array::{Int32Array, MapArray, StringArray};
+
+        // Slicing pins that `MapArray::offsets()` returns sliced-aware offsets so
+        // `windows(2)` differences the correct rows. Same trap as the sliced-List
+        // test above.
+        //
+        // Full map: [{"a":1,"b":2}, {"c":3}, {"d":4,"e":5,"f":6}, null, {"g":7}]
+        let keys = StringArray::from(vec![
+            Some("a"),
+            Some("b"),
+            Some("c"),
+            Some("d"),
+            Some("e"),
+            Some("f"),
+            Some("g"),
+        ]);
+        let values = Int32Array::from(vec![
+            Some(1),
+            Some(2),
+            Some(3),
+            Some(4),
+            Some(5),
+            Some(6),
+            Some(7),
+        ]);
+        let entry_offsets = arrow::buffer::OffsetBuffer::new(vec![0i32, 2, 3, 6, 6, 7].into());
+
+        let key_field = Arc::new(Field::new("key", DataType::Utf8, false));
+        let value_field = Arc::new(Field::new("value", DataType::Int32, true));
+
+        let entries = arrow::array::StructArray::new(
+            arrow::datatypes::Fields::from(vec![key_field, value_field]),
+            vec![Arc::new(keys), Arc::new(values)],
+            None,
+        );
+
+        let mut null_buffer = NullBufferBuilder::new(5);
+        null_buffer.append(true);
+        null_buffer.append(true);
+        null_buffer.append(true);
+        null_buffer.append(false);
+        null_buffer.append(true);
+
+        let map_field = Arc::new(Field::new(
+            "entries",
+            DataType::Struct(arrow::datatypes::Fields::from(vec![
+                Field::new("key", DataType::Utf8, false),
+                Field::new("value", DataType::Int32, true),
+            ])),
+            false,
+        ));
+
+        let map_array = MapArray::try_new(
+            map_field,
+            entry_offsets,
+            entries,
+            null_buffer.finish(),
+            false,
+        )
+        .unwrap();
+
+        // Skip the first two rows: sliced view is [{d,e,f}, null, {g}].
+        let sliced: ArrayRef = Arc::new(map_array.slice(2, 3));
+        let result = spark_size_array(&sliced).unwrap();
+        let result = result.as_any().downcast_ref::<Int32Array>().unwrap();
+
+        assert_eq!(result.len(), 3);
+        assert_eq!(result.value(0), 3);
+        assert_eq!(result.value(1), -1);
+        assert_eq!(result.value(2), 1);
     }
 
     #[test]
@@ -690,7 +800,9 @@ mod tests {
         let nulls = NullBuffer::from(vec![false, true]); // row 0 null, row 1 empty
         let values = spark_size_large_list_lengths_checked(&offsets, Some(&nulls)).unwrap();
         assert_eq!(values, vec![0, 0]);
-        let result = ints_with_nulls_as_neg_one(values, Some(&nulls));
+        let lengths = Int32Array::new(values.into(), Some(nulls));
+        let result = rewrite_nulls_to_minus_one(lengths);
+        let result = result.as_any().downcast_ref::<Int32Array>().unwrap();
         assert_eq!(result.value(0), -1);
         assert_eq!(result.value(1), 0);
     }

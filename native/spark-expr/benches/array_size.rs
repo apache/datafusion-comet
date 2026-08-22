@@ -15,9 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::array::{ArrayRef, Int32Array, LargeListArray, ListArray};
+use arrow::array::{ArrayRef, Int32Array, LargeListArray, ListArray, MapArray, StructArray};
 use arrow::buffer::{NullBuffer, OffsetBuffer};
-use arrow::datatypes::{DataType, Field};
+use arrow::datatypes::{DataType, Field, Fields};
 use criterion::{criterion_group, criterion_main, Criterion};
 use datafusion::physical_plan::ColumnarValue;
 use datafusion_comet_spark_expr::spark_size;
@@ -70,6 +70,52 @@ fn create_large_list_array(rows: usize, elems_per_row: usize, with_nulls: bool) 
     ))
 }
 
+/// Build a `MapArray` of `rows` maps, each with `entries_per_row` Int32→Int32
+/// entries. When `with_nulls` is true every 10th row is null. Map entry counts
+/// come from the offset buffer, so per-row diff is O(1) already; this bench
+/// isolates per-row dispatch + builder overhead vs. one-shot offset differencing.
+fn create_map_array(rows: usize, entries_per_row: usize, with_nulls: bool) -> ArrayRef {
+    let total = rows * entries_per_row;
+    let keys = Int32Array::from((0..total as i32).collect::<Vec<i32>>());
+    let values = Int32Array::from((0..total as i32).collect::<Vec<i32>>());
+
+    let mut offsets = Vec::with_capacity(rows + 1);
+    offsets.push(0i32);
+    for i in 1..=rows {
+        offsets.push((i * entries_per_row) as i32);
+    }
+
+    let key_field = Arc::new(Field::new("key", DataType::Int32, false));
+    let value_field = Arc::new(Field::new("value", DataType::Int32, true));
+    let entries = StructArray::new(
+        Fields::from(vec![key_field, value_field]),
+        vec![Arc::new(keys), Arc::new(values)],
+        None,
+    );
+
+    let map_field = Arc::new(Field::new(
+        "entries",
+        DataType::Struct(Fields::from(vec![
+            Field::new("key", DataType::Int32, false),
+            Field::new("value", DataType::Int32, true),
+        ])),
+        false,
+    ));
+
+    let nulls =
+        with_nulls.then(|| NullBuffer::from((0..rows).map(|i| i % 10 != 0).collect::<Vec<bool>>()));
+    Arc::new(
+        MapArray::try_new(
+            map_field,
+            OffsetBuffer::new(offsets.into()),
+            entries,
+            nulls,
+            false,
+        )
+        .unwrap(),
+    )
+}
+
 fn criterion_benchmark(c: &mut Criterion) {
     let rows = 8192;
 
@@ -113,6 +159,19 @@ fn criterion_benchmark(c: &mut Criterion) {
     bench(
         "spark_size: LargeList, no nulls",
         &create_large_list_array(rows, 5, false),
+    );
+
+    // Map shapes: no length-kernel support for MapArray, so this path differences
+    // offsets directly. Cover the two shapes the issue calls for — with and without
+    // nulls — since the null rewrite is the only branch that touches the values
+    // buffer.
+    bench(
+        "spark_size: map (10% null)",
+        &create_map_array(rows, 5, true),
+    );
+    bench(
+        "spark_size: map, no nulls",
+        &create_map_array(rows, 5, false),
     );
 }
 
