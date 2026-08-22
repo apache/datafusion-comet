@@ -19,8 +19,10 @@
 
 package org.apache.comet.shims
 
+import org.apache.spark.sql.catalyst.expressions.{CreateNamedStruct, Expression, Literal}
 import org.apache.spark.sql.execution.datasources.VariantMetadata
 import org.apache.spark.sql.types.{ArrayType, DataType, MapType, StringType, StructType, VariantType}
+import org.apache.spark.unsafe.types.VariantVal
 
 trait CometTypeShim {
   // A `StringType` carries collation metadata in Spark 4.0. Only non-default (non-UTF8_BINARY)
@@ -68,6 +70,22 @@ trait CometTypeShim {
   }
 
   def variantType: Option[DataType] = Some(VariantType)
+
+  // Expose Variant defaults to the native scan as their Arrow storage struct without enabling
+  // Variant literals in Comet's general expression serde.
+  def variantDefaultExpression(value: Any): Option[Expression] = value match {
+    case variant: VariantVal =>
+      val variantValue = variant.getValue
+      val metadata = variant.getMetadata
+      if (variantValue == null || metadata == null) {
+        None
+      } else {
+        Some(
+          CreateNamedStruct(
+            Seq(Literal("value"), Literal(variantValue), Literal("metadata"), Literal(metadata))))
+      }
+    case _ => None
+  }
 
   def isTimeType(dt: DataType): Boolean =
     dt.getClass.getSimpleName.startsWith("TimeType")

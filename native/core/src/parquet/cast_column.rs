@@ -16,11 +16,13 @@
 // under the License.
 use arrow::{
     array::{
-        make_array, Array, ArrayRef, LargeListArray, ListArray, MapArray, StructArray,
-        TimestampMicrosecondArray, TimestampMillisecondArray,
+        make_array, Array, ArrayRef, BinaryArray, BinaryBuilder, LargeListArray, ListArray,
+        MapArray, StructArray, TimestampMicrosecondArray, TimestampMillisecondArray,
     },
+    buffer::NullBuffer,
     compute::{cast, CastOptions},
     datatypes::{DataType, FieldRef, Schema, TimeUnit},
+    error::ArrowError,
     record_batch::RecordBatch,
 };
 
@@ -33,10 +35,14 @@ use datafusion::common::ScalarValue;
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::physical_expr::PhysicalExpr;
-use parquet::variant::{unshred_variant, VariantArray};
+use parquet::variant::{
+    unshred_variant, MetadataBuilder, ParentState, ReadOnlyMetadataBuilder, ValueBuilder, Variant,
+    VariantArray, VariantMetadata,
+};
 use std::{
     fmt::{self, Display},
     hash::Hash,
+    panic::{catch_unwind, AssertUnwindSafe},
     sync::Arc,
 };
 
@@ -201,19 +207,252 @@ fn normalize_variant_array(
         ));
     }
 
-    let variant = VariantArray::try_new(array.as_ref())?;
+    let array = decode_variant_metadata_dictionary(array)?;
+    let variant = prepare_variant_for_unshredding(&VariantArray::try_new(array.as_ref())?)?;
     let unshredded = unshred_variant(&variant)?;
     let value = unshredded.value_field().ok_or_else(|| {
         DataFusionError::Execution("Unshredded Variant is missing its value field".to_string())
     })?;
     let value = cast(value.as_ref(), &DataType::Binary)?;
     let metadata = cast(unshredded.metadata_field().as_ref(), &DataType::Binary)?;
+    let value = reorder_variant_values(
+        &value,
+        &metadata,
+        unshredded.inner().nulls(),
+        VariantObjectKeyOrder::SparkUtf16,
+        false,
+    )?;
     let output = StructArray::try_new(
         fields.clone(),
         vec![value, metadata],
         unshredded.inner().nulls().cloned(),
     )?;
     Ok(Arc::new(output))
+}
+
+/// Arrow's unshredder fully validates any residual `value` in a partially shredded object. Spark
+/// writes object keys in Java UTF-16 order, so put that residual value in Arrow UTF-8 order only
+/// while it passes through the upstream unshredder.
+fn prepare_variant_for_unshredding(variant: &VariantArray) -> DataFusionResult<VariantArray> {
+    let (Some(value), Some(_)) = (variant.value_field(), variant.typed_value_field()) else {
+        return Ok(variant.clone());
+    };
+
+    let value = cast(value.as_ref(), &DataType::Binary)?;
+    let metadata = cast(variant.metadata_field().as_ref(), &DataType::Binary)?;
+    let value = reorder_variant_values(
+        &value,
+        &metadata,
+        variant.inner().nulls(),
+        VariantObjectKeyOrder::ArrowUtf8,
+        true,
+    )?;
+
+    let value_index = variant
+        .inner()
+        .fields()
+        .iter()
+        .position(|field| field.name() == "value")
+        .unwrap();
+    let mut fields = variant.inner().fields().iter().cloned().collect::<Vec<_>>();
+    fields[value_index] = Arc::new(
+        fields[value_index]
+            .as_ref()
+            .clone()
+            .with_data_type(DataType::Binary),
+    );
+    let mut columns = variant.inner().columns().to_vec();
+    columns[value_index] = value;
+    let array = StructArray::try_new(fields.into(), columns, variant.inner().nulls().cloned())?;
+    Ok(VariantArray::try_new(&array)?)
+}
+
+/// Arrow-rs parquet-variant-compute allows dictionary-encoded metadata in its contract, but 58.4's
+/// `VariantArray::try_new` validates only Binary, LargeBinary, and BinaryView. Decode just that
+/// child and keep the physical struct otherwise unchanged.
+/// https://github.com/apache/arrow-rs/blob/0ff81c1215cc026a1de93ce3d2078df1ecba6f09/parquet-variant-compute/src/variant_array.rs#L276-L310
+fn decode_variant_metadata_dictionary(array: &ArrayRef) -> DataFusionResult<ArrayRef> {
+    let Some(struct_array) = array.as_any().downcast_ref::<StructArray>() else {
+        return Ok(Arc::clone(array));
+    };
+    let Some((metadata_index, metadata_field)) = struct_array
+        .fields()
+        .iter()
+        .enumerate()
+        .find(|(_, field)| field.name() == "metadata")
+    else {
+        return Ok(Arc::clone(array));
+    };
+    let DataType::Dictionary(_, value_type) = metadata_field.data_type() else {
+        return Ok(Arc::clone(array));
+    };
+
+    let decoded = cast(struct_array.column(metadata_index).as_ref(), value_type)?;
+    let mut fields = struct_array.fields().iter().cloned().collect::<Vec<_>>();
+    fields[metadata_index] = Arc::new(
+        metadata_field
+            .as_ref()
+            .clone()
+            .with_data_type(decoded.data_type().clone()),
+    );
+    let mut columns = struct_array.columns().to_vec();
+    columns[metadata_index] = decoded;
+    Ok(Arc::new(StructArray::try_new(
+        fields.into(),
+        columns,
+        struct_array.nulls().cloned(),
+    )?))
+}
+
+/// Supplies sort-only field names whose Rust ordering matches Java `String.compareTo` ordering.
+/// The original metadata dictionary still supplies the field IDs written to the Variant value.
+#[derive(Debug)]
+struct SparkMetadataBuilder<'a, 'm> {
+    metadata: &'a VariantMetadata<'m>,
+    sort_keys: Vec<String>,
+}
+
+impl<'a, 'm> SparkMetadataBuilder<'a, 'm> {
+    fn new(metadata: &'a VariantMetadata<'m>) -> Self {
+        let sort_keys = metadata
+            .iter()
+            .map(|field_name| {
+                field_name
+                    .encode_utf16()
+                    .map(|unit| char::from_u32(0x10000 + u32::from(unit)).unwrap())
+                    .collect()
+            })
+            .collect();
+        Self {
+            metadata,
+            sort_keys,
+        }
+    }
+}
+
+impl MetadataBuilder for SparkMetadataBuilder<'_, '_> {
+    fn try_upsert_field_name(&mut self, field_name: &str) -> Result<u32, ArrowError> {
+        self.metadata
+            .get_entry(field_name)
+            .map(|(field_id, _)| field_id)
+            .ok_or_else(|| {
+                ArrowError::InvalidArgumentError(format!(
+                    "Field name '{field_name}' not found in metadata dictionary"
+                ))
+            })
+    }
+
+    fn field_name(&self, field_id: usize) -> &str {
+        &self.sort_keys[field_id]
+    }
+
+    fn num_field_names(&self) -> usize {
+        self.metadata.len()
+    }
+
+    fn truncate_field_names(&mut self, new_size: usize) {
+        debug_assert_eq!(self.metadata.len(), new_size);
+    }
+
+    fn finish(&mut self) -> usize {
+        self.metadata.size()
+    }
+}
+
+#[derive(Clone, Copy)]
+enum VariantObjectKeyOrder {
+    ArrowUtf8,
+    SparkUtf16,
+}
+
+fn is_compatible_variant(variant: &Variant<'_, '_>, order: VariantObjectKeyOrder) -> bool {
+    match variant {
+        Variant::Object(object) => {
+            let mut previous = None;
+            object.iter().all(|(name, value)| {
+                let ordered = previous
+                    .map(|previous: &str| match order {
+                        VariantObjectKeyOrder::ArrowUtf8 => previous <= name,
+                        VariantObjectKeyOrder::SparkUtf16 => {
+                            previous.encode_utf16().cmp(name.encode_utf16())
+                                != std::cmp::Ordering::Greater
+                        }
+                    })
+                    .unwrap_or(true);
+                previous = Some(name);
+                ordered && is_compatible_variant(&value, order)
+            })
+        }
+        Variant::List(list) => list
+            .iter()
+            .all(|value| is_compatible_variant(&value, order)),
+        _ => true,
+    }
+}
+
+/// Reorder object keys for either Arrow's UTF-8 order or Spark's Java UTF-16 order. Preserve
+/// already-compatible values byte-for-byte and retain the original metadata dictionary.
+fn reorder_variant_values(
+    value: &ArrayRef,
+    metadata: &ArrayRef,
+    parent_nulls: Option<&NullBuffer>,
+    order: VariantObjectKeyOrder,
+    allow_null_value: bool,
+) -> DataFusionResult<ArrayRef> {
+    let value = value.as_any().downcast_ref::<BinaryArray>().unwrap();
+    let metadata = metadata.as_any().downcast_ref::<BinaryArray>().unwrap();
+    let mut output = BinaryBuilder::new();
+
+    for index in 0..value.len() {
+        if parent_nulls.is_some_and(|nulls| nulls.is_null(index)) {
+            output.append_null();
+            continue;
+        }
+        if value.is_null(index) {
+            if allow_null_value {
+                output.append_null();
+                continue;
+            }
+            return Err(DataFusionError::Execution(format!(
+                "Variant value is null at row {index}"
+            )));
+        }
+        if metadata.is_null(index) {
+            return Err(DataFusionError::Execution(format!(
+                "Variant metadata is null at row {index}"
+            )));
+        }
+
+        let metadata = VariantMetadata::try_new(metadata.value(index))?;
+        let rebuilt = catch_unwind(AssertUnwindSafe(|| {
+            let variant = Variant::new_with_metadata(metadata.clone(), value.value(index));
+            if is_compatible_variant(&variant, order) {
+                return None;
+            }
+            let mut value_builder = ValueBuilder::new();
+            match order {
+                VariantObjectKeyOrder::ArrowUtf8 => {
+                    let mut metadata_builder = ReadOnlyMetadataBuilder::new(&metadata);
+                    ValueBuilder::append_variant(
+                        ParentState::variant(&mut value_builder, &mut metadata_builder),
+                        variant,
+                    );
+                }
+                VariantObjectKeyOrder::SparkUtf16 => {
+                    let mut metadata_builder = SparkMetadataBuilder::new(&metadata);
+                    ValueBuilder::append_variant(
+                        ParentState::variant(&mut value_builder, &mut metadata_builder),
+                        variant,
+                    );
+                }
+            }
+            Some(value_builder.into_inner())
+        }))
+        .map_err(|_| DataFusionError::Execution(format!("Invalid Variant value at row {index}")))?;
+        output.append_value(rebuilt.as_deref().unwrap_or_else(|| value.value(index)));
+    }
+
+    Ok(Arc::new(output.finish()))
 }
 
 #[derive(Debug, Clone, Eq)]
@@ -401,19 +640,59 @@ impl PhysicalExpr for CometCastColumnExpr {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{Array, AsArray, Int32Array, Int64Array, StringArray};
-    use arrow::datatypes::{Field, Fields};
+    use arrow::array::{
+        Array, AsArray, BinaryArray, DictionaryArray, Int32Array, Int64Array, StringArray,
+    };
+    use arrow::datatypes::{Field, Fields, Int32Type};
     use datafusion::physical_expr::expressions::Column;
-    use parquet::variant::{Variant, VariantArrayBuilder, VariantType};
+    use parquet::variant::{VariantArrayBuilder, VariantBuilder, VariantType};
+
+    fn unicode_object_keys() -> Vec<String> {
+        let mut keys = (0..30).map(|i| format!("k{i:02}")).collect::<Vec<_>>();
+        keys.push("\u{e000}".to_string());
+        keys.push("😀".to_string());
+        keys
+    }
+
+    fn assert_spark_unicode_object(output: &StructArray) {
+        let value = output.column(0).as_binary::<i32>();
+        let metadata = output.column(1).as_binary::<i32>();
+        let Variant::Object(object) = Variant::new(metadata.value(0), value.value(0)) else {
+            panic!("expected object")
+        };
+        let fields = object.iter().collect::<Vec<_>>();
+
+        assert_eq!(fields.len(), 32);
+        assert_eq!(fields[30].0, "😀");
+        assert_eq!(fields[31].0, "\u{e000}");
+        let emoji = fields
+            .binary_search_by(|(name, _)| name.encode_utf16().cmp("😀".encode_utf16()))
+            .unwrap();
+        assert_eq!(fields[emoji].1, Variant::from(531_i64));
+        let private_use = fields
+            .binary_search_by(|(name, _)| name.encode_utf16().cmp("\u{e000}".encode_utf16()))
+            .unwrap();
+        assert_eq!(fields[private_use].1, Variant::from(30_i64));
+    }
 
     #[test]
-    fn test_normalize_shredded_variant_for_spark() {
+    fn test_normalize_shredded_variant_with_dictionary_metadata_for_spark() {
         let mut builder = VariantArrayBuilder::new(3);
         builder.append_variant(Variant::from(1_i64));
         builder.append_null();
         builder.append_variant(Variant::from(3_i64));
         let base = builder.build();
-        let metadata = Arc::clone(base.metadata_field());
+        let metadata = cast(base.metadata_field().as_ref(), &DataType::Binary).unwrap();
+        let metadata_bytes = metadata.as_binary::<i32>().value(0).to_vec();
+        let metadata_values: ArrayRef =
+            Arc::new(BinaryArray::from(vec![Some(metadata_bytes.as_slice())]));
+        let metadata: ArrayRef = Arc::new(
+            DictionaryArray::<Int32Type>::try_new(
+                Int32Array::from(vec![Some(0), Some(0), Some(0)]),
+                metadata_values,
+            )
+            .unwrap(),
+        );
         let typed_value: ArrayRef = Arc::new(Int64Array::from(vec![Some(10), None, Some(30)]));
         let physical_fields = Fields::from(vec![
             Field::new("typed_value", DataType::Int64, true),
@@ -464,6 +743,243 @@ mod tests {
         let variant = VariantArray::try_new(output).unwrap();
         assert_eq!(variant.value(0), Variant::from(10_i64));
         assert_eq!(variant.value(2), Variant::from(30_i64));
+    }
+
+    #[test]
+    fn test_normalize_shredded_variant_uses_spark_object_key_order() {
+        let keys = unicode_object_keys();
+
+        let metadata_builder =
+            VariantBuilder::new().with_field_names(keys.iter().map(String::as_str));
+        let (metadata_bytes, _) = metadata_builder.finish();
+        let metadata: ArrayRef = Arc::new(BinaryArray::from(vec![Some(metadata_bytes.as_slice())]));
+
+        let mut object_fields = Vec::with_capacity(keys.len());
+        let mut object_columns = Vec::with_capacity(keys.len());
+        for (index, key) in keys.iter().enumerate() {
+            let value = if key == "😀" { 531 } else { index as i64 };
+            let field = Field::new("typed_value", DataType::Int64, false);
+            let column: ArrayRef = Arc::new(Int64Array::from(vec![value]));
+            let shredded_field =
+                StructArray::try_new(Fields::from(vec![field]), vec![column], None).unwrap();
+            object_fields.push(Field::new(key, shredded_field.data_type().clone(), false));
+            object_columns.push(Arc::new(shredded_field) as ArrayRef);
+        }
+        let typed_value: ArrayRef =
+            Arc::new(StructArray::try_new(object_fields.into(), object_columns, None).unwrap());
+        let physical_fields = Fields::from(vec![
+            Field::new("metadata", DataType::Binary, false),
+            Field::new("typed_value", typed_value.data_type().clone(), false),
+        ]);
+        let physical: ArrayRef = Arc::new(
+            StructArray::try_new(physical_fields, vec![metadata, typed_value], None).unwrap(),
+        );
+        let target_fields = Fields::from(vec![
+            Field::new("value", DataType::Binary, false),
+            Field::new("metadata", DataType::Binary, false),
+        ]);
+        let target_field = Arc::new(
+            Field::new("v", DataType::Struct(target_fields), false)
+                .with_extension_type(VariantType),
+        );
+
+        let output = normalize_variant_array(&physical, &target_field).unwrap();
+        let output = output.as_struct();
+        assert_spark_unicode_object(output);
+    }
+
+    #[test]
+    fn test_normalize_partially_shredded_spark_object_key_order() {
+        let keys = unicode_object_keys();
+        let mut builder = VariantBuilder::new().with_field_names(keys.iter().map(String::as_str));
+        let mut object = builder.new_object();
+        for (index, key) in keys.iter().enumerate().skip(1) {
+            object.insert(key, if key == "😀" { 531 } else { index as i64 });
+        }
+        object.finish();
+        let (metadata_bytes, value_bytes) = builder.finish();
+
+        let value: ArrayRef = Arc::new(BinaryArray::from(vec![Some(value_bytes.as_slice())]));
+        let metadata: ArrayRef = Arc::new(BinaryArray::from(vec![Some(metadata_bytes.as_slice())]));
+        let spark_value = reorder_variant_values(
+            &value,
+            &metadata,
+            None,
+            VariantObjectKeyOrder::SparkUtf16,
+            false,
+        )
+        .unwrap();
+
+        let shredded_k00: ArrayRef = Arc::new(
+            StructArray::try_new(
+                Fields::from(vec![Field::new("typed_value", DataType::Int64, false)]),
+                vec![Arc::new(Int64Array::from(vec![0]))],
+                None,
+            )
+            .unwrap(),
+        );
+        let typed_value: ArrayRef = Arc::new(
+            StructArray::try_new(
+                Fields::from(vec![Field::new(
+                    "k00",
+                    shredded_k00.data_type().clone(),
+                    false,
+                )]),
+                vec![shredded_k00],
+                None,
+            )
+            .unwrap(),
+        );
+        let physical: ArrayRef = Arc::new(
+            StructArray::try_new(
+                Fields::from(vec![
+                    Field::new("metadata", DataType::Binary, false),
+                    Field::new("value", DataType::Binary, true),
+                    Field::new("typed_value", typed_value.data_type().clone(), true),
+                ]),
+                vec![metadata, spark_value, typed_value],
+                None,
+            )
+            .unwrap(),
+        );
+        let target_field = Arc::new(
+            Field::new(
+                "v",
+                DataType::Struct(Fields::from(vec![
+                    Field::new("value", DataType::Binary, false),
+                    Field::new("metadata", DataType::Binary, false),
+                ])),
+                false,
+            )
+            .with_extension_type(VariantType),
+        );
+
+        let output = normalize_variant_array(&physical, &target_field).unwrap();
+        assert_spark_unicode_object(output.as_struct());
+    }
+
+    #[test]
+    fn test_normalize_unshredded_variant_uses_spark_object_key_order() {
+        let keys = unicode_object_keys();
+        let mut builder = VariantBuilder::new().with_field_names(keys.iter().map(String::as_str));
+        let mut object = builder.new_object();
+        for (index, key) in keys.iter().enumerate() {
+            object.insert(key, if key == "😀" { 531 } else { index as i64 });
+        }
+        object.finish();
+        let (metadata_bytes, value_bytes) = builder.finish();
+
+        let Variant::Object(canonical) = Variant::new(&metadata_bytes, &value_bytes) else {
+            panic!("expected object")
+        };
+        let canonical_fields = canonical.iter().collect::<Vec<_>>();
+        assert_eq!(canonical_fields[30].0, "\u{e000}");
+        assert_eq!(canonical_fields[31].0, "😀");
+
+        let value: ArrayRef = Arc::new(BinaryArray::from(vec![Some(value_bytes.as_slice())]));
+        let metadata: ArrayRef = Arc::new(BinaryArray::from(vec![Some(metadata_bytes.as_slice())]));
+        let physical_fields = Fields::from(vec![
+            Field::new("value", DataType::Binary, false),
+            Field::new("metadata", DataType::Binary, false),
+        ]);
+        let physical: ArrayRef =
+            Arc::new(StructArray::try_new(physical_fields, vec![value, metadata], None).unwrap());
+        let target_fields = Fields::from(vec![
+            Field::new("value", DataType::Binary, false),
+            Field::new("metadata", DataType::Binary, false),
+        ]);
+        let target_field = Arc::new(
+            Field::new("v", DataType::Struct(target_fields), false)
+                .with_extension_type(VariantType),
+        );
+
+        let first = normalize_variant_array(&physical, &target_field).unwrap();
+        let first_value = first
+            .as_struct()
+            .column(0)
+            .as_binary::<i32>()
+            .value(0)
+            .to_vec();
+        assert_spark_unicode_object(first.as_struct());
+
+        // Spark-produced already-unshredded input is UTF-16 ordered. Normalizing it again must
+        // remain valid without Arrow's UTF-8-order full validation.
+        let second = normalize_variant_array(&first, &target_field).unwrap();
+        assert_spark_unicode_object(second.as_struct());
+        assert_eq!(
+            second.as_struct().column(0).as_binary::<i32>().value(0),
+            first_value
+        );
+    }
+
+    #[test]
+    fn test_normalize_spark_ordered_variant_preserves_value_bytes() {
+        let mut builder = VariantBuilder::new();
+        let mut object = builder.new_object();
+        object.insert("b", 1_i64);
+        object.insert("a", 2_i64);
+        object.finish();
+        let (metadata_bytes, value_bytes) = builder.finish();
+
+        let Variant::Object(object) = Variant::new(&metadata_bytes, &value_bytes) else {
+            panic!("expected object")
+        };
+        assert_eq!(
+            object.iter().map(|(name, _)| name).collect::<Vec<_>>(),
+            vec!["a", "b"]
+        );
+
+        let value: ArrayRef = Arc::new(BinaryArray::from(vec![Some(value_bytes.as_slice())]));
+        let metadata: ArrayRef = Arc::new(BinaryArray::from(vec![Some(metadata_bytes.as_slice())]));
+        let physical_fields = Fields::from(vec![
+            Field::new("value", DataType::Binary, false),
+            Field::new("metadata", DataType::Binary, false),
+        ]);
+        let physical: ArrayRef =
+            Arc::new(StructArray::try_new(physical_fields, vec![value, metadata], None).unwrap());
+        let target_fields = Fields::from(vec![
+            Field::new("value", DataType::Binary, false),
+            Field::new("metadata", DataType::Binary, false),
+        ]);
+        let target_field = Arc::new(
+            Field::new("v", DataType::Struct(target_fields), false)
+                .with_extension_type(VariantType),
+        );
+
+        let output = normalize_variant_array(&physical, &target_field).unwrap();
+        assert_eq!(
+            output.as_struct().column(0).as_binary::<i32>().value(0),
+            value_bytes
+        );
+    }
+
+    #[test]
+    fn test_normalize_variant_skips_empty_children_of_null_parent() {
+        let value: ArrayRef = Arc::new(BinaryArray::from(vec![Some(&b""[..])]));
+        let metadata: ArrayRef = Arc::new(BinaryArray::from(vec![Some(&b""[..])]));
+        let physical_fields = Fields::from(vec![
+            Field::new("value", DataType::Binary, false),
+            Field::new("metadata", DataType::Binary, false),
+        ]);
+        let physical: ArrayRef = Arc::new(
+            StructArray::try_new(
+                physical_fields,
+                vec![value, metadata],
+                Some(NullBuffer::from(vec![false])),
+            )
+            .unwrap(),
+        );
+        let target_fields = Fields::from(vec![
+            Field::new("value", DataType::Binary, false),
+            Field::new("metadata", DataType::Binary, false),
+        ]);
+        let target_field = Arc::new(
+            Field::new("v", DataType::Struct(target_fields), true).with_extension_type(VariantType),
+        );
+
+        let output = normalize_variant_array(&physical, &target_field).unwrap();
+        assert!(output.is_null(0));
+        assert!(output.as_struct().column(0).is_null(0));
     }
 
     #[test]

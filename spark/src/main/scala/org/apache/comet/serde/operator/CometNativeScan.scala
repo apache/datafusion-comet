@@ -23,7 +23,7 @@ import scala.collection.mutable.ListBuffer
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.internal.Logging
-import org.apache.spark.sql.catalyst.expressions.{Expression, Literal}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, Literal}
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
 import org.apache.spark.sql.comet.{CometNativeExec, CometNativeScanExec, CometScanExec}
 import org.apache.spark.sql.execution.{FileSourceScanExec, InSubqueryExec, SubqueryAdaptiveBroadcastExec}
@@ -50,6 +50,31 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
   // DataFusion's table_partition_cols literal substitution matches by name, so a bare name
   // like "file_size" could collide with a real column of the same name. Prefix to avoid it.
   private val constantMetadataFieldPrefix = "_comet_metadata_"
+  private val unsupportedDefaultReason =
+    "Full native scan disabled because one or more column default values are not supported"
+
+  private def serializeExistenceDefaultValues(
+      schema: StructType,
+      output: Seq[Attribute]): Option[(Seq[Expr], Seq[java.lang.Long])] = {
+    val serialized = getExistenceDefaultValues(schema).iterator
+      .zip(schema.fields.iterator)
+      .zipWithIndex
+      .collect {
+        case ((value, field), index) if value != null =>
+          // Variant expressions remain unsupported generally. Only scan defaults use the existing
+          // physical Arrow storage struct so the native schema adapter can fill a missing column.
+          val proto =
+            if (isVariantType(field.dataType)) {
+              variantDefaultExpression(value).flatMap(exprToProto(_, output))
+            } else {
+              exprToProto(Literal(value), output)
+            }
+          proto.map(_ -> java.lang.Long.valueOf(index.toLong))
+      }
+      .toSeq
+
+    if (serialized.forall(_.isDefined)) Some(serialized.flatten.unzip) else None
+  }
 
   /** Determine whether the scan is supported and tag the Spark plan with any fallback reasons */
   def isSupported(scanExec: FileSourceScanExec): Boolean = {
@@ -91,6 +116,10 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
         .contains("true")) {
 
       withFallbackReason(scanExec, "Full native scan disabled because ignoreMissingFiles enabled")
+    }
+
+    if (serializeExistenceDefaultValues(scanExec.requiredSchema, scanExec.output).isEmpty) {
+      withFallbackReason(scanExec, unsupportedDefaultReason)
     }
 
     // the scan is supported if no fallback reasons were added to the node
@@ -144,23 +173,15 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
         commonBuilder.addAllDataFilters(dataFilters.asJava)
       }
 
-      val possibleDefaultValues = getExistenceDefaultValues(scan.requiredSchema)
-      if (possibleDefaultValues.exists(_ != null)) {
-        // Our schema has default values. Serialize two lists, one with the default values
-        // and another with the indexes in the schema so the native side can map missing
-        // columns to these default values.
-        val (defaultValues, indexes) = possibleDefaultValues.iterator.zipWithIndex
-          .filter { case (expr, _) => expr != null }
-          .map { case (expr, index) =>
-            // ResolveDefaultColumnsUtil.getExistenceDefaultValues has evaluated these
-            // expressions and they should now just be literals.
-            (Literal(expr), index.toLong.asInstanceOf[java.lang.Long])
-          }
-          .toList
-          .unzip
-        commonBuilder.addAllDefaultValues(
-          defaultValues.flatMap(exprToProto(_, scan.output)).asJava)
-        commonBuilder.addAllDefaultValuesIndexes(indexes.asJava)
+      serializeExistenceDefaultValues(scan.requiredSchema, scan.output) match {
+        case Some((defaultValues, indexes)) =>
+          // Keep each value paired with its original required-schema index. Dropping an
+          // unsupported value while retaining its index would shift every later default.
+          commonBuilder.addAllDefaultValues(defaultValues.asJava)
+          commonBuilder.addAllDefaultValuesIndexes(indexes.asJava)
+        case None =>
+          withFallbackReason(scan, unsupportedDefaultReason)
+          return None
       }
 
       // Extract object store options from first file (S3 configs apply to all files in scan).

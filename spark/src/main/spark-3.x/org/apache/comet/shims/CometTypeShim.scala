@@ -21,6 +21,7 @@ package org.apache.comet.shims
 
 import scala.annotation.nowarn
 
+import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.types.{DataType, StructType}
 
 trait CometTypeShim {
@@ -44,6 +45,9 @@ trait CometTypeShim {
 
   @nowarn // Spark 4 feature; VariantType doesn't exist in Spark 3.x.
   def variantType: Option[DataType] = None
+
+  @nowarn // Spark 4 feature; VariantVal doesn't exist in Spark 3.x.
+  def variantDefaultExpression(value: Any): Option[Expression] = None
 
   @nowarn // Spark 4.1 feature; TimeType doesn't exist in Spark 3.x.
   def isTimeType(dt: DataType): Boolean = false

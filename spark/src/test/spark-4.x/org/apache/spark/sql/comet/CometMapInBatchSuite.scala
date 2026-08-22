@@ -27,7 +27,7 @@ import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, ExprId, PythonUDF}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, LeafExecNode}
 import org.apache.spark.sql.execution.python.MapInArrowExec
-import org.apache.spark.sql.types.{LongType, StructField, StructType}
+import org.apache.spark.sql.types.{ArrayType, DataType, LongType, StructField, StructType, VariantType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import org.apache.comet.{CometConf, ExtendedExplainInfo}
@@ -78,10 +78,18 @@ class CometMapInBatchSuite extends CometTestBase {
   }
 
   private def buildPlan(): MapInArrowExec = {
-    val cometChild = StubCometLeaf(Seq(AttributeReference("id", LongType)(ExprId(0L))))
+    buildPlan(LongType, LongType)
+  }
+
+  private def buildPlan(inputType: DataType, outputType: DataType): MapInArrowExec = {
+    val input = AttributeReference("id", inputType)(ExprId(0L))
+    val output = Seq(AttributeReference("id", outputType)(ExprId(1L)))
+    val cometChild = StubCometLeaf(Seq(input))
     MapInArrowExec(
-      stubPythonUDF,
-      cometChild.output,
+      stubPythonUDF.copy(
+        dataType = StructType(Seq(StructField("id", outputType))),
+        children = Seq(input)),
+      output,
       ColumnarToRowExec(cometChild),
       isBarrier = false,
       profile = None)
@@ -93,6 +101,23 @@ class CometMapInBatchSuite extends CometTestBase {
       assert(
         rewritten.exists(_.isInstanceOf[CometMapInBatchExec]),
         s"expected CometMapInBatchExec in rewritten plan:\n$rewritten")
+    }
+  }
+
+  test("rule does not rewrite MapInArrowExec with Variant-bearing input or output") {
+    val nestedVariant = StructType(Seq(StructField("v", VariantType)))
+    val plans = Seq(
+      buildPlan(VariantType, LongType),
+      buildPlan(nestedVariant, LongType),
+      buildPlan(LongType, ArrayType(VariantType, containsNull = true)))
+
+    withSQLConf(CometConf.COMET_PYARROW_UDF_ENABLED.key -> "true") {
+      plans.foreach { plan =>
+        val rewritten = EliminateRedundantTransitions(spark).apply(plan)
+        assert(
+          !rewritten.exists(_.isInstanceOf[CometMapInBatchExec]),
+          s"unexpected CometMapInBatchExec for Variant-bearing schema:\n$rewritten")
+      }
     }
   }
 

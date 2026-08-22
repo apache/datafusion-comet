@@ -732,8 +732,14 @@ case class CometExecRule(session: SparkSession)
   private def tryConvertToComet(
       op: SparkPlan,
       handler: CometOperatorSerde[_]): Option[SparkPlan] = {
+    // Get the actual data-producing children (unwrap WriteFilesExec if present).
+    val dataProducingChildren = op.children.flatMap {
+      case writeFiles: WriteFilesExec => Seq(writeFiles.child)
+      case other => Seq(other)
+    }
+
     if (!op.isInstanceOf[CometScanExec] &&
-      (op.output ++ op.children.flatMap(_.output)).exists(attr =>
+      (op.output ++ dataProducingChildren.flatMap(_.output)).exists(attr =>
         containsVariantType(attr.dataType))) {
       withFallbackReason(
         op,
@@ -747,11 +753,6 @@ case class CometExecRule(session: SparkSession)
       // children are CometNativeExec. This prevents runtime failures when the native operator
       // expects Arrow arrays but receives non-Arrow data (e.g., OnHeapColumnVector).
       if (serde.requiresNativeChildren && op.children.nonEmpty) {
-        // Get the actual data-producing children (unwrap WriteFilesExec if present)
-        val dataProducingChildren = op.children.flatMap {
-          case writeFiles: WriteFilesExec => Seq(writeFiles.child)
-          case other => Seq(other)
-        }
         if (!dataProducingChildren.forall(_.isInstanceOf[CometNativeExec])) {
           withFallbackReason(
             op,
