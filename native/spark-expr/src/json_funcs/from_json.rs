@@ -124,6 +124,17 @@ impl PhysicalExpr for FromJson {
     }
 }
 
+/// Whether `s` is blank per Spark's own definition (SPARK-19543): Spark's `JacksonParser`
+/// treats input as blank when the underlying Jackson `JsonParser` finds no first token, which
+/// happens when only JSON whitespace precedes EOF. RFC 8259 defines JSON whitespace as exactly
+/// space, tab, CR, and LF -- a narrower set than Rust's Unicode-aware `str::trim()` (which also
+/// trims e.g. NBSP, U+2028) and than ASCII "control or space" (which also trims e.g. NUL, BEL,
+/// vertical tab -- not JSON whitespace, so Jackson would fail to tokenize them and PERMISSIVE
+/// mode would produce a non-null struct, not NULL).
+fn is_blank(s: &str) -> bool {
+    s.trim_matches([' ', '\t', '\n', '\r']).is_empty()
+}
+
 /// Parse JSON string array into struct array
 fn json_string_to_struct(arr: &Arc<dyn Array>, schema: &DataType) -> Result<ArrayRef> {
     use arrow::array::StringArray;
@@ -150,7 +161,7 @@ fn json_string_to_struct(arr: &Arc<dyn Array>, schema: &DataType) -> Result<Arra
         } else {
             let json_str = string_array.value(row_idx);
 
-            if json_str.trim().is_empty() {
+            if is_blank(json_str) {
                 // Blank input (empty or whitespace only) is NULL, not a struct with null
                 // fields (SPARK-19543) -- distinct from a non-blank string that fails to
                 // parse, which PERMISSIVE mode below turns into a struct with null fields.

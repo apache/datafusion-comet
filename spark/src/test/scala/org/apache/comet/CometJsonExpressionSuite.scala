@@ -176,9 +176,14 @@ class CometJsonExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
         Seq(
           (1, "{}"), // valid JSON object
           (2, ""), // blank input -> NULL
-          (3, "   "), // whitespace-only input -> NULL
+          (3, "   "), // JSON-whitespace-only input (spaces) -> NULL
           (4, "not json"), // malformed, non-blank -> non-null struct
-          (5, null) // SQL NULL input -> NULL
+          (5, null), // SQL NULL input -> NULL
+          // Spark's blank check is Jackson's tokenizer finding no first token, which skips
+          // only JSON whitespace (RFC 8259: space/tab/CR/LF). Neither of the next two chars
+          // qualifies, so both must fail to tokenize -> non-null struct, not NULL.
+          (6, "\u00A0"), // non-breaking space -> not JSON whitespace, non-null struct
+          (7, "\u000B") // vertical tab -> ASCII control, not JSON whitespace, non-null struct
         ),
         "tbl",
         withDictionary = dictionaryEnabled) {
