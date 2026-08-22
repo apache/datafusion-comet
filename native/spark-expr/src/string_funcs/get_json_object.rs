@@ -255,56 +255,75 @@ fn parse_json_path(path: &str) -> Option<ParsedPath> {
 /// Evaluate a parsed JSONPath against a JSON string.
 /// Returns the result as a string, or None if no match.
 fn evaluate_path(json_str: &str, path: &ParsedPath) -> Option<String> {
-    if !path.has_wildcard {
-        return value_into_string(extract_no_wildcard(json_str, &path.segments)?);
+    let mut result = extract_path(json_str, &path.segments)?;
+    if !result.matched {
+        return None;
     }
 
-    let value: Value = serde_json::from_str(json_str).ok()?;
+    if !path.has_wildcard {
+        return value_into_string(result.values.pop()?);
+    }
 
-    // Wildcard path: may return multiple results
-    let results = evaluate_with_wildcard(&value, &path.segments);
-
-    match results.len() {
+    match result.values.len() {
         0 => None,
-        1 => {
-            // Single wildcard match: Spark preserves JSON serialization format
-            // (strings keep their quotes, numbers don't)
-            if results[0].is_null() {
-                None
-            } else {
-                serde_json::to_string(results[0]).ok()
-            }
-        }
-        // Multiple results: wrap in JSON array. A slice of `&Value` serializes
-        // as a JSON array, so no clone into an owned `Value::Array` is needed.
-        _ => serde_json::to_string(&results).ok(),
+        // A wildcard match preserves JSON serialization format, including
+        // quotes around strings and the JSON text `null`.
+        1 => serde_json::to_string(&result.values[0]).ok(),
+        _ => serde_json::to_string(&result.values).ok(),
     }
 }
 
-/// Evaluation for paths without wildcards.
-///
 /// Descends into the document while it is being parsed, so only the matched
-/// subtree is materialized as a `Value`; everything else is skipped by the
-/// parser without allocating. The whole document is still consumed, so
-/// malformed JSON anywhere in the input yields no match, as a full parse would.
-fn extract_no_wildcard(json_str: &str, segments: &[PathSegment]) -> Option<Value> {
+/// subtrees are materialized as `Value`s; everything else is skipped by the
+/// parser without allocating. The whole document is still consumed, so malformed
+/// JSON anywhere in the input yields no match, as a full parse would.
+fn extract_path(json_str: &str, segments: &[PathSegment]) -> Option<PathResult> {
     let mut de = serde_json::Deserializer::from_str(json_str);
-    let found = PathSeed { segments }.deserialize(&mut de).ok()?;
+    let found = PathSeed {
+        segments,
+        reject_direct_null: false,
+    }
+    .deserialize(&mut de)
+    .ok()?;
     de.end().ok()?;
-    found
+    Some(found)
 }
 
 /// Deserializes the value at `segments`, discarding everything else.
 struct PathSeed<'a> {
     segments: &'a [PathSegment],
+    /// A JSON null directly below a named field is not a match in Spark. Nulls
+    /// reached through array traversal are matches and serialize as `null`.
+    reject_direct_null: bool,
+}
+
+#[derive(Default)]
+struct PathResult {
+    values: Vec<Value>,
+    matched: bool,
+}
+
+impl PathResult {
+    fn matched(value: Value) -> Self {
+        Self {
+            values: vec![value],
+            matched: true,
+        }
+    }
 }
 
 impl<'de> DeserializeSeed<'de> for PathSeed<'_> {
-    type Value = Option<Value>;
+    type Value = PathResult;
 
     fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<Self::Value, D::Error> {
         if self.segments.is_empty() {
-            return Value::deserialize(deserializer).map(Some);
+            return Value::deserialize(deserializer).map(|value| {
+                if self.reject_direct_null && value.is_null() {
+                    PathResult::default()
+                } else {
+                    PathResult::matched(value)
+                }
+            });
         }
         deserializer.deserialize_any(SegmentVisitor {
             segments: self.segments,
@@ -320,50 +339,52 @@ struct SegmentVisitor<'a> {
 }
 
 impl<'de> Visitor<'de> for SegmentVisitor<'_> {
-    type Value = Option<Value>;
+    type Value = PathResult;
 
     fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("a JSON value")
     }
 
     fn visit_bool<E>(self, _: bool) -> Result<Self::Value, E> {
-        Ok(None)
+        Ok(PathResult::default())
     }
 
     fn visit_i64<E>(self, _: i64) -> Result<Self::Value, E> {
-        Ok(None)
+        Ok(PathResult::default())
     }
 
     fn visit_u64<E>(self, _: u64) -> Result<Self::Value, E> {
-        Ok(None)
+        Ok(PathResult::default())
     }
 
     fn visit_f64<E>(self, _: f64) -> Result<Self::Value, E> {
-        Ok(None)
+        Ok(PathResult::default())
     }
 
     fn visit_str<E>(self, _: &str) -> Result<Self::Value, E> {
-        Ok(None)
+        Ok(PathResult::default())
     }
 
     fn visit_unit<E>(self) -> Result<Self::Value, E> {
-        Ok(None)
+        Ok(PathResult::default())
     }
 
     fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
         let PathSegment::Field(name) = &self.segments[0] else {
             IgnoredAny.visit_map(map)?;
-            return Ok(None);
+            return Ok(PathResult::default());
         };
 
-        let mut found = None;
-        // Every entry is visited so that a duplicated key resolves to its last
-        // occurrence, as it would in a parsed object.
+        let mut found = PathResult::default();
         while let Some(matched) = map.next_key_seed(KeySeed(name))? {
-            if matched {
-                found = map.next_value_seed(PathSeed {
+            if matched && !found.matched {
+                let candidate = map.next_value_seed(PathSeed {
                     segments: &self.segments[1..],
+                    reject_direct_null: true,
                 })?;
+                if candidate.matched {
+                    found = candidate;
+                }
             } else {
                 map.next_value::<IgnoredAny>()?;
             }
@@ -372,25 +393,42 @@ impl<'de> Visitor<'de> for SegmentVisitor<'_> {
     }
 
     fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
-        let PathSegment::Index(idx) = &self.segments[0] else {
-            IgnoredAny.visit_seq(seq)?;
-            return Ok(None);
-        };
-
-        for _ in 0..*idx {
-            if seq.next_element::<IgnoredAny>()?.is_none() {
-                return Ok(None);
+        match &self.segments[0] {
+            PathSegment::Index(idx) => {
+                for _ in 0..*idx {
+                    if seq.next_element::<IgnoredAny>()?.is_none() {
+                        return Ok(PathResult::default());
+                    }
+                }
+                let found = seq
+                    .next_element_seed(PathSeed {
+                        segments: &self.segments[1..],
+                        reject_direct_null: false,
+                    })?
+                    .unwrap_or_default();
+                // The remaining elements are still visited, so that a malformed element
+                // after the match yields no match, as a full parse would.
+                IgnoredAny.visit_seq(seq)?;
+                Ok(found)
+            }
+            PathSegment::Wildcard => {
+                let mut found = PathResult::default();
+                while let Some(mut result) = seq.next_element_seed(PathSeed {
+                    segments: &self.segments[1..],
+                    reject_direct_null: false,
+                })? {
+                    if result.matched {
+                        found.matched = true;
+                        found.values.append(&mut result.values);
+                    }
+                }
+                Ok(found)
+            }
+            PathSegment::Field(_) => {
+                IgnoredAny.visit_seq(seq)?;
+                Ok(PathResult::default())
             }
         }
-        let found = seq
-            .next_element_seed(PathSeed {
-                segments: &self.segments[1..],
-            })?
-            .flatten();
-        // The remaining elements are still visited, so that a malformed element
-        // after the match yields no match, as a full parse would.
-        IgnoredAny.visit_seq(seq)?;
-        Ok(found)
     }
 }
 
@@ -417,47 +455,12 @@ impl<'de> Visitor<'de> for KeySeed<'_> {
     }
 }
 
-/// Evaluation for paths containing wildcards.
-/// Returns references to all matching values.
-fn evaluate_with_wildcard<'a>(value: &'a Value, segments: &[PathSegment]) -> Vec<&'a Value> {
-    if segments.is_empty() {
-        return vec![value];
-    }
-
-    let rest = &segments[1..];
-
-    match &segments[0] {
-        PathSegment::Field(name) => match value {
-            Value::Object(map) => match map.get(name) {
-                Some(v) => evaluate_with_wildcard(v, rest),
-                None => vec![],
-            },
-            _ => vec![],
-        },
-        PathSegment::Index(idx) => match value {
-            Value::Array(arr) => match arr.get(*idx) {
-                Some(v) => evaluate_with_wildcard(v, rest),
-                None => vec![],
-            },
-            _ => vec![],
-        },
-        PathSegment::Wildcard => match value {
-            Value::Array(arr) => arr
-                .iter()
-                .flat_map(|v| evaluate_with_wildcard(v, rest))
-                .collect(),
-            _ => vec![],
-        },
-    }
-}
-
 /// Convert a JSON value to its string representation matching Spark behavior.
 /// - Strings are returned without quotes
-/// - null returns None
+/// - null reached through array traversal is returned as JSON text
 /// - Numbers, booleans, objects, arrays are serialized as JSON
 fn value_into_string(value: Value) -> Option<String> {
     match value {
-        Value::Null => None,
         Value::String(s) => Some(s),
         other => Some(other.to_string()),
     }
@@ -581,14 +584,86 @@ mod tests {
     }
 
     #[test]
-    fn test_duplicate_key_last_wins() {
-        // Every entry is visited, so a duplicated key resolves to its last
-        // occurrence, matching serde_json's preserve_order overwrite behavior.
+    fn test_duplicate_key_first_wins() {
+        // The first occurrence of a duplicated key wins, matching Spark.
         let path = parse_json_path("$.a").unwrap();
         assert_eq!(
             evaluate_path(r#"{"a":1,"a":2}"#, &path),
+            Some("1".to_string())
+        );
+    }
+
+    #[test]
+    fn test_duplicate_key_first_wins_nested() {
+        // First-wins also applies when recursing into the matched value.
+        let path = parse_json_path("$.a.b").unwrap();
+        assert_eq!(
+            evaluate_path(r#"{"a":{"b":1},"a":{"b":2}}"#, &path),
+            Some("1".to_string())
+        );
+    }
+
+    #[test]
+    fn test_duplicate_key_first_successful_match_wins() {
+        // A duplicate field is only locked in after the remaining path
+        // produces a non-null result. Spark continues to later occurrences
+        // when an earlier occurrence is null or misses the remaining path.
+        let path = parse_json_path("$.a.b").unwrap();
+        assert_eq!(
+            evaluate_path(r#"{"a":{"x":1},"a":{"b":2}}"#, &path),
             Some("2".to_string())
         );
+        assert_eq!(
+            evaluate_path(r#"{"a":null,"a":{"b":2}}"#, &path),
+            Some("2".to_string())
+        );
+
+        let path = parse_json_path("$.a").unwrap();
+        assert_eq!(
+            evaluate_path(r#"{"a":null,"a":2}"#, &path),
+            Some("2".to_string())
+        );
+
+        let path = parse_json_path("$.a.b").unwrap();
+        assert_eq!(
+            evaluate_path(r#"{"a":{"b":null,"b":2}}"#, &path),
+            Some("2".to_string())
+        );
+    }
+
+    #[test]
+    fn test_duplicate_key_first_successful_match_wins_with_wildcard() {
+        let path = parse_json_path("$.a[*].b").unwrap();
+        assert_eq!(
+            evaluate_path(
+                r#"{"a":[{"x":1}],"a":[{"b":2},{"b":3}],"a":[{"b":4}]}"#,
+                &path
+            ),
+            Some("[2,3]".to_string())
+        );
+
+        let path = parse_json_path("$.a[*]").unwrap();
+        assert_eq!(
+            evaluate_path(r#"{"a":[1],"a":[2]}"#, &path),
+            Some("1".to_string())
+        );
+        assert_eq!(
+            evaluate_path(r#"{"a":[],"a":[2]}"#, &path),
+            Some("2".to_string())
+        );
+    }
+
+    #[test]
+    fn test_duplicate_key_null_reached_through_array_locks_match() {
+        let json = r#"{"a":[null],"a":[2]}"#;
+
+        // Unlike a null directly under a named field, a null reached through
+        // array traversal is emitted as JSON text and locks that field match.
+        let path = parse_json_path("$.a[0]").unwrap();
+        assert_eq!(evaluate_path(json, &path), Some("null".to_string()));
+
+        let path = parse_json_path("$.a[*]").unwrap();
+        assert_eq!(evaluate_path(json, &path), Some("null".to_string()));
     }
 
     #[test]
