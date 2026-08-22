@@ -20,9 +20,9 @@ use crate::conversion_funcs::utils::cast_overflow;
 use crate::conversion_funcs::utils::MICROS_PER_SECOND;
 use crate::{EvalMode, SparkError, SparkResult};
 use arrow::array::{
-    Array, ArrayRef, AsArray, Decimal128Array, Float32Array, Float64Array, GenericStringBuilder,
-    Int16Array, Int32Array, Int64Array, Int8Array, OffsetSizeTrait, PrimitiveArray, Scalar,
-    StringBuilder, TimestampMicrosecondBuilder,
+    Array, ArrayRef, AsArray, BooleanArray, Decimal128Array, Float32Array, Float64Array,
+    GenericStringBuilder, Int16Array, Int32Array, Int64Array, Int8Array, OffsetSizeTrait,
+    PrimitiveArray, Scalar, StringBuilder, TimestampMicrosecondBuilder,
 };
 use arrow::compute::kernels::cmp::neq;
 use arrow::datatypes::{
@@ -853,6 +853,11 @@ pub(crate) fn spark_cast_int_to_int(
 
 pub(crate) fn spark_cast_decimal_to_boolean(array: &dyn Array) -> SparkResult<ArrayRef> {
     let decimal_array = array.as_primitive::<Decimal128Type>();
+    // All-null fast path avoids constructing a zero scalar with the input's precision/scale,
+    // which would fail validation for Decimal128(0, 0) inputs that Spark accepts as nullable.
+    if decimal_array.null_count() == decimal_array.len() {
+        return Ok(Arc::new(BooleanArray::new_null(decimal_array.len())));
+    }
     // Arrow has no Decimal-to-Boolean cast. `neq` against a zero of the same
     // precision/scale is exactly `!value.is_zero()`, including null handling.
     let zero = Scalar::new(
@@ -1305,6 +1310,48 @@ mod tests {
         let bool_array = result.as_boolean();
         assert!(!bool_array.value(0));
         assert!(bool_array.value(1));
+
+        // All-null Decimal128(0, 0) is reachable via Spark's RDD row-to-Arrow path;
+        // `with_precision_and_scale(0, 0)` rejects precision 0, so the all-null fast path
+        // must yield an all-null boolean array without constructing the zero scalar.
+        // SAFETY: builds a well-formed Decimal128 ArrayData:
+        //   - len = 2 slots
+        //   - values buffer = 32 bytes = 2 * 16 (Decimal128 slot width), zero-initialized
+        //   - null buffer = 1 byte, all bits clear, covering >= len bits as required
+        //   Precision 0 skips ArrowError validation but is otherwise a legal DataType tag;
+        //   no non-null slot is ever read, so precision-range invariants are vacuous.
+        let array_data = unsafe {
+            arrow::array::ArrayData::builder(DataType::Decimal128(0, 0))
+                .len(2)
+                .null_bit_buffer(Some(arrow::buffer::Buffer::from(&[0u8])))
+                .add_buffer(arrow::buffer::Buffer::from(&[0u8; 32]))
+                .build_unchecked()
+        };
+        let array: ArrayRef = Arc::new(Decimal128Array::from(array_data));
+        assert_eq!(array.data_type(), &DataType::Decimal128(0, 0));
+        let result = spark_cast_decimal_to_boolean(&array).unwrap();
+        let bool_array = result.as_boolean();
+        assert_eq!(bool_array.len(), 2);
+        assert!(bool_array.is_null(0));
+        assert!(bool_array.is_null(1));
+
+        // Empty Decimal128(0, 0) input: `null_count() == len()` (0 == 0) must still take
+        // the fast path. Precision 0 makes this discriminating — without the fast path,
+        // building the zero scalar would fail regardless of the empty length.
+        // SAFETY: len = 0, so both the (empty) values buffer and the absent null buffer
+        // trivially cover every slot; the precision-range invariant is vacuous.
+        let array_data = unsafe {
+            arrow::array::ArrayData::builder(DataType::Decimal128(0, 0))
+                .len(0)
+                .add_buffer(arrow::buffer::Buffer::from(&[] as &[u8]))
+                .build_unchecked()
+        };
+        let array: ArrayRef = Arc::new(Decimal128Array::from(array_data));
+        // The load-bearing check is that `spark_cast_decimal_to_boolean` returns Ok — without
+        // the fast path, precision 0 would fail during zero-scalar construction. Length is
+        // asserted for completeness; null_count is trivially 0 on any empty array.
+        let result = spark_cast_decimal_to_boolean(&array).unwrap();
+        assert_eq!(result.as_boolean().len(), 0);
     }
 
     #[test]
