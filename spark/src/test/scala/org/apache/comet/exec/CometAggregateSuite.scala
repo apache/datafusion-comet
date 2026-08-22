@@ -25,9 +25,11 @@ import org.apache.hadoop.fs.Path
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.expressions.Cast
+import org.apache.spark.sql.catalyst.expressions.aggregate.Partial
 import org.apache.spark.sql.catalyst.optimizer.EliminateSorts
-import org.apache.spark.sql.comet.CometHashAggregateExec
-import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+import org.apache.spark.sql.comet.{CometFilterExec, CometHashAggregateExec}
+import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanHelper, ShuffleQueryStageExec}
+import org.apache.spark.sql.execution.aggregate.BaseAggregateExec
 import org.apache.spark.sql.functions.{avg, col, count_distinct, sum}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
@@ -35,6 +37,7 @@ import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
 import org.apache.comet.CometConf
 import org.apache.comet.CometConf.COMET_EXEC_STRICT_FLOATING_POINT
 import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
+import org.apache.comet.rules.CometExecRule
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, ParquetGenerator, SchemaGenOptions}
 
 /**
@@ -185,6 +188,73 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.key -> (!disableFinal).toString) {
           checkSparkAnswer(
             s"SELECT percentile_approx(_2, 0.5), count(DISTINCT _3) FROM tbl$groupBy")
+        }
+      }
+    }
+  }
+
+  for (adaptive <- Seq(false, true)) {
+    test(s"decimal AVG falls back across a Spark shuffle (AQE=$adaptive)") {
+      withTempDir { dir =>
+        val path = s"${dir.getAbsolutePath}/data"
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          spark
+            .range(0L, 8L, 1L, 4)
+            .selectExpr("id", "CAST(200 AS DECIMAL(20, 2)) AS v")
+            .write
+            .parquet(path)
+        }
+
+        withSQLConf(
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+          SQLConf.FILES_MAX_PARTITION_BYTES.key -> "1048576",
+          SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED.key -> "false",
+          CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
+          CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true",
+          CometConf.COMET_SHUFFLE_ENABLED.key -> "false") {
+          withParquetTable(path, "decimal_avg_fallback") {
+            // The filter leaves three input partitions empty. Decimal AVG is not safe to mix
+            // between engines: a native empty partial can poison the Spark final's sum buffer.
+            val df = sql("SELECT AVG(v) FROM decimal_avg_fallback WHERE id = 1")
+            val initialPlan = stripAQEPlan(df.queryExecution.executedPlan)
+            checkAnswer(df, Seq(Row(new java.math.BigDecimal("200.000000"))))
+            for (plan <- Seq(initialPlan, df.queryExecution.executedPlan)) {
+              assert(collect(plan) { case agg: CometHashAggregateExec => agg }.isEmpty)
+              val partials = collect(plan) {
+                case agg: BaseAggregateExec
+                    if agg.aggregateExpressions.forall(_.mode == Partial) =>
+                  agg
+              }
+              assert(partials.size == 1)
+              assert(partials.forall(_.getTagValue(CometExecRule.COMET_UNSAFE_PARTIAL).isDefined))
+              // Falling back the aggregate must not discard the native filter/scan conversion.
+              assert(collect(plan) { case filter: CometFilterExec => filter }.nonEmpty)
+            }
+            if (adaptive) {
+              val stages = collect(df.queryExecution.executedPlan) {
+                case stage: ShuffleQueryStageExec => stage
+              }
+              assert(stages.nonEmpty && stages.forall(_.isMaterialized))
+            }
+
+            // Compatible buffers may still use a native Partial and a Spark Final.
+            val safe = sql("SELECT MIN(v), MAX(v) FROM decimal_avg_fallback WHERE id = 1")
+            checkAnswer(
+              safe,
+              Seq(Row(new java.math.BigDecimal("200.00"), new java.math.BigDecimal("200.00"))))
+            assert(collect(safe.queryExecution.executedPlan) { case agg: CometHashAggregateExec =>
+              agg
+            }.size == 1)
+
+            // The same unsafe buffer is valid when both aggregate stages execute in Comet.
+            withSQLConf(CometConf.COMET_SHUFFLE_ENABLED.key -> "true") {
+              val native = sql("SELECT AVG(v) FROM decimal_avg_fallback WHERE id = 1")
+              checkAnswer(native, Seq(Row(new java.math.BigDecimal("200.000000"))))
+              assert(collect(native.queryExecution.executedPlan) {
+                case agg: CometHashAggregateExec => agg
+              }.size == 2)
+            }
+          }
         }
       }
     }
@@ -513,7 +583,10 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             dictionaryEnabled) {
             val n = if (nativeShuffleEnabled) 2 else 1
             checkSparkAnswerAndNumOfAggregates("SELECT _2, SUM(_1) FROM tbl GROUP BY _2", n)
-            checkSparkAnswerAndNumOfAggregates("SELECT _2, COUNT(_1) FROM tbl GROUP BY _2", n)
+            // COUNT is not declared safe for mixed execution, unlike the other aggregates here.
+            checkSparkAnswerAndNumOfAggregates(
+              "SELECT _2, COUNT(_1) FROM tbl GROUP BY _2",
+              if (nativeShuffleEnabled) 2 else 0)
             checkSparkAnswerAndNumOfAggregates("SELECT _2, MIN(_1) FROM tbl GROUP BY _2", n)
             checkSparkAnswerAndNumOfAggregates("SELECT _2, MAX(_1) FROM tbl GROUP BY _2", n)
             checkSparkAnswerAndNumOfAggregates("SELECT _2, AVG(_1) FROM tbl GROUP BY _2", n)
@@ -721,26 +794,29 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             val path = new Path(dir.toURI.toString, "test")
             makeParquetFile(path, 1000, 20, dictionaryEnabled)
             withParquetTable(path.toUri.toString, "tbl") {
+              // Spark rewrites _7's small decimal SUM to Long; _8 and _9 remain decimal and
+              // cannot use a native Partial when the Final runs in Spark.
               val expectedNumOfCometAggregates = if (nativeShuffleEnabled) 2 else 1
+              val expectedNumOfDecimalAggregates = if (nativeShuffleEnabled) 2 else 0
 
               checkSparkAnswerAndNumOfAggregates(
                 "SELECT _g2, SUM(_7) FROM tbl GROUP BY _g2",
                 expectedNumOfCometAggregates)
               checkSparkAnswerAndNumOfAggregates(
                 "SELECT _g3, SUM(_8) FROM tbl GROUP BY _g3",
-                expectedNumOfCometAggregates)
+                expectedNumOfDecimalAggregates)
               checkSparkAnswerAndNumOfAggregates(
                 "SELECT _g4, SUM(_9) FROM tbl GROUP BY _g4",
-                expectedNumOfCometAggregates)
+                expectedNumOfDecimalAggregates)
               checkSparkAnswerAndNumOfAggregates(
                 "SELECT SUM(_7) FROM tbl",
                 expectedNumOfCometAggregates)
               checkSparkAnswerAndNumOfAggregates(
                 "SELECT SUM(_8) FROM tbl",
-                expectedNumOfCometAggregates)
+                expectedNumOfDecimalAggregates)
               checkSparkAnswerAndNumOfAggregates(
                 "SELECT SUM(_9) FROM tbl",
-                expectedNumOfCometAggregates)
+                expectedNumOfDecimalAggregates)
             }
           }
         }
@@ -1325,7 +1401,9 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             val path = new Path(dir.toURI.toString, "test")
             makeParquetFile(path, 1000, 20, dictionaryEnabled)
             withParquetTable(path.toUri.toString, "tbl") {
+              // Only _7 is rewritten to a mixed-safe Long AVG by Spark's decimal optimizer.
               val expectedNumOfCometAggregates = if (nativeShuffleEnabled) 2 else 1
+              val expectedNumOfDecimalAggregates = if (nativeShuffleEnabled) 2 else 0
 
               checkSparkAnswerAndNumOfAggregates(
                 "SELECT _g2, AVG(_7) FROM tbl GROUP BY _g2",
@@ -1333,11 +1411,12 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
               checkSparkAnswerWithTolerance("SELECT _g3, AVG(_8) FROM tbl GROUP BY _g3")
               assert(getNumCometHashAggregate(
-                sql("SELECT _g3, AVG(_8) FROM tbl GROUP BY _g3")) == expectedNumOfCometAggregates)
+                sql(
+                  "SELECT _g3, AVG(_8) FROM tbl GROUP BY _g3")) == expectedNumOfDecimalAggregates)
 
               checkSparkAnswerAndNumOfAggregates(
                 "SELECT _g4, AVG(_9) FROM tbl GROUP BY _g4",
-                expectedNumOfCometAggregates)
+                expectedNumOfDecimalAggregates)
 
               checkSparkAnswerAndNumOfAggregates(
                 "SELECT AVG(_7) FROM tbl",
@@ -1345,11 +1424,11 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
               checkSparkAnswerWithTolerance("SELECT AVG(_8) FROM tbl")
               assert(getNumCometHashAggregate(
-                sql("SELECT AVG(_8) FROM tbl")) == expectedNumOfCometAggregates)
+                sql("SELECT AVG(_8) FROM tbl")) == expectedNumOfDecimalAggregates)
 
               checkSparkAnswerAndNumOfAggregates(
                 "SELECT AVG(_9) FROM tbl",
-                expectedNumOfCometAggregates)
+                expectedNumOfDecimalAggregates)
             }
           }
         }
