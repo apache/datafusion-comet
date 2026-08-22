@@ -15,10 +15,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::utils::is_valid_decimal_precision;
 use crate::{decimal_sum_overflow_error, EvalMode, SparkErrorWithContext};
 use arrow::array::{
-    cast::AsArray, types::Decimal128Type, Array, ArrayRef, BooleanArray, Decimal128Array,
+    cast::AsArray,
+    types::{Decimal128Type, DecimalType},
+    Array, ArrayRef, BooleanArray, Decimal128Array,
 };
 use arrow::datatypes::{DataType, Field, FieldRef};
 use datafusion::common::{DataFusionError, Result as DFResult, ScalarValue};
@@ -208,7 +209,7 @@ impl SumDecimalAccumulator {
         let running_sum = self.sum.unwrap_or(0);
         let (new_sum, is_overflow) = running_sum.overflowing_add(v);
 
-        if is_overflow || !is_valid_decimal_precision(new_sum, self.precision) {
+        if is_overflow || !Decimal128Type::is_valid_decimal_precision(new_sum, self.precision) {
             if self.eval_mode == EvalMode::Ansi {
                 let error = decimal_sum_overflow_error("sum");
                 return Err(self.wrap_error_with_context(error));
@@ -276,7 +277,9 @@ impl Accumulator for SumDecimalAccumulator {
             )
         } else {
             match self.sum {
-                Some(sum_value) if is_valid_decimal_precision(sum_value, self.precision) => {
+                Some(sum_value)
+                    if Decimal128Type::is_valid_decimal_precision(sum_value, self.precision) =>
+                {
                     ScalarValue::try_new_decimal128(sum_value, self.precision, self.scale)
                 }
                 _ => ScalarValue::new_primitive::<Decimal128Type>(
@@ -351,7 +354,7 @@ impl Accumulator for SumDecimalAccumulator {
             let right = that_sum.unwrap();
             let (new_sum, is_overflow) = left.overflowing_add(right);
 
-            if is_overflow || !is_valid_decimal_precision(new_sum, self.precision) {
+            if is_overflow || !Decimal128Type::is_valid_decimal_precision(new_sum, self.precision) {
                 if self.eval_mode == EvalMode::Ansi {
                     let error = decimal_sum_overflow_error("sum");
                     return Err(self.wrap_error_with_context(error));
@@ -424,7 +427,7 @@ impl SumDecimalGroupsAccumulator {
         let running_sum = self.sum[group_index].unwrap_or(0);
         let (new_sum, is_overflow) = running_sum.overflowing_add(value);
 
-        if is_overflow || !is_valid_decimal_precision(new_sum, self.precision) {
+        if is_overflow || !Decimal128Type::is_valid_decimal_precision(new_sum, self.precision) {
             if self.eval_mode == EvalMode::Ansi {
                 let error = decimal_sum_overflow_error("sum");
                 return Err(self.wrap_error_with_context(error));
@@ -484,7 +487,12 @@ impl GroupsAccumulator for SumDecimalGroupsAccumulator {
                                 None
                             } else {
                                 match sum {
-                                    Some(v) if is_valid_decimal_precision(v, self.precision) => {
+                                    Some(v)
+                                        if Decimal128Type::is_valid_decimal_precision(
+                                            v,
+                                            self.precision,
+                                        ) =>
+                                    {
                                         Some(v)
                                     }
                                     _ => None,
@@ -508,7 +516,12 @@ impl GroupsAccumulator for SumDecimalGroupsAccumulator {
                                 None
                             } else {
                                 match sum {
-                                    Some(v) if is_valid_decimal_precision(v, self.precision) => {
+                                    Some(v)
+                                        if Decimal128Type::is_valid_decimal_precision(
+                                            v,
+                                            self.precision,
+                                        ) =>
+                                    {
                                         Some(v)
                                     }
                                     _ => None,
@@ -593,7 +606,7 @@ impl GroupsAccumulator for SumDecimalGroupsAccumulator {
             let right = that_sum_val.unwrap();
             let (new_sum, is_overflow) = left.overflowing_add(right);
 
-            if is_overflow || !is_valid_decimal_precision(new_sum, self.precision) {
+            if is_overflow || !Decimal128Type::is_valid_decimal_precision(new_sum, self.precision) {
                 if self.eval_mode == EvalMode::Ansi {
                     let error = decimal_sum_overflow_error("sum");
                     return Err(self.wrap_error_with_context(error));
