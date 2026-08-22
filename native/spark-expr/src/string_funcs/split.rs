@@ -315,7 +315,7 @@ fn push_split_char<'a, O: OffsetSizeTrait>(
 ) {
     if limit == 0 {
         scratch.clear();
-        scratch.extend(string.split(delimiter)); // std::str::split(char)
+        scratch.extend(string.split(delimiter));
         while scratch.last().is_some_and(|s| s.is_empty()) {
             scratch.pop();
         }
@@ -330,7 +330,6 @@ fn push_split_char<'a, O: OffsetSizeTrait>(
         let cap = (limit - 1) as usize;
         let mut count = 0;
         let mut last_end = 0;
-        // match_indices(char) в std работает через быстрый поиск символа
         for (start, _) in string.match_indices(delimiter) {
             if count >= cap {
                 break;
