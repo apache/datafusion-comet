@@ -48,7 +48,9 @@ use crate::execution::{
 };
 use crate::jvm_bridge::{jni_call, JVMClasses};
 use arrow::compute::CastOptions;
-use arrow::datatypes::{DataType, Field, FieldRef, Schema, TimeUnit, DECIMAL128_MAX_PRECISION};
+use arrow::datatypes::{
+    DataType, Field, FieldRef, IntervalUnit, Schema, TimeUnit, DECIMAL128_MAX_PRECISION,
+};
 use arrow::ffi_stream::FFI_ArrowArrayStream;
 use datafusion::functions_aggregate::bit_and_or_xor::{bit_and_udaf, bit_or_udaf, bit_xor_udaf};
 use datafusion::functions_aggregate::count::count_udaf;
@@ -502,6 +504,9 @@ impl PhysicalPlanner {
                         DataType::Duration(TimeUnit::Microsecond) => {
                             ScalarValue::DurationMicrosecond(None)
                         }
+                        DataType::Interval(IntervalUnit::YearMonth) => {
+                            ScalarValue::IntervalYearMonth(None)
+                        }
                         dt => {
                             return Err(GeneralError(format!("{dt:?} is not supported in Comet")))
                         }
@@ -514,9 +519,12 @@ impl PhysicalPlanner {
                         Value::IntVal(value) => match data_type {
                             DataType::Int32 => ScalarValue::Int32(Some(*value)),
                             DataType::Date32 => ScalarValue::Date32(Some(*value)),
+                            DataType::Interval(IntervalUnit::YearMonth) => {
+                                ScalarValue::IntervalYearMonth(Some(*value))
+                            }
                             dt => {
                                 return Err(GeneralError(format!(
-                                    "Expected either 'Int32' or 'Date32' for IntVal, but found {dt:?}"
+                                    "Expected 'Int32', 'Date32', or 'Interval(YearMonth)' for IntVal, but found {dt:?}"
                                 )))
                             }
                         },

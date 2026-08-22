@@ -991,6 +991,8 @@ case class CometScanTypeChecker() extends DataTypeSupport with CometTypeShim {
       name: String,
       fallbackReasons: ListBuffer[String]): Boolean = {
     dt match {
+      case _: YearMonthIntervalType | _: DayTimeIntervalType =>
+        true
       case ShortType if CometConf.COMET_PARQUET_UNSIGNED_SMALL_INT_CHECK.get() =>
         fallbackReasons += "Native Parquet scan may not handle unsigned UINT_8 correctly for " +
           s"$dt. Set ${CometConf.COMET_PARQUET_UNSIGNED_SMALL_INT_CHECK.key}=false to allow " +
