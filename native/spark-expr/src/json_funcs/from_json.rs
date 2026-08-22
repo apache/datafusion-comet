@@ -150,26 +150,34 @@ fn json_string_to_struct(arr: &Arc<dyn Array>, schema: &DataType) -> Result<Arra
         } else {
             let json_str = string_array.value(row_idx);
 
-            // Parse JSON (PERMISSIVE mode: return null fields on error)
-            match serde_json::from_str::<serde_json::Value>(json_str) {
-                Ok(json_value) => {
-                    if let serde_json::Value::Object(obj) = json_value {
-                        // Struct is not null, extract each field
-                        *struct_null = true;
-                        for (field, builder) in fields.iter().zip(field_builders.iter_mut()) {
-                            let field_value = obj.get(field.name());
-                            append_field_value(builder, field, field_value)?;
+            if json_str.trim().is_empty() {
+                // Blank input (empty or whitespace only) is NULL, not a struct with null
+                // fields (SPARK-19543) -- distinct from a non-blank string that fails to
+                // parse, which PERMISSIVE mode below turns into a struct with null fields.
+                *struct_null = false;
+                append_null_to_all_builders(&mut field_builders);
+            } else {
+                // Parse JSON (PERMISSIVE mode: return null fields on error)
+                match serde_json::from_str::<serde_json::Value>(json_str) {
+                    Ok(json_value) => {
+                        if let serde_json::Value::Object(obj) = json_value {
+                            // Struct is not null, extract each field
+                            *struct_null = true;
+                            for (field, builder) in fields.iter().zip(field_builders.iter_mut()) {
+                                let field_value = obj.get(field.name());
+                                append_field_value(builder, field, field_value)?;
+                            }
+                        } else {
+                            // Not an object -> struct with null fields
+                            *struct_null = true;
+                            append_null_to_all_builders(&mut field_builders);
                         }
-                    } else {
-                        // Not an object -> struct with null fields
+                    }
+                    Err(_) => {
+                        // Parse error -> struct with null fields (PERMISSIVE mode)
                         *struct_null = true;
                         append_null_to_all_builders(&mut field_builders);
                     }
-                }
-                Err(_) => {
-                    // Parse error -> struct with null fields (PERMISSIVE mode)
-                    *struct_null = true;
-                    append_null_to_all_builders(&mut field_builders);
                 }
             }
         }
@@ -401,7 +409,10 @@ fn finish_builder(builder: FieldBuilder) -> Result<ArrayRef> {
             // schema (e.g. a `struct<>`-typed field nested inside a larger schema) has no child
             // arrays to derive it from, so the count is supplied explicitly here instead.
             if fields.is_empty() {
-                Arc::new(StructArray::new_empty_fields(null_buf.len(), Some(null_buf)))
+                Arc::new(StructArray::new_empty_fields(
+                    null_buf.len(),
+                    Some(null_buf),
+                ))
             } else {
                 Arc::new(StructArray::new(fields, nested_arrays, Some(null_buf)))
             }

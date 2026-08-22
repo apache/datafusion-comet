@@ -168,15 +168,24 @@ class CometJsonExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
 
   test("from_json - empty struct schema") {
     // A zero-field target schema is a legitimate value: no fields to parse into, but a real
-    // (possibly null) struct row per input, same as any other from_json result.
+    // (possibly null) struct row per input, same as any other from_json result. Blank input
+    // (empty or whitespace only) is NULL per Spark's own contract (SPARK-19543), distinct from
+    // non-blank malformed input, which PERMISSIVE mode turns into a non-null struct.
     Seq(true, false).foreach { dictionaryEnabled =>
       withParquetTable(
-        (0 until 20).map(i => (i, "{}")),
+        Seq(
+          (1, "{}"), // valid JSON object
+          (2, ""), // blank input -> NULL
+          (3, "   "), // whitespace-only input -> NULL
+          (4, "not json"), // malformed, non-blank -> non-null struct
+          (5, null) // SQL NULL input -> NULL
+        ),
         "tbl",
         withDictionary = dictionaryEnabled) {
 
-        checkSparkAnswerAndOperator("SELECT from_json(_2, 'struct<>') FROM tbl")
-        checkSparkAnswerAndOperator("SELECT from_json(_2, 'struct<>') IS NULL FROM tbl")
+        checkSparkAnswerAndOperator("SELECT _1, from_json(_2, 'struct<>') FROM tbl ORDER BY _1")
+        checkSparkAnswerAndOperator(
+          "SELECT _1, from_json(_2, 'struct<>') IS NULL FROM tbl ORDER BY _1")
       }
     }
   }
