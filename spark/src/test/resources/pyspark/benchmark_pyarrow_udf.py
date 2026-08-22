@@ -31,8 +31,8 @@ optimization actually changes for users:
   * vanilla:   CometScan -> ColumnarToRow + UnsafeProjection -> ArrowPythonRunner
               (per-row InternalRow.getXXX() loop inside ArrowWriter.write)
   * optimized: CometScan -> CometMapInBatchExec -> CometArrowPythonRunner
-              (per-buffer Unsafe.copyMemory from Comet's vectors into the
-              runner's persistent VectorSchemaRoot; no row materialization)
+              (Arrow IPC serialization directly from Comet's source vectors;
+              no row materialization or intermediate vector-buffer copy)
 
 Results are wall-clock seconds, so they include Python interpreter,
 Arrow IPC, and downstream count() costs. That's intentional: the
@@ -47,9 +47,9 @@ savings and shrinks the speedup ratio relative to what you see here.
 
 Usage:
     # Build Comet (release for representative numbers):
-    make release
+    make release PROFILES='-Pspark-4.0 -Pscala-2.13'
 
-    pip install pyspark==3.5.9 pyarrow pandas
+    pip install pyspark==4.0.4 pyarrow pandas
 
     python3 spark/src/test/resources/pyspark/benchmark_pyarrow_udf.py
 
@@ -84,6 +84,8 @@ def _build_spark() -> SparkSession:
         .config("spark.plugins", "org.apache.spark.CometPlugin")
         .config("spark.comet.enabled", "true")
         .config("spark.comet.exec.enabled", "true")
+        # Keep Comet's scan and execution rules active with Spark's default shuffle manager.
+        .config("spark.comet.shuffle.enabled", "false")
         .config("spark.memory.offHeap.enabled", "true")
         .config("spark.memory.offHeap.size", "4g")
         .config("spark.driver.memory", "4g")
@@ -157,6 +159,10 @@ def _time_run(spark: SparkSession, parquet_path: str, accelerate: bool, api: str
         df = df.mapInArrow(_passthrough_arrow, schema)
     else:
         df = df.mapInPandas(_passthrough_pandas, schema)
+    plan = df._jdf.queryExecution().executedPlan().toString()
+    if ("CometMapInBatch" in plan) != accelerate:
+        expected = "CometMapInBatch" if accelerate else "vanilla Python execution"
+        raise RuntimeError(f"Expected {expected} for {api}, but found:\n{plan}")
     t0 = time.perf_counter()
     df.count()
     return time.perf_counter() - t0
