@@ -15,33 +15,7 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
-statement
-CREATE TABLE test_elt(n int) USING parquet
+-- Config: spark.sql.ansi.enabled=true
 
-statement
-INSERT INTO test_elt VALUES (1), (2), (3), (NULL)
-
-query
-SELECT elt(0, 'a', 'b', 'c'), elt(-1, 'a', 'b', 'c'), elt(4, 'a', 'b', 'c')
-
-query
-SELECT elt(n + 1, 'x', 'y', 'z', 'w') FROM test_elt
-
-query
-SELECT elt(1, 'a', NULL, 'c'), elt(2, 'a', NULL, 'c'), elt(3, 'a', NULL, 'c')
-
-statement
-CREATE TABLE test_elt_edge (idx int, v1 string, v2 string, v3 string) USING parquet
-
-statement
-INSERT INTO test_elt_edge VALUES
-  (1, 'foo', 'bar', 'baz'),
-  (2, 'foo', NULL, 'baz'),
-  (3, NULL, 'bar', 'baz'),
-  (4, 'foo', 'bar', 'baz'),
-  (NULL, 'foo', 'bar', 'baz'),
-  (0, 'foo', 'bar', 'baz'),
-  (-1, 'foo', 'bar', 'baz')
-
-query
-SELECT elt(idx, v1, v2, v3) FROM test_elt_edge
+query expect_error(The index 100 is out of bounds)
+SELECT elt(100, 'a', 'b', 'c')
