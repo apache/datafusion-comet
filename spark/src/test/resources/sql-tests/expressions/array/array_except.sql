@@ -51,8 +51,8 @@ INSERT INTO test_except_dbl VALUES
   (array(double('NaN'), 1.0), array(2.0)),
   (array(double('Infinity'), 1.0, double('-Infinity')), array(double('Infinity'))),
   (array(double('Infinity'), double('-Infinity')), array(double('-Infinity'))),
-  (array(0.0, -0.0, 1.0), array(0.0)),
-  (array(0.0, 1.0), array(-0.0)),
+  (array(0.0, double('-0.0'), 1.0), array(0.0)),
+  (array(0.0, 1.0), array(double('-0.0'))),
   (array(1.0, 2.0, NULL), array(2.0, NULL)),
   (array(double('NaN'), NULL), array(NULL))
 
@@ -69,7 +69,7 @@ INSERT INTO test_except_float VALUES
   (array(float('NaN'), float('NaN'), cast(1.0 as float)), array(float('NaN'))),
   (array(cast(1.0 as float), cast(2.0 as float)), array(float('NaN'))),
   (array(float('Infinity'), cast(1.0 as float), float('-Infinity')), array(float('Infinity'))),
-  (array(cast(0.0 as float), cast(-0.0 as float), cast(1.0 as float)), array(cast(0.0 as float))),
+  (array(cast(0.0 as float), float('-0.0'), cast(1.0 as float)), array(cast(0.0 as float))),
   (array(cast(1.0 as float), cast(2.0 as float), NULL), array(cast(2.0 as float), NULL))
 
 query

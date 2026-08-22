@@ -539,7 +539,12 @@ private[comet] case class NativeExecContext(
     broadcastedHadoopConfForEncryption: Option[Broadcast[SerializableConfiguration]],
     encryptedFilePaths: Seq[String],
     commonByKey: Map[String, Array[Byte]],
-    perPartitionByKey: Map[String, Array[Array[Byte]]],
+    // @transient: this holds one serialized scan-plan-data blob per partition, so at high partition
+    // counts it is huge. It is only read on the driver (to slice per partition onto each task's
+    // Partition object - see CometNativeShuffleInputRDD / CometExecRDD); the executor reads its own
+    // slice, never this map. Keeping it off the wire stops it from bloating the broadcast task
+    // binary when this context rides on the non-transient CometShuffleDependency.nativeShuffleSpec.
+    @transient perPartitionByKey: Map[String, Array[Array[Byte]]],
     shuffleScanIndices: Set[Int],
     hasScanInput: Boolean) {
   // Catch shape divergence (e.g. broadcast scans with different partition counts after DPP
