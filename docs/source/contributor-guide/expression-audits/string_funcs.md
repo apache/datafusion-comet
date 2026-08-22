@@ -169,8 +169,8 @@
 
 - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
 - Spark 3.5.8 (audited 2026-05-27): baseline. `StringReplace(src, search, replace)`; when `search` is empty, Spark returns `src` unchanged (short-circuit on `search.numBytes == 0`). DataFusion `replace` instead inserts `replace` between every character.
-  - Comet evaluates `replace` natively by default when `search` is a non-empty `UTF8_BINARY` literal.
-  - Empty literal search, non-literal search, and non-default collations stay on the JVM codegen dispatcher.
+  - Comet evaluates `replace` natively by default when `search` is a short, well-formed, non-empty `UTF8_BINARY` literal and `replace` is a short well-formed literal or a column.
+  - Empty, malformed, or oversized literals, a non-literal / non-column replacement (including expressions that can throw), and non-default collations stay on the JVM codegen dispatcher. The kernel match is not enough: `CometLiteral` is not byte-preserving, DataFusion evaluates every child before `replace`, and large scalars overflow Arrow `Utf8` offsets when broadcast.
   - Users can still opt into the native (potentially incompatible) path for remaining cases via `spark.comet.expression.StringReplace.allowIncompatible=true`.
 - Spark 4.0.1 (audited 2026-05-27): routes through `CollationSupport.StringReplace.exec`; semantics unchanged for `UTF8_BINARY`. Non-default collations not honoured by Comet ([#4496](https://github.com/apache/datafusion-comet/issues/4496)).
 
