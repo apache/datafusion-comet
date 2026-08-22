@@ -843,12 +843,20 @@ object CometCollectSet extends CometAggregateExpressionSerde[CollectSet] {
       " `spark.comet.expression.CollectSet.allowIncompatible=true` is set.")
 
   override def getSupportLevel(expr: CollectSet): SupportLevel = {
-    // The native path always drops null inputs. Spark 4.2 added an `ignoreNulls` field to
-    // CollectSet that `RESPECT NULLS` sets to false, preserving nulls in the result; Comet
-    // cannot match that, so fall back. This branch is only reachable on Spark 4.2+: on 3.4
-    // through 4.1 the field does not exist, `RESPECT NULLS`/`IGNORE NULLS` are rejected at
-    // analysis time, and CometCollectShim.ignoreNulls hardcodes true, making this a no-op.
-    if (!CometCollectShim.ignoreNulls(expr)) {
+    // DataFusion's DistinctArrayAggAccumulator (backing SparkCollectSet) calls
+    // ScalarValue::compacted() per non-null input, hitting the same zero-field
+    // StructArray::new panic as First/Last -- see SupportLevel.containsEmptyStruct.
+    if (SupportLevel.containsEmptyStruct(expr.dataType)) {
+      Unsupported(
+        Some(
+          "collect_set on a schema containing an empty struct is not supported " +
+            "(DataFusion's ScalarValue::compacted panics on zero-field structs)"))
+      // The native path always drops null inputs. Spark 4.2 added an `ignoreNulls` field to
+      // CollectSet that `RESPECT NULLS` sets to false, preserving nulls in the result; Comet
+      // cannot match that, so fall back. This branch is only reachable on Spark 4.2+: on 3.4
+      // through 4.1 the field does not exist, `RESPECT NULLS`/`IGNORE NULLS` are rejected at
+      // analysis time, and CometCollectShim.ignoreNulls hardcodes true, making this a no-op.
+    } else if (!CometCollectShim.ignoreNulls(expr)) {
       Unsupported(Some("collect_set with RESPECT NULLS (ignoreNulls = false) is not supported"))
     } else {
       SupportLevel
@@ -1036,26 +1044,9 @@ object AggSerde {
     }
   }
 
-  /**
-   * Whether `dt` is, or contains (recursively, through struct/array/map), a zero-field struct.
-   * DataFusion's `ScalarValue::compact` -- used by the `FirstValue`/`LastValue` accumulators that
-   * back Comet's `First`/`Last` -- calls `StructArray::new` unconditionally when reconstructing a
-   * struct, which panics for a zero-field struct (no child array to derive its row count from).
-   * `First`/`Last` decline such schemas until that's fixed upstream; see
-   * https://github.com/apache/datafusion-comet/pull/5414.
-   */
-  def containsEmptyStruct(dt: DataType): Boolean = dt match {
-    case StructType(fields) if fields.isEmpty => true
-    case StructType(fields) => fields.exists(f => containsEmptyStruct(f.dataType))
-    case ArrayType(elementType, _) => containsEmptyStruct(elementType)
-    case MapType(keyType, valueType, _) =>
-      containsEmptyStruct(keyType) || containsEmptyStruct(valueType)
-    case _ => false
-  }
-
   /** Shared support level for `First` / `Last`, which can't accept an empty struct. */
   def firstLastSupportLevel(dt: DataType): SupportLevel = {
-    if (containsEmptyStruct(dt)) {
+    if (SupportLevel.containsEmptyStruct(dt)) {
       Unsupported(
         Some(
           "FIRST/LAST on a schema containing an empty struct is not supported " +
