@@ -18,6 +18,20 @@
 -- Config: spark.comet.exec.localTableScan.enabled=true
 -- Config: spark.comet.shuffle.mode=native
 
+statement
+CREATE TABLE test_null_interval(id int) USING parquet
+
+statement
+INSERT INTO test_null_interval VALUES (1)
+
+-- Null calendar interval literal in a projection over a real scan.
+query
+SELECT CAST(NULL AS INTERVAL) FROM test_null_interval
+
+-- NullPropagation folds make_interval with a null argument to a null interval literal.
+query
+SELECT make_interval(NULL, 2, 3, 4, 5, 6, 7.008009) FROM test_null_interval
+
 query
 SELECT * FROM VALUES
   (make_interval(1, 2, 3, 4, 5, 6, 7.008009)),
