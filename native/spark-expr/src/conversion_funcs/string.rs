@@ -507,8 +507,25 @@ const POW10_I128: [i128; 39] = {
 
 /// `10^exp`, or `None` when the exponent overflows an `i128` (exp >= 39).
 #[inline]
-fn pow10_i128(exp: u32) -> Option<i128> {
+pub(crate) fn pow10_i128(exp: u32) -> Option<i128> {
     POW10_I128.get(exp as usize).copied()
+}
+
+/// Divide by a power of ten with HALF_UP rounding, matching `BigDecimal.setScale`: a tie
+/// rounds away from zero.
+///
+/// `divisor` must be `10^n` for `n >= 1`, so `divisor / 2` is exact and a zero remainder
+/// can never be mistaken for a tie.
+#[inline]
+pub(crate) fn div_round_half_up_i128(numerator: i128, divisor: i128) -> i128 {
+    debug_assert!(divisor >= 10);
+    let quotient = numerator / divisor;
+    let remainder = numerator % divisor;
+    if remainder.abs() >= divisor / 2 {
+        quotient + numerator.signum()
+    } else {
+        quotient
+    }
 }
 
 /// Accumulate an ASCII-digit slice into an `i128`, returning `None` on overflow.
@@ -516,7 +533,7 @@ fn pow10_i128(exp: u32) -> Option<i128> {
 /// The first 38 digits always fit (`i128::MAX` is ~1.7e38), so only the digits past
 /// them need the per-digit overflow checks.
 #[inline]
-fn digits_to_i128(digits: &[u8]) -> Option<i128> {
+pub(crate) fn digits_to_i128(digits: &[u8]) -> Option<i128> {
     let (head, tail) = digits.split_at(digits.len().min(38));
     let mut value: i128 = 0;
     for &d in head {
@@ -616,28 +633,10 @@ fn parse_string_to_decimal(input_str: &str, precision: u8, scale: i8) -> SparkRe
             return Ok(Some(0));
         }
 
-        // Bounded above, so pow10_i128 always returns Some.
+        // Bounded above, so pow10_i128 always returns Some. The adjustment is at least 1
+        // here, so the divisor is a power of ten no smaller than 10.
         let divisor = pow10_i128(abs_scale_adjustment).unwrap();
-        let quotient_opt = mantissa.checked_div(divisor);
-        // Check if divisor is 0
-        if quotient_opt.is_none() {
-            return Ok(None);
-        }
-        let quotient = quotient_opt.unwrap();
-        let remainder = mantissa % divisor;
-
-        // Round half up: if abs(remainder) >= divisor/2, round away from zero
-        let half_divisor = divisor / 2;
-        let rounded = if remainder.abs() >= half_divisor {
-            if mantissa >= 0 {
-                quotient + 1
-            } else {
-                quotient - 1
-            }
-        } else {
-            quotient
-        };
-        Some(rounded)
+        Some(div_round_half_up_i128(mantissa, divisor))
     };
 
     match scaled_value {
@@ -2202,7 +2201,7 @@ mod tests {
     /// The codepoint matrix from
     /// <https://github.com/apache/datafusion-comet/issues/5149>: the ASCII control bytes and
     /// DELETE, plus the non-ASCII codepoints that are whitespace to Unicode but that no Spark
-    /// cast trims. `CometCastSuite` runs the same matrix with Spark itself as the oracle.
+    /// cast trims. `CometNativeCastSuite` runs the same matrix with Spark itself as the oracle.
     fn trim_pads() -> Vec<String> {
         let mut pads: Vec<String> = (0x00u8..=0x20).map(|b| String::from(b as char)).collect();
         pads.push("\u{7f}".to_string());
@@ -2306,7 +2305,7 @@ mod tests {
     /// than change behaviour silently. `timestamp_parser` and `timestamp_ntz_parser` still use
     /// `str::trim`, so they accept the non-ASCII whitespace that Spark's
     /// `SparkDateTimeUtils.getTrimmedStart` / `getTrimmedEnd` leave in place, where Spark returns
-    /// NULL. `CometCastSuite` cannot cover this, because Spark is the oracle there and Comet does
+    /// NULL. `CometNativeCastSuite` cannot cover this, because Spark is the oracle there and Comet does
     /// not fall back -- it silently returns a value.
     #[test]
     fn test_cast_string_to_timestamp_unicode_whitespace_divergence() {

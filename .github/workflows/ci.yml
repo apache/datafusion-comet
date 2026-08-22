@@ -85,6 +85,9 @@ jobs:
       - name: Check missing suites
         run: python3 dev/ci/check-suites.py
 
+      - name: Check micro benchmark runner
+        run: python3 dev/ci/check-benchmark-runner.py
+
       - name: Install actionlint
         run: |
           curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash | bash
@@ -246,7 +249,7 @@ jobs:
     uses: ./.github/workflows/spark_sql_test_reusable.yml
     with:
       spark-short: '4.0'
-      spark-full: '4.0.2'
+      spark-full: '4.0.4'
       java: 17
 
   spark_4_1:

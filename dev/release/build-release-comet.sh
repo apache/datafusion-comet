@@ -140,6 +140,7 @@ docker run \
    --name comet-amd64-builder-container \
    --memory 24g \
    --cpus 6 \
+   --env "CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-2}" \
    -it \
    --platform linux/amd64 \
    $BUILDER_IMAGE_AMD64 "${REPO}" "${BRANCH}" amd64
@@ -156,6 +157,7 @@ docker run \
    --name comet-arm64-builder-container \
    --memory 24g \
    --cpus 6 \
+   --env "CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-2}" \
    -it \
    --platform linux/arm64 \
    $BUILDER_IMAGE_ARM64 "${REPO}" "${BRANCH}" arm64

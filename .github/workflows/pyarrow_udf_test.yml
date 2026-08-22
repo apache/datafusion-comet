@@ -70,7 +70,7 @@ jobs:
           # pyspark, so it stays compile-only via the pr_build matrix.)
           - name: Spark 4.0
             maven_profiles: "-Pspark-4.0 -Pscala-2.13"
-            pyspark: "4.0.2"
+            pyspark: "4.0.4"
           - name: Spark 4.1
             maven_profiles: "-Pspark-4.1"
             pyspark: "4.1.3"

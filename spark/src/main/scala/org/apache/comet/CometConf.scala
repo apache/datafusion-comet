@@ -121,6 +121,26 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(true)
 
+  val COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.write.iceberg.splitOperator.enabled")
+      .category(CATEGORY_TESTING)
+      .doc(
+        "Whether to rewrite Iceberg V2 writes from Spark's combined V2 write/commit operator " +
+          "into Comet's two-operator shape: a file writer exec (inside AQE) and a committer " +
+          "(outside AQE).")
+      .booleanConf
+      .createWithDefault(false)
+
+  val COMET_ICEBERG_NATIVE_WRITE_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.iceberg.write.enabled")
+      .category(CATEGORY_TESTING)
+      .doc(
+        "Whether to delegate the executor-side Parquet write to Comet's native (iceberg-rust) " +
+          "writer when the table's properties allow it. Requires " +
+          "`spark.comet.write.iceberg.splitOperator.enabled = true`. Off by default.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_ICEBERG_DATA_FILE_CONCURRENCY_LIMIT: ConfigEntry[Int] =
     conf("spark.comet.scan.icebergNative.dataFileConcurrencyLimit")
       .category(CATEGORY_SCAN)
@@ -256,7 +276,7 @@ object CometConf extends ShimCometConf {
       .createWithDefault(true)
 
   val COMET_PYARROW_UDF_ENABLED: ConfigEntry[Boolean] =
-    conf("spark.comet.exec.pyarrowUdf.enabled")
+    conf("spark.comet.exec.pyarrowUDF.enabled")
       .category(CATEGORY_EXEC)
       .doc(
         "Experimental: whether to enable optimized execution of PyArrow UDFs " +
@@ -668,6 +688,35 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_STRICT_FALLBACK_REASONS: ConfigEntry[Boolean] =
+    conf("spark.comet.explain.fallback.strict.enabled")
+      .category(CATEGORY_TESTING)
+      .doc(
+        "Test-only. When enabled, Comet throws if it declines to convert an operator that it " +
+          "could otherwise have converted (all children are already native) without recording a " +
+          "fallback reason on the operator or on any of its expressions. Without this check, a " +
+          "serde that returns `None` and forgets to state a reason silently produces a generic " +
+          "'<operator> is not supported' message instead of a visible failure. Enabled for all " +
+          "Comet test suites via `CometTestBase`.")
+      .internal()
+      .booleanConf
+      .createWithDefault(false)
+
+  val COMET_SCAN_CONTRIB_DETECT_CONFLICTS: ConfigEntry[Boolean] =
+    conf("spark.comet.scan.contrib.detectConflicts.enabled")
+      .category(CATEGORY_TESTING)
+      .doc(
+        "Diagnostic. Out-of-tree scan contribs are normally offered a scan one at a time and " +
+          "the first to claim it wins, so a contrib that wrongly claims another format's scan " +
+          "silently hides it. When this is enabled, every registered contrib is offered the " +
+          "scan and a warning is logged if more than one claims it; the first claim is still " +
+          "the one used, so behaviour is unchanged. Off by default because it makes every " +
+          "contrib do its (potentially expensive) planning work on every scan, even after one " +
+          "has already claimed it. Only meaningful when two or more contribs are registered.")
+      .internal()
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_ONHEAP_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.onHeap.enabled")
       .category(CATEGORY_TESTING)
@@ -714,18 +763,6 @@ object CometConf extends ShimCometConf {
         "Otherwise, an error will be thrown and the Spark job will be aborted.")
     .booleanConf
     .createWithDefault(false)
-
-  val COMET_EXCEPTION_ON_LEGACY_DATE_TIMESTAMP: ConfigEntry[Boolean] =
-    conf("spark.comet.exceptionOnDatetimeRebase")
-      .category(CATEGORY_EXEC)
-      .doc("Whether to throw exception when seeing dates/timestamps from the legacy hybrid " +
-        "(Julian + Gregorian) calendar. Since Spark 3, dates/timestamps were written according " +
-        "to the Proleptic Gregorian calendar. When this is true, Comet will " +
-        "throw exceptions when seeing these dates/timestamps that were written by Spark version " +
-        "before 3.0. If this is false, these dates/timestamps will be read as if they were " +
-        "written to the Proleptic Gregorian calendar and will not be rebased.")
-      .booleanConf
-      .createWithDefault(false)
 
   val COMET_ENABLE_PARTIAL_HASH_AGGREGATE: ConfigEntry[Boolean] =
     conf("spark.comet.testing.aggregate.partialMode.enabled")
