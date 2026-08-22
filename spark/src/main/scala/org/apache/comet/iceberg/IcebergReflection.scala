@@ -54,6 +54,7 @@ object IcebergReflection extends Logging {
     val UNBOUND_PREDICATE = "org.apache.iceberg.expressions.UnboundPredicate"
     val SPARK_BATCH_QUERY_SCAN = "org.apache.iceberg.spark.source.SparkBatchQueryScan"
     val SPARK_STAGED_SCAN = "org.apache.iceberg.spark.source.SparkStagedScan"
+    val SPARK_COPY_ON_WRITE_SCAN = "org.apache.iceberg.spark.source.SparkCopyOnWriteScan"
     val SPARK_SCHEMA_UTIL = "org.apache.iceberg.spark.SparkSchemaUtil"
     val TABLE = "org.apache.iceberg.Table"
     val PARTITIONING = "org.apache.iceberg.Partitioning"
@@ -72,7 +73,10 @@ object IcebergReflection extends Logging {
    * instances.
    */
   val ICEBERG_SCAN_CLASSES: Set[String] =
-    Set(ClassNames.SPARK_BATCH_QUERY_SCAN, ClassNames.SPARK_STAGED_SCAN)
+    Set(
+      ClassNames.SPARK_BATCH_QUERY_SCAN,
+      ClassNames.SPARK_STAGED_SCAN,
+      ClassNames.SPARK_COPY_ON_WRITE_SCAN)
 
   def isIcebergScanClass(name: String): Boolean = ICEBERG_SCAN_CLASSES.contains(name)
 
