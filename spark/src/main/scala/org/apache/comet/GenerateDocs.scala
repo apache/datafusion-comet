@@ -53,7 +53,7 @@ object GenerateDocs {
    * @param unsupportedReasons
    *   cases that Comet's native implementation does not handle
    * @param nativeOptIn
-   *   whether the serde implements `NativeOptInAvailable`, meaning the expression runs a
+   *   whether the serde implements `NativeOptInAvailable`, meaning incompatible cases run a
    *   Spark-compatible path by default and the user can opt into a native path
    * @param nativeOptInConfigKey
    *   the config key the user sets to opt into the native path
@@ -398,7 +398,8 @@ object GenerateDocs {
       }
       if (n.incompatibleReasons.nonEmpty) {
         val header = if (n.nativeOptIn) {
-          s"\nBy default, `$name` is evaluated in the JVM using Spark's own code-generated" +
+          s"\nFor the incompatible cases listed below, `$name` is evaluated by default" +
+            " in the JVM using Spark's own code-generated" +
             " implementation (run inside the Comet pipeline), which matches Spark exactly." +
             s" Set `${n.nativeOptInConfigKey}=true` to opt into Comet's native implementation" +
             " instead, which has the following differences from Spark:\n\n"
