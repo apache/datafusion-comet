@@ -22,6 +22,7 @@ package org.apache.comet
 import scala.util.Random
 
 import org.apache.hadoop.fs.Path
+import org.apache.spark.SparkThrowable
 import org.apache.spark.sql.{Column, CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.expressions.{Alias, Cast, FromUnixTime, Literal, StructsToJson, TruncDate, TruncTimestamp}
 import org.apache.spark.sql.catalyst.optimizer.{ConvertToLocalRelation, OptimizeIn, SimplifyExtractValueOps}
@@ -43,6 +44,19 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     """[ARITHMETIC_OVERFLOW] integer overflow. If necessary set "spark.sql.ansi.enabled" to "false" to bypass this error"""
   val DIVIDE_BY_ZERO_EXCEPTION_MSG =
     """Division by zero. Use `try_divide` to tolerate divisor being 0 and return NULL instead"""
+
+  private def arithmeticError(error: Throwable): SparkThrowable =
+    Iterator
+      .iterate[Throwable](error)(_.getCause)
+      .takeWhile(_ != null)
+      .collectFirst {
+        // SparkArithmeticException is private[spark] in Spark 3.4, so this cross-version test
+        // cannot pattern match on its type directly.
+        case error: SparkThrowable
+            if error.getClass.getName == "org.apache.spark.SparkArithmeticException" =>
+          error
+      }
+      .getOrElse(fail(s"Expected SparkArithmeticException, got $error"))
 
   // Temporary test to verify checkSparkAnswer failure output labels Comet/Spark correctly.
   ignore("check output labels on mismatch") {
@@ -197,6 +211,31 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               checkSparkSchema(cometDf)
               checkSparkAnswerAndOperator(cometDf)
             }
+          }
+        }
+      }
+    }
+  }
+
+  test("ANSI decimal divide by zero raises a Spark error") {
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+      withTable("decimal_div_zero") {
+        sql("CREATE TABLE decimal_div_zero (a DECIMAL(10, 2), b DECIMAL(10, 2)) USING PARQUET")
+        sql("INSERT INTO decimal_div_zero VALUES (1.00, 0.00)")
+
+        Seq("a / b", "a div b").foreach { expression =>
+          val df = sql(s"SELECT $expression FROM decimal_div_zero")
+          checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
+          checkSparkAnswerMaybeThrows(df) match {
+            case (Some(sparkException), Some(cometException)) =>
+              val expected = arithmeticError(sparkException)
+              val actual = arithmeticError(cometException)
+              assert(actual.getErrorClass == expected.getErrorClass)
+              assert(actual.getSqlState == expected.getSqlState)
+              assert(
+                actual.getQueryContext.map(_.fragment()).toSeq ==
+                  expected.getQueryContext.map(_.fragment()).toSeq)
+            case errors => fail(s"Expected Spark and Comet divide-by-zero errors, got $errors")
           }
         }
       }
@@ -1397,14 +1436,23 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     // 1.1e19 * 1.1e19 = 1.21e38 overflows DECIMAL(38,0). With ANSI mode on, both Spark and
     // Comet must throw — Comet must not panic or silently return null. Spark reports
     // NUMERIC_VALUE_OUT_OF_RANGE; Comet's WideDecimalBinaryExpr catches the overflow first
-    // and surfaces it as an arithmetic overflow error.
+    // and must surface the same structured Spark error.
     withSQLConf(CometConf.COMET_ENABLED.key -> "true", SQLConf.ANSI_ENABLED.key -> "true") {
       withParquetTable(Seq((BigDecimal("11000000000000000000"), 0)), "tbl") {
         val res = sql("SELECT _1 * _1 FROM tbl")
+        checkCometOperators(stripAQEPlan(res.queryExecution.executedPlan))
         checkSparkAnswerMaybeThrows(res) match {
           case (Some(sparkExc), Some(cometExc)) =>
-            assert(sparkExc.getMessage.contains("NUMERIC_VALUE_OUT_OF_RANGE"))
-            assert(cometExc.getMessage.toLowerCase.contains("overflow"))
+            val expected = arithmeticError(sparkExc)
+            val actual = arithmeticError(cometExc)
+            // Spark formats its pre-toPrecision Decimal, while Comet formats the rescaled i256
+            // value (https://github.com/apache/datafusion-comet/issues/5211). This regression
+            // covers the structured error fields and query context.
+            assert(actual.getErrorClass == expected.getErrorClass)
+            assert(actual.getSqlState == expected.getSqlState)
+            assert(
+              actual.getQueryContext.map(_.fragment()).toSeq ==
+                expected.getQueryContext.map(_.fragment()).toSeq)
           case _ =>
             fail("Expected exception for decimal overflow in ANSI mode")
         }
