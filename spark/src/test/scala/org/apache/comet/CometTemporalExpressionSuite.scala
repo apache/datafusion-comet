@@ -796,7 +796,7 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
     val ntzSchema = StructType(Seq(StructField("ts", DataTypes.TimestampNTZType, true)))
     val ntzDF = FuzzDataGenerator.generateDataFrame(r, spark, ntzSchema, 1000, DataGenOptions())
 
-    // Spark 3.4: unix_micros() does not accept TIMESTAMP_NTZ; baseline matches micros / hour.
+    // Baseline matches micros / hour.
     val _spark = spark
     import _spark.implicits._
     val expectedDF = ntzDF

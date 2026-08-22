@@ -55,7 +55,6 @@ jobs:
     if: >-
       github.event_name != 'pull_request' ||
       github.event.action != 'labeled' ||
-      github.event.label.name == 'run-spark-3.4-tests' ||
       github.event.label.name == 'run-spark-4.0-tests' ||
       github.event.label.name == 'run-spark-4.1-tests' ||
       github.event.label.name == 'run-iceberg-tests'
@@ -113,7 +112,6 @@ jobs:
       build_macos:  ${{ steps.compute.outputs.build_macos }}
       benchmark:    ${{ steps.compute.outputs.benchmark }}
       docs:         ${{ steps.compute.outputs.docs }}
-      spark_3_4:    ${{ steps.compute.outputs.spark_3_4 }}
       spark_3_5:    ${{ steps.compute.outputs.spark_3_5 }}
       spark_4_0:    ${{ steps.compute.outputs.spark_4_0 }}
       spark_4_1:    ${{ steps.compute.outputs.spark_4_1 }}
@@ -140,7 +138,7 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
-            for key in build_linux build_macos benchmark docs spark_3_4 spark_3_5 spark_4_0 spark_4_1 iceberg_1_8 iceberg_1_9 iceberg_1_10 iceberg_1_11; do
+            for key in build_linux build_macos benchmark docs spark_3_5 spark_4_0 spark_4_1 iceberg_1_8 iceberg_1_9 iceberg_1_10 iceberg_1_11; do
               echo "${key}=true" >> "$GITHUB_OUTPUT"
             done
             exit 0
@@ -204,22 +202,6 @@ jobs:
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     uses: ./.github/workflows/docs.yaml
 
-  spark_3_4:
-    name: Spark SQL Tests (Spark 3.4)
-    needs: changes
-    # Main-only by default; PRs need the `run-spark-3.4-tests` label.
-    if: |
-      needs.changes.outputs.spark_3_4 == 'true' &&
-      (github.event_name == 'push' ||
-       github.event_name == 'workflow_dispatch' ||
-       (github.event_name == 'pull_request' &&
-        contains(github.event.pull_request.labels.*.name, 'run-spark-3.4-tests')))
-    uses: ./.github/workflows/spark_sql_test_reusable.yml
-    with:
-      spark-short: '3.4'
-      spark-full: '3.4.3'
-      java: 11
-
   spark_3_5:
     name: Spark SQL Tests (Spark 3.5)
     needs: changes
@@ -280,9 +262,9 @@ jobs:
     with:
       iceberg-short: '1.8'
       iceberg-full: '1.8.1'
-      spark-short: '3.4'
-      spark-full: '3.4.3'
-      java: 11
+      spark-short: '3.5'
+      spark-full: '3.5.9'
+      java: 17
 
   iceberg_1_9:
     name: Iceberg Spark SQL Tests (Iceberg 1.9)

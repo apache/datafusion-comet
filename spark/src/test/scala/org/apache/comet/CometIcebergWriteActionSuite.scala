@@ -37,7 +37,7 @@ import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.types.{DoubleType, IntegerType, StringType, StructField, StructType}
 import org.apache.spark.sql.util.QueryExecutionListener
 
-import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark41Plus}
+import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
 
 private case class WriteSnapshot(snapshotDelta: Long, plans: Seq[SparkPlan])
 
@@ -710,8 +710,6 @@ class CometIcebergWriteActionSuite
 
   test("CoW MERGE with a NOT MATCHED BY SOURCE leg routes through two-op") {
     assume(icebergAvailable, "Iceberg not available in classpath")
-    // Iceberg 1.5.x (the Spark 3.4 pairing) rejects the clause in its extensions parser.
-    assume(isSpark35Plus, "NOT MATCHED BY SOURCE needs Iceberg 1.8+")
     withIcebergCatalog { warehouseDir =>
       createTable(
         warehouseDir,
@@ -782,10 +780,9 @@ class CometIcebergWriteActionSuite
     }
   }
 
-  // On Spark 3.5+ the staged CTAS/RTAS operators run their inner append as its own
-  // `AppendData` QueryExecution, which IcebergWriteStrategy intercepts like any other append.
-  // Spark 3.4 writes inline inside the exec (no re-planning), so nothing is intercepted there.
-  test("CTAS and RTAS write through the split operators on Spark 3.5+") {
+  // The staged CTAS/RTAS operators run their inner append as its own `AppendData` QueryExecution,
+  // which IcebergWriteStrategy intercepts like any other append.
+  test("CTAS and RTAS write through the split operators") {
     assume(icebergAvailable, "Iceberg not available in classpath")
     withIcebergCatalog { _ =>
       val session = spark
@@ -797,15 +794,9 @@ class CometIcebergWriteActionSuite
 
       def assertSplitUsage(plans: Seq[SparkPlan], statement: String): Unit = {
         val (commits, writes) = collectIcebergWriteOps(plans)
-        if (isSpark35Plus) {
-          assert(
-            commits.nonEmpty && writes.nonEmpty,
-            s"expected the $statement inner append to plan through the split operators: $plans")
-        } else {
-          assert(
-            commits.isEmpty && writes.isEmpty,
-            s"expected the $statement write to stay inside Spark's staged exec: $plans")
-        }
+        assert(
+          commits.nonEmpty && writes.nonEmpty,
+          s"expected the $statement inner append to plan through the split operators: $plans")
       }
 
       val ctasPlans = capturePlans {

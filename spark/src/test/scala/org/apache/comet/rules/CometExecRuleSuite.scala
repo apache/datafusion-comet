@@ -34,7 +34,7 @@ import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ShuffleEx
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
 
 import org.apache.comet.{CometConf, CometExplainInfo}
-import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark42Plus}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, isSpark42Plus}
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
 /**
@@ -380,7 +380,6 @@ class CometExecRuleSuite extends CometTestBase {
   }
 
   test("CometExecRule should not allow try_sum mixed execution") {
-    assume(isSpark35Plus, "try_sum was added in Spark 3.5")
     withTempView("test_data") {
       createTestDataFrame.createOrReplaceTempView("test_data")
       val sparkPlan =
@@ -477,7 +476,7 @@ class CometExecRuleSuite extends CometTestBase {
       withTempView("test_data") {
         createTestDataFrame.createOrReplaceTempView("test_data")
 
-        // Cast to bigint: Spark 3.4's bloom_filter_agg only accepts a long-typed first
+        // Cast to bigint so the test uses a type supported by bloom_filter_agg.
         // argument; later versions widened it to any integral type.
         val sparkPlan =
           createSparkPlan(spark, "SELECT bloom_filter_agg(CAST(id AS BIGINT)) FROM test_data")
@@ -516,7 +515,7 @@ class CometExecRuleSuite extends CometTestBase {
       withTempView("test_data") {
         createTestDataFrame.createOrReplaceTempView("test_data")
 
-        // Cast to bigint: Spark 3.4's bloom_filter_agg only accepts a long-typed first
+        // Cast to bigint so the test uses a type supported by bloom_filter_agg.
         // argument; later versions widened it to any integral type.
         val sparkPlan =
           createSparkPlan(spark, "SELECT bloom_filter_agg(CAST(id AS BIGINT)) FROM test_data")
@@ -639,7 +638,7 @@ class CometExecRuleSuite extends CometTestBase {
   }
 
   test("CometExecRule should not convert hash aggregate when grouping key contains map type") {
-    // Spark 3.4/3.5 reject `array<map<...>>` as a grouping key in the analyzer (not orderable),
+    // Spark 3.5 rejects `array<map<...>>` as a grouping key in the analyzer (not orderable),
     // so the plan never reaches CometExecRule on those versions. The guard we're exercising
     // (containsMapType) only matters on Spark 4.0+, which permits the GROUP BY to be analyzed.
     assume(isSpark40Plus)

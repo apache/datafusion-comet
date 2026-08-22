@@ -26,7 +26,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.BooleanType
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
+import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde._
 
@@ -342,14 +342,14 @@ object ComparisonUtils {
       s"effect (`$legacyNullInEmptyListConfig`), because a `NULL` operand then evaluates to " +
       "`NULL` rather than `false`."
 
-  // Spark 3.4 has no config and always uses the legacy behavior, Spark 3.5 defaults the config to
-  // true, and Spark 4.0+ makes it optional with a default of `!spark.sql.ansi.enabled`. Read by
-  // string key so this compiles against every supported Spark version.
+  // Spark 3.5 defaults the config to true, and Spark 4.0+ makes it optional with a default of
+  // `!spark.sql.ansi.enabled`. Read by string key so this compiles against every supported Spark
+  // version.
   private def legacyNullInEmptyListBehavior: Boolean =
-    !isSpark35Plus || {
-      val default = !isSpark40Plus || !SQLConf.get.ansiEnabled
-      CometConf.getBooleanConf(legacyNullInEmptyListConfig, default, SQLConf.get)
-    }
+    CometConf.getBooleanConf(
+      legacyNullInEmptyListConfig,
+      !isSpark40Plus || !SQLConf.get.ansiEnabled,
+      SQLConf.get)
 
   /**
    * Support level shared by the `In` and `InSet` serdes: `list` is the set of values being tested

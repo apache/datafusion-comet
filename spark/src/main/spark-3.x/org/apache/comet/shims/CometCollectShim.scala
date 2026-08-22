@@ -22,7 +22,7 @@ package org.apache.comet.shims
 import org.apache.spark.sql.catalyst.expressions.aggregate.{CollectList, CollectSet}
 
 /**
- * Shim for the `ignoreNulls` flag on `CollectList` / `CollectSet`. Spark 3.4 through 4.1 have no
+ * Shim for the `ignoreNulls` flag on `CollectList` / `CollectSet`. Spark 3.5 through 4.1 have no
  * such field: these aggregates always drop null inputs, so this shim reports `true`. Spark 4.2
  * added `ignoreNulls` (settable to `false` via `RESPECT NULLS`), handled by the spark-4.2 shim.
  */

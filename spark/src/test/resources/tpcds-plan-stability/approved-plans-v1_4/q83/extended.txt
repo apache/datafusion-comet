@@ -54,20 +54,7 @@ CometColumnarToRow
          :                       :  +- CometBroadcastHashJoin
          :                       :     :- CometFilter
          :                       :     :  +- CometNativeScan parquet spark_catalog.default.catalog_returns
-         :                       :     :        +- CometSubqueryBroadcast
-         :                       :     :           +- CometBroadcastExchange
-         :                       :     :              +- CometProject
-         :                       :     :                 +- CometBroadcastHashJoin
-         :                       :     :                    :- CometFilter
-         :                       :     :                    :  +- CometNativeScan parquet spark_catalog.default.date_dim
-         :                       :     :                    +- CometBroadcastExchange
-         :                       :     :                       +- CometProject
-         :                       :     :                          +- CometBroadcastHashJoin
-         :                       :     :                             :- CometNativeScan parquet spark_catalog.default.date_dim
-         :                       :     :                             +- CometBroadcastExchange
-         :                       :     :                                +- CometProject
-         :                       :     :                                   +- CometFilter
-         :                       :     :                                      +- CometNativeScan parquet spark_catalog.default.date_dim
+         :                       :     :        +- ReusedSubquery
          :                       :     +- CometBroadcastExchange
          :                       :        +- CometProject
          :                       :           +- CometFilter
@@ -114,4 +101,4 @@ CometColumnarToRow
                                                    +- CometFilter
                                                       +- CometNativeScan parquet spark_catalog.default.date_dim
 
-Comet accelerated 113 out of 113 eligible operators (100%). Final plan contains 1 transitions between Spark and Comet. Accelerated expressions: 12 native, 0 codegen dispatch.
+Comet accelerated 99 out of 99 eligible operators (100%). Final plan contains 1 transitions between Spark and Comet. Accelerated expressions: 12 native, 0 codegen dispatch.

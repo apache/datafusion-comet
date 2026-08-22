@@ -221,7 +221,7 @@ mod tests {
     /// from this Rust code instead of from Commons Math3 would make the test circular and silently
     /// stop it testing anything. The backstop is `CometUuidExpressionSuite`, which builds
     /// `Uuid(Some(seed))` directly and compares Comet against Spark bit for bit on *every*
-    /// supported profile -- including 3.4 and 3.5, where the SQL `uuid(seed)` form does not exist
+    /// supported profile -- including 3.5, where the SQL `uuid(seed)` form does not exist
     /// and `uuid_with_seed.sql` is skipped. If these values ever disagree with that suite, trust
     /// the suite.
     #[test]

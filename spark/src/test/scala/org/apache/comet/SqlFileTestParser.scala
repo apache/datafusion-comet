@@ -84,7 +84,7 @@ case class ExpectError(pattern: String) extends QueryAssertionMode
  *   Optional minimum Spark version required to run this test (e.g. "3.5"). The test is skipped on
  *   older versions.
  * @param maxSparkVersion
- *   Optional maximum Spark version this test applies to (e.g. "3.4"). The test is skipped on
+ *   Optional maximum Spark version this test applies to (e.g. "4.0"). The test is skipped on
  *   newer versions. Useful for paired fixtures where each version range has its own expected
  *   error class or output format.
  */

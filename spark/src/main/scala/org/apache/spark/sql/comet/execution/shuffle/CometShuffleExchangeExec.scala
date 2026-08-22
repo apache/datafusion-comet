@@ -334,9 +334,9 @@ object CometShuffleExchangeExec
 
     // A Comet shuffle wrapped around a stage that still contains a Spark FileSourceScanExec
     // with DPP produces inefficient row<->columnar transitions. This only happens when the
-    // scan fell back to Spark (e.g., AQE DPP on Spark 3.4, or unsupported scan type).
-    // On 3.5+ with AQE DPP, the scan converts to CometNativeScanExec and
-    // stageContainsDPPScan won't match (it checks FileSourceScanExec).
+    // scan fell back to Spark because of an unsupported scan type. AQE DPP scans convert to
+    // CometNativeScanExec, so stageContainsDPPScan won't match them (it checks
+    // FileSourceScanExec).
     if (stageContainsDPPScan(s)) {
       withFallbackReasons(s, Set("Stage contains a scan with Dynamic Partition Pruning"))
       return None

@@ -41,7 +41,7 @@ import org.apache.spark.sql.execution.exchange.{ReusedExchangeExec, ShuffleExcha
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{StringType, TimestampType}
 
-import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark42Plus}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, isSpark42Plus}
 import org.apache.comet.iceberg.{IcebergReflection, RESTCatalogHelper}
 import org.apache.comet.serde.OperatorOuterClass
 import org.apache.comet.testing.{FuzzDataGenerator, SchemaGenOptions}
@@ -3241,14 +3241,12 @@ class CometIcebergNativeSuite
         assert(numPartitions == 1, s"Expected DPP to prune to 1 partition but got $numPartitions")
 
         // Verify AQE DPP used CometSubqueryBroadcastExec with broadcast reuse
-        if (isSpark35Plus) {
-          val subqueries = collectIcebergDPPSubqueries(cometPlan)
-          assert(subqueries.size == 2, s"Expected 2 DPP subqueries but got ${subqueries.size}")
-          subqueries.foreach { sub =>
-            assert(
-              sub.isInstanceOf[CometSubqueryBroadcastExec],
-              s"Expected CometSubqueryBroadcastExec but got ${sub.getClass.getSimpleName}")
-          }
+        val subqueries = collectIcebergDPPSubqueries(cometPlan)
+        assert(subqueries.size == 2, s"Expected 2 DPP subqueries but got ${subqueries.size}")
+        subqueries.foreach { sub =>
+          assert(
+            sub.isInstanceOf[CometSubqueryBroadcastExec],
+            s"Expected CometSubqueryBroadcastExec but got ${sub.getClass.getSimpleName}")
         }
 
         spark.sql("DROP TABLE runtime_cat.db.multi_dpp_fact")
@@ -3330,11 +3328,9 @@ class CometIcebergNativeSuite
         assert(numPartitions == 1, s"Expected DPP to prune to 1 partition but got $numPartitions")
 
         // Verify AQE DPP used CometSubqueryBroadcastExec with broadcast reuse
-        if (isSpark35Plus) {
-          val subqueries = collectIcebergDPPSubqueries(cometPlan)
-          assert(subqueries.nonEmpty, s"Expected DPP subqueries in plan:\n$cometPlan")
-          assertCsbBroadcastReuse(subqueries, cometPlan)
-        }
+        val subqueries = collectIcebergDPPSubqueries(cometPlan)
+        assert(subqueries.nonEmpty, s"Expected DPP subqueries in plan:\n$cometPlan")
+        assertCsbBroadcastReuse(subqueries, cometPlan)
 
         spark.sql("DROP TABLE runtime_cat.db.fact_table")
       }
@@ -3797,30 +3793,28 @@ class CometIcebergNativeSuite
 
         assertNoLeftoverCSAB(cometPlan)
 
-        if (isSpark35Plus) {
-          // Verify CometSubqueryBroadcastExec replaced SubqueryAdaptiveBroadcastExec
-          val subqueries = collectIcebergDPPSubqueries(cometPlan)
-          assert(subqueries.nonEmpty, s"Expected DPP subqueries in plan:\n$cometPlan")
-          subqueries.foreach { sub =>
-            assert(
-              sub.isInstanceOf[CometSubqueryBroadcastExec],
-              s"Expected CometSubqueryBroadcastExec but got ${sub.getClass.getSimpleName}")
-          }
-
-          // Verify broadcast reuse: subquery child should be an ASPE that contains a
-          // BroadcastQueryStageExec (via AQE stageCache, possibly wrapped in
-          // ReusedExchangeExec). Reference equality (eq) on the join's BQS does not
-          // hold because convertSAB wraps a fresh exchange in a new ASPE; the actual
-          // reuse manifests as ReusedExchangeExec inside the ASPE's final plan.
-          assertCsbBroadcastReuse(subqueries, cometPlan)
-
-          // Verify correct results and partition pruning
-          val icebergScans = collectIcebergNativeScans(cometPlan)
-          assert(icebergScans.nonEmpty, "Expected CometIcebergNativeScanExec in plan")
+        // Verify CometSubqueryBroadcastExec replaced SubqueryAdaptiveBroadcastExec
+        val subqueries = collectIcebergDPPSubqueries(cometPlan)
+        assert(subqueries.nonEmpty, s"Expected DPP subqueries in plan:\n$cometPlan")
+        subqueries.foreach { sub =>
           assert(
-            icebergScans.head.numPartitions == 1,
-            s"Expected DPP to prune to 1 partition but got ${icebergScans.head.numPartitions}")
+            sub.isInstanceOf[CometSubqueryBroadcastExec],
+            s"Expected CometSubqueryBroadcastExec but got ${sub.getClass.getSimpleName}")
         }
+
+        // Verify broadcast reuse: subquery child should be an ASPE that contains a
+        // BroadcastQueryStageExec (via AQE stageCache, possibly wrapped in
+        // ReusedExchangeExec). Reference equality (eq) on the join's BQS does not
+        // hold because convertSAB wraps a fresh exchange in a new ASPE; the actual
+        // reuse manifests as ReusedExchangeExec inside the ASPE's final plan.
+        assertCsbBroadcastReuse(subqueries, cometPlan)
+
+        // Verify correct results and partition pruning
+        val icebergScans = collectIcebergNativeScans(cometPlan)
+        assert(icebergScans.nonEmpty, "Expected CometIcebergNativeScanExec in plan")
+        assert(
+          icebergScans.head.numPartitions == 1,
+          s"Expected DPP to prune to 1 partition but got ${icebergScans.head.numPartitions}")
 
         spark.sql("DROP TABLE aqe_cat.db.dpp_reuse_fact")
       }
@@ -3877,21 +3871,19 @@ class CometIcebergNativeSuite
 
         assertNoLeftoverCSAB(cometPlan)
 
-        if (isSpark35Plus) {
-          // Both DPP filters should use CometSubqueryBroadcastExec
-          val subqueries = collectIcebergDPPSubqueries(cometPlan)
-          assert(subqueries.size == 2, s"Expected 2 DPP subqueries but got ${subqueries.size}")
-          subqueries.foreach { sub =>
-            assert(
-              sub.isInstanceOf[CometSubqueryBroadcastExec],
-              s"Expected CometSubqueryBroadcastExec but got ${sub.getClass.getSimpleName}")
-          }
-
-          // Both should reuse the dim broadcast. Each subquery child is an ASPE that
-          // contains a BroadcastQueryStageExec (or ReusedExchangeExec) - AQE stageCache
-          // dedupes via canonical form rather than Java reference identity.
-          assertCsbBroadcastReuse(subqueries, cometPlan)
+        // Both DPP filters should use CometSubqueryBroadcastExec
+        val subqueries = collectIcebergDPPSubqueries(cometPlan)
+        assert(subqueries.size == 2, s"Expected 2 DPP subqueries but got ${subqueries.size}")
+        subqueries.foreach { sub =>
+          assert(
+            sub.isInstanceOf[CometSubqueryBroadcastExec],
+            s"Expected CometSubqueryBroadcastExec but got ${sub.getClass.getSimpleName}")
         }
+
+        // Both should reuse the dim broadcast. Each subquery child is an ASPE that
+        // contains a BroadcastQueryStageExec (or ReusedExchangeExec) - AQE stageCache
+        // dedupes via canonical form rather than Java reference identity.
+        assertCsbBroadcastReuse(subqueries, cometPlan)
 
         spark.sql("DROP TABLE aqe_cat.db.multi_dpp_reuse")
       }
@@ -3957,40 +3949,38 @@ class CometIcebergNativeSuite
 
         assertNoLeftoverCSAB(cometPlan)
 
-        if (isSpark35Plus) {
-          // Should have DPP subqueries for both joins
-          val subqueries = collectIcebergDPPSubqueries(cometPlan)
-          assert(subqueries.nonEmpty, s"Expected DPP subqueries in plan:\n$cometPlan")
+        // Should have DPP subqueries for both joins
+        val subqueries = collectIcebergDPPSubqueries(cometPlan)
+        assert(subqueries.nonEmpty, s"Expected DPP subqueries in plan:\n$cometPlan")
 
-          // Each should be CometSubqueryBroadcastExec with an ASPE child wrapping the
-          // build-side broadcast (reuse manifests as ReusedExchangeExec inside the ASPE).
-          subqueries.foreach { sub =>
-            assert(
-              sub.isInstanceOf[CometSubqueryBroadcastExec],
-              s"Expected CometSubqueryBroadcastExec but got ${sub.getClass.getSimpleName}")
-          }
-
-          val subqueryCsbs = subqueries.collect { case csb: CometSubqueryBroadcastExec => csb }
-          assertCsbBroadcastReuse(subqueryCsbs, cometPlan)
-
-          // buildKeys disambiguation: the two DPP subqueries should not share canonical
-          // form (different join keys -> different broadcasts). Compare canonicalized
-          // plans rather than Java reference identity.
-          if (subqueryCsbs.size >= 2) {
-            val distinctCanonical = subqueryCsbs.map(_.child.canonicalized).distinct
-            assert(
-              distinctCanonical.size == subqueryCsbs.size,
-              s"Expected ${subqueryCsbs.size} distinct broadcasts (by canonical form) " +
-                s"but got ${distinctCanonical.size}. buildKeys disambiguation may not be working.")
-          }
-
-          // Verify correct results: date=2024-01-02 AND category=A returns row (3, 2024-01-02, A, 30)
-          val icebergScans = collectIcebergNativeScans(cometPlan)
-          assert(icebergScans.nonEmpty, "Expected CometIcebergNativeScanExec in plan")
+        // Each should be CometSubqueryBroadcastExec with an ASPE child wrapping the
+        // build-side broadcast (reuse manifests as ReusedExchangeExec inside the ASPE).
+        subqueries.foreach { sub =>
           assert(
-            icebergScans.head.numPartitions == 1,
-            s"Expected DPP to prune to 1 partition but got ${icebergScans.head.numPartitions}")
+            sub.isInstanceOf[CometSubqueryBroadcastExec],
+            s"Expected CometSubqueryBroadcastExec but got ${sub.getClass.getSimpleName}")
         }
+
+        val subqueryCsbs = subqueries.collect { case csb: CometSubqueryBroadcastExec => csb }
+        assertCsbBroadcastReuse(subqueryCsbs, cometPlan)
+
+        // buildKeys disambiguation: the two DPP subqueries should not share canonical
+        // form (different join keys -> different broadcasts). Compare canonicalized
+        // plans rather than Java reference identity.
+        if (subqueryCsbs.size >= 2) {
+          val distinctCanonical = subqueryCsbs.map(_.child.canonicalized).distinct
+          assert(
+            distinctCanonical.size == subqueryCsbs.size,
+            s"Expected ${subqueryCsbs.size} distinct broadcasts (by canonical form) " +
+              s"but got ${distinctCanonical.size}. buildKeys disambiguation may not be working.")
+        }
+
+        // Verify correct results: date=2024-01-02 AND category=A returns row (3, 2024-01-02, A, 30)
+        val icebergScans = collectIcebergNativeScans(cometPlan)
+        assert(icebergScans.nonEmpty, "Expected CometIcebergNativeScanExec in plan")
+        assert(
+          icebergScans.head.numPartitions == 1,
+          s"Expected DPP to prune to 1 partition but got ${icebergScans.head.numPartitions}")
 
         spark.sql("DROP TABLE aqe_cat.db.two_join_fact")
       }
@@ -4093,14 +4083,12 @@ class CometIcebergNativeSuite
 
         assertNoLeftoverCSAB(cometPlan)
 
-        if (isSpark35Plus) {
-          // Verify the rule still converted the SAB
-          val subqueries = collectIcebergDPPSubqueries(cometPlan)
-          subqueries.foreach { sub =>
-            assert(
-              sub.isInstanceOf[CometSubqueryBroadcastExec],
-              s"Expected CometSubqueryBroadcastExec but got ${sub.getClass.getSimpleName}")
-          }
+        // Verify the rule still converted the SAB
+        val subqueries = collectIcebergDPPSubqueries(cometPlan)
+        subqueries.foreach { sub =>
+          assert(
+            sub.isInstanceOf[CometSubqueryBroadcastExec],
+            s"Expected CometSubqueryBroadcastExec but got ${sub.getClass.getSimpleName}")
         }
 
         spark.sql("DROP TABLE aqe_cat.db.empty_dpp_fact")
@@ -4152,9 +4140,8 @@ class CometIcebergNativeSuite
         // Should produce correct results regardless of DPP path
         val (_, cometPlan) = checkSparkAnswer(query)
         assertIcebergNativeScanPresent(cometPlan)
-        // Even when no BHJ exists, no CSAB should survive the rule. On 3.5+ the rule
-        // emits TrueLiteral or aggregate SubqueryExec; on 3.4 the wrapper is never
-        // created in the first place. A leftover CSAB would crash at runtime.
+        // Even when no BHJ exists, no CSAB should survive the rule. It emits TrueLiteral or an
+        // aggregate SubqueryExec; a leftover CSAB would crash at runtime.
         assertNoLeftoverCSAB(cometPlan)
 
         spark.sql("DROP TABLE aqe_cat.db.smj_fact")
@@ -4228,27 +4215,25 @@ class CometIcebergNativeSuite
         val (_, cometPlan) = checkSparkAnswer(query)
         assertIcebergNativeScanPresent(cometPlan)
 
-        // No CSAB should survive on either version (would crash at execution otherwise).
+        // No CSAB should survive (it would crash at execution otherwise).
         assertNoLeftoverCSAB(cometPlan)
 
-        if (isSpark35Plus) {
-          // Subquery dedup: exactly 1 CometSubqueryBroadcastExec shared across both
-          // fact scans, plus at least 1 ReusedSubqueryExec pointer.
-          val cometSubqueries = collectWithSubqueries(cometPlan) {
-            case s: CometSubqueryBroadcastExec => s
-          }
-          assert(
-            cometSubqueries.size == 1,
-            "Expected exactly 1 CometSubqueryBroadcastExec (shared), got " +
-              s"${cometSubqueries.size}:\n${cometPlan.treeString}")
-          val reusedCsbs = collectWithSubqueries(cometPlan) {
-            case r @ ReusedSubqueryExec(_: CometSubqueryBroadcastExec) => r
-          }
-          assert(
-            reusedCsbs.nonEmpty,
-            "Expected at least one ReusedSubqueryExec(CometSubqueryBroadcastExec):" +
-              s"\n${cometPlan.treeString}")
+        // Subquery dedup: exactly 1 CometSubqueryBroadcastExec shared across both
+        // fact scans, plus at least 1 ReusedSubqueryExec pointer.
+        val cometSubqueries = collectWithSubqueries(cometPlan) {
+          case s: CometSubqueryBroadcastExec => s
         }
+        assert(
+          cometSubqueries.size == 1,
+          "Expected exactly 1 CometSubqueryBroadcastExec (shared), got " +
+            s"${cometSubqueries.size}:\n${cometPlan.treeString}")
+        val reusedCsbs = collectWithSubqueries(cometPlan) {
+          case r @ ReusedSubqueryExec(_: CometSubqueryBroadcastExec) => r
+        }
+        assert(
+          reusedCsbs.nonEmpty,
+          "Expected at least one ReusedSubqueryExec(CometSubqueryBroadcastExec):" +
+            s"\n${cometPlan.treeString}")
 
         spark.sql("DROP TABLE aqe_cat.db.fact1")
         spark.sql("DROP TABLE aqe_cat.db.fact2")
@@ -4321,25 +4306,20 @@ class CometIcebergNativeSuite
 
         assertNoLeftoverCSAB(cometPlan)
 
-        // Cross-plan dedup is a known 3.4 limitation (each ASPE sees only its own
-        // plan at prep-rule time, so the scalar subquery's SAB cannot find the main
-        // query's BHJ). Strict shape checks only on 3.5+.
-        if (isSpark35Plus) {
-          val countBroadcasts = collectWithSubqueries(cometPlan) {
-            case _: CometSubqueryBroadcastExec => 1
-          }.sum
-          val countReused = collectWithSubqueries(cometPlan) {
-            case ReusedSubqueryExec(_: CometSubqueryBroadcastExec) => 1
-          }.sum
+        val countBroadcasts = collectWithSubqueries(cometPlan) {
+          case _: CometSubqueryBroadcastExec => 1
+        }.sum
+        val countReused = collectWithSubqueries(cometPlan) {
+          case ReusedSubqueryExec(_: CometSubqueryBroadcastExec) => 1
+        }.sum
 
-          assert(
-            countBroadcasts == 1,
-            "Expected 1 CometSubqueryBroadcastExec (shared across plans), " +
-              s"got $countBroadcasts:\n${cometPlan.treeString}")
-          assert(
-            countReused == 1,
-            s"Expected 1 ReusedSubqueryExec, got $countReused:\n${cometPlan.treeString}")
-        }
+        assert(
+          countBroadcasts == 1,
+          "Expected 1 CometSubqueryBroadcastExec (shared across plans), " +
+            s"got $countBroadcasts:\n${cometPlan.treeString}")
+        assert(
+          countReused == 1,
+          s"Expected 1 ReusedSubqueryExec, got $countReused:\n${cometPlan.treeString}")
 
         spark.sql("DROP TABLE aqe_cat.db.scalar_fact")
       }
@@ -4462,17 +4442,15 @@ class CometIcebergNativeSuite
 
         assertNoLeftoverCSAB(cometPlan)
 
-        if (isSpark35Plus) {
-          // Two DPP filters from the same join must not duplicate the dim broadcast.
-          // Count broadcasts across the whole plan including subquery contexts.
-          val cometBroadcasts = collectWithSubqueries(cometPlan) {
-            case b: CometBroadcastExchangeExec => b
-          }
-          assert(
-            cometBroadcasts.size == 1,
-            "Expected exactly 1 CometBroadcastExchangeExec across whole plan, " +
-              s"got ${cometBroadcasts.size}:\n${cometPlan.treeString}")
+        // Two DPP filters from the same join must not duplicate the dim broadcast.
+        // Count broadcasts across the whole plan including subquery contexts.
+        val cometBroadcasts = collectWithSubqueries(cometPlan) {
+          case b: CometBroadcastExchangeExec => b
         }
+        assert(
+          cometBroadcasts.size == 1,
+          "Expected exactly 1 CometBroadcastExchangeExec across whole plan, " +
+            s"got ${cometBroadcasts.size}:\n${cometPlan.treeString}")
 
         spark.sql("DROP TABLE aqe_cat.db.exchg_fact")
       }
@@ -4519,14 +4497,12 @@ class CometIcebergNativeSuite
 
         assertNoLeftoverCSAB(cometPlan)
 
-        if (isSpark35Plus) {
-          val cometSubqueries = collectWithSubqueries(cometPlan) {
-            case s: CometSubqueryBroadcastExec => s
-          }
-          assert(
-            cometSubqueries.nonEmpty,
-            s"Expected CometSubqueryBroadcastExec for DPP, got 0:\n${cometPlan.treeString}")
+        val cometSubqueries = collectWithSubqueries(cometPlan) {
+          case s: CometSubqueryBroadcastExec => s
         }
+        assert(
+          cometSubqueries.nonEmpty,
+          s"Expected CometSubqueryBroadcastExec for DPP, got 0:\n${cometPlan.treeString}")
 
         spark.sql("DROP TABLE aqe_cat.db.q34637_fact")
       }
@@ -4541,14 +4517,9 @@ class CometIcebergNativeSuite
   // DynamicPruningExpression(TrueLiteral) - analogous to FileSourceScanExec.doCanonicalize
   // on V1.
   //
-  // The "exactly once" property manifests differently across Spark versions:
-  //   - 3.5+: EnsureRequirements inserts a hash shuffle for SMJ; AQE recognizes the matching
-  //     canonical form on the peer side and emits ReusedExchangeExec -> 1 shuffle, 1 reuse.
-  //     Same shape as V1's CometExecSuite version of this test.
-  //   - 3.4: planner doesn't insert shuffles for this query shape (V2-specific outputPartitioning
-  //     interaction with EnsureRequirements). Result: 0 shuffles. Still "data read once" - just
-  //     via a different mechanism.
-  // Either shape satisfies the invariant; assertion accepts both.
+  // EnsureRequirements inserts a hash shuffle for SMJ; AQE recognizes the matching canonical
+  // form on the peer side and emits ReusedExchangeExec -> 1 shuffle, 1 reuse. This is the same
+  // shape as V1's CometExecSuite version of this test.
   test("AQE DPP - unused DPP filter and exchange reuse (SPARK-32509)") {
     assume(icebergAvailable, "Iceberg not available")
     withTempIcebergDir { warehouseDir =>
@@ -4593,8 +4564,7 @@ class CometIcebergNativeSuite
 
         assertNoLeftoverCSAB(cometPlan)
 
-        // Accept either shape (see test docstring): single shuffle with reuse, or no
-        // shuffles at all. Both prove the two scans canonicalize identically after DPP
+        // A single shuffle plus one reuse proves the two scans canonicalize identically after DPP
         // degrades to TrueLiteral, so fact data is read exactly once.
         val shuffleExchanges = collect(cometPlan) {
           case e: ShuffleExchangeExec => e
@@ -4602,13 +4572,10 @@ class CometIcebergNativeSuite
         }
         val reusedExchanges = collect(cometPlan) { case r: ReusedExchangeExec => r }
 
-        val singleShuffleWithReuse =
-          shuffleExchanges.size == 1 && reusedExchanges.size == 1
-        val noShuffles = shuffleExchanges.isEmpty && reusedExchanges.isEmpty
         assert(
-          singleShuffleWithReuse || noShuffles,
-          "Expected fact data read exactly once: either (1 shuffle + 1 ReusedExchange) " +
-            s"or (0 shuffles), got (${shuffleExchanges.size} shuffles, " +
+          shuffleExchanges.size == 1 && reusedExchanges.size == 1,
+          "Expected fact data read exactly once with 1 shuffle + 1 ReusedExchange, " +
+            s"got (${shuffleExchanges.size} shuffles, " +
             s"${reusedExchanges.size} reused):\n${cometPlan.treeString}")
 
         spark.sql("DROP TABLE aqe_cat.db.q32509_fact")
@@ -4675,22 +4642,20 @@ class CometIcebergNativeSuite
 
         assertNoLeftoverCSAB(cometPlan)
 
-        if (isSpark35Plus) {
-          val dpExprs = collect(cometPlan) { case s: CometIcebergNativeScanExec => s }
-            .flatMap(_.runtimeFilters.collect { case d: DynamicPruningExpression =>
-              d.child
-            })
-          val hasSubquery = dpExprs.exists {
-            case InSubqueryExec(_, _: SubqueryExec, _, _, _, _) => true
-            case _ => false
-          }
-          val hasBroadcast = dpExprs.exists {
-            case InSubqueryExec(_, _: CometSubqueryBroadcastExec, _, _, _, _) => true
-            case _ => false
-          }
-          assert(!hasSubquery, s"Should not have SubqueryExec DPP:\n${cometPlan.treeString}")
-          assert(hasBroadcast, s"Should have broadcast DPP:\n${cometPlan.treeString}")
+        val dpExprs = collect(cometPlan) { case s: CometIcebergNativeScanExec => s }
+          .flatMap(_.runtimeFilters.collect { case d: DynamicPruningExpression =>
+            d.child
+          })
+        val hasSubquery = dpExprs.exists {
+          case InSubqueryExec(_, _: SubqueryExec, _, _, _, _) => true
+          case _ => false
         }
+        val hasBroadcast = dpExprs.exists {
+          case InSubqueryExec(_, _: CometSubqueryBroadcastExec, _, _, _, _) => true
+          case _ => false
+        }
+        assert(!hasSubquery, s"Should not have SubqueryExec DPP:\n${cometPlan.treeString}")
+        assert(hasBroadcast, s"Should have broadcast DPP:\n${cometPlan.treeString}")
 
         spark.sql("DROP TABLE aqe_cat.db.large")
       }

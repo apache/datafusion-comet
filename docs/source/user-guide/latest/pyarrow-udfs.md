@@ -188,7 +188,7 @@ on the unoptimized path.
   `org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager` and enable
   `spark.comet.shuffle.enabled=true` at session startup. With a vanilla Spark `Exchange`
   in the plan the data leaves the shuffle as rows and the optimization cannot fire.
-- Spark 4.0 or newer is required. On Spark 3.4 and 3.5 the optimization is a no-op even when
+- Spark 4.0 or newer is required. On Spark 3.5 the optimization is a no-op even when
   enabled; vanilla `PythonMapInArrowExec` / `MapInPandasExec` handle the operation. The Spark 3.5
   `PythonArrowInput` trait has a different contract than 4.x and a separate implementation has
   not been written. Track 3.5 support as a future follow-on if there is user demand.

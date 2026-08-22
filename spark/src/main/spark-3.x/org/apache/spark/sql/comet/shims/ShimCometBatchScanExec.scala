@@ -25,7 +25,7 @@ import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 trait ShimCometBatchScanExec {
   protected def wrappedScan: BatchScanExec
 
-  // Spark 3.4 and 3.5 expose `partitions` as Seq[Seq[InputPartition]] (same as 4.0/4.1);
+  // Spark 3.5 exposes `partitions` as Seq[Seq[InputPartition]] (same as 4.0/4.1);
   // 4.2 changed it to Seq[Option[InputPartition]]. The concrete subclass overrides
   // `partitions` to delegate to `shimPartitions`, which carries the version-specific
   // element type.

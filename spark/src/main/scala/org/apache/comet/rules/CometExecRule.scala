@@ -108,13 +108,6 @@ object CometExecRule {
   val SKIP_COMET_SHUFFLE_TAG: org.apache.spark.sql.catalyst.trees.TreeNodeTag[Unit] =
     org.apache.spark.sql.catalyst.trees.TreeNodeTag[Unit]("comet.skipCometShuffle")
 
-  /**
-   * Tag set on a `BroadcastExchangeExec` that should be left as a plain Spark broadcast rather
-   * than converted to `CometBroadcastExchangeExec`. Written by [[CometSpark34AqeDppFallbackRule]]
-   * on Spark < 3.5. See that rule's class docstring for the rationale.
-   */
-  val SKIP_COMET_BROADCAST_TAG: org.apache.spark.sql.catalyst.trees.TreeNodeTag[Unit] =
-    org.apache.spark.sql.catalyst.trees.TreeNodeTag[Unit]("comet.skipCometBroadcast")
 }
 
 /**
@@ -326,11 +319,6 @@ case class CometExecRule(session: SparkSession)
       // broadcast exchange is forced to be enabled by Comet config.
       case plan if plan.children.exists(_.isInstanceOf[BroadcastExchangeExec]) =>
         val newChildren = plan.children.map {
-          // Tagged by CometSpark34AqeDppFallbackRule on Spark < 3.5 to keep the build-side
-          // broadcast Spark-native so Spark's PlanAdaptiveDynamicPruningFilters can match it.
-          case b: BroadcastExchangeExec
-              if b.getTagValue(CometExecRule.SKIP_COMET_BROADCAST_TAG).isDefined =>
-            b
           case b: BroadcastExchangeExec if b.children.forall(_.isInstanceOf[CometNativeExec]) =>
             convertToComet(b, CometBroadcastExchangeExec).getOrElse(b)
           case other => other
@@ -489,17 +477,13 @@ case class CometExecRule(session: SparkSession)
             }
           case _ => inSub
         }
-      case sab: SubqueryAdaptiveBroadcastExec if isSpark35Plus =>
+      case sab: SubqueryAdaptiveBroadcastExec =>
         // Wrap SABs to prevent Spark's PlanAdaptiveDynamicPruningFilters from
         // converting them to Literal.TrueLiteral. Spark's rule pattern-matches for
         // BroadcastHashJoinExec, which Comet replaced with CometBroadcastHashJoinExec.
         // Without wrapping, DPP is disabled for both Comet native scans and non-Comet
         // scans (e.g., V2 BatchScan). CometPlanAdaptiveDynamicPruningFilters
-        // (queryStageOptimizerRule, 3.5+) unwraps and converts them later.
-        //
-        // On Spark 3.4, injectQueryStageOptimizerRule is unavailable. The isSpark35Plus
-        // guard leaves SABs unwrapped; CometSpark34AqeDppFallbackRule then tags the
-        // matching BHJ's build broadcast so Spark's rule can match it natively.
+        // (queryStageOptimizerRule) unwraps and converts them later.
         assert(
           sab.buildKeys.nonEmpty,
           s"SubqueryAdaptiveBroadcastExec '${sab.name}' has empty buildKeys")
