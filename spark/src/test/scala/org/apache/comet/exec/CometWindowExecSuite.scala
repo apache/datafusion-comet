@@ -34,7 +34,7 @@ import org.apache.spark.sql.execution.window.{WindowExec => SparkWindowExec}
 import org.apache.spark.sql.expressions.Window
 import org.apache.spark.sql.functions.{count, lead, sum}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{DecimalType, IntegerType, StructField, StructType}
+import org.apache.spark.sql.types.{ArrayType, DecimalType, IntegerType, StructField, StructType}
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
@@ -929,7 +929,7 @@ class CometWindowExecSuite extends CometTestBase {
   test("window: FIRST_VALUE/LAST_VALUE decline an empty-struct input") {
     // DataFusion's ScalarValue::compact panics reconstructing a zero-field StructArray, so
     // CometFirst/CometLast must decline this schema and let the window run on Spark instead
-    // of letting CometWindowExec crash -- see AggSerde.containsEmptyStruct.
+    // of letting CometWindowExec crash -- see SupportLevel.containsEmptyStruct.
     val schema =
       StructType(Seq(StructField("id", IntegerType), StructField("marker", StructType(Nil))))
     val data = (0 until 3).map(i => Row(i, Row())).asJava
@@ -942,6 +942,32 @@ class CometWindowExecSuite extends CometTestBase {
     // needs no equivalent guard -- pinned here so a future regression would be caught.
     checkSparkAnswer(
       sql("SELECT nth_value(marker, 1) OVER (ORDER BY id) FROM empty_struct_window"))
+  }
+
+  test("window: LAG/LEAD decline a typed-NULL empty-struct-array default") {
+    // DataFusion casts the literal default to the input type when building the window expr,
+    // and its cast errors on a zero-field struct even when source and target agree ("no field
+    // name overlap") -- see SupportLevel.containsEmptyStruct.
+    val schema = StructType(
+      Seq(StructField("id", IntegerType), StructField("arr", ArrayType(StructType(Nil)))))
+    val data = (0 until 3).map(i => Row(i, Array(Row()))).asJava
+    spark.createDataFrame(data, schema).createOrReplaceTempView("empty_struct_array_window")
+
+    checkSparkAnswer(sql("""
+      SELECT lag(arr, 1, CAST(NULL AS ARRAY<STRUCT<>>)) OVER (ORDER BY id)
+      FROM empty_struct_array_window
+      """))
+    checkSparkAnswer(sql("""
+      SELECT lead(arr, 1, CAST(NULL AS ARRAY<STRUCT<>>)) OVER (ORDER BY id)
+      FROM empty_struct_array_window
+      """))
+
+    // The omitted-default and plain-NULL-literal forms don't go through the typed-NULL cast
+    // that panics -- they should stay native, not fall back with the rest of this schema.
+    checkSparkAnswerAndOperator(
+      sql("SELECT lag(arr, 1) OVER (ORDER BY id) FROM empty_struct_array_window"))
+    checkSparkAnswerAndOperator(
+      sql("SELECT lag(arr, 1, NULL) OVER (ORDER BY id) FROM empty_struct_array_window"))
   }
 
   test("window: LAST_VALUE with ROWS frame") {
