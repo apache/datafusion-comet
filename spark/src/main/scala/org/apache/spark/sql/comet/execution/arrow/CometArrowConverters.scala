@@ -52,9 +52,10 @@ object CometArrowConverters extends Logging {
   def rowToArrowBatchIter(
       rowIter: Iterator[InternalRow],
       schema: StructType,
-      maxRecordsPerBatch: Long,
+      maxRecordsPerBatch: Int,
       timeZoneId: String,
       allocator: BufferAllocator): Iterator[ColumnarBatch] = {
+    require(maxRecordsPerBatch > 0, "Maximum records per batch must be positive")
     val arrowSchema: Schema = Utils.toArrowSchema(schema, timeZoneId)
 
     new Iterator[ColumnarBatch] {
@@ -62,10 +63,9 @@ object CometArrowConverters extends Logging {
 
       override def next(): ColumnarBatch = {
         val root = VectorSchemaRoot.create(arrowSchema, allocator)
-        val writer = ArrowWriter.create(root)
-        var rowCount = 0L
-        while (rowIter.hasNext &&
-          (maxRecordsPerBatch <= 0 || rowCount < maxRecordsPerBatch)) {
+        val writer = ArrowWriter.create(root, maxRecordsPerBatch)
+        var rowCount = 0
+        while (rowIter.hasNext && rowCount < maxRecordsPerBatch) {
           writer.write(rowIter.next())
           rowCount += 1
         }

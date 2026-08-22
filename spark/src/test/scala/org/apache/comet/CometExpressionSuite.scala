@@ -19,8 +19,6 @@
 
 package org.apache.comet
 
-import java.time.{Duration, Period}
-
 import scala.util.Random
 
 import org.apache.hadoop.fs.Path
@@ -2324,11 +2322,19 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         CometConf.COMET_EXEC_ENABLED.key -> "true")(f)
     }
 
-    def checkOverflow(query: String, dtype: String): Unit = {
+    // Spark 3.4/3.5 throw `_LEGACY_ERROR_TEMP_2043` ("- <sqlValue> caused overflow.") for byte and
+    // short. Spark 4.x routes them through `MathUtils.negateExact` and agrees with Comet, which
+    // always renders `SparkError::ArithmeticOverflow` with the Spark type name.
+    def sparkOverflowMsg(dtype: String): String =
+      if (isSpark40Plus) s"$dtype overflow" else "caused overflow"
+
+    // Spark and Comet can render different overflow messages for the same operation, so assert each
+    // side's expected substring separately.
+    def checkOverflow(query: String, sparkExpected: String, cometExpected: String): Unit = {
       checkSparkAnswerMaybeThrows(sql(query)) match {
         case (Some(sparkException), Some(cometException)) =>
-          assert(sparkException.getMessage.contains(dtype + " overflow"))
-          assert(cometException.getMessage.contains(dtype + " overflow"))
+          assert(sparkException.getMessage.contains(sparkExpected))
+          assert(cometException.getMessage.contains(cometExpected))
         case (None, None) => checkSparkAnswerAndOperator(sql(query))
         case (None, Some(ex)) =>
           fail("Comet threw an exception but Spark did not " + ex.getMessage)
@@ -2337,44 +2343,50 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       }
     }
 
-    def runArrayTest(query: String, dtype: String, path: String): Unit = {
+    def runArrayTest(
+        query: String,
+        sparkExpected: String,
+        cometExpected: String,
+        path: String): Unit = {
       withParquetTable(path, "t") {
         withAnsiMode(enabled = false) {
           checkSparkAnswerAndOperator(sql(query))
         }
         withAnsiMode(enabled = true) {
-          checkOverflow(query, dtype)
+          checkOverflow(query, sparkExpected, cometExpected)
         }
       }
     }
 
     withTempDir { dir =>
-      // Array values test
+      // Array values test. Tuple is (file, data, Spark-expected substring, Comet-expected substring).
       val dataTypes = Seq(
-        ("array_test.parquet", Seq(Int.MaxValue, Int.MinValue).toDF("a"), "integer"),
-        ("long_array_test.parquet", Seq(Long.MaxValue, Long.MinValue).toDF("a"), "long"),
-        ("short_array_test.parquet", Seq(Short.MaxValue, Short.MinValue).toDF("a"), ""),
-        ("byte_array_test.parquet", Seq(Byte.MaxValue, Byte.MinValue).toDF("a"), ""))
+        (
+          "array_test.parquet",
+          Seq(Int.MaxValue, Int.MinValue).toDF("a"),
+          "integer overflow",
+          "integer overflow"),
+        (
+          "long_array_test.parquet",
+          Seq(Long.MaxValue, Long.MinValue).toDF("a"),
+          "long overflow",
+          "long overflow"),
+        (
+          "short_array_test.parquet",
+          Seq(Short.MaxValue, Short.MinValue).toDF("a"),
+          sparkOverflowMsg("short"),
+          "short overflow"),
+        (
+          "byte_array_test.parquet",
+          Seq(Byte.MaxValue, Byte.MinValue).toDF("a"),
+          sparkOverflowMsg("byte"),
+          "byte overflow"))
 
-      dataTypes.foreach { case (fileName, df, dtype) =>
+      dataTypes.foreach { case (fileName, df, sparkExpected, cometExpected) =>
         val path = new Path(dir.toURI.toString, fileName).toString
         df.write.mode("overwrite").parquet(path)
         val query = "select a, -a from t"
-        runArrayTest(query, dtype, path)
-      }
-
-      withParquetTable((0 until 5).map(i => (i % 5, i % 3)), "tbl") {
-        withAnsiMode(enabled = true) {
-          // interval test without cast
-          val longDf = Seq(Long.MaxValue, Long.MaxValue, 2)
-          val yearMonthDf = Seq(Int.MaxValue, Int.MaxValue, 2)
-            .map(Period.ofMonths)
-          val dayTimeDf = Seq(106751991L, 106751991L, 2L)
-            .map(Duration.ofDays)
-          Seq(longDf, yearMonthDf, dayTimeDf).foreach { _ =>
-            checkOverflow("select -(_1) FROM tbl", "")
-          }
-        }
+        runArrayTest(query, sparkExpected, cometExpected, path)
       }
 
       // scalar tests
@@ -2385,19 +2397,32 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           CometConf.COMET_ENABLED.key -> "true",
           CometConf.COMET_EXEC_ENABLED.key -> "true") {
           for (n <- Seq("2147483647", "-2147483648")) {
-            checkOverflow(s"select -(cast(${n} as int)) FROM tbl", "integer")
+            checkOverflow(
+              s"select -(cast(${n} as int)) FROM tbl",
+              "integer overflow",
+              "integer overflow")
           }
           for (n <- Seq("32767", "-32768")) {
-            checkOverflow(s"select -(cast(${n} as short)) FROM tbl", "")
+            checkOverflow(
+              s"select -(cast(${n} as short)) FROM tbl",
+              sparkOverflowMsg("short"),
+              "short overflow")
           }
           for (n <- Seq("127", "-128")) {
-            checkOverflow(s"select -(cast(${n} as byte)) FROM tbl", "")
+            checkOverflow(
+              s"select -(cast(${n} as byte)) FROM tbl",
+              sparkOverflowMsg("byte"),
+              "byte overflow")
           }
           for (n <- Seq("9223372036854775807", "-9223372036854775808")) {
-            checkOverflow(s"select -(cast(${n} as long)) FROM tbl", "long")
+            checkOverflow(
+              s"select -(cast(${n} as long)) FROM tbl",
+              "long overflow",
+              "long overflow")
           }
+          // Float negation cannot overflow; confirm it stays native and returns the negated value.
           for (n <- Seq("3.4028235E38", "-3.4028235E38")) {
-            checkOverflow(s"select -(cast(${n} as float)) FROM tbl", "float")
+            checkSparkAnswerAndOperator(sql(s"select -(cast(${n} as float)) FROM tbl"))
           }
         }
       }

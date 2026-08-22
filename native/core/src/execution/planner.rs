@@ -21,6 +21,15 @@ pub mod expression_registry;
 pub mod macros;
 pub mod operator_registry;
 
+// Glue that wires the optional Delta integration into core's plan-tree builder.
+// Compiled only under `--features contrib-delta`; default builds carry zero Delta
+// surface. The bulk of the Delta logic lives in the `comet-contrib-delta` crate --
+// this module is just the bridge that reaches into core's `pub(crate)` planner
+// helpers (`create_expr`, `init_datasource_exec`, `prepare_object_store_with_configs`)
+// and calls into that crate.
+#[cfg(feature = "contrib-delta")]
+mod delta_scan;
+
 use crate::execution::operators::init_csv_datasource_exec;
 use crate::execution::operators::AlignedArrowStreamReader;
 use crate::execution::operators::IcebergScanExec;
@@ -252,6 +261,10 @@ pub struct PhysicalPlanner {
     /// Captured at `createPlan` time on `ExecutionContext`; see that struct for the
     /// propagation rationale. `None` when no driving Spark task is available.
     task_context: Option<Arc<Global<JObject<'static>>>>,
+    /// Context `ClassLoader` of the driving Spark task thread, captured at `createPlan` time on
+    /// `ExecutionContext`; see that struct for the propagation rationale. `None` when no driving
+    /// Spark task is available.
+    class_loader: Option<Arc<Global<JObject<'static>>>>,
 }
 
 impl Default for PhysicalPlanner {
@@ -269,6 +282,7 @@ impl PhysicalPlanner {
             query_context_registry: datafusion_comet_spark_expr::create_query_context_map(),
             sql_text_pool: vec![],
             task_context: None,
+            class_loader: None,
         }
     }
 
@@ -355,6 +369,17 @@ impl PhysicalPlanner {
         task_context: Option<Arc<Global<JObject<'static>>>>,
     ) -> Self {
         self.task_context = task_context;
+        self
+    }
+
+    /// Attach the driving Spark task thread's context `ClassLoader` as a global reference. Mirrors
+    /// `with_task_context`: called by the JNI `executePlan` entry with whatever was captured at
+    /// `createPlan` time, and cloned into every `JvmScalarUdfExpr` the planner builds.
+    pub fn with_class_loader(
+        mut self,
+        class_loader: Option<Arc<Global<JObject<'static>>>>,
+    ) -> Self {
+        self.class_loader = class_loader;
         self
     }
 
@@ -884,12 +909,14 @@ impl PhysicalPlanner {
                     to_arrow_datatype(udf.return_type.as_ref().ok_or_else(|| {
                         GeneralError("JvmScalarUdf missing return_type".to_string())
                     })?);
-                // Invariant: task_context is propagated for every JvmScalarUdfExpr built during
-                // normal execution. The TEST_EXEC_CONTEXT_ID path is the only context in which
-                // task_context may legitimately be None (unit tests, direct native driver runs).
+                // Invariant: task_context and class_loader are propagated for every
+                // JvmScalarUdfExpr built during normal execution. The TEST_EXEC_CONTEXT_ID path is
+                // the only context in which they may legitimately be None (unit tests, direct
+                // native driver runs).
                 debug_assert!(
-                    self.task_context.is_some() || self.exec_context_id == TEST_EXEC_CONTEXT_ID,
-                    "task_context must be set for non-test execution"
+                    (self.task_context.is_some() && self.class_loader.is_some())
+                        || self.exec_context_id == TEST_EXEC_CONTEXT_ID,
+                    "task_context and class_loader must be set for non-test execution"
                 );
                 Ok(Arc::new(JvmScalarUdfExpr::new(
                     udf.class_name.clone(),
@@ -897,6 +924,7 @@ impl PhysicalPlanner {
                     return_type,
                     udf.return_nullable,
                     self.task_context.clone(),
+                    self.class_loader.clone(),
                 )))
             }
             expr => Err(GeneralError(format!("Not implemented: {expr:?}"))),
@@ -1765,6 +1793,26 @@ impl PhysicalPlanner {
                     )),
                 ))
             }
+            OpStruct::ContribScan(contrib) => {
+                // Extension point for optional, out-of-tree contrib scans (Delta, Lance, ...). The
+                // concrete scan message is packed into the `ContribScan` envelope on the JVM side;
+                // here we route by `type_url` to whichever contrib was compiled in. Core names no
+                // specific contrib: the type_url match + decode lives entirely inside each
+                // contrib's gated module, so a default build carries zero contrib surface. The arm
+                // itself is unconditional so a default build that receives a contrib-shaped plan
+                // from a misconfigured driver gets a clear error instead of a "no match" decode
+                // failure.
+                #[cfg(feature = "contrib-delta")]
+                if let Some(result) = delta_scan::try_plan_contrib_scan(self, spark_plan, contrib) {
+                    return result;
+                }
+                Err(GeneralError(format!(
+                    "Received a contrib_scan operator (type_url: {}) but core was built without a \
+                     contrib that handles it. Rebuild with the matching contrib feature -- e.g. \
+                     `-Pcontrib-delta` (Maven) + `--features contrib-delta` (Cargo) for Delta Lake.",
+                    contrib.type_url
+                )))
+            }
             OpStruct::ShuffleWriter(writer) => {
                 assert_eq!(children.len(), 1);
                 let (scans, shuffle_scans, child) =
@@ -1855,6 +1903,8 @@ impl PhysicalPlanner {
                     codec,
                     self.partition,
                     writer.column_names.clone(),
+                    (!writer.output_schema.is_empty())
+                        .then(|| convert_spark_types_to_arrow_schema(&writer.output_schema)),
                     object_store_options,
                 )?);
 
@@ -1888,21 +1938,7 @@ impl PhysicalPlanner {
                     Ok::<(), ExecutionError>(())
                 })?;
 
-                assert!(
-                    !projections.is_empty(),
-                    "Expand should have at least one projection"
-                );
-
-                let datatypes = projections[0]
-                    .iter()
-                    .map(|expr| expr.data_type(&child.schema()))
-                    .collect::<Result<Vec<DataType>, _>>()?;
-                let fields: Vec<Field> = datatypes
-                    .iter()
-                    .enumerate()
-                    .map(|(idx, dt)| Field::new(format!("col_{idx}"), dt.clone(), true))
-                    .collect();
-                let schema = Arc::new(Schema::new(fields));
+                let schema = ExpandExec::build_schema(&projections, &child.schema())?;
 
                 // `Expand` operator keeps the input batch and expands it to multiple output
                 // batches. However, `ScanExec` will reuse input arrays for the next
@@ -3732,7 +3768,13 @@ pub fn from_protobuf_eval_mode(value: i32) -> Result<EvalMode, prost::UnknownEnu
     }
 }
 
-fn convert_spark_types_to_arrow_schema(
+/// Convert Comet's `SparkStructField` protos to an Arrow [`SchemaRef`].
+///
+/// `pub(crate)` so the optional `contrib-delta` scan module
+/// (`planner/delta_scan.rs`) can reuse the exact same Spark→Arrow schema
+/// mapping that the core scan path uses, keeping the two in lockstep. Kept
+/// crate-private — it is not part of any public API.
+pub(crate) fn convert_spark_types_to_arrow_schema(
     spark_types: &[spark_operator::SparkStructField],
 ) -> SchemaRef {
     let arrow_fields = spark_types

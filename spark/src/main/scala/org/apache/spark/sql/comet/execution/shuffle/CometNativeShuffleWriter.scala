@@ -97,10 +97,14 @@ class CometNativeShuffleWriter[K, V](
     val unifiedPlan = buildUnifiedPlan(tempDataFilename, tempIndexFilename)
     val ctx = spec.execContext
     val finalNativePlan = if (ctx.commonByKey.nonEmpty) {
-      val partitionDataByKey = ctx.perPartitionByKey.map { case (k, arr) =>
-        k -> arr(partitionIdx)
-      }
-      PlanDataInjector.injectPlanData(unifiedPlan, ctx.commonByKey, partitionDataByKey)
+      // This partition's plan-data slice rides on the input iterator's Partition object (populated
+      // in CometNativeShuffleInputRDD.getPartitions on the driver), not on the spec. The spec's
+      // execContext.perPartitionByKey is emptied in prepareNativeShuffleDependency so the full
+      // O(numPartitions) map stays out of the broadcast task binary.
+      PlanDataInjector.injectPlanData(
+        unifiedPlan,
+        ctx.commonByKey,
+        shuffleInputIter.planDataByKey)
     } else {
       unifiedPlan
     }
@@ -109,9 +113,11 @@ class CometNativeShuffleWriter[K, V](
       "elapsed_compute",
       "encode_time",
       "repart_time",
+      "interleave_time",
       "input_batches",
       "spill_count",
-      "spilled_bytes")
+      "spilled_bytes",
+      "memory_spilled_bytes")
     val metricsOutputRows = new SQLMetric("outputRows")
     val metricsWriteTime = new SQLMetric("writeTime")
     val shuffleWriterSQLMetrics = Map(
@@ -130,6 +136,8 @@ class CometNativeShuffleWriter[K, V](
     if (ctx.hasScanInput) {
       Option(context).foreach(nativeMetrics.reportScanInputMetrics)
     }
+
+    Option(context).foreach(nativeMetrics.reportSpillMetrics)
 
     val cometIter = new CometExecIterator(
       CometExec.newIterId,
@@ -180,14 +188,6 @@ class CometNativeShuffleWriter[K, V](
     metricsReporter.incBytesWritten(Files.size(tempDataFilePath))
     metricsReporter.incRecordsWritten(metricsOutputRows.value)
     metricsReporter.incWriteTime(metricsWriteTime.value)
-
-    // Report spill metrics to Spark's task metrics so they appear in
-    // Spark UI task summaries (not just SQL metrics)
-    val spilledBytes = shuffleWriterSQLMetrics.get("spilled_bytes").map(_.value).getOrElse(0L)
-    if (spilledBytes > 0) {
-      context.taskMetrics().incMemoryBytesSpilled(spilledBytes)
-      context.taskMetrics().incDiskBytesSpilled(spilledBytes)
-    }
 
     // commit
     shuffleBlockResolver.writeMetadataFileAndCommit(
