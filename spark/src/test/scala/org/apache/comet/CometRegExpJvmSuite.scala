@@ -23,8 +23,10 @@ import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.comet.{CometFilterExec, CometProjectExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 
-// No per-expression `allowIncompatible` is set, so the regex family runs through the codegen
-// dispatcher (Spark's own code, enabled by default) rather than the native rust path.
+import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
+
+// Regex expressions other than in-subset `rlike` run through the codegen dispatcher by default
+// (Spark's own code, enabled by default) rather than the native rust path.
 class CometRegExpJvmSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   // Patterns that the Rust regex crate cannot handle. Using one of these proves
@@ -128,12 +130,6 @@ class CometRegExpJvmSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("rlike: null literal pattern falls back to Spark") {
-    withSubjects("a", "b", null) {
-      checkSparkAnswer(sql("SELECT s rlike CAST(NULL AS STRING) FROM t"))
-    }
-  }
-
   test("rlike: invalid pattern falls back to Spark") {
     withSubjects("a") {
       val ex = intercept[Throwable](sql("SELECT s rlike '[' FROM t").collect())
@@ -168,6 +164,215 @@ class CometRegExpJvmSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       sql(s"INSERT INTO t VALUES $values")
       checkSparkAnswerAndOperator(sql(s"SELECT s, s rlike '$backreference' FROM t"))
       checkSparkAnswerAndOperator(sql(s"SELECT s FROM t WHERE s rlike '$backreference'"))
+    }
+  }
+
+  private def withRLikeExplain(f: => Unit): Unit = {
+    withSQLConf(
+      CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true",
+      CometConf.COMET_EXPLAIN_CODEGEN_ENABLED.key -> "true",
+      CometConf.COMET_EXTENDED_EXPLAIN_FORMAT.key ->
+        CometConf.COMET_EXTENDED_EXPLAIN_FORMAT_VERBOSE)(f)
+  }
+
+  private def explainOf(df: org.apache.spark.sql.DataFrame): String =
+    new ExtendedExplainInfo().generateExtendedInfo(df.queryExecution.executedPlan)
+
+  test("rlike: safe literal pattern takes the native path by default") {
+    withRLikeExplain {
+      withSubjects("abc123", "xyz", null, "abc") {
+        val df = sql("SELECT s, s rlike 'abc[0-9]+' FROM t")
+        checkSparkAnswerAndOperator(df)
+        val explain = explainOf(df)
+        assert(
+          !explain.contains("JVM codegen dispatcher: rlike"),
+          s"expected native path for in-subset pattern, got:\n$explain")
+      }
+    }
+  }
+
+  test("rlike: unsafe literal pattern stays on the JVM dispatcher by default") {
+    withRLikeExplain {
+      withSubjects("abc123", "no digits", null) {
+        val df = sql("SELECT s, s rlike '\\\\d+' FROM t")
+        checkSparkAnswerAndOperator(df)
+        val explain = explainOf(df)
+        assert(
+          explain.contains("JVM codegen dispatcher: rlike"),
+          s"expected dispatcher path for out-of-subset pattern, got:\n$explain")
+      }
+    }
+  }
+
+  test("rlike: unsafe but Rust-accepted pattern is native after opt-in") {
+    withRLikeExplain {
+      withSQLConf(CometConf.getExprAllowIncompatConfigKey("RLike") -> "true") {
+        withSubjects("abc123", "no digits", null) {
+          val df = sql("SELECT s, s rlike '\\\\d+' FROM t")
+          checkSparkAnswerAndOperator(df)
+          val explain = explainOf(df)
+          assert(
+            !explain.contains("JVM codegen dispatcher: rlike"),
+            s"expected native path after allowIncompatible, got:\n$explain")
+        }
+      }
+    }
+  }
+
+  test("rlike: non-literal pattern stays on the dispatcher") {
+    withRLikeExplain {
+      withTable("t") {
+        sql("CREATE TABLE t (s STRING, p STRING) USING parquet")
+        sql("INSERT INTO t VALUES ('abc123', 'abc[0-9]+'), ('xyz', 'xyz')")
+        val df = sql("SELECT s, s rlike p FROM t")
+        checkSparkAnswerAndOperator(df)
+        val explain = explainOf(df)
+        assert(
+          explain.contains("JVM codegen dispatcher: rlike"),
+          s"expected dispatcher path for non-literal pattern, got:\n$explain")
+      }
+    }
+  }
+
+  test("rlike: null literal pattern stays on the dispatcher") {
+    // NullPropagation would replace `s rlike NULL` with a null literal before serde sees it.
+    withRLikeExplain {
+      withSQLConf(
+        "spark.sql.optimizer.excludedRules" ->
+          "org.apache.spark.sql.catalyst.optimizer.NullPropagation") {
+        withSubjects("a", "b", null) {
+          val df = sql("SELECT s rlike CAST(NULL AS STRING) FROM t")
+          checkSparkAnswerAndOperator(df)
+          val explain = explainOf(df)
+          assert(
+            explain.contains("JVM codegen dispatcher: rlike"),
+            s"expected dispatcher path for null literal pattern, got:\n$explain")
+        }
+      }
+    }
+  }
+
+  test("rlike: unsafe pattern falls back to Spark when the dispatcher is disabled") {
+    withSubjects("abc123", "no digits", null) {
+      withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
+        checkSparkAnswerAndFallbackReason(
+          sql("SELECT s, s rlike '\\\\d+' FROM t"),
+          CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key + "=false")
+      }
+    }
+  }
+
+  test("rlike: in-subset pattern stays native when the dispatcher is disabled") {
+    withSQLConf(
+      CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false",
+      CometConf.COMET_EXPLAIN_CODEGEN_ENABLED.key -> "true",
+      CometConf.COMET_EXTENDED_EXPLAIN_FORMAT.key ->
+        CometConf.COMET_EXTENDED_EXPLAIN_FORMAT_VERBOSE) {
+      withSubjects("abc123", "xyz", null, "abc") {
+        val df = sql("SELECT s, s rlike 'abc[0-9]+' FROM t")
+        checkSparkAnswerAndOperator(df)
+        val explain = explainOf(df)
+        assert(
+          !explain.contains("JVM codegen dispatcher: rlike"),
+          s"expected native path with dispatcher disabled, got:\n$explain")
+        assert(
+          !explain.contains(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key),
+          s"in-subset rlike must not fall back when the dispatcher is off, got:\n$explain")
+      }
+    }
+  }
+
+  test("rlike: invalid pattern preserves Spark exception type and message") {
+    withSubjects("a") {
+      def collectError(): Throwable =
+        intercept[Throwable](sql("SELECT s rlike '[' FROM t").collect())
+
+      var sparkEx: Throwable = null
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        sparkEx = collectError()
+      }
+      val cometEx = collectError()
+
+      def chain(ex: Throwable): List[Throwable] =
+        Iterator.iterate(ex)(_.getCause).takeWhile(_ != null).toList
+
+      val sparkMsgs = chain(sparkEx).flatMap(e => Option(e.getMessage)).mkString("\n")
+      val cometMsgs = chain(cometEx).flatMap(e => Option(e.getMessage)).mkString("\n")
+      assert(
+        sparkMsgs.toLowerCase.contains("unclosed") || sparkMsgs.contains("PatternSyntax") ||
+          sparkMsgs.toLowerCase.contains("regex"),
+        s"Spark error did not look like a regex syntax error: $sparkMsgs")
+      assert(
+        cometMsgs.toLowerCase.contains("unclosed") || cometMsgs.contains("PatternSyntax") ||
+          cometMsgs.toLowerCase.contains("regex"),
+        s"Comet error did not look like a regex syntax error: $cometMsgs")
+      val sparkTypes = chain(sparkEx).map(_.getClass.getName)
+      val cometTypes = chain(cometEx).map(_.getClass.getName)
+      assert(
+        sparkTypes.exists(cometTypes.contains),
+        s"Comet exception types $cometTypes did not share a type with Spark $sparkTypes")
+    }
+  }
+
+  test("rlike: Java-only pattern with allowIncompatible keeps existing opt-in behavior") {
+    // Pre-existing: opt-in sends any literal to native. Rust cannot compile lookaround, so
+    // native plan construction fails. This PR does not add a fallback for that case.
+    withSQLConf(CometConf.getExprAllowIncompatConfigKey("RLike") -> "true") {
+      withSubjects("foobar") {
+        val ex = intercept[Throwable](sql(s"SELECT s rlike '$lookahead' FROM t").collect())
+        val msgs =
+          Iterator
+            .iterate(ex)(_.getCause)
+            .takeWhile(_ != null)
+            .flatMap(e => Option(e.getMessage))
+            .mkString("\n")
+        assert(
+          msgs.toLowerCase.contains("pattern") || msgs.toLowerCase.contains("regex") ||
+            msgs.toLowerCase.contains("look"),
+          s"expected native compile failure for lookaround under opt-in, got: $msgs")
+      }
+    }
+  }
+
+  test("rlike: UTF8_BINARY safe literal is native on Spark 4") {
+    assume(isSpark40Plus)
+    withRLikeExplain {
+      withSubjects("abc123", "xyz") {
+        val df = sql("SELECT s rlike 'abc[0-9]+' FROM t")
+        checkSparkAnswerAndOperator(df)
+        val explain = explainOf(df)
+        assert(
+          !explain.contains("JVM codegen dispatcher: rlike"),
+          s"expected native path for UTF8_BINARY, got:\n$explain")
+      }
+    }
+  }
+
+  test("rlike: non-default collation on the subject stays on the dispatcher") {
+    assume(isSpark40Plus)
+    withRLikeExplain {
+      withSubjects("abc123", "ABC123", null) {
+        val df = sql("SELECT CAST(s AS STRING COLLATE UTF8_LCASE) rlike 'abc[0-9]+' FROM t")
+        checkSparkAnswerAndOperator(df)
+        val explain = explainOf(df)
+        assert(
+          explain.contains("JVM codegen dispatcher: rlike"),
+          s"expected dispatcher for collated subject, got:\n$explain")
+      }
+    }
+  }
+
+  test("rlike: non-default collation on the pattern stays on the dispatcher") {
+    assume(isSpark40Plus)
+    withRLikeExplain {
+      withSubjects("abc123", "xyz", null) {
+        val df = sql("SELECT s rlike CAST('abc[0-9]+' AS STRING COLLATE UTF8_LCASE) FROM t")
+        checkSparkAnswerAndOperator(df)
+        val explain = explainOf(df)
+        assert(
+          explain.contains("JVM codegen dispatcher: rlike"),
+          s"expected dispatcher for collated pattern, got:\n$explain")
+      }
     }
   }
 

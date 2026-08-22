@@ -146,6 +146,6 @@
 
 ## rlike
 
-- See `string_funcs / regexp_replace` and the `CometRLike` notes (audited in PR [#4461](https://github.com/apache/datafusion-comet/pull/4461)). By default `CometRLike` routes through the JVM codegen dispatcher so Spark's own `Pattern` engine runs inside the Comet pipeline. The native path uses the Rust `regex` crate, which differs from Java's `Pattern` engine, so it is opt-in via `spark.comet.expression.RLike.allowIncompatible=true` and only applies when the pattern is a string literal.
+- See `string_funcs / regexp_replace` and the `CometRLike` notes (audited in PR [#4461](https://github.com/apache/datafusion-comet/pull/4461)). `CometRLike` consults a plan-time whitelist (`CometRegex`) for non-null `UTF8_BINARY` literal patterns. Analyzer-admitted patterns (ASCII literals, simple character classes, greedy quantifiers, groups, alternation) run natively by default. Every other literal stays on the JVM codegen dispatcher unless `spark.comet.expression.RLike.allowIncompatible=true` forces the Rust path. Non-literal and NULL patterns, and Spark 4 non-default collations, always stay on the dispatcher. Anchors (`^`, `$`) and `.` / `\d` / `\w` / `\s` are out of subset because Java and Rust disagree on line terminators and Unicode character classes.
 
 [Spark Expression Support]: ../../user-guide/latest/expressions.md
