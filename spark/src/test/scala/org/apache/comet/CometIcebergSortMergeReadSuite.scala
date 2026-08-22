@@ -397,6 +397,24 @@ class CometIcebergSortMergeReadSuite
     }
   }
 
+  test("many small files in one partition merge correctly") {
+    // Raise the per-partition file limit so the k-way merge (not the sort fallback) runs with many
+    // files -- the shape this feature targets, where the merge opens one reader per file at once.
+    // On an ordering-reporting Iceberg build this exercises a ~70-way SortPreservingMerge; on the
+    // published Iceberg (no reported ordering) it is a plain read. checkSparkAnswer guards
+    // correctness; asserting on memory-pool usage / peak concurrent readers is a TODO for #5343.
+    val conf =
+      orderedReadConf :+ (CometConf.COMET_ICEBERG_SORT_MERGE_MAX_FILES_PER_PARTITION.key -> "1000")
+    withSortedTables(conf)("t") { cat =>
+      spark.sql(s"CREATE TABLE $cat.db.t (id INT, data STRING) USING iceberg")
+      replaceSortOrder(cat, "db", "t", "id" -> true)
+      val rows = (1 to 70).map(i => s"($i,'v$i')")
+      insertBatches(cat, "t", rows: _*)
+
+      checkSparkAnswer(s"SELECT id, data FROM $cat.db.t ORDER BY id")
+    }
+  }
+
   test("many small files in one partition stay correct (exercises the sort fallback)") {
     withSortedTables(orderedReadConf)("t") { cat =>
       spark.sql(s"CREATE TABLE $cat.db.t (id INT, data STRING) USING iceberg")
