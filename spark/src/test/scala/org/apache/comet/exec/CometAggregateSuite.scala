@@ -463,6 +463,49 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("avg with empty partial input and Spark final") {
+    import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial}
+    import org.apache.spark.sql.execution.aggregate.HashAggregateExec
+
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.FILES_MAX_PARTITION_BYTES.key -> "1048576",
+      SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED.key -> "false",
+      CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
+      CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "false",
+      CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.key -> "false") {
+      withTempPath { path =>
+        // Four files remain separate scan partitions. Only one partition has a matching row,
+        // so the other native partials must emit Spark's (sum = 0, count = 0) AVG buffer.
+        spark
+          .range(0L, 8L, 1L, 4)
+          .selectExpr(
+            "id",
+            "cast(id + 1 as int) as quantity",
+            "cast(id + 10 as decimal(7, 2)) as price")
+          .write
+          .parquet(path.getCanonicalPath)
+        withParquetTable(path.getCanonicalPath, "avg_empty_partials") {
+          for (predicate <- Seq("id = 1", "id < 0")) {
+            // Spark optimizes this narrow decimal AVG to AVG(UnscaledValue(price)), so both
+            // averages exercise the mixed non-decimal accumulator path.
+            val df =
+              sql(s"SELECT avg(quantity), avg(price) FROM avg_empty_partials WHERE $predicate")
+            checkSparkAnswer(df)
+            val plan = df.queryExecution.executedPlan
+            assert(
+              plan.collect { case a: CometHashAggregateExec => a.modes }.flatten ==
+                Seq(Partial))
+            assert(plan.collect { case a: HashAggregateExec =>
+              a.aggregateExpressions.map(_.mode).distinct
+            }.flatten == Seq(Final))
+          }
+        }
+      }
+    }
+  }
+
   test("count, avg with null") {
     Seq(false, true).foreach { dictionary =>
       withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
