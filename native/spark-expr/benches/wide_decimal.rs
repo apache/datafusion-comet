@@ -19,7 +19,7 @@
 //! for Decimal128 arithmetic that requires wider intermediate precision.
 
 use arrow::array::builder::Decimal128Builder;
-use arrow::array::RecordBatch;
+use arrow::array::{Array, Decimal128Array, RecordBatch};
 use arrow::datatypes::{DataType, Field, Schema};
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use datafusion::logical_expr::Operator;
@@ -28,6 +28,7 @@ use datafusion::physical_expr::PhysicalExpr;
 use datafusion_comet_spark_expr::{
     Cast, EvalMode, SparkCastOptions, WideDecimalBinaryExpr, WideDecimalOp,
 };
+use std::hint::black_box;
 use std::sync::Arc;
 
 const BATCH_SIZE: usize = 8192;
@@ -45,6 +46,30 @@ fn make_decimal_batch(p1: u8, s1: i8, p2: u8, s2: i8) -> RecordBatch {
     let schema = Schema::new(vec![
         Field::new("left", DataType::Decimal128(p1, s1), false),
         Field::new("right", DataType::Decimal128(p2, s2), false),
+    ]);
+    RecordBatch::try_new(Arc::new(schema), vec![Arc::new(left), Arc::new(right)]).unwrap()
+}
+
+fn make_overflow_batch(null_every: usize, overflow_every: usize) -> RecordBatch {
+    let left: Decimal128Array = (0..BATCH_SIZE)
+        .map(|i| {
+            if null_every != 0 && i % null_every == 0 {
+                None
+            } else if overflow_every != 0 && (i + 1) % overflow_every == 0 {
+                Some(10_000_000_000)
+            } else {
+                Some((i as i128 % 100_000) * 100)
+            }
+        })
+        .collect::<Decimal128Array>()
+        .with_precision_and_scale(38, 2)
+        .unwrap();
+    let right = Decimal128Array::from_value(0, BATCH_SIZE)
+        .with_precision_and_scale(38, 2)
+        .unwrap();
+    let schema = Schema::new(vec![
+        Field::new("left", left.data_type().clone(), true),
+        Field::new("right", right.data_type().clone(), false),
     ]);
     RecordBatch::try_new(Arc::new(schema), vec![Arc::new(left), Arc::new(right)]).unwrap()
 }
@@ -80,16 +105,16 @@ fn build_old_expr(
 }
 
 /// New approach: single fused WideDecimalBinaryExpr.
-fn build_new_expr(op: WideDecimalOp, p_out: u8, s_out: i8) -> Arc<dyn PhysicalExpr> {
+fn build_new_expr(
+    op: WideDecimalOp,
+    p_out: u8,
+    s_out: i8,
+    eval_mode: EvalMode,
+) -> Arc<dyn PhysicalExpr> {
     let left_col: Arc<dyn PhysicalExpr> = Arc::new(Column::new("left", 0));
     let right_col: Arc<dyn PhysicalExpr> = Arc::new(Column::new("right", 1));
     Arc::new(WideDecimalBinaryExpr::new(
-        left_col,
-        right_col,
-        op,
-        p_out,
-        s_out,
-        EvalMode::Legacy,
+        left_col, right_col, op, p_out, s_out, eval_mode,
     ))
 }
 
@@ -116,7 +141,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     {
         let batch = make_decimal_batch(38, 10, 38, 10);
         let old = build_old_expr(38, 10, 38, 10, Operator::Plus, DataType::Decimal128(38, 10));
-        let new = build_new_expr(WideDecimalOp::Add, 38, 10);
+        let new = build_new_expr(WideDecimalOp::Add, 38, 10, EvalMode::Legacy);
         bench_case(&mut group, "add_same_scale", &batch, &old, &new);
     }
 
@@ -124,7 +149,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     {
         let batch = make_decimal_batch(38, 6, 38, 4);
         let old = build_old_expr(38, 6, 38, 4, Operator::Plus, DataType::Decimal128(38, 6));
-        let new = build_new_expr(WideDecimalOp::Add, 38, 6);
+        let new = build_new_expr(WideDecimalOp::Add, 38, 6, EvalMode::Legacy);
         bench_case(&mut group, "add_diff_scale", &batch, &old, &new);
     }
 
@@ -140,7 +165,7 @@ fn criterion_benchmark(c: &mut Criterion) {
             Operator::Multiply,
             DataType::Decimal128(38, 6),
         );
-        let new = build_new_expr(WideDecimalOp::Multiply, 38, 6);
+        let new = build_new_expr(WideDecimalOp::Multiply, 38, 6, EvalMode::Legacy);
         bench_case(&mut group, "multiply", &batch, &old, &new);
     }
 
@@ -155,11 +180,38 @@ fn criterion_benchmark(c: &mut Criterion) {
             Operator::Minus,
             DataType::Decimal128(38, 18),
         );
-        let new = build_new_expr(WideDecimalOp::Subtract, 38, 18);
+        let new = build_new_expr(WideDecimalOp::Subtract, 38, 18, EvalMode::Legacy);
         bench_case(&mut group, "subtract", &batch, &old, &new);
     }
 
     group.finish();
+
+    let no_overflow = make_overflow_batch(0, 0);
+    let no_overflow_nulls = make_overflow_batch(17, 0);
+    let sparse_overflow = make_overflow_batch(0, 17);
+    let dense_overflow = make_overflow_batch(0, 2);
+    let overflow_at_end = make_overflow_batch(0, BATCH_SIZE);
+    let legacy = build_new_expr(WideDecimalOp::Add, 10, 2, EvalMode::Legacy);
+    let ansi = build_new_expr(WideDecimalOp::Add, 10, 2, EvalMode::Ansi);
+
+    c.bench_function("wide_decimal: no overflow", |b| {
+        b.iter(|| black_box(legacy.evaluate(black_box(&no_overflow)).unwrap()))
+    });
+    c.bench_function("wide_decimal: no overflow, nulls", |b| {
+        b.iter(|| black_box(legacy.evaluate(black_box(&no_overflow_nulls)).unwrap()))
+    });
+    c.bench_function("wide_decimal: sparse overflow", |b| {
+        b.iter(|| black_box(legacy.evaluate(black_box(&sparse_overflow)).unwrap()))
+    });
+    c.bench_function("wide_decimal: dense overflow", |b| {
+        b.iter(|| black_box(legacy.evaluate(black_box(&dense_overflow)).unwrap()))
+    });
+    c.bench_function("wide_decimal: overflow at end of batch", |b| {
+        b.iter(|| black_box(legacy.evaluate(black_box(&overflow_at_end)).unwrap()))
+    });
+    c.bench_function("wide_decimal: ansi no overflow", |b| {
+        b.iter(|| black_box(ansi.evaluate(black_box(&no_overflow)).unwrap()))
+    });
 }
 
 criterion_group!(benches, criterion_benchmark);
