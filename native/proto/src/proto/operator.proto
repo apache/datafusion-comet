@@ -335,6 +335,12 @@ message IcebergScanCommon {
   // projections or filters, so PlanDataInjector keys planning data by
   // (metadata_location, scan_hash_code) rather than metadata_location alone.
   int32 scan_hash_code = 15;
+
+  // Table sort order Iceberg reported (SupportsReportOrdering), against required_schema. Each Expr
+  // wraps a SortOrder (child, direction, null_ordering). When set, the native scan reads each file
+  // as its own sorted stream and wraps the scan in a SortPreservingMergeExec, so each Spark
+  // partition comes out sorted. Empty means no reported order: read unordered, as before.
+  repeated spark.spark_expression.Expr table_sort_orders = 16;
 }
 
 message IcebergScan {
