@@ -20,15 +20,16 @@ use crate::conversion_funcs::utils::cast_overflow;
 use crate::conversion_funcs::utils::MICROS_PER_SECOND;
 use crate::{EvalMode, SparkError, SparkResult};
 use arrow::array::{
-    Array, ArrayRef, AsArray, BooleanBuilder, Decimal128Array, Float32Array, Float64Array,
+    Array, ArrayRef, AsArray, BooleanArray, Decimal128Array, Float32Array, Float64Array,
     GenericStringBuilder, Int16Array, Int32Array, Int64Array, Int8Array, OffsetSizeTrait,
-    PrimitiveArray, StringBuilder, TimestampMicrosecondBuilder,
+    PrimitiveArray, Scalar, StringBuilder, TimestampMicrosecondBuilder,
 };
+use arrow::compute::kernels::cmp::neq;
 use arrow::datatypes::{
     i256, is_validate_decimal_precision, ArrowPrimitiveType, DataType, Decimal128Type, Float32Type,
     Float64Type, Int16Type, Int32Type, Int64Type, Int8Type,
 };
-use num::{cast::AsPrimitive, ToPrimitive, Zero};
+use num::{cast::AsPrimitive, ToPrimitive};
 use std::sync::Arc;
 
 /// Check if DataFusion cast from integer types is Spark compatible
@@ -80,8 +81,8 @@ pub(crate) fn is_df_cast_from_decimal_spark_compatible(to_type: &DataType) -> bo
             | DataType::Utf8
     )
     // Note: Boolean is intentionally absent. Decimal-to-boolean uses a dedicated
-    // spark_cast_decimal_to_boolean function (in cast.rs) that checks the raw i128
-    // value, bypassing the DataFusion cast kernel entirely.
+    // spark_cast_decimal_to_boolean function that compares against a zero decimal of
+    // the same precision/scale, bypassing the DataFusion cast kernel entirely.
 }
 
 macro_rules! cast_float_to_timestamp_impl {
@@ -852,15 +853,18 @@ pub(crate) fn spark_cast_int_to_int(
 
 pub(crate) fn spark_cast_decimal_to_boolean(array: &dyn Array) -> SparkResult<ArrayRef> {
     let decimal_array = array.as_primitive::<Decimal128Type>();
-    let mut result = BooleanBuilder::with_capacity(decimal_array.len());
-    for i in 0..decimal_array.len() {
-        if decimal_array.is_null(i) {
-            result.append_null()
-        } else {
-            result.append_value(!decimal_array.value(i).is_zero());
-        }
+    // All-null fast path avoids constructing a zero scalar with the input's precision/scale,
+    // which would fail validation for Decimal128(0, 0) inputs that Spark accepts as nullable.
+    if decimal_array.null_count() == decimal_array.len() {
+        return Ok(Arc::new(BooleanArray::new_null(decimal_array.len())));
     }
-    Ok(Arc::new(result.finish()))
+    // Arrow has no Decimal-to-Boolean cast. `neq` against a zero of the same
+    // precision/scale is exactly `!value.is_zero()`, including null handling.
+    let zero = Scalar::new(
+        Decimal128Array::from(vec![0i128])
+            .with_precision_and_scale(decimal_array.precision(), decimal_array.scale())?,
+    );
+    Ok(Arc::new(neq(decimal_array, &zero)?))
 }
 
 pub(crate) fn cast_float64_to_decimal128(
@@ -1295,6 +1299,59 @@ mod tests {
         assert!(bool_array.value(1)); // 100 -> true
         assert!(bool_array.value(2)); // -100 -> true
         assert!(bool_array.is_null(3)); // null -> null
+
+        // A different precision/scale must still compare against a matching zero scalar.
+        let array: ArrayRef = Arc::new(
+            Decimal128Array::from(vec![Some(0), Some(1)])
+                .with_precision_and_scale(38, 0)
+                .unwrap(),
+        );
+        let result = spark_cast_decimal_to_boolean(&array).unwrap();
+        let bool_array = result.as_boolean();
+        assert!(!bool_array.value(0));
+        assert!(bool_array.value(1));
+
+        // All-null Decimal128(0, 0) is reachable via Spark's RDD row-to-Arrow path;
+        // `with_precision_and_scale(0, 0)` rejects precision 0, so the all-null fast path
+        // must yield an all-null boolean array without constructing the zero scalar.
+        // SAFETY: builds a well-formed Decimal128 ArrayData:
+        //   - len = 2 slots
+        //   - values buffer = 32 bytes = 2 * 16 (Decimal128 slot width), zero-initialized
+        //   - null buffer = 1 byte, all bits clear, covering >= len bits as required
+        //   Precision 0 skips ArrowError validation but is otherwise a legal DataType tag;
+        //   no non-null slot is ever read, so precision-range invariants are vacuous.
+        let array_data = unsafe {
+            arrow::array::ArrayData::builder(DataType::Decimal128(0, 0))
+                .len(2)
+                .null_bit_buffer(Some(arrow::buffer::Buffer::from(&[0u8])))
+                .add_buffer(arrow::buffer::Buffer::from(&[0u8; 32]))
+                .build_unchecked()
+        };
+        let array: ArrayRef = Arc::new(Decimal128Array::from(array_data));
+        assert_eq!(array.data_type(), &DataType::Decimal128(0, 0));
+        let result = spark_cast_decimal_to_boolean(&array).unwrap();
+        let bool_array = result.as_boolean();
+        assert_eq!(bool_array.len(), 2);
+        assert!(bool_array.is_null(0));
+        assert!(bool_array.is_null(1));
+
+        // Empty Decimal128(0, 0) input: `null_count() == len()` (0 == 0) must still take
+        // the fast path. Precision 0 makes this discriminating — without the fast path,
+        // building the zero scalar would fail regardless of the empty length.
+        // SAFETY: len = 0, so both the (empty) values buffer and the absent null buffer
+        // trivially cover every slot; the precision-range invariant is vacuous.
+        let array_data = unsafe {
+            arrow::array::ArrayData::builder(DataType::Decimal128(0, 0))
+                .len(0)
+                .add_buffer(arrow::buffer::Buffer::from(&[] as &[u8]))
+                .build_unchecked()
+        };
+        let array: ArrayRef = Arc::new(Decimal128Array::from(array_data));
+        // The load-bearing check is that `spark_cast_decimal_to_boolean` returns Ok — without
+        // the fast path, precision 0 would fail during zero-scalar construction. Length is
+        // asserted for completeness; null_count is trivially 0 on any empty array.
+        let result = spark_cast_decimal_to_boolean(&array).unwrap();
+        assert_eq!(result.as_boolean().len(), 0);
     }
 
     #[test]

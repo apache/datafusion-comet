@@ -15,8 +15,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::array::Float64Array;
-use datafusion::common::{DataFusionError, ScalarValue};
+use arrow::array::{Array, ArrayRef, Datum, Float64Array};
+use arrow::compute::kernels::arity::{binary, unary};
+use arrow::error::ArrowError;
+use datafusion::common::{utils::take_function_args, DataFusionError};
+use datafusion::physical_expr_common::datum::apply;
 use datafusion::physical_plan::ColumnarValue;
 use std::sync::Arc;
 
@@ -42,86 +45,55 @@ fn spark_powf(base: f64, exp: f64) -> f64 {
 /// Unlike DataFusion's `power`, `pow(0, -1)` returns `Infinity` rather than erroring. Only null
 /// inputs produce null; otherwise every result is the `spark_powf` value.
 pub fn spark_pow(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
-    if args.len() != 2 {
-        return Err(DataFusionError::Internal(format!(
-            "spark_pow requires 2 arguments, got {}",
-            args.len()
-        )));
-    }
+    let [base, exp] = take_function_args("spark_pow", args)?;
+    apply(base, exp, spark_pow_kernel)
+}
 
-    fn as_f64_array(
-        value: &Arc<dyn arrow::array::Array>,
-    ) -> Result<&Float64Array, DataFusionError> {
-        value
-            .as_any()
-            .downcast_ref::<Float64Array>()
-            .ok_or_else(|| {
-                DataFusionError::Internal(format!(
-                    "spark_pow expected Float64, got {:?}",
-                    value.data_type()
-                ))
-            })
-    }
+fn as_f64_array(array: &dyn Array) -> Result<&Float64Array, ArrowError> {
+    array
+        .as_any()
+        .downcast_ref::<Float64Array>()
+        .ok_or_else(|| {
+            ArrowError::ComputeError(format!(
+                "spark_pow expected Float64, got {:?}",
+                array.data_type()
+            ))
+        })
+}
 
-    fn as_f64_scalar(scalar: &ScalarValue) -> Result<Option<f64>, DataFusionError> {
-        match scalar {
-            ScalarValue::Float64(v) => Ok(*v),
-            _ => Err(DataFusionError::Internal(format!(
-                "spark_pow expected Float64 scalar, got {scalar:?}",
-            ))),
-        }
-    }
+/// Array/array uses [`binary`] over [`spark_powf`]. Scalar/array uses [`unary`] so the
+/// scalar is not broadcast. A null scalar short-circuits to an all-null array.
+fn spark_pow_kernel(lhs: &dyn Datum, rhs: &dyn Datum) -> Result<ArrayRef, ArrowError> {
+    let (left, left_is_scalar) = lhs.get();
+    let (right, right_is_scalar) = rhs.get();
+    let left = as_f64_array(left)?;
+    let right = as_f64_array(right)?;
 
-    match (&args[0], &args[1]) {
-        (ColumnarValue::Array(base_arr), ColumnarValue::Array(exp_arr)) => {
-            let bases = as_f64_array(base_arr)?;
-            let exps = as_f64_array(exp_arr)?;
-            let result: Float64Array = bases
-                .iter()
-                .zip(exps.iter())
-                .map(|(b, e)| match (b, e) {
-                    (Some(base), Some(exp)) => Some(spark_powf(base, exp)),
-                    _ => None,
-                })
-                .collect();
-            Ok(ColumnarValue::Array(Arc::new(result)))
+    let result = match (left_is_scalar, right_is_scalar) {
+        (true, false) => {
+            if left.is_null(0) {
+                Float64Array::new_null(right.len())
+            } else {
+                unary(right, |exp| spark_powf(left.value(0), exp))
+            }
         }
-        (ColumnarValue::Scalar(base_scalar), ColumnarValue::Array(exp_arr)) => {
-            let exps = as_f64_array(exp_arr)?;
-            let result: Float64Array = match as_f64_scalar(base_scalar)? {
-                Some(base) => exps
-                    .iter()
-                    .map(|e| e.map(|exp| spark_powf(base, exp)))
-                    .collect(),
-                None => Float64Array::new_null(exp_arr.len()),
-            };
-            Ok(ColumnarValue::Array(Arc::new(result)))
+        (false, true) => {
+            if right.is_null(0) {
+                Float64Array::new_null(left.len())
+            } else {
+                unary(left, |base| spark_powf(base, right.value(0)))
+            }
         }
-        (ColumnarValue::Array(base_arr), ColumnarValue::Scalar(exp_scalar)) => {
-            let bases = as_f64_array(base_arr)?;
-            let result: Float64Array = match as_f64_scalar(exp_scalar)? {
-                Some(exp) => bases
-                    .iter()
-                    .map(|b| b.map(|base| spark_powf(base, exp)))
-                    .collect(),
-                None => Float64Array::new_null(base_arr.len()),
-            };
-            Ok(ColumnarValue::Array(Arc::new(result)))
-        }
-        (ColumnarValue::Scalar(base_scalar), ColumnarValue::Scalar(exp_scalar)) => {
-            let result = match (as_f64_scalar(base_scalar)?, as_f64_scalar(exp_scalar)?) {
-                (Some(base), Some(exp)) => ScalarValue::Float64(Some(spark_powf(base, exp))),
-                _ => ScalarValue::Float64(None),
-            };
-            Ok(ColumnarValue::Scalar(result))
-        }
-    }
+        _ => binary(left, right, spark_powf)?,
+    };
+    Ok(Arc::new(result))
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
     use arrow::array::Array;
+    use datafusion::common::ScalarValue;
 
     #[test]
     fn test_spark_pow_basic() {
@@ -310,5 +282,32 @@ mod test {
         } else {
             panic!("expected array result");
         }
+    }
+
+    #[test]
+    fn test_spark_pow_null_scalar() {
+        let exps = Float64Array::from(vec![Some(3.0), Some(2.0)]);
+        let result = spark_pow(&[
+            ColumnarValue::Scalar(ScalarValue::Float64(None)),
+            ColumnarValue::Array(Arc::new(exps)),
+        ])
+        .unwrap();
+        if let ColumnarValue::Array(arr) = result {
+            let arr = arr.as_any().downcast_ref::<Float64Array>().unwrap();
+            assert!(arr.is_null(0));
+            assert!(arr.is_null(1));
+        } else {
+            panic!("expected array result");
+        }
+
+        let both_null = spark_pow(&[
+            ColumnarValue::Scalar(ScalarValue::Float64(None)),
+            ColumnarValue::Scalar(ScalarValue::Float64(Some(2.0))),
+        ])
+        .unwrap();
+        assert!(matches!(
+            both_null,
+            ColumnarValue::Scalar(ScalarValue::Float64(None))
+        ));
     }
 }
