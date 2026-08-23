@@ -87,22 +87,31 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     // dependent PartialMerge/Final stages must also fall back rather than crash. See issue #4724
     // for enabling the fully-native distinct path.
     import org.apache.spark.sql.functions.{collect_list, collect_set, sort_array}
-    // Non-native source (LocalTableScan): the buffer-producing Partial runs in Spark.
+    // Non-native source (LocalTableScan): the buffer-producing Partial runs in Spark, so the
+    // dependent PartialMerge/Final stages fall back via the buffer-source check in doConvert.
+    // tagUnsafePartialAggregates does not fire here because the Partial was never convertible.
+    def bufferSourceFallback(fn: String): String = s"Incompatible aggregate function(s): $fn"
     val df = Seq((1, 3, "a"), (1, 2, "b"), (3, 4, "c"), (3, 4, "c"), (3, 5, "d"))
       .toDF("x", "y", "z")
-    checkSparkAnswer(
-      df.groupBy(col("x")).agg(count_distinct(col("y")), sort_array(collect_list(col("z")))))
-    checkSparkAnswer(
-      df.groupBy(col("x")).agg(count_distinct(col("y")), sort_array(collect_set(col("z")))))
+    checkSparkAnswerAndFallbackReason(
+      df.groupBy(col("x")).agg(count_distinct(col("y")), sort_array(collect_list(col("z")))),
+      bufferSourceFallback("collect_list"))
+    checkSparkAnswerAndFallbackReason(
+      df.groupBy(col("x")).agg(count_distinct(col("y")), sort_array(collect_set(col("z")))),
+      bufferSourceFallback("collect_set"))
 
-    // Native source (Parquet): the whole multi-stage distinct chain must still fall back to
-    // Spark consistently (issue #4724), rather than running a fully-native pipeline that crashes.
+    // Native source (Parquet): the Partial would otherwise convert, so tagUnsafePartialAggregates
+    // must disable it and force the whole multi-stage distinct chain back to Spark (issue #4724),
+    // rather than running a fully-native pipeline that crashes.
+    val multiStageFallback = "multi-stage CollectList/CollectSet aggregate whose intermediate " +
+      "buffer cannot round-trip in Comet"
     withParquetTable(
       Seq((1, 3, "a"), (1, 2, "b"), (3, 4, "c"), (3, 4, "c"), (3, 5, "d")),
       "t17616") {
       for (fn <- Seq("collect_list", "collect_set")) {
-        checkSparkAnswer(
-          sql(s"SELECT _1, count(distinct _2), sort_array($fn(_3)) FROM t17616 GROUP BY _1"))
+        checkSparkAnswerAndFallbackReasons(
+          sql(s"SELECT _1, count(distinct _2), sort_array($fn(_3)) FROM t17616 GROUP BY _1"),
+          Set(multiStageFallback, bufferSourceFallback(fn)))
       }
     }
   }
@@ -289,6 +298,33 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           "SELECT _4, SUM(_1), SUM(_2), SUM(_3), AVG(_1), AVG(_2), AVG(_3) FROM tbl GROUP BY _4")
       }
     }
+  }
+
+  // collect_list has no Spark-compatible intermediate buffer: Spark declares BinaryType while the
+  // native accumulator produces a list. Disabling either half of the aggregate must therefore
+  // cascade so that neither half runs in Comet - a Spark final cannot read a Comet-produced list,
+  // and adjustOutputForNativeState would misinterpret Spark's Binary buffer as a list if a Comet
+  // final ran above a Spark partial. count(*) is included so the aggregate also carries a
+  // buffer-compatible function, which is the shape most likely to be split by mistake.
+  Seq(
+    ("Comet partial + Spark final", CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE),
+    ("Spark partial + Comet final", CometConf.COMET_ENABLE_PARTIAL_HASH_AGGREGATE)).foreach {
+    case (name, disabledHalf) =>
+      test(s"mixed engine collect_list: $name matches Spark") {
+        val data = (0 until 100).map(i => (if (i % 11 == 0) None else Some(i), i % 7))
+        withParquetTable(data, "tbl") {
+          withSQLConf(
+            disabledHalf.key -> "false",
+            CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+            CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
+            val df = sql("SELECT _2, sort_array(collect_list(_1)), count(*) FROM tbl GROUP BY _2")
+            checkSparkAnswer(df)
+            // Without the cascade the surviving half would still convert, so pinning this at zero
+            // is what keeps the test from passing on a regression.
+            assert(getNumCometHashAggregate(df) == 0)
+          }
+        }
+      }
   }
 
   test("Aggregation without aggregate expressions should use correct result expressions") {
