@@ -89,6 +89,16 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] with
   private val ParquetWritePropertyPrefix = "write.parquet."
   private val ParquetMrPropertyPrefix = "parquet."
 
+  // Hadoop-side `parquet.*` keys that iceberg-java's writer never consumes, so seeing them
+  // in the session Hadoop configuration does not indicate the native writer would diverge.
+  // `parquet.hadoop.vectored.io.enabled` is a reader-side vectored-IO knob declared by
+  // parquet-hadoop as `ParquetInputFormat.HADOOP_VECTORED_IO_ENABLED` (default `true` in
+  // parquet-hadoop 1.16+) and only consulted by parquet-mr's Hadoop reader path. Keep it
+  // out of the writer-compatibility gate so that environments which seed it into the
+  // session Hadoop configuration do not silently disable native Iceberg writes.
+  private val IgnoredHadoopParquetConfKeys: Set[String] = Set(
+    "parquet.hadoop.vectored.io.enabled")
+
   private lazy val vettedParquetWriteKeys: Set[String] = Set(
     PropertyKeys.ParquetCompressionCodec,
     PropertyKeys.ParquetCompressionLevel,
@@ -271,7 +281,8 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] with
   private val requireNoParquetHadoopConfOverrides: TriggerRule = ctx =>
     ctx.hadoopConf.asScala
       .map(_.getKey)
-      .find(_.startsWith(ParquetMrPropertyPrefix))
+      .filter(_.startsWith(ParquetMrPropertyPrefix))
+      .find(k => !IgnoredHadoopParquetConfKeys.contains(k))
       .map(k => s"Hadoop configuration sets $k (reaches iceberg-java's writer but not native)")
 
   private val requireSupportedStorageScheme: TriggerRule = ctx =>
