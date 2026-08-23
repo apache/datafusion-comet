@@ -282,38 +282,26 @@ object CometMetricNode {
         SQLMetrics.createMetric(sc, "Number of row groups matched by limit pruning (not pruned)"),
       "bytes_scanned" ->
         SQLMetrics.createSizeMetric(sc, "Number of bytes scanned"),
-      "scan_io_bytes_requested" ->
+      "scan_io_data_bytes" ->
         SQLMetrics.createSizeMetric(
           sc,
-          "Total data-page plus metadata byte ranges requested by native Parquet scan"),
-      "scan_io_bytes_returned" ->
+          "Projected Parquet data-page bytes returned to the reader"),
+      "scan_io_metadata_bytes" ->
         SQLMetrics.createSizeMetric(
           sc,
-          "Total data-page plus metadata bytes returned to native Parquet scan"),
-      "scan_io_data_bytes_requested" ->
-        SQLMetrics.createSizeMetric(sc, "Data-page byte ranges requested by native Parquet scan"),
-      "scan_io_data_bytes_returned" ->
-        SQLMetrics.createSizeMetric(sc, "Data-page bytes returned to native Parquet scan"),
-      "scan_io_metadata_bytes_requested" ->
+          "Footer-prefetch, page-index, and Bloom-filter bytes returned to the reader"),
+      "scan_io_footer_reads" ->
+        SQLMetrics.createMetric(sc, "Number of Parquet footer payloads read from storage"),
+      "scan_io_footer_bytes" ->
+        SQLMetrics.createSizeMetric(sc, "Serialized Parquet footer payload bytes read"),
+      "scan_io_object_store_get_calls" ->
+        SQLMetrics.createMetric(sc, "ObjectStore GET operations after range coalescing"),
+      "scan_io_object_store_get_requested_bytes" ->
+        SQLMetrics.createSizeMetric(sc, "ObjectStore GET range bytes after range coalescing"),
+      "scan_io_object_store_response_bytes_read" ->
         SQLMetrics.createSizeMetric(
           sc,
-          "Footer, page-index, and Bloom-filter byte ranges requested through the storage API"),
-      "scan_io_metadata_bytes_returned" ->
-        SQLMetrics.createSizeMetric(
-          sc,
-          "Footer, page-index, and Bloom-filter bytes returned through the storage API"),
-      "scan_io_object_store_bytes_requested" ->
-        SQLMetrics.createSizeMetric(
-          sc,
-          "Non-local ObjectStore API bytes requested, excluding metadata cache hits"),
-      "scan_io_object_store_bytes_returned" ->
-        SQLMetrics.createSizeMetric(
-          sc,
-          "Non-local ObjectStore API bytes returned, excluding metadata cache hits"),
-      "scan_io_local_bytes_requested" ->
-        SQLMetrics.createSizeMetric(sc, "Local file bytes requested by native Parquet scan"),
-      "scan_io_local_bytes_returned" ->
-        SQLMetrics.createSizeMetric(sc, "Local file bytes returned to native Parquet scan"),
+          "ObjectStore response bytes consumed after range coalescing"),
       "scan_io_metadata_cache_hits" ->
         SQLMetrics.createMetric(sc, "Metadata loads served without storage I/O"),
       "scan_io_metadata_cache_misses" ->

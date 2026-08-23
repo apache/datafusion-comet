@@ -469,9 +469,9 @@ fn create_hdfs_object_store(
     })
 }
 
-type ObjectStoreCache = RwLock<HashMap<(String, u64), Arc<dyn ObjectStore>>>;
+type ObjectStoreCache = RwLock<HashMap<(String, u64, bool), Arc<dyn ObjectStore>>>;
 
-/// Process-wide cache of object stores, keyed by `(scheme://host:port, config_hash)`.
+/// Process-wide cache of object stores, keyed by `(scheme://host:port, config_hash, hdfs_backend)`.
 ///
 /// ## Why static / process lifetime?
 ///
@@ -486,8 +486,8 @@ type ObjectStoreCache = RwLock<HashMap<(String, u64), Arc<dyn ObjectStore>>>;
 ///
 /// ## Unbounded size
 ///
-/// Cache entries are indexed by `(scheme://host:port, hash-of-configs)`.  A typical Spark
-/// job accesses a small, fixed set of buckets with a stable configuration, so the number of
+/// Cache entries are indexed by `(scheme://host:port, hash-of-configs, hdfs_backend)`.  A typical
+/// Spark job accesses a small, fixed set of buckets with a stable configuration, so the number of
 /// distinct keys is O(buckets × credential-configs) and remains small throughout the job.
 /// Entries are cheap relative to the cost of creating a new object store (new HTTP
 /// connection pool + DNS resolution), and there is no meaningful benefit from eviction, so
@@ -543,7 +543,7 @@ pub(crate) fn prepare_object_store_with_configs(
     );
 
     let config_hash = hash_object_store_configs(object_store_configs);
-    let cache_key = (url_key.clone(), config_hash);
+    let cache_key = (url_key.clone(), config_hash, is_hdfs_scheme);
 
     // Check the cache first to reuse existing object store instances.
     // This enables HTTP connection pooling and avoids redundant DNS lookups.
@@ -603,6 +603,47 @@ mod tests {
     use crate::execution::operators::ExecutionError;
     #[cfg(not(feature = "hdfs-opendal"))]
     use std::collections::HashMap;
+
+    #[test]
+    fn cache_distinguishes_backend_routing_for_normalized_s3_aliases() {
+        let configs = std::collections::HashMap::from([(
+            "fs.comet.libhdfs.schemes".to_string(),
+            "s3".to_string(),
+        )]);
+        let cloud_url = url::Url::parse("s3a://scan-io-backend-routing").unwrap();
+        let hdfs_url = url::Url::parse("s3://scan-io-backend-routing").unwrap();
+        let config_hash = super::hash_object_store_configs(&configs);
+        let cloud_key = (
+            "s3://scan-io-backend-routing".to_string(),
+            config_hash,
+            super::is_hdfs_scheme(&cloud_url, &configs),
+        );
+        let hdfs_key = (
+            "s3://scan-io-backend-routing".to_string(),
+            config_hash,
+            super::is_hdfs_scheme(&hdfs_url, &configs),
+        );
+        let cloud_store: std::sync::Arc<dyn object_store::ObjectStore> =
+            std::sync::Arc::new(object_store::memory::InMemory::new());
+        let hdfs_store: std::sync::Arc<dyn object_store::ObjectStore> =
+            std::sync::Arc::new(object_store::memory::InMemory::new());
+
+        let mut cache = super::object_store_cache().write().unwrap();
+        cache.insert(cloud_key.clone(), std::sync::Arc::clone(&cloud_store));
+        cache.insert(hdfs_key.clone(), std::sync::Arc::clone(&hdfs_store));
+
+        assert!(std::sync::Arc::ptr_eq(
+            cache.get(&cloud_key).unwrap(),
+            &cloud_store
+        ));
+        assert!(std::sync::Arc::ptr_eq(
+            cache.get(&hdfs_key).unwrap(),
+            &hdfs_store
+        ));
+
+        cache.remove(&cloud_key);
+        cache.remove(&hdfs_key);
+    }
 
     /// Parses the url, registers the object store, and returns a tuple of the object store url and object store path
     #[cfg(not(feature = "hdfs-opendal"))]

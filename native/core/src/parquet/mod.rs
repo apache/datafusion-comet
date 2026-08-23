@@ -49,7 +49,7 @@ use crate::execution::utils::SparkArrowConvert;
 use crate::jvm_bridge::JVMClasses;
 use crate::parquet::encryption_support::{CometEncryptionFactory, ENCRYPTION_FACTORY_ID};
 use crate::parquet::parquet_exec::init_datasource_exec;
-use crate::parquet::parquet_support::prepare_object_store_with_configs;
+use crate::parquet::parquet_support::{is_hdfs_scheme, prepare_object_store_with_configs};
 use arrow::array::{Array, RecordBatch};
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::execution::SendableRecordBatchStream;
@@ -160,6 +160,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
         let path: String = file_path.try_to_string(env).unwrap();
 
         let object_store_config = get_object_store_options(env, object_store_options)?;
+        let is_hdfs_object_store =
+            url::Url::parse(&path).is_ok_and(|url| is_hdfs_scheme(&url, &object_store_config));
         let (object_store_url, object_store_path) = prepare_object_store_with_configs(
             session_ctx.runtime_env(),
             path.clone(),
@@ -213,6 +215,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
             Some(data_schema),
             None,
             object_store_url,
+            is_hdfs_object_store,
             file_groups,
             None,
             data_filters,

@@ -62,6 +62,7 @@ pub(crate) fn init_datasource_exec(
     data_schema: Option<SchemaRef>,
     partition_schema: Option<SchemaRef>,
     object_store_url: ObjectStoreUrl,
+    is_hdfs_object_store: bool,
     file_groups: Vec<Vec<PartitionedFile>>,
     projection_vector: Option<Vec<usize>>,
     data_filters: Option<Vec<Arc<dyn PhysicalExpr>>>,
@@ -161,11 +162,7 @@ pub(crate) fn init_datasource_exec(
     let runtime_env = session_ctx.runtime_env();
     let store = runtime_env.object_store(&object_store_url)?;
     let metadata_cache = runtime_env.cache_manager.get_file_metadata_cache();
-    let scan_io_source = if object_store_url == ObjectStoreUrl::local_filesystem() {
-        ScanIoSource::Local
-    } else {
-        ScanIoSource::ObjectStore
-    };
+    let scan_io_source = scan_io_source(&object_store_url, is_hdfs_object_store);
     let reader_factory = Arc::new(EagerPageIndexReaderFactory::new(
         store,
         metadata_cache,
@@ -221,6 +218,19 @@ pub(crate) fn init_datasource_exec(
     let data_source_exec = Arc::new(DataSourceExec::new(Arc::new(file_scan_config)));
 
     Ok(data_source_exec)
+}
+
+fn scan_io_source(object_store_url: &ObjectStoreUrl, is_hdfs_object_store: bool) -> ScanIoSource {
+    let store_url: &url::Url = object_store_url.as_ref();
+    if is_hdfs_object_store {
+        return ScanIoSource::OtherObjectStore;
+    }
+
+    match store_url.scheme() {
+        "file" => ScanIoSource::Local,
+        "s3" | "gs" | "az" | "abfs" | "abfss" | "http" | "https" => ScanIoSource::ObjectStore,
+        _ => ScanIoSource::OtherObjectStore,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -300,6 +310,7 @@ mod tests {
     use arrow::array::Int32Array;
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow::record_batch::RecordBatch;
+    use bytes::Bytes;
     use datafusion::datasource::physical_plan::parquet::metadata::{
         CachedParquetMetaData, DFParquetMetadata,
     };
@@ -311,6 +322,8 @@ mod tests {
     use datafusion::physical_plan::ExecutionPlan;
     use datafusion_comet_spark_expr::test_common::file_util::get_temp_filename;
     use futures::StreamExt;
+    use object_store::memory::InMemory;
+    use object_store::{ObjectStore, ObjectStoreExt};
     use parquet::arrow::ArrowWriter;
     use parquet::file::metadata::PageIndexPolicy;
     use parquet::file::properties::{EnabledStatistics, WriterProperties};
@@ -371,6 +384,7 @@ mod tests {
             Some(data_schema),
             None,
             ObjectStoreUrl::local_filesystem(),
+            false,
             vec![vec![partitioned_file]],
             projection,
             filters,
@@ -456,6 +470,35 @@ mod tests {
         assert_eq!(global.coerce_int96_tz, Some("UTC".to_string()));
     }
 
+    #[test]
+    fn preserves_custom_hdfs_backend_range_reads_for_cloud_schemes() {
+        let options = HashMap::from([(
+            "fs.comet.libhdfs.schemes".to_string(),
+            "abfs,s3".to_string(),
+        )]);
+
+        for scheme in ["abfs", "s3"] {
+            let url = ObjectStoreUrl::parse(format!("{scheme}://bucket")).unwrap();
+            let original_url = url::Url::parse(format!("{scheme}://bucket").as_str()).unwrap();
+            let is_hdfs_store =
+                crate::parquet::parquet_support::is_hdfs_scheme(&original_url, &options);
+            assert_eq!(scan_io_source(&url, false), ScanIoSource::ObjectStore);
+            assert_eq!(
+                scan_io_source(&url, is_hdfs_store),
+                ScanIoSource::OtherObjectStore
+            );
+        }
+
+        let s3a_original_url = url::Url::parse("s3a://bucket").unwrap();
+        let normalized_s3_url = ObjectStoreUrl::parse("s3://bucket").unwrap();
+        let is_hdfs_store =
+            crate::parquet::parquet_support::is_hdfs_scheme(&s3a_original_url, &options);
+        assert_eq!(
+            scan_io_source(&normalized_s3_url, is_hdfs_store),
+            ScanIoSource::ObjectStore
+        );
+    }
+
     // Regression test for #3978: DataFusion's opener requests `PageIndexPolicy::Skip` on the
     // initial metadata load and only loads the page index later, on demand, when row-group
     // pruning shows it is still needed (apache/datafusion#22857). That on-demand load bypasses
@@ -499,6 +542,7 @@ mod tests {
             None,
             None,
             ObjectStoreUrl::local_filesystem(),
+            false,
             vec![vec![partitioned_file]],
             None,
             None,
@@ -545,6 +589,13 @@ mod tests {
     #[tokio::test]
     async fn reports_cold_and_warm_metadata_io_without_data_reads() {
         let (filename, _schema) = write_scan_io_fixture();
+        let file_bytes = std::fs::read(&filename).unwrap();
+        let footer_bytes = usize::try_from(u32::from_le_bytes(
+            file_bytes[file_bytes.len() - 8..file_bytes.len() - 4]
+                .try_into()
+                .unwrap(),
+        ))
+        .unwrap();
         let partitioned_file = PartitionedFile::from_path(filename).unwrap();
         let session_ctx = Arc::new(SessionContext::new());
         let runtime_env = session_ctx.runtime_env();
@@ -564,34 +615,24 @@ mod tests {
             .unwrap();
         cold_reader.get_metadata(None).await.unwrap();
 
-        let cold_metadata_requested =
-            reader_metric(&cold_metrics, "scan_io_metadata_bytes_requested");
-        let cold_metadata_returned =
-            reader_metric(&cold_metrics, "scan_io_metadata_bytes_returned");
-        assert!(cold_metadata_requested > 0);
-        assert_eq!(cold_metadata_returned, cold_metadata_requested);
+        let cold_metadata_bytes = reader_metric(&cold_metrics, "scan_io_metadata_bytes");
+        assert!(cold_metadata_bytes > footer_bytes);
+        assert_eq!(reader_metric(&cold_metrics, "scan_io_data_bytes"), 0);
+        assert_eq!(reader_metric(&cold_metrics, "scan_io_footer_reads"), 1);
         assert_eq!(
-            reader_metric(&cold_metrics, "scan_io_data_bytes_requested"),
+            reader_metric(&cold_metrics, "scan_io_footer_bytes"),
+            footer_bytes
+        );
+        assert_eq!(
+            reader_metric(&cold_metrics, "scan_io_object_store_get_calls"),
             0
         );
         assert_eq!(
-            reader_metric(&cold_metrics, "scan_io_bytes_requested"),
-            cold_metadata_requested
-        );
-        assert_eq!(
-            reader_metric(&cold_metrics, "scan_io_local_bytes_requested"),
-            cold_metadata_requested
-        );
-        assert_eq!(
-            reader_metric(&cold_metrics, "scan_io_local_bytes_returned"),
-            cold_metadata_returned
-        );
-        assert_eq!(
-            reader_metric(&cold_metrics, "scan_io_object_store_bytes_requested"),
+            reader_metric(&cold_metrics, "scan_io_object_store_get_requested_bytes"),
             0
         );
         assert_eq!(
-            reader_metric(&cold_metrics, "scan_io_object_store_bytes_returned"),
+            reader_metric(&cold_metrics, "scan_io_object_store_response_bytes_read"),
             0
         );
         assert_eq!(
@@ -615,15 +656,9 @@ mod tests {
             .unwrap();
         warm_reader.get_metadata(None).await.unwrap();
 
-        assert_eq!(
-            reader_metric(&warm_metrics, "scan_io_metadata_bytes_requested"),
-            0
-        );
-        assert_eq!(
-            reader_metric(&warm_metrics, "scan_io_metadata_bytes_returned"),
-            0
-        );
-        assert_eq!(reader_metric(&warm_metrics, "scan_io_bytes_requested"), 0);
+        assert_eq!(reader_metric(&warm_metrics, "scan_io_metadata_bytes"), 0);
+        assert_eq!(reader_metric(&warm_metrics, "scan_io_footer_reads"), 0);
+        assert_eq!(reader_metric(&warm_metrics, "scan_io_footer_bytes"), 0);
         assert_eq!(
             reader_metric(&warm_metrics, "scan_io_metadata_cache_hits"),
             1
@@ -669,13 +704,11 @@ mod tests {
 
         assert!(metadata.column_index().is_some());
         assert!(metadata.offset_index().is_some());
-        let requested = reader_metric(&metrics, "scan_io_metadata_bytes_requested");
-        assert!(requested > 0);
-        assert_eq!(
-            reader_metric(&metrics, "scan_io_metadata_bytes_returned"),
-            requested
-        );
-        assert_eq!(reader_metric(&metrics, "scan_io_data_bytes_requested"), 0);
+        let metadata_bytes = reader_metric(&metrics, "scan_io_metadata_bytes");
+        assert!(metadata_bytes > 0);
+        assert_eq!(reader_metric(&metrics, "scan_io_data_bytes"), 0);
+        assert_eq!(reader_metric(&metrics, "scan_io_footer_reads"), 0);
+        assert_eq!(reader_metric(&metrics, "scan_io_footer_bytes"), 0);
         assert_eq!(reader_metric(&metrics, "scan_io_metadata_cache_hits"), 0);
         assert_eq!(reader_metric(&metrics, "scan_io_metadata_cache_misses"), 1);
 
@@ -687,15 +720,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            reader_metric(&metrics, "scan_io_metadata_bytes_requested"),
-            requested + page_index_length as usize
+            reader_metric(&metrics, "scan_io_metadata_bytes"),
+            metadata_bytes + page_index_length as usize
         );
-        assert_eq!(
-            reader_metric(&metrics, "scan_io_metadata_bytes_returned"),
-            requested + page_index_length as usize
-        );
-        assert_eq!(reader_metric(&metrics, "scan_io_data_bytes_requested"), 0);
-        assert_eq!(reader_metric(&metrics, "scan_io_data_bytes_returned"), 0);
+        assert_eq!(reader_metric(&metrics, "scan_io_data_bytes"), 0);
     }
 
     #[test]
@@ -723,11 +751,156 @@ mod tests {
             .iter()
             .filter(|metric| metric.value().name().starts_with("scan_io_"))
             .collect::<Vec<_>>();
-        assert_eq!(scan_io_metrics.len(), 12);
+        assert_eq!(scan_io_metrics.len(), 9);
         for metric in scan_io_metrics {
             assert!(metric.labels().is_empty());
             assert_eq!(metric.partition(), None);
         }
+    }
+
+    #[tokio::test]
+    async fn reports_object_store_read_amplification_after_range_coalescing() {
+        let file_size = 524_416;
+        let location = object_store::path::Path::from("coalesced.parquet");
+        let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        store
+            .put(&location, Bytes::from(vec![0; file_size]).into())
+            .await
+            .unwrap();
+
+        let session_ctx = Arc::new(SessionContext::new());
+        let metadata_cache = session_ctx
+            .runtime_env()
+            .cache_manager
+            .get_file_metadata_cache();
+        let metrics = ExecutionPlanMetricsSet::new();
+        let factory = EagerPageIndexReaderFactory::new(
+            store,
+            metadata_cache,
+            ScanIoSource::ObjectStore,
+            &metrics,
+        );
+        let mut reader = factory
+            .create_reader(
+                0,
+                PartitionedFile::new(location.to_string(), file_size as u64),
+                None,
+                &metrics,
+            )
+            .unwrap();
+        let buffers = reader
+            .get_byte_ranges(vec![0..64, 524_352..524_416])
+            .await
+            .unwrap();
+
+        assert_eq!(buffers.iter().map(Bytes::len).sum::<usize>(), 128);
+        assert_eq!(reader_metric(&metrics, "bytes_scanned"), 128);
+        assert_eq!(reader_metric(&metrics, "scan_io_data_bytes"), 128);
+        assert_eq!(reader_metric(&metrics, "scan_io_metadata_bytes"), 0);
+        assert_eq!(reader_metric(&metrics, "scan_io_object_store_get_calls"), 1);
+        assert_eq!(
+            reader_metric(&metrics, "scan_io_object_store_get_requested_bytes"),
+            file_size
+        );
+        assert_eq!(
+            reader_metric(&metrics, "scan_io_object_store_response_bytes_read"),
+            file_size
+        );
+    }
+
+    #[tokio::test]
+    async fn reports_object_store_footer_and_metadata_reads() {
+        let (filename, _schema) = write_scan_io_fixture();
+        let file_bytes = std::fs::read(filename).unwrap();
+        let file_size = file_bytes.len();
+        let footer_bytes = usize::try_from(u32::from_le_bytes(
+            file_bytes[file_size - 8..file_size - 4].try_into().unwrap(),
+        ))
+        .unwrap();
+        let location = object_store::path::Path::from("footer.parquet");
+        let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        store
+            .put(&location, Bytes::from(file_bytes).into())
+            .await
+            .unwrap();
+
+        let session_ctx = Arc::new(SessionContext::new());
+        let metadata_cache = session_ctx
+            .runtime_env()
+            .cache_manager
+            .get_file_metadata_cache();
+        let metrics = ExecutionPlanMetricsSet::new();
+        let factory = EagerPageIndexReaderFactory::new(
+            store,
+            metadata_cache,
+            ScanIoSource::ObjectStore,
+            &metrics,
+        );
+        let mut reader = factory
+            .create_reader(
+                0,
+                PartitionedFile::new(location.to_string(), file_size as u64),
+                Some(512 * 1024),
+                &metrics,
+            )
+            .unwrap();
+        reader.get_metadata(None).await.unwrap();
+
+        assert_eq!(reader_metric(&metrics, "scan_io_data_bytes"), 0);
+        assert_eq!(reader_metric(&metrics, "scan_io_metadata_bytes"), file_size);
+        assert_eq!(reader_metric(&metrics, "scan_io_footer_reads"), 1);
+        assert_eq!(
+            reader_metric(&metrics, "scan_io_footer_bytes"),
+            footer_bytes
+        );
+        assert_eq!(reader_metric(&metrics, "scan_io_object_store_get_calls"), 1);
+        assert_eq!(
+            reader_metric(&metrics, "scan_io_object_store_get_requested_bytes"),
+            file_size
+        );
+        assert_eq!(
+            reader_metric(&metrics, "scan_io_object_store_response_bytes_read"),
+            file_size
+        );
+        assert_eq!(reader_metric(&metrics, "scan_io_metadata_cache_misses"), 1);
+    }
+
+    #[tokio::test]
+    async fn does_not_report_footer_metrics_when_metadata_decoding_fails() {
+        let (filename, _schema) = write_scan_io_fixture();
+        let mut file_bytes = std::fs::read(&filename).unwrap();
+        let file_size = file_bytes.len();
+        let footer_bytes = usize::try_from(u32::from_le_bytes(
+            file_bytes[file_size - 8..file_size - 4].try_into().unwrap(),
+        ))
+        .unwrap();
+        file_bytes[file_size - 8 - footer_bytes..file_size - 8].fill(0xff);
+        std::fs::write(&filename, file_bytes).unwrap();
+
+        let session_ctx = Arc::new(SessionContext::new());
+        let runtime_env = session_ctx.runtime_env();
+        let store = runtime_env
+            .object_store(ObjectStoreUrl::local_filesystem())
+            .unwrap();
+        let metadata_cache = runtime_env.cache_manager.get_file_metadata_cache();
+        let metrics = ExecutionPlanMetricsSet::new();
+        let factory =
+            EagerPageIndexReaderFactory::new(store, metadata_cache, ScanIoSource::Local, &metrics);
+        let mut reader = factory
+            .create_reader(
+                0,
+                PartitionedFile::from_path(filename).unwrap(),
+                Some(512 * 1024),
+                &metrics,
+            )
+            .unwrap();
+
+        assert!(reader.get_metadata(None).await.is_err());
+        assert!(reader_metric(&metrics, "scan_io_metadata_bytes") > 0);
+        assert_eq!(reader_metric(&metrics, "scan_io_footer_reads"), 0);
+        assert_eq!(reader_metric(&metrics, "scan_io_footer_bytes"), 0);
+        assert_eq!(reader_metric(&metrics, "scan_io_metadata_cache_hits"), 0);
+        assert_eq!(reader_metric(&metrics, "scan_io_metadata_cache_misses"), 0);
     }
 
     #[tokio::test]
@@ -774,13 +947,8 @@ mod tests {
 
         let bloom_bytes = scan_metric(&scan, "bytes_scanned");
         assert!(bloom_bytes > 0);
-        assert_eq!(scan_metric(&scan, "scan_io_data_bytes_requested"), 0);
-        assert_eq!(scan_metric(&scan, "scan_io_data_bytes_returned"), 0);
-        assert!(scan_metric(&scan, "scan_io_metadata_bytes_requested") >= bloom_bytes);
-        assert_eq!(
-            scan_metric(&scan, "scan_io_metadata_bytes_requested"),
-            scan_metric(&scan, "scan_io_metadata_bytes_returned")
-        );
+        assert_eq!(scan_metric(&scan, "scan_io_data_bytes"), 0);
+        assert!(scan_metric(&scan, "scan_io_metadata_bytes") >= bloom_bytes);
     }
 
     #[tokio::test]
@@ -825,9 +993,9 @@ mod tests {
         );
         drain_scan(&filtered_scan, &session_ctx).await;
 
-        let full_data = scan_metric(&full_scan, "scan_io_data_bytes_requested");
-        let projected_data = scan_metric(&projected_scan, "scan_io_data_bytes_requested");
-        let filtered_data = scan_metric(&filtered_scan, "scan_io_data_bytes_requested");
+        let full_data = scan_metric(&full_scan, "scan_io_data_bytes");
+        let projected_data = scan_metric(&projected_scan, "scan_io_data_bytes");
+        let filtered_data = scan_metric(&filtered_scan, "scan_io_data_bytes");
         assert!(
             projected_data < full_data,
             "projection should request fewer data bytes: projected={projected_data}, full={full_data}"
@@ -838,31 +1006,19 @@ mod tests {
         );
 
         for scan in [&full_scan, &projected_scan, &filtered_scan] {
-            let data_requested = scan_metric(scan, "scan_io_data_bytes_requested");
-            let data_returned = scan_metric(scan, "scan_io_data_bytes_returned");
-            let metadata_requested = scan_metric(scan, "scan_io_metadata_bytes_requested");
-            let metadata_returned = scan_metric(scan, "scan_io_metadata_bytes_returned");
-            assert_eq!(scan_metric(scan, "bytes_scanned"), data_requested);
-            assert_eq!(data_returned, data_requested);
-            assert_eq!(metadata_returned, metadata_requested);
             assert_eq!(
-                scan_metric(scan, "scan_io_bytes_requested"),
-                data_requested + metadata_requested
+                scan_metric(scan, "bytes_scanned"),
+                scan_metric(scan, "scan_io_data_bytes")
+            );
+            assert_eq!(scan_metric(scan, "scan_io_object_store_get_calls"), 0);
+            assert_eq!(
+                scan_metric(scan, "scan_io_object_store_get_requested_bytes"),
+                0
             );
             assert_eq!(
-                scan_metric(scan, "scan_io_bytes_returned"),
-                data_returned + metadata_returned
+                scan_metric(scan, "scan_io_object_store_response_bytes_read"),
+                0
             );
-            assert_eq!(
-                scan_metric(scan, "scan_io_local_bytes_requested"),
-                data_requested + metadata_requested
-            );
-            assert_eq!(
-                scan_metric(scan, "scan_io_local_bytes_returned"),
-                data_returned + metadata_returned
-            );
-            assert_eq!(scan_metric(scan, "scan_io_object_store_bytes_requested"), 0);
-            assert_eq!(scan_metric(scan, "scan_io_object_store_bytes_returned"), 0);
         }
     }
 }
