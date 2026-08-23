@@ -38,8 +38,8 @@ use crate::execution::{
     expressions::list_positions::ListPositionsExpr,
     expressions::subquery::Subquery,
     operators::{
-        ExecutionError, ExpandExec, ParquetCompression, ParquetWriterExec, SampleExec, ScanExec,
-        ShuffleScanExec,
+        BatchSplitExec, ExecutionError, ExpandExec, ParquetCompression, ParquetWriterExec,
+        SampleExec, ScanExec, ShuffleScanExec,
     },
     planner::expression_registry::ExpressionRegistry,
     planner::operator_registry::OperatorRegistry,
@@ -2116,11 +2116,20 @@ impl PhysicalPlanner {
                     output_schema,
                     unnest_options,
                 )?);
+                // DataFusion 54.1.0's UnnestExec can emit more than the runtime batch size.
+                // Bound batches before downstream native projections until Comet upgrades to a
+                // DataFusion version containing https://github.com/apache/datafusion/pull/24384.
+                let bounded_unnest: Arc<dyn ExecutionPlan> =
+                    Arc::new(BatchSplitExec::new(unnest_exec));
 
                 Ok((
                     scans,
                     shuffle_scans,
-                    Arc::new(SparkPlan::new(spark_plan.plan_id, unnest_exec, vec![child])),
+                    Arc::new(SparkPlan::new(
+                        spark_plan.plan_id,
+                        bounded_unnest,
+                        vec![child],
+                    )),
                 ))
             }
             OpStruct::SortMergeJoin(join) => {

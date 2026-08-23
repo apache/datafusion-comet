@@ -223,7 +223,9 @@ object CometStringReplace
   /**
    * `CometLiteral` encodes a string as `UTF8String.toString`, so only literals whose bytes
    * survive that round-trip can be sent natively. The size cap keeps a broadcast scalar under
-   * Arrow `Utf8`'s 32-bit offset limit at `spark.comet.batchSize` rows.
+   * Arrow `Utf8`'s 32-bit offset limit. Native operators feeding projections must emit batches no
+   * larger than `spark.comet.batchSize`; Comet's explode path enforces that with
+   * `BatchSplitExec`.
    */
   private def isNativeSafeStringLiteral(v: UTF8String, allowEmpty: Boolean): Boolean = {
     if (v == null) {

@@ -26,6 +26,7 @@ import org.apache.spark.{SparkConf, SparkEnv, TaskContext}
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.api.java.UDF1
 import org.apache.spark.sql.catalyst.expressions.{BoundReference, CreateArray, CreateMap, CreateNamedStruct, Expression, Literal, MapConcat}
+import org.apache.spark.sql.comet.CometExplodeExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
@@ -479,6 +480,38 @@ class CometCodegenSuite
         assertDispatcher(
           sql("SELECT replace(repeat('x', 262144), 'notfound', r) FROM t"),
           "expected dispatcher path for oversized source literal")
+      }
+    }
+  }
+
+  test("replace remains safe after native explode expands the batch") {
+    withTable("t") {
+      sql("""
+          |CREATE TABLE t USING parquet AS
+          |SELECT IF(id % 2 = 0, 'a', 'b') AS s
+          |FROM range(8192)
+          |""".stripMargin)
+
+      withSQLConf(CometConf.COMET_EXEC_EXPLODE_ENABLED.key -> "true") {
+        val df = sql("""
+            |SELECT replace(e, 'notfound', repeat('x', 131072))
+            |FROM t
+            |LATERAL VIEW explode(array(s, s)) a AS e
+            |""".stripMargin)
+
+        val (_, cometPlan) = checkSparkAnswerAndOperator(df)
+        assert(
+          stripAQEPlan(cometPlan).exists(_.isInstanceOf[CometExplodeExec]),
+          s"expected native CometExplodeExec, got:\n$cometPlan")
+
+        val rows = df.collect()
+        assert(rows.length == 16384)
+        assert(rows.forall(row => Set("a", "b").contains(row.getString(0))))
+
+        val explain = new ExtendedExplainInfo().generateExtendedInfo(cometPlan)
+        assert(
+          !explain.contains("JVM codegen dispatcher: replace"),
+          s"expected native replace after native explode, got:\n$explain")
       }
     }
   }
