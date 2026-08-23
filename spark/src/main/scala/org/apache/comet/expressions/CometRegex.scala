@@ -98,7 +98,11 @@ object CometRegex {
       while (remaining && peek == '|') {
         consume()
         parseTerm() match {
-          case Some(s) => total = saturatingAdd(total, s)
+          case Some(s) =>
+            addWithinBudget(total, s) match {
+              case Some(next) => total = next
+              case None => return None
+            }
           case None => return None
         }
       }
@@ -111,8 +115,12 @@ object CometRegex {
       while (remaining && peek != '|' && peek != ')') {
         parseFactor() match {
           case Some(s) =>
-            total = saturatingAdd(total, s)
-            any = true
+            addWithinBudget(total, s) match {
+              case Some(next) =>
+                total = next
+                any = true
+              case None => return None
+            }
           case None =>
             return None
         }
@@ -232,12 +240,19 @@ object CometRegex {
         case _ =>
           return None
       }
-      val expanded = saturatingMul(atomSize, bound.toLong)
-      if (expanded > MaxExpansion) {
-        None
-      } else {
-        Some(expanded)
-      }
+      multiplyWithinBudget(atomSize, bound.toLong)
+    }
+
+    private def addWithinBudget(a: Long, b: Long): Option[Long] = {
+      val total = saturatingAdd(a, b)
+      if (total > MaxExpansion) None else Some(total)
+    }
+
+    private def multiplyWithinBudget(a: Long, b: Long): Option[Long] = {
+      // A zero-count repetition still contributes syntax and compile work.
+      // Keep every factor visible to aggregate term/alternation accounting.
+      val total = math.max(1L, saturatingMul(a, b))
+      if (total > MaxExpansion) None else Some(total)
     }
 
     private def saturatingAdd(a: Long, b: Long): Long = {
@@ -279,7 +294,7 @@ object CometRegex {
       var lastAtom: Option[Char] = None
       while (remaining && !(peek == ']' && contentStarted)) {
         // Rust class set ops (&& / ~~ / --) are not Java literals. Nested
-        // classes and unescaped `]` as an atom are also out of subset.
+        // classes and unescaped class delimiters as atoms are also out of subset.
         if (startsWith("&&") || startsWith("~~") || startsWith("--") || peek == '[') {
           return false
         }
@@ -309,9 +324,10 @@ object CometRegex {
       if (!remaining) {
         return None
       }
-      // Unescaped `]` is only the class closer, never a range endpoint. Java
-      // treats a leading `]` as a literal/range start; Rust does not.
-      if (peek == ']') {
+      // Unescaped `]` is only the class closer, never a range endpoint. An
+      // unescaped `[` starts a nested class in Java, so it cannot be a literal
+      // range endpoint even though Rust accepts it as one.
+      if (peek == ']' || peek == '[') {
         return None
       }
       if (peek == '\\') {

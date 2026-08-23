@@ -138,11 +138,32 @@ class CometRegexSuite extends AnyFunSuite {
     assertCompatible("[a\\]]")
   }
 
+  test("rejects unescaped [ used as a character-class range endpoint") {
+    Seq("[@-[]", "[^@-[]").foreach(assertIncompatible)
+    assertCompatible("[@-\\[]")
+  }
+
   test("rejects counted or nested patterns that can exceed the Rust compile budget") {
     Seq("a{1000000}", "[^;]{20000}", "a{257}", "(a{100}){100}", "(" * 33 + "a" + ")" * 33)
       .foreach(assertIncompatible)
     assertCompatible("a{256}")
     assertCompatible("(a{2}){3}")
     assertCompatible("(" * 32 + "a" + ")" * 32)
+  }
+
+  test("rejects aggregate patterns that exceed the Rust compile budget") {
+    val maxExpansion = 4096
+    assertCompatible("a{256}" * 16)
+    assertCompatible("(a{64}){64}")
+    assertCompatible("a{0}" * maxExpansion)
+    Seq(
+      "a{256}" * 17,
+      "(a)" * (maxExpansion + 1),
+      List.fill(maxExpansion + 1)("a").mkString("|"),
+      "a{0}" * (maxExpansion + 1),
+      "a{0,}" * (maxExpansion + 1),
+      "a{0,0}" * (maxExpansion + 1),
+      "a{256}" * 16 + "a{0}")
+      .foreach(assertIncompatible)
   }
 }
