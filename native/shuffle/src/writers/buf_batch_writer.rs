@@ -18,6 +18,7 @@
 use super::ShuffleBlockWriter;
 use arrow::array::RecordBatch;
 use arrow::compute::kernels::coalesce::BatchCoalescer;
+use arrow::ipc::writer::CompressionContext;
 use datafusion::physical_plan::metrics::Time;
 use std::borrow::Borrow;
 use std::io::{Cursor, Seek, SeekFrom, Write};
@@ -37,6 +38,7 @@ pub(crate) struct BufBatchWriter<S: Borrow<ShuffleBlockWriter>, W: Write> {
     writer: W,
     buffer: Vec<u8>,
     buffer_max_size: usize,
+    compression_context: CompressionContext,
     /// Coalesces small batches into target_batch_size before serialization.
     /// Lazily initialized on first write to capture the schema.
     coalescer: Option<BatchCoalescer>,
@@ -56,6 +58,7 @@ impl<S: Borrow<ShuffleBlockWriter>, W: Write> BufBatchWriter<S, W> {
             writer,
             buffer: vec![],
             buffer_max_size,
+            compression_context: CompressionContext::default(),
             coalescer: None,
             batch_size,
         }
@@ -107,10 +110,12 @@ impl<S: Borrow<ShuffleBlockWriter>, W: Write> BufBatchWriter<S, W> {
     ) -> datafusion::common::Result<usize> {
         let mut cursor = Cursor::new(&mut self.buffer);
         cursor.seek(SeekFrom::End(0))?;
-        let bytes_written =
-            self.shuffle_block_writer
-                .borrow()
-                .write_batch(batch, &mut cursor, encode_time)?;
+        let bytes_written = self.shuffle_block_writer.borrow().write_batch(
+            batch,
+            &mut cursor,
+            &mut self.compression_context,
+            encode_time,
+        )?;
         let pos = cursor.position();
         if pos >= self.buffer_max_size as u64 {
             let mut write_timer = write_time.timer();
