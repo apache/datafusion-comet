@@ -2412,6 +2412,7 @@ class CometExecSuite extends CometTestBase {
             metrics.contains("time_elapsed_scanning_total"),
             s"Missing time_elapsed_scanning_total. Available: ${metrics.keys}")
           assert(metrics.contains("bytes_scanned"))
+          assert(metrics("bytes_scanned").name.contains("Number of bytes scanned"))
           assert(metrics.contains("output_rows"))
           assert(metrics.contains("time_elapsed_opening"))
           assert(metrics.contains("time_elapsed_processing"))

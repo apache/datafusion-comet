@@ -281,9 +281,7 @@ object CometMetricNode {
       "limit_matched_row_groups" ->
         SQLMetrics.createMetric(sc, "Number of row groups matched by limit pruning (not pruned)"),
       "bytes_scanned" ->
-        SQLMetrics.createSizeMetric(
-          sc,
-          "Legacy data-page bytes requested by native Parquet scan"),
+        SQLMetrics.createSizeMetric(sc, "Number of bytes scanned"),
       "scan_io_bytes_requested" ->
         SQLMetrics.createSizeMetric(
           sc,
@@ -299,11 +297,11 @@ object CometMetricNode {
       "scan_io_metadata_bytes_requested" ->
         SQLMetrics.createSizeMetric(
           sc,
-          "Footer and page-index byte ranges requested through the storage API"),
+          "Footer, page-index, and Bloom-filter byte ranges requested through the storage API"),
       "scan_io_metadata_bytes_returned" ->
         SQLMetrics.createSizeMetric(
           sc,
-          "Footer and page-index bytes returned through the storage API"),
+          "Footer, page-index, and Bloom-filter bytes returned through the storage API"),
       "scan_io_object_store_bytes_requested" ->
         SQLMetrics.createSizeMetric(
           sc,
