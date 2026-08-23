@@ -121,9 +121,9 @@ Internal decimal wrapper emitted around every decimal `+ - * /`, `sum`, and `avg
 
 ## DecimalRescaleCheckOverflow (internal)
 
-Internal fused expression that rescales a Decimal128 value (changing scale) and checks output precision in one pass, replacing the `CheckOverflow(Cast(expr, Decimal128(p, s)))` pattern used by decimal-to-decimal casts. Native impl: `math_funcs/internal/decimal_rescale_check.rs`.
+Internal fused expression that rescales a Decimal128 value and checks output precision with Arrow's decimal cast kernel, replacing the `CheckOverflow(Cast(expr, Decimal128(p, s)))` pattern used by decimal-to-decimal casts. Native impl: `math_funcs/internal/decimal_rescale_check.rs`.
 
-- Performance (tuned 2026-07-15, PR [#4938](https://github.com/apache/datafusion-comet/pull/4938)): the legacy path ran `null_if_overflow_precision` (a second full pass that allocates a new array) on every batch to turn overflow sentinels into nulls, even when nothing overflowed. Now that pass runs only when a sentinel is present (`contains(&i128::MAX)`, short-circuiting), so the common no-overflow case skips the allocation. 8 to 26% faster on no-overflow shapes; overflow and ANSI shapes unchanged. Benchmark: `benches/decimal_rescale.rs`.
+- Implementation (updated 2026-08-04, issue [#5094](https://github.com/apache/datafusion-comet/issues/5094)): decimal casts delegate rescaling, HALF_UP rounding, and precision validation to Arrow's decimal cast kernel. Legacy overflow becomes null and ANSI overflow raises Spark's `NUMERIC_VALUE_OUT_OF_RANGE`; scale changes beyond Arrow's Decimal128 power table preserve Spark's value-sensitive zero, null, and overflow behavior. Benchmark: `benches/decimal_rescale.rs`.
 
 ## e
 

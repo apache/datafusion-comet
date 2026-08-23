@@ -111,6 +111,7 @@ use datafusion::physical_expr::expressions::{Literal, StatsType};
 use datafusion::physical_expr::window::WindowExpr;
 use datafusion::physical_expr::LexOrdering;
 
+use crate::execution::expressions::arithmetic::CheckedBinaryExpr;
 use crate::parquet::parquet_exec::init_datasource_exec;
 use arrow::array::{
     new_empty_array, Array, ArrayRef, BinaryBuilder, BooleanArray, Date32Array, Decimal128Array,
@@ -602,6 +603,10 @@ impl PhysicalPlanner {
                     self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&input_schema))?;
                 let data_type = to_arrow_datatype(expr.datatype.as_ref().unwrap());
                 let fail_on_error = expr.fail_on_error;
+                let query_context = spark_expr.expr_id.and_then(|expr_id| {
+                    let registry = &self.query_context_registry;
+                    registry.get(expr_id)
+                });
 
                 // WideDecimalBinaryExpr already handles overflow — skip redundant check
                 // but only if its output type matches CheckOverflow's declared type
@@ -622,22 +627,22 @@ impl PhysicalPlanner {
                     {
                         let cast_target = cast.data_type(&input_schema)?;
                         if cast_target == data_type {
-                            return Ok(Arc::new(DecimalRescaleCheckOverflow::new(
-                                Arc::clone(&cast.child),
-                                s_in,
-                                *p_out,
-                                *s_out,
-                                fail_on_error,
-                            )));
+                            let fused: Arc<dyn PhysicalExpr> =
+                                Arc::new(DecimalRescaleCheckOverflow::new(
+                                    Arc::clone(&cast.child),
+                                    s_in,
+                                    *p_out,
+                                    *s_out,
+                                    fail_on_error,
+                                ));
+                            return if query_context.is_some() {
+                                Ok(Arc::new(CheckedBinaryExpr::new(fused, query_context)))
+                            } else {
+                                Ok(fused)
+                            };
                         }
                     }
                 }
-
-                // Look up query context from registry if expr_id is present
-                let query_context = spark_expr.expr_id.and_then(|expr_id| {
-                    let registry = &self.query_context_registry;
-                    registry.get(expr_id)
-                });
 
                 Ok(Arc::new(CheckOverflow::new(
                     child,
@@ -1121,8 +1126,6 @@ impl PhysicalPlanner {
                         Arc::new(ConfigOptions::default()),
                     ));
 
-                    // Wrap with CheckedBinaryExpr to add query_context to errors
-                    use crate::execution::expressions::arithmetic::CheckedBinaryExpr;
                     Ok(Arc::new(CheckedBinaryExpr::new(scalar_expr, query_context)))
                 } else {
                     Ok(Arc::new(BinaryExpr::new(left, op, right)))
@@ -4598,7 +4601,8 @@ mod tests {
     use std::{sync::Arc, task::Poll};
 
     use arrow::array::{
-        Array, DictionaryArray, Int32Array, Int8Array, ListArray, RecordBatch, StringArray,
+        Array, Decimal128Array, DictionaryArray, Int32Array, Int8Array, ListArray, RecordBatch,
+        StringArray,
     };
     use arrow::datatypes::{DataType, Field, FieldRef, Fields, Schema};
     use datafusion::catalog::memory::DataSourceExec;
@@ -4616,7 +4620,9 @@ mod tests {
     use tempfile::TempDir;
     use tokio::sync::mpsc;
 
-    use crate::execution::{operators::InputBatch, planner::PhysicalPlanner};
+    use crate::execution::{
+        expressions::arithmetic::CheckedBinaryExpr, operators::InputBatch, planner::PhysicalPlanner,
+    };
 
     use crate::execution::operators::ExecutionError;
     use crate::execution::planner::literal_to_array_ref;
@@ -4632,7 +4638,7 @@ mod tests {
         spark_operator,
         spark_operator::{operator::OpStruct, Operator},
     };
-    use datafusion_comet_spark_expr::EvalMode;
+    use datafusion_comet_spark_expr::{EvalMode, SparkError, SparkErrorWithContext};
 
     #[test]
     fn test_unpack_dictionary_primitive() {
@@ -4805,6 +4811,101 @@ mod tests {
         let err = datafusion::common::DataFusionError::Execution(err_msg.to_string());
         let comet_err: ExecutionError = err.into();
         assert_eq!(comet_err.to_string(), "Error from DataFusion: exec error.");
+    }
+
+    #[test]
+    fn fused_decimal_overflow_keeps_query_context() {
+        use spark_expression::data_type::{
+            data_type_info::DatatypeStruct, DataTypeInfo, DecimalInfo,
+        };
+
+        fn decimal_type(precision: i32, scale: i32) -> spark_expression::DataType {
+            spark_expression::DataType {
+                type_id: 10,
+                type_info: Some(Box::new(DataTypeInfo {
+                    datatype_struct: Some(DatatypeStruct::Decimal(DecimalInfo {
+                        precision,
+                        scale,
+                    })),
+                })),
+            }
+        }
+
+        let input_type = decimal_type(3, 1);
+        let output_type = decimal_type(2, 1);
+        let bound = Expr {
+            expr_struct: Some(Bound(spark_expression::BoundReference {
+                index: 0,
+                datatype: Some(input_type),
+            })),
+            query_context: None,
+            expr_id: None,
+        };
+        let cast = Expr {
+            expr_struct: Some(ExprStruct::Cast(Box::new(spark_expression::Cast {
+                child: Some(Box::new(bound)),
+                datatype: Some(output_type.clone()),
+                timezone: "UTC".to_string(),
+                eval_mode: spark_expression::EvalMode::Ansi as i32,
+                allow_incompat: false,
+                is_spark4_plus: true,
+            }))),
+            query_context: None,
+            expr_id: None,
+        };
+        let sql = "SELECT CAST(10.1 AS DECIMAL(2, 1))";
+        let check_overflow = Expr {
+            expr_struct: Some(ExprStruct::CheckOverflow(Box::new(
+                spark_expression::CheckOverflow {
+                    child: Some(Box::new(cast)),
+                    datatype: Some(output_type),
+                    fail_on_error: true,
+                },
+            ))),
+            query_context: Some(spark_expression::QueryContext {
+                sql_text: sql.to_string(),
+                start_index: 7,
+                stop_index: 34,
+                object_type: None,
+                object_name: None,
+                line: 1,
+                start_position: 7,
+                sql_text_idx: None,
+            }),
+            expr_id: Some(1),
+        };
+
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "value",
+            DataType::Decimal128(3, 1),
+            false,
+        )]));
+        let expr = PhysicalPlanner::default()
+            .create_expr(&check_overflow, Arc::clone(&schema))
+            .unwrap();
+        assert!(expr.downcast_ref::<CheckedBinaryExpr>().is_some());
+
+        let values = Decimal128Array::from(vec![101])
+            .with_precision_and_scale(3, 1)
+            .unwrap();
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(values)]).unwrap();
+        let DataFusionError::External(error) = expr.evaluate(&batch).unwrap_err() else {
+            panic!("expected external Spark error")
+        };
+        let error = error
+            .downcast_ref::<SparkErrorWithContext>()
+            .expect("expected SparkErrorWithContext");
+        assert!(matches!(
+            &error.error,
+            SparkError::NumericValueOutOfRange {
+                value,
+                precision: 2,
+                scale: 1,
+            } if value == "10.1"
+        ));
+        let context = error.context.as_ref().expect("expected query context");
+        assert_eq!(context.sql_text.as_str(), sql);
+        assert_eq!((context.start_index, context.stop_index), (7, 34));
     }
 
     // Creates a filter operator which takes an `Int32Array` and selects rows that are equal to
