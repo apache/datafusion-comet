@@ -64,7 +64,8 @@ class CometRegexParitySuite extends CometTestBase with AdaptiveSparkPlanHelper {
     "[a\\-z]",
     "a b",
     "(?:(?:foo)|bar)",
-    "(ab)+")
+    "(ab)+",
+    "[@-\\[]")
 
   private val subjects: Seq[String] = Seq(
     "abc",
@@ -99,7 +100,10 @@ class CometRegexParitySuite extends CometTestBase with AdaptiveSparkPlanHelper {
     "a b",
     "ab",
     "abab",
-    "b")
+    "b",
+    "@",
+    "[",
+    "A")
 
   private def sqlLiteral(pattern: String): String =
     pattern.replace("\\", "\\\\").replace("'", "''")

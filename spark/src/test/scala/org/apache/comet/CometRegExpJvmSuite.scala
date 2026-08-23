@@ -178,6 +178,35 @@ class CometRegExpJvmSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   private def explainOf(df: org.apache.spark.sql.DataFrame): String =
     new ExtendedExplainInfo().generateExtendedInfo(df.queryExecution.executedPlan)
 
+  private def assertSparkRegexError(query: String): Unit = {
+    def collectError(): Throwable =
+      intercept[Throwable](sql(query).collect())
+
+    def chain(ex: Throwable): List[Throwable] =
+      Iterator.iterate(ex)(_.getCause).takeWhile(_ != null).toList
+
+    var sparkEx: Throwable = null
+    withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+      sparkEx = collectError()
+    }
+    val cometEx = collectError()
+    val sparkMsgs = chain(sparkEx).flatMap(e => Option(e.getMessage)).mkString("\n")
+    val cometMsgs = chain(cometEx).flatMap(e => Option(e.getMessage)).mkString("\n")
+    assert(
+      sparkMsgs.toLowerCase.contains("unclosed") || sparkMsgs.contains("PatternSyntax") ||
+        sparkMsgs.toLowerCase.contains("regex"),
+      s"Spark error did not look like a regex syntax error: $sparkMsgs")
+    assert(
+      cometMsgs.toLowerCase.contains("unclosed") || cometMsgs.contains("PatternSyntax") ||
+        cometMsgs.toLowerCase.contains("regex"),
+      s"Comet error did not look like a regex syntax error: $cometMsgs")
+    val sparkTypes = chain(sparkEx).map(_.getClass.getName)
+    val cometTypes = chain(cometEx).map(_.getClass.getName)
+    assert(
+      sparkTypes.exists(cometTypes.contains),
+      s"Comet exception types $cometTypes did not share a type with Spark $sparkTypes")
+  }
+
   test("rlike: safe literal pattern takes the native path by default") {
     withRLikeExplain {
       withSubjects("abc123", "xyz", null, "abc") {
@@ -226,6 +255,21 @@ class CometRegExpJvmSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("rlike: raw [ range endpoint stays on the dispatcher and preserves Spark error") {
+    withRLikeExplain {
+      withSubjects("@", "[", "A", null) {
+        Seq("[@-[]", "[^@-[]").foreach { pat =>
+          val query = s"SELECT s, s rlike '$pat' FROM t"
+          val df = sql(query)
+          assert(
+            explainOf(df).contains("JVM codegen dispatcher: rlike"),
+            s"expected dispatcher for $pat, got:\n${explainOf(df)}")
+          assertSparkRegexError(query)
+        }
+      }
+    }
+  }
+
   test("rlike: over-budget counted repetition stays on the dispatcher") {
     withRLikeExplain {
       withSubjects("a", "aaa", null) {
@@ -256,6 +300,33 @@ class CometRegExpJvmSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         assert(
           explainOf(df).contains("JVM codegen dispatcher: rlike"),
           s"expected dispatcher for 33 nested groups, got:\n${explainOf(df)}")
+      }
+    }
+  }
+
+  test("rlike: compile-budget boundary stays native") {
+    withRLikeExplain {
+      withSubjects("a", "aaa", null) {
+        val pat = "(a{64}){64}"
+        val df = sql(s"SELECT s, s rlike '$pat' FROM t")
+        checkSparkAnswerAndOperator(df)
+        assert(
+          !explainOf(df).contains("JVM codegen dispatcher: rlike"),
+          s"expected native path for expansion-4096 pattern, got:\n${explainOf(df)}")
+      }
+    }
+  }
+
+  test("rlike: aggregate expansion budget stays on the dispatcher") {
+    withRLikeExplain {
+      withSubjects("a", "aaa", null) {
+        Seq("a{256}" * 17, "a{0}" * 4097).foreach { pat =>
+          val df = sql(s"SELECT s, s rlike '$pat' FROM t")
+          checkSparkAnswerAndOperator(df)
+          assert(
+            explainOf(df).contains("JVM codegen dispatcher: rlike"),
+            s"expected dispatcher for aggregate over-budget pattern, got:\n${explainOf(df)}")
+        }
       }
     }
   }
@@ -353,33 +424,7 @@ class CometRegExpJvmSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("rlike: invalid pattern preserves Spark exception type and message") {
     withSubjects("a") {
-      def collectError(): Throwable =
-        intercept[Throwable](sql("SELECT s rlike '[' FROM t").collect())
-
-      var sparkEx: Throwable = null
-      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-        sparkEx = collectError()
-      }
-      val cometEx = collectError()
-
-      def chain(ex: Throwable): List[Throwable] =
-        Iterator.iterate(ex)(_.getCause).takeWhile(_ != null).toList
-
-      val sparkMsgs = chain(sparkEx).flatMap(e => Option(e.getMessage)).mkString("\n")
-      val cometMsgs = chain(cometEx).flatMap(e => Option(e.getMessage)).mkString("\n")
-      assert(
-        sparkMsgs.toLowerCase.contains("unclosed") || sparkMsgs.contains("PatternSyntax") ||
-          sparkMsgs.toLowerCase.contains("regex"),
-        s"Spark error did not look like a regex syntax error: $sparkMsgs")
-      assert(
-        cometMsgs.toLowerCase.contains("unclosed") || cometMsgs.contains("PatternSyntax") ||
-          cometMsgs.toLowerCase.contains("regex"),
-        s"Comet error did not look like a regex syntax error: $cometMsgs")
-      val sparkTypes = chain(sparkEx).map(_.getClass.getName)
-      val cometTypes = chain(cometEx).map(_.getClass.getName)
-      assert(
-        sparkTypes.exists(cometTypes.contains),
-        s"Comet exception types $cometTypes did not share a type with Spark $sparkTypes")
+      assertSparkRegexError("SELECT s rlike '[' FROM t")
     }
   }
 
