@@ -190,28 +190,35 @@ object CometStringReplace
    * Arrow `Utf8` arrays that overflow 32-bit offsets on a large batch.
    *
    * The default native path is therefore limited to a plan-time subset that avoids those
-   * boundaries. Non-default collations stay on the dispatcher.
-   * https://github.com/apache/datafusion-comet/issues/4496
+   * boundaries. `src` uses the same whitelist as `replace`: a short well-formed literal or a
+   * column. Nested expressions (`substring`, `concat`, …) stay on the dispatcher so a throwing or
+   * malformed child cannot hide inside the source tree. Non-default collations stay on the
+   * dispatcher. https://github.com/apache/datafusion-comet/issues/4496
    */
   private def nativeSafeSubset(expr: StringReplace): Boolean = {
     val children = expr.children
     if (children.length != 3) {
       return false
     }
+    val sourceIsSafe = isNativeSafeStringArg(children(0), allowEmptyLiteral = true)
     val searchIsSafe = children(1) match {
       case Literal(v: UTF8String, _) => isNativeSafeStringLiteral(v, allowEmpty = false)
       case _ => false
     }
-    val replacementIsSafe = children(2) match {
+    val replacementIsSafe = isNativeSafeStringArg(children(2), allowEmptyLiteral = true)
+    val utf8BinaryCollation =
+      !children.exists(c => QueryPlanSerde.isStringCollationType(c.dataType))
+    utf8BinaryCollation && sourceIsSafe && searchIsSafe && replacementIsSafe
+  }
+
+  /** A column, null literal, or a short well-formed string literal. */
+  private def isNativeSafeStringArg(expr: Expression, allowEmptyLiteral: Boolean): Boolean =
+    expr match {
       case Literal(null, _) => true
-      case Literal(v: UTF8String, _) => isNativeSafeStringLiteral(v, allowEmpty = true)
+      case Literal(v: UTF8String, _) => isNativeSafeStringLiteral(v, allowEmptyLiteral)
       case _: Attribute | _: BoundReference => true
       case _ => false
     }
-    val utf8BinaryCollation =
-      !children.exists(c => QueryPlanSerde.isStringCollationType(c.dataType))
-    utf8BinaryCollation && searchIsSafe && replacementIsSafe
-  }
 
   /**
    * `CometLiteral` encodes a string as `UTF8String.toString`, so only literals whose bytes
@@ -234,9 +241,9 @@ object CometStringReplace
 
   override def getCompatibleNotes(): Seq[String] =
     Seq(
-      "When `search` is a short, well-formed, non-empty `UTF8_BINARY` literal and `replace` " +
-        "is a short well-formed literal or a column, Comet evaluates `replace` natively " +
-        "by default.")
+      "When `src` and `replace` are each a short well-formed literal or a column, and " +
+        "`search` is a short, well-formed, non-empty `UTF8_BINARY` literal, Comet evaluates " +
+        "`replace` natively by default.")
 
   override def getIncompatibleReasons(): Seq[String] =
     Seq("Produces different results from Spark when the search string is empty")
@@ -257,9 +264,9 @@ object CometStringReplace
       // Native path for the plan-time safe subset, or when the user has opted in.
       super.convert(expr, inputs, binding)
     } else {
-      // Empty / malformed / oversized search, a throwing or non-column replacement, or a
-      // non-default collation: run Spark's own generated code inside the Comet pipeline.
-      // Falls back to Spark when the codegen dispatcher is disabled.
+      // Nested / malformed / oversized / throwing children, or a non-default collation: run
+      // Spark's own generated code inside the Comet pipeline. Falls back to Spark when the
+      // codegen dispatcher is disabled.
       CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
     }
   }

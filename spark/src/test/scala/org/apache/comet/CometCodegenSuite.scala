@@ -442,6 +442,44 @@ class CometCodegenSuite
           sql("SELECT replace(s, 'notfound', repeat('x', 262144)) FROM t"),
           "expected dispatcher path for oversized replacement literal")
       }
+
+      // Source is not on the whitelist: Spark short-circuits inside substring when s is NULL.
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+        withTable("t") {
+          sql("CREATE TABLE t (s STRING, n INT) USING parquet")
+          sql("INSERT INTO t VALUES (NULL, 0), ('a', 1)")
+          assertDispatcher(
+            sql("SELECT replace(substring(s, 1, CAST(1 / n AS INT)), 'a', 'x') FROM t"),
+            "expected dispatcher path for throwing expression nested in source")
+        }
+      }
+
+      // Malformed source literal: same CometLiteral byte-normalization as search/replacement.
+      withTable("t") {
+        sql("CREATE TABLE t (r STRING) USING parquet")
+        sql("INSERT INTO t VALUES ('x')")
+        assertDispatcher(
+          sql("SELECT replace(CAST(X'FF' AS STRING), 'a', r) FROM t"),
+          "expected dispatcher path for malformed source literal")
+      }
+
+      // Malformed literal nested under concat is still in the source tree.
+      withTable("t") {
+        sql("CREATE TABLE t (r STRING) USING parquet")
+        sql("INSERT INTO t VALUES ('x')")
+        assertDispatcher(
+          sql("SELECT replace(concat(CAST(X'FF' AS STRING), r), 'a', 'x') FROM t"),
+          "expected dispatcher path for malformed literal nested in source")
+      }
+
+      // Oversized source literal has the same broadcast / offset-overflow hazard.
+      withTable("t") {
+        sql("CREATE TABLE t (r STRING) USING parquet")
+        sql("INSERT INTO t VALUES ('x')")
+        assertDispatcher(
+          sql("SELECT replace(repeat('x', 262144), 'notfound', r) FROM t"),
+          "expected dispatcher path for oversized source literal")
+      }
     }
   }
 
