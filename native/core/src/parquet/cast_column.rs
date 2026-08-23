@@ -393,11 +393,11 @@ fn is_compatible_variant(variant: &Variant<'_, '_>, order: VariantObjectKeyOrder
 
 /// Reorder object keys for either Arrow's UTF-8 order or Spark's Java UTF-16 order. Preserve
 /// already-compatible values byte-for-byte and retain the original metadata dictionary.
-/// SPARK-56637 tracks this mismatch. The metadata dictionary's sorted flag affects dictionary
-/// lookup, not object-entry ordering; Spark's builder and lookup must agree while continuing to
-/// read Variant values already written by Spark 4.x in UTF-16 order.
-/// https://issues.apache.org/jira/browse/SPARK-56637
-/// https://github.com/apache/spark/pull/55928
+/// SPARK-58949 tracks this mismatch and legacy compatibility. The metadata dictionary's sorted
+/// flag affects dictionary lookup, not object-entry ordering; Spark's builder and lookup must
+/// agree while continuing to read Variant values already written by Spark 4.x in UTF-16 order.
+/// https://issues.apache.org/jira/browse/SPARK-58949
+/// https://github.com/apache/parquet-java/issues/3735
 fn reorder_variant_values(
     value: &ArrayRef,
     metadata: &ArrayRef,
