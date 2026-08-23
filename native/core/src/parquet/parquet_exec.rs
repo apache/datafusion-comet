@@ -221,18 +221,25 @@ pub(crate) fn init_datasource_exec(
 }
 
 fn scan_io_source(object_store_url: &ObjectStoreUrl, is_hdfs_object_store: bool) -> ScanIoSource {
-    let store_url: &url::Url = object_store_url.as_ref();
     if is_hdfs_object_store {
         return ScanIoSource::OtherObjectStore;
     }
 
-    match store_url.scheme() {
+    match physical_object_store_scheme(object_store_url) {
         "file" => ScanIoSource::Local,
         "s3" | "s3a" | "gs" | "az" | "abfs" | "abfss" | "http" | "https" => {
             ScanIoSource::ObjectStore
         }
         _ => ScanIoSource::OtherObjectStore,
     }
+}
+
+fn physical_object_store_scheme(object_store_url: &ObjectStoreUrl) -> &str {
+    let store_url: &url::Url = object_store_url.as_ref();
+    store_url
+        .scheme()
+        .split_once("+comet-")
+        .map_or_else(|| store_url.scheme(), |(scheme, _)| scheme)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -295,10 +302,15 @@ fn get_options(
     spark_parquet_options.allow_timestamp_ltz_to_ntz = allow_timestamp_ltz_to_ntz;
 
     if encryption_enabled {
+        let store_url: &url::Url = object_store_url.as_ref();
         table_parquet_options.crypto.configure_factory(
             ENCRYPTION_FACTORY_ID,
             &CometEncryptionConfig {
-                uri_base: object_store_url.to_string(),
+                uri_base: format!(
+                    "{}://{}/",
+                    physical_object_store_scheme(object_store_url),
+                    &store_url[url::Position::BeforeHost..url::Position::AfterPort],
+                ),
             },
         );
     }
@@ -494,6 +506,8 @@ mod tests {
         let s3a_original_url = url::Url::parse("s3a://bucket").unwrap();
         let normalized_s3_url = ObjectStoreUrl::parse("s3://bucket").unwrap();
         let preserved_s3a_url = ObjectStoreUrl::parse("s3a://bucket").unwrap();
+        let isolated_s3a_url =
+            ObjectStoreUrl::parse("s3a+comet-0123456789abcdef-native://bucket").unwrap();
         let is_hdfs_store =
             crate::parquet::parquet_support::is_hdfs_scheme(&s3a_original_url, &options);
         assert_eq!(
@@ -504,6 +518,33 @@ mod tests {
             scan_io_source(&preserved_s3a_url, is_hdfs_store),
             ScanIoSource::ObjectStore
         );
+        assert_eq!(
+            scan_io_source(&isolated_s3a_url, is_hdfs_store),
+            ScanIoSource::ObjectStore
+        );
+    }
+
+    #[test]
+    fn preserves_physical_uri_for_isolated_encrypted_object_stores() {
+        let object_store_url =
+            ObjectStoreUrl::parse("s3a+comet-0123456789abcdef-native://bucket").unwrap();
+        let (table_parquet_options, _) = get_options(
+            "UTC",
+            true,
+            false,
+            false,
+            false,
+            &object_store_url,
+            true,
+            &ParquetOptions::default(),
+        );
+        let encryption_options: CometEncryptionConfig = table_parquet_options
+            .crypto
+            .factory_options
+            .to_extension_options()
+            .unwrap();
+
+        assert_eq!(encryption_options.uri_base, "s3a://bucket/");
     }
 
     // Regression test for #3978: DataFusion's opener requests `PageIndexPolicy::Skip` on the

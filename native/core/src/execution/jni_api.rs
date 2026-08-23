@@ -1000,7 +1000,14 @@ pub extern "system" fn Java_org_apache_comet_Native_releasePlan(
 
 fn stop_batch_producer(producer: JoinHandle<()>) {
     producer.abort();
-    let _ = get_runtime().block_on(producer);
+    let deadline = Instant::now() + Duration::from_millis(100);
+    while !producer.is_finished() {
+        if Instant::now() >= deadline {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let _ = futures::executor::block_on(producer);
 }
 
 fn update_metrics(env: &mut Env, exec_context: &mut ExecutionContext) -> CometResult<()> {
@@ -1408,5 +1415,27 @@ mod tests {
             receiver.try_recv(),
             Err(std::sync::mpsc::TryRecvError::Disconnected)
         );
+    }
+
+    #[test]
+    fn does_not_wait_indefinitely_for_blocked_batch_producer() {
+        let (started_sender, started_receiver) = std::sync::mpsc::channel();
+        let (release_sender, release_receiver) = std::sync::mpsc::channel();
+        let producer = get_runtime().spawn(async move {
+            started_sender.send(()).unwrap();
+            release_receiver.recv().unwrap();
+        });
+        started_receiver.recv().unwrap();
+
+        let release_thread = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(500));
+            release_sender.send(()).unwrap();
+        });
+        let started = Instant::now();
+        stop_batch_producer(producer);
+        let elapsed = started.elapsed();
+        release_thread.join().unwrap();
+
+        assert!(elapsed < Duration::from_millis(400));
     }
 }

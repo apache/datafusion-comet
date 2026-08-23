@@ -582,19 +582,28 @@ pub(crate) fn prepare_object_store_with_configs(
             (store, path)
         };
 
-    let registration_url = if original_url.scheme() != url.scheme()
-        && self::is_hdfs_scheme(&url, object_store_configs)
+    let object_store_url = ObjectStoreUrl::parse(url_key.as_str())?;
+    let registration_url = if scheme != "file"
+        && runtime_env
+            .object_store(&object_store_url)
+            .is_ok_and(|existing| !Arc::ptr_eq(&existing, &object_store))
     {
-        &original_url
+        let backend = if is_hdfs_scheme { "hdfs" } else { "native" };
+        Url::parse(&format!(
+            "{}+comet-{config_hash:016x}-{backend}://{}",
+            original_url.scheme(),
+            &url[url::Position::BeforeHost..url::Position::AfterPort],
+        ))
+        .map_err(|e| ExecutionError::GeneralError(e.to_string()))?
     } else {
-        &url
+        url
     };
     let object_store_url = ObjectStoreUrl::parse(format!(
         "{}://{}",
         registration_url.scheme(),
         &registration_url[url::Position::BeforeHost..url::Position::AfterPort],
     ))?;
-    runtime_env.register_object_store(registration_url, object_store);
+    runtime_env.register_object_store(&registration_url, object_store);
     Ok((object_store_url, object_store_path))
 }
 
@@ -658,6 +667,68 @@ mod tests {
             std::sync::Arc::clone(&runtime_env),
             hdfs_url.to_string(),
             &configs,
+        )
+        .unwrap();
+
+        assert_ne!(cloud_object_store_url, hdfs_object_store_url);
+        assert!(std::sync::Arc::ptr_eq(
+            &runtime_env.object_store(&cloud_object_store_url).unwrap(),
+            &cloud_store
+        ));
+        assert!(std::sync::Arc::ptr_eq(
+            &runtime_env.object_store(&hdfs_object_store_url).unwrap(),
+            &hdfs_store
+        ));
+
+        let mut cache = super::object_store_cache().write().unwrap();
+        cache.remove(&cloud_key);
+        cache.remove(&hdfs_key);
+    }
+
+    #[test]
+    fn registry_distinguishes_backend_routing_across_configurations() {
+        let cloud_configs = std::collections::HashMap::from([(
+            "fs.comet.libhdfs.schemes".to_string(),
+            "s3".to_string(),
+        )]);
+        let hdfs_configs = std::collections::HashMap::from([(
+            "fs.comet.libhdfs.schemes".to_string(),
+            "s3a".to_string(),
+        )]);
+        let url = url::Url::parse("s3a://scan-io-mixed-backend-routing").unwrap();
+        let cloud_key = (
+            "s3://scan-io-mixed-backend-routing".to_string(),
+            super::hash_object_store_configs(&cloud_configs),
+            false,
+        );
+        let hdfs_key = (
+            "s3a://scan-io-mixed-backend-routing".to_string(),
+            super::hash_object_store_configs(&hdfs_configs),
+            true,
+        );
+        let cloud_store: std::sync::Arc<dyn object_store::ObjectStore> =
+            std::sync::Arc::new(object_store::memory::InMemory::new());
+        let hdfs_store: std::sync::Arc<dyn object_store::ObjectStore> =
+            std::sync::Arc::new(object_store::memory::InMemory::new());
+
+        {
+            let mut cache = super::object_store_cache().write().unwrap();
+            cache.insert(cloud_key.clone(), std::sync::Arc::clone(&cloud_store));
+            cache.insert(hdfs_key.clone(), std::sync::Arc::clone(&hdfs_store));
+        }
+
+        let runtime_env =
+            std::sync::Arc::new(datafusion::execution::runtime_env::RuntimeEnv::default());
+        let (hdfs_object_store_url, _) = super::prepare_object_store_with_configs(
+            std::sync::Arc::clone(&runtime_env),
+            url.to_string(),
+            &hdfs_configs,
+        )
+        .unwrap();
+        let (cloud_object_store_url, _) = super::prepare_object_store_with_configs(
+            std::sync::Arc::clone(&runtime_env),
+            url.to_string(),
+            &cloud_configs,
         )
         .unwrap();
 
