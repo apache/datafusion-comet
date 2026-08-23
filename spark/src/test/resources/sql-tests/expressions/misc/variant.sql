@@ -22,6 +22,7 @@
 -- MinSparkVersion: 4.0
 -- Config: spark.sql.variant.writeShredding.enabled=false
 -- Config: spark.sql.variant.pushVariantIntoScan=false
+-- Config: spark.sql.variant.forceShreddingSchemaForTest=k00 BIGINT
 
 statement
 CREATE TABLE test_variant(id INT, v VARIANT, tail STRING) USING parquet
@@ -32,7 +33,8 @@ INSERT INTO test_variant VALUES
   (2, parse_json('[1, true, "x"]'), 'array'),
   (3, parse_json('42'), 'scalar'),
   (4, parse_json('null'), 'json-null'),
-  (5, CAST(NULL AS VARIANT), 'sql-null')
+  (5, CAST(NULL AS VARIANT), 'sql-null'),
+  (6, parse_json('{"":1,"nested":{"":2}}'), 'empty-key')
 
 -- A plain Parquet scan can remain native when its required schema prunes the
 -- Variant column completely, including both SQL NULL and Variant null values.
@@ -120,9 +122,6 @@ SET spark.comet.scan.allowDisabledParquetVectorizedReader=false
 -- the native scan reconstructs the whole 32-field value before Spark's variant_get binary search.
 statement
 SET spark.sql.variant.writeShredding.enabled=true
-
-statement
-SET spark.sql.variant.forceShreddingSchemaForTest=k00 BIGINT
 
 statement
 CREATE TABLE test_variant_unicode(v VARIANT) USING parquet

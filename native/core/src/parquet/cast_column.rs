@@ -423,8 +423,11 @@ fn reorder_variant_values(
             )));
         }
 
-        let metadata = VariantMetadata::try_new(metadata.value(index))?;
         let rebuilt = catch_unwind(AssertUnwindSafe(|| {
+            // Spark encodes empty object keys with equal metadata offsets, which Arrow 58.4's
+            // full validator rejects. Keep shallow parsing and all accesses inside this boundary.
+            // https://github.com/apache/arrow-rs/blob/58.4.0/parquet-variant/src/variant/metadata.rs#L307-L317
+            let metadata = VariantMetadata::new(metadata.value(index));
             let variant = Variant::new_with_metadata(metadata.clone(), value.value(index));
             if is_compatible_variant(&variant, order) {
                 return None;
@@ -951,6 +954,61 @@ mod tests {
             output.as_struct().column(0).as_binary::<i32>().value(0),
             value_bytes
         );
+    }
+
+    #[test]
+    fn test_normalize_variant_preserves_empty_object_keys() {
+        let mut builder = VariantBuilder::new();
+        let mut object = builder.new_object();
+        object.insert("", 1_i64);
+        let mut nested = object.new_object("nested");
+        nested.insert("", 2_i64);
+        nested.finish();
+        object.finish();
+        let (mut metadata_bytes, value_bytes) = builder.finish();
+
+        // Spark leaves the metadata dictionary unsorted. Equal offsets encode the empty key.
+        metadata_bytes[0] &= !0x10;
+        assert!(VariantMetadata::try_new(&metadata_bytes).is_err());
+
+        let value: ArrayRef = Arc::new(BinaryArray::from(vec![Some(value_bytes.as_slice())]));
+        let metadata: ArrayRef = Arc::new(BinaryArray::from(vec![Some(metadata_bytes.as_slice())]));
+        let physical: ArrayRef = Arc::new(
+            StructArray::try_new(
+                Fields::from(vec![
+                    Field::new("value", DataType::Binary, false),
+                    Field::new("metadata", DataType::Binary, false),
+                ]),
+                vec![value, metadata],
+                None,
+            )
+            .unwrap(),
+        );
+        let target_field = Arc::new(
+            Field::new(
+                "v",
+                DataType::Struct(Fields::from(vec![
+                    Field::new("value", DataType::Binary, false),
+                    Field::new("metadata", DataType::Binary, false),
+                ])),
+                false,
+            )
+            .with_extension_type(VariantType),
+        );
+
+        let output = normalize_variant_array(&physical, &target_field).unwrap();
+        let output = output.as_struct();
+        assert_eq!(output.column(0).as_binary::<i32>().value(0), value_bytes);
+        assert_eq!(output.column(1).as_binary::<i32>().value(0), metadata_bytes);
+
+        let Variant::Object(object) = Variant::new(&metadata_bytes, &value_bytes) else {
+            panic!("expected object")
+        };
+        assert_eq!(object.get(""), Some(Variant::from(1_i64)));
+        let Variant::Object(nested) = object.get("nested").unwrap() else {
+            panic!("expected nested object")
+        };
+        assert_eq!(nested.get(""), Some(Variant::from(2_i64)));
     }
 
     #[test]
