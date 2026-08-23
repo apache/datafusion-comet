@@ -21,6 +21,7 @@ package org.apache.comet.udf;
 
 import java.io.IOException;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -164,14 +165,24 @@ public class CometUdfBridge {
     }
 
     try {
-      evaluateInternal(
-          udfClassName,
-          inputArrayPtrs,
-          inputSchemaPtrs,
-          outArrayPtr,
-          outSchemaPtr,
-          numRows,
-          taskContext);
+      TaskState state = taskContext == null ? null : taskState(taskContext);
+      if (state != null) {
+        state.beginEvaluation();
+      }
+      try {
+        evaluateInternal(
+            udfClassName,
+            inputArrayPtrs,
+            inputSchemaPtrs,
+            outArrayPtr,
+            outSchemaPtr,
+            numRows,
+            state);
+      } finally {
+        if (state != null) {
+          state.finishEvaluation();
+        }
+      }
     } finally {
       // Unconditional: a no-op when nothing was installed, and it also undoes any change the
       // user function made to the ClassLoader of a worker that outlives this call.
@@ -193,8 +204,7 @@ public class CometUdfBridge {
       long outArrayPtr,
       long outSchemaPtr,
       int numRows,
-      TaskContext taskContext) {
-    TaskState state = taskContext == null ? null : taskState(taskContext);
+      TaskState state) {
     ConcurrentHashMap<String, CometUDF> perTask =
         state == null ? NO_TASK_INSTANCES : state.instances;
     assert perTask != null : "per-task cache must be non-null after computeIfAbsent";
@@ -272,6 +282,13 @@ public class CometUdfBridge {
     return TASKS.size();
   }
 
+  /** Visible to the focused allocator test in this package. */
+  static Runnable beginTaskEvaluation(TaskContext taskContext) {
+    TaskState state = taskState(taskContext);
+    state.beginEvaluation();
+    return state::finishEvaluation;
+  }
+
   private static TaskState taskState(TaskContext taskContext) {
     return TASKS.computeIfAbsent(
         taskContext,
@@ -287,16 +304,20 @@ public class CometUdfBridge {
   private static final class TaskState implements AllocationListener {
     private final TaskContext taskContext;
     private final long taskAttemptId;
+    private final TaskMemoryManager taskMemoryManager;
     private final TaskMemoryConsumer consumer;
     private final ConcurrentHashMap<String, CometUDF> instances = new ConcurrentHashMap<>();
 
     private BufferAllocator allocator;
+    // Arrow updates allocator accounting after onPreAllocation returns.
+    private int evaluationsInFlight;
     private boolean completed;
     private boolean closed;
 
     private TaskState(TaskContext taskContext, TaskMemoryManager taskMemoryManager) {
       this.taskContext = taskContext;
       this.taskAttemptId = taskContext.taskAttemptId();
+      this.taskMemoryManager = taskMemoryManager;
       this.consumer =
           taskMemoryManager.getTungstenMemoryMode() == MemoryMode.OFF_HEAP
               ? new TaskMemoryConsumer(taskMemoryManager)
@@ -317,59 +338,94 @@ public class CometUdfBridge {
     }
 
     @Override
-    public synchronized void onPreAllocation(long size) {
-      if (completed) {
-        throw new OutOfMemoryException(
-            "Cannot allocate " + size + " JVM UDF bytes after task completion");
-      }
-      if (consumer != null) {
-        long acquired = consumer.acquireMemory(size);
-        if (acquired < size) {
-          if (acquired > 0) {
-            consumer.freeMemory(acquired);
+    public void onPreAllocation(long size) {
+      // Spark's executor cleanup also synchronizes on TaskMemoryManager. Keep that cleanup from
+      // overtaking an admitted allocation, while leaving this TaskState monitor free for buffer
+      // releases that can satisfy a blocking acquire.
+      synchronized (taskMemoryManager) {
+        synchronized (this) {
+          if (completed) {
+            throw new OutOfMemoryException(
+                "Cannot allocate " + size + " JVM UDF bytes after task completion");
           }
-          throw new OutOfMemoryException(
-              "Failed to acquire " + size + " JVM UDF bytes from Spark TaskMemoryManager");
+        }
+
+        long acquired = consumer == null ? size : consumer.acquireMemory(size);
+        synchronized (this) {
+          if (completed) {
+            if (consumer != null) {
+              consumer.freeAllMemory();
+            }
+            throw new OutOfMemoryException(
+                "Cannot allocate " + size + " JVM UDF bytes after task completion");
+          }
+          if (acquired < size) {
+            if (acquired > 0) {
+              consumer.freeMemory(acquired);
+            }
+            throw new OutOfMemoryException(
+                "Failed to acquire " + size + " JVM UDF bytes from Spark TaskMemoryManager");
+          }
         }
       }
     }
 
     @Override
-    public synchronized boolean onFailedAllocation(long size, AllocationOutcome outcome) {
-      if (!completed && consumer != null) {
-        consumer.freeMemory(size);
+    public boolean onFailedAllocation(long size, AllocationOutcome outcome) {
+      synchronized (this) {
+        if (!completed && consumer != null) {
+          consumer.freeMemory(size);
+        }
       }
       return false;
     }
 
     @Override
     public void onRelease(long size) {
-      BufferAllocator toClose = null;
       synchronized (this) {
         if (!completed && consumer != null) {
           consumer.freeMemory(size);
-        } else if (completed && allocator.getAllocatedMemory() == 0 && !closed) {
-          closed = true;
-          toClose = allocator;
         }
       }
-      if (toClose != null) {
-        close(toClose);
+      closeIfIdle();
+    }
+
+    private synchronized void beginEvaluation() {
+      if (completed) {
+        throw new IllegalStateException(
+            "Cannot evaluate JVM UDF after task " + taskAttemptId + " completed");
       }
+      evaluationsInFlight++;
     }
 
     private void taskCompleted() {
-      BufferAllocator toClose = null;
-      boolean removeOnly = false;
       synchronized (this) {
         completed = true;
         instances.clear();
-        if (consumer != null && consumer.getUsed() > 0) {
+        if (consumer != null) {
           // Spark discards all remaining task accounting immediately after completion listeners.
           // Release it here; later FFI callbacks only drive allocator cleanup.
-          consumer.freeMemory(consumer.getUsed());
+          consumer.freeAllMemory();
         }
-        if ((allocator == null || allocator.getAllocatedMemory() == 0) && !closed) {
+      }
+      closeIfIdle();
+    }
+
+    private void finishEvaluation() {
+      synchronized (this) {
+        evaluationsInFlight--;
+      }
+      closeIfIdle();
+    }
+
+    private void closeIfIdle() {
+      BufferAllocator toClose = null;
+      boolean removeOnly = false;
+      synchronized (this) {
+        if (completed
+            && evaluationsInFlight == 0
+            && (allocator == null || allocator.getAllocatedMemory() == 0)
+            && !closed) {
           closed = true;
           toClose = allocator;
           removeOnly = allocator == null;
@@ -400,8 +456,35 @@ public class CometUdfBridge {
    * and cannot be safely evicted and reconstructed.
    */
   private static final class TaskMemoryConsumer extends MemoryConsumer {
+    private final AtomicLong accounted = new AtomicLong();
+
     private TaskMemoryConsumer(TaskMemoryManager taskMemoryManager) {
       super(taskMemoryManager, 0L, MemoryMode.OFF_HEAP);
+    }
+
+    @Override
+    public long acquireMemory(long size) {
+      long acquired = taskMemoryManager.acquireExecutionMemory(size, this);
+      accounted.addAndGet(acquired);
+      return acquired;
+    }
+
+    @Override
+    public long getUsed() {
+      return accounted.get();
+    }
+
+    @Override
+    public void freeMemory(long size) {
+      taskMemoryManager.releaseExecutionMemory(size, this);
+      accounted.addAndGet(-size);
+    }
+
+    private void freeAllMemory() {
+      long toFree = accounted.getAndSet(0);
+      if (toFree > 0) {
+        taskMemoryManager.releaseExecutionMemory(toFree, this);
+      }
     }
 
     @Override
