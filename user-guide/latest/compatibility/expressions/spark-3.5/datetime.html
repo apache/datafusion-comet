@@ -856,13 +856,6 @@ with Spark. For dates beyond this range, functions that involve timezone-aware c
 <li><p>Only <code class="docutils literal notranslate"><span class="pre">TimestampType</span></code> and <code class="docutils literal notranslate"><span class="pre">TimestampNTZType</span></code> inputs are supported.</p></li>
 </ul>
 </section>
-<section id="makedate">
-<h2>MakeDate<a class="headerlink" href="#makedate" title="Link to this heading">#</a></h2>
-<p>The following differences from Spark are always present and do not require any additional configuration:</p>
-<ul class="simple">
-<li><p>Native <code class="docutils literal notranslate"><span class="pre">make_date</span></code> is limited to chrono’s year range <code class="docutils literal notranslate"><span class="pre">[-262143,</span> <span class="pre">262142]</span></code>; Spark accepts wider years (for example, <code class="docutils literal notranslate"><span class="pre">300000</span></code>), so Comet returns <code class="docutils literal notranslate"><span class="pre">NULL</span></code> or throws under ANSI mode for dates Spark accepts, and may incorrectly report valid dates as invalid (for example, <code class="docutils literal notranslate"><span class="pre">300000-02-29</span></code> is falsely reported as not a leap year) (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5208">#5208</a>).</p></li>
-</ul>
-</section>
 <section id="makeinterval">
 <h2>MakeInterval<a class="headerlink" href="#makeinterval" title="Link to this heading">#</a></h2>
 <p>The following differences from Spark are always present and do not require any additional configuration:</p>
@@ -982,7 +975,6 @@ with Spark. For dates beyond this range, functions that involve timezone-aware c
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#fromutctimestamp">FromUTCTimestamp</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#fromunixtime">FromUnixTime</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#hours">Hours</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#makedate">MakeDate</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#makeinterval">MakeInterval</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#precisetimestampconversion">PreciseTimestampConversion</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#secondstotimestamp">SecondsToTimestamp</a></li>
