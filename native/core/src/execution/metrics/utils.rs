@@ -65,8 +65,9 @@ pub(crate) fn to_native_metric_node(
 
     let children = spark_plan.children();
     let mut native_metric_node = NativeMetricNode {
-        // Native scans expose the largest metric map, including scan I/O breakdowns.
-        metrics: HashMap::with_capacity(32),
+        // Most operator metric maps are well under 20 entries (e.g. hash-join: 9,
+        // native-scan: ~20). Pre-sizing to 16 avoids the default-capacity rehash.
+        metrics: HashMap::with_capacity(16),
         children: Vec::with_capacity(children.len()),
     };
 

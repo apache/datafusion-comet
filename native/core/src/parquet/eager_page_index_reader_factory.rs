@@ -66,15 +66,13 @@ use object_store::{
     ObjectMeta, ObjectStore, PutMultipartOptions, PutOptions, PutPayload, PutResult, RenameOptions,
     Result as ObjectStoreResult,
 };
-use parking_lot::Mutex;
 use parquet::arrow::arrow_reader::ArrowReaderOptions;
 use parquet::arrow::async_reader::{AsyncFileReader, ParquetObjectReader};
 use parquet::file::metadata::{PageIndexPolicy, ParquetMetaData};
-use std::collections::HashMap;
 use std::fmt::{Debug, Display, Formatter};
 use std::ops::Range;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Weak};
+use std::sync::Arc;
 
 /// Whether the reader's storage API represents a local file or a non-local object store.
 ///
@@ -86,8 +84,6 @@ pub(crate) enum ScanIoSource {
     ObjectStore,
     Local,
 }
-
-type ColumnDataRangeCache = HashMap<Path, (Weak<ParquetMetaData>, Arc<[Range<u64>]>)>;
 
 /// Scan I/O metrics at the boundaries this reader can observe without guessing.
 ///
@@ -115,7 +111,6 @@ struct ScanIoMetrics {
     local_bytes_returned: Count,
     metadata_cache_hits: Count,
     metadata_cache_misses: Count,
-    column_data_ranges: Mutex<ColumnDataRangeCache>,
     source: ScanIoSource,
 }
 
@@ -140,48 +135,7 @@ impl ScanIoMetrics {
             local_bytes_returned: byte_counter(metrics, "scan_io_local_bytes_returned"),
             metadata_cache_hits: count_counter(metrics, "scan_io_metadata_cache_hits"),
             metadata_cache_misses: count_counter(metrics, "scan_io_metadata_cache_misses"),
-            column_data_ranges: Mutex::new(HashMap::new()),
             source,
-        }
-    }
-
-    fn column_data_ranges(
-        &self,
-        location: &Path,
-        metadata: &Arc<ParquetMetaData>,
-    ) -> Arc<[Range<u64>]> {
-        let metadata_identity = Arc::downgrade(metadata);
-        let mut cached_ranges = self.column_data_ranges.lock();
-        if let Some((cached_metadata, ranges)) = cached_ranges.get(location) {
-            if cached_metadata.ptr_eq(&metadata_identity) {
-                return Arc::clone(ranges);
-            }
-        }
-
-        if cached_ranges.len() == cached_ranges.capacity() {
-            cached_ranges.retain(|_, (cached_metadata, _)| cached_metadata.strong_count() > 0);
-        }
-
-        let ranges = column_data_ranges(metadata);
-        cached_ranges.insert(location.clone(), (metadata_identity, Arc::clone(&ranges)));
-        ranges
-    }
-
-    fn add_reader_requested(&self, bytes: ScanIoBytes) {
-        if bytes.data > 0 {
-            self.add_data_requested(bytes.data);
-        }
-        if bytes.metadata > 0 {
-            self.add_metadata_requested(bytes.metadata);
-        }
-    }
-
-    fn add_reader_returned(&self, bytes: ScanIoBytes) {
-        if bytes.data > 0 {
-            self.add_data_returned(bytes.data);
-        }
-        if bytes.metadata > 0 {
-            self.add_metadata_returned(bytes.metadata);
         }
     }
 
@@ -243,94 +197,12 @@ fn count_counter(metrics: &ExecutionPlanMetricsSet, name: &'static str) -> Count
         .global_counter(name)
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-struct ScanIoBytes {
-    data: usize,
-    metadata: usize,
-}
-
-impl ScanIoBytes {
-    fn add(&mut self, other: Self) {
-        self.data += other.data;
-        self.metadata += other.metadata;
-    }
-}
-
 fn range_bytes(range: &Range<u64>) -> usize {
     (range.end - range.start) as usize
 }
 
 fn ranges_bytes(ranges: &[Range<u64>]) -> usize {
     ranges.iter().map(range_bytes).sum()
-}
-
-fn column_data_ranges(metadata: &ParquetMetaData) -> Arc<[Range<u64>]> {
-    let mut ranges = metadata
-        .row_groups()
-        .iter()
-        .flat_map(|row_group| row_group.columns())
-        .filter_map(|column| {
-            let start = u64::try_from(
-                column
-                    .dictionary_page_offset()
-                    .unwrap_or_else(|| column.data_page_offset()),
-            )
-            .ok()?;
-            let length = u64::try_from(column.compressed_size()).ok()?;
-            let end = start.checked_add(length)?;
-            (start < end).then_some(start..end)
-        })
-        .collect::<Vec<_>>();
-    ranges.sort_unstable_by_key(|range| range.start);
-
-    let mut merged: Vec<Range<u64>> = Vec::with_capacity(ranges.len());
-    for range in ranges {
-        if let Some(previous) = merged.last_mut() {
-            if range.start <= previous.end {
-                previous.end = previous.end.max(range.end);
-                continue;
-            }
-        }
-        merged.push(range);
-    }
-    Arc::from(merged)
-}
-
-fn classify_reader_range(range: &Range<u64>, data_ranges: Option<&[Range<u64>]>) -> ScanIoBytes {
-    let requested = range_bytes(range);
-    let Some(data_ranges) = data_ranges else {
-        return ScanIoBytes {
-            data: requested,
-            metadata: 0,
-        };
-    };
-
-    let first = data_ranges.partition_point(|data_range| data_range.end <= range.start);
-    let mut data = 0;
-    for data_range in &data_ranges[first..] {
-        if data_range.start >= range.end {
-            break;
-        }
-        let start = range.start.max(data_range.start);
-        let end = range.end.min(data_range.end);
-        if start < end {
-            data += range_bytes(&(start..end));
-        }
-    }
-
-    ScanIoBytes {
-        data,
-        metadata: requested - data,
-    }
-}
-
-fn classify_returned_range(
-    requested: &Range<u64>,
-    returned: usize,
-    data_ranges: Option<&[Range<u64>]>,
-) -> ScanIoBytes {
-    let end = requested.start.saturating_add(returned as u64);
-    classify_reader_range(&(requested.start..end), data_ranges)
 }
 
 #[derive(Debug)]
@@ -385,7 +257,6 @@ impl ParquetFileReaderFactory for EagerPageIndexReaderFactory {
             partitioned_file,
             metadata_cache: Arc::clone(&self.metadata_cache),
             metadata_size_hint,
-            data_ranges: None,
         }))
     }
 }
@@ -398,26 +269,18 @@ struct EagerPageIndexReader {
     partitioned_file: PartitionedFile,
     metadata_cache: Arc<dyn FileMetadataCache>,
     metadata_size_hint: Option<usize>,
-    data_ranges: Option<Arc<[Range<u64>]>>,
 }
 
 impl AsyncFileReader for EagerPageIndexReader {
     fn get_bytes(&mut self, range: Range<u64>) -> BoxFuture<'_, parquet::errors::Result<Bytes>> {
         let requested = range_bytes(&range);
         self.file_metrics.bytes_scanned.add(requested);
-        self.scan_io_metrics
-            .add_reader_requested(classify_reader_range(&range, self.data_ranges.as_deref()));
+        self.scan_io_metrics.add_metadata_requested(requested);
         let scan_io_metrics = Arc::clone(&self.scan_io_metrics);
-        let data_ranges = self.data_ranges.clone();
-        let requested_range = range.clone();
         let future = self.inner.get_bytes(range);
         async move {
             let bytes = future.await?;
-            scan_io_metrics.add_reader_returned(classify_returned_range(
-                &requested_range,
-                bytes.len(),
-                data_ranges.as_deref(),
-            ));
+            scan_io_metrics.add_metadata_returned(bytes.len());
             Ok(bytes)
         }
         .boxed()
@@ -432,38 +295,12 @@ impl AsyncFileReader for EagerPageIndexReader {
     {
         let requested = ranges_bytes(&ranges);
         self.file_metrics.bytes_scanned.add(requested);
-        let requested_bytes = ranges
-            .iter()
-            .fold(ScanIoBytes::default(), |mut total, range| {
-                total.add(classify_reader_range(range, self.data_ranges.as_deref()));
-                total
-            });
-        self.scan_io_metrics.add_reader_requested(requested_bytes);
-        let returned_ranges = (requested_bytes.metadata > 0).then(|| ranges.clone());
+        self.scan_io_metrics.add_data_requested(requested);
         let scan_io_metrics = Arc::clone(&self.scan_io_metrics);
-        let data_ranges = self.data_ranges.clone();
         let future = self.inner.get_byte_ranges(ranges);
         async move {
             let bytes = future.await?;
-            let returned = if let Some(ranges) = returned_ranges {
-                ranges.iter().zip(&bytes).fold(
-                    ScanIoBytes::default(),
-                    |mut total, (range, bytes)| {
-                        total.add(classify_returned_range(
-                            range,
-                            bytes.len(),
-                            data_ranges.as_deref(),
-                        ));
-                        total
-                    },
-                )
-            } else {
-                ScanIoBytes {
-                    data: bytes.iter().map(Bytes::len).sum(),
-                    metadata: 0,
-                }
-            };
-            scan_io_metrics.add_reader_returned(returned);
+            scan_io_metrics.add_data_returned(bytes.iter().map(Bytes::len).sum());
             Ok(bytes)
         }
         .boxed()
@@ -480,7 +317,6 @@ impl AsyncFileReader for EagerPageIndexReader {
         let store = Arc::clone(&self.store);
         let metadata_size_hint = self.metadata_size_hint;
         let scan_io_metrics = Arc::clone(&self.scan_io_metrics);
-        let data_ranges = &mut self.data_ranges;
         async move {
             let file_decryption_properties = options
                 .and_then(|o| o.file_decryption_properties())
@@ -512,14 +348,9 @@ impl AsyncFileReader for EagerPageIndexReader {
                     ))
                 });
 
-            if let Ok(metadata) = &metadata {
-                *data_ranges =
-                    Some(scan_io_metrics.column_data_ranges(&object_meta.location, metadata));
-                if cache_enabled {
-                    scan_io_metrics.record_metadata_cache_result(
-                        metadata_storage_reads.load(Ordering::Relaxed),
-                    );
-                }
+            if metadata.is_ok() && cache_enabled {
+                scan_io_metrics
+                    .record_metadata_cache_result(metadata_storage_reads.load(Ordering::Relaxed));
             }
 
             metadata
@@ -685,37 +516,5 @@ impl Drop for EagerPageIndexReader {
         self.file_metrics
             .scan_efficiency_ratio
             .set_total(self.partitioned_file.object_meta.size as usize);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use parquet::file::metadata::FileMetaData;
-    use parquet::schema::types::{SchemaDescriptor, Type};
-
-    #[test]
-    fn shares_column_data_ranges_by_metadata_identity() {
-        let schema = Arc::new(SchemaDescriptor::new(Arc::new(
-            Type::group_type_builder("schema").build().unwrap(),
-        )));
-        let metadata = Arc::new(ParquetMetaData::new(
-            FileMetaData::new(1, 0, None, None, schema, None),
-            vec![],
-        ));
-        let metrics = ScanIoMetrics::new(&ExecutionPlanMetricsSet::new(), ScanIoSource::Local);
-        let location = Path::from("test.parquet");
-
-        let first = metrics.column_data_ranges(&location, &metadata);
-        let second = metrics.column_data_ranges(&location, &metadata);
-        assert!(Arc::ptr_eq(&first, &second));
-
-        let replacement = Arc::new(metadata.as_ref().clone());
-        let refreshed = metrics.column_data_ranges(&location, &replacement);
-        assert!(!Arc::ptr_eq(&first, &refreshed));
-        assert!(Arc::ptr_eq(
-            &refreshed,
-            &metrics.column_data_ranges(&location, &replacement)
-        ));
     }
 }
