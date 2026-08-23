@@ -270,7 +270,8 @@ fn prepare_variant_for_unshredding(variant: &VariantArray) -> DataFusionResult<V
 /// Arrow-rs parquet-variant-compute allows dictionary-encoded metadata in its contract, but 58.4's
 /// `VariantArray::try_new` validates only Binary, LargeBinary, and BinaryView. Decode just that
 /// child and keep the physical struct otherwise unchanged.
-/// https://github.com/apache/arrow-rs/blob/0ff81c1215cc026a1de93ce3d2078df1ecba6f09/parquet-variant-compute/src/variant_array.rs#L276-L310
+/// https://github.com/apache/arrow-rs/blob/58.4.0/parquet-variant-compute/src/variant_array.rs#L276-L310
+/// Upstream issue: https://github.com/apache/arrow-rs/issues/10802
 fn decode_variant_metadata_dictionary(array: &ArrayRef) -> DataFusionResult<ArrayRef> {
     let Some(struct_array) = array.as_any().downcast_ref::<StructArray>() else {
         return Ok(Arc::clone(array));
@@ -392,6 +393,11 @@ fn is_compatible_variant(variant: &Variant<'_, '_>, order: VariantObjectKeyOrder
 
 /// Reorder object keys for either Arrow's UTF-8 order or Spark's Java UTF-16 order. Preserve
 /// already-compatible values byte-for-byte and retain the original metadata dictionary.
+/// SPARK-56637 tracks this mismatch. The metadata dictionary's sorted flag affects dictionary
+/// lookup, not object-entry ordering; Spark's builder and lookup must agree while continuing to
+/// read Variant values already written by Spark 4.x in UTF-16 order.
+/// https://issues.apache.org/jira/browse/SPARK-56637
+/// https://github.com/apache/spark/pull/55928
 fn reorder_variant_values(
     value: &ArrayRef,
     metadata: &ArrayRef,
@@ -427,6 +433,7 @@ fn reorder_variant_values(
             // Spark encodes empty object keys with equal metadata offsets, which Arrow 58.4's
             // full validator rejects. Keep shallow parsing and all accesses inside this boundary.
             // https://github.com/apache/arrow-rs/blob/58.4.0/parquet-variant/src/variant/metadata.rs#L307-L317
+            // Upstream fix: https://github.com/apache/arrow-rs/pull/10352
             let metadata = VariantMetadata::new(metadata.value(index));
             let variant = Variant::new_with_metadata(metadata.clone(), value.value(index));
             if is_compatible_variant(&variant, order) {
