@@ -357,6 +357,20 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     }
   }
 
+  // parquet.hadoop.vectored.io.enabled is a reader-side vectored-IO knob declared by
+  // parquet-hadoop (ParquetInputFormat.HADOOP_VECTORED_IO_ENABLED, default true in
+  // parquet-hadoop 1.16+). iceberg-java's writer never consumes it, so it must not
+  // disable native Iceberg writes when it happens to be present in the session
+  // Hadoop configuration.
+  test("Compatible when only parquet.hadoop.vectored.io.enabled is set in Hadoop configuration") {
+    withDetectionCatalog { dir =>
+      createTable(dir, "vectored_io_only", partitionSpec = "")
+      withSQLConf("parquet.hadoop.vectored.io.enabled" -> "true") {
+        assertSupportLevelIs[Compatible]("vectored_io_only")
+      }
+    }
+  }
+
   test("fall-back: io-impl set") {
     withDetectionCatalog { dir =>
       createTable(

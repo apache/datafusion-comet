@@ -79,7 +79,7 @@ jobs:
     env:
       SPARK_LOCAL_IP: localhost
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Setup Rust & Java toolchain
         uses: ./.github/actions/setup-builder
