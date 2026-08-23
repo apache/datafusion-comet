@@ -95,6 +95,7 @@ use std::time::{Duration, Instant};
 use std::{sync::Arc, task::Poll};
 use tokio::runtime::{Handle, Runtime};
 use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 
 use crate::execution::memory_pools::{
     create_memory_pool, handle_task_shared_pool_release, parse_memory_pool_config, MemoryPoolConfig,
@@ -324,6 +325,7 @@ struct ExecutionContext {
     pub stream: Option<SendableRecordBatchStream>,
     /// Receives batches from a spawned tokio task (async I/O path)
     pub batch_receiver: Option<mpsc::Receiver<DataFusionResult<RecordBatch>>>,
+    pub batch_producer: Option<JoinHandle<()>>,
     /// Native metrics
     pub metrics: Arc<Global<JObject<'static>>>,
     // The interval in milliseconds to update metrics
@@ -537,6 +539,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 input_sources,
                 stream: None,
                 batch_receiver: None,
+                batch_producer: None,
                 metrics,
                 metrics_update_interval,
                 metrics_last_update_time: Instant::now(),
@@ -835,7 +838,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                     // decreasing to 1 would serialize production and consumption.
                     let (tx, rx) = mpsc::channel(2);
                     let mut stream = stream;
-                    get_runtime().spawn(async move {
+                    let producer = get_runtime().spawn(async move {
                         let result = std::panic::AssertUnwindSafe(async {
                             while let Some(batch) = stream.next().await {
                                 if tx.send(batch).await.is_err() {
@@ -862,6 +865,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                         }
                     });
                     exec_context.batch_receiver = Some(rx);
+                    exec_context.batch_producer = Some(producer);
                 } else {
                     exec_context.stream = Some(stream);
                 }
@@ -966,6 +970,11 @@ pub extern "system" fn Java_org_apache_comet_Native_releasePlan(
     try_unwrap_or_throw(&e, |env| unsafe {
         let execution_context = get_execution_context(exec_context);
 
+        execution_context.batch_receiver.take();
+        if let Some(producer) = execution_context.batch_producer.take() {
+            stop_batch_producer(producer);
+        }
+
         // Update metrics
         update_metrics(env, execution_context)?;
 
@@ -987,6 +996,11 @@ pub extern "system" fn Java_org_apache_comet_Native_releasePlan(
         let _: Box<ExecutionContext> = Box::from_raw(execution_context);
         Ok(())
     })
+}
+
+fn stop_batch_producer(producer: JoinHandle<()>) {
+    producer.abort();
+    let _ = get_runtime().block_on(producer);
 }
 
 fn update_metrics(env: &mut Env, exec_context: &mut ExecutionContext) -> CometResult<()> {
@@ -1374,4 +1388,25 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_columnarToRowClose(
         }
         Ok(())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn waits_for_background_batch_producer_shutdown() {
+        let (sender, receiver) = std::sync::mpsc::channel::<()>();
+        let producer = get_runtime().spawn(async move {
+            let _sender = sender;
+            futures::future::pending::<()>().await;
+        });
+
+        stop_batch_producer(producer);
+
+        assert_eq!(
+            receiver.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Disconnected)
+        );
+    }
 }

@@ -66,13 +66,15 @@ use object_store::{
     ObjectMeta, ObjectStore, PutMultipartOptions, PutOptions, PutPayload, PutResult, RenameOptions,
     Result as ObjectStoreResult,
 };
+use parking_lot::Mutex;
 use parquet::arrow::arrow_reader::ArrowReaderOptions;
 use parquet::arrow::async_reader::{AsyncFileReader, ParquetObjectReader};
 use parquet::file::metadata::{PageIndexPolicy, ParquetMetaData};
+use std::collections::HashMap;
 use std::fmt::{Debug, Display, Formatter};
 use std::ops::Range;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 /// Whether the reader's storage API represents a local file or a non-local object store.
 ///
@@ -84,6 +86,8 @@ pub(crate) enum ScanIoSource {
     ObjectStore,
     Local,
 }
+
+type ColumnDataRangeCache = HashMap<Path, (Weak<ParquetMetaData>, Arc<[Range<u64>]>)>;
 
 /// Scan I/O metrics at the boundaries this reader can observe without guessing.
 ///
@@ -111,6 +115,7 @@ struct ScanIoMetrics {
     local_bytes_returned: Count,
     metadata_cache_hits: Count,
     metadata_cache_misses: Count,
+    column_data_ranges: Mutex<ColumnDataRangeCache>,
     source: ScanIoSource,
 }
 
@@ -135,8 +140,31 @@ impl ScanIoMetrics {
             local_bytes_returned: byte_counter(metrics, "scan_io_local_bytes_returned"),
             metadata_cache_hits: count_counter(metrics, "scan_io_metadata_cache_hits"),
             metadata_cache_misses: count_counter(metrics, "scan_io_metadata_cache_misses"),
+            column_data_ranges: Mutex::new(HashMap::new()),
             source,
         }
+    }
+
+    fn column_data_ranges(
+        &self,
+        location: &Path,
+        metadata: &Arc<ParquetMetaData>,
+    ) -> Arc<[Range<u64>]> {
+        let metadata_identity = Arc::downgrade(metadata);
+        let mut cached_ranges = self.column_data_ranges.lock();
+        if let Some((cached_metadata, ranges)) = cached_ranges.get(location) {
+            if cached_metadata.ptr_eq(&metadata_identity) {
+                return Arc::clone(ranges);
+            }
+        }
+
+        if cached_ranges.len() == cached_ranges.capacity() {
+            cached_ranges.retain(|_, (cached_metadata, _)| cached_metadata.strong_count() > 0);
+        }
+
+        let ranges = column_data_ranges(metadata);
+        cached_ranges.insert(location.clone(), (metadata_identity, Arc::clone(&ranges)));
+        ranges
     }
 
     fn add_reader_requested(&self, bytes: ScanIoBytes) {
@@ -485,7 +513,8 @@ impl AsyncFileReader for EagerPageIndexReader {
                 });
 
             if let Ok(metadata) = &metadata {
-                *data_ranges = Some(column_data_ranges(metadata));
+                *data_ranges =
+                    Some(scan_io_metrics.column_data_ranges(&object_meta.location, metadata));
                 if cache_enabled {
                     scan_io_metrics.record_metadata_cache_result(
                         metadata_storage_reads.load(Ordering::Relaxed),
@@ -656,5 +685,37 @@ impl Drop for EagerPageIndexReader {
         self.file_metrics
             .scan_efficiency_ratio
             .set_total(self.partitioned_file.object_meta.size as usize);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use parquet::file::metadata::FileMetaData;
+    use parquet::schema::types::{SchemaDescriptor, Type};
+
+    #[test]
+    fn shares_column_data_ranges_by_metadata_identity() {
+        let schema = Arc::new(SchemaDescriptor::new(Arc::new(
+            Type::group_type_builder("schema").build().unwrap(),
+        )));
+        let metadata = Arc::new(ParquetMetaData::new(
+            FileMetaData::new(1, 0, None, None, schema, None),
+            vec![],
+        ));
+        let metrics = ScanIoMetrics::new(&ExecutionPlanMetricsSet::new(), ScanIoSource::Local);
+        let location = Path::from("test.parquet");
+
+        let first = metrics.column_data_ranges(&location, &metadata);
+        let second = metrics.column_data_ranges(&location, &metadata);
+        assert!(Arc::ptr_eq(&first, &second));
+
+        let replacement = Arc::new(metadata.as_ref().clone());
+        let refreshed = metrics.column_data_ranges(&location, &replacement);
+        assert!(!Arc::ptr_eq(&first, &refreshed));
+        assert!(Arc::ptr_eq(
+            &refreshed,
+            &metrics.column_data_ranges(&location, &replacement)
+        ));
     }
 }
