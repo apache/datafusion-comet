@@ -329,31 +329,22 @@ object IcebergReflection extends Logging {
    * Different Iceberg versions expose file paths differently:
    *   - Newer versions: location() returns String
    *   - Older versions: path() returns CharSequence
+   *
+   * `None` means neither accessor is declared; a genuine invoke failure propagates instead.
    */
-  def extractFileLocation(contentFileClass: Class[_], file: Any): Option[String] = {
-    try {
-      findMethod(contentFileClass, "location") match {
-        case Some(locationMethod) => Some(locationMethod.invoke(file).asInstanceOf[String])
-        case None =>
-          findMethod(contentFileClass, "path")
-            .map(_.invoke(file).asInstanceOf[CharSequence].toString)
-      }
-    } catch {
-      case _: Exception => None
+  def extractFileLocation(contentFileClass: Class[_], file: Any): Option[String] =
+    findMethod(contentFileClass, "location") match {
+      case Some(locationMethod) => Some(locationMethod.invoke(file).asInstanceOf[String])
+      case None =>
+        findMethod(contentFileClass, "path")
+          .map(_.invoke(file).asInstanceOf[CharSequence].toString)
     }
-  }
 
   /**
    * Extracts file location from ContentFile instance using dynamic class lookup.
    */
-  def extractFileLocation(file: Any): Option[String] = {
-    try {
-      val contentFileClass = loadClass(ClassNames.CONTENT_FILE)
-      extractFileLocation(contentFileClass, file)
-    } catch {
-      case _: Exception => None
-    }
-  }
+  def extractFileLocation(file: Any): Option[String] =
+    tryLoadClass(ClassNames.CONTENT_FILE).flatMap(extractFileLocation(_, file))
 
   /**
    * The file format of a ContentFile (data or delete file), e.g. "PARQUET", "AVRO", "ORC".
@@ -361,14 +352,11 @@ object IcebergReflection extends Logging {
    * `contentFileClass` is the public ContentFile interface, which callers already hold: Iceberg's
    * concrete file impls are package-private, so `format()` resolved on the concrete class throws
    * IllegalAccessException when invoked.
+   *
+   * `None` means `format()` isn't declared; a genuine invoke failure propagates instead.
    */
-  def getFileFormat(contentFileClass: Class[_], file: Any): Option[String] = {
-    try {
-      findMethod(contentFileClass, "format").map(_.invoke(file).toString)
-    } catch {
-      case _: Exception => None
-    }
-  }
+  def getFileFormat(contentFileClass: Class[_], file: Any): Option[String] =
+    findMethod(contentFileClass, "format").map(_.invoke(file).toString)
 
   /**
    * Gets the Iceberg Table from a SparkScan.
@@ -786,20 +774,18 @@ object IcebergReflection extends Logging {
    *   An Iceberg DeleteFile object
    * @return
    *   List of field IDs used in equality deletes, or empty list for position deletes
+   *
+   * Empty means either `equalityFieldIds()` isn't declared, or it returned `null` (Iceberg's
+   * normal contract for a position-delete file). A genuine invoke failure propagates instead of
+   * collapsing into empty.
    */
-  def getEqualityFieldIds(deleteFileClass: Class[_], deleteFile: Any): java.util.List[_] = {
-    try {
-      val ids =
-        getMethod(deleteFileClass, "equalityFieldIds")
-          .invoke(deleteFile)
-          .asInstanceOf[java.util.List[_]]
-      if (ids == null) new java.util.ArrayList[Any]() else ids
-    } catch {
-      case _: Exception =>
-        // Position delete files return null/empty for equalityFieldIds
-        new java.util.ArrayList[Any]()
+  def getEqualityFieldIds(deleteFileClass: Class[_], deleteFile: Any): java.util.List[_] =
+    findMethod(deleteFileClass, "equalityFieldIds") match {
+      case None => new java.util.ArrayList[Any]()
+      case Some(method) =>
+        val ids = method.invoke(deleteFile).asInstanceOf[java.util.List[_]]
+        if (ids == null) new java.util.ArrayList[Any]() else ids
     }
-  }
 
   /**
    * Gets field name and type from schema by field ID.
