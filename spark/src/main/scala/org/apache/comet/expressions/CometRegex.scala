@@ -48,7 +48,7 @@ object CometRegex {
     flavor match {
       case RegexFlavor.RLike =>
         val scanner = new Scanner(pattern)
-        if (scanner.parseExpr() && !scanner.remaining) {
+        if (scanner.parseExpr().isDefined && !scanner.remaining) {
           Compatible()
         } else {
           Incompatible(None)
@@ -59,8 +59,16 @@ object CometRegex {
   private val MetaEscapes: Set[Char] =
     Set('.', '*', '+', '?', '(', ')', '[', ']', '{', '}', '|', '^', '$', '\\')
 
+  // Conservative compile-size gates. Rust `regex` rejects large counted
+  // expansions and deep nesting; a single `{n}` cap is not enough because
+  // nested repetition multiplies. Stay well below crate defaults (nest 250).
+  private val MaxGroupDepth = 32
+  private val MaxCountedBound = 256
+  private val MaxExpansion = 4096L
+
   private class Scanner(pattern: String) {
     private var i = 0
+    private var groupDepth = 0
 
     def remaining: Boolean = i < pattern.length
 
@@ -79,119 +87,169 @@ object CometRegex {
 
     private def startsWith(s: String): Boolean = pattern.startsWith(s, i)
 
-    def parseExpr(): Boolean = {
-      if (!parseTerm()) {
-        return false
+    // Returns a conservative compiled-size estimate, or None if the construct
+    // is unrecognized or exceeds the compile budget.
+    def parseExpr(): Option[Long] = {
+      val first = parseTerm() match {
+        case Some(s) => s
+        case None => return None
       }
+      var total = first
       while (remaining && peek == '|') {
         consume()
-        if (!parseTerm()) {
-          return false
+        parseTerm() match {
+          case Some(s) => total = saturatingAdd(total, s)
+          case None => return None
         }
       }
-      true
+      Some(total)
     }
 
-    private def parseTerm(): Boolean = {
+    private def parseTerm(): Option[Long] = {
+      var total = 0L
+      var any = false
       while (remaining && peek != '|' && peek != ')') {
-        if (!parseFactor()) {
-          return false
+        parseFactor() match {
+          case Some(s) =>
+            total = saturatingAdd(total, s)
+            any = true
+          case None =>
+            return None
         }
       }
-      true
+      Some(if (any) total else 1L)
     }
 
-    private def parseFactor(): Boolean = {
-      if (!parseAtom()) {
-        return false
+    private def parseFactor(): Option[Long] = {
+      val atomSize = parseAtom() match {
+        case Some(s) => s
+        case None => return None
       }
-      parseOptionalQuantifier()
+      parseOptionalQuantifier(atomSize)
     }
 
-    private def parseAtom(): Boolean = {
+    private def parseAtom(): Option[Long] = {
       if (!remaining) {
-        return false
+        return None
       }
       peek match {
-        case '\\' => parseEscape(inClass = false).isDefined
-        case '[' => parseClass()
+        case '\\' =>
+          if (parseEscape(inClass = false).isDefined) Some(1L) else None
+        case '[' =>
+          if (parseClass()) Some(1L) else None
         case '(' => parseGroup()
         case '.' | '^' | '$' | '*' | '+' | '?' | '{' | '}' | ')' | ']' | '|' =>
-          false
+          None
         case c if isPrintableAscii(c) =>
           consume()
-          true
-        case _ => false
+          Some(1L)
+        case _ => None
       }
     }
 
-    private def parseGroup(): Boolean = {
+    private def parseGroup(): Option[Long] = {
       consume() // '('
       if (!remaining) {
-        return false
+        return None
       }
       if (startsWith("?:")) {
         i += 2
       } else if (peek == '?') {
         // lookaround, flags, named groups, atomic groups, comments, ...
-        return false
+        return None
       }
-      if (!parseExpr()) {
-        return false
+      if (groupDepth >= MaxGroupDepth) {
+        return None
       }
-      remaining && consume() == ')'
+      groupDepth += 1
+      val inner = parseExpr()
+      val closed = remaining && consume() == ')'
+      groupDepth -= 1
+      if (closed) inner else None
     }
 
-    private def parseOptionalQuantifier(): Boolean = {
+    private def parseOptionalQuantifier(atomSize: Long): Option[Long] = {
       if (!remaining) {
-        return true
+        return Some(atomSize)
       }
       peek match {
         case '*' | '+' | '?' =>
           consume()
           if (remaining && (peek == '+' || peek == '?')) {
             // possessive or lazy
-            false
+            None
           } else {
-            true
+            Some(atomSize)
           }
-        case '{' => parseCountedQuantifier()
-        case _ => true
+        case '{' => parseCountedQuantifier(atomSize)
+        case _ => Some(atomSize)
       }
     }
 
-    private def parseCountedQuantifier(): Boolean = {
+    private def parseCountedQuantifier(atomSize: Long): Option[Long] = {
       consume() // '{'
       val n = parseNonNegInt() match {
         case Some(v) => v
-        case None => return false
+        case None => return None
+      }
+      if (n > MaxCountedBound) {
+        return None
       }
       if (!remaining) {
-        return false
+        return None
       }
-      peek match {
+      val bound = peek match {
         case '}' =>
           consume()
-          !isLazyOrPossessiveSuffix
+          if (isLazyOrPossessiveSuffix) {
+            return None
+          }
+          n
         case ',' =>
           consume()
           if (!remaining) {
-            return false
+            return None
           }
           if (peek == '}') {
             consume()
-            !isLazyOrPossessiveSuffix
+            if (isLazyOrPossessiveSuffix) {
+              return None
+            }
+            n
           } else {
             val m = parseNonNegInt() match {
               case Some(v) => v
-              case None => return false
+              case None => return None
             }
-            if (m < n) {
-              return false
+            if (m < n || m > MaxCountedBound) {
+              return None
             }
-            remaining && consume() == '}' && !isLazyOrPossessiveSuffix
+            if (!(remaining && consume() == '}' && !isLazyOrPossessiveSuffix)) {
+              return None
+            }
+            m
           }
-        case _ => false
+        case _ =>
+          return None
+      }
+      val expanded = saturatingMul(atomSize, bound.toLong)
+      if (expanded > MaxExpansion) {
+        None
+      } else {
+        Some(expanded)
+      }
+    }
+
+    private def saturatingAdd(a: Long, b: Long): Long = {
+      val s = a + b
+      if (s < 0) Long.MaxValue else s
+    }
+
+    private def saturatingMul(a: Long, b: Long): Long = {
+      if (a != 0 && b > Long.MaxValue / a) {
+        Long.MaxValue
+      } else {
+        a * b
       }
     }
 
@@ -220,7 +278,9 @@ object CometRegex {
       var contentStarted = false
       var lastAtom: Option[Char] = None
       while (remaining && !(peek == ']' && contentStarted)) {
-        if (startsWith("&&") || peek == '[') {
+        // Rust class set ops (&& / ~~ / --) are not Java literals. Nested
+        // classes and unescaped `]` as an atom are also out of subset.
+        if (startsWith("&&") || startsWith("~~") || startsWith("--") || peek == '[') {
           return false
         }
         val ranging = lastAtom.isDefined && peek == '-' && peekOffset(1).exists(_ != ']')
@@ -247,6 +307,11 @@ object CometRegex {
 
     private def parseClassAtom(): Option[Char] = {
       if (!remaining) {
+        return None
+      }
+      // Unescaped `]` is only the class closer, never a range endpoint. Java
+      // treats a leading `]` as a literal/range start; Rust does not.
+      if (peek == ']') {
         return None
       }
       if (peek == '\\') {

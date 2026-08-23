@@ -191,6 +191,75 @@ class CometRegExpJvmSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("rlike: Rust class set operations stay on the dispatcher") {
+    withRLikeExplain {
+      withSubjects("~", "a", "b", "x", null) {
+        Seq("[a~~b]", "[^a~~b]").foreach { pat =>
+          val df = sql(s"SELECT s, s rlike '$pat' FROM t")
+          checkSparkAnswerAndOperator(df)
+          assert(
+            explainOf(df).contains("JVM codegen dispatcher: rlike"),
+            s"expected dispatcher for $pat, got:\n${explainOf(df)}")
+        }
+      }
+      withSubjects("b", "a", "z", "-", null) {
+        val df = sql("SELECT s, s rlike '[a-z--b]' FROM t")
+        checkSparkAnswerAndOperator(df)
+        assert(
+          explainOf(df).contains("JVM codegen dispatcher: rlike"),
+          s"expected dispatcher for [a-z--b], got:\n${explainOf(df)}")
+      }
+    }
+  }
+
+  test("rlike: leading-bracket class ranges stay on the dispatcher") {
+    withRLikeExplain {
+      withSubjects("_", "-", "]", "a", "z", null) {
+        Seq("[]-a]", "[^]-a]").foreach { pat =>
+          val df = sql(s"SELECT s, s rlike '$pat' FROM t")
+          checkSparkAnswerAndOperator(df)
+          assert(
+            explainOf(df).contains("JVM codegen dispatcher: rlike"),
+            s"expected dispatcher for [$pat], got:\n${explainOf(df)}")
+        }
+      }
+    }
+  }
+
+  test("rlike: over-budget counted repetition stays on the dispatcher") {
+    withRLikeExplain {
+      withSubjects("a", "aaa", null) {
+        val df = sql("SELECT s, s rlike 'a{1000000}' FROM t")
+        checkSparkAnswerAndOperator(df)
+        assert(
+          explainOf(df).contains("JVM codegen dispatcher: rlike"),
+          s"expected dispatcher for a{1000000}, got:\n${explainOf(df)}")
+      }
+      withSubjects(";", "x", "xx", null) {
+        val df = sql("SELECT s, s rlike '[^;]{20000}' FROM t")
+        checkSparkAnswerAndOperator(df)
+        assert(
+          explainOf(df).contains("JVM codegen dispatcher: rlike"),
+          s"expected dispatcher for [^;]{20000}, got:\n${explainOf(df)}")
+      }
+      withSubjects("a", "aaa", null) {
+        val df = sql("SELECT s, s rlike '(a{100}){100}' FROM t")
+        checkSparkAnswerAndOperator(df)
+        assert(
+          explainOf(df).contains("JVM codegen dispatcher: rlike"),
+          s"expected dispatcher for (a{100}){100}, got:\n${explainOf(df)}")
+      }
+      withSubjects("a", "b", null) {
+        val nested = "(" * 33 + "a" + ")" * 33
+        val df = sql(s"SELECT s, s rlike '$nested' FROM t")
+        checkSparkAnswerAndOperator(df)
+        assert(
+          explainOf(df).contains("JVM codegen dispatcher: rlike"),
+          s"expected dispatcher for 33 nested groups, got:\n${explainOf(df)}")
+      }
+    }
+  }
+
   test("rlike: unsafe literal pattern stays on the JVM dispatcher by default") {
     withRLikeExplain {
       withSubjects("abc123", "no digits", null) {

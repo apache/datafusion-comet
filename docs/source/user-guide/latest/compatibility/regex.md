@@ -143,7 +143,9 @@ Even where both engines accept a construct, the matching behavior is not always 
 Comet's plan-time analyzer admits a conservative whitelist of `rlike` literals and runs those on
 the Rust engine by default: printable ASCII literals, simple ASCII character classes, greedy
 quantifiers (`*`, `+`, `?`, `{n}`, `{n,}`, `{n,m}`), capturing and non-capturing groups, and
-alternation. Anchors (`^`, `$`), `.`, `\d` / `\w` / `\s`, inline flags, lookaround, and any
+alternation. Anchors (`^`, `$`), `.`, `\d` / `\w` / `\s`, inline flags, lookaround, Rust-only
+class set operators (`&&`, `~~`, `--`), an unescaped `]` used as a class atom or range
+endpoint, counted or nested patterns that exceed a conservative compile-size budget, and any
 unrecognized construct stay on the Java engine.
 
 For `regexp_replace`, `split`, `regexp_extract`, and `regexp_extract_all`, the native path is

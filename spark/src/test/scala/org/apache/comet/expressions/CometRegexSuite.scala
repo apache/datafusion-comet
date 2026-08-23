@@ -61,7 +61,9 @@ class CometRegexSuite extends AnyFunSuite {
       "[a\\-z]",
       "a b",
       "(?:(?:foo)|bar)",
-      "(ab)+").foreach(assertCompatible)
+      "(ab)+",
+      "[a~b]",
+      "(a{2}){3}").foreach(assertCompatible)
   }
 
   test("admits lexer-boundary patterns that a substring search would misclassify") {
@@ -124,5 +126,23 @@ class CometRegexSuite extends AnyFunSuite {
       "\\x41", // hex escape
       "\\Qabc\\E" // quoted span
     ).foreach(assertIncompatible)
+  }
+
+  test("rejects Rust-only character-class set operations") {
+    Seq("[a~~b]", "[a-z--b]", "[^a~~b]", "[^a-z--b]", "[a&&b]").foreach(assertIncompatible)
+  }
+
+  test("rejects unescaped ] used as a character-class atom or range endpoint") {
+    Seq("[]-a]", "[^]-a]", "[]]", "[^]]").foreach(assertIncompatible)
+    assertCompatible("[\\]]")
+    assertCompatible("[a\\]]")
+  }
+
+  test("rejects counted or nested patterns that can exceed the Rust compile budget") {
+    Seq("a{1000000}", "[^;]{20000}", "a{257}", "(a{100}){100}", "(" * 33 + "a" + ")" * 33)
+      .foreach(assertIncompatible)
+    assertCompatible("a{256}")
+    assertCompatible("(a{2}){3}")
+    assertCompatible("(" * 32 + "a" + ")" * 32)
   }
 }
