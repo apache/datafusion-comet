@@ -338,7 +338,10 @@ mod tests {
     use futures::StreamExt;
     use object_store::memory::InMemory;
     use object_store::{ObjectStore, ObjectStoreExt};
+    use parquet::arrow::arrow_reader::ArrowReaderOptions;
     use parquet::arrow::ArrowWriter;
+    use parquet::encryption::decrypt::{FileDecryptionProperties, KeyRetriever};
+    use parquet::encryption::encrypt::FileEncryptionProperties;
     use parquet::file::metadata::PageIndexPolicy;
     use parquet::file::properties::{EnabledStatistics, WriterProperties};
     use std::fs::File;
@@ -911,6 +914,98 @@ mod tests {
             file_size
         );
         assert_eq!(reader_metric(&metrics, "scan_io_metadata_cache_misses"), 1);
+    }
+
+    #[tokio::test]
+    async fn reports_encrypted_footer_before_key_retrieval() {
+        struct ObservingKeyRetriever {
+            key: Vec<u8>,
+            metrics: Arc<ExecutionPlanMetricsSet>,
+            footer_bytes: usize,
+        }
+
+        impl KeyRetriever for ObservingKeyRetriever {
+            fn retrieve_key(&self, _key_metadata: &[u8]) -> parquet::errors::Result<Vec<u8>> {
+                assert_eq!(reader_metric(&self.metrics, "scan_io_footer_reads"), 1);
+                assert_eq!(
+                    reader_metric(&self.metrics, "scan_io_footer_bytes"),
+                    self.footer_bytes
+                );
+                Ok(self.key.clone())
+            }
+        }
+
+        let key = b"0123456789012345".to_vec();
+        let encryption = FileEncryptionProperties::builder(key.clone())
+            .with_footer_key_metadata(b"footer".to_vec())
+            .build()
+            .unwrap();
+        let properties = WriterProperties::builder()
+            .with_file_encryption_properties(encryption)
+            .build();
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+        let filename = get_temp_filename();
+        let mut writer =
+            ArrowWriter::try_new(File::create(&filename).unwrap(), schema, Some(properties))
+                .unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+
+        let file_bytes = std::fs::read(&filename).unwrap();
+        let file_size = file_bytes.len();
+        let footer_bytes = usize::try_from(u32::from_le_bytes(
+            file_bytes[file_size - 8..file_size - 4].try_into().unwrap(),
+        ))
+        .unwrap();
+        let location = object_store::path::Path::from("encrypted-footer.parquet");
+        let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        store
+            .put(&location, Bytes::from(file_bytes).into())
+            .await
+            .unwrap();
+
+        let session_ctx = Arc::new(SessionContext::new());
+        let metadata_cache = session_ctx
+            .runtime_env()
+            .cache_manager
+            .get_file_metadata_cache();
+        let metrics = Arc::new(ExecutionPlanMetricsSet::new());
+        let factory = EagerPageIndexReaderFactory::new(
+            store,
+            metadata_cache,
+            ScanIoSource::ObjectStore,
+            &metrics,
+        );
+        let mut reader = factory
+            .create_reader(
+                0,
+                PartitionedFile::new(location.to_string(), file_size as u64),
+                Some(512 * 1024),
+                &metrics,
+            )
+            .unwrap();
+        let decryption =
+            FileDecryptionProperties::with_key_retriever(Arc::new(ObservingKeyRetriever {
+                key,
+                metrics: Arc::clone(&metrics),
+                footer_bytes,
+            }))
+            .build()
+            .unwrap();
+        let options = ArrowReaderOptions::new().with_file_decryption_properties(decryption);
+
+        reader.get_metadata(Some(&options)).await.unwrap();
+
+        assert_eq!(reader_metric(&metrics, "scan_io_footer_reads"), 1);
+        assert_eq!(
+            reader_metric(&metrics, "scan_io_footer_bytes"),
+            footer_bytes
+        );
     }
 
     #[tokio::test]

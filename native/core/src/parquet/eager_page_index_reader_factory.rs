@@ -287,6 +287,7 @@ impl AsyncFileReader for EagerPageIndexReader {
                     storage_reads: Arc::clone(&metadata_storage_reads),
                     footer_payload_bytes: Arc::clone(&footer_payload_bytes),
                     file_size: object_meta.size,
+                    record_footer_immediately: !cache_enabled,
                 },
             };
 
@@ -306,7 +307,7 @@ impl AsyncFileReader for EagerPageIndexReader {
 
             if metadata.is_ok() {
                 let footer_bytes = footer_payload_bytes.load(Ordering::Relaxed);
-                if footer_bytes > 0 {
+                if footer_bytes > 0 && cache_enabled {
                     scan_io_metrics.footer_reads.add(1);
                     scan_io_metrics.footer_bytes.add(footer_bytes);
                 }
@@ -330,6 +331,7 @@ enum ScanIoStoreRole {
         storage_reads: Arc<AtomicUsize>,
         footer_payload_bytes: Arc<AtomicUsize>,
         file_size: u64,
+        record_footer_immediately: bool,
     },
 }
 
@@ -367,17 +369,27 @@ impl ScanIoObjectStore {
             ScanIoStoreRole::Metadata {
                 footer_payload_bytes,
                 file_size,
+                record_footer_immediately,
                 ..
             } => {
                 self.scan_io_metrics.metadata_bytes.add(bytes.len());
                 if range.is_some_and(|range| range.end == *file_size) && bytes.len() >= 8 {
                     if let Ok(footer) = FooterTail::try_from(&bytes[bytes.len() - 8..]) {
-                        let _ = footer_payload_bytes.compare_exchange(
-                            0,
-                            footer.metadata_length(),
-                            Ordering::Relaxed,
-                            Ordering::Relaxed,
-                        );
+                        if footer_payload_bytes
+                            .compare_exchange(
+                                0,
+                                footer.metadata_length(),
+                                Ordering::Relaxed,
+                                Ordering::Relaxed,
+                            )
+                            .is_ok()
+                            && *record_footer_immediately
+                        {
+                            self.scan_io_metrics.footer_reads.add(1);
+                            self.scan_io_metrics
+                                .footer_bytes
+                                .add(footer.metadata_length());
+                        }
                     }
                 }
             }
