@@ -228,7 +228,9 @@ fn scan_io_source(object_store_url: &ObjectStoreUrl, is_hdfs_object_store: bool)
 
     match store_url.scheme() {
         "file" => ScanIoSource::Local,
-        "s3" | "gs" | "az" | "abfs" | "abfss" | "http" | "https" => ScanIoSource::ObjectStore,
+        "s3" | "s3a" | "gs" | "az" | "abfs" | "abfss" | "http" | "https" => {
+            ScanIoSource::ObjectStore
+        }
         _ => ScanIoSource::OtherObjectStore,
     }
 }
@@ -491,10 +493,15 @@ mod tests {
 
         let s3a_original_url = url::Url::parse("s3a://bucket").unwrap();
         let normalized_s3_url = ObjectStoreUrl::parse("s3://bucket").unwrap();
+        let preserved_s3a_url = ObjectStoreUrl::parse("s3a://bucket").unwrap();
         let is_hdfs_store =
             crate::parquet::parquet_support::is_hdfs_scheme(&s3a_original_url, &options);
         assert_eq!(
             scan_io_source(&normalized_s3_url, is_hdfs_store),
+            ScanIoSource::ObjectStore
+        );
+        assert_eq!(
+            scan_io_source(&preserved_s3a_url, is_hdfs_store),
             ScanIoSource::ObjectStore
         );
     }

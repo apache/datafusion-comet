@@ -528,6 +528,7 @@ pub(crate) fn prepare_object_store_with_configs(
 ) -> Result<(ObjectStoreUrl, Path), ExecutionError> {
     let mut url = Url::parse(url.as_str())
         .map_err(|e| ExecutionError::GeneralError(format!("Error parsing URL {url}: {e}")))?;
+    let original_url = url.clone();
     let is_hdfs_scheme = is_hdfs_scheme(&url, object_store_configs);
     let mut scheme = url.scheme();
     if !is_hdfs_scheme && scheme == "s3a" {
@@ -581,8 +582,19 @@ pub(crate) fn prepare_object_store_with_configs(
             (store, path)
         };
 
-    let object_store_url = ObjectStoreUrl::parse(url_key.clone())?;
-    runtime_env.register_object_store(&url, object_store);
+    let registration_url = if original_url.scheme() != url.scheme()
+        && self::is_hdfs_scheme(&url, object_store_configs)
+    {
+        &original_url
+    } else {
+        &url
+    };
+    let object_store_url = ObjectStoreUrl::parse(format!(
+        "{}://{}",
+        registration_url.scheme(),
+        &registration_url[url::Position::BeforeHost..url::Position::AfterPort],
+    ))?;
+    runtime_env.register_object_store(registration_url, object_store);
     Ok((object_store_url, object_store_path))
 }
 
@@ -628,19 +640,38 @@ mod tests {
         let hdfs_store: std::sync::Arc<dyn object_store::ObjectStore> =
             std::sync::Arc::new(object_store::memory::InMemory::new());
 
-        let mut cache = super::object_store_cache().write().unwrap();
-        cache.insert(cloud_key.clone(), std::sync::Arc::clone(&cloud_store));
-        cache.insert(hdfs_key.clone(), std::sync::Arc::clone(&hdfs_store));
+        {
+            let mut cache = super::object_store_cache().write().unwrap();
+            cache.insert(cloud_key.clone(), std::sync::Arc::clone(&cloud_store));
+            cache.insert(hdfs_key.clone(), std::sync::Arc::clone(&hdfs_store));
+        }
 
+        let runtime_env =
+            std::sync::Arc::new(datafusion::execution::runtime_env::RuntimeEnv::default());
+        let (cloud_object_store_url, _) = super::prepare_object_store_with_configs(
+            std::sync::Arc::clone(&runtime_env),
+            cloud_url.to_string(),
+            &configs,
+        )
+        .unwrap();
+        let (hdfs_object_store_url, _) = super::prepare_object_store_with_configs(
+            std::sync::Arc::clone(&runtime_env),
+            hdfs_url.to_string(),
+            &configs,
+        )
+        .unwrap();
+
+        assert_ne!(cloud_object_store_url, hdfs_object_store_url);
         assert!(std::sync::Arc::ptr_eq(
-            cache.get(&cloud_key).unwrap(),
+            &runtime_env.object_store(&cloud_object_store_url).unwrap(),
             &cloud_store
         ));
         assert!(std::sync::Arc::ptr_eq(
-            cache.get(&hdfs_key).unwrap(),
+            &runtime_env.object_store(&hdfs_object_store_url).unwrap(),
             &hdfs_store
         ));
 
+        let mut cache = super::object_store_cache().write().unwrap();
         cache.remove(&cloud_key);
         cache.remove(&hdfs_key);
     }
