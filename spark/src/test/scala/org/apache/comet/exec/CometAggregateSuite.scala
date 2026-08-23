@@ -19,15 +19,21 @@
 
 package org.apache.comet.exec
 
+import java.util.concurrent.atomic.AtomicLong
+
 import scala.util.Random
 
 import org.apache.hadoop.fs.Path
-import org.apache.spark.SparkConf
+import org.apache.spark.{CometListenerBusUtils, SparkConf}
+import org.apache.spark.scheduler.{SparkListener, SparkListenerTaskEnd}
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.expressions.Cast
 import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial}
 import org.apache.spark.sql.catalyst.optimizer.EliminateSorts
+import org.apache.spark.sql.catalyst.plans.physical.RangePartitioning
 import org.apache.spark.sql.comet.CometHashAggregateExec
+import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
+import org.apache.spark.sql.execution.SQLExecution
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.{avg, col, count_distinct, sum}
 import org.apache.spark.sql.internal.SQLConf
@@ -86,6 +92,58 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         globalAggregates.foreach { aggregate =>
           assert(aggregateMetricNames.intersect(aggregate.metrics.keySet).isEmpty)
         }
+      }
+    }
+  }
+
+  test("range sampling does not report grouped aggregate metrics") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "2",
+      CometConf.COMET_SHUFFLE_MODE.key -> "native") {
+      withParquetTable((0 until 1024).map(i => (i % 64, i)), "tbl", false) {
+        val ranged =
+          sql("SELECT _1, SUM(_2) AS total FROM tbl GROUP BY _1").repartitionByRange(2, col("_1"))
+        val plan = stripAQEPlan(ranged.queryExecution.executedPlan)
+        val exchange = plan
+          .collectFirst {
+            case exchange: CometShuffleExchangeExec
+                if exchange.outputPartitioning.isInstanceOf[RangePartitioning] =>
+              exchange
+          }
+          .getOrElse(fail("Expected a native range shuffle"))
+        val aggregate = exchange.child
+          .collectFirst {
+            case aggregate: CometHashAggregateExec if aggregate.modes.contains(Final) => aggregate
+          }
+          .getOrElse(fail("Expected a final native aggregate under the range shuffle"))
+
+        val samplingInputBytes = new AtomicLong()
+        val samplingInputRecords = new AtomicLong()
+        val listener = new SparkListener {
+          override def onTaskEnd(taskEnd: SparkListenerTaskEnd): Unit = {
+            samplingInputBytes.addAndGet(taskEnd.taskMetrics.inputMetrics.bytesRead)
+            samplingInputRecords.addAndGet(taskEnd.taskMetrics.inputMetrics.recordsRead)
+          }
+        }
+
+        plan.resetMetrics()
+        CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
+        spark.sparkContext.addSparkListener(listener)
+        try {
+          SQLExecution.withNewExecutionId(ranged.queryExecution, Some("range sampling")) {
+            exchange.shuffleDependency
+          }
+          CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
+        } finally {
+          spark.sparkContext.removeSparkListener(listener)
+        }
+        assert(aggregate.metrics("peak_mem_used").value == 0L)
+        assert(samplingInputBytes.get() > 0L)
+        assert(samplingInputRecords.get() > 0L)
+
+        assert(ranged.collect().length == 64)
+        assert(aggregate.metrics("peak_mem_used").value > 0L)
       }
     }
   }

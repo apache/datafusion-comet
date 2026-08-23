@@ -602,11 +602,15 @@ abstract class CometNativeExec extends CometExec {
    * shuffle path can sample (RangePartitioning) without re-walking the SparkPlan tree and
    * re-broadcasting the encryption Hadoop conf.
    */
-  private[comet] def executeColumnarWithContext(ctx: NativeExecContext): RDD[ColumnarBatch] = {
+  private[comet] def executeColumnarWithContext(ctx: NativeExecContext): RDD[ColumnarBatch] =
+    executeColumnarWithContext(ctx, CometMetricNode.fromCometPlan(this))
+
+  private[comet] def executeColumnarWithContext(
+      ctx: NativeExecContext,
+      nativeMetrics: CometMetricNode): RDD[ColumnarBatch] = {
     val serializedPlan = serializedPlanOpt.plan.getOrElse(
       throw new CometRuntimeException(
         s"CometNativeExec should not be executed directly without a serialized plan: $this"))
-    val nativeMetrics = CometMetricNode.fromCometPlan(this)
 
     new CometExecRDD(
       sparkContext,

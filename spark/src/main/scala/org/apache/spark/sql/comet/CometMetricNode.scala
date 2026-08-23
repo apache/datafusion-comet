@@ -81,6 +81,21 @@ case class CometMetricNode(metrics: Map[String, SQLMetric], children: Seq[CometM
   }
 
   /**
+   * Range sampling executes aggregate inputs again for the actual shuffle, so exclude aggregate
+   * metrics during sampling to avoid counting their spills and memory usage twice.
+   */
+  private[comet] def withoutAggregateMetrics(plan: SparkPlan): CometMetricNode =
+    CometMetricNode(
+      if (plan.isInstanceOf[CometHashAggregateExec]) {
+        metrics -- CometMetricNode.aggregateMetricNames
+      } else {
+        metrics
+      },
+      children.zip(plan.children).map { case (child, childPlan) =>
+        child.withoutAggregateMetrics(childPlan)
+      })
+
+  /**
    * Reports aggregated scan input metrics (bytesRead, recordsRead) to Spark's task metrics.
    * Aggregates across all scan leaf nodes to handle plans with multiple scans (e.g., joins). Must
    * be called in a TaskCompletionListener after the iterator is fully consumed.
@@ -191,6 +206,9 @@ case class CometMetricNode(metrics: Map[String, SQLMetric], children: Seq[CometM
 }
 
 object CometMetricNode {
+
+  private val aggregateMetricNames =
+    Set("spill_count", "spilled_bytes", "spilled_rows", "peak_mem_used")
 
   /**
    * The baseline SQL metrics for DataFusion `BaselineMetrics`.
