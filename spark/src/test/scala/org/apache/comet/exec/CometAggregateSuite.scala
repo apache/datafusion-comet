@@ -315,7 +315,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         withParquetTable(data, "tbl") {
           withSQLConf(
             disabledHalf.key -> "false",
-            CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+            CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
             CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
             val df = sql("SELECT _2, sort_array(collect_list(_1)), count(*) FROM tbl GROUP BY _2")
             checkSparkAnswer(df)
