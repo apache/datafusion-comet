@@ -500,13 +500,18 @@ class CometCodegenSuite
             |""".stripMargin)
 
         val (_, cometPlan) = checkSparkAnswerAndOperator(df)
-        assert(
-          stripAQEPlan(cometPlan).exists(_.isInstanceOf[CometExplodeExec]),
-          s"expected native CometExplodeExec, got:\n$cometPlan")
 
         val rows = df.collect()
         assert(rows.length == 16384)
         assert(rows.forall(row => Set("a", "b").contains(row.getString(0))))
+
+        val explode = stripAQEPlan(df.queryExecution.executedPlan)
+          .collectFirst { case e: CometExplodeExec => e }
+          .getOrElse(fail("expected CometExplodeExec"))
+        assert(explode.metrics("input_rows").value == 8192)
+        assert(explode.metrics("output_rows").value == 16384)
+        assert(explode.metrics("input_batches").value > 0)
+        assert(explode.metrics("output_batches").value > 0)
 
         val explain = new ExtendedExplainInfo().generateExtendedInfo(cometPlan)
         assert(

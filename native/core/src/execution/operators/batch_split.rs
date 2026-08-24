@@ -100,7 +100,18 @@ impl ExecutionPlan for BatchSplitExec {
     }
 
     fn metrics(&self) -> Option<MetricsSet> {
-        Some(self.metrics.clone_inner())
+        let mut metrics = self.metrics.clone_inner();
+
+        // BatchSplitExec is a transparent execution wrapper. Preserve metrics produced by the
+        // wrapped UnnestExec so the Spark explode node can continue reporting its original SQL
+        // metrics.
+        if let Some(input_metrics) = self.input.metrics() {
+            for metric in input_metrics.iter() {
+                metrics.push(metric.to_owned());
+            }
+        }
+
+        Some(metrics)
     }
 
     fn maintains_input_order(&self) -> Vec<bool> {
@@ -117,6 +128,7 @@ mod tests {
     use datafusion::datasource::memory::MemorySourceConfig;
     use datafusion::datasource::source::DataSourceExec;
     use datafusion::execution::SessionStateBuilder;
+    use datafusion::physical_plan::limit::GlobalLimitExec;
     use datafusion::prelude::{SessionConfig, SessionContext};
     use futures::StreamExt;
 
@@ -129,7 +141,8 @@ mod tests {
         )
         .unwrap();
         let source = MemorySourceConfig::try_new(&[vec![input_batch]], schema, None).unwrap();
-        let input: Arc<dyn ExecutionPlan> = Arc::new(DataSourceExec::new(Arc::new(source)));
+        let source: Arc<dyn ExecutionPlan> = Arc::new(DataSourceExec::new(Arc::new(source)));
+        let input: Arc<dyn ExecutionPlan> = Arc::new(GlobalLimitExec::new(source, 0, None));
         let split = BatchSplitExec::new(input);
 
         let config = SessionConfig::new().with_batch_size(4);
@@ -150,5 +163,12 @@ mod tests {
 
         assert_eq!(batch_sizes, vec![4, 4, 2]);
         assert_eq!(values, (0..10).collect::<Vec<_>>());
+
+        let metrics = split.metrics().unwrap().aggregate_by_name();
+        let output_rows = metrics
+            .iter()
+            .find(|metric| metric.value().name() == "output_rows")
+            .expect("wrapped input output_rows metric should be forwarded");
+        assert_eq!(output_rows.value().as_usize(), 10);
     }
 }
