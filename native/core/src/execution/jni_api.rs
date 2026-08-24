@@ -249,7 +249,11 @@ pub fn release_runtime() {
     }
 }
 
-/// Returns a short name for an OpStruct variant.
+/// Returns a short name for an OpStruct variant. Used for tracing event names;
+/// no contrib-specific logic. The `OpStruct::ContribScan` arm is the generic
+/// extension point for out-of-tree contrib scans (Delta, Lance, ...); it stays
+/// unconditional even in non-contrib builds because the proto enum is generated
+/// regardless of cargo feature flags and Rust requires an exhaustive match.
 fn op_name(op: &OpStruct) -> &'static str {
     match op {
         OpStruct::Scan(_) => "Scan",
@@ -271,6 +275,7 @@ fn op_name(op: &OpStruct) -> &'static str {
         OpStruct::ShuffleScan(_) => "ShuffleScan",
         OpStruct::BroadcastNestedLoopJoin(_) => "BroadcastNestedLoopJoin",
         OpStruct::Sample(_) => "Sample",
+        OpStruct::ContribScan(_) => "ContribScan",
     }
 }
 
@@ -352,6 +357,11 @@ struct ExecutionContext {
     /// cheap to clone; the underlying `Global<JObject>` releases its JNI global ref on drop
     /// via `jni`'s `Drop` impl.
     pub task_context: Option<Arc<Global<JObject<'static>>>>,
+    /// Context `ClassLoader` of the driving Spark task thread, captured at `createPlan` time and
+    /// threaded into every JVM scalar UDF the planner builds; see `CometUdfBridge.evaluate` for why
+    /// it has to travel with the plan. `None` when no driving Spark task is present (unit tests,
+    /// direct native driver runs). Lifetime is as for `task_context` above.
+    pub class_loader: Option<Arc<Global<JObject<'static>>>>,
 }
 
 /// Accept serialized query plan and return the address of the native query plan.
@@ -379,6 +389,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
     task_cpus: jlong,
     key_unwrapper_obj: JObject,
     task_context_obj: JObject,
+    class_loader_obj: JObject,
 ) -> jlong {
     try_unwrap_or_throw(&e, |env| {
         // Deserialize Spark configs
@@ -500,11 +511,17 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 String::new()
             };
 
-            // Capture the driving Spark task's TaskContext as a JNI global reference when
-            // non-null. The `Arc<Global<JObject>>` releases its global ref on drop, so cleanup
-            // is automatic when the ExecutionContext drops.
+            // Capture the driving Spark task's TaskContext and context ClassLoader as JNI global
+            // references when non-null. The `Arc<Global<JObject>>` releases its global ref on
+            // drop, so cleanup is automatic when the ExecutionContext drops.
             let task_context = if !task_context_obj.is_null() {
                 Some(Arc::new(jni_new_global_ref!(env, task_context_obj)?))
+            } else {
+                None
+            };
+
+            let class_loader = if !class_loader_obj.is_null() {
+                Some(Arc::new(jni_new_global_ref!(env, class_loader_obj)?))
             } else {
                 None
             };
@@ -536,6 +553,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 ),
                 tracing_event_name,
                 task_context,
+                class_loader,
             });
 
             Ok(Box::into_raw(exec_context) as i64)
@@ -781,7 +799,9 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                 let planner =
                     PhysicalPlanner::new(Arc::clone(&exec_context.session_ctx), partition)
                         .with_exec_id(exec_context_id)
-                        .with_task_context(exec_context.task_context.clone());
+                        .with_sql_text_pool(&exec_context.spark_plan)
+                        .with_task_context(exec_context.task_context.clone())
+                        .with_class_loader(exec_context.class_loader.clone());
                 let (scans, shuffle_scans, root_op) = planner.create_plan(
                     &exec_context.spark_plan,
                     &mut exec_context.input_sources.clone(),

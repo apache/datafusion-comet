@@ -251,7 +251,7 @@ SELECT array_insert(array(CAST(1.0 AS DOUBLE), CAST(2.0 AS DOUBLE)), 2, CAST('-I
 
 -- negative zero
 query
-SELECT array_insert(array(CAST(1.0 AS DOUBLE), CAST(2.0 AS DOUBLE)), 1, CAST(-0.0 AS DOUBLE))
+SELECT array_insert(array(CAST(1.0 AS DOUBLE), CAST(2.0 AS DOUBLE)), 1, double('-0.0'))
 
 -- ============================================================
 -- Long arrays

@@ -20,9 +20,11 @@
 package org.apache.spark.sql.comet
 
 import org.apache.spark.sql.CometTestBase
-import org.apache.spark.sql.catalyst.expressions.{Add, AttributeReference, CheckOverflow, EvalMode, NumericEvalContext}
+import org.apache.spark.sql.catalyst.expressions.{Add, AttributeReference, BinaryArithmetic, CheckOverflow, Divide, EvalMode, Expression, Multiply, NumericEvalContext, Remainder, Subtract}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.DecimalType
+
+import org.apache.comet.serde.{CometScalarFunction, ExprOuterClass, QueryPlanSerde}
 
 class CometDecimalArithmeticViewSuite extends CometTestBase {
 
@@ -50,7 +52,7 @@ class CometDecimalArithmeticViewSuite extends CometTestBase {
     Seq((true, storedFalse), (false, storedTrue)).foreach { case (currentConf, add) =>
       withSQLConf(SQLConf.DECIMAL_OPERATIONS_ALLOW_PREC_LOSS.key -> currentConf.toString) {
         val promoted = org.apache.spark.sql.comet.DecimalPrecision
-          .promote(add, nullOnOverflow = true)
+          .promote(add)
         promoted match {
           case CheckOverflow(_, dt, _) =>
             assert(
@@ -62,5 +64,55 @@ class CometDecimalArithmeticViewSuite extends CometTestBase {
         }
       }
     }
+  }
+
+  test("issue #5075: DecimalPrecision.promote honours per-expression eval mode") {
+    val left = AttributeReference("a", DecimalType(10, 0))()
+    val right = AttributeReference("b", DecimalType(10, 0))()
+    val third = AttributeReference("c", DecimalType(10, 0))()
+
+    val operations: Seq[(
+        String,
+        (Expression, Expression, NumericEvalContext) => BinaryArithmetic,
+        ExprOuterClass.Expr => ExprOuterClass.MathExpr)] = Seq(
+      ("add", Add.apply, _.getAdd),
+      ("subtract", Subtract.apply, _.getSubtract),
+      ("multiply", Multiply.apply, _.getMultiply),
+      ("divide", Divide.apply, _.getDivide),
+      ("remainder", Remainder.apply, _.getRemainder))
+    val tryContext = NumericEvalContext(EvalMode.TRY, allowDecimalPrecisionLoss = true)
+    val ansiContext = NumericEvalContext(EvalMode.ANSI, allowDecimalPrecisionLoss = true)
+    val expressionTrees = operations.map { case (name, operation, getMathExpr) =>
+      (name, operation(operation(left, right, tryContext), third, ansiContext), getMathExpr)
+    }
+
+    Seq(false, true).foreach { sessionAnsiEnabled =>
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> sessionAnsiEnabled.toString) {
+        expressionTrees.foreach { case (name, expression, getMathExpr) =>
+          val proto = QueryPlanSerde.exprToProto(expression, Seq(left, right, third)).get
+          assert(proto.hasCheckOverflow, s"$name under session ANSI=$sessionAnsiEnabled")
+          val ansiOverflow = proto.getCheckOverflow
+          assert(ansiOverflow.getFailOnError, s"$name under session ANSI=$sessionAnsiEnabled")
+
+          val mathExprProto = ansiOverflow.getChild
+          val tryExprProto = getMathExpr(mathExprProto).getLeft
+          assert(tryExprProto.hasCheckOverflow, s"$name under session ANSI=$sessionAnsiEnabled")
+          assert(
+            !tryExprProto.getCheckOverflow.getFailOnError,
+            s"$name under session ANSI=$sessionAnsiEnabled")
+        }
+      }
+    }
+  }
+
+  test("plain CometScalarFunction rejects Spark 4.1+ Add with evalContext") {
+    val left = AttributeReference("a", DecimalType(10, 0))()
+    val right = AttributeReference("b", DecimalType(10, 0))()
+    val add =
+      Add(left, right, NumericEvalContext(EvalMode.LEGACY, allowDecimalPrecisionLoss = true))
+    assert(
+      CometScalarFunction[Add]("add")
+        .convert(add, Seq(left, right), binding = true)
+        .isEmpty)
   }
 }
