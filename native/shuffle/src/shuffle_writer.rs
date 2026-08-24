@@ -272,6 +272,7 @@ mod test {
     use crate::{read_ipc_compressed, ShuffleBlockWriter};
     use arrow::array::{Array, Int64Array, StringArray, StringBuilder};
     use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::ipc::writer::CompressionContext;
     use arrow::record_batch::RecordBatch;
     use arrow::row::{RowConverter, SortField};
     use datafusion::datasource::memory::MemorySourceConfig;
@@ -301,8 +302,14 @@ mod test {
             let mut cursor = Cursor::new(&mut output);
             let writer =
                 ShuffleBlockWriter::try_new(batch.schema().as_ref(), codec.clone()).unwrap();
+            let mut compression_context = CompressionContext::default();
             let length = writer
-                .write_batch(&batch, &mut cursor, &Time::default())
+                .write_batch(
+                    &batch,
+                    &mut cursor,
+                    &mut compression_context,
+                    &Time::default(),
+                )
                 .unwrap();
             assert_eq!(length, output.len());
 
@@ -341,8 +348,14 @@ mod test {
             let mut output = vec![];
             let mut cursor = Cursor::new(&mut output);
             let writer = ShuffleBlockWriter::try_new(schema.as_ref(), codec.clone()).unwrap();
+            let mut compression_context = CompressionContext::default();
             writer
-                .write_batch(&batch, &mut cursor, &Time::default())
+                .write_batch(
+                    &batch,
+                    &mut cursor,
+                    &mut compression_context,
+                    &Time::default(),
+                )
                 .unwrap();
 
             let batch2 = read_ipc_compressed(&output[16..]).unwrap();

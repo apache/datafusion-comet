@@ -412,6 +412,7 @@ jobs:
               org.apache.comet.CometWidthBucketSuite
               org.apache.comet.CometUuidExpressionSuite
               org.apache.comet.serde.CometScalarFunctionSuite
+              org.apache.comet.CometFallbackInvarianceSuite
       fail-fast: false
     name: ${{ matrix.profile.name }} [${{ matrix.suite.name }}]
     runs-on: ubuntu-24.04
