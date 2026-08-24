@@ -421,6 +421,8 @@ class CometNativeShuffleWriter[K, V](
         partitioning.setNumPartitions(effectivePartitionCount)
         partitioning.setMaxHashColumns(
           CometConf.COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_MAX_HASH_COLUMNS.get())
+        partitioning.setBatchGranular(
+          CometConf.COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_BATCH_GRANULAR.get())
 
         val partitioningBuilder = PartitioningOuterClass.Partitioning.newBuilder()
         shuffleWriterBuilder.setPartitioning(

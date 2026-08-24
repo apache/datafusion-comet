@@ -32,9 +32,18 @@ pub mod spark_unsafe;
 pub(crate) mod writers;
 
 pub use codec_context::ShuffleCodecContext;
-pub use comet_partitioning::CometPartitioning;
+pub use comet_partitioning::{CometPartitioning, RoundRobinStrategy};
 pub use ipc::{read_ipc_compressed, read_ipc_compressed_validated, reset_schema_cache};
 pub use remote_schema::{decode_remote_shuffle_batch, validate_remote_schema};
 pub use schema_align::SchemaAlignExec;
 pub use shuffle_writer::{PartitionOffsets, ShuffleWriterDestination, ShuffleWriterExec};
 pub use writers::{CompressionCodec, ShuffleBlockWriter};
+
+// Bench-only re-exports. `#[doc(hidden)]` marks these as not part of the stable API contract.
+// Consumed by the criterion benches under `native/shuffle/benches/`.
+#[doc(hidden)]
+pub use metrics::ShufflePartitionerMetrics;
+#[doc(hidden)]
+pub use partitioners::{MultiPartitionShuffleRepartitioner, ShufflePartitioner};
+#[doc(hidden)]
+pub use writers::LocalPartitionWriter;

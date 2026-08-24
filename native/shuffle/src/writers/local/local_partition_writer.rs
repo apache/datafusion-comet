@@ -77,7 +77,7 @@ enum DataOutput {
 /// Writes shuffle output to a single data file and publishes the byte offset where
 /// each partition begins through [`PartitionOffsets`]. See [`DataOutput`] for how the
 /// single- and multi-partition modes differ.
-pub(crate) struct LocalPartitionWriter {
+pub struct LocalPartitionWriter {
     partition_offsets: Arc<PartitionOffsets>,
     data_output: DataOutput,
     /// Compression state shared by every block this task writes; the per-partition
@@ -97,7 +97,7 @@ pub(crate) struct LocalPartitionWriter {
 }
 
 impl LocalPartitionWriter {
-    pub(crate) fn try_new(
+    pub fn try_new(
         output_data_file: String,
         partition_offsets: Arc<PartitionOffsets>,
         shuffle_block_writer: ShuffleBlockWriter,

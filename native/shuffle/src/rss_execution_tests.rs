@@ -16,7 +16,7 @@
 // under the License.
 
 use crate::{
-    read_ipc_compressed, CometPartitioning, CompressionCodec, PartitionOffsets,
+    read_ipc_compressed, CometPartitioning, CompressionCodec, PartitionOffsets, RoundRobinStrategy,
     ShuffleWriterDestination, ShuffleWriterExec,
 };
 use arrow::array::{Array, Int32Array, RecordBatch, RecordBatchOptions};
@@ -231,7 +231,12 @@ fn rss_multi_partition_supports_hash_range_and_round_robin() {
     for partitioning in [
         CometPartitioning::Hash(vec![expression], 4),
         CometPartitioning::RangePartitioning(ordering, 4, Arc::new(converter), boundaries),
-        CometPartitioning::RoundRobin(4, 0),
+        CometPartitioning::RoundRobin(
+            4,
+            RoundRobinStrategy::HashAll {
+                max_hash_columns: 0,
+            },
+        ),
     ] {
         let pusher = Arc::new(RecordingPusher::default());
         let execution = rss_execution(
@@ -271,7 +276,12 @@ fn rss_empty_schema_preserves_row_counts_in_partition_zero() {
     let execution = rss_execution(
         vec![batch.clone(), batch],
         schema,
-        CometPartitioning::RoundRobin(4, 0),
+        CometPartitioning::RoundRobin(
+            4,
+            RoundRobinStrategy::HashAll {
+                max_hash_columns: 0,
+            },
+        ),
         pusher.clone(),
         CompressionCodec::None,
         1024 * 1024,
@@ -299,7 +309,12 @@ fn rss_empty_schema_without_rows_does_not_push_frames() {
     let execution = rss_execution(
         vec![batch],
         schema,
-        CometPartitioning::RoundRobin(4, 0),
+        CometPartitioning::RoundRobin(
+            4,
+            RoundRobinStrategy::HashAll {
+                max_hash_columns: 0,
+            },
+        ),
         pusher.clone(),
         CompressionCodec::None,
         1024 * 1024,
