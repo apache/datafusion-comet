@@ -1178,55 +1178,69 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
   // `CometLiteral` rebuilds each folded map as an equivalent `CreateMap` of primitive literals.
   test("array of folded map literals with array values (multirow)") {
     withParquetTable((0 until 3).map(i => (i, i.toLong)), "tbl") {
-      val df =
-        spark.table("tbl").selectExpr("array(map(1, array(1, 2, 3)), map(2, array(4, 5, 6)))")
-      checkSparkAnswerAndOperator(df)
+      checkSparkAnswerAndOperator(
+        "SELECT array(map(1, array(1, 2, 3)), map(2, array(4, 5, 6))) FROM tbl")
     }
   }
 
   test("array of folded map literals (multirow)") {
     withParquetTable((0 until 3).map(i => (i, i.toLong)), "tbl") {
-      checkSparkAnswerAndOperator(spark.table("tbl").selectExpr("array(map(1, 10), map(2, 20))"))
+      checkSparkAnswerAndOperator("SELECT array(map(1, 10), map(2, 20)) FROM tbl")
     }
   }
 
-  // P2 regression: standalone folded struct literal reaches native `CreateNamedStruct` with all
-  // scalar children. `values_to_arrays` returns a 1-row `StructArray` regardless of batch size,
-  // which fails length checks. `CometLiteral` excludes StructType from expansion so the projection
-  // falls back to Spark rather than producing a truncated result.
+  // A folded struct literal would reach native `CreateNamedStruct` with all-scalar children,
+  // which builds a 1-row `StructArray` regardless of batch size. `CometLiteral` excludes
+  // StructType from expansion so the projection falls back instead of truncating the result.
   test("folded struct literal in multirow projection falls back") {
     withParquetTable((0 until 3).map(i => (i, i.toLong)), "tbl") {
-      // Spark's `named_struct(...)` folds to a single struct Literal. Comet must not run
-      // `CreateNamedStruct` with all-scalar children against a 3-row batch.
-      val df = spark.table("tbl").selectExpr("_1 AS id", "named_struct('a', 1) AS s")
-      checkSparkAnswerAndFallbackReason(df, "Unsupported data type StructType")
+      checkSparkAnswerAndFallbackReason(
+        "SELECT _1 AS id, named_struct('a', 1) AS s FROM tbl",
+        "Unsupported data type StructType")
     }
   }
 
-  // P2 regression: `array(named_struct(...), named_struct(...))` with divergent field
-  // nullabilities folds to a single ArrayType(StructType) Literal. `KnownNullable` is dropped on
-  // the wire, so recursive expansion would produce sibling struct arrays with divergent per-field
-  // nullabilities and `make_array` would panic. Excluding StructType keeps this on Spark.
+  // Folds to one ArrayType(StructType) Literal whose structs disagree on field nullability.
+  // `KnownNullable` is dropped on the wire, so expansion could not make the sibling struct
+  // arrays agree and `make_array` would panic. Excluding StructType keeps this on Spark.
   test("folded array of structs with divergent field nullability falls back (multirow)") {
     withParquetTable((0 until 3).map(i => (i, i.toLong)), "tbl") {
-      val df = spark
-        .table("tbl")
-        .selectExpr("array(named_struct('a', CAST(NULL AS INT)), named_struct('a', 1)) AS arr")
-      checkSparkAnswerAndFallbackReason(df, "Unsupported data type ArrayType")
+      checkSparkAnswerAndFallbackReason(
+        "SELECT array(named_struct('a', CAST(NULL AS INT)), named_struct('a', 1)) AS arr FROM tbl",
+        "Unsupported data type ArrayType")
     }
   }
 
-  // P2 regression: `from_json` produces a MapData whose keys may be duplicated. Rebuilding via
-  // `CreateMap` invokes `ArrayBasedMapBuilder`, which throws under the default
-  // `MAP_KEY_DEDUP_POLICY=EXCEPTION` policy. `CometLiteral` inspects the folded map's key array
-  // and declines expansion when duplicates are present, letting Spark evaluate the projection.
+  // `from_json` can fold to a MapData with duplicate keys. Rebuilding it as a `CreateMap` would
+  // run `ArrayBasedMapBuilder`, which throws under `MAP_KEY_DEDUP_POLICY=EXCEPTION`, so
+  // `CometLiteral` declines expansion and Spark evaluates the projection.
   test("folded map literal with duplicate keys falls back (multirow)") {
     assume(isSpark35Plus)
     withParquetTable((0 until 3).map(i => (i, i.toLong)), "tbl") {
-      val df = spark
-        .table("tbl")
-        .selectExpr("_1 AS id", "from_json('{\"a\":1,\"a\":2}', 'MAP<STRING,INT>') AS m")
-      checkSparkAnswerAndFallbackReason(df, "Unsupported data type MapType")
+      checkSparkAnswerAndFallbackReason(
+        "SELECT _1 AS id, from_json('{\"a\":1,\"a\":2}', 'MAP<STRING,INT>') AS m FROM tbl",
+        "Unsupported data type MapType")
+    }
+  }
+
+  // Spark treats `+0.0` and `-0.0` as the same map key; native lookup compares bytes.
+  test("folded map literal with double keys falls back to Spark for +/-0.0 equality") {
+    withParquetTable((1 until 4).map(i => (i, i.toLong)), "tbl") {
+      checkSparkAnswerAndFallbackReason(
+        "SELECT _1 AS id, element_at(map(CAST(0 AS DOUBLE), 7), " +
+          "CAST(concat('-', CAST(_1 - 1 AS STRING), '.0') AS DOUBLE)) AS v FROM tbl",
+        "Unsupported data type MapType")
+    }
+  }
+
+  // Spark compares the key under its declared collation; native compares under UTF8_BINARY.
+  test("folded map literal with collated string keys falls back") {
+    assume(isSpark40Plus)
+    withParquetTable(Seq(("a1", 0)), "tbl") {
+      checkSparkAnswerAndFallbackReason(
+        "SELECT element_at(map(CAST('A1' AS STRING COLLATE UTF8_LCASE), 7), " +
+          "CAST(_1 AS STRING COLLATE UTF8_LCASE)) AS v FROM tbl",
+        "Unsupported data type MapType")
     }
   }
 

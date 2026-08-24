@@ -32,7 +32,7 @@ import com.google.protobuf.ByteString
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.serde.{CometExpressionSerde, Compatible, ExprOuterClass, LiteralOuterClass, SupportLevel, Unsupported}
-import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, isTimeType, serializeDataType, supportedDataType}
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, hasNonDefaultStringCollation, isTimeType, serializeDataType, supportedDataType}
 import org.apache.comet.serde.Types.ListLiteral
 
 object CometLiteral extends CometExpressionSerde[Literal] with Logging {
@@ -55,8 +55,8 @@ object CometLiteral extends CometExpressionSerde[Literal] with Logging {
             .elementType
             .isInstanceOf[ArrayType])))) {
       Compatible(None)
-    } else if (canExpandComplexLiteral(expr)) {
-      // Rebuilt as a Create[Array|Map|NamedStruct] tree in `convert`.
+    } else if (expandComplexLiteral(expr).isDefined) {
+      // Rebuilt as a `CreateArray` / `CreateMap` tree in `convert`.
       Compatible(None)
     } else {
       expr.dataType match {
@@ -73,8 +73,9 @@ object CometLiteral extends CometExpressionSerde[Literal] with Logging {
     val dataType = expr.dataType
     val value = expr.value
 
-    if (canExpandComplexLiteral(expr)) {
-      return exprToProtoInternal(expandComplexLiteral(value, dataType), inputs, binding).orElse {
+    val expanded = expandComplexLiteral(expr)
+    if (expanded.isDefined) {
+      return exprToProtoInternal(expanded.get, inputs, binding).orElse {
         withFallbackReason(expr, s"Unsupported data type $dataType")
         None
       }
@@ -226,21 +227,58 @@ object CometLiteral extends CometExpressionSerde[Literal] with Logging {
   }
 
   /**
-   * True when a non-null Literal of this type is not encodable in the native `Literal` proto and
-   * `convert` should try to rebuild it from primitive-typed Literals. The native proto today
-   * carries scalars and nested `ListLiteral`s (arrays of arrays / arrays of scalars). It does not
-   * carry Map values, so any Literal whose type contains a `MapType` needs to be expanded before
-   * serialization.
+   * Rebuild a folded complex Literal as an equivalent tree of `CreateArray` / `CreateMap` over
+   * primitive-typed Literals, or `None` when the shape cannot be rebuilt. The native `Literal`
+   * proto carries scalars and nested `ListLiteral`s but no map values, so a Literal whose type
+   * contains a `MapType` has to be expanded before serialization. Teaching the proto to transport
+   * maps directly would remove the need for this rewrite and for the declines below:
+   * https://github.com/apache/datafusion-comet/issues/1937
    *
-   * `StructType` (at any nesting depth) is deliberately excluded. Native `CometCreateNamedStruct`
-   * (`spark/src/main/scala/org/apache/comet/serde/structs.scala`) uses `values_to_arrays` in
-   * `native/spark-expr/src/struct_funcs/create_named_struct.rs`, which returns a 1-row
-   * `StructArray` whenever all children are scalar values. That collides with the row count of
-   * the surrounding batch and fails `make_array`'s length check. Field nullability is likewise
-   * inferred from the concrete child expressions, and `CometKnownNullable`
-   * (`spark/src/main/scala/org/apache/comet/serde/contraintExpressions.scala:99`) drops the tag
-   * on the wire, so wrapping a non-null child in `KnownNullable` does not carry across. Fall back
-   * to Spark for those shapes.
+   * Declined shapes:
+   *   - Null values and empty top-level containers: a synthesized `Create*` with no children
+   *     cannot recover the original element type. Empty `ArrayType` literals still serialize via
+   *     `makeListLiteral`, which keeps the type.
+   *   - `StructType` at any depth. Native `CreateNamedStruct` builds a 1-row `StructArray`
+   *     whenever all of its children are scalars (`values_to_arrays`), which collides with the
+   *     surrounding batch's row count. Its proto message also carries no type, so Spark's
+   *     declared field nullability cannot survive the wire either way.
+   *   - Map key types whose Spark equality semantics native lookup cannot honor, see
+   *     [[hasUnsafeMapKeyType]].
+   *   - Folded maps with duplicate keys. The rebuilt `CreateMap` evaluates through
+   *     `ArrayBasedMapBuilder`, which throws under `MAP_KEY_DEDUP_POLICY=EXCEPTION`, where the
+   *     original literal had already folded cleanly.
+   */
+  private def expandComplexLiteral(expr: Literal): Option[Expression] = {
+    if (expr.value == null) return None
+    expr.dataType match {
+      case ArrayType(et, _) if needsExpansion(et) =>
+        val arr = expr.value.asInstanceOf[ArrayData]
+        if (arr.numElements() == 0) {
+          None
+        } else {
+          val elements = (0 until arr.numElements()).map(i => asNullable(literalAt(arr, i, et)))
+          Some(CreateArray(elements, useStringTypeWhenEmpty = false))
+        }
+      case MapType(kt, vt, _) =>
+        val mapData = expr.value.asInstanceOf[MapData]
+        val keys = mapData.keyArray()
+        if (mapData.numElements() == 0 || hasUnsafeMapKeyType(kt) ||
+          hasDuplicateMapKeys(keys, kt)) {
+          None
+        } else {
+          val values = mapData.valueArray()
+          val children = (0 until keys.numElements()).flatMap(i =>
+            Seq(literalAt(keys, i, kt), asNullable(literalAt(values, i, vt))))
+          Some(CreateMap(children, useStringTypeWhenEmpty = false))
+        }
+      case _ => None
+    }
+  }
+
+  /**
+   * True when a Literal of this type has to be expanded rather than serialized, because the
+   * native `Literal` proto carries no map values. Walks array nesting only: a `StructType` is not
+   * expandable at all (see [[expandComplexLiteral]]), so the walk stops there.
    */
   private def needsExpansion(dataType: DataType): Boolean = dataType match {
     case _: MapType => true
@@ -248,81 +286,41 @@ object CometLiteral extends CometExpressionSerde[Literal] with Logging {
     case _ => false
   }
 
-  /**
-   * True when the Literal is a non-null complex value that we can rebuild from primitive Literals
-   * via [[expandComplexLiteral]]. Empty top-level containers are excluded because a synthesized
-   * `Create[Array|Map]` with no children cannot recover the original element type. A folded
-   * `MapData` with duplicate keys is also excluded: Spark's `CreateMap.eval`
-   * (`sql/catalyst/.../complexTypeCreator.scala:250`) feeds every entry through
-   * `ArrayBasedMapBuilder`, which throws under the default `MAP_KEY_DEDUP_POLICY=EXCEPTION`
-   * (`sql/catalyst/.../util/ArrayBasedMapBuilder.scala`). Rebuilding a folded literal that came
-   * from `from_json` or a similar source would then throw where the original literal had executed
-   * cleanly.
-   */
-  private def canExpandComplexLiteral(expr: Literal): Boolean = {
-    if (expr.value == null) return false
-    expr.dataType match {
-      case at: ArrayType if needsExpansion(at) =>
-        expr.value.asInstanceOf[ArrayData].numElements() > 0
-      case MapType(kt, _, _) =>
-        val mapData = expr.value.asInstanceOf[MapData]
-        mapData.numElements() > 0 && !hasDuplicateMapKeys(mapData.keyArray(), kt)
-      case _ => false
-    }
-  }
+  /** Element `i` of `arr`, or `null` for a null slot. */
+  private def valueAt(arr: ArrayData, i: Int, dt: DataType): Any =
+    if (arr.isNullAt(i)) null else arr.get(i, dt)
+
+  /** Element `i` of `arr` as a Literal of type `dt`. */
+  private def literalAt(arr: ArrayData, i: Int, dt: DataType): Literal =
+    Literal(valueAt(arr, i, dt), dt)
 
   /**
-   * True when the folded map's key array contains any duplicate values. Uses Catalyst internal
-   * equality (`UTF8String`, `Decimal`, `ArrayData`, `InternalRow`, and boxed primitives all
-   * implement `equals` / `hashCode`), matching `ArrayBasedMapBuilder`'s own dedup semantics.
+   * True when the map key type has Spark equality semantics that native map lookup (Arrow
+   * bytewise comparison) cannot honor, in which case declining expansion keeps the projection on
+   * Spark. `NormalizeFloatingNumbers` makes Spark treat `+0.0` and `-0.0` as the same key and
+   * canonicalises NaN, and a non-default collation compares under rules native applies as
+   * `UTF8_BINARY`. Both are checked at every nesting level of the key type.
+   */
+  private def hasUnsafeMapKeyType(kt: DataType): Boolean =
+    hasNonDefaultStringCollation(kt) ||
+      SupportLevel.containsType(kt, classOf[FloatType], classOf[DoubleType])
+
+  /**
+   * True when the folded map's key array holds duplicates under Catalyst internal equality
+   * (`UTF8String`, `Decimal`, `ArrayData`, `InternalRow` and boxed primitives all implement
+   * `equals` / `hashCode`), which is what `ArrayBasedMapBuilder` uses for the key types reachable
+   * here.
    */
   private def hasDuplicateMapKeys(keys: ArrayData, keyType: DataType): Boolean = {
     val n = keys.numElements()
-    if (n < 2) return false
-    val seen = new java.util.HashSet[Any](n)
-    var i = 0
-    while (i < n) {
-      val k = if (keys.isNullAt(i)) null else keys.get(i, keyType)
-      if (!seen.add(k)) return true
-      i += 1
-    }
-    false
+    n > 1 && (0 until n).map(i => valueAt(keys, i, keyType)).distinct.size < n
   }
 
   /**
-   * Rebuild a folded complex Literal as an equivalent tree of `CreateArray` / `CreateMap` over
-   * primitive-typed Literals. Callers must gate on [[canExpandComplexLiteral]] so `dataType` is
-   * one of the two complex cases and top-level containers are non-empty and have unique keys.
-   */
-  private def expandComplexLiteral(value: Any, dataType: DataType): Expression =
-    dataType match {
-      case ArrayType(et, _) =>
-        val arr = value.asInstanceOf[ArrayData]
-        val elems = (0 until arr.numElements()).map { i =>
-          if (arr.isNullAt(i)) Literal(null, et)
-          else asNullable(Literal(arr.get(i, et), et))
-        }
-        CreateArray(elems, useStringTypeWhenEmpty = false)
-      case MapType(kt, vt, _) =>
-        val mapData = value.asInstanceOf[MapData]
-        val keys = mapData.keyArray()
-        val vals = mapData.valueArray()
-        val children = (0 until keys.numElements()).flatMap { i =>
-          val k = if (keys.isNullAt(i)) Literal(null, kt) else Literal(keys.get(i, kt), kt)
-          val v =
-            if (vals.isNullAt(i)) Literal(null, vt)
-            else asNullable(Literal(vals.get(i, vt), vt))
-          Seq(k, v)
-        }
-        CreateMap(children, useStringTypeWhenEmpty = false)
-      case other =>
-        throw new IllegalStateException(s"expandComplexLiteral called on $other")
-    }
-
-  /**
-   * Wrap a non-null expression in `KnownNullable` so a surrounding `Create*` sees every sibling
-   * as nullable. DataFusion `make_array` asserts strict Arrow-type equality across siblings and
-   * would panic if a folded literal produced a non-nullable child next to a nullable one.
+   * Wrap a non-null expression in `KnownNullable` so the surrounding `Create*` derives a nullable
+   * element / value type. DataFusion `make_array` asserts strict Arrow-type equality across
+   * siblings and would panic on a non-nullable child next to a nullable one. Same root cause as
+   * the mismatched-type decline in `CometCreateArray` (apache/datafusion#22366).
    * `CometKnownNullable` forwards the child on the wire, so runtime is unaffected.
    */
   private def asNullable(expr: Expression): Expression =

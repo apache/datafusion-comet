@@ -51,9 +51,10 @@ SELECT array(array(1, 2), array(3, NULL))
 query
 SELECT array(array(a, b), array(b, c)) FROM test_create_array
 
--- Array of maps built from primitive int values. Under Spark constant folding this collapses
--- each `map(...)` to a MapType Literal; CometLiteral expands it back to a CreateMap of int
--- literals so the outer `array(...)` runs natively via `make_array`.
+-- Array of maps built from primitive int values. The SQL-file harness always excludes
+-- ConstantFolding, so every `map(...)` below stays a `CreateMap` and reaches native
+-- `make_array` through the constructor path. Folded-literal expansion in `CometLiteral` is
+-- covered by `CometArrayExpressionSuite` instead, where folding is left enabled.
 query
 SELECT array(map(1, 10), map(2, 20))
 
@@ -69,19 +70,15 @@ SELECT array(map('x', 1, 'y', 2), map('z', 3))
 query
 SELECT array(map(1, 2))
 
--- Array of arrays of maps (recursive expansion of ArrayType(ArrayType(MapType)) literal).
+-- Array of arrays of maps: `ArrayType(ArrayType(MapType(IntegerType, StringType)))`.
 query
 SELECT array(array(map(1, 'a')), array(map(2, 'b')))
 
--- Array of structs. The SQL-file harness disables ConstantFolding, so `named_struct(...)`
--- stays as `CreateNamedStruct` (not a folded Literal) and this exercises the constructor
--- path, not `CometLiteral` expansion.
+-- Array of structs.
 query
 SELECT array(named_struct('a', 1, 'b', 'x'), named_struct('a', 2, 'b', 'y'))
 
--- Column-based array of maps. With constant folding disabled by the SQL-file harness this
--- flows through CometCreateMap's codegen dispatch, not through Literal expansion, but it
--- must remain natively supported. Filter out NULL keys because Spark forbids them.
+-- Column-based array of maps. Filter out NULL keys because Spark forbids them.
 query
 SELECT array(map(k, v)) FROM test_create_array_complex WHERE k IS NOT NULL
 
@@ -97,7 +94,6 @@ SELECT array(arr, array(k, v)) FROM test_create_array_complex
 query
 SELECT array(map(k, arr)) FROM test_create_array_complex WHERE k IS NOT NULL
 
--- Empty complex ArrayType literal takes the pre-expansion makeListLiteral path (empty
--- ListLiteral) so its element type survives even without any children.
+-- Empty array cast to a nested array type: the element type has to survive with no children.
 query
 SELECT CAST(array() AS ARRAY<ARRAY<INT>>)
