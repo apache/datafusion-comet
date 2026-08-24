@@ -343,7 +343,7 @@ mod tests {
     use parquet::arrow::ArrowWriter;
     use parquet::encryption::decrypt::{FileDecryptionProperties, KeyRetriever};
     use parquet::encryption::encrypt::FileEncryptionProperties;
-    use parquet::file::metadata::{KeyValue, PageIndexPolicy};
+    use parquet::file::metadata::{KeyValue, PageIndexPolicy, ParquetMetaDataReader};
     use parquet::file::properties::{EnabledStatistics, WriterProperties};
     use std::fs::File;
     use std::time::Duration;
@@ -978,6 +978,62 @@ mod tests {
         }
 
         metadata.await.unwrap();
+        assert_eq!(reader_metric(&metrics, "scan_io_footer_reads"), 1);
+        assert_eq!(
+            reader_metric(&metrics, "scan_io_footer_bytes"),
+            footer_bytes
+        );
+    }
+
+    #[tokio::test]
+    async fn reports_plaintext_footer_when_prefetched_page_index_is_invalid() {
+        let (filename, _schema) = write_scan_io_fixture();
+        let mut file_bytes = std::fs::read(filename).unwrap();
+        let file_size = file_bytes.len();
+        let footer_bytes = usize::try_from(u32::from_le_bytes(
+            file_bytes[file_size - 8..file_size - 4].try_into().unwrap(),
+        ))
+        .unwrap();
+        let footer_start = file_size - 8 - footer_bytes;
+        let footer =
+            ParquetMetaDataReader::decode_metadata(&file_bytes[footer_start..file_size - 8])
+                .unwrap();
+        let column = footer.row_group(0).column(0);
+        let index_start = usize::try_from(column.column_index_offset().unwrap()).unwrap();
+        let index_bytes = usize::try_from(column.column_index_length().unwrap()).unwrap();
+        file_bytes[index_start..index_start + index_bytes].fill(0xff);
+
+        let location = object_store::path::Path::from("invalid-prefetched-page-index.parquet");
+        let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        store
+            .put(&location, Bytes::from(file_bytes).into())
+            .await
+            .unwrap();
+
+        let session_ctx = Arc::new(SessionContext::new());
+        let metadata_cache = session_ctx
+            .runtime_env()
+            .cache_manager
+            .get_file_metadata_cache();
+        let metrics = ExecutionPlanMetricsSet::new();
+        let factory = EagerPageIndexReaderFactory::new(
+            store,
+            metadata_cache,
+            ScanIoSource::ObjectStore,
+            &metrics,
+        );
+        let mut reader = factory
+            .create_reader(
+                0,
+                PartitionedFile::new(location.to_string(), file_size as u64),
+                Some(512 * 1024),
+                &metrics,
+            )
+            .unwrap();
+
+        assert!(reader.get_metadata(None).await.is_err());
+        assert_eq!(reader_metric(&metrics, "scan_io_metadata_bytes"), file_size);
+        assert_eq!(reader_metric(&metrics, "scan_io_object_store_get_calls"), 1);
         assert_eq!(reader_metric(&metrics, "scan_io_footer_reads"), 1);
         assert_eq!(
             reader_metric(&metrics, "scan_io_footer_bytes"),

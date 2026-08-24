@@ -69,11 +69,13 @@ use object_store::{
 };
 use parquet::arrow::arrow_reader::ArrowReaderOptions;
 use parquet::arrow::async_reader::{AsyncFileReader, ParquetObjectReader};
-use parquet::file::metadata::{FooterTail, PageIndexPolicy, ParquetMetaData};
+use parquet::file::metadata::{
+    FooterTail, PageIndexPolicy, ParquetMetaData, ParquetMetaDataReader,
+};
 use std::fmt::{Debug, Display, Formatter};
 use std::ops::Range;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ScanIoSource {
@@ -286,6 +288,7 @@ impl AsyncFileReader for EagerPageIndexReader {
                 role: ScanIoStoreRole::Metadata {
                     storage_reads: Arc::clone(&metadata_storage_reads),
                     footer_payload_bytes: Arc::clone(&footer_payload_bytes),
+                    footer_payload: OnceLock::new(),
                     footer_recorded: AtomicBool::new(false),
                     file_size: object_meta.size,
                     record_footer_immediately: !cache_enabled,
@@ -316,6 +319,8 @@ impl AsyncFileReader for EagerPageIndexReader {
                         metadata_storage_reads.load(Ordering::Relaxed),
                     );
                 }
+            } else if cache_enabled {
+                metadata_store.record_valid_footer();
             }
 
             metadata
@@ -330,6 +335,7 @@ enum ScanIoStoreRole {
     Metadata {
         storage_reads: Arc<AtomicUsize>,
         footer_payload_bytes: Arc<AtomicUsize>,
+        footer_payload: OnceLock<Bytes>,
         footer_recorded: AtomicBool,
         file_size: u64,
         record_footer_immediately: bool,
@@ -344,6 +350,24 @@ struct ScanIoObjectStore {
 }
 
 impl ScanIoObjectStore {
+    fn record_valid_footer(&self) {
+        if let ScanIoStoreRole::Metadata {
+            footer_payload_bytes,
+            footer_payload,
+            footer_recorded,
+            ..
+        } = &self.role
+        {
+            if !footer_recorded.load(Ordering::Relaxed)
+                && footer_payload
+                    .get()
+                    .is_some_and(|payload| ParquetMetaDataReader::decode_metadata(payload).is_ok())
+            {
+                self.record_footer(footer_payload_bytes.load(Ordering::Relaxed));
+            }
+        }
+    }
+
     fn record_footer(&self, bytes: usize) {
         if let ScanIoStoreRole::Metadata {
             footer_recorded, ..
@@ -381,6 +405,7 @@ impl ScanIoObjectStore {
                 .add(bytes.len()),
             ScanIoStoreRole::Metadata {
                 footer_payload_bytes,
+                footer_payload,
                 file_size,
                 record_footer_immediately,
                 ..
@@ -397,21 +422,25 @@ impl ScanIoObjectStore {
                     }
                 }
 
-                if *record_footer_immediately {
-                    let footer_bytes = footer_payload_bytes.load(Ordering::Relaxed);
-                    let footer_end = file_size.saturating_sub(8);
-                    if footer_bytes > 0
-                        && footer_end
-                            .checked_sub(footer_bytes as u64)
-                            .is_some_and(|footer_start| {
-                                range.is_some_and(|range| {
-                                    range.start <= footer_start
-                                        && range.start.saturating_add(bytes.len() as u64)
-                                            >= footer_end
-                                })
+                let footer_bytes = footer_payload_bytes.load(Ordering::Relaxed);
+                let footer_end = file_size.saturating_sub(8);
+                if footer_bytes > 0
+                    && footer_end
+                        .checked_sub(footer_bytes as u64)
+                        .is_some_and(|footer_start| {
+                            range.is_some_and(|range| {
+                                range.start <= footer_start
+                                    && range.start.saturating_add(bytes.len() as u64) >= footer_end
                             })
-                    {
+                        })
+                {
+                    if *record_footer_immediately {
                         self.record_footer(footer_bytes);
+                    } else if let Some(range) = range {
+                        let payload_start =
+                            (footer_end - footer_bytes as u64 - range.start) as usize;
+                        let _ = footer_payload
+                            .set(bytes.slice(payload_start..payload_start + footer_bytes));
                     }
                 }
             }
