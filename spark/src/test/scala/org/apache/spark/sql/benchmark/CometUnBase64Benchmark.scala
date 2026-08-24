@@ -19,8 +19,6 @@
 
 package org.apache.spark.sql.benchmark
 
-import org.apache.comet.CometConf
-
 /**
  * Configuration for a single unbase64 input shape under benchmark. Each shape is materialized as
  * its own column in the source table, so the same benchmark harness that measures the other
