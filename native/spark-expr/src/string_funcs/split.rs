@@ -16,9 +16,9 @@
 // under the License.
 use arrow::array::{
     Array, ArrayBuilder, ArrayRef, BufferBuilder, GenericListArray, GenericStringArray,
-    GenericStringBuilder, ListArray, NullBufferBuilder, OffsetSizeTrait,
+    GenericStringBuilder, ListArray, NullBufferBuilder, OffsetSizeTrait, StringArray,
 };
-use arrow::buffer::OffsetBuffer;
+use arrow::buffer::{OffsetBuffer, ScalarBuffer};
 use arrow::datatypes::{DataType, Field};
 use datafusion::common::{
     cast::as_generic_string_array, exec_err, DataFusionError, Result as DataFusionResult,
@@ -212,42 +212,40 @@ pub fn spark_split_sql(args: &[ColumnarValue]) -> DataFusionResult<ColumnarValue
                 }
                 _ => return exec_err!("split_sql delimiter must be a string"),
             };
-
             let string = string.clone().unwrap();
-            let mut str_offsets = BufferBuilder::<i32>::new(8);
-            let mut str_values = BufferBuilder::<u8>::new(string.len());
-            str_offsets.append(0);
+
+            let mut offsets_builder = BufferBuilder::<i32>::new(2);
+            let mut values_builder = BufferBuilder::<u8>::new(string.len());
+
+            offsets_builder.append(0);
 
             if delimiter.is_empty() {
-                for ch in string.chars() {
-                    append_str(
-                        ch.encode_utf8(&mut [0; 4]),
-                        &mut str_offsets,
-                        &mut str_values,
-                    );
-                }
+                values_builder.append_slice(string.as_bytes());
+                offsets_builder.append(string.len() as i32);
             } else {
-                for p in string.split(delimiter) {
-                    append_str(p, &mut str_offsets, &mut str_values);
+                let mut offset = 0i32;
+                for part in string.split(delimiter.as_str()) {
+                    values_builder.append_slice(part.as_bytes());
+                    offset += part.len() as i32;
+                    offsets_builder.append(offset);
                 }
             }
 
-            let item_offsets_buffer = OffsetBuffer::new(str_offsets.finish().into());
-            let item_values_buffer = str_values.finish();
+            let offsets_buffer = offsets_builder.finish();
+            let values_buffer = values_builder.finish();
 
-            let string_array_values = unsafe {
-                GenericStringArray::<i32>::new_unchecked(
-                    item_offsets_buffer,
-                    item_values_buffer,
-                    None,
-                )
-            };
+            let list_field = Arc::new(Field::new("item", DataType::Utf8, true));
+            let values_array = Arc::new(StringArray::try_new(
+                OffsetBuffer::new(offsets_buffer.into()),
+                values_buffer,
+                None,
+            )?);
 
-            let list_array = create_list_array(Arc::new(string_array_values));
+            let list_offsets =
+                OffsetBuffer::new(ScalarBuffer::from(vec![0i32, values_array.len() as i32]));
+            let list_array = ListArray::try_new(list_field, list_offsets, values_array, None)?;
 
-            Ok(ColumnarValue::Scalar(ScalarValue::List(Arc::new(
-                list_array,
-            ))))
+            Ok(ColumnarValue::Array(Arc::new(list_array)))
         }
         _ => exec_err!("split_sql expects string arguments"),
     }
@@ -286,15 +284,13 @@ fn push_split_literal<'a, O: OffsetSizeTrait>(
         }
     } else if limit > 0 {
         let cap = (limit - 1) as usize;
-        let mut count = 0;
         let mut last_end = 0;
-        for (start, _) in string.match_indices(delimiter) {
+        for (count, (start, _)) in string.match_indices(delimiter).enumerate() {
             if count >= cap {
                 break;
             }
             append_str(&string[last_end..start], offsets, values);
             last_end = start + delimiter.len();
-            count += 1;
         }
         append_str(&string[last_end..], offsets, values);
     } else {
@@ -328,15 +324,13 @@ fn push_split_char<'a, O: OffsetSizeTrait>(
         }
     } else if limit > 0 {
         let cap = (limit - 1) as usize;
-        let mut count = 0;
         let mut last_end = 0;
-        for (start, _) in string.match_indices(delimiter) {
+        for (count, (start, _)) in string.match_indices(delimiter).enumerate() {
             if count >= cap {
                 break;
             }
             append_str(&string[last_end..start], offsets, values);
             last_end = start + delimiter.len_utf8();
-            count += 1;
         }
         append_str(&string[last_end..], offsets, values);
     } else {
@@ -802,12 +796,7 @@ fn push_split_sql_parts<O: OffsetSizeTrait>(
 fn create_list_array(values: ArrayRef) -> ListArray {
     let field = Arc::new(Field::new("item", DataType::Utf8, false));
     let offsets = vec![0i32, values.len() as i32];
-    ListArray::new(
-        field,
-        arrow::buffer::OffsetBuffer::new(offsets.into()),
-        values,
-        None,
-    )
+    ListArray::new(field, OffsetBuffer::new(offsets.into()), values, None)
 }
 
 fn new_null_list_array(len: usize) -> ArrayRef {
@@ -831,7 +820,7 @@ fn new_null_list_array_with_offset<O: OffsetSizeTrait>(len: usize) -> ArrayRef {
 
     Arc::new(GenericListArray::<O>::new(
         field,
-        arrow::buffer::OffsetBuffer::new(offsets.into()),
+        OffsetBuffer::new(offsets.into()),
         values,
         Some(nulls),
     ))
@@ -845,7 +834,7 @@ fn new_null_list_array_value(len: usize) -> ListArray {
 
     ListArray::new(
         field,
-        arrow::buffer::OffsetBuffer::new(offsets.into()),
+        OffsetBuffer::new(offsets.into()),
         values,
         Some(nulls),
     )
@@ -967,6 +956,44 @@ mod tests {
             }
             _ => panic!("Expected Array result"),
         }
+    }
+
+    #[test]
+    fn test_split_sql_empty_delimiter_scalar() {
+        let input = ColumnarValue::Scalar(ScalarValue::Utf8(Some("hello world".to_string())));
+        let delimiter = ColumnarValue::Scalar(ScalarValue::Utf8(Some("".to_string())));
+
+        let result = spark_split_sql(&[input, delimiter])
+            .unwrap()
+            .into_array(1)
+            .unwrap();
+        let list_array = result.as_any().downcast_ref::<ListArray>().unwrap();
+
+        assert_eq!(list_array.len(), 1);
+        let values = list_array.value(0);
+        let str_array = values.as_any().downcast_ref::<StringArray>().unwrap();
+
+        assert_eq!(str_array.len(), 1);
+        assert_eq!(str_array.value(0), "hello world");
+    }
+
+    #[test]
+    fn test_split_sql_empty_string_and_empty_delimiter_scalar() {
+        let input = ColumnarValue::Scalar(ScalarValue::Utf8(Some("".to_string())));
+        let delimiter = ColumnarValue::Scalar(ScalarValue::Utf8(Some("".to_string())));
+
+        let result = spark_split_sql(&[input, delimiter])
+            .unwrap()
+            .into_array(1)
+            .unwrap();
+        let list_array = result.as_any().downcast_ref::<ListArray>().unwrap();
+
+        assert_eq!(list_array.len(), 1);
+        let values = list_array.value(0);
+        let str_array = values.as_any().downcast_ref::<StringArray>().unwrap();
+
+        assert_eq!(str_array.len(), 1);
+        assert_eq!(str_array.value(0), "");
     }
 
     fn assert_list_value(list_array: &ListArray, row: usize, expected: &[&str]) {
