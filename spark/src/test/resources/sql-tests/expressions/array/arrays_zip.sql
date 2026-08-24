@@ -27,7 +27,19 @@ SELECT arrays_zip(array(1, 2, 3), array('a', 'b'));
 
 -- With floating points
 query
-SELECT arrays_zip(array(-.1234567E+2BD, CAST('-Infinity' AS DOUBLE), CAST('NaN' AS DOUBLE)), array(CAST('Infinity' AS FLOAT), float('-0.0'), -0.1234567f, CAST('NaN' AS FLOAT)));
+SELECT arrays_zip(array(-.1234567E+2BD, CAST('-Infinity' AS DOUBLE), CAST('NaN' AS DOUBLE)), array(CAST('Infinity' AS FLOAT), double('-0.0'), -0.1234567f, CAST('NaN' AS FLOAT)));
+
+-- Preserve both signs of zero in float and double array columns.
+statement
+CREATE TABLE test_arrays_zip_fp(f array<float>, d array<double>) USING parquet
+
+statement
+INSERT INTO test_arrays_zip_fp VALUES
+  (array(float('-0.0'), float('0.0')), array(double('0.0'), double('-0.0'))),
+  (array(float('0.0'), float('-0.0')), array(double('-0.0')))
+
+query
+SELECT arrays_zip(f, d) FROM test_arrays_zip_fp
 
 -- basic: two integer arrays of equal length
 query
