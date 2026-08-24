@@ -111,7 +111,11 @@ jobs:
 
   iceberg-spark:
     needs: build-native
-    name: iceberg-spark/iceberg-${{ inputs.iceberg-full }}/spark-${{ inputs.spark-full }}/scala-${{ inputs.scala }}/java-${{ inputs.java }}
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    name: iceberg-spark/iceberg-${{ inputs.iceberg-full }}/spark-${{ inputs.spark-full }}/scala-${{ inputs.scala }}/java-${{ inputs.java }}/shard-${{ matrix.shard }}
     runs-on: ubuntu-24.04
     container:
       image: amd64/rust
@@ -142,7 +146,19 @@ jobs:
           rm -rf /root/.m2/repository/org/apache/parquet # somehow parquet cache requires cleanups
           ENABLE_COMET=true ENABLE_COMET_ONHEAP=true ./gradlew -DsparkVersions=${{ inputs.spark-short }} -DscalaVersion=${{ inputs.scala }} -DflinkVersions= -DkafkaVersions= \
             :iceberg-spark:iceberg-spark-${{ inputs.spark-short }}_${{ inputs.scala }}:test \
+            --init-script ../dev/ci/iceberg-test-shards.gradle \
+            -PcometShardTask=:iceberg-spark:iceberg-spark-${{ inputs.spark-short }}_${{ inputs.scala }}:test \
+            -PcometShardIndex=${{ matrix.shard }} -PcometShardCount=${{ strategy.job-total }} \
             -Pquick=true -x javadoc
+      - name: Upload Iceberg shard inventory and test reports
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: iceberg-spark-${{ inputs.iceberg-full }}-spark-${{ inputs.spark-full }}-scala-${{ inputs.scala }}-jdk${{ inputs.java }}-shard-${{ matrix.shard }}-attempt-${{ github.run_attempt }}
+          path: |
+            apache-iceberg/**/build/comet-shards/*.json
+            apache-iceberg/**/build/test-results/test/*.xml
+          retention-days: 7
 
   iceberg-spark-extensions:
     needs: build-native
@@ -206,6 +222,8 @@ jobs:
         uses: ./.github/actions/setup-iceberg-builder
         with:
           iceberg-version: ${{ inputs.iceberg-full }}
+      - name: Verify test sharding preserves discovery
+        run: python3 dev/ci/check-iceberg-shards.py --gradle "$PWD/apache-iceberg/gradlew"
       - name: Run Iceberg Spark runtime tests
         run: |
           cd apache-iceberg
