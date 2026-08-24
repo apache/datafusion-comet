@@ -81,11 +81,13 @@ object CometWindowGroupLimitExec extends CometOperatorSerde[SparkPlan] {
       return None
     }
 
-    // The streaming operator compares partition and order keys via the Arrow row encoder,
-    // which orders by raw bytes. A non-default `StringType` collation (e.g. `UTF8_LCASE`)
-    // makes Spark's comparison case-insensitive, so byte-ordering would drop rows that
-    // Spark considers tied. Walk nested types (StructField, ArrayType element, MapType
-    // key / value) via the shim helper and fall back if any key carries a collation.
+    // The streaming operator detects partition boundaries and order-key peer groups by comparing
+    // Arrow row-encoded keys for byte equality, and relies on the child sort Spark injected to
+    // have ordered rows the same way. A non-default `StringType` collation (e.g. `UTF8_LCASE`)
+    // makes Spark's comparison case-insensitive, so byte equality splits a peer group Spark
+    // considers tied and byte ordering disagrees with the ordering the operator assumes. Walk
+    // nested types (StructField, ArrayType element, MapType key / value) via the shim helper and
+    // fall back if any key carries a collation.
     val collated = (fields.partitionSpec ++ fields.orderSpec.map(_.child))
       .filter(e => hasNonDefaultStringCollation(e.dataType))
     if (collated.nonEmpty) {

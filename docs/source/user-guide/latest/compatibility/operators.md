@@ -77,8 +77,8 @@ runs natively; it is controlled by `spark.comet.exec.windowGroupLimit.enabled` (
 **Falls back to Spark:**
 
 - Any `PARTITION BY` or `ORDER BY` key whose type carries a non-default `StringType` collation
-  (e.g. `UTF8_LCASE`). The native operator compares keys via the Arrow row encoder, which orders
-  by raw bytes.
+  (e.g. `UTF8_LCASE`). The native operator detects partitions and order-key peer groups by
+  comparing Arrow row-encoded keys for byte equality, which splits peers that Spark ties.
 
 **Known incompatibilities:**
 
