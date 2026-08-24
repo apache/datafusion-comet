@@ -115,6 +115,9 @@ abstract class CometTestBase
     }
   }
 
+  protected def causeChain(error: Throwable): Seq[Throwable] =
+    Iterator.iterate(error)(_.getCause).takeWhile(_ != null).toSeq
+
   protected def internalCheckSparkAnswer(
       df: => DataFrame,
       assertCometNative: Boolean,
