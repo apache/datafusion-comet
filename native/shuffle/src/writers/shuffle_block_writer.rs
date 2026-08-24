@@ -142,7 +142,12 @@ impl ShuffleBlockWriter {
     }
 
     /// Serialize `batch` as a standalone Arrow IPC stream into `out`.
-    fn encode_ipc_stream<W: Write>(&self, batch: &RecordBatch, out: &mut W) -> Result<()> {
+    fn encode_ipc_stream<W: Write>(
+        &self,
+        batch: &RecordBatch,
+        out: &mut W,
+        compression_context: &mut CompressionContext,
+    ) -> Result<()> {
         let schema_message = match &self.schema_encoding {
             SchemaEncoding::Fallback(schema) => {
                 // Dictionary encoding requires the schema and record batch to share a dictionary
@@ -159,12 +164,11 @@ impl ShuffleBlockWriter {
         // Fast path: reuse the pre-encoded schema message and write the record batch manually.
         let data_gen = IpcDataGenerator::default();
         let mut dictionary_tracker = DictionaryTracker::new(true);
-        let mut compression_context = CompressionContext::default();
         let (encoded_dictionaries, encoded_batch) = data_gen.encode(
             batch,
             &mut dictionary_tracker,
             &self.write_options,
-            &mut compression_context,
+            compression_context,
         )?;
         debug_assert!(encoded_dictionaries.is_empty());
 
@@ -180,6 +184,7 @@ impl ShuffleBlockWriter {
         &self,
         batch: &RecordBatch,
         output: &mut W,
+        compression_context: &mut CompressionContext,
         ipc_time: &Time,
     ) -> Result<usize> {
         if batch.num_rows() == 0 {
@@ -194,25 +199,25 @@ impl ShuffleBlockWriter {
 
         match &self.codec {
             CompressionCodec::None => {
-                self.encode_ipc_stream(batch, output)?;
+                self.encode_ipc_stream(batch, output, compression_context)?;
             }
             CompressionCodec::Lz4Frame => {
                 let mut wtr = lz4_flex::frame::FrameEncoder::new(&mut *output);
-                self.encode_ipc_stream(batch, &mut wtr)?;
+                self.encode_ipc_stream(batch, &mut wtr, compression_context)?;
                 wtr.finish().map_err(|e| {
                     DataFusionError::Execution(format!("lz4 compression error: {e}"))
                 })?;
             }
             CompressionCodec::Snappy => {
                 let mut wtr = snap::write::FrameEncoder::new(&mut *output);
-                self.encode_ipc_stream(batch, &mut wtr)?;
+                self.encode_ipc_stream(batch, &mut wtr, compression_context)?;
                 wtr.into_inner().map_err(|e| {
                     DataFusionError::Execution(format!("snappy compression error: {e}"))
                 })?;
             }
             CompressionCodec::Zstd(level) => {
                 let mut encoder = zstd::Encoder::new(&mut *output, *level)?;
-                self.encode_ipc_stream(batch, &mut encoder)?;
+                self.encode_ipc_stream(batch, &mut encoder, compression_context)?;
                 encoder.finish()?;
             }
         }
