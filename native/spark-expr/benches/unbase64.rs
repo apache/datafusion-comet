@@ -94,7 +94,8 @@ fn criterion_benchmark(c: &mut Criterion) {
     let long_clean = create_string_array(size, &unwrapped(&long_bytes), NullDensity::Every(10));
     // Long CRLF-wrapped values: matches `unbase64(base64(x))` when Spark's default
     // `spark.sql.chunkBase64String.enabled = true` is in effect (also Comet's default).
-    let long_wrapped = create_string_array(size, &crlf_wrapped(&long_bytes), NullDensity::Every(10));
+    let long_wrapped =
+        create_string_array(size, &crlf_wrapped(&long_bytes), NullDensity::Every(10));
     // A batch dominated by tiny values, one per row (worst case for per-row overhead).
     let tiny = create_string_array(size, &unwrapped(b"a"), NullDensity::Every(10));
 
