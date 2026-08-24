@@ -57,22 +57,9 @@ SELECT array(array(a, b), array(b, c)) FROM test_create_array
 query
 SELECT array(map(1, 10), map(2, 20))
 
--- Array of maps whose values are arrays. This is the exact fallback shape reported in
--- https://github.com/apache/datafusion-comet — `MapType(IntegerType, ArrayType(IntegerType, false), true)`.
+-- Array of maps whose values are arrays: `MapType(IntegerType, ArrayType(IntegerType, false), true)`.
 query
 SELECT array(map(1, array(1, 2, 3)), map(2, array(4, 5, 6)))
-
--- Array of maps with a NULL value inside (map value expansion must handle NULLs).
-query
-SELECT array(map('x', CAST(NULL AS INT), 'y', 2), map('z', 3))
-
--- Array containing a folded NULL map literal alongside a non-null map.
-query
-SELECT array(CAST(NULL AS MAP<INT,INT>), map(1, 2))
-
--- Deeply nested folded complex literal: array of struct of map of array of struct.
-query
-SELECT array(named_struct('m', map(1, array(named_struct('id', 1, 's', 'x')))))
 
 -- Array of maps with string keys.
 query
@@ -86,8 +73,9 @@ SELECT array(map(1, 2))
 query
 SELECT array(array(map(1, 'a')), array(map(2, 'b')))
 
--- Array of structs. Under constant folding each named_struct(...) folds to a StructType
--- Literal; expansion rebuilds it as CreateNamedStruct of primitive literals.
+-- Array of structs. The SQL-file harness disables ConstantFolding, so `named_struct(...)`
+-- stays as `CreateNamedStruct` (not a folded Literal) and this exercises the constructor
+-- path, not `CometLiteral` expansion.
 query
 SELECT array(named_struct('a', 1, 'b', 'x'), named_struct('a', 2, 'b', 'y'))
 

@@ -22,10 +22,9 @@ package org.apache.comet.serde.literals
 import java.lang
 
 import org.apache.spark.internal.Logging
-import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Attribute, CreateArray, CreateMap, CreateNamedStruct, Expression, KnownNullable, Literal}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, CreateArray, CreateMap, Expression, KnownNullable, Literal}
 import org.apache.spark.sql.catalyst.util.{ArrayData, MapData}
-import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DateType, DayTimeIntervalType, Decimal, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, NullType, ShortType, StringType, StructType, TimestampNTZType, TimestampType}
+import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DateType, DayTimeIntervalType, Decimal, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, NullType, ShortType, StringType, TimestampNTZType, TimestampType}
 import org.apache.spark.unsafe.types.UTF8String
 
 import com.google.protobuf.ByteString
@@ -230,11 +229,21 @@ object CometLiteral extends CometExpressionSerde[Literal] with Logging {
    * True when a non-null Literal of this type is not encodable in the native `Literal` proto and
    * `convert` should try to rebuild it from primitive-typed Literals. The native proto today
    * carries scalars and nested `ListLiteral`s (arrays of arrays / arrays of scalars). It does not
-   * carry Map or Struct values, so any Literal whose type contains a `MapType` or a `StructType`
-   * needs to be expanded before serialization.
+   * carry Map values, so any Literal whose type contains a `MapType` needs to be expanded before
+   * serialization.
+   *
+   * `StructType` (at any nesting depth) is deliberately excluded. Native `CometCreateNamedStruct`
+   * (`spark/src/main/scala/org/apache/comet/serde/structs.scala`) uses `values_to_arrays` in
+   * `native/spark-expr/src/struct_funcs/create_named_struct.rs`, which returns a 1-row
+   * `StructArray` whenever all children are scalar values. That collides with the row count of
+   * the surrounding batch and fails `make_array`'s length check. Field nullability is likewise
+   * inferred from the concrete child expressions, and `CometKnownNullable`
+   * (`spark/src/main/scala/org/apache/comet/serde/contraintExpressions.scala:99`) drops the tag
+   * on the wire, so wrapping a non-null child in `KnownNullable` does not carry across. Fall back
+   * to Spark for those shapes.
    */
   private def needsExpansion(dataType: DataType): Boolean = dataType match {
-    case _: MapType | _: StructType => true
+    case _: MapType => true
     case ArrayType(et, _) => needsExpansion(et)
     case _ => false
   }
@@ -242,24 +251,48 @@ object CometLiteral extends CometExpressionSerde[Literal] with Logging {
   /**
    * True when the Literal is a non-null complex value that we can rebuild from primitive Literals
    * via [[expandComplexLiteral]]. Empty top-level containers are excluded because a synthesized
-   * `Create[Array|Map]` with no children cannot recover the original element type.
+   * `Create[Array|Map]` with no children cannot recover the original element type. A folded
+   * `MapData` with duplicate keys is also excluded: Spark's `CreateMap.eval`
+   * (`sql/catalyst/.../complexTypeCreator.scala:250`) feeds every entry through
+   * `ArrayBasedMapBuilder`, which throws under the default `MAP_KEY_DEDUP_POLICY=EXCEPTION`
+   * (`sql/catalyst/.../util/ArrayBasedMapBuilder.scala`). Rebuilding a folded literal that came
+   * from `from_json` or a similar source would then throw where the original literal had executed
+   * cleanly.
    */
   private def canExpandComplexLiteral(expr: Literal): Boolean = {
-    val value = expr.value
-    if (value == null || !needsExpansion(expr.dataType)) return false
+    if (expr.value == null) return false
     expr.dataType match {
-      case _: ArrayType => value.asInstanceOf[ArrayData].numElements() > 0
-      case _: MapType => value.asInstanceOf[MapData].numElements() > 0
-      case _: StructType => true
+      case at: ArrayType if needsExpansion(at) =>
+        expr.value.asInstanceOf[ArrayData].numElements() > 0
+      case MapType(kt, _, _) =>
+        val mapData = expr.value.asInstanceOf[MapData]
+        mapData.numElements() > 0 && !hasDuplicateMapKeys(mapData.keyArray(), kt)
       case _ => false
     }
   }
 
   /**
-   * Rebuild a folded complex Literal as an equivalent tree of `CreateArray` / `CreateMap` /
-   * `CreateNamedStruct` over primitive-typed Literals. Callers must gate on
-   * [[canExpandComplexLiteral]] so `dataType` is one of the three complex cases and top-level
-   * containers are non-empty.
+   * True when the folded map's key array contains any duplicate values. Uses Catalyst internal
+   * equality (`UTF8String`, `Decimal`, `ArrayData`, `InternalRow`, and boxed primitives all
+   * implement `equals` / `hashCode`), matching `ArrayBasedMapBuilder`'s own dedup semantics.
+   */
+  private def hasDuplicateMapKeys(keys: ArrayData, keyType: DataType): Boolean = {
+    val n = keys.numElements()
+    if (n < 2) return false
+    val seen = new java.util.HashSet[Any](n)
+    var i = 0
+    while (i < n) {
+      val k = if (keys.isNullAt(i)) null else keys.get(i, keyType)
+      if (!seen.add(k)) return true
+      i += 1
+    }
+    false
+  }
+
+  /**
+   * Rebuild a folded complex Literal as an equivalent tree of `CreateArray` / `CreateMap` over
+   * primitive-typed Literals. Callers must gate on [[canExpandComplexLiteral]] so `dataType` is
+   * one of the two complex cases and top-level containers are non-empty and have unique keys.
    */
   private def expandComplexLiteral(value: Any, dataType: DataType): Expression =
     dataType match {
@@ -282,15 +315,6 @@ object CometLiteral extends CometExpressionSerde[Literal] with Logging {
           Seq(k, v)
         }
         CreateMap(children, useStringTypeWhenEmpty = false)
-      case StructType(fields) =>
-        val row = value.asInstanceOf[InternalRow]
-        val children = fields.zipWithIndex.flatMap { case (f, i) =>
-          val v =
-            if (row.isNullAt(i)) Literal(null, f.dataType)
-            else asNullable(Literal(row.get(i, f.dataType), f.dataType))
-          Seq(Literal(f.name), v)
-        }
-        CreateNamedStruct(children.toSeq)
       case other =>
         throw new IllegalStateException(s"expandComplexLiteral called on $other")
     }

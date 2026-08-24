@@ -1173,6 +1173,63 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     }
   }
 
+  // Constant folding is enabled by default here, so each `map(...)` collapses to a MapType
+  // Literal and the outer `array(...)` reaches `CometCreateArray` with folded-Literal children.
+  // `CometLiteral` rebuilds each folded map as an equivalent `CreateMap` of primitive literals.
+  test("array of folded map literals with array values (multirow)") {
+    withParquetTable((0 until 3).map(i => (i, i.toLong)), "tbl") {
+      val df =
+        spark.table("tbl").selectExpr("array(map(1, array(1, 2, 3)), map(2, array(4, 5, 6)))")
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("array of folded map literals (multirow)") {
+    withParquetTable((0 until 3).map(i => (i, i.toLong)), "tbl") {
+      checkSparkAnswerAndOperator(spark.table("tbl").selectExpr("array(map(1, 10), map(2, 20))"))
+    }
+  }
+
+  // P2 regression: standalone folded struct literal reaches native `CreateNamedStruct` with all
+  // scalar children. `values_to_arrays` returns a 1-row `StructArray` regardless of batch size,
+  // which fails length checks. `CometLiteral` excludes StructType from expansion so the projection
+  // falls back to Spark rather than producing a truncated result.
+  test("folded struct literal in multirow projection falls back") {
+    withParquetTable((0 until 3).map(i => (i, i.toLong)), "tbl") {
+      // Spark's `named_struct(...)` folds to a single struct Literal. Comet must not run
+      // `CreateNamedStruct` with all-scalar children against a 3-row batch.
+      val df = spark.table("tbl").selectExpr("_1 AS id", "named_struct('a', 1) AS s")
+      checkSparkAnswerAndFallbackReason(df, "Unsupported data type StructType")
+    }
+  }
+
+  // P2 regression: `array(named_struct(...), named_struct(...))` with divergent field
+  // nullabilities folds to a single ArrayType(StructType) Literal. `KnownNullable` is dropped on
+  // the wire, so recursive expansion would produce sibling struct arrays with divergent per-field
+  // nullabilities and `make_array` would panic. Excluding StructType keeps this on Spark.
+  test("folded array of structs with divergent field nullability falls back (multirow)") {
+    withParquetTable((0 until 3).map(i => (i, i.toLong)), "tbl") {
+      val df = spark
+        .table("tbl")
+        .selectExpr("array(named_struct('a', CAST(NULL AS INT)), named_struct('a', 1)) AS arr")
+      checkSparkAnswerAndFallbackReason(df, "Unsupported data type ArrayType")
+    }
+  }
+
+  // P2 regression: `from_json` produces a MapData whose keys may be duplicated. Rebuilding via
+  // `CreateMap` invokes `ArrayBasedMapBuilder`, which throws under the default
+  // `MAP_KEY_DEDUP_POLICY=EXCEPTION` policy. `CometLiteral` inspects the folded map's key array
+  // and declines expansion when duplicates are present, letting Spark evaluate the projection.
+  test("folded map literal with duplicate keys falls back (multirow)") {
+    assume(isSpark35Plus)
+    withParquetTable((0 until 3).map(i => (i, i.toLong)), "tbl") {
+      val df = spark
+        .table("tbl")
+        .selectExpr("_1 AS id", "from_json('{\"a\":1,\"a\":2}', 'MAP<STRING,INT>') AS m")
+      checkSparkAnswerAndFallbackReason(df, "Unsupported data type MapType")
+    }
+  }
+
   // Local table scan carries non-null array child fields (an in-memory Seq encodes
   // containsNull=false) into native kernels that promise nullable elements. ConvertToLocalRelation
   // must be disabled or the optimizer folds the expression at plan time and nothing runs natively.
