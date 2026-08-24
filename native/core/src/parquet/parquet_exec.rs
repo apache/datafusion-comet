@@ -919,6 +919,73 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn reports_plaintext_footer_before_page_index_read() {
+        let (filename, _schema) = write_scan_io_fixture();
+        let file_bytes = std::fs::read(filename).unwrap();
+        let file_size = file_bytes.len();
+        let footer_bytes = usize::try_from(u32::from_le_bytes(
+            file_bytes[file_size - 8..file_size - 4].try_into().unwrap(),
+        ))
+        .unwrap();
+        let location = object_store::path::Path::from("plaintext-footer.parquet");
+        let store: Arc<dyn ObjectStore> = Arc::new(ThrottledStore::new(
+            InMemory::new(),
+            ThrottleConfig {
+                wait_get_per_call: Duration::from_millis(10),
+                ..Default::default()
+            },
+        ));
+        store
+            .put(&location, Bytes::from(file_bytes).into())
+            .await
+            .unwrap();
+
+        let session_ctx = Arc::new(SessionContext::new());
+        let metadata_cache = session_ctx
+            .runtime_env()
+            .cache_manager
+            .get_file_metadata_cache();
+        let metrics = ExecutionPlanMetricsSet::new();
+        let factory = EagerPageIndexReaderFactory::new(
+            store,
+            metadata_cache,
+            ScanIoSource::ObjectStore,
+            &metrics,
+        );
+        let mut reader = factory
+            .create_reader(
+                0,
+                PartitionedFile::new(location.to_string(), file_size as u64),
+                Some(footer_bytes + 8),
+                &metrics,
+            )
+            .unwrap();
+        let metadata = reader.get_metadata(None);
+        tokio::pin!(metadata);
+
+        tokio::select! {
+            result = &mut metadata => {
+                panic!("metadata load completed before the page-index read: {result:?}");
+            }
+            () = async {
+                while reader_metric(&metrics, "scan_io_object_store_get_calls") < 2 {
+                    tokio::task::yield_now().await;
+                }
+            } => {
+                assert_eq!(reader_metric(&metrics, "scan_io_footer_reads"), 1);
+                assert_eq!(reader_metric(&metrics, "scan_io_footer_bytes"), footer_bytes);
+            }
+        }
+
+        metadata.await.unwrap();
+        assert_eq!(reader_metric(&metrics, "scan_io_footer_reads"), 1);
+        assert_eq!(
+            reader_metric(&metrics, "scan_io_footer_bytes"),
+            footer_bytes
+        );
+    }
+
+    #[tokio::test]
     async fn reports_encrypted_footer_before_key_retrieval() {
         assert_encrypted_footer_before_key_retrieval(0).await;
     }

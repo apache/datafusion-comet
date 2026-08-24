@@ -309,8 +309,7 @@ impl AsyncFileReader for EagerPageIndexReader {
             if metadata.is_ok() {
                 let footer_bytes = footer_payload_bytes.load(Ordering::Relaxed);
                 if footer_bytes > 0 && cache_enabled {
-                    scan_io_metrics.footer_reads.add(1);
-                    scan_io_metrics.footer_bytes.add(footer_bytes);
+                    metadata_store.record_footer(footer_bytes);
                 }
                 if cache_enabled {
                     scan_io_metrics.record_metadata_cache_result(
@@ -345,6 +344,18 @@ struct ScanIoObjectStore {
 }
 
 impl ScanIoObjectStore {
+    fn record_footer(&self, bytes: usize) {
+        if let ScanIoStoreRole::Metadata {
+            footer_recorded, ..
+        } = &self.role
+        {
+            if bytes > 0 && !footer_recorded.swap(true, Ordering::Relaxed) {
+                self.scan_io_metrics.footer_reads.add(1);
+                self.scan_io_metrics.footer_bytes.add(bytes);
+            }
+        }
+    }
+
     fn record_request(&self, bytes: usize) {
         if bytes == 0 {
             return;
@@ -370,7 +381,6 @@ impl ScanIoObjectStore {
                 .add(bytes.len()),
             ScanIoStoreRole::Metadata {
                 footer_payload_bytes,
-                footer_recorded,
                 file_size,
                 record_footer_immediately,
                 ..
@@ -400,10 +410,8 @@ impl ScanIoObjectStore {
                                             >= footer_end
                                 })
                             })
-                        && !footer_recorded.swap(true, Ordering::Relaxed)
                     {
-                        self.scan_io_metrics.footer_reads.add(1);
-                        self.scan_io_metrics.footer_bytes.add(footer_bytes);
+                        self.record_footer(footer_bytes);
                     }
                 }
             }
@@ -504,7 +512,25 @@ impl ObjectStore for ScanIoObjectStore {
                 )
                 .await
             }
-            ScanIoStoreRole::Metadata { .. } => {
+            ScanIoStoreRole::Metadata {
+                footer_payload_bytes,
+                file_size,
+                record_footer_immediately,
+                ..
+            } => {
+                let footer_bytes = footer_payload_bytes.load(Ordering::Relaxed);
+                if !record_footer_immediately
+                    && footer_bytes > 0
+                    && !ranges.is_empty()
+                    && file_size
+                        .saturating_sub(8)
+                        .checked_sub(footer_bytes as u64)
+                        .is_some_and(|footer_start| {
+                            ranges.iter().all(|range| range.end <= footer_start)
+                        })
+                {
+                    self.record_footer(footer_bytes);
+                }
                 self.record_request(ranges_bytes(ranges));
                 let bytes = self.inner.get_ranges(location, ranges).await?;
                 for (range, bytes) in ranges.iter().zip(bytes.iter()) {

@@ -1007,7 +1007,6 @@ fn stop_batch_producer(producer: JoinHandle<()>) {
         }
         std::thread::sleep(Duration::from_millis(1));
     }
-    let _ = futures::executor::block_on(producer);
 }
 
 fn update_metrics(env: &mut Env, exec_context: &mut ExecutionContext) -> CometResult<()> {
@@ -1437,5 +1436,25 @@ mod tests {
         release_thread.join().unwrap();
 
         assert!(elapsed < Duration::from_millis(400));
+    }
+
+    #[test]
+    fn stops_finished_batch_producer_with_exhausted_runtime_budget() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+
+        get_runtime().spawn(async move {
+            let producer = get_runtime().spawn(async {});
+            while !producer.is_finished() {
+                tokio::task::yield_now().await;
+            }
+            while tokio::task::coop::has_budget_remaining() {
+                tokio::task::coop::consume_budget().await;
+            }
+
+            stop_batch_producer(producer);
+            sender.send(()).unwrap();
+        });
+
+        assert_eq!(receiver.recv_timeout(Duration::from_millis(500)), Ok(()));
     }
 }
