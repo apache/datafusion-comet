@@ -293,6 +293,14 @@ class CometRegExpJvmSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           explainOf(df).contains("JVM codegen dispatcher: rlike"),
           s"expected dispatcher for (a{100}){100}, got:\n${explainOf(df)}")
       }
+      withSubjects("", "x", ";" * 256, null) {
+        val pat = "(([^;]{256}){0,}){256}"
+        val df = sql(s"SELECT s, s rlike '$pat' FROM t")
+        checkSparkAnswerAndOperator(df)
+        assert(
+          explainOf(df).contains("JVM codegen dispatcher: rlike"),
+          s"expected dispatcher for $pat, got:\n${explainOf(df)}")
+      }
       withSubjects("a", "b", null) {
         val nested = "(" * 33 + "a" + ")" * 33
         val df = sql(s"SELECT s, s rlike '$nested' FROM t")
@@ -313,6 +321,20 @@ class CometRegExpJvmSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         assert(
           !explainOf(df).contains("JVM codegen dispatcher: rlike"),
           s"expected native path for expansion-4096 pattern, got:\n${explainOf(df)}")
+      }
+    }
+  }
+
+  test("rlike: exact-zero counted repetitions stay native") {
+    withRLikeExplain {
+      withSubjects("", "x", ";" * 256, null) {
+        Seq("(([^;]{256}){0}){256}", "(([^;]{256}){0,0}){256}").foreach { pat =>
+          val df = sql(s"SELECT s, s rlike '$pat' FROM t")
+          checkSparkAnswerAndOperator(df)
+          assert(
+            !explainOf(df).contains("JVM codegen dispatcher: rlike"),
+            s"expected native path for exact-zero pattern $pat, got:\n${explainOf(df)}")
+        }
       }
     }
   }

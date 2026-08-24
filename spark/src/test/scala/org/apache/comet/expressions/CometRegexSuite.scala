@@ -144,10 +144,18 @@ class CometRegexSuite extends AnyFunSuite {
   }
 
   test("rejects counted or nested patterns that can exceed the Rust compile budget") {
-    Seq("a{1000000}", "[^;]{20000}", "a{257}", "(a{100}){100}", "(" * 33 + "a" + ")" * 33)
+    Seq(
+      "a{1000000}",
+      "[^;]{20000}",
+      "a{257}",
+      "(a{100}){100}",
+      "(([^;]{256}){0,}){256}",
+      "(" * 33 + "a" + ")" * 33)
       .foreach(assertIncompatible)
     assertCompatible("a{256}")
     assertCompatible("(a{2}){3}")
+    assertCompatible("(([^;]{256}){0}){256}")
+    assertCompatible("(([^;]{256}){0,0}){256}")
     assertCompatible("(" * 32 + "a" + ")" * 32)
   }
 
