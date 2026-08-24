@@ -713,7 +713,34 @@ object CometBase64 extends CometExpressionSerde[Base64] {
   }
 }
 
-object CometUnBase64 extends CometCodegenDispatch[UnBase64]
+// Base64.getMimeDecoder() semantics: skips non-alphabet bytes and matches Spark's codegen
+// path. The native path handles the default UnBase64 (failOnError = false, reachable from SQL
+// `unbase64(...)`). When failOnError = true (from `to_binary('base64')` / `try_to_binary`),
+// Spark uses a stricter RFC 4648 validator, so those cases stay on the JVM codegen dispatcher
+// via CodegenDispatchFallback. Error messages match Spark byte-for-byte (pinned in the Rust
+// unit tests), but the wrapping exception class does not; kept as Compatible() because Spark
+// surfaces these as bare IllegalArgumentException without a SQL error class.
+object CometUnBase64 extends CometExpressionSerde[UnBase64] with CodegenDispatchFallback {
+
+  private val failOnErrorReason =
+    "unbase64 with failOnError = true uses stricter RFC 4648 validation that is not yet" +
+      " implemented natively"
+
+  override def getUnsupportedReasons(): Seq[String] = Seq(failOnErrorReason)
+
+  override def getSupportLevel(expr: UnBase64): SupportLevel = {
+    if (expr.failOnError) Unsupported(Some(failOnErrorReason)) else Compatible()
+  }
+
+  override def convert(expr: UnBase64, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
+    val childExpr = exprToProtoInternal(expr.child, inputs, binding)
+    scalarFunctionExprToProtoWithReturnType(
+      "unbase64",
+      BinaryType,
+      failOnError = false,
+      childExpr)
+  }
+}
 
 object CometToCharacter extends CometCodegenDispatch[ToCharacter]
 

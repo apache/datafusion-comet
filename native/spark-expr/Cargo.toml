@@ -101,6 +101,10 @@ name = "base64"
 harness = false
 
 [[bench]]
+name = "unbase64"
+harness = false
+
+[[bench]]
 name = "date_trunc"
 harness = false
 
