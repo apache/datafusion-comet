@@ -137,8 +137,6 @@ class CometNativeShuffleWriter[K, V](
       Option(context).foreach(nativeMetrics.reportScanInputMetrics)
     }
 
-    Option(context).foreach(nativeMetrics.reportSpillMetrics)
-
     val cometIter = new CometExecIterator(
       CometExec.newIterId,
       inputObjects,
