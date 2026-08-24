@@ -42,6 +42,7 @@ datafusion-comet-jni-bridge = { workspace = true }
 jni = "0.22.4"
 futures = { workspace = true }
 twox-hash = "2.1.2"
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
 rand = { workspace = true }
 base64 = "0.23.0"
 # shortest round-trip float formatting, used to match Spark's Double.toString-based

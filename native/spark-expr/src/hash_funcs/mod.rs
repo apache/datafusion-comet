@@ -18,6 +18,7 @@
 pub mod murmur3;
 pub(super) mod utils;
 mod xxhash64;
+pub mod xxh3_64;
 
 pub use murmur3::spark_murmur3_hash;
 pub(crate) use xxhash64::create_xxhash64_hashes;

@@ -27,6 +27,7 @@ use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion_comet_common::tracing::{with_trace, with_trace_async};
 use datafusion_comet_spark_expr::murmur3::create_murmur3_hashes;
+use datafusion_comet_spark_expr::xxh3_64::create_xxh3_64_hashes;
 use itertools::Itertools;
 use std::fmt;
 use std::fmt::{Debug, Formatter};
@@ -36,8 +37,13 @@ use tokio::time::Instant;
 /// Reusable scratch buffers for computing row-to-partition assignments.
 #[derive(Default)]
 struct ScratchSpace {
-    /// Hashes for each row in the current batch.
+    /// Murmur3 hashes for each row in the current batch. Allocated only for
+    /// the `Hash` partitioning arm (Spark-compatible seed 42, 32-bit hash).
     hashes_buf: Vec<u32>,
+    /// XXH3-64 hashes for each row in the current batch. Allocated only for
+    /// the `RoundRobin` partitioning arm, which is Comet-internal and does
+    /// not need Spark hash parity.
+    xxh3_hashes_buf: Vec<u64>,
     /// Partition ids for each row in the current batch.
     partition_ids: Vec<u32>,
     /// The row indices of the rows in each partition. This array is conceptually divided into
@@ -225,11 +231,16 @@ impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
         // The initial values are not used.
         let scratch = ScratchSpace {
             hashes_buf: match partitioning {
-                // Allocate hashes_buf for hash and round robin partitioning.
-                // Round robin hashes all columns to achieve even, deterministic distribution.
-                CometPartitioning::Hash(_, _) | CometPartitioning::RoundRobin(_, _) => {
-                    vec![0; batch_size]
-                }
+                // Spark-compatible Murmur3, seed 42, matches HashPartitioning
+                // downstream co-partitioning contracts.
+                CometPartitioning::Hash(_, _) => vec![0; batch_size],
+                _ => vec![],
+            },
+            xxh3_hashes_buf: match partitioning {
+                // RoundRobin is Comet-internal (see comment in the RoundRobin
+                // arm of `partitioning_batch`); XXH3-64 gives faster
+                // per-row hashing on strings and binary than Murmur3.
+                CometPartitioning::RoundRobin(_, _) => vec![0; batch_size],
                 _ => vec![],
             },
             partition_ids: vec![0; batch_size],
@@ -384,13 +395,14 @@ impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
                 self.scratch = scratch;
             }
             CometPartitioning::RoundRobin(num_output_partitions, max_hash_columns) => {
-                // Comet implements "round robin" as hash partitioning on columns.
-                // This achieves the same goal as Spark's round robin (even distribution
-                // without semantic grouping) while being deterministic for fault tolerance.
-                //
-                // Note: This produces different partition assignments than Spark's round robin,
-                // which sorts by UnsafeRow binary representation before assigning partitions.
-                // However, both approaches provide even distribution and determinism.
+                // Comet implements "round robin" as hash partitioning on columns
+                // using XXH3-64. This achieves even distribution and determinism
+                // for fault tolerance. The hash function is a Comet-internal
+                // choice: RoundRobinPartitioning has no ShuffleSpec, so no
+                // downstream Spark stage co-partitions against this layout, and
+                // Spark's own round-robin sorts by UnsafeRow binary
+                // representation instead, so the partition assignments already
+                // differ from Spark either way.
                 let mut scratch = std::mem::take(&mut self.scratch);
                 let (partition_starts, partition_row_indices): (&Vec<u32>, &Vec<u32>) = {
                     let mut timer = self.metrics.repart_time.timer();
@@ -409,18 +421,19 @@ impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
                         .map(|i| Arc::clone(input.column(i)))
                         .collect();
 
-                    // Use identical seed as Spark hash partitioning.
-                    let hashes_buf = &mut scratch.hashes_buf[..num_rows];
-                    hashes_buf.fill(42_u32);
+                    let hashes_buf = &mut scratch.xxh3_hashes_buf[..num_rows];
+                    hashes_buf.fill(42_u64);
 
                     // Compute hash for selected columns
-                    create_murmur3_hashes(&columns_to_hash, hashes_buf)?;
+                    create_xxh3_64_hashes(&columns_to_hash, hashes_buf)?;
 
-                    // Assign partition IDs based on hash (same as hash partitioning)
+                    // Assign partition IDs based on hash. XXH3-64's low 32 bits
+                    // are fully avalanched, so truncating to u32 for pmod
+                    // preserves distribution without widening pmod itself.
                     let partition_ids = &mut scratch.partition_ids[..num_rows];
                     hashes_buf.iter().enumerate().for_each(|(idx, hash)| {
                         partition_ids[idx] =
-                            comet_partitioning::pmod(*hash, *num_output_partitions) as u32;
+                            comet_partitioning::pmod(*hash as u32, *num_output_partitions) as u32;
                     });
 
                     // We now have partition ids for every input row, map that to partition starts
