@@ -117,8 +117,13 @@ object SparkErrorConverter extends ShimSparkErrorConverter {
 
     val summary: String = errorJson.summary.getOrElse("")
 
-    // Delegate to version-specific shim - let conversion exceptions propagate
-    val optEx = convertErrorType(errorJson.errorType, errorClass, params, sparkContext, summary)
+    // Math.multiplyExact throws a plain JVM exception in every Spark version, without an
+    // ANSI error class or configuration advice. Delegate other errors to the version-specific shim.
+    val optEx = if (errorJson.errorType == "LongOverflow") {
+      Some(new ArithmeticException("long overflow"))
+    } else {
+      convertErrorType(errorJson.errorType, errorClass, params, sparkContext, summary)
+    }
     optEx match {
       case Some(exception) =>
         // successfully converted - return the proper typed exception
