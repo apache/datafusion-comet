@@ -23,7 +23,7 @@ import java.io.File
 
 import scala.collection.mutable
 
-import org.apache.spark.{SparkConf, SparkContext}
+import org.apache.spark.{SparkConf, SparkContext, Success}
 import org.apache.spark.executor.ShuffleReadMetrics
 import org.apache.spark.executor.ShuffleWriteMetrics
 import org.apache.spark.scheduler.SparkListener
@@ -102,6 +102,160 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       shuffleReadMetricsList.foreach { metrics =>
         assert(metrics.recordsRead > 0)
         assert(metrics.totalBytesRead > 0)
+      }
+    }
+  }
+
+  test("native shuffle write reports separate memory and disk spill metrics") {
+    val expectedRecords = 20000L
+    val compressibleValue = "native-shuffle-spill-metrics-" * 8
+    withParquetTable((0 until expectedRecords.toInt).map(i => (i, compressibleValue)), "tbl") {
+      withSQLConf(
+        CometConf.COMET_SHUFFLE_MODE.key -> "native",
+        CometConf.COMET_SHUFFLE_COMPRESSION_CODEC.key -> "zstd",
+        CometConf.COMET_SHUFFLE_NATIVE_MAX_BUFFER_BYTES.key -> "32k",
+        SQLConf.SHUFFLE_PARTITIONS.key -> "4") {
+        val shuffled = sql("SELECT * FROM tbl").repartition(4, $"_1")
+        val store = spark.sparkContext.statusStore
+        spark.sparkContext.listenerBus.waitUntilEmpty()
+        val stagesBefore = store.stageList(null).map(_.stageId).toSet
+
+        assert(shuffled.collect().length == expectedRecords)
+        spark.sparkContext.listenerBus.waitUntilEmpty()
+
+        val exchange = collectFirst(shuffled.queryExecution.executedPlan) {
+          case native: CometShuffleExchangeExec if native.shuffleType == CometNativeShuffle =>
+            native
+        }.getOrElse(fail("Expected a native shuffle exchange"))
+        val metrics = exchange.metrics
+        assert(metrics("spilled_bytes").name.contains("disk spilled bytes"))
+        assert(metrics("memory_spilled_bytes").name.contains("memory spilled bytes"))
+        val sqlMemorySpilled = metrics("memory_spilled_bytes").value
+        val sqlDiskSpilled = metrics("spilled_bytes").value
+
+        assert(metrics("shuffleRecordsWritten").value == expectedRecords)
+        assert(metrics("shuffleBytesWritten").value > 0L)
+        assert(metrics("shuffleWriteTime").value > 0L)
+        assert(metrics("interleave_time").value > 0L)
+        assert(metrics("spill_count").value > 0L)
+        assert(sqlDiskSpilled > 0L, "Compressed native shuffle spill bytes were not reported")
+        assert(
+          sqlMemorySpilled > sqlDiskSpilled,
+          s"Expected in-memory spill bytes ($sqlMemorySpilled) to exceed compressed " +
+            s"disk spill bytes ($sqlDiskSpilled)")
+
+        val shuffleWriteStages = store
+          .stageList(null)
+          .filterNot(stage => stagesBefore.contains(stage.stageId))
+          .filter(_.shuffleWriteRecords > 0L)
+
+        assert(shuffleWriteStages.nonEmpty, "No native shuffle write stage was recorded")
+        assert(shuffleWriteStages.map(_.shuffleWriteRecords).sum == expectedRecords)
+        assert(
+          shuffleWriteStages.map(_.shuffleWriteBytes).sum == metrics("shuffleBytesWritten").value)
+        assert(shuffleWriteStages.map(_.shuffleWriteTime).sum > 0L)
+        assert(shuffleWriteStages.map(_.memoryBytesSpilled).sum == sqlMemorySpilled)
+        assert(shuffleWriteStages.map(_.diskBytesSpilled).sum == sqlDiskSpilled)
+      }
+    }
+  }
+
+  test("failed native shuffle attempts preserve memory and disk spill metrics") {
+    val failureRow = 8192
+    val compressibleValue = "native-shuffle-failed-spill-metrics-" * 8
+
+    withTempPath { path =>
+      spark
+        .createDataFrame((0 until failureRow + 1024).map { i =>
+          (i, if (i == failureRow) 0 else 1, compressibleValue)
+        })
+        .coalesce(1)
+        .write
+        .parquet(path.getAbsolutePath)
+
+      withParquetTable(path.getAbsolutePath, "failed_shuffle_tbl") {
+        val failedShuffleMetrics = mutable.ArrayBuffer.empty[(Long, Long)]
+        val targetStageIds = mutable.HashSet.empty[Int]
+        val jobGroupId = s"failed-native-shuffle-metrics-${java.util.UUID.randomUUID().toString}"
+
+        val listener = new SparkListener {
+          override def onJobStart(jobStart: SparkListenerJobStart): Unit = {
+            val isTargetJob = Option(jobStart.properties)
+              .flatMap(props => Option(props.getProperty(SparkContext.SPARK_JOB_GROUP_ID)))
+              .contains(jobGroupId)
+            if (isTargetJob) {
+              targetStageIds.synchronized {
+                targetStageIds ++= jobStart.stageInfos.map(_.stageId)
+              }
+            }
+          }
+
+          override def onTaskEnd(taskEnd: SparkListenerTaskEnd): Unit = {
+            val isTargetStage = targetStageIds.synchronized {
+              targetStageIds.contains(taskEnd.stageId)
+            }
+            if (isTargetStage && taskEnd.taskType.contains("ShuffleMapTask") &&
+              taskEnd.reason != Success) {
+              val taskMetrics = taskEnd.taskMetrics
+              failedShuffleMetrics.synchronized {
+                failedShuffleMetrics += ((
+                  taskMetrics.memoryBytesSpilled,
+                  taskMetrics.diskBytesSpilled))
+              }
+            }
+          }
+        }
+        spark.sparkContext.addSparkListener(listener)
+
+        try {
+          spark.sparkContext.listenerBus.waitUntilEmpty()
+
+          withSQLConf(
+            CometConf.COMET_SHUFFLE_MODE.key -> "native",
+            CometConf.COMET_SHUFFLE_COMPRESSION_CODEC.key -> "zstd",
+            CometConf.COMET_SHUFFLE_NATIVE_MAX_BUFFER_BYTES.key -> "32k",
+            CometConf.COMET_BATCH_SIZE.key -> "1024",
+            SQLConf.ANSI_ENABLED.key -> "true",
+            SQLConf.SHUFFLE_PARTITIONS.key -> "4") {
+            val shuffled = sql("SELECT _1, _1 / _2 AS quotient, _3 FROM failed_shuffle_tbl")
+              .repartition(4, $"_1")
+            val exchange = collectFirst(shuffled.queryExecution.executedPlan) {
+              case native: CometShuffleExchangeExec if native.shuffleType == CometNativeShuffle =>
+                native
+            }.getOrElse(fail("Expected a native shuffle exchange"))
+            assert(
+              collect(exchange.child) { case project: CometProjectExec => project }.nonEmpty,
+              s"Expected the failing division to execute in a native project:\n${exchange.treeString}")
+
+            spark.sparkContext.setJobGroup(jobGroupId, "failed native shuffle spill metrics")
+            try {
+              val failure = intercept[Exception] {
+                shuffled.collect()
+              }
+              val messages = causeChain(failure).flatMap(error => Option(error.getMessage))
+              assert(
+                messages.exists(message =>
+                  message.contains("DIVIDE_BY_ZERO") || message.contains("Division by zero")),
+                s"Expected the late-row division failure, got:\n${messages.mkString("\n")}")
+            } finally {
+              spark.sparkContext.clearJobGroup()
+            }
+          }
+
+          spark.sparkContext.listenerBus.waitUntilEmpty()
+
+          val metrics = failedShuffleMetrics.synchronized {
+            failedShuffleMetrics.toSeq
+          }
+          assert(metrics.nonEmpty, "No failed native shuffle map attempt was recorded")
+          assert(
+            metrics.exists { case (memoryBytesSpilled, diskBytesSpilled) =>
+              memoryBytesSpilled > 0L && diskBytesSpilled > 0L
+            },
+            s"Failed shuffle attempts must preserve both memory and disk spill metrics: $metrics")
+        } finally {
+          spark.sparkContext.removeSparkListener(listener)
+        }
       }
     }
   }

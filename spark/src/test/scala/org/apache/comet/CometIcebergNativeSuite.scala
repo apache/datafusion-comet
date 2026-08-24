@@ -26,9 +26,12 @@ import java.nio.charset.StandardCharsets.UTF_8
 import scala.collection.mutable
 import scala.jdk.CollectionConverters._
 
+import org.apache.iceberg.data.IcebergGenerics
+import org.apache.iceberg.expressions.Expressions
+import org.apache.iceberg.spark.Spark3Util
 import org.apache.spark.CometListenerBusUtils
 import org.apache.spark.scheduler.{SparkListener, SparkListenerTaskEnd}
-import org.apache.spark.sql.{CometTestBase, DataFrame}
+import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.expressions.DynamicPruningExpression
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
@@ -5156,6 +5159,225 @@ class CometIcebergNativeSuite
           s"SELECT id FROM $table WHERE try_variant_get(data, '$$.num', 'int') > 30 ORDER BY id",
           "the native scan does not support the VARIANT type")
         spark.sql(s"DROP TABLE $table")
+      }
+    }
+  }
+
+  test("unprojected variant columns do not disable native Iceberg scans") {
+    assume(isSpark40Plus, "VARIANT type requires Spark 4.0+")
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    assume(icebergVersionAtLeast(1, 10), "VARIANT type requires Iceberg 1.10+")
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+        val table = "test_cat.db.variant_projection"
+        try {
+          spark.sql(
+            s"CREATE TABLE $table (id BIGINT, label STRING, data VARIANT) USING iceberg " +
+              "TBLPROPERTIES ('format-version' = '3')")
+          spark.sql(s"""
+            INSERT INTO $table VALUES
+              (1, 'object', parse_json('{"num": 25}')),
+              (2, NULL, parse_json('null')),
+              (NULL, 'sql-null', NULL),
+              (4, 'array', parse_json('[1, 2]'))
+          """)
+
+          // Iceberg 1.10's Spark reader dereferences a null requested type when it encounters an
+          // unprojected, annotated Variant. Keep Variant projected for the Spark reference read,
+          // then discard it from the expected rows before checking the native pruned projection.
+          var sparkAllRows = Seq.empty[Row]
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            sparkAllRows = spark
+              .sql(s"SELECT id, label, data FROM $table ORDER BY id NULLS FIRST")
+              .collect()
+              .map(row => Row(row.get(0), row.get(1)))
+              .toSeq
+          }
+          assert(
+            sparkAllRows ==
+              Seq(Row(null, "sql-null"), Row(1L, "object"), Row(2L, null), Row(4L, "array")))
+          val allRows = spark.sql(s"SELECT id, label FROM $table ORDER BY id NULLS FIRST")
+          checkCometAnswer(allRows, sparkAllRows)
+          assertSingleNativeScan(allRows.queryExecution.executedPlan)
+
+          var sparkFilteredRows = Seq.empty[Row]
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            sparkFilteredRows = spark
+              .sql(s"SELECT id, data FROM $table " +
+                "WHERE label IS NOT NULL ORDER BY id NULLS FIRST")
+              .collect()
+              .map(row => Row(row.get(0)))
+              .toSeq
+          }
+          val filteredRows =
+            spark.sql(s"SELECT id FROM $table WHERE label IS NOT NULL ORDER BY id NULLS FIRST")
+          checkCometAnswer(filteredRows, sparkFilteredRows)
+          assertSingleNativeScan(filteredRows.queryExecution.executedPlan)
+
+          checkIcebergNativeScanFallback(
+            s"SELECT id FROM $table WHERE " +
+              "try_variant_get(data, '$.num', 'int') > 20 ORDER BY id",
+            "projected VARIANT columns remain unsupported")
+
+          withSQLConf("spark.sql.iceberg.aggregate-push-down.enabled" -> "false") {
+            val emptyProjection = spark.sql(s"SELECT COUNT(*) FROM $table")
+            assert(
+              collectIcebergNativeScans(emptyProjection.queryExecution.executedPlan).isEmpty,
+              "An empty projection must not read every field from a VARIANT-bearing table")
+          }
+
+          val metadataOnly = spark.sql(s"SELECT _file FROM $table")
+          assert(
+            collectIcebergNativeScans(metadataOnly.queryExecution.executedPlan).isEmpty,
+            "A metadata-only projection must not read a VARIANT-bearing data schema")
+        } finally {
+          spark.sql(s"DROP TABLE IF EXISTS $table PURGE")
+        }
+      }
+    }
+  }
+
+  test("variant equality deletes fall back to Spark") {
+    assume(isSpark40Plus, "VARIANT type requires Spark 4.0+")
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    assume(icebergVersionAtLeast(1, 10), "VARIANT type requires Iceberg 1.10+")
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+        val tableName = "variant_equality_delete"
+        val table = s"test_cat.db.$tableName"
+        try {
+          spark.sql(
+            s"CREATE TABLE $table (id BIGINT, data VARIANT) USING iceberg " +
+              "TBLPROPERTIES ('format-version' = '3')")
+          spark.sql(
+            s"INSERT INTO $table VALUES " +
+              "(1, parse_json('1')), (2, parse_json('2'))")
+
+          val nativePlan = spark.sql(s"SELECT id FROM $table ORDER BY id")
+          assertSingleNativeScan(nativePlan.queryExecution.executedPlan)
+
+          // Reuse the table's existing Variant without referencing newer Iceberg Variant APIs.
+          val records = IcebergGenerics
+            .read(Spark3Util.loadIcebergTable(spark, table))
+            .where(Expressions.equal("id", 2L))
+            .select("data")
+            .build()
+          val variant =
+            try {
+              val rows = records.iterator()
+              assert(rows.hasNext, "Expected an Iceberg row containing the delete key")
+              rows.next().getField("data")
+            } finally {
+              records.close()
+            }
+
+          commitEqualityDelete("test_cat", "db", tableName, "data", variant, warehouseDir)
+
+          // Spark also lacks a Variant equality comparator, so verify the fallback plan only.
+          val fallbackPlan =
+            spark.sql(s"SELECT id FROM $table ORDER BY id").queryExecution.executedPlan
+          assert(
+            collectIcebergNativeScans(fallbackPlan).isEmpty,
+            "A VARIANT equality-delete key must prevent the native Iceberg scan")
+          val fallbackReasons = new ExtendedExplainInfo().getFallbackReasons(fallbackPlan)
+          assert(
+            fallbackReasons.exists(
+              _.contains("Equality delete on unsupported column type 'data' (variant)")),
+            s"Expected VARIANT equality-delete fallback, found: ${fallbackReasons.mkString(", ")}")
+        } finally {
+          spark.sql(s"DROP TABLE IF EXISTS $table PURGE")
+        }
+      }
+    }
+  }
+
+  test("projecting nested variant structs, arrays, and maps still falls back") {
+    assume(isSpark40Plus, "VARIANT type requires Spark 4.0+")
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    assume(icebergVersionAtLeast(1, 10), "VARIANT type requires Iceberg 1.10+")
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+        val table = "test_cat.db.nested_variant_projection"
+        try {
+          spark.sql(
+            s"CREATE TABLE $table " +
+              "(id BIGINT, nested STRUCT<label: STRING, data: VARIANT>, " +
+              "variants ARRAY<VARIANT>, variants_by_key MAP<STRING, VARIANT>) USING iceberg " +
+              "TBLPROPERTIES ('format-version' = '3')")
+          spark.sql(s"""
+            INSERT INTO $table VALUES
+              (1, named_struct('label', 'first', 'data', parse_json('{"num": 1}')),
+               array(parse_json('{"num": 2}'), parse_json('null')),
+               map('first', parse_json('{"num": 3}'))),
+              (2, named_struct('label', NULL, 'data', NULL),
+               array(CAST(NULL AS VARIANT)), map('sql-null', CAST(NULL AS VARIANT))),
+              (3, NULL, NULL, NULL)
+          """)
+
+          var sparkScalarRows = Seq.empty[Row]
+          // Iceberg 1.10 cannot materialize nested Variant values in arrays or maps, but
+          // reading their sizes still projects every Variant-bearing root for Spark parity.
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            sparkScalarRows = spark
+              .sql("SELECT id, nested, size(variants), size(variants_by_key) " +
+                s"FROM $table ORDER BY id")
+              .collect()
+              .map(row => Row(row.get(0)))
+              .toSeq
+          }
+          val scalarRows = spark.sql(s"SELECT id FROM $table ORDER BY id")
+          checkCometAnswer(scalarRows, sparkScalarRows)
+          assertSingleNativeScan(scalarRows.queryExecution.executedPlan)
+
+          val nestedProjection = spark.sql(s"SELECT nested.label FROM $table ORDER BY id")
+          assert(
+            collectIcebergNativeScans(nestedProjection.queryExecution.executedPlan).isEmpty,
+            "iceberg-rust rejects a projected parent containing a VARIANT field")
+
+          val arrayProjection = spark.sql(s"SELECT variants FROM $table ORDER BY id")
+          assert(
+            collectIcebergNativeScans(arrayProjection.queryExecution.executedPlan).isEmpty,
+            "iceberg-rust rejects a projected array containing VARIANT values")
+
+          val mapProjection = spark.sql(s"SELECT variants_by_key FROM $table ORDER BY id")
+          assert(
+            collectIcebergNativeScans(mapProjection.queryExecution.executedPlan).isEmpty,
+            "iceberg-rust rejects a projected map containing VARIANT values")
+
+          val snapshotId = spark
+            .sql(s"SELECT snapshot_id FROM $table.snapshots ORDER BY committed_at DESC LIMIT 1")
+            .collect()
+            .head
+            .getLong(0)
+          spark.sql(s"ALTER TABLE $table RENAME COLUMN nested TO renamed")
+
+          val historicalNestedProjection =
+            spark.sql(s"SELECT nested.label FROM $table VERSION AS OF $snapshotId ORDER BY id")
+          assert(
+            collectIcebergNativeScans(
+              historicalNestedProjection.queryExecution.executedPlan).isEmpty,
+            "A renamed parent containing a VARIANT field must fall back for historical snapshots")
+        } finally {
+          spark.sql(s"DROP TABLE IF EXISTS $table PURGE")
+        }
       }
     }
   }
