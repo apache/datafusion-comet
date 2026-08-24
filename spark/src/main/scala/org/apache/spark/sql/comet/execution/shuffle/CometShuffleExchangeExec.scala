@@ -769,6 +769,7 @@ object CometShuffleExchangeExec
       serializer: Serializer,
       metrics: Map[String, SQLMetric],
       spec: NativeShuffleSpec): ShuffleDependency[Int, ColumnarBatch, ColumnarBatch] = {
+    thinRDD.spillMetricNode = Some(CometMetricNode(metrics, Seq(spec.childMetricNode)))
     val numParts = thinRDD.getNumPartitions
 
     // Subqueries in the partitioning expressions (e.g. DISTRIBUTE BY over a subquery) belong to

@@ -19,11 +19,12 @@
 
 package org.apache.spark.sql.comet.execution.shuffle
 
-import org.apache.spark.HashPartitioner
+import org.apache.spark.{HashPartitioner, Partition, TaskContext}
+import org.apache.spark.rdd.RDD
 import org.apache.spark.serializer.JavaSerializer
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.comet.{CometMetricNode, NativeExecContext}
-import org.apache.spark.sql.execution.metric.SQLMetrics
+import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import org.apache.comet.serde.OperatorOuterClass.Operator
@@ -43,6 +44,56 @@ import org.apache.comet.serde.OperatorOuterClass.Operator
  * [[CometNativeShuffleInputRDD]] and the `private[comet]` [[NativeExecContext]] directly.
  */
 class CometNativeShuffleInputRDDSuite extends CometTestBase {
+
+  test("spill reporting is registered before native shuffle input producers") {
+    Seq(None, Some(new IllegalStateException("failed native shuffle"))).foreach { failure =>
+      val writerDisk = new SQLMetric("writerDisk")
+      val writerMemory = new SQLMetric("writerMemory")
+      val childDisk = new SQLMetric("childDisk")
+      val childMemory = new SQLMetric("childMemory")
+      val childMetrics =
+        CometMetricNode(Map("spilled_bytes" -> childDisk, "memory_spilled_bytes" -> childMemory))
+      val taskContext = TaskContext.empty()
+      val nestedInput = new RDD[AnyRef](spark.sparkContext, Nil) {
+        override protected def getPartitions: Array[Partition] = Array(new Partition {
+          override def index: Int = 0
+        })
+
+        override def compute(split: Partition, context: TaskContext): Iterator[AnyRef] = {
+          context.addTaskCompletionListener[Unit] { _ =>
+            childDisk.set(19L)
+            childMemory.set(37L)
+          }
+          Iterator.single(null)
+        }
+      }
+      val inputRDD =
+        new CometNativeShuffleInputRDD(spark.sparkContext, Seq(nestedInput), 1, Set.empty)
+      val writerMetrics =
+        Map("spilled_bytes" -> writerDisk, "memory_spilled_bytes" -> writerMemory)
+      inputRDD.spillMetricNode = Some(CometMetricNode(writerMetrics, Seq(childMetrics)))
+
+      inputRDD.iterator(inputRDD.partitions.head, taskContext)
+      new CometNativeShuffleWriter[Int, Any](
+        NativeShuffleSpec(null, childMetrics, null),
+        null,
+        Nil,
+        writerMetrics,
+        1,
+        0,
+        0L,
+        taskContext,
+        null)
+      taskContext.addTaskCompletionListener[Unit] { _ =>
+        writerDisk.set(23L)
+        writerMemory.set(41L)
+      }
+      taskContext.markTaskCompleted(failure)
+
+      assert(taskContext.taskMetrics.diskBytesSpilled == 42L)
+      assert(taskContext.taskMetrics.memoryBytesSpilled == 78L)
+    }
+  }
 
   test("serialized (rdd, dep) task binary size is independent of partition count") {
     val sc = spark.sparkContext
@@ -74,10 +125,15 @@ class CometNativeShuffleInputRDDSuite extends CometTestBase {
         hasScanInput = false)
       val spec =
         NativeShuffleSpec(Operator.getDefaultInstance, CometMetricNode(Map.empty), execContext)
+      val writerMetrics = Map(
+        "spilled_bytes" -> SQLMetrics.createSizeMetric(sc, "disk spilled bytes"),
+        "memory_spilled_bytes" -> SQLMetrics.createSizeMetric(sc, "memory spilled bytes"))
+      rdd.spillMetricNode = Some(CometMetricNode(writerMetrics, Seq(spec.childMetricNode)))
       val dep = new CometShuffleDependency[Int, ColumnarBatch, ColumnarBatch](
         _rdd = rdd,
         partitioner = new HashPartitioner(numPartitions),
         decodeTime = SQLMetrics.createMetric(sc, "decode time"),
+        shuffleWriteMetrics = writerMetrics,
         nativeShuffleSpec = Some(spec))
       (rdd, dep)
     }
