@@ -72,7 +72,7 @@ use parquet::arrow::async_reader::{AsyncFileReader, ParquetObjectReader};
 use parquet::file::metadata::{FooterTail, PageIndexPolicy, ParquetMetaData};
 use std::fmt::{Debug, Display, Formatter};
 use std::ops::Range;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -286,6 +286,7 @@ impl AsyncFileReader for EagerPageIndexReader {
                 role: ScanIoStoreRole::Metadata {
                     storage_reads: Arc::clone(&metadata_storage_reads),
                     footer_payload_bytes: Arc::clone(&footer_payload_bytes),
+                    footer_recorded: AtomicBool::new(false),
                     file_size: object_meta.size,
                     record_footer_immediately: !cache_enabled,
                 },
@@ -330,6 +331,7 @@ enum ScanIoStoreRole {
     Metadata {
         storage_reads: Arc<AtomicUsize>,
         footer_payload_bytes: Arc<AtomicUsize>,
+        footer_recorded: AtomicBool,
         file_size: u64,
         record_footer_immediately: bool,
     },
@@ -368,6 +370,7 @@ impl ScanIoObjectStore {
                 .add(bytes.len()),
             ScanIoStoreRole::Metadata {
                 footer_payload_bytes,
+                footer_recorded,
                 file_size,
                 record_footer_immediately,
                 ..
@@ -375,21 +378,32 @@ impl ScanIoObjectStore {
                 self.scan_io_metrics.metadata_bytes.add(bytes.len());
                 if range.is_some_and(|range| range.end == *file_size) && bytes.len() >= 8 {
                     if let Ok(footer) = FooterTail::try_from(&bytes[bytes.len() - 8..]) {
-                        if footer_payload_bytes
-                            .compare_exchange(
-                                0,
-                                footer.metadata_length(),
-                                Ordering::Relaxed,
-                                Ordering::Relaxed,
-                            )
-                            .is_ok()
-                            && *record_footer_immediately
-                        {
-                            self.scan_io_metrics.footer_reads.add(1);
-                            self.scan_io_metrics
-                                .footer_bytes
-                                .add(footer.metadata_length());
-                        }
+                        let _ = footer_payload_bytes.compare_exchange(
+                            0,
+                            footer.metadata_length(),
+                            Ordering::Relaxed,
+                            Ordering::Relaxed,
+                        );
+                    }
+                }
+
+                if *record_footer_immediately {
+                    let footer_bytes = footer_payload_bytes.load(Ordering::Relaxed);
+                    let footer_end = file_size.saturating_sub(8);
+                    if footer_bytes > 0
+                        && footer_end
+                            .checked_sub(footer_bytes as u64)
+                            .is_some_and(|footer_start| {
+                                range.is_some_and(|range| {
+                                    range.start <= footer_start
+                                        && range.start.saturating_add(bytes.len() as u64)
+                                            >= footer_end
+                                })
+                            })
+                        && !footer_recorded.swap(true, Ordering::Relaxed)
+                    {
+                        self.scan_io_metrics.footer_reads.add(1);
+                        self.scan_io_metrics.footer_bytes.add(footer_bytes);
                     }
                 }
             }

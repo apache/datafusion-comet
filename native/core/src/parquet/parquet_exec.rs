@@ -337,14 +337,16 @@ mod tests {
     use datafusion_comet_spark_expr::test_common::file_util::get_temp_filename;
     use futures::StreamExt;
     use object_store::memory::InMemory;
+    use object_store::throttle::{ThrottleConfig, ThrottledStore};
     use object_store::{ObjectStore, ObjectStoreExt};
     use parquet::arrow::arrow_reader::ArrowReaderOptions;
     use parquet::arrow::ArrowWriter;
     use parquet::encryption::decrypt::{FileDecryptionProperties, KeyRetriever};
     use parquet::encryption::encrypt::FileEncryptionProperties;
-    use parquet::file::metadata::PageIndexPolicy;
+    use parquet::file::metadata::{KeyValue, PageIndexPolicy};
     use parquet::file::properties::{EnabledStatistics, WriterProperties};
     use std::fs::File;
+    use std::time::Duration;
 
     fn write_scan_io_fixture() -> (String, SchemaRef) {
         let schema = Arc::new(Schema::new(vec![
@@ -918,6 +920,15 @@ mod tests {
 
     #[tokio::test]
     async fn reports_encrypted_footer_before_key_retrieval() {
+        assert_encrypted_footer_before_key_retrieval(0).await;
+    }
+
+    #[tokio::test]
+    async fn does_not_report_encrypted_footer_before_payload_is_read() {
+        assert_encrypted_footer_before_key_retrieval(512 * 1024).await;
+    }
+
+    async fn assert_encrypted_footer_before_key_retrieval(footer_padding: usize) {
         struct ObservingKeyRetriever {
             key: Vec<u8>,
             metrics: Arc<ExecutionPlanMetricsSet>,
@@ -942,6 +953,12 @@ mod tests {
             .unwrap();
         let properties = WriterProperties::builder()
             .with_file_encryption_properties(encryption)
+            .set_key_value_metadata((footer_padding > 0).then(|| {
+                vec![KeyValue::new(
+                    "padding".to_string(),
+                    "x".repeat(footer_padding),
+                )]
+            }))
             .build();
         let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
         let batch = RecordBatch::try_new(
@@ -963,7 +980,18 @@ mod tests {
         ))
         .unwrap();
         let location = object_store::path::Path::from("encrypted-footer.parquet");
-        let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        let store: Arc<dyn ObjectStore> = if footer_padding > 0 {
+            assert!(footer_bytes > 512 * 1024);
+            Arc::new(ThrottledStore::new(
+                InMemory::new(),
+                ThrottleConfig {
+                    wait_get_per_call: Duration::from_millis(10),
+                    ..Default::default()
+                },
+            ))
+        } else {
+            Arc::new(InMemory::new())
+        };
         store
             .put(&location, Bytes::from(file_bytes).into())
             .await
@@ -999,7 +1027,28 @@ mod tests {
             .unwrap();
         let options = ArrowReaderOptions::new().with_file_decryption_properties(decryption);
 
-        reader.get_metadata(Some(&options)).await.unwrap();
+        if footer_padding > 0 {
+            let metadata = reader.get_metadata(Some(&options));
+            tokio::pin!(metadata);
+
+            tokio::select! {
+                result = &mut metadata => {
+                    panic!("metadata load completed before the second footer read: {result:?}");
+                }
+                () = async {
+                    while reader_metric(&metrics, "scan_io_object_store_get_calls") < 2 {
+                        tokio::task::yield_now().await;
+                    }
+                } => {
+                    assert_eq!(reader_metric(&metrics, "scan_io_footer_reads"), 0);
+                    assert_eq!(reader_metric(&metrics, "scan_io_footer_bytes"), 0);
+                }
+            }
+
+            metadata.await.unwrap();
+        } else {
+            reader.get_metadata(Some(&options)).await.unwrap();
+        }
 
         assert_eq!(reader_metric(&metrics, "scan_io_footer_reads"), 1);
         assert_eq!(
