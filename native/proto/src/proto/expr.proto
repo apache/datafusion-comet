@@ -94,6 +94,8 @@ message Expr {
     Shuffle shuffle = 72;
     RandStr rand_str = 73;
     Uuid uuid = 74;
+    HigherOrderFunc high_order_func = 75;
+    NamedLambdaVariable named_lambda_variable = 76;
   }
 
   reserved 20;
@@ -617,4 +619,22 @@ message JvmScalarUdf {
   DataType return_type = 3;
   // Whether the result column may contain nulls.
   bool return_nullable = 4;
+}
+
+message HigherOrderFunc {
+  string func_name = 1;
+  repeated Expr value_args = 2;
+  repeated LambdaFunction lambdas = 3;
+}
+
+message NamedLambdaVariable {
+  string name = 1;
+  DataType data_type = 2;
+  bool nullable = 3;
+  int64 expr_id = 4;
+}
+
+message LambdaFunction {
+  Expr body = 1;
+  repeated NamedLambdaVariable args = 2;
 }
