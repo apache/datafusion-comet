@@ -214,10 +214,10 @@ class CometArrowStreamSuite extends AnyFunSuite with Matchers {
       }
 
       def scalarWrites(rows: Int): Int =
-        if (ByteOrder.nativeOrder() == ByteOrder.LITTLE_ENDIAN) 0 else rows
+        if (rows < 32 || ByteOrder.nativeOrder() != ByteOrder.LITTLE_ENDIAN) rows else 0
       check(onHeap, numRows, i => 1000L + startRow + i, scalarWrites(numRows))
       check(offHeap, numRows, i => 2000L + startRow + i, scalarWrites(numRows))
-      check(onHeap, 1, i => 1000L + startRow + i, scalarWrites(1))
+      check(onHeap, numRows - 1, i => 1000L + startRow + i, scalarWrites(numRows - 1))
 
       dictionary.setDictionary(new Dictionary {
         override def decodeToInt(id: Int): Int = id

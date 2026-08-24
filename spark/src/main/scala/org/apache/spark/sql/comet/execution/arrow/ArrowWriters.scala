@@ -266,7 +266,9 @@ private[arrow] abstract class FixedWidthArrowFieldWriter extends ArrowFieldWrite
   }
 
   private def tryBulkCopyNoNull(input: ColumnVector, startRow: Int, numRows: Int): Boolean = {
-    if (count != 0 || ByteOrder.nativeOrder() != ByteOrder.LITTLE_ENDIAN) {
+    // Spark's bulk getters allocate and fill a temporary array before the copy into Arrow. Keep
+    // slices below 32 on the scalar path to avoid the observed tiny-slice regression.
+    if (count != 0 || numRows < 32 || ByteOrder.nativeOrder() != ByteOrder.LITTLE_ENDIAN) {
       return false
     }
 
