@@ -107,6 +107,36 @@ impl Iterator for PartitionedBatchIterator<'_> {
 
         let indices_end = std::cmp::min(self.pos + self.batch_size, self.indices.len());
         let indices = &self.indices[self.pos..indices_end];
+
+        // Whole-source-batch fast path: when this chunk covers every row of one source
+        // batch in natural order, cloning the source batch is equivalent to `interleave`
+        // and skips walking every column (and every nested child on wide/nested schemas).
+        // This is the vectorized path used by RoundRobinStrategy::WholeBatch, but the check
+        // is generic and fires whenever indices happen to line up this way.
+        if let (Some(&(first_batch, first_row)), Some(&(last_batch, last_row))) =
+            (indices.first(), indices.last())
+        {
+            let source_rows = self.record_batches[first_batch].num_rows();
+            if first_batch == last_batch
+                && first_row == 0
+                && last_row + 1 == source_rows
+                && indices.len() == source_rows
+            {
+                // Verify the full contiguous invariant. Invariant holds by construction in
+                // `buffer_partitioned_batch_may_spill`, but the check is O(indices.len())
+                // with two integer compares per step and vectorizes easily. Two orders of
+                // magnitude cheaper than a nested-schema interleave.
+                let contiguous = indices
+                    .iter()
+                    .enumerate()
+                    .all(|(i, &(b, r))| b == first_batch && r == i);
+                if contiguous {
+                    self.pos = indices_end;
+                    return Some(Ok(self.record_batches[first_batch].clone()));
+                }
+            }
+        }
+
         let mut timer = self.interleave_time.timer();
         let result = interleave_record_batch(&self.record_batches, indices);
         timer.stop();

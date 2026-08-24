@@ -23,15 +23,18 @@ use arrow::row::{RowConverter, SortField};
 use criterion::{criterion_group, criterion_main, Criterion};
 use datafusion::datasource::memory::MemorySourceConfig;
 use datafusion::datasource::source::DataSourceExec;
+use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::physical_expr::expressions::{col, Column};
 use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
-use datafusion::physical_plan::metrics::Time;
+use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, Time};
 use datafusion::{
     physical_plan::{common::collect, ExecutionPlan},
     prelude::SessionContext,
 };
 use datafusion_comet_shuffle::{
-    CometPartitioning, CompressionCodec, ShuffleBlockWriter, ShuffleWriterExec,
+    CometPartitioning, CompressionCodec, LocalPartitionWriter, MultiPartitionShuffleRepartitioner,
+    RoundRobinStrategy, ShuffleBlockWriter, ShufflePartitioner, ShufflePartitionerMetrics,
+    ShuffleWriterExec,
 };
 use itertools::Itertools;
 use std::io::Cursor;
@@ -78,8 +81,7 @@ fn criterion_benchmark(c: &mut Criterion) {
                 let exec = create_shuffle_writer_exec(
                     compression_codec.clone(),
                     CometPartitioning::Hash(vec![Arc::new(Column::new("a", 0))], 16),
-                    8192,
-                    10,
+                    create_batches(8192, 10),
                 );
                 b.iter(|| {
                     let task_ctx = ctx.task_ctx();
@@ -131,8 +133,7 @@ fn criterion_benchmark(c: &mut Criterion) {
                 let exec = create_shuffle_writer_exec(
                     compression_codec.clone(),
                     partitioning.clone(),
-                    8192,
-                    10,
+                    create_batches(8192, 10),
                 );
                 b.iter(|| {
                     let task_ctx = ctx.task_ctx();
@@ -162,8 +163,7 @@ fn criterion_benchmark(c: &mut Criterion) {
                 let exec = create_shuffle_writer_exec(
                     CompressionCodec::None,
                     CometPartitioning::SinglePartition,
-                    rows_per_batch,
-                    num_batches,
+                    create_batches(rows_per_batch, num_batches),
                 );
                 b.iter(|| {
                     let task_ctx = ctx.task_ctx();
@@ -174,15 +174,200 @@ fn criterion_benchmark(c: &mut Criterion) {
             },
         );
     }
+
+    // RoundRobin on a wide nested schema: compares the row-level hash-all-columns strategy
+    // against the whole-batch strategy. The nested schema is where the win is largest:
+    // `create_murmur3_hashes` recurses into every Struct child per row on the row-level path,
+    // while the whole-batch path does one mod per batch and never inspects row contents.
+    // 40 top-level struct columns of shallow depth reflect the real-world shape where this
+    // optimization matters (event log workload was ~194 nested columns).
+    let num_partitions = 50usize;
+    let wide_batches: Vec<RecordBatch> = (0..8).map(|_| nested_schema_batch(8192, 40, 2)).collect();
+    let wide_schema = wide_batches[0].schema();
+    let round_robin_strategies = [
+        (
+            "hash_all_columns",
+            RoundRobinStrategy::HashAll {
+                max_hash_columns: 0,
+            },
+        ),
+        ("whole_batch", RoundRobinStrategy::WholeBatch),
+    ];
+    for (label, strategy) in &round_robin_strategies {
+        group.bench_function(
+            format!("shuffle_writer: RoundRobin nested schema (strategy={label})"),
+            |b| {
+                let ctx = SessionContext::new();
+                let rt = Runtime::new().unwrap();
+                let exec = create_shuffle_writer_exec(
+                    CompressionCodec::None,
+                    CometPartitioning::RoundRobin(num_partitions, strategy.clone()),
+                    wide_batches.clone(),
+                );
+                b.iter(|| {
+                    let task_ctx = ctx.task_ctx();
+                    let stream = exec.execute(0, task_ctx).unwrap();
+                    rt.block_on(collect(stream)).unwrap();
+                });
+            },
+        );
+    }
+
+    // Partitioning-only microbench. `insert_batch` runs partition assignment + index
+    // buffering but never flushes to disk, so the two RoundRobin strategies can be compared
+    // without the IPC encode + disk write cost that dominates the end-to-end bench above.
+    for (label, strategy) in &round_robin_strategies {
+        group.bench_function(
+            format!("partitioning_only: RoundRobin nested schema (strategy={label})"),
+            |b| {
+                let rt = Runtime::new().unwrap();
+                let batches = wide_batches.clone();
+                let runtime_env = Arc::new(
+                    RuntimeEnvBuilder::new()
+                        .with_memory_limit(1024 * 1024 * 1024, 1.0)
+                        .build()
+                        .unwrap(),
+                );
+                let dir = tempfile::tempdir().unwrap();
+                let data_path = dir.path().join("data.out").to_str().unwrap().to_string();
+                let index_path = dir.path().join("index.out").to_str().unwrap().to_string();
+                b.iter(|| {
+                    let block_writer =
+                        ShuffleBlockWriter::try_new(wide_schema.as_ref(), CompressionCodec::None)
+                            .unwrap();
+                    let writer = LocalPartitionWriter::try_new(
+                        data_path.clone(),
+                        index_path.clone(),
+                        block_writer,
+                        num_partitions,
+                        8192,
+                        1024 * 1024,
+                        Arc::clone(&runtime_env),
+                    )
+                    .unwrap();
+                    let metrics =
+                        ShufflePartitionerMetrics::new(&ExecutionPlanMetricsSet::new(), 0);
+                    let mut repartitioner = MultiPartitionShuffleRepartitioner::try_new(
+                        0,
+                        writer,
+                        CometPartitioning::RoundRobin(num_partitions, strategy.clone()),
+                        metrics,
+                        Arc::clone(&runtime_env),
+                        8192,
+                        false,
+                        None,
+                    )
+                    .unwrap();
+                    rt.block_on(async {
+                        for batch in &batches {
+                            repartitioner.insert_batch(batch.clone()).await.unwrap();
+                        }
+                    });
+                });
+            },
+        );
+    }
+
+    // End-to-end bench on a real on-disk parquet dataset at
+    // /tmp/clickstream_data_smoke (Spark-written, snappy-compressed, wide nested
+    // clickstream schema — the shape this optimization targets). Loaded once per
+    // process; each iteration streams the batches through `ShuffleWriterExec`
+    // for both RoundRobin strategies. Skipped if the dataset is absent.
+    let clickstream_batches = load_parquet_dir_batches("/tmp/clickstream_data_smoke");
+    if let Some(batches) = clickstream_batches {
+        let clickstream_num_partitions = 50usize;
+        let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+        let num_cols = batches[0].num_columns();
+        eprintln!(
+            "clickstream bench: {} batches, {} rows total, {} columns",
+            batches.len(),
+            total_rows,
+            num_cols,
+        );
+        for (label, strategy) in &round_robin_strategies {
+            group.bench_function(
+                format!("shuffle_writer: RoundRobin clickstream parquet (strategy={label})"),
+                |b| {
+                    let ctx = SessionContext::new();
+                    let rt = Runtime::new().unwrap();
+                    let exec = create_shuffle_writer_exec(
+                        CompressionCodec::Lz4Frame,
+                        CometPartitioning::RoundRobin(clickstream_num_partitions, strategy.clone()),
+                        batches.clone(),
+                    );
+                    b.iter(|| {
+                        let task_ctx = ctx.task_ctx();
+                        let stream = exec.execute(0, task_ctx).unwrap();
+                        rt.block_on(collect(stream)).unwrap();
+                    });
+                },
+            );
+        }
+    } else {
+        eprintln!("clickstream bench: /tmp/clickstream_data_smoke not found; skipping");
+    }
+}
+
+/// Loads every `*.parquet` file under `dir` (recursively, one level deep for
+/// partitioned datasets like `date=…/part-*.parquet`) and returns their record
+/// batches at 8192 rows per batch. Returns `None` if the directory is missing
+/// or contains no parquet files.
+fn load_parquet_dir_batches(dir: &str) -> Option<Vec<RecordBatch>> {
+    use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+
+    let root = std::path::Path::new(dir);
+    if !root.exists() {
+        return None;
+    }
+
+    let mut files: Vec<std::path::PathBuf> = Vec::new();
+    let mut stack: Vec<std::path::PathBuf> = vec![root.to_path_buf()];
+    while let Some(p) = stack.pop() {
+        let entries = match std::fs::read_dir(&p) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path
+                .extension()
+                .and_then(|s| s.to_str())
+                .map(|s| s.eq_ignore_ascii_case("parquet"))
+                .unwrap_or(false)
+            {
+                files.push(path);
+            }
+        }
+    }
+    files.sort();
+    if files.is_empty() {
+        return None;
+    }
+
+    let mut all = Vec::new();
+    for path in files {
+        let file = std::fs::File::open(&path).unwrap_or_else(|e| {
+            panic!("failed to open {}: {e}", path.display());
+        });
+        let reader = ParquetRecordBatchReaderBuilder::try_new(file)
+            .unwrap_or_else(|e| panic!("parquet builder for {}: {e}", path.display()))
+            .with_batch_size(8192)
+            .build()
+            .unwrap_or_else(|e| panic!("parquet build for {}: {e}", path.display()));
+        for batch in reader {
+            all.push(batch.unwrap());
+        }
+    }
+    Some(all)
 }
 
 fn create_shuffle_writer_exec(
     compression_codec: CompressionCodec,
     partitioning: CometPartitioning,
-    rows_per_batch: usize,
-    num_batches: usize,
+    batches: Vec<RecordBatch>,
 ) -> ShuffleWriterExec {
-    let batches = create_batches(rows_per_batch, num_batches);
     let schema = batches[0].schema();
     let partitions = &[batches];
     ShuffleWriterExec::try_new(
@@ -251,7 +436,7 @@ fn schema_encoding_benchmark(c: &mut Criterion) {
 
     for (name, batch) in [
         ("flat", flat_schema_batch(8192)),
-        ("nested", nested_schema_batch(8192)),
+        ("nested", nested_schema_batch(8192, 4, 6)),
     ] {
         let writer =
             ShuffleBlockWriter::try_new(batch.schema().as_ref(), CompressionCodec::None).unwrap();
@@ -288,11 +473,8 @@ fn flat_schema_batch(num_rows: usize) -> RecordBatch {
     RecordBatch::try_new(schema, columns).unwrap()
 }
 
-/// A schema of several deeply nested struct columns.
-fn nested_schema_batch(num_rows: usize) -> RecordBatch {
-    let num_cols = 4;
-    let depth = 6;
-
+/// A schema of `num_cols` struct columns, each nested `depth` levels deep.
+fn nested_schema_batch(num_rows: usize, num_cols: usize, depth: usize) -> RecordBatch {
     let mut fields: Vec<Field> = Vec::with_capacity(num_cols);
     let mut columns: Vec<Arc<dyn Array>> = Vec::with_capacity(num_cols);
     for col in 0..num_cols {

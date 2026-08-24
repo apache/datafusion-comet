@@ -269,7 +269,7 @@ async fn external_shuffle(
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::{read_ipc_compressed, ShuffleBlockWriter};
+    use crate::{read_ipc_compressed, RoundRobinStrategy, ShuffleBlockWriter};
     use arrow::array::{Array, Int64Array, StringArray, StringBuilder};
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow::ipc::writer::CompressionContext;
@@ -868,7 +868,12 @@ mod test {
                 Arc::new(row_converter),
                 owned_rows,
             ),
-            CometPartitioning::RoundRobin(num_partitions, 0),
+            CometPartitioning::RoundRobin(
+                num_partitions,
+                RoundRobinStrategy::HashAll {
+                    max_hash_columns: 0,
+                },
+            ),
         ] {
             let batches = (0..num_batches).map(|_| batch.clone()).collect::<Vec<_>>();
 
@@ -937,7 +942,12 @@ mod test {
                 Arc::new(DataSourceExec::new(Arc::new(
                     MemorySourceConfig::try_new(partitions, batch.schema(), None).unwrap(),
                 ))),
-                CometPartitioning::RoundRobin(num_partitions, 0),
+                CometPartitioning::RoundRobin(
+                    num_partitions,
+                    RoundRobinStrategy::HashAll {
+                        max_hash_columns: 0,
+                    },
+                ),
                 CompressionCodec::Zstd(1),
                 data_file.clone(),
                 index_file.clone(),
@@ -1005,8 +1015,212 @@ mod test {
         let _ = fs::remove_file("/tmp/rr_index_1.out");
     }
 
-    /// Test that batch coalescing in BufBatchWriter reduces output size by
-    /// writing fewer, larger IPC blocks instead of many small ones.
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_round_robin_batch_granular_retry_deterministic() {
+        // A retry that sees the same batches in the same order must produce byte-identical
+        // shuffle output. This is the contract the batch-granular path relies on in place
+        // of per-row content hashing.
+        use arrow::array::{Float64Array, Int64Array, StringArray, StructArray};
+        use std::fs;
+        use std::io::Read;
+
+        let num_rows = 1024;
+        let num_batches = 6;
+        let num_partitions = 8;
+
+        // A schema with a nested struct to exercise the code path this optimization targets.
+        let leaf_dt = DataType::Struct(
+            vec![
+                Field::new("a", DataType::Int64, false),
+                Field::new("b", DataType::Utf8, false),
+                Field::new("c", DataType::Float64, false),
+            ]
+            .into(),
+        );
+        let wrapped_dt = DataType::Struct(vec![Field::new("leaf", leaf_dt.clone(), false)].into());
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("scalar", DataType::Int64, false),
+            Field::new("nested", wrapped_dt.clone(), false),
+        ]));
+
+        let make_batch = |seed: i64| {
+            let scalar = Int64Array::from_iter_values((0..num_rows as i64).map(|i| i + seed));
+            let leaf = StructArray::from(vec![
+                (
+                    Arc::new(Field::new("a", DataType::Int64, false)),
+                    Arc::new(Int64Array::from_iter_values(
+                        (0..num_rows as i64).map(|i| i * 3 + seed),
+                    )) as Arc<dyn Array>,
+                ),
+                (
+                    Arc::new(Field::new("b", DataType::Utf8, false)),
+                    Arc::new(StringArray::from_iter_values(
+                        (0..num_rows).map(|i| format!("v{i}")),
+                    )) as Arc<dyn Array>,
+                ),
+                (
+                    Arc::new(Field::new("c", DataType::Float64, false)),
+                    Arc::new(Float64Array::from_iter_values(
+                        (0..num_rows).map(|i| (i as f64) * 0.5),
+                    )) as Arc<dyn Array>,
+                ),
+            ]);
+            let nested = StructArray::from(vec![(
+                Arc::new(Field::new("leaf", leaf_dt.clone(), false)),
+                Arc::new(leaf) as Arc<dyn Array>,
+            )]);
+            RecordBatch::try_new(
+                Arc::clone(&schema),
+                vec![Arc::new(scalar), Arc::new(nested)],
+            )
+            .unwrap()
+        };
+        let batches: Vec<RecordBatch> = (0..num_batches as i64).map(make_batch).collect();
+
+        let dir = tempfile::tempdir().unwrap();
+        let run = |tag: &str| -> (Vec<u8>, Vec<u8>) {
+            let data_file = dir.path().join(format!("{tag}_data.out"));
+            let index_file = dir.path().join(format!("{tag}_index.out"));
+            let partitions = std::slice::from_ref(&batches);
+            let exec = ShuffleWriterExec::try_new(
+                Arc::new(DataSourceExec::new(Arc::new(
+                    MemorySourceConfig::try_new(partitions, Arc::clone(&schema), None).unwrap(),
+                ))),
+                CometPartitioning::RoundRobin(num_partitions, RoundRobinStrategy::WholeBatch),
+                CompressionCodec::Zstd(1),
+                data_file.to_str().unwrap().to_string(),
+                index_file.to_str().unwrap().to_string(),
+                false,
+                1024 * 1024,
+                None,
+            )
+            .unwrap();
+
+            let ctx = SessionContext::new_with_config_rt(
+                SessionConfig::new(),
+                Arc::new(
+                    RuntimeEnvBuilder::new()
+                        .with_memory_limit(10 * 1024 * 1024, 1.0)
+                        .build()
+                        .unwrap(),
+                ),
+            );
+            let stream = exec.execute(0, ctx.task_ctx()).unwrap();
+            Runtime::new().unwrap().block_on(collect(stream)).unwrap();
+
+            let mut data = Vec::new();
+            fs::File::open(&data_file)
+                .unwrap()
+                .read_to_end(&mut data)
+                .unwrap();
+            let mut index = Vec::new();
+            fs::File::open(&index_file)
+                .unwrap()
+                .read_to_end(&mut index)
+                .unwrap();
+            (data, index)
+        };
+
+        let (data_a, index_a) = run("attempt0");
+        let (data_b, index_b) = run("attempt1");
+        assert_eq!(
+            data_a, data_b,
+            "batch-granular round robin must produce byte-identical shuffle data on retry"
+        );
+        assert_eq!(
+            index_a, index_b,
+            "batch-granular round robin must produce byte-identical index on retry"
+        );
+
+        // Sanity: the assignment must have distributed the 6 batches across the partitions
+        // (specifically, the index must show non-trivial partition sizes, not all in one bucket).
+        let offsets: Vec<i64> = index_a
+            .chunks_exact(8)
+            .map(|c| i64::from_le_bytes(c.try_into().unwrap()))
+            .collect();
+        assert_eq!(offsets.len(), num_partitions + 1);
+        let sizes: Vec<i64> = offsets.windows(2).map(|w| w[1] - w[0]).collect();
+        let nonempty = sizes.iter().filter(|&&s| s > 0).count();
+        assert!(
+            nonempty >= 2,
+            "batch-granular round robin should populate at least 2 partitions across 6 batches; got sizes {sizes:?}"
+        );
+
+        // And every batch's rows must show up somewhere in the output.
+        let total_rows: usize = read_all_ipc_batches(&data_a)
+            .iter()
+            .map(|b| b.num_rows())
+            .sum();
+        assert_eq!(total_rows, num_rows * num_batches, "no rows may be dropped");
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_round_robin_batch_granular_whole_batch_per_partition() {
+        // Each input batch must land entirely on a single output partition. Reading back
+        // the IPC blocks from any one partition should give whole batches (num_rows each),
+        // not row-level slices.
+        use std::fs;
+
+        let num_rows = 500;
+        let num_batches = 4;
+        let num_partitions = 8;
+
+        let batch = create_batch(num_rows);
+        let batches: Vec<RecordBatch> = (0..num_batches).map(|_| batch.clone()).collect();
+
+        let dir = tempfile::tempdir().unwrap();
+        let data_file = dir.path().join("data.out");
+        let index_file = dir.path().join("index.out");
+
+        let partitions = std::slice::from_ref(&batches);
+        let exec = ShuffleWriterExec::try_new(
+            Arc::new(DataSourceExec::new(Arc::new(
+                MemorySourceConfig::try_new(partitions, batch.schema(), None).unwrap(),
+            ))),
+            CometPartitioning::RoundRobin(num_partitions, RoundRobinStrategy::WholeBatch),
+            CompressionCodec::Zstd(1),
+            data_file.to_str().unwrap().to_string(),
+            index_file.to_str().unwrap().to_string(),
+            false,
+            1024 * 1024,
+            None,
+        )
+        .unwrap();
+
+        let ctx = SessionContext::new_with_config_rt(
+            SessionConfig::new(),
+            Arc::new(RuntimeEnvBuilder::new().build().unwrap()),
+        );
+        let stream = exec.execute(0, ctx.task_ctx()).unwrap();
+        Runtime::new().unwrap().block_on(collect(stream)).unwrap();
+
+        let data = fs::read(&data_file).unwrap();
+        let index = fs::read(&index_file).unwrap();
+        let offsets: Vec<i64> = index
+            .chunks_exact(8)
+            .map(|c| i64::from_le_bytes(c.try_into().unwrap()))
+            .collect();
+        assert_eq!(offsets.len(), num_partitions + 1);
+
+        for p in 0..num_partitions {
+            let start = offsets[p] as usize;
+            let end = offsets[p + 1] as usize;
+            if start == end {
+                continue;
+            }
+            let batches = read_all_ipc_batches(&data[start..end]);
+            for b in &batches {
+                assert_eq!(
+                    b.num_rows(),
+                    num_rows,
+                    "each shuffle block in partition {p} must contain a whole input batch"
+                );
+            }
+        }
+    }
+
     #[test]
     #[cfg_attr(miri, ignore)]
     fn test_batch_coalescing_reduces_size() {
@@ -1312,7 +1526,12 @@ mod test {
             Arc::new(DataSourceExec::new(Arc::new(
                 MemorySourceConfig::try_new(partitions, Arc::clone(&schema), None).unwrap(),
             ))),
-            CometPartitioning::RoundRobin(num_partitions, 0),
+            CometPartitioning::RoundRobin(
+                num_partitions,
+                RoundRobinStrategy::HashAll {
+                    max_hash_columns: 0,
+                },
+            ),
             CompressionCodec::Zstd(1),
             data_file.to_str().unwrap().to_string(),
             index_file.to_str().unwrap().to_string(),
@@ -1401,7 +1620,12 @@ mod test {
             Arc::new(DataSourceExec::new(Arc::new(
                 MemorySourceConfig::try_new(partitions, Arc::clone(&schema), None).unwrap(),
             ))),
-            CometPartitioning::RoundRobin(num_partitions, 0),
+            CometPartitioning::RoundRobin(
+                num_partitions,
+                RoundRobinStrategy::HashAll {
+                    max_hash_columns: 0,
+                },
+            ),
             CompressionCodec::Zstd(1),
             data_file.to_str().unwrap().to_string(),
             index_file.to_str().unwrap().to_string(),

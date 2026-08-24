@@ -19,7 +19,7 @@ use crate::metrics::ShufflePartitionerMetrics;
 use crate::partitioners::partitioned_batch_iterator::PartitionedBatchesProducer;
 use crate::partitioners::ShufflePartitioner;
 use crate::writers::PartitionWriter;
-use crate::{comet_partitioning, CometPartitioning};
+use crate::{comet_partitioning, CometPartitioning, RoundRobinStrategy};
 use arrow::array::{Array, ArrayData, ArrayRef, RecordBatch};
 use datafusion::common::utils::proxy::VecAllocExt;
 use datafusion::common::{DataFusionError, HashSet};
@@ -99,7 +99,7 @@ impl ScratchSpace {
 }
 
 /// A partitioner that uses a hash function to partition data into multiple partitions
-pub(crate) struct MultiPartitionShuffleRepartitioner<T: PartitionWriter> {
+pub struct MultiPartitionShuffleRepartitioner<T: PartitionWriter> {
     buffered_batches: Vec<RecordBatch>,
     partition_indices: Vec<Vec<(u32, u32)>>,
     partition_writer: T,
@@ -129,6 +129,11 @@ pub(crate) struct MultiPartitionShuffleRepartitioner<T: PartitionWriter> {
     /// Bytes in the currently buffered batches that were already counted by a previous spill of
     /// the same outer input batch. Partition-index allocations are never included here.
     repeated_spill_buffer_bytes: usize,
+    /// Batch counter for the batch-granular RoundRobin path. Seeded with the input partition
+    /// id so mappers with adjacent partition ids do not concentrate their first batches on the
+    /// same output partition, then incremented once per input batch slice that reaches
+    /// `partitioning_batch`. Unused by other strategies.
+    round_robin_batch_seq: usize,
 }
 
 /// Sum of the capacities of the backing buffers reachable from `batch` whose start address is
@@ -204,7 +209,7 @@ fn count_new_buffers(
 
 impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn try_new(
+    pub fn try_new(
         partition: usize,
         partition_writer: T,
         partitioning: CometPartitioning,
@@ -223,17 +228,36 @@ impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
         // Vectors in the scratch space will be filled with valid values before being used, this
         // initialization code is simply initializing the vectors to the desired size.
         // The initial values are not used.
+        //
+        // `partition_ids` and `partition_row_indices` are only touched by the row-level
+        // strategies (`Hash`, `RangePartitioning`, and hash-all-columns RoundRobin). The
+        // whole-batch RoundRobin path never inspects rows, so allocating them there would be
+        // ~64 KB of dead scratch on every task.
+        let needs_row_scratch = !matches!(
+            &partitioning,
+            CometPartitioning::SinglePartition
+                | CometPartitioning::RoundRobin(_, RoundRobinStrategy::WholeBatch),
+        );
         let scratch = ScratchSpace {
-            hashes_buf: match partitioning {
-                // Allocate hashes_buf for hash and round robin partitioning.
-                // Round robin hashes all columns to achieve even, deterministic distribution.
-                CometPartitioning::Hash(_, _) | CometPartitioning::RoundRobin(_, _) => {
+            hashes_buf: match &partitioning {
+                // Allocate hashes_buf for hash and hash-all-columns round robin partitioning.
+                // Whole-batch round robin does no per-row hashing.
+                CometPartitioning::Hash(_, _)
+                | CometPartitioning::RoundRobin(_, RoundRobinStrategy::HashAll { .. }) => {
                     vec![0; batch_size]
                 }
                 _ => vec![],
             },
-            partition_ids: vec![0; batch_size],
-            partition_row_indices: vec![0; batch_size],
+            partition_ids: if needs_row_scratch {
+                vec![0; batch_size]
+            } else {
+                vec![]
+            },
+            partition_row_indices: if needs_row_scratch {
+                vec![0; batch_size]
+            } else {
+                vec![]
+            },
             partition_starts: vec![0; num_output_partitions + 1],
         };
 
@@ -255,6 +279,10 @@ impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
             pinned_buffers: HashSet::new(),
             spill_accounted_input_buffers: HashSet::new(),
             repeated_spill_buffer_bytes: 0,
+            // Seed with the input partition id so batches from mapper i land on
+            // partition (i + k) mod N on the k-th batch, spreading concurrent mappers' first
+            // batches across distinct output partitions.
+            round_robin_batch_seq: partition,
         })
     }
 
@@ -324,7 +352,7 @@ impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
 
                 self.buffer_partitioned_batch_may_spill(
                     input,
-                    partition_row_indices,
+                    Some(partition_row_indices),
                     partition_starts,
                 )
                 .await?;
@@ -377,68 +405,85 @@ impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
 
                 self.buffer_partitioned_batch_may_spill(
                     input,
-                    partition_row_indices,
+                    Some(partition_row_indices),
                     partition_starts,
                 )
                 .await?;
                 self.scratch = scratch;
             }
-            CometPartitioning::RoundRobin(num_output_partitions, max_hash_columns) => {
-                // Comet implements "round robin" as hash partitioning on columns.
-                // This achieves the same goal as Spark's round robin (even distribution
-                // without semantic grouping) while being deterministic for fault tolerance.
-                //
-                // Note: This produces different partition assignments than Spark's round robin,
-                // which sorts by UnsafeRow binary representation before assigning partitions.
-                // However, both approaches provide even distribution and determinism.
+            CometPartitioning::RoundRobin(num_output_partitions, strategy) => {
+                // Two strategies share the scratch-take / timer / spill / scratch-restore
+                // scaffold. Only the middle "fill partition_row_indices + partition_starts"
+                // step differs. WholeBatch: assign the whole input batch to one partition and
+                // pay no per-row cost. HashAll: hash every row (over up to max_hash_columns
+                // columns) and route rows individually. WholeBatch is retry-safe only when the
+                // upstream operator emits the same batches in the same order under retry
+                // (Comet's `CometNativeScan` and other order-preserving operators do so).
                 let mut scratch = std::mem::take(&mut self.scratch);
-                let (partition_starts, partition_row_indices): (&Vec<u32>, &Vec<u32>) = {
+                let num_rows = input.num_rows();
+                let partition_row_indices: Option<&[u32]> = {
                     let mut timer = self.metrics.repart_time.timer();
 
-                    let num_rows = input.num_rows();
+                    let indices: Option<&[u32]> = match strategy {
+                        RoundRobinStrategy::WholeBatch => {
+                            let target_idx = self.round_robin_batch_seq % *num_output_partitions;
+                            self.round_robin_batch_seq = self.round_robin_batch_seq.wrapping_add(1);
 
-                    // Collect columns for hashing, respecting max_hash_columns limit
-                    // max_hash_columns of 0 means no limit (hash all columns)
-                    // Negative values are normalized to 0 in the planner
-                    let num_columns_to_hash = if *max_hash_columns == 0 {
-                        input.num_columns()
-                    } else {
-                        (*max_hash_columns).min(input.num_columns())
+                            // `partition_starts[k]..partition_starts[k+1]` is partition k's
+                            // slice. Slots 0..=target_idx are 0; slots after `target_idx` are
+                            // `num_rows`, so `target_idx` owns the whole [0..num_rows) range.
+                            // `partition_row_indices` is left unmaterialized — the spill path
+                            // treats the target partition's slice as an identity mapping.
+                            let partition_starts = &mut scratch.partition_starts;
+                            partition_starts.clear();
+                            partition_starts.resize(target_idx + 1, 0);
+                            partition_starts.resize(*num_output_partitions + 1, num_rows as u32);
+                            None
+                        }
+                        RoundRobinStrategy::HashAll { max_hash_columns } => {
+                            // Hash-partition rows into pmod(hash, N). This produces different
+                            // partition assignments than Spark's round robin (which sorts by
+                            // UnsafeRow binary representation before assigning partitions), but
+                            // both approaches provide even distribution and determinism.
+                            //
+                            // max_hash_columns of 0 means no limit (hash all columns). Negative
+                            // values are normalized to 0 in the planner.
+                            let num_columns_to_hash = if *max_hash_columns == 0 {
+                                input.num_columns()
+                            } else {
+                                (*max_hash_columns).min(input.num_columns())
+                            };
+                            let columns_to_hash: Vec<ArrayRef> = (0..num_columns_to_hash)
+                                .map(|i| Arc::clone(input.column(i)))
+                                .collect();
+
+                            // Use identical seed as Spark hash partitioning.
+                            let hashes_buf = &mut scratch.hashes_buf[..num_rows];
+                            hashes_buf.fill(42_u32);
+                            create_murmur3_hashes(&columns_to_hash, hashes_buf)?;
+
+                            let partition_ids = &mut scratch.partition_ids[..num_rows];
+                            hashes_buf.iter().enumerate().for_each(|(idx, hash)| {
+                                partition_ids[idx] =
+                                    comet_partitioning::pmod(*hash, *num_output_partitions) as u32;
+                            });
+
+                            scratch.map_partition_ids_to_starts_and_indices(
+                                *num_output_partitions,
+                                num_rows,
+                            );
+                            Some(scratch.partition_row_indices.as_slice())
+                        }
                     };
-                    let columns_to_hash: Vec<ArrayRef> = (0..num_columns_to_hash)
-                        .map(|i| Arc::clone(input.column(i)))
-                        .collect();
-
-                    // Use identical seed as Spark hash partitioning.
-                    let hashes_buf = &mut scratch.hashes_buf[..num_rows];
-                    hashes_buf.fill(42_u32);
-
-                    // Compute hash for selected columns
-                    create_murmur3_hashes(&columns_to_hash, hashes_buf)?;
-
-                    // Assign partition IDs based on hash (same as hash partitioning)
-                    let partition_ids = &mut scratch.partition_ids[..num_rows];
-                    hashes_buf.iter().enumerate().for_each(|(idx, hash)| {
-                        partition_ids[idx] =
-                            comet_partitioning::pmod(*hash, *num_output_partitions) as u32;
-                    });
-
-                    // We now have partition ids for every input row, map that to partition starts
-                    // and partition indices to eventually write these rows to partition buffers.
-                    scratch
-                        .map_partition_ids_to_starts_and_indices(*num_output_partitions, num_rows);
 
                     timer.stop();
-                    Ok::<(&Vec<u32>, &Vec<u32>), DataFusionError>((
-                        &scratch.partition_starts,
-                        &scratch.partition_row_indices,
-                    ))
-                }?;
+                    indices
+                };
 
                 self.buffer_partitioned_batch_may_spill(
                     input,
                     partition_row_indices,
-                    partition_starts,
+                    &scratch.partition_starts,
                 )
                 .await?;
                 self.scratch = scratch;
@@ -457,7 +502,7 @@ impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
     async fn buffer_partitioned_batch_may_spill(
         &mut self,
         input: RecordBatch,
-        partition_row_indices: &[u32],
+        partition_row_indices: Option<&[u32]>,
         partition_starts: &[u32],
     ) -> datafusion::common::Result<()> {
         // Charge both the reservation and the data_size metric for the buffers this batch newly
@@ -473,26 +518,29 @@ impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
         let buffered_partition_idx = self.buffered_batches.len() as u32;
         self.buffered_batches.push(input);
 
-        // partition_starts conceptually slices partition_row_indices into smaller slices,
-        // each slice contains the indices of rows in input that will go into the corresponding
-        // partition. The following loop iterates over the slices and put the row indices into
-        // the indices array of the corresponding partition.
+        // `partition_starts` slices the input's rows into per-partition ranges: partition K
+        // owns rows `partition_starts[K]..partition_starts[K + 1]`. When `partition_row_indices`
+        // is `Some(indices)`, `indices[start..end]` are the source-row ids in the input for
+        // partition K (see the hash arms). When it is `None`, the source rows are the identity
+        // range `start..end` itself (whole-batch RoundRobin — one target partition owns all
+        // input rows, and the mapping is trivial so we do not materialize it).
         for (partition_id, (&start, &end)) in partition_starts
             .iter()
             .tuple_windows()
             .enumerate()
             .filter(|(_, (start, end))| start < end)
         {
-            let row_indices = &partition_row_indices[start as usize..end as usize];
-
-            // Put row indices for the current partition into the indices array of that partition.
-            // This indices array will be used for calling interleave_record_batch to produce
-            // shuffled batches.
             let indices = &mut self.partition_indices[partition_id];
             let before_size = indices.allocated_size();
-            indices.reserve(row_indices.len());
-            for row_idx in row_indices {
-                indices.push((buffered_partition_idx, *row_idx));
+            match partition_row_indices {
+                Some(row_indices) => indices.extend(
+                    row_indices[start as usize..end as usize]
+                        .iter()
+                        .map(|&row_idx| (buffered_partition_idx, row_idx)),
+                ),
+                None => {
+                    indices.extend((start..end).map(|row_idx| (buffered_partition_idx, row_idx)))
+                }
             }
             let after_size = indices.allocated_size();
             mem_growth += after_size.saturating_sub(before_size);

@@ -19,7 +19,7 @@ use arrow::record_batch::RecordBatch;
 use datafusion::common::Result;
 
 #[async_trait::async_trait]
-pub(crate) trait ShufflePartitioner: Send + Sync {
+pub trait ShufflePartitioner: Send + Sync {
     /// Insert a batch into the partitioner
     async fn insert_batch(&mut self, batch: RecordBatch) -> Result<()>;
     /// Write shuffle data and shuffle index file to disk

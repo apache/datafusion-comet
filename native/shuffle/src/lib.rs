@@ -25,8 +25,17 @@ mod spark_crc32c_hasher;
 pub mod spark_unsafe;
 pub(crate) mod writers;
 
-pub use comet_partitioning::CometPartitioning;
+pub use comet_partitioning::{CometPartitioning, RoundRobinStrategy};
 pub use ipc::read_ipc_compressed;
 pub use schema_align::SchemaAlignExec;
 pub use shuffle_writer::ShuffleWriterExec;
 pub use writers::{CompressionCodec, ShuffleBlockWriter};
+
+// Bench-only re-exports. `#[doc(hidden)]` marks these as not part of the stable API contract.
+// Consumed by the criterion benches under `native/shuffle/benches/`.
+#[doc(hidden)]
+pub use metrics::ShufflePartitionerMetrics;
+#[doc(hidden)]
+pub use partitioners::{MultiPartitionShuffleRepartitioner, ShufflePartitioner};
+#[doc(hidden)]
+pub use writers::LocalPartitionWriter;
