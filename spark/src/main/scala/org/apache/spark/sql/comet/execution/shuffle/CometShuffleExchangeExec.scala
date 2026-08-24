@@ -115,6 +115,9 @@ case class CometShuffleExchangeExec(
     case _ => None
   }
 
+  @transient private lazy val nativeChildMetricNode: CometMetricNode =
+    CometMetricNode.fromCometPlan(child)
+
   @transient lazy val inputRDD: RDD[_] = if (shuffleType == CometNativeShuffle) {
     nativeChildContext match {
       case Some(ctx) =>
@@ -123,6 +126,7 @@ case class CometShuffleExchangeExec(
           ctx.inputs,
           ctx.numPartitions,
           ctx.shuffleScanIndices,
+          CometMetricNode(metrics, Seq(nativeChildMetricNode)),
           ctx.perPartitionByKey)
       case None =>
         // Non-native child (e.g. CometSparkToColumnarExec): no subtree to inline. The dep gets
@@ -189,10 +193,7 @@ case class CometShuffleExchangeExec(
             outputPartitioning,
             serializer,
             metrics,
-            NativeShuffleSpec(
-              nativeChild.nativeOp,
-              CometMetricNode.fromCometPlan(nativeChild),
-              ctx))
+            NativeShuffleSpec(nativeChild.nativeOp, nativeChildMetricNode, ctx))
         case None =>
           CometShuffleExchangeExec.prepareShuffleDependency(
             inputRDD.asInstanceOf[RDD[ColumnarBatch]],
@@ -717,11 +718,13 @@ object CometShuffleExchangeExec
       CometArrowStream.NATIVE_TIMEZONE,
       "ShuffleWriterInput")
 
+    val childMetricNode = CometMetricNode(Map.empty)
     val thinRDD = new CometNativeShuffleInputRDD(
       rdd.sparkContext,
       Seq(streamRDD),
       rdd.getNumPartitions,
-      shuffleScanIndices = Set.empty)
+      shuffleScanIndices = Set.empty,
+      spillMetricNode = CometMetricNode(metrics, Seq(childMetricNode)))
 
     val ctx = NativeExecContext(
       inputs = Seq(streamRDD),
@@ -743,7 +746,7 @@ object CometShuffleExchangeExec
       outputPartitioning,
       serializer,
       metrics,
-      NativeShuffleSpec(scanOp, CometMetricNode(Map.empty), ctx))
+      NativeShuffleSpec(scanOp, childMetricNode, ctx))
   }
 
   /**
@@ -769,7 +772,6 @@ object CometShuffleExchangeExec
       serializer: Serializer,
       metrics: Map[String, SQLMetric],
       spec: NativeShuffleSpec): ShuffleDependency[Int, ColumnarBatch, ColumnarBatch] = {
-    thinRDD.spillMetricNode = Some(CometMetricNode(metrics, Seq(spec.childMetricNode)))
     val numParts = thinRDD.getNumPartitions
 
     // Subqueries in the partitioning expressions (e.g. DISTRIBUTE BY over a subquery) belong to

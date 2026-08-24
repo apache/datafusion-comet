@@ -39,12 +39,11 @@ private[shuffle] class CometNativeShuffleInputRDD(
     var inputRDDs: Seq[RDD[_]],
     numPartitionsParam: Int,
     shuffleScanIndices: Set[Int],
+    spillMetricNode: CometMetricNode,
     @transient perPartitionByKey: Map[String, Array[Array[Byte]]] = Map.empty)
     extends RDD[Product2[Int, ColumnarBatch]](
       sc,
       inputRDDs.map(rdd => new OneToOneDependency(rdd))) {
-
-  private[shuffle] var spillMetricNode: Option[CometMetricNode] = None
 
   override protected def getPartitions: Array[Partition] =
     (0 until numPartitionsParam).map { i =>
@@ -65,7 +64,7 @@ private[shuffle] class CometNativeShuffleInputRDD(
   override def compute(
       split: Partition,
       context: TaskContext): Iterator[Product2[Int, ColumnarBatch]] = {
-    spillMetricNode.foreach(_.reportSpillMetrics(context))
+    spillMetricNode.reportSpillMetrics(context)
     val partition = split.asInstanceOf[CometNativeShuffleInputPartition]
     val (inputObjects, shuffleBlockIters) =
       CometExecRDD.resolveInputObjects(

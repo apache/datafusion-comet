@@ -67,11 +67,14 @@ class CometNativeShuffleInputRDDSuite extends CometTestBase {
           Iterator.single(null)
         }
       }
-      val inputRDD =
-        new CometNativeShuffleInputRDD(spark.sparkContext, Seq(nestedInput), 1, Set.empty)
       val writerMetrics =
         Map("spilled_bytes" -> writerDisk, "memory_spilled_bytes" -> writerMemory)
-      inputRDD.spillMetricNode = Some(CometMetricNode(writerMetrics, Seq(childMetrics)))
+      val inputRDD = new CometNativeShuffleInputRDD(
+        spark.sparkContext,
+        Seq(nestedInput),
+        1,
+        Set.empty,
+        CometMetricNode(writerMetrics, Seq(childMetrics)))
 
       inputRDD.iterator(inputRDD.partitions.head, taskContext)
       new CometNativeShuffleWriter[Int, Any](
@@ -107,11 +110,16 @@ class CometNativeShuffleInputRDDSuite extends CometTestBase {
         CometShuffleDependency[Int, ColumnarBatch, ColumnarBatch]) = {
       val perPartitionByKey =
         Map("scan-0" -> Array.fill(numPartitions)(new Array[Byte](1024)))
+      val childMetricNode = CometMetricNode(Map.empty)
+      val writerMetrics = Map(
+        "spilled_bytes" -> SQLMetrics.createSizeMetric(sc, "disk spilled bytes"),
+        "memory_spilled_bytes" -> SQLMetrics.createSizeMetric(sc, "memory spilled bytes"))
       val rdd = new CometNativeShuffleInputRDD(
         sc,
         inputRDDs = Seq.empty,
         numPartitionsParam = numPartitions,
         shuffleScanIndices = Set.empty,
+        spillMetricNode = CometMetricNode(writerMetrics, Seq(childMetricNode)),
         perPartitionByKey = perPartitionByKey)
       val execContext = NativeExecContext(
         inputs = Seq.empty,
@@ -123,12 +131,7 @@ class CometNativeShuffleInputRDDSuite extends CometTestBase {
         perPartitionByKey = perPartitionByKey,
         shuffleScanIndices = Set.empty,
         hasScanInput = false)
-      val spec =
-        NativeShuffleSpec(Operator.getDefaultInstance, CometMetricNode(Map.empty), execContext)
-      val writerMetrics = Map(
-        "spilled_bytes" -> SQLMetrics.createSizeMetric(sc, "disk spilled bytes"),
-        "memory_spilled_bytes" -> SQLMetrics.createSizeMetric(sc, "memory spilled bytes"))
-      rdd.spillMetricNode = Some(CometMetricNode(writerMetrics, Seq(spec.childMetricNode)))
+      val spec = NativeShuffleSpec(Operator.getDefaultInstance, childMetricNode, execContext)
       val dep = new CometShuffleDependency[Int, ColumnarBatch, ColumnarBatch](
         _rdd = rdd,
         partitioner = new HashPartitioner(numPartitions),

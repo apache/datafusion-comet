@@ -231,8 +231,8 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
         val shuffleWriteStages = store
           .stageList(null)
-          .filterNot(stage => stagesBefore.contains(stage.stageId))
-          .filter(_.shuffleWriteRecords > 0L)
+          .filter(stage =>
+            !stagesBefore.contains(stage.stageId) && stage.shuffleWriteRecords > 0L)
 
         assert(shuffleWriteStages.nonEmpty, "No native shuffle write stage was recorded")
         assert(
