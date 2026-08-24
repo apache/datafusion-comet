@@ -232,11 +232,7 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               val failure = intercept[Exception] {
                 shuffled.collect()
               }
-              val messages = Iterator
-                .iterate(failure: Throwable)(_.getCause)
-                .takeWhile(_ != null)
-                .flatMap(error => Option(error.getMessage))
-                .toSeq
+              val messages = causeChain(failure).flatMap(error => Option(error.getMessage))
               assert(
                 messages.exists(message =>
                   message.contains("DIVIDE_BY_ZERO") || message.contains("Division by zero")),

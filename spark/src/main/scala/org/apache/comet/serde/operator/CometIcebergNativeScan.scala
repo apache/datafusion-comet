@@ -286,7 +286,9 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
         val deletePath = IcebergReflection
           .extractFileLocation(contentFileClass, deleteFile)
           .getOrElse(
-            throw new RuntimeException("Failed to extract delete file path from FileScanTask"))
+            throw new RuntimeException(
+              "Neither location() nor path() is declared on this Iceberg version's " +
+                "ContentFile -- cannot extract delete file path from FileScanTask"))
 
         val deleteBuilder = OperatorOuterClass.IcebergDeleteFile.newBuilder()
         deleteBuilder.setFilePath(deletePath)
@@ -1026,7 +1028,8 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                     taskBuilder.setDataFilePath(filePath)
                   case None =>
                     val msg =
-                      "Iceberg reflection failure: Cannot extract file path from data file"
+                      "Neither location() nor path() is declared on this Iceberg version's " +
+                        "ContentFile -- cannot extract file path from data file"
                     logError(msg)
                     throw new RuntimeException(msg)
                 }
