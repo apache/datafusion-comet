@@ -31,6 +31,7 @@ import org.apache.spark.SparkConf
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row, SaveMode}
 import org.apache.spark.sql.catalyst.expressions.Cast
 import org.apache.spark.sql.catalyst.parser.ParseException
+import org.apache.spark.sql.comet.CometProjectExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.{col, monotonically_increasing_id}
 import org.apache.spark.sql.internal.SQLConf
@@ -39,6 +40,7 @@ import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType,
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
 import org.apache.comet.rules.CometScanTypeChecker
 import org.apache.comet.serde.{Compatible, Incompatible, Unsupported}
+import org.apache.comet.udf.codegen.CometScalaUDFCodegen
 
 /**
  * Spark-parity coverage for Comet's **native** `Cast` implementation, and for the
@@ -50,18 +52,21 @@ import org.apache.comet.serde.{Compatible, Incompatible, Unsupported}
  * decisions themselves (`Compatible` / `Incompatible` / `Unsupported`, and the reason strings)
  * are asserted directly against `CometCast.isSupported`.
  *
- * Out of scope: the JVM codegen dispatch path. `CometCast` mixes in `CodegenDispatchFallback`, so
- * a cast that `isSupported` rejects still runs inside the Comet operator by way of the
- * Arrow-direct codegen dispatcher, evaluating Spark's own `Cast` against Arrow vectors. That path
- * is covered by `CometCodegenSuite` and friends. Where this suite touches it at all, it does so
- * only to pin that an `Unsupported` cast keeps the enclosing operator native rather than falling
- * back to Spark; it does not attempt to cover dispatch semantics.
+ * `CometCast` mixes in `CodegenDispatchFallback`, so a cast that `isSupported` rejects still runs
+ * inside the Comet operator by way of the Arrow-direct codegen dispatcher, evaluating Spark's own
+ * `Cast` against Arrow vectors. That path is primarily covered by `CometCodegenSuite` and
+ * friends. Targeted routing regressions here also pin that an `Unsupported` cast uses the
+ * dispatcher, retaining Spark parity and keeping the enclosing operator native rather than
+ * falling back to Spark.
  *
  * Because of that split, a cast marked `Unsupported` here is not untested overall — it is tested
  * through the dispatcher instead. Adding a native cast implementation therefore means moving a
  * pair out of the `Unsupported` assertions and into the parity matrix below.
  */
-class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
+class CometNativeCastSuite
+    extends CometTestBase
+    with AdaptiveSparkPlanHelper
+    with CometCodegenAssertions {
 
   import testImplicits._
 
@@ -1506,6 +1511,152 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("cast DateType to timestamps preserves wide make_date results") {
+    // Store the components, not dates: this both avoids Parquet rebasing and prevents Spark
+    // from constant-folding make_date before it reaches the native cast.
+    val input: Seq[(Option[Int], Int, Int)] = Seq(
+      (Some(262143), 1, 1),
+      (Some(-262144), 1, 1),
+      (Some(1970), 1, 1),
+      (Some(2024), 11, 3),
+      (None, 1, 1))
+    withParquetTable(input, "wide_dates") {
+      for {
+        (target, tz) <- Seq(
+          ("TIMESTAMP_NTZ", "America/Los_Angeles"),
+          ("TIMESTAMP", "UTC"),
+          ("TIMESTAMP", "+05:30"),
+          ("TIMESTAMP", "-08:00"))
+        ansi <- Seq("false", "true")
+      } {
+        withSQLConf(
+          SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz,
+          SQLConf.ANSI_ENABLED.key -> ansi,
+          CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true") {
+          assertNoCodegenRan {
+            checkSparkAnswerAndOperator(
+              s"SELECT CAST(make_date(_1, _2, _3) AS $target) FROM wide_dates")
+          }
+        }
+      }
+
+      // Named regions and offsets with seconds must use Spark's timezone rules instead of
+      // constructing chrono dates. Neither the wide positive nor negative year fits chrono.
+      Seq("America/Los_Angeles", "GMT", "+05:30:15").foreach { tz =>
+        withSQLConf(
+          SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz,
+          CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true") {
+          assertCodegenRan {
+            checkSparkAnswerAndOperator(
+              "SELECT CAST(make_date(_1, _2, _3) AS TIMESTAMP) FROM wide_dates")
+          }
+        }
+      }
+      withSQLConf(
+        SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Los_Angeles",
+        CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false",
+        CometConf.COMET_STRICT_TESTING.key -> "true") {
+        checkSparkAnswer("SELECT CAST(make_date(_1, _2, _3) AS TIMESTAMP) FROM wide_dates")
+      }
+    }
+  }
+
+  test("cast DateType to timestamps checks microsecond overflow") {
+    // +/-106751991 are the last whole days representable in microseconds at UTC. The next
+    // days overflow; a fixed offset can also push an otherwise valid boundary day out of range.
+    val input = withNulls(Seq(-106751992, -106751991, 0, 106751991, 106751992))
+      .map(Tuple1(_))
+    val wideDate =
+      "make_date(CASE WHEN _1 = 0 THEN 300000 WHEN _1 > 0 THEN 2024 END, 6, 15)"
+    withParquetTable(input, "date_boundaries") {
+      for {
+        (target, tz, overflowDays) <- Seq(
+          ("TIMESTAMP_NTZ", "America/Los_Angeles", Seq(-106751992, 106751992)),
+          ("TIMESTAMP", "UTC", Seq(-106751992, 106751992)),
+          ("TIMESTAMP", "+18:00", Seq(-106751991)),
+          ("TIMESTAMP", "-18:00", Seq(106751991)))
+        ansi <- Seq("false", "true")
+      } {
+        withSQLConf(
+          SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz,
+          SQLConf.ANSI_ENABLED.key -> ansi,
+          CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true") {
+          val overflowQueries = overflowDays.map { day =>
+            s"SELECT CAST(date_from_unix_date(_1) AS $target) " +
+              s"FROM date_boundaries WHERE _1 = $day"
+          } ++ (if (target == "TIMESTAMP_NTZ") {
+                  Seq(s"SELECT CAST($wideDate AS $target) FROM date_boundaries")
+                } else Seq.empty)
+          overflowQueries.foreach { query =>
+            assertNoCodegenRan {
+              val df = sql(query)
+              checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
+              val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
+              assert(sparkError.isDefined, s"Spark should overflow for $query in $tz")
+              assert(cometError.isDefined, s"Comet should overflow for $query in $tz")
+              Seq(sparkError.get, cometError.get).foreach { error =>
+                assert(
+                  causeChain(error).exists { cause =>
+                    cause.getClass == classOf[ArithmeticException] &&
+                    cause.getMessage == "long overflow"
+                  },
+                  s"Expected ArithmeticException: long overflow, got $error")
+              }
+            }
+          }
+          // A mixed batch must retain valid values and return NULL only for overflowing rows
+          // and input NULLs. TRY_CAST does this regardless of the session ANSI setting.
+          // Compare LTZ as epoch seconds (these date casts are second-aligned): Spark's
+          // java.sql.Timestamp row conversion overflows when rebasing the extreme boundaries.
+          val casts = Seq(
+            s"TRY_CAST(date_from_unix_date(_1) AS $target)",
+            s"TRY_CAST($wideDate AS $target)").map { expr =>
+            if (target == "TIMESTAMP") s"CAST($expr AS BIGINT)" else expr
+          }
+          assertNoCodegenRan {
+            checkSparkAnswerAndOperator(
+              s"SELECT _1, ${casts.mkString(", ")} " +
+                "FROM date_boundaries ORDER BY _1")
+          }
+        }
+      }
+    }
+  }
+
+  test("cast DateType to timestamps falls back for unsafe TRY_CAST nullability") {
+    withParquetTable(Seq(Tuple1(300000), Tuple1(2024)), "try_wide_dates") {
+      val date = "make_date(_1, 6, 15)"
+      for {
+        target <- Seq("TIMESTAMP", "TIMESTAMP_NTZ")
+        codegen <- Seq("true", "false")
+      } {
+        withSQLConf(
+          SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC",
+          SQLConf.ANSI_ENABLED.key -> "true",
+          "spark.sql.legacy.castComplexTypesToString.enabled" -> "true",
+          CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> codegen,
+          CometConf.COMET_STRICT_TESTING.key -> "true") {
+          val expressions = Seq(
+            s"TRY_CAST(make_date(coalesce(_1, 300000), 6, 15) AS $target)",
+            s"TRY_CAST(map(1, $date) AS MAP<INT, $target>)",
+            s"TRY_CAST(named_struct('d', $date) AS STRUCT<d: $target>)",
+            // The outer cast would otherwise dispatch. Its entire tree must be checked.
+            s"CAST(array(TRY_CAST(make_date(coalesce(_1, 300000), 6, 15) AS $target)) AS STRING)") ++
+            (if (target == "TIMESTAMP") Seq(s"TRY_CAST(map($date, 1) AS MAP<$target, INT>)")
+             else Seq.empty)
+          expressions.foreach { expr =>
+            assertNoCodegenRan {
+              val query = s"SELECT $expr FROM try_wide_dates"
+              val plan = stripAQEPlan(sql(query).queryExecution.executedPlan)
+              assert(!plan.exists(_.isInstanceOf[CometProjectExec]))
+              checkSparkAnswer(query)
+            }
+          }
+        }
+      }
+    }
+  }
+
   // CAST from TimestampType
 
   ignore("cast TimestampType to BooleanType") {
@@ -2356,6 +2507,15 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   private def withNulls[T](values: Seq[T]): Seq[Option[T]] = {
     values.map(v => Some(v)) ++ Seq(None)
+  }
+
+  private def assertNoCodegenRan(f: => Unit): Unit = {
+    CometScalaUDFCodegen.resetStats()
+    f
+    val stats = CometScalaUDFCodegen.stats()
+    assert(
+      stats.compileCount + stats.cacheHitCount == 0,
+      s"Expected a native cast, but the JVM codegen dispatcher ran: $stats")
   }
 
   private def castFallbackTest(

@@ -69,6 +69,10 @@ pub enum SparkError {
     #[error("[ARITHMETIC_OVERFLOW] {from_type} overflow. If necessary set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error.")]
     ArithmeticOverflow { from_type: String },
 
+    // Spark's checked date/timestamp conversions throw this even with ANSI disabled.
+    #[error("long overflow")]
+    LongOverflow,
+
     #[error("[ARITHMETIC_OVERFLOW] Overflow in integral divide. Use 'try_divide' to tolerate overflow and return NULL instead. If necessary set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error.")]
     IntegralDivideOverflow,
 
@@ -269,6 +273,7 @@ impl SparkError {
             SparkError::CastOverFlow { .. } => "CastOverFlow",
             SparkError::CannotParseDecimal => "CannotParseDecimal",
             SparkError::ArithmeticOverflow { .. } => "ArithmeticOverflow",
+            SparkError::LongOverflow => "LongOverflow",
             SparkError::IntegralDivideOverflow => "IntegralDivideOverflow",
             SparkError::DecimalSumOverflow { .. } => "DecimalSumOverflow",
             SparkError::DivideByZero => "DivideByZero",
@@ -580,6 +585,8 @@ impl SparkError {
     /// Returns the appropriate Spark exception class for this error
     pub fn exception_class(&self) -> &'static str {
         match self {
+            SparkError::LongOverflow => "java/lang/ArithmeticException",
+
             // ArithmeticException
             SparkError::DivideByZero
             | SparkError::RemainderByZero
@@ -684,6 +691,7 @@ impl SparkError {
             SparkError::RemainderByZero => Some("REMAINDER_BY_ZERO"),
             SparkError::IntervalDividedByZero => Some("INTERVAL_DIVIDED_BY_ZERO"),
             SparkError::ArithmeticOverflow { .. } => Some("ARITHMETIC_OVERFLOW"),
+            SparkError::LongOverflow => None,
             SparkError::IntegralDivideOverflow => Some("ARITHMETIC_OVERFLOW"),
             SparkError::DecimalSumOverflow { .. } => Some("ARITHMETIC_OVERFLOW"),
             SparkError::BinaryArithmeticOverflow { .. } => Some("BINARY_ARITHMETIC_OVERFLOW"),
@@ -896,6 +904,22 @@ mod tests {
 
         assert!(json.contains("\"errorType\":\"RemainderByZero\""));
         assert!(json.contains("\"errorClass\":\"REMAINDER_BY_ZERO\""));
+    }
+
+    #[test]
+    fn test_long_overflow_json() {
+        let error = SparkError::LongOverflow;
+        let parsed: serde_json::Value = serde_json::from_str(&error.to_json()).unwrap();
+        assert_eq!(
+            parsed,
+            serde_json::json!({
+                "errorType": "LongOverflow",
+                "errorClass": "",
+                "params": {},
+            })
+        );
+        assert_eq!(error.exception_class(), "java/lang/ArithmeticException");
+        assert_eq!(error.to_string(), "long overflow");
     }
 
     #[test]
