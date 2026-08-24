@@ -22,9 +22,10 @@ package org.apache.comet.serde.literals
 import java.lang
 
 import org.apache.spark.internal.Logging
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Literal}
-import org.apache.spark.sql.catalyst.util.ArrayData
-import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DateType, DayTimeIntervalType, Decimal, DecimalType, DoubleType, FloatType, IntegerType, LongType, NullType, ShortType, StringType, TimestampNTZType, TimestampType}
+import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.catalyst.expressions.{Attribute, CreateArray, CreateMap, CreateNamedStruct, Expression, KnownNullable, Literal}
+import org.apache.spark.sql.catalyst.util.{ArrayData, MapData}
+import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DateType, DayTimeIntervalType, Decimal, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, NullType, ShortType, StringType, StructType, TimestampNTZType, TimestampType}
 import org.apache.spark.unsafe.types.UTF8String
 
 import com.google.protobuf.ByteString
@@ -32,7 +33,7 @@ import com.google.protobuf.ByteString
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.serde.{CometExpressionSerde, Compatible, ExprOuterClass, LiteralOuterClass, SupportLevel, Unsupported}
-import org.apache.comet.serde.QueryPlanSerde.{isTimeType, serializeDataType, supportedDataType}
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, isTimeType, serializeDataType, supportedDataType}
 import org.apache.comet.serde.Types.ListLiteral
 
 object CometLiteral extends CometExpressionSerde[Literal] with Logging {
@@ -55,6 +56,9 @@ object CometLiteral extends CometExpressionSerde[Literal] with Logging {
             .elementType
             .isInstanceOf[ArrayType])))) {
       Compatible(None)
+    } else if (canExpandComplexLiteral(expr)) {
+      // Rebuilt as a Create[Array|Map|NamedStruct] tree in `convert`.
+      Compatible(None)
     } else {
       expr.dataType match {
         case _: DayTimeIntervalType => Compatible(None)
@@ -70,6 +74,12 @@ object CometLiteral extends CometExpressionSerde[Literal] with Logging {
     val dataType = expr.dataType
     val value = expr.value
 
+    if (canExpandComplexLiteral(expr)) {
+      return exprToProtoInternal(expandComplexLiteral(value, dataType), inputs, binding).orElse {
+        withFallbackReason(expr, s"Unsupported data type $dataType")
+        None
+      }
+    }
     val exprBuilder = LiteralOuterClass.Literal.newBuilder()
 
     if (value == null) {
@@ -215,4 +225,82 @@ object CometLiteral extends CometExpressionSerde[Literal] with Logging {
     }
     listLiteralBuilder
   }
+
+  /**
+   * True when a non-null Literal of this type is not encodable in the native `Literal` proto and
+   * `convert` should try to rebuild it from primitive-typed Literals. The native proto today
+   * carries scalars and nested `ListLiteral`s (arrays of arrays / arrays of scalars). It does not
+   * carry Map or Struct values, so any Literal whose type contains a `MapType` or a `StructType`
+   * needs to be expanded before serialization.
+   */
+  private def needsExpansion(dataType: DataType): Boolean = dataType match {
+    case _: MapType | _: StructType => true
+    case ArrayType(et, _) => needsExpansion(et)
+    case _ => false
+  }
+
+  /**
+   * True when the Literal is a non-null complex value that we can rebuild from primitive Literals
+   * via [[expandComplexLiteral]]. Empty top-level containers are excluded because a synthesized
+   * `Create[Array|Map]` with no children cannot recover the original element type.
+   */
+  private def canExpandComplexLiteral(expr: Literal): Boolean = {
+    val value = expr.value
+    if (value == null || !needsExpansion(expr.dataType)) return false
+    expr.dataType match {
+      case _: ArrayType => value.asInstanceOf[ArrayData].numElements() > 0
+      case _: MapType => value.asInstanceOf[MapData].numElements() > 0
+      case _: StructType => true
+      case _ => false
+    }
+  }
+
+  /**
+   * Rebuild a folded complex Literal as an equivalent tree of `CreateArray` / `CreateMap` /
+   * `CreateNamedStruct` over primitive-typed Literals. Callers must gate on
+   * [[canExpandComplexLiteral]] so `dataType` is one of the three complex cases and top-level
+   * containers are non-empty.
+   */
+  private def expandComplexLiteral(value: Any, dataType: DataType): Expression =
+    dataType match {
+      case ArrayType(et, _) =>
+        val arr = value.asInstanceOf[ArrayData]
+        val elems = (0 until arr.numElements()).map { i =>
+          if (arr.isNullAt(i)) Literal(null, et)
+          else asNullable(Literal(arr.get(i, et), et))
+        }
+        CreateArray(elems, useStringTypeWhenEmpty = false)
+      case MapType(kt, vt, _) =>
+        val mapData = value.asInstanceOf[MapData]
+        val keys = mapData.keyArray()
+        val vals = mapData.valueArray()
+        val children = (0 until keys.numElements()).flatMap { i =>
+          val k = if (keys.isNullAt(i)) Literal(null, kt) else Literal(keys.get(i, kt), kt)
+          val v =
+            if (vals.isNullAt(i)) Literal(null, vt)
+            else asNullable(Literal(vals.get(i, vt), vt))
+          Seq(k, v)
+        }
+        CreateMap(children, useStringTypeWhenEmpty = false)
+      case StructType(fields) =>
+        val row = value.asInstanceOf[InternalRow]
+        val children = fields.zipWithIndex.flatMap { case (f, i) =>
+          val v =
+            if (row.isNullAt(i)) Literal(null, f.dataType)
+            else asNullable(Literal(row.get(i, f.dataType), f.dataType))
+          Seq(Literal(f.name), v)
+        }
+        CreateNamedStruct(children.toSeq)
+      case other =>
+        throw new IllegalStateException(s"expandComplexLiteral called on $other")
+    }
+
+  /**
+   * Wrap a non-null expression in `KnownNullable` so a surrounding `Create*` sees every sibling
+   * as nullable. DataFusion `make_array` asserts strict Arrow-type equality across siblings and
+   * would panic if a folded literal produced a non-nullable child next to a nullable one.
+   * `CometKnownNullable` forwards the child on the wire, so runtime is unaffected.
+   */
+  private def asNullable(expr: Expression): Expression =
+    if (expr.nullable) expr else KnownNullable(expr)
 }
