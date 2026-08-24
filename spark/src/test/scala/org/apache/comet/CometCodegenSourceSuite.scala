@@ -24,7 +24,7 @@ import org.scalatest.funsuite.AnyFunSuite
 import org.apache.spark.SparkConf
 import org.apache.spark.serializer.JavaSerializer
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Add, AddMonths, BoundReference, Coalesce, Concat, CreateArray, CreateMap, DateFormatClass, ElementAt, Expression, GetStructField, LeafExpression, Length, Literal, MakeTimestamp, MicrosToTimestamp, MillisToTimestamp, MonthsBetween, Nondeterministic, Rand, Size, ToUnixTimestamp, Unevaluable, UnixMicros, UnixMillis, UnixSeconds, Upper}
+import org.apache.spark.sql.catalyst.expressions.{Add, AddMonths, BoundReference, Cast, Coalesce, Concat, CreateArray, CreateMap, DateFormatClass, ElementAt, Expression, GetStructField, LeafExpression, Length, Literal, MakeTimestamp, MicrosToTimestamp, MillisToTimestamp, MonthsBetween, Nondeterministic, Rand, Size, ToUnixTimestamp, Unevaluable, UnixMicros, UnixMillis, UnixSeconds, Upper}
 import org.apache.spark.sql.catalyst.expressions.codegen.{CodeFormatter, CodegenContext, CodegenFallback, ExprCode}
 import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
@@ -41,8 +41,10 @@ import org.apache.comet.udf.codegen.CometScalaUDFCodegen
  * assert on the emitted Java directly, without invoking Janino. The goal is to catch regressions
  * in the optimizations we claim the dispatcher applies:
  *
- *   - `NullIntolerant` short-circuit wraps `ev.code` in `if (any-input-null) { setNull } else {
- *     ev.code; write }`.
+ *   - `NullIntolerant` short-circuit wraps `ev.code` in `if (input-null) { setNull } else {
+ *     ev.code; write }`. It is emitted for a tree reading a single ordinal, and for a
+ *     multi-ordinal tree whose root has only leaf children; it is *not* emitted once a subtree
+ *     sits between the root and a leaf (see the multi-input tests for why).
  *   - Non-nullable column declaration emits `return false;` from `isNullAt(ord)`, and a
  *     `BoundReference.nullable=false` (Catalyst sets this from schema-declared nullability) makes
  *     Spark's `doGenCode` skip emitting its own `row.isNullAt(ord)` probe entirely.
@@ -164,6 +166,53 @@ class CometCodegenSourceSuite extends AnyFunSuite {
       !src.contains("this.col0.isNull(i) || this.col1.isNull(i)"),
       "expected no pre-null short-circuit when Concat breaks the NullIntolerant chain; " +
         s"got:\n$src")
+  }
+
+  test("NullIntolerant short-circuit skipped when a subtree sits between root and leaf (#5218)") {
+    // Even when every node is NullIntolerant, a short-circuit on the *union* of input ordinals is
+    // not equivalent to Spark once a real subtree sits between the root and a leaf. Spark's null
+    // handling is per-node and left-to-right: `BinaryExpression.nullSafeCodeGen` emits the left
+    // child's code unconditionally, then tests the left child's null, then the right child's. So
+    // for `Add(cast(c0 AS INT), c1)` on a row where c0 = 'abc' and c1 IS NULL, Spark evaluates the
+    // cast first and (under ANSI) raises CAST_INVALID_INPUT. A union short-circuit would skip the
+    // cast and return null, swallowing the error. See CometCodegenSuite's add_months test for the
+    // end-to-end witness.
+    //
+    // The `Cast` is what disqualifies the short-circuit here: it is a non-leaf child of the root
+    // that can raise on its own. The sibling test below covers the leaf-only-children shape, which
+    // keeps the short-circuit.
+    val strCol = ArrowColumnSpec(varCharVectorClass, nullable = true)
+    val intCol = ArrowColumnSpec(
+      CometBatchKernelCodegen.vectorClassBySimpleName("IntVector"),
+      nullable = true)
+    val expr = Add(
+      Cast(BoundReference(0, StringType, nullable = true), IntegerType, ansiEnabled = true),
+      BoundReference(1, IntegerType, nullable = true))
+    val src = gen(expr, strCol, intCol)
+    assert(
+      !src.contains("this.col0.isNull(i) || this.col1.isNullAt(i)"),
+      s"expected no union-of-inputs short-circuit when a Cast sits under the root; got:\n$src")
+    assert(
+      !src.contains("if (this.col0.isNull(i))") && !src.contains("if (this.col1.isNullAt(i))"),
+      s"expected no pre-eval input-null short-circuit at all for this shape; got:\n$src")
+  }
+
+  test("NullIntolerant short-circuit kept for a multi-input leaf-only tree (#5218)") {
+    // Counterpart to the test above. When every direct child of the root is a `BoundReference` or
+    // `Literal`, the tree is one level deep: the only code Spark runs ahead of its own null checks
+    // is leaf reads, which cannot raise. Any error comes from the root's own logic, which runs only
+    // once every input is known non-null -- in Spark's shape and in ours alike. So the union
+    // short-circuit is exact and worth keeping for the common no-cast multi-argument case.
+    val intCol = ArrowColumnSpec(
+      CometBatchKernelCodegen.vectorClassBySimpleName("IntVector"),
+      nullable = true)
+    val expr = Add(
+      BoundReference(0, IntegerType, nullable = true),
+      BoundReference(1, IntegerType, nullable = true))
+    val src = gen(expr, intCol, intCol)
+    assert(
+      src.contains("if (this.col0.isNullAt(i) || this.col1.isNullAt(i))"),
+      s"expected union-of-inputs short-circuit for a leaf-only two-input tree; got:\n$src")
   }
 
   test("canHandle accepts CodegenFallback expressions (delegates to eval(row))") {
@@ -404,6 +453,9 @@ class CometCodegenSourceSuite extends AnyFunSuite {
     // non-null output and dropped the post-eval guard; that wrote stale `ev.value` bytes for
     // every invalid row. The short-circuit on input nulls must coexist with a post-eval
     // `if (ev.isNull) setNull` check whenever the expression itself is nullable.
+    //
+    // All six children are `BoundReference`s, so this is a leaf-only tree and keeps the
+    // union-of-ordinals short-circuit (#5218).
     val expr = MakeTimestamp(
       BoundReference(0, IntegerType, nullable = true),
       BoundReference(1, IntegerType, nullable = true),
@@ -428,12 +480,83 @@ class CometCodegenSourceSuite extends AnyFunSuite {
     val formatted = CodeFormatter.format(result.code)
     // Two distinct setNull sites must exist: the input-null short-circuit before `ev.code` runs,
     // and the post-eval guard that propagates `ev.isNull = true` set by MakeTimestamp's catch
-    // block on invalid components. Pre-fix there was only one (the input short-circuit).
+    // block on invalid components. Pre-#4554 there was only one (the input short-circuit).
     val setNullOccurrences = "output\\.setNull\\(i\\);".r.findAllIn(src).length
     assert(
       setNullOccurrences >= 2,
       "expected at least two setNull sites (input short-circuit + post-eval ev.isNull guard); " +
         s"found $setNullOccurrences. Source:\n$formatted")
+    // The short-circuit must test every ordinal the tree reads, not just the first.
+    assert(
+      src.contains(
+        "if (this.col0.isNullAt(i) || this.col1.isNullAt(i) || " +
+          "this.col2.isNullAt(i) || this.col3.isNullAt(i) || this.col4.isNullAt(i) || " +
+          "this.col5.isNull(i))"),
+      s"expected the short-circuit to test all six ordinals; source:\n$formatted")
+  }
+
+  test("multi-input tree with a non-leaf child keeps only the post-eval guard (#5218)") {
+    // The counterpart to the test above: the same nullable-NullIntolerant-root shape, but with a
+    // `Cast` between the root and one leaf. That disqualifies the short-circuit, so exactly one
+    // setNull site remains -- the post-eval `ev.isNull` guard, which is the actual #4554
+    // regression and must survive independently of the short-circuit.
+    val expr = MakeTimestamp(
+      Cast(BoundReference(0, StringType, nullable = true), IntegerType, ansiEnabled = true),
+      BoundReference(1, IntegerType, nullable = true),
+      BoundReference(2, IntegerType, nullable = true),
+      Literal(0),
+      Literal(0),
+      Literal(Decimal(0, 8, 6), DecimalType(8, 6)),
+      timezone = None,
+      timeZoneId = Some("UTC"),
+      failOnError = false)
+    assert(expr.nullable, "MakeTimestamp(failOnError=false) must be nullable for this test")
+    val strCol = ArrowColumnSpec(varCharVectorClass, nullable = true)
+    val intCol = ArrowColumnSpec(
+      CometBatchKernelCodegen.vectorClassBySimpleName("IntVector"),
+      nullable = true)
+    val result =
+      CometBatchKernelCodegen.generateSource(expr, IndexedSeq(strCol, intCol, intCol))
+    val src = result.body
+    val formatted = CodeFormatter.format(result.code)
+    val setNullOccurrences = "output\\.setNull\\(i\\);".r.findAllIn(src).length
+    assert(
+      setNullOccurrences == 1,
+      "expected exactly one setNull site (the post-eval ev.isNull guard, with no short-circuit); " +
+        s"found $setNullOccurrences. Source:\n$formatted")
+    assert(
+      !src.contains("if (this.col0.isNull(i))"),
+      s"expected no input-null short-circuit when a Cast sits under the root; source:\n$formatted")
+  }
+
+  test("single-input nullable NullIntolerant root emits both short-circuit and post-eval guard") {
+    // Counterpart to the test above, for the shape that does keep the short-circuit: one input
+    // ordinal. Two distinct setNull sites must exist -- the input-null short-circuit before
+    // `ev.code` runs, and the post-eval `ev.isNull` guard.
+    val expr = MakeTimestamp(
+      BoundReference(0, IntegerType, nullable = true),
+      Literal(1),
+      Literal(1),
+      Literal(0),
+      Literal(0),
+      Literal(Decimal(0, 8, 6), DecimalType(8, 6)),
+      timezone = None,
+      timeZoneId = Some("UTC"),
+      failOnError = false)
+    assert(expr.nullable, "MakeTimestamp(failOnError=false) must be nullable for this test")
+    val intCol = ArrowColumnSpec(
+      CometBatchKernelCodegen.vectorClassBySimpleName("IntVector"),
+      nullable = true)
+    val result = CometBatchKernelCodegen.generateSource(expr, IndexedSeq(intCol))
+    val src = result.body
+    assert(
+      src.contains("if (this.col0.isNullAt(i))"),
+      s"expected input-null short-circuit for the single-input tree; got:\n$src")
+    val setNullOccurrences = "output\\.setNull\\(i\\);".r.findAllIn(src).length
+    assert(
+      setNullOccurrences >= 2,
+      "expected two setNull sites (input short-circuit + post-eval ev.isNull guard); " +
+        s"found $setNullOccurrences. Source:\n${CodeFormatter.format(result.code)}")
   }
 
   test("ArrayType(StringType) output emits ListVector startNewValue/endValue recursion") {

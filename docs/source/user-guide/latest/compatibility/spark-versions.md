@@ -67,7 +67,7 @@ We recommend moving to JDK 17 or later.
 
 ## Spark 4.0
 
-Spark 4.0.2 is supported with Java 17 and Scala 2.13.
+Spark 4.0.4 is supported with Java 17 and Scala 2.13.
 
 ### Known Limitations
 
@@ -76,7 +76,7 @@ Spark 4.0.2 is supported with Java 17 and Scala 2.13.
 
 ## Spark 4.1
 
-Spark 4.1.2 is supported with Java 17/21 and Scala 2.13.
+Spark 4.1.3 is supported with Java 17/21 and Scala 2.13.
 
 ### Known Limitations
 
@@ -91,9 +91,9 @@ Spark 4.1.2 is supported with Java 17/21 and Scala 2.13.
 
 ## Spark 4.2 (Experimental)
 
-Spark 4.2.0-preview4 is provided as experimental support with Java 17 and Scala 2.13.
+Spark 4.2.0 is provided as experimental support with Java 17 and Scala 2.13.
 
 ```{warning}
-Spark 4.2 support is experimental and targets a preview release of Spark. It is intended for early
-evaluation only and should not be used in production.
+Spark 4.2 support is experimental. Comet tests run in CI for this version, but the Spark SQL tests
+do not yet. It is intended for early evaluation only and should not be used in production.
 ```

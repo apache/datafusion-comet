@@ -19,6 +19,7 @@
 
 package org.apache.comet.serde.operator
 
+import java.lang.reflect.Method
 import java.math.BigDecimal
 import java.nio.ByteBuffer
 import java.nio.charset.StandardCharsets.UTF_8
@@ -271,11 +272,11 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
   private def extractDeleteFilesList(
       task: Any,
       contentFileClass: Class[_],
-      fileScanTaskClass: Class[_]): Seq[OperatorOuterClass.IcebergDeleteFile] = {
+      fileScanTaskClass: Class[_],
+      deleteFileClass: Class[_]): Seq[OperatorOuterClass.IcebergDeleteFile] = {
     try {
-      val deleteFileClass = IcebergReflection.loadClass(IcebergReflection.ClassNames.DELETE_FILE)
       // keyMetadata() is declared on ContentFile; present across all supported Iceberg versions.
-      val keyMetadataMethod = contentFileClass.getMethod("keyMetadata")
+      val keyMetadataMethod = IcebergReflection.getMethod(contentFileClass, "keyMetadata")
 
       val deletes = IcebergReflection.getDeleteFilesFromTask(task, fileScanTaskClass)
 
@@ -285,14 +286,16 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
         val deletePath = IcebergReflection
           .extractFileLocation(contentFileClass, deleteFile)
           .getOrElse(
-            throw new RuntimeException("Failed to extract delete file path from FileScanTask"))
+            throw new RuntimeException(
+              "Neither location() nor path() is declared on this Iceberg version's " +
+                "ContentFile -- cannot extract delete file path from FileScanTask"))
 
         val deleteBuilder = OperatorOuterClass.IcebergDeleteFile.newBuilder()
         deleteBuilder.setFilePath(deletePath)
 
         val contentType =
           try {
-            val contentMethod = deleteFileClass.getMethod("content")
+            val contentMethod = IcebergReflection.getMethod(deleteFileClass, "content")
             val content = contentMethod.invoke(deleteFile)
             content.toString match {
               case IcebergReflection.ContentTypes.POSITION_DELETES =>
@@ -309,7 +312,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
 
         val specId =
           try {
-            val specIdMethod = deleteFileClass.getMethod("specId")
+            val specIdMethod = IcebergReflection.getMethod(deleteFileClass, "specId")
             specIdMethod.invoke(deleteFile).asInstanceOf[Int]
           } catch {
             case _: Exception => 0
@@ -318,7 +321,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
 
         try {
           val equalityIdsMethod =
-            deleteFileClass.getMethod("equalityFieldIds")
+            IcebergReflection.getMethod(deleteFileClass, "equalityFieldIds")
           val equalityIds = equalityIdsMethod
             .invoke(deleteFile)
             .asInstanceOf[java.util.List[Integer]]
@@ -355,29 +358,28 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       task: Any,
       contentScanTaskClass: Class[_],
       fileScanTaskClass: Class[_],
+      partitionSpecToJson: Option[Method],
       taskBuilder: OperatorOuterClass.IcebergFileScanTask.Builder,
       commonBuilder: OperatorOuterClass.IcebergScanCommon.Builder,
       partitionSpecToPoolIndex: mutable.HashMap[String, Int],
       partitionDataToPoolIndex: mutable.HashMap[String, Int]): Unit = {
     try {
-      val specMethod = fileScanTaskClass.getMethod("spec")
+      val specMethod = IcebergReflection.getMethod(fileScanTaskClass, "spec")
       val spec = specMethod.invoke(task)
 
       if (spec != null) {
         // Get the partition type/schema from the spec. Needed regardless of whether this task
         // ends up value-less below.
-        val partitionTypeMethod = spec.getClass.getMethod("partitionType")
+        val partitionTypeMethod = IcebergReflection.getMethod(spec.getClass, "partitionType")
         val partitionType = partitionTypeMethod.invoke(spec)
-        val fieldsMethod = partitionType.getClass.getMethod("fields")
+        val fieldsMethod = IcebergReflection.getMethod(partitionType.getClass, "fields")
         val fields = fieldsMethod
           .invoke(partitionType)
           .asInstanceOf[java.util.List[_]]
 
         // Helper to get field type string (shared by both type and data serialization)
-        def getFieldType(field: Any): String = {
-          val typeMethod = field.getClass.getMethod("type")
-          typeMethod.invoke(field).toString
-        }
+        def getFieldType(field: Any): String =
+          IcebergReflection.getMethod(field.getClass, "type").invoke(field).toString
 
         // Filter out fields with unknown types (dropped partition fields).
         // Unknown type fields represent partition columns that have been dropped
@@ -392,13 +394,13 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
           if (fieldTypeStr == IcebergReflection.TypeNames.UNKNOWN) {
             None
           } else {
-            val fieldIdMethod = field.getClass.getMethod("fieldId")
+            val fieldIdMethod = IcebergReflection.getMethod(field.getClass, "fieldId")
             val fieldId = fieldIdMethod.invoke(field).asInstanceOf[Int]
 
-            val nameMethod = field.getClass.getMethod("name")
+            val nameMethod = IcebergReflection.getMethod(field.getClass, "name")
             val fieldName = nameMethod.invoke(field).asInstanceOf[String]
 
-            val isOptionalMethod = field.getClass.getMethod("isOptional")
+            val isOptionalMethod = IcebergReflection.getMethod(field.getClass, "isOptional")
             val isOptional =
               isOptionalMethod.invoke(field).asInstanceOf[Boolean]
             val required = !isOptional
@@ -425,12 +427,8 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
         // adds its type-pool entry in the same block to keep them aligned.
         def serializeRealSpec(): Unit = {
           try {
-            val partitionSpecParserClass =
-              IcebergReflection.loadClass(IcebergReflection.ClassNames.PARTITION_SPEC_PARSER)
-            val toJsonMethod = partitionSpecParserClass.getMethod(
-              "toJson",
-              IcebergReflection.loadClass(IcebergReflection.ClassNames.PARTITION_SPEC))
-            val partitionSpecJson = toJsonMethod
+            val partitionSpecJson = partitionSpecToJson
+              .getOrElse(throw new NoSuchMethodException("PartitionSpecParser.toJson"))
               .invoke(null, spec)
               .asInstanceOf[String]
 
@@ -457,7 +455,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
         }
 
         // Get partition data from the task (via file().partition())
-        val partitionMethod = contentScanTaskClass.getMethod("partition")
+        val partitionMethod = IcebergReflection.getMethod(contentScanTaskClass, "partition")
         val partitionData = partitionMethod.invoke(task)
 
         if (partitionData != null) {
@@ -480,12 +478,13 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                 None
               } else {
                 // Use the partition type's field ID (same as in partition_type_json)
-                val fieldIdMethod = field.getClass.getMethod("fieldId")
+                val fieldIdMethod = IcebergReflection.getMethod(field.getClass, "fieldId")
                 val fieldId = fieldIdMethod.invoke(field).asInstanceOf[Int]
 
-                val getMethod =
-                  partitionData.getClass.getMethod("get", classOf[Int], classOf[Class[_]])
-                val value = getMethod.invoke(partitionData, Integer.valueOf(idx), classOf[Object])
+                val getValueMethod = IcebergReflection
+                  .getMethod(partitionData.getClass, "get", classOf[Int], classOf[Class[_]])
+                val value =
+                  getValueMethod.invoke(partitionData, Integer.valueOf(idx), classOf[Object])
 
                 Some(partitionValueToProto(fieldId, fieldTypeStr, value))
               }
@@ -506,7 +505,8 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
           // Only the value-carrying path serializes the real spec (serializeRealSpec), so the
           // value-less path never does the reflection/intern work just to overwrite it.
           if (partitionValues.isEmpty) {
-            val specId = spec.getClass.getMethod("specId").invoke(spec).asInstanceOf[Int]
+            val specId =
+              IcebergReflection.getMethod(spec.getClass, "specId").invoke(spec).asInstanceOf[Int]
             val emptySpecJson =
               compact(
                 render(("spec-id" -> specId) ~ ("fields" -> List.empty[org.json4s.JObject])))
@@ -630,10 +630,11 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       val attributeMap = output.map(attr => attr.name -> attr).toMap
 
       if (exprClass.getName.endsWith(Constants.ExpressionTypes.UNBOUND_PREDICATE)) {
-        val operation = exprClass.getMethod("op").invoke(icebergExpr).toString
-        val term = exprClass.getMethod("term").invoke(icebergExpr)
-        val ref = term.getClass.getMethod("ref").invoke(term)
-        val columnName = ref.getClass.getMethod("name").invoke(ref).asInstanceOf[String]
+        val operation = IcebergReflection.getMethod(exprClass, "op").invoke(icebergExpr).toString
+        val term = IcebergReflection.getMethod(exprClass, "term").invoke(icebergExpr)
+        val ref = IcebergReflection.getMethod(term.getClass, "ref").invoke(term)
+        val columnName =
+          IcebergReflection.getMethod(ref.getClass, "name").invoke(ref).asInstanceOf[String]
 
         // Iceberg names a nested reference by its dotted path ("struct.field"), which never matches
         // a top-level scan output attribute, so a residual on a nested field drops here. That miss
@@ -660,11 +661,11 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
         }
       } else if (exprClass.getName.endsWith(Constants.ExpressionTypes.AND)) {
         val left = icebergExprToProto(
-          exprClass.getMethod("left").invoke(icebergExpr),
+          IcebergReflection.getMethod(exprClass, "left").invoke(icebergExpr),
           output,
           pageIndexUnsupportedColumns)
         val right = icebergExprToProto(
-          exprClass.getMethod("right").invoke(icebergExpr),
+          IcebergReflection.getMethod(exprClass, "right").invoke(icebergExpr),
           output,
           pageIndexUnsupportedColumns)
         (left, right) match {
@@ -677,11 +678,11 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
         }
       } else if (exprClass.getName.endsWith(Constants.ExpressionTypes.OR)) {
         val left = icebergExprToProto(
-          exprClass.getMethod("left").invoke(icebergExpr),
+          IcebergReflection.getMethod(exprClass, "left").invoke(icebergExpr),
           output,
           pageIndexUnsupportedColumns)
         val right = icebergExprToProto(
-          exprClass.getMethod("right").invoke(icebergExpr),
+          IcebergReflection.getMethod(exprClass, "right").invoke(icebergExpr),
           output,
           pageIndexUnsupportedColumns)
         // Dropping a disjunct would strengthen the predicate and wrongly prune, so require both.
@@ -690,7 +691,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
           case _ => None
         }
       } else if (exprClass.getName.endsWith(Constants.ExpressionTypes.NOT)) {
-        val child = exprClass.getMethod("child").invoke(icebergExpr)
+        val child = IcebergReflection.getMethod(exprClass, "child").invoke(icebergExpr)
         icebergExprToProto(child, output, pageIndexUnsupportedColumns).map(notPredicate)
       } else {
         None
@@ -722,7 +723,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       attribute: Attribute,
       op: OperatorOuterClass.IcebergPredicateOperator)
       : Option[OperatorOuterClass.IcebergPredicate] = {
-    val literal = exprClass.getMethod("literal").invoke(icebergExpr)
+    val literal = IcebergReflection.getMethod(exprClass, "literal").invoke(icebergExpr)
     predicateLiteralToProto(attribute.dataType, icebergLiteralValue(literal)).map { lit =>
       OperatorOuterClass.IcebergPredicate
         .newBuilder()
@@ -742,7 +743,10 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       column: String,
       attribute: Attribute): Option[OperatorOuterClass.IcebergPredicate] = {
     val literals =
-      exprClass.getMethod("literals").invoke(icebergExpr).asInstanceOf[java.util.List[_]]
+      IcebergReflection
+        .getMethod(exprClass, "literals")
+        .invoke(icebergExpr)
+        .asInstanceOf[java.util.List[_]]
     val protoLiterals =
       literals.asScala.map(l =>
         predicateLiteralToProto(attribute.dataType, icebergLiteralValue(l)))
@@ -784,7 +788,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
   /** Extracts the raw Java value from an Iceberg Literal via reflection. */
   private def icebergLiteralValue(icebergLiteral: Any): Any = {
     val literalClass = IcebergReflection.loadClass(IcebergReflection.ClassNames.LITERAL)
-    literalClass.getMethod("value").invoke(icebergLiteral)
+    IcebergReflection.getMethod(literalClass, "value").invoke(icebergLiteral)
   }
 
   /**
@@ -906,6 +910,20 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     val deleteFilesToPoolIndex =
       mutable.HashMap[Seq[Int], Int]()
     val residualToPoolIndex = mutable.HashMap[OperatorOuterClass.IcebergPredicate, Int]()
+    // Field-id mappings are read out of an Iceberg schema by reflection, one lookup per column, so
+    // memoize them. Keyed like schemaToPoolIndex above: a task schema that Iceberg materializes
+    // fresh per task misses, but the table/scan schema shared by every task hits.
+    val fieldIdMappingCache = mutable.HashMap[AnyRef, Map[String, Int]]()
+    def fieldIdMapping(schema: AnyRef): Map[String, Int] =
+      fieldIdMappingCache.getOrElseUpdate(schema, IcebergReflection.buildFieldIdMapping(schema))
+    // Whether the scan schema references field ids the current table schema no longer has (a
+    // dropped column read through VERSION AS OF). Loop-invariant, and lazy so a scan whose tasks
+    // all carry deletes never walks the table schema at all.
+    lazy val hasHistoricalColumns = {
+      val tableSchemaFieldIds =
+        fieldIdMapping(metadata.tableSchema.asInstanceOf[AnyRef]).values.toSet
+      metadata.globalFieldIdMapping.values.exists(id => !tableSchemaFieldIds.contains(id))
+    }
     // Columns whose Iceberg type iceberg-rust cannot use for page-index pruning; residual
     // predicates over them are dropped (see icebergExprToProto). Computed once from the full table
     // schema so a filter column projected out of the scan output is still recognized.
@@ -944,19 +962,34 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       IcebergReflection.loadClass(IcebergReflection.ClassNames.SCHEMA_PARSER)
     val schemaClass =
       IcebergReflection.loadClass(IcebergReflection.ClassNames.SCHEMA)
+    val deleteFileClass =
+      IcebergReflection.loadClass(IcebergReflection.ClassNames.DELETE_FILE)
+    // Optional rather than required: serializePartitionData reports an unresolvable
+    // PartitionSpecParser.toJson as a per-task warning that leaves the task without a partition
+    // spec, so it must not fail the whole scan here.
+    val partitionSpecToJson =
+      try {
+        Some(
+          IcebergReflection.getMethod(
+            IcebergReflection.loadClass(IcebergReflection.ClassNames.PARTITION_SPEC_PARSER),
+            "toJson",
+            IcebergReflection.loadClass(IcebergReflection.ClassNames.PARTITION_SPEC)))
+      } catch {
+        case _: Exception => None
+      }
 
-    // Cache method lookups (avoid repeated getMethod in loop)
-    val fileMethod = contentScanTaskClass.getMethod("file")
-    val startMethod = contentScanTaskClass.getMethod("start")
-    val lengthMethod = contentScanTaskClass.getMethod("length")
-    val residualMethod = contentScanTaskClass.getMethod("residual")
-    val fileSizeInBytesMethod = contentFileClass.getMethod("fileSizeInBytes")
+    // Accessors used by the per-task loop
+    val fileMethod = IcebergReflection.getMethod(contentScanTaskClass, "file")
+    val startMethod = IcebergReflection.getMethod(contentScanTaskClass, "start")
+    val lengthMethod = IcebergReflection.getMethod(contentScanTaskClass, "length")
+    val residualMethod = IcebergReflection.getMethod(contentScanTaskClass, "residual")
+    val fileSizeInBytesMethod = IcebergReflection.getMethod(contentFileClass, "fileSizeInBytes")
     // keyMetadata() is declared on ContentFile (present across all supported Iceberg versions).
     // For encrypted tables it returns the plaintext StandardKeyMetadata blob; null otherwise.
-    val keyMetadataMethod = contentFileClass.getMethod("keyMetadata")
-    val taskSchemaMethod = fileScanTaskClass.getMethod("schema")
-    val toJsonMethod = schemaParserClass.getMethod("toJson", schemaClass)
-    toJsonMethod.setAccessible(true)
+    val keyMetadataMethod = IcebergReflection.getMethod(contentFileClass, "keyMetadata")
+    val taskSchemaMethod = IcebergReflection.getMethod(fileScanTaskClass, "schema")
+    val toJsonMethod =
+      IcebergReflection.getMethod(schemaParserClass, "toJson", schemaClass)
 
     // Access inputRDD - safe now, DPP is resolved
     scanExec.inputRDD match {
@@ -972,12 +1005,11 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
             val inputPartClass = inputPartition.getClass
 
             {
-              val taskGroupMethod = inputPartClass.getDeclaredMethod("taskGroup")
-              taskGroupMethod.setAccessible(true)
+              val taskGroupMethod =
+                IcebergReflection.getDeclaredMethod(inputPartClass, "taskGroup")
               val taskGroup = taskGroupMethod.invoke(inputPartition)
 
-              val taskGroupClass = taskGroup.getClass
-              val tasksMethod = taskGroupClass.getMethod("tasks")
+              val tasksMethod = IcebergReflection.getMethod(taskGroup.getClass, "tasks")
               val tasksCollection =
                 tasksMethod.invoke(taskGroup).asInstanceOf[java.util.Collection[_]]
 
@@ -996,7 +1028,8 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                     taskBuilder.setDataFilePath(filePath)
                   case None =>
                     val msg =
-                      "Iceberg reflection failure: Cannot extract file path from data file"
+                      "Neither location() nor path() is declared on this Iceberg version's " +
+                        "ContentFile -- cannot extract file path from data file"
                     logError(msg)
                     throw new RuntimeException(msg)
                 }
@@ -1030,7 +1063,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                     // DeleteFilter.fileProjection).
                     val equalityFieldIds = deletes.asScala.flatMap { df =>
                       IcebergReflection
-                        .getEqualityFieldIds(df)
+                        .getEqualityFieldIds(deleteFileClass, df)
                         .asScala
                         .map(_.asInstanceOf[java.lang.Integer].intValue())
                     }.toSeq
@@ -1042,17 +1075,6 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                       taskSchema
                     }
                   } else {
-                    val scanSchemaFieldIds = IcebergReflection
-                      .buildFieldIdMapping(metadata.scanSchema)
-                      .values
-                      .toSet
-                    val tableSchemaFieldIds = IcebergReflection
-                      .buildFieldIdMapping(metadata.tableSchema)
-                      .values
-                      .toSet
-                    val hasHistoricalColumns =
-                      scanSchemaFieldIds.exists(id => !tableSchemaFieldIds.contains(id))
-
                     if (hasHistoricalColumns) {
                       metadata.scanSchema.asInstanceOf[AnyRef]
                     } else {
@@ -1069,7 +1091,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                   })
                 taskBuilder.setSchemaIdx(schemaIdx)
 
-                val nameToFieldId = IcebergReflection.buildFieldIdMapping(schema)
+                val nameToFieldId = fieldIdMapping(schema)
 
                 val projectFieldIds = output.map { attr =>
                   nameToFieldId
@@ -1095,7 +1117,11 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                 taskBuilder.setProjectFieldIdsIdx(projectFieldIdsIdx)
 
                 val deleteFilesList =
-                  extractDeleteFilesList(task, contentFileClass, fileScanTaskClass)
+                  extractDeleteFilesList(
+                    task,
+                    contentFileClass,
+                    fileScanTaskClass,
+                    deleteFileClass)
                 if (deleteFilesList.nonEmpty) {
                   // Intern each delete file into the flat pool, then dedup this task's set as the
                   // resulting list of pool indices.
@@ -1146,6 +1172,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                   task,
                   contentScanTaskClass,
                   fileScanTaskClass,
+                  partitionSpecToJson,
                   taskBuilder,
                   commonBuilder,
                   partitionSpecToPoolIndex,

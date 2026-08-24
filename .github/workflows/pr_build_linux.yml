@@ -314,6 +314,8 @@ jobs:
               org.apache.comet.CometIcebergNativeSuite
               org.apache.comet.CometIcebergEncryptionSuite
               org.apache.comet.CometIcebergRewriteActionSuite
+              org.apache.comet.CometIcebergWriteActionSuite
+              org.apache.comet.CometIcebergWriteDetectionSuite
               org.apache.comet.iceberg.IcebergReflectionSuite
               org.apache.comet.csv.CometCsvNativeReadSuite
               org.apache.comet.CometFuzzTestSuite
@@ -325,6 +327,7 @@ jobs:
               org.apache.comet.exec.CometShuffle4_0Suite
               org.apache.comet.exec.CometNativeColumnarToRowSuite
               org.apache.comet.exec.CometNativeShuffleSuite
+              org.apache.spark.sql.comet.execution.shuffle.CometNativeShuffleInputRDDSuite
               org.apache.comet.exec.CometShuffleEncryptionSuite
               org.apache.comet.exec.CometShuffleManagerSuite
               org.apache.comet.exec.CometAsyncShuffleSuite
@@ -343,6 +346,7 @@ jobs:
               org.apache.comet.CometNativeSuite
               org.apache.comet.CometConfSuite
               org.apache.comet.CometPublicApiSuite
+              org.apache.comet.QueryContextInternerSuite
               org.apache.comet.CometSetOpWithGroupBySuite
               org.apache.comet.CometSparkSessionExtensionsSuite
               org.apache.spark.CometPluginsSuite
@@ -350,6 +354,7 @@ jobs:
               org.apache.spark.CometPluginsNonOverrideSuite
               org.apache.spark.CometPluginsUnifiedModeOverrideSuite
               org.apache.comet.rules.CometScanRuleSuite
+              org.apache.comet.rules.CometScanContribSuite
               org.apache.comet.rules.CometScanSchemeFallbackSuite
               org.apache.comet.rules.CometExecRuleSuite
               org.apache.comet.rules.RevertNativeForTransitionHeavyStagesSuite
@@ -363,6 +368,7 @@ jobs:
               org.apache.spark.sql.comet.CometShuffleFallbackStickinessSuite
               org.apache.spark.sql.comet.PlanDataInjectorSuite
               org.apache.spark.sql.comet.CometDecimalArithmeticViewSuite
+              org.apache.spark.sql.comet.CometDecimalPromotionSuite
               org.apache.spark.sql.comet.CometScanWithPlanDataSuite
               org.apache.spark.sql.comet.util.UtilsSuite
               org.apache.comet.vector.NativeUtilSuite
@@ -380,7 +386,7 @@ jobs:
               org.apache.comet.CometHashExpressionSuite
               org.apache.comet.CometTemporalExpressionSuite
               org.apache.comet.CometArrayExpressionSuite
-              org.apache.comet.CometCastSuite
+              org.apache.comet.CometNativeCastSuite
               org.apache.comet.CometDateTimeUtilsSuite
               org.apache.comet.CometMathExpressionSuite
               org.apache.comet.CometStringExpressionSuite
@@ -395,13 +401,18 @@ jobs:
               org.apache.comet.expressions.conditional.CometCaseWhenSuite
               org.apache.comet.CometRegExpJvmSuite
               org.apache.comet.CometCodegenSuite
+              org.apache.comet.CometCoverageStatsSuite
               org.apache.comet.CometCodegenSourceSuite
               org.apache.comet.CometCodegenHOFSuite
               org.apache.comet.CometFuzzMathSuite
               org.apache.comet.CometCodegenFuzzSuite
+              org.apache.comet.CometScalaUDFClassLoaderSuite
+              org.apache.comet.codegen.CometSpecializedGettersDispatchSuite
               org.apache.comet.CometStringDecodeSuite
               org.apache.comet.CometWidthBucketSuite
               org.apache.comet.CometUuidExpressionSuite
+              org.apache.comet.serde.CometScalarFunctionSuite
+              org.apache.comet.CometFallbackInvarianceSuite
       fail-fast: false
     name: ${{ matrix.profile.name }} [${{ matrix.suite.name }}]
     runs-on: ubuntu-24.04

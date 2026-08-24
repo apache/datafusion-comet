@@ -21,6 +21,7 @@ package org.apache.comet.serde
 
 import java.util.concurrent.atomic.AtomicLong
 
+import scala.collection.mutable
 import scala.collection.mutable.ArrayBuffer
 import scala.jdk.CollectionConverters._
 
@@ -36,7 +37,8 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.{withFallbackReason, withInfo}
+import org.apache.comet.CometExplainInfo
+import org.apache.comet.CometSparkSessionExtensions.{appendTagValues, withFallbackReason, withFallbackReasons, withInfo, withNativeExpr}
 import org.apache.comet.expressions._
 import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.serde.ExprOuterClass.{AggExpr, Expr, ScalarFunc}
@@ -301,7 +303,10 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[MakeTimestamp] -> CometMakeTimestamp,
       classOf[MakeYMInterval] -> CometMakeYMInterval,
       classOf[MakeDTInterval] -> CometMakeDTInterval,
+      classOf[MakeInterval] -> CometMakeInterval,
       classOf[MultiplyDTInterval] -> CometMultiplyDTInterval,
+      classOf[TimestampAdd] -> CometTimestampAdd,
+      classOf[TimestampDiff] -> CometTimestampDiff,
       classOf[MicrosToTimestamp] -> CometMicrosToTimestamp,
       classOf[MillisToTimestamp] -> CometMillisToTimestamp,
       classOf[MonthsBetween] -> CometMonthsBetween,
@@ -361,6 +366,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[CheckOverflow] -> CometCheckOverflow,
       classOf[Coalesce] -> CometCoalesce,
       classOf[KnownFloatingPointNormalized] -> CometKnownFloatingPointNormalized,
+      classOf[KnownNotNull] -> CometKnownNotNull,
       classOf[KnownNullable] -> CometKnownNullable,
       classOf[Literal] -> CometLiteral,
       classOf[MakeDecimal] -> CometMakeDecimal,
@@ -547,7 +553,19 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
    * doesn't mean it is supported by Comet native execution, i.e., `supportedDataType` may return
    * false for it.
    */
-  def serializeDataType(dt: org.apache.spark.sql.types.DataType): Option[Types.DataType] = {
+  def serializeDataType(dt: org.apache.spark.sql.types.DataType): Option[Types.DataType] =
+    serializeDataType(dt, None, Seq.empty, includeFieldIds = true)
+
+  /**
+   * Preserves collection field IDs stored on the nearest Catalyst StructField when serializing a
+   * Parquet write schema. Delta stores synthetic list and map IDs under paths relative to that
+   * field, and resets the path whenever a nested struct introduces a new StructField.
+   */
+  private[comet] def serializeDataType(
+      dt: org.apache.spark.sql.types.DataType,
+      parentField: Option[StructField],
+      fieldPath: Seq[String],
+      includeFieldIds: Boolean): Option[Types.DataType] = {
     val typeId = dt match {
       case _: BooleanType => 0
       case _: ByteType => 1
@@ -589,7 +607,9 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
         builder.setTypeInfo(info.build()).build()
 
       case a: ArrayType =>
-        val elementType = serializeDataType(a.elementType)
+        val elementPath = fieldPath :+ "element"
+        val elementType =
+          serializeDataType(a.elementType, parentField, elementPath, includeFieldIds)
 
         if (elementType.isEmpty) {
           return None
@@ -599,17 +619,21 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
         val list = ListInfo.newBuilder()
         list.setElementType(elementType.get)
         list.setContainsNull(a.containsNull)
+        nestedParquetFieldId(parentField, elementPath, includeFieldIds)
+          .foreach(list.setElementFieldId)
 
         info.setList(list)
         builder.setTypeInfo(info.build()).build()
 
       case m: MapType =>
-        val keyType = serializeDataType(m.keyType)
+        val keyPath = fieldPath :+ "key"
+        val keyType = serializeDataType(m.keyType, parentField, keyPath, includeFieldIds)
         if (keyType.isEmpty) {
           return None
         }
 
-        val valueType = serializeDataType(m.valueType)
+        val valuePath = fieldPath :+ "value"
+        val valueType = serializeDataType(m.valueType, parentField, valuePath, includeFieldIds)
         if (valueType.isEmpty) {
           return None
         }
@@ -619,6 +643,8 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
         map.setKeyType(keyType.get)
         map.setValueType(valueType.get)
         map.setValueContainsNull(m.valueContainsNull)
+        nestedParquetFieldId(parentField, keyPath, includeFieldIds).foreach(map.setKeyFieldId)
+        nestedParquetFieldId(parentField, valuePath, includeFieldIds).foreach(map.setValueFieldId)
 
         info.setMap(map)
         builder.setTypeInfo(info.build()).build()
@@ -628,7 +654,11 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
         val struct = StructInfo.newBuilder()
 
         val fieldNames = s.map(_.name).asJava
-        val fieldDatatypes = s.map(f => serializeDataType(f.dataType))
+        val fieldDatatypes = s.map { field =>
+          val nestedParentField = parentField.map(_ => field)
+          val nestedFieldPath = if (nestedParentField.isDefined) Seq(field.name) else Seq.empty
+          serializeDataType(field.dataType, nestedParentField, nestedFieldPath, includeFieldIds)
+        }
         val fieldNullable = s.map(f => Boolean.box(f.nullable)).asJava
 
         if (fieldDatatypes.exists(_.isEmpty)) {
@@ -640,7 +670,8 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
         struct.addAllFieldNullable(fieldNullable)
 
         val fieldIds = s.fields.map { f =>
-          if (ParquetUtils.hasFieldId(f)) Some(ParquetUtils.getFieldId(f)) else None
+          if (includeFieldIds && ParquetUtils.hasFieldId(f)) Some(ParquetUtils.getFieldId(f))
+          else None
         }
         if (fieldIds.exists(_.isDefined)) {
           // Emit one FieldMetadata entry per nested field, parallel to field_names. Entries
@@ -660,6 +691,30 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     }
 
     Some(dataType)
+  }
+
+  private def nestedParquetFieldId(
+      parentField: Option[StructField],
+      fieldPath: Seq[String],
+      includeFieldIds: Boolean): Option[Int] = {
+    val nestedIdsMetadataKey = "parquet.field.nested.ids"
+    if (!includeFieldIds) {
+      None
+    } else {
+      parentField.flatMap { field =>
+        if (field.metadata.contains(nestedIdsMetadataKey)) {
+          val nestedIds = field.metadata.getMetadata(nestedIdsMetadataKey)
+          val nestedPath = fieldPath.mkString(".")
+          if (nestedIds.contains(nestedPath)) {
+            Some(Math.toIntExact(nestedIds.getLong(nestedPath)))
+          } else {
+            None
+          }
+        } else {
+          None
+        }
+      }
+    }
   }
 
   def aggExprToProto(
@@ -723,15 +778,15 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
             aggHandler.convert(aggExpr, fn, inputs, binding, conf)
         }
       case _ =>
-        withFallbackReason(
-          aggExpr,
-          s"unsupported Spark aggregate function: ${fn.prettyName}",
-          fn.children: _*)
+        withFallbackReason(aggExpr, s"unsupported Spark aggregate function: ${fn.prettyName}")
         None
     }
 
     // Attach QueryContext and expr_id to the aggregate expression
     protoAggExprOpt.flatMap { protoAggExpr =>
+      // Aggregate functions never route through the JVM codegen dispatcher, so reaching here
+      // always means a native lowering. Recorded for the coverage stats in extended explain.
+      withNativeExpr(fn, CometExplainInfo.exprDisplayName(fn))
       val builder = protoAggExpr.toBuilder
       builder.setExprId(nextExprId())
 
@@ -740,7 +795,6 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       if (aggExpr.filter.isDefined && aggExpr.mode == Partial) {
         val filterProto = exprToProto(aggExpr.filter.get, inputs, binding)
         if (filterProto.isEmpty) {
-          withFallbackReason(aggExpr, aggExpr.filter.get)
           return None
         }
         builder.setFilter(filterProto.get)
@@ -785,8 +839,51 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       inputs: Seq[Attribute],
       binding: Boolean = true): Option[Expr] = {
 
-    val newExpr = DecimalPrecision.promote(expr, !SQLConf.get.ansiEnabled)
-    exprToProtoInternal(newExpr, inputs, binding)
+    val newExpr = DecimalPrecision.promote(expr)
+    val result = exprToProtoInternal(newExpr, inputs, binding)
+    if (!(newExpr eq expr)) {
+      // `promote` rebuilt the tree, so the tags landed on copies that the operator does not hold.
+      // Lift them onto `expr` so the roll-ups in `CometExecRule`, which walk the operator's own
+      // expressions, still see them. Skipped in the common case where `promote` returned the same
+      // tree and there is nothing to lift.
+      liftCoverageTags(newExpr, expr)
+      if (result.isEmpty) {
+        liftFallbackReasons(newExpr, expr)
+      }
+    }
+    result
+  }
+
+  private def liftCoverageTags(from: Expression, to: Expression): Unit = {
+    val native = mutable.Set.empty[String]
+    val dispatched = mutable.Set.empty[String]
+    from.foreach { e =>
+      e.getTagValue(CometExplainInfo.NATIVE_EXPRS).foreach(native ++= _)
+      e.getTagValue(CometExplainInfo.CODEGEN_DISPATCH_EXPRS).foreach(dispatched ++= _)
+    }
+    appendTagValues(to, CometExplainInfo.NATIVE_EXPRS, native.toSet)
+    appendTagValues(to, CometExplainInfo.CODEGEN_DISPATCH_EXPRS, dispatched.toSet)
+  }
+
+  /**
+   * Lift fallback reasons recorded anywhere in the rewritten tree onto the original node, so that
+   * `CometExecRule.rollUpFallbackReasons` and extended explain can see them. Without this the
+   * reason is attached to a copy that is not in the plan and is lost entirely - see
+   * https://github.com/apache/datafusion-comet/issues/5230. Same copy-back that the `Invoke` /
+   * `StaticInvoke` rewrites in `Spark4xCometExprShim` do.
+   *
+   * Only called when conversion failed: a fallback reason states why an expression could not be
+   * converted, so lifting one off a tree that converted fine would attribute a stale reason to an
+   * operator that has no problem.
+   */
+  private def liftFallbackReasons(from: Expression, to: Expression): Unit = {
+    val reasons = mutable.Set.empty[String]
+    from.foreach { e =>
+      e.getTagValue(CometExplainInfo.FALLBACK_REASONS).foreach(reasons ++= _)
+    }
+    if (reasons.nonEmpty) {
+      withFallbackReasons(to, reasons.toSet)
+    }
   }
 
   /**
@@ -893,11 +990,19 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
             case Some(handler) =>
               convert(expr, handler.asInstanceOf[CometExpressionSerde[Expression]])
             case _ =>
-              withFallbackReason(expr, s"${expr.prettyName} is not supported", expr.children: _*)
+              withFallbackReason(expr, s"${expr.prettyName} is not supported")
               None
           }
       })
       .map { protoExpr =>
+        // Record that this expression stayed in the native pipeline, for the expression coverage
+        // stats in extended explain. `CometScalaUDF.emitJvmCodegenDispatch` marks the expressions
+        // it converted, so anything reaching here without that marker was lowered to a native
+        // DataFusion expression.
+        if (!isStructuralExpr(expr) &&
+          expr.getTagValue(CometExplainInfo.DISPATCHED_SELF).isEmpty) {
+          withNativeExpr(expr, CometExplainInfo.exprDisplayName(expr))
+        }
         // Attach QueryContext and expr_id to the expression
         val builder = protoExpr.toBuilder
         builder.setExprId(nextExprId())
@@ -906,6 +1011,16 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
         }
         builder.build()
       }
+  }
+
+  /**
+   * Nodes that carry no computation of their own. They are excluded from the expression coverage
+   * stats in extended explain because they appear in nearly every expression tree and would swamp
+   * the names a user actually cares about.
+   */
+  private def isStructuralExpr(expr: Expression): Boolean = expr match {
+    case _: Attribute | _: BoundReference | _: Literal | _: Alias => true
+    case _ => false
   }
 
   /**
@@ -944,7 +1059,6 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
             .newBuilder(),
           inner).build())
     } else {
-      withFallbackReason(expr, child)
       None
     }
   }
@@ -974,7 +1088,6 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
             .newBuilder(),
           inner).build())
     } else {
-      withFallbackReason(expr, left, right)
       None
     }
   }
@@ -1003,7 +1116,6 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       : Option[ExprOuterClass.Expr] = {
     val protos = operands.map(exprToProtoInternal(_, inputs, binding))
     if (protos.exists(_.isEmpty)) {
-      withFallbackReason(expr, operands: _*)
       None
     } else {
       val leaves = protos.map(_.get).toIndexedSeq
@@ -1084,20 +1196,6 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
         return None
     }
     Some(ExprOuterClass.Expr.newBuilder().setScalarFunc(builder).build())
-  }
-
-  // Utility method. Adds fallback reason if the result of calling exprToProto is None
-  def optExprWithFallbackReason(
-      optExpr: Option[Expr],
-      expr: Expression,
-      childExpr: Expression*): Option[Expr] = {
-    optExpr match {
-      case None =>
-        withFallbackReason(expr, childExpr: _*)
-        None
-      case o => o
-    }
-
   }
 
   /**
