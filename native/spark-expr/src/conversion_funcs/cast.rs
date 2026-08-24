@@ -50,9 +50,9 @@ use arrow::error::ArrowError;
 use arrow::{
     array::{
         cast::AsArray, Array, ArrayRef, Int16Array, Int32Array, Int64Array, Int8Array,
-        OffsetSizeTrait,
+        OffsetSizeTrait, UInt64Array,
     },
-    compute::{cast_with_options, CastOptions},
+    compute::{cast_with_options, take, CastOptions},
     record_batch::RecordBatch,
     util::display::FormatOptions,
 };
@@ -230,6 +230,7 @@ pub(crate) fn cast_array(
         return Ok(Arc::new(array));
     }
 
+    let array = prepare_nested_cast_input(array)?;
     let array = array_with_timezone(array, cast_options.timezone.clone(), Some(to_type))?;
     let eval_mode = cast_options.eval_mode;
 
@@ -416,6 +417,36 @@ pub(crate) fn cast_array(
     };
 
     Ok(spark_cast_postprocess(cast_result?, &from_type, to_type))
+}
+
+/// Recursive casts must not evaluate child values hidden by a null parent or outside a slice.
+fn prepare_nested_cast_input(array: ArrayRef) -> DataFusionResult<ArrayRef> {
+    let has_unused_values = match array.data_type() {
+        DataType::Struct(_) => false,
+        DataType::List(_) => {
+            let list = array.as_list::<i32>();
+            list.value_offsets()[0] != 0
+                || list.value_offsets()[list.len()] as usize != list.values().len()
+        }
+        DataType::Map(_, _) => {
+            let map = array.as_map();
+            map.value_offsets()[0] != 0
+                || map.value_offsets()[map.len()] as usize != map.entries().len()
+        }
+        _ => return Ok(array),
+    };
+    if array.null_count() == 0 && !has_unused_values {
+        return Ok(array);
+    }
+
+    // Nullable identity indices preserve the rows and their validity. Arrow's take propagates
+    // struct nulls to children and compacts list/map entries, without introducing null map keys
+    // or changing field nullability. Contiguous, non-null containers need no normalization.
+    let indices = UInt64Array::new(
+        (0..array.len() as u64).collect::<Vec<_>>().into(),
+        array.nulls().cloned(),
+    );
+    Ok(take(array.as_ref(), &indices, None)?)
 }
 
 /// Determines if DataFusion supports the given cast in a way that is
@@ -847,9 +878,11 @@ fn cast_binary_to_string<O: OffsetSizeTrait>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{BinaryArray, ListArray, NullArray, PrimitiveArray, StringArray};
-    use arrow::buffer::OffsetBuffer;
-    use arrow::datatypes::{Field, Fields, Int32Type, TimestampMicrosecondType};
+    use arrow::array::{
+        BinaryArray, Date32Array, ListArray, NullArray, PrimitiveArray, StringArray,
+    };
+    use arrow::buffer::{NullBuffer, OffsetBuffer};
+    use arrow::datatypes::{Field, Fields, Int32Type, TimeUnit, TimestampMicrosecondType};
 
     #[test]
     fn test_cast_to_dictionary_is_rejected() {
@@ -1121,6 +1154,158 @@ mod tests {
         );
 
         assert!(result.is_err());
+    }
+
+    fn nested_date_cast_inputs(
+        days: Vec<i32>,
+        nulls: Option<NullBuffer>,
+    ) -> Vec<(ArrayRef, DataType)> {
+        let offsets = OffsetBuffer::new((0..=days.len() as i32).collect::<Vec<_>>().into());
+        let dates: ArrayRef = Arc::new(Date32Array::from(days));
+        let timestamp = DataType::Timestamp(TimeUnit::Microsecond, None);
+        let fields = Fields::from(vec![Field::new("d", DataType::Date32, false)]);
+        let entries_fields = Fields::from(vec![
+            Field::new("key", DataType::Date32, false),
+            Field::new("value", DataType::Date32, false),
+        ]);
+        vec![
+            (
+                Arc::new(StructArray::new(
+                    fields,
+                    vec![Arc::clone(&dates)],
+                    nulls.clone(),
+                )),
+                DataType::Struct(Fields::from(vec![Field::new(
+                    "d",
+                    timestamp.clone(),
+                    false,
+                )])),
+            ),
+            (
+                Arc::new(ListArray::new(
+                    Arc::new(Field::new("element", DataType::Date32, false)),
+                    offsets.clone(),
+                    Arc::clone(&dates),
+                    nulls.clone(),
+                )),
+                DataType::List(Arc::new(Field::new("element", timestamp.clone(), false))),
+            ),
+            (
+                Arc::new(MapArray::new(
+                    Arc::new(Field::new(
+                        "entries",
+                        DataType::Struct(entries_fields.clone()),
+                        false,
+                    )),
+                    offsets,
+                    StructArray::new(entries_fields, vec![Arc::clone(&dates), dates], None),
+                    nulls,
+                    false,
+                )),
+                DataType::Map(
+                    Arc::new(Field::new(
+                        "entries",
+                        DataType::Struct(Fields::from(vec![
+                            Field::new(
+                                "key",
+                                DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+                                false,
+                            ),
+                            Field::new("value", timestamp, false),
+                        ])),
+                        false,
+                    )),
+                    false,
+                ),
+            ),
+        ]
+    }
+
+    fn assert_nested_timestamp_values(array: &ArrayRef, expected: &[i64]) {
+        array.to_data().validate_full().unwrap();
+        let values = match array.data_type() {
+            DataType::Struct(_) => array.as_struct().column(0),
+            DataType::List(_) => array.as_list::<i32>().values(),
+            DataType::Map(_, _) => {
+                let keys = array
+                    .as_map()
+                    .keys()
+                    .as_primitive::<TimestampMicrosecondType>();
+                assert_eq!(keys.null_count(), 0);
+                assert_eq!(keys.values().as_ref(), expected);
+                array.as_map().values()
+            }
+            _ => unreachable!(),
+        };
+        assert_eq!(
+            values
+                .as_primitive::<TimestampMicrosecondType>()
+                .iter()
+                .flatten()
+                .collect::<Vec<_>>(),
+            expected,
+        );
+    }
+
+    #[test]
+    fn test_cast_nested_dates_ignores_null_parent_values() {
+        // Non-nullable children contain overflowing dates beneath null parent rows, as IF can
+        // produce without changing its child buffers. Map keys must remain non-nullable.
+        for (array, to_type) in nested_date_cast_inputs(
+            vec![i32::MAX, 0, i32::MIN, 1],
+            Some(NullBuffer::from(vec![false, true, false, true])),
+        ) {
+            for mode in [EvalMode::Legacy, EvalMode::Ansi, EvalMode::Try] {
+                let options = SparkCastOptions::new(mode, "UTC", false);
+                let casted = cast_array(Arc::clone(&array), &to_type, &options).unwrap();
+                assert_eq!(casted.data_type(), &to_type);
+                assert_eq!(casted.len(), 4);
+                assert!(casted.is_null(0) && casted.is_null(2));
+                assert!(!casted.is_null(1) && !casted.is_null(3));
+                assert_nested_timestamp_values(&casted, &[0, 86_400_000_000]);
+
+                let all_null = cast_array(array.slice(0, 1), &to_type, &options).unwrap();
+                assert_eq!(all_null.len(), 1);
+                assert!(all_null.is_null(0));
+                assert_nested_timestamp_values(&all_null, &[]);
+            }
+        }
+    }
+
+    #[test]
+    fn test_cast_nested_dates_ignores_values_outside_slice() {
+        for (array, to_type) in nested_date_cast_inputs(vec![i32::MAX, 0, 1, i32::MIN], None) {
+            for mode in [EvalMode::Legacy, EvalMode::Ansi, EvalMode::Try] {
+                let options = SparkCastOptions::new(mode, "UTC", false);
+                // Lists/maps keep their original child buffer even when the parent is sliced.
+                let casted = cast_array(array.slice(1, 2), &to_type, &options).unwrap();
+                assert_eq!(casted.len(), 2);
+                assert_eq!(casted.null_count(), 0);
+                assert_nested_timestamp_values(&casted, &[0, 86_400_000_000]);
+
+                let empty = cast_array(array.slice(1, 0), &to_type, &options).unwrap();
+                assert_eq!(empty.len(), 0);
+                assert_nested_timestamp_values(&empty, &[]);
+            }
+        }
+    }
+
+    #[test]
+    fn test_cast_nested_dates_still_checks_visible_overflow() {
+        for (array, to_type) in nested_date_cast_inputs(
+            vec![i32::MAX, i32::MAX, 0],
+            Some(NullBuffer::from(vec![false, true, true])),
+        ) {
+            for mode in [EvalMode::Legacy, EvalMode::Ansi] {
+                let error = cast_array(
+                    Arc::clone(&array),
+                    &to_type,
+                    &SparkCastOptions::new(mode, "UTC", false),
+                )
+                .unwrap_err();
+                assert!(error.to_string().contains("long overflow"));
+            }
+        }
     }
 
     #[test]

@@ -1623,6 +1623,56 @@ class CometNativeCastSuite
     }
   }
 
+  test("cast DateType to timestamps ignores values in null containers") {
+    withTempPath { path =>
+      // Materialize the containers to prevent constant folding. The native IF can null a parent
+      // while retaining its children; keep hidden overflow and visible valid dates in one batch.
+      withSQLConf(
+        CometConf.COMET_ENABLED.key -> "false",
+        "spark.sql.parquet.datetimeRebaseModeInWrite" -> "CORRECTED") {
+        val date = "make_date(year, 6, 15)"
+        Seq((false, 300000), (true, 2024), (false, -300000), (true, 1970))
+          .toDF("flag", "year")
+          .selectExpr(
+            "flag",
+            s"named_struct('d', $date) AS s",
+            s"map(1, $date) AS m",
+            s"map($date, 1) AS k",
+            s"array(named_struct('d', $date)) AS a")
+          .coalesce(1)
+          .write
+          .parquet(path.toString)
+      }
+      withParquetTable(path.toString, "masked_dates") {
+        for {
+          target <- Seq("TIMESTAMP", "TIMESTAMP_NTZ")
+          ansi <- Seq("false", "true")
+        } {
+          withSQLConf(
+            SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC",
+            SQLConf.ANSI_ENABLED.key -> ansi,
+            CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
+            val casts = Seq(
+              ("s", s"STRUCT<d: $target>"),
+              ("m", s"MAP<INT, $target>"),
+              ("a", s"ARRAY<STRUCT<d: $target>>")) ++
+              // Spark rejects DATE -> TIMESTAMP_NTZ map keys in legacy mode.
+              (if (target == "TIMESTAMP") Seq(("k", s"MAP<$target, INT>")) else Seq.empty)
+            casts.foreach { case (column, targetType) =>
+              // Referencing the alias twice keeps Spark from pushing CAST inside IF. CASE uses
+              // a different native path that already masks the children before casting them.
+              val query = s"SELECT masked, CAST(masked AS $targetType) FROM " +
+                s"(SELECT IF(flag, $column, NULL) AS masked FROM masked_dates)"
+              assertNoCodegenRan {
+                checkSparkAnswerAndOperator(sql(query), Seq(classOf[CometProjectExec]))
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
   test("cast DateType to timestamps falls back for unsafe TRY_CAST nullability") {
     withParquetTable(Seq(Tuple1(300000), Tuple1(2024)), "try_wide_dates") {
       val date = "make_date(_1, 6, 15)"
