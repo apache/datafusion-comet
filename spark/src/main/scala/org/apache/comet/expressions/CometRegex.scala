@@ -223,7 +223,7 @@ object CometRegex {
             if (isLazyOrPossessiveSuffix) {
               return None
             }
-            n
+            math.max(1, n)
           } else {
             val m = parseNonNegInt() match {
               case Some(v) => v

@@ -63,6 +63,14 @@ object CometRegExpBenchmark extends CometBenchmarkBase {
   // Input data is ASCII (REPEAT of numeric strings) so `\d` vs `[0-9]` does not change hits.
   private val outOfSubsetPatterns = List(RegExpPattern("digit_class_shorthand", "\\d+"))
 
+  // Spark's SQL parser consumes one backslash layer and treats `'` as the
+  // string delimiter. Escape so the regex engine sees the intended pattern.
+  private def sqlRegexLiteral(pattern: String): String =
+    pattern.replace("\\", "\\\\").replace("'", "''")
+
+  private def rlikeQuery(pattern: String): String =
+    s"select c1 rlike '${sqlRegexLiteral(pattern)}' from parquetV1Table"
+
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
     runBenchmarkWithTable("rlike modes", 1024 * 1024) { v =>
       withTempPath { dir =>
@@ -72,13 +80,13 @@ object CometRegExpBenchmark extends CometBenchmarkBase {
             spark.sql(s"SELECT REPEAT(CAST(value AS STRING), 10) AS c1 FROM $tbl"))
 
           inSubsetPatterns.foreach { p =>
-            val query = s"select c1 rlike '${p.pattern}' from parquetV1Table"
+            val query = rlikeQuery(p.pattern)
             runBenchmark(p.name) {
               runInSubsetModes(p.name, v, query)
             }
           }
           outOfSubsetPatterns.foreach { p =>
-            val query = s"select c1 rlike '${p.pattern}' from parquetV1Table"
+            val query = rlikeQuery(p.pattern)
             runBenchmark(p.name) {
               runOutOfSubsetModes(p.name, v, query)
             }
