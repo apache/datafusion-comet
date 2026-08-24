@@ -35,6 +35,7 @@ import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.execution.command.DataWritingCommandExec
+import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf
@@ -47,6 +48,35 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   import testImplicits._
+
+  test("spill metric tree counts nested shared accumulators once") {
+    def metric(name: String, value: Long): SQLMetric = {
+      val sqlMetric = new SQLMetric(name)
+      sqlMetric.set(value)
+      sqlMetric
+    }
+
+    val writerDisk = metric("writerDisk", 5L)
+    val writerMemory = metric("writerMemory", 3L)
+    val childDisk = metric("childDisk", 7L)
+    val nestedDisk = metric("nestedDisk", 11L)
+    val sharedDisk = metric("sharedDisk", 13L)
+    val sharedMemory = metric("sharedMemory", 17L)
+    val metricTree = CometMetricNode(
+      Map("spilled_bytes" -> writerDisk, "memory_spilled_bytes" -> writerMemory),
+      Seq(
+        CometMetricNode(
+          Map("spilled_bytes" -> childDisk),
+          Seq(
+            CometMetricNode(
+              Map("spilled_bytes" -> nestedDisk, "memory_spilled_bytes" -> sharedMemory)))),
+        CometMetricNode(
+          Map("spilled_bytes" -> sharedDisk, "memory_spilled_bytes" -> sharedMemory),
+          Seq(CometMetricNode(Map("spilled_bytes" -> sharedDisk))))))
+
+    assert(metricTree.sumMetricValues("spilled_bytes") == 36L)
+    assert(metricTree.sumMetricValues("memory_spilled_bytes") == 20L)
+  }
 
   test("per-task native shuffle metrics") {
     withParquetTable((0 until 10000).map(i => (i, (i + 1).toLong)), "tbl") {
@@ -160,6 +190,59 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("native shuffle task metrics include existing child sort spill metrics once") {
+    val expectedRecords = 20000L
+    val compressibleValue = "native-child-sort-spill-metrics-" * 8
+    withParquetTable(
+      (0 until expectedRecords.toInt).map(index => (index, compressibleValue)),
+      "tbl") {
+      withSQLConf(
+        CometConf.COMET_SHUFFLE_MODE.key -> "native",
+        CometConf.COMET_SHUFFLE_COMPRESSION_CODEC.key -> "zstd",
+        CometConf.COMET_SHUFFLE_NATIVE_MAX_BUFFER_BYTES.key -> "32k",
+        CometConf.COMET_BATCH_SIZE.key -> "1024",
+        CometConf.COMET_OFFHEAP_MEMORY_POOL_FRACTION.key -> "0.002",
+        CometConf.COMET_RESPECT_DATAFUSION_CONFIGS.key -> "true",
+        "spark.comet.datafusion.execution.spill_compression" -> "zstd",
+        "spark.comet.datafusion.execution.sort_spill_reservation_bytes" -> "65536",
+        SQLConf.SHUFFLE_PARTITIONS.key -> "4") {
+        val shuffled = sql("SELECT * FROM tbl")
+          .sortWithinPartitions($"_1".desc)
+          .repartition(4, $"_1")
+        val store = spark.sparkContext.statusStore
+        spark.sparkContext.listenerBus.waitUntilEmpty()
+        val stagesBefore = store.stageList(null).map(_.stageId).toSet
+
+        assert(shuffled.collect().length == expectedRecords)
+        spark.sparkContext.listenerBus.waitUntilEmpty()
+
+        val exchange = collectFirst(shuffled.queryExecution.executedPlan) {
+          case native: CometShuffleExchangeExec if native.shuffleType == CometNativeShuffle =>
+            native
+        }.getOrElse(fail("Expected a native shuffle exchange"))
+        val childSorts = collect(exchange.child) { case sort: CometSortExec => sort }
+        assert(childSorts.nonEmpty, s"Expected a native child sort:\n${exchange.treeString}")
+
+        val writerDiskSpilled = exchange.metrics("spilled_bytes").value
+        val writerMemorySpilled = exchange.metrics("memory_spilled_bytes").value
+        val childDiskSpilled = childSorts.map(_.metrics("spilled_bytes").value).sum
+        assert(childDiskSpilled > 0L, "Native child sort did not spill")
+        assert(childSorts.forall(!_.metrics.contains("memory_spilled_bytes")))
+
+        val shuffleWriteStages = store
+          .stageList(null)
+          .filter(stage =>
+            !stagesBefore.contains(stage.stageId) && stage.shuffleWriteRecords > 0L)
+
+        assert(shuffleWriteStages.nonEmpty, "No native shuffle write stage was recorded")
+        assert(
+          shuffleWriteStages.map(_.diskBytesSpilled).sum ==
+            writerDiskSpilled + childDiskSpilled)
+        assert(shuffleWriteStages.map(_.memoryBytesSpilled).sum == writerMemorySpilled)
+      }
+    }
+  }
+
   test("failed native shuffle attempts preserve memory and disk spill metrics") {
     val failureRow = 8192
     val compressibleValue = "native-shuffle-failed-spill-metrics-" * 8
@@ -232,11 +315,7 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               val failure = intercept[Exception] {
                 shuffled.collect()
               }
-              val messages = Iterator
-                .iterate(failure: Throwable)(_.getCause)
-                .takeWhile(_ != null)
-                .flatMap(error => Option(error.getMessage))
-                .toSeq
+              val messages = causeChain(failure).flatMap(error => Option(error.getMessage))
               assert(
                 messages.exists(message =>
                   message.contains("DIVIDE_BY_ZERO") || message.contains("Division by zero")),
