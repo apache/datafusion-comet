@@ -25,7 +25,7 @@ import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
 
 import org.apache.arrow.memory.{AllocationListener, RootAllocator}
-import org.apache.arrow.vector.{BaseValueVector, BigIntVector, BitVector, DecimalVector, IntervalMonthDayNanoVector, IntVector, VectorSchemaRoot}
+import org.apache.arrow.vector.{BaseValueVector, BigIntVector, BitVector, DecimalVector, IntVector, VectorSchemaRoot}
 import org.apache.arrow.vector.complex.StructVector
 import org.apache.arrow.vector.types.pojo.{ArrowType, Field, FieldType, Schema}
 import org.apache.spark.sql.catalyst.expressions.GenericInternalRow
