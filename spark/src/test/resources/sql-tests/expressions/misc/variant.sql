@@ -139,6 +139,27 @@ SET spark.sql.variant.allowReadingShredded=true
 query expect_fallback(type VariantType)
 SELECT variant_get(v, '$.😀', 'bigint') FROM test_variant_unicode
 
+-- Spark SQL cannot write unsigned Parquet integer annotations. Generate the signed representation
+-- produced after widening here; the unsigned-to-signed conversion itself is covered in Rust.
+statement
+SET spark.sql.variant.forceShreddingSchemaForTest=u8 SMALLINT, u16 INT, u32 BIGINT
+
+statement
+SET spark.sql.variant.writeShredding.enabled=true
+
+statement
+CREATE TABLE test_variant_widened(v VARIANT) USING parquet
+
+statement
+INSERT INTO test_variant_widened VALUES
+  (parse_json('{"u8":255,"u16":65535,"u32":4294967295}'))
+
+statement
+SET spark.sql.variant.writeShredding.enabled=false
+
+query
+SELECT v FROM test_variant_widened
+
 statement
 CREATE TABLE test_variant_struct(id INT, s STRUCT<safe: INT, v: VARIANT>, tail STRING)
 USING parquet

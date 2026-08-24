@@ -208,6 +208,7 @@ fn normalize_variant_array(
     }
 
     let array = decode_variant_metadata_dictionary(array)?;
+    let array = widen_unsigned_variant_typed_value(&array)?;
     let variant = prepare_variant_for_unshredding(&VariantArray::try_new(array.as_ref())?)?;
     let unshredded = unshred_variant(&variant)?;
     let value = unshredded.value_field().ok_or_else(|| {
@@ -228,6 +229,81 @@ fn normalize_variant_array(
         unshredded.inner().nulls().cloned(),
     )?;
     Ok(Arc::new(output))
+}
+
+fn widen_unsigned_variant_type(data_type: &DataType) -> Option<DataType> {
+    fn widen_field(field: &FieldRef) -> Option<FieldRef> {
+        widen_unsigned_variant_type(field.data_type())
+            .map(|data_type| Arc::new(field.as_ref().clone().with_data_type(data_type)))
+    }
+
+    match data_type {
+        DataType::UInt8 => Some(DataType::Int16),
+        DataType::UInt16 => Some(DataType::Int32),
+        DataType::UInt32 => Some(DataType::Int64),
+        DataType::List(field) => widen_field(field).map(DataType::List),
+        DataType::LargeList(field) => widen_field(field).map(DataType::LargeList),
+        DataType::ListView(field) => widen_field(field).map(DataType::ListView),
+        DataType::LargeListView(field) => widen_field(field).map(DataType::LargeListView),
+        DataType::Struct(fields) => {
+            let mut changed = false;
+            let fields = fields
+                .iter()
+                .map(|field| match widen_field(field) {
+                    Some(field) => {
+                        changed = true;
+                        field
+                    }
+                    None => Arc::clone(field),
+                })
+                .collect::<Vec<_>>();
+            changed.then(|| DataType::Struct(fields.into()))
+        }
+        _ => None,
+    }
+}
+
+/// Parquet restores unsigned integer annotations as Arrow unsigned arrays, while Spark widens
+/// those values to the next signed width. Arrow Variant accepts only the latter representation.
+/// arrow-rs #10416/#10417 would move this widening into `VariantArray`/`unshred_variant`; remove
+/// both local `widen_unsigned_variant_*` helpers after that ships and Comet upgrades:
+/// https://github.com/apache/arrow-rs/issues/10416
+/// https://github.com/apache/arrow-rs/pull/10417
+/// Arrow #50622/#50810 instead proposes removing unsigned `typed_value` mappings because the
+/// Parquet Variant shredding table permits only signed integer fields. Until upstream resolves
+/// that choice, keep this compatibility path for unsigned files Spark already reads:
+/// https://github.com/apache/arrow/issues/50622
+/// https://github.com/apache/arrow/pull/50810
+fn widen_unsigned_variant_typed_value(array: &ArrayRef) -> DataFusionResult<ArrayRef> {
+    let Some(struct_array) = array.as_any().downcast_ref::<StructArray>() else {
+        return Ok(Arc::clone(array));
+    };
+    let Some((typed_value_index, typed_value_field)) = struct_array
+        .fields()
+        .iter()
+        .enumerate()
+        .find(|(_, field)| field.name() == "typed_value")
+    else {
+        return Ok(Arc::clone(array));
+    };
+    let Some(data_type) = widen_unsigned_variant_type(typed_value_field.data_type()) else {
+        return Ok(Arc::clone(array));
+    };
+
+    let mut fields = struct_array.fields().iter().cloned().collect::<Vec<_>>();
+    fields[typed_value_index] = Arc::new(
+        typed_value_field
+            .as_ref()
+            .clone()
+            .with_data_type(data_type.clone()),
+    );
+    let mut columns = struct_array.columns().to_vec();
+    columns[typed_value_index] = cast(columns[typed_value_index].as_ref(), &data_type)?;
+    Ok(Arc::new(StructArray::try_new(
+        fields.into(),
+        columns,
+        struct_array.nulls().cloned(),
+    )?))
 }
 
 /// Arrow's unshredder fully validates any residual `value` in a partially shredded object. Spark
@@ -652,6 +728,7 @@ mod tests {
     use super::*;
     use arrow::array::{
         Array, AsArray, BinaryArray, DictionaryArray, Int32Array, Int64Array, StringArray,
+        UInt16Array, UInt32Array, UInt8Array,
     };
     use arrow::datatypes::{Field, Fields, Int32Type};
     use datafusion::physical_expr::expressions::Column;
@@ -753,6 +830,75 @@ mod tests {
         let variant = VariantArray::try_new(output).unwrap();
         assert_eq!(variant.value(0), Variant::from(10_i64));
         assert_eq!(variant.value(2), Variant::from(30_i64));
+    }
+
+    #[test]
+    fn test_normalize_shredded_variant_widens_unsigned_values() {
+        let metadata_builder = VariantBuilder::new().with_field_names(["u8", "u16", "u32"]);
+        let (metadata_bytes, _) = metadata_builder.finish();
+        let metadata: ArrayRef = Arc::new(BinaryArray::from(vec![Some(metadata_bytes.as_slice())]));
+
+        let fields = [
+            ("u8", Arc::new(UInt8Array::from(vec![u8::MAX])) as ArrayRef),
+            (
+                "u16",
+                Arc::new(UInt16Array::from(vec![u16::MAX])) as ArrayRef,
+            ),
+            (
+                "u32",
+                Arc::new(UInt32Array::from(vec![u32::MAX])) as ArrayRef,
+            ),
+        ];
+        let mut object_fields = Vec::with_capacity(fields.len());
+        let mut object_columns = Vec::with_capacity(fields.len());
+        for (name, value) in fields {
+            let shredded = StructArray::try_new(
+                Fields::from(vec![Field::new(
+                    "typed_value",
+                    value.data_type().clone(),
+                    false,
+                )]),
+                vec![value],
+                None,
+            )
+            .unwrap();
+            object_fields.push(Field::new(name, shredded.data_type().clone(), false));
+            object_columns.push(Arc::new(shredded) as ArrayRef);
+        }
+        let typed_value: ArrayRef =
+            Arc::new(StructArray::try_new(object_fields.into(), object_columns, None).unwrap());
+        let physical: ArrayRef = Arc::new(
+            StructArray::try_new(
+                Fields::from(vec![
+                    Field::new("metadata", DataType::Binary, false),
+                    Field::new("typed_value", typed_value.data_type().clone(), false),
+                ]),
+                vec![metadata, typed_value],
+                None,
+            )
+            .unwrap(),
+        );
+        let target_field = Arc::new(
+            Field::new(
+                "v",
+                DataType::Struct(Fields::from(vec![
+                    Field::new("value", DataType::Binary, false),
+                    Field::new("metadata", DataType::Binary, false),
+                ])),
+                false,
+            )
+            .with_extension_type(VariantType),
+        );
+
+        let output = normalize_variant_array(&physical, &target_field).unwrap();
+        let output = VariantArray::try_new(output.as_ref()).unwrap();
+        let variant = output.value(0);
+        let Variant::Object(object) = variant else {
+            panic!("expected object")
+        };
+        assert_eq!(object.get("u8"), Some(Variant::from(255_i16)));
+        assert_eq!(object.get("u16"), Some(Variant::from(65_535_i32)));
+        assert_eq!(object.get("u32"), Some(Variant::from(4_294_967_295_i64)));
     }
 
     #[test]
