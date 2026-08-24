@@ -27,22 +27,20 @@ query
 select map_contains_key(map_from_arrays(array(1, 2), array('a', 'b')), 1)
 
 -- Decimal type coercion tests
--- TODO: requires map cast to be supported in Comet
-query spark_answer_only
+query
 select map_contains_key(map_from_arrays(array(1, 2), array('a', 'b')), 5.0)
 
-query spark_answer_only
+query
 select map_contains_key(map_from_arrays(array(1, 2), array('a', 'b')), 1.0)
 
-query spark_answer_only
+query
 select map_contains_key(map_from_arrays(array(1.0, 2), array('a', 'b')), 5)
 
-query spark_answer_only
+query
 select map_contains_key(map_from_arrays(array(1.0, 2), array('a', 'b')), 1)
 
 -- Empty map tests
--- TODO: requires casting from NullType to be supported in Comet
-query spark_answer_only
+query
 select map_contains_key(map_from_arrays(array(), array()), 0)
 
 -- Test with table data
