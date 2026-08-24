@@ -213,11 +213,11 @@ class CometArrowStreamSuite extends AnyFunSuite with Matchers {
         i += 1
       }
 
-      val scalarWrites =
-        if (ByteOrder.nativeOrder() == ByteOrder.LITTLE_ENDIAN) 0 else numRows
-      check(onHeap, numRows, i => 1000L + startRow + i, scalarWrites)
-      check(offHeap, numRows, i => 2000L + startRow + i, scalarWrites)
-      check(onHeap, 8, i => 1000L + startRow + i, 8)
+      def scalarWrites(rows: Int): Int =
+        if (ByteOrder.nativeOrder() == ByteOrder.LITTLE_ENDIAN) 0 else rows
+      check(onHeap, numRows, i => 1000L + startRow + i, scalarWrites(numRows))
+      check(offHeap, numRows, i => 2000L + startRow + i, scalarWrites(numRows))
+      check(onHeap, 1, i => 1000L + startRow + i, scalarWrites(1))
 
       dictionary.setDictionary(new Dictionary {
         override def decodeToInt(id: Int): Int = id
