@@ -136,7 +136,7 @@ object GenerateDocs {
    * Args:
    *   - args(0): user guide root directory (e.g. `docs/source/user-guide/latest/`).
    *   - args(1) (optional): per-Spark-version subdirectory for compatibility pages (e.g.
-   *     `spark-3.4`). When omitted, compat pages are written to `compatibility/expressions/`
+   *     `spark-3.5`). When omitted, compat pages are written to `compatibility/expressions/`
    *     directly, preserving the legacy flat layout used by released-version doc trees.
    */
   def main(args: Array[String]): Unit = {

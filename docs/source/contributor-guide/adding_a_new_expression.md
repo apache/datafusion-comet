@@ -287,7 +287,7 @@ In addition to `getSupportLevel`, which governs runtime planning decisions, the 
 - `getIncompatibleReasons(): Seq[String]` - Reasons the expression may produce different results than Spark.
 - `getUnsupportedReasons(): Seq[String]` - Reasons the expression, or certain usages of it, may not be supported by Comet.
 
-These methods do not affect runtime behavior. They are called by `GenerateDocs` (`spark/src/main/scala/org/apache/comet/GenerateDocs.scala`) when building the user-facing Compatibility Guide pages. The Markdown templates live in `docs/source/user-guide/latest/compatibility/expressions/_category_template/` (for example, `math.md`, `datetime.md`, `array.md`, `aggregate.md`, `struct.md`); `docs/build.sh` copies them into per-Spark-version subdirectories (`spark-3.4/`, `spark-3.5/`, `spark-4.0/`, `spark-4.1/`) and runs `GenerateDocs` once per profile, so the published page reflects the expressions registered for that Spark version. Each reason is rendered as a bullet in the corresponding page.
+These methods do not affect runtime behavior. They are called by `GenerateDocs` (`spark/src/main/scala/org/apache/comet/GenerateDocs.scala`) when building the user-facing Compatibility Guide pages. The Markdown templates live in `docs/source/user-guide/latest/compatibility/expressions/_category_template/` (for example, `math.md`, `datetime.md`, `array.md`, `aggregate.md`, `struct.md`); `docs/build.sh` copies them into per-Spark-version subdirectories (`spark-3.5/`, `spark-4.0/`, `spark-4.1/`) and runs `GenerateDocs` once per profile, so the published page reflects the expressions registered for that Spark version. Each reason is rendered as a bullet in the corresponding page.
 
 `GenerateDocs` also rewrites the **Implementation** column of every table in [`docs/source/user-guide/latest/expressions.md`](../user-guide/latest/expressions.md) based on the serde's trait mixins: `NativeOptInAvailable` (or its subtype `CodegenDispatchFallback`) is reported as `Hybrid`, a plain `CometCodegenDispatch` is reported as `Codegen dispatch`, and anything else is reported as `Native`. Rows whose function name is not registered in Spark's `FunctionRegistry` (or has no matching serde) get an em-dash placeholder.
 
@@ -552,7 +552,7 @@ Spark.
 If the expression you're adding has different behavior across different Spark versions, you'll need to account for that in your implementation. There are two tools at your disposal to help with this:
 
 1. Shims that exist in `spark/src/main/spark-$SPARK_VERSION/org/apache/comet/shims/CometExprShim.scala` for each Spark version. These shims are used to provide compatibility between different Spark versions.
-2. Variables that correspond to the Spark version, such as `isSpark33Plus`, which can be used to conditionally execute code based on the Spark version.
+2. Variables that correspond to the Spark version, such as `isSpark40Plus`, which can be used to conditionally execute code based on the Spark version.
 
 ## Shimming to Support Different Spark Versions
 

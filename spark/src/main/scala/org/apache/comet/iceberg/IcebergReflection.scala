@@ -60,8 +60,6 @@ object IcebergReflection extends Logging {
     val SPARK_WRITE = "org.apache.iceberg.spark.source.SparkWrite"
     val TABLE_PROPERTIES = "org.apache.iceberg.TableProperties"
 
-    // Iceberg 1.5.2 uses its own `ReplaceIcebergData` due to lack of `ReplaceData` in Spark 3.4.
-    val REPLACE_ICEBERG_DATA = "org.apache.spark.sql.catalyst.plans.logical.ReplaceIcebergData"
   }
 
   /**
@@ -168,34 +166,6 @@ object IcebergReflection extends Logging {
           None
       }
     }
-  }
-
-  def isReplaceIcebergData(plan: Any): Boolean =
-    plan != null && plan.getClass.getName == ClassNames.REPLACE_ICEBERG_DATA
-
-  private def reflectField(plan: Any, fieldName: String): Option[AnyRef] =
-    try {
-      val field = plan.getClass.getDeclaredField(fieldName)
-      field.setAccessible(true)
-      Option(field.get(plan))
-    } catch {
-      case e: Exception =>
-        logError(
-          s"Iceberg reflection failure: $fieldName on ${plan.getClass.getName}: ${e.getMessage}")
-        None
-    }
-
-  def extractReplaceIcebergDataFields(plan: Any): Option[(AnyRef, AnyRef, AnyRef, AnyRef)] = {
-    if (!isReplaceIcebergData(plan)) return None
-    for {
-      table <- reflectField(plan, "table")
-      query <- reflectField(plan, "query")
-      originalTable <- reflectField(plan, "originalTable")
-      write <- reflectField(
-        plan,
-        "write"
-      ) // Option[Write]; field can be Some(null) so kept AnyRef
-    } yield (table, query, originalTable, write)
   }
 
   /**

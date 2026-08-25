@@ -28,11 +28,10 @@ import org.apache.spark.sql.functions.col
  * Bit-for-bit comparisons of seeded `uuid` against Spark.
  *
  * The SQL `uuid(seed)` form only exists in Spark 4.0+, so `uuid_with_seed.sql` carries a
- * `MinSparkVersion: 4.0` marker and is skipped on 3.4 and 3.5. Unseeded `uuid()` cannot be
- * compared across engines. That left the Rust golden constants in
- * `nondetermenistic_funcs/uuid.rs` as the only guard on those profiles, and their provenance is
- * not checkable from the repo -- if they were ever regenerated from the Rust side the test would
- * become circular.
+ * `MinSparkVersion: 4.0` marker and is skipped on 3.5. Unseeded `uuid()` cannot be compared
+ * across engines. That left the Rust golden constants in `nondetermenistic_funcs/uuid.rs` as the
+ * only guard on those profiles, and their provenance is not checkable from the repo -- if they
+ * were ever regenerated from the Rust side the test would become circular.
  *
  * `Uuid(Some(seed))` is constructible from Scala on every supported version even where the SQL
  * form is not, so building the expression directly gives all profiles a real cross-engine

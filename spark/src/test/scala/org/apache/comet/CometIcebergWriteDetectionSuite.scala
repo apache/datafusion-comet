@@ -28,7 +28,6 @@ import org.apache.spark.SparkConf
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.comet.IcebergWriteExec
 
-import org.apache.comet.CometSparkSessionExtensions.isSpark35Plus
 import org.apache.comet.iceberg.IcebergReflection
 import org.apache.comet.serde.{Compatible, SupportLevel, Unsupported}
 import org.apache.comet.serde.operator.CometIcebergNativeWrite
@@ -142,7 +141,6 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
   }
 
   test("fall-back: format-version=3") {
-    assume(isSpark35Plus, "V3 tables require Iceberg 1.8.1+ (Spark 3.5 profile)")
     withDetectionCatalog { dir =>
       createTable(dir, "v3", partitionSpec = "", properties = Some("'format-version'='3'"))
       assertUnsupportedContains("v3", "format-version=3")
