@@ -715,21 +715,36 @@ object CometBase64 extends CometExpressionSerde[Base64] {
 
 // Base64.getMimeDecoder() semantics: skips non-alphabet bytes and matches Spark's codegen
 // path. The native path handles the default UnBase64 (failOnError = false, reachable from SQL
-// `unbase64(...)`). When failOnError = true (from `to_binary('base64')` / `try_to_binary`),
-// Spark uses a stricter RFC 4648 validator, so those cases stay on the JVM codegen dispatcher
-// via CodegenDispatchFallback. Error messages match Spark byte-for-byte (pinned in the Rust
-// unit tests), but the wrapping exception class does not; kept as Compatible() because Spark
-// surfaces these as bare IllegalArgumentException without a SQL error class.
+// `unbase64(...)`) only when the child is a column reference or literal, since native
+// ScalarFunctionExpr evaluates its arguments eagerly and would bypass Spark's short-circuit
+// semantics for compound children (see apache/datafusion-comet#5451). More complex children
+// stay on the JVM codegen dispatcher via CodegenDispatchFallback. When failOnError = true
+// (from `to_binary('base64')` / `try_to_binary`), Spark uses a stricter RFC 4648 validator, so
+// those cases also stay on the dispatcher. Error messages match Spark byte-for-byte (pinned in
+// the Rust unit tests), but the wrapping exception class does not; kept as Compatible() because
+// Spark surfaces these as bare IllegalArgumentException without a SQL error class.
 object CometUnBase64 extends CometExpressionSerde[UnBase64] with CodegenDispatchFallback {
 
   private val failOnErrorReason =
     "unbase64 with failOnError = true uses stricter RFC 4648 validation that is not yet" +
       " implemented natively"
 
-  override def getUnsupportedReasons(): Seq[String] = Seq(failOnErrorReason)
+  private val nonTrivialChildReason =
+    "unbase64 with a non-trivial child expression uses the JVM codegen dispatcher to preserve" +
+      " Spark's short-circuit evaluation (native path is limited to column and literal children)"
+
+  override def getUnsupportedReasons(): Seq[String] =
+    Seq(failOnErrorReason, nonTrivialChildReason)
 
   override def getSupportLevel(expr: UnBase64): SupportLevel = {
-    if (expr.failOnError) Unsupported(Some(failOnErrorReason)) else Compatible()
+    if (expr.failOnError) {
+      Unsupported(Some(failOnErrorReason))
+    } else {
+      expr.child match {
+        case _: Attribute | _: Literal => Compatible()
+        case _ => Unsupported(Some(nonTrivialChildReason))
+      }
+    }
   }
 
   override def convert(expr: UnBase64, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {

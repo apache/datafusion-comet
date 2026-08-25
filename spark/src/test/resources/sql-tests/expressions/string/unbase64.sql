@@ -87,3 +87,21 @@ INSERT INTO test_unbase64_roundtrip VALUES
 
 query
 SELECT s, cast(unbase64(base64(cast(s AS binary))) AS string) FROM test_unbase64_roundtrip
+
+-- Regression for apache/datafusion-comet#5451: when unbase64 has a compound child, Spark's
+-- generated code preserves the child's short-circuit semantics and never evaluates branches
+-- that would otherwise raise. The native ScalarFunctionExpr path evaluates its argument
+-- eagerly, so compound children stay on the JVM codegen dispatcher via CodegenDispatchFallback.
+-- CASE WHEN is used here because its short-circuit is guaranteed across all supported Spark
+-- versions; the row (NULL, 'A') exercises the skipped branch that would otherwise raise on the
+-- unpadded 1-char input.
+statement
+CREATE TABLE test_unbase64_short_circuit(n string, bad string) USING parquet
+
+statement
+INSERT INTO test_unbase64_short_circuit VALUES (NULL, 'A'), ('X', 'YWJj')
+
+query
+SELECT hex(unbase64(case when n is null then null
+                         else cast(unbase64(bad) as string) end))
+FROM test_unbase64_short_circuit
