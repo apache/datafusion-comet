@@ -177,11 +177,17 @@ object CometSparkSessionExtensions extends Logging {
     }
   }
 
-  // The Celeborn manager is valid for loading Comet, but its native shuffle writer and reader
-  // are not wired yet. Keep exchanges on Celeborn's existing Spark shuffle path until they are.
   def isCometShuffleEnabled(conf: SQLConf): Boolean =
-    COMET_SHUFFLE_ENABLED.get(conf) && isCometShuffleManagerEnabled(conf) &&
-      conf.getConfString(SHUFFLE_MANAGER_KEY) != classOf[CometCelebornShuffleManager].getName
+    COMET_SHUFFLE_ENABLED.get(conf) && isCometShuffleManagerEnabled(conf) && {
+      // Explicit native mode opts out of Celeborn's local fallback. Keep this restriction at the
+      // common gate because CollectLimit and TakeOrdered bypass ordinary exchange planning.
+      !isCometCelebornShuffleManagerEnabled(conf) ||
+      (COMET_EXEC_ENABLED.get(conf) && COMET_SHUFFLE_MODE.get(conf) == "native")
+    }
+
+  def isCometCelebornShuffleManagerEnabled(conf: SQLConf): Boolean =
+    conf.contains(SHUFFLE_MANAGER_KEY) &&
+      conf.getConfString(SHUFFLE_MANAGER_KEY) == classOf[CometCelebornShuffleManager].getName
 
   def isCometShuffleManagerEnabled(conf: SQLConf): Boolean = {
     conf.contains(SHUFFLE_MANAGER_KEY) && {

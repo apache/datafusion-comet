@@ -51,7 +51,7 @@ import com.google.common.base.Objects
 
 import org.apache.comet.{CometConf, CometExplainInfo}
 import org.apache.comet.CometConf.{COMET_SHUFFLE_ENABLED, COMET_SHUFFLE_MODE}
-import org.apache.comet.CometSparkSessionExtensions.{hasFallbackReason, isCometShuffleEnabled, isCometShuffleManagerEnabled, withFallbackReasons}
+import org.apache.comet.CometSparkSessionExtensions.{hasFallbackReason, isCometCelebornShuffleManagerEnabled, isCometShuffleEnabled, isCometShuffleManagerEnabled, withFallbackReasons}
 import org.apache.comet.serde.{Compatible, OperatorOuterClass, QueryPlanSerde, SupportLevel, Unsupported}
 import org.apache.comet.serde.operator.CometSink
 import org.apache.comet.shims.{CometTypeShim, ShimCometShuffleExchangeExec}
@@ -347,12 +347,27 @@ object CometShuffleExchangeExec
       return None
     }
 
-    // Native path is only eligible when the child is already a Comet plan; otherwise skip it
-    // silently (no reason to surface) and let columnar take over.
+    val usesCelebornShuffleManager = isCometCelebornShuffleManagerEnabled(s.conf)
+
+    // Native path is only eligible when the child is already a Comet plan; otherwise a local
+    // manager can fall back to columnar shuffle, but Celeborn must keep Spark's existing shuffle.
+    val nativeChild = isCometPlan(s.child)
     val nativeReasons: Seq[String] =
-      if (isCometPlan(s.child)) nativeShuffleFailureReasons(s) else Seq.empty
-    if (isCometPlan(s.child) && nativeReasons.isEmpty) {
+      if (nativeChild) nativeShuffleFailureReasons(s) else Seq.empty
+    if (nativeChild && nativeReasons.isEmpty) {
       return Some(CometNativeShuffle)
+    }
+
+    if (usesCelebornShuffleManager) {
+      val reasons = if (nativeChild) {
+        nativeReasons
+      } else {
+        Seq("Celeborn native shuffle requires a Comet child")
+      }
+      val columnarReason =
+        "Comet columnar shuffle is not supported by the Celeborn shuffle manager"
+      withFallbackReasons(s, (reasons :+ columnarReason).toSet)
+      return None
     }
 
     if (!isCometPlan(s.child) &&
@@ -681,8 +696,13 @@ object CometShuffleExchangeExec
           s"${classOf[CometShuffleManager].getName} or " +
           classOf[CometCelebornShuffleManager].getName)
     } else if (!isCometShuffleEnabled(op.conf)) {
-      Some(
-        "Celeborn-backed Comet shuffle is unavailable until its native writer and reader are wired")
+      if (!CometConf.COMET_EXEC_ENABLED.get(op.conf)) {
+        Some("Celeborn-backed Comet shuffle requires Comet native execution to be enabled")
+      } else if (COMET_SHUFFLE_MODE.get(op.conf) == "jvm") {
+        Some("Celeborn-backed Comet shuffle does not support spark.comet.shuffle.mode=jvm")
+      } else {
+        Some("Celeborn-backed Comet shuffle requires spark.comet.shuffle.mode=native")
+      }
     } else {
       None
     }

@@ -38,9 +38,9 @@ import org.apache.comet.util.ClassLoaders
 /**
  * Lets Comet execution coexist with the application's existing Celeborn shuffle manager.
  *
- * Ordinary Spark shuffle dependencies are owned entirely by Celeborn. Native Comet map tasks can
- * write to and read from Celeborn, while query planning keeps native shuffle disabled until its
- * remaining production-readiness work is complete. JVM Comet shuffle remains unsupported.
+ * Ordinary Spark shuffle dependencies are owned entirely by Celeborn. Native Comet shuffle writes
+ * to and reads from Celeborn, while unsupported exchanges retain the existing Spark shuffle path.
+ * JVM Comet shuffle remains unsupported.
  *
  * Celeborn is loaded reflectively because its client is an optional, application-provided
  * dependency rather than part of Comet's compile-time or runtime distribution.
@@ -395,8 +395,7 @@ class CometCelebornShuffleManager private[shuffle] (
 
   private def rejectCometShuffle(): Nothing = {
     throw new UnsupportedOperationException(
-      "Comet shuffle over Celeborn is not supported yet; its remote writer, reader, " +
-        "and task lifecycle must be integrated before Comet shuffle can be enabled")
+      "Comet shuffle over Celeborn is not supported for JVM shuffle or non-Celeborn handles")
   }
 }
 
