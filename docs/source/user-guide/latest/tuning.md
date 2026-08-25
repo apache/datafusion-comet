@@ -273,13 +273,16 @@ when the number of columnar-to-row transitions exceeds
 `spark.comet.exec.transitionRevert.maxTransitions` (default `2`). This trades native execution of a small
 subset of operators for eliminating conversion overhead across the stage.
 
+### Entire-Plan Fallback for Wide or Deeply Nested Schemas
+
 The cost of each conversion also grows sharply with schema shape: for wide or deeply nested schemas,
 columnar-to-row conversion is especially expensive because the conversion work scales with the number of
-columns and nested fields. If profiling shows these conversions dominating a query stage over such a schema,
-set `spark.comet.exec.transitionRevert.enabled=true` and lower
-`spark.comet.exec.transitionRevert.maxTransitions` to `1` so that the stage reverts entirely to Spark
-row-based execution once it needs more than one conversion, which can be cheaper than paying the conversion
-repeatedly across many operators.
+columns and nested fields. If profiling shows these conversions dominating a query over such a schema, set
+`spark.comet.exec.transitionRevert.enabled=true` and lower
+`spark.comet.exec.transitionRevert.maxTransitions` (default `2`) to `1`. Note that this causes the entire
+plan to fall back to Spark row-based execution — Comet removes its native operators rather than running a
+mix of native and fallback operators joined by repeated conversions — which can be cheaper than paying the
+expensive conversions again and again.
 
 ## Metrics Overhead
 
