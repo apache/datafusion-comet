@@ -226,9 +226,17 @@ public final class CelebornShufflePartitionPusher implements ShufflePartitionPus
           "Celeborn raw-push API must be an instance method returning an int");
     }
 
-    Method mapperEndMethod =
-        resolveLifecycleMethod(
-            shuffleClient, "mapperEnd", int.class, int.class, int.class, int.class);
+    Method mapperEndMethod;
+    try {
+      mapperEndMethod =
+          resolveLifecycleMethod(
+              shuffleClient, "mapperEnd", int.class, int.class, int.class, int.class, int.class);
+    } catch (IllegalArgumentException unsupportedStandardMapperEnd) {
+      // Older application-provided Celeborn clients did not require the reducer count.
+      mapperEndMethod =
+          resolveLifecycleMethod(
+              shuffleClient, "mapperEnd", int.class, int.class, int.class, int.class);
+    }
     Method cleanupMethod =
         resolveLifecycleMethod(shuffleClient, "cleanup", int.class, int.class, int.class);
     final Method getPushStateMethod;
@@ -241,8 +249,15 @@ public final class CelebornShufflePartitionPusher implements ShufflePartitionPus
     try {
       getPushStateMethod = shuffleClient.getClass().getMethod("getPushState", String.class);
       setPushMetricsCallbackMethod = resolvePushMetricsCallback(getPushStateMethod.getReturnType());
-      pushMetricsCallbackClass = setPushMetricsCallbackMethod.getParameterTypes()[0];
-      pushMetricsCallbackClass.getMethod("incPushDataCount", long.class);
+      if (setPushMetricsCallbackMethod == null) {
+        // Apache Celeborn does not expose push-completion callbacks. Its in-flight request
+        // tracker still records every accepted request and completion, so periodic reconciliation
+        // provides the same completion-backed admission without requiring a patched client.
+        pushMetricsCallbackClass = null;
+      } else {
+        pushMetricsCallbackClass = setPushMetricsCallbackMethod.getParameterTypes()[0];
+        pushMetricsCallbackClass.getMethod("incPushDataCount", long.class);
+      }
       clientPushStatesField = resolveClientPushStates(shuffleClient.getClass());
       inFlightRequestTrackerField =
           getPushStateMethod.getReturnType().getDeclaredField("inFlightRequestTracker");
@@ -265,9 +280,10 @@ public final class CelebornShufflePartitionPusher implements ShufflePartitionPus
           e);
     }
     if (Modifier.isStatic(getPushStateMethod.getModifiers())
-        || Modifier.isStatic(setPushMetricsCallbackMethod.getModifiers())
-        || setPushMetricsCallbackMethod.getReturnType() != void.class
-        || !pushMetricsCallbackClass.isInterface()) {
+        || (setPushMetricsCallbackMethod != null
+            && (Modifier.isStatic(setPushMetricsCallbackMethod.getModifiers())
+                || setPushMetricsCallbackMethod.getReturnType() != void.class
+                || !pushMetricsCallbackClass.isInterface()))) {
       throw new IllegalArgumentException("Celeborn push-state completion API is incompatible");
     }
 
@@ -293,14 +309,13 @@ public final class CelebornShufflePartitionPusher implements ShufflePartitionPus
     this.partitionLengths = new AtomicLongArray(numPartitions);
   }
 
-  private static Method resolvePushMetricsCallback(Class<?> pushStateClass)
-      throws NoSuchMethodException {
+  private static Method resolvePushMetricsCallback(Class<?> pushStateClass) {
     for (Method method : pushStateClass.getMethods()) {
       if (method.getName().equals("setMetricsCallback") && method.getParameterCount() == 1) {
         return method;
       }
     }
-    throw new NoSuchMethodException("PushState.setMetricsCallback");
+    return null;
   }
 
   private static Field resolveClientPushStates(Class<?> clientClass) throws NoSuchFieldException {
@@ -532,7 +547,12 @@ public final class CelebornShufflePartitionPusher implements ShufflePartitionPus
         mapperEndThread = Thread.currentThread();
       }
       try {
-        mapperEnd.invoke(shuffleClient, shuffleId, mapId, encodedAttemptId, numMappers);
+        if (mapperEnd.getParameterCount() == 5) {
+          mapperEnd.invoke(
+              shuffleClient, shuffleId, mapId, encodedAttemptId, numMappers, numPartitions);
+        } else {
+          mapperEnd.invoke(shuffleClient, shuffleId, mapId, encodedAttemptId, numMappers);
+        }
       } finally {
         synchronized (lifecycleLock) {
           mapperEndThread = null;
@@ -663,25 +683,27 @@ public final class CelebornShufflePartitionPusher implements ShufflePartitionPus
           new ObservedPushState(
               (LongAdder) totalInFlightRequests.get(tracker),
               (AtomicReference<?>) pushStateException.get(pushState));
-      Object callback =
-          Proxy.newProxyInstance(
-              pushMetricsCallbackClass.getClassLoader(),
-              new Class<?>[] {pushMetricsCallbackClass},
-              (proxy, method, arguments) -> {
-                if (method.getName().equals("incPushDataCount")) {
-                  boolean metricsOnlyFailure =
-                      created.inFlightRequests.sum() > 0 && isTerminalFailureCallback();
-                  completeAcceptedPushes(created, (long) arguments[0], metricsOnlyFailure);
-                } else if (method.getName().equals("hashCode")) {
-                  return System.identityHashCode(proxy);
-                } else if (method.getName().equals("equals")) {
-                  return proxy == arguments[0];
-                } else if (method.getName().equals("toString")) {
-                  return "Celeborn native shuffle push completion callback";
-                }
-                return null;
-              });
-      setPushMetricsCallback.invoke(pushState, callback);
+      if (setPushMetricsCallback != null) {
+        Object callback =
+            Proxy.newProxyInstance(
+                pushMetricsCallbackClass.getClassLoader(),
+                new Class<?>[] {pushMetricsCallbackClass},
+                (proxy, method, arguments) -> {
+                  if (method.getName().equals("incPushDataCount")) {
+                    boolean metricsOnlyFailure =
+                        created.inFlightRequests.sum() > 0 && isTerminalFailureCallback();
+                    completeAcceptedPushes(created, (long) arguments[0], metricsOnlyFailure);
+                  } else if (method.getName().equals("hashCode")) {
+                    return System.identityHashCode(proxy);
+                  } else if (method.getName().equals("equals")) {
+                    return proxy == arguments[0];
+                  } else if (method.getName().equals("toString")) {
+                    return "Celeborn native shuffle push completion callback";
+                  }
+                  return null;
+                });
+        setPushMetricsCallback.invoke(pushState, callback);
+      }
       created.failedBeforeObservation = created.exception.get() != null;
       observedPushStates.put(pushState, created);
       return created;
@@ -769,6 +791,16 @@ public final class CelebornShufflePartitionPusher implements ShufflePartitionPus
     final ArrayList<PushReservation> completed = new ArrayList<>();
     synchronized (lifecycleLock) {
       for (ObservedPushState pushState : observedPushStates.values()) {
+        if (setPushMetricsCallback == null
+            && (state == State.OPEN || state == State.FINISHING)
+            && pushState.exception.get() != null
+            && !pushState.recoveredMissedFailure) {
+          // Apache Celeborn records a terminal push failure without removing its transport batch.
+          // Its first exception proves exactly one request completed unsuccessfully. Cancellation
+          // also installs an exception, so never infer completion after this attempt was aborted.
+          pushState.metricsOnlyFailures++;
+          pushState.recoveredMissedFailure = true;
+        }
         long transportRequests =
             Math.max(0L, pushState.inFlightRequests.sum() - pushState.metricsOnlyFailures);
         long trackerCompletions = Math.max(0L, pushState.submittedPushes - transportRequests);
@@ -894,6 +926,9 @@ public final class CelebornShufflePartitionPusher implements ShufflePartitionPus
 
   private void abortAndSuppress(Throwable original) {
     try {
+      // A stock client can report terminal failure synchronously without a completion callback.
+      // Reconcile its exception before abort() marks the attempt cancelled and hides that signal.
+      reconcileAcceptedPushes();
       abort();
     } catch (Throwable cleanupFailure) {
       if (cleanupFailure != original) {

@@ -123,6 +123,7 @@ object CometSparkSessionExtensions extends Logging {
   lazy val isBigEndian: Boolean = ByteOrder.nativeOrder().equals(ByteOrder.BIG_ENDIAN)
 
   private val SHUFFLE_MANAGER_KEY = "spark.shuffle.manager"
+  private val IO_ENCRYPTION_ENABLED_KEY = "spark.io.encryption.enabled"
 
   /**
    * Checks whether Comet extension should be loaded for Spark.
@@ -182,8 +183,13 @@ object CometSparkSessionExtensions extends Logging {
       // Explicit native mode opts out of Celeborn's local fallback. Keep this restriction at the
       // common gate because CollectLimit and TakeOrdered bypass ordinary exchange planning.
       !isCometCelebornShuffleManagerEnabled(conf) ||
-      (COMET_EXEC_ENABLED.get(conf) && COMET_SHUFFLE_MODE.get(conf) == "native")
+      (COMET_EXEC_ENABLED.get(conf) && COMET_SHUFFLE_MODE.get(conf) == "native" &&
+        COMET_SHUFFLE_CELEBORN_ENABLED.get(conf) &&
+        !isCometCelebornShuffleEncryptionEnabled(conf))
     }
+
+  def isCometCelebornShuffleEncryptionEnabled(conf: SQLConf): Boolean =
+    conf.getConfString(IO_ENCRYPTION_ENABLED_KEY, "false").toBoolean
 
   def isCometCelebornShuffleManagerEnabled(conf: SQLConf): Boolean =
     conf.contains(SHUFFLE_MANAGER_KEY) &&

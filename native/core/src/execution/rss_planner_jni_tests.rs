@@ -110,6 +110,8 @@ fn execution_context(
         tracing_memory_metric_name: String::new(),
         tracing_event_name: String::new(),
         task_context: None,
+        class_loader: None,
+        memory_pool_registration: None,
         rss_pusher: None,
     })
 }

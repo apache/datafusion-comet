@@ -24,6 +24,7 @@ use arrow::array::{
 };
 use arrow::buffer::OffsetBuffer;
 use arrow::datatypes::DataType;
+use arrow::ipc::writer::CompressionContext;
 use arrow::record_batch::RecordBatch;
 use arrow_select::dictionary::garbage_collect_any_dictionary;
 use datafusion::common::{DataFusionError, Result};
@@ -94,6 +95,7 @@ impl PartitionPusher for JavaShufflePartitionPusher {
 pub struct RssPartitionWriter<P: PartitionPusher> {
     pusher: P,
     block_writer: ShuffleBlockWriter,
+    compression_context: CompressionContext,
     num_partitions: usize,
     max_frame_bytes: usize,
     next_partition: usize,
@@ -112,6 +114,7 @@ impl<P: PartitionPusher> RssPartitionWriter<P> {
         Ok(Self {
             pusher,
             block_writer,
+            compression_context: CompressionContext::default(),
             num_partitions,
             max_frame_bytes,
             next_partition: 0,

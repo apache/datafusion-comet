@@ -553,12 +553,8 @@ private[shuffle] final class CelebornShuffleGenerationCoordinator(
 
   private def invalidateOwners(shuffleId: Int): Unit = {
     generationEpochs.update(shuffleId, currentEpoch(shuffleId) + 1L)
-    claimOwners.filterInPlace { case ((ownerShuffleId, _, _, _), _) =>
-      ownerShuffleId != shuffleId
-    }
-    deniedAttempts.filterInPlace { case ((ownerShuffleId, _, _, _), _) =>
-      ownerShuffleId != shuffleId
-    }
+    claimOwners.retain((key, _) => key._1 != shuffleId)
+    deniedAttempts.retain((key, _) => key._1 != shuffleId)
   }
 
   private def resetSparkCommitOwners(generation: PrepareCelebornShuffleGeneration): Unit =
@@ -791,12 +787,8 @@ private[shuffle] final class CelebornShuffleGenerationCoordinator(
     generations.remove(shuffleId)
     invalidatedGenerations.remove(shuffleId)
     generationEpochs.remove(shuffleId)
-    claimOwners.filterInPlace { case ((ownerShuffleId, _, _, _), _) =>
-      ownerShuffleId != shuffleId
-    }
-    deniedAttempts.filterInPlace { case ((ownerShuffleId, _, _, _), _) =>
-      ownerShuffleId != shuffleId
-    }
+    claimOwners.retain((key, _) => key._1 != shuffleId)
+    deniedAttempts.retain((key, _) => key._1 != shuffleId)
   }
 }
 

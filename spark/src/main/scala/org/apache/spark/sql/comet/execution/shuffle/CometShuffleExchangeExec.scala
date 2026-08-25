@@ -51,7 +51,7 @@ import com.google.common.base.Objects
 
 import org.apache.comet.{CometConf, CometExplainInfo}
 import org.apache.comet.CometConf.{COMET_SHUFFLE_ENABLED, COMET_SHUFFLE_MODE}
-import org.apache.comet.CometSparkSessionExtensions.{hasFallbackReason, isCometCelebornShuffleManagerEnabled, isCometShuffleEnabled, isCometShuffleManagerEnabled, withFallbackReasons}
+import org.apache.comet.CometSparkSessionExtensions.{hasFallbackReason, isCometCelebornShuffleEncryptionEnabled, isCometCelebornShuffleManagerEnabled, isCometShuffleEnabled, isCometShuffleManagerEnabled, withFallbackReasons}
 import org.apache.comet.serde.{Compatible, OperatorOuterClass, QueryPlanSerde, SupportLevel, Unsupported}
 import org.apache.comet.serde.operator.CometSink
 import org.apache.comet.shims.{CometTypeShim, ShimCometShuffleExchangeExec}
@@ -698,6 +698,12 @@ object CometShuffleExchangeExec
     } else if (!isCometShuffleEnabled(op.conf)) {
       if (!CometConf.COMET_EXEC_ENABLED.get(op.conf)) {
         Some("Celeborn-backed Comet shuffle requires Comet native execution to be enabled")
+      } else if (!CometConf.COMET_SHUFFLE_CELEBORN_ENABLED.get(op.conf)) {
+        Some(
+          "Celeborn-backed Comet shuffle is disabled: " +
+            CometConf.COMET_SHUFFLE_CELEBORN_ENABLED.key)
+      } else if (isCometCelebornShuffleEncryptionEnabled(op.conf)) {
+        Some("Celeborn-backed Comet shuffle does not support spark.io.encryption.enabled=true")
       } else if (COMET_SHUFFLE_MODE.get(op.conf) == "jvm") {
         Some("Celeborn-backed Comet shuffle does not support spark.comet.shuffle.mode=jvm")
       } else {

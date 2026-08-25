@@ -308,9 +308,20 @@ object CometConf extends ShimCometConf {
       .doc(
         "Whether to enable Comet native shuffle. " +
           "Note that this requires setting `spark.shuffle.manager` to " +
-          "`org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager`. " +
+          "`org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager` or " +
+          "`org.apache.spark.sql.comet.execution.shuffle.CometCelebornShuffleManager`. " +
           "`spark.shuffle.manager` must be set before starting the Spark application and " +
           "cannot be changed during the application.")
+      .booleanConf
+      .createWithDefault(true)
+
+  val COMET_SHUFFLE_CELEBORN_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.shuffle.celeborn.enabled")
+      .category(CATEGORY_SHUFFLE)
+      .doc(
+        "Whether to allow Comet native shuffle to use an application-provided Apache " +
+          "Celeborn client when a Celeborn shuffle manager, shuffle data I/O plugin, " +
+          "or master endpoint is configured.")
       .booleanConf
       .createWithDefault(true)
 

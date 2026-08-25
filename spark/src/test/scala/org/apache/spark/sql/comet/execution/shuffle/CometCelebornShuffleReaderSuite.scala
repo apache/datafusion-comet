@@ -476,6 +476,27 @@ class CometCelebornShuffleReaderSuite extends CometTestBase {
     context.markTaskCompleted(None)
   }
 
+  test("raw fetch prefers Apache Celeborn's public 15-argument partition reader") {
+    val context = TaskContext.empty()
+    val client = new RecordingCelebornRawClient.StockApiClient
+    client.fileGroups.partitionGroups.put(1, location("worker"))
+    client.fileGroups.mapAttempts = Array(2, 4)
+    client.streams.put(1, new ByteArrayInputStream(Array[Byte](3, 5)))
+
+    val input = rawReader(client, context, startPartition = 1, endPartition = 2).openPartitions()
+    assert(input.readAllBytes().toSeq == Seq[Byte](3, 5))
+    assert(client.stockReadPartitionCalls == 1)
+    assert(client.requests.size() == 1)
+    val request = client.requests.get(0)
+    assert(request.shuffleId == 91)
+    assert(request.appShuffleId == 17)
+    assert(request.coalescedPartitionInfos == null)
+    assert(request.mapAttempts eq client.fileGroups.mapAttempts)
+    assert(!request.needDecompress)
+    input.close()
+    context.markTaskCompleted(None)
+  }
+
   test("raw fetch forwards Celeborn byte, block, and wait metrics") {
     val context = TaskContext.empty()
     val client = new RecordingCelebornRawClient

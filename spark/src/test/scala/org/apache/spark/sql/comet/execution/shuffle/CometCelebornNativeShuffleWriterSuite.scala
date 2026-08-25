@@ -527,6 +527,42 @@ class CometCelebornNativeShuffleWriterSuite extends CometTestBase {
     }
   }
 
+  test("task failure proactively cleans up a blocked Celeborn native push") {
+    val client = new RecordingCelebornShuffleClient
+    client.pushStarted = new CountDownLatch(1)
+    client.allowPush = new CountDownLatch(1)
+    client.cleanupUnblocksPush = true
+    val taskContext = TaskContext.empty()
+    val pusher =
+      new org.apache.comet.shuffle.CelebornShufflePartitionPusher(client, 93, 0, 0, 1, 1)
+    val callbackFailure = new AtomicReference[Throwable]()
+    val cleanupFailure = new AtomicReference[Throwable]()
+    val watcher = CelebornNativeShuffleDestination.watchForCancellation(
+      taskContext,
+      pusher,
+      failure => cleanupFailure.set(failure))
+
+    try {
+      val worker = new Thread(() => {
+        try pusher.pushPartitionData(0, Array[Byte](1), 1)
+        catch { case failure: Throwable => callbackFailure.set(failure) }
+      })
+      worker.start()
+      assert(client.pushStarted.await(5, TimeUnit.SECONDS))
+
+      taskContext.markTaskFailed(new IOException("the Spark task failed"))
+      worker.join(5000)
+
+      assert(!worker.isAlive)
+      assert(callbackFailure.get().isInstanceOf[IOException])
+      assert(cleanupFailure.get() == null)
+      assert(client.cleanupCalls.get() == 2)
+    } finally {
+      watcher.cancel(false)
+      pusher.abort()
+    }
+  }
+
   test("task interruption proactively wakes blocked Celeborn map completion") {
     val client = new RecordingCelebornShuffleClient
     client.mapperEndStarted = new CountDownLatch(1)

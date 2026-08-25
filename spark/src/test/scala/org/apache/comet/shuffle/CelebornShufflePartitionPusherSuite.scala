@@ -28,7 +28,7 @@ import org.scalatest.funsuite.AnyFunSuite
 import org.apache.spark.{SparkConf, TaskContext}
 import org.apache.spark.shuffle.ShuffleHandle
 
-import org.apache.comet.CometExecIterator
+import org.apache.comet.{CometConf, CometExecIterator}
 
 /** Matches the pinned Celeborn completion hook without adding its optional client dependency. */
 trait RecordingCelebornPushMetricsCallback {
@@ -303,6 +303,89 @@ final class RecordingCelebornPushState(client: RecordingCelebornShuffleClient) {
   }
 }
 
+/** Mirrors Apache Celeborn's public client without a push-completion metrics callback. */
+final class StockCelebornShuffleClient {
+  @volatile var automaticallyCompletePushes = true
+  @volatile var lastMapperEnd: (Int, Int, Int, Int, Int) = _
+  val pushCalls = new AtomicInteger()
+  private val pushStates = new ConcurrentHashMap[String, StockCelebornPushState]()
+  private val pendingPushCompletions = new ConcurrentLinkedDeque[StockCelebornPushState]()
+
+  def getPushState(mapKey: String): StockCelebornPushState =
+    pushStates.computeIfAbsent(mapKey, _ => new StockCelebornPushState)
+
+  def pushOrMergeData(
+      shuffleId: Int,
+      mapId: Int,
+      attemptId: Int,
+      partitionId: Int,
+      bytes: Array[Byte],
+      offset: Int,
+      length: Int,
+      numMappers: Int,
+      numPartitions: Int,
+      doPush: Boolean,
+      skipCompress: Boolean): Int = {
+    pushCalls.incrementAndGet()
+    val pushState = getPushState(s"$shuffleId-$mapId-$attemptId")
+    pushState.addPush()
+    pendingPushCompletions.add(pushState)
+    if (automaticallyCompletePushes) completeNextPush()
+    length + 16
+  }
+
+  def completeNextPush(): Boolean = {
+    val pushState = pendingPushCompletions.pollFirst()
+    if (pushState == null) false
+    else {
+      pushState.completePush()
+      true
+    }
+  }
+
+  def failNextPush(): Boolean = {
+    val pushState = pendingPushCompletions.pollFirst()
+    if (pushState == null) false
+    else {
+      pushState.failPushWithoutRemovingBatch()
+      true
+    }
+  }
+
+  def mapperEnd(
+      shuffleId: Int,
+      mapId: Int,
+      attemptId: Int,
+      numMappers: Int,
+      numPartitions: Int): Unit = {
+    Option(pushStates.get(s"$shuffleId-$mapId-$attemptId")).foreach(_.checkFailure())
+    lastMapperEnd = (shuffleId, mapId, attemptId, numMappers, numPartitions)
+  }
+
+  def cleanup(shuffleId: Int, mapId: Int, attemptId: Int): Unit = {
+    Option(pushStates.remove(s"$shuffleId-$mapId-$attemptId")).foreach(_.cleanup())
+  }
+}
+
+final class StockCelebornPushState {
+  private val inFlightRequestTracker = new RecordingCelebornInFlightRequestTracker()
+  private val exception = new AtomicReference[IOException]()
+
+  def addPush(): Unit = inFlightRequestTracker.addBatch()
+
+  def completePush(): Unit = inFlightRequestTracker.removeBatch()
+
+  def failPushWithoutRemovingBatch(): Unit = {
+    exception.compareAndSet(null, new IOException("the stock Celeborn push failed"))
+  }
+
+  def cleanup(): Unit = {
+    exception.compareAndSet(null, new IOException("Cleaned Up"))
+  }
+
+  def checkFailure(): Unit = Option(exception.get()).foreach(throw _)
+}
+
 final case class RecordedCelebornPush(
     shuffleId: Int,
     mapId: Int,
@@ -341,7 +424,7 @@ class CelebornShufflePartitionPusherSuite extends AnyFunSuite {
   private val pluginKey = "spark.shuffle.sort.io.plugin.class"
   private val pluginClass = "org.apache.spark.shuffle.celeborn.CelebornShuffleDataIO"
   private val endpointsKey = "spark.celeborn.master.endpoints"
-  private val enabledKey = "spark.comet.celeborn.enabled"
+  private val enabledKey = CometConf.COMET_SHUFFLE_CELEBORN_ENABLED.key
 
   private def enabledConf: SparkConf =
     new SparkConf(false).set(endpointsKey, "celeborn-master:9097")
@@ -372,6 +455,112 @@ class CelebornShufflePartitionPusherSuite extends AnyFunSuite {
     assert(push.doPush)
     assert(push.skipCompress)
     assert(client.observedMapKey == s"19-3-${(4 << 16) | 7}")
+  }
+
+  test("stock Apache Celeborn commits with its reducer-aware mapperEnd API") {
+    val client = new StockCelebornShuffleClient
+    val adapter = new CelebornShufflePartitionPusher(client, 19, 3, 7, 12, 9)
+
+    assert(adapter.pushPartitionData(2, Array[Byte](1, 2, 3), 3) == 3)
+    assert(adapter.finish().sameElements(Array[Long](0, 0, 3, 0, 0, 0, 0, 0, 0)))
+    assert(client.lastMapperEnd == ((19, 3, 7, 12, 9)))
+  }
+
+  test("stock Apache Celeborn restores byte admission without a push metrics callback") {
+    val client = new StockCelebornShuffleClient
+    client.automaticallyCompletePushes = false
+    val first = new CelebornShufflePartitionPusher(client, 19, 3, 1, 12, 9, 48)
+    val second = new CelebornShufflePartitionPusher(client, 19, 4, 1, 12, 9, 48)
+    val failure = new AtomicReference[Throwable]()
+    val bytes = Array.fill[Byte](32)(1)
+
+    assert(first.pushPartitionData(0, bytes, bytes.length) == bytes.length)
+    val worker = new Thread(() => {
+      try second.pushPartitionData(0, bytes, bytes.length)
+      catch { case error: Throwable => failure.set(error) }
+    })
+    worker.start()
+
+    Thread.sleep(100)
+    assert(worker.isAlive)
+    assert(client.pushCalls.get() == 1)
+
+    assert(client.completeNextPush())
+    worker.join(5000)
+
+    if (worker.isAlive) {
+      second.abort()
+      worker.join(5000)
+      fail("stock Celeborn transport completion did not restore executor-wide admission")
+    }
+    assert(failure.get() == null)
+    assert(client.pushCalls.get() == 2)
+    assert(client.completeNextPush())
+  }
+
+  test("stock Apache Celeborn terminal push failures restore shared byte admission once") {
+    val client = new StockCelebornShuffleClient
+    client.automaticallyCompletePushes = false
+    val failed = new CelebornShufflePartitionPusher(client, 19, 3, 1, 12, 9, 48)
+    val replacement = new CelebornShufflePartitionPusher(client, 19, 4, 1, 12, 9, 48)
+    val replacementFailure = new AtomicReference[Throwable]()
+    val frame = Array.fill[Byte](32)(1)
+
+    assert(failed.pushPartitionData(0, frame, frame.length) == frame.length)
+    val worker = new Thread(() => {
+      try replacement.pushPartitionData(0, frame, frame.length)
+      catch { case failure: Throwable => replacementFailure.set(failure) }
+    })
+    worker.start()
+
+    Thread.sleep(100)
+    assert(worker.isAlive)
+    assert(client.failNextPush())
+    val failure = intercept[IOException](failed.finish())
+    assert(failure.getMessage.contains("stock Celeborn push failed"))
+    worker.join(5000)
+
+    if (worker.isAlive) {
+      replacement.abort()
+      worker.join(5000)
+      fail("a stock Celeborn terminal push failure permanently retained byte admission")
+    }
+    assert(replacementFailure.get() == null)
+    assert(client.pushCalls.get() == 2)
+    assert(client.completeNextPush())
+  }
+
+  test("stock Apache Celeborn cancellation does not release a live transport request") {
+    val client = new StockCelebornShuffleClient
+    client.automaticallyCompletePushes = false
+    val cancelled = new CelebornShufflePartitionPusher(client, 19, 3, 1, 12, 9, 48)
+    val replacement = new CelebornShufflePartitionPusher(client, 19, 4, 1, 12, 9, 48)
+    val replacementFailure = new AtomicReference[Throwable]()
+    val frame = Array.fill[Byte](32)(1)
+
+    assert(cancelled.pushPartitionData(0, frame, frame.length) == frame.length)
+    cancelled.abort()
+
+    val worker = new Thread(() => {
+      try replacement.pushPartitionData(0, frame, frame.length)
+      catch { case failure: Throwable => replacementFailure.set(failure) }
+    })
+    worker.start()
+
+    Thread.sleep(100)
+    assert(worker.isAlive)
+    assert(client.pushCalls.get() == 1)
+    assert(client.completeNextPush())
+    worker.join(5000)
+
+    if (worker.isAlive) {
+      replacement.abort()
+      worker.join(5000)
+      fail("a completed stock Celeborn request permanently retained byte admission")
+    }
+    assert(replacementFailure.get() == null)
+    assert(client.pushCalls.get() == 2)
+    assert(client.completeNextPush())
   }
 
   test("raw Celeborn push requires exactly the payload plus its transport header") {
@@ -1453,6 +1642,15 @@ class CelebornShufflePartitionPusherSuite extends AnyFunSuite {
 
     conf.set(managerKey, "org.apache.spark.shuffle.sort.SortShuffleManager")
     assert(!CelebornShufflePusherFactory.isEnabled(conf))
+  }
+
+  test("factory disables Celeborn native shuffle while Spark I/O encryption is enabled") {
+    val conf = enabledConf.set("spark.io.encryption.enabled", "true")
+
+    assert(!CelebornShufflePusherFactory.isEnabled(conf))
+
+    conf.set("spark.io.encryption.enabled", "false")
+    assert(CelebornShufflePusherFactory.isEnabled(conf))
   }
 
   test("an acquired client remains owned when Celeborn shuffle-generation resolution fails") {

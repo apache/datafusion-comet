@@ -32,7 +32,8 @@ import org.apache.comet.util.ClassLoaders
 /** Creates task-owned Celeborn pushers using the application's existing Spark configuration. */
 object CelebornShufflePusherFactory {
 
-  private val CELEBORN_ENABLED_KEY = "spark.comet.celeborn.enabled"
+  private val CELEBORN_ENABLED = CometConf.COMET_SHUFFLE_CELEBORN_ENABLED
+  private val IO_ENCRYPTION_ENABLED_KEY = "spark.io.encryption.enabled"
   private val SHUFFLE_MANAGER_KEY = "spark.shuffle.manager"
   private val SHUFFLE_DATA_IO_KEY = "spark.shuffle.sort.io.plugin.class"
   private val CELEBORN_MASTER_ENDPOINTS_KEY = "spark.celeborn.master.endpoints"
@@ -55,7 +56,8 @@ object CelebornShufflePusherFactory {
 
   /** Detects resolved Celeborn configuration while honoring an explicit application opt-out. */
   def isEnabled(conf: SparkConf): Boolean = {
-    conf.getBoolean(CELEBORN_ENABLED_KEY, true) &&
+    conf.getBoolean(CELEBORN_ENABLED.key, CELEBORN_ENABLED.defaultValue.get) &&
+    !conf.getBoolean(IO_ENCRYPTION_ENABLED_KEY, false) &&
     (conf
       .getOption(SHUFFLE_MANAGER_KEY)
       .exists(manager =>

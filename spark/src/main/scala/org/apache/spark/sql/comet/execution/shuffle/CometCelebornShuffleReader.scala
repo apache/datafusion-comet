@@ -158,19 +158,26 @@ private[shuffle] final class CelebornRawPartitionReader(
   private val updateFileGroup =
     client.getClass.getMethod("updateFileGroup", java.lang.Integer.TYPE, java.lang.Integer.TYPE)
   private val readPartitionMethod = client.getClass.getMethods
-    .find { method =>
+    .filter { method =>
       val parameters = method.getParameterTypes
-      method.getName == "readPartition" && parameters.length == 16 &&
+      method.getName == "readPartition" && (parameters.length == 15 || parameters.length == 16) &&
       parameters(0) == java.lang.Integer.TYPE && parameters(4) == java.lang.Long.TYPE &&
-      parameters(15) == java.lang.Boolean.TYPE && parameters(14).isInterface &&
+      parameters(parameters.length - 1) == java.lang.Boolean.TYPE &&
+      parameters(parameters.length - 2).isInterface &&
+      parameters(parameters.length - 3) == classOf[Array[Int]] &&
       classOf[InputStream].isAssignableFrom(method.getReturnType)
     }
+    // Prefer Apache Celeborn's public API when a client also retains an extended overload.
+    .sortBy(_.getParameterCount)
+    .headOption
     .getOrElse {
       throw new IllegalStateException(
-        "The Celeborn client does not expose its raw 16-argument partition reader")
+        "The Celeborn client does not expose its raw 15- or 16-argument partition reader")
     }
   private val metricsCallback =
-    createMetricsCallback(readPartitionMethod.getParameterTypes.apply(14), readMetrics)
+    createMetricsCallback(
+      readPartitionMethod.getParameterTypes.apply(readPartitionMethod.getParameterCount - 2),
+      readMetrics)
 
   private lazy val fileGroups: AnyRef = loadFileGroups()
 
@@ -250,28 +257,25 @@ private[shuffle] final class CelebornRawPartitionReader(
       pushFailedBatches: AnyRef,
       mapAttempts: Array[Int]): InputStream = {
     val attempt = encodeAttemptNumber(context.stageAttemptNumber(), context.attemptNumber())
+    val arguments = Array[AnyRef](
+      Int.box(celebornShuffleId),
+      Int.box(sparkShuffleId),
+      Int.box(partition),
+      Int.box(attempt),
+      Long.box(context.taskAttemptId()),
+      Int.box(startMapIndex),
+      Int.box(endMapIndex),
+      null,
+      locations,
+      null,
+      pushFailedBatches,
+      null) ++
+      (if (readPartitionMethod.getParameterCount == 16) Array[AnyRef](null)
+       else Array.empty[AnyRef]) ++
+      Array[AnyRef](mapAttempts, metricsCallback, java.lang.Boolean.FALSE)
     val stream =
       try {
-        Option(
-          invoke(
-            readPartitionMethod,
-            client,
-            Int.box(celebornShuffleId),
-            Int.box(sparkShuffleId),
-            Int.box(partition),
-            Int.box(attempt),
-            Long.box(context.taskAttemptId()),
-            Int.box(startMapIndex),
-            Int.box(endMapIndex),
-            null,
-            locations,
-            null,
-            pushFailedBatches,
-            null,
-            null,
-            mapAttempts,
-            metricsCallback,
-            java.lang.Boolean.FALSE))
+        Option(invoke(readPartitionMethod, client, arguments: _*))
           .getOrElse {
             throw new IOException(s"Celeborn returned a null stream for reducer $partition")
           }

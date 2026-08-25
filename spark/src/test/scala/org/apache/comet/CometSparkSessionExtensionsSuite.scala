@@ -128,6 +128,15 @@ class CometSparkSessionExtensionsSuite extends CometTestBase {
     conf.setConfString(CometConf.COMET_SHUFFLE_MODE.key, "native")
     assert(isCometShuffleEnabled(conf))
 
+    conf.setConfString(CometConf.COMET_SHUFFLE_CELEBORN_ENABLED.key, "false")
+    assert(!isCometShuffleEnabled(conf))
+    conf.setConfString(CometConf.COMET_SHUFFLE_CELEBORN_ENABLED.key, "true")
+
+    conf.setConfString("spark.io.encryption.enabled", "true")
+    assert(!isCometShuffleEnabled(conf))
+    conf.setConfString("spark.io.encryption.enabled", "false")
+    assert(isCometShuffleEnabled(conf))
+
     conf.setConfString(CometConf.COMET_EXEC_ENABLED.key, "false")
     assert(!isCometShuffleEnabled(conf))
 
@@ -144,6 +153,23 @@ class CometSparkSessionExtensionsSuite extends CometTestBase {
 
       assert(CometShuffleExchangeExec.shuffleSupported(shuffle).contains(CometNativeShuffle))
       assert(shuffle.getTagValue(CometExplainInfo.FALLBACK_REASONS).isEmpty)
+    }
+  }
+
+  test("Celeborn manager keeps encrypted Spark shuffle on the existing Celeborn path") {
+    val child = nativeShuffleChild()
+
+    withShuffleManagerSession(classOf[CometCelebornShuffleManager].getName, "native") { conf =>
+      conf.setConfString("spark.io.encryption.enabled", "true")
+      assert(!isCometShuffleEnabled(conf))
+
+      val shuffle = ShuffleExchangeExec(SinglePartition, child)
+      assert(CometShuffleExchangeExec.shuffleSupported(shuffle).isEmpty)
+      assert(
+        shuffle
+          .getTagValue(CometExplainInfo.FALLBACK_REASONS)
+          .getOrElse(Set.empty[String])
+          .exists(_.contains("spark.io.encryption.enabled=true")))
     }
   }
 

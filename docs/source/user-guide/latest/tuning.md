@@ -220,6 +220,32 @@ Comet provides a fully native shuffle implementation, which generally provides t
 supports `HashPartitioning`, `RangePartitioning` and `SinglePartitioning` but currently only supports primitive type
 partitioning keys. Columns that are not partitioning keys may contain complex types like maps, structs, and arrays.
 
+#### Apache Celeborn Remote Shuffle
+
+Comet native shuffle can write partition data to and read it from an existing Apache Celeborn remote shuffle
+service. Provide an Apache Celeborn 0.7.0 or newer Spark client on the driver and executor classpaths, then
+configure the composite shuffle manager and explicitly enable native shuffle:
+
+```
+spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometCelebornShuffleManager
+spark.celeborn.master.endpoints=celeborn-master:9097
+spark.comet.enabled=true
+spark.comet.exec.enabled=true
+spark.comet.shuffle.enabled=true
+spark.comet.shuffle.mode=native
+```
+
+The composite manager delegates ordinary Spark shuffles to Celeborn and uses native Comet shuffle only for
+supported exchanges whose child is already a Comet plan. Unsupported exchanges, the default `auto` shuffle mode,
+and JVM columnar shuffle remain on the existing Spark/Celeborn shuffle path. The Celeborn client is optional and
+is not bundled with Comet. Spark I/O encryption (`spark.io.encryption.enabled=true`) is not supported by the
+native remote shuffle path; encrypted applications continue to use the existing Spark/Celeborn shuffle path.
+
+Set `spark.comet.shuffle.celeborn.enabled=false` to disable Celeborn-backed partition pushers. The maximum
+complete partition frame size defaults to 64 MiB and can be configured with
+`spark.comet.shuffle.rss.maxFrameBytes`. The executor-wide in-flight push limit defaults to 256 MiB and can be
+configured with `spark.comet.shuffle.rss.maxInFlightBytes`.
+
 #### Columnar (JVM) Shuffle
 
 Comet Columnar shuffle is JVM-based and supports `HashPartitioning`, `RoundRobinPartitioning`, `RangePartitioning`, and

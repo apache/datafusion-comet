@@ -523,16 +523,20 @@ private[shuffle] object CelebornNativeShuffleDestination {
       pusher: CelebornShufflePartitionPusher,
       reportFailure: Throwable => Unit): ScheduledFuture[_] = {
     val handled = new AtomicBoolean(false)
+    def abortOnce(): Unit = {
+      if (handled.compareAndSet(false, true)) {
+        try pusher.abort()
+        catch {
+          case failure: Throwable => reportFailure(failure)
+        }
+      }
+    }
+
+    taskContext.addTaskFailureListener((_: TaskContext, _: Throwable) => abortOnce())
     cancellationWatcher.scheduleWithFixedDelay(
       new Runnable {
         override def run(): Unit = {
-          if ((taskContext.isInterrupted() || taskContext.isFailed()) &&
-            handled.compareAndSet(false, true)) {
-            try pusher.abort()
-            catch {
-              case failure: Throwable => reportFailure(failure)
-            }
-          }
+          if (taskContext.isInterrupted()) abortOnce()
         }
       },
       0L,

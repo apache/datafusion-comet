@@ -37,7 +37,7 @@ import scala.collection.Iterator;
 import org.apache.spark.shuffle.ShuffleReader;
 
 /** Exposes the pinned Celeborn read contract without making Celeborn a Comet test dependency. */
-public final class RecordingCelebornRawClient {
+public class RecordingCelebornRawClient {
 
   private static final AtomicBoolean BROADCAST_DECODER_REGISTERED = new AtomicBoolean(false);
 
@@ -61,6 +61,48 @@ public final class RecordingCelebornRawClient {
 
   public interface OptionalMetricsReporter {
     void incCelebornRemoteReadRetryCount(long count);
+  }
+
+  /** Also exposes the unmodified, 15-argument Apache Celeborn partition-reader API. */
+  public static final class StockApiClient extends RecordingCelebornRawClient {
+    public int stockReadPartitionCalls;
+
+    public InputStream readPartition(
+        int shuffleId,
+        int appShuffleId,
+        int partitionId,
+        int attemptNumber,
+        long taskId,
+        int startMapIndex,
+        int endMapIndex,
+        Object exceptionMaker,
+        ArrayList<Object> locations,
+        ArrayList<Object> streamHandlers,
+        Map<String, Object> pushFailedBatches,
+        Map<String, Object> chunksRange,
+        int[] mapAttempts,
+        MetricsCallback metricsCallback,
+        boolean needDecompress)
+        throws IOException {
+      stockReadPartitionCalls++;
+      return super.readPartition(
+          shuffleId,
+          appShuffleId,
+          partitionId,
+          attemptNumber,
+          taskId,
+          startMapIndex,
+          endMapIndex,
+          exceptionMaker,
+          locations,
+          streamHandlers,
+          pushFailedBatches,
+          chunksRange,
+          null,
+          mapAttempts,
+          metricsCallback,
+          needDecompress);
+    }
   }
 
   public static final class BackendReader implements ShuffleReader<Object, Object> {
