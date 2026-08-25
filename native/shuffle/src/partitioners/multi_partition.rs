@@ -566,15 +566,17 @@ impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
 
         with_trace("shuffle_spill", self.tracing_enabled, || {
             let num_output_partitions = self.partition_indices.len();
-            let mut partitioned_batches = self.partitioned_batches();
-
-            for partition_id in 0..num_output_partitions {
-                self.partition_writer.write(
-                    partition_id,
-                    &mut partitioned_batches.produce(partition_id, &self.metrics.interleave_time),
-                    &self.metrics,
-                )?;
-            }
+            let write_result = {
+                let mut partitioned_batches = self.partitioned_batches();
+                (0..num_output_partitions).try_for_each(|partition_id| {
+                    self.partition_writer.write(
+                        partition_id,
+                        &mut partitioned_batches
+                            .produce(partition_id, &self.metrics.interleave_time),
+                        &self.metrics,
+                    )
+                })
+            };
 
             let memory_spilled_bytes = self
                 .reservation
@@ -585,7 +587,7 @@ impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
             self.pinned_buffers.clear();
             self.repeated_spill_buffer_bytes = 0;
             self.metrics.spill_count.add(1);
-            Ok(())
+            write_result
         })
     }
 
@@ -660,5 +662,160 @@ impl<T: PartitionWriter> Debug for MultiPartitionShuffleRepartitioner<T> {
             .field("spilled_count", &self.spill_count())
             .field("data_size", &self.data_size())
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow::array::Int64Array;
+    use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
+
+    #[derive(Default)]
+    struct FailingPartitionWriter {
+        fail: bool,
+        write_calls: usize,
+    }
+
+    impl PartitionWriter for FailingPartitionWriter {
+        fn write<I>(
+            &mut self,
+            _pid: usize,
+            iter: &mut I,
+            _metrics: &ShufflePartitionerMetrics,
+        ) -> datafusion::common::Result<()>
+        where
+            I: Iterator<Item = datafusion::common::Result<RecordBatch>>,
+        {
+            self.write_calls += 1;
+            if self.fail {
+                return Err(DataFusionError::Execution(
+                    "injected write failure".to_string(),
+                ));
+            }
+            iter.try_for_each(|batch| batch.map(|_| ()))
+        }
+
+        fn finish_partition<I>(
+            &mut self,
+            pid: usize,
+            iter: &mut I,
+            metrics: &ShufflePartitionerMetrics,
+        ) -> datafusion::common::Result<()>
+        where
+            I: Iterator<Item = datafusion::common::Result<RecordBatch>>,
+        {
+            self.write(pid, iter, metrics)
+        }
+
+        fn finish_all(
+            &mut self,
+            _metrics: &ShufflePartitionerMetrics,
+        ) -> datafusion::common::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn spill_write_error_releases_buffered_memory() {
+        let batch = RecordBatch::try_from_iter([(
+            "a",
+            Arc::new(Int64Array::from(vec![0, 1, 2, 3])) as ArrayRef,
+        )])
+        .unwrap();
+        let buffer_bytes = batch.column(0).to_data().buffers()[0].capacity();
+        let runtime = Arc::new(RuntimeEnv::default());
+        let metrics_set = ExecutionPlanMetricsSet::new();
+        let mut repartitioner = MultiPartitionShuffleRepartitioner::try_new(
+            0,
+            FailingPartitionWriter::default(),
+            CometPartitioning::RoundRobin(2, 0),
+            ShufflePartitionerMetrics::new(&metrics_set, 0),
+            Arc::clone(&runtime),
+            2,
+            false,
+            Some(1),
+        )
+        .unwrap();
+
+        repartitioner
+            .buffer_partitioned_batch_may_spill(batch.slice(0, 2), &[0, 1], &[0, 1, 2])
+            .await
+            .unwrap();
+        assert_eq!(repartitioner.reservation.size(), 0);
+        assert_eq!(runtime.memory_pool.reserved(), 0);
+        assert!(repartitioner.pinned_buffers.is_empty());
+        assert_eq!(repartitioner.spill_accounted_input_buffers.len(), 1);
+        assert_eq!(repartitioner.repeated_spill_buffer_bytes, 0);
+        assert!(repartitioner.buffered_batches.is_empty());
+        assert!(repartitioner.partition_indices.iter().all(Vec::is_empty));
+        assert_eq!(repartitioner.partition_writer.write_calls, 2);
+        let successful_spill_bytes = repartitioner.metrics.memory_spilled_bytes.value();
+        assert_eq!(repartitioner.spill_count(), 1);
+        assert!(successful_spill_bytes > buffer_bytes);
+        assert_eq!(repartitioner.spilled_bytes(), 0);
+        assert_eq!(repartitioner.data_size(), buffer_bytes);
+
+        repartitioner.max_buffer_bytes = None;
+        repartitioner
+            .buffer_partitioned_batch_may_spill(batch.slice(2, 2), &[0, 1], &[0, 1, 2])
+            .await
+            .unwrap();
+        let reservation_before_failure = repartitioner.reservation.size();
+        let repeated_before_failure = repartitioner.repeated_spill_buffer_bytes;
+        let metrics_before_failure = (
+            repartitioner.spill_count(),
+            repartitioner.metrics.memory_spilled_bytes.value(),
+            repartitioner.spilled_bytes(),
+            repartitioner.data_size(),
+        );
+        assert_eq!(reservation_before_failure, successful_spill_bytes);
+        assert_eq!(runtime.memory_pool.reserved(), reservation_before_failure);
+        assert_eq!(repartitioner.pinned_buffers.len(), 1);
+        assert_eq!(repartitioner.spill_accounted_input_buffers.len(), 1);
+        assert_eq!(repeated_before_failure, buffer_bytes);
+        assert_eq!(repartitioner.buffered_batches.len(), 1);
+        assert_eq!(
+            repartitioner
+                .partition_indices
+                .iter()
+                .map(Vec::len)
+                .sum::<usize>(),
+            2
+        );
+        assert_eq!(repartitioner.partition_writer.write_calls, 2);
+        assert_eq!(
+            metrics_before_failure,
+            (1, successful_spill_bytes, 0, buffer_bytes * 2)
+        );
+
+        repartitioner.partition_writer.fail = true;
+        let error = repartitioner.spill(0).unwrap_err();
+        assert!(matches!(
+            error,
+            DataFusionError::Execution(message) if message == "injected write failure"
+        ));
+        assert_eq!(repartitioner.reservation.size(), 0);
+        assert_eq!(runtime.memory_pool.reserved(), 0);
+        assert!(repartitioner.pinned_buffers.is_empty());
+        assert_eq!(repartitioner.spill_accounted_input_buffers.len(), 1);
+        assert_eq!(repartitioner.repeated_spill_buffer_bytes, 0);
+        assert!(repartitioner.buffered_batches.is_empty());
+        assert!(repartitioner.partition_indices.iter().all(Vec::is_empty));
+        assert_eq!(repartitioner.partition_writer.write_calls, 3);
+        assert_eq!(
+            (
+                repartitioner.spill_count(),
+                repartitioner.metrics.memory_spilled_bytes.value(),
+                repartitioner.spilled_bytes(),
+                repartitioner.data_size(),
+            ),
+            (
+                metrics_before_failure.0 + 1,
+                metrics_before_failure.1 + reservation_before_failure - repeated_before_failure,
+                metrics_before_failure.2,
+                metrics_before_failure.3,
+            )
+        );
     }
 }
