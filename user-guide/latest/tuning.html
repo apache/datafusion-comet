@@ -998,6 +998,17 @@ repeated columnar-to-row and row-to-columnar conversions that dominate stage run
 when the number of columnar-to-row transitions exceeds
 <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.transitionRevert.maxTransitions</span></code> (default <code class="docutils literal notranslate"><span class="pre">2</span></code>). This trades native execution of a small
 subset of operators for eliminating conversion overhead across the stage.</p>
+<section id="entire-plan-fallback-for-wide-or-deeply-nested-schemas">
+<h3>Entire-Plan Fallback for Wide or Deeply Nested Schemas<a class="headerlink" href="#entire-plan-fallback-for-wide-or-deeply-nested-schemas" title="Link to this heading">#</a></h3>
+<p>The cost of each conversion also grows sharply with schema shape: for wide or deeply nested schemas,
+columnar-to-row conversion is especially expensive because the conversion work scales with the number of
+columns and nested fields. If profiling shows these conversions dominating a query over such a schema, set
+<code class="docutils literal notranslate"><span class="pre">spark.comet.exec.transitionRevert.enabled=true</span></code> and lower
+<code class="docutils literal notranslate"><span class="pre">spark.comet.exec.transitionRevert.maxTransitions</span></code> (default <code class="docutils literal notranslate"><span class="pre">2</span></code>) to <code class="docutils literal notranslate"><span class="pre">1</span></code>. Note that this causes the entire
+plan to fall back to Spark row-based execution — Comet removes its native operators rather than running a
+mix of native and fallback operators joined by repeated conversions — which can be cheaper than paying the
+expensive conversions again and again.</p>
+</section>
 </section>
 <section id="metrics-overhead">
 <h2>Metrics Overhead<a class="headerlink" href="#metrics-overhead" title="Link to this heading">#</a></h2>
@@ -1087,7 +1098,10 @@ fallback to Spark works, see <a class="reference internal" href="understanding-c
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#shuffle-compression">Shuffle Compression</a></li>
 </ul>
 </li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#reducing-row-columnar-conversion-overhead">Reducing Row/Columnar Conversion Overhead</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#reducing-row-columnar-conversion-overhead">Reducing Row/Columnar Conversion Overhead</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#entire-plan-fallback-for-wide-or-deeply-nested-schemas">Entire-Plan Fallback for Wide or Deeply Nested Schemas</a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#metrics-overhead">Metrics Overhead</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#explain-plan">Explain Plan</a></li>
 </ul>
