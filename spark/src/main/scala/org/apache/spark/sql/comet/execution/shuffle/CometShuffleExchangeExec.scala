@@ -51,7 +51,7 @@ import com.google.common.base.Objects
 
 import org.apache.comet.{CometConf, CometExplainInfo}
 import org.apache.comet.CometConf.{COMET_SHUFFLE_ENABLED, COMET_SHUFFLE_MODE}
-import org.apache.comet.CometSparkSessionExtensions.{hasFallbackReason, isCometShuffleManagerEnabled, withFallbackReasons}
+import org.apache.comet.CometSparkSessionExtensions.{hasFallbackReason, isCometShuffleEnabled, isCometShuffleManagerEnabled, withFallbackReasons}
 import org.apache.comet.serde.{Compatible, OperatorOuterClass, QueryPlanSerde, SupportLevel, Unsupported}
 import org.apache.comet.serde.operator.CometSink
 import org.apache.comet.shims.{CometTypeShim, ShimCometShuffleExchangeExec}
@@ -676,7 +676,13 @@ object CometShuffleExchangeExec
     if (!COMET_SHUFFLE_ENABLED.get(op.conf)) {
       Some(s"Comet shuffle is not enabled: ${COMET_SHUFFLE_ENABLED.key} is not enabled")
     } else if (!isCometShuffleManagerEnabled(op.conf)) {
-      Some(s"spark.shuffle.manager is not set to ${classOf[CometShuffleManager].getName}")
+      Some(
+        "spark.shuffle.manager is not set to " +
+          s"${classOf[CometShuffleManager].getName} or " +
+          classOf[CometCelebornShuffleManager].getName)
+    } else if (!isCometShuffleEnabled(op.conf)) {
+      Some(
+        "Celeborn-backed Comet shuffle is unavailable until its native writer and reader are wired")
     } else {
       None
     }

@@ -28,6 +28,7 @@ import org.apache.spark.sql.{SparkSession, SparkSessionExtensions}
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.trees.{TreeNode, TreeNodeTag}
 import org.apache.spark.sql.comet._
+import org.apache.spark.sql.comet.execution.shuffle.{CometCelebornShuffleManager, CometShuffleManager}
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.internal.SQLConf
 
@@ -121,6 +122,8 @@ class CometSparkSessionExtensions
 object CometSparkSessionExtensions extends Logging {
   lazy val isBigEndian: Boolean = ByteOrder.nativeOrder().equals(ByteOrder.BIG_ENDIAN)
 
+  private val SHUFFLE_MANAGER_KEY = "spark.shuffle.manager"
+
   /**
    * Checks whether Comet extension should be loaded for Spark.
    */
@@ -137,7 +140,8 @@ object CometSparkSessionExtensions extends Logging {
     if (COMET_SHUFFLE_ENABLED.get(conf) && !isCometShuffleManagerEnabled(conf)) {
       logWarning(
         "Comet extension is disabled because spark.shuffle.manager is not set to " +
-          "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager. " +
+          s"${classOf[CometShuffleManager].getName} or " +
+          s"${classOf[CometCelebornShuffleManager].getName}. " +
           "Comet provides limited benefit without its shuffle manager. " +
           s"Set ${COMET_SHUFFLE_ENABLED.key}=false to keep Comet enabled with " +
           "Spark's default shuffle manager.")
@@ -173,16 +177,18 @@ object CometSparkSessionExtensions extends Logging {
     }
   }
 
-  // Check whether Comet shuffle is enabled:
-  // 1. `COMET_SHUFFLE_ENABLED` is true
-  // 2. `spark.shuffle.manager` is set to `CometShuffleManager`
-  // 3. Off-heap memory is enabled || Spark/Comet unit testing
+  // The Celeborn manager is valid for loading Comet, but its native shuffle writer and reader
+  // are not wired yet. Keep exchanges on Celeborn's existing Spark shuffle path until they are.
   def isCometShuffleEnabled(conf: SQLConf): Boolean =
-    COMET_SHUFFLE_ENABLED.get(conf) && isCometShuffleManagerEnabled(conf)
+    COMET_SHUFFLE_ENABLED.get(conf) && isCometShuffleManagerEnabled(conf) &&
+      conf.getConfString(SHUFFLE_MANAGER_KEY) != classOf[CometCelebornShuffleManager].getName
 
   def isCometShuffleManagerEnabled(conf: SQLConf): Boolean = {
-    conf.contains("spark.shuffle.manager") && conf.getConfString("spark.shuffle.manager") ==
-      "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager"
+    conf.contains(SHUFFLE_MANAGER_KEY) && {
+      val manager = conf.getConfString(SHUFFLE_MANAGER_KEY)
+      manager == classOf[CometShuffleManager].getName ||
+      manager == classOf[CometCelebornShuffleManager].getName
+    }
   }
 
   def isCometScan(op: SparkPlan): Boolean = {

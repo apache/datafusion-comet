@@ -21,6 +21,9 @@ package org.apache.comet
 
 import org.apache.spark.SparkConf
 import org.apache.spark.sql._
+import org.apache.spark.sql.catalyst.plans.physical.SinglePartition
+import org.apache.spark.sql.comet.execution.shuffle.{CometCelebornShuffleManager, CometShuffleExchangeExec, CometShuffleManager}
+import org.apache.spark.sql.execution.exchange.ShuffleExchangeExec
 import org.apache.spark.sql.internal.SQLConf
 
 class CometSparkSessionExtensionsSuite extends CometTestBase {
@@ -53,7 +56,7 @@ class CometSparkSessionExtensionsSuite extends CometTestBase {
     NativeBase.setLoaded(true)
   }
 
-  test("isCometLoaded requires CometShuffleManager when shuffle.enabled=true") {
+  test("isCometLoaded requires a supported Comet shuffle manager when shuffle.enabled=true") {
     val conf = new SQLConf
     conf.setConfString(CometConf.COMET_ENABLED.key, "true")
 
@@ -66,10 +69,61 @@ class CometSparkSessionExtensionsSuite extends CometTestBase {
 
     // shuffle.enabled=true with the Comet shuffle manager registered: Comet should load.
     conf.setConfString(CometConf.COMET_SHUFFLE_ENABLED.key, "true")
+    conf.setConfString("spark.shuffle.manager", classOf[CometShuffleManager].getName)
+    assert(isCometLoaded(conf))
+    assert(isCometShuffleManagerEnabled(conf))
+    assert(isCometShuffleEnabled(conf))
+  }
+
+  test("Celeborn manager loads Comet without enabling its unfinished native shuffle transport") {
+    val conf = new SQLConf
+    conf.setConfString(CometConf.COMET_ENABLED.key, "true")
+    conf.setConfString(CometConf.COMET_SHUFFLE_ENABLED.key, "true")
+    conf.setConfString("spark.shuffle.manager", classOf[CometCelebornShuffleManager].getName)
+
+    assert(isCometShuffleManagerEnabled(conf))
+    assert(isCometLoaded(conf))
+    assert(!isCometShuffleEnabled(conf))
+  }
+
+  test("Celeborn manager leaves shuffle exchanges on its existing Spark shuffle path") {
+    val child = spark.emptyDataFrame.queryExecution.executedPlan
+    val session = spark.newSession()
+    val conf = session.sessionState.conf
+    conf.setConfString(CometConf.COMET_ENABLED.key, "true")
+    conf.setConfString(CometConf.COMET_SHUFFLE_ENABLED.key, "true")
+    conf.setConfString("spark.shuffle.manager", classOf[CometCelebornShuffleManager].getName)
+
+    val previousActiveSession = SparkSession.getActiveSession
+    try {
+      SparkSession.setActiveSession(session)
+      val shuffle = ShuffleExchangeExec(SinglePartition, child)
+
+      assert(CometShuffleExchangeExec.shuffleSupported(shuffle).isEmpty)
+      assert(
+        shuffle
+          .getTagValue(CometExplainInfo.FALLBACK_REASONS)
+          .getOrElse(Set.empty[String])
+          .exists(_.contains("Celeborn-backed Comet shuffle is unavailable")))
+    } finally {
+      previousActiveSession match {
+        case Some(previousSession) => SparkSession.setActiveSession(previousSession)
+        case None => SparkSession.clearActiveSession()
+      }
+    }
+  }
+
+  test("stock Celeborn manager does not satisfy Comet shuffle-manager requirements") {
+    val conf = new SQLConf
+    conf.setConfString(CometConf.COMET_ENABLED.key, "true")
+    conf.setConfString(CometConf.COMET_SHUFFLE_ENABLED.key, "true")
     conf.setConfString(
       "spark.shuffle.manager",
-      "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
-    assert(isCometLoaded(conf))
+      "org.apache.spark.shuffle.celeborn.SparkShuffleManager")
+
+    assert(!isCometShuffleManagerEnabled(conf))
+    assert(!isCometShuffleEnabled(conf))
+    assert(!isCometLoaded(conf))
   }
 
   test("Arrow properties") {
