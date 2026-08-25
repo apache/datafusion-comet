@@ -333,6 +333,28 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
       case _: SpecifiedWindowFrame => false
       case _ => true
     }
+    if (isEverExpanding) {
+      windowExpr.windowFunction match {
+        case agg: AggregateExpression =>
+          agg.aggregateFunction match {
+            case a: Average =>
+              a.sumDataType match {
+                case decimal: DecimalType if decimal.precision == DecimalType.MAX_PRECISION =>
+                  // Spark can preserve an out-of-precision intermediate sum in a window
+                  // buffer until AVG divides it by the count. Comet's decimal accumulator
+                  // instead records overflow immediately, so keep these windows in Spark
+                  // when the intermediate precision cannot be widened any further.
+                  withFallbackReason(
+                    windowExpr,
+                    "AVG on DECIMAL with maximum-precision intermediate state is not supported")
+                  return None
+                case _ =>
+              }
+            case _ =>
+          }
+        case _ =>
+      }
+    }
     if (!isEverExpanding) {
       windowExpr.windowFunction match {
         case agg: AggregateExpression =>
