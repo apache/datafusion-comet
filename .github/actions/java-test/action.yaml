@@ -89,6 +89,7 @@ runs:
         key: ${{ runner.os }}-${{ runner.arch }}-maven-wrapper-${{ hashFiles('.mvn/wrapper/maven-wrapper.properties') }}
 
     # Retry only the wrapper download, never compilation or test execution.
+    # Delays use exponential backoff (10s, 20s, 40s) plus 0-4s of random jitter.
     - name: Bootstrap Maven
       shell: bash
       run: |
