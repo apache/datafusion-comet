@@ -16,6 +16,7 @@
 // under the License.
 
 use std::io::{self, Cursor, Seek, SeekFrom, Write};
+use std::sync::Arc;
 
 use arrow::record_batch::RecordBatch;
 use datafusion::common::{DataFusionError, Result};
@@ -32,6 +33,12 @@ use crate::ShuffleBlockWriter;
 /// cancellation, and commit; they must not split a frame into independently interleavable pushes.
 pub trait PartitionPusher: Send + Sync {
     fn push_partition_data(&self, partition_id: usize, frame: &[u8]) -> Result<()>;
+}
+
+impl<P: PartitionPusher + ?Sized> PartitionPusher for Arc<P> {
+    fn push_partition_data(&self, partition_id: usize, frame: &[u8]) -> Result<()> {
+        self.as_ref().push_partition_data(partition_id, frame)
+    }
 }
 
 impl PartitionPusher for JavaShufflePartitionPusher {
@@ -64,6 +71,19 @@ impl<P: PartitionPusher> RssPartitionWriter<P> {
         num_partitions: usize,
         max_frame_bytes: usize,
     ) -> Result<Self> {
+        Self::validate_options(num_partitions, max_frame_bytes)?;
+        Ok(Self {
+            pusher,
+            block_writer,
+            num_partitions,
+            max_frame_bytes,
+            next_partition: 0,
+            finished: false,
+            failed: false,
+        })
+    }
+
+    pub(crate) fn validate_options(num_partitions: usize, max_frame_bytes: usize) -> Result<()> {
         if num_partitions == 0 || num_partitions > i32::MAX as usize {
             return Err(DataFusionError::Configuration(
                 "Invalid RSS partition count".into(),
@@ -74,15 +94,7 @@ impl<P: PartitionPusher> RssPartitionWriter<P> {
                 "Invalid RSS frame byte limit".into(),
             ));
         }
-        Ok(Self {
-            pusher,
-            block_writer,
-            num_partitions,
-            max_frame_bytes,
-            next_partition: 0,
-            finished: false,
-            failed: false,
-        })
+        Ok(())
     }
 
     /// Encodes and synchronously submits one batch. A failed writer cannot be reused.
