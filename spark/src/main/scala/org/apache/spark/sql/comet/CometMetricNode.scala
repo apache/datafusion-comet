@@ -19,6 +19,8 @@
 
 package org.apache.spark.sql.comet
 
+import java.util.IdentityHashMap
+
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.{SparkContext, TaskContext}
@@ -59,6 +61,23 @@ case class CometMetricNode(metrics: Map[String, SQLMetric], children: Seq[CometM
   def leafNodes: Seq[CometMetricNode] = {
     if (children.isEmpty) Seq(this)
     else children.flatMap(_.leafNodes)
+  }
+
+  private[comet] def sumMetricValues(metricName: String): Long = {
+    val seenMetrics = new IdentityHashMap[SQLMetric, java.lang.Boolean]()
+
+    def sumFromNode(metricNode: CometMetricNode): Long = {
+      val nodeValue = metricNode.metrics.get(metricName).fold(0L) { metric =>
+        if (seenMetrics.put(metric, java.lang.Boolean.TRUE) == null) {
+          math.max(metric.value, 0L)
+        } else {
+          0L
+        }
+      }
+      nodeValue + metricNode.children.iterator.map(sumFromNode).sum
+    }
+
+    sumFromNode(this)
   }
 
   /**
@@ -105,8 +124,8 @@ case class CometMetricNode(metrics: Map[String, SQLMetric], children: Seq[CometM
   }
 
   /**
-   * Reports this node's native shuffle spill metrics to Spark's task metrics, preserving the
-   * distinction between on-disk bytes and uncompressed in-memory bytes.
+   * Reports this node's and its descendants' native shuffle spill metrics to Spark's task
+   * metrics, preserving the distinction between on-disk bytes and uncompressed in-memory bytes.
    *
    * Must be registered on the task thread before [[org.apache.comet.CometExecIterator]] so its
    * completion listener publishes final SQL metrics before this listener runs, including when the
@@ -114,17 +133,14 @@ case class CometMetricNode(metrics: Map[String, SQLMetric], children: Seq[CometM
    */
   def reportSpillMetrics(ctx: TaskContext): Unit = {
     ctx.addTaskCompletionListener[Unit] { _ =>
-      metrics.get("spilled_bytes").foreach { metric =>
-        val spilledBytes = metric.value
-        if (spilledBytes > 0L) {
-          ctx.taskMetrics().incDiskBytesSpilled(spilledBytes)
-        }
+      val diskBytesSpilled = sumMetricValues("spilled_bytes")
+      if (diskBytesSpilled > 0L) {
+        ctx.taskMetrics().incDiskBytesSpilled(diskBytesSpilled)
       }
-      metrics.get("memory_spilled_bytes").foreach { metric =>
-        val spilledBytes = metric.value
-        if (spilledBytes > 0L) {
-          ctx.taskMetrics().incMemoryBytesSpilled(spilledBytes)
-        }
+
+      val memoryBytesSpilled = sumMetricValues("memory_spilled_bytes")
+      if (memoryBytesSpilled > 0L) {
+        ctx.taskMetrics().incMemoryBytesSpilled(memoryBytesSpilled)
       }
     }
   }
