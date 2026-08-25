@@ -28,6 +28,7 @@ import java.lang.reflect.Proxy;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.IdentityHashMap;
+import java.util.Map;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
@@ -55,6 +56,7 @@ public final class CelebornShufflePartitionPusher implements ShufflePartitionPus
   private final Method getPushState;
   private final Method setPushMetricsCallback;
   private final Class<?> pushMetricsCallbackClass;
+  private final Field clientPushStates;
   private final Field inFlightRequestTracker;
   private final Field totalInFlightRequests;
   private final Field pushStateException;
@@ -232,6 +234,7 @@ public final class CelebornShufflePartitionPusher implements ShufflePartitionPus
     final Method getPushStateMethod;
     final Method setPushMetricsCallbackMethod;
     final Class<?> pushMetricsCallbackClass;
+    final Field clientPushStatesField;
     final Field inFlightRequestTrackerField;
     final Field totalInFlightRequestsField;
     final Field pushStateExceptionField;
@@ -240,6 +243,7 @@ public final class CelebornShufflePartitionPusher implements ShufflePartitionPus
       setPushMetricsCallbackMethod = resolvePushMetricsCallback(getPushStateMethod.getReturnType());
       pushMetricsCallbackClass = setPushMetricsCallbackMethod.getParameterTypes()[0];
       pushMetricsCallbackClass.getMethod("incPushDataCount", long.class);
+      clientPushStatesField = resolveClientPushStates(shuffleClient.getClass());
       inFlightRequestTrackerField =
           getPushStateMethod.getReturnType().getDeclaredField("inFlightRequestTracker");
       totalInFlightRequestsField =
@@ -251,6 +255,7 @@ public final class CelebornShufflePartitionPusher implements ShufflePartitionPus
       if (pushStateExceptionField.getType() != AtomicReference.class) {
         throw new NoSuchFieldException("PushState.exception: AtomicReference");
       }
+      clientPushStatesField.setAccessible(true);
       inFlightRequestTrackerField.setAccessible(true);
       totalInFlightRequestsField.setAccessible(true);
       pushStateExceptionField.setAccessible(true);
@@ -273,6 +278,7 @@ public final class CelebornShufflePartitionPusher implements ShufflePartitionPus
     this.getPushState = getPushStateMethod;
     this.setPushMetricsCallback = setPushMetricsCallbackMethod;
     this.pushMetricsCallbackClass = pushMetricsCallbackClass;
+    this.clientPushStates = clientPushStatesField;
     this.inFlightRequestTracker = inFlightRequestTrackerField;
     this.totalInFlightRequests = totalInFlightRequestsField;
     this.pushStateException = pushStateExceptionField;
@@ -295,6 +301,22 @@ public final class CelebornShufflePartitionPusher implements ShufflePartitionPus
       }
     }
     throw new NoSuchMethodException("PushState.setMetricsCallback");
+  }
+
+  private static Field resolveClientPushStates(Class<?> clientClass) throws NoSuchFieldException {
+    for (Class<?> current = clientClass; current != null; current = current.getSuperclass()) {
+      try {
+        Field field = current.getDeclaredField("pushStates");
+        if (!Map.class.isAssignableFrom(field.getType())
+            || Modifier.isStatic(field.getModifiers())) {
+          throw new NoSuchFieldException("ShuffleClientImpl.pushStates: instance Map");
+        }
+        return field;
+      } catch (NoSuchFieldException ignored) {
+        // Test clients and application wrappers can declare the pinned field on a superclass.
+      }
+    }
+    throw new NoSuchFieldException("ShuffleClientImpl.pushStates: instance Map");
   }
 
   private static Method resolveLifecycleMethod(
@@ -406,12 +428,14 @@ public final class CelebornShufflePartitionPusher implements ShufflePartitionPus
         }
 
         if (submitted && isAborted()) {
-          // Cleanup can remove the initial state while Celeborn resolves locations. Capture the
-          // recreated state's actual in-flight count before this submission becomes observable.
-          final Object resumedPushState =
-              getPushState.invoke(shuffleClient, shuffleId + "-" + mapId + "-" + encodedAttemptId);
-          observedPushState = observePushState(resumedPushState);
-          if (resumedPushState != pushState) {
+          // Cleanup removes the map entry, but Celeborn can still submit using the PushState it
+          // already captured. A side-effect-free lookup distinguishes that state from a genuine
+          // post-cleanup replacement without creating an empty state and losing the live request.
+          Object resumedPushState =
+              ((Map<?, ?>) clientPushStates.get(shuffleClient))
+                  .get(shuffleId + "-" + mapId + "-" + encodedAttemptId);
+          if (resumedPushState != null && resumedPushState != pushState) {
+            observedPushState = observePushState(resumedPushState);
             recoverUnobservedFailure(observedPushState);
           }
         }

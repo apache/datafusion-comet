@@ -374,6 +374,83 @@ class CometCelebornShuffleManagerSuite extends AnyFunSuite {
     assert(!prepared.requiresGenerationResolution)
   }
 
+  test("a replacement generation preserves another partition's previously reported failure") {
+    val sparkCoordinator = new OutputCommitCoordinator(new SparkConf(false), true)
+    val coordinator = new CelebornShuffleGenerationCoordinator(sparkCoordinator)
+    val stageId = 80
+    sparkCoordinator.getClass
+      .getMethod("stageStart", java.lang.Integer.TYPE, java.lang.Integer.TYPE)
+      .invoke(sparkCoordinator, Int.box(stageId), Int.box(1))
+
+    val originalGeneration = PrepareCelebornShuffleGeneration(12, 91, stageId, 0, 2)
+    assert(coordinator.prepareGeneration(originalGeneration))
+    assert(coordinator.claimMapAttempt(ClaimCelebornMapAttempt(12, stageId, 0, 0, 0)).authorized)
+
+    // Partition zero fails while resolving its input, before it can ask Comet for a writer.
+    sparkCoordinator.getClass
+      .getMethod(
+        "taskCompleted",
+        java.lang.Integer.TYPE,
+        java.lang.Integer.TYPE,
+        java.lang.Integer.TYPE,
+        java.lang.Integer.TYPE,
+        classOf[TaskEndReason])
+      .invoke(
+        sparkCoordinator,
+        Int.box(stageId),
+        Int.box(1),
+        Int.box(0),
+        Int.box(0),
+        UnknownReason)
+
+    // Partition one is the first replacement-stage mapper to prepare the new generation.
+    val firstReplacementClaim =
+      coordinator.claimMapAttempt(ClaimCelebornMapAttempt(12, stageId, 1, 1, 0))
+    assert(firstReplacementClaim.authorized)
+    val replacementGeneration = PrepareCelebornShuffleGeneration(12, 92, stageId, 1, 2)
+    val preparedReplacement = coordinator.prepareGenerationAndClaim(
+      replacementGeneration.copy(
+        mapId = 1,
+        taskAttempt = 0,
+        claimEpoch = firstReplacementClaim.epoch,
+        claimAuthorized = firstReplacementClaim.authorized))
+    assert(preparedReplacement.authorized)
+
+    // Its peer's already-failed attempt must not become a phantom commit owner after the reset.
+    val retry = coordinator.claimMapAttempt(ClaimCelebornMapAttempt(12, stageId, 1, 0, 1))
+    assert(retry.authorized)
+    val preparedRetry = coordinator.prepareGenerationAndClaim(
+      replacementGeneration.copy(
+        mapId = 0,
+        taskAttempt = 1,
+        claimEpoch = retry.epoch,
+        claimAuthorized = retry.authorized))
+    assert(preparedRetry.authorized)
+    assert(preparedRetry.epoch == preparedReplacement.epoch)
+  }
+
+  test("a replacement generation cannot recreate a completed Spark stage") {
+    val sparkCoordinator = new OutputCommitCoordinator(new SparkConf(false), true)
+    val coordinator = new CelebornShuffleGenerationCoordinator(sparkCoordinator)
+    val stageId = 81
+    sparkCoordinator.getClass
+      .getMethod("stageStart", java.lang.Integer.TYPE, java.lang.Integer.TYPE)
+      .invoke(sparkCoordinator, Int.box(stageId), Int.box(0))
+
+    val originalGeneration = PrepareCelebornShuffleGeneration(13, 91, stageId, 0, 1)
+    assert(coordinator.prepareGeneration(originalGeneration))
+    sparkCoordinator.getClass
+      .getMethod("stageEnd", java.lang.Integer.TYPE)
+      .invoke(sparkCoordinator, Int.box(stageId))
+
+    val failure = intercept[IllegalStateException] {
+      coordinator.prepareGeneration(
+        originalGeneration.copy(celebornShuffleId = 92, stageAttempt = 1))
+    }
+    assert(failure.getMessage.contains(s"stage $stageId"))
+    assert(sparkCoordinator.isEmpty)
+  }
+
   test("a replacement-stage original blocks speculation before its generation is resolved") {
     val sparkCoordinator = new OutputCommitCoordinator(new SparkConf(false), true)
     val coordinator = new CelebornShuffleGenerationCoordinator(sparkCoordinator)

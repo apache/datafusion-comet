@@ -525,6 +525,30 @@ private[shuffle] final class CelebornShuffleGenerationCoordinator(
     }
   }
 
+  private def resetSparkCommitOwners(generation: PrepareCelebornShuffleGeneration): Unit =
+    outputCommitCoordinator.synchronized {
+      val stageStatesField = classOf[OutputCommitCoordinator].getDeclaredField("stageStates")
+      stageStatesField.setAccessible(true)
+      val stageStates = stageStatesField
+        .get(outputCommitCoordinator)
+        .asInstanceOf[mutable.Map[Int, AnyRef]]
+      val stageState = stageStates.getOrElse(
+        generation.stageId,
+        throw new IllegalStateException(
+          s"Spark output commit state is unavailable for stage ${generation.stageId}"))
+      val authorizedCommitters = stageState.getClass
+        .getMethod("authorizedCommitters")
+        .invoke(stageState)
+        .asInstanceOf[Array[AnyRef]]
+      require(
+        authorizedCommitters.length == generation.numMappers,
+        s"Spark output commit mapper count ${authorizedCommitters.length} does not match " +
+          s"Celeborn mapper count ${generation.numMappers}")
+
+      // Ending and restarting the stage would also erase failures that Spark has already recorded.
+      java.util.Arrays.fill(authorizedCommitters, null)
+    }
+
   def claimMapAttempt(claim: ClaimCelebornMapAttempt): CelebornMapAttemptClaim = synchronized {
     val previousGeneration = generations.get(claim.shuffleId)
     val stale = previousGeneration.exists { generation =>
@@ -598,18 +622,7 @@ private[shuffle] final class CelebornShuffleGenerationCoordinator(
             previous.stageAttempt == generation.stageAttempt =>
         previous.celebornShuffleId == generation.celebornShuffleId
       case Some(previous) if previous.celebornShuffleId != generation.celebornShuffleId =>
-        // Spark scopes these lifecycle methods private[scheduler] despite public JVM methods.
-        outputCommitCoordinator.synchronized {
-          outputCommitCoordinator.getClass
-            .getMethod("stageEnd", java.lang.Integer.TYPE)
-            .invoke(outputCommitCoordinator, Int.box(generation.stageId))
-          outputCommitCoordinator.getClass
-            .getMethod("stageStart", java.lang.Integer.TYPE, java.lang.Integer.TYPE)
-            .invoke(
-              outputCommitCoordinator,
-              Int.box(generation.stageId),
-              Int.box(generation.numMappers - 1))
-        }
+        resetSparkCommitOwners(generation)
         invalidateOwners(generation.shuffleId)
         invalidatedGenerations.remove(generation.shuffleId)
         generations.update(generation.shuffleId, generation)

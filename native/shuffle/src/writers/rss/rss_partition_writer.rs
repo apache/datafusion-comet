@@ -168,10 +168,12 @@ impl<P: PartitionPusher> RssPartitionWriter<P> {
         // compacting first; ordinary oversized batches can still be split before admission.
         let original_ipc_data_size = Self::estimated_pre_compaction_ipc_data_size(batch)?;
         let compaction_scratch = Self::estimated_compaction_scratch(batch)?;
-        if compaction_scratch == 0
-            && original_ipc_data_size > self.max_frame_bytes
-            && batch.num_rows() > 1
-        {
+        // Dictionary compaction can shrink values but cannot remove keys, list/map offsets, or
+        // other ordinary columns. Split before admission when those surviving buffers alone make
+        // one frame impossible, even if a different or nested column contains a dictionary.
+        let minimum_compacted_ipc_data_size =
+            Self::estimated_minimum_compacted_ipc_data_size(batch)?;
+        if minimum_compacted_ipc_data_size > self.max_frame_bytes && batch.num_rows() > 1 {
             return self.write_split_batch(partition_id, batch, encode_time, write_time);
         }
 
@@ -300,11 +302,31 @@ impl<P: PartitionPusher> RssPartitionWriter<P> {
     /// dictionary values remain fully charged because dense garbage collection traverses them.
     fn estimated_pre_compaction_ipc_data_size(batch: &RecordBatch) -> Result<usize> {
         batch.columns().iter().try_fold(0usize, |total, column| {
-            Ok(total.saturating_add(Self::estimated_live_array_ipc_data_size(column.as_ref())?))
+            Ok(
+                total.saturating_add(Self::estimated_live_array_ipc_data_size(
+                    column.as_ref(),
+                    true,
+                )?),
+            )
         })
     }
 
-    fn estimated_live_array_ipc_data_size(array: &dyn Array) -> Result<usize> {
+    /// Lower-bound the IPC buffers that must survive any dictionary-value compaction.
+    fn estimated_minimum_compacted_ipc_data_size(batch: &RecordBatch) -> Result<usize> {
+        batch.columns().iter().try_fold(0usize, |total, column| {
+            Ok(
+                total.saturating_add(Self::estimated_live_array_ipc_data_size(
+                    column.as_ref(),
+                    false,
+                )?),
+            )
+        })
+    }
+
+    fn estimated_live_array_ipc_data_size(
+        array: &dyn Array,
+        include_dictionary_values: bool,
+    ) -> Result<usize> {
         let data = array.to_data();
         let child_logical = data.child_data().iter().try_fold(0usize, |total, child| {
             Ok::<_, DataFusionError>(total.saturating_add(child.get_slice_memory_size()?))
@@ -319,7 +341,14 @@ impl<P: PartitionPusher> RssPartitionWriter<P> {
 
         let children =
             if let Some(dictionary) = array.as_any_dictionary_opt() {
-                Self::estimated_live_array_ipc_data_size(dictionary.values().as_ref())?
+                if include_dictionary_values {
+                    Self::estimated_live_array_ipc_data_size(
+                        dictionary.values().as_ref(),
+                        include_dictionary_values,
+                    )?
+                } else {
+                    0
+                }
             } else {
                 match array.data_type() {
                     DataType::List(_) => {
@@ -328,7 +357,10 @@ impl<P: PartitionPusher> RssPartitionWriter<P> {
                         let start = offsets[0] as usize;
                         let end = offsets[offsets.len() - 1] as usize;
                         let live_values = list.values().slice(start, end - start);
-                        Self::estimated_live_array_ipc_data_size(live_values.as_ref())?
+                        Self::estimated_live_array_ipc_data_size(
+                            live_values.as_ref(),
+                            include_dictionary_values,
+                        )?
                     }
                     DataType::LargeList(_) => {
                         let list = array.as_any().downcast_ref::<LargeListArray>().unwrap();
@@ -336,11 +368,17 @@ impl<P: PartitionPusher> RssPartitionWriter<P> {
                         let start = offsets[0] as usize;
                         let end = offsets[offsets.len() - 1] as usize;
                         let live_values = list.values().slice(start, end - start);
-                        Self::estimated_live_array_ipc_data_size(live_values.as_ref())?
+                        Self::estimated_live_array_ipc_data_size(
+                            live_values.as_ref(),
+                            include_dictionary_values,
+                        )?
                     }
                     DataType::FixedSizeList(_, _) => {
                         let list = array.as_any().downcast_ref::<FixedSizeListArray>().unwrap();
-                        Self::estimated_live_array_ipc_data_size(list.values().as_ref())?
+                        Self::estimated_live_array_ipc_data_size(
+                            list.values().as_ref(),
+                            include_dictionary_values,
+                        )?
                     }
                     DataType::Struct(_) => {
                         let structure = array.as_any().downcast_ref::<StructArray>().unwrap();
@@ -349,7 +387,10 @@ impl<P: PartitionPusher> RssPartitionWriter<P> {
                             .iter()
                             .try_fold(0usize, |total, column| {
                                 Ok::<_, DataFusionError>(total.saturating_add(
-                                    Self::estimated_live_array_ipc_data_size(column.as_ref())?,
+                                    Self::estimated_live_array_ipc_data_size(
+                                        column.as_ref(),
+                                        include_dictionary_values,
+                                    )?,
                                 ))
                             })?
                     }
@@ -359,7 +400,10 @@ impl<P: PartitionPusher> RssPartitionWriter<P> {
                         let start = offsets[0] as usize;
                         let end = offsets[offsets.len() - 1] as usize;
                         let live_entries = map.entries().slice(start, end - start);
-                        Self::estimated_live_array_ipc_data_size(&live_entries)?
+                        Self::estimated_live_array_ipc_data_size(
+                            &live_entries,
+                            include_dictionary_values,
+                        )?
                     }
                     _ => data.child_data().iter().try_fold(0usize, |total, child| {
                         let logical = child.get_slice_memory_size()?;
@@ -1599,6 +1643,233 @@ mod tests {
             assert_eq!(recorded.frames.len(), 1);
             assert_eq!(
                 read_ipc_compressed(&recorded.frames[0][16..]).unwrap(),
+                input
+            );
+        }
+    }
+
+    #[test]
+    fn rss_partition_writer_splits_oversized_lists_and_maps_before_admission() {
+        struct BoundedAdmissionPusher {
+            recorder: ReservationRecordingPusher,
+            capacity: usize,
+        }
+
+        impl PartitionPusher for BoundedAdmissionPusher {
+            fn reserve_partition_data(&self, reservation_bytes: usize) -> Result<()> {
+                if reservation_bytes > self.capacity {
+                    return Err(DataFusionError::External(Box::new(io::Error::other(
+                        "nested batch exceeded admission before it was split",
+                    ))));
+                }
+                self.recorder.reserve_partition_data(reservation_bytes)
+            }
+
+            fn release_partition_data_reservation(&self) -> Result<()> {
+                self.recorder.release_partition_data_reservation()
+            }
+
+            fn push_partition_data(&self, partition_id: usize, frame: &[u8]) -> Result<()> {
+                self.recorder.push_partition_data(partition_id, frame)
+            }
+        }
+
+        let row_count = 4_096;
+        let values: ArrayRef = Arc::new(Int32Array::from_iter_values(0..row_count));
+        let offsets = OffsetBuffer::new((0..=row_count).collect::<Vec<i32>>().into());
+        let item = Arc::new(Field::new("item", DataType::Int32, false));
+        let list = ListArray::try_new(
+            Arc::clone(&item),
+            offsets.clone(),
+            Arc::clone(&values),
+            None,
+        )
+        .unwrap();
+        let list_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "items",
+                DataType::List(item),
+                false,
+            )])),
+            vec![Arc::new(list)],
+        )
+        .unwrap();
+
+        let fields = vec![
+            Arc::new(Field::new("key", DataType::Int32, false)),
+            Arc::new(Field::new("value", DataType::Int32, false)),
+        ];
+        let entries = StructArray::try_new(
+            fields.clone().into(),
+            vec![Arc::clone(&values), Arc::clone(&values)],
+            None,
+        )
+        .unwrap();
+        let entry = Arc::new(Field::new(
+            "entries",
+            DataType::Struct(fields.into()),
+            false,
+        ));
+        let map =
+            MapArray::try_new(Arc::clone(&entry), offsets.clone(), entries, None, false).unwrap();
+        let map_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "entries",
+                DataType::Map(entry, false),
+                false,
+            )])),
+            vec![Arc::new(map)],
+        )
+        .unwrap();
+
+        let dictionary_type =
+            DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Int32));
+        let tiny_dictionary: ArrayRef = Arc::new(
+            DictionaryArray::<Int32Type>::try_new(
+                Int32Array::from(vec![0; row_count as usize]),
+                Arc::new(Int32Array::from(vec![42])),
+            )
+            .unwrap(),
+        );
+        let dictionary_field = Field::new("dictionary", dictionary_type.clone(), false);
+
+        let mixed_list_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                list_batch.schema().field(0).clone(),
+                dictionary_field.clone(),
+            ])),
+            vec![
+                Arc::clone(list_batch.column(0)),
+                Arc::clone(&tiny_dictionary),
+            ],
+        )
+        .unwrap();
+        let mixed_map_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                map_batch.schema().field(0).clone(),
+                dictionary_field,
+            ])),
+            vec![
+                Arc::clone(map_batch.column(0)),
+                Arc::clone(&tiny_dictionary),
+            ],
+        )
+        .unwrap();
+
+        let dictionary_item = Arc::new(Field::new("item", dictionary_type.clone(), false));
+        let nested_list = ListArray::try_new(
+            Arc::clone(&dictionary_item),
+            offsets.clone(),
+            Arc::clone(&tiny_dictionary),
+            None,
+        )
+        .unwrap();
+        let nested_dictionary_list_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "items",
+                DataType::List(dictionary_item),
+                false,
+            )])),
+            vec![Arc::new(nested_list)],
+        )
+        .unwrap();
+
+        let dictionary_entries_fields = vec![
+            Arc::new(Field::new("key", DataType::Int32, false)),
+            Arc::new(Field::new("value", dictionary_type, false)),
+        ];
+        let dictionary_entries = StructArray::try_new(
+            dictionary_entries_fields.clone().into(),
+            vec![values, tiny_dictionary],
+            None,
+        )
+        .unwrap();
+        let dictionary_entry = Arc::new(Field::new(
+            "entries",
+            DataType::Struct(dictionary_entries_fields.into()),
+            false,
+        ));
+        let nested_map = MapArray::try_new(
+            Arc::clone(&dictionary_entry),
+            offsets,
+            dictionary_entries,
+            None,
+            false,
+        )
+        .unwrap();
+        let nested_dictionary_map_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "entries",
+                DataType::Map(dictionary_entry, false),
+                false,
+            )])),
+            vec![Arc::new(nested_map)],
+        )
+        .unwrap();
+
+        let frame_limit = 2_048;
+        let admission_capacity = 8_192 - 16;
+        for input in [
+            list_batch,
+            map_batch,
+            mixed_list_batch,
+            mixed_map_batch,
+            nested_dictionary_list_batch,
+            nested_dictionary_map_batch,
+        ] {
+            let first_split = input.slice(0, row_count as usize / 2);
+            let split_ipc_data_size =
+                RssPartitionWriter::<BoundedAdmissionPusher>::estimated_pre_compaction_ipc_data_size(
+                    &first_split,
+                )
+                .unwrap();
+            let split_compaction_scratch =
+                RssPartitionWriter::<BoundedAdmissionPusher>::estimated_compaction_scratch(
+                    &first_split,
+                )
+                .unwrap();
+            assert!(split_compaction_scratch > 0);
+            assert!(split_ipc_data_size + split_compaction_scratch > admission_capacity);
+
+            let recorder = ReservationRecordingPusher::default();
+            let recorded = Arc::clone(&recorder.0);
+            let pusher = BoundedAdmissionPusher {
+                recorder,
+                capacity: admission_capacity,
+            };
+            let encoder =
+                ShuffleBlockWriter::try_new(input.schema().as_ref(), CompressionCodec::None)
+                    .unwrap();
+            let mut writer = RssPartitionWriter::try_new(pusher, encoder, 1, frame_limit).unwrap();
+            let metrics = metrics();
+
+            writer
+                .finish_partition(0, &mut [Ok(input.clone())].into_iter(), &metrics)
+                .unwrap();
+            writer.finish_all(&metrics).unwrap();
+
+            let recorded = recorded.lock().unwrap();
+            assert!(recorded.active.is_none());
+            assert!(recorded.frames.len() > 1);
+            assert!(recorded
+                .reservations
+                .iter()
+                .all(|reservation| *reservation <= admission_capacity));
+            assert_eq!(
+                recorded.reservations.len(),
+                recorded.releases + recorded.frames.len()
+            );
+
+            let decoded = recorded
+                .frames
+                .iter()
+                .map(|frame| {
+                    assert!(frame.len() <= frame_limit);
+                    read_ipc_compressed(&frame[16..]).unwrap()
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                arrow_select::concat::concat_batches(&input.schema(), &decoded).unwrap(),
                 input
             );
         }

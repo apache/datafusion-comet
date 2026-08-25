@@ -51,6 +51,10 @@ final class RecordingCelebornShuffleClient {
   @volatile var lastCleanup: (Int, Int, Int) = _
   @volatile var pushStarted: CountDownLatch = _
   @volatile var allowPush: CountDownLatch = _
+  @volatile var pushStateCaptured: CountDownLatch = _
+  @volatile var allowPushStateCapture: CountDownLatch = _
+  @volatile var pushRegistered: CountDownLatch = _
+  @volatile var allowPushRegistration: CountDownLatch = _
   @volatile var pushCompletedBeforeReturn: CountDownLatch = _
   @volatile var allowPushReturn: CountDownLatch = _
   @volatile var mapperEndStarted: CountDownLatch = _
@@ -74,6 +78,7 @@ final class RecordingCelebornShuffleClient {
   @volatile var generationInvalidated = true
   @volatile var lastInvalidatedShuffle: (Int, Int, Long) = _
   val pushCalls = new AtomicInteger()
+  val pushStateCreations = new AtomicInteger()
   val pushCompletionCalls = new AtomicInteger()
   val mapperEndCalls = new AtomicInteger()
   val cleanupCalls = new AtomicInteger()
@@ -83,7 +88,12 @@ final class RecordingCelebornShuffleClient {
   def getPushState(mapKey: String): RecordingCelebornPushState = {
     observedMapKey = mapKey
     retainedPushState = true
-    pushStates.computeIfAbsent(mapKey, _ => new RecordingCelebornPushState(this))
+    pushStates.computeIfAbsent(
+      mapKey,
+      _ => {
+        pushStateCreations.incrementAndGet()
+        new RecordingCelebornPushState(this)
+      })
   }
 
   def completeNextPush(): Boolean = {
@@ -161,7 +171,19 @@ final class RecordingCelebornShuffleClient {
 
     val pushState = getPushState(s"$shuffleId-$mapId-$attemptId")
     pushState.addPush()
+    if (pushStateCaptured != null) {
+      pushStateCaptured.countDown()
+      if (!allowPushStateCapture.await(5, TimeUnit.SECONDS)) {
+        throw new IOException("timed out waiting for the captured test push state")
+      }
+    }
     pendingPushCompletions.add(pushState)
+    if (pushRegistered != null) {
+      pushRegistered.countDown()
+      if (!allowPushRegistration.await(5, TimeUnit.SECONDS)) {
+        throw new IOException("timed out waiting for the registered test push")
+      }
+    }
     if (automaticallyCompleteLatestPush) {
       completeLatestPush()
     } else if (automaticallyCompletePushes) {
@@ -1072,6 +1094,68 @@ class CelebornShufflePartitionPusherSuite extends AnyFunSuite {
 
     adapter.abort()
     assert(client.cleanupCalls.get() == 2)
+  }
+
+  Seq("connection creation", "transport registration").foreach { cancellationWindow =>
+    test(
+      s"cancellation during $cancellationWindow retains the captured state's transport admission") {
+      val client = new RecordingCelebornShuffleClient
+      client.automaticallyCompletePushes = false
+      val pausedPush = new CountDownLatch(1)
+      val allowPush = new CountDownLatch(1)
+      if (cancellationWindow == "connection creation") {
+        client.pushStateCaptured = pausedPush
+        client.allowPushStateCapture = allowPush
+      } else {
+        client.pushRegistered = pausedPush
+        client.allowPushRegistration = allowPush
+      }
+
+      val cancelled = new CelebornShufflePartitionPusher(client, 19, 3, 1, 12, 9, 112)
+      val replacement = new CelebornShufflePartitionPusher(client, 19, 4, 1, 12, 9, 112)
+      val cancelledFailure = new AtomicReference[Throwable]()
+      val replacementFailure = new AtomicReference[Throwable]()
+      val frame = Array.fill[Byte](32)(1)
+
+      val cancelledWorker = new Thread(() => {
+        try {
+          cancelled.reservePartitionData(96)
+          cancelled.pushPartitionData(0, frame, frame.length)
+        } catch { case failure: Throwable => cancelledFailure.set(failure) }
+      })
+      cancelledWorker.start()
+      assert(pausedPush.await(5, TimeUnit.SECONDS))
+
+      cancelled.abort()
+      allowPush.countDown()
+      cancelledWorker.join(5000)
+      assert(!cancelledWorker.isAlive)
+      assert(cancelledFailure.get().isInstanceOf[IOException])
+      assert(client.cleanupCalls.get() == 2)
+
+      client.pushStateCaptured = null
+      client.pushRegistered = null
+      val replacementWorker = new Thread(() => {
+        try {
+          replacement.reservePartitionData(96)
+          replacement.pushPartitionData(0, frame, frame.length)
+        } catch { case failure: Throwable => replacementFailure.set(failure) }
+      })
+      replacementWorker.start()
+
+      Thread.sleep(100)
+      assert(replacementWorker.isAlive)
+      assert(client.pushCalls.get() == 1)
+      assert(client.pushStateCreations.get() == 1)
+      assert(client.pushCompletionCalls.get() == 0)
+
+      assert(client.completeNextPush())
+      replacementWorker.join(5000)
+      assert(!replacementWorker.isAlive)
+      assert(replacementFailure.get() == null)
+      assert(client.pushCalls.get() == 2)
+      assert(client.completeNextPush())
+    }
   }
 
   test("a recreated cancelled push retains byte admission until its own transport completes") {
