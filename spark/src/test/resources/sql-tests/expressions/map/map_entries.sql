@@ -21,7 +21,7 @@ CREATE TABLE test_map_entries(m map<string, int>) USING parquet
 statement
 INSERT INTO test_map_entries VALUES (map('a', 1, 'b', 2)), (map()), (NULL)
 
-query spark_answer_only
+query
 SELECT map_entries(m) FROM test_map_entries
 
 -- `MapType(_, _, valueContainsNull = false)`, which every `map(...)` over non-null values

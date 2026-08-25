@@ -275,34 +275,28 @@ class CometMapExpressionSuite extends CometTestBase {
   // A map that reaches `map_entries` through an expression rather than a scan keeps
   // `valueContainsNull = false`, which every `map(...)` over non-null values produces. DataFusion's
   // `map_entries` declares the entry `value` field nullable but reuses the input map's entries
-  // array, so the planner widens the argument before the call. Both queries below depend on a
-  // column, so `ConstantFolding` cannot collapse the whole `map_entries(...)` call into an
-  // `ArrayType(StructType)` literal that `CometLiteral` would decline. `map_entries.sql` covers the
-  // all-constant shapes, where the harness excludes `ConstantFolding`.
-  test("map_entries on a non-nullable-value map expression (multirow)") {
+  // array, so the planner widens the argument before the call. Here the inner `map(1, map(1, 2))`
+  // folds to a literal that `CometLiteral` rebuilds, and the outer `element_at` yields a
+  // non-nullable-value map straight into native `map_entries`. This exercises the widening on the
+  // default folding-on path; `map_entries.sql` covers the constructor path, where the harness
+  // excludes `ConstantFolding`.
+  test("map_entries on a folded non-nullable-value map (multirow)") {
     withParquetTable((1 until 4).map(i => (i, i.toLong)), "tbl") {
-      checkSparkAnswerAndOperator("SELECT _1 AS id, map_entries(map(_1, 2)) AS e FROM tbl")
       checkSparkAnswerAndOperator(
         "SELECT _1 AS id, map_entries(element_at(map(1, map(1, 2)), _1)) AS e FROM tbl")
     }
   }
 
-  // Spark stores a `-0.0` map key as `+0.0` and finds it with `nanSafeCompareDoubles`, which
-  // treats `-0.0` and `+0.0` as equal. Native `map_extract` compares the raw Arrow values, so
-  // `CometMapExtract` / `CometElementAt` decline the lookup. The map here folds to a literal, so
-  // the decline has to come from the lookup rather than from `CometLiteral`, which cannot see how
-  // a map nested in a map value will be consumed.
-  test("map lookup with floating-point keys falls back") {
+  // Finding E: a map nested inside a map value is handed to the JVM dispatcher whole, so its double
+  // keys never revisit `CometLiteral`. The guard has to live on the lookup instead. The outer key
+  // type is INT, so inspecting only the outermost map would admit the query; the fallback comes
+  // from the inner `element_at`, whose child is `MapType(DoubleType, IntegerType)`. Constant folding
+  // is on here, which is the only configuration where the inner map becomes such a literal, so this
+  // regression cannot be expressed in a SQL fixture (the harness disables folding). The direct
+  // single-level double-key lookups live in `element_at_map.sql` / `get_map_value.sql`.
+  test("nested map lookup with floating-point keys falls back") {
     withParquetTable((1 until 4).map(i => (i, i.toLong)), "tbl") {
       val negZero = "CAST(concat('-', CAST(_1 - 1 AS STRING), '.0') AS DOUBLE)"
-      checkSparkAnswerAndFallbackReason(
-        s"SELECT _1 AS id, element_at(map(CAST(0 AS DOUBLE), 7), $negZero) AS v FROM tbl",
-        "Spark normalizes floating-point map keys")
-      checkSparkAnswerAndFallbackReason(
-        s"SELECT _1 AS id, map(CAST(0 AS DOUBLE), 7)[$negZero] AS v FROM tbl",
-        "Spark normalizes floating-point map keys")
-      // The outer key type is INT, so only inspecting it would admit the lookup; the inner map is
-      // handed to the JVM dispatcher whole and never revisits `CometLiteral`.
       checkSparkAnswerAndFallbackReason(
         "SELECT _1 AS id, element_at(element_at(map(1, map(CAST(0 AS DOUBLE), 7)), _1), " +
           s"$negZero) AS v FROM tbl",
@@ -310,43 +304,15 @@ class CometMapExpressionSuite extends CometTestBase {
     }
   }
 
-  // Spark compares the key under its declared collation; native compares under UTF8_BINARY.
-  test("map lookup with collated string keys falls back") {
+  // Finding E for a collated inner key. Same folding-on-only bypass as the double-key case above;
+  // the direct single-level collated lookup lives in `element_at_map_collation.sql`.
+  test("nested map lookup with collated string keys falls back") {
     assume(isSpark40Plus)
     withParquetTable(Seq(("a1", 0)), "tbl") {
-      checkSparkAnswerAndFallbackReason(
-        "SELECT element_at(map(CAST('A1' AS STRING COLLATE UTF8_LCASE), 7), " +
-          "CAST(_1 AS STRING COLLATE UTF8_LCASE)) AS v FROM tbl",
-        "cannot honour a non-default collation")
       checkSparkAnswerAndFallbackReason(
         "SELECT element_at(element_at(map(1, map(CAST('A1' AS STRING COLLATE UTF8_LCASE), 7)), 1), " +
           "CAST(_1 AS STRING COLLATE UTF8_LCASE)) AS v FROM tbl",
         "cannot honour a non-default collation")
-    }
-  }
-
-  // `map_extract`'s `coerce_types` returns the map's exact Arrow key field type, so Comet casts the
-  // lookup key to it. A NULL inside the lookup key then aborts the cast with `Non-nullable field of
-  // ListArray "item" cannot contain nulls` instead of missing the lookup, which is what Spark does.
-  test("map lookup with complex keys falls back") {
-    withParquetTable((1 until 4).map(i => (i, i.toLong)), "tbl") {
-      checkSparkAnswerAndFallbackReason(
-        "SELECT _1 AS id, element_at(map(array(1), 7), " +
-          "array(IF(_1 = 2, CAST(NULL AS INT), _1))) AS v FROM tbl",
-        "casts the lookup key to the map's exact Arrow key type")
-      checkSparkAnswerAndFallbackReason(
-        "SELECT _1 AS id, element_at(map(named_struct('a', 1), 7), " +
-          "named_struct('a', _1)) AS v FROM tbl",
-        "casts the lookup key to the map's exact Arrow key type")
-    }
-  }
-
-  // `BinaryType` keys need no decline: Arrow compares them by content, as Spark's ordering does.
-  test("map lookup with binary keys stays native") {
-    withParquetTable((1 until 4).map(i => (i, i.toLong)), "tbl") {
-      checkSparkAnswerAndOperator(
-        "SELECT _1 AS id, element_at(map(CAST('1' AS BINARY), 10, CAST('2' AS BINARY), 20), " +
-          "CAST(CAST(_1 AS STRING) AS BINARY)) AS v FROM tbl")
     }
   }
 

@@ -513,6 +513,11 @@ object CometCreateArray extends CometExpressionSerde[CreateArray] {
    * panics. Keep `valueContainsNull` significant here so those children are declined instead. The
    * same is true of a struct field's nullability, which `coerce_struct_by_*` would merge but
    * which `MutableArrayData` still rejects for the array's own element type.
+   *
+   * TODO: DataFusion 55.0.0 adds a `map_coercion` arm to `type_union_resolution_coercion`
+   * (apache/datafusion#23521), which coerces a `MapType.valueContainsNull` mismatch away. When
+   * Comet upgrades onto it, stop keeping `valueContainsNull` significant here or this decline
+   * stays correct but grows over-conservative, falling maps back that DataFusion can now unify.
    */
   private def normalizeContainerNullability(dt: DataType): DataType = dt match {
     case ArrayType(elementType, _) =>
@@ -599,11 +604,7 @@ object CometElementAt extends CometExpressionSerde[ElementAt] {
   override def getSupportLevel(expr: ElementAt): SupportLevel = {
     expr.left.dataType match {
       case _: ArrayType => Compatible()
-      case MapType(keyType, _, _) =>
-        MapKeySupport.unsupportedKeyTypeReason(keyType) match {
-          case Some(reason) => Unsupported(Some(reason))
-          case None => Compatible()
-        }
+      case MapType(keyType, _, _) => MapKeySupport.keySupport(keyType)
       case _ => Unsupported(Some("Input must be an array or map"))
     }
   }

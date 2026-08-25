@@ -33,47 +33,47 @@ import org.apache.comet.shims.CometTypeShim
  */
 private[serde] object MapKeySupport {
 
-  val floatingPointReason: String =
+  private val floatingPointReason: String =
     "Spark normalizes floating-point map keys, so `-0.0` matches a `+0.0` key and all `NaN`s " +
       "match each other; Comet's native map lookup compares the raw Arrow values."
 
-  val collationReason: String =
+  private val collationReason: String =
     "Comet's native map lookup compares string keys as `UTF8_BINARY` and cannot honour a " +
       "non-default collation."
 
-  val complexKeyReason: String =
-    "Comet's native `map_extract` casts the lookup key to the map's exact Arrow key type, so a " +
-      "complex key type whose components are declared non-nullable rejects a lookup key that " +
-      "holds a `NULL` inside one of them."
+  private val complexKeyReason: String =
+    "Comet's native `map_extract` casts the lookup key to the map's exact Arrow key type, which " +
+      "cannot reproduce Spark's equality for a complex key type (for example a `NULL` inside the " +
+      "lookup key aborts the cast against a non-nullable nested component)."
 
   /**
-   * The reason Comet's native map lookup cannot reproduce Spark's key equality for `keyType`, or
-   * `None` when it can. Spark finds a key with `TypeUtils.getInterpretedOrdering` over the keys
-   * `ArrayBasedMapBuilder` stored, having first normalized them, while native `map_extract`
-   * compares the Arrow values as they are:
+   * The `SupportLevel` for a map-consuming expression whose stored-key type is `keyType`. Spark
+   * finds a key with `TypeUtils.getInterpretedOrdering` over the keys `ArrayBasedMapBuilder`
+   * stored, having first normalized them, while native `map_extract` compares the Arrow values as
+   * they are, so decline the key types where those disagree:
    *   - `ArrayBasedMapBuilder` rewrites a `-0.0` key to `+0.0` and canonicalises `NaN`, and
    *     `nanSafeCompareDoubles` treats `-0.0` and `+0.0` as equal, so Spark answers a `-0.0`
    *     lookup from a `+0.0` key where native finds nothing.
    *   - a non-default collation compares under rules native applies as `UTF8_BINARY`.
    *   - for a complex key type, `map_extract`'s `coerce_types` returns the map's exact key field
-   *     type, so Comet's planner casts the lookup key to it. When the key type declares a nested
-   *     component non-nullable, a `NULL` inside the lookup key aborts that cast with
+   *     type, so Comet's planner casts the lookup key to it. That cannot reproduce Spark's
+   *     interpreted-ordering equality, and a `NULL` inside the lookup key aborts the cast with
    *     `Non-nullable field of ListArray "item" cannot contain nulls` rather than missing the
-   *     lookup, which is what Spark does.
+   *     lookup. Declined for every complex key type, since which of these trips is a runtime
+   *     property of the lookup.
    *
    * `BinaryType` keys need no decline: Arrow compares them by content, as Spark's ordering does.
-   * The floating-point and collation checks walk every nesting level of the key type, so they
-   * keep holding if native `map_extract` ever gains complex-key support.
+   * The floating-point and collation checks walk every nesting level of the key type.
    */
-  def unsupportedKeyTypeReason(keyType: DataType): Option[String] = {
+  def keySupport(keyType: DataType): SupportLevel = {
     if (SupportLevel.containsType(keyType, classOf[FloatType], classOf[DoubleType])) {
-      Some(floatingPointReason)
+      Unsupported(Some(floatingPointReason))
     } else if (hasNonDefaultStringCollation(keyType)) {
-      Some(collationReason)
+      Unsupported(Some(collationReason))
     } else if (isComplexType(keyType)) {
-      Some(complexKeyReason)
+      Unsupported(Some(complexKeyReason))
     } else {
-      None
+      Compatible()
     }
   }
 }
@@ -117,11 +117,7 @@ object CometMapValues extends CometExpressionSerde[MapValues] {
 object CometMapExtract extends CometExpressionSerde[GetMapValue] {
 
   override def getSupportLevel(expr: GetMapValue): SupportLevel = expr.child.dataType match {
-    case MapType(keyType, _, _) =>
-      MapKeySupport.unsupportedKeyTypeReason(keyType) match {
-        case Some(reason) => Unsupported(Some(reason))
-        case None => Compatible()
-      }
+    case MapType(keyType, _, _) => MapKeySupport.keySupport(keyType)
     case _ => Compatible()
   }
 

@@ -55,7 +55,7 @@ object CometLiteral extends CometExpressionSerde[Literal] with Logging {
             .elementType
             .isInstanceOf[ArrayType])))) {
       Compatible(None)
-    } else if (expandComplexLiteral(expr).isDefined) {
+    } else if (canExpandComplexLiteral(expr)) {
       // Rebuilt as a `CreateArray` / `CreateMap` tree in `convert`.
       Compatible(None)
     } else {
@@ -239,7 +239,9 @@ object CometLiteral extends CometExpressionSerde[Literal] with Logging {
    * safety property this rewrite rests on: whatever the rebuilt expression does natively is what
    * the same query already does with `ConstantFolding` disabled, so expansion cannot introduce a
    * folding-only behaviour difference. Shapes the native map kernels cannot handle are therefore
-   * declined by their own serdes rather than here, see [[MapKeySupport]] and [[CometMapEntries]].
+   * declined by their consumers rather than here: a map lookup with an unsupported key type by
+   * [[MapKeySupport]], and a non-nullable-value map into `map_entries` by the native planner
+   * widening its argument.
    *
    * Declined shapes:
    *   - Null values and empty top-level containers: a synthesized `Create*` with no children
@@ -255,31 +257,42 @@ object CometLiteral extends CometExpressionSerde[Literal] with Logging {
    *   - Folded maps with duplicate keys, see [[hasDuplicateMapKeys]].
    */
   private def expandComplexLiteral(expr: Literal): Option[Expression] = {
-    if (expr.value == null) return None
+    if (!canExpandComplexLiteral(expr)) return None
     expr.dataType match {
-      case ArrayType(et, containsNull) if needsExpansion(et) =>
+      case ArrayType(et, containsNull) =>
         val arr = expr.value.asInstanceOf[ArrayData]
-        if (arr.numElements() == 0) {
-          None
-        } else {
-          val elements = (0 until arr.numElements())
-            .map(i => withNullability(literalAt(arr, i, et), containsNull))
-          Some(CreateArray(elements, useStringTypeWhenEmpty = false))
-        }
+        val elements = (0 until arr.numElements())
+          .map(i => withNullability(literalAt(arr, i, et), containsNull))
+        Some(CreateArray(elements, useStringTypeWhenEmpty = false))
       case MapType(kt, vt, valueContainsNull) =>
         val mapData = expr.value.asInstanceOf[MapData]
         val keys = mapData.keyArray()
-        if (mapData.numElements() == 0 || hasDuplicateMapKeys(keys, kt)) {
-          None
-        } else {
-          val values = mapData.valueArray()
-          val children = (0 until keys.numElements()).flatMap(i =>
-            Seq(
-              literalAt(keys, i, kt),
-              withNullability(literalAt(values, i, vt), valueContainsNull)))
-          Some(CreateMap(children, useStringTypeWhenEmpty = false))
-        }
+        val values = mapData.valueArray()
+        val children = (0 until keys.numElements()).flatMap(i =>
+          Seq(
+            literalAt(keys, i, kt),
+            withNullability(literalAt(values, i, vt), valueContainsNull)))
+        Some(CreateMap(children, useStringTypeWhenEmpty = false))
       case _ => None
+    }
+  }
+
+  /**
+   * True when [[expandComplexLiteral]] can rebuild this folded literal, tested without allocating
+   * the rebuilt tree so `getSupportLevel` can probe cheaply (`convert` runs the build only once,
+   * on the value it keeps). Mirrors the shapes [[expandComplexLiteral]] declines: a non-null
+   * value, a non-empty top-level container, an array whose elements need expansion, and a map
+   * with no duplicate keys.
+   */
+  private def canExpandComplexLiteral(expr: Literal): Boolean = {
+    if (expr.value == null) return false
+    expr.dataType match {
+      case ArrayType(et, _) if needsExpansion(et) =>
+        expr.value.asInstanceOf[ArrayData].numElements() > 0
+      case MapType(kt, _, _) =>
+        val mapData = expr.value.asInstanceOf[MapData]
+        mapData.numElements() > 0 && !hasDuplicateMapKeys(mapData.keyArray(), kt)
+      case _ => false
     }
   }
 
