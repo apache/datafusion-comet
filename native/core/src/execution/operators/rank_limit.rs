@@ -334,9 +334,11 @@ impl RankLimitStream {
 
         let mut mask_builder = BooleanBufferBuilder::new(num_rows);
         let mut kept: usize = 0;
-        // Position of the first dropped row in this batch. When `kept == first_dropped_at`,
-        // every kept row lies at positions `0..kept`, so the output is `batch.slice(0, kept)`
-        // -- one `Arc` reslice per column, no bitmap scan or per-column filter kernel.
+        // Position of the first dropped row in this batch, recorded by BOTH drop paths (the
+        // exhausted-partition fast drop inside the loop and the rank-based drop below). When
+        // `kept == first_dropped_at`, every kept row lies at positions `0..kept`, so the
+        // output is `batch.slice(0, kept)` -- one `Arc` reslice per column, no bitmap scan or
+        // per-column filter kernel.
         let mut first_dropped_at: Option<usize> = None;
         for i in 0..num_rows {
             // Only a PARTITION-BY-shaped stream has partition boundaries. With no
@@ -355,6 +357,13 @@ impl RankLimitStream {
             }
 
             if self.partition_exhausted {
+                // Record the first drop here too. A batch can open inside a partition the
+                // previous batch already exhausted, dropping these leading rows before the
+                // rank-based drop below ever runs. The clean-prefix shortcut keys off
+                // `first_dropped_at`, so leaving it unset here lets a later partition's kept
+                // row at position `kept` fire `batch.slice(0, kept)` and lose the kept tail
+                // (see the `exhausted_partition_prefix_then_fresh_partitions` test).
+                first_dropped_at.get_or_insert(i);
                 mask_builder.append(false);
                 continue;
             }
@@ -386,9 +395,7 @@ impl RankLimitStream {
             if keep {
                 kept += 1;
             } else {
-                if first_dropped_at.is_none() {
-                    first_dropped_at = Some(i);
-                }
+                first_dropped_at.get_or_insert(i);
                 // `this_rank` is monotonically nondecreasing within a partition for all three
                 // kinds (ROW_NUMBER: strictly, RANK / DENSE_RANK: nondecreasing), so once
                 // `keep` flips false every remaining row of this partition is dropped.
@@ -633,5 +640,31 @@ mod tests {
         let b1 = batch(vec![1, 1, 1], vec![40, 50, 60]);
         let out = run(vec![b0, b1], 1, WindowFnKind::RowNumber).await;
         assert_eq!(flatten(&out), vec![(1, 10)]);
+    }
+
+    /// Regression for the clean-prefix shortcut mis-firing after an exhausted-partition
+    /// prefix. Batch 1 opens with the tail of the partition batch 0 exhausted (dropped), then
+    /// crosses into two fresh partitions whose top rows must be kept. The mask is
+    /// `[false, true, false, true]`. If the exhausted-partition branch does not record the
+    /// leading drops, `first_dropped_at` stays at the rank-based drop (position 2) and equals
+    /// `kept` (2), so the shortcut returns `batch.slice(0, 2)` -- keeping `(1,50)` and losing
+    /// partition 3's top row `(3,10)`. Covered for all three window kinds; the ORDER BY values
+    /// are distinct so RANK, DENSE_RANK, and ROW_NUMBER all yield the same top-1-per-partition.
+    #[tokio::test]
+    async fn exhausted_partition_prefix_then_fresh_partitions() {
+        let b0 = batch(vec![1, 1, 1, 1], vec![10, 20, 30, 40]);
+        let b1 = batch(vec![1, 2, 2, 3], vec![50, 10, 20, 10]);
+        for kind in [
+            WindowFnKind::RowNumber,
+            WindowFnKind::Rank,
+            WindowFnKind::DenseRank,
+        ] {
+            let out = run(vec![b0.clone(), b1.clone()], 1, kind).await;
+            assert_eq!(
+                flatten(&out),
+                vec![(1, 10), (2, 10), (3, 10)],
+                "kind={kind:?}"
+            );
+        }
     }
 }
