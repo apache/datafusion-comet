@@ -687,6 +687,12 @@ enum CompressionCodec {
 
 message ShuffleWriter {
   spark.spark_partitioning.Partitioning partitioning = 1;
+  // Absent means legacy local output using fields 3 and 4. An explicit local writer may
+  // duplicate those paths for older native libraries, but the paths must agree.
+  // Do not emit RSS until the native library's RSS protocol support has been verified.
+  // RSS must not populate the legacy local paths, and is not executable yet.
+  spark.spark_partitioning.PartitionWriter partition_writer = 2;
+  // Retained for compatibility with existing JVM and native plans.
   string output_data_file = 3;
   string output_index_file = 4;
   CompressionCodec codec = 5;

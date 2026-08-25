@@ -1806,6 +1806,9 @@ impl PhysicalPlanner {
                 )))
             }
             OpStruct::ShuffleWriter(writer) => {
+                // Validate the destination before planning the child. In particular, an RSS or
+                // unknown destination must never fall through to the legacy local-file writer.
+                let (output_data_file, output_index_file) = local_shuffle_output_paths(writer)?;
                 assert_eq!(children.len(), 1);
                 let (scans, shuffle_scans, child) =
                     self.create_plan(&children[0], inputs, partition_count)?;
@@ -1842,8 +1845,8 @@ impl PhysicalPlanner {
                     writer_input,
                     partitioning,
                     codec,
-                    writer.output_data_file.clone(),
-                    writer.output_index_file.clone(),
+                    output_data_file.to_owned(),
+                    output_index_file.to_owned(),
                     writer.tracing_enabled,
                     write_buffer_size,
                     max_buffer_bytes,
@@ -3788,6 +3791,43 @@ pub(crate) fn convert_spark_types_to_arrow_schema(
     arrow_schema
 }
 
+/// Resolve the currently supported local destination without silently accepting remote plans.
+fn local_shuffle_output_paths(
+    writer: &spark_operator::ShuffleWriter,
+) -> Result<(&str, &str), ExecutionError> {
+    use datafusion_comet_proto::spark_partitioning::partition_writer::PartitionWriterStruct;
+
+    let Some(partition_writer) = &writer.partition_writer else {
+        return Ok((&writer.output_data_file, &writer.output_index_file));
+    };
+
+    match &partition_writer.partition_writer_struct {
+        Some(PartitionWriterStruct::LocalPartitionWriter(local)) => {
+            if local.output_data_file.is_empty() || local.output_index_file.is_empty() {
+                return Err(GeneralError(
+                    "Local shuffle partition writer requires data and index paths".to_string(),
+                ));
+            }
+            if (!writer.output_data_file.is_empty()
+                && writer.output_data_file != local.output_data_file)
+                || (!writer.output_index_file.is_empty()
+                    && writer.output_index_file != local.output_index_file)
+            {
+                return Err(GeneralError(
+                    "Shuffle partition writer conflicts with legacy local paths".to_string(),
+                ));
+            }
+            Ok((&local.output_data_file, &local.output_index_file))
+        }
+        Some(PartitionWriterStruct::RssPartitionWriter(_)) => Err(GeneralError(
+            "RSS shuffle partition writer is not supported yet".to_string(),
+        )),
+        None => Err(GeneralError(
+            "Shuffle partition writer has no recognized destination".to_string(),
+        )),
+    }
+}
+
 /// Wrap `child` in a `SchemaAlignExec` when its output drifts from what Spark catalyst
 /// declared. See <https://github.com/apache/datafusion-comet/issues/4515>.
 fn align_shuffle_writer_input(
@@ -4633,6 +4673,170 @@ mod tests {
         spark_operator::{operator::OpStruct, Operator},
     };
     use datafusion_comet_spark_expr::EvalMode;
+
+    mod shuffle_writer_destination {
+        use super::create_scan;
+        use crate::execution::operators::InputBatch;
+        use crate::execution::planner::{local_shuffle_output_paths, PhysicalPlanner};
+        use datafusion::physical_plan::common::collect;
+        use datafusion::prelude::SessionContext;
+        use datafusion_comet_proto::spark_operator::{operator::OpStruct, Operator, ShuffleWriter};
+        use datafusion_comet_proto::spark_partitioning::{
+            partition_writer::PartitionWriterStruct, partitioning::PartitioningStruct,
+            LocalPartitionWriter, PartitionWriter, Partitioning, RssPartitionWriter,
+            SinglePartition,
+        };
+        use prost::Message;
+        use tempfile::TempDir;
+
+        fn local_destination(data: &str, index: &str) -> PartitionWriter {
+            PartitionWriter {
+                partition_writer_struct: Some(PartitionWriterStruct::LocalPartitionWriter(
+                    LocalPartitionWriter {
+                        output_data_file: data.to_string(),
+                        output_index_file: index.to_string(),
+                    },
+                )),
+            }
+        }
+
+        fn legacy_writer() -> ShuffleWriter {
+            ShuffleWriter {
+                output_data_file: "data".to_string(),
+                output_index_file: "index".to_string(),
+                ..Default::default()
+            }
+        }
+
+        fn assert_rejected_before_child(writer: ShuffleWriter, expected: &str) {
+            let op = Operator {
+                // An invalid child ensures destination validation happens before child planning.
+                children: vec![Operator::default()],
+                op_struct: Some(OpStruct::ShuffleWriter(writer)),
+                ..Default::default()
+            };
+            let err = PhysicalPlanner::default()
+                .create_plan(&op, &mut vec![], 1)
+                .err()
+                .expect("invalid destination must not produce a plan");
+            assert!(err.to_string().contains(expected), "{err}");
+        }
+
+        #[test]
+        fn resolves_legacy_explicit_and_dual_written_local_paths() {
+            let legacy = legacy_writer();
+            assert_eq!(
+                local_shuffle_output_paths(&legacy).unwrap(),
+                ("data", "index")
+            );
+
+            let explicit = ShuffleWriter {
+                partition_writer: Some(local_destination("data", "index")),
+                ..Default::default()
+            };
+            assert_eq!(
+                local_shuffle_output_paths(&explicit).unwrap(),
+                ("data", "index")
+            );
+
+            let dual_written = ShuffleWriter {
+                partition_writer: explicit.partition_writer,
+                ..legacy
+            };
+            assert_eq!(
+                local_shuffle_output_paths(&dual_written).unwrap(),
+                ("data", "index")
+            );
+        }
+
+        #[test]
+        fn rejects_conflicting_or_incomplete_local_paths() {
+            for (data, index) in [("other", "index"), ("data", "other")] {
+                let writer = ShuffleWriter {
+                    partition_writer: Some(local_destination(data, index)),
+                    ..legacy_writer()
+                };
+                assert_rejected_before_child(writer, "conflicts with legacy local paths");
+            }
+            for (data, index) in [("", "index"), ("data", ""), ("", "")] {
+                let writer = ShuffleWriter {
+                    partition_writer: Some(local_destination(data, index)),
+                    ..Default::default()
+                };
+                assert_rejected_before_child(writer, "requires data and index paths");
+            }
+        }
+
+        #[test]
+        fn rejects_rss_even_when_legacy_paths_are_present() {
+            for handle in [0, 7, -1] {
+                for mut writer in [ShuffleWriter::default(), legacy_writer()] {
+                    writer.partition_writer = Some(PartitionWriter {
+                        partition_writer_struct: Some(PartitionWriterStruct::RssPartitionWriter(
+                            RssPartitionWriter {
+                                rss_partition_pusher: handle,
+                            },
+                        )),
+                    });
+                    assert_rejected_before_child(
+                        writer,
+                        "RSS shuffle partition writer is not supported",
+                    );
+                }
+            }
+        }
+
+        #[test]
+        fn rejects_empty_and_unknown_destinations() {
+            for bytes in [b"\x12\x00".as_slice(), b"\x12\x02\x1a\x00".as_slice()] {
+                let decoded = ShuffleWriter::decode(bytes).unwrap();
+                let writer = ShuffleWriter {
+                    partition_writer: decoded.partition_writer,
+                    ..legacy_writer()
+                };
+                assert_rejected_before_child(writer, "no recognized destination");
+            }
+        }
+
+        #[tokio::test]
+        async fn local_destinations_execute_the_existing_file_writer() {
+            let dir = TempDir::new().unwrap();
+            for mode in ["legacy", "explicit", "dual"] {
+                let data = dir.path().join(format!("{mode}.data"));
+                let index = dir.path().join(format!("{mode}.index"));
+                let data_path = data.to_str().unwrap();
+                let index_path = index.to_str().unwrap();
+                let writer = ShuffleWriter {
+                    partitioning: Some(Partitioning {
+                        partitioning_struct: Some(PartitioningStruct::SinglePartition(
+                            SinglePartition {},
+                        )),
+                    }),
+                    partition_writer: (mode != "legacy")
+                        .then(|| local_destination(data_path, index_path)),
+                    output_data_file: if mode == "explicit" { "" } else { data_path }.to_string(),
+                    output_index_file: if mode == "explicit" { "" } else { index_path }.to_string(),
+                    write_buffer_size: 1024,
+                    ..Default::default()
+                };
+                let op = Operator {
+                    children: vec![create_scan()],
+                    op_struct: Some(OpStruct::ShuffleWriter(writer)),
+                    ..Default::default()
+                };
+                let planner = PhysicalPlanner::default();
+                let (mut scans, _, plan) = planner.create_plan(&op, &mut vec![], 1).unwrap();
+                scans[0].set_input_batch(InputBatch::EOF);
+                let stream = plan
+                    .native_plan
+                    .execute(0, SessionContext::new().task_ctx())
+                    .unwrap();
+                assert!(collect(stream).await.unwrap().is_empty());
+                assert!(std::fs::read(data).unwrap().is_empty());
+                assert_eq!(std::fs::read(index).unwrap(), vec![0; 16]);
+            }
+        }
+    }
 
     #[test]
     fn test_unpack_dictionary_primitive() {
