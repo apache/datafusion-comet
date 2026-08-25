@@ -27,8 +27,27 @@ public final class RecordingShufflePartitionPusher implements ShufflePartitionPu
   public int partitionId;
   public int adjustment;
   public int failureMode;
+  public int reservationCalls;
+  public int reservationReleases;
+  public int reservedBytes;
+  public boolean reservedBeforePush;
   public byte[] lastBytes;
   public final IOException failure = new IOException("recorded push failure");
+
+  @Override
+  public void reservePartitionData(int maxLength) throws IOException {
+    reservationCalls++;
+    if (failureMode == 2) {
+      throw failure;
+    }
+    reservedBytes = maxLength;
+  }
+
+  @Override
+  public void releasePartitionDataReservation() {
+    reservationReleases++;
+    reservedBytes = 0;
+  }
 
   @Override
   public int pushPartitionData(int partitionId, byte[] bytes, int length) throws IOException {
@@ -36,6 +55,8 @@ public final class RecordingShufflePartitionPusher implements ShufflePartitionPu
     if (failureMode != 0) {
       throw failure;
     }
+    reservedBeforePush = reservedBytes >= length;
+    reservedBytes = 0;
     this.partitionId = partitionId;
     lastBytes = Arrays.copyOf(bytes, length);
     return length + adjustment;

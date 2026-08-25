@@ -26,6 +26,17 @@ import java.io.IOException;
 public interface ShufflePartitionPusher {
 
   /**
+   * Reserve executor-wide transport capacity before native frame encoding or JNI array allocation.
+   *
+   * <p>The reservation belongs to the calling thread until its next successful push. Backends
+   * without asynchronous admission can retain the default no-op behavior.
+   */
+  default void reservePartitionData(int maxLength) throws IOException {}
+
+  /** Release an unsubmitted reservation after native encoding fails or must split its batch. */
+  default void releasePartitionDataReservation() {}
+
+  /**
    * Accepts one complete, independently decodable Comet frame for an output partition.
    *
    * <p>The implementation must own any bytes it needs after this method returns. Success means

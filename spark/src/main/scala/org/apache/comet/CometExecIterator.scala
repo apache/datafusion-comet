@@ -36,6 +36,7 @@ import org.apache.comet.Tracing.withTrace
 import org.apache.comet.exceptions.CometQueryExecutionException
 import org.apache.comet.parquet.CometFileKeyUnwrapper
 import org.apache.comet.serde.Config.ConfigMap
+import org.apache.comet.shuffle.ShufflePartitionPusher
 import org.apache.comet.vector.NativeUtil
 
 /**
@@ -72,7 +73,8 @@ class CometExecIterator(
     broadcastedHadoopConfForEncryption: Option[Broadcast[SerializableConfiguration]] = None,
     encryptedFilePaths: Seq[String] = Seq.empty,
     shuffleBlockIterators: Map[Int, CometShuffleBlockIterator] = Map.empty,
-    taskFilePaths: Seq[String] = Seq.empty)
+    taskFilePaths: Seq[String] = Seq.empty,
+    rssPartitionPusher: Option[CometExecIterator.RssPartitionPusherRegistration] = None)
     extends Iterator[ColumnarBatch]
     with Logging {
 
@@ -106,7 +108,7 @@ class CometExecIterator(
 
     val memoryConfig = CometExecIterator.getMemoryConfig(conf)
 
-    nativeLib.createPlan(
+    val nativePlan = nativeLib.createPlan(
       id,
       inputObjects,
       protobufQueryPlan,
@@ -130,6 +132,25 @@ class CometExecIterator(
       // worker has neither. See CometUdfBridge.evaluate.
       TaskContext.get(),
       Thread.currentThread().getContextClassLoader)
+
+    try {
+      rssPartitionPusher.foreach { registration =>
+        nativeLib.registerRssPartitionPusher(
+          nativePlan,
+          registration.handle,
+          registration.pusher,
+          registration.numPartitions,
+          registration.maxFrameBytes)
+      }
+      nativePlan
+    } catch {
+      case failure: Throwable =>
+        try nativeLib.releasePlan(nativePlan)
+        catch {
+          case releaseFailure: Throwable => failure.addSuppressed(releaseFailure)
+        }
+        throw failure
+    }
   }
 
   private var nextBatch: Option[ColumnarBatch] = None
@@ -254,6 +275,18 @@ class CometExecIterator(
 }
 
 object CometExecIterator extends Logging {
+
+  /** A callback is resolved only inside the native execution context that owns this task. */
+  final case class RssPartitionPusherRegistration(
+      handle: Long,
+      pusher: ShufflePartitionPusher,
+      numPartitions: Int,
+      maxFrameBytes: Int) {
+    require(handle > 0, "The native RSS partition-pusher handle must be positive")
+    require(pusher != null, "The native RSS partition pusher must not be null")
+    require(numPartitions > 0, "The native RSS partition count must be positive")
+    require(maxFrameBytes >= 20, "The native RSS frame byte limit must fit a complete frame")
+  }
 
   private def cometSqlConfs: Map[String, String] =
     SQLConf.get.getAllConfs.filter(_._1.startsWith(CometConf.COMET_PREFIX))

@@ -30,6 +30,7 @@ publish = false
 
 [dependencies]
 arrow = { workspace = true }
+arrow-select = "58.4.0"
 async-trait = { workspace = true }
 bytes = { workspace = true }
 clap = { version = "4", features = ["derive"], optional = true }

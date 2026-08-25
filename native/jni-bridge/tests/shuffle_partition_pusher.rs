@@ -119,10 +119,13 @@ fn rss_jni_callback_contract() {
     // Global references and the cached method remain valid on another attached native thread.
     let worker_pusher = pusher.clone();
     let worker_frame = frame.clone();
-    std::thread::spawn(move || worker_pusher.push_partition_data(1, &worker_frame))
-        .join()
-        .unwrap()
-        .unwrap();
+    std::thread::spawn(move || {
+        worker_pusher.reserve_partition_data(worker_frame.len())?;
+        worker_pusher.push_partition_data(1, &worker_frame)
+    })
+    .join()
+    .unwrap()
+    .unwrap();
 
     vm.attach_current_thread(|env| -> jni::errors::Result<()> {
         assert_eq!(
@@ -135,6 +138,22 @@ fn rss_jni_callback_contract() {
                 .i()?,
             1
         );
+        assert_eq!(
+            env.get_field(
+                &fixture,
+                jni::jni_str!("reservationCalls"),
+                jni::jni_sig!("I"),
+            )?
+            .i()?,
+            1
+        );
+        assert!(env
+            .get_field(
+                &fixture,
+                jni::jni_str!("reservedBeforePush"),
+                jni::jni_sig!("Z"),
+            )?
+            .z()?);
         let bytes = env
             .get_field(&fixture, jni::jni_str!("lastBytes"), jni::jni_sig!("[B"))?
             .l()?;
@@ -146,6 +165,23 @@ fn rss_jni_callback_contract() {
     .unwrap();
 
     assert!(pusher.push_partition_data(2, &frame).is_err());
+    assert!(pusher.reserve_partition_data(0).is_err());
+    assert!(pusher
+        .reserve_partition_data(i32::MAX as usize + 1)
+        .is_err());
+    pusher.reserve_partition_data(frame.len() + 1).unwrap();
+    vm.attach_current_thread(|env| -> jni::errors::Result<()> {
+        assert_eq!(
+            env.get_field(&fixture, jni::jni_str!("reservedBytes"), jni::jni_sig!("I"))?
+                .i()?,
+            frame.len() as i32 + 1
+        );
+        Ok(())
+    })
+    .unwrap();
+    pusher.release_partition_data_reservation().unwrap();
+    pusher.reserve_partition_data(frame.len()).unwrap();
+    pusher.release_partition_data_reservation().unwrap();
     assert!(pusher.push_partition_data(0, &[]).is_err());
     assert!(pusher
         .push_partition_data(0, &vec![0; frame.len() + 1])

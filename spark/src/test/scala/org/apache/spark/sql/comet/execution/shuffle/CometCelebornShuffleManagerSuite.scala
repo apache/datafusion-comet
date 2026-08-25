@@ -21,8 +21,11 @@ package org.apache.spark.sql.comet.execution.shuffle
 
 import org.scalatest.funsuite.AnyFunSuite
 
-import org.apache.spark.{ShuffleDependency, SparkConf, TaskContext}
+import org.apache.spark.{ShuffleDependency, SparkConf, TaskContext, TaskEndReason, UnknownReason}
+import org.apache.spark.scheduler.OutputCommitCoordinator
 import org.apache.spark.shuffle.{BaseShuffleHandle, ShuffleBlockResolver, ShuffleHandle, ShuffleManager, ShuffleReader, ShuffleReadMetricsReporter, ShuffleWriteMetricsReporter, ShuffleWriter}
+
+import org.apache.comet.shuffle.{CelebornShufflePartitionPusher, RecordingCelebornShuffleClient}
 
 class CometCelebornShuffleManagerSuite extends AnyFunSuite {
 
@@ -110,6 +113,352 @@ class CometCelebornShuffleManagerSuite extends AnyFunSuite {
     assert(observedConf eq conf)
     assert(!observedIsDriver)
     assert(conf.get("spark.celeborn.master.endpoints") == "existing-master:9097")
+  }
+
+  test("native frame limits reserve all submission copies within executor admission") {
+    val client = new RecordingCelebornShuffleClient
+    val pusher = new CelebornShufflePartitionPusher(client, 19, 3, 1, 12, 9, 112)
+
+    assert(CometCelebornShuffleManager.maxNativeFrameBytes(64, pusher) == 32)
+    assert(CometCelebornShuffleManager.maxNativeFrameBytes(32, pusher) == 32)
+    assert(CometCelebornShuffleManager.maxNativeFrameBytes(24, pusher) == 24)
+    pusher.reservePartitionData(96)
+    pusher.releasePartitionDataReservation()
+    assert(pusher.pushPartitionData(0, Array.fill[Byte](32)(1), 32) == 32)
+    assert(client.lastPush.length == 32)
+
+    val minimum =
+      new CelebornShufflePartitionPusher(new RecordingCelebornShuffleClient, 19, 3, 1, 12, 9, 76)
+    assert(CometCelebornShuffleManager.maxNativeFrameBytes(64, minimum) == 20)
+  }
+
+  test("a new Celeborn generation resets successful map commit owners on the Spark driver") {
+    val sparkCoordinator = new OutputCommitCoordinator(new SparkConf(false), true)
+    val coordinator = new CelebornShuffleGenerationCoordinator(sparkCoordinator)
+    val firstGeneration = PrepareCelebornShuffleGeneration(7, 91, 12, 0, 2)
+    val replacementGeneration = PrepareCelebornShuffleGeneration(7, 92, 12, 1, 2)
+    val stageStart = sparkCoordinator.getClass
+      .getMethod("stageStart", java.lang.Integer.TYPE, java.lang.Integer.TYPE)
+    val canCommit = sparkCoordinator.getClass
+      .getMethod(
+        "handleAskPermissionToCommit",
+        java.lang.Integer.TYPE,
+        java.lang.Integer.TYPE,
+        java.lang.Integer.TYPE,
+        java.lang.Integer.TYPE)
+
+    def authorize(stageAttempt: Int, partition: Int, taskAttempt: Int): Boolean =
+      canCommit
+        .invoke(
+          sparkCoordinator,
+          Int.box(12),
+          Int.box(stageAttempt),
+          Int.box(partition),
+          Int.box(taskAttempt))
+        .asInstanceOf[Boolean]
+
+    stageStart.invoke(sparkCoordinator, Int.box(12), Int.box(1))
+    assert(coordinator.prepareGeneration(firstGeneration))
+    assert(authorize(0, 0, 0))
+    assert(authorize(0, 1, 1))
+    assert(!coordinator.prepareGeneration(firstGeneration.copy(celebornShuffleId = 92)))
+    assert(!authorize(1, 0, 0))
+
+    assert(coordinator.prepareGeneration(replacementGeneration))
+    assert(authorize(1, 0, 0))
+    assert(coordinator.prepareGeneration(replacementGeneration))
+    assert(!authorize(1, 0, 1))
+    assert(authorize(1, 1, 0))
+    assert(!coordinator.prepareGeneration(firstGeneration))
+  }
+
+  test("early map ownership denies speculation and releases only after genuine task failure") {
+    val coordinator = new OutputCommitCoordinator(new SparkConf(false), true)
+    val stageId = 74
+    coordinator.getClass
+      .getMethod("stageStart", java.lang.Integer.TYPE, java.lang.Integer.TYPE)
+      .invoke(coordinator, Int.box(stageId), Int.box(0))
+    val canCommit = coordinator.getClass
+      .getMethod(
+        "handleAskPermissionToCommit",
+        java.lang.Integer.TYPE,
+        java.lang.Integer.TYPE,
+        java.lang.Integer.TYPE,
+        java.lang.Integer.TYPE)
+
+    def authorize(attempt: Int): Boolean =
+      canCommit
+        .invoke(coordinator, Int.box(stageId), Int.box(0), Int.box(0), Int.box(attempt))
+        .asInstanceOf[Boolean]
+
+    assert(authorize(0))
+    assert(!authorize(1))
+    // Spark's coordinator also rejects the exact same owner when asked twice.
+    assert(!authorize(0))
+
+    coordinator.getClass
+      .getMethod(
+        "taskCompleted",
+        java.lang.Integer.TYPE,
+        java.lang.Integer.TYPE,
+        java.lang.Integer.TYPE,
+        java.lang.Integer.TYPE,
+        classOf[TaskEndReason])
+      .invoke(coordinator, Int.box(stageId), Int.box(0), Int.box(0), Int.box(0), UnknownReason)
+
+    assert(authorize(1))
+  }
+
+  test("driver claims survive concurrent generation resets and reject stale map commits") {
+    val sparkCoordinator = new OutputCommitCoordinator(new SparkConf(false), true)
+    val coordinator = new CelebornShuffleGenerationCoordinator(sparkCoordinator)
+    val stageId = 75
+    sparkCoordinator.getClass
+      .getMethod("stageStart", java.lang.Integer.TYPE, java.lang.Integer.TYPE)
+      .invoke(sparkCoordinator, Int.box(stageId), Int.box(1))
+
+    val firstGeneration = PrepareCelebornShuffleGeneration(7, 91, stageId, 0, 2)
+    assert(coordinator.prepareGeneration(firstGeneration))
+    val originalClaim = coordinator.claimMapAttempt(ClaimCelebornMapAttempt(7, stageId, 0, 0, 0))
+    assert(originalClaim.authorized)
+    assert(!coordinator.claimMapAttempt(ClaimCelebornMapAttempt(7, stageId, 0, 0, 1)).authorized)
+    val originalPrepared = coordinator.prepareGenerationAndClaim(firstGeneration
+      .copy(mapId = 0, taskAttempt = 0, claimEpoch = originalClaim.epoch, claimAuthorized = true))
+    assert(originalPrepared == originalClaim)
+    val originalValidation =
+      ValidateCelebornMapAttempt(7, 91, stageId, 0, 0, 0, originalPrepared.epoch)
+    assert(coordinator.validateMapAttempt(originalValidation))
+
+    // Another partition can claim before its peer prepares and resets the next generation.
+    val concurrentClaim =
+      coordinator.claimMapAttempt(ClaimCelebornMapAttempt(7, stageId, 1, 1, 0))
+    assert(concurrentClaim.authorized)
+    val blockedClaim = coordinator.claimMapAttempt(ClaimCelebornMapAttempt(7, stageId, 1, 0, 0))
+    assert(!blockedClaim.authorized)
+    val replacementGeneration = PrepareCelebornShuffleGeneration(7, 92, stageId, 1, 2)
+    val replacementClaim = coordinator.prepareGenerationAndClaim(
+      replacementGeneration.copy(
+        mapId = 0,
+        taskAttempt = 0,
+        claimEpoch = blockedClaim.epoch,
+        claimAuthorized = blockedClaim.authorized))
+    assert(replacementClaim.authorized)
+    assert(replacementClaim.epoch > originalPrepared.epoch)
+
+    // The reset erased the other partition's otherwise successful early authorization.
+    val recoveredConcurrentClaim = coordinator.prepareGenerationAndClaim(
+      replacementGeneration.copy(
+        mapId = 1,
+        taskAttempt = 0,
+        claimEpoch = concurrentClaim.epoch,
+        claimAuthorized = true))
+    assert(recoveredConcurrentClaim.authorized)
+    assert(recoveredConcurrentClaim.epoch == replacementClaim.epoch)
+    assert(!coordinator.validateMapAttempt(originalValidation))
+    assert(!coordinator.claimMapAttempt(ClaimCelebornMapAttempt(7, stageId, 0, 1, 2)).authorized)
+
+    val replacementValidation =
+      ValidateCelebornMapAttempt(7, 92, stageId, 1, 0, 0, replacementClaim.epoch)
+    assert(coordinator.validateMapAttempt(replacementValidation))
+    assert(
+      coordinator.invalidateGeneration(
+        InvalidateCelebornShuffleGeneration(7, 92, stageId, 1, replacementClaim.epoch)))
+    assert(!coordinator.validateMapAttempt(replacementValidation))
+    val rejectedOldClaim =
+      coordinator.claimMapAttempt(ClaimCelebornMapAttempt(7, stageId, 1, 1, 1))
+    assert(!rejectedOldClaim.authorized)
+    assert(
+      !coordinator
+        .prepareGenerationAndClaim(
+          replacementGeneration.copy(
+            mapId = 1,
+            taskAttempt = 1,
+            claimEpoch = rejectedOldClaim.epoch,
+            claimAuthorized = false))
+        .authorized)
+
+    val nextGeneration = PrepareCelebornShuffleGeneration(7, 93, stageId, 2, 2)
+    val nextEarlyClaim =
+      coordinator.claimMapAttempt(ClaimCelebornMapAttempt(7, stageId, 2, 0, 0))
+    val nextPrepared = coordinator.prepareGenerationAndClaim(
+      nextGeneration.copy(
+        mapId = 0,
+        taskAttempt = 0,
+        claimEpoch = nextEarlyClaim.epoch,
+        claimAuthorized = nextEarlyClaim.authorized))
+    assert(nextPrepared.authorized)
+    assert(
+      coordinator.validateMapAttempt(
+        ValidateCelebornMapAttempt(7, 93, stageId, 2, 0, 0, nextPrepared.epoch)))
+  }
+
+  test("speculation arriving first reserves its original without creating phantom owners") {
+    val sparkCoordinator = new OutputCommitCoordinator(new SparkConf(false), true)
+    val coordinator = new CelebornShuffleGenerationCoordinator(sparkCoordinator)
+    val stageId = 76
+    sparkCoordinator.getClass
+      .getMethod("stageStart", java.lang.Integer.TYPE, java.lang.Integer.TYPE)
+      .invoke(sparkCoordinator, Int.box(stageId), Int.box(0))
+
+    val speculative = coordinator.claimMapAttempt(ClaimCelebornMapAttempt(8, stageId, 0, 0, 1))
+    assert(!speculative.authorized)
+    assert(!speculative.requiresGenerationResolution)
+    val original = coordinator.claimMapAttempt(ClaimCelebornMapAttempt(8, stageId, 0, 0, 0))
+    assert(original.authorized)
+    assert(original.epoch == speculative.epoch)
+
+    sparkCoordinator.getClass
+      .getMethod(
+        "taskCompleted",
+        java.lang.Integer.TYPE,
+        java.lang.Integer.TYPE,
+        java.lang.Integer.TYPE,
+        java.lang.Integer.TYPE,
+        classOf[TaskEndReason])
+      .invoke(
+        sparkCoordinator,
+        Int.box(stageId),
+        Int.box(0),
+        Int.box(0),
+        Int.box(0),
+        UnknownReason)
+
+    // Spark deliberately does not mark CommitDenied attempt 1 as failed; Comet must skip it.
+    val genuineRetry = coordinator.claimMapAttempt(ClaimCelebornMapAttempt(8, stageId, 0, 0, 2))
+    assert(genuineRetry.authorized)
+  }
+
+  test("a first retry can resolve a replacement generation after its original failed in input") {
+    val sparkCoordinator = new OutputCommitCoordinator(new SparkConf(false), true)
+    val coordinator = new CelebornShuffleGenerationCoordinator(sparkCoordinator)
+    val stageId = 77
+    sparkCoordinator.getClass
+      .getMethod("stageStart", java.lang.Integer.TYPE, java.lang.Integer.TYPE)
+      .invoke(sparkCoordinator, Int.box(stageId), Int.box(0))
+
+    val oldGeneration = PrepareCelebornShuffleGeneration(9, 91, stageId, 0, 1)
+    assert(coordinator.prepareGeneration(oldGeneration))
+    assert(coordinator.claimMapAttempt(ClaimCelebornMapAttempt(9, stageId, 0, 0, 0)).authorized)
+    sparkCoordinator.getClass
+      .getMethod(
+        "taskCompleted",
+        java.lang.Integer.TYPE,
+        java.lang.Integer.TYPE,
+        java.lang.Integer.TYPE,
+        java.lang.Integer.TYPE,
+        classOf[TaskEndReason])
+      .invoke(
+        sparkCoordinator,
+        Int.box(stageId),
+        Int.box(1),
+        Int.box(0),
+        Int.box(0),
+        UnknownReason)
+
+    val retry = coordinator.claimMapAttempt(ClaimCelebornMapAttempt(9, stageId, 1, 0, 1))
+    assert(!retry.authorized)
+    assert(retry.requiresGenerationResolution)
+
+    val prepared = coordinator.prepareGenerationAndClaim(
+      PrepareCelebornShuffleGeneration(
+        9,
+        92,
+        stageId,
+        1,
+        1,
+        mapId = 0,
+        taskAttempt = 1,
+        claimEpoch = retry.epoch,
+        claimAuthorized = retry.authorized))
+    assert(prepared.authorized)
+    assert(!prepared.requiresGenerationResolution)
+  }
+
+  test("a replacement-stage original blocks speculation before its generation is resolved") {
+    val sparkCoordinator = new OutputCommitCoordinator(new SparkConf(false), true)
+    val coordinator = new CelebornShuffleGenerationCoordinator(sparkCoordinator)
+    val stageId = 78
+    sparkCoordinator.getClass
+      .getMethod("stageStart", java.lang.Integer.TYPE, java.lang.Integer.TYPE)
+      .invoke(sparkCoordinator, Int.box(stageId), Int.box(0))
+
+    assert(coordinator.prepareGeneration(PrepareCelebornShuffleGeneration(10, 91, stageId, 0, 1)))
+    val original = coordinator.claimMapAttempt(ClaimCelebornMapAttempt(10, stageId, 1, 0, 0))
+    assert(original.authorized)
+
+    val speculative = coordinator.claimMapAttempt(ClaimCelebornMapAttempt(10, stageId, 1, 0, 1))
+    assert(!speculative.authorized)
+    assert(!speculative.requiresGenerationResolution)
+  }
+
+  test("a speculative replacement owner yields its commit to an original blocked in input") {
+    val sparkCoordinator = new OutputCommitCoordinator(new SparkConf(false), true)
+    val coordinator = new CelebornShuffleGenerationCoordinator(sparkCoordinator, _ => false)
+    val stageId = 79
+    sparkCoordinator.getClass
+      .getMethod("stageStart", java.lang.Integer.TYPE, java.lang.Integer.TYPE)
+      .invoke(sparkCoordinator, Int.box(stageId), Int.box(0))
+
+    val oldGeneration = PrepareCelebornShuffleGeneration(11, 91, stageId, 0, 1)
+    assert(coordinator.prepareGeneration(oldGeneration))
+    assert(coordinator.claimMapAttempt(ClaimCelebornMapAttempt(11, stageId, 0, 0, 0)).authorized)
+
+    val speculative = coordinator.claimMapAttempt(ClaimCelebornMapAttempt(11, stageId, 1, 0, 1))
+    assert(!speculative.authorized)
+    assert(speculative.requiresGenerationResolution)
+    val replacementGeneration = PrepareCelebornShuffleGeneration(11, 92, stageId, 1, 1)
+    val speculativeOwner = coordinator.prepareGenerationAndClaim(
+      replacementGeneration.copy(
+        mapId = 0,
+        taskAttempt = 1,
+        claimEpoch = speculative.epoch,
+        claimAuthorized = speculative.authorized))
+    assert(speculativeOwner.authorized)
+    assert(
+      coordinator.abandonMapAttempt(
+        AbandonCelebornMapAttempt(11, 92, stageId, 1, 0, 1, speculativeOwner.epoch, 101L)))
+
+    val original = coordinator.claimMapAttempt(ClaimCelebornMapAttempt(11, stageId, 1, 0, 0))
+    assert(original.authorized)
+    val preparedOriginal = coordinator.prepareGenerationAndClaim(
+      replacementGeneration.copy(
+        mapId = 0,
+        taskAttempt = 0,
+        claimEpoch = original.epoch,
+        claimAuthorized = original.authorized))
+    assert(preparedOriginal.authorized)
+    assert(
+      coordinator.validateMapAttempt(
+        ValidateCelebornMapAttempt(11, 92, stageId, 1, 0, 0, preparedOriginal.epoch)))
+  }
+
+  test(
+    "a later stage attempt preserves commit owners when the Celeborn generation is unchanged") {
+    val sparkCoordinator = new OutputCommitCoordinator(new SparkConf(false), true)
+    val coordinator = new CelebornShuffleGenerationCoordinator(sparkCoordinator)
+    val generation = PrepareCelebornShuffleGeneration(7, 91, 12, 0, 1)
+    sparkCoordinator.getClass
+      .getMethod("stageStart", java.lang.Integer.TYPE, java.lang.Integer.TYPE)
+      .invoke(sparkCoordinator, Int.box(12), Int.box(0))
+    val canCommit = sparkCoordinator.getClass
+      .getMethod(
+        "handleAskPermissionToCommit",
+        java.lang.Integer.TYPE,
+        java.lang.Integer.TYPE,
+        java.lang.Integer.TYPE,
+        java.lang.Integer.TYPE)
+
+    assert(coordinator.prepareGeneration(generation))
+    assert(
+      canCommit
+        .invoke(sparkCoordinator, Int.box(12), Int.box(0), Int.box(0), Int.box(0))
+        .asInstanceOf[Boolean])
+
+    assert(coordinator.prepareGeneration(generation.copy(stageAttempt = 1)))
+    assert(
+      !canCommit
+        .invoke(sparkCoordinator, Int.box(12), Int.box(1), Int.box(0), Int.box(1))
+        .asInstanceOf[Boolean])
   }
 
   test("ordinary shuffle registration preserves the existing Celeborn handle and fallback") {
