@@ -27,9 +27,11 @@ import org.apache.spark.sql.comet.{CometIcebergNativeScanExec, CometSortExec}
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution.{SortExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.exchange.ShuffleExchangeExec
 import org.apache.spark.sql.types.IntegerType
 
+import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.serde.operator.CometIcebergNativeScan
 
 /**
@@ -132,9 +134,13 @@ class CometIcebergSortMergeReadSuite
   private val catalogCounter = new AtomicInteger(0)
 
   // preserve-data-ordering makes Iceberg report the table sort order; adaptive off keeps the
-  // executed plan stable for the sort/shuffle counts below.
+  // executed plan stable for the sort/shuffle counts below. preserve-data-grouping is also set
+  // because newer Iceberg builds reject preserve-data-ordering without it (SparkPartitioningAware
+  // Scan throws "Cannot preserve data ordering without data grouping"); it is a harmless no-op on
+  // builds that do not require it.
   private val orderedReadConf: Seq[(String, String)] = Seq(
     "spark.sql.iceberg.planning.preserve-data-ordering" -> "true",
+    "spark.sql.iceberg.planning.preserve-data-grouping" -> "true",
     "spark.sql.adaptive.enabled" -> "false")
 
   // Storage-partitioned join config. preserve-data-grouping + v2 bucketing let Iceberg report
@@ -204,6 +210,36 @@ class CometIcebergSortMergeReadSuite
   }
 
   /**
+   * Sets a transform (bucket) sort order via the Iceberg Java API. Iceberg orders files by the
+   * bucket hash, so the reported sort field is a transform expression, not a plain column. Spark
+   * 4.0+ can convert a bucket transform ordering (V2ScanPartitioningAndOrdering threads the
+   * function catalog and V2ExpressionUtils special-cases BucketTransform); Spark 3.4 cannot, so
+   * the caller gates the test on isSpark40Plus. Either way Comet's reportableOrdering rejects the
+   * non-AttributeReference sort child (v1 is identity-scope only, #5339), so Comet must fall
+   * back.
+   */
+  private def replaceSortOrderBucket(
+      cat: String,
+      namespace: String,
+      table: String,
+      col: String,
+      numBuckets: Int): Unit = {
+    val catalog = spark.sessionState.catalogManager
+      .catalog(cat)
+      .asInstanceOf[org.apache.iceberg.spark.SparkCatalog]
+    val ident =
+      org.apache.spark.sql.connector.catalog.Identifier.of(Array(namespace), table)
+    val icebergTable = catalog
+      .loadTable(ident)
+      .asInstanceOf[org.apache.iceberg.spark.source.SparkTable]
+      .table()
+    icebergTable
+      .replaceSortOrder()
+      .asc(org.apache.iceberg.expressions.Expressions.bucket(col, numBuckets))
+      .commit()
+  }
+
+  /**
    * Each string becomes a separate INSERT, hence a separate data file, so merging is required.
    */
   private def insertBatches(cat: String, table: String, batches: String*): Unit =
@@ -245,6 +281,44 @@ class CometIcebergSortMergeReadSuite
       orderingReported(plan),
       "current Iceberg build does not implement SupportsReportOrdering (no ordering reported); " +
         "sort-elimination assertion skipped")
+
+  /**
+   * True if the Iceberg build on the classpath reports a sort order for `query`. Determined
+   * independently of Comet: the query is planned with the native Iceberg scan disabled, and we
+   * check whether Spark's own BatchScanExec advertises an outputOrdering. This is the signal that
+   * makes the fallback checks below meaningful -- when Iceberg does not report (the published
+   * Iceberg in CI), there is no reported ordering for Comet to decline, so those checks are
+   * skipped rather than firing on a scan that was never eligible to fall back.
+   */
+  private def icebergReportsOrdering(query: String): Boolean = {
+    // withSQLConf returns the block value on Spark 4.x but Unit on 3.4/3.5, so capture in a var
+    // rather than relying on its return value.
+    var reported = false
+    withSQLConf(CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "false") {
+      val plan = spark.sql(query).queryExecution.executedPlan
+      reported = collect(stripAQEPlan(plan)) { case b: BatchScanExec => b }
+        .exists(_.outputOrdering.nonEmpty)
+    }
+    reported
+  }
+
+  /**
+   * The Spark-fallback contract for a reported-but-unhonorable ordering: when the native scan
+   * cannot guarantee an ordering Iceberg reported, Comet must not convert the scan at all.
+   * Reading unordered natively would return silently-wrong results, because EnsureRequirements
+   * has already dropped the Sort above the scan on the strength of Iceberg's report. So the plan
+   * must contain no CometIcebergNativeScanExec -- the scan stays on Spark's Iceberg reader. Gated
+   * on a reporting Iceberg build (see icebergReportsOrdering); correctness is asserted separately
+   * by the caller.
+   */
+  private def assertFellBackToSpark(query: String, plan: SparkPlan): Unit = {
+    assume(
+      icebergReportsOrdering(query),
+      "current Iceberg build does not report an ordering; the Spark-fallback path is not exercised")
+    assert(
+      nativeScans(plan).isEmpty,
+      s"Comet reported an ordering it cannot honour instead of falling back to Spark:\n$plan")
+  }
 
   // The reporting mechanism: SupportsReportOrdering -> CometIcebergNativeScanExec.outputOrdering
 
@@ -486,6 +560,76 @@ class CometIcebergSortMergeReadSuite
         disabled = spark.sql(query).collect().toSeq
       }
       assert(enabled == disabled, "reporting the ordering must not change the result")
+    }
+  }
+
+  // -------------------------------------------------------------------------------------------
+  // Fallback to Spark. These are the v1 non-targets from
+  // https://github.com/apache/datafusion-comet/issues/5323: cases where Iceberg reports a sort
+  // order but the native scan cannot honour it. When Iceberg reports an ordering, EnsureRequirements
+  // may already have dropped the Sort above the scan, so a native unordered read would be silently
+  // wrong -- Comet must instead leave the scan on Spark's Iceberg reader. Correctness is checked
+  // unconditionally (checkSparkAnswer, holds on any Iceberg build); the "stayed on Spark" assertion
+  // is gated on a reporting build (assertFellBackToSpark).
+  //
+  // Triggers: (a) sort-merge disabled while Iceberg still reports an ordering, and (b) a transform
+  // (bucket) sort key (#5339), which Comet's reportableOrdering rejects as a non-column sort child.
+  // The transform test is gated on Spark 4.0+: Spark converts a transform sort ordering only where
+  // V2ScanPartitioningAndOrdering threads the function catalog into the scan's outputOrdering (4.0+
+  // does, 3.4 does not -- there a transform ordering throws _LEGACY_ERROR_TEMP_3054 in Spark before
+  // Comet is reached), and it also needs a reporting Iceberg build (assertFellBackToSpark gates on
+  // that). UUID sort keys are covered by the "ordering-unsafe column" gate test since a UUID column
+  // has no Spark DDL type. All of these feed the same reportableOrdering gate the fallback uses.
+  // -------------------------------------------------------------------------------------------
+
+  test("fallback: sort-merge disabled but Iceberg reports an ordering stays on Spark (SMJ)") {
+    withSortedTables(spjConf ++ Seq(CometConf.COMET_ICEBERG_SORT_MERGE_ENABLED.key -> "false"))(
+      "a",
+      "b") { cat =>
+      Seq("a", "b").foreach { t =>
+        spark.sql(
+          s"CREATE TABLE $cat.db.$t (c1 INT, c2 STRING, c3 STRING) USING iceberg " +
+            "PARTITIONED BY (bucket(4, c1))")
+        replaceSortOrder(cat, "db", t, "c1" -> true)
+        insertBatches(cat, t, "(1,'a','X'),(2,'b','X')", "(1,'c','X'),(3,'d','X')")
+      }
+      val query = s"SELECT a.c1, b.c2 FROM $cat.db.a a JOIN $cat.db.b b ON a.c1 = b.c1"
+      val (_, plan) = checkSparkAnswer(query)
+      assertFellBackToSpark(query, plan)
+    }
+  }
+
+  test(
+    "fallback: sort-merge disabled but Iceberg reports an ordering stays on Spark (group-by)") {
+    withSortedTables(spjConf ++ Seq(CometConf.COMET_ICEBERG_SORT_MERGE_ENABLED.key -> "false"))(
+      "t") { cat =>
+      spark.sql(
+        s"CREATE TABLE $cat.db.t (c1 INT, c2 STRING, c3 STRING) USING iceberg " +
+          "PARTITIONED BY (bucket(4, c1))")
+      replaceSortOrder(cat, "db", "t", "c1" -> true)
+      insertBatches(cat, "t", "(1,'a','X'),(2,'b','X')", "(1,'c','X'),(3,'d','X')")
+      val query = s"SELECT c1, COUNT(*) FROM $cat.db.t GROUP BY c1"
+      val (_, plan) = checkSparkAnswer(query)
+      assertFellBackToSpark(query, plan)
+    }
+  }
+
+  test("fallback: a transform (bucket) sort order stays on Spark (#5339)") {
+    // Spark converts a transform sort ordering only on 4.0+ (see the section note); on 3.4 the
+    // query would throw in Spark before Comet is reached, so skip there.
+    assume(isSpark40Plus, "transform sort orderings are only convertible on Spark 4.0+")
+    withSortedTables(spjConf)("t") { cat =>
+      spark.sql(
+        s"CREATE TABLE $cat.db.t (c1 INT, c2 STRING, c3 STRING) USING iceberg " +
+          "PARTITIONED BY (bucket(4, c1))")
+      // Sort by bucket(8, c1): Iceberg reports the ordering as a bucket transform. Spark 4.0+
+      // converts it, but Comet's reportableOrdering rejects the non-AttributeReference sort child,
+      // so Comet stays on Spark (v1 identity-only, #5339).
+      replaceSortOrderBucket(cat, "db", "t", "c1", 8)
+      insertBatches(cat, "t", "(1,'a','X'),(2,'b','X')", "(3,'c','X'),(4,'d','X')")
+      val query = s"SELECT c1, c2 FROM $cat.db.t"
+      val (_, plan) = checkSparkAnswer(query)
+      assertFellBackToSpark(query, plan)
     }
   }
 
