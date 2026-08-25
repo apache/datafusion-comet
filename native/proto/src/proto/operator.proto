@@ -690,7 +690,7 @@ message ShuffleWriter {
   // Absent means legacy local output using fields 3 and 4. An explicit local writer may
   // duplicate those paths for older native libraries, but the paths must agree.
   // Do not emit RSS until the native library's RSS protocol support has been verified.
-  // RSS must not populate the legacy local paths, and is not executable yet.
+  // RSS must not populate the legacy local paths and requires a task-owned pusher registration.
   spark.spark_partitioning.PartitionWriter partition_writer = 2;
   // Retained for compatibility with existing JVM and native plans.
   string output_data_file = 3;

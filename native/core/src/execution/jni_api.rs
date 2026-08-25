@@ -21,8 +21,11 @@ use super::{serde, utils::SparkArrowConvert};
 use crate::{
     errors::{try_unwrap_or_throw, CometError, CometResult},
     execution::{
-        metrics::utils::update_comet_metric, planner::PhysicalPlanner, serde::to_arrow_datatype,
-        shuffle::spark_unsafe::row::process_sorted_row_partition, sort::RdxSort,
+        metrics::utils::update_comet_metric,
+        planner::{PhysicalPlanner, RegisteredShufflePusher},
+        serde::to_arrow_datatype,
+        shuffle::spark_unsafe::row::process_sorted_row_partition,
+        sort::RdxSort,
     },
     jvm_bridge::JVMClasses,
 };
@@ -41,7 +44,9 @@ use datafusion::{
     physical_plan::{display::DisplayableExecutionPlan, SendableRecordBatchStream},
     prelude::{SessionConfig, SessionContext},
 };
+use datafusion_comet_jni_bridge::shuffle_partition_pusher::JavaShufflePartitionPusher;
 use datafusion_comet_proto::spark_operator::Operator;
+use datafusion_comet_shuffle::PartitionPusher;
 use datafusion_comet_spark_expr::url_funcs::{CometParseUrl, CometTryParseUrl};
 use datafusion_spark::function::array::array_contains::SparkArrayContains;
 use datafusion_spark::function::array::repeat::SparkArrayRepeat;
@@ -119,6 +124,10 @@ use log::info;
 use std::sync::OnceLock;
 #[cfg(feature = "jemalloc")]
 use tikv_jemalloc_ctl::{epoch, stats};
+
+#[cfg(test)]
+#[path = "rss_planner_jni_tests.rs"]
+mod rss_planner_jni_tests;
 
 static TOKIO_RUNTIME: Mutex<Option<Runtime>> = Mutex::new(None);
 
@@ -394,6 +403,9 @@ struct ExecutionContext {
     pub class_loader: Option<Arc<Global<JObject<'static>>>>,
     /// Removes this context's tracing memory-pool entry on every exit path.
     memory_pool_registration: Option<ThreadMemoryPoolRegistration>,
+    /// Optional RSS callback registered by this task before the physical plan is built.
+    /// The callback's global JNI references are released with this execution context.
+    pub rss_pusher: Option<RegisteredShufflePusher>,
 }
 
 /// Accept serialized query plan and return the address of the native query plan.
@@ -583,11 +595,94 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 task_context,
                 class_loader,
                 memory_pool_registration,
+                rss_pusher: None,
             });
 
             Ok(Box::into_raw(exec_context) as i64)
         })
     })
+}
+
+/// Register an RSS callback on the native context that owns its Spark task attempt.
+///
+/// Registration must happen after `createPlan` and before the first `executePlan`. The handle is
+/// an opaque task-local identifier, not a native address or a process-wide registry key.
+///
+/// # Safety
+/// The execution context address must refer to a live native plan returned by `createPlan`.
+#[no_mangle]
+pub unsafe extern "system" fn Java_org_apache_comet_Native_registerRssPartitionPusher(
+    e: EnvUnowned,
+    _class: JClass,
+    exec_context: jlong,
+    handle: jlong,
+    object: JObject,
+    num_partitions: jint,
+    max_frame_bytes: jint,
+) {
+    try_unwrap_or_throw(&e, |env| {
+        if exec_context == 0 {
+            return Err(CometError::NullPointer(
+                "Comet execution context is null".into(),
+            ));
+        }
+
+        register_rss_partition_pusher(
+            env,
+            get_execution_context(exec_context),
+            handle,
+            &object,
+            num_partitions,
+            max_frame_bytes,
+        )
+    })
+}
+
+fn register_rss_partition_pusher(
+    env: &mut Env,
+    exec_context: &mut ExecutionContext,
+    handle: i64,
+    object: &JObject<'_>,
+    num_partitions: jint,
+    max_frame_bytes: jint,
+) -> CometResult<()> {
+    if handle <= 0 {
+        return Err(CometError::Config(
+            "RSS partition pusher handle must be positive".into(),
+        ));
+    }
+    if num_partitions <= 0 {
+        return Err(CometError::Config("Invalid RSS partition count".into()));
+    }
+    if max_frame_bytes <= 0 {
+        return Err(CometError::Config("Invalid RSS frame byte limit".into()));
+    }
+    if exec_context.root_op.is_some() {
+        return Err(CometError::Config(
+            "RSS partition pusher must be registered before execution".into(),
+        ));
+    }
+    if exec_context.rss_pusher.is_some() {
+        return Err(CometError::Config(
+            "RSS partition pusher is already registered for this task".into(),
+        ));
+    }
+
+    let num_partitions = num_partitions as usize;
+    let max_frame_bytes = max_frame_bytes as usize;
+    let pusher: Arc<dyn PartitionPusher> = Arc::new(JavaShufflePartitionPusher::try_new(
+        env,
+        object,
+        num_partitions,
+        max_frame_bytes,
+    )?);
+    exec_context.rss_pusher = Some(RegisteredShufflePusher {
+        handle,
+        num_partitions,
+        max_frame_bytes,
+        pusher,
+    });
+    Ok(())
 }
 
 /// Configure DataFusion session context.
@@ -830,7 +925,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                         .with_exec_id(exec_context_id)
                         .with_sql_text_pool(&exec_context.spark_plan)
                         .with_task_context(exec_context.task_context.clone())
-                        .with_class_loader(exec_context.class_loader.clone());
+                        .with_class_loader(exec_context.class_loader.clone())
+                        .with_rss_pusher(exec_context.rss_pusher.clone());
                 let (scans, shuffle_scans, root_op) = planner.create_plan(
                     &exec_context.spark_plan,
                     &mut exec_context.input_sources.clone(),

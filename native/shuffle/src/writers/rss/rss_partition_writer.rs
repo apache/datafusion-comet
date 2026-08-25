@@ -49,7 +49,7 @@ impl PartitionPusher for JavaShufflePartitionPusher {
 }
 
 /// Encodes already-partitioned batches using the existing Comet format and sends one frame per
-/// callback. This foundation is not selected by the native planner yet.
+/// callback. The native planner selects it only for a registered task-owned pusher.
 ///
 /// There are no retained per-reducer buffers. The byte limit caps encoded output, not Arrow's
 /// encoding scratch space or the backend's asynchronous memory. Production admission, row

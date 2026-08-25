@@ -74,7 +74,7 @@ message LocalPartitionWriter {
 }
 
 message RssPartitionWriter {
-  // Opaque, task-scoped pusher handle. This schema does not make the handle usable:
-  // RSS plans remain unsupported until capability negotiation and safe handle ownership exist.
+  // Opaque, task-scoped pusher handle. Native planning resolves this handle only against
+  // the pusher registered on the owning execution context.
   int64 rss_partition_pusher = 1;
 }

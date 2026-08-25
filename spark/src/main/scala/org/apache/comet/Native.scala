@@ -25,6 +25,7 @@ import org.apache.spark.{CometTaskMemoryManager, TaskContext}
 import org.apache.spark.sql.comet.CometMetricNode
 
 import org.apache.comet.parquet.CometFileKeyUnwrapper
+import org.apache.comet.shuffle.ShufflePartitionPusher
 
 class Native extends NativeBase {
 
@@ -78,6 +79,27 @@ class Native extends NativeBase {
       taskContext: TaskContext,
       classLoader: ClassLoader): Long
   // scalastyle:on
+
+  /**
+   * Register a task-owned remote shuffle callback before the native plan is first executed.
+   *
+   * @param plan
+   *   the native execution context returned by createPlan
+   * @param handle
+   *   the positive, opaque handle serialized in this task's remote shuffle plan
+   * @param pusher
+   *   the callback that accepts complete encoded shuffle frames
+   * @param numPartitions
+   *   the number of remote shuffle output partitions
+   * @param maxFrameBytes
+   *   the maximum encoded bytes accepted for one complete shuffle frame
+   */
+  @native def registerRssPartitionPusher(
+      plan: Long,
+      handle: Long,
+      pusher: ShufflePartitionPusher,
+      numPartitions: Int,
+      maxFrameBytes: Int): Unit
 
   /**
    * Execute a native query plan based on given input Arrow arrays.

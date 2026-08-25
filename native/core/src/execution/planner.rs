@@ -44,7 +44,7 @@ use crate::execution::{
     planner::expression_registry::ExpressionRegistry,
     planner::operator_registry::OperatorRegistry,
     serde::to_arrow_datatype,
-    shuffle::{SchemaAlignExec, ShuffleWriterExec},
+    shuffle::{PartitionPusher, SchemaAlignExec, ShuffleDestination, ShuffleWriterExec},
 };
 use crate::jvm_bridge::{jni_call, JVMClasses};
 use arrow::compute::CastOptions;
@@ -244,6 +244,15 @@ pub struct BinaryExprOptions {
 
 pub const TEST_EXEC_CONTEXT_ID: i64 = -1;
 
+/// An opaque RSS callback registration owned by one native task execution context.
+#[derive(Clone)]
+pub(crate) struct RegisteredShufflePusher {
+    pub(crate) handle: i64,
+    pub(crate) num_partitions: usize,
+    pub(crate) max_frame_bytes: usize,
+    pub(crate) pusher: Arc<dyn PartitionPusher>,
+}
+
 /// The query planner for converting Spark query plans to DataFusion query plans.
 pub struct PhysicalPlanner {
     // The execution context id of this planner.
@@ -263,6 +272,8 @@ pub struct PhysicalPlanner {
     /// `ExecutionContext`; see that struct for the propagation rationale. `None` when no driving
     /// Spark task is available.
     class_loader: Option<Arc<Global<JObject<'static>>>>,
+    /// Callback explicitly registered on this task's native execution context.
+    rss_pusher: Option<RegisteredShufflePusher>,
 }
 
 impl Default for PhysicalPlanner {
@@ -281,6 +292,7 @@ impl PhysicalPlanner {
             sql_text_pool: vec![],
             task_context: None,
             class_loader: None,
+            rss_pusher: None,
         }
     }
 
@@ -378,6 +390,12 @@ impl PhysicalPlanner {
         class_loader: Option<Arc<Global<JObject<'static>>>>,
     ) -> Self {
         self.class_loader = class_loader;
+        self
+    }
+
+    /// Attach the callback owned by this planner's Spark task attempt, if one was registered.
+    pub(crate) fn with_rss_pusher(mut self, pusher: Option<RegisteredShufflePusher>) -> Self {
+        self.rss_pusher = pusher;
         self
     }
 
@@ -1806,9 +1824,59 @@ impl PhysicalPlanner {
                 )))
             }
             OpStruct::ShuffleWriter(writer) => {
-                // Validate the destination before planning the child. In particular, an RSS or
-                // unknown destination must never fall through to the legacy local-file writer.
-                let (output_data_file, output_index_file) = local_shuffle_output_paths(writer)?;
+                use datafusion_comet_proto::spark_partitioning::partition_writer::PartitionWriterStruct;
+
+                // Resolve task ownership before planning the child so malformed or unregistered
+                // RSS destinations can never fall through to legacy local-file output.
+                let rss_registration = match writer
+                    .partition_writer
+                    .as_ref()
+                    .and_then(|partition_writer| partition_writer.partition_writer_struct.as_ref())
+                {
+                    Some(PartitionWriterStruct::RssPartitionWriter(rss)) => {
+                        if !writer.output_data_file.is_empty()
+                            || !writer.output_index_file.is_empty()
+                        {
+                            return Err(GeneralError(
+                                "RSS shuffle partition writer must not specify legacy local paths"
+                                    .to_string(),
+                            ));
+                        }
+                        if rss.rss_partition_pusher <= 0 {
+                            return Err(GeneralError(
+                                "RSS partition pusher handle must be positive".to_string(),
+                            ));
+                        }
+                        let registered = self.rss_pusher.as_ref().ok_or_else(|| {
+                            GeneralError(
+                                "RSS partition pusher is not registered for this task".to_string(),
+                            )
+                        })?;
+                        if registered.handle != rss.rss_partition_pusher {
+                            return Err(GeneralError(
+                                "RSS partition pusher handle does not belong to this task"
+                                    .to_string(),
+                            ));
+                        }
+                        Some(registered)
+                    }
+                    _ => None,
+                };
+
+                let shuffle_destination = if let Some(registered) = rss_registration {
+                    ShuffleDestination::Rss {
+                        pusher: Arc::clone(&registered.pusher),
+                        max_frame_bytes: registered.max_frame_bytes,
+                    }
+                } else {
+                    let (output_data_file, output_index_file) = local_shuffle_output_paths(writer)?;
+                    ShuffleDestination::Local {
+                        output_data_file: output_data_file.to_owned(),
+                        output_index_file: output_index_file.to_owned(),
+                        write_buffer_size: writer.write_buffer_size as usize,
+                    }
+                };
+
                 assert_eq!(children.len(), 1);
                 let (scans, shuffle_scans, child) =
                     self.create_plan(&children[0], inputs, partition_count)?;
@@ -1823,6 +1891,16 @@ impl PhysicalPlanner {
                     writer_input.schema(),
                 )?;
 
+                if let Some(registered) = rss_registration {
+                    let partition_count = partitioning.partition_count();
+                    if registered.num_partitions != partition_count {
+                        return Err(GeneralError(format!(
+                            "RSS partition count {} does not match shuffle partition count {}",
+                            registered.num_partitions, partition_count
+                        )));
+                    }
+                }
+
                 let codec = match writer.codec.try_into() {
                     Ok(SparkCompressionCodec::None) => Ok(CompressionCodec::None),
                     Ok(SparkCompressionCodec::Snappy) => Ok(CompressionCodec::Snappy),
@@ -1836,19 +1914,16 @@ impl PhysicalPlanner {
                     ))),
                 }?;
 
-                let write_buffer_size = writer.write_buffer_size as usize;
                 // Zero on the wire means the limit is disabled; normalize it here so the writer
                 // only ever sees a real limit or none at all.
                 let max_buffer_bytes =
                     (writer.max_buffer_bytes > 0).then_some(writer.max_buffer_bytes as usize);
-                let shuffle_writer = Arc::new(ShuffleWriterExec::try_new(
+                let shuffle_writer = Arc::new(ShuffleWriterExec::try_new_with_destination(
                     writer_input,
                     partitioning,
                     codec,
-                    output_data_file.to_owned(),
-                    output_index_file.to_owned(),
+                    shuffle_destination,
                     writer.tracing_enabled,
-                    write_buffer_size,
                     max_buffer_bytes,
                 )?);
 
@@ -4677,7 +4752,12 @@ mod tests {
     mod shuffle_writer_destination {
         use super::create_scan;
         use crate::execution::operators::InputBatch;
-        use crate::execution::planner::{local_shuffle_output_paths, PhysicalPlanner};
+        use crate::execution::planner::{
+            local_shuffle_output_paths, PhysicalPlanner, RegisteredShufflePusher,
+        };
+        use crate::execution::shuffle::PartitionPusher;
+        use arrow::array::Int32Array;
+        use datafusion::error::Result as DataFusionResult;
         use datafusion::physical_plan::common::collect;
         use datafusion::prelude::SessionContext;
         use datafusion_comet_proto::spark_operator::{operator::OpStruct, Operator, ShuffleWriter};
@@ -4686,8 +4766,48 @@ mod tests {
             LocalPartitionWriter, PartitionWriter, Partitioning, RssPartitionWriter,
             SinglePartition,
         };
+        use futures::{poll, StreamExt};
         use prost::Message;
+        use std::sync::{Arc, Mutex};
+        use std::task::Poll;
         use tempfile::TempDir;
+
+        type RecordedFrames = Arc<Mutex<Vec<(usize, Vec<u8>)>>>;
+
+        struct RecordingPusher {
+            frames: RecordedFrames,
+        }
+
+        impl PartitionPusher for RecordingPusher {
+            fn push_partition_data(
+                &self,
+                partition_id: usize,
+                frame: &[u8],
+            ) -> DataFusionResult<()> {
+                self.frames
+                    .lock()
+                    .unwrap()
+                    .push((partition_id, frame.to_vec()));
+                Ok(())
+            }
+        }
+
+        fn registered_pusher(
+            handle: i64,
+            num_partitions: usize,
+            max_frame_bytes: usize,
+        ) -> (RegisteredShufflePusher, RecordedFrames) {
+            let frames = Arc::new(Mutex::new(vec![]));
+            let registration = RegisteredShufflePusher {
+                handle,
+                num_partitions,
+                max_frame_bytes,
+                pusher: Arc::new(RecordingPusher {
+                    frames: Arc::clone(&frames),
+                }),
+            };
+            (registration, frames)
+        }
 
         fn local_destination(data: &str, index: &str) -> PartitionWriter {
             PartitionWriter {
@@ -4708,6 +4828,24 @@ mod tests {
             }
         }
 
+        fn rss_writer(handle: i64) -> ShuffleWriter {
+            ShuffleWriter {
+                partitioning: Some(Partitioning {
+                    partitioning_struct: Some(PartitioningStruct::SinglePartition(
+                        SinglePartition {},
+                    )),
+                }),
+                partition_writer: Some(PartitionWriter {
+                    partition_writer_struct: Some(PartitionWriterStruct::RssPartitionWriter(
+                        RssPartitionWriter {
+                            rss_partition_pusher: handle,
+                        },
+                    )),
+                }),
+                ..Default::default()
+            }
+        }
+
         fn assert_rejected_before_child(writer: ShuffleWriter, expected: &str) {
             let op = Operator {
                 // An invalid child ensures destination validation happens before child planning.
@@ -4717,8 +4855,7 @@ mod tests {
             };
             let err = PhysicalPlanner::default()
                 .create_plan(&op, &mut vec![], 1)
-                .err()
-                .expect("invalid destination must not produce a plan");
+                .expect_err("invalid destination must not produce a plan");
             assert!(err.to_string().contains(expected), "{err}");
         }
 
@@ -4768,7 +4905,7 @@ mod tests {
         }
 
         #[test]
-        fn rejects_rss_even_when_legacy_paths_are_present() {
+        fn rejects_unregistered_or_invalid_rss_before_planning_child() {
             for handle in [0, 7, -1] {
                 for mut writer in [ShuffleWriter::default(), legacy_writer()] {
                     writer.partition_writer = Some(PartitionWriter {
@@ -4778,12 +4915,92 @@ mod tests {
                             },
                         )),
                     });
-                    assert_rejected_before_child(
-                        writer,
-                        "RSS shuffle partition writer is not supported",
-                    );
+                    let expected = if !writer.output_data_file.is_empty()
+                        || !writer.output_index_file.is_empty()
+                    {
+                        "must not specify legacy local paths"
+                    } else if handle <= 0 {
+                        "handle must be positive"
+                    } else {
+                        "not registered for this task"
+                    };
+                    assert_rejected_before_child(writer, expected);
                 }
             }
+        }
+
+        #[test]
+        fn rejects_other_tasks_rss_handle_before_planning_child() {
+            let (registration, frames) = registered_pusher(7, 1, 1024);
+            let op = Operator {
+                children: vec![Operator::default()],
+                op_struct: Some(OpStruct::ShuffleWriter(rss_writer(8))),
+                ..Default::default()
+            };
+            let error = PhysicalPlanner::default()
+                .with_rss_pusher(Some(registration))
+                .create_plan(&op, &mut vec![], 1)
+                .expect_err("a different task's RSS pusher must be rejected");
+            assert!(error.to_string().contains("does not belong to this task"));
+            assert!(frames.lock().unwrap().is_empty());
+        }
+
+        #[test]
+        fn rejects_incompatible_rss_partition_counts_and_frame_limits() {
+            for (registration, expected) in [
+                (registered_pusher(7, 2, 1024).0, "partition count"),
+                (registered_pusher(7, 1, 19).0, "frame byte limit"),
+            ] {
+                let op = Operator {
+                    children: vec![create_scan()],
+                    op_struct: Some(OpStruct::ShuffleWriter(rss_writer(7))),
+                    ..Default::default()
+                };
+                let error = PhysicalPlanner::default()
+                    .with_rss_pusher(Some(registration))
+                    .create_plan(&op, &mut vec![], 1)
+                    .expect_err("incompatible RSS options must be rejected");
+                assert!(error.to_string().contains(expected), "{error}");
+            }
+        }
+
+        #[tokio::test]
+        async fn registered_rss_destination_pushes_complete_partition_frames() {
+            let (registration, frames) = registered_pusher(7, 1, 1024 * 1024);
+            let op = Operator {
+                children: vec![create_scan()],
+                op_struct: Some(OpStruct::ShuffleWriter(rss_writer(7))),
+                ..Default::default()
+            };
+            let planner = PhysicalPlanner::default().with_rss_pusher(Some(registration));
+            let (mut scans, _, plan) = planner.create_plan(&op, &mut vec![], 1).unwrap();
+            scans[0].set_input_batch(InputBatch::Batch(
+                vec![Arc::new(Int32Array::from(vec![11, 29, 47]))],
+                3,
+            ));
+
+            let mut stream = plan
+                .native_plan
+                .execute(0, SessionContext::new().task_ctx())
+                .unwrap();
+            let mut eof_sent = false;
+            loop {
+                match poll!(stream.next()) {
+                    Poll::Ready(Some(Ok(_))) => panic!("RSS writer must not produce batches"),
+                    Poll::Ready(Some(Err(error))) => panic!("RSS writer failed: {error}"),
+                    Poll::Ready(None) => break,
+                    Poll::Pending if !eof_sent => {
+                        scans[0].set_input_batch(InputBatch::EOF);
+                        eof_sent = true;
+                    }
+                    Poll::Pending => tokio::task::yield_now().await,
+                }
+            }
+
+            let frames = frames.lock().unwrap();
+            assert_eq!(frames.len(), 1);
+            assert_eq!(frames[0].0, 0);
+            assert!(frames[0].1.len() >= 20);
         }
 
         #[test]
