@@ -127,8 +127,11 @@ statement
 CREATE TABLE test_variant_unicode(v VARIANT) USING parquet
 
 statement
-INSERT INTO test_variant_unicode VALUES (parse_json(
-  '{"k00":0,"k01":1,"k02":2,"k03":3,"k04":4,"k05":5,"k06":6,"k07":7,"k08":8,"k09":9,"k10":10,"k11":11,"k12":12,"k13":13,"k14":14,"k15":15,"k16":16,"k17":17,"k18":18,"k19":19,"k20":20,"k21":21,"k22":22,"k23":23,"k24":24,"k25":25,"k26":26,"k27":27,"k28":28,"k29":29,"\uE000":30,"😀":531}'))
+INSERT INTO test_variant_unicode VALUES
+  (parse_json(
+    '{"k00":0,"k01":1,"k02":2,"k03":3,"k04":4,"k05":5,"k06":6,"k07":7,"k08":8,"k09":9,"k10":10,"k11":11,"k12":12,"k13":13,"k14":14,"k15":15,"k16":16,"k17":17,"k18":18,"k19":19,"k20":20,"k21":21,"k22":22,"k23":23,"k24":24,"k25":25,"k26":26,"k27":27,"k28":28,"k29":29,"\uE000":30,"😀":531}')),
+  (parse_json(
+    '{"":-2,"k00":0,"nested":{"":-1,"k00":0,"k01":1,"k02":2,"k03":3,"k04":4,"k05":5,"k06":6,"k07":7,"k08":8,"k09":9,"k10":10,"k11":11,"k12":12,"k13":13,"k14":14,"k15":15,"k16":16,"k17":17,"k18":18,"k19":19,"k20":20,"k21":21,"k22":22,"k23":23,"k24":24,"k25":25,"k26":26,"k27":27,"k28":28,"k29":29,"\uE000":30,"😀":532}}'))
 
 statement
 SET spark.sql.variant.writeShredding.enabled=false
@@ -136,29 +139,32 @@ SET spark.sql.variant.writeShredding.enabled=false
 statement
 SET spark.sql.variant.allowReadingShredded=true
 
-query expect_fallback(type VariantType)
-SELECT variant_get(v, '$.😀', 'bigint') FROM test_variant_unicode
+query
+SELECT v FROM test_variant_unicode
 
--- Spark SQL cannot write unsigned Parquet integer annotations. Generate the signed representation
--- produced after widening here; the unsigned-to-signed conversion itself is covered in Rust.
+query expect_fallback(type VariantType)
+SELECT variant_get(v, '$.😀', 'bigint'), variant_get(v, '$.nested.😀', 'bigint')
+FROM test_variant_unicode
+
+-- Spark rebuilds typed fields in physical shredding-schema order and chooses integer/decimal
+-- widths from the runtime value, independently of the Parquet physical width.
 statement
-SET spark.sql.variant.forceShreddingSchemaForTest=u8 SMALLINT, u16 INT, u32 BIGINT
+SET spark.sql.variant.forceShreddingSchemaForTest=b BIGINT, a BIGINT, d DECIMAL(38,2)
 
 statement
 SET spark.sql.variant.writeShredding.enabled=true
 
 statement
-CREATE TABLE test_variant_widened(v VARIANT) USING parquet
+CREATE TABLE test_variant_typed_bytes(v VARIANT) USING parquet
 
 statement
-INSERT INTO test_variant_widened VALUES
-  (parse_json('{"u8":255,"u16":65535,"u32":4294967295}'))
+INSERT INTO test_variant_typed_bytes VALUES (parse_json('{"a":1,"b":2,"d":1.23}'))
 
 statement
 SET spark.sql.variant.writeShredding.enabled=false
 
 query
-SELECT v FROM test_variant_widened
+SELECT v FROM test_variant_typed_bytes
 
 statement
 CREATE TABLE test_variant_struct(id INT, s STRUCT<safe: INT, v: VARIANT>, tail STRING)

@@ -1119,13 +1119,12 @@ impl PhysicalExpr for RejectOnNonEmpty {
 mod test {
     use crate::parquet::parquet_support::SparkParquetOptions;
     use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
-    use arrow::array::UInt32Array;
     use arrow::array::{
-        BinaryArray, Date32Array, Decimal128Array, Float32Array, Float64Array, Int32Array,
-        Int64Array, StringArray, TimestampMicrosecondArray,
+        Array, BinaryArray, Date32Array, Decimal128Array, Float32Array, Float64Array, Int32Array,
+        Int64Array, StringArray, StructArray, TimestampMicrosecondArray, UInt16Array, UInt32Array,
+        UInt8Array,
     };
-    use arrow::datatypes::SchemaRef;
-    use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::datatypes::{DataType, Field, Fields, Schema, SchemaRef};
     use arrow::record_batch::RecordBatch;
     use datafusion::common::DataFusionError;
     use datafusion::datasource::listing::PartitionedFile;
@@ -1139,6 +1138,7 @@ mod test {
     use datafusion_physical_expr_adapter::PhysicalExprAdapterFactory;
     use futures::StreamExt;
     use parquet::arrow::ArrowWriter;
+    use parquet::variant::{Variant, VariantArray, VariantBuilder, VariantType};
     use std::fs::File;
     use std::sync::Arc;
 
@@ -1692,6 +1692,64 @@ mod test {
 
         let _ = roundtrip(&batch, required_schema).await?;
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn parquet_roundtrip_shredded_variant_unsigned_values() -> Result<(), DataFusionError> {
+        let (metadata_bytes, _) = VariantBuilder::new().finish();
+        let values = [
+            (
+                "u8",
+                Arc::new(UInt8Array::from(vec![u8::MAX])) as Arc<dyn arrow::array::Array>,
+            ),
+            ("u16", Arc::new(UInt16Array::from(vec![u16::MAX]))),
+            ("u32", Arc::new(UInt32Array::from(vec![u32::MAX]))),
+        ];
+        let mut file_fields = Vec::with_capacity(values.len());
+        let mut columns = Vec::with_capacity(values.len());
+        let mut required_fields = Vec::with_capacity(values.len());
+        for (name, value) in values {
+            let metadata = Arc::new(BinaryArray::from(vec![Some(metadata_bytes.as_slice())]));
+            let physical = StructArray::try_new(
+                Fields::from(vec![
+                    Field::new("metadata", DataType::Binary, false),
+                    Field::new("typed_value", value.data_type().clone(), false),
+                ]),
+                vec![metadata, value],
+                None,
+            )?;
+            file_fields.push(
+                Field::new(name, physical.data_type().clone(), false)
+                    .with_extension_type(VariantType),
+            );
+            columns.push(Arc::new(physical) as Arc<dyn arrow::array::Array>);
+            required_fields.push(
+                Field::new(
+                    name,
+                    DataType::Struct(Fields::from(vec![
+                        Field::new("value", DataType::Binary, false),
+                        Field::new("metadata", DataType::Binary, false),
+                    ])),
+                    false,
+                )
+                .with_extension_type(VariantType),
+            );
+        }
+
+        let file_schema = Arc::new(Schema::new(file_fields));
+        let batch = RecordBatch::try_new(Arc::clone(&file_schema), columns)?;
+        let output = roundtrip(&batch, Arc::new(Schema::new(required_fields))).await?;
+
+        let expected = [
+            Variant::from(255_i16),
+            Variant::from(65_535_i32),
+            Variant::from(4_294_967_295_i64),
+        ];
+        for (column, expected) in output.columns().iter().zip(expected) {
+            let variant = VariantArray::try_new(column.as_ref())?;
+            assert_eq!(variant.value(0), expected);
+        }
         Ok(())
     }
 
