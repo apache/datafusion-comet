@@ -66,6 +66,19 @@ SELECT array(map(1, array(1, 2, 3)), map(2, array(4, 5, 6)))
 query
 SELECT array(map('x', 1, 'y', 2), map('z', 3))
 
+-- Array of maps whose children disagree on `valueContainsNull`. Spark's CreateArray coercion
+-- compares element types with `sameType`, which ignores nullability, so it inserts no unifying
+-- cast. DataFusion 54.1 cannot unify two Map arguments either: the fallback chain in
+-- `type_union_resolution_coercion` has no `map_coercion` arm, so `make_array` receives the two
+-- differently typed map arrays and `MutableArrayData` panics. `CometCreateArray` therefore keeps
+-- `MapType.valueContainsNull` significant when it normalizes container nullability and declines.
+query expect_fallback(CreateArray children have mismatched data types)
+SELECT array(map('x', CAST(NULL AS INT), 'y', 2), map('z', 3))
+
+-- Both children agree that the value is nullable, so this stays native.
+query
+SELECT array(map('x', CAST(NULL AS INT)), map('z', CAST(NULL AS INT)))
+
 -- Single-element array of map.
 query
 SELECT array(map(1, 2))

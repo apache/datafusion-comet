@@ -23,3 +23,16 @@ INSERT INTO test_map_entries VALUES (map('a', 1, 'b', 2)), (map()), (NULL)
 
 query spark_answer_only
 SELECT map_entries(m) FROM test_map_entries
+
+-- `MapType(_, _, valueContainsNull = false)`, which every `map(...)` over non-null values
+-- produces. DataFusion's `map_entries` declares the entry `value` field nullable but reuses the
+-- input map's entries array, so the planner widens the argument before the call.
+query
+SELECT map_entries(map(1, 2, 3, 4))
+
+query
+SELECT map_entries(map('a', array(1, 2)))
+
+-- A map nested in a map value keeps `valueContainsNull = false` through the extract.
+query
+SELECT map_entries(element_at(map(1, map(1, 2)), 1))

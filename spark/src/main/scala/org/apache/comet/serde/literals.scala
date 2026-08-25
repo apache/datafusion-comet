@@ -23,7 +23,7 @@ import java.lang
 
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions.{Attribute, CreateArray, CreateMap, Expression, KnownNullable, Literal}
-import org.apache.spark.sql.catalyst.util.{ArrayData, MapData}
+import org.apache.spark.sql.catalyst.util.{ArrayData, MapData, TypeUtils}
 import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DateType, DayTimeIntervalType, Decimal, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, NullType, ShortType, StringType, TimestampNTZType, TimestampType}
 import org.apache.spark.unsafe.types.UTF8String
 
@@ -32,7 +32,7 @@ import com.google.protobuf.ByteString
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.serde.{CometExpressionSerde, Compatible, ExprOuterClass, LiteralOuterClass, SupportLevel, Unsupported}
-import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, hasNonDefaultStringCollation, isTimeType, serializeDataType, supportedDataType}
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, isTimeType, serializeDataType, supportedDataType}
 import org.apache.comet.serde.Types.ListLiteral
 
 object CometLiteral extends CometExpressionSerde[Literal] with Logging {
@@ -234,41 +234,49 @@ object CometLiteral extends CometExpressionSerde[Literal] with Logging {
    * maps directly would remove the need for this rewrite and for the declines below:
    * https://github.com/apache/datafusion-comet/issues/1937
    *
+   * The rebuilt tree is the tree Spark itself had before `ConstantFolding` collapsed it, down to
+   * every container's declared nullability (see [[withNullability]]). That equivalence is the
+   * safety property this rewrite rests on: whatever the rebuilt expression does natively is what
+   * the same query already does with `ConstantFolding` disabled, so expansion cannot introduce a
+   * folding-only behaviour difference. Shapes the native map kernels cannot handle are therefore
+   * declined by their own serdes rather than here, see [[MapKeySupport]] and [[CometMapEntries]].
+   *
    * Declined shapes:
    *   - Null values and empty top-level containers: a synthesized `Create*` with no children
    *     cannot recover the original element type. Empty `ArrayType` literals still serialize via
    *     `makeListLiteral`, which keeps the type.
-   *   - `StructType` at any depth. Native `CreateNamedStruct` builds a 1-row `StructArray`
-   *     whenever all of its children are scalars (`values_to_arrays`), which collides with the
-   *     surrounding batch's row count. Its proto message also carries no type, so Spark's
-   *     declared field nullability cannot survive the wire either way.
-   *   - Map key types whose Spark equality semantics native lookup cannot honor, see
-   *     [[hasUnsafeMapKeyType]].
-   *   - Folded maps with duplicate keys. The rebuilt `CreateMap` evaluates through
-   *     `ArrayBasedMapBuilder`, which throws under `MAP_KEY_DEDUP_POLICY=EXCEPTION`, where the
-   *     original literal had already folded cleanly.
+   *   - Arrays whose elements are structs, because [[needsExpansion]] does not walk into a
+   *     `StructType`. Native `CreateNamedStruct` builds a 1-row `StructArray` whenever all of its
+   *     children are scalars (`values_to_arrays`), which collides with the surrounding batch's
+   *     row count, and its proto message carries no type, so Spark's declared field nullability
+   *     cannot survive the wire either way. A struct that is only a map value is safe:
+   *     `CometCreateMap` hands the whole rebuilt `CreateMap` to the JVM codegen dispatcher, so
+   *     Spark's own code builds the struct.
+   *   - Folded maps with duplicate keys, see [[hasDuplicateMapKeys]].
    */
   private def expandComplexLiteral(expr: Literal): Option[Expression] = {
     if (expr.value == null) return None
     expr.dataType match {
-      case ArrayType(et, _) if needsExpansion(et) =>
+      case ArrayType(et, containsNull) if needsExpansion(et) =>
         val arr = expr.value.asInstanceOf[ArrayData]
         if (arr.numElements() == 0) {
           None
         } else {
-          val elements = (0 until arr.numElements()).map(i => asNullable(literalAt(arr, i, et)))
+          val elements = (0 until arr.numElements())
+            .map(i => withNullability(literalAt(arr, i, et), containsNull))
           Some(CreateArray(elements, useStringTypeWhenEmpty = false))
         }
-      case MapType(kt, vt, _) =>
+      case MapType(kt, vt, valueContainsNull) =>
         val mapData = expr.value.asInstanceOf[MapData]
         val keys = mapData.keyArray()
-        if (mapData.numElements() == 0 || hasUnsafeMapKeyType(kt) ||
-          hasDuplicateMapKeys(keys, kt)) {
+        if (mapData.numElements() == 0 || hasDuplicateMapKeys(keys, kt)) {
           None
         } else {
           val values = mapData.valueArray()
           val children = (0 until keys.numElements()).flatMap(i =>
-            Seq(literalAt(keys, i, kt), asNullable(literalAt(values, i, vt))))
+            Seq(
+              literalAt(keys, i, kt),
+              withNullability(literalAt(values, i, vt), valueContainsNull)))
           Some(CreateMap(children, useStringTypeWhenEmpty = false))
         }
       case _ => None
@@ -277,8 +285,8 @@ object CometLiteral extends CometExpressionSerde[Literal] with Logging {
 
   /**
    * True when a Literal of this type has to be expanded rather than serialized, because the
-   * native `Literal` proto carries no map values. Walks array nesting only: a `StructType` is not
-   * expandable at all (see [[expandComplexLiteral]]), so the walk stops there.
+   * native `Literal` proto carries no map values. Walks array nesting only: an array of structs
+   * is not expandable (see [[expandComplexLiteral]]), so the walk stops at a `StructType`.
    */
   private def needsExpansion(dataType: DataType): Boolean = dataType match {
     case _: MapType => true
@@ -295,34 +303,51 @@ object CometLiteral extends CometExpressionSerde[Literal] with Logging {
     Literal(valueAt(arr, i, dt), dt)
 
   /**
-   * True when the map key type has Spark equality semantics that native map lookup (Arrow
-   * bytewise comparison) cannot honor, in which case declining expansion keeps the projection on
-   * Spark. `NormalizeFloatingNumbers` makes Spark treat `+0.0` and `-0.0` as the same key and
-   * canonicalises NaN, and a non-default collation compares under rules native applies as
-   * `UTF8_BINARY`. Both are checked at every nesting level of the key type.
-   */
-  private def hasUnsafeMapKeyType(kt: DataType): Boolean =
-    hasNonDefaultStringCollation(kt) ||
-      SupportLevel.containsType(kt, classOf[FloatType], classOf[DoubleType])
-
-  /**
-   * True when the folded map's key array holds duplicates under Catalyst internal equality
-   * (`UTF8String`, `Decimal`, `ArrayData`, `InternalRow` and boxed primitives all implement
-   * `equals` / `hashCode`), which is what `ArrayBasedMapBuilder` uses for the key types reachable
-   * here.
+   * True when the folded map's key array holds duplicates under Spark's own key equality, in
+   * which case rebuilding the value as a `CreateMap` would change semantics the folded `MapData`
+   * had already settled: `ArrayBasedMapBuilder` throws `DUPLICATED_MAP_KEY` under
+   * `MAP_KEY_DEDUP_POLICY=EXCEPTION` and silently drops the earlier entry under `LAST_WIN`, where
+   * the original literal (from `from_json`, or a cast of one) kept both entries.
+   *
+   * `ArrayBasedMapBuilder` hashes most atomic keys but compares `BinaryType`, collated
+   * `StringType` and complex keys through `TypeUtils.getInterpretedOrdering`, and it normalizes
+   * `-0.0` and `NaN` before either. The interpreted ordering is the one comparison that agrees
+   * with all of those: `Array[Byte]` keys compare by content rather than by identity, a collated
+   * `StringType` compares under its collation, and `nanSafeCompareDoubles` already treats `-0.0`
+   * and `+0.0`, and any two `NaN`s, as equal. A null key cannot occur in a map Spark built, so
+   * treat one as a duplicate and keep the projection on Spark instead of asking the ordering to
+   * compare it.
    */
   private def hasDuplicateMapKeys(keys: ArrayData, keyType: DataType): Boolean = {
     val n = keys.numElements()
-    n > 1 && (0 until n).map(i => valueAt(keys, i, keyType)).distinct.size < n
+    if (n < 2) {
+      false
+    } else if ((0 until n).exists(keys.isNullAt)) {
+      true
+    } else {
+      val ordering = TypeUtils.getInterpretedOrdering(keyType)
+      val sorted = (0 until n).map(i => keys.get(i, keyType)).sorted(ordering)
+      sorted.sliding(2).exists(pair => ordering.compare(pair.head, pair.last) == 0)
+    }
   }
 
   /**
-   * Wrap a non-null expression in `KnownNullable` so the surrounding `Create*` derives a nullable
-   * element / value type. DataFusion `make_array` asserts strict Arrow-type equality across
-   * siblings and would panic on a non-nullable child next to a nullable one. Same root cause as
-   * the mismatched-type decline in `CometCreateArray` (apache/datafusion#22366).
-   * `CometKnownNullable` forwards the child on the wire, so runtime is unaffected.
+   * Wrap `expr` in `KnownNullable` when the container it came out of declares its elements or
+   * values nullable, so the rebuilt `Create*` reports exactly the literal's declared
+   * `ArrayType.containsNull` / `MapType.valueContainsNull`. Both directions matter:
+   *   - when the flag is true, a null slot yields a nullable `Literal` while a populated slot
+   *     does not, and DataFusion `make_array` asserts strict Arrow-type equality across siblings
+   *     (apache/datafusion#22366), so all children have to agree.
+   *   - when the flag is false, widening it would make the rebuilt map disagree with a non-folded
+   *     `CreateMap` sibling whose type Spark's own coercion had already accepted, which
+   *     `CometCreateArray` no longer normalizes away because DataFusion 54.1 cannot coerce a
+   *     `MapType.valueContainsNull` mismatch.
+   *
+   * A container that declares itself non-nullable never holds a null slot: `CreateArray` and
+   * `CreateMap` only report `false` when every child is non-nullable, and Spark's other sources
+   * of a complex type (a `CAST` target, a `from_json` schema, `MapType.apply`) default the flag
+   * to `true`. `CometKnownNullable` forwards the child on the wire, so runtime is unaffected.
    */
-  private def asNullable(expr: Expression): Expression =
-    if (expr.nullable) expr else KnownNullable(expr)
+  private def withNullability(expr: Expression, nullable: Boolean): Expression =
+    if (nullable && !expr.nullable) KnownNullable(expr) else expr
 }

@@ -1189,6 +1189,65 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     }
   }
 
+  // The folded `map(1, 2)` and the dynamic `map(2, coalesce(...))` both declare
+  // `MapType(IntegerType, IntegerType, valueContainsNull = false)`, so `CometCreateArray` admits
+  // the pair. Rebuilding the literal has to report that exact type: widening the rebuilt map's
+  // value to nullable would leave the sibling behind and `make_array` would panic, because
+  // DataFusion 54.1 cannot coerce a `MapType.valueContainsNull` mismatch away.
+  test("folded map literal keeps non-nullable values next to a dynamic map sibling (multirow)") {
+    withParquetTable((0 until 3).map(i => (i, i.toLong)), "tbl") {
+      checkSparkAnswerAndOperator(
+        "SELECT _1 AS id, array(map(1, 2), map(2, coalesce(_1, 0))) AS arr FROM tbl")
+    }
+  }
+
+  // The whole `array(...)` folds to one `ArrayType(MapType(IntegerType, IntegerType, true))`
+  // literal, so every rebuilt element must report the unified nullable value type.
+  test("folded array of maps with a NULL value (multirow)") {
+    withParquetTable((0 until 3).map(i => (i, i.toLong)), "tbl") {
+      checkSparkAnswerAndOperator(
+        "SELECT array(map(1, CAST(NULL AS INT)), map(2, 3)) AS arr FROM tbl")
+    }
+  }
+
+  // A NULL element sits next to a populated one inside a single folded
+  // `ArrayType(MapType(IntegerType, IntegerType, false), containsNull = true)` literal. The null
+  // slot serializes as a typed null literal carrying the declared map type, so the rebuilt sibling
+  // has to report that same type for `make_array` to accept the pair.
+  test("folded array mixing a map literal and a NULL element (multirow)") {
+    withParquetTable((0 until 3).map(i => (i, i.toLong)), "tbl") {
+      checkSparkAnswerAndOperator("SELECT array(map(1, 2), NULL) AS arr FROM tbl")
+      checkSparkAnswerAndOperator("SELECT array(NULL, map(1, 2)) AS arr FROM tbl")
+    }
+  }
+
+  // A map value that is itself a map or an array of maps is built by Spark's own generated code
+  // inside `CometCreateMap`, so it keeps its declared nullability all the way to the consumer.
+  test("folded map literals with nested map values (multirow)") {
+    withParquetTable((0 until 3).map(i => (i, i.toLong)), "tbl") {
+      checkSparkAnswerAndOperator("SELECT _1 AS id, map(1, map(1, 2)) AS m FROM tbl")
+      checkSparkAnswerAndOperator("SELECT _1 AS id, map(1, array(map(2, 3))) AS m FROM tbl")
+      checkSparkAnswerAndOperator(
+        "SELECT _1 AS id, map(1, named_struct('a', 1, 'b', 'x')) AS m FROM tbl")
+    }
+  }
+
+  // An empty container has no children to recover the element type from, and a NULL literal
+  // serializes as a typed null without expansion, so only the empty cases fall back.
+  test("folded empty and NULL complex literals") {
+    withParquetTable((0 until 3).map(i => (i, i.toLong)), "tbl") {
+      checkSparkAnswerAndFallbackReason(
+        "SELECT _1 AS id, CAST(map() AS MAP<INT,INT>) AS m FROM tbl",
+        "Unsupported data type MapType")
+      checkSparkAnswerAndFallbackReason(
+        "SELECT _1 AS id, CAST(array() AS ARRAY<MAP<INT,INT>>) AS a FROM tbl",
+        "Unsupported data type ArrayType")
+      checkSparkAnswerAndOperator("SELECT _1 AS id, CAST(NULL AS MAP<INT,INT>) AS m FROM tbl")
+      checkSparkAnswerAndOperator(
+        "SELECT _1 AS id, CAST(NULL AS ARRAY<MAP<INT,INT>>) AS a FROM tbl")
+    }
+  }
+
   // A folded struct literal would reach native `CreateNamedStruct` with all-scalar children,
   // which builds a 1-row `StructArray` regardless of batch size. `CometLiteral` excludes
   // StructType from expansion so the projection falls back instead of truncating the result.
@@ -1212,35 +1271,46 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
   }
 
   // `from_json` can fold to a MapData with duplicate keys. Rebuilding it as a `CreateMap` would
-  // run `ArrayBasedMapBuilder`, which throws under `MAP_KEY_DEDUP_POLICY=EXCEPTION`, so
-  // `CometLiteral` declines expansion and Spark evaluates the projection.
+  // run `ArrayBasedMapBuilder`, which throws under `MAP_KEY_DEDUP_POLICY=EXCEPTION` and silently
+  // drops the earlier entry under `LAST_WIN`, so `CometLiteral` declines expansion under either
+  // policy and Spark evaluates the projection.
   test("folded map literal with duplicate keys falls back (multirow)") {
     assume(isSpark35Plus)
     withParquetTable((0 until 3).map(i => (i, i.toLong)), "tbl") {
-      checkSparkAnswerAndFallbackReason(
-        "SELECT _1 AS id, from_json('{\"a\":1,\"a\":2}', 'MAP<STRING,INT>') AS m FROM tbl",
-        "Unsupported data type MapType")
+      Seq("EXCEPTION", "LAST_WIN").foreach { policy =>
+        withSQLConf(SQLConf.MAP_KEY_DEDUP_POLICY.key -> policy) {
+          checkSparkAnswerAndFallbackReason(
+            "SELECT _1 AS id, from_json('{\"a\":1,\"a\":2}', 'MAP<STRING,INT>') AS m FROM tbl",
+            "Unsupported data type MapType")
+        }
+      }
     }
   }
 
-  // Spark treats `+0.0` and `-0.0` as the same map key; native lookup compares bytes.
-  test("folded map literal with double keys falls back to Spark for +/-0.0 equality") {
+  // Spark's map cast preserves both entries, so the folded value still holds duplicate keys after
+  // the key type becomes BinaryType. `Array[Byte]` has no value-based `equals`, so the duplicate
+  // check has to compare keys the way `ArrayBasedMapBuilder` does, through
+  // `TypeUtils.getInterpretedOrdering`.
+  test("folded map literal with duplicate binary keys falls back (multirow)") {
+    assume(isSpark35Plus)
+    withParquetTable((0 until 3).map(i => (i, i.toLong)), "tbl") {
+      Seq("EXCEPTION", "LAST_WIN").foreach { policy =>
+        withSQLConf(SQLConf.MAP_KEY_DEDUP_POLICY.key -> policy) {
+          checkSparkAnswerAndFallbackReason(
+            "SELECT _1 AS id, CAST(from_json('{\"a\":1,\"a\":2}', 'MAP<STRING,INT>') " +
+              "AS MAP<BINARY,INT>) AS m FROM tbl",
+            "Unsupported data type MapType")
+        }
+      }
+    }
+  }
+
+  // Distinct binary keys are fine: Arrow compares them by content, as Spark's ordering does.
+  test("folded map literal with distinct binary keys (multirow)") {
     withParquetTable((1 until 4).map(i => (i, i.toLong)), "tbl") {
-      checkSparkAnswerAndFallbackReason(
-        "SELECT _1 AS id, element_at(map(CAST(0 AS DOUBLE), 7), " +
-          "CAST(concat('-', CAST(_1 - 1 AS STRING), '.0') AS DOUBLE)) AS v FROM tbl",
-        "Unsupported data type MapType")
-    }
-  }
-
-  // Spark compares the key under its declared collation; native compares under UTF8_BINARY.
-  test("folded map literal with collated string keys falls back") {
-    assume(isSpark40Plus)
-    withParquetTable(Seq(("a1", 0)), "tbl") {
-      checkSparkAnswerAndFallbackReason(
-        "SELECT element_at(map(CAST('A1' AS STRING COLLATE UTF8_LCASE), 7), " +
-          "CAST(_1 AS STRING COLLATE UTF8_LCASE)) AS v FROM tbl",
-        "Unsupported data type MapType")
+      checkSparkAnswerAndOperator(
+        "SELECT _1 AS id, element_at(map(CAST('1' AS BINARY), 10, CAST('2' AS BINARY), 20), " +
+          "CAST(CAST(_1 AS STRING) AS BINARY)) AS v FROM tbl")
     }
   }
 

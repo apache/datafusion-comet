@@ -474,11 +474,12 @@ object CometCreateArray extends CometExpressionSerde[CreateArray] {
     // `MutableArrayData::with_capacities` and panics on a mismatch. Spark's CreateArray is more
     // permissive: its type coercion compares element types with `sameType`, which ignores
     // nullability, so children that share a surface type but differ only in nested field
-    // nullability get no unifying cast. DataFusion tolerates container nullability differences
-    // (an `ArrayType.containsNull` / `MapType.valueContainsNull` mismatch is coerced), but NOT a
-    // struct field's nullability -- `array(struct(a not null), struct(a nullable))` panics inside
-    // `make_array_inner`. Decline only those cases (i.e. children that still differ after
-    // normalizing container nullability) so Spark's evaluator handles them.
+    // nullability get no unifying cast. DataFusion coerces an `ArrayType.containsNull` mismatch
+    // away before that assert, but NOT a struct field's or a `MapType.valueContainsNull`
+    // mismatch, so `array(struct(a not null), struct(a nullable))` and
+    // `array(map('x', CAST(NULL AS INT)), map('z', 3))` both panic inside `make_array_inner`.
+    // Decline only those cases (i.e. children that still differ after normalizing the container
+    // nullability DataFusion does coerce) so Spark's evaluator handles them.
     //
     // TODO: remove this decline once apache/datafusion#22366 lands; the upstream fix widens the
     // element type via nullability-OR-merge and casts each child before MutableArrayData.
@@ -502,20 +503,25 @@ object CometCreateArray extends CometExpressionSerde[CreateArray] {
   }
 
   /**
-   * Rewrites a type so that container nullability (`ArrayType.containsNull`,
-   * `MapType.valueContainsNull`) is forced to `true` everywhere, while struct field nullability
-   * is left intact. Two CreateArray children whose types differ ONLY in container nullability are
-   * tolerated by DataFusion's `make_array` (coerced), so they normalize equal here; a difference
-   * in a struct field's nullability survives normalization and triggers the decline above.
+   * Rewrites a type so that `ArrayType.containsNull` is forced to `true` everywhere, while struct
+   * field nullability and `MapType.valueContainsNull` are left intact. Two CreateArray children
+   * whose types differ ONLY in `containsNull` are tolerated by DataFusion's `make_array`, because
+   * `type_union_resolution_coercion` routes `List` arguments through `list_coercion`, which
+   * merges the element field's nullability and lets Comet's planner insert the unifying cast. Its
+   * fallback chain has no `map_coercion` arm in DataFusion 54.1, so two `Map` arguments that
+   * differ in value nullability fail to unify, no cast is inserted, and `MutableArrayData`
+   * panics. Keep `valueContainsNull` significant here so those children are declined instead. The
+   * same is true of a struct field's nullability, which `coerce_struct_by_*` would merge but
+   * which `MutableArrayData` still rejects for the array's own element type.
    */
   private def normalizeContainerNullability(dt: DataType): DataType = dt match {
     case ArrayType(elementType, _) =>
       ArrayType(normalizeContainerNullability(elementType), containsNull = true)
-    case MapType(keyType, valueType, _) =>
+    case MapType(keyType, valueType, valueContainsNull) =>
       MapType(
         normalizeContainerNullability(keyType),
         normalizeContainerNullability(valueType),
-        valueContainsNull = true)
+        valueContainsNull)
     case StructType(fields) =>
       StructType(fields.map(f => f.copy(dataType = normalizeContainerNullability(f.dataType))))
     case other => other
@@ -593,7 +599,11 @@ object CometElementAt extends CometExpressionSerde[ElementAt] {
   override def getSupportLevel(expr: ElementAt): SupportLevel = {
     expr.left.dataType match {
       case _: ArrayType => Compatible()
-      case _: MapType => Compatible()
+      case MapType(keyType, _, _) =>
+        MapKeySupport.unsupportedKeyTypeReason(keyType) match {
+          case Some(reason) => Unsupported(Some(reason))
+          case None => Compatible()
+        }
       case _ => Unsupported(Some("Input must be an array or map"))
     }
   }

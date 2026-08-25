@@ -2897,13 +2897,13 @@ impl PhysicalPlanner {
             }
             AggExprStruct::CollectSet(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
-                let child = Self::coerce_collect_child_nullability(child, &schema)?;
+                let child = Self::coerce_child_fields_nullable(child, &schema)?;
                 let func = AggregateUDF::new_from_impl(SparkCollectSet::new());
                 Self::create_aggr_func_expr("collect_set", schema, vec![child], func)
             }
             AggExprStruct::CollectList(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
-                let child = Self::coerce_collect_child_nullability(child, &schema)?;
+                let child = Self::coerce_child_fields_nullable(child, &schema)?;
                 let func = AggregateUDF::new_from_impl(SparkCollectList::new());
                 Self::create_aggr_func_expr("collect_list", schema, vec![child], func)
             }
@@ -3384,6 +3384,16 @@ impl PhysicalPlanner {
             .collect::<Result<Vec<_>, _>>()?;
 
         let fun_name = &expr.func;
+        // `map_entries` reuses the input map's entries array but declares the entry `value` field
+        // nullable, so widen the argument first or Arrow rejects the child type. See
+        // `coerce_child_fields_nullable`.
+        let args = if fun_name == "map_entries" {
+            args.into_iter()
+                .map(|arg| Self::coerce_child_fields_nullable(arg, &input_schema))
+                .collect::<Result<Vec<_>, ExecutionError>>()?
+        } else {
+            args
+        };
         let input_expr_types = args
             .iter()
             .map(|x| x.data_type(input_schema.as_ref()))
@@ -3516,15 +3526,24 @@ impl PhysicalPlanner {
         Ok(scalar_expr)
     }
 
-    /// `collect_list` / `collect_set` build their result list with all element fields marked
-    /// nullable, regardless of the input's nullability. However `SparkCollectList::return_type`
-    /// (and `SparkCollectSet`) derive the element type directly from the child, preserving any
-    /// non-nullable nested field. When the child is a nested type with a non-nullable inner field
-    /// (e.g. a struct field), the declared aggregate output disagrees with the array the
-    /// accumulator actually produces, and DataFusion's grouped `AggregateExec` fails validating
-    /// its output batch ("column types must match schema types"). Cast the child to the
-    /// all-nullable variant of its type so the declared and produced types stay consistent.
-    fn coerce_collect_child_nullability(
+    /// Casts `child` to the all-nullable variant of its own type, or returns it unchanged when it
+    /// already is. Used where a kernel's declared output type marks every nested field nullable
+    /// but its implementation reuses the child's arrays, so a non-nullable inner field makes the
+    /// declared and produced types disagree:
+    ///
+    ///   - `collect_list` / `collect_set` build their result list with all element fields marked
+    ///     nullable, while `SparkCollectList::return_type` (and `SparkCollectSet`) derive the
+    ///     element type directly from the child. With a non-nullable nested field (e.g. a struct
+    ///     field), DataFusion's grouped `AggregateExec` fails validating its output batch
+    ///     ("column types must match schema types").
+    ///   - `map_entries` declares its list element as `Struct(key non-null, value nullable)` but
+    ///     reuses the input map's own entries array as the list values, so `ListArray::new`
+    ///     rejects a map whose entry `value` field is non-nullable. Every Spark `map(...)`
+    ///     constructor over non-null values produces exactly that type.
+    ///
+    /// `make_all_fields_nullable` keeps an Arrow map's key field non-nullable, so widening a map
+    /// stays a legal map type.
+    fn coerce_child_fields_nullable(
         child: Arc<dyn PhysicalExpr>,
         schema: &SchemaRef,
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
