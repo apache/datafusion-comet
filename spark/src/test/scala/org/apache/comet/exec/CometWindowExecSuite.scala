@@ -453,6 +453,56 @@ class CometWindowExecSuite extends CometTestBase {
     }
   }
 
+  test("window: high-precision decimal AVG and TRY_AVG fall back to Spark") {
+    withTempDir { dir =>
+      Seq((1, 1, "0.6"), (1, 2, "0.6"), (2, 1, "0.6"), (2, 2, "0.5"))
+        .toDF("g", "ord", "raw_v")
+        .selectExpr(
+          "g",
+          "ord",
+          "CAST(raw_v AS DECIMAL(27,27)) AS v27",
+          "CAST(raw_v AS DECIMAL(28,28)) AS v28",
+          "CAST(raw_v AS DECIMAL(38,38)) AS v38")
+        .repartition(1)
+        .write
+        .mode("overwrite")
+        .parquet(dir.toString)
+
+      spark.read.parquet(dir.toString).createOrReplaceTempView("high_precision_dec_avg")
+      val fallbackReason =
+        "AVG on DECIMAL with maximum-precision intermediate state is not supported"
+      def runningAverage(aggregate: String, column: String) = sql(s"""
+        SELECT g, ord,
+          $aggregate($column) OVER (
+            PARTITION BY g
+            ORDER BY ord
+            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+          ) AS running_avg
+        FROM high_precision_dec_avg
+        ORDER BY g, ord
+      """)
+
+      for {
+        ansiEnabled <- Seq(false, true)
+        aggregate <- Seq("AVG", "TRY_AVG")
+      } {
+        withSQLConf(SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString) {
+          val (_, cometPlan) =
+            checkSparkAnswerAndFallbackReason(runningAverage(aggregate, "v38"), fallbackReason)
+          assert(collect(cometPlan) { case window: SparkWindowExec => window }.nonEmpty)
+          assert(collect(cometPlan) { case window: CometWindowExec => window }.isEmpty)
+        }
+      }
+
+      val (_, maxPrecisionPlan) =
+        checkSparkAnswerAndFallbackReason(runningAverage("AVG", "v28"), fallbackReason)
+      assert(collect(maxPrecisionPlan) { case window: SparkWindowExec => window }.nonEmpty)
+
+      val (_, lowerPrecisionPlan) = checkSparkAnswerAndOperator(runningAverage("AVG", "v27"))
+      assertCometWindowExecExists(lowerPrecisionPlan)
+    }
+  }
+
   test("window: decimal AVG fuzz with PARTITION BY and ORDER BY") {
     Seq((9, 1), (9, 4), (10, 2), (11, 3), (11, 6)).foreach { case (precision, scale) =>
       withTempDir { dir =>
