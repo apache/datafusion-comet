@@ -15,18 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-pub(crate) mod comet_partitioning;
-pub mod ipc;
-pub(crate) mod metrics;
-pub(crate) mod partitioners;
-mod schema_align;
-mod shuffle_writer;
-mod spark_crc32c_hasher;
-pub mod spark_unsafe;
-pub(crate) mod writers;
+mod rss_partition_writer;
 
-pub use comet_partitioning::CometPartitioning;
-pub use ipc::read_ipc_compressed;
-pub use schema_align::SchemaAlignExec;
-pub use shuffle_writer::ShuffleWriterExec;
-pub use writers::{CompressionCodec, PartitionPusher, RssPartitionWriter, ShuffleBlockWriter};
+pub use rss_partition_writer::{PartitionPusher, RssPartitionWriter};

@@ -33,6 +33,7 @@ use once_cell::sync::OnceCell;
 use errors::{CometError, CometResult};
 
 pub mod errors;
+pub mod shuffle_partition_pusher;
 
 enum LocalFrameError<E> {
     Closure(E),

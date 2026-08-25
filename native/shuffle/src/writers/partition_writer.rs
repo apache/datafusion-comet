@@ -22,9 +22,8 @@ use arrow::record_batch::RecordBatch;
 ///
 /// Decouples partitioning from storage: partitioners only produce partitioned
 /// `RecordBatch` streams, while implementations of this trait own how those
-/// batches are stored and finalized. [`LocalPartitionWriter`] implements the
-/// local file behavior; other backends (e.g. a remote shuffle writer) can be
-/// added without changing the partitioners.
+/// batches are stored and finalized. [`LocalPartitionWriter`] implements local file output;
+/// [`RssPartitionWriter`] sends encoded frames through a remote shuffle callback.
 ///
 /// A partitioner drives a writer as: any number of
 /// [`write`](PartitionWriter::write) calls to stage batches, then one
@@ -32,13 +31,15 @@ use arrow::record_batch::RecordBatch;
 /// ascending id order, then a single [`finish_all`](PartitionWriter::finish_all).
 ///
 /// [`LocalPartitionWriter`]: crate::writers::local::local_partition_writer::LocalPartitionWriter
+/// [`RssPartitionWriter`]: crate::RssPartitionWriter
 pub(crate) trait PartitionWriter: Send + Sync {
     /// Stages the batches from `iter` for partition `pid` without finalizing it.
     ///
     /// Used to stream single-partition output and to stage multi-partition
     /// spilled batches. A partition may be written multiple times and in any
-    /// order; staged data is only guaranteed visible after
-    /// [`finish_partition`](PartitionWriter::finish_partition).
+    /// order; an implementation may retain staged data until
+    /// [`finish_partition`](PartitionWriter::finish_partition). Writer-side finalization does
+    /// not replace a remote backend's task-level commit protocol.
     fn write<I>(
         &mut self,
         pid: usize,
@@ -63,9 +64,9 @@ pub(crate) trait PartitionWriter: Send + Sync {
     where
         I: Iterator<Item = datafusion::common::Result<RecordBatch>>;
 
-    /// Completes the shuffle write, flushing output and emitting the partition
-    /// index. Called exactly once, after the last
-    /// [`finish_partition`](PartitionWriter::finish_partition).
+    /// Completes writer-side output. Local writers flush and emit the partition index; a remote
+    /// writer's owner must separately complete its task-level commit protocol. Called exactly
+    /// once, after the last [`finish_partition`](PartitionWriter::finish_partition).
     fn finish_all(&mut self, metrics: &ShufflePartitionerMetrics)
         -> datafusion::common::Result<()>;
 }
