@@ -64,7 +64,13 @@ object CometInMemoryCacheBenchmark extends CometBenchmarkBase {
     withTempTable(sourceTable, cacheTable) {
       spark
         .range(0, numRows, 1, 16)
-        .selectExpr("id", "id % 1000 AS k", "id + 1 AS v")
+        .selectExpr(
+          "id",
+          "id % 1000 AS k",
+          "id + 1 AS v",
+          "concat('str_a_', cast(id % 100000 as string)) AS s1",
+          "concat('str_b_', cast(id % 7919 as string)) AS s2",
+          "concat('str_c_', cast(id as string)) AS s3")
         .createOrReplaceTempView(sourceTable)
 
       runCacheBenchmark(
@@ -78,6 +84,18 @@ object CometInMemoryCacheBenchmark extends CometBenchmarkBase {
            |FROM $cacheTable
            |WHERE id >= 4500000 AND id < 4750000
          """.stripMargin)
+
+      // A CometCachedBatch is one compressed Arrow IPC stream covering every cached column, so a
+      // scan decodes all of them and projects afterwards. Cost is therefore flat in the width of
+      // the projection, where Spark's per-column format falls away as it narrows. These two cases
+      // bracket that: the same cached relation read one column wide and six columns wide.
+      runCacheBenchmark(
+        "in-memory cache narrow projection (1 of 6 columns)",
+        s"SELECT count(k) FROM $cacheTable")
+
+      runCacheBenchmark(
+        "in-memory cache full projection (6 of 6 columns)",
+        s"SELECT count(id), count(k), count(v), count(s1), count(s2), count(s3) FROM $cacheTable")
     }
   }
 
@@ -114,8 +132,15 @@ object CometInMemoryCacheBenchmark extends CometBenchmarkBase {
     // Materialize the cache once using Comet's cache serializer.
     // The benchmark measures repeated cache reads by comparing the
     // fallback read path against CometInMemoryTableScan.
+    //
+    // Both cases therefore read a Comet-written cache: spark.sql.cache.serializer is a static
+    // conf, so a single session cannot also materialize a DefaultCachedBatch to compare against.
+    // "Comet cache disabled" here means Spark execution over CometCachedBatch, NOT Spark's own
+    // cache format, and these numbers are not a baseline for it.
     withSQLConf(cacheConf(nativeCacheEnabled = true): _*) {
-      spark.sql(s"SELECT id, k, v FROM $sourceTable").createOrReplaceTempView(cacheTable)
+      spark
+        .sql(s"SELECT id, k, v, s1, s2, s3 FROM $sourceTable")
+        .createOrReplaceTempView(cacheTable)
       spark.catalog.cacheTable(cacheTable)
       spark.table(cacheTable).count()
     }

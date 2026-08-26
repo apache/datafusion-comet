@@ -268,7 +268,11 @@ object CometConf extends ShimCometConf {
           "static config, the cached format is fixed for the application, and disabling this " +
           "at runtime only sends cached scans back to Spark's execution path. Relations whose " +
           "schema Comet's Arrow writer does not support are always cached in Spark's default " +
-          "format.")
+          "format. Cached batches are stored as one compressed Arrow IPC stream covering every " +
+          "cached column, so a scan decodes all of them and then projects, while Spark's " +
+          "default format decodes only the projected columns. Reads that project a few columns " +
+          "of a wide cached relation, or that feed Spark operators rather than Comet ones, can " +
+          "therefore be slower than Spark's cache even though materializing it is faster.")
       .booleanConf
       .createWithDefault(false)
 
