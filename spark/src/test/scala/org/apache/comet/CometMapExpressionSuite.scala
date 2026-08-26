@@ -272,6 +272,15 @@ class CometMapExpressionSuite extends CometTestBase {
     }
   }
 
+  // ==============================================================================================
+  // Folded complex-literal tests. These live in this suite, not a `sql-tests` fixture, on purpose:
+  // they need `ConstantFolding` ON so `map(...)` / `array(...)` collapses to a `Literal` that
+  // `CometLiteral` then rebuilds -- the folded-literal expansion path under review. The SQL harness
+  // (`CometSqlFileTestSuite`) force-disables `ConstantFolding`, so an equivalent fixture would only
+  // exercise the constructor path. The `*.sql` files cover that constructor path where the same
+  // guard fires regardless of folding.
+  // ==============================================================================================
+
   // A map that reaches `map_entries` through an expression rather than a scan keeps
   // `valueContainsNull = false`, which every `map(...)` over non-null values produces. DataFusion's
   // `map_entries` declares the entry `value` field nullable but reuses the input map's entries
@@ -425,6 +434,19 @@ class CometMapExpressionSuite extends CometTestBase {
           "SELECT _1 AS id, element_at(element_at(map(1, map(0, 7)), _1), _1 % (_1 - 2)) AS v " +
             "FROM tbl")
       }
+    }
+  }
+
+  // A large folded map (`map_from_arrays(sequence(...), sequence(...))` collapses to a many-entry
+  // MapType literal) rebuilds as a big `CreateMap` whose generated code Spark's codegen splits into
+  // nested helper classes. Those helpers read `CometBatchKernel.references`, which must be public
+  // (not protected) or the split code raises `IllegalAccessError` at runtime. 100k entries is large
+  // enough to force the split.
+  test("large folded map literal in element_at runs natively (multirow)") {
+    withParquetTable((1 until 4).map(i => (i, i.toLong)), "tbl") {
+      checkSparkAnswerAndOperator(
+        "SELECT _1 AS id, element_at(" +
+          "map_from_arrays(sequence(1, 100000), sequence(1, 100000)), _1) AS v FROM tbl")
     }
   }
 

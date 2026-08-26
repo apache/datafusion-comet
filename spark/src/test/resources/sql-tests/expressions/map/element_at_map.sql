@@ -80,3 +80,19 @@ SELECT element_at(map(named_struct('a', 1), 7), named_struct('a', 1))
 -- `BinaryType` keys need no decline: Arrow compares them by content, as Spark's ordering does.
 query
 SELECT element_at(map(CAST('a' AS BINARY), 1, CAST('b' AS BINARY), 2), CAST('b' AS BINARY))
+
+-- Nested INT-keyed map: the inner `element_at` returns NULL for ids not in the outer map (2, 3),
+-- and the outer `element_at` looks it up with a per-row key `id % (id - 2)`. This harness runs with
+-- ANSI disabled, so the remainder-by-zero at id = 2 evaluates to NULL rather than throwing, and
+-- `element_at(NULL_map, NULL)` returns NULL -- matching Spark's 7, NULL, NULL natively. (Under ANSI,
+-- native scalar functions evaluate the key eagerly and throw where Spark short-circuits after the
+-- NULL inner map; that is a pre-existing eager-evaluation difference in native `ElementAt`.)
+statement
+CREATE TABLE test_element_at_nested(id int) USING parquet
+
+statement
+INSERT INTO test_element_at_nested VALUES (1), (2), (3)
+
+query
+SELECT id, element_at(element_at(map(1, map(0, 7)), id), id % (id - 2)) AS v
+FROM test_element_at_nested

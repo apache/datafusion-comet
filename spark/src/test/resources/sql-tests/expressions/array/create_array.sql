@@ -98,6 +98,21 @@ SELECT array(array(map(1, 'a')), array(map(2, 'b')))
 query
 SELECT array(named_struct('a', 1, 'b', 'x'), named_struct('a', 2, 'b', 'y'))
 
+-- Array of structs differing only in a field's nullability: the first `ct` is a non-null literal,
+-- the second is a nullable CASE. Spark compares element types with `sameType` (nullability ignored)
+-- so it keeps distinct StructTypes; `CometCreateArray` casts each child to the merged struct type
+-- (widening `ct` to nullable) before `make_array`, so this runs natively.
+query
+SELECT array(
+  named_struct('id', a, 'ct', 'x'),
+  named_struct('id', a, 'ct', CASE WHEN a = 0 THEN 'y' END)) FROM test_create_array
+
+-- Same nested-field-nullability divergence wrapped in a map value.
+query
+SELECT array(
+  map('k', named_struct('id', a, 'ct', 'x')),
+  map('k', named_struct('id', a, 'ct', CASE WHEN a = 0 THEN 'y' END))) FROM test_create_array
+
 -- Column-based array of maps. Filter out NULL keys because Spark forbids them.
 query
 SELECT array(map(k, v)) FROM test_create_array_complex WHERE k IS NOT NULL

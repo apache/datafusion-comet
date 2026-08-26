@@ -52,3 +52,14 @@ SELECT array(
   map_entries(map(1, IF(id = 1, map(1, 2), NULL)))[0].value,
   map(2, coalesce(id, 0))) AS a
 FROM test_map_entries_nested
+
+-- `map_entries` declares its entry `value` field nullable, so the extracted entry struct has a
+-- nullable `value` while the sibling `named_struct('key', 1, 'value', id IS NOT NULL)` has a
+-- non-nullable one. The two struct children differ only in that field's nullability, so
+-- `CometCreateArray` casts each to the merged struct type before `make_array` and this runs
+-- natively rather than panicking on the struct-field mismatch.
+query
+SELECT array(
+  map_entries(element_at(map(1, map(1, true)), id))[0],
+  named_struct('key', 1, 'value', id IS NOT NULL)) AS a
+FROM test_map_entries_nested

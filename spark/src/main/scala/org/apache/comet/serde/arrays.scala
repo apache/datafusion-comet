@@ -472,32 +472,15 @@ object CometCreateArray extends CometExpressionSerde[CreateArray] {
 
     // DataFusion's `make_array` asserts strict element-type equality in
     // `MutableArrayData::with_capacities` and panics on a mismatch. Spark's CreateArray is more
-    // permissive: its type coercion compares element types with `sameType`, which ignores
-    // nullability, so children that share a surface type but differ only in nested nullability get
-    // no unifying cast, and Spark reports a merged element type (nullability-OR across children)
-    // as the array's own type. Reconcile that here by casting every child to the merged element
-    // type, so `make_array` sees identical Arrow types. Comet's cast widens container nullability
-    // (`ArrayType.containsNull`, `MapType.valueContainsNull`, and either nested) via the recursive
-    // `cast_map_to_map` / array casts, which is what lets `array(map('x', CAST(NULL AS INT)),
-    // map('z', 3))` and `array(map(1, array(1)), map(2, array(col)))` run natively rather than
-    // falling back.
-    //
-    // A struct FIELD's own nullability is the one difference kept significant (see
-    // [[normalizeContainerNullability]]): `array(struct(a not null), struct(a nullable))` is
-    // declined so Spark evaluates it, matching the coverage the `make_array` struct-field panic
-    // drove.
-    val normalizedTypes = children.map(c => normalizeContainerNullability(c.dataType))
-    if (normalizedTypes.distinct.size > 1) {
-      withFallbackReason(
-        expr,
-        "CreateArray children have mismatched data types: " +
-          children.map(_.dataType).distinct.mkString(", "))
-      return None
-    }
-
-    // Cast each child that is not already the merged element type to it. The element data types
-    // are identical, so the cast only widens nullability metadata and never changes values.
-    val elementType = expr.dataType.asInstanceOf[ArrayType].elementType
+    // permissive: its coercion compares element types with `sameType` (nullability ignored), so
+    // children that share a surface type but differ in nullability reach here as distinct types.
+    // Comet's native runtime types are also frequently MORE nullable than Spark's Catalyst types
+    // (`map_entries` forces the entry `value` field nullable, list elements are nullable, ...), so
+    // casting to Spark's declared element type does not reliably unify them. Cast every child to a
+    // deeply-nullable element type instead (every array/map/struct field nullable at all nesting
+    // levels; the cast only widens metadata and never changes values), so `make_array` always sees
+    // identical Arrow types. A child whose cast is unsupported declines below.
+    val elementType = deepNullable(expr.dataType.asInstanceOf[ArrayType].elementType)
     val childExprs = children.map { c =>
       val unified = if (c.dataType == elementType) c else Cast(c, elementType)
       exprToProtoInternal(unified, inputs, binding)
@@ -512,24 +495,20 @@ object CometCreateArray extends CometExpressionSerde[CreateArray] {
   }
 
   /**
-   * Rewrites a type so that container nullability Comet can cast away (`ArrayType.containsNull`
-   * and `MapType.valueContainsNull`, at every nesting level) is forced to `true`, while each
-   * struct FIELD's own nullability is left intact. Two CreateArray children whose types differ
-   * only in container nullability normalize equal, so [[convert]] unifies them by casting each to
-   * the merged element type before `make_array` (DataFusion 54.1 only coerces `List` nullability
-   * on its own, not `Map`; the explicit cast covers both). Children that differ in a struct
-   * field's own nullability normalize distinct and are declined instead, so Spark evaluates them.
+   * A copy of `dt` with every array `containsNull`, map `valueContainsNull`, and struct field
+   * nullability forced to `true` at every nesting level (map key fields stay non-null per Arrow's
+   * map invariant). This is Spark's `DataType.asNullable`, re-derived here because that method is
+   * `private[spark]` and unreachable from this package. Used as the common cast target for
+   * `CometCreateArray` so that children whose native runtime types are more nullable than Spark's
+   * Catalyst types (e.g. a `map_entries` entry struct, whose `value` field Comet forces nullable)
+   * still unify for `make_array`.
    */
-  private def normalizeContainerNullability(dt: DataType): DataType = dt match {
-    case ArrayType(elementType, _) =>
-      ArrayType(normalizeContainerNullability(elementType), containsNull = true)
-    case MapType(keyType, valueType, _) =>
-      MapType(
-        normalizeContainerNullability(keyType),
-        normalizeContainerNullability(valueType),
-        valueContainsNull = true)
+  private def deepNullable(dt: DataType): DataType = dt match {
+    case ArrayType(et, _) => ArrayType(deepNullable(et), containsNull = true)
+    case MapType(kt, vt, _) =>
+      MapType(deepNullable(kt), deepNullable(vt), valueContainsNull = true)
     case StructType(fields) =>
-      StructType(fields.map(f => f.copy(dataType = normalizeContainerNullability(f.dataType))))
+      StructType(fields.map(f => f.copy(dataType = deepNullable(f.dataType), nullable = true)))
     case other => other
   }
 }

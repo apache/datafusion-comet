@@ -1134,48 +1134,12 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     }
   }
 
-  test("array of structs with nullability-divergent children") {
-    // Spark's type coercion compares element types with `sameType`, which ignores nullability,
-    // so two struct children that differ ONLY in a nested field's nullability get no unifying
-    // cast -- CreateArray keeps children of different StructTypes. DataFusion's make_array asserts
-    // strict element-type equality (down to nested nullability) and panics on the mismatch. Comet
-    // must decline this CreateArray so Spark's evaluator handles it.
-    withParquetTable((0 until 5).map(i => (i, i.toLong)), "tbl") {
-      val df = spark
-        .table("tbl")
-        .select(
-          array(
-            // ct is NOT NULL (literal)
-            struct(col("_1").as("id"), lit("a").as("ct")),
-            // ct is NULLABLE (when without otherwise) -- same type, different nullability
-            struct(col("_1").as("id"), when(col("_1") === 0, lit("b")).as("ct"))).as("arr"))
-      checkSparkAnswerAndFallbackReason(df, "CreateArray children have mismatched data types")
-    }
-  }
-
-  test("array of maps with nullability-divergent struct values") {
-    // Same nested-nullability divergence as the struct case, but wrapped in a MapType value so we
-    // exercise normalizeContainerNullability's MapType branch: the two map children share a surface
-    // type and differ only in a nested struct field's nullability, so they survive container
-    // (`MapType.valueContainsNull`) normalization as distinct types and CreateArray must still
-    // decline -- DataFusion's make_array would otherwise panic on the struct-field mismatch.
-    withParquetTable((0 until 5).map(i => (i, i.toLong)), "tbl") {
-      val df = spark
-        .table("tbl")
-        .select(
-          array(
-            // map value struct has ct NOT NULL (literal)
-            map(lit("k"), struct(col("_1").as("id"), lit("a").as("ct"))),
-            // map value struct has ct NULLABLE -- same type, different nested nullability
-            map(lit("k"), struct(col("_1").as("id"), when(col("_1") === 0, lit("b")).as("ct"))))
-            .as("arr"))
-      checkSparkAnswerAndFallbackReason(df, "CreateArray children have mismatched data types")
-    }
-  }
-
-  // Constant folding is enabled by default here, so each `map(...)` collapses to a MapType
-  // Literal and the outer `array(...)` reaches `CometCreateArray` with folded-Literal children.
-  // `CometLiteral` rebuilds each folded map as an equivalent `CreateMap` of primitive literals.
+  // The tests below deliberately live in this suite, not a `sql-tests` fixture: constant folding is
+  // enabled by default here, so each `map(...)` collapses to a MapType Literal and the outer
+  // `array(...)` reaches `CometCreateArray` with folded-Literal children, which `CometLiteral`
+  // rebuilds as an equivalent `CreateMap` of primitive literals -- the folded-literal expansion path
+  // under review. `CometSqlFileTestSuite` force-disables `ConstantFolding`, so an equivalent SQL
+  // fixture would only exercise the constructor path (which `create_array.sql` already covers).
   test("array of folded map literals with array values (multirow)") {
     withParquetTable((0 until 3).map(i => (i, i.toLong)), "tbl") {
       checkSparkAnswerAndOperator(

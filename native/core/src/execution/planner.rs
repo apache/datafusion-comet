@@ -3419,10 +3419,8 @@ impl PhysicalPlanner {
             .collect::<Result<Vec<_>, _>>()?;
 
         let fun_name = &expr.func;
-        // `map_entries` reuses the input map's entries array but declares the entry `value` field
-        // nullable, so widen ONLY that outer field first or Arrow rejects the child type. Widening
-        // nested types would corrupt a nested map's `valueContainsNull` and break a downstream
-        // consumer. See `widen_map_entry_value_nullable`.
+        // `map_entries` needs its argument's entry `value` field widened to nullable first (only
+        // that outer field). See `widen_map_entry_value_nullable`.
         let args = if fun_name == "map_entries" {
             args.into_iter()
                 .map(|arg| {

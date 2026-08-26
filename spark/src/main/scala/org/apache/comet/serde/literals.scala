@@ -55,7 +55,7 @@ object CometLiteral extends CometExpressionSerde[Literal] with Logging {
             .elementType
             .isInstanceOf[ArrayType])))) {
       Compatible(None)
-    } else if (expandComplexLiteral(expr).isDefined) {
+    } else if (canExpandComplexLiteral(expr)) {
       // Rebuilt as a `CreateArray` / `CreateMap` tree in `convert`.
       Compatible(None)
     } else {
@@ -228,13 +228,13 @@ object CometLiteral extends CometExpressionSerde[Literal] with Logging {
 
   /**
    * Rebuild a folded complex Literal as an equivalent tree of `CreateArray` / `CreateMap` over
-   * primitive-typed Literals, or `None` when the shape cannot be rebuilt. `getSupportLevel`
-   * probes with this same function and reports `Compatible` when it returns a `Some`, so
-   * admission and expansion cannot diverge. The native `Literal` proto carries scalars and nested
-   * `ListLiteral`s but no map values, so a Literal whose type contains a `MapType` has to be
-   * expanded before serialization. Teaching the proto to transport maps directly would remove the
-   * need for this rewrite and for the declines below:
-   * https://github.com/apache/datafusion-comet/issues/1937
+   * primitive-typed Literals, or `None` when [[canExpandComplexLiteral]] rejects the shape.
+   * `getSupportLevel` probes cheaply with [[canExpandComplexLiteral]], which shares this method's
+   * admission checks, so the two cannot diverge and only `convert` materializes the tree. The
+   * native `Literal` proto carries scalars and nested `ListLiteral`s but no map values, so a
+   * Literal whose type contains a `MapType` has to be expanded before serialization. Teaching the
+   * proto to transport maps directly would remove the need for this rewrite and for the declines
+   * below: https://github.com/apache/datafusion-comet/issues/1937
    *
    * The rebuilt tree is the tree Spark itself had before `ConstantFolding` collapsed it, down to
    * every container's declared nullability (see [[withNullability]]). That equivalence is the
@@ -243,14 +243,8 @@ object CometLiteral extends CometExpressionSerde[Literal] with Logging {
    * folding-only behaviour difference. A non-nullable-value map into `map_entries` is handled by
    * the native planner widening its argument rather than declined here.
    *
-   * Map key semantics, however, are declined here at admission (see [[mapKeyTypesExpandable]])
-   * rather than left to consumers. A map lookup gates itself on [[MapKeySupport]], but not every
-   * native map consumer does: `map_contains_key` lowers to `array_contains(map_keys(...), key)`,
-   * and neither kernel checks the key type. A map that is only the value of another map is also
-   * opaque once rebuilt, because `CometCreateMap` hands the whole `CreateMap` to the JVM codegen
-   * dispatcher, so a nested unsupported key type never revisits this serde. Declining any folded
-   * literal that (recursively) contains an unsupported or non-orderable map key type keeps all of
-   * those paths on Spark.
+   * Map key semantics are declined here at admission rather than left to consumers, because not
+   * every native map consumer gates on [[MapKeySupport]]; see [[mapKeyTypesExpandable]] for why.
    *
    * Declined shapes:
    *   - Null values and empty top-level containers: a synthesized `Create*` with no children
@@ -269,31 +263,44 @@ object CometLiteral extends CometExpressionSerde[Literal] with Logging {
    *   - Folded maps with duplicate keys, see [[hasDuplicateMapKeys]].
    */
   private def expandComplexLiteral(expr: Literal): Option[Expression] = {
-    if (expr.value == null || !mapKeyTypesExpandable(expr.dataType)) return None
+    if (!canExpandComplexLiteral(expr)) return None
     expr.dataType match {
-      case ArrayType(et, containsNull) if needsExpansion(et) =>
+      case ArrayType(et, containsNull) =>
         val arr = expr.value.asInstanceOf[ArrayData]
-        if (arr.numElements() == 0) {
-          None
-        } else {
-          val elements = (0 until arr.numElements())
-            .map(i => withNullability(literalAt(arr, i, et), containsNull))
-          Some(CreateArray(elements, useStringTypeWhenEmpty = false))
-        }
+        val elements = (0 until arr.numElements())
+          .map(i => withNullability(literalAt(arr, i, et), containsNull))
+        Some(CreateArray(elements, useStringTypeWhenEmpty = false))
       case MapType(kt, vt, valueContainsNull) =>
         val mapData = expr.value.asInstanceOf[MapData]
         val keys = mapData.keyArray()
-        if (mapData.numElements() == 0 || hasDuplicateMapKeys(keys, kt)) {
-          None
-        } else {
-          val values = mapData.valueArray()
-          val children = (0 until keys.numElements()).flatMap(i =>
-            Seq(
-              literalAt(keys, i, kt),
-              withNullability(literalAt(values, i, vt), valueContainsNull)))
-          Some(CreateMap(children, useStringTypeWhenEmpty = false))
-        }
+        val values = mapData.valueArray()
+        val children = (0 until keys.numElements()).flatMap(i =>
+          Seq(
+            literalAt(keys, i, kt),
+            withNullability(literalAt(values, i, vt), valueContainsNull)))
+        Some(CreateMap(children, useStringTypeWhenEmpty = false))
       case _ => None
+    }
+  }
+
+  /**
+   * Cheap admission test that mirrors [[expandComplexLiteral]] without materializing the rebuilt
+   * `Create*` tree, so `getSupportLevel` can probe a large folded literal without allocating the
+   * N `Literal`s `convert` would immediately rebuild. Declines a null value or empty top-level
+   * container (no children to recover the element type), a folded map with duplicate keys (see
+   * [[hasDuplicateMapKeys]]), any unsupported or non-orderable map key type at any nesting level
+   * (see [[mapKeyTypesExpandable]]), and an array of structs ([[needsExpansion]] stops at a
+   * `StructType`). [[expandComplexLiteral]] gates on this, so the two cannot diverge.
+   */
+  private def canExpandComplexLiteral(expr: Literal): Boolean = {
+    if (expr.value == null || !mapKeyTypesExpandable(expr.dataType)) return false
+    expr.dataType match {
+      case ArrayType(et, _) if needsExpansion(et) =>
+        expr.value.asInstanceOf[ArrayData].numElements() > 0
+      case MapType(kt, _, _) =>
+        val mapData = expr.value.asInstanceOf[MapData]
+        mapData.numElements() > 0 && !hasDuplicateMapKeys(mapData.keyArray(), kt)
+      case _ => false
     }
   }
 
