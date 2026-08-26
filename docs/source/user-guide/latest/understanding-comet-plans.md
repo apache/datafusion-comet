@@ -233,7 +233,10 @@ way normal Comet planning does, so the reports for one query describe
 overlapping sets of operators and their counts should not be added up. Repeat
 applications of the same plan are not reported again: under AQE, neither the
 per-stage applications nor the applications that follow each adaptive
-re-optimization add reports.
+re-optimization add reports, and nor does a plan AQE re-plans wholesale after a
+stage materializes empty. One consequence under AQE is that a subquery Spark
+only plans once query stages are under way — a DPP subquery, for instance — has
+no report of its own.
 
 The estimate reflects Scala-side conversion only. The native plan is never
 handed to DataFusion, so anything that would have failed in DataFusion's
