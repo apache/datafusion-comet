@@ -25,12 +25,14 @@ import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.FunctionIdentifier
 import org.apache.spark.sql.catalyst.expressions.{Expression, ExpressionInfo}
 import org.apache.spark.sql.catalyst.expressions.aggregate.BloomFilterAggregate
+import org.apache.spark.sql.catalyst.plans.logical.LocalRelation
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution._
-import org.apache.spark.sql.execution.adaptive.QueryStageExec
+import org.apache.spark.sql.execution.adaptive.{LogicalQueryStage, QueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{HashAggregateExec, ObjectHashAggregateExec}
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ShuffleExchangeExec}
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
 
 import org.apache.comet.{CometConf, CometExplainInfo}
@@ -75,6 +77,85 @@ class CometExecRuleSuite extends CometTestBase {
         countOperators(stage.plan, opClass)
       case op if op.getClass.isAssignableFrom(opClass) => 1
     }.sum
+  }
+
+  /** A native final aggregate over a shuffle stage, as reused by AQE replanning. */
+  private def createAdaptiveAggregate(): CometHashAggregateExec = {
+    val plan = createSparkPlan(
+      spark,
+      "SELECT id % 3 AS k, SUM(id) AS total FROM range(0, 100, 1, 2) GROUP BY id % 3")
+    val aggregate = applyCometExecRule(plan).asInstanceOf[CometHashAggregateExec]
+    val shuffle = aggregate.child.asInstanceOf[CometShuffleExchangeExec]
+    aggregate
+      .withNewChildren(Seq(ShuffleQueryStageExec(0, shuffle, shuffle.canonicalized)))
+      .asInstanceOf[CometHashAggregateExec]
+  }
+
+  test("CometExecRule preserves the current direct AQE logical link") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false",
+      CometConf.COMET_SPARK_TO_ARROW_SUPPORTED_OPERATOR_LIST.key -> "Range") {
+      val originalTags =
+        Seq(Some(SparkPlan.LOGICAL_PLAN_TAG), Some(SparkPlan.LOGICAL_PLAN_INHERITED_TAG), None)
+      originalTags.foreach { originalTag =>
+        withClue(s"original logical tag: $originalTag") {
+          val aggregate = createAdaptiveAggregate()
+          val original = aggregate.originalPlan
+          val originalLogicalPlan = original.logicalLink.get
+          original.unsetTagValue(SparkPlan.LOGICAL_PLAN_TAG)
+          original.unsetTagValue(SparkPlan.LOGICAL_PLAN_INHERITED_TAG)
+          originalTag.foreach(original.setTagValue(_, originalLogicalPlan))
+
+          var current: SparkPlan = aggregate
+          (1 to 2).foreach { _ =>
+            val logicalStage = LogicalQueryStage(originalLogicalPlan, current)
+            val replanned = spark.sessionState.planner.plan(logicalStage).next()
+            assert(replanned eq current)
+            assert(replanned.getTagValue(SparkPlan.LOGICAL_PLAN_TAG).exists(_ eq logicalStage))
+
+            current = applyCometExecRule(replanned)
+            assert(current.getTagValue(SparkPlan.LOGICAL_PLAN_TAG).exists(_ eq logicalStage))
+          }
+        }
+      }
+    }
+  }
+
+  test("CometExecRule repairs ordinary and inherited logical links from the original plan") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false",
+      CometConf.COMET_SPARK_TO_ARROW_SUPPORTED_OPERATOR_LIST.key -> "Range") {
+      val originalTags =
+        Seq(Some(SparkPlan.LOGICAL_PLAN_TAG), Some(SparkPlan.LOGICAL_PLAN_INHERITED_TAG), None)
+      for (originalTag <- originalTags; hasDirectLink <- Seq(false, true)) {
+        withClue(s"original logical tag: $originalTag, ordinary direct link: $hasDirectLink") {
+          val aggregate = createAdaptiveAggregate()
+          val original = aggregate.originalPlan
+          val originalLogicalPlan = original.logicalLink.get
+          original.unsetTagValue(SparkPlan.LOGICAL_PLAN_TAG)
+          original.unsetTagValue(SparkPlan.LOGICAL_PLAN_INHERITED_TAG)
+          originalTag.foreach(original.setTagValue(_, originalLogicalPlan))
+
+          aggregate.unsetTagValue(SparkPlan.LOGICAL_PLAN_TAG)
+          aggregate.setTagValue(
+            SparkPlan.LOGICAL_PLAN_INHERITED_TAG,
+            LogicalQueryStage(originalLogicalPlan, aggregate))
+          if (hasDirectLink) {
+            aggregate.setTagValue(SparkPlan.LOGICAL_PLAN_TAG, LocalRelation(aggregate.output))
+          }
+
+          val transformed = applyCometExecRule(aggregate)
+          if (originalTag.isDefined) {
+            assert(transformed.logicalLink.exists(_ eq originalLogicalPlan))
+          } else {
+            assert(transformed.getTagValue(SparkPlan.LOGICAL_PLAN_TAG).isEmpty)
+            assert(transformed.getTagValue(SparkPlan.LOGICAL_PLAN_INHERITED_TAG).isEmpty)
+          }
+        }
+      }
+    }
   }
 
   test("expression-level fallback reasons are rolled up onto the operator that falls back") {
