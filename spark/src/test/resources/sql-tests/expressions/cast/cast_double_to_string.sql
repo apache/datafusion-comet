@@ -20,7 +20,7 @@ CREATE TABLE test_double_to_string(d double, id int) USING parquet
 
 statement
 INSERT INTO test_double_to_string VALUES
-  (-0.0, 1),
+  (double('-0.0'), 1),
   (0.0, 2),
   (1.5, 3),
   (-1.5, 4),
@@ -39,4 +39,4 @@ query
 SELECT cast(d as string), id FROM test_double_to_string ORDER BY id
 
 query
-SELECT cast(-0.0 as string), cast(0.0 as string)
+SELECT cast(double('-0.0') as string), cast(0.0 as string)

@@ -19,6 +19,9 @@ mod buf_batch_writer;
 mod checksum;
 mod local;
 mod partition_writer;
+// Remote shuffle execution will use this writer in a subsequent change.
+#[allow(dead_code)]
+mod rss;
 mod shuffle_block_writer;
 
 pub(crate) use buf_batch_writer::BufBatchWriter;

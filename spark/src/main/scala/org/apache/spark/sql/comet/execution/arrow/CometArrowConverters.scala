@@ -28,7 +28,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.types.StructType
-import org.apache.spark.sql.vectorized.{ColumnarArray, ColumnarBatch}
+import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import org.apache.comet.vector.NativeUtil
 
@@ -56,9 +56,10 @@ object CometArrowConverters extends Logging {
   def rowToArrowBatchIter(
       rowIter: Iterator[InternalRow],
       schema: StructType,
-      maxRecordsPerBatch: Long,
+      maxRecordsPerBatch: Int,
       timeZoneId: String,
       allocator: BufferAllocator): Iterator[ColumnarBatch] = {
+    require(maxRecordsPerBatch > 0, "Maximum records per batch must be positive")
     val arrowSchema: Schema = Utils.toArrowSchema(schema, timeZoneId)
 
     new Iterator[ColumnarBatch] {
@@ -69,10 +70,9 @@ object CometArrowConverters extends Logging {
         // Same ownership rule as columnarBatchToArrowBatch: the caller only owns the batch that
         // rootAsBatch returns, so a throw from writing a row has to release the root here.
         closingRootOnFailure(root) {
-          val writer = ArrowWriter.create(root)
-          var rowCount = 0L
-          while (rowIter.hasNext &&
-            (maxRecordsPerBatch <= 0 || rowCount < maxRecordsPerBatch)) {
+          val writer = ArrowWriter.create(root, maxRecordsPerBatch)
+          var rowCount = 0
+          while (rowIter.hasNext && rowCount < maxRecordsPerBatch) {
             writer.write(rowIter.next())
             rowCount += 1
           }
@@ -81,37 +81,6 @@ object CometArrowConverters extends Logging {
         }
       }
     }
-  }
-
-  /**
-   * Copy `numRows` rows starting at `startRow` from a Spark `ColumnarBatch` into `root`.
-   *
-   * Spark's `ColumnVector` implementations do not expose Arrow buffers, so values are necessarily
-   * copied element-wise. Shared by [[SparkColumnarArrowReader]], which slices into a stable root,
-   * and [[columnarBatchToArrowBatch]], which fills a fresh one.
-   */
-  private[arrow] def writeColumns(
-      root: VectorSchemaRoot,
-      batch: ColumnarBatch,
-      startRow: Int,
-      numRows: Int): Unit = {
-    val writer = ArrowWriter.create(root)
-    var col = 0
-    while (col < batch.numCols()) {
-      val column = batch.column(col)
-      val columnArray = new ColumnarArray(column, startRow, numRows)
-      if (column.hasNull) {
-        writer.writeCol(columnArray, col)
-      } else {
-        writer.writeColNoNull(columnArray, col)
-      }
-      col += 1
-    }
-    writer.finish()
-    // ArrowWriter derives the root row count from its per-column writes, so a zero-column input
-    // batch (Spark's count-from-metadata scan: numRows > 0, numCols == 0) would otherwise produce
-    // a root with rowCount == 0 and silently drop the rows.
-    root.setRowCount(numRows)
   }
 
   /**
@@ -126,11 +95,14 @@ object CometArrowConverters extends Logging {
       batch: ColumnarBatch,
       arrowSchema: Schema,
       allocator: BufferAllocator): ColumnarBatch = {
+    val numRows = batch.numRows()
     val root = VectorSchemaRoot.create(arrowSchema, allocator)
     // The caller only owns the returned batch, so anything that throws before `rootAsBatch` wraps
     // the root has to release it here or the allocation leaks.
     closingRootOnFailure(root) {
-      writeColumns(root, batch, 0, batch.numRows())
+      val writer = ArrowWriter.create(root, numRows)
+      writer.writeColumns(batch, 0, numRows)
+      writer.finish()
       NativeUtil.rootAsBatch(root)
     }
   }
