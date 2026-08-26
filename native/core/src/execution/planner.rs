@@ -33,6 +33,7 @@ mod delta_scan;
 use crate::execution::operators::init_csv_datasource_exec;
 use crate::execution::operators::AlignedArrowStreamReader;
 use crate::execution::operators::IcebergScanExec;
+use crate::execution::operators::{PartitionedRankLimitExec, WindowFnKind};
 use crate::execution::{
     expressions::list_empty_to_null::ListEmptyToNullExpr,
     expressions::list_positions::ListPositionsExpr,
@@ -135,7 +136,8 @@ use datafusion_comet_proto::{
     spark_operator::{
         self, lower_window_frame_bound::LowerFrameBoundStruct, operator::OpStruct,
         upper_window_frame_bound::UpperFrameBoundStruct, AggregateMode as ProtoAggregateMode,
-        BuildSide, CompressionCodec as SparkCompressionCodec, JoinType, Operator, WindowFrameType,
+        BuildSide, CompressionCodec as SparkCompressionCodec, JoinType, Operator, RankLikeFunction,
+        WindowFrameType,
     },
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
 };
@@ -2388,6 +2390,93 @@ impl PhysicalPlanner {
                     scans,
                     shuffle_scans,
                     Arc::new(SparkPlan::new(spark_plan.plan_id, final_plan, vec![child])),
+                ))
+            }
+            OpStruct::WindowGroupLimit(wgl) => {
+                // Route:
+                //   * ROW_NUMBER + empty PARTITION BY -> `LocalLimitExec`. Spark's WGL requires
+                //     the child to be sorted by ORDER BY, so `first K rows per input partition`
+                //     IS the global RANK top-K (Partial phase); the Final phase runs on the
+                //     single-partition post-shuffle stream and stays correct.
+                //   * Everything else (ROW_NUMBER partitioned, RANK / DENSE_RANK with any
+                //     PARTITION BY) -> Comet's streaming `PartitionedRankLimitExec`. Relies on
+                //     the Spark-injected sort of `[partition_keys, order_keys]`, which lets it
+                //     preserve input order for rows tied on the ORDER BY keys (matching Spark's
+                //     `SimpleLimitIterator` for ROW_NUMBER and `RankLimitIterator` for RANK /
+                //     DENSE_RANK). `partition_prefix_len == 0` degenerates to one big partition
+                //     per DF input partition.
+                assert_eq!(children.len(), 1);
+                let (scans, shuffle_scans, child) =
+                    self.create_plan(&children[0], inputs, partition_count)?;
+                let input_schema = child.schema();
+
+                let kind =
+                    match RankLikeFunction::try_from(wgl.rank_like_function).map_err(|_| {
+                        GeneralError(format!(
+                            "Unsupported WindowGroupLimit rank function tag: {}",
+                            wgl.rank_like_function
+                        ))
+                    })? {
+                        RankLikeFunction::RowNumber => WindowFnKind::RowNumber,
+                        RankLikeFunction::Rank => WindowFnKind::Rank,
+                        RankLikeFunction::DenseRank => WindowFnKind::DenseRank,
+                    };
+
+                let partition_prefix_len = wgl.partition_by_list.len();
+                let fetch = wgl.limit as usize;
+
+                // Fast path: ROW_NUMBER without PARTITION BY collapses to `first K rows per
+                // input DF partition`, which is exactly what `LocalLimitExec` does. No
+                // row-encoding overhead, no ORDER BY tie detection needed.
+                let topk: Arc<dyn ExecutionPlan> = if partition_prefix_len == 0
+                    && kind == WindowFnKind::RowNumber
+                {
+                    Arc::new(LocalLimitExec::new(Arc::clone(&child.native_plan), fetch))
+                } else {
+                    // Partition keys arrive as bare exprs (no direction). Spark's WGL
+                    // requires the child to be sorted by partition-keys ASCENDING then by
+                    // order-by keys, so materialize partition keys with SortOptions matching
+                    // Spark's `SortOrder(_, Ascending)` (ascending, nulls_first).
+                    let mut partition_keys: Vec<PhysicalSortExpr> =
+                        Vec::with_capacity(partition_prefix_len);
+                    for expr in &wgl.partition_by_list {
+                        let phys = self.create_expr(expr, Arc::clone(&input_schema))?;
+                        partition_keys.push(PhysicalSortExpr {
+                            expr: phys,
+                            options: SortOptions::default(),
+                        });
+                    }
+                    let mut order_keys: Vec<PhysicalSortExpr> =
+                        Vec::with_capacity(wgl.order_by_list.len());
+                    for expr in &wgl.order_by_list {
+                        order_keys.push(self.create_sort_expr(expr, Arc::clone(&input_schema))?);
+                    }
+
+                    // Always route to the streaming `PartitionedRankLimitExec`. Spark's
+                    // `WindowGroupLimitExec.requiredChildOrdering` guarantees the child is
+                    // sorted by `[partition_keys..., order_keys...]`, so a single pass
+                    // suffices. A heap-based top-K would be faster asymptotically but would
+                    // reorder rows tied on the ORDER BY keys, which breaks Spark's
+                    // `SimpleLimitIterator` / `RankLimitIterator` semantics: for
+                    // `ROW_NUMBER()`, Spark assigns ranks in input order to tied rows, and
+                    // any deviation surfaces as wrong-row diffs in SPARK-37099-shaped tests.
+                    Arc::new(PartitionedRankLimitExec::try_new(
+                        Arc::clone(&child.native_plan),
+                        partition_keys,
+                        order_keys,
+                        fetch,
+                        kind,
+                    )?)
+                };
+
+                Ok((
+                    scans,
+                    shuffle_scans,
+                    Arc::new(SparkPlan::new(
+                        spark_plan.plan_id,
+                        topk,
+                        vec![Arc::clone(&child)],
+                    )),
                 ))
             }
             OpStruct::ShuffleScan(scan) => {
@@ -5002,6 +5091,47 @@ mod tests {
         assert_eq!(2, hash_join_exec.children.len());
         assert_eq!("ScanExec", hash_join_exec.children[0].native_plan.name());
         assert_eq!("ScanExec", hash_join_exec.children[1].native_plan.name());
+    }
+
+    #[test]
+    fn projection_rolls_up_same_plan_id_child_metrics() {
+        let op_scan = Operator {
+            plan_id: 1,
+            ..create_scan()
+        };
+        let hash_agg = Operator {
+            plan_id: 2,
+            sql_text_pool: vec![],
+            children: vec![op_scan],
+            op_struct: Some(OpStruct::HashAgg(spark_operator::HashAggregate {
+                grouping_exprs: vec![create_bound_reference(0)],
+                agg_exprs: vec![],
+                mode: spark_operator::AggregateMode::Partial as i32,
+                expr_modes: vec![],
+                initial_input_buffer_offset: 0,
+            })),
+        };
+        let projection = Operator {
+            plan_id: 2,
+            sql_text_pool: vec![],
+            children: vec![hash_agg],
+            op_struct: Some(OpStruct::Projection(spark_operator::Projection {
+                project_list: vec![create_bound_reference(0)],
+            })),
+        };
+
+        let planner = PhysicalPlanner::default();
+        let (_scans, _shuffle_scans, projection_exec) =
+            planner.create_plan(&projection, &mut vec![], 1).unwrap();
+
+        assert_eq!("ProjectionExec", projection_exec.native_plan.name());
+        assert_eq!(1, projection_exec.additional_native_plans.len());
+        assert_eq!(
+            "AggregateExec",
+            projection_exec.additional_native_plans[0].name()
+        );
+        assert_eq!(1, projection_exec.children.len());
+        assert_eq!("ScanExec", projection_exec.children[0].native_plan.name());
     }
 
     fn create_bound_reference(index: i32) -> Expr {
