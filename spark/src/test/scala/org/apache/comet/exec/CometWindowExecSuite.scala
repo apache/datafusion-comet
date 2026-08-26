@@ -200,6 +200,67 @@ class CometWindowExecSuite extends CometTestBase {
     }
   }
 
+  for {
+    partitionColumn <- Seq("f", "d")
+    (function, groupLimit) <- Seq(
+      "RANK()" -> false,
+      "PERCENT_RANK()" -> false,
+      "NTILE(2)" -> false,
+      "RANK()" -> true)
+  } {
+    test(
+      s"window: floating partition keys ($partitionColumn, $function, group limit=$groupLimit)") {
+      assume(!groupLimit || isSpark35Plus, "WindowGroupLimit was added in Spark 3.5")
+
+      val partitionKeys = Seq(
+        (Some(1.0f), Some(1.0d)),
+        (Some(2.0f), Some(2.0d)),
+        (None, None),
+        (Some(0.0f), Some(0.0d)),
+        (Some(-0.0f), Some(-0.0d)),
+        (Some(Float.NaN), Some(Double.NaN)),
+        (
+          Some(java.lang.Float.intBitsToFloat(0xffc00002)),
+          Some(java.lang.Double.longBitsToDouble(0xfff8000000000002L))))
+      val data = partitionKeys.zipWithIndex.flatMap { case ((f, d), index) =>
+        (0 until 4).map(i => (index * 4 + i, f, d, i % 2))
+      }
+
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.SHUFFLE_PARTITIONS.key -> "1",
+        CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "false",
+        CometConf.COMET_EXEC_WINDOW_GROUP_LIMIT_ENABLED.key -> groupLimit.toString) {
+        withTempView("floating_window_partitions") {
+          data
+            .toDF("id", "f", "d", "secondary")
+            .createOrReplaceTempView("floating_window_partitions")
+
+          for (partitionBy <- Seq(partitionColumn, s"secondary, $partitionColumn")) {
+            // Spark normalizes floating partition keys before constructing the child sort.
+            // Native sort and window expressions must still agree on these keys, including
+            // for bounded RANK and non-bounded PERCENT_RANK/NTILE without WindowGroupLimit.
+            val windowQuery = s"""
+                 |SELECT id, $function OVER (PARTITION BY $partitionBy ORDER BY id) AS rnk
+                 |FROM floating_window_partitions
+                 |""".stripMargin
+            val query = if (groupLimit) {
+              s"SELECT * FROM ($windowQuery) WHERE rnk <= 1"
+            } else {
+              windowQuery
+            }
+            val operators = Seq(classOf[CometSortExec], classOf[CometWindowExec]) ++
+              (if (groupLimit) Seq(classOf[CometWindowGroupLimitExec]) else Seq.empty)
+            val (_, cometPlan) = checkSparkAnswerAndOperator(sql(query), operators)
+            if (!groupLimit) {
+              assert(collect(cometPlan) { case w: CometWindowGroupLimitExec => w }.isEmpty)
+            }
+          }
+        }
+      }
+    }
+  }
+
   test("lead/lag should return the default value if the offset row does not exist") {
     withSQLConf(
       CometConf.COMET_ENABLED.key -> "true",

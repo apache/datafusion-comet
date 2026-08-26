@@ -941,6 +941,26 @@ impl PhysicalPlanner {
         }
     }
 
+    /// Normalize scalar floating-point comparison keys without changing output values.
+    /// Sort, Window, and WindowGroupLimit must use identical expressions so DataFusion
+    /// can recognize the ordering of window partition keys.
+    fn create_normalized_key_expr(
+        &self,
+        spark_expr: &Expr,
+        input_schema: SchemaRef,
+    ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
+        let child = self.create_expr(spark_expr, Arc::clone(&input_schema))?;
+        let data_type = child.data_type(input_schema.as_ref())?;
+        // Spark may already have normalized a partition or join key.
+        if matches!(data_type, DataType::Float32 | DataType::Float64)
+            && child.downcast_ref::<NormalizeNaNAndZero>().is_none()
+        {
+            Ok(Arc::new(NormalizeNaNAndZero::new(data_type, child)))
+        } else {
+            Ok(child)
+        }
+    }
+
     /// Create a DataFusion physical sort expression from Spark physical expression
     fn create_sort_expr<'a>(
         &'a self,
@@ -950,16 +970,7 @@ impl PhysicalPlanner {
         match spark_expr.expr_struct.as_ref().unwrap() {
             ExprStruct::SortOrder(expr) => {
                 let child =
-                    self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let data_type = child.data_type(input_schema.as_ref())?;
-                // Spark treats every NaN as a peer and equates signed zeros. Normalize only
-                // comparison keys, preserving the original values in the output. Sort, Window,
-                // and WindowGroupLimit must agree so peers remain contiguous for compound keys.
-                let child = if matches!(data_type, DataType::Float32 | DataType::Float64) {
-                    Arc::new(NormalizeNaNAndZero::new(data_type, child)) as Arc<dyn PhysicalExpr>
-                } else {
-                    child
-                };
+                    self.create_normalized_key_expr(expr.child.as_ref().unwrap(), input_schema)?;
                 let descending = expr.direction == 1;
                 let nulls_first = expr.null_ordering == 0;
 
@@ -2306,7 +2317,7 @@ impl PhysicalPlanner {
                 let partition_exprs: Result<Vec<Arc<dyn PhysicalExpr>>, ExecutionError> = wnd
                     .partition_by_list
                     .iter()
-                    .map(|expr| self.create_expr(expr, Arc::clone(&input_schema)))
+                    .map(|expr| self.create_normalized_key_expr(expr, Arc::clone(&input_schema)))
                     .collect();
 
                 let sort_exprs = &sort_exprs?;
@@ -2454,7 +2465,8 @@ impl PhysicalPlanner {
                     let mut partition_keys: Vec<PhysicalSortExpr> =
                         Vec::with_capacity(partition_prefix_len);
                     for expr in &wgl.partition_by_list {
-                        let phys = self.create_expr(expr, Arc::clone(&input_schema))?;
+                        let phys =
+                            self.create_normalized_key_expr(expr, Arc::clone(&input_schema))?;
                         partition_keys.push(PhysicalSortExpr {
                             expr: phys,
                             options: SortOptions::default(),
@@ -4846,8 +4858,9 @@ mod tests {
     use datafusion::logical_expr::AggregateUDF;
     use datafusion::logical_expr::ScalarUDF;
     use datafusion::physical_expr::expressions::Column;
-    use datafusion::physical_expr::{LexOrdering, PhysicalExpr};
+    use datafusion::physical_expr::{LexOrdering, PhysicalExpr, PhysicalSortExpr};
     use datafusion::physical_plan::sorts::sort::SortExec;
+    use datafusion::physical_plan::windows::get_ordered_partition_by_indices;
     use datafusion::physical_plan::ExecutionPlan;
     use datafusion::prelude::SessionConfig;
     use datafusion::{assert_batches_eq, physical_plan::common::collect, prelude::SessionContext};
@@ -5160,6 +5173,69 @@ mod tests {
                 (type_id, batch)
             })
             .collect()
+    }
+
+    #[test]
+    fn floating_window_partition_keys_preserve_ordering() {
+        let planner = PhysicalPlanner::default();
+        for (type_id, batch) in floating_sort_batches() {
+            for already_normalized in [false, true] {
+                let mut partition_sort = create_sort_order(0, type_id, false, true);
+                let Some(SortOrder(sort_order)) = partition_sort.expr_struct.as_mut() else {
+                    unreachable!();
+                };
+                if already_normalized {
+                    sort_order.child = Some(Box::new(Expr {
+                        expr_struct: Some(NormalizeNanAndZero(Box::new(
+                            spark_expression::NormalizeNaNAndZero {
+                                child: sort_order.child.take(),
+                                datatype: Some(spark_expression::DataType {
+                                    type_id,
+                                    type_info: None,
+                                }),
+                            },
+                        ))),
+                        ..Default::default()
+                    }));
+                }
+                // A key can arrive as Spark's normalization expression or as a
+                // materialized floating column. Both must match the sort prefix.
+                let partition_expr = planner
+                    .create_normalized_key_expr(sort_order.child.as_ref().unwrap(), batch.schema())
+                    .unwrap();
+                let sort_expr = planner
+                    .create_sort_expr(&partition_sort, batch.schema())
+                    .unwrap();
+                let input =
+                    MemorySourceConfig::try_new_exec(&[vec![batch.clone()]], batch.schema(), None)
+                        .unwrap();
+                let sorted: Arc<dyn ExecutionPlan> = Arc::new(SortExec::new(
+                    LexOrdering::new(vec![sort_expr.clone()]).unwrap(),
+                    input,
+                ));
+                let limited: Arc<dyn ExecutionPlan> = Arc::new(
+                    PartitionedRankLimitExec::try_new(
+                        Arc::clone(&sorted),
+                        vec![PhysicalSortExpr {
+                            expr: Arc::clone(&partition_expr),
+                            options: sort_expr.options,
+                        }],
+                        vec![],
+                        1,
+                        WindowFnKind::RowNumber,
+                    )
+                    .unwrap(),
+                );
+                for input in [sorted, limited] {
+                    assert_eq!(
+                        get_ordered_partition_by_indices(&[Arc::clone(&partition_expr)], &input)
+                            .unwrap(),
+                        vec![0],
+                        "type={type_id}, already_normalized={already_normalized}",
+                    );
+                }
+            }
+        }
     }
 
     #[tokio::test]
