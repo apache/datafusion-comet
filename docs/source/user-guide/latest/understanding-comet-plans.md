@@ -228,19 +228,28 @@ transitions is reported as reverted.
 Spark prepares some plans on their own, ahead of the query that contains them —
 scalar subqueries and dynamic partition pruning subqueries, for instance — so a
 query gets one report per independently planned plan: one for the outer query,
-plus one per such subquery. Repeat applications of the same plan are not
-reported again: under AQE, neither the per-stage applications nor the
-applications that follow each adaptive re-optimization add reports.
+plus one per such subquery. The outer report counts its subqueries too, the same
+way normal Comet planning does, so the reports for one query describe
+overlapping sets of operators and their counts should not be added up. Repeat
+applications of the same plan are not reported again: under AQE, neither the
+per-stage applications nor the applications that follow each adaptive
+re-optimization add reports.
 
 The estimate reflects Scala-side conversion only. The native plan is never
 handed to DataFusion, so anything that would have failed in DataFusion's
 `create_plan` still counts as accelerated. Treat the percentage as an upper
 bound.
 
-Under AQE there is a second reason to treat the report as an estimate: it
-describes the plan as it stands before any adaptive re-planning, and the
-post-columnar rules are applied to that whole plan at once rather than to each
-stage as it is created. Coverage of the plan AQE finally executes can differ.
+Under AQE the report is an estimate for a second reason: it describes the plan
+as it stands before any adaptive re-planning, and the post-columnar rules are
+applied to that whole plan at once rather than to each stage as it is created.
+Coverage of the plan AQE finally executes can differ. One case is worth calling
+out, because it moves the number the other way: AQE does not plan a subquery
+into the outer plan until after the report has been produced, so the outer
+report counts a subquery's operators as un-accelerated Spark even where Comet
+would accelerate them. For a subquery-heavy query under AQE, read the
+per-subquery reports rather than the outer percentage, or turn AQE off for the
+evaluation run.
 
 The config requires `spark.comet.exec.enabled=true`. With Comet exec disabled
 the rule that emits the report does not run.

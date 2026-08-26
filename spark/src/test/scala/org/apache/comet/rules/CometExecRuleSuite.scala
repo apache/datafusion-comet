@@ -946,14 +946,88 @@ class CometExecRuleSuite extends CometTestBase {
           df.collect()
           val executed = CometCoverageStats.forPlan(df.queryExecution.executedPlan)
 
-          val reports = withSQLConf(CometConf.COMET_EXPLAIN_PLAN_ONLY_ENABLED.key -> "true") {
-            capturePlanOnlyReports(sql(query).collect())
+          // The assertions stay inside the config block: on Spark 3.4 and 3.5 `withSQLConf` is
+          // declared to return `Unit`, so a value cannot be carried out of one.
+          withSQLConf(CometConf.COMET_EXPLAIN_PLAN_ONLY_ENABLED.key -> "true") {
+            val reports = capturePlanOnlyReports(sql(query).collect())
+            assert(reports.size == 1, s"expected one report, got:\n${reports.mkString("\n\n")}")
+            assert(
+              coverageOf(reports.head) ==
+                (executed.cometOperators, executed.cometOperators + executed.sparkOperators),
+              s"report disagrees with the executed plan ($executed):\n${reports.head}")
           }
-          assert(reports.size == 1, s"expected one report, got:\n${reports.mkString("\n\n")}")
+        }
+      }
+    }
+  }
+
+  // `df.rdd.count()` and reading `executedPlan` without running an action can plan - and in the
+  // first case execute AQE stages - without a SQL execution ID installed, so the reporting state
+  // cannot be scoped to one. Each of these must still produce exactly one report per query, not
+  // one per stage and re-optimization.
+  for (aqe <- Seq(true, false)) {
+    test(s"plan-only mode: one report per query without a SQL execution ID (AQE=$aqe)") {
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe.toString,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_EXPLAIN_PLAN_ONLY_ENABLED.key -> "true") {
+        withParquetTable((0 until 100).map(i => (i, i % 5)), "tbl") {
+          val query = "SELECT _2, count(*) FROM tbl GROUP BY _2"
+
+          val viaRdd = capturePlanOnlyReports(spark.sql(query).rdd.count())
           assert(
-            coverageOf(reports.head) ==
+            viaRdd.size == 1,
+            s"expected one report for df.rdd.count(), got ${viaRdd.size}:\n" +
+              viaRdd.mkString("\n\n"))
+
+          val viaExecutedPlan =
+            capturePlanOnlyReports(spark.sql(query).queryExecution.executedPlan)
+          assert(
+            viaExecutedPlan.size == 1,
+            s"expected one report for executedPlan, got ${viaExecutedPlan.size}:\n" +
+              viaExecutedPlan.mkString("\n\n"))
+        }
+      }
+    }
+  }
+
+  // A scalar subquery is planned as a top-level plan of its own and substituted into the outer
+  // plan, and extended explain counts the plans owned by a node's expressions. The outer preview
+  // therefore has to preview its subqueries too, or it reports operators Comet does accelerate as
+  // Spark. AQE is off here so the preview and the executed plan are the same single pass; see the
+  // user guide for why the two can differ under AQE.
+  test("plan-only mode: outer report coverage matches normal planning for a scalar subquery") {
+    withSQLConf(
+      SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      CometConf.COMET_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_ENABLED.key -> "true") {
+      withParquetTable((0 until 100).map(i => (i, i % 5)), "tbl") {
+        val query = "SELECT _1 FROM tbl WHERE _1 > (SELECT max(_2) FROM tbl)"
+
+        // What Comet really executes, subquery operators included.
+        val df = sql(query)
+        df.collect()
+        val executed = CometCoverageStats.forPlan(df.queryExecution.executedPlan)
+        assert(
+          executed.cometOperators > 0,
+          "test query must be partly accelerated for the comparison to mean anything")
+
+        withSQLConf(CometConf.COMET_EXPLAIN_PLAN_ONLY_ENABLED.key -> "true") {
+          val reports = capturePlanOnlyReports(sql(query).collect())
+          // One report for the separately planned subquery, one for the outer query. Only the
+          // outer one describes the Filter.
+          val outer = reports.filter(_.contains("Filter"))
+          assert(
+            outer.size == 1,
+            s"expected exactly one report for the outer query, got ${outer.size}:\n" +
+              reports.mkString("\n\n"))
+          assert(
+            coverageOf(outer.head) ==
               (executed.cometOperators, executed.cometOperators + executed.sparkOperators),
-            s"report disagrees with the executed plan ($executed):\n${reports.head}")
+            s"outer report disagrees with the executed plan ($executed):\n${outer.head}")
         }
       }
     }
