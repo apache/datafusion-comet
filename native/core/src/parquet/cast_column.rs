@@ -21,7 +21,7 @@ use arrow::{
         TimestampMillisecondArray,
     },
     buffer::NullBuffer,
-    compute::{cast, CastOptions},
+    compute::{cast, cast_with_options, CastOptions},
     datatypes::{DataType, FieldRef, Schema, TimeUnit},
     error::ArrowError,
     record_batch::RecordBatch,
@@ -211,7 +211,7 @@ fn normalize_variant_array(
     }
 
     let array = decode_variant_metadata_dictionary(array)?;
-    let array = widen_unsigned_variant_typed_value(&array)?;
+    let array = normalize_variant_typed_value(&array)?;
     let variant = VariantArray::try_new(array.as_ref())?;
     let was_shredded = variant.typed_value_field().is_some();
     let unshredded = unshred_variant_for_spark(&variant)?;
@@ -254,9 +254,9 @@ fn unshred_variant_for_spark(variant: &VariantArray) -> DataFusionResult<Variant
     Ok(unshred_variant(&variant)?)
 }
 
-fn widen_unsigned_variant_type(data_type: &DataType) -> Option<DataType> {
-    fn widen_field(field: &FieldRef) -> Option<FieldRef> {
-        widen_unsigned_variant_type(field.data_type())
+fn normalize_variant_type(data_type: &DataType) -> Option<DataType> {
+    fn normalize_field(field: &FieldRef) -> Option<FieldRef> {
+        normalize_variant_type(field.data_type())
             .map(|data_type| Arc::new(field.as_ref().clone().with_data_type(data_type)))
     }
 
@@ -264,15 +264,21 @@ fn widen_unsigned_variant_type(data_type: &DataType) -> Option<DataType> {
         DataType::UInt8 => Some(DataType::Int16),
         DataType::UInt16 => Some(DataType::Int32),
         DataType::UInt32 => Some(DataType::Int64),
-        DataType::List(field) => widen_field(field).map(DataType::List),
-        DataType::LargeList(field) => widen_field(field).map(DataType::LargeList),
-        DataType::ListView(field) => widen_field(field).map(DataType::ListView),
-        DataType::LargeListView(field) => widen_field(field).map(DataType::LargeListView),
+        DataType::Timestamp(TimeUnit::Millisecond, timezone) => {
+            Some(DataType::Timestamp(TimeUnit::Microsecond, timezone.clone()))
+        }
+        DataType::FixedSizeList(field, _) => Some(DataType::List(
+            normalize_field(field).unwrap_or_else(|| Arc::clone(field)),
+        )),
+        DataType::List(field) => normalize_field(field).map(DataType::List),
+        DataType::LargeList(field) => normalize_field(field).map(DataType::LargeList),
+        DataType::ListView(field) => normalize_field(field).map(DataType::ListView),
+        DataType::LargeListView(field) => normalize_field(field).map(DataType::LargeListView),
         DataType::Struct(fields) => {
             let mut changed = false;
             let fields = fields
                 .iter()
-                .map(|field| match widen_field(field) {
+                .map(|field| match normalize_field(field) {
                     Some(field) => {
                         changed = true;
                         field
@@ -286,10 +292,12 @@ fn widen_unsigned_variant_type(data_type: &DataType) -> Option<DataType> {
     }
 }
 
-/// Parquet restores unsigned integer annotations as Arrow unsigned arrays, while Spark widens
-/// those values to the next signed width. Arrow Variant accepts only the latter representation.
+/// Normalize Arrow types that Spark's Parquet reader accepts but `VariantArray` 58.4 rejects.
+/// Parquet restores unsigned integers to Arrow unsigned arrays and millisecond timestamps at their
+/// annotated unit; embedded Arrow schemas may also restore fixed-size lists. Spark widens the
+/// integers and timestamps and treats fixed-size lists as ordinary Variant arrays.
 /// arrow-rs #10416/#10417 would move this widening into `VariantArray`/`unshred_variant`; remove
-/// both local `widen_unsigned_variant_*` helpers after that ships and Comet upgrades:
+/// the unsigned arms after that ships and Comet upgrades:
 /// https://github.com/apache/arrow-rs/issues/10416
 /// https://github.com/apache/arrow-rs/pull/10417
 /// Arrow #50622/#50810 instead proposes removing unsigned `typed_value` mappings because the
@@ -297,7 +305,7 @@ fn widen_unsigned_variant_type(data_type: &DataType) -> Option<DataType> {
 /// that choice, keep this compatibility path for unsigned files Spark already reads:
 /// https://github.com/apache/arrow/issues/50622
 /// https://github.com/apache/arrow/pull/50810
-fn widen_unsigned_variant_typed_value(array: &ArrayRef) -> DataFusionResult<ArrayRef> {
+fn normalize_variant_typed_value(array: &ArrayRef) -> DataFusionResult<ArrayRef> {
     let Some(struct_array) = array.as_any().downcast_ref::<StructArray>() else {
         return Ok(Arc::clone(array));
     };
@@ -309,7 +317,7 @@ fn widen_unsigned_variant_typed_value(array: &ArrayRef) -> DataFusionResult<Arra
     else {
         return Ok(Arc::clone(array));
     };
-    let Some(data_type) = widen_unsigned_variant_type(typed_value_field.data_type()) else {
+    let Some(data_type) = normalize_variant_type(typed_value_field.data_type()) else {
         return Ok(Arc::clone(array));
     };
 
@@ -321,7 +329,11 @@ fn widen_unsigned_variant_typed_value(array: &ArrayRef) -> DataFusionResult<Arra
             .with_data_type(data_type.clone()),
     );
     let mut columns = struct_array.columns().to_vec();
-    columns[typed_value_index] = cast(columns[typed_value_index].as_ref(), &data_type)?;
+    columns[typed_value_index] = cast_with_options(
+        columns[typed_value_index].as_ref(),
+        &data_type,
+        &DEFAULT_CAST_OPTIONS,
+    )?;
     Ok(Arc::new(StructArray::try_new(
         fields.into(),
         columns,
@@ -881,13 +893,6 @@ fn collect_shredded_field_names(
             field_names,
             seen,
         )?,
-        DataType::FixedSizeList(_, _) => collect_list_field_names(
-            typed_value.as_fixed_size_list(),
-            index,
-            source_metadata,
-            field_names,
-            seen,
-        )?,
         _ => {}
     }
     Ok(())
@@ -1104,13 +1109,6 @@ fn spark_shredded_variant_bytes(
         ),
         DataType::LargeListView(_) => spark_list_bytes(
             typed_value.as_list_view::<i64>(),
-            index,
-            semantic,
-            source_metadata,
-            target_metadata,
-        ),
-        DataType::FixedSizeList(_, _) => spark_list_bytes(
-            typed_value.as_fixed_size_list(),
             index,
             semantic,
             source_metadata,
@@ -1460,8 +1458,9 @@ impl PhysicalExpr for CometCastColumnExpr {
 mod tests {
     use super::*;
     use arrow::array::{
-        Array, AsArray, BinaryArray, Decimal128Array, DictionaryArray, Int32Array, Int64Array,
-        StringArray, UInt16Array, UInt32Array, UInt8Array,
+        Array, AsArray, BinaryArray, Decimal128Array, DictionaryArray, FixedSizeListArray,
+        Int32Array, Int64Array, StringArray, TimestampMillisecondArray, UInt16Array, UInt32Array,
+        UInt8Array,
     };
     use arrow::datatypes::{Field, Fields, Int32Type};
     use datafusion::physical_expr::expressions::Column;
@@ -1497,6 +1496,38 @@ mod tests {
         let value = output.column(0).as_binary::<i32>();
         let metadata = output.column(1).as_binary::<i32>();
         assert_spark_unicode_variant(Variant::new(metadata.value(0), value.value(0)));
+    }
+
+    fn normalize_typed_value(typed_value: ArrayRef, field_names: &[&str]) -> VariantArray {
+        let (metadata_bytes, _) = VariantBuilder::new()
+            .with_field_names(field_names.iter().copied())
+            .finish();
+        let metadata: ArrayRef = Arc::new(BinaryArray::from(vec![Some(metadata_bytes.as_slice())]));
+        let physical: ArrayRef = Arc::new(
+            StructArray::try_new(
+                Fields::from(vec![
+                    Field::new("metadata", DataType::Binary, false),
+                    Field::new("typed_value", typed_value.data_type().clone(), false),
+                ]),
+                vec![metadata, typed_value],
+                None,
+            )
+            .unwrap(),
+        );
+        let target_field = Arc::new(
+            Field::new(
+                "v",
+                DataType::Struct(Fields::from(vec![
+                    Field::new("value", DataType::Binary, false),
+                    Field::new("metadata", DataType::Binary, false),
+                ])),
+                false,
+            )
+            .with_extension_type(VariantType),
+        );
+
+        let output = normalize_variant_array(&physical, &target_field).unwrap();
+        VariantArray::try_new(output.as_ref()).unwrap()
     }
 
     #[test]
@@ -1636,6 +1667,87 @@ mod tests {
         assert_eq!(object.get("u8"), Some(Variant::from(255_i16)));
         assert_eq!(object.get("u16"), Some(Variant::from(65_535_i32)));
         assert_eq!(object.get("u32"), Some(Variant::from(4_294_967_295_i64)));
+    }
+
+    #[test]
+    fn test_normalize_shredded_variant_widens_millisecond_timestamps() {
+        let millis = 1_704_067_200_123_i64;
+        let ltz: ArrayRef =
+            Arc::new(TimestampMillisecondArray::from(vec![millis]).with_timezone("UTC"));
+        let ntz: ArrayRef = Arc::new(TimestampMillisecondArray::from(vec![millis]));
+        let shredded = |value: ArrayRef| -> ArrayRef {
+            Arc::new(
+                StructArray::try_new(
+                    Fields::from(vec![Field::new(
+                        "typed_value",
+                        value.data_type().clone(),
+                        false,
+                    )]),
+                    vec![value],
+                    None,
+                )
+                .unwrap(),
+            )
+        };
+        let ltz = shredded(ltz);
+        let ntz = shredded(ntz);
+        let object: ArrayRef = Arc::new(
+            StructArray::try_new(
+                Fields::from(vec![
+                    Field::new("ltz", ltz.data_type().clone(), false),
+                    Field::new("ntz", ntz.data_type().clone(), false),
+                ]),
+                vec![ltz, ntz],
+                None,
+            )
+            .unwrap(),
+        );
+        let output = normalize_typed_value(object, &["ltz", "ntz"]);
+        let Variant::Object(object) = output.value(0) else {
+            panic!("expected object")
+        };
+
+        let Some(Variant::TimestampMicros(ltz)) = object.get("ltz") else {
+            panic!("expected timestamp")
+        };
+        assert_eq!(ltz.timestamp_micros(), millis * 1_000);
+
+        let Some(Variant::TimestampNtzMicros(ntz)) = object.get("ntz") else {
+            panic!("expected timestamp_ntz")
+        };
+        assert_eq!(ntz.and_utc().timestamp_micros(), millis * 1_000);
+    }
+
+    #[test]
+    fn test_normalize_shredded_variant_converts_fixed_size_list() {
+        let elements: ArrayRef = Arc::new(
+            StructArray::try_new(
+                Fields::from(vec![Field::new("typed_value", DataType::Int64, false)]),
+                vec![Arc::new(Int64Array::from(vec![42, 43]))],
+                None,
+            )
+            .unwrap(),
+        );
+        let typed_value: ArrayRef = Arc::new(
+            FixedSizeListArray::try_new(
+                Arc::new(Field::new("element", elements.data_type().clone(), false)),
+                2,
+                elements,
+                None,
+            )
+            .unwrap(),
+        );
+
+        let output = normalize_typed_value(typed_value, &[]);
+        let Variant::List(list) = output.value(0) else {
+            panic!("expected list")
+        };
+        assert_eq!(
+            list.iter()
+                .map(|value| value.as_int64())
+                .collect::<Vec<_>>(),
+            vec![Some(42), Some(43)]
+        );
     }
 
     #[test]

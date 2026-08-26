@@ -1120,10 +1120,11 @@ mod test {
     use crate::parquet::parquet_support::SparkParquetOptions;
     use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
     use arrow::array::{
-        Array, BinaryArray, Date32Array, Decimal128Array, Float32Array, Float64Array, Int32Array,
-        Int64Array, StringArray, StructArray, TimestampMicrosecondArray, UInt16Array, UInt32Array,
-        UInt8Array,
+        Array, ArrayRef, BinaryArray, Date32Array, Decimal128Array, FixedSizeListArray,
+        Float32Array, Float64Array, Int32Array, Int64Array, StringArray, StructArray,
+        TimestampMicrosecondArray, TimestampMillisecondArray, UInt16Array, UInt32Array, UInt8Array,
     };
+    use arrow::buffer::NullBuffer;
     use arrow::datatypes::{DataType, Field, Fields, Schema, SchemaRef};
     use arrow::record_batch::RecordBatch;
     use datafusion::common::DataFusionError;
@@ -1137,7 +1138,7 @@ mod test {
     use datafusion_comet_spark_expr::EvalMode;
     use datafusion_physical_expr_adapter::PhysicalExprAdapterFactory;
     use futures::StreamExt;
-    use parquet::arrow::ArrowWriter;
+    use parquet::arrow::{arrow_writer::ArrowWriterOptions, ArrowWriter};
     use parquet::variant::{Variant, VariantArray, VariantBuilder, VariantType};
     use std::fs::File;
     use std::sync::Arc;
@@ -1695,6 +1696,18 @@ mod test {
         Ok(())
     }
 
+    fn required_variant_field(name: &str, nullable: bool) -> Field {
+        Field::new(
+            name,
+            DataType::Struct(Fields::from(vec![
+                Field::new("value", DataType::Binary, false),
+                Field::new("metadata", DataType::Binary, false),
+            ])),
+            nullable,
+        )
+        .with_extension_type(VariantType)
+    }
+
     #[tokio::test]
     async fn parquet_roundtrip_shredded_variant_unsigned_values() -> Result<(), DataFusionError> {
         let (metadata_bytes, _) = VariantBuilder::new().finish();
@@ -1724,17 +1737,7 @@ mod test {
                     .with_extension_type(VariantType),
             );
             columns.push(Arc::new(physical) as Arc<dyn arrow::array::Array>);
-            required_fields.push(
-                Field::new(
-                    name,
-                    DataType::Struct(Fields::from(vec![
-                        Field::new("value", DataType::Binary, false),
-                        Field::new("metadata", DataType::Binary, false),
-                    ])),
-                    false,
-                )
-                .with_extension_type(VariantType),
-            );
+            required_fields.push(required_variant_field(name, false));
         }
 
         let file_schema = Arc::new(Schema::new(file_fields));
@@ -1753,16 +1756,158 @@ mod test {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn parquet_roundtrip_shredded_variant_millisecond_timestamps(
+    ) -> Result<(), DataFusionError> {
+        let millis = 1_704_067_200_123_i64;
+        let micros = 1_704_067_200_123_456_i64;
+        let shredded = |value: ArrayRef| -> ArrayRef {
+            Arc::new(
+                StructArray::try_new(
+                    Fields::from(vec![Field::new(
+                        "typed_value",
+                        value.data_type().clone(),
+                        false,
+                    )]),
+                    vec![value],
+                    None,
+                )
+                .unwrap(),
+            )
+        };
+        let ltz = shredded(Arc::new(
+            TimestampMillisecondArray::from(vec![millis]).with_timezone("UTC"),
+        ));
+        let ntz = shredded(Arc::new(TimestampMillisecondArray::from(vec![millis])));
+        let micros_control = shredded(Arc::new(
+            TimestampMicrosecondArray::from(vec![micros]).with_timezone("UTC"),
+        ));
+        let typed_value: ArrayRef = Arc::new(StructArray::try_new(
+            Fields::from(vec![
+                Field::new("ltz", ltz.data_type().clone(), false),
+                Field::new("ntz", ntz.data_type().clone(), false),
+                Field::new("micros", micros_control.data_type().clone(), false),
+            ]),
+            vec![ltz, ntz, micros_control],
+            None,
+        )?);
+        let (metadata_bytes, _) = VariantBuilder::new()
+            .with_field_names(["ltz", "ntz", "micros"])
+            .finish();
+        let metadata: ArrayRef = Arc::new(BinaryArray::from(vec![Some(metadata_bytes.as_slice())]));
+        let physical = StructArray::try_new(
+            Fields::from(vec![
+                Field::new("metadata", DataType::Binary, false),
+                Field::new("typed_value", typed_value.data_type().clone(), false),
+            ]),
+            vec![metadata, typed_value],
+            None,
+        )?;
+        let file_schema = Arc::new(Schema::new(vec![Field::new(
+            "v",
+            physical.data_type().clone(),
+            false,
+        )
+        .with_extension_type(VariantType)]));
+        let batch = RecordBatch::try_new(Arc::clone(&file_schema), vec![Arc::new(physical)])?;
+
+        let output = roundtrip_with_options(
+            &batch,
+            Arc::new(Schema::new(vec![required_variant_field("v", false)])),
+            ArrowWriterOptions::new().with_skip_arrow_metadata(true),
+        )
+        .await?;
+        let variant = VariantArray::try_new(output.column(0).as_ref())?;
+        let Variant::Object(object) = variant.value(0) else {
+            panic!("expected object")
+        };
+        let Some(Variant::TimestampMicros(ltz)) = object.get("ltz") else {
+            panic!("expected timestamp")
+        };
+        assert_eq!(ltz.timestamp_micros(), millis * 1_000);
+        let Some(Variant::TimestampNtzMicros(ntz)) = object.get("ntz") else {
+            panic!("expected timestamp_ntz")
+        };
+        assert_eq!(ntz.and_utc().timestamp_micros(), millis * 1_000);
+        let Some(Variant::TimestampMicros(control)) = object.get("micros") else {
+            panic!("expected timestamp")
+        };
+        assert_eq!(control.timestamp_micros(), micros);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn parquet_roundtrip_shredded_variant_fixed_size_list() -> Result<(), DataFusionError> {
+        let (metadata_bytes, _) = VariantBuilder::new().finish();
+        let metadata: ArrayRef = Arc::new(BinaryArray::from(vec![
+            Some(metadata_bytes.as_slice()),
+            Some(metadata_bytes.as_slice()),
+        ]));
+        let elements: ArrayRef = Arc::new(StructArray::try_new(
+            Fields::from(vec![Field::new("typed_value", DataType::Int64, false)]),
+            vec![Arc::new(Int64Array::from(vec![42, 43, 0, 0]))],
+            None,
+        )?);
+        let typed_value: ArrayRef = Arc::new(FixedSizeListArray::try_new(
+            Arc::new(Field::new("element", elements.data_type().clone(), false)),
+            2,
+            elements,
+            None,
+        )?);
+        let physical = StructArray::try_new(
+            Fields::from(vec![
+                Field::new("metadata", DataType::Binary, false),
+                Field::new("typed_value", typed_value.data_type().clone(), false),
+            ]),
+            vec![metadata, typed_value],
+            Some(NullBuffer::from(vec![true, false])),
+        )?;
+        let file_schema = Arc::new(Schema::new(vec![Field::new(
+            "v",
+            physical.data_type().clone(),
+            true,
+        )
+        .with_extension_type(VariantType)]));
+        let batch = RecordBatch::try_new(Arc::clone(&file_schema), vec![Arc::new(physical)])?;
+
+        let output = roundtrip(
+            &batch,
+            Arc::new(Schema::new(vec![required_variant_field("v", true)])),
+        )
+        .await?;
+        let variant = VariantArray::try_new(output.column(0).as_ref())?;
+        let Variant::List(list) = variant.value(0) else {
+            panic!("expected list")
+        };
+        assert_eq!(
+            list.iter()
+                .map(|value| value.as_int64())
+                .collect::<Vec<_>>(),
+            vec![Some(42), Some(43)]
+        );
+        assert!(variant.inner().is_null(1));
+        Ok(())
+    }
+
     /// Create a Parquet file containing a single batch and then read the batch back using
     /// the specified required_schema. This will cause the PhysicalExprAdapter code to be used.
     async fn roundtrip(
         batch: &RecordBatch,
         required_schema: SchemaRef,
     ) -> Result<RecordBatch, DataFusionError> {
+        roundtrip_with_options(batch, required_schema, ArrowWriterOptions::new()).await
+    }
+
+    async fn roundtrip_with_options(
+        batch: &RecordBatch,
+        required_schema: SchemaRef,
+        writer_options: ArrowWriterOptions,
+    ) -> Result<RecordBatch, DataFusionError> {
         let filename = get_temp_filename();
         let filename = filename.as_path().as_os_str().to_str().unwrap().to_string();
         let file = File::create(&filename)?;
-        let mut writer = ArrowWriter::try_new(file, Arc::clone(&batch.schema()), None)?;
+        let mut writer =
+            ArrowWriter::try_new_with_options(file, Arc::clone(&batch.schema()), writer_options)?;
         writer.write(batch)?;
         writer.close()?;
 
