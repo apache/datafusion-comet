@@ -825,8 +825,19 @@ overflow instead of returning Spark’s <code class="docutils literal notranslat
 window are not supported by Spark either.</p></li>
 <li><p>Any <code class="docutils literal notranslate"><span class="pre">PARTITION</span> <span class="pre">BY</span></code> or <code class="docutils literal notranslate"><span class="pre">ORDER</span> <span class="pre">BY</span></code> expression that Comet cannot serialize.</p></li>
 </ul>
-<p><code class="docutils literal notranslate"><span class="pre">WindowGroupLimitExec</span></code> (window-based limit pushdown) is not yet supported and falls back to Spark
-(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4837">#4837</a>).</p>
+<p><code class="docutils literal notranslate"><span class="pre">WindowGroupLimitExec</span></code> (window-based limit pushdown for <code class="docutils literal notranslate"><span class="pre">ROW_NUMBER</span></code>, <code class="docutils literal notranslate"><span class="pre">RANK</span></code>, and <code class="docutils literal notranslate"><span class="pre">DENSE_RANK</span></code>)
+runs natively; it is controlled by <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.windowGroupLimit.enabled</span></code> (default: true).</p>
+<p><strong>Falls back to Spark:</strong></p>
+<ul class="simple">
+<li><p>Any <code class="docutils literal notranslate"><span class="pre">PARTITION</span> <span class="pre">BY</span></code> or <code class="docutils literal notranslate"><span class="pre">ORDER</span> <span class="pre">BY</span></code> key whose type carries a non-default <code class="docutils literal notranslate"><span class="pre">StringType</span></code> collation
+(e.g. <code class="docutils literal notranslate"><span class="pre">UTF8_LCASE</span></code>). The native operator detects partitions and order-key peer groups by
+comparing Arrow row-encoded keys for byte equality, which splits peers that Spark ties.</p></li>
+</ul>
+<p><strong>Known incompatibilities:</strong></p>
+<ul class="simple">
+<li><p>Signed-zero ordering (<code class="docutils literal notranslate"><span class="pre">-0.0</span></code> vs <code class="docutils literal notranslate"><span class="pre">+0.0</span></code>) diverges from Spark’s <code class="docutils literal notranslate"><span class="pre">RankLimitIterator</span></code>; see
+<a class="reference internal" href="floating-point.html#ordering-signed-zero-00-vs-00"><span class="std std-ref">floating-point ordering</span></a>.</p></li>
+</ul>
 </section>
 <section id="round-robin-partitioning">
 <h2>Round-Robin Partitioning<a class="headerlink" href="#round-robin-partitioning" title="Link to this heading">#</a></h2>

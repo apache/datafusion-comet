@@ -251,6 +251,10 @@ under the License.
   
 
   
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
 </div>
 
     </header>
@@ -780,6 +784,19 @@ So Comet adds additional normalization expression of NaN and zero for comparison
 to Spark in some cases, especially when the data contains both positive and negative zero. This is likely an edge
 case that is not of concern for many users. If it is a concern, setting <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.strictFloatingPoint=true</span></code>
 will make relevant operations fall back to Spark.</p>
+<section id="ordering-signed-zero-0-0-vs-0-0">
+<h2>Ordering: signed zero (<code class="docutils literal notranslate"><span class="pre">-0.0</span></code> vs <code class="docutils literal notranslate"><span class="pre">+0.0</span></code>)<a class="headerlink" href="#ordering-signed-zero-0-0-vs-0-0" title="Link to this heading">#</a></h2>
+<p>Spark’s <code class="docutils literal notranslate"><span class="pre">ORDER</span> <span class="pre">BY</span></code>, <code class="docutils literal notranslate"><span class="pre">RANK</span></code>, <code class="docutils literal notranslate"><span class="pre">DENSE_RANK</span></code>, and window frame comparisons route through
+<code class="docutils literal notranslate"><span class="pre">SQLOrderingUtil.compareDoubles</span></code> / <code class="docutils literal notranslate"><span class="pre">compareFloats</span></code>, which explicitly define <code class="docutils literal notranslate"><span class="pre">-0.0</span> <span class="pre">==</span> <span class="pre">0.0</span></code>. Comet’s
+native sort and <code class="docutils literal notranslate"><span class="pre">WindowGroupLimitExec</span></code> use the <code class="docutils literal notranslate"><span class="pre">arrow-row</span></code> row-format encoder for <code class="docutils literal notranslate"><span class="pre">ORDER</span> <span class="pre">BY</span></code> keys,
+which applies Rust’s total-ordering transform to the raw IEEE-754 bits. Under that encoding <code class="docutils literal notranslate"><span class="pre">-0.0</span></code>
+sorts strictly less than <code class="docutils literal notranslate"><span class="pre">+0.0</span></code>, so a partition that mixes the two zeros can produce a rank
+distribution that differs from Spark. For example, <code class="docutils literal notranslate"><span class="pre">RANK()</span> <span class="pre">OVER</span> <span class="pre">(ORDER</span> <span class="pre">BY</span> <span class="pre">v</span> <span class="pre">ASC)</span></code> over
+<code class="docutils literal notranslate"><span class="pre">[-0.0,</span> <span class="pre">0.0,</span> <span class="pre">1.0]</span></code> filtered to <code class="docutils literal notranslate"><span class="pre">rk</span> <span class="pre">&lt;=</span> <span class="pre">1</span></code> returns two rows in Spark (both zeros tied at rank 1) but
+one row in Comet (<code class="docutils literal notranslate"><span class="pre">-0.0</span></code> at rank 1, <code class="docutils literal notranslate"><span class="pre">+0.0</span></code> at rank 2). If your workload materially mixes <code class="docutils literal notranslate"><span class="pre">-0.0</span></code>
+and <code class="docutils literal notranslate"><span class="pre">+0.0</span></code> in a ranked column, prefer Spark for that stage or normalize the column to <code class="docutils literal notranslate"><span class="pre">+0.0</span></code>
+upstream.</p>
+</section>
 </section>
 
 
@@ -816,6 +833,24 @@ will make relevant operations fall back to Spark.</p>
             </div>
             
             
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#ordering-signed-zero-0-0-vs-0-0">Ordering: signed zero (<code class="docutils literal notranslate"><span class="pre">-0.0</span></code> vs <code class="docutils literal notranslate"><span class="pre">+0.0</span></code>)</a></li>
+</ul>
+  </nav></div>
+
+</div></div>
               
             
           </div>

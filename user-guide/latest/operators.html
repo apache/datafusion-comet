@@ -1000,8 +1000,8 @@ omitted from the tables below and may be reconsidered based on demand:</p>
 <td><p>Runs natively and is enabled by default. A broad set of window functions is accelerated; unsupported shapes fall back to Spark. See <a class="reference internal" href="compatibility/operators.html"><span class="std std-doc">window function compatibility</span></a>.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">WindowGroupLimitExec</span></code></p></td>
-<td><p>🔜</p></td>
-<td><p>Window-based limit pushdown falls back today (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4837">#4837</a>).</p></td>
+<td><p>✅</p></td>
+<td><p>Streaming per-partition top-K pushdown for <code class="docutils literal notranslate"><span class="pre">ROW_NUMBER</span></code>, <code class="docutils literal notranslate"><span class="pre">RANK</span></code>, and <code class="docutils literal notranslate"><span class="pre">DENSE_RANK</span></code>.</p></td>
 </tr>
 </tbody>
 </table>
