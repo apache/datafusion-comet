@@ -1085,7 +1085,7 @@ class CometInMemoryCacheSuite extends CometTestBase {
   test("Comet in-memory cache records per-column sizes in its statistics") {
     // SimpleMetricsCachedBatch reserves a fifth field per column for its size. Each column is now
     // its own stream, so the real size is known and must be reported rather than left at zero.
-    withProjectionCache { (relation, batches) =>
+    withProjectionCache { (_, batches) =>
       batches.foreach { batch =>
         val sizes = CometCachedBatchHelper.columnStreamSizes(batch)
         val stats = batch.asInstanceOf[SimpleMetricsCachedBatch].stats
