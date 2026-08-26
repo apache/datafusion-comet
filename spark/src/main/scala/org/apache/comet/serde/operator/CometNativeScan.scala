@@ -122,15 +122,25 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
       withFallbackReason(scanExec, unsupportedDefaultReason)
     }
 
+    val hasVariant =
+      scanExec.requiredSchema.fields.exists(field => isVariantType(field.dataType))
+
     // Spark's strict mode validates the legacy two-field Variant layout and reports SPARK-47546
     // errors itself: https://issues.apache.org/jira/browse/SPARK-47546
-    if (scanExec.requiredSchema.fields.exists(field => isVariantType(field.dataType)) &&
-      !SQLConf.get
-        .getConfString("spark.sql.variant.allowReadingShredded", "true")
-        .toBoolean) {
+    if (hasVariant &&
+      !SQLConf.get.getConfString("spark.sql.variant.allowReadingShredded").toBoolean) {
       withFallbackReason(
         scanExec,
         "Full native scan disabled because Spark's strict unshredded Variant reader is enabled")
+    }
+
+    // Spark interprets TIMESTAMP(NANOS) leaves as raw longs in this legacy mode. The logical
+    // Variant schema does not expose whether a file contains such a shredded child, so preserve
+    // Spark semantics by falling back before reading any requested Variant value.
+    if (hasVariant && SQLConf.get.legacyParquetNanosAsLong) {
+      withFallbackReason(
+        scanExec,
+        "Full native scan disabled because spark.sql.legacy.parquet.nanosAsLong is enabled")
     }
 
     // the scan is supported if no fallback reasons were added to the node

@@ -49,7 +49,7 @@ import org.apache.spark.sql.types._
 
 import com.google.common.primitives.UnsignedLong
 
-import org.apache.comet.{CometConf, CometSparkSessionExtensions}
+import org.apache.comet.{CometConf, CometSparkSessionExtensions, ExtendedExplainInfo}
 import org.apache.comet.vector.CometStructVector
 
 abstract class ParquetReadSuite extends CometTestBase {
@@ -202,33 +202,119 @@ abstract class ParquetReadSuite extends CometTestBase {
     }
   }
 
-  test("strict unshredded Variant validation falls back to Spark") {
+  test("native scan honors Spark's shredded Variant reader configuration") {
+    assume(CometSparkSessionExtensions.isSpark40Plus, "VariantType requires Spark 4.0+")
+
+    withTable("variant_reader_mode") {
+      withSQLConf(
+        CometConf.COMET_ENABLED.key -> "false",
+        "spark.sql.variant.allowReadingShredded" -> "true",
+        "spark.sql.variant.writeShredding.enabled" -> "true",
+        "spark.sql.variant.forceShreddingSchemaForTest" -> "a BIGINT") {
+        sql("CREATE TABLE variant_reader_mode(v VARIANT) USING parquet")
+        sql("INSERT INTO variant_reader_mode VALUES (parse_json('{\"a\":1}'))")
+      }
+
+      val key = "spark.sql.variant.allowReadingShredded"
+      val conf = SQLConf.get
+      val original = conf.getAllConfs.get(key)
+      try {
+        Seq(None, Some(false), Some(true)).foreach { configured =>
+          configured match {
+            case Some(value) => conf.setConfString(key, value.toString)
+            case None => conf.unsetConf(key)
+          }
+          val allowShredded = conf.getConfString(key).toBoolean
+
+          withSQLConf(
+            "spark.sql.variant.pushVariantIntoScan" -> "false",
+            "spark.sql.variant.inferShreddingSchema" -> "false") {
+            val result = sql("SELECT v FROM variant_reader_mode")
+            val nativeScans = collect(result.queryExecution.executedPlan) {
+              case _: CometNativeScanExec => true
+            }
+
+            if (allowShredded) {
+              assert(normalizedVariantRows(result, 0) == Seq(Seq("{\"a\":1}")))
+              assert(nativeScans.size == 1)
+            } else {
+              assert(nativeScans.isEmpty)
+              val error = intercept[SparkException](result.collect()).getCause
+              assert(error.isInstanceOf[AnalysisException])
+              assert(
+                error.asInstanceOf[AnalysisException].getErrorClass ==
+                  "INVALID_VARIANT_FROM_PARQUET.WRONG_NUM_FIELDS")
+            }
+          }
+        }
+      } finally {
+        original match {
+          case Some(value) => conf.setConfString(key, value)
+          case None => conf.unsetConf(key)
+        }
+      }
+    }
+  }
+
+  test("nanosAsLong Variant children fall back to Spark") {
     assume(CometSparkSessionExtensions.isSpark40Plus, "VariantType requires Spark 4.0+")
 
     withTempDir { dir =>
-      val path = new File(dir, "data").getCanonicalPath
-      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-        sql("SELECT named_struct('value', X'08') AS v").write
-          .parquet(path)
+      val rawNanos = Seq(1704067200123000000L, 1704067200123456789L)
+      val variant = sql("SELECT parse_json('0')").head().get(0)
+      val metadata =
+        variant.getClass.getMethod("getMetadata").invoke(variant).asInstanceOf[Array[Byte]]
+
+      Seq(true, false).foreach { adjustedToUtc =>
+        val path = new Path(dir.toURI.toString, s"nanos-$adjustedToUtc.parquet")
+        val parquetSchema = MessageTypeParser.parseMessageType(s"""message root {
+            |  optional group v {
+            |    optional binary value;
+            |    required binary metadata;
+            |    optional int64 typed_value (TIMESTAMP(NANOS,$adjustedToUtc));
+            |  }
+            |}
+            |""".stripMargin)
+        val writer = ExampleParquetWriter
+          .builder(path)
+          .withType(parquetSchema)
+          .withConf(spark.sessionState.newHadoopConf())
+          .build()
+
+        try {
+          rawNanos.foreach { value =>
+            val row = new SimpleGroup(parquetSchema)
+            val group = row.addGroup(0)
+            group.add(1, Binary.fromConstantByteArray(metadata))
+            group.add(2, value)
+            writer.write(row)
+          }
+        } finally {
+          writer.close()
+        }
       }
 
-      withSQLConf(
-        "spark.sql.variant.allowReadingShredded" -> "false",
-        "spark.sql.variant.pushVariantIntoScan" -> "false",
-        "spark.sql.variant.inferShreddingSchema" -> "false") {
-        val result = spark.read
-          .schema("v VARIANT")
-          .parquet(path)
-          .selectExpr("to_json(v)")
-        assert(collect(result.queryExecution.executedPlan) { case _: CometNativeScanExec =>
-          true
-        }.isEmpty)
+      withTable("variant_nanos_as_long") {
+        sql(s"""CREATE TABLE variant_nanos_as_long(v VARIANT)
+               |USING parquet LOCATION '${dir.getCanonicalPath}'""".stripMargin)
+        withSQLConf(
+          SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> "true",
+          "spark.sql.legacy.parquet.nanosAsLong" -> "true",
+          "spark.sql.variant.allowReadingShredded" -> "true",
+          "spark.sql.variant.pushVariantIntoScan" -> "false",
+          "spark.sql.variant.inferShreddingSchema" -> "false") {
+          val result = sql("SELECT v FROM variant_nanos_as_long")
+          assert(
+            normalizedVariantRows(result, 0) ==
+              rawNanos.flatMap(value => Seq.fill(2)(Seq(value.toString))))
 
-        val error = intercept[SparkException](result.collect()).getCause
-        assert(error.isInstanceOf[AnalysisException])
-        assert(
-          error.asInstanceOf[AnalysisException].getErrorClass ==
-            "INVALID_VARIANT_FROM_PARQUET.WRONG_NUM_FIELDS")
+          val plan = result.queryExecution.executedPlan
+          assert(collect(plan) { case _: CometNativeScanExec => true }.isEmpty)
+          val fallbackReasons = new ExtendedExplainInfo().getFallbackReasons(plan)
+          assert(
+            fallbackReasons.exists(_.contains("spark.sql.legacy.parquet.nanosAsLong")),
+            s"Expected nanosAsLong fallback, found: ${fallbackReasons.mkString(", ")}")
+        }
       }
     }
   }
