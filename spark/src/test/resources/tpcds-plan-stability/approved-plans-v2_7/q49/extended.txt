@@ -1,7 +1,7 @@
 CometColumnarToRow
 +- CometTakeOrderedAndProject
    +- CometHashAggregate
-      +- CometExchange
+      +- CometColumnarExchange
          +- CometHashAggregate
             +- CometUnion
                :- CometProject
