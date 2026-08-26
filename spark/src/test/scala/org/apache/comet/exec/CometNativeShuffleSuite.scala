@@ -108,6 +108,34 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
     }
   }
 
+  test("native shuffle over a multi-partition native scan re-threads per-partition plan data") {
+    // End-to-end companion to CometNativeShuffleInputRDDSuite: that suite proves the per-partition
+    // scan plan data no longer rides the broadcast task binary; this one proves each task still
+    // gets its OWN slice at write time. Reading real Parquet files gives a CometNativeScanExec with
+    // several map partitions, so perPartitionByKey holds one file-list slice per partition and a
+    // correct result depends on task i seeing slice i (not partition 0's).
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "multi.parquet")
+      // Spread rows across 8 files so the native scan can yield multiple map partitions.
+      spark
+        .range(0, 10000, 1, numPartitions = 8)
+        .selectExpr("id AS _1", "CAST(id AS STRING) AS _2")
+        .write
+        .parquet(path.toString)
+
+      // Force one scan partition per file split so the per-partition array has multiple distinct
+      // entries; otherwise Spark coalesces the tiny files into a single partition.
+      withSQLConf(
+        "spark.sql.files.maxPartitionBytes" -> "1024",
+        "spark.sql.files.openCostInBytes" -> "0") {
+        readParquetFile(path.toString) { df =>
+          val shuffled = df.repartition(17, col("_1"))
+          checkShuffleAnswer(shuffled, 1, checkNativeOperators = true)
+        }
+      }
+    }
+  }
+
   test("hash-based native shuffle") {
     withParquetTable((0 until 5).map(i => (i, (i + 1).toLong)), "tbl") {
       val df = sql("SELECT * FROM tbl").sortWithinPartitions($"_1".desc)

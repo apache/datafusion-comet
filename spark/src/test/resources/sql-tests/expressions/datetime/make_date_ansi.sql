@@ -28,6 +28,9 @@
 query
 SELECT make_date(2024, 2, 28)
 
+query
+SELECT make_date(300000, 6, 15), make_date(300000, 2, 29)
+
 -- February 30 is not a valid date.
 query expect_error(Invalid date)
 SELECT make_date(2024, 2, 30)
