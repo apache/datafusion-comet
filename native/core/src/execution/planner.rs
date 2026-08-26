@@ -1835,6 +1835,7 @@ impl PhysicalPlanner {
                     ))),
                 }?;
 
+                let (output_data_file, output_index_file) = shuffle_output_files(writer)?;
                 let write_buffer_size = writer.write_buffer_size as usize;
                 // Zero on the wire means the limit is disabled; normalize it here so the writer
                 // only ever sees a real limit or none at all.
@@ -1844,8 +1845,8 @@ impl PhysicalPlanner {
                     writer_input,
                     partitioning,
                     codec,
-                    writer.output_data_file.clone(),
-                    writer.output_index_file.clone(),
+                    output_data_file.to_string(),
+                    output_index_file.to_string(),
                     writer.tracing_enabled,
                     write_buffer_size,
                     max_buffer_bytes,
@@ -3891,6 +3892,65 @@ fn align_shuffle_writer_input(
         .map_err(|e| ExecutionError::DataFusionError(e.to_string()))
 }
 
+/// Resolves local shuffle output paths from the destination-aware writer descriptor.
+///
+/// Plans serialized before partition-writer descriptors were introduced only contain the
+/// top-level paths. New local plans populate both representations so older native binaries can
+/// still consume them; when both are present they must agree to avoid ambiguous destinations.
+fn shuffle_output_files(
+    writer: &spark_operator::ShuffleWriter,
+) -> Result<(&str, &str), ExecutionError> {
+    let Some(partition_writer) = writer.partition_writer.as_ref() else {
+        return Ok((&writer.output_data_file, &writer.output_index_file));
+    };
+
+    match partition_writer.writer.as_ref() {
+        Some(spark_operator::partition_writer::Writer::Local(local)) => {
+            if local.output_data_file.is_empty() {
+                return Err(GeneralError(
+                    "Local shuffle partition writer is missing its output data file".to_string(),
+                ));
+            }
+
+            if local.output_index_file.is_empty() {
+                return Err(GeneralError(
+                    "Local shuffle partition writer is missing its output index file".to_string(),
+                ));
+            }
+
+            if !writer.output_data_file.is_empty()
+                && writer.output_data_file != local.output_data_file
+            {
+                return Err(GeneralError(
+                    "Local shuffle partition writer output data file conflicts with the legacy \
+                     shuffle output data file"
+                        .to_string(),
+                ));
+            }
+
+            if !writer.output_index_file.is_empty()
+                && writer.output_index_file != local.output_index_file
+            {
+                return Err(GeneralError(
+                    "Local shuffle partition writer output index file conflicts with the legacy \
+                     shuffle output index file"
+                        .to_string(),
+                ));
+            }
+
+            Ok((&local.output_data_file, &local.output_index_file))
+        }
+        Some(spark_operator::partition_writer::Writer::Rss(_)) => Err(GeneralError(
+            "RSS shuffle partition writers are not supported until remote shuffle execution is \
+             enabled"
+                .to_string(),
+        )),
+        None => Err(GeneralError(
+            "Shuffle partition writer has no destination".to_string(),
+        )),
+    }
+}
+
 /// Converts a protobuf PartitionValue to an iceberg Literal.
 ///
 fn partition_value_to_literal(
@@ -4722,6 +4782,166 @@ mod tests {
         spark_operator::{operator::OpStruct, Operator},
     };
     use datafusion_comet_spark_expr::EvalMode;
+
+    fn local_shuffle_partition_writer(
+        output_data_file: &str,
+        output_index_file: &str,
+    ) -> spark_operator::PartitionWriter {
+        spark_operator::PartitionWriter {
+            writer: Some(spark_operator::partition_writer::Writer::Local(
+                spark_operator::LocalPartitionWriter {
+                    output_data_file: output_data_file.to_string(),
+                    output_index_file: output_index_file.to_string(),
+                },
+            )),
+        }
+    }
+
+    #[test]
+    fn shuffle_partition_writer_legacy_paths_remain_supported() {
+        let writer = spark_operator::ShuffleWriter {
+            output_data_file: "legacy.data".to_string(),
+            output_index_file: "legacy.index".to_string(),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            super::shuffle_output_files(&writer).unwrap(),
+            ("legacy.data", "legacy.index")
+        );
+    }
+
+    #[test]
+    fn shuffle_partition_writer_uses_nested_local_paths() {
+        let writer = spark_operator::ShuffleWriter {
+            partition_writer: Some(local_shuffle_partition_writer(
+                "shuffle.data",
+                "shuffle.index",
+            )),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            super::shuffle_output_files(&writer).unwrap(),
+            ("shuffle.data", "shuffle.index")
+        );
+    }
+
+    #[test]
+    fn shuffle_partition_writer_accepts_matching_legacy_paths() {
+        let writer = spark_operator::ShuffleWriter {
+            output_data_file: "shuffle.data".to_string(),
+            output_index_file: "shuffle.index".to_string(),
+            partition_writer: Some(local_shuffle_partition_writer(
+                "shuffle.data",
+                "shuffle.index",
+            )),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            super::shuffle_output_files(&writer).unwrap(),
+            ("shuffle.data", "shuffle.index")
+        );
+    }
+
+    #[test]
+    fn shuffle_partition_writer_rejects_conflicting_legacy_data_path() {
+        let writer = spark_operator::ShuffleWriter {
+            output_data_file: "legacy.data".to_string(),
+            partition_writer: Some(local_shuffle_partition_writer(
+                "shuffle.data",
+                "shuffle.index",
+            )),
+            ..Default::default()
+        };
+
+        let error = super::shuffle_output_files(&writer).unwrap_err();
+        assert!(
+            error.to_string().contains("output data file conflicts"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn shuffle_partition_writer_rejects_conflicting_legacy_index_path() {
+        let writer = spark_operator::ShuffleWriter {
+            output_index_file: "legacy.index".to_string(),
+            partition_writer: Some(local_shuffle_partition_writer(
+                "shuffle.data",
+                "shuffle.index",
+            )),
+            ..Default::default()
+        };
+
+        let error = super::shuffle_output_files(&writer).unwrap_err();
+        assert!(
+            error.to_string().contains("output index file conflicts"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn shuffle_partition_writer_rejects_empty_local_data_path() {
+        let writer = spark_operator::ShuffleWriter {
+            output_data_file: "legacy.data".to_string(),
+            partition_writer: Some(local_shuffle_partition_writer("", "shuffle.index")),
+            ..Default::default()
+        };
+
+        let error = super::shuffle_output_files(&writer).unwrap_err();
+        assert!(
+            error.to_string().contains("missing its output data file"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn shuffle_partition_writer_rejects_empty_local_index_path() {
+        let writer = spark_operator::ShuffleWriter {
+            output_index_file: "legacy.index".to_string(),
+            partition_writer: Some(local_shuffle_partition_writer("shuffle.data", "")),
+            ..Default::default()
+        };
+
+        let error = super::shuffle_output_files(&writer).unwrap_err();
+        assert!(
+            error.to_string().contains("missing its output index file"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn shuffle_partition_writer_rejects_missing_destination() {
+        let writer = spark_operator::ShuffleWriter {
+            partition_writer: Some(spark_operator::PartitionWriter { writer: None }),
+            ..Default::default()
+        };
+
+        let error = super::shuffle_output_files(&writer).unwrap_err();
+        assert!(
+            error.to_string().contains("has no destination"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn shuffle_partition_writer_rejects_rss_until_execution_is_supported() {
+        let writer = spark_operator::ShuffleWriter {
+            partition_writer: Some(spark_operator::PartitionWriter {
+                writer: Some(spark_operator::partition_writer::Writer::Rss(
+                    spark_operator::RssPartitionWriter {},
+                )),
+            }),
+            ..Default::default()
+        };
+
+        let error = super::shuffle_output_files(&writer).unwrap_err();
+        assert!(
+            error.to_string().contains("RSS shuffle partition writers"),
+            "unexpected error: {error}"
+        );
+    }
 
     #[test]
     fn test_unpack_dictionary_primitive() {
