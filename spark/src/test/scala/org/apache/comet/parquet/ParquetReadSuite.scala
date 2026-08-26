@@ -393,28 +393,39 @@ abstract class ParquetReadSuite extends CometTestBase {
     }
   }
 
-  test("native scan decodes dictionary-encoded Variant metadata") {
+  test("native scan decodes dictionary-encoded Variant storage") {
     assume(CometSparkSessionExtensions.isSpark40Plus, "VariantType requires Spark 4.0+")
 
     withTempDir { dir =>
       val path = new Path(dir.toURI.toString, "dictionary-variant.parquet")
       val parquetSchema = MessageTypeParser.parseMessageType("""message root {
           |  optional group v {
-          |    required binary value;
+          |    optional binary value;
           |    required binary metadata;
+          |    optional int64 typed_value;
           |  }
           |}
           |""".stripMargin)
       val valueField = new ArrowField(
         "value",
-        FieldType.notNullable(ArrowType.Binary.INSTANCE),
+        new FieldType(
+          true,
+          ArrowType.Binary.INSTANCE,
+          new DictionaryEncoding(0L, false, new ArrowType.Int(32, true))),
         Collections.emptyList[ArrowField]())
       val metadataField = new ArrowField(
         "metadata",
         new FieldType(
           false,
           ArrowType.Binary.INSTANCE,
-          new DictionaryEncoding(0L, false, new ArrowType.Int(32, true))),
+          new DictionaryEncoding(1L, false, new ArrowType.Int(32, true))),
+        Collections.emptyList[ArrowField]())
+      val typedValueField = new ArrowField(
+        "typed_value",
+        new FieldType(
+          true,
+          new ArrowType.Int(64, true),
+          new DictionaryEncoding(2L, false, new ArrowType.Int(32, true))),
         Collections.emptyList[ArrowField]())
       val variantField = new ArrowField(
         "v",
@@ -423,7 +434,7 @@ abstract class ParquetReadSuite extends CometTestBase {
           ArrowType.Struct.INSTANCE,
           null,
           Collections.singletonMap("ARROW:extension:name", "arrow.parquet.variant")),
-        Seq(valueField, metadataField).asJava)
+        Seq(valueField, metadataField, typedValueField).asJava)
       val arrowSchema = new ArrowSchema(Collections.singletonList(variantField))
       val footer = Collections.singletonMap(
         "ARROW:schema",
@@ -442,11 +453,16 @@ abstract class ParquetReadSuite extends CometTestBase {
         .build()
 
       try {
-        (0 until 3).foreach { _ =>
+        (0 until 4).foreach { index =>
           val row = new SimpleGroup(parquetSchema)
           val group = row.addGroup(0)
-          group.add(0, Binary.fromConstantByteArray(value))
+          if (index % 2 == 0) {
+            group.add(0, Binary.fromConstantByteArray(value))
+          }
           group.add(1, Binary.fromConstantByteArray(metadata))
+          if (index % 2 != 0) {
+            group.add(2, 42L)
+          }
           writer.write(row)
         }
       } finally {
@@ -456,9 +472,53 @@ abstract class ParquetReadSuite extends CometTestBase {
       withTable("dictionary_variant") {
         sql(s"""CREATE TABLE dictionary_variant(v VARIANT)
                |USING parquet LOCATION '${dir.getCanonicalPath}'""".stripMargin)
-        withSQLConf("spark.sql.variant.pushVariantIntoScan" -> "false") {
+        withSQLConf(
+          "spark.sql.variant.allowReadingShredded" -> "true",
+          "spark.sql.variant.pushVariantIntoScan" -> "false") {
           val df = sql("SELECT v FROM dictionary_variant")
-          assert(normalizedVariantRows(df, 0) == Seq.fill(3)(Seq("42")))
+          assert(normalizedVariantRows(df, 0) == Seq.fill(4)(Seq("42")))
+          assert(collect(df.queryExecution.executedPlan) { case _: CometNativeScanExec =>
+            true
+          }.size == 1)
+        }
+      }
+    }
+  }
+
+  test("native scan widens shredded Variant UINT_64") {
+    assume(CometSparkSessionExtensions.isSpark40Plus, "VariantType requires Spark 4.0+")
+
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "uint64-variant.parquet")
+      val parquetSchema = MessageTypeParser.parseMessageType("""message root {
+          |  optional group v {
+          |    required binary metadata;
+          |    required int64 typed_value (UINT_64);
+          |  }
+          |}
+          |""".stripMargin)
+      val variant = sql("SELECT parse_json('0')").head().get(0)
+      val metadata =
+        variant.getClass.getMethod("getMetadata").invoke(variant).asInstanceOf[Array[Byte]]
+      val writer = createParquetWriter(parquetSchema, path, dictionaryEnabled = false)
+      try {
+        val row = new SimpleGroup(parquetSchema)
+        val group = row.addGroup(0)
+        group.add(0, Binary.fromConstantByteArray(metadata))
+        group.add(1, -1L)
+        writer.write(row)
+      } finally {
+        writer.close()
+      }
+
+      withTable("uint64_variant") {
+        sql(s"""CREATE TABLE uint64_variant(v VARIANT)
+               |USING parquet LOCATION '${dir.getCanonicalPath}'""".stripMargin)
+        withSQLConf(
+          "spark.sql.variant.allowReadingShredded" -> "true",
+          "spark.sql.variant.pushVariantIntoScan" -> "false") {
+          val df = sql("SELECT v FROM uint64_variant")
+          assert(normalizedVariantRows(df, 0) == Seq(Seq("18446744073709551615")))
           assert(collect(df.queryExecution.executedPlan) { case _: CometNativeScanExec =>
             true
           }.size == 1)

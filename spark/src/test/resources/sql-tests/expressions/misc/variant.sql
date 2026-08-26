@@ -22,6 +22,7 @@
 -- MinSparkVersion: 4.0
 -- Config: spark.sql.variant.writeShredding.enabled=false
 -- Config: spark.sql.variant.pushVariantIntoScan=false
+-- Config: spark.sql.variant.allowReadingShredded=true
 -- Config: spark.sql.variant.forceShreddingSchemaForTest=k00 BIGINT
 
 statement
@@ -118,8 +119,11 @@ SET spark.sql.parquet.enableVectorizedReader=true
 statement
 SET spark.comet.scan.allowDisabledParquetVectorizedReader=false
 
--- Arrow and Spark order supplementary Unicode object keys differently. Force a shredded field so
--- the native scan reconstructs the whole 32-field value before Spark's variant_get binary search.
+-- Arrow and Spark order supplementary Unicode object keys differently. Force top-level and nested
+-- shredded fields so the native scan reconstructs their residual values before Spark's lookup.
+statement
+SET spark.sql.variant.forceShreddingSchemaForTest=k00 BIGINT, nested STRUCT<known: BIGINT>
+
 statement
 SET spark.sql.variant.writeShredding.enabled=true
 
@@ -131,7 +135,7 @@ INSERT INTO test_variant_unicode VALUES
   (parse_json(
     '{"k00":0,"k01":1,"k02":2,"k03":3,"k04":4,"k05":5,"k06":6,"k07":7,"k08":8,"k09":9,"k10":10,"k11":11,"k12":12,"k13":13,"k14":14,"k15":15,"k16":16,"k17":17,"k18":18,"k19":19,"k20":20,"k21":21,"k22":22,"k23":23,"k24":24,"k25":25,"k26":26,"k27":27,"k28":28,"k29":29,"\uE000":30,"😀":531}')),
   (parse_json(
-    '{"":-2,"k00":0,"nested":{"":-1,"k00":0,"k01":1,"k02":2,"k03":3,"k04":4,"k05":5,"k06":6,"k07":7,"k08":8,"k09":9,"k10":10,"k11":11,"k12":12,"k13":13,"k14":14,"k15":15,"k16":16,"k17":17,"k18":18,"k19":19,"k20":20,"k21":21,"k22":22,"k23":23,"k24":24,"k25":25,"k26":26,"k27":27,"k28":28,"k29":29,"\uE000":30,"😀":532}}'))
+    '{"":-2,"k00":0,"nested":{"known":99,"":-1,"k00":0,"k01":1,"k02":2,"k03":3,"k04":4,"k05":5,"k06":6,"k07":7,"k08":8,"k09":9,"k10":10,"k11":11,"k12":12,"k13":13,"k14":14,"k15":15,"k16":16,"k17":17,"k18":18,"k19":19,"k20":20,"k21":21,"k22":22,"k23":23,"k24":24,"k25":25,"k26":26,"k27":27,"k28":28,"k29":29,"\uE000":30,"😀":532}}'))
 
 statement
 SET spark.sql.variant.writeShredding.enabled=false
