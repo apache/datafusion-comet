@@ -35,6 +35,7 @@ import org.apache.spark.sql.comet.CometHashAggregateExec
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution.SQLExecution
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.functions.{avg, col, count_distinct, sum}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
@@ -1296,6 +1297,61 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             "SELECT _2, MIN(_1) + java_method('java.lang.Math', 'random') " +
               "FROM tbl GROUP BY _2")
           assert(getNumCometHashAggregate(df) == 1)
+        }
+      }
+    }
+  }
+
+  Seq(
+    ("COUNT(*)", 2L),
+    ("COUNT(DISTINCT _2)", 2L),
+    ("COUNT(DISTINCT _2) + SUM(_2)", 7L),
+    ("CAST(SIZE(COLLECT_SET(_2)) AS BIGINT)", 2L)).foreach { case (function, expected) =>
+    test(
+      s"aggregate canonicalization preserves result expressions and equivalent reuse: $function") {
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.EXCHANGE_REUSE_ENABLED.key -> "true",
+        SQLConf.SHUFFLE_PARTITIONS.key -> "2",
+        CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+        CometConf.COMET_SHUFFLE_MODE.key -> "native") {
+        withParquetTable(Seq((0, 2), (0, 3)), "tbl") {
+          def aggregate(result: String, alias: String = "c"): DataFrame =
+            sql(s"SELECT $result AS $alias, _1 FROM tbl GROUP BY _1")
+              .repartition(2, col(alias), col("_1"))
+
+          def finalAggregate(df: DataFrame): CometHashAggregateExec =
+            df.queryExecution.executedPlan
+              .collectFirst {
+                case agg: CometHashAggregateExec if agg.modes.contains(Final) => agg
+              }
+              .getOrElse(fail("Expected a native final aggregate"))
+
+          val plus = aggregate(s"($function) + 1")
+          val minus = aggregate(s"($function) - 1")
+          // The shuffles above the final aggregates must not reuse each other: doing so
+          // would return the first projection twice, even without an existence join.
+          checkSparkAnswerAndOperator(plus.unionAll(minus), classOf[ReusedExchangeExec])
+          checkAnswer(plus.unionAll(minus), Seq(Row(expected + 1L, 0), Row(expected - 1L, 0)))
+          assert(!finalAggregate(plus).sameResult(finalAggregate(minus)))
+
+          // Comparing result expressions must still normalize aggregate-result attributes.
+          // Fresh expression IDs and a different output alias do not change the computation.
+          val same = aggregate(s"($function) + 1", "renamed")
+          assert(finalAggregate(plus).sameResult(finalAggregate(same)))
+          assert(finalAggregate(plus).semanticHash() == finalAggregate(same).semanticHash())
+          val (_, reusedPlan) =
+            checkSparkAnswerAndOperator(plus.unionAll(same), classOf[ReusedExchangeExec])
+          val reusedFinalAggregates = reusedPlan.collect {
+            case reused: ReusedExchangeExec if reused.child.exists {
+                  case agg: CometHashAggregateExec => agg.modes.contains(Final)
+                  case _ => false
+                } =>
+              reused
+          }
+          assert(
+            reusedFinalAggregates.nonEmpty,
+            s"Expected equivalent aggregate reuse:\n$reusedPlan")
         }
       }
     }
