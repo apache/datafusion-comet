@@ -624,9 +624,9 @@ impl GroupsAccumulator for AvgDecimalGroupsAccumulator {
         let target_max = MAX_DECIMAL128_FOR_EACH_PRECISION[self.target_precision as usize];
 
         for (is_not_null, (sum, count)) in nulls.into_iter().zip(iter) {
-            // Check for overflow during sum accumulation in ANSI mode.
-            // This matches Spark's DecimalDivideWithOverflowCheck behavior.
-            if !is_not_null && count > 0 && self.eval_mode == EvalMode::Ansi {
+            // A null state marks overflow even if a shuffle zeroed its null count
+            // payload. Empty/all-null groups keep valid zero buffers instead.
+            if !is_not_null && self.eval_mode == EvalMode::Ansi {
                 let error = decimal_sum_overflow_error("avg");
                 return Err(self.wrap_error_with_context(error));
             }
@@ -917,6 +917,67 @@ mod tests {
             let values = Decimal128Array::from(vec![100]).with_precision_and_scale(38, 2)?;
             final_acc.update_batch(&[Arc::new(values)])?;
             assert_overflow(&mut final_acc)?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn grouped_overflow_with_zeroed_null_count_is_not_empty() -> Result<()> {
+        for mode in [EvalMode::Legacy, EvalMode::Ansi, EvalMode::Try] {
+            let new_acc = || {
+                AvgDecimalGroupsAccumulator::new(
+                    &DataType::Decimal128(38, 38),
+                    &DataType::Decimal128(38, 38),
+                    38,
+                    38,
+                    38,
+                    38,
+                    mode,
+                    None,
+                    crate::create_query_context_map(),
+                )
+            };
+            let mut partial = new_acc();
+            // Group 0 has no input, group 1 has only nulls, and group 2 overflows.
+            let values = Decimal128Array::from(vec![
+                None,
+                None,
+                Some(6 * 10_i128.pow(37)),
+                Some(6 * 10_i128.pow(37)),
+            ])
+            .with_precision_and_scale(38, 38)?;
+            partial.update_batch(&[Arc::new(values)], &[1, 1, 2, 2], None, 3)?;
+            let state = partial.state(EmitTo::All)?;
+
+            // Rebuilding the logical values models a columnar shuffle's row roundtrip:
+            // overflow stays null, but the null count's underlying payload becomes 0.
+            let sums = state[0]
+                .as_primitive::<Decimal128Type>()
+                .iter()
+                .collect::<Decimal128Array>()
+                .with_precision_and_scale(38, 38)?;
+            let counts = state[1]
+                .as_primitive::<Int64Type>()
+                .iter()
+                .collect::<Int64Array>();
+            assert!(counts.is_null(2));
+            assert_eq!(counts.value(2), 0);
+
+            let mut final_acc = new_acc();
+            final_acc.merge_batch(&[Arc::new(sums), Arc::new(counts)], &[0, 1, 2], None, 3)?;
+            let empty = final_acc.evaluate(EmitTo::First(2))?;
+            assert_eq!(empty.len(), 2);
+            assert_eq!(empty.null_count(), 2);
+
+            let result = final_acc.evaluate(EmitTo::All);
+            if mode == EvalMode::Ansi {
+                let error = result.unwrap_err().to_string();
+                assert!(error.contains("ARITHMETIC_OVERFLOW"), "{error}");
+            } else {
+                let result = result?;
+                assert_eq!(result.len(), 1);
+                assert!(result.is_null(0));
+            }
         }
         Ok(())
     }

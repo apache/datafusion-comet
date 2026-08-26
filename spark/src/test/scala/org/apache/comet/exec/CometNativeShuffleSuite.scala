@@ -31,6 +31,7 @@ import org.apache.spark.sql.{CometTestBase, DataFrame, Dataset, Row}
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.{col, count, sum}
+import org.apache.spark.sql.types.DecimalType
 
 import org.apache.comet.CometConf
 
@@ -72,7 +73,14 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
               val shuffled = df
                 .select($"_1")
                 .repartition(10, col(c))
-              checkShuffleAnswer(shuffled, 1, checkNativeOperators = true)
+              val nativeHashSupported = df.schema(c).dataType match {
+                case d: DecimalType => d.precision <= 18
+                case _ => true
+              }
+              checkShuffleAnswer(
+                shuffled,
+                if (nativeHashSupported) 1 else 0,
+                checkNativeOperators = nativeHashSupported)
             }
           }
         }

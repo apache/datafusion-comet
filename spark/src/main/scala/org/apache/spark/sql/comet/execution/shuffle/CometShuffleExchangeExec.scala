@@ -397,12 +397,10 @@ object CometShuffleExchangeExec
           _: FloatType | _: DoubleType | _: StringType | _: BinaryType | _: TimestampType |
           _: TimestampNTZType | _: DateType =>
         true
-      case _: DecimalType =>
-        // TODO enforce this check
-        // https://github.com/apache/datafusion-comet/issues/3079
-        // Decimals with precision > 18 require Java BigDecimal conversion before hashing
-        // d.precision <= 18
-        true
+      case d: DecimalType =>
+        // Spark hashes wider decimals through BigInteger bytes, which native hashing does not
+        // match. Different partition assignments can change decimal AVG overflow behavior.
+        d.precision <= 18
       case dt if isTimeType(dt) =>
         true
       case _ =>
