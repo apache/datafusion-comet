@@ -19,8 +19,6 @@ mod buf_batch_writer;
 mod checksum;
 mod local;
 mod partition_writer;
-// Remote shuffle execution will use this writer in a subsequent change.
-#[allow(dead_code)]
 mod rss;
 mod shuffle_block_writer;
 
@@ -28,4 +26,5 @@ pub(crate) use buf_batch_writer::BufBatchWriter;
 pub(crate) use checksum::Checksum;
 pub(crate) use local::local_partition_writer::LocalPartitionWriter;
 pub(crate) use partition_writer::PartitionWriter;
+pub(crate) use rss::rss_partition_writer::RssPartitionWriter;
 pub use shuffle_block_writer::{CompressionCodec, ShuffleBlockWriter};
