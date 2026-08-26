@@ -38,7 +38,7 @@ import org.apache.parquet.hadoop.example.ExampleParquetWriter
 import org.apache.parquet.io.api.Binary
 import org.apache.parquet.schema.MessageTypeParser
 import org.apache.spark.SparkException
-import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
+import org.apache.spark.sql.{AnalysisException, CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.util.DateTimeUtils
 import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometNativeColumnarToRowExec, CometNativeScanExec, CometScanExec}
 import org.apache.spark.sql.comet.util.Utils
@@ -198,6 +198,37 @@ abstract class ParquetReadSuite extends CometTestBase {
             values.flatten.toSet ==
               Set("{\"a\":10,\"b\":\"hello\"}", "[1,true,\"x\"]", "42", "null"))
         }
+      }
+    }
+  }
+
+  test("strict unshredded Variant validation falls back to Spark") {
+    assume(CometSparkSessionExtensions.isSpark40Plus, "VariantType requires Spark 4.0+")
+
+    withTempDir { dir =>
+      val path = new File(dir, "data").getCanonicalPath
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        sql("SELECT named_struct('value', X'08') AS v").write
+          .parquet(path)
+      }
+
+      withSQLConf(
+        "spark.sql.variant.allowReadingShredded" -> "false",
+        "spark.sql.variant.pushVariantIntoScan" -> "false",
+        "spark.sql.variant.inferShreddingSchema" -> "false") {
+        val result = spark.read
+          .schema("v VARIANT")
+          .parquet(path)
+          .selectExpr("to_json(v)")
+        assert(collect(result.queryExecution.executedPlan) { case _: CometNativeScanExec =>
+          true
+        }.isEmpty)
+
+        val error = intercept[SparkException](result.collect()).getCause
+        assert(error.isInstanceOf[AnalysisException])
+        assert(
+          error.asInstanceOf[AnalysisException].getErrorClass ==
+            "INVALID_VARIANT_FROM_PARQUET.WRONG_NUM_FIELDS")
       }
     }
   }

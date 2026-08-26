@@ -122,6 +122,17 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
       withFallbackReason(scanExec, unsupportedDefaultReason)
     }
 
+    // Spark's strict mode validates the legacy two-field Variant layout and reports SPARK-47546
+    // errors itself: https://issues.apache.org/jira/browse/SPARK-47546
+    if (scanExec.requiredSchema.fields.exists(field => isVariantType(field.dataType)) &&
+      !SQLConf.get
+        .getConfString("spark.sql.variant.allowReadingShredded", "true")
+        .toBoolean) {
+      withFallbackReason(
+        scanExec,
+        "Full native scan disabled because Spark's strict unshredded Variant reader is enabled")
+    }
+
     // the scan is supported if no fallback reasons were added to the node
     !hasFallbackReason(scanExec)
   }
