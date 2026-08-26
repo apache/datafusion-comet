@@ -1183,6 +1183,19 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     }
   }
 
+  // A folded `map(1, array(1))` (value `ArrayType(IntegerType, containsNull = false)`) sits beside a
+  // dynamic `map(2, array(_1))` (value `ArrayType(IntegerType, true)`). Both maps still declare
+  // `valueContainsNull = false`, so only the nested array's `containsNull` differs. `CometCreateArray`
+  // casts each child to the nullability-merged element type (`cast_map_to_map` widens the nested
+  // array), so `make_array` sees identical Arrow types and this runs natively.
+  test(
+    "folded map with non-null nested array beside a dynamic map sibling runs natively (multirow)") {
+    withParquetTable((0 until 3).map(i => (i, i.toLong)), "tbl") {
+      checkSparkAnswerAndOperator(
+        "SELECT array(map(1, array(1)), map(2, array(_1))) AS a FROM tbl")
+    }
+  }
+
   test("array of folded map literals (multirow)") {
     withParquetTable((0 until 3).map(i => (i, i.toLong)), "tbl") {
       checkSparkAnswerAndOperator("SELECT array(map(1, 10), map(2, 20)) FROM tbl")

@@ -36,3 +36,19 @@ SELECT map_entries(map('a', array(1, 2)))
 -- A map nested in a map value keeps `valueContainsNull = false` through the extract.
 query
 SELECT map_entries(element_at(map(1, map(1, 2)), 1))
+
+-- The `map_entries` argument is widened so its entry `value` field is nullable, but ONLY that outer
+-- field: the nested `map(1, 2)` value must keep `valueContainsNull = false`. Extracting it with
+-- `[0].value` and pairing it with the `map(2, coalesce(id, 0))` sibling would otherwise hit
+-- `make_array` with unequal map types (one widened to `valueContainsNull = true`) and panic.
+statement
+CREATE TABLE test_map_entries_nested(id int) USING parquet
+
+statement
+INSERT INTO test_map_entries_nested VALUES (1), (2), (3)
+
+query
+SELECT array(
+  map_entries(map(1, IF(id = 1, map(1, 2), NULL)))[0].value,
+  map(2, coalesce(id, 0))) AS a
+FROM test_map_entries_nested

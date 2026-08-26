@@ -68,16 +68,23 @@ SELECT array(map('x', 1, 'y', 2), map('z', 3))
 
 -- Array of maps whose children disagree on `valueContainsNull`. Spark's CreateArray coercion
 -- compares element types with `sameType`, which ignores nullability, so it inserts no unifying
--- cast. DataFusion 54.1 cannot unify two Map arguments either: the fallback chain in
--- `type_union_resolution_coercion` has no `map_coercion` arm, so `make_array` receives the two
--- differently typed map arrays and `MutableArrayData` panics. `CometCreateArray` therefore keeps
--- `MapType.valueContainsNull` significant when it normalizes container nullability and declines.
-query expect_fallback(CreateArray children have mismatched data types)
+-- cast; it reports the nullability-merged map type as the array's element type. `make_array`
+-- needs identical Arrow types, so `CometCreateArray` casts each child to that merged type
+-- (`cast_map_to_map` widens `valueContainsNull`) and runs natively.
+query
 SELECT array(map('x', CAST(NULL AS INT), 'y', 2), map('z', 3))
 
--- Both children agree that the value is nullable, so this stays native.
+-- Both children agree that the value is nullable, so this needs no cast.
 query
 SELECT array(map('x', CAST(NULL AS INT)), map('z', CAST(NULL AS INT)))
+
+-- Array of maps whose values are arrays that disagree only on the array's `containsNull`:
+-- `map(1, array(1))` has value `ArrayType(IntegerType, containsNull = false)` while
+-- `map(2, array(a))` has `ArrayType(IntegerType, true)`. The difference is container nullability
+-- nested inside the map value, which Comet's map cast widens, so `CometCreateArray` casts each
+-- child to the merged element type and runs natively.
+query
+SELECT array(map(1, array(1)), map(2, array(a))) FROM test_create_array
 
 -- Single-element array of map.
 query

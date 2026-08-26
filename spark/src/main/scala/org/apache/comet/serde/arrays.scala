@@ -473,16 +473,19 @@ object CometCreateArray extends CometExpressionSerde[CreateArray] {
     // DataFusion's `make_array` asserts strict element-type equality in
     // `MutableArrayData::with_capacities` and panics on a mismatch. Spark's CreateArray is more
     // permissive: its type coercion compares element types with `sameType`, which ignores
-    // nullability, so children that share a surface type but differ only in nested field
-    // nullability get no unifying cast. DataFusion coerces an `ArrayType.containsNull` mismatch
-    // away before that assert, but NOT a struct field's or a `MapType.valueContainsNull`
-    // mismatch, so `array(struct(a not null), struct(a nullable))` and
-    // `array(map('x', CAST(NULL AS INT)), map('z', 3))` both panic inside `make_array_inner`.
-    // Decline only those cases (i.e. children that still differ after normalizing the container
-    // nullability DataFusion does coerce) so Spark's evaluator handles them.
+    // nullability, so children that share a surface type but differ only in nested nullability get
+    // no unifying cast, and Spark reports a merged element type (nullability-OR across children)
+    // as the array's own type. Reconcile that here by casting every child to the merged element
+    // type, so `make_array` sees identical Arrow types. Comet's cast widens container nullability
+    // (`ArrayType.containsNull`, `MapType.valueContainsNull`, and either nested) via the recursive
+    // `cast_map_to_map` / array casts, which is what lets `array(map('x', CAST(NULL AS INT)),
+    // map('z', 3))` and `array(map(1, array(1)), map(2, array(col)))` run natively rather than
+    // falling back.
     //
-    // TODO: remove this decline once apache/datafusion#22366 lands; the upstream fix widens the
-    // element type via nullability-OR-merge and casts each child before MutableArrayData.
+    // A struct FIELD's own nullability is the one difference kept significant (see
+    // [[normalizeContainerNullability]]): `array(struct(a not null), struct(a nullable))` is
+    // declined so Spark evaluates it, matching the coverage the `make_array` struct-field panic
+    // drove.
     val normalizedTypes = children.map(c => normalizeContainerNullability(c.dataType))
     if (normalizedTypes.distinct.size > 1) {
       withFallbackReason(
@@ -492,7 +495,13 @@ object CometCreateArray extends CometExpressionSerde[CreateArray] {
       return None
     }
 
-    val childExprs = children.map(exprToProtoInternal(_, inputs, binding))
+    // Cast each child that is not already the merged element type to it. The element data types
+    // are identical, so the cast only widens nullability metadata and never changes values.
+    val elementType = expr.dataType.asInstanceOf[ArrayType].elementType
+    val childExprs = children.map { c =>
+      val unified = if (c.dataType == elementType) c else Cast(c, elementType)
+      exprToProtoInternal(unified, inputs, binding)
+    }
 
     if (childExprs.forall(_.isDefined)) {
       scalarFunctionExprToProto("make_array", childExprs: _*)
@@ -503,30 +512,22 @@ object CometCreateArray extends CometExpressionSerde[CreateArray] {
   }
 
   /**
-   * Rewrites a type so that `ArrayType.containsNull` is forced to `true` everywhere, while struct
-   * field nullability and `MapType.valueContainsNull` are left intact. Two CreateArray children
-   * whose types differ ONLY in `containsNull` are tolerated by DataFusion's `make_array`, because
-   * `type_union_resolution_coercion` routes `List` arguments through `list_coercion`, which
-   * merges the element field's nullability and lets Comet's planner insert the unifying cast. Its
-   * fallback chain has no `map_coercion` arm in DataFusion 54.1, so two `Map` arguments that
-   * differ in value nullability fail to unify, no cast is inserted, and `MutableArrayData`
-   * panics. Keep `valueContainsNull` significant here so those children are declined instead. The
-   * same is true of a struct field's nullability, which `coerce_struct_by_*` would merge but
-   * which `MutableArrayData` still rejects for the array's own element type.
-   *
-   * TODO: DataFusion 55.0.0 adds a `map_coercion` arm to `type_union_resolution_coercion`
-   * (apache/datafusion#23521), which coerces a `MapType.valueContainsNull` mismatch away. When
-   * Comet upgrades onto it, stop keeping `valueContainsNull` significant here or this decline
-   * stays correct but grows over-conservative, falling maps back that DataFusion can now unify.
+   * Rewrites a type so that container nullability Comet can cast away (`ArrayType.containsNull`
+   * and `MapType.valueContainsNull`, at every nesting level) is forced to `true`, while each
+   * struct FIELD's own nullability is left intact. Two CreateArray children whose types differ
+   * only in container nullability normalize equal, so [[convert]] unifies them by casting each to
+   * the merged element type before `make_array` (DataFusion 54.1 only coerces `List` nullability
+   * on its own, not `Map`; the explicit cast covers both). Children that differ in a struct
+   * field's own nullability normalize distinct and are declined instead, so Spark evaluates them.
    */
   private def normalizeContainerNullability(dt: DataType): DataType = dt match {
     case ArrayType(elementType, _) =>
       ArrayType(normalizeContainerNullability(elementType), containsNull = true)
-    case MapType(keyType, valueType, valueContainsNull) =>
+    case MapType(keyType, valueType, _) =>
       MapType(
         normalizeContainerNullability(keyType),
         normalizeContainerNullability(valueType),
-        valueContainsNull)
+        valueContainsNull = true)
     case StructType(fields) =>
       StructType(fields.map(f => f.copy(dataType = normalizeContainerNullability(f.dataType))))
     case other => other

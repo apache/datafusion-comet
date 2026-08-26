@@ -316,4 +316,62 @@ class CometMapExpressionSuite extends CometTestBase {
     }
   }
 
+  // A folded map with `CalendarIntervalType` keys reaches `CometLiteral`. `ArrayBasedMapBuilder`
+  // dedups such keys by hash equality, but the folded-literal duplicate-key check needs an
+  // interpreted ordering and `PhysicalCalendarIntervalType` has none ("does not support ordered
+  // operations"). Expansion must decline these keys and keep the projection on Spark rather than
+  // crash planning by asking for that ordering; such literals fell back before this rewrite too.
+  test("folded map literal with calendar-interval keys falls back (multirow)") {
+    withParquetTable((0 until 3).map(i => (i, i.toLong)), "tbl") {
+      checkSparkAnswerAndFallbackReason(
+        "SELECT _1 AS id, map(make_interval(1), 1, make_interval(2), 2) AS m FROM tbl",
+        "Unsupported data type MapType")
+    }
+  }
+
+  // `map_entries` widens its argument so the entry `value` field is nullable, but it must widen ONLY
+  // that outer field. The outer `map(1, IF(...))` has `valueContainsNull = true`, and its value is a
+  // folded `map(1, 2)` with `valueContainsNull = false`. Widening the nested map too would extract a
+  // `valueContainsNull = true` map that disagrees with the dynamic `map(2, coalesce(...))` sibling,
+  // and native `make_array` would panic; the shallow widen keeps the nested type intact.
+  test("map_entries widening keeps nested map value nullability (multirow)") {
+    withParquetTable((1 until 4).map(i => (i, i.toLong)), "tbl") {
+      checkSparkAnswerAndOperator(
+        "SELECT _1 AS id, array(" +
+          "map_entries(map(1, IF(_1 = 1, map(1, 2), NULL)))[0].value, " +
+          "map(2, coalesce(_1, 0))) AS a FROM tbl")
+    }
+  }
+
+  // `map_contains_key` lowers to `array_contains(map_keys(...), key)`; neither `map_keys` nor
+  // `array_contains` gates the key type, so a folded map with floating-point keys would reach them
+  // and compare `-0.0` against a normalized `+0.0` key bytewise, unlike Spark. The double-keyed map
+  // is nested inside an INT-keyed outer map, so the lookup guard on the outer `element_at` does not
+  // see it; expansion has to inspect nested map key types and decline. Spark returns `7, NULL, NULL`.
+  test("map_contains_key over nested floating-point map keys falls back (multirow)") {
+    withParquetTable((1 until 4).map(i => (i, i.toLong)), "tbl") {
+      val negZero = "CAST(concat('-', CAST(_1 - 1 AS STRING), '.0') AS DOUBLE)"
+      checkSparkAnswerAndFallbackReason(
+        "SELECT _1 AS id, map_contains_key(" +
+          s"element_at(map(1, map(CAST(0 AS DOUBLE), 7)), _1), $negZero) AS present FROM tbl",
+        "Unsupported data type MapType")
+    }
+  }
+
+  // The collated counterpart of the double-key `map_contains_key` case above: a nested
+  // `UTF8_LCASE`-keyed map would reach `array_contains` with bytewise comparison. Expansion declines
+  // the folded literal so the case-insensitive lookup stays on Spark. The outer lookup key is the
+  // dynamic `_1` so the inner map survives as a literal (a constant key would let Spark fold
+  // `map_keys` into a collated-string array literal instead, which never reaches this guard).
+  test("map_contains_key over nested collated map keys falls back (multirow)") {
+    assume(isSpark40Plus)
+    withParquetTable((1 until 4).map(i => (i, i.toLong)), "tbl") {
+      checkSparkAnswerAndFallbackReason(
+        "SELECT _1 AS id, map_contains_key(" +
+          "element_at(map(1, map(CAST('A1' AS STRING COLLATE UTF8_LCASE), 7)), _1), " +
+          "CAST('a1' AS STRING COLLATE UTF8_LCASE)) AS present FROM tbl",
+        "Unsupported data type MapType")
+    }
+  }
+
 }

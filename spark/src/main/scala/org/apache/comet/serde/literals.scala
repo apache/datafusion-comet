@@ -24,14 +24,14 @@ import java.lang
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions.{Attribute, CreateArray, CreateMap, Expression, KnownNullable, Literal}
 import org.apache.spark.sql.catalyst.util.{ArrayData, MapData, TypeUtils}
-import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DateType, DayTimeIntervalType, Decimal, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, NullType, ShortType, StringType, TimestampNTZType, TimestampType}
+import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, CalendarIntervalType, DataType, DateType, DayTimeIntervalType, Decimal, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, NullType, ShortType, StringType, StructType, TimestampNTZType, TimestampType}
 import org.apache.spark.unsafe.types.UTF8String
 
 import com.google.protobuf.ByteString
 
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.DataTypeSupport.isComplexType
-import org.apache.comet.serde.{CometExpressionSerde, Compatible, ExprOuterClass, LiteralOuterClass, SupportLevel, Unsupported}
+import org.apache.comet.serde.{CometExpressionSerde, Compatible, ExprOuterClass, LiteralOuterClass, MapKeySupport, SupportLevel, Unsupported}
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, isTimeType, serializeDataType, supportedDataType}
 import org.apache.comet.serde.Types.ListLiteral
 
@@ -55,7 +55,7 @@ object CometLiteral extends CometExpressionSerde[Literal] with Logging {
             .elementType
             .isInstanceOf[ArrayType])))) {
       Compatible(None)
-    } else if (canExpandComplexLiteral(expr)) {
+    } else if (expandComplexLiteral(expr).isDefined) {
       // Rebuilt as a `CreateArray` / `CreateMap` tree in `convert`.
       Compatible(None)
     } else {
@@ -228,25 +228,37 @@ object CometLiteral extends CometExpressionSerde[Literal] with Logging {
 
   /**
    * Rebuild a folded complex Literal as an equivalent tree of `CreateArray` / `CreateMap` over
-   * primitive-typed Literals, or `None` when the shape cannot be rebuilt. The native `Literal`
-   * proto carries scalars and nested `ListLiteral`s but no map values, so a Literal whose type
-   * contains a `MapType` has to be expanded before serialization. Teaching the proto to transport
-   * maps directly would remove the need for this rewrite and for the declines below:
+   * primitive-typed Literals, or `None` when the shape cannot be rebuilt. `getSupportLevel`
+   * probes with this same function and reports `Compatible` when it returns a `Some`, so
+   * admission and expansion cannot diverge. The native `Literal` proto carries scalars and nested
+   * `ListLiteral`s but no map values, so a Literal whose type contains a `MapType` has to be
+   * expanded before serialization. Teaching the proto to transport maps directly would remove the
+   * need for this rewrite and for the declines below:
    * https://github.com/apache/datafusion-comet/issues/1937
    *
    * The rebuilt tree is the tree Spark itself had before `ConstantFolding` collapsed it, down to
    * every container's declared nullability (see [[withNullability]]). That equivalence is the
    * safety property this rewrite rests on: whatever the rebuilt expression does natively is what
    * the same query already does with `ConstantFolding` disabled, so expansion cannot introduce a
-   * folding-only behaviour difference. Shapes the native map kernels cannot handle are therefore
-   * declined by their consumers rather than here: a map lookup with an unsupported key type by
-   * [[MapKeySupport]], and a non-nullable-value map into `map_entries` by the native planner
-   * widening its argument.
+   * folding-only behaviour difference. A non-nullable-value map into `map_entries` is handled by
+   * the native planner widening its argument rather than declined here.
+   *
+   * Map key semantics, however, are declined here at admission (see [[mapKeyTypesExpandable]])
+   * rather than left to consumers. A map lookup gates itself on [[MapKeySupport]], but not every
+   * native map consumer does: `map_contains_key` lowers to `array_contains(map_keys(...), key)`,
+   * and neither kernel checks the key type. A map that is only the value of another map is also
+   * opaque once rebuilt, because `CometCreateMap` hands the whole `CreateMap` to the JVM codegen
+   * dispatcher, so a nested unsupported key type never revisits this serde. Declining any folded
+   * literal that (recursively) contains an unsupported or non-orderable map key type keeps all of
+   * those paths on Spark.
    *
    * Declined shapes:
    *   - Null values and empty top-level containers: a synthesized `Create*` with no children
    *     cannot recover the original element type. Empty `ArrayType` literals still serialize via
    *     `makeListLiteral`, which keeps the type.
+   *   - Any map key type native map kernels cannot reproduce Spark equality for (floating-point,
+   *     collated string, complex), or whose interpreted ordering is undefined
+   *     (`CalendarIntervalType`), at any nesting level. See [[mapKeyTypesExpandable]].
    *   - Arrays whose elements are structs, because [[needsExpansion]] does not walk into a
    *     `StructType`. Native `CreateNamedStruct` builds a 1-row `StructArray` whenever all of its
    *     children are scalars (`values_to_arrays`), which collides with the surrounding batch's
@@ -257,43 +269,61 @@ object CometLiteral extends CometExpressionSerde[Literal] with Logging {
    *   - Folded maps with duplicate keys, see [[hasDuplicateMapKeys]].
    */
   private def expandComplexLiteral(expr: Literal): Option[Expression] = {
-    if (!canExpandComplexLiteral(expr)) return None
+    if (expr.value == null || !mapKeyTypesExpandable(expr.dataType)) return None
     expr.dataType match {
-      case ArrayType(et, containsNull) =>
+      case ArrayType(et, containsNull) if needsExpansion(et) =>
         val arr = expr.value.asInstanceOf[ArrayData]
-        val elements = (0 until arr.numElements())
-          .map(i => withNullability(literalAt(arr, i, et), containsNull))
-        Some(CreateArray(elements, useStringTypeWhenEmpty = false))
+        if (arr.numElements() == 0) {
+          None
+        } else {
+          val elements = (0 until arr.numElements())
+            .map(i => withNullability(literalAt(arr, i, et), containsNull))
+          Some(CreateArray(elements, useStringTypeWhenEmpty = false))
+        }
       case MapType(kt, vt, valueContainsNull) =>
         val mapData = expr.value.asInstanceOf[MapData]
         val keys = mapData.keyArray()
-        val values = mapData.valueArray()
-        val children = (0 until keys.numElements()).flatMap(i =>
-          Seq(
-            literalAt(keys, i, kt),
-            withNullability(literalAt(values, i, vt), valueContainsNull)))
-        Some(CreateMap(children, useStringTypeWhenEmpty = false))
+        if (mapData.numElements() == 0 || hasDuplicateMapKeys(keys, kt)) {
+          None
+        } else {
+          val values = mapData.valueArray()
+          val children = (0 until keys.numElements()).flatMap(i =>
+            Seq(
+              literalAt(keys, i, kt),
+              withNullability(literalAt(values, i, vt), valueContainsNull)))
+          Some(CreateMap(children, useStringTypeWhenEmpty = false))
+        }
       case _ => None
     }
   }
 
   /**
-   * True when [[expandComplexLiteral]] can rebuild this folded literal, tested without allocating
-   * the rebuilt tree so `getSupportLevel` can probe cheaply (`convert` runs the build only once,
-   * on the value it keeps). Mirrors the shapes [[expandComplexLiteral]] declines: a non-null
-   * value, a non-empty top-level container, an array whose elements need expansion, and a map
-   * with no duplicate keys.
+   * True when every map key type reachable inside `dataType` can be rebuilt and consumed
+   * natively. A folded map is rebuilt as a `CreateMap`; once native it may reach a map consumer
+   * that has no key-type gate of its own -- `map_contains_key` lowers to
+   * `array_contains(map_keys(...), key)`, and neither `map_keys` nor `array_contains` consults
+   * [[MapKeySupport]]. A map that is only the value of another map is handed to the JVM
+   * dispatcher whole by `CometCreateMap` and never revisits this serde, so a nested unsupported
+   * key type would otherwise slip through. Mirror the [[MapKeySupport]] gate here, walking into
+   * map values, array elements, and struct fields, so an unsupported key type (floating-point,
+   * collated string, complex) declines expansion instead of reaching a native kernel whose key
+   * equality disagrees with Spark.
+   *
+   * Also decline a key type whose interpreted ordering is undefined -- one that recursively
+   * contains a `CalendarIntervalType`, whose `PhysicalCalendarIntervalType` ordering throws "does
+   * not support ordered operations". `ArrayBasedMapBuilder` dedups such keys by hash equality and
+   * never asks for an ordering, but [[hasDuplicateMapKeys]] compares keys through that ordering,
+   * so gating here keeps it from being called on a type it cannot order. Such literals fell back
+   * before this rewrite too, so declining them matches the prior behaviour.
    */
-  private def canExpandComplexLiteral(expr: Literal): Boolean = {
-    if (expr.value == null) return false
-    expr.dataType match {
-      case ArrayType(et, _) if needsExpansion(et) =>
-        expr.value.asInstanceOf[ArrayData].numElements() > 0
-      case MapType(kt, _, _) =>
-        val mapData = expr.value.asInstanceOf[MapData]
-        mapData.numElements() > 0 && !hasDuplicateMapKeys(mapData.keyArray(), kt)
-      case _ => false
-    }
+  private def mapKeyTypesExpandable(dataType: DataType): Boolean = dataType match {
+    case MapType(kt, vt, _) =>
+      MapKeySupport.keySupport(kt).isInstanceOf[Compatible] &&
+      !SupportLevel.containsType(kt, classOf[CalendarIntervalType]) &&
+      mapKeyTypesExpandable(vt)
+    case ArrayType(et, _) => mapKeyTypesExpandable(et)
+    case StructType(fields) => fields.forall(f => mapKeyTypesExpandable(f.dataType))
+    case _ => true
   }
 
   /**
@@ -307,13 +337,9 @@ object CometLiteral extends CometExpressionSerde[Literal] with Logging {
     case _ => false
   }
 
-  /** Element `i` of `arr`, or `null` for a null slot. */
-  private def valueAt(arr: ArrayData, i: Int, dt: DataType): Any =
-    if (arr.isNullAt(i)) null else arr.get(i, dt)
-
-  /** Element `i` of `arr` as a Literal of type `dt`. */
+  /** Element `i` of `arr` as a Literal of type `dt`, or a null Literal for a null slot. */
   private def literalAt(arr: ArrayData, i: Int, dt: DataType): Literal =
-    Literal(valueAt(arr, i, dt), dt)
+    Literal(if (arr.isNullAt(i)) null else arr.get(i, dt), dt)
 
   /**
    * True when the folded map's key array holds duplicates under Spark's own key equality, in
@@ -322,14 +348,14 @@ object CometLiteral extends CometExpressionSerde[Literal] with Logging {
    * `MAP_KEY_DEDUP_POLICY=EXCEPTION` and silently drops the earlier entry under `LAST_WIN`, where
    * the original literal (from `from_json`, or a cast of one) kept both entries.
    *
-   * `ArrayBasedMapBuilder` hashes most atomic keys but compares `BinaryType`, collated
-   * `StringType` and complex keys through `TypeUtils.getInterpretedOrdering`, and it normalizes
-   * `-0.0` and `NaN` before either. The interpreted ordering is the one comparison that agrees
-   * with all of those: `Array[Byte]` keys compare by content rather than by identity, a collated
-   * `StringType` compares under its collation, and `nanSafeCompareDoubles` already treats `-0.0`
-   * and `+0.0`, and any two `NaN`s, as equal. A null key cannot occur in a map Spark built, so
-   * treat one as a duplicate and keep the projection on Spark instead of asking the ordering to
-   * compare it.
+   * Only reached for key types [[mapKeyTypesExpandable]] admits, i.e. atomic non-floating-point,
+   * default-collation `StringType`, and `BinaryType` -- floating-point, collated, complex, and
+   * `CalendarIntervalType` keys are already declined before this runs. Every admitted key type is
+   * orderable, so `TypeUtils.getInterpretedOrdering` (which `ArrayBasedMapBuilder` itself uses
+   * for `BinaryType`) is safe and matches Spark's equality: `Array[Byte]` keys compare by content
+   * rather than by identity, and the atomic orderings agree with hash equality. A null key cannot
+   * occur in a map Spark built, so treat one as a duplicate and keep the projection on Spark
+   * instead of asking the ordering to compare it.
    */
   private def hasDuplicateMapKeys(keys: ArrayData, keyType: DataType): Boolean = {
     val n = keys.numElements()
