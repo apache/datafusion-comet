@@ -21,6 +21,9 @@ use jni::objects::{Global, JMethodID, JObject, JValue};
 use jni::signature::{Primitive, ReturnType};
 use jni::Env;
 
+/// OpenJDK's conservative soft array limit; actual JVM limits can vary.
+const MAX_JVM_ARRAY_LENGTH: i32 = i32::MAX - 8;
+
 /// Receives a complete encoded shuffle block for one output partition.
 ///
 /// Implementations must remain safe when invoked from native execution
@@ -72,11 +75,13 @@ impl JavaShufflePartitionPusher {
             )));
         }
 
-        i32::try_from(payload_length).map_err(|_| {
-            DataFusionError::Execution(format!(
-                "Remote shuffle payload size {payload_length} exceeds the JVM array limit"
-            ))
-        })
+        match i32::try_from(payload_length) {
+            Ok(length) if length <= MAX_JVM_ARRAY_LENGTH => Ok(length),
+            _ => Err(DataFusionError::Execution(format!(
+                "Remote shuffle payload size {payload_length} exceeds the JVM array limit of \
+                 {MAX_JVM_ARRAY_LENGTH} bytes"
+            ))),
+        }
     }
 }
 
@@ -117,17 +122,18 @@ impl ShufflePartitionPusher for JavaShufflePartitionPusher {
 
 #[cfg(test)]
 mod tests {
-    use super::JavaShufflePartitionPusher;
+    use super::{JavaShufflePartitionPusher, MAX_JVM_ARRAY_LENGTH};
 
     #[test]
-    fn accepts_payload_lengths_representable_by_jvm_arrays() {
+    fn accepts_payload_lengths_up_to_jvm_soft_array_limit() {
         assert_eq!(
             JavaShufflePartitionPusher::checked_payload_length(0, 0).unwrap(),
             0
         );
         assert_eq!(
-            JavaShufflePartitionPusher::checked_payload_length(7, i32::MAX as usize).unwrap(),
-            i32::MAX
+            JavaShufflePartitionPusher::checked_payload_length(7, MAX_JVM_ARRAY_LENGTH as usize,)
+                .unwrap(),
+            MAX_JVM_ARRAY_LENGTH
         );
     }
 
@@ -138,10 +144,18 @@ mod tests {
     }
 
     #[test]
-    fn rejects_payload_lengths_larger_than_a_jvm_array() {
-        let oversized_length = i32::MAX as usize + 1;
-        let error =
-            JavaShufflePartitionPusher::checked_payload_length(0, oversized_length).unwrap_err();
-        assert!(error.to_string().contains("exceeds the JVM array limit"));
+    fn rejects_payload_lengths_larger_than_jvm_soft_array_limit() {
+        for oversized_length in [
+            MAX_JVM_ARRAY_LENGTH as usize + 1,
+            i32::MAX as usize,
+            i32::MAX as usize + 1,
+            usize::MAX,
+        ] {
+            let error = JavaShufflePartitionPusher::checked_payload_length(0, oversized_length)
+                .unwrap_err();
+            let message = error.to_string();
+            assert!(message.contains("exceeds the JVM array limit"));
+            assert!(message.contains(&MAX_JVM_ARRAY_LENGTH.to_string()));
+        }
     }
 }
