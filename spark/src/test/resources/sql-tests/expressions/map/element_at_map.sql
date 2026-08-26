@@ -64,6 +64,11 @@ SELECT element_at(map(CAST(0 AS DOUBLE), 7), CAST(-0.0 AS DOUBLE))
 query expect_fallback(Spark normalizes floating-point map keys)
 SELECT element_at(map(CAST(0 AS FLOAT), 7), CAST(-0.0 AS FLOAT))
 
+-- The floating-point decline walks every nesting level of the key type, so an array-of-double key
+-- falls back for the same reason.
+query expect_fallback(Spark normalizes floating-point map keys)
+SELECT element_at(map(array(CAST(0 AS DOUBLE)), 7), array(CAST(-0.0 AS DOUBLE)))
+
 -- A complex key type: `map_extract` casts the lookup key to the map's exact Arrow key type, so a
 -- NULL inside the lookup key would abort the cast instead of missing the lookup.
 query expect_fallback(casts the lookup key to the map's exact Arrow key type)

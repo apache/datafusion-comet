@@ -374,4 +374,58 @@ class CometMapExpressionSuite extends CometTestBase {
     }
   }
 
+  // Direct single-level folded map with floating-point keys: `map(CAST(0 AS DOUBLE), 7)` folds to a
+  // literal and `element_at` with a dynamic `-0.0` lookup must match Spark's `+0.0`-normalized key.
+  // Native `map_extract` compares raw Arrow values, so `MapKeySupport` declines it at `element_at`.
+  // Spark returns 7, NULL, NULL. (`element_at_map.sql` covers the folding-off constructor form.)
+  test("folded map literal with floating-point keys in element_at falls back (multirow)") {
+    withParquetTable((1 until 4).map(i => (i, i.toLong)), "tbl") {
+      val lookup = "CAST(concat('-', CAST(_1 - 1 AS STRING), '.0') AS DOUBLE)"
+      checkSparkAnswerAndFallbackReason(
+        s"SELECT _1 AS id, element_at(map(CAST(0 AS DOUBLE), 7), $lookup) AS v FROM tbl",
+        "Spark normalizes floating-point map keys")
+    }
+  }
+
+  // Direct single-level folded map with collated string keys. Native lookup is bytewise, so a
+  // case-insensitive `a1` lookup against a stored `A1` cannot match; `MapKeySupport` declines it.
+  test("folded map literal with collated string keys in element_at falls back (multirow)") {
+    assume(isSpark40Plus)
+    withParquetTable(Seq(("a1", 0)), "tbl") {
+      checkSparkAnswerAndFallbackReason(
+        "SELECT element_at(map(CAST('A1' AS STRING COLLATE UTF8_LCASE), 7), " +
+          "CAST(_1 AS STRING COLLATE UTF8_LCASE)) AS v FROM tbl",
+        "cannot honour a non-default collation")
+    }
+  }
+
+  // Folded map with a complex (array) key. Spark permits a dynamic lookup array containing a NULL
+  // element; native `map_extract` casts the lookup to the key's exact Arrow type and cannot
+  // reproduce Spark's equality, so `MapKeySupport` declines every complex key type. Spark returns
+  // 7, NULL, NULL. (`element_at_map.sql` covers the constructor form with a non-null lookup.)
+  test("folded map literal with complex array key in element_at falls back (multirow)") {
+    withParquetTable((1 until 4).map(i => (i, i.toLong)), "tbl") {
+      checkSparkAnswerAndFallbackReason(
+        "SELECT _1 AS id, element_at(map(array(1), 7), " +
+          "array(IF(_1 = 2, CAST(NULL AS INT), _1))) AS v FROM tbl",
+        "casts the lookup key to the map's exact Arrow key type")
+    }
+  }
+
+  // A folded nested INT-keyed map is admitted natively (all key-type guards pass), so the outer
+  // `element_at` runs as native `map_extract`. With ANSI disabled, a remainder-by-zero lookup key
+  // evaluates to NULL instead of throwing, so `map_extract(NULL_map, NULL)` returns NULL and the
+  // result matches Spark's 7, NULL, NULL. Under ANSI, native scalar functions evaluate the key
+  // eagerly and throw where Spark short-circuits after the NULL inner map -- a pre-existing eager
+  // evaluation difference in native `ElementAt`, not specific to folded literals.
+  test("folded nested map lookup with per-row key evaluation (multirow, non-ansi)") {
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "false") {
+      withParquetTable((1 until 4).map(i => (i, i.toLong)), "tbl") {
+        checkSparkAnswerAndOperator(
+          "SELECT _1 AS id, element_at(element_at(map(1, map(0, 7)), _1), _1 % (_1 - 2)) AS v " +
+            "FROM tbl")
+      }
+    }
+  }
+
 }
