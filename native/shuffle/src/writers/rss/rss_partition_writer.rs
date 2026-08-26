@@ -36,7 +36,7 @@ use std::sync::Arc;
 /// Partition data may arrive in any order until its partition is finalized.
 /// Finalization follows the same ascending-partition contract as the existing
 /// local shuffle writer.
-pub struct RssPartitionWriter {
+pub(crate) struct RssPartitionWriter {
     block_writer: ShuffleBlockWriter,
     pusher: Arc<dyn ShufflePartitionPusher>,
     num_partitions: usize,
@@ -53,7 +53,7 @@ impl RssPartitionWriter {
     /// `num_partitions` must be nonzero and each partition identifier must fit
     /// in a JVM `int`. `max_frame_size` is the maximum complete encoded shuffle
     /// block passed to a callback and must also be nonzero.
-    pub fn try_new(
+    pub(crate) fn try_new(
         block_writer: ShuffleBlockWriter,
         pusher: Arc<dyn ShufflePartitionPusher>,
         num_partitions: usize,
