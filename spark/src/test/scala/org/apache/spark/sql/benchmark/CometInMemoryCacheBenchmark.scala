@@ -85,10 +85,13 @@ object CometInMemoryCacheBenchmark extends CometBenchmarkBase {
            |WHERE id >= 4500000 AND id < 4750000
          """.stripMargin)
 
-      // A CometCachedBatch is one compressed Arrow IPC stream covering every cached column, so a
-      // scan decodes all of them and projects afterwards. Cost is therefore flat in the width of
-      // the projection, where Spark's per-column format falls away as it narrows. These two cases
-      // bracket that: the same cached relation read one column wide and six columns wide.
+      // A CometCachedBatch stores each column as its own stream, so a scan decodes only what it
+      // projected and cost tracks the width of the projection. These three cases span that range
+      // over one cached relation: no columns, one column, and all six.
+      runCacheBenchmark(
+        "in-memory cache row count only (0 of 6 columns)",
+        s"SELECT count(*) FROM $cacheTable")
+
       runCacheBenchmark(
         "in-memory cache narrow projection (1 of 6 columns)",
         s"SELECT count(k) FROM $cacheTable")

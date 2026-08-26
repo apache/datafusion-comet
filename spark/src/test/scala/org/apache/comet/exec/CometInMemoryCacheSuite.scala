@@ -25,10 +25,13 @@ import org.apache.arrow.vector.types.pojo.ArrowType
 import org.apache.spark.CometDriverPlugin
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.CometTestBase
-import org.apache.spark.sql.catalyst.expressions.{And, Expression, GreaterThanOrEqual, LessThan, Literal}
-import org.apache.spark.sql.columnar.SimpleMetricsCachedBatch
+import org.apache.spark.sql.catalyst.expressions.{And, Attribute, Expression, GreaterThanOrEqual, LessThan, Literal}
+import org.apache.spark.sql.columnar.{CachedBatch, SimpleMetricsCachedBatch}
+import org.apache.spark.sql.comet.CometInMemoryTableScanExec
+import org.apache.spark.sql.comet.execution.arrow.CometCachedBatchHelper
 import org.apache.spark.sql.execution.columnar.CometInMemoryRelationHelper
 import org.apache.spark.sql.internal.{SQLConf, StaticSQLConf}
+import org.apache.spark.sql.types.BooleanType
 import org.apache.spark.storage.StorageLevel
 
 import org.apache.comet.CometConf
@@ -966,6 +969,174 @@ class CometInMemoryCacheSuite extends CometTestBase {
       assert(spark.table("spark_columnar_complex").count() == 200)
 
       checkSparkAnswer(spark.sql("SELECT key, a, st, m, b FROM spark_columnar_complex"))
+    }
+  }
+
+  /**
+   * Cache a six-column relation and hand the collected batches to `f` along with the relation, so
+   * a test can doctor the payload before decoding it again through the serializer.
+   */
+  private def withProjectionCache(
+      f: (org.apache.spark.sql.execution.columnar.InMemoryRelation, Array[CachedBatch]) => Unit)
+      : Unit = {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true",
+      "spark.comet.sparkToColumnar.enabled" -> "true",
+      SQLConf.CACHE_VECTORIZED_READER_ENABLED.key -> "true") {
+
+      spark.catalog.clearCache()
+      spark
+        .range(0, 500, 1, 2)
+        .selectExpr(
+          "id",
+          "id % 100 AS k",
+          "cast(id as double) / 3 AS d",
+          "concat('a_', cast(id as string)) AS s1",
+          "concat('b_', cast(id % 17 as string)) AS s2",
+          "cast(id % 2 = 0 as boolean) AS flag")
+        .createOrReplaceTempView("projection_cache")
+      spark.catalog.cacheTable("projection_cache")
+      assert(spark.table("projection_cache").count() == 500)
+      assert(
+        cachedBatchTypes("projection_cache").sameElements(
+          Array("org.apache.spark.sql.comet.execution.arrow.CometCachedBatch")))
+
+      val relation = spark.sharedState.cacheManager
+        .lookupCachedData(spark.table("projection_cache"))
+        .get
+        .cachedRepresentation
+
+      try {
+        f(relation, relation.cacheBuilder.cachedColumnBuffers.collect())
+      } finally {
+        spark.catalog.clearCache()
+      }
+    }
+  }
+
+  /** Decode `batches` through the cache serializer, selecting `selected`, and total the rows. */
+  private def decodedRowCount(
+      relation: org.apache.spark.sql.execution.columnar.InMemoryRelation,
+      batches: Array[CachedBatch],
+      selected: Seq[Attribute]): Long = {
+    relation.cacheBuilder.serializer
+      .convertCachedBatchToColumnarBatch(
+        spark.sparkContext.parallelize(batches.toSeq, 1),
+        relation.output,
+        selected,
+        spark.sessionState.conf)
+      // ColumnarBatch is not serializable, so reduce to a count inside the closure.
+      .mapPartitions(batches => Iterator.single(batches.map(_.numRows().toLong).sum))
+      .collect()
+      .sum
+  }
+
+  test("Comet in-memory cache stores one stream per column") {
+    withProjectionCache { (relation, batches) =>
+      assert(batches.nonEmpty)
+      batches.foreach { batch =>
+        assert(
+          CometCachedBatchHelper.numColumnStreams(batch) == relation.output.length,
+          "a cached batch must hold one independently decodable stream per cached column")
+        assert(
+          CometCachedBatchHelper.columnStreamSizes(batch).forall(_ > 0),
+          "every column stream must carry data")
+      }
+    }
+  }
+
+  test("Comet in-memory cache decodes only the projected columns") {
+    // Timings would be a weak assertion here, so this corrupts the streams the read must not
+    // touch. Reading still has to succeed, which it only can if those streams were never
+    // inflated. The second half checks the corruption is detectable at all, so that the first
+    // half cannot pass just because the bad bytes decode silently to nothing.
+    withProjectionCache { (relation, batches) =>
+      val selectedIdx = 1
+      val selected = Seq(relation.output(selectedIdx))
+
+      relation.output.indices.filter(_ != selectedIdx).foreach { i =>
+        batches.foreach(b => CometCachedBatchHelper.corruptColumnStream(b, i))
+      }
+
+      assert(
+        decodedRowCount(relation, batches, selected) == 500,
+        "reading one column must not decode the other five")
+
+      batches.foreach(b => CometCachedBatchHelper.corruptColumnStream(b, selectedIdx))
+      intercept[Exception] {
+        decodedRowCount(relation, batches, selected)
+      }
+    }
+  }
+
+  test("Comet in-memory cache decodes no columns for a row-count-only read") {
+    // SELECT count(*) selects no columns. Every stream is corrupted, so the read can only succeed
+    // by decoding none of them and answering from the row count the cached batch already carries.
+    withProjectionCache { (relation, batches) =>
+      relation.output.indices.foreach { i =>
+        batches.foreach(b => CometCachedBatchHelper.corruptColumnStream(b, i))
+      }
+
+      assert(decodedRowCount(relation, batches, Seq.empty) == 500)
+    }
+  }
+
+  test("Comet in-memory cache records per-column sizes in its statistics") {
+    // SimpleMetricsCachedBatch reserves a fifth field per column for its size. Each column is now
+    // its own stream, so the real size is known and must be reported rather than left at zero.
+    withProjectionCache { (relation, batches) =>
+      batches.foreach { batch =>
+        val sizes = CometCachedBatchHelper.columnStreamSizes(batch)
+        val stats = batch.asInstanceOf[SimpleMetricsCachedBatch].stats
+        sizes.zipWithIndex.foreach { case (size, i) =>
+          assert(
+            stats.getLong(i * 5 + 4) == size,
+            s"column $i should report its own stream size in the statistics row")
+        }
+      }
+    }
+  }
+
+  test("Comet in-memory cache scans one narrow column for a row-count-only query") {
+    // SELECT count(*) needs no columns, but the native plan needs a non-empty scan schema, so the
+    // scan has to ask for something. It asks for one cheap column: since the serializer decodes
+    // exactly what it is asked for, falling back to the whole cache schema would make the
+    // cheapest query in a workload decode every cached column.
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true",
+      "spark.comet.sparkToColumnar.enabled" -> "true",
+      SQLConf.CACHE_VECTORIZED_READER_ENABLED.key -> "true") {
+
+      spark.catalog.clearCache()
+      spark
+        .range(0, 500, 1, 2)
+        .selectExpr(
+          "id",
+          "id % 100 AS k",
+          "concat('a_', cast(id as string)) AS s1",
+          "cast(id % 2 = 0 as boolean) AS flag")
+        .createOrReplaceTempView("count_only_cache")
+      spark.catalog.cacheTable("count_only_cache")
+      assert(spark.table("count_only_cache").count() == 500)
+
+      val df = spark.sql("SELECT count(*) FROM count_only_cache")
+      val scan = df.queryExecution.executedPlan.collectFirst {
+        case s: CometInMemoryTableScanExec => s
+      }
+
+      assert(scan.isDefined, "expected a native cache scan")
+      assert(scan.get.output.isEmpty, "a count-only scan declares no output")
+      assert(
+        scan.get.scanOutput.length == 1,
+        s"expected one scanned column, got ${scan.get.scanOutput.map(_.name).mkString(",")}")
+      assert(
+        scan.get.scanOutput.head.dataType == BooleanType,
+        "expected the cheapest column to decode, not a string or the first column")
+
+      checkSparkAnswer(df)
+      spark.catalog.clearCache()
     }
   }
 }

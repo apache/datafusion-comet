@@ -27,6 +27,7 @@ import org.apache.spark.sql.columnar.{CachedBatch, CachedBatchSerializer}
 import org.apache.spark.sql.execution.LeafExecNode
 import org.apache.spark.sql.execution.columnar.InMemoryTableScanExec
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
+import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import org.apache.comet.CometConf
@@ -57,11 +58,10 @@ case class CometInMemoryTableScanExec(
   override lazy val metrics: Map[String, SQLMetric] = Map(
     "numOutputRows" -> SQLMetrics.createMetric(sparkContext, "number of output rows"))
 
-  // For an empty-projection scan (`SELECT count(*)`) this is empty while `scanOutput` holds the
-  // full cache schema, so the emitted batches are wider than the declared output. That is safe
-  // because the only consumer of an empty-output scan is a count-style aggregate, which reads
-  // the row count rather than any column; `convert` and `createExec` deliberately fall back to
-  // the cache schema in that case because the native plan still needs a non-empty scan schema.
+  // For an empty-projection scan (`SELECT count(*)`) this is empty while `scanOutput` holds one
+  // placeholder column, so the emitted batches are wider than the declared output. That is safe
+  // because the only consumer of an empty-output scan is a count-style aggregate, which reads the
+  // row count rather than any column; see `scanOutputFor` for why the scan cannot simply be empty.
   override def output: Seq[Attribute] = originalPlan.output
 
   // Use the serializer's vector types because the cached batch layout is owned by the serializer.
@@ -107,12 +107,7 @@ object CometInMemoryTableScanExec extends CometOperatorSerde[InMemoryTableScanEx
       builder: OperatorOuterClass.Operator.Builder,
       childOp: Operator*): Option[Operator] = {
 
-    // Empty-output scans still need a schema for native planning, so fall back to the cache schema.
-    val actualOutput =
-      if (op.output.nonEmpty) op.output
-      else op.relation.output
-
-    val scanTypes = actualOutput.flatMap(attr => serializeDataType(attr.dataType))
+    val scanTypes = scanOutputFor(op).flatMap(attr => serializeDataType(attr.dataType))
 
     val scanBuilder = OperatorOuterClass.Scan
       .newBuilder()
@@ -127,10 +122,6 @@ object CometInMemoryTableScanExec extends CometOperatorSerde[InMemoryTableScanEx
   override def createExec(nativeOp: Operator, op: InMemoryTableScanExec): CometNativeExec = {
     val relation = op.relation
 
-    val actualOutput =
-      if (op.output.nonEmpty) op.output
-      else relation.output
-
     CometScanWrapper(
       nativeOp,
       CometInMemoryTableScanExec(
@@ -138,6 +129,41 @@ object CometInMemoryTableScanExec extends CometOperatorSerde[InMemoryTableScanEx
         relation.cacheBuilder.serializer,
         relation.cacheBuilder.cachedColumnBuffers,
         relation.output,
-        actualOutput))
+        scanOutputFor(op)))
+  }
+
+  /**
+   * Columns the cache scan asks the serializer to decode.
+   *
+   * An empty-output scan (`SELECT count(*)`) still needs a non-empty schema for native planning,
+   * and the batches the node emits have to match that schema. Falling back to the whole cache
+   * schema satisfies both, but the serializer decodes exactly what it is asked for, so the
+   * cheapest query in the workload would decode every cached column. One column is enough: the
+   * aggregate above an empty-output scan reads the row count and never a value, so pick the
+   * cheapest to decode rather than all of them.
+   *
+   * `convert` and `createExec` must choose identically, or the native scan's declared schema and
+   * the batches fed to it disagree.
+   */
+  private def scanOutputFor(op: InMemoryTableScanExec): Seq[Attribute] = {
+    if (op.output.nonEmpty) {
+      op.output
+    } else if (op.relation.output.isEmpty) {
+      Nil
+    } else {
+      Seq(op.relation.output.minBy(a => decodeCostRank(a.dataType)))
+    }
+  }
+
+  // Rank by how much work decoding a column of this type costs, cheapest first. Fixed-width types
+  // decode to a flat buffer; variable-width and nested ones carry offsets, children and possibly
+  // dictionaries.
+  private def decodeCostRank(dt: DataType): Int = dt match {
+    case BooleanType | ByteType => 0
+    case ShortType => 1
+    case IntegerType | FloatType | DateType => 2
+    case LongType | DoubleType | TimestampType | TimestampNTZType => 3
+    case _: DecimalType => 4
+    case _ => 5
   }
 }

@@ -269,6 +269,37 @@ object Utils extends CometTypeShim with Logging {
   }
 
   /**
+   * Serializes each column of `batch` into its own compressed Arrow IPC stream, in column order.
+   *
+   * [[serializeBatches]] writes one stream covering every column, so a reader has to inflate all
+   * of them before it can project. Comet's in-memory cache stores columns separately instead, so
+   * a scan decodes only the ones it selected. Each stream is self-contained, including its schema
+   * and any dictionaries the column needs.
+   *
+   * The row count is not recoverable from the result when `batch` has no columns, so callers keep
+   * it alongside. As with [[serializeBatches]], the batch's vectors are cleared once written.
+   */
+  def serializeBatchColumns(batch: ColumnarBatch): Array[ChunkedByteBuffer] = {
+    val (fieldVectors, batchProviderOpt) = getBatchFieldVectors(batch)
+    val provider = batchProviderOpt.getOrElse(new CDataDictionaryProvider)
+    val codec = CompressionCodec.createCodec(SparkEnv.get.conf)
+
+    fieldVectors.map { fieldVector =>
+      val cbbos = new ChunkedByteBufferOutputStream(1024 * 1024, ByteBuffer.allocate)
+      val out = new DataOutputStream(codec.compressedOutputStream(cbbos))
+
+      val root = new VectorSchemaRoot(Seq(fieldVector).asJava)
+      val writer = new ArrowStreamWriter(root, provider, Channels.newChannel(out))
+      writer.start()
+      writer.writeBatch()
+      root.clear()
+      writer.close()
+
+      cbbos.toChunkedByteBuffer
+    }.toArray
+  }
+
+  /**
    * Decodes the byte arrays back to ColumnarBatchs and put them into buffer.
    *
    * @param bytes
