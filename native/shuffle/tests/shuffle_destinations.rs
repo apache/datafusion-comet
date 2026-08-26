@@ -206,8 +206,10 @@ fn read_local(output_paths: &(String, String), num_partitions: usize) -> Vec<Vec
     let index = std::fs::read(&output_paths.1).unwrap();
     assert_eq!(index.len(), (num_partitions + 1) * 8);
     let offsets: Vec<usize> = index
-        .chunks_exact(8)
-        .map(|bytes| u64::from_le_bytes(bytes.try_into().unwrap()) as usize)
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .map(|bytes| u64::from_le_bytes(*bytes) as usize)
         .collect();
     assert_eq!(offsets[0], 0);
     assert_eq!(offsets[num_partitions], data.len());

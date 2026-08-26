@@ -320,7 +320,7 @@ object CelebornShufflePusherFactory {
         Long.box(-1L),
         Int.box(-1),
         Int.box(-1),
-        s"Retried Celeborn map attempt requires a new shuffle generation: " +
+        "Retried Celeborn map attempt requires a new shuffle generation: " +
           s"$sparkShuffleId/$celebornShuffleId",
         null)
       .asInstanceOf[Throwable]
