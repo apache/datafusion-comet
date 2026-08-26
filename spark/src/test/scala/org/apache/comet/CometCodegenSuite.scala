@@ -25,7 +25,7 @@ import org.apache.arrow.vector._
 import org.apache.spark.{SparkConf, SparkEnv, TaskContext}
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.api.java.UDF1
-import org.apache.spark.sql.catalyst.expressions.{BoundReference, CreateArray, CreateMap, CreateNamedStruct, Expression, Literal, MapConcat}
+import org.apache.spark.sql.catalyst.expressions.{Add, Alias, AttributeReference, BoundReference, CreateArray, CreateMap, CreateNamedStruct, Expression, Literal, MapConcat}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
@@ -34,6 +34,7 @@ import org.apache.spark.unsafe.types.UTF8String
 import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
 import org.apache.comet.codegen.CometBatchKernelCodegen
 import org.apache.comet.codegen.CometBatchKernelCodegen.ArrowColumnSpec
+import org.apache.comet.serde.QueryPlanSerde
 import org.apache.comet.udf.codegen.CometScalaUDFCodegen
 import org.apache.comet.vector.CometVector
 
@@ -278,7 +279,20 @@ class CometCodegenSuite
     val planted = Literal.TrueLiteral
     planted.setTagValue(CometExplainInfo.EXTENSION_INFO, Set("PLANTED_INFO"))
     planted.setTagValue(CometExplainInfo.NATIVE_EXPRS, Set("plantedexpr"))
+    planted.setTagValue(CometExplainInfo.CODEGEN_DISPATCH_EXPRS, Set("planteddispatch"))
     try {
+      // Decimal promotion rebuilds this projection. Its coverage lift must not copy the
+      // singleton's stale tags onto the Alias, which is a legitimate coverage owner.
+      val decimal = AttributeReference("amount", DecimalType(10, 2), nullable = false)()
+      val projection = Alias(
+        CreateNamedStruct(Seq(Literal("flag"), planted, Literal("sum"), Add(decimal, decimal))),
+        "value")()
+      assert(QueryPlanSerde.exprToProto(projection, Seq(decimal)).isDefined)
+      val native = projection.getTagValue(CometExplainInfo.NATIVE_EXPRS).getOrElse(Set.empty)
+      assert(native.contains("checkoverflow"), s"expected lifted decimal coverage, got: $native")
+      assert(!native.contains("plantedexpr"))
+      assert(projection.getTagValue(CometExplainInfo.CODEGEN_DISPATCH_EXPRS).isEmpty)
+
       withSQLConf(
         CometConf.COMET_EXTENDED_EXPLAIN_FORMAT.key ->
           CometConf.COMET_EXTENDED_EXPLAIN_FORMAT_VERBOSE,
@@ -301,6 +315,7 @@ class CometCodegenSuite
 
           val info = new ExtendedExplainInfo()
           assert(!info.getNativeExpressions(plan).contains("plantedexpr"))
+          assert(!info.getCodegenDispatchExpressions(plan).contains("planteddispatch"))
           val explain = info.generateExtendedInfo(plan)
           assert(!explain.contains("PLANTED_INFO"), s"tag leaked into:\n$explain")
         }
@@ -308,6 +323,7 @@ class CometCodegenSuite
     } finally {
       planted.unsetTagValue(CometExplainInfo.EXTENSION_INFO)
       planted.unsetTagValue(CometExplainInfo.NATIVE_EXPRS)
+      planted.unsetTagValue(CometExplainInfo.CODEGEN_DISPATCH_EXPRS)
     }
   }
 

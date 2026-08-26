@@ -855,14 +855,10 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
   }
 
   private def liftCoverageTags(from: Expression, to: Expression): Unit = {
-    val native = mutable.Set.empty[String]
-    val dispatched = mutable.Set.empty[String]
-    from.foreach { e =>
-      e.getTagValue(CometExplainInfo.NATIVE_EXPRS).foreach(native ++= _)
-      e.getTagValue(CometExplainInfo.CODEGEN_DISPATCH_EXPRS).foreach(dispatched ++= _)
+    val exprs = from.collect { case e: Expression => e }
+    Seq(CometExplainInfo.NATIVE_EXPRS, CometExplainInfo.CODEGEN_DISPATCH_EXPRS).foreach { tag =>
+      appendTagValues(to, tag, CometExplainInfo.collectExprTagValues(exprs, tag))
     }
-    appendTagValues(to, CometExplainInfo.NATIVE_EXPRS, native.toSet)
-    appendTagValues(to, CometExplainInfo.CODEGEN_DISPATCH_EXPRS, dispatched.toSet)
   }
 
   /**
