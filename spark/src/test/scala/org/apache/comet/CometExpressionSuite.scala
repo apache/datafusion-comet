@@ -25,7 +25,7 @@ import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{Column, CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.expressions.{Alias, Cast, FromUnixTime, Literal, StructsToJson, TruncDate, TruncTimestamp}
 import org.apache.spark.sql.catalyst.optimizer.{ConvertToLocalRelation, OptimizeIn, SimplifyExtractValueOps}
-import org.apache.spark.sql.comet.CometProjectExec
+import org.apache.spark.sql.comet.{CometFilterExec, CometProjectExec}
 import org.apache.spark.sql.execution.{ProjectExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions._
@@ -170,6 +170,59 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         }
       }
     }
+  }
+
+  Seq(
+    (
+      "float",
+      "_1",
+      Seq[Any](
+        java.lang.Float.intBitsToFloat(0x7fc00001),
+        java.lang.Float.intBitsToFloat(0xffc00002))),
+    (
+      "double",
+      "_2",
+      Seq[Any](
+        java.lang.Double.longBitsToDouble(0x7ff8000000000001L),
+        java.lang.Double.longBitsToDouble(0xfff8000000000002L)))).foreach {
+    case (dataType, column, nanLiterals) =>
+      test(s"compare $dataType columns with noncanonical NaN literals") {
+        withSQLConf(SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED.key -> "false") {
+          val rows = Seq(
+            (Some(Float.NaN), Some(Double.NaN)),
+            (Some(-0.0f), Some(-0.0d)),
+            (Some(0.0f), Some(0.0d)),
+            (Some(-1.0f), Some(-1.0d)),
+            (Some(1.0f), Some(1.0d)),
+            (Some(Float.NegativeInfinity), Some(Double.NegativeInfinity)),
+            (Some(Float.PositiveInfinity), Some(Double.PositiveInfinity)),
+            (None, None))
+          withParquetDataFrame(rows, withDictionary = false) { df =>
+            // Parquet canonicalizes stored NaNs, so construct the signed/payload literals here.
+            // Compare Boolean results so Spark's NaN-aware answer checker cannot hide a mismatch.
+            val value = df(column)
+            nanLiterals.foreach { nan =>
+              val literal = lit(nan)
+              Seq((value, literal), (literal, value)).foreach { case (left, right) =>
+                val comparisons = Seq(
+                  left === right,
+                  left =!= right,
+                  left.eqNullSafe(right),
+                  left < right,
+                  left <= right,
+                  left > right,
+                  left >= right)
+                checkSparkAnswerAndOperator(
+                  df.select(comparisons: _*),
+                  Seq(classOf[CometProjectExec]))
+              }
+              checkSparkAnswerAndOperator(
+                df.filter(value === literal),
+                Seq(classOf[CometFilterExec]))
+            }
+          }
+        }
+      }
   }
 
   test("parquet default values") {
