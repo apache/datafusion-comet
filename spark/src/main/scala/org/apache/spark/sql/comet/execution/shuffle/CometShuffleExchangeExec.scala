@@ -531,6 +531,9 @@ object CometShuffleExchangeExec
       if (!QueryPlanSerde.supportedDataType(
           input.dataType,
           allowComplex = true,
+          // The native row-to-Arrow converter (spark_unsafe/row.rs) has no CalendarInterval
+          // support, so calendar intervals must fall back to Spark shuffle.
+          allowCalendarInterval = false,
           // Java Arrow stream reader cannot work on duplicate field names.
           allowDuplicateStructFieldNames = false)) {
         reasons += s"unsupported shuffle data type ${input.dataType} for input $input"

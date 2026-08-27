@@ -528,13 +528,16 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       dt: DataType,
       allowComplex: Boolean = false,
       allowIntervals: Boolean = false,
+      allowCalendarInterval: Boolean = true,
       allowTimeType: Boolean = true,
       allowAnyStringType: Boolean = true,
       allowDuplicateStructFieldNames: Boolean = true): Boolean = {
     def supported(dt: DataType): Boolean = dt match {
       case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
           _: DoubleType | _: BinaryType | _: TimestampType | _: TimestampNTZType |
-          _: DecimalType | _: DateType | _: BooleanType | _: NullType | CalendarIntervalType =>
+          _: DecimalType | _: DateType | _: BooleanType | _: NullType =>
+        true
+      case CalendarIntervalType if allowCalendarInterval =>
         true
       case st: StringType if allowAnyStringType || st == StringType =>
         true

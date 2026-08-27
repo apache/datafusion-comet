@@ -65,6 +65,17 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         allowComplex = true,
         allowDuplicateStructFieldNames = false))
 
+    assert(supportedDataType(CalendarIntervalType))
+    assert(!supportedDataType(CalendarIntervalType, allowCalendarInterval = false))
+    val nestedCalendarInterval =
+      StructType(Seq(StructField("i", ArrayType(CalendarIntervalType, containsNull = true))))
+    assert(supportedDataType(nestedCalendarInterval, allowComplex = true))
+    assert(
+      !supportedDataType(
+        nestedCalendarInterval,
+        allowComplex = true,
+        allowCalendarInterval = false))
+
     assert(supportedDataType(StringType, allowAnyStringType = false))
     assert(!supportedDataType(CharType(1), allowAnyStringType = false))
 

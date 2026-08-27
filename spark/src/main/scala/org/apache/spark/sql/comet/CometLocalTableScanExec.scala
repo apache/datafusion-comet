@@ -144,6 +144,8 @@ object CometLocalTableScanExec extends CometSink[LocalTableScanExec] with DataTy
       allowIntervals = true,
       allowTimeType = false,
       allowAnyStringType = false)
+    // DataTypeSupport accepts no type that supportedDataType rejects here, so the super call
+    // cannot widen the accepted set; it only records the fallback reason for rejected types.
     if (supported) true else super.isTypeSupported(dt, name, fallbackReasons)
   }
 
