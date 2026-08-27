@@ -337,7 +337,7 @@ class CometIcebergSortMergeReadSuite
     }
   }
 
-  test("native scan reports no ordering when the sort-merge flag is disabled") {
+  test("sort-merge disabled keeps the scan native and still reports the ordering (via sort)") {
     withSortedTables(
       orderedReadConf ++ Seq(CometConf.COMET_ICEBERG_SORT_MERGE_ENABLED.key -> "false"))("t") {
       cat =>
@@ -345,13 +345,14 @@ class CometIcebergSortMergeReadSuite
         replaceSortOrder(cat, "db", "t", "id" -> true)
         insertBatches(cat, "t", "(1,'a'),(3,'c')", "(2,'b'),(4,'d')")
 
-        // Correctness must hold with the feature off, and no ordering may be advertised.
+        // Disabling only turns off the k-way merge, not the whole native scan: Comet still reads
+        // the table and still honours the reported order (via a spillable sort). Correctness must
+        // hold, and on an ordering-reporting Iceberg build the scan still advertises the order.
         val (_, plan) = checkSparkAnswer(s"SELECT id, data FROM $cat.db.t ORDER BY id")
-        nativeScans(plan).foreach { scan =>
-          assert(
-            scan.outputOrdering.isEmpty,
-            s"no ordering must be reported when the flag is off:\n$plan")
-        }
+        assert(
+          nativeScans(plan).nonEmpty,
+          s"sort-merge disabled must not force the scan back to Spark:\n$plan")
+        assumeOrderingReported(plan)
     }
   }
 
@@ -572,17 +573,19 @@ class CometIcebergSortMergeReadSuite
   // unconditionally (checkSparkAnswer, holds on any Iceberg build); the "stayed on Spark" assertion
   // is gated on a reporting build (assertFellBackToSpark).
   //
-  // Triggers: (a) sort-merge disabled while Iceberg still reports an ordering, and (b) a transform
-  // (bucket) sort key (#5339), which Comet's reportableOrdering rejects as a non-column sort child.
-  // The transform test is gated on Spark 4.0+: Spark converts a transform sort ordering only where
-  // V2ScanPartitioningAndOrdering threads the function catalog into the scan's outputOrdering (4.0+
-  // does, 3.4 does not -- there a transform ordering throws _LEGACY_ERROR_TEMP_3054 in Spark before
-  // Comet is reached), and it also needs a reporting Iceberg build (assertFellBackToSpark gates on
-  // that). UUID sort keys are covered by the "ordering-unsafe column" gate test since a UUID column
-  // has no Spark DDL type. All of these feed the same reportableOrdering gate the fallback uses.
+  // Triggers for the Spark-fallback path (Comet declines a reported ordering it cannot honour): a
+  // transform (bucket) sort key (#5339), which Comet's reportableOrdering rejects as a non-column
+  // sort child. The transform test is gated on Spark 4.0+: Spark converts a transform sort ordering
+  // only where V2ScanPartitioningAndOrdering threads the function catalog into the scan's
+  // outputOrdering (4.0+ does, 3.4 does not -- there a transform ordering throws
+  // _LEGACY_ERROR_TEMP_3054 in Spark before Comet is reached), and it also needs a reporting Iceberg
+  // build (assertFellBackToSpark gates on that). UUID sort keys are covered by the "ordering-unsafe
+  // column" gate test since a UUID column has no Spark DDL type. Note that sort-merge disabled is
+  // NOT a fallback trigger: the scan stays native and honours the order via a spillable sort (see
+  // the "sort-merge disabled keeps the scan native" test above).
   // -------------------------------------------------------------------------------------------
 
-  test("fallback: sort-merge disabled but Iceberg reports an ordering stays on Spark (SMJ)") {
+  test("sort-merge disabled but Iceberg reports an ordering stays native over an SMJ") {
     withSortedTables(spjConf ++ Seq(CometConf.COMET_ICEBERG_SORT_MERGE_ENABLED.key -> "false"))(
       "a",
       "b") { cat =>
@@ -595,12 +598,14 @@ class CometIcebergSortMergeReadSuite
       }
       val query = s"SELECT a.c1, b.c2 FROM $cat.db.a a JOIN $cat.db.b b ON a.c1 = b.c1"
       val (_, plan) = checkSparkAnswer(query)
-      assertFellBackToSpark(query, plan)
+      // Disabling the merge must not push the join's scans back to Spark.
+      assert(
+        nativeScans(plan).nonEmpty,
+        s"sort-merge disabled must not force the SMJ scans back to Spark:\n$plan")
     }
   }
 
-  test(
-    "fallback: sort-merge disabled but Iceberg reports an ordering stays on Spark (group-by)") {
+  test("sort-merge disabled but Iceberg reports an ordering stays native over a group-by") {
     withSortedTables(spjConf ++ Seq(CometConf.COMET_ICEBERG_SORT_MERGE_ENABLED.key -> "false"))(
       "t") { cat =>
       spark.sql(
@@ -610,7 +615,9 @@ class CometIcebergSortMergeReadSuite
       insertBatches(cat, "t", "(1,'a','X'),(2,'b','X')", "(1,'c','X'),(3,'d','X')")
       val query = s"SELECT c1, COUNT(*) FROM $cat.db.t GROUP BY c1"
       val (_, plan) = checkSparkAnswer(query)
-      assertFellBackToSpark(query, plan)
+      assert(
+        nativeScans(plan).nonEmpty,
+        s"sort-merge disabled must not force the group-by scan back to Spark:\n$plan")
     }
   }
 
