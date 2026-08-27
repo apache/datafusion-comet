@@ -257,17 +257,23 @@ class CometExecIterator(
       // global refs.
       attempt(nativeLib.releasePlan(plan))
 
+      // Run the diagnostics even when teardown failed: a failed teardown is exactly when the
+      // non-zero memory usage warning below is most informative.
+      attempt {
+        if (tracingEnabled) {
+          traceMemoryUsage()
+        }
+      }
+
+      attempt {
+        val memInUse = cometTaskMemoryManager.getUsed
+        if (memInUse != 0) {
+          logWarning(s"CometExecIterator closed with non-zero memory usage : $memInUse")
+        }
+      }
+
       if (failure != null) {
         throw failure
-      }
-
-      if (tracingEnabled) {
-        traceMemoryUsage()
-      }
-
-      val memInUse = cometTaskMemoryManager.getUsed
-      if (memInUse != 0) {
-        logWarning(s"CometExecIterator closed with non-zero memory usage : $memInUse")
       }
     }
   }

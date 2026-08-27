@@ -32,7 +32,7 @@ import org.apache.spark.sql.comet.{CometExec, CometExecUtils, CometMetricNode}
 import org.apache.spark.sql.comet.execution.arrow.CometArrowStream
 import org.apache.spark.sql.types.{LongType, StructField, StructType}
 
-import org.apache.comet.{CometExecIterator, CometShuffleBlockIterator, Native}
+import org.apache.comet.{CometConf, CometExecIterator, CometShuffleBlockIterator, Native}
 import org.apache.comet.serde.Config.ConfigMap
 import org.apache.comet.serde.OperatorOuterClass
 
@@ -174,40 +174,50 @@ class CometExecIteratorLifecycleSuite extends CometTestBase {
   }
 
   test("releasePlan frees the native context even when the final metrics update fails") {
-    withTaskContext(4400000L) {
-      val failMetrics = new AtomicBoolean(false)
-      class ThrowingMetricNode extends CometMetricNode(Map.empty, Nil) {
-        override def set_all_from_bytes(bytes: Array[Byte]): Unit = {
-          if (failMetrics.get()) {
-            throw new IllegalStateException("injected metrics update failure")
+    // Disable the periodic metrics updates inside executePlan, so the only metrics update -- and
+    // therefore the only place the injected failure can fire -- is the one in releasePlan.
+    withSQLConf(CometConf.COMET_METRICS_UPDATE_INTERVAL.key -> "0") {
+      withTaskContext(4400000L) {
+        val failMetrics = new AtomicBoolean(false)
+        class ThrowingMetricNode extends CometMetricNode(Map.empty, Nil) {
+          override def set_all_from_bytes(bytes: Array[Byte]): Unit = {
+            if (failMetrics.get()) {
+              throw new IllegalStateException("injected metrics update failure")
+            }
           }
         }
-      }
-      val schema = StructType(Seq(StructField("test", LongType, nullable = false)))
-      val stream = CometArrowStream.fromColumnarBatchIter(
-        Iterator.empty,
-        schema,
-        CometArrowStream.NATIVE_TIMEZONE,
-        "lifecycle-test")
-      val limitOp =
-        CometExecUtils.getLimitNativePlan(Seq(PrettyAttribute("test", LongType)), 100).get
-      val iter = CometExec.getCometIterator(
-        Array(stream.asInstanceOf[Object]),
-        1,
-        limitOp,
-        new ThrowingMetricNode,
-        1,
-        0,
-        None,
-        Seq.empty)
+        val schema = StructType(Seq(StructField("test", LongType, nullable = false)))
+        val stream = CometArrowStream.fromColumnarBatchIter(
+          Iterator.empty,
+          schema,
+          CometArrowStream.NATIVE_TIMEZONE,
+          "lifecycle-test")
+        val limitOp =
+          CometExecUtils.getLimitNativePlan(Seq(PrettyAttribute("test", LongType)), 100).get
+        val iter = CometExec.getCometIterator(
+          Array(stream.asInstanceOf[Object]),
+          1,
+          limitOp,
+          new ThrowingMetricNode,
+          1,
+          0,
+          None,
+          Seq.empty)
 
-      failMetrics.set(true)
-      // Exhausting the iterator closes it, and the close propagates the metrics failure thrown
-      // by the native releasePlan call.
-      intercept[Throwable](iter.hasNext)
-      // The metrics failure must not have left the iterator open or the native context alive: a
-      // second close() must be a no-op instead of calling releasePlan again.
-      iter.close()
+        failMetrics.set(true)
+        // Exhausting the iterator closes it, and the close propagates the metrics failure thrown
+        // by the native releasePlan call.
+        val thrown = intercept[Throwable](iter.hasNext)
+        // Guard against a vacuous pass: the failure must be the injected one, thrown from the
+        // releasePlan metrics update (the only metrics update left with the interval disabled).
+        assert(
+          thrown.getMessage != null && thrown.getMessage.contains(
+            "injected metrics update failure"),
+          s"expected the injected metrics update failure, got: $thrown")
+        // The metrics failure must not have left the iterator open or the native context alive: a
+        // second close() must be a no-op instead of calling releasePlan again.
+        iter.close()
+      }
     }
   }
 }

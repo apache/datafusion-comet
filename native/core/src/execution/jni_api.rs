@@ -986,6 +986,14 @@ pub extern "system" fn Java_org_apache_comet_Native_releasePlan(
     exec_context: jlong,
 ) {
     try_unwrap_or_throw(&e, |env| unsafe {
+        // A null pointer from the JVM would be undefined behaviour in `Box::from_raw`; panic
+        // instead, which `try_unwrap_or_throw` converts into a Java exception (this is the check
+        // `get_execution_context` performs for the other JNI entry points).
+        assert_ne!(
+            exec_context, 0,
+            "Comet execution context shouldn't be null!"
+        );
+
         // Reclaim ownership of the context up front so that it is always freed, even if updating
         // metrics below fails. Dropping it releases the memory pool and every JNI global ref the
         // context holds.

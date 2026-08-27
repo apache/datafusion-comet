@@ -185,4 +185,34 @@ mod tests {
         drop(replacement);
         assert!(!is_registered(-1006));
     }
+
+    /// Exercises the drop/acquire race for real: an acquire can replace an expired `Weak` between
+    /// another thread's last `Arc` drop and that drop obtaining the registry lock, and the old
+    /// pool's `Drop` must not evict the replacement's entry.
+    #[test]
+    fn concurrent_acquire_and_drop_leaves_a_consistent_registry() {
+        use std::thread;
+
+        let threads: Vec<_> = (0..8)
+            .map(|_| {
+                thread::spawn(|| {
+                    for _ in 0..1_000 {
+                        drop(acquire(-1007));
+                    }
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+
+        assert!(
+            !is_registered(-1007),
+            "registry entry survived after every reference was dropped"
+        );
+
+        // The registry must still work for the task after the churn.
+        let _pool = acquire(-1007);
+        assert!(is_registered(-1007));
+    }
 }
