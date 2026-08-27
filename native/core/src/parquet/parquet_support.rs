@@ -44,7 +44,11 @@ use parquet::arrow::PARQUET_FIELD_ID_META_KEY;
 use std::collections::HashMap;
 use std::sync::OnceLock;
 use std::time::Duration;
-use std::{collections::hash_map::DefaultHasher, hash::Hasher, sync::RwLock};
+use std::{
+    collections::hash_map::DefaultHasher,
+    hash::Hasher,
+    sync::{PoisonError, RwLock},
+};
 use std::{fmt::Debug, hash::Hash, sync::Arc};
 use url::Url;
 
@@ -430,10 +434,17 @@ fn object_store_url_key(url: &Url) -> String {
     )
 }
 
+/// An [`ObjectStoreRegistry`] that keys ABFS stores by the full authority
+/// (`scheme://container@host:port`) instead of DataFusion's `scheme://host:port`.
+///
+/// This is a workaround for `DefaultObjectStoreRegistry`, whose key drops the userinfo
+/// component, collapsing every container in an Azure storage account onto a single store.
+/// Fixed upstream in <https://github.com/apache/datafusion/pull/23935>; this registry can be
+/// removed once Comet is on a DataFusion release containing that fix.
 #[derive(Debug, Default)]
 pub(crate) struct CometObjectStoreRegistry {
     default: DefaultObjectStoreRegistry,
-    azure_stores: parking_lot::RwLock<HashMap<String, Arc<dyn ObjectStore>>>,
+    azure_stores: RwLock<HashMap<String, Arc<dyn ObjectStore>>>,
 }
 
 impl ObjectStoreRegistry for CometObjectStoreRegistry {
@@ -445,15 +456,35 @@ impl ObjectStoreRegistry for CometObjectStoreRegistry {
         if is_azure_scheme(url.scheme()) {
             self.azure_stores
                 .write()
+                .unwrap_or_else(PoisonError::into_inner)
                 .insert(object_store_url_key(url), store)
         } else {
             self.default.register_store(url, store)
         }
     }
 
+    fn deregister_store(&self, url: &Url) -> DataFusionResult<Arc<dyn ObjectStore>> {
+        if is_azure_scheme(url.scheme()) {
+            self.azure_stores
+                .write()
+                .unwrap_or_else(PoisonError::into_inner)
+                .remove(&object_store_url_key(url))
+                .ok_or_else(|| {
+                    DataFusionError::Internal(format!("No suitable object store found for {url}"))
+                })
+        } else {
+            self.default.deregister_store(url)
+        }
+    }
+
     fn get_store(&self, url: &Url) -> DataFusionResult<Arc<dyn ObjectStore>> {
         if is_azure_scheme(url.scheme()) {
-            if let Some(store) = self.azure_stores.read().get(&object_store_url_key(url)) {
+            if let Some(store) = self
+                .azure_stores
+                .read()
+                .unwrap_or_else(PoisonError::into_inner)
+                .get(&object_store_url_key(url))
+            {
                 return Ok(Arc::clone(store));
             }
         }
@@ -747,7 +778,10 @@ mod tests {
     }
 
     #[test]
-    fn test_s3_store_cache_keys_by_host() {
+    fn test_non_azure_schemes_ignore_userinfo() {
+        // The URL shape here is synthetic: real S3 URLs carry the bucket in the host
+        // position, not in userinfo. Placing distinct userinfo in front of a shared host
+        // pins down that only Azure schemes include userinfo in the cache key.
         let configs = HashMap::from([
             (
                 "fs.s3a.aws.credentials.provider".into(),
@@ -755,11 +789,11 @@ mod tests {
             ),
             ("fs.s3a.endpoint.region".into(), "us-east-1".into()),
         ]);
-        let object_store = |bucket| {
+        let object_store = |userinfo| {
             let runtime_env = Arc::new(RuntimeEnv::default());
             let (object_store_url, _) = super::prepare_object_store_with_configs(
                 Arc::clone(&runtime_env),
-                format!("s3://{bucket}@shared-host/path/file.parquet"),
+                format!("s3://{userinfo}@shared-host/path/file.parquet"),
                 &configs,
             )
             .unwrap();
@@ -767,8 +801,8 @@ mod tests {
         };
 
         assert!(Arc::ptr_eq(
-            &object_store("bucket-a"),
-            &object_store("bucket-b")
+            &object_store("userinfo-a"),
+            &object_store("userinfo-b")
         ));
     }
 }

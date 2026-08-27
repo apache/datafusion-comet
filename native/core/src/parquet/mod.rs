@@ -49,9 +49,12 @@ use crate::execution::utils::SparkArrowConvert;
 use crate::jvm_bridge::JVMClasses;
 use crate::parquet::encryption_support::{CometEncryptionFactory, ENCRYPTION_FACTORY_ID};
 use crate::parquet::parquet_exec::init_datasource_exec;
-use crate::parquet::parquet_support::prepare_object_store_with_configs;
+use crate::parquet::parquet_support::{
+    prepare_object_store_with_configs, CometObjectStoreRegistry,
+};
 use arrow::array::{Array, RecordBatch};
 use datafusion::datasource::listing::PartitionedFile;
+use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::execution::SendableRecordBatchStream;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::{SessionConfig, SessionContext};
@@ -153,8 +156,19 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
     try_unwrap_or_throw(&e, |env| unsafe {
         JVMClasses::init(env);
         let session_config = SessionConfig::new().with_batch_size(batch_size as usize);
-        let planner =
-            PhysicalPlanner::new(Arc::new(SessionContext::new_with_config(session_config)), 0);
+        // This context is private to one reader, so its registry only ever sees a single
+        // store; the ABFS-aware registry is still installed so per-container isolation does
+        // not silently depend on that stays-private invariant.
+        let runtime_env = RuntimeEnvBuilder::new()
+            .with_object_store_registry(Arc::new(CometObjectStoreRegistry::default()))
+            .build_arc()?;
+        let planner = PhysicalPlanner::new(
+            Arc::new(SessionContext::new_with_config_rt(
+                session_config,
+                runtime_env,
+            )),
+            0,
+        );
         let session_ctx = planner.session_ctx();
 
         let path: String = file_path.try_to_string(env).unwrap();
