@@ -21,7 +21,7 @@ package org.apache.spark.sql.comet.execution.shuffle
 
 import org.apache.spark._
 import org.apache.spark.rdd.RDD
-import org.apache.spark.sql.comet.CometExecRDD
+import org.apache.spark.sql.comet.{CometExecRDD, CometMetricNode}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import org.apache.comet.CometShuffleBlockIterator
@@ -39,6 +39,7 @@ private[shuffle] class CometNativeShuffleInputRDD(
     var inputRDDs: Seq[RDD[_]],
     numPartitionsParam: Int,
     shuffleScanIndices: Set[Int],
+    spillMetricNode: CometMetricNode,
     @transient perPartitionByKey: Map[String, Array[Array[Byte]]] = Map.empty)
     extends RDD[Product2[Int, ColumnarBatch]](
       sc,
@@ -63,6 +64,7 @@ private[shuffle] class CometNativeShuffleInputRDD(
   override def compute(
       split: Partition,
       context: TaskContext): Iterator[Product2[Int, ColumnarBatch]] = {
+    spillMetricNode.reportSpillMetrics(context)
     val partition = split.asInstanceOf[CometNativeShuffleInputPartition]
     val (inputObjects, shuffleBlockIters) =
       CometExecRDD.resolveInputObjects(

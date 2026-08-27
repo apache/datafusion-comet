@@ -55,7 +55,7 @@ import org.apache.comet.CometSparkSessionExtensions._
 import org.apache.comet.rules.CometExecRule.allExecs
 import org.apache.comet.serde._
 import org.apache.comet.serde.operator._
-import org.apache.comet.shims.{ShimCometStreaming, ShimSubqueryBroadcast}
+import org.apache.comet.shims.{ShimCometStreaming, ShimCometWindowGroupLimit, ShimSubqueryBroadcast}
 
 object CometExecRule {
 
@@ -71,7 +71,7 @@ object CometExecRule {
    * Fully native operators.
    */
   val nativeExecs: Map[Class[_ <: SparkPlan], CometOperatorSerde[_]] =
-    Map(
+    Map[Class[_ <: SparkPlan], CometOperatorSerde[_]](
       classOf[ProjectExec] -> CometProjectExec,
       classOf[FilterExec] -> CometFilterExec,
       classOf[LocalLimitExec] -> CometLocalLimitExec,
@@ -87,7 +87,9 @@ object CometExecRule {
       classOf[SortExec] -> CometSortExec,
       classOf[LocalTableScanExec] -> CometLocalTableScanExec,
       classOf[SampleExec] -> CometSampleExec,
-      classOf[WindowExec] -> CometWindowExec)
+      classOf[WindowExec] -> CometWindowExec) ++
+      // WindowGroupLimitExec exists only on Spark 3.5+; the shim returns None on 3.4.
+      ShimCometWindowGroupLimit.windowGroupLimitClass.map(_ -> CometWindowGroupLimitExec)
 
   /**
    * Sinks that have a native plan of ScanExec.
