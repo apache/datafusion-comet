@@ -116,7 +116,8 @@ object CometArrayContains
     // -0.0/+0.0 and NaN. Report Incompatible (not Unsupported) for float/double element types (at
     // any nesting level) so the expression routes through the JVM codegen dispatcher (Spark's own
     // doGenCode) and stays native + Spark-exact under the default config, while non-float arrays
-    // keep the fast native kernel. Under allowIncompatible=true the native kernel is used as before.
+    // keep the fast native kernel. Under allowIncompatible=true the native kernel is used
+    // as before.
     case ArrayType(elementType, _)
         if SupportLevel.containsType(elementType, classOf[FloatType], classOf[DoubleType]) =>
       Incompatible(Some(floatingPointReason))
@@ -422,9 +423,10 @@ object CometArrayInsert extends CometExpressionSerde[ArrayInsert] with ArraysBas
     // a `CreateArray` source is widened to a deeply-nullable element type (see CometCreateArray),
     // while a standalone item (e.g. `map(2, coalesce(id, 0))`) keeps Spark's Catalyst nullability.
     // Cast BOTH sides in lockstep to the same deeply-nullable element type so their Arrow types
-    // match; Spark's `ArrayInsert.dataType` is `first.dataType.asNullable`, so this also matches the
-    // declared output element type. Casting only widens metadata and never changes values. Primitive
-    // element types are byte-identical on both sides, so the gate leaves them untouched.
+    // match; Spark's `ArrayInsert.dataType` is `first.dataType.asNullable`, so this also
+    // matches the declared output element type. Casting only widens metadata and never
+    // changes values. Primitive element types are byte-identical on both sides, so the gate
+    // leaves them untouched.
     val (srcChild, itemChild) = if (isComplexType(srcElementType)) {
       val elementType = deepNullable(srcElementType)
       val arrayType = ArrayType(elementType, containsNull = true)
