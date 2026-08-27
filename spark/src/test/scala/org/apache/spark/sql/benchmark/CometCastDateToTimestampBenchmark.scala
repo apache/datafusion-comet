@@ -37,7 +37,7 @@ import org.apache.comet.udf.codegen.CometScalaUDFCodegen
  */
 object CometCastDateToTimestampBenchmark extends CometBenchmarkBase {
 
-  override def runCometBenchmark(mainArgs: Array[String]): Unit = {
+  override def runCometBenchmark(mainArgs: Array[String]): Unit = try {
     val rows = mainArgs.headOption.map(_.toInt).getOrElse(1024 * 1024)
     withTempPath { dir =>
       withTempTable("date_cast_input") {
@@ -103,5 +103,7 @@ object CometCastDateToTimestampBenchmark extends CometBenchmarkBase {
         }
       }
     }
+  } finally {
+    spark.stop()
   }
 }
