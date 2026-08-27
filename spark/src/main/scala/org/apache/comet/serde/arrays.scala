@@ -29,7 +29,7 @@ import org.apache.spark.sql.types._
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
-import org.apache.comet.DataTypeSupport.isComplexType
+import org.apache.comet.DataTypeSupport.{deepNullable, isComplexType}
 import org.apache.comet.serde.QueryPlanSerde._
 import org.apache.comet.shims.{CometExprShim, CometTypeShim}
 
@@ -903,25 +903,6 @@ trait ArraysBase {
       .collectFirst { case dt if !isTypeSupported(dt) => dt }
       .map(dt => Unsupported(Some(s"data type not supported: $dt")))
       .getOrElse(Compatible())
-
-  /**
-   * A copy of `dt` with every array `containsNull`, map `valueContainsNull`, and struct field
-   * nullability forced to `true` at every nesting level (map key fields stay non-null per Arrow's
-   * map invariant). This is Spark's `DataType.asNullable`, re-derived here because that method is
-   * `private[spark]` and unreachable from this package. Used as a common cast target so that
-   * children whose native runtime types are more nullable than Spark's Catalyst types (e.g. a
-   * `map_entries` entry struct, whose `value` field Comet forces nullable) still unify for
-   * `make_array` (`CometCreateArray`) and for the strict source-element/item type check in native
-   * `ArrayInsert` (`CometArrayInsert`).
-   */
-  def deepNullable(dt: DataType): DataType = dt match {
-    case ArrayType(et, _) => ArrayType(deepNullable(et), containsNull = true)
-    case MapType(kt, vt, _) =>
-      MapType(deepNullable(kt), deepNullable(vt), valueContainsNull = true)
-    case StructType(fields) =>
-      StructType(fields.map(f => f.copy(dataType = deepNullable(f.dataType), nullable = true)))
-    case other => other
-  }
 }
 
 object CometArrayTransform extends CometCodegenDispatch[ArrayTransform]
