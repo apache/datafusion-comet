@@ -51,6 +51,9 @@ runs:
         restore-keys: |
           ${{ runner.os }}-rust-maven-
 
+    - name: Setup Maven
+      uses: ./.github/actions/setup-maven
+
     - name: Build common module (pre-requisite for Rust tests)
       shell: bash
       run: |

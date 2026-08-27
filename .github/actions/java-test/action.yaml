@@ -76,45 +76,8 @@ runs:
         restore-keys: |
           ${{ runner.os }}-java-maven-
 
-    # Maven itself is stored outside the dependency repository. Keep its cache
-    # independent of pom.xml changes and preserve the macOS cache workaround.
-    - name: Restore Maven distribution
-      id: maven-distribution
-      if: ${{ runner.os != 'macOS' }}
-      uses: actions/cache/restore@v5
-      with:
-        path: |
-          ~/.m2/wrapper/dists
-          /root/.m2/wrapper/dists
-        key: ${{ runner.os }}-${{ runner.arch }}-maven-wrapper-${{ hashFiles('.mvn/wrapper/maven-wrapper.properties') }}
-
-    # Retry only the wrapper download, never compilation or test execution.
-    # Delays use exponential backoff (10s, 20s, 40s) plus 0-4s of random jitter.
-    - name: Bootstrap Maven
-      shell: bash
-      run: |
-        for attempt in 1 2 3 4; do
-          if ./mvnw -B --version; then
-            break
-          fi
-          if [ "$attempt" -eq 4 ]; then
-            echo "::error::Maven bootstrap failed after $attempt attempts; tests were not started."
-            exit 1
-          fi
-          delay=$((10 * (1 << (attempt - 1)) + RANDOM % 5))
-          echo "::warning::Maven bootstrap attempt $attempt failed; retrying in ${delay}s."
-          sleep "$delay"
-        done
-
-    # Save a successful bootstrap even when the subsequent tests fail.
-    - name: Save Maven distribution
-      if: ${{ runner.os != 'macOS' && steps.maven-distribution.outputs.cache-hit != 'true' }}
-      uses: actions/cache/save@v5
-      with:
-        path: |
-          ~/.m2/wrapper/dists
-          /root/.m2/wrapper/dists
-        key: ${{ steps.maven-distribution.outputs.cache-primary-key }}
+    - name: Setup Maven
+      uses: ./.github/actions/setup-maven
 
     - name: Run all tests
       shell: bash
@@ -123,7 +86,7 @@ runs:
         SPARK_LOCAL_HOSTNAME: "localhost"
         SPARK_LOCAL_IP: "127.0.0.1"
       run: |
-        MAVEN_OPTS="-Xmx4G -Xms2G -XX:+UnlockDiagnosticVMOptions -XX:+ShowMessageBoxOnError -XX:+HeapDumpOnOutOfMemoryError -XX:ErrorFile=./hs_err_pid%p.log" SPARK_HOME=`pwd` ./mvnw -B -Prelease install ${{ inputs.maven_opts }}
+        MAVEN_OPTS="${MAVEN_OPTS:-} -Xmx4G -Xms2G -XX:+UnlockDiagnosticVMOptions -XX:+ShowMessageBoxOnError -XX:+HeapDumpOnOutOfMemoryError -XX:ErrorFile=./hs_err_pid%p.log" SPARK_HOME=`pwd` ./mvnw -B -Prelease install ${{ inputs.maven_opts }}
     - name: Run specified tests
       shell: bash
       if: ${{ inputs.suites != '' }}
@@ -133,7 +96,7 @@ runs:
       run: |
         MAVEN_SUITES="$(echo "${{ inputs.suites }}" | paste -sd, -)"
         echo "Running with MAVEN_SUITES=$MAVEN_SUITES"
-        MAVEN_OPTS="-Xmx4G -Xms2G -DwildcardSuites=$MAVEN_SUITES -XX:+UnlockDiagnosticVMOptions -XX:+ShowMessageBoxOnError -XX:+HeapDumpOnOutOfMemoryError -XX:ErrorFile=./hs_err_pid%p.log" SPARK_HOME=`pwd` ./mvnw -B -Prelease install ${{ inputs.maven_opts }}
+        MAVEN_OPTS="${MAVEN_OPTS:-} -Xmx4G -Xms2G -DwildcardSuites=$MAVEN_SUITES -XX:+UnlockDiagnosticVMOptions -XX:+ShowMessageBoxOnError -XX:+HeapDumpOnOutOfMemoryError -XX:ErrorFile=./hs_err_pid%p.log" SPARK_HOME=`pwd` ./mvnw -B -Prelease install ${{ inputs.maven_opts }}
     - name: Upload crash logs
       if: failure()
       uses: actions/upload-artifact@v6

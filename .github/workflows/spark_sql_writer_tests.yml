@@ -116,11 +116,11 @@ jobs:
           spark-version: ${{ steps.resolve.outputs.spark-full }}
           spark-short-version: ${{ inputs.spark-version }}
           skip-native-build: true
+          sbt-projects: sql
 
       - name: Run Parquet writer tests
         run: |
           cd apache-spark
-          rm -rf /root/.m2/repository/org/apache/parquet # somehow parquet cache requires cleanups
           # SERIAL_SBT_TESTS gates SparkParallelTestGrouping in
           # project/SparkBuild.scala. We always set it to reduce peak memory
           # on standard 7 GB runners (3.5 and 4.1 are unaffected by the

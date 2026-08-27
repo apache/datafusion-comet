@@ -119,6 +119,9 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-java-maven-
 
+      - name: Setup Maven
+        uses: ./.github/actions/setup-maven
+
       - name: Run scalafix check
         run: |
           ./mvnw -B package -DskipTests scalafix:scalafix -Dscalafix.mode=CHECK -Psemanticdb ${{ matrix.profile.maven_opts }}
@@ -172,6 +175,9 @@ jobs:
           key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}-spark-4.1-build
           restore-keys: |
             ${{ runner.os }}-java-maven-
+
+      - name: Setup Maven
+        uses: ./.github/actions/setup-maven
 
       - name: Compile (skip tests)
         run: ./mvnw -B install -DskipTests -Dmaven.test.skip=true -Pspark-4.1
@@ -492,6 +498,9 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-java-maven-
 
+      - name: Setup Maven
+        uses: ./.github/actions/setup-maven
+
       - name: Cache TPC-H data
         id: cache-tpch
         uses: actions/cache@v6
@@ -506,7 +515,7 @@ jobs:
       - name: Generate TPC-H data (SF=1)
         if: steps.cache-tpch.outputs.cache-hit != 'true'
         run: |
-          cd spark && MAVEN_OPTS='-Xmx20g' ../mvnw -B -Prelease exec:java -Dexec.mainClass="org.apache.spark.sql.GenTPCHData" -Dexec.classpathScope="test" -Dexec.cleanupDaemonThreads="false" -Dexec.args="--location `pwd`/.. --scaleFactor 1 --numPartitions 1 --overwrite"
+          cd spark && MAVEN_OPTS="${MAVEN_OPTS:-} -Xmx20g" ../mvnw -B -Prelease exec:java -Dexec.mainClass="org.apache.spark.sql.GenTPCHData" -Dexec.classpathScope="test" -Dexec.cleanupDaemonThreads="false" -Dexec.args="--location `pwd`/.. --scaleFactor 1 --numPartitions 1 --overwrite"
 
       - name: Run TPC-H queries
         run: |
@@ -547,6 +556,9 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-java-maven-
 
+      - name: Setup Maven
+        uses: ./.github/actions/setup-maven
+
       - name: Cache TPC-DS data
         id: cache-tpcds
         uses: actions/cache@v6
@@ -575,7 +587,7 @@ jobs:
       - name: Generate TPC-DS data (SF=1)
         if: steps.cache-tpcds.outputs.cache-hit != 'true'
         run: |
-          cd spark && MAVEN_OPTS='-Xmx20g' ../mvnw -B -Prelease exec:java -Dexec.mainClass="org.apache.spark.sql.GenTPCDSData" -Dexec.classpathScope="test" -Dexec.cleanupDaemonThreads="false" -Dexec.args="--dsdgenDir `pwd`/../tpcds-kit/tools --location `pwd`/../tpcds-sf-1 --scaleFactor 1 --numPartitions 1"
+          cd spark && MAVEN_OPTS="${MAVEN_OPTS:-} -Xmx20g" ../mvnw -B -Prelease exec:java -Dexec.mainClass="org.apache.spark.sql.GenTPCDSData" -Dexec.classpathScope="test" -Dexec.cleanupDaemonThreads="false" -Dexec.args="--dsdgenDir `pwd`/../tpcds-kit/tools --location `pwd`/../tpcds-sf-1 --scaleFactor 1 --numPartitions 1"
 
       - name: Run TPC-DS queries (Sort merge join)
         run: |

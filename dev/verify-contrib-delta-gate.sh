@@ -66,20 +66,41 @@ export GIT_CONFIG_COUNT=$((GIT_CONFIG_IDX + 1))
 # launch, produce no dependency output, and trip the anti-vacuous guard below.
 # `./mvnw` self-provisions the pinned Maven version regardless of the image.
 MVNW="$ROOT/mvnw"
+RETRY_DOWNLOAD="$ROOT/dev/ci/retry-download.sh"
+
+# Keep a fixed set of command logs outside Maven's target directories, which the
+# compiled-class gate cleans. CI uploads this directory if any gate fails.
+LOG_DIR="${COMET_DELTA_GATE_LOG_DIR:-$ROOT/artifactlog/delta-build-gate}"
+mkdir -p "$LOG_DIR"
+LOG_DIR="$(cd "$LOG_DIR" && pwd)"
 
 red()   { printf '\033[31m%s\033[0m\n' "$*"; }
 green() { printf '\033[32m%s\033[0m\n' "$*"; }
 hdr()   { printf '\n\033[36m==> %s\033[0m\n' "$*"; }
 
+# Keep stdout separate so cargo-tree output can still be inspected without
+# mistaking dependency-download messages on stderr for entries in the tree.
+run_logged() { # args: log name, command, arguments
+  local name="$1"
+  shift
+  local status
+  if "$@" >"$LOG_DIR/$name.stdout.log" 2>"$LOG_DIR/$name.stderr.log"; then
+    cat "$LOG_DIR/$name.stdout.log"
+  else
+    status=$?
+    red "FAIL: $name exited with status $status (logs: $LOG_DIR/$name.*.log)" >&2
+    tail -n 60 "$LOG_DIR/$name.stdout.log" "$LOG_DIR/$name.stderr.log" >&2 || true
+    return "$status"
+  fi
+}
+
 # ---- Cargo gate -----------------------------------------------------------
 
 hdr "Cargo: default build does not depend on comet-contrib-delta / delta_kernel"
 cd "$NATIVE_DIR"
-TREE_DEFAULT="$(cargo tree -p datafusion-comet --no-default-features 2>/dev/null)"
-# Anti-vacuous (mirrors the Maven gate below): a failing `cargo tree` yields empty output, and the
-# command-substitution failure doesn't trip `set -e` in an assignment -- so assert the root crate we
-# KNOW is always present before concluding "no Delta deps", otherwise a broken cargo-tree run would
-# pass the leak check vacuously. (`datafusion-comet ` with a trailing space matches only the root
+TREE_DEFAULT="$(run_logged cargo-tree-default cargo tree -p datafusion-comet --no-default-features)"
+# Also reject unexpectedly empty output after a successful command before concluding
+# "no Delta deps". (`datafusion-comet ` with a trailing space matches only the root
 # crate line, not `datafusion-comet-proto`/`-common`.)
 if ! grep -q 'datafusion-comet ' <<<"$TREE_DEFAULT"; then
   red "FAIL: default cargo tree produced no datafusion-comet entry (cargo tree likely failed;"
@@ -93,7 +114,7 @@ if grep -qE 'comet-contrib-delta|delta_kernel|delta-kernel' <<<"$TREE_DEFAULT"; 
 fi
 green "OK: cargo tree default is clean of contrib + kernel"
 
-TREE_CONTRIB="$(cargo tree -p datafusion-comet --features contrib-delta 2>/dev/null)"
+TREE_CONTRIB="$(run_logged cargo-tree-contrib cargo tree -p datafusion-comet --features contrib-delta)"
 # The build-gate unit ships a STUB contrib crate, so the gated tree pulls in
 # `comet-contrib-delta` but not yet the heavy `delta_kernel` (that arrives with the
 # native read-path unit). Require the contrib crate to be present; the symbol check
@@ -111,37 +132,57 @@ hdr "Maven: default profile excludes io.delta:* dependencies"
 cd "$ROOT"
 # `dependency:list` can't run in a fresh CI checkout: it needs the sibling reactor JARs
 # (comet-common, the shims) which aren't built, so it fails with a resolution error and no
-# output. `help:effective-pom` only merges POM models (no artifact resolution), so it works
-# without a build. We extract the ACTIVE top-level <dependencies> -- after </dependencyManagement>,
+# output. `help:effective-pom` only merges POM models (no reactor JAR resolution), so it works
+# without a build, but its Maven plugins still need to be downloaded. We extract the ACTIVE
+# top-level <dependencies> -- after </dependencyManagement>,
 # before the <profiles> listing -- which is exactly what dependency:list would have shown for the
 # active profiles (and excludes the inactive contrib-delta profile's own io.delta declaration).
-# Last effective-pom invocation's combined output, kept so the anti-vacuous guard can SHOW why
-# mvn failed instead of swallowing it.
-EPOM_LOG="$(mktemp)"
-delta_active_deps() { # args: -P / -D flags
-  local epom
-  epom="$(mktemp)"
-  "$MVNW" help:effective-pom -Djava.version=17 -Dmaven.gitcommitid.skip -pl spark \
-    -Doutput="$epom" "$@" >"$EPOM_LOG" 2>&1 || true
-  awk '/<\/dependencyManagement>/{f=1} /<profiles>/{f=0} f' "$epom"
-  rm -f "$epom"
+delta_active_deps() { # args: log name, -P / -D flags
+  local name="$1"
+  shift
+  local epom="$LOG_DIR/$name.pom.log"
+  : >"$epom"
+  # Retry only transient download failures during model/plugin resolution. -U
+  # lets a retry resolve an artifact whose earlier transfer failure was cached.
+  # Compilation and tests below are deliberately not retried.
+  if run_logged "$name" "$RETRY_DOWNLOAD" "$MVNW" -U help:effective-pom \
+      -Djava.version=17 -Dmaven.gitcommitid.skip -pl spark \
+      -Doutput="$epom" "$@" >/dev/null; then
+    awk '/<\/dependencyManagement>/{f=1} /<profiles>/{f=0} f' "$epom"
+  else
+    return $?
+  fi
 }
 # Resolved delta-spark version from the active deps (empty if absent).
-delta_spark_version() { # args: -P flags
-  delta_active_deps "$@" |
-    grep -A2 'artifactId>delta-spark' |
-    grep -oE '<version>[^<]+' | sed -n '1s/<version>//p'
+delta_spark_version() { # args: log name, -P flags
+  local deps
+  deps="$(delta_active_deps "$@")" || return $?
+  # Keep an absent version empty so the profile-specific assertion below reports
+  # it, while an actual Maven failure retains its status and diagnostic log.
+  awk '
+    /artifactId>delta-spark/ { remaining = 3 }
+    remaining > 0 {
+      if (/<version>/) {
+        sub(/.*<version>/, "")
+        sub(/<.*/, "")
+        print
+        exit
+      }
+      remaining--
+    }
+  ' <<<"$deps"
 }
 
-DEPS_DEFAULT="$(delta_active_deps -Pspark-4.1)"
-# Anti-vacuous: a broken mvn run yields empty output; assert a dep we KNOW is always present so a
-# broken run fails loudly instead of "passing" the io.delta check by finding nothing.
+DEPS_DEFAULT="$(delta_active_deps maven-default-spark-4.1 -Pspark-4.1)"
+# Even after Maven succeeds, assert a dep we KNOW is always present rather than
+# "passing" the io.delta check on unexpectedly empty effective-pom output.
 if ! grep -q '<groupId>org.apache.spark</groupId>' <<<"$DEPS_DEFAULT"; then
-  red "FAIL: default effective-pom produced no org.apache.spark deps (mvn likely failed;"
-  red "      refusing to conclude 'zero io.delta' vacuously)"
+  red "FAIL: default effective-pom produced no org.apache.spark deps;"
+  red "      refusing to conclude 'zero io.delta' vacuously"
   red "      --- mvnw: $MVNW (java=${JAVA_HOME:-unset}) ---"
   red "      --- effective-pom output (last 60 lines) ---"
-  tail -60 "$EPOM_LOG" >&2 || true
+  tail -n 60 "$LOG_DIR/maven-default-spark-4.1.stdout.log" \
+    "$LOG_DIR/maven-default-spark-4.1.stderr.log" >&2 || true
   exit 1
 fi
 if grep -q '<groupId>io.delta</groupId>' <<<"$DEPS_DEFAULT"; then
@@ -154,17 +195,17 @@ green "OK: default Maven build has zero io.delta dependencies"
 # Per-Spark Delta version pinning: spark-4.1 -> delta-spark 4.1.x, spark-3.5 -> 3.x, spark-4.0 ->
 # 4.0.x (Delta 4.1 needs Spark 4.1 internals; 4.0 must stay on 4.0.x to avoid a runtime
 # NoSuchMethodError on ParserInterface.$init$).
-V41="$(delta_spark_version -Pspark-4.1,contrib-delta)"
+V41="$(delta_spark_version maven-contrib-spark-4.1 -Pspark-4.1,contrib-delta)"
 case "$V41" in
   4.1.*) green "OK: -Pcontrib-delta + spark-4.1 correctly pulls delta-spark $V41" ;;
   *) red "FAIL: -Pcontrib-delta + spark-4.1 expected delta-spark 4.1.x, got '${V41:-<none>}'"; exit 1 ;;
 esac
-V35="$(delta_spark_version -Pspark-3.5,contrib-delta)"
+V35="$(delta_spark_version maven-contrib-spark-3.5 -Pspark-3.5,contrib-delta)"
 case "$V35" in
   3.*) green "OK: -Pcontrib-delta + spark-3.5 correctly pulls delta-spark $V35" ;;
   *) red "FAIL: -Pcontrib-delta + spark-3.5 expected delta-spark 3.x, got '${V35:-<none>}'"; exit 1 ;;
 esac
-V40="$(delta_spark_version -Pspark-4.0,contrib-delta)"
+V40="$(delta_spark_version maven-contrib-spark-4.0 -Pspark-4.0,contrib-delta)"
 case "$V40" in
   4.0.*) green "OK: -Pcontrib-delta + spark-4.0 correctly pulls delta-spark $V40" ;;
   *) red "FAIL: -Pcontrib-delta + spark-4.0 expected delta-spark 4.0.x, got '${V40:-<none>}'"; exit 1 ;;
@@ -181,7 +222,7 @@ cd "$ROOT"
 # resources. Without `clean`, this gate reports a leak that is really just a stale artifact, and
 # a developer who sees one false FAIL learns to ignore the gate. Build from scratch so what we
 # find in target/classes is exactly what THIS default build produced.
-"$MVNW" -Pspark-4.1 -Djava.version=17 -Dmaven.compiler.source=17 -Dmaven.compiler.target=17 -Dmaven.gitcommitid.skip -pl spark -am clean test-compile -q -DskipTests=true >/dev/null 2>&1
+run_logged maven-test-compile "$MVNW" -Pspark-4.1 -Djava.version=17 -Dmaven.compiler.source=17 -Dmaven.compiler.target=17 -Dmaven.gitcommitid.skip -pl spark -am clean test-compile -q -DskipTests=true
 LEAK_CLASSES="$(find spark/target/classes -path '*comet/contrib*' -name '*.class' 2>/dev/null)"
 if [[ -n "$LEAK_CLASSES" ]]; then
   red "FAIL: default Maven build compiled contrib classes:"
@@ -251,8 +292,9 @@ delta_syms() {
   nm "$1" 2>/dev/null | grep -ciE 'comet_contrib_delta|delta_kernel|deltadvfilter|deltasynthetic' || true
 }
 
-cargo clean -p comet-contrib-delta -p datafusion-comet >/dev/null 2>&1 || true
-cargo build -j 4 -p datafusion-comet >/dev/null 2>&1
+cargo clean -p comet-contrib-delta -p datafusion-comet >"$LOG_DIR/cargo-clean.stdout.log" \
+  2>"$LOG_DIR/cargo-clean.stderr.log" || true
+run_logged cargo-build-default cargo build -j 4 -p datafusion-comet
 LIB_DEFAULT="$(comet_lib)"
 if [[ -z "$LIB_DEFAULT" ]]; then
   red "FAIL: default build produced no libcomet.{so,dylib} under $NATIVE_DIR/target/debug"
@@ -270,7 +312,7 @@ if [[ "$EXT_SYMS" -ne 0 ]]; then
 fi
 green "OK: default libcomet has 0 Delta symbols (size=$SIZE_DEFAULT bytes)"
 
-cargo build -j 4 -p datafusion-comet --features contrib-delta >/dev/null 2>&1
+run_logged cargo-build-contrib cargo build -j 4 -p datafusion-comet --features contrib-delta
 LIB_CONTRIB="$(comet_lib)"
 SIZE_CONTRIB="$(lib_size "$LIB_CONTRIB")"
 if [[ "$SIZE_CONTRIB" -le "$SIZE_DEFAULT" ]]; then
