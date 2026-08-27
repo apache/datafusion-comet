@@ -1234,7 +1234,7 @@ fn is_leap_year(year: i64) -> bool {
 /// Days since 1970-01-01 for a proleptic Gregorian year/month/day, or `None` when the
 /// combination is not a real calendar date. Unlike `NaiveDate::from_ymd_opt`, this accepts
 /// any year that fits in `i64`.
-fn ymd_to_epoch_day(year: i64, month: i64, day: i64) -> Option<i64> {
+pub(crate) fn ymd_to_epoch_day(year: i64, month: i64, day: i64) -> Option<i64> {
     const DAYS_IN_MONTH: [i64; 12] = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
     let mut max_day = *DAYS_IN_MONTH.get(usize::try_from(month.checked_sub(1)?).ok()?)?;
     if month == 2 && is_leap_year(year) {

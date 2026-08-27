@@ -4200,11 +4200,7 @@ class CometExecSuite extends CometTestBase {
         }
         // Spark reports its own per-file read failures as FAILED_READ_FILE carrying the path.
         // Comet's native scan must do the same instead of leaking a raw CometNativeException.
-        val messages = Iterator
-          .iterate(e: Throwable)(_.getCause)
-          .takeWhile(_ != null)
-          .map(t => s"${t.getClass.getName}: ${t.getMessage}")
-          .toList
+        val messages = causeChain(e).map(t => s"${t.getClass.getName}: ${t.getMessage}")
         val chain = messages.mkString("\n  ")
         // `cannotReadFilesError` is the FAILED_READ_FILE path. Its message is version-stable
         // ("Encountered error while reading file ..."); only Spark 4.x prepends the
@@ -4239,11 +4235,7 @@ class CometExecSuite extends CometTestBase {
         val e = intercept[Throwable] {
           df.collect()
         }
-        val messages = Iterator
-          .iterate(e: Throwable)(_.getCause)
-          .takeWhile(_ != null)
-          .map(t => s"${t.getClass.getName}: ${t.getMessage}")
-          .toList
+        val messages = causeChain(e).map(t => s"${t.getClass.getName}: ${t.getMessage}")
         val chain = messages.mkString("\n  ")
         assert(
           messages.exists(m =>
