@@ -1057,24 +1057,39 @@ class CometExecRuleSuite extends CometTestBase {
     (action, runIt) <- Seq[(String, org.apache.spark.sql.DataFrame => Unit)](
       "collect" -> (df => df.collect()),
       "toRdd.count" -> (df => df.queryExecution.toRdd.count()))
+    // The second shape is the one where the plan that AQE reports back cannot be recognized by a
+    // mark of any kind: `RemoveRedundantSorts` drops the outer sort before this rule sees the
+    // plan, so the mark lands on the join below it, and empty propagation replaces the join and
+    // then the sort, leaving a root that inherited the unmarked sort's tags.
+    (shape, query, marker) <- Seq(
+      (
+        "aggregate",
+        "SELECT id % 2 AS k, count(*) AS n FROM range(20) WHERE id < 0 GROUP BY id % 2",
+        "HashAggregate"),
+      (
+        "join under a removed root sort",
+        """SELECT a.id FROM range(0, 20, 1, 2) a
+          |JOIN range(0, 20, 1, 2) b ON a.id % 7 = b.id % 7
+          |WHERE a.id < 0
+          |SORT BY a.id % 7""".stripMargin,
+        "SortMergeJoin"))
   } {
-    test(s"plan-only mode: one report when the plan becomes empty (AQE=$aqe, $action)") {
+    test(s"plan-only mode: one report when the plan becomes empty ($shape, AQE=$aqe, $action)") {
       withSQLConf(
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe.toString,
+        // Force a shuffled join so the join shape has a stage that can materialize empty.
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+        SQLConf.SHUFFLE_PARTITIONS.key -> "2",
         CometConf.COMET_ENABLED.key -> "true",
         CometConf.COMET_EXEC_ENABLED.key -> "true",
         CometConf.COMET_EXPLAIN_PLAN_ONLY_ENABLED.key -> "true") {
-        val reports = capturePlanOnlyReports {
-          runIt(
-            spark.sql(
-              "SELECT id % 2 AS k, count(*) AS n FROM range(20) WHERE id < 0 GROUP BY id % 2"))
-        }
+        val reports = capturePlanOnlyReports(runIt(spark.sql(query)))
         assert(
           reports.size == 1,
           s"expected one report, got ${reports.size}:\n${reports.mkString("\n\n")}")
         // The one report must describe the query, not the empty relation AQE replaced it with.
         assert(
-          reports.head.contains("HashAggregate"),
+          reports.head.contains(marker),
           s"the report does not describe the query:\n${reports.head}")
       }
     }
