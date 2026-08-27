@@ -31,6 +31,7 @@ import org.apache.spark.sql.execution.command.DataWritingCommandExec
 import org.apache.spark.sql.execution.datasources.{InsertIntoHadoopFsRelationCommand, WriteFilesExec}
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.types.{DateType, TimestampType}
 
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
@@ -76,6 +77,34 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
             val codec = parseCompressionCodec(cmd)
             if (!supportedCompressionCodes.contains(codec)) {
               return Unsupported(Some(s"Unsupported compression codec: $codec"))
+            }
+
+            // The native writer always writes proleptic Gregorian (corrected) datetime values
+            // and stamps `org.apache.spark.version` with no legacy markers. Honoring a LEGACY
+            // write rebase mode would require rebasing the values and stamping
+            // `org.apache.spark.legacyDateTime` / `org.apache.spark.legacyINT96`, so fall back
+            // to Spark rather than silently ignoring the requested mode and letting readers
+            // trust a "corrected" marker over legacy-intent data. TIMESTAMP_NTZ is exempt
+            // because Spark never rebases NTZ values on write.
+            val hasDate = cmd.query.output.exists(a =>
+              SupportLevel.containsType(a.dataType, classOf[DateType]))
+            val hasTimestamp = cmd.query.output.exists(a =>
+              SupportLevel.containsType(a.dataType, classOf[TimestampType]))
+            // Both write rebase mode configs default to EXCEPTION in all supported Spark
+            // versions.
+            def isLegacyWriteMode(key: String): Boolean =
+              SQLConf.get.getConfString(key, "EXCEPTION").toUpperCase(Locale.ROOT) == "LEGACY"
+            val legacyModeKeys =
+              ((if (hasDate || hasTimestamp) Seq(SQLConf.PARQUET_REBASE_MODE_IN_WRITE.key)
+                else Seq.empty) ++
+                (if (hasTimestamp) Seq(SQLConf.PARQUET_INT96_REBASE_MODE_IN_WRITE.key)
+                 else Seq.empty)).filter(isLegacyWriteMode)
+            if (legacyModeKeys.nonEmpty) {
+              return Unsupported(
+                Some(
+                  "Native Parquet write always writes corrected (proleptic Gregorian) " +
+                    "datetime values and does not support LEGACY rebase mode " +
+                    s"(${legacyModeKeys.mkString(", ")})"))
             }
 
             Incompatible(Some("Parquet write support is highly experimental"))

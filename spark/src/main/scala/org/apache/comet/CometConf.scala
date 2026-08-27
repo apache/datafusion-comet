@@ -771,6 +771,22 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(true)
 
+  val COMET_SCAN_PARQUET_CHECK_DATETIME_REBASE: ConfigEntry[Boolean] =
+    conf("spark.comet.scan.parquet.checkDatetimeRebase")
+      .category(CATEGORY_SCAN)
+      .doc(
+        "Whether to inspect Parquet footer metadata during planning to detect files whose " +
+          "dates/timestamps may require legacy (hybrid Julian/Gregorian) datetime rebasing, " +
+          "and fall back to Spark for those scans. The check reads each input file's footer " +
+          "on the driver the first time the file is planned; results are cached per file. " +
+          "Disable only when all input files are known to contain datetime values written " +
+          "with the proleptic Gregorian calendar (for example, written by Spark 3.x or later " +
+          "with corrected rebase modes). When disabled, Comet reads legacy files without " +
+          "rebasing, which produces results that differ from Spark for dates and timestamps " +
+          s"before 1582-10-15. $COMPAT_GUIDE.")
+      .booleanConf
+      .createWithDefault(true)
+
   val COMET_SCAN_ALLOW_DISABLED_PARQUET_VECTORIZED_READER: ConfigEntry[Boolean] =
     conf("spark.comet.scan.allowDisabledParquetVectorizedReader")
       .category(CATEGORY_SCAN)

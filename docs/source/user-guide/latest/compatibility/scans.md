@@ -47,7 +47,11 @@ The following features are not supported and cause Comet to fall back to Spark:
   `spark.sql.parquet.datetimeRebaseModeInRead` /
   `spark.sql.parquet.int96RebaseModeInRead` requires legacy-calendar handling. This includes
   files written by any Spark version with a corresponding legacy rebase mode, not only files
-  written before Spark 3.0. See [#5010](https://github.com/apache/datafusion-comet/issues/5010).
+  written before Spark 3.0. Detecting this requires reading each input file's footer on the
+  driver during planning (results are cached per file); users whose data is known to be free
+  of legacy-calendar values can skip the check by setting
+  `spark.comet.scan.parquet.checkDatetimeRebase=false`.
+  See [#5010](https://github.com/apache/datafusion-comet/issues/5010).
 - `spark.sql.parquet.enableVectorizedReader=false`. Disabling the vectorized reader opts into
   Spark's parquet-mr semantics (silent overflow, null-on-narrowing), which Comet's native reader
   does not replicate. By default Comet falls back to Spark in this case. Set

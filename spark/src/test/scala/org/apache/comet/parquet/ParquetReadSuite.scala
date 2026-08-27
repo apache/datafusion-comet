@@ -29,7 +29,7 @@ import scala.reflect.runtime.universe.TypeTag
 import org.scalactic.source.Position
 import org.scalatest.Tag
 
-import org.apache.hadoop.fs.Path
+import org.apache.hadoop.fs.{FileUtil, Path}
 import org.apache.parquet.example.data.simple.SimpleGroup
 import org.apache.parquet.schema.MessageTypeParser
 import org.apache.spark.SparkException
@@ -1766,9 +1766,13 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
           .find(_.getName.endsWith(".parquet"))
           .get
       }
-      def requiresRebase(paths: Seq[Path]): Boolean =
+      def fileInfo(p: Path): CometScanUtils.ParquetFileInfo = {
+        val status = p.getFileSystem(hadoopConf).getFileStatus(p)
+        CometScanUtils.ParquetFileInfo(p, status.getLen, status.getModificationTime)
+      }
+      def requiresRebase(files: Seq[CometScanUtils.ParquetFileInfo]): Boolean =
         CometScanUtils.requiresDatetimeRebase(
-          paths,
+          files,
           hadoopConf,
           "CORRECTED",
           "CORRECTED",
@@ -1777,10 +1781,19 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
 
       val correctedFile = parquetFile(correctedPath)
       val legacyFile = parquetFile(legacyPath)
-      assert(requiresRebase(Seq(correctedFile, legacyFile)))
-      assert(
-        requiresRebase(
-          Seq.fill(8)(legacyFile) :+ new Path(path.toString, "must-not-be-read.parquet")))
+      assert(requiresRebase(Seq(fileInfo(correctedFile), fileInfo(legacyFile))))
+
+      // Early exit: eight not-yet-cached legacy footers fill every read slot, so the
+      // nonexistent ninth file must never be opened.
+      val fs = legacyFile.getFileSystem(hadoopConf)
+      val legacyCopies = (0 until 8).map { i =>
+        val copy = new Path(path.toString, s"legacy-copy-$i.parquet")
+        FileUtil.copy(fs, legacyFile, fs, copy, false, hadoopConf)
+        fileInfo(copy)
+      }
+      val missingFile =
+        CometScanUtils.ParquetFileInfo(new Path(path.toString, "must-not-be-read.parquet"), 0, 0)
+      assert(requiresRebase(legacyCopies :+ missingFile))
 
       val df = spark.read.parquet(correctedPath.toString, legacyPath.toString)
       val plan = df.queryExecution.executedPlan
@@ -1794,6 +1807,21 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
           1L,
           java.sql.Timestamp.valueOf("1000-01-01 00:00:00"),
           java.sql.Timestamp.valueOf("1000-01-01 00:00:00")))
+
+      // Disabling the check restores the previous behavior: the legacy file no longer causes
+      // a fallback (and its ancient values are then read without rebasing).
+      withSQLConf(CometConf.COMET_SCAN_PARQUET_CHECK_DATETIME_REBASE.key -> "false") {
+        val uncheckedPlan =
+          spark.read.parquet(legacyPath.toString).queryExecution.executedPlan
+        assert(collect(uncheckedPlan) { case _: CometNativeScanExec => true }.nonEmpty)
+      }
+
+      // Footer facts are cached per (path, length, modificationTime): the corrected file can
+      // be answered again without any I/O even after the underlying file is deleted.
+      val correctedInfo = fileInfo(correctedFile)
+      assert(!requiresRebase(Seq(correctedInfo)))
+      fs.delete(correctedFile, false)
+      assert(!requiresRebase(Seq(correctedInfo)))
     }
   }
 
@@ -1806,9 +1834,12 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
             |""".stripMargin).coalesce(1).write.parquet(path.toString)
       }
 
+      // NTZ values themselves are never rebased by Spark; the check only matters where a
+      // Parquet TIMESTAMP (LTZ/INT96) column may be read as NTZ, which Comet permits only
+      // when COMET_ALLOW_TIMESTAMP_LTZ_AS_NTZ is true (Spark 4.x).
       val (_, cometPlan) = checkSparkAnswer(spark.read.parquet(path.toString).select("ts_ntz"))
       val nativeScans = collect(cometPlan) { case _: CometNativeScanExec => true }
-      if (CometConf.COMET_SCHEMA_EVOLUTION_ENABLED) {
+      if (CometConf.COMET_ALLOW_TIMESTAMP_LTZ_AS_NTZ) {
         assert(nativeScans.isEmpty)
       } else {
         assert(nativeScans.nonEmpty)

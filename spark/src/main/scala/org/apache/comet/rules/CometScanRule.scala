@@ -295,17 +295,25 @@ case class CometScanRule(session: SparkSession)
     }
     val cometScan = CometScanExec(scanExec, session)
     val hasDate = SupportLevel.containsType(scanExec.requiredSchema, classOf[DateType])
+    // TIMESTAMP_NTZ values are never rebased by Spark, on write or on read (Spark's
+    // ParquetVectorUpdaterFactory: "TIMESTAMP_NTZ is a new data type and has no legacy files
+    // that need to do rebase"). The rebase question arises for a requested NTZ column only
+    // when the underlying Parquet column is a TIMESTAMP (LTZ or INT96) that may carry
+    // legacy-calendar values, and Comet permits that read only when
+    // COMET_ALLOW_TIMESTAMP_LTZ_AS_NTZ is true (Spark 4.x, SPARK-47447).
     val hasTimestamp =
       SupportLevel.containsType(scanExec.requiredSchema, classOf[TimestampType]) ||
-        (COMET_SCHEMA_EVOLUTION_ENABLED &&
+        (COMET_ALLOW_TIMESTAMP_LTZ_AS_NTZ &&
           SupportLevel.containsType(scanExec.requiredSchema, classOf[TimestampNTZType]))
-    if (hasDate || hasTimestamp) {
+    if ((hasDate || hasTimestamp) && COMET_SCAN_PARQUET_CHECK_DATETIME_REBASE.get()) {
       val options = new ParquetOptions(r.options, conf)
-      val paths =
-        cometScan.selectedPartitions.iterator.flatMap(_.files.iterator.map(_.getPath)).toSeq
+      val files = cometScan.selectedPartitions.iterator
+        .flatMap(_.files.iterator.map(f =>
+          CometScanUtils.ParquetFileInfo(f.getPath, f.getLen, f.getModificationTime)))
+        .toSeq
       try {
         if (CometScanUtils.requiresDatetimeRebase(
-            paths,
+            files,
             hadoopConf,
             options.datetimeRebaseModeInRead,
             options.int96RebaseModeInRead,

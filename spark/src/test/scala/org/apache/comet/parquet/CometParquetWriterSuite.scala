@@ -396,6 +396,43 @@ class CometParquetWriterSuite extends CometTestBase {
     }
   }
 
+  test("parquet write with LEGACY datetime rebase mode falls back to Spark") {
+    withTempPath { dir =>
+      val df = spark.sql(
+        "SELECT id, date'1000-01-01' AS d, timestamp'1000-01-01 00:00:00' AS ts FROM range(10)")
+
+      // The native writer always writes corrected (proleptic Gregorian) values, so a LEGACY
+      // write rebase mode must fall back to Spark, which rebases the values and stamps the
+      // legacy markers.
+      val legacyPath = new File(dir, "legacy.parquet").getAbsolutePath
+      withSQLConf(
+        CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
+        CometConf.getOperatorAllowIncompatConfigKey(classOf[DataWritingCommandExec]) -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        SQLConf.PARQUET_REBASE_MODE_IN_WRITE.key -> "LEGACY",
+        SQLConf.PARQUET_INT96_REBASE_MODE_IN_WRITE.key -> "LEGACY") {
+
+        val plan = captureWritePlan(path => df.write.parquet(path), legacyPath)
+        assertNoCometNativeWriteExec(plan)
+      }
+      checkAnswer(spark.read.parquet(legacyPath), df.collect())
+
+      // The same write with corrected modes stays native.
+      val correctedPath = new File(dir, "corrected.parquet").getAbsolutePath
+      withSQLConf(
+        CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
+        CometConf.getOperatorAllowIncompatConfigKey(classOf[DataWritingCommandExec]) -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        SQLConf.PARQUET_REBASE_MODE_IN_WRITE.key -> "CORRECTED",
+        SQLConf.PARQUET_INT96_REBASE_MODE_IN_WRITE.key -> "CORRECTED") {
+
+        val plan = captureWritePlan(path => df.write.parquet(path), correctedPath)
+        assertHasCometNativeWriteExec(plan)
+      }
+      checkAnswer(spark.read.parquet(correctedPath), df.collect())
+    }
+  }
+
   test("parquet write with temporal types within complex types") {
     withTempPath { dir =>
       val outputPath = new File(dir, "output.parquet").getAbsolutePath
