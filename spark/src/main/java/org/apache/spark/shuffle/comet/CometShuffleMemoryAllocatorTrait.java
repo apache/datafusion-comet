@@ -34,11 +34,11 @@ public abstract class CometShuffleMemoryAllocatorTrait extends MemoryConsumer {
   public abstract MemoryBlock allocate(long required);
 
   /**
-   * Like {@link #allocate(long)}, but may wait for memory freed by other tasks before giving up.
-   * Callers must only use this after spilling their own buffered data, so that a waiting task holds
-   * no memory that other tasks could be waiting for. The default implementation does not wait:
-   * `CometUnifiedShuffleMemoryAllocator` delegates to Spark's memory manager, which already
-   * arbitrates memory between tasks.
+   * Like {@link #allocate(long)}, but may wait for memory freed by other tasks instead of failing
+   * immediately. Callers must only use this after spilling their own buffered data, so that a
+   * waiting task holds no memory that other tasks could be waiting for. The default implementation
+   * does not wait: `CometUnifiedShuffleMemoryAllocator` delegates to Spark's memory manager, which
+   * already arbitrates memory between tasks.
    */
   public MemoryBlock allocateBlocking(long required) {
     return allocate(required);

@@ -22,6 +22,9 @@ package org.apache.spark.shuffle.comet;
 import java.io.IOException;
 import java.util.BitSet;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import org.apache.spark.SparkConf;
 import org.apache.spark.memory.MemoryConsumer;
 import org.apache.spark.memory.MemoryMode;
@@ -51,14 +54,14 @@ import org.apache.comet.CometSparkSessionExtensions$;
  * Columnar Shuffle and execution apart from Spark's on-heap memory configuration.
  */
 public final class CometBoundedShuffleMemoryAllocator extends CometShuffleMemoryAllocatorTrait {
+  private static final Logger logger =
+      LoggerFactory.getLogger(CometBoundedShuffleMemoryAllocator.class);
+
   private final UnsafeMemoryAllocator allocator = new UnsafeMemoryAllocator();
 
   private final long pageSize;
   private final long totalMemory;
   private long allocatedMemory = 0L;
-
-  /** How long `allocateBlocking` waits for other tasks to free memory before giving up. */
-  private static final long MEMORY_WAIT_TIMEOUT_MS = 60_000L;
 
   /** The number of bits used to address the page table. */
   private static final int PAGE_NUMBER_BITS = 13;
@@ -116,25 +119,27 @@ public final class CometBoundedShuffleMemoryAllocator extends CometShuffleMemory
   }
 
   /**
-   * Like {@link #allocate(long)}, but waits for other tasks of this shared pool to free memory
-   * before giving up. Callers must only use this after spilling their own buffered data, so a
-   * waiting task holds no pool memory itself and the tasks still holding memory can always progress
-   * and eventually free it.
+   * Like {@link #allocate(long)}, but waits for other tasks of this shared pool to free memory,
+   * mirroring how Spark's unified memory manager blocks a task until memory becomes available.
+   * Callers must only use this after spilling their own buffered data, so a waiting task holds no
+   * pool memory itself and the tasks still holding memory can always progress and eventually free
+   * it. Interrupting the task (e.g. task kill) aborts the wait.
    */
   @Override
   public synchronized MemoryBlock allocateBlocking(long required) {
     long size = Math.max(pageSize, required);
-    long deadline = System.currentTimeMillis() + MEMORY_WAIT_TIMEOUT_MS;
+    boolean logged = false;
     while (true) {
       try {
         return allocateMemoryBlock(size);
       } catch (SparkOutOfMemoryError e) {
-        long remaining = deadline - System.currentTimeMillis();
-        if (remaining <= 0) {
-          throw e;
+        if (!logged) {
+          logger.warn(
+              "Waiting for other tasks to free up {} bytes of Comet shuffle pool memory", size);
+          logged = true;
         }
         try {
-          wait(remaining);
+          wait();
         } catch (InterruptedException ie) {
           Thread.currentThread().interrupt();
           throw e;
