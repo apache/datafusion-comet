@@ -234,8 +234,7 @@ class CometExecRuleSuite extends CometTestBase {
     }
   }
 
-  // Regression test for https://github.com/apache/datafusion-comet/issues/1389
-  test("CometExecRule should not allow Comet partial and Spark final hash aggregate") {
+  test("CometExecRule should allow COUNT Comet partial and Spark final hash aggregate") {
     withTempView("test_data") {
       createTestDataFrame.createOrReplaceTempView("test_data")
 
@@ -251,11 +250,10 @@ class CometExecRuleSuite extends CometTestBase {
         CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
         val transformedPlan = applyCometExecRule(sparkPlan)
 
-        // COUNT is intentionally excluded from mixed execution (AQE / count-bug reasons), so if
-        // the final aggregate cannot be converted to Comet, neither should the partial.
-        assert(
-          countOperators(transformedPlan, classOf[HashAggregateExec]) == originalHashAggCount)
-        assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 0)
+        // COUNT's buffer is compatible in this direction. Keeping the Final in Spark also keeps
+        // the AQE/count-bug rewrites that prevent the reverse direction from being admitted.
+        assert(countOperators(transformedPlan, classOf[HashAggregateExec]) == 1)
+        assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 1)
       }
     }
   }
@@ -276,8 +274,8 @@ class CometExecRuleSuite extends CometTestBase {
         CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
         val transformedPlan = applyCometExecRule(sparkPlan)
 
-        // COUNT blocks mixed execution, so if the partial cannot be converted, neither should
-        // the final.
+        // COUNT still blocks Spark Partial to Comet Final, independently of the safe reverse
+        // direction, so if the partial cannot be converted, neither should the final.
         assert(
           countOperators(transformedPlan, classOf[HashAggregateExec]) == originalHashAggCount)
         assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 0)
