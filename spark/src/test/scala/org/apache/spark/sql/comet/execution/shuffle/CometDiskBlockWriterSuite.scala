@@ -31,10 +31,12 @@ import org.apache.spark.{SparkConf, TaskContextImpl}
 import org.apache.spark.executor.{ShuffleWriteMetrics, TaskMetrics}
 import org.apache.spark.memory.{SparkOutOfMemoryError, TaskMemoryManager, TestMemoryManager}
 import org.apache.spark.shuffle.comet.{CometBoundedShuffleMemoryAllocator, CometShuffleMemoryAllocator, CometShuffleMemoryAllocatorTrait}
+import org.apache.spark.shuffle.sort.SpillSorter
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.UnsafeProjection
 import org.apache.spark.sql.execution.UnsafeRowSerializer
 import org.apache.spark.sql.types.{BinaryType, StructField, StructType}
+import org.apache.spark.unsafe.UnsafeAlignedOffset
 import org.apache.spark.util.Utils
 
 class CometDiskBlockWriterSuite extends AnyFunSuite with TimeLimits {
@@ -427,6 +429,49 @@ class CometDiskBlockWriterSuite extends AnyFunSuite with TimeLimits {
       conf,
       false,
       new JLinkedList[CometDiskBlockWriter]())
+  }
+
+  test("on-heap shared pool: a failed SpillSorter constructor does not leak pool memory") {
+    // The unsafe sorter's constructor first allocates a one-entry array (8 bytes) inside
+    // ShuffleInMemorySorter and then its real pointer array. If the second allocation fails, the
+    // first must be reclaimed: the writer is never handed to Spark, so no cleanup path would
+    // ever free it, and the orphaned bytes would make later full-pool allocations impossible.
+    val conf = new SparkConf().set("spark.comet.memoryOverhead", "1") // 1 MiB shared pool
+    resetOnHeapAllocatorSingleton()
+    val memoryManager = new TestMemoryManager(conf)
+    val tmm = new TaskMemoryManager(memoryManager, 0L)
+    val taskContext = newTaskContext(tmm, 0L)
+    val bounded = CometShuffleMemoryAllocator
+      .getInstance(conf, tmm, pageSize)
+      .asInstanceOf[CometBoundedShuffleMemoryAllocator]
+    try {
+      // A healthy task holds most of the pool, leaving room for the one-entry array but not for
+      // the 4096-entry pointer array.
+      val holderBlock = bounded.allocate(1008 * 1024)
+      intercept[SparkOutOfMemoryError] {
+        new SpillSorter(
+          bounded,
+          4096,
+          schema,
+          UnsafeAlignedOffset.getUaoSize(),
+          1.0,
+          "zstd",
+          1,
+          "adler32",
+          new Array[Long](0),
+          new ShuffleWriteMetrics,
+          taskContext,
+          new JLinkedList[SpillInfo](),
+          () => ())
+      }
+      bounded.free(holderBlock)
+      // With the constructor cleanup the pool is empty again, so a full-pool allocation
+      // succeeds; a leaked constructor allocation would make it fail forever.
+      bounded.free(bounded.allocate(1024 * 1024))
+    } finally {
+      tmm.cleanUpAllAllocatedMemory()
+      resetOnHeapAllocatorSingleton()
+    }
   }
 
   /** Whether the thread is parked in `Object.wait` (the allocator uses a timed wait). */
