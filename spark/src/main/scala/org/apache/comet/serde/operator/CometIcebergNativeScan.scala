@@ -280,62 +280,9 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
 
       val deletes = IcebergReflection.getDeleteFilesFromTask(task, fileScanTaskClass)
 
-      deletes.asScala.map { deleteFile =>
-        // The path is the one essential field. A delete file we cannot locate cannot be applied,
-        // and silently skipping it would leak deleted rows, so treat a missing path as fatal.
-        val deletePath = IcebergReflection
-          .extractFileLocation(contentFileClass, deleteFile)
-          .getOrElse(
-            throw new RuntimeException(
-              "Neither location() nor path() is declared on this Iceberg version's " +
-                "ContentFile -- cannot extract delete file path from FileScanTask"))
-
-        val deleteBuilder = OperatorOuterClass.IcebergDeleteFile.newBuilder()
-        deleteBuilder.setFilePath(deletePath)
-
-        val contentType =
-          try {
-            val contentMethod = IcebergReflection.getMethod(deleteFileClass, "content")
-            val content = contentMethod.invoke(deleteFile)
-            content.toString match {
-              case IcebergReflection.ContentTypes.POSITION_DELETES =>
-                IcebergReflection.ContentTypes.POSITION_DELETES
-              case IcebergReflection.ContentTypes.EQUALITY_DELETES =>
-                IcebergReflection.ContentTypes.EQUALITY_DELETES
-              case other => other
-            }
-          } catch {
-            case _: Exception =>
-              IcebergReflection.ContentTypes.POSITION_DELETES
-          }
-        deleteBuilder.setContentType(contentType)
-
-        val specId =
-          try {
-            val specIdMethod = IcebergReflection.getMethod(deleteFileClass, "specId")
-            specIdMethod.invoke(deleteFile).asInstanceOf[Int]
-          } catch {
-            case _: Exception => 0
-          }
-        deleteBuilder.setPartitionSpecId(specId)
-
-        try {
-          val equalityIdsMethod =
-            IcebergReflection.getMethod(deleteFileClass, "equalityFieldIds")
-          val equalityIds = equalityIdsMethod
-            .invoke(deleteFile)
-            .asInstanceOf[java.util.List[Integer]]
-          equalityIds.forEach(id => deleteBuilder.addEqualityIds(id))
-        } catch {
-          case _: Exception =>
-        }
-
-        // Encrypted delete files carry a plaintext StandardKeyMetadata blob; forward it verbatim.
-        // Unencrypted delete files leave the field unset.
-        keyMetadataBytes(keyMetadataMethod, deleteFile).foreach(deleteBuilder.setKeyMetadata)
-
-        deleteBuilder.build()
-      }.toSeq
+      deletes.asScala
+        .map(serializeDeleteFile(_, contentFileClass, deleteFileClass, keyMetadataMethod))
+        .toSeq
     } catch {
       case e: Exception =>
         val msg =
@@ -344,6 +291,63 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
         logError(msg)
         throw new RuntimeException(msg, e)
     }
+  }
+
+  /**
+   * Serializes a single Iceberg DeleteFile to protobuf.
+   *
+   * `content()`, `specId()`, and `equalityFieldIds()` are declared on the public `ContentFile` /
+   * `DeleteFile` interfaces across all supported Iceberg versions, so a `getMethod` miss or an
+   * `invoke` failure on any of them means something is genuinely wrong. None of the three may
+   * fall back to a default: the scan is already committed to native execution, and a guessed
+   * content type, partition spec, or dropped equality keys all silently return wrong rows.
+   * Failures propagate to `extractDeleteFilesList`'s outer catch.
+   */
+  private[operator] def serializeDeleteFile(
+      deleteFile: Any,
+      contentFileClass: Class[_],
+      deleteFileClass: Class[_],
+      keyMetadataMethod: Method): OperatorOuterClass.IcebergDeleteFile = {
+    // The path is the one essential field. A delete file we cannot locate cannot be applied,
+    // and silently skipping it would leak deleted rows, so treat a missing path as fatal.
+    val deletePath = IcebergReflection
+      .extractFileLocation(contentFileClass, deleteFile)
+      .getOrElse(
+        throw new RuntimeException(
+          "Neither location() nor path() is declared on this Iceberg version's " +
+            "ContentFile -- cannot extract delete file path from FileScanTask"))
+
+    val deleteBuilder = OperatorOuterClass.IcebergDeleteFile.newBuilder()
+    deleteBuilder.setFilePath(deletePath)
+
+    val contentMethod = IcebergReflection.getMethod(deleteFileClass, "content")
+    val contentType = contentMethod.invoke(deleteFile).toString match {
+      case IcebergReflection.ContentTypes.POSITION_DELETES =>
+        IcebergReflection.ContentTypes.POSITION_DELETES
+      case IcebergReflection.ContentTypes.EQUALITY_DELETES =>
+        IcebergReflection.ContentTypes.EQUALITY_DELETES
+      case other => other
+    }
+    deleteBuilder.setContentType(contentType)
+
+    val specIdMethod = IcebergReflection.getMethod(deleteFileClass, "specId")
+    deleteBuilder.setPartitionSpecId(specIdMethod.invoke(deleteFile).asInstanceOf[Int])
+
+    val equalityIdsMethod = IcebergReflection.getMethod(deleteFileClass, "equalityFieldIds")
+    val equalityIds = equalityIdsMethod.invoke(deleteFile).asInstanceOf[java.util.List[Integer]]
+    // Iceberg's BaseFile stores equality field IDs in a nullable backing array, so
+    // equalityFieldIds() returns null for files without equality keys. A null return is a
+    // normal accessor result, unlike a reflective lookup or invocation failure, and does not
+    // make serialization fail.
+    if (equalityIds != null) {
+      equalityIds.forEach(id => deleteBuilder.addEqualityIds(id))
+    }
+
+    // Encrypted delete files carry a plaintext StandardKeyMetadata blob; forward it verbatim.
+    // Unencrypted delete files leave the field unset.
+    keyMetadataBytes(keyMetadataMethod, deleteFile).foreach(deleteBuilder.setKeyMetadata)
+
+    deleteBuilder.build()
   }
 
   /**
