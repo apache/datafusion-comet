@@ -149,7 +149,7 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
     if (hasVariant && !SQLConf.get.parquetInferTimestampNTZEnabled) {
       withFallbackReason(
         scanExec,
-        s"Full native scan disabled because " +
+        "Full native scan disabled because " +
           s"${SQLConf.PARQUET_INFER_TIMESTAMP_NTZ_ENABLED.key} is disabled")
     }
 
