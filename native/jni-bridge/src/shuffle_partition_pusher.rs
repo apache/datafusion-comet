@@ -44,6 +44,12 @@ pub struct JavaShufflePartitionPusher {
 }
 
 impl JavaShufflePartitionPusher {
+    /// Largest payload that can safely be copied into a JVM byte array.
+    ///
+    /// Keep native shuffle frame limits aligned with OpenJDK's conservative
+    /// soft maximum so oversized frames fail before crossing the JNI boundary.
+    pub const MAX_PAYLOAD_SIZE: usize = MAX_JVM_ARRAY_LENGTH as usize;
+
     /// Captures the callback while running on an attached JVM thread.
     pub fn try_new(env: &mut Env<'_>, callback: &JObject<'_>) -> Result<Self> {
         if callback.is_null() {
@@ -126,6 +132,10 @@ mod tests {
 
     #[test]
     fn accepts_payload_lengths_up_to_jvm_soft_array_limit() {
+        assert_eq!(
+            JavaShufflePartitionPusher::MAX_PAYLOAD_SIZE,
+            MAX_JVM_ARRAY_LENGTH as usize
+        );
         assert_eq!(
             JavaShufflePartitionPusher::checked_payload_length(0, 0).unwrap(),
             0

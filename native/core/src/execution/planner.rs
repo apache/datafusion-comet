@@ -45,9 +45,9 @@ use crate::execution::{
     planner::expression_registry::ExpressionRegistry,
     planner::operator_registry::OperatorRegistry,
     serde::to_arrow_datatype,
-    shuffle::{SchemaAlignExec, ShuffleWriterExec},
+    shuffle::{SchemaAlignExec, ShuffleWriterDestination, ShuffleWriterExec},
 };
-use crate::jvm_bridge::{jni_call, JVMClasses};
+use crate::jvm_bridge::{jni_call, JVMClasses, JavaShufflePartitionPusher, ShufflePartitionPusher};
 use arrow::compute::CastOptions;
 use arrow::datatypes::{DataType, Field, FieldRef, Schema, TimeUnit, DECIMAL128_MAX_PRECISION};
 use arrow::ffi_stream::FFI_ArrowArrayStream;
@@ -265,6 +265,9 @@ pub struct PhysicalPlanner {
     /// `ExecutionContext`; see that struct for the propagation rationale. `None` when no driving
     /// Spark task is available.
     class_loader: Option<Arc<Global<JObject<'static>>>>,
+    /// Task-owned destination for remote shuffle blocks, registered on the driving Spark task
+    /// thread before native planning. Only explicit RSS destinations may use it.
+    shuffle_partition_pusher: Option<Arc<dyn ShufflePartitionPusher>>,
 }
 
 impl Default for PhysicalPlanner {
@@ -283,6 +286,7 @@ impl PhysicalPlanner {
             sql_text_pool: vec![],
             task_context: None,
             class_loader: None,
+            shuffle_partition_pusher: None,
         }
     }
 
@@ -380,6 +384,18 @@ impl PhysicalPlanner {
         class_loader: Option<Arc<Global<JObject<'static>>>>,
     ) -> Self {
         self.class_loader = class_loader;
+        self
+    }
+
+    /// Attach the remote-shuffle callback owned by the Spark task that created this plan.
+    ///
+    /// The callback is retained by any RSS shuffle writer in the physical plan and must not be
+    /// supplied to a legacy or explicitly local shuffle writer.
+    pub fn with_shuffle_partition_pusher(
+        mut self,
+        shuffle_partition_pusher: Option<Arc<dyn ShufflePartitionPusher>>,
+    ) -> Self {
+        self.shuffle_partition_pusher = shuffle_partition_pusher;
         self
     }
 
@@ -1835,18 +1851,18 @@ impl PhysicalPlanner {
                     ))),
                 }?;
 
-                let (output_data_file, output_index_file) = shuffle_output_files(writer)?;
+                let destination =
+                    shuffle_writer_destination(writer, self.shuffle_partition_pusher.as_ref())?;
                 let write_buffer_size = writer.write_buffer_size as usize;
                 // Zero on the wire means the limit is disabled; normalize it here so the writer
                 // only ever sees a real limit or none at all.
                 let max_buffer_bytes =
                     (writer.max_buffer_bytes > 0).then_some(writer.max_buffer_bytes as usize);
-                let shuffle_writer = Arc::new(ShuffleWriterExec::try_new(
+                let shuffle_writer = Arc::new(ShuffleWriterExec::try_new_with_destination(
                     writer_input,
                     partitioning,
                     codec,
-                    output_data_file.to_string(),
-                    output_index_file.to_string(),
+                    destination,
                     writer.tracing_enabled,
                     write_buffer_size,
                     max_buffer_bytes,
@@ -3892,16 +3908,28 @@ fn align_shuffle_writer_input(
         .map_err(|e| ExecutionError::DataFusionError(e.to_string()))
 }
 
-/// Resolves local shuffle output paths from the destination-aware writer descriptor.
+/// Resolves a native shuffle writer's destination and binds its task-owned callback, if any.
 ///
 /// Plans serialized before partition-writer descriptors were introduced only contain the
 /// top-level paths. New local plans populate both representations so older native binaries can
 /// still consume them; when both are present they must agree to avoid ambiguous destinations.
-fn shuffle_output_files(
+/// RSS plans must not contain local output paths and require the callback supplied by their own
+/// Spark task. Supplying a remote callback for a local destination is also rejected.
+fn shuffle_writer_destination(
     writer: &spark_operator::ShuffleWriter,
-) -> Result<(&str, &str), ExecutionError> {
+    shuffle_partition_pusher: Option<&Arc<dyn ShufflePartitionPusher>>,
+) -> Result<ShuffleWriterDestination, ExecutionError> {
     let Some(partition_writer) = writer.partition_writer.as_ref() else {
-        return Ok((&writer.output_data_file, &writer.output_index_file));
+        if shuffle_partition_pusher.is_some() {
+            return Err(GeneralError(
+                "Local shuffle partition writer cannot use a remote shuffle callback".to_string(),
+            ));
+        }
+
+        return Ok(ShuffleWriterDestination::Local {
+            output_data_file: writer.output_data_file.clone(),
+            output_index_file: writer.output_index_file.clone(),
+        });
     };
 
     match partition_writer.writer.as_ref() {
@@ -3938,13 +3966,37 @@ fn shuffle_output_files(
                 ));
             }
 
-            Ok((&local.output_data_file, &local.output_index_file))
+            if shuffle_partition_pusher.is_some() {
+                return Err(GeneralError(
+                    "Local shuffle partition writer cannot use a remote shuffle callback"
+                        .to_string(),
+                ));
+            }
+
+            Ok(ShuffleWriterDestination::Local {
+                output_data_file: local.output_data_file.clone(),
+                output_index_file: local.output_index_file.clone(),
+            })
         }
-        Some(spark_operator::partition_writer::Writer::Rss(_)) => Err(GeneralError(
-            "RSS shuffle partition writers are not supported until remote shuffle execution is \
-             enabled"
-                .to_string(),
-        )),
+        Some(spark_operator::partition_writer::Writer::Rss(_)) => {
+            if !writer.output_data_file.is_empty() || !writer.output_index_file.is_empty() {
+                return Err(GeneralError(
+                    "RSS shuffle partition writer cannot have local output files".to_string(),
+                ));
+            }
+
+            let pusher = shuffle_partition_pusher.ok_or_else(|| {
+                GeneralError(
+                    "RSS shuffle partition writer requires a task-owned remote shuffle callback"
+                        .to_string(),
+                )
+            })?;
+
+            Ok(ShuffleWriterDestination::Rss {
+                pusher: Arc::clone(pusher),
+                max_frame_size: JavaShufflePartitionPusher::MAX_PAYLOAD_SIZE,
+            })
+        }
         None => Err(GeneralError(
             "Shuffle partition writer has no destination".to_string(),
         )),
@@ -4744,7 +4796,13 @@ fn needs_fields_coercion(sig: &TypeSignature) -> bool {
 #[cfg(test)]
 mod tests {
     use futures::{poll, StreamExt};
-    use std::{sync::Arc, task::Poll};
+    use std::{
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        },
+        task::Poll,
+    };
 
     use arrow::array::{
         Array, DictionaryArray, Int32Array, Int8Array, ListArray, RecordBatch, StringArray,
@@ -4765,7 +4823,10 @@ mod tests {
     use tempfile::TempDir;
     use tokio::sync::mpsc;
 
-    use crate::execution::{operators::InputBatch, planner::PhysicalPlanner};
+    use crate::execution::{
+        operators::InputBatch, planner::PhysicalPlanner, shuffle::ShuffleWriterDestination,
+    };
+    use crate::jvm_bridge::{JavaShufflePartitionPusher, ShufflePartitionPusher};
 
     use crate::execution::operators::ExecutionError;
     use crate::execution::planner::literal_to_array_ref;
@@ -4783,6 +4844,22 @@ mod tests {
     };
     use datafusion_comet_spark_expr::EvalMode;
 
+    #[derive(Default)]
+    struct RecordingShufflePartitionPusher {
+        pushes: AtomicUsize,
+    }
+
+    impl ShufflePartitionPusher for RecordingShufflePartitionPusher {
+        fn push_partition_data(
+            &self,
+            _partition_id: i32,
+            _data: &[u8],
+        ) -> datafusion::common::Result<()> {
+            self.pushes.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
     fn local_shuffle_partition_writer(
         output_data_file: &str,
         output_index_file: &str,
@@ -4797,6 +4874,31 @@ mod tests {
         }
     }
 
+    fn rss_shuffle_partition_writer() -> spark_operator::PartitionWriter {
+        spark_operator::PartitionWriter {
+            writer: Some(spark_operator::partition_writer::Writer::Rss(
+                spark_operator::RssPartitionWriter {},
+            )),
+        }
+    }
+
+    fn assert_local_shuffle_destination(
+        writer: &spark_operator::ShuffleWriter,
+        expected_data_file: &str,
+        expected_index_file: &str,
+    ) {
+        match super::shuffle_writer_destination(writer, None).unwrap() {
+            ShuffleWriterDestination::Local {
+                output_data_file,
+                output_index_file,
+            } => {
+                assert_eq!(output_data_file, expected_data_file);
+                assert_eq!(output_index_file, expected_index_file);
+            }
+            destination => panic!("expected a local shuffle destination, got {destination:?}"),
+        }
+    }
+
     #[test]
     fn shuffle_partition_writer_legacy_paths_remain_supported() {
         let writer = spark_operator::ShuffleWriter {
@@ -4805,10 +4907,7 @@ mod tests {
             ..Default::default()
         };
 
-        assert_eq!(
-            super::shuffle_output_files(&writer).unwrap(),
-            ("legacy.data", "legacy.index")
-        );
+        assert_local_shuffle_destination(&writer, "legacy.data", "legacy.index");
     }
 
     #[test]
@@ -4821,10 +4920,7 @@ mod tests {
             ..Default::default()
         };
 
-        assert_eq!(
-            super::shuffle_output_files(&writer).unwrap(),
-            ("shuffle.data", "shuffle.index")
-        );
+        assert_local_shuffle_destination(&writer, "shuffle.data", "shuffle.index");
     }
 
     #[test]
@@ -4839,10 +4935,7 @@ mod tests {
             ..Default::default()
         };
 
-        assert_eq!(
-            super::shuffle_output_files(&writer).unwrap(),
-            ("shuffle.data", "shuffle.index")
-        );
+        assert_local_shuffle_destination(&writer, "shuffle.data", "shuffle.index");
     }
 
     #[test]
@@ -4856,7 +4949,7 @@ mod tests {
             ..Default::default()
         };
 
-        let error = super::shuffle_output_files(&writer).unwrap_err();
+        let error = super::shuffle_writer_destination(&writer, None).unwrap_err();
         assert!(
             error.to_string().contains("output data file conflicts"),
             "unexpected error: {error}"
@@ -4874,7 +4967,7 @@ mod tests {
             ..Default::default()
         };
 
-        let error = super::shuffle_output_files(&writer).unwrap_err();
+        let error = super::shuffle_writer_destination(&writer, None).unwrap_err();
         assert!(
             error.to_string().contains("output index file conflicts"),
             "unexpected error: {error}"
@@ -4889,7 +4982,7 @@ mod tests {
             ..Default::default()
         };
 
-        let error = super::shuffle_output_files(&writer).unwrap_err();
+        let error = super::shuffle_writer_destination(&writer, None).unwrap_err();
         assert!(
             error.to_string().contains("missing its output data file"),
             "unexpected error: {error}"
@@ -4904,7 +4997,7 @@ mod tests {
             ..Default::default()
         };
 
-        let error = super::shuffle_output_files(&writer).unwrap_err();
+        let error = super::shuffle_writer_destination(&writer, None).unwrap_err();
         assert!(
             error.to_string().contains("missing its output index file"),
             "unexpected error: {error}"
@@ -4918,7 +5011,7 @@ mod tests {
             ..Default::default()
         };
 
-        let error = super::shuffle_output_files(&writer).unwrap_err();
+        let error = super::shuffle_writer_destination(&writer, None).unwrap_err();
         assert!(
             error.to_string().contains("has no destination"),
             "unexpected error: {error}"
@@ -4926,21 +5019,235 @@ mod tests {
     }
 
     #[test]
-    fn shuffle_partition_writer_rejects_rss_until_execution_is_supported() {
+    fn shuffle_partition_writer_requires_a_task_callback_for_rss() {
         let writer = spark_operator::ShuffleWriter {
-            partition_writer: Some(spark_operator::PartitionWriter {
-                writer: Some(spark_operator::partition_writer::Writer::Rss(
-                    spark_operator::RssPartitionWriter {},
-                )),
-            }),
+            partition_writer: Some(rss_shuffle_partition_writer()),
             ..Default::default()
         };
 
-        let error = super::shuffle_output_files(&writer).unwrap_err();
+        let error = super::shuffle_writer_destination(&writer, None).unwrap_err();
         assert!(
-            error.to_string().contains("RSS shuffle partition writers"),
+            error
+                .to_string()
+                .contains("requires a task-owned remote shuffle callback"),
             "unexpected error: {error}"
         );
+    }
+
+    #[test]
+    fn shuffle_partition_writer_binds_its_rss_task_callback() {
+        let writer = spark_operator::ShuffleWriter {
+            partition_writer: Some(rss_shuffle_partition_writer()),
+            ..Default::default()
+        };
+        let callback: Arc<dyn ShufflePartitionPusher> =
+            Arc::new(RecordingShufflePartitionPusher::default());
+
+        match super::shuffle_writer_destination(&writer, Some(&callback)).unwrap() {
+            ShuffleWriterDestination::Rss {
+                pusher,
+                max_frame_size,
+            } => {
+                assert!(Arc::ptr_eq(&pusher, &callback));
+                assert_eq!(max_frame_size, JavaShufflePartitionPusher::MAX_PAYLOAD_SIZE);
+            }
+            destination => panic!("expected an RSS shuffle destination, got {destination:?}"),
+        }
+    }
+
+    #[test]
+    fn shuffle_partition_writer_rejects_rss_with_legacy_data_path() {
+        let writer = spark_operator::ShuffleWriter {
+            output_data_file: "legacy.data".to_string(),
+            partition_writer: Some(rss_shuffle_partition_writer()),
+            ..Default::default()
+        };
+        let callback: Arc<dyn ShufflePartitionPusher> =
+            Arc::new(RecordingShufflePartitionPusher::default());
+
+        let error = super::shuffle_writer_destination(&writer, Some(&callback)).unwrap_err();
+        assert!(
+            error.to_string().contains("cannot have local output files"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn shuffle_partition_writer_rejects_rss_with_legacy_index_path() {
+        let writer = spark_operator::ShuffleWriter {
+            output_index_file: "legacy.index".to_string(),
+            partition_writer: Some(rss_shuffle_partition_writer()),
+            ..Default::default()
+        };
+        let callback: Arc<dyn ShufflePartitionPusher> =
+            Arc::new(RecordingShufflePartitionPusher::default());
+
+        let error = super::shuffle_writer_destination(&writer, Some(&callback)).unwrap_err();
+        assert!(
+            error.to_string().contains("cannot have local output files"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn shuffle_partition_writer_rejects_callback_for_legacy_local_destination() {
+        let writer = spark_operator::ShuffleWriter {
+            output_data_file: "legacy.data".to_string(),
+            output_index_file: "legacy.index".to_string(),
+            ..Default::default()
+        };
+        let callback: Arc<dyn ShufflePartitionPusher> =
+            Arc::new(RecordingShufflePartitionPusher::default());
+
+        let error = super::shuffle_writer_destination(&writer, Some(&callback)).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("cannot use a remote shuffle callback"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn shuffle_partition_writer_rejects_callback_for_explicit_local_destination() {
+        let writer = spark_operator::ShuffleWriter {
+            partition_writer: Some(local_shuffle_partition_writer(
+                "shuffle.data",
+                "shuffle.index",
+            )),
+            ..Default::default()
+        };
+        let callback: Arc<dyn ShufflePartitionPusher> =
+            Arc::new(RecordingShufflePartitionPusher::default());
+
+        let error = super::shuffle_writer_destination(&writer, Some(&callback)).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("cannot use a remote shuffle callback"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn shuffle_partition_writer_callbacks_remain_isolated_between_tasks() {
+        let writer = spark_operator::ShuffleWriter {
+            partition_writer: Some(rss_shuffle_partition_writer()),
+            ..Default::default()
+        };
+        let first_recorder = Arc::new(RecordingShufflePartitionPusher::default());
+        let second_recorder = Arc::new(RecordingShufflePartitionPusher::default());
+        let first_callback: Arc<dyn ShufflePartitionPusher> =
+            Arc::<RecordingShufflePartitionPusher>::clone(&first_recorder);
+        let second_callback: Arc<dyn ShufflePartitionPusher> =
+            Arc::<RecordingShufflePartitionPusher>::clone(&second_recorder);
+        let first_planner = PhysicalPlanner::default()
+            .with_shuffle_partition_pusher(Some(Arc::clone(&first_callback)));
+        let second_planner = PhysicalPlanner::default()
+            .with_shuffle_partition_pusher(Some(Arc::clone(&second_callback)));
+
+        let ShuffleWriterDestination::Rss {
+            pusher: first_pusher,
+            ..
+        } = super::shuffle_writer_destination(
+            &writer,
+            first_planner.shuffle_partition_pusher.as_ref(),
+        )
+        .unwrap()
+        else {
+            panic!("expected an RSS shuffle destination for the first task");
+        };
+        let ShuffleWriterDestination::Rss {
+            pusher: second_pusher,
+            ..
+        } = super::shuffle_writer_destination(
+            &writer,
+            second_planner.shuffle_partition_pusher.as_ref(),
+        )
+        .unwrap()
+        else {
+            panic!("expected an RSS shuffle destination for the second task");
+        };
+
+        assert!(Arc::ptr_eq(&first_pusher, &first_callback));
+        assert!(Arc::ptr_eq(&second_pusher, &second_callback));
+        assert!(!Arc::ptr_eq(&first_pusher, &second_pusher));
+
+        first_pusher.push_partition_data(0, b"first").unwrap();
+        assert_eq!(first_recorder.pushes.load(Ordering::Relaxed), 1);
+        assert_eq!(second_recorder.pushes.load(Ordering::Relaxed), 0);
+
+        second_pusher.push_partition_data(0, b"second").unwrap();
+        assert_eq!(first_recorder.pushes.load(Ordering::Relaxed), 1);
+        assert_eq!(second_recorder.pushes.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn shuffle_partition_writer_plans_and_executes_rss_with_its_task_callback() {
+        let scan = Operator {
+            plan_id: 0,
+            sql_text_pool: vec![],
+            children: vec![],
+            op_struct: Some(OpStruct::Scan(spark_operator::Scan {
+                fields: vec![],
+                source: "rss-task-input".to_string(),
+            })),
+        };
+        let shuffle = Operator {
+            plan_id: 1,
+            sql_text_pool: vec![],
+            children: vec![scan],
+            op_struct: Some(OpStruct::ShuffleWriter(spark_operator::ShuffleWriter {
+                partitioning: Some(datafusion_comet_proto::spark_partitioning::Partitioning {
+                    partitioning_struct: Some(
+                        datafusion_comet_proto::spark_partitioning::partitioning::PartitioningStruct::SinglePartition(
+                            datafusion_comet_proto::spark_partitioning::SinglePartition {},
+                        ),
+                    ),
+                }),
+                partition_writer: Some(rss_shuffle_partition_writer()),
+                write_buffer_size: 1024,
+                ..Default::default()
+            })),
+        };
+        let recorder = Arc::new(RecordingShufflePartitionPusher::default());
+        let callback: Arc<dyn ShufflePartitionPusher> =
+            Arc::<RecordingShufflePartitionPusher>::clone(&recorder);
+        let planner = PhysicalPlanner::default().with_shuffle_partition_pusher(Some(callback));
+        let (mut scans, shuffle_scans, plan) =
+            planner.create_plan(&shuffle, &mut vec![], 1).unwrap();
+
+        assert!(shuffle_scans.is_empty());
+        scans[0].set_input_batch(InputBatch::Batch(vec![], 17));
+        let mut stream = plan
+            .native_plan
+            .execute(0, planner.session_ctx().task_ctx())
+            .unwrap();
+
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(async move {
+                let mut eof_sent = false;
+
+                loop {
+                    match poll!(stream.next()) {
+                        Poll::Ready(Some(result)) => {
+                            let result = result.unwrap();
+                            panic!("shuffle writer must not produce output batches: {result:?}");
+                        }
+                        Poll::Ready(None) => break,
+                        Poll::Pending if !eof_sent => {
+                            scans[0].set_input_batch(InputBatch::EOF);
+                            eof_sent = true;
+                        }
+                        Poll::Pending => {
+                            panic!("shuffle writer remained pending after end of input")
+                        }
+                    }
+                }
+            });
+
+        assert_eq!(recorder.pushes.load(Ordering::Relaxed), 1);
     }
 
     #[test]

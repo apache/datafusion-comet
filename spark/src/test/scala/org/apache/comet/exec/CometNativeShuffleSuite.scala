@@ -19,6 +19,10 @@
 
 package org.apache.comet.exec
 
+import java.io.{ByteArrayInputStream, IOException}
+import java.nio.{ByteBuffer, ByteOrder}
+
+import scala.collection.mutable
 import scala.concurrent.duration.DurationInt
 import scala.util.Random
 
@@ -28,12 +32,17 @@ import org.scalatest.Tag
 import org.apache.hadoop.fs.Path
 import org.apache.spark.SparkEnv
 import org.apache.spark.sql.{CometTestBase, DataFrame, Dataset, Row}
+import org.apache.spark.sql.comet.{CometExec, CometMetricNode}
+import org.apache.spark.sql.comet.execution.arrow.CometArrowStream
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.{col, count, sum}
+import org.apache.spark.sql.types.StructType
+import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 
-import org.apache.comet.CometConf
-import org.apache.comet.serde.OperatorOuterClass
+import org.apache.comet.{CometConf, CometExecIterator, CometShuffleBlockIterator, Native}
+import org.apache.comet.serde.{OperatorOuterClass, PartitioningOuterClass}
+import org.apache.comet.shuffle.ShufflePartitionPusher
 
 class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
@@ -49,6 +58,191 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
   }
 
   import testImplicits._
+
+  private def rssShufflePlanBytes: Array[Byte] = {
+    val scan = OperatorOuterClass.Operator
+      .newBuilder()
+      .setScan(OperatorOuterClass.Scan.newBuilder().setSource("RemoteShuffleInput"))
+      .build()
+    val partitioning = PartitioningOuterClass.Partitioning
+      .newBuilder()
+      .setSinglePartition(PartitioningOuterClass.SinglePartition.getDefaultInstance)
+      .build()
+    val writer = OperatorOuterClass.ShuffleWriter
+      .newBuilder()
+      .setPartitioning(partitioning)
+      .setPartitionWriter(
+        OperatorOuterClass.PartitionWriter
+          .newBuilder()
+          .setRss(OperatorOuterClass.RssPartitionWriter.getDefaultInstance)
+          .build())
+      .setWriteBufferSize(1024)
+      .build()
+
+    OperatorOuterClass.Operator
+      .newBuilder()
+      .setShuffleWriter(writer)
+      .addChildren(scan)
+      .build()
+      .toByteArray
+  }
+
+  test("native shuffle callback registration preserves the existing createPlan JNI signature") {
+    val createPlan = classOf[Native].getDeclaredMethods.find(_.getName == "createPlan").get
+    assert(createPlan.getParameterTypes.last == classOf[ClassLoader])
+
+    val registration = classOf[Native]
+      .getDeclaredMethod(
+        "setShufflePartitionPusher",
+        java.lang.Long.TYPE,
+        classOf[ShufflePartitionPusher])
+    assert(registration.getReturnType == java.lang.Void.TYPE)
+  }
+
+  test("native RSS shuffle invokes its task-owned JVM callback with a complete frame") {
+    val planBytes = rssShufflePlanBytes
+
+    val frames = spark.sparkContext
+      .parallelize(Seq(17), 1)
+      .mapPartitions { rowCounts =>
+        val batch = new ColumnarBatch(Array.empty[ColumnVector], rowCounts.next())
+        val inputs = CometArrowStream.inputObjects(
+          Iterator.single(batch),
+          StructType(Nil),
+          "native-rss-callback-test")
+        val captured = mutable.ArrayBuffer.empty[(Int, Int, Int, Long)]
+        val pusher = new ShufflePartitionPusher {
+          override def pushPartitionData(partitionId: Int, data: Array[Byte], length: Int)
+              : Unit = {
+            val encodedLength = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN).getLong
+            captured.synchronized {
+              captured += ((partitionId, data.length, length, encodedLength))
+            }
+          }
+        }
+        val iterator = new CometExecIterator(
+          CometExec.newIterId,
+          inputs,
+          0,
+          planBytes,
+          CometMetricNode(Map.empty),
+          1,
+          0,
+          shufflePartitionPusher = Some(pusher))
+
+        try {
+          while (iterator.hasNext) {
+            iterator.next().close()
+          }
+          captured.iterator
+        } finally {
+          iterator.close()
+        }
+      }
+      .collect()
+
+    assert(frames.length == 1)
+    val (partitionId, arrayLength, callbackLength, encodedLength) = frames.head
+    assert(partitionId == 0)
+    assert(arrayLength > java.lang.Long.BYTES)
+    assert(callbackLength == arrayLength)
+    assert(encodedLength + java.lang.Long.BYTES == arrayLength)
+  }
+
+  test("native RSS shuffle preserves the original JVM callback exception") {
+    val planBytes = rssShufflePlanBytes
+
+    val failures = spark.sparkContext
+      .parallelize(Seq(17), 1)
+      .mapPartitions { rowCounts =>
+        val batch = new ColumnarBatch(Array.empty[ColumnVector], rowCounts.next())
+        val inputs = CometArrowStream.inputObjects(
+          Iterator.single(batch),
+          StructType(Nil),
+          "native-rss-callback-failure-test")
+        val expected = new IOException("remote shuffle callback sentinel")
+        val pusher = new ShufflePartitionPusher {
+          override def pushPartitionData(partitionId: Int, data: Array[Byte], length: Int): Unit =
+            throw expected
+        }
+        val iterator = new CometExecIterator(
+          CometExec.newIterId,
+          inputs,
+          0,
+          planBytes,
+          CometMetricNode(Map.empty),
+          1,
+          0,
+          shufflePartitionPusher = Some(pusher))
+
+        try {
+          try {
+            iterator.hasNext
+            Iterator.single((false, "callback unexpectedly succeeded"))
+          } catch {
+            case actual: IOException => Iterator.single((actual eq expected, actual.getMessage))
+          }
+        } finally {
+          iterator.close()
+        }
+      }
+      .collect()
+
+    assert(failures.sameElements(Array((true, "remote shuffle callback sentinel"))))
+  }
+
+  test("failed RSS callback registration closes every shuffle input and preserves its error") {
+    val planBytes = rssShufflePlanBytes
+
+    val results = spark.sparkContext
+      .parallelize(Seq(17), 1)
+      .mapPartitions { rowCounts =>
+        val batch = new ColumnarBatch(Array.empty[ColumnVector], rowCounts.next())
+        val inputs = CometArrowStream.inputObjects(
+          Iterator.single(batch),
+          StructType(Nil),
+          "native-rss-registration-failure-test")
+        val closedInputs = mutable.ArrayBuffer.empty[String]
+        val failingInput = new ByteArrayInputStream(Array.empty[Byte]) {
+          override def close(): Unit = {
+            closedInputs += "failing"
+            throw new IOException("shuffle input cleanup sentinel")
+          }
+        }
+        val remainingInput = new ByteArrayInputStream(Array.empty[Byte]) {
+          override def close(): Unit = closedInputs += "remaining"
+        }
+        val shuffleInputs = Map(
+          0 -> new CometShuffleBlockIterator(failingInput),
+          1 -> new CometShuffleBlockIterator(remainingInput))
+
+        try {
+          val iterator = new CometExecIterator(
+            CometExec.newIterId,
+            inputs,
+            0,
+            planBytes,
+            CometMetricNode(Map.empty),
+            1,
+            0,
+            shuffleBlockIterators = shuffleInputs,
+            shufflePartitionPusher = Some(null))
+          iterator.close()
+          Iterator.single((false, false, false))
+        } catch {
+          case failure: Throwable =>
+            Iterator.single(
+              (
+                failure.getMessage.contains("Remote shuffle callback must not be null"),
+                closedInputs.toSet == Set("failing", "remaining"),
+                failure.getSuppressed.exists(
+                  _.getMessage.contains("shuffle input cleanup sentinel"))))
+        }
+      }
+      .collect()
+
+    assert(results.sameElements(Array((true, true, true))))
+  }
 
   test("native shuffle plan preserves local partition writer and legacy output paths") {
     val dataFile = "/tmp/comet-shuffle.data"
