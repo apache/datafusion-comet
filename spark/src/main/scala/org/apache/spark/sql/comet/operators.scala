@@ -1680,7 +1680,7 @@ trait CometBaseAggregate {
 
     if (missingCometProducer) {
       val incompatibleAggs =
-        QueryPlanSerde.aggsNotSupportingMixedExecution(aggregate.aggregateExpressions)
+        QueryPlanSerde.aggsNotSupportingSparkPartialToNativeFinal(aggregate.aggregateExpressions)
       if (incompatibleAggs.nonEmpty) {
         val names = incompatibleAggs.map(_.prettyName).distinct.sorted.mkString(", ")
         withFallbackReason(

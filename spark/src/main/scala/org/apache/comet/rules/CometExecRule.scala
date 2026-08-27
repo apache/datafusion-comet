@@ -974,7 +974,7 @@ case class CometExecRule(session: SparkSession)
         // PartialMerge stages of a distinct-aggregate rewrite. See issues #1389 and #4813.
         val modes = agg.aggregateExpressions.map(_.mode).distinct
         if (modes == Seq(Final) &&
-          !QueryPlanSerde.allAggsSupportMixedExecution(agg.aggregateExpressions) &&
+          !QueryPlanSerde.allAggsSupportNativePartialToSparkFinal(agg.aggregateExpressions) &&
           !canAggregateBeConverted(agg, Final)) {
           findPartialAggInPlan(agg.child).foreach { partial =>
             // Only tag if the Partial would otherwise have been converted. If the Partial itself
@@ -1064,7 +1064,7 @@ case class CometExecRule(session: SparkSession)
     plan.transformUp {
       case agg: BaseAggregateExec
           if agg.aggregateExpressions.map(_.mode).distinct == Seq(Final) &&
-            !QueryPlanSerde.allAggsSupportMixedExecution(agg.aggregateExpressions) =>
+            !QueryPlanSerde.allAggsSupportNativePartialToSparkFinal(agg.aggregateExpressions) =>
         revertChain(agg.child)
           // Rebuild native consumers and shuffles from their original Spark operators. Merely
           // replacing their children would leave a native protobuf reading the old buffers.
