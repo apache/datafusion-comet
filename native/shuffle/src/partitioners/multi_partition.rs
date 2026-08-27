@@ -554,7 +554,7 @@ impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
 
     pub(crate) fn spill(&mut self, unreserved_bytes: usize) -> datafusion::common::Result<()> {
         log::info!(
-            "ShuffleRepartitioner spilling shuffle data of {} to disk while inserting ({} time(s) so far)",
+            "ShuffleRepartitioner spilling {} bytes to its partition writer ({} previous spills)",
             self.used(),
             self.spill_count()
         );

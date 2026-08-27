@@ -33,7 +33,8 @@ pub(crate) struct ShufflePartitionerMetrics {
     /// Time encoding batches to IPC format
     pub(crate) encode_time: Time,
 
-    /// Time spent writing to disk. Maps to "shuffleWriteTime" in Spark SQL Metrics.
+    /// Time spent writing encoded data to its destination. Maps to "shuffleWriteTime" in Spark
+    /// SQL Metrics.
     pub(crate) write_time: Time,
 
     /// Number of input batches
