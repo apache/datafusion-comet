@@ -34,6 +34,7 @@ public final class CelebornShufflePartitionPusher implements ShufflePartitionPus
 
   private final Object shuffleClient;
   private final Method pushOrMergeData;
+  private final Method computeBatchCRC;
   private final int shuffleId;
   private final int mapId;
   private final int encodedAttemptId;
@@ -110,8 +111,48 @@ public final class CelebornShufflePartitionPusher implements ShufflePartitionPus
           "Celeborn raw-push API must be an instance method returning an int");
     }
 
+    Method integrityMethod = null;
+    try {
+      integrityMethod =
+          shuffleClient
+              .getClass()
+              .getMethod(
+                  "computeBatchCRC",
+                  int.class,
+                  int.class,
+                  int.class,
+                  int.class,
+                  byte[].class,
+                  int.class,
+                  int.class);
+    } catch (NoSuchMethodException missing) {
+      // Older Celeborn clients account for integrity inside pushOrMergeData instead.
+      try {
+        for (Method method : shuffleClient.getClass().getMethods()) {
+          if (method.getName().equals("computeBatchCRC")) {
+            throw new IllegalArgumentException(
+                "Celeborn integrity-accounting API has an incompatible signature", missing);
+          }
+        }
+      } catch (SecurityException failure) {
+        throw new IllegalArgumentException(
+            "Cannot inspect the optional Celeborn integrity-accounting API", failure);
+      }
+    } catch (SecurityException failure) {
+      throw new IllegalArgumentException(
+          "Cannot resolve the optional Celeborn integrity-accounting API", failure);
+    }
+
+    if (integrityMethod != null
+        && (integrityMethod.getReturnType() != void.class
+            || Modifier.isStatic(integrityMethod.getModifiers()))) {
+      throw new IllegalArgumentException(
+          "Celeborn integrity-accounting API must be an instance method returning void");
+    }
+
     this.shuffleClient = shuffleClient;
     this.pushOrMergeData = pushMethod;
+    this.computeBatchCRC = integrityMethod;
     this.shuffleId = shuffleId;
     this.mapId = mapId;
     this.encodedAttemptId = encodedAttemptId;
@@ -146,6 +187,11 @@ public final class CelebornShufflePartitionPusher implements ShufflePartitionPus
 
     final int accepted;
     try {
+      if (computeBatchCRC != null) {
+        computeBatchCRC.invoke(
+            shuffleClient, shuffleId, mapId, encodedAttemptId, partitionId, data, 0, length);
+      }
+
       accepted =
           (int)
               pushOrMergeData.invoke(
@@ -177,13 +223,13 @@ public final class CelebornShufflePartitionPusher implements ShufflePartitionPus
       throw new IOException("Celeborn raw shuffle push failed", cause);
     }
 
-    int expected = length + CELEBORN_BATCH_HEADER_BYTES;
-    if (accepted != expected) {
+    int minimumAccepted = length + CELEBORN_BATCH_HEADER_BYTES;
+    if (accepted < minimumAccepted) {
       throw new IOException(
           "Celeborn raw shuffle push accepted "
               + accepted
-              + " bytes; expected "
-              + expected
+              + " bytes; expected at least "
+              + minimumAccepted
               + " including its transport header");
     }
   }

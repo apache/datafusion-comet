@@ -23,6 +23,9 @@ import java.io.IOException
 import java.nio.{ByteBuffer, ByteOrder}
 import java.util.Arrays
 import java.util.concurrent.atomic.AtomicReference
+import java.util.zip.CRC32
+
+import scala.collection.mutable
 
 import org.scalatest.funsuite.AnyFunSuite
 
@@ -40,6 +43,18 @@ class CelebornShufflePartitionPusherSuite extends AnyFunSuite {
       .putLong(bodyLength.toLong)
     (0 until bodyLength).foreach(index => buffer.put((index + 1).toByte))
     buffer.array()
+  }
+
+  private def combinedCrc(frames: Array[Byte]*): Long = {
+    frames.foldLeft(0L) { (combined, bytes) =>
+      val checksum = new CRC32
+      checksum.update(bytes, 0, bytes.length)
+      (0 until java.lang.Integer.BYTES).foldLeft(0L) { (result, index) =>
+        val shift = index * java.lang.Byte.SIZE
+        val next = ((combined >>> shift) & 0xffL) + ((checksum.getValue >>> shift) & 0xffL)
+        result | ((next & 0xffL) << shift)
+      }
+    }
   }
 
   test("raw push forwards captured task metadata and preserves the complete Comet frame") {
@@ -73,10 +88,10 @@ class CelebornShufflePartitionPusherSuite extends AnyFunSuite {
     assert(client.lastPush.length == completeFrame.length)
   }
 
-  test("raw push requires exactly the frame bytes plus the Celeborn transport header") {
+  test("raw push rejects fewer bytes than the frame and Celeborn transport header require") {
     val bytes = frame()
 
-    Seq(0, bytes.length, bytes.length + 15, bytes.length + 17, -1).foreach { accepted =>
+    Seq(0, bytes.length, bytes.length + 15, -1).foreach { accepted =>
       val client = new RecordingCelebornPushClient
       client.acceptedBytes = Some(accepted)
 
@@ -87,6 +102,104 @@ class CelebornShufflePartitionPusherSuite extends AnyFunSuite {
       assert(failure.getMessage.contains(accepted.toString))
       assert(failure.getMessage.contains((bytes.length + 16).toString))
     }
+  }
+
+  test("legacy Celeborn clients without integrity accounting remain compatible") {
+    val client = new RecordingCelebornPushClient
+    val bytes = frame()
+
+    assert(!client.getClass.getMethods.exists(_.getName == "computeBatchCRC"))
+    pusher(client).pushPartitionData(2, bytes, bytes.length)
+
+    assert(client.pushCount == 1)
+    assert(client.lastPush.partitionId == 2)
+    assert(client.lastPush.skipCompress)
+  }
+
+  test("integrity accounting records every complete frame exactly once before each raw push") {
+    val client = new IntegrityCheckingCelebornPushClient
+    val adapter = pusher(client)
+    val first = frame(8)
+    val second = frame(11)
+    val third = frame(12)
+
+    adapter.pushPartitionData(2, first, first.length)
+    adapter.pushPartitionData(5, second, second.length)
+    adapter.pushPartitionData(2, third, third.length)
+
+    assert(client.pushCount == 3)
+    assert(client.accountedFrames.size == 3)
+    assert(client.partitionCrc(2) == combinedCrc(first, third))
+    assert(client.partitionBytes(2) == first.length + third.length)
+    assert(client.partitionCrc(5) == combinedCrc(second))
+    assert(client.partitionBytes(5) == second.length)
+    assert(
+      client.invocationOrder.toSeq ==
+        Seq("crc:2", "push:2", "crc:5", "push:5", "crc:2", "push:2"))
+    assert(client.accountedFrames.forall(_.shuffleId == 19))
+    assert(client.accountedFrames.forall(_.mapId == 3))
+    assert(client.accountedFrames.forall(_.attemptId == encodedAttemptId))
+    assert(client.accountedFrames.forall(_.offset == 0))
+    assert(
+      client.accountedFrames
+        .map(_.length)
+        .toSeq == Seq(first.length, second.length, third.length))
+    assert(client.accountedFrames.head.bytes eq first)
+    assert(client.recordedPushes.forall(_.doPush))
+    assert(client.recordedPushes.forall(_.skipCompress))
+  }
+
+  test("integrity accounting failures prevent raw pushes and preserve the original exception") {
+    val bytes = frame()
+
+    Seq[Throwable](
+      new IOException("Celeborn integrity accounting rejected the frame"),
+      new IllegalStateException("Celeborn integrity accounting state was unavailable"))
+      .foreach { expected =>
+        val client = new IntegrityCheckingCelebornPushClient
+        client.integrityFailure = expected
+
+        val actual = intercept[Throwable] {
+          pusher(client).pushPartitionData(0, bytes, bytes.length)
+        }
+
+        assert(actual eq expected)
+        assert(client.pushCount == 0)
+        assert(client.accountedFrames.isEmpty)
+        assert(client.invocationOrder.toSeq == Seq("crc:0"))
+      }
+  }
+
+  test("raw push accepts frames expanded by Spark IO encryption without pushing twice") {
+    val client = new RecordingCelebornPushClient
+    val cryptoHandler = new RecordingCelebornCryptoHandler
+    val bytes = frame()
+    client.cryptoHandler = Some(cryptoHandler)
+
+    pusher(client).pushPartitionData(6, bytes, bytes.length)
+
+    assert(client.pushCount == 1)
+    assert(cryptoHandler.encryptionCount == 1)
+    assert(cryptoHandler.plaintext.sameElements(bytes))
+    assert(cryptoHandler.encryptedLength == bytes.length + 20)
+    assert(client.lastPush.bytes eq bytes)
+    assert(client.lastPush.skipCompress)
+  }
+
+  test("integrity accounting covers plaintext before Spark IO encryption expands the frame") {
+    val client = new IntegrityCheckingCelebornPushClient
+    val cryptoHandler = new RecordingCelebornCryptoHandler
+    val bytes = frame(13)
+    client.cryptoHandler = Some(cryptoHandler)
+
+    pusher(client).pushPartitionData(4, bytes, bytes.length)
+
+    assert(client.partitionCrc(4) == combinedCrc(bytes))
+    assert(client.partitionBytes(4) == bytes.length)
+    assert(client.invocationOrder.toSeq == Seq("crc:4", "push:4"))
+    assert(cryptoHandler.plaintext.sameElements(bytes))
+    assert(cryptoHandler.encryptedLength == bytes.length + 20)
+    assert(client.pushCount == 1)
   }
 
   test("raw push preserves the exact IOException thrown by the Celeborn client") {
@@ -250,9 +363,10 @@ class CelebornShufflePartitionPusherSuite extends AnyFunSuite {
 }
 
 /** Public so the adapter can resolve and invoke the optional client's API using reflection. */
-final class RecordingCelebornPushClient {
+class RecordingCelebornPushClient {
 
   @volatile var acceptedBytes: Option[Int] = None
+  @volatile var cryptoHandler: Option[RecordingCelebornCryptoHandler] = None
   @volatile var failure: Throwable = _
   @volatile var lastPush: RecordedCelebornPush = _
   @volatile var pushCount: Int = 0
@@ -287,9 +401,109 @@ final class RecordingCelebornPushClient {
     if (failure != null) {
       throw failure
     }
-    acceptedBytes.getOrElse(length + 16)
+    val transportPayloadLength =
+      cryptoHandler.fold(length)(handler => handler.encrypt(bytes, offset, length).length)
+    acceptedBytes.getOrElse(transportPayloadLength + 16)
   }
 }
+
+/** Models the Spark crypto wire format's minimum 4-byte length plus 16-byte IV overhead. */
+final class RecordingCelebornCryptoHandler {
+
+  @volatile var encryptionCount: Int = 0
+  @volatile var plaintext: Array[Byte] = _
+  @volatile var encryptedLength: Int = 0
+
+  def encrypt(bytes: Array[Byte], offset: Int, length: Int): Array[Byte] = {
+    encryptionCount += 1
+    plaintext = Arrays.copyOfRange(bytes, offset, offset + length)
+    encryptedLength = length + java.lang.Integer.BYTES + 16
+    new Array[Byte](encryptedLength)
+  }
+}
+
+/** Mirrors Celeborn 0.7 integrity accounting without depending on its optional client classes. */
+final class IntegrityCheckingCelebornPushClient extends RecordingCelebornPushClient {
+
+  @volatile var integrityFailure: Throwable = _
+  val accountedFrames: mutable.ArrayBuffer[RecordedCelebornAccounting] =
+    mutable.ArrayBuffer.empty
+  val recordedPushes: mutable.ArrayBuffer[RecordedCelebornPush] = mutable.ArrayBuffer.empty
+  val invocationOrder: mutable.ArrayBuffer[String] = mutable.ArrayBuffer.empty
+  private val checksums = mutable.HashMap.empty[Int, Long]
+  private val byteTotals = mutable.HashMap.empty[Int, Long]
+
+  def partitionCrc(partitionId: Int): Long = checksums(partitionId)
+
+  def partitionBytes(partitionId: Int): Long = byteTotals(partitionId)
+
+  @throws[IOException]
+  def computeBatchCRC(
+      shuffleId: Int,
+      mapId: Int,
+      attemptId: Int,
+      partitionId: Int,
+      bytes: Array[Byte],
+      offset: Int,
+      length: Int): Unit = {
+    invocationOrder += s"crc:$partitionId"
+    if (integrityFailure != null) {
+      throw integrityFailure
+    }
+
+    accountedFrames +=
+      RecordedCelebornAccounting(shuffleId, mapId, attemptId, partitionId, bytes, offset, length)
+    val batchChecksum = new CRC32
+    batchChecksum.update(bytes, offset, length)
+    val previous = checksums.getOrElse(partitionId, 0L)
+    val combined = (0 until java.lang.Integer.BYTES).foldLeft(0L) { (result, index) =>
+      val shift = index * java.lang.Byte.SIZE
+      val next = ((previous >>> shift) & 0xffL) + ((batchChecksum.getValue >>> shift) & 0xffL)
+      result | ((next & 0xffL) << shift)
+    }
+    checksums.update(partitionId, combined)
+    byteTotals.update(partitionId, byteTotals.getOrElse(partitionId, 0L) + length)
+  }
+
+  @throws[IOException]
+  override def pushOrMergeData(
+      shuffleId: Int,
+      mapId: Int,
+      attemptId: Int,
+      partitionId: Int,
+      bytes: Array[Byte],
+      offset: Int,
+      length: Int,
+      numMappers: Int,
+      numPartitions: Int,
+      doPush: Boolean,
+      skipCompress: Boolean): Int = {
+    invocationOrder += s"push:$partitionId"
+    val accepted = super.pushOrMergeData(
+      shuffleId,
+      mapId,
+      attemptId,
+      partitionId,
+      bytes,
+      offset,
+      length,
+      numMappers,
+      numPartitions,
+      doPush,
+      skipCompress)
+    recordedPushes += lastPush
+    accepted
+  }
+}
+
+final case class RecordedCelebornAccounting(
+    shuffleId: Int,
+    mapId: Int,
+    attemptId: Int,
+    partitionId: Int,
+    bytes: Array[Byte],
+    offset: Int,
+    length: Int)
 
 final case class RecordedCelebornPush(
     shuffleId: Int,
