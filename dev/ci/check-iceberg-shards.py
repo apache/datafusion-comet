@@ -22,6 +22,8 @@ Run with the Iceberg checkout's wrapper (or a Gradle executable):
 
 The fixture downloads only JUnit. --junit-classpath accepts local JUnit jars for
 offline checks. --work-dir retains the fixture, logs, and comparison results.
+--github-output exports the workflow matrix/count from one shared definition.
+--manifests verifies the real inventories downloaded from an Iceberg CI run.
 """
 
 import argparse
@@ -36,6 +38,69 @@ import xml.etree.ElementTree as ET
 
 
 INIT_SCRIPT = Path(__file__).with_name("iceberg-test-shards.gradle")
+# The workflow matrix and Gradle's partition count must come from the same value,
+# not strategy.job-total (which includes any other matrix dimensions).
+SHARD_COUNT = 4
+
+
+def verify_manifests(root, task):
+    """Check each latest shard attempt against its independently captured baseline.
+
+    Rerunning only failed jobs leaves successful jobs' artifacts in an earlier
+    attempt. Keep those, but never count two attempts of the same shard twice.
+    Artifact download is scoped to one run and Iceberg/Spark/Scala/JDK tuple.
+    """
+    attempts = {}
+    for path in sorted(root.rglob("*.json")):
+        manifest = json.loads(path.read_text())
+        for key in ("shard", "count", "attempt"):
+            if type(manifest.get(key)) is not int or manifest[key] < 1:
+                raise ValueError(f"{path}: {key} must be a positive integer")
+        key = manifest["shard"], manifest["attempt"]
+        if key in attempts:
+            raise ValueError(f"Duplicate inventory for shard/attempt {key}: {path}")
+        attempts[key] = manifest
+
+    expected = set(range(1, SHARD_COUNT + 1))
+    indices = {index for index, _ in attempts}
+    if indices != expected:
+        raise ValueError(f"Expected shard indices {sorted(expected)}, found {sorted(indices)}")
+
+    baseline = None
+    combined = Counter()
+    for index in sorted(expected):
+        attempt = max(attempt for shard, attempt in attempts if shard == index)
+        manifest = attempts[index, attempt]
+        if manifest.get("task") != task or manifest["count"] != SHARD_COUNT:
+            raise ValueError(f"Shard {index}: mismatched task or shard count")
+        for field in ("candidates", "unshardedCandidates"):
+            values = manifest.get(field)
+            if not isinstance(values, list) or not all(isinstance(v, str) for v in values):
+                raise ValueError(f"Shard {index}: {field} must be a list of class paths")
+            if len(set(values)) != len(values):
+                raise ValueError(f"Shard {index}: duplicate class paths in {field}")
+        inventory = set(manifest["unshardedCandidates"])
+        if not inventory:
+            raise ValueError(f"Shard {index}: empty unsharded candidate inventory")
+        if baseline is not None and baseline != inventory:
+            raise ValueError(f"Shard {index}: unsharded inventories disagree")
+        baseline = inventory
+        combined.update(manifest["candidates"])
+
+    if set(combined) != baseline:
+        missing, extra = baseline - set(combined), set(combined) - baseline
+        raise ValueError(f"Shard coverage mismatch: missing={sorted(missing)}, extra={sorted(extra)}")
+    duplicates = sorted(name for name, count in combined.items() if count != 1)
+    if duplicates:
+        raise ValueError(f"Candidate classes selected by multiple shards: {duplicates}")
+    print(f"Verified {SHARD_COUNT} shards and {len(baseline)} candidate classes: "
+          "the selected inventories equal the unsharded inventory exactly once.", flush=True)
+
+
+def write_workflow_matrix(output):
+    with output.open("a") as stream:
+        stream.write(f"matrix={json.dumps({'shard': list(range(1, SHARD_COUNT + 1))})}\n")
+        stream.write(f"count={SHARD_COUNT}\n")
 
 
 def groovy_string(value):
@@ -168,7 +233,7 @@ def check(root, gradle, junit_classpath):
         print(f"{label}: {'expected failure' if expect_failure else 'passed'}", flush=True)
         return read_cases(root, task)
 
-    def shard_args(index, count=4, task=":test"):
+    def shard_args(index, count=SHARD_COUNT, task=":test"):
         return ["--init-script", str(INIT_SCRIPT.resolve()), f"-PcometShardTask={task}",
                 f"-PcometShardIndex={index}", f"-PcometShardCount={count}"]
 
@@ -183,11 +248,12 @@ def check(root, gradle, junit_classpath):
     combined_cases = Counter()
     combined_candidates = Counter()
     failure_owner = None
-    for index in range(1, 5):
+    for index in range(1, SHARD_COUNT + 1):
         cases = run(f"shard-{index}", shard_args(index))
         manifest = json.loads((root / f"build/comet-shards/test-{index}.json").read_text())
         candidates = json.loads((root / "build/candidates.json").read_text())
         assert candidates == manifest["candidates"]
+        assert set(manifest["unshardedCandidates"]) == inventory
         assert cases, f"empty fixture shard {index}"
         combined_cases.update(cases)
         combined_candidates.update(candidates)
@@ -197,6 +263,7 @@ def check(root, gradle, junit_classpath):
     assert set(combined_candidates) == inventory, (set(combined_candidates), inventory)
     assert set(combined_candidates.values()) == {1}, combined_candidates
     assert combined_cases == baseline, (combined_cases, baseline)
+    verify_manifests(results, ":test")
     assert run("single-shard", shard_args(1, count=1)) == baseline
 
     other_baseline = run("other-baseline", task="otherTest")
@@ -218,7 +285,19 @@ def main():
     parser.add_argument("--gradle", default="gradle")
     parser.add_argument("--junit-classpath")
     parser.add_argument("--work-dir", type=Path)
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--github-output", type=Path)
+    mode.add_argument("--manifests", type=Path)
+    parser.add_argument("--task", help="Expected Gradle task path when checking real manifests")
     args = parser.parse_args()
+    if args.github_output:
+        write_workflow_matrix(args.github_output)
+        return
+    if args.manifests:
+        if not args.task:
+            parser.error("--manifests requires --task")
+        verify_manifests(args.manifests, args.task)
+        return
     gradle = shutil.which(args.gradle)
     if not gradle:
         parser.error(f"Gradle executable not found: {args.gradle}")

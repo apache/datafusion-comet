@@ -91,6 +91,9 @@ jobs:
       - name: Check pull request type labeling
         run: node --test dev/ci/pr-type-label.test.mjs
 
+      - name: Check Iceberg shard inventory validation
+        run: python3 dev/ci/test-iceberg-shards.py
+
       - name: Install actionlint
         run: |
           curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash | bash

@@ -63,6 +63,9 @@ jobs:
   build-native:
     name: Build Native Library
     runs-on: ubuntu-24.04
+    outputs:
+      shard-matrix: ${{ steps.shards.outputs.matrix }}
+      shard-count: ${{ steps.shards.outputs.count }}
     container:
       image: amd64/rust
     steps:
@@ -73,6 +76,10 @@ jobs:
         with:
           rust-version: ${{ env.RUST_VERSION }}
           jdk-version: 17
+
+      - name: Define Iceberg test shards
+        id: shards
+        run: python3 dev/ci/check-iceberg-shards.py --github-output "$GITHUB_OUTPUT"
 
       - name: Restore Cargo cache
         uses: actions/cache/restore@v6
@@ -113,8 +120,7 @@ jobs:
     needs: build-native
     strategy:
       fail-fast: false
-      matrix:
-        shard: [1, 2, 3, 4]
+      matrix: ${{ fromJSON(needs.build-native.outputs.shard-matrix) }}
     name: iceberg-spark/iceberg-${{ inputs.iceberg-full }}/spark-${{ inputs.spark-full }}/scala-${{ inputs.scala }}/java-${{ inputs.java }}/shard-${{ matrix.shard }}
     runs-on: ubuntu-24.04
     container:
@@ -148,7 +154,7 @@ jobs:
             :iceberg-spark:iceberg-spark-${{ inputs.spark-short }}_${{ inputs.scala }}:test \
             --init-script ../dev/ci/iceberg-test-shards.gradle \
             -PcometShardTask=:iceberg-spark:iceberg-spark-${{ inputs.spark-short }}_${{ inputs.scala }}:test \
-            -PcometShardIndex=${{ matrix.shard }} -PcometShardCount=${{ strategy.job-total }} \
+            -PcometShardIndex=${{ matrix.shard }} -PcometShardCount=${{ needs.build-native.outputs.shard-count }} \
             -Pquick=true -x javadoc
       - name: Upload Iceberg shard inventory and test reports
         if: ${{ !cancelled() }}
@@ -159,6 +165,25 @@ jobs:
             apache-iceberg/**/build/comet-shards/*.json
             apache-iceberg/**/build/test-results/test/*.xml
           retention-days: 7
+
+  iceberg-spark-shard-coverage:
+    needs: iceberg-spark
+    if: ${{ !cancelled() }}
+    name: iceberg-spark-shard-coverage/iceberg-${{ inputs.iceberg-full }}/spark-${{ inputs.spark-full }}/scala-${{ inputs.scala }}/java-${{ inputs.java }}
+    runs-on: ubuntu-slim
+    steps:
+      - uses: actions/checkout@v7
+      - name: Download Iceberg shard inventories
+        uses: actions/download-artifact@v8
+        with:
+          # Download all attempts: a failed-job rerun retains earlier successful
+          # shards. The checker selects the latest inventory for each index.
+          pattern: iceberg-spark-${{ inputs.iceberg-full }}-spark-${{ inputs.spark-full }}-scala-${{ inputs.scala }}-jdk${{ inputs.java }}-shard-*-attempt-*
+          path: iceberg-shard-reports
+      - name: Verify complete, disjoint Iceberg candidate coverage
+        run: |
+          python3 dev/ci/check-iceberg-shards.py --manifests iceberg-shard-reports \
+            --task :iceberg-spark:iceberg-spark-${{ inputs.spark-short }}_${{ inputs.scala }}:test
 
   iceberg-spark-extensions:
     needs: build-native
