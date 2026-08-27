@@ -179,9 +179,17 @@ SELECT some_expression(v) FROM test_table
 Checks results with a numeric tolerance. Useful for floating-point functions where small
 differences are acceptable.
 
+The comparison ignores the sign of zero (`+0.0` matches `-0.0`) and the sign of infinity
+(`+Infinity` matches `-Infinity`). Keep tolerance for ordinary values and add a plain
+`query` for cases whose expected result is signed zero or signed infinity.
+
 ```sql
 query tolerance=0.0001
 SELECT cos(v) FROM test_trig
+
+-- csc(-0.0) == -Infinity; a tolerance check would also accept +Infinity
+query
+SELECT csc(double('-0.0'))
 ```
 
 #### `query expect_fallback(<reason>)`
@@ -304,6 +312,16 @@ common ones include:
 - **Zero, negative, and very large numbers** -- for numeric functions
 - **Boundary values** -- `INT_MIN`, `INT_MAX`, `NaN`, `Infinity`, `-Infinity` for numeric
   types
+- **Signed zero** -- Spark parses a bare `-0.0` as `decimal(1,1)`, which has no signed
+  zero, so coercion to `float`/`double` yields `+0.0`. `CAST(-0.0 AS DOUBLE)` and
+  `CAST(-0.0 AS FLOAT)` have the same problem because the cast source is still the
+  decimal literal. Use `double('-0.0')` or `float('-0.0')` (equivalently
+  `CAST('-0.0' AS DOUBLE)`). Spark's array comparator also treats `+0.0` and `-0.0` as
+  equal, so `sort_array(...)` is not a unique projection when both signs are present
+  (the SQL test comparator distinguishes the bits). Prefer a sign-aware form such as
+  `sort_array(transform(arr, x -> cast(x AS string)))`. A `query tolerance=...` check
+  likewise treats the two zero signs as equal, and `+Infinity` / `-Infinity` as equal,
+  so signed-zero and signed-infinity results need a separate plain `query`.
 - **Special characters and multibyte UTF-8** -- for string functions (e.g. `'é'`, `'中文'`,
   `'\t'`)
 - **Empty arrays/maps** -- for collection functions

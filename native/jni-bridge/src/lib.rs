@@ -195,6 +195,7 @@ mod comet_s3_credential_dispatcher;
 mod comet_task_memory_manager;
 mod comet_udf_bridge;
 mod shuffle_block_iterator;
+mod shuffle_partition_pusher;
 
 use arrow_array_stream::ArrowArrayStream;
 pub use comet_metric_node::*;
@@ -202,6 +203,7 @@ pub use comet_s3_credential_dispatcher::CometS3CredentialDispatcher;
 pub use comet_task_memory_manager::*;
 use comet_udf_bridge::CometUdfBridge;
 use shuffle_block_iterator::CometShuffleBlockIterator;
+pub use shuffle_partition_pusher::{JavaShufflePartitionPusher, ShufflePartitionPusher};
 
 /// The JVM classes that are used in the JNI calls.
 #[allow(dead_code)] // we need to keep references to Java items to prevent GC

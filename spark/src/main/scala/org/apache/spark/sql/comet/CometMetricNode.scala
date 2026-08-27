@@ -19,6 +19,8 @@
 
 package org.apache.spark.sql.comet
 
+import java.util.IdentityHashMap
+
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.{SparkContext, TaskContext}
@@ -61,6 +63,38 @@ case class CometMetricNode(metrics: Map[String, SQLMetric], children: Seq[CometM
     else children.flatMap(_.leafNodes)
   }
 
+  private[comet] def sumMetricValues(metricName: String): Long = {
+    val seenMetrics = new IdentityHashMap[SQLMetric, java.lang.Boolean]()
+
+    def sumFromNode(metricNode: CometMetricNode): Long = {
+      val nodeValue = metricNode.metrics.get(metricName).fold(0L) { metric =>
+        if (seenMetrics.put(metric, java.lang.Boolean.TRUE) == null) {
+          math.max(metric.value, 0L)
+        } else {
+          0L
+        }
+      }
+      nodeValue + metricNode.children.iterator.map(sumFromNode).sum
+    }
+
+    sumFromNode(this)
+  }
+
+  /**
+   * Range sampling executes aggregate inputs again for the actual shuffle, so exclude aggregate
+   * metrics during sampling to avoid counting their spills and memory usage twice.
+   */
+  private[comet] def withoutAggregateMetrics(plan: SparkPlan): CometMetricNode =
+    CometMetricNode(
+      if (plan.isInstanceOf[CometHashAggregateExec]) {
+        metrics -- CometMetricNode.aggregateMetricNames
+      } else {
+        metrics
+      },
+      children.zip(plan.children).map { case (child, childPlan) =>
+        child.withoutAggregateMetrics(childPlan)
+      })
+
   /**
    * Reports aggregated scan input metrics (bytesRead, recordsRead) to Spark's task metrics.
    * Aggregates across all scan leaf nodes to handle plans with multiple scans (e.g., joins). Must
@@ -100,6 +134,28 @@ case class CometMetricNode(metrics: Map[String, SQLMetric], children: Seq[CometM
       }
       metrics.get("rows_written").foreach { m =>
         ctx.taskMetrics().outputMetrics.setRecordsWritten(m.value)
+      }
+    }
+  }
+
+  /**
+   * Reports this node's and its descendants' native shuffle spill metrics to Spark's task
+   * metrics, preserving the distinction between on-disk bytes and uncompressed in-memory bytes.
+   *
+   * Must be registered on the task thread before [[org.apache.comet.CometExecIterator]] so its
+   * completion listener publishes final SQL metrics before this listener runs, including when the
+   * shuffle attempt fails.
+   */
+  def reportSpillMetrics(ctx: TaskContext): Unit = {
+    ctx.addTaskCompletionListener[Unit] { _ =>
+      val diskBytesSpilled = sumMetricValues("spilled_bytes")
+      if (diskBytesSpilled > 0L) {
+        ctx.taskMetrics().incDiskBytesSpilled(diskBytesSpilled)
+      }
+
+      val memoryBytesSpilled = sumMetricValues("memory_spilled_bytes")
+      if (memoryBytesSpilled > 0L) {
+        ctx.taskMetrics().incMemoryBytesSpilled(memoryBytesSpilled)
       }
     }
   }
@@ -151,6 +207,9 @@ case class CometMetricNode(metrics: Map[String, SQLMetric], children: Seq[CometM
 
 object CometMetricNode {
 
+  private val aggregateMetricNames =
+    Set("spill_count", "spilled_bytes", "spilled_rows", "peak_mem_used")
+
   /**
    * The baseline SQL metrics for DataFusion `BaselineMetrics`.
    */
@@ -160,6 +219,14 @@ object CometMetricNode {
       "elapsed_compute" -> SQLMetrics.createNanoTimingMetric(
         sc,
         "total time (in ms) spent in this operator"))
+  }
+
+  def aggregateMetrics(sc: SparkContext): Map[String, SQLMetric] = {
+    Map(
+      "spill_count" -> SQLMetrics.createMetric(sc, "number of spills"),
+      "spilled_bytes" -> SQLMetrics.createSizeMetric(sc, "total spilled bytes"),
+      "spilled_rows" -> SQLMetrics.createMetric(sc, "number of spilled rows"),
+      "peak_mem_used" -> SQLMetrics.createSizeMetric(sc, "peak native aggregate memory"))
   }
 
   /**
@@ -345,10 +412,12 @@ object CometMetricNode {
     Map(
       "elapsed_compute" -> SQLMetrics.createNanoTimingMetric(sc, "native shuffle writer time"),
       "repart_time" -> SQLMetrics.createNanoTimingMetric(sc, "repartition time"),
+      "interleave_time" -> SQLMetrics.createNanoTimingMetric(sc, "partition interleaving time"),
       "encode_time" -> SQLMetrics.createNanoTimingMetric(sc, "encoding and compression time"),
       "decode_time" -> SQLMetrics.createNanoTimingMetric(sc, "decoding and decompression time"),
       "spill_count" -> SQLMetrics.createMetric(sc, "number of spills"),
-      "spilled_bytes" -> SQLMetrics.createSizeMetric(sc, "spilled bytes"),
+      "spilled_bytes" -> SQLMetrics.createSizeMetric(sc, "disk spilled bytes"),
+      "memory_spilled_bytes" -> SQLMetrics.createSizeMetric(sc, "memory spilled bytes"),
       "input_batches" -> SQLMetrics.createMetric(sc, "number of input batches"))
   }
 

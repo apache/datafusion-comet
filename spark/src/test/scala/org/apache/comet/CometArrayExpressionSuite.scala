@@ -560,6 +560,33 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     }
   }
 
+  test("arrays_overlap - runtime NaN representations") {
+    val floatNaN = java.lang.Float.intBitsToFloat(0x7fc01234 | Int.MinValue)
+    val doubleNaN = java.lang.Double.longBitsToDouble(0x7ff8000000001234L | Long.MinValue)
+
+    withParquetTable(
+      Seq((floatNaN, doubleNaN)),
+      "floating_point_overlap",
+      withDictionary = false) {
+      // The behavioral cases live in arrays_overlap.sql. SQL equality cannot distinguish NaN
+      // representations, so verify here that Parquet canonicalizes the inputs and that native
+      // runtime negation produces noncanonical NaNs after the scan.
+      val query = sql("SELECT _1, -_1, _2, -_2 FROM floating_point_overlap")
+      checkSparkAnswerAndOperator(query)
+      val row = query.head()
+      val canonicalFloatNaNBits = java.lang.Float.floatToRawIntBits(Float.NaN)
+      val canonicalDoubleNaNBits = java.lang.Double.doubleToRawLongBits(Double.NaN)
+      assert(java.lang.Float.floatToRawIntBits(row.getFloat(0)) == canonicalFloatNaNBits)
+      assert(
+        java.lang.Float.floatToRawIntBits(row.getFloat(1)) ==
+          (canonicalFloatNaNBits | Int.MinValue))
+      assert(java.lang.Double.doubleToRawLongBits(row.getDouble(2)) == canonicalDoubleNaNBits)
+      assert(
+        java.lang.Double.doubleToRawLongBits(row.getDouble(3)) ==
+          (canonicalDoubleNaNBits | Long.MinValue))
+    }
+  }
+
   test("arrays_overlap - null handling behavior verification") {
     withSQLConf(
       "spark.sql.optimizer.excludedRules" -> "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {

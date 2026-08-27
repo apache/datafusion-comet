@@ -23,7 +23,7 @@
 
 ## `%`
 
-- Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): `Remainder(left, right, evalMode)` signature identical across versions. Native path uses Rust `spark_modulo` UDF; non-ANSI returns NULL on divide-by-zero, ANSI raises `DIVIDE_BY_ZERO` / `REMAINDER_BY_ZERO`. `CometRemainder` rejects `EvalMode.TRY`, so `try_mod` (Spark 4.0+) falls back to Spark (https://github.com/apache/datafusion-comet/issues/4484).
+- Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): `Remainder(left, right, evalMode)` signature identical across versions. Native path uses Rust `spark_modulo` UDF; non-ANSI returns NULL on divide-by-zero, ANSI raises `DIVIDE_BY_ZERO` / `REMAINDER_BY_ZERO`. `CometRemainder` gates only on the left input's data type, so all three eval modes, including the `EvalMode.TRY` form used by `try_mod` (Spark 4.0+), are serialized natively.
 
 ## `*`
 
@@ -45,7 +45,7 @@
 
 Internal decimal wrapper emitted around every decimal `+ - * /`, `sum`, and `avg` result to null out (non-ANSI) or raise on (ANSI) values that exceed the declared precision. Native impl: `math_funcs/internal/checkoverflow.rs`.
 
-- Performance (tuned 2026-07-15, PR #4937): both the ANSI and non-ANSI paths share a no-overflow fast path built on `is_valid_decimal_precision`, a small inlined bounds check scanned with `all` (short-circuits at the first overflow). When nothing overflows (the common shape) the input buffers are reused via `to_data()` (cheap Arc metadata clone) instead of allocating through `null_if_overflow_precision` (non-ANSI) or running the heavier per-value `validate_decimal_precision` (ANSI). The ANSI path only falls back to `validate_decimal_precision` when an overflow is present, to build the precise Spark error. ~10% faster on the no-overflow shape, ~17% with nulls, and ~69% faster for ANSI no-overflow (down to parity with non-ANSI); overflow shapes unchanged. Benchmark: `benches/check_overflow.rs`.
+- Performance (tuned 2026-07-15, PR [#4937](https://github.com/apache/datafusion-comet/pull/4937)): both the ANSI and non-ANSI paths share a no-overflow fast path built on `is_valid_decimal_precision`, a small inlined bounds check scanned with `all` (short-circuits at the first overflow). When nothing overflows (the common shape) the input buffers are reused via `to_data()` (cheap Arc metadata clone) instead of allocating through `null_if_overflow_precision` (non-ANSI) or running the heavier per-value `validate_decimal_precision` (ANSI). The ANSI path only falls back to `validate_decimal_precision` when an overflow is present, to build the precise Spark error. ~10% faster on the no-overflow shape, ~17% with nulls, and ~69% faster for ANSI no-overflow (down to parity with non-ANSI); overflow shapes unchanged. Benchmark: `benches/check_overflow.rs`.
 
 ## abs
 
@@ -121,9 +121,7 @@ Internal decimal wrapper emitted around every decimal `+ - * /`, `sum`, and `avg
 
 ## DecimalRescaleCheckOverflow (internal)
 
-Internal fused expression that rescales a Decimal128 value (changing scale) and checks output precision in one pass, replacing the `CheckOverflow(Cast(expr, Decimal128(p, s)))` pattern used by decimal-to-decimal casts. Native impl: `math_funcs/internal/decimal_rescale_check.rs`.
-
-- Performance (tuned 2026-07-15, PR #4938): the legacy path ran `null_if_overflow_precision` (a second full pass that allocates a new array) on every batch to turn overflow sentinels into nulls, even when nothing overflowed. Now that pass runs only when a sentinel is present (`contains(&i128::MAX)`, short-circuiting), so the common no-overflow case skips the allocation. 8 to 26% faster on no-overflow shapes; overflow and ANSI shapes unchanged. Benchmark: `benches/decimal_rescale.rs`.
+Internal fused expression that replaces the `CheckOverflow(Cast(expr, Decimal128(p, s)))` pattern used by decimal-to-decimal casts. It delegates rescaling, HALF_UP rounding, and output-precision validation to Arrow's single-pass decimal cast kernel. Arrow writes nulls directly in legacy mode and returns an error in ANSI mode. Native impl: `math_funcs/internal/decimal_rescale_check.rs`; benchmark: `benches/decimal_rescale.rs`.
 
 ## e
 
@@ -227,7 +225,7 @@ Internal fused expression that rescales a Decimal128 value (changing scale) and 
 
 ## shiftleft
 
-- See `bitwise_funcs / <<` (audited in PR #4479). Same support as the operator alias added in 4.0.
+- See `bitwise_funcs / <<` (audited in PR [#4479](https://github.com/apache/datafusion-comet/pull/4479)). Same support as the operator alias added in 4.0.
 
 ## sign
 
@@ -276,12 +274,12 @@ Internal fused expression that rescales a Decimal128 value (changing scale) and 
 ## unhex
 
 - Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): `Unhex(child, failOnError)`. Spark 4.x widens input to `StringTypeWithCollation` and wraps the inner call in try/catch; Comet `CometUnhex` forwards `failOnError` to native `spark_unhex` but does not gate on collation.
-- Performance (tuned 2026-07-11, PR #4876): compile-time 256-entry hex lookup table plus a preallocated `BinaryBuilder`, cutting per-byte branching and repeated buffer reallocations. Up to 31% faster on long strings. Benchmark: `benches/unhex.rs`.
+- Performance (tuned 2026-07-11, PR [#4876](https://github.com/apache/datafusion-comet/pull/4876)): compile-time 256-entry hex lookup table plus a preallocated `BinaryBuilder`, cutting per-byte branching and repeated buffer reallocations. Up to 31% faster on long strings. Benchmark: `benches/unhex.rs`.
 
 ## width_bucket
 
 - Spark 3.5.8 (audited 2026-05-27): introduced; not available in 3.4.3.
 - Spark 4.0.1, 4.1.1 (audited 2026-05-27): same semantics; `NullIntolerant` -> `nullIntolerant: Boolean` refactor.
-- Known limitation: wired via per-version `CometExprShim` rather than a `CometExpressionSerde`, so it bypasses the support-level framework and the auto-generated compatibility doc (https://github.com/apache/datafusion-comet/issues/4485). Native path uses datafusion-spark `SparkWidthBucket`; interval input types are not exercised by Comet tests.
+- Known limitation: wired via per-version `CometExprShim` rather than a `CometExpressionSerde`, so it bypasses the support-level framework and the auto-generated compatibility doc ([#4485](https://github.com/apache/datafusion-comet/issues/4485)). Native path uses datafusion-spark `SparkWidthBucket`; interval input types are not exercised by Comet tests.
 
 [Spark Expression Support]: ../../user-guide/latest/expressions.md

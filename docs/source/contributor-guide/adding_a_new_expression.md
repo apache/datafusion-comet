@@ -87,6 +87,37 @@ For simple scalar functions that map directly to a DataFusion function, you can 
 classOf[Cos] -> CometScalarFunction("cos")
 ```
 
+### ANSI / `fail_on_error` constraints
+
+`CometScalarFunction` uses `scalarFunctionExprToProto`, which always serializes
+`fail_on_error=false`.
+
+On the native side, `create_comet_physical_fun` delegates to
+`create_comet_physical_fun_with_eval_mode`, whose registry catch-all **fails
+closed**. If `fail_on_error=Some(true)` reaches a UDF that can only be resolved
+from the function registry—including functions registered by
+`datafusion-spark`—Comet returns an error instead of silently ignoring the flag.
+
+Follow these rules when wiring scalar expressions:
+
+- **Do not** register a Spark expression class that exposes `failOnError`,
+  `evalMode`, `nullOnOverflow`, `ansiEnabled`, or `evalContext` using plain
+  `CometScalarFunction`. `CometScalarFunction.convert` rejects such expressions
+  by returning `None`, allowing the planner to fall back to Spark.
+
+- **Prefer name-based ANSI and try variants** so that the error semantics are
+  encoded in the function name while the proto `fail_on_error` flag remains
+  `false`. Existing examples include `parse_url` / `try_parse_url`
+  (`CometParseUrl`) and `url_decode` / `try_url_decode`
+  (`CometUrlDecodeStaticInvoke`).
+
+- If a function must receive `fail_on_error` through the proto, use
+  `scalarFunctionExprToProtoWithReturnType(..., failOnError, ...)`. The function
+  must also have a dedicated match arm in
+  `create_comet_physical_fun_with_eval_mode` that actually consumes the flag;
+  it must not fall through to registry lookup. Existing native consumers
+  include `make_decimal`, `make_date`, `make_time`, and `next_day`.
+
 #### When to set the return type explicitly
 
 `CometScalarFunction(name)` and the lower-level `scalarFunctionExprToProto(name, args)` helper both produce a protobuf `ScalarFunc` message **without** a `return_type` field. That is fine when the function name does not collide with a DataFusion built-in, or when it does collide and the Spark and DataFusion versions take the same arity and types. In that case the native planner consults DataFusion's UDF registry only to resolve the return type, then swaps in Comet's UDF for execution.
@@ -145,7 +176,7 @@ A few things to note:
 The `SupportLevel` sealed trait has three possible values:
 
 - **`Compatible(notes: Option[String] = None)`** - Comet supports this expression with full compatibility with Spark, or may have known differences in specific edge cases unlikely to affect most users. This is the default if you don't override `getSupportLevel`.
-- **`Incompatible(notes: Option[String] = None)`** - Comet supports this expression but results can differ from Spark. The expression will only be used if `spark.comet.expr.allowIncompatible=true` or the expression-specific config `spark.comet.expr.<exprName>.allowIncompatible=true` is set.
+- **`Incompatible(notes: Option[String] = None)`** - Comet supports this expression but results can differ from Spark. The expression will only be used if the expression-specific config `spark.comet.expression.<exprName>.allowIncompatible=true` is set.
 - **`Unsupported(notes: Option[String] = None)`** - Comet does not support this expression under the current conditions. Spark will fall back to its native execution.
 
 All three accept an optional `notes` parameter to provide additional context that is logged for debugging.
@@ -240,11 +271,11 @@ This expression will only be used when users explicitly enable incompatible expr
 
 When the query planner encounters an expression:
 
-1. It first checks if the expression is explicitly disabled via `spark.comet.expr.<exprName>.enabled=false`
+1. It first checks if the expression is explicitly disabled via `spark.comet.expression.<exprName>.enabled=false`
 2. It then calls `getSupportLevel` on the expression handler
 3. Based on the result:
    - `Compatible()`: Expression proceeds to conversion
-   - `Incompatible()`: Expression is skipped unless `spark.comet.expr.allowIncompatible=true` or expression-specific allow config is set
+   - `Incompatible()`: Expression is skipped unless `spark.comet.expression.<exprName>.allowIncompatible=true` is set
    - `Unsupported()`: Expression is skipped and a fallback to Spark occurs
 
 Any notes provided will be logged to help with debugging and understanding why an expression was not used.
