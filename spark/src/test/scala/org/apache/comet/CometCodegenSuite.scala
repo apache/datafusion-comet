@@ -25,7 +25,7 @@ import org.apache.arrow.vector._
 import org.apache.spark.{SparkConf, SparkEnv, TaskContext}
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.api.java.UDF1
-import org.apache.spark.sql.catalyst.expressions.{Add, Alias, AttributeReference, BoundReference, CreateArray, CreateMap, CreateNamedStruct, Expression, Literal, MapConcat}
+import org.apache.spark.sql.catalyst.expressions.{Add, Alias, AttributeReference, BoundReference, Cast, CreateArray, CreateMap, CreateNamedStruct, Expression, Hypot, Literal, MapConcat}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
@@ -267,6 +267,22 @@ class CometCodegenSuite
         assert(native.contains("add"), s"expected the arithmetic expression, got: $native")
       }
     }
+  }
+
+  test("codegen dispatch coverage survives the decimal promotion rewrite") {
+    val decimal = AttributeReference("amount", DecimalType(10, 2), nullable = false)()
+    val dispatched = Hypot(Cast(Add(decimal, decimal), DoubleType), Literal(4.0d))
+    val projection = Alias(dispatched, "value")()
+
+    // Promotion rebuilds Hypot as well as the Alias above it. Unlike the original Add, the
+    // dispatched copy is not reachable from the original tree, so only the coverage lift can
+    // bring its name back to the projection owner.
+    val proto = QueryPlanSerde.exprToProto(projection, Seq(decimal)).get
+    assert(proto.hasJvmScalarUdf)
+    assert(proto.getJvmScalarUdf.getClassName === classOf[CometScalaUDFCodegen].getName)
+    assert(dispatched.getTagValue(CometExplainInfo.DISPATCHED_SELF).isEmpty)
+    assert(dispatched.getTagValue(CometExplainInfo.CODEGEN_DISPATCH_EXPRS).isEmpty)
+    assert(projection.getTagValue(CometExplainInfo.CODEGEN_DISPATCH_EXPRS).contains(Set("hypot")))
   }
 
   test("tags copied onto the shared TrueLiteral do not leak into unrelated plans") {

@@ -1013,6 +1013,11 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
    * Nodes that carry no computation of their own. They are excluded from the expression coverage
    * stats in extended explain because they appear in nearly every expression tree and would swamp
    * the names a user actually cares about.
+   *
+   * `CometExplainInfo.isNeverTagged` must be this set minus `Alias`: the read-side filter retains
+   * aliases because [[liftCoverageTags]] uses them to hold names from rewritten children. Keep
+   * both sets in sync. This coverage invariant does not exclude structural nodes from carrying
+   * `FALLBACK_REASONS`.
    */
   private def isStructuralExpr(expr: Expression): Boolean = expr match {
     case _: Attribute | _: BoundReference | _: Literal | _: Alias => true
