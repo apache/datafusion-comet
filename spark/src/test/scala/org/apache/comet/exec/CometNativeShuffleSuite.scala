@@ -29,6 +29,9 @@ import scala.util.Random
 import org.scalactic.source.Position
 import org.scalatest.Tag
 
+import org.apache.arrow.memory.ArrowBuf
+import org.apache.arrow.vector.ipc.ArrowReader
+import org.apache.arrow.vector.types.pojo.{Field, Schema}
 import org.apache.hadoop.fs.Path
 import org.apache.spark.SparkEnv
 import org.apache.spark.sql.{CometTestBase, DataFrame, Dataset, Row}
@@ -191,17 +194,36 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
     assert(failures.sameElements(Array((true, "remote shuffle callback sentinel"))))
   }
 
-  test("failed RSS callback registration closes every shuffle input and preserves its error") {
+  test(
+    "failed RSS callback registration closes every Arrow and shuffle input and preserves its error") {
     val planBytes = rssShufflePlanBytes
 
     val results = spark.sparkContext
       .parallelize(Seq(17), 1)
-      .mapPartitions { rowCounts =>
-        val batch = new ColumnarBatch(Array.empty[ColumnVector], rowCounts.next())
-        val inputs = CometArrowStream.inputObjects(
-          Iterator.single(batch),
-          StructType(Nil),
-          "native-rss-registration-failure-test")
+      .mapPartitions { _ =>
+        var readerClosed = false
+        var ownedBuffer: ArrowBuf = null
+        val arrowInput = CometArrowStream
+          .stream(
+            "native-rss-registration-failure-test",
+            allocator => {
+              ownedBuffer = allocator.buffer(128)
+              new ArrowReader(allocator) {
+                override protected def readSchema(): Schema =
+                  new Schema(java.util.Collections.emptyList[Field]())
+
+                override def loadNextBatch(): Boolean = false
+
+                override def bytesRead(): Long = 0L
+
+                override protected def closeReadSource(): Unit = {
+                  ownedBuffer.close()
+                  readerClosed = true
+                }
+              }
+            })
+          .next()
+        val inputs = Array[Object](arrowInput)
         val closedInputs = mutable.ArrayBuffer.empty[String]
         val failingInput = new ByteArrayInputStream(Array.empty[Byte]) {
           override def close(): Unit = {
@@ -228,12 +250,13 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
             shuffleBlockIterators = shuffleInputs,
             shufflePartitionPusher = Some(null))
           iterator.close()
-          Iterator.single((false, false, false))
+          Iterator.single((false, false, false, false))
         } catch {
           case failure: Throwable =>
             Iterator.single(
               (
                 failure.getMessage.contains("Remote shuffle callback must not be null"),
+                readerClosed && ownedBuffer.refCnt() == 0,
                 closedInputs.toSet == Set("failing", "remaining"),
                 failure.getSuppressed.exists(
                   _.getMessage.contains("shuffle input cleanup sentinel"))))
@@ -241,7 +264,7 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
       }
       .collect()
 
-    assert(results.sameElements(Array((true, true, true))))
+    assert(results.sameElements(Array((true, true, true, true))))
   }
 
   test("native shuffle plan preserves local partition writer and legacy output paths") {

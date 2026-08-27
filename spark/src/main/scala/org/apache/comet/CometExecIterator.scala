@@ -21,6 +21,7 @@ package org.apache.comet
 
 import java.lang.management.ManagementFactory
 
+import org.apache.arrow.c.ArrowArrayStream
 import org.apache.hadoop.conf.Configuration
 import org.apache.spark._
 import org.apache.spark.broadcast.Broadcast
@@ -148,6 +149,17 @@ class CometExecIterator(
           nativeUtil.close()
         } catch {
           case closeFailure: Throwable => failure.addSuppressed(closeFailure)
+        }
+
+        // Native only takes ownership of Arrow streams during the first executePlan call.
+        inputObjects.foreach {
+          case stream: ArrowArrayStream =>
+            try {
+              stream.release()
+            } catch {
+              case releaseFailure: Throwable => failure.addSuppressed(releaseFailure)
+            }
+          case _ =>
         }
 
         shuffleBlockIterators.values.foreach { iterator =>
