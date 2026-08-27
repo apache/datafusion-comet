@@ -215,8 +215,20 @@ class CometNativeShuffleWriter[K, V](
    */
   private def buildUnifiedPlan(dataFile: String, indexFile: String): Operator = {
     val shuffleWriterBuilder = OperatorOuterClass.ShuffleWriter.newBuilder()
+    // Keep the legacy output fields populated so older native libraries can still consume local
+    // shuffle plans while newer libraries use the explicit partition-writer destination.
     shuffleWriterBuilder.setOutputDataFile(dataFile)
     shuffleWriterBuilder.setOutputIndexFile(indexFile)
+    shuffleWriterBuilder.setPartitionWriter(
+      OperatorOuterClass.PartitionWriter
+        .newBuilder()
+        .setLocal(
+          OperatorOuterClass.LocalPartitionWriter
+            .newBuilder()
+            .setOutputDataFile(dataFile)
+            .setOutputIndexFile(indexFile)
+            .build())
+        .build())
 
     if (SparkEnv.get.conf.getBoolean("spark.shuffle.compress", true)) {
       val codec = CometConf.COMET_SHUFFLE_COMPRESSION_CODEC.get() match {
