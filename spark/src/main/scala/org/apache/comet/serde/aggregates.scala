@@ -133,6 +133,11 @@ object CometCount extends CometAggregateExpressionSerde[Count] {
 
 object CometAverage extends CometAggregateExpressionSerde[Average] {
 
+  // Native AVG exports (0.0, 0) for empty partials after #5420, so Spark Final can merge its
+  // non-decimal buffers. This replaces #5421's conservative policy for the older native state.
+  override def supportsNativePartialToSparkFinal(fn: Average): Boolean =
+    supportsSparkPartialToNativeFinal(fn)
+
   override def supportsSparkPartialToNativeFinal(fn: Average): Boolean =
     // Non-decimal AVG has a (sum: double, count: long) buffer matching Spark. Decimal AVG is
     // deferred (overflow nulls count differently) and stays unsafe for mixed execution.
