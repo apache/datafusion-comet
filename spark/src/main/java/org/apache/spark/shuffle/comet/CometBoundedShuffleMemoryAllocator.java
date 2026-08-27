@@ -57,6 +57,9 @@ public final class CometBoundedShuffleMemoryAllocator extends CometShuffleMemory
   private final long totalMemory;
   private long allocatedMemory = 0L;
 
+  /** How long `allocateBlocking` waits for other tasks to free memory before giving up. */
+  private static final long MEMORY_WAIT_TIMEOUT_MS = 60_000L;
+
   /** The number of bits used to address the page table. */
   private static final int PAGE_NUMBER_BITS = 13;
 
@@ -112,6 +115,34 @@ public final class CometBoundedShuffleMemoryAllocator extends CometShuffleMemory
     return allocateMemoryBlock(size);
   }
 
+  /**
+   * Like {@link #allocate(long)}, but waits for other tasks of this shared pool to free memory
+   * before giving up. Callers must only use this after spilling their own buffered data, so a
+   * waiting task holds no pool memory itself and the tasks still holding memory can always progress
+   * and eventually free it.
+   */
+  @Override
+  public synchronized MemoryBlock allocateBlocking(long required) {
+    long size = Math.max(pageSize, required);
+    long deadline = System.currentTimeMillis() + MEMORY_WAIT_TIMEOUT_MS;
+    while (true) {
+      try {
+        return allocateMemoryBlock(size);
+      } catch (SparkOutOfMemoryError e) {
+        long remaining = deadline - System.currentTimeMillis();
+        if (remaining <= 0) {
+          throw e;
+        }
+        try {
+          wait(remaining);
+        } catch (InterruptedException ie) {
+          Thread.currentThread().interrupt();
+          throw e;
+        }
+      }
+    }
+  }
+
   private synchronized MemoryBlock allocateMemoryBlock(long required) {
     if (required > TaskMemoryManager.MAXIMUM_PAGE_SIZE_BYTES) {
       throw new TooLargePageException(required);
@@ -160,6 +191,8 @@ public final class CometBoundedShuffleMemoryAllocator extends CometShuffleMemory
     block.pageNumber = MemoryBlock.FREED_IN_TMM_PAGE_NUMBER;
 
     allocator.free(block);
+    // Wake up tasks waiting in `allocateBlocking`.
+    notifyAll();
     return blockSize;
   }
 

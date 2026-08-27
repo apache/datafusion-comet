@@ -152,4 +152,96 @@ class CometDiskBlockWriterSuite extends AnyFunSuite {
       tmmB.cleanUpAllAllocatedMemory()
     }
   }
+
+  test("on-heap shared pool: a task with nothing to spill waits for other tasks to free memory") {
+    // On-heap mode uses one executor-wide CometBoundedShuffleMemoryAllocator. A task whose own
+    // writers hold nothing spillable must wait for other tasks to free pool memory rather than
+    // fail with SparkOutOfMemoryError.
+    val conf = new SparkConf().set("spark.comet.memoryOverhead", "1") // 1 MiB shared pool
+    resetOnHeapAllocatorSingleton()
+    val memoryManager = new TestMemoryManager(conf)
+    val tmmA = new TaskMemoryManager(memoryManager, 0L)
+    val tmmB = new TaskMemoryManager(memoryManager, 1L)
+    val taskContextA = newTaskContext(tmmA, 0L)
+    val taskContextB = newTaskContext(tmmB, 1L)
+    // Both tasks get the same singleton allocator in on-heap mode.
+    val allocatorA = CometShuffleMemoryAllocator.getInstance(conf, tmmA, pageSize)
+    val allocatorB = CometShuffleMemoryAllocator.getInstance(conf, tmmB, pageSize)
+    assert(allocatorA eq allocatorB)
+
+    val tempDir = Utils.createTempDir()
+    try {
+      val serializer = new UnsafeRowSerializer(1).newInstance()
+      val fileA = new File(tempDir, "onheap-taskA")
+      val fileB = new File(tempDir, "onheap-taskB")
+      val writerA = new CometDiskBlockWriter(
+        fileA,
+        allocatorA,
+        taskContextA,
+        serializer,
+        schema,
+        new ShuffleWriteMetrics,
+        conf,
+        false,
+        new JLinkedList[CometDiskBlockWriter]())
+      val writerB = new CometDiskBlockWriter(
+        fileB,
+        allocatorB,
+        taskContextB,
+        serializer,
+        schema,
+        new ShuffleWriteMetrics,
+        conf,
+        false,
+        new JLinkedList[CometDiskBlockWriter]())
+
+      val toUnsafe = UnsafeProjection.create(schema)
+      def insertOne(writer: CometDiskBlockWriter): Unit = {
+        writer.insertRow(toUnsafe(InternalRow(new Array[Byte](1024))), 0)
+      }
+
+      // Task B fills the whole 1 MiB pool (4 pages) and idles.
+      var rowsB = 0L
+      while (writerB.getActiveMemoryUsage < 4 * pageSize) {
+        insertOne(writerB)
+        rowsB += 1
+      }
+
+      // Task B finishes a bit later on its own thread, freeing the pool.
+      val threadB = new Thread(() => {
+        Thread.sleep(500)
+        writerB.close()
+      })
+      threadB.start()
+
+      // Task A's first insert finds the pool exhausted and has nothing of its own to spill; it
+      // must wait for task B to finish instead of throwing SparkOutOfMemoryError.
+      var rowsA = 0L
+      (0 until 10).foreach { _ =>
+        insertOne(writerA)
+        rowsA += 1
+      }
+      threadB.join()
+
+      val segmentA = writerA.close()
+      assert(writerA.getOutputRecords == rowsA)
+      assert(writerB.getOutputRecords == rowsB)
+      assert(segmentA.length > 0)
+      // Neither task spilled: A waited instead of stealing B's memory, and B was never touched.
+      assert(taskContextA.taskMetrics.diskBytesSpilled == 0)
+      assert(taskContextB.taskMetrics.diskBytesSpilled == 0)
+    } finally {
+      Utils.deleteRecursively(tempDir)
+      tmmA.cleanUpAllAllocatedMemory()
+      tmmB.cleanUpAllAllocatedMemory()
+      resetOnHeapAllocatorSingleton()
+    }
+  }
+
+  /** Clears the CometShuffleMemoryAllocator singleton so this suite controls its pool size. */
+  private def resetOnHeapAllocatorSingleton(): Unit = {
+    val field = classOf[CometShuffleMemoryAllocator].getDeclaredField("INSTANCE")
+    field.setAccessible(true)
+    field.set(null, null)
+  }
 }
