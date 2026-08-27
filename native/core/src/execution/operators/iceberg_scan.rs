@@ -25,6 +25,7 @@ use std::task::{Context, Poll};
 
 use arrow::array::{ArrayRef, RecordBatch, RecordBatchOptions};
 use arrow::datatypes::SchemaRef;
+use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{DataFusionError, Result as DFResult};
 use datafusion::execution::{RecordBatchStream, SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr::expressions::Column;
@@ -136,6 +137,15 @@ impl ExecutionPlan for IcebergScanExec {
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         vec![]
+    }
+
+    /// The projection expressions are derived per data file inside the stream, not held on the
+    /// node, so there is nothing to visit here.
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> DFResult<TreeNodeRecursion>,
+    ) -> DFResult<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
     }
 
     fn with_new_children(
@@ -557,6 +567,8 @@ mod tests {
             start: 0,
             length: 0,
             record_count: None,
+            first_row_id: None,
+            data_sequence_number: None,
             data_file_path: "data.parquet".to_string(),
             data_file_format: DataFileFormat::Parquet,
             schema: Arc::new(Schema::builder().build().unwrap()),
