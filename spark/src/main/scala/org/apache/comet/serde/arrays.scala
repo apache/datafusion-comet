@@ -851,6 +851,9 @@ trait ArraysBase {
       SupportLevel.containsType(elementType, classOf[FloatType], classOf[DoubleType])
     case ArrayType(elementType: StructType, _) =>
       SupportLevel.containsType(elementType, classOf[FloatType], classOf[DoubleType])
+    // Map elements cannot reach here: ArraysOverlap and ArrayPosition call
+    // TypeUtils.checkForOrderingExpr on the element type, and maps are not orderable,
+    // so Spark's analyzer rejects them before planning.
     case _ => false
   }
 
