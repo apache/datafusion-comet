@@ -39,7 +39,10 @@ sorting, window peer comparisons, and `WindowGroupLimitExec` rank comparisons. N
 partitioning normalizes its keys and sampled boundaries in the same way. Only comparison keys
 are normalized; returned values retain their original NaN representations and zero signs.
 
-Floating-point values nested in arrays or structs still use Arrow's raw total ordering and can
-produce different ordering or rank results from Spark. The existing
-`spark.comet.exec.strictFloatingPoint=true` fallback policy is unchanged, including its
-conservative fallback for scalar floating-point sort keys.
+Native sorting of floating-point values nested in arrays or structs still uses Arrow's raw total
+ordering. Nested keys can therefore produce different ordering or rank results from Spark; see
+[#5507](https://github.com/apache/datafusion-comet/issues/5507).
+
+The existing `spark.comet.exec.strictFloatingPoint=true` fallback policy is unchanged, including
+its conservative fallback for scalar floating-point sort keys. Narrowing that scalar-sort
+admission policy is tracked in [#5506](https://github.com/apache/datafusion-comet/issues/5506).
