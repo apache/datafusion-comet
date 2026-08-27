@@ -40,6 +40,7 @@ use std::sync::Arc;
 ///   [`PartitionWriter::finish_partition`], each with its own short-lived
 ///   `BufBatchWriter`, so coalescing intentionally does not cross partition
 ///   boundaries. They hold the raw output writer and block writer directly.
+#[allow(clippy::large_enum_variant)]
 enum DataOutput {
     /// Single-partition output: one long-lived writer streams all batches.
     Single(BufBatchWriter<ShuffleBlockWriter, File>),

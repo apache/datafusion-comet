@@ -18,7 +18,7 @@
 use super::ShuffleBlockWriter;
 use arrow::array::RecordBatch;
 use arrow::compute::kernels::coalesce::BatchCoalescer;
-use arrow::ipc::writer::CompressionContext;
+use arrow::ipc::writer::IpcWriteContext;
 use datafusion::physical_plan::metrics::Time;
 use std::borrow::Borrow;
 use std::io::{Cursor, Seek, SeekFrom, Write};
@@ -38,12 +38,15 @@ pub(crate) struct BufBatchWriter<S: Borrow<ShuffleBlockWriter>, W: Write> {
     writer: W,
     buffer: Vec<u8>,
     buffer_max_size: usize,
-    compression_context: CompressionContext,
+    compression_context: IpcWriteContext,
     /// Coalesces small batches into target_batch_size before serialization.
     /// Lazily initialized on first write to capture the schema.
     coalescer: Option<BatchCoalescer>,
     /// Target batch size for coalescing
     batch_size: usize,
+    /// Running total of bytes serialized through this writer, used to report spilled bytes when
+    /// the underlying writer does not implement [`Seek`] (e.g. a `Box<dyn SpillWriter>`).
+    total_bytes_written: u64,
 }
 
 impl<S: Borrow<ShuffleBlockWriter>, W: Write> BufBatchWriter<S, W> {
@@ -58,9 +61,10 @@ impl<S: Borrow<ShuffleBlockWriter>, W: Write> BufBatchWriter<S, W> {
             writer,
             buffer: vec![],
             buffer_max_size,
-            compression_context: CompressionContext::default(),
+            compression_context: IpcWriteContext::default(),
             coalescer: None,
             batch_size,
+            total_bytes_written: 0,
         }
     }
 
@@ -123,6 +127,7 @@ impl<S: Borrow<ShuffleBlockWriter>, W: Write> BufBatchWriter<S, W> {
             write_timer.stop();
             self.buffer.clear();
         }
+        self.total_bytes_written += bytes_written as u64;
         Ok(bytes_written)
     }
 
@@ -152,6 +157,13 @@ impl<S: Borrow<ShuffleBlockWriter>, W: Write> BufBatchWriter<S, W> {
         write_timer.stop();
         self.buffer.clear();
         Ok(())
+    }
+
+    /// Total number of bytes serialized through this writer since it was created. Unlike
+    /// [`Self::writer_stream_position`], this does not require the underlying writer to implement
+    /// [`Seek`], so it is used to report spilled bytes when writing to a `Box<dyn SpillWriter>`.
+    pub(crate) fn bytes_written(&self) -> u64 {
+        self.total_bytes_written
     }
 }
 

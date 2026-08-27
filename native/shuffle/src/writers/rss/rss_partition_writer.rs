@@ -26,7 +26,7 @@ use arrow::array::{
 };
 use arrow::buffer::OffsetBuffer;
 use arrow::datatypes::{DataType, Field, Int16Type, Int32Type, Int64Type};
-use arrow::ipc::writer::CompressionContext;
+use arrow::ipc::writer::IpcWriteContext;
 use arrow_select::dictionary::garbage_collect_any_dictionary;
 use datafusion::common::{DataFusionError, Result};
 use datafusion_comet_jni_bridge::ShufflePartitionPusher;
@@ -49,7 +49,8 @@ pub(crate) struct RssPartitionWriter {
     pusher: Arc<dyn ShufflePartitionPusher>,
     num_partitions: usize,
     max_frame_size: usize,
-    compression_context: CompressionContext,
+    compression_context: IpcWriteContext,
+    frame: Vec<u8>,
     next_partition_to_finish: usize,
     finished: bool,
     failed: bool,
@@ -90,7 +91,8 @@ impl RssPartitionWriter {
             pusher,
             num_partitions,
             max_frame_size,
-            compression_context: CompressionContext::default(),
+            compression_context: IpcWriteContext::default(),
+            frame: Vec::new(),
             next_partition_to_finish: 0,
             finished: false,
             failed: false,

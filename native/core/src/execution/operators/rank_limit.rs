@@ -35,6 +35,7 @@ use arrow::array::{ArrayRef, BooleanArray, BooleanBufferBuilder, RecordBatch};
 use arrow::compute::filter_record_batch;
 use arrow::datatypes::SchemaRef;
 use arrow::row::{OwnedRow, RowConverter, Rows, SortField};
+use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::Result;
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr::{
@@ -43,8 +44,8 @@ use datafusion::physical_expr::{
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::metrics::{BaselineMetrics, ExecutionPlanMetricsSet, MetricsSet};
 use datafusion::physical_plan::{
-    DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, PlanProperties,
-    RecordBatchStream, SendableRecordBatchStream,
+    apply_expression_roots, DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties,
+    PlanProperties, RecordBatchStream, SendableRecordBatchStream,
 };
 use futures::{Stream, StreamExt};
 
@@ -167,6 +168,19 @@ impl ExecutionPlan for PartitionedRankLimitExec {
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         vec![&self.input]
+    }
+
+    fn apply_expressions(
+        &self,
+        f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        apply_expression_roots(
+            self.partition_keys
+                .iter()
+                .chain(self.order_keys.iter())
+                .map(|sort_expr| &sort_expr.expr),
+            f,
+        )
     }
 
     fn with_new_children(

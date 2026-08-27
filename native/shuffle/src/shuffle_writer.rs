@@ -25,10 +25,11 @@ use crate::partitioners::{
 use crate::writers::{LocalPartitionWriter, PartitionWriter, RssPartitionWriter};
 use crate::{CometPartitioning, CompressionCodec, ShuffleBlockWriter};
 use async_trait::async_trait;
+use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{exec_datafusion_err, DataFusionError};
-use datafusion::physical_expr::{EquivalenceProperties, Partitioning};
+use datafusion::physical_expr::{EquivalenceProperties, Partitioning, PhysicalExpr};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
-use datafusion::physical_plan::EmptyRecordBatchStream;
+use datafusion::physical_plan::{apply_expression_roots, EmptyRecordBatchStream};
 use datafusion::{
     arrow::datatypes::SchemaRef,
     error::Result,
@@ -202,6 +203,21 @@ impl ExecutionPlan for ShuffleWriterExec {
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         vec![&self.input]
+    }
+
+    fn apply_expressions(
+        &self,
+        f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        match &self.partitioning {
+            CometPartitioning::Hash(exprs, _) => apply_expression_roots(exprs, f),
+            CometPartitioning::RangePartitioning(ordering, _, _, _) => {
+                apply_expression_roots(ordering.iter().map(|sort_expr| &sort_expr.expr), f)
+            }
+            CometPartitioning::SinglePartition | CometPartitioning::RoundRobin(_, _) => {
+                Ok(TreeNodeRecursion::Continue)
+            }
+        }
     }
 
     fn with_new_children(
@@ -395,7 +411,7 @@ mod test {
     use crate::{read_ipc_compressed, ShuffleBlockWriter};
     use arrow::array::{Array, Int64Array, StringArray, StringBuilder};
     use arrow::datatypes::{DataType, Field, Schema};
-    use arrow::ipc::writer::CompressionContext;
+    use arrow::ipc::writer::IpcWriteContext;
     use arrow::record_batch::RecordBatch;
     use arrow::row::{RowConverter, SortField};
     use datafusion::datasource::memory::MemorySourceConfig;
@@ -425,7 +441,7 @@ mod test {
             let mut cursor = Cursor::new(&mut output);
             let writer =
                 ShuffleBlockWriter::try_new(batch.schema().as_ref(), codec.clone()).unwrap();
-            let mut compression_context = CompressionContext::default();
+            let mut compression_context = IpcWriteContext::default();
             let length = writer
                 .write_batch(
                     &batch,
@@ -471,7 +487,7 @@ mod test {
             let mut output = vec![];
             let mut cursor = Cursor::new(&mut output);
             let writer = ShuffleBlockWriter::try_new(schema.as_ref(), codec.clone()).unwrap();
-            let mut compression_context = CompressionContext::default();
+            let mut compression_context = IpcWriteContext::default();
             writer
                 .write_batch(
                     &batch,

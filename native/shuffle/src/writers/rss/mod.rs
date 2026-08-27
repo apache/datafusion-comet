@@ -29,7 +29,7 @@ mod tests {
     use arrow::buffer::OffsetBuffer;
     use arrow::compute::cast;
     use arrow::datatypes::{DataType, Field, Int32Type, Schema};
-    use arrow::ipc::writer::CompressionContext;
+    use arrow::ipc::writer::IpcWriteContext;
     use arrow::record_batch::RecordBatch;
     use datafusion::common::{DataFusionError, Result};
     use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, Time};
@@ -400,7 +400,7 @@ mod tests {
         let block_writer =
             ShuffleBlockWriter::try_new(batch.schema().as_ref(), CompressionCodec::None).unwrap();
         let mut frame = Cursor::new(Vec::new());
-        let mut compression_context = CompressionContext::default();
+        let mut compression_context = IpcWriteContext::default();
         block_writer
             .write_batch(
                 batch,
