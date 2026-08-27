@@ -29,6 +29,7 @@ import org.apache.spark.sql.types._
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
+import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.serde.QueryPlanSerde._
 import org.apache.comet.shims.{CometExprShim, CometTypeShim}
 
@@ -100,7 +101,27 @@ object CometArrayAppend extends CometExpressionSerde[ArrayAppend] {
   }
 }
 
-object CometArrayContains extends CometExpressionSerde[ArrayContains] {
+object CometArrayContains
+    extends CometExpressionSerde[ArrayContains]
+    with CodegenDispatchFallback {
+
+  private val floatingPointReason: String =
+    "Spark compares array elements with ordering.equiv, so -0.0 matches +0.0 and all NaNs match " +
+      "each other; Comet's native array_contains compares the raw Arrow values bitwise"
+
+  override def getIncompatibleReasons(): Seq[String] = Seq(floatingPointReason)
+
+  override def getSupportLevel(expr: ArrayContains): SupportLevel = expr.left.dataType match {
+    // Native array_contains compares floating-point elements bitwise, disagreeing with Spark for
+    // -0.0/+0.0 and NaN. Report Incompatible (not Unsupported) for float/double element types (at
+    // any nesting level) so the expression routes through the JVM codegen dispatcher (Spark's own
+    // doGenCode) and stays native + Spark-exact under the default config, while non-float arrays
+    // keep the fast native kernel. Under allowIncompatible=true the native kernel is used as before.
+    case ArrayType(elementType, _)
+        if SupportLevel.containsType(elementType, classOf[FloatType], classOf[DoubleType]) =>
+      Incompatible(Some(floatingPointReason))
+    case _ => Compatible()
+  }
 
   override def convert(
       expr: ArrayContains,
@@ -384,7 +405,7 @@ object CometArrayJoin
   }
 }
 
-object CometArrayInsert extends CometExpressionSerde[ArrayInsert] {
+object CometArrayInsert extends CometExpressionSerde[ArrayInsert] with ArraysBase {
 
   override def getSupportLevel(expr: ArrayInsert): SupportLevel = Compatible()
 
@@ -392,9 +413,31 @@ object CometArrayInsert extends CometExpressionSerde[ArrayInsert] {
       expr: ArrayInsert,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val srcExprProto = exprToProtoInternal(expr.children.head, inputs, binding)
+    val srcArray = expr.children.head
+    val item = expr.children(2)
+    val srcElementType = srcArray.dataType.asInstanceOf[ArrayType].elementType
+
+    // Native ArrayInsert requires the item's Arrow type to equal the source array's element type
+    // exactly, including nested nullability. For complex element types the two sides can disagree:
+    // a `CreateArray` source is widened to a deeply-nullable element type (see CometCreateArray),
+    // while a standalone item (e.g. `map(2, coalesce(id, 0))`) keeps Spark's Catalyst nullability.
+    // Cast BOTH sides in lockstep to the same deeply-nullable element type so their Arrow types
+    // match; Spark's `ArrayInsert.dataType` is `first.dataType.asNullable`, so this also matches the
+    // declared output element type. Casting only widens metadata and never changes values. Primitive
+    // element types are byte-identical on both sides, so the gate leaves them untouched.
+    val (srcChild, itemChild) = if (isComplexType(srcElementType)) {
+      val elementType = deepNullable(srcElementType)
+      val arrayType = ArrayType(elementType, containsNull = true)
+      val widenedSrc = if (srcArray.dataType == arrayType) srcArray else Cast(srcArray, arrayType)
+      val widenedItem = if (item.dataType == elementType) item else Cast(item, elementType)
+      (widenedSrc, widenedItem)
+    } else {
+      (srcArray, item)
+    }
+
+    val srcExprProto = exprToProtoInternal(srcChild, inputs, binding)
     val posExprProto = exprToProtoInternal(expr.children(1), inputs, binding)
-    val itemExprProto = exprToProtoInternal(expr.children(2), inputs, binding)
+    val itemExprProto = exprToProtoInternal(itemChild, inputs, binding)
     val legacyNegativeIndex =
       SQLConf.get.getConfString("spark.sql.legacy.negativeIndexInArrayInsert").toBoolean
     if (srcExprProto.isDefined && posExprProto.isDefined && itemExprProto.isDefined) {
@@ -455,7 +498,7 @@ object CometArrayUnion extends CometExpressionSerde[ArrayUnion] {
   }
 }
 
-object CometCreateArray extends CometExpressionSerde[CreateArray] {
+object CometCreateArray extends CometExpressionSerde[CreateArray] with ArraysBase {
   override def convert(
       expr: CreateArray,
       inputs: Seq[Attribute],
@@ -492,24 +535,6 @@ object CometCreateArray extends CometExpressionSerde[CreateArray] {
       withFallbackReason(expr, "unsupported arguments for CreateArray")
       None
     }
-  }
-
-  /**
-   * A copy of `dt` with every array `containsNull`, map `valueContainsNull`, and struct field
-   * nullability forced to `true` at every nesting level (map key fields stay non-null per Arrow's
-   * map invariant). This is Spark's `DataType.asNullable`, re-derived here because that method is
-   * `private[spark]` and unreachable from this package. Used as the common cast target for
-   * `CometCreateArray` so that children whose native runtime types are more nullable than Spark's
-   * Catalyst types (e.g. a `map_entries` entry struct, whose `value` field Comet forces nullable)
-   * still unify for `make_array`.
-   */
-  private def deepNullable(dt: DataType): DataType = dt match {
-    case ArrayType(et, _) => ArrayType(deepNullable(et), containsNull = true)
-    case MapType(kt, vt, _) =>
-      MapType(deepNullable(kt), deepNullable(vt), valueContainsNull = true)
-    case StructType(fields) =>
-      StructType(fields.map(f => f.copy(dataType = deepNullable(f.dataType), nullable = true)))
-    case other => other
   }
 }
 
@@ -596,10 +621,9 @@ object CometElementAt extends CometExpressionSerde[ElementAt] {
     val childExpr = exprToProtoInternal(expr.left, inputs, binding)
     val ordinalExpr = exprToProtoInternal(expr.right, inputs, binding)
 
-    expr.left.dataType match {
+    val baseExpr = expr.left.dataType match {
       case _: MapType =>
-        val mapExtractExpr = scalarFunctionExprToProto("map_extract", childExpr, ordinalExpr)
-        mapExtractExpr
+        scalarFunctionExprToProto("map_extract", childExpr, ordinalExpr)
       case _ =>
         val defaultExpr =
           expr.defaultValueOutOfBound.flatMap(exprToProtoInternal(_, inputs, binding))
@@ -624,6 +648,42 @@ object CometElementAt extends CometExpressionSerde[ElementAt] {
           withFallbackReason(expr, "unsupported arguments for ElementAt")
           None
         }
+    }
+
+    // Spark's ElementAt is a BinaryExpression: for a NULL map/array it returns NULL WITHOUT
+    // evaluating the key/index child. Native scalar functions evaluate the key eagerly over the
+    // whole batch, so under ANSI (failOnError) a throwing key (e.g. a divide-by-zero) fires even on
+    // rows whose map/array is NULL, where Spark short-circuits. When the left can actually be NULL,
+    // guard the lookup with CASE WHEN left IS NOT NULL THEN <lookup> ELSE null so the key is only
+    // evaluated on the selected rows (DataFusion's CaseExpr filters the batch before the THEN
+    // branch), reproducing the short-circuit. Mirrors the CASE-WHEN idiom in CometArrayAppend /
+    // CometSize; the ELSE null literal carries the result type, as in CometArraysZip.
+    if (expr.failOnError && expr.left.nullable) {
+      val isNotNullExpr = createUnaryExpr(
+        expr,
+        expr.left,
+        inputs,
+        binding,
+        (builder, unaryExpr) => builder.setIsNotNull(unaryExpr))
+      val nullLiteralProto = exprToProto(Literal(null, expr.dataType), Seq.empty)
+      for {
+        base <- baseExpr
+        notNull <- isNotNullExpr
+        nullLit <- nullLiteralProto
+      } yield {
+        val caseWhenExpr = ExprOuterClass.CaseWhen
+          .newBuilder()
+          .addWhen(notNull)
+          .addThen(base)
+          .setElseExpr(nullLit)
+          .build()
+        ExprOuterClass.Expr
+          .newBuilder()
+          .setCaseWhen(caseWhenExpr)
+          .build()
+      }
+    } else {
+      baseExpr
     }
   }
 }
@@ -841,6 +901,25 @@ trait ArraysBase {
       .collectFirst { case dt if !isTypeSupported(dt) => dt }
       .map(dt => Unsupported(Some(s"data type not supported: $dt")))
       .getOrElse(Compatible())
+
+  /**
+   * A copy of `dt` with every array `containsNull`, map `valueContainsNull`, and struct field
+   * nullability forced to `true` at every nesting level (map key fields stay non-null per Arrow's
+   * map invariant). This is Spark's `DataType.asNullable`, re-derived here because that method is
+   * `private[spark]` and unreachable from this package. Used as a common cast target so that
+   * children whose native runtime types are more nullable than Spark's Catalyst types (e.g. a
+   * `map_entries` entry struct, whose `value` field Comet forces nullable) still unify for
+   * `make_array` (`CometCreateArray`) and for the strict source-element/item type check in native
+   * `ArrayInsert` (`CometArrayInsert`).
+   */
+  def deepNullable(dt: DataType): DataType = dt match {
+    case ArrayType(et, _) => ArrayType(deepNullable(et), containsNull = true)
+    case MapType(kt, vt, _) =>
+      MapType(deepNullable(kt), deepNullable(vt), valueContainsNull = true)
+    case StructType(fields) =>
+      StructType(fields.map(f => f.copy(dataType = deepNullable(f.dataType), nullable = true)))
+    case other => other
+  }
 }
 
 object CometArrayTransform extends CometCodegenDispatch[ArrayTransform]

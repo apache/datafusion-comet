@@ -129,6 +129,14 @@ SELECT array(arr, array(k, v)) FROM test_create_array_complex
 query
 SELECT array(map(k, arr)) FROM test_create_array_complex WHERE k IS NOT NULL
 
+-- Array combining an all-literal struct child with a column-referencing struct child. The SQL
+-- harness always excludes ConstantFolding, so the literal `named_struct('a', 1)` stays a
+-- `CreateNamedStruct` whose native evaluation is a constant (row-count-independent) struct. It must
+-- broadcast to the batch row count to sit alongside the column-based `named_struct('a', a)` inside
+-- `make_array`, which otherwise rejects the length-1 vs length-N mismatch.
+query
+SELECT array(named_struct('a', 1), named_struct('a', a)) FROM test_create_array
+
 -- Empty array cast to a nested array type: the element type has to survive with no children.
 query
 SELECT CAST(array() AS ARRAY<ARRAY<INT>>)

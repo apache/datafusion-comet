@@ -373,7 +373,7 @@ object CometLiteral extends CometExpressionSerde[Literal] with Logging {
     } else {
       val ordering = TypeUtils.getInterpretedOrdering(keyType)
       val sorted = (0 until n).map(i => keys.get(i, keyType)).sorted(ordering)
-      sorted.sliding(2).exists(pair => ordering.compare(pair.head, pair.last) == 0)
+      (1 until sorted.length).exists(i => ordering.compare(sorted(i - 1), sorted(i)) == 0)
     }
   }
 
