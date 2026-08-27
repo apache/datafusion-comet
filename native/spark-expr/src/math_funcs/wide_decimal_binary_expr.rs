@@ -215,6 +215,12 @@ impl PhysicalExpr for WideDecimalBinaryExpr {
 
         let bound = max_for_precision(p_out);
         let neg_bound = i256::ZERO.wrapping_sub(bound);
+        // Records overflow during evaluation so no-overflow batches can skip the
+        // null-masking pass below. The `Cell` write is an observable side effect
+        // inside the kernel closure and costs 3-5% on overflow-bearing batches even
+        // when only a single row overflows, so the cost comes from inhibited
+        // optimization of the closure rather than the number of stores. #5309
+        // tracks removing the sentinel and `Cell` by writing null bits directly.
         let overflowed = Cell::new(false);
 
         let result: Decimal128Array = match op {
@@ -284,6 +290,10 @@ impl PhysicalExpr for WideDecimalBinaryExpr {
         };
 
         let result = if overflowed.get() {
+            // Every non-sentinel value is already within ±(10^p_out - 1), so the extra
+            // null-masking pass can only null sentinels. Checking the overflow flag lets
+            // the common no-overflow case skip this pass and its allocation entirely.
+            // ANSI mode errors before setting the flag, so it also skips this pass.
             result.null_if_overflow_precision(p_out)
         } else {
             result
