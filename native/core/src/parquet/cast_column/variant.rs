@@ -131,6 +131,7 @@ fn normalize_variant_type(data_type: &DataType) -> Option<DataType> {
         DataType::Timestamp(TimeUnit::Millisecond, timezone) => {
             Some(DataType::Timestamp(TimeUnit::Microsecond, timezone.clone()))
         }
+        DataType::FixedSizeBinary(_) => Some(DataType::Binary),
         DataType::FixedSizeList(field, _) => Some(DataType::List(
             normalize_field(field).unwrap_or_else(|| Arc::clone(field)),
         )),
@@ -156,11 +157,33 @@ fn normalize_variant_type(data_type: &DataType) -> Option<DataType> {
     }
 }
 
+fn contains_uuid_extension(data_type: &DataType) -> bool {
+    fn field_contains_uuid(field: &FieldRef) -> bool {
+        (field.data_type() == &DataType::FixedSizeBinary(16)
+            && field.extension_type_name() == Some("arrow.uuid"))
+            || contains_uuid_extension(field.data_type())
+    }
+
+    match data_type {
+        DataType::Struct(fields) => fields.iter().any(field_contains_uuid),
+        DataType::List(field)
+        | DataType::LargeList(field)
+        | DataType::ListView(field)
+        | DataType::LargeListView(field)
+        | DataType::FixedSizeList(field, _)
+        | DataType::Map(field, _) => field_contains_uuid(field),
+        DataType::Dictionary(_, value_type) => contains_uuid_extension(value_type),
+        _ => false,
+    }
+}
+
 /// Normalize Arrow types that Spark's Parquet reader accepts but `VariantArray` 58.4 rejects.
 /// Parquet restores unsigned integers to Arrow unsigned arrays and millisecond timestamps at their
-/// annotated unit; embedded Arrow schemas may also restore dictionary arrays and fixed-size lists.
-/// Spark decodes dictionaries, widens integers and timestamps, and treats fixed-size lists as
-/// ordinary Variant arrays.
+/// annotated unit; it also exposes unannotated FIXED_LEN_BYTE_ARRAY as FixedSizeBinary. The
+/// `arrow_canonical_extension_types` feature retains UUID annotations so they are not mistaken for
+/// Spark-compatible Binary. Embedded Arrow schemas may restore dictionary arrays and fixed-size
+/// lists. Spark decodes dictionaries, widens integers and timestamps, treats unannotated
+/// fixed-length binary as Binary, and treats fixed-size lists as ordinary Variant arrays.
 /// arrow-rs #10416/#10417 would move the UInt8/16/32 widening into
 /// `VariantArray`/`unshred_variant`; remove those three arms after that ships and Comet upgrades:
 /// https://github.com/apache/arrow-rs/issues/10416
@@ -175,6 +198,11 @@ fn normalize_variant_type(data_type: &DataType) -> Option<DataType> {
 /// dictionary `value` and `typed_value` children, so keep decoding those for Spark compatibility:
 /// https://github.com/apache/arrow-rs/pull/10810
 fn normalize_variant_storage(array: &ArrayRef) -> DataFusionResult<ArrayRef> {
+    if contains_uuid_extension(array.data_type()) {
+        return Err(DataFusionError::Execution(
+            "Parquet UUID is not supported as a shredded Variant child".to_string(),
+        ));
+    }
     let Some(data_type) = normalize_variant_type(array.data_type()) else {
         return Ok(Arc::clone(array));
     };

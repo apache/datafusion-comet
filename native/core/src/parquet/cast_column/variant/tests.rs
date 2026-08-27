@@ -16,11 +16,15 @@
 // under the License.
 use super::*;
 use arrow::array::{
-    Decimal128Array, DictionaryArray, FixedSizeListArray, Int32Array, Int64Array,
-    TimestampMillisecondArray, UInt16Array, UInt32Array, UInt64Array, UInt8Array,
+    Decimal128Array, DictionaryArray, FixedSizeBinaryArray, FixedSizeListArray, Int32Array,
+    Int64Array, TimestampMillisecondArray, UInt16Array, UInt32Array, UInt64Array, UInt8Array,
 };
 use arrow::datatypes::{Field, Fields, Int32Type};
-use parquet::variant::{VariantDecimal16, VariantType};
+use parquet::{
+    arrow::parquet_to_arrow_schema,
+    schema::{parser::parse_message_type, types::SchemaDescriptor},
+    variant::{VariantDecimal16, VariantType},
+};
 
 fn unicode_object_keys() -> Vec<String> {
     let mut keys = (0..30).map(|i| format!("k{i:02}")).collect::<Vec<_>>();
@@ -309,6 +313,44 @@ fn test_normalize_shredded_variant_converts_fixed_size_list() {
             .collect::<Vec<_>>(),
         vec![Some(42), Some(43)]
     );
+}
+
+#[test]
+fn test_normalize_shredded_variant_converts_fixed_size_binary() {
+    let bytes = (0_u8..16).collect::<Vec<_>>();
+    let typed_value: ArrayRef = Arc::new(FixedSizeBinaryArray::from(vec![Some(bytes.as_slice())]));
+
+    let output = normalize_typed_value(typed_value, &[]);
+    assert_eq!(output.value(0), Variant::Binary(&bytes));
+}
+
+#[test]
+fn test_normalize_shredded_variant_rejects_uuid_annotation() {
+    let bytes = (0_u8..16).collect::<Vec<_>>();
+    let typed_value: ArrayRef = Arc::new(FixedSizeBinaryArray::from(vec![Some(bytes.as_slice())]));
+    let parquet_schema = parse_message_type(
+        "message root { required fixed_len_byte_array(16) typed_value (UUID); }",
+    )
+    .unwrap();
+    let arrow_schema =
+        parquet_to_arrow_schema(&SchemaDescriptor::new(Arc::new(parquet_schema)), None).unwrap();
+    let typed_value_field = Arc::clone(&arrow_schema.fields()[0]);
+    assert_eq!(typed_value_field.extension_type_name(), Some("arrow.uuid"));
+    let metadata: ArrayRef = Arc::new(BinaryArray::from(vec![Some(&[][..])]));
+    let physical: ArrayRef = Arc::new(
+        StructArray::try_new(
+            Fields::from(vec![
+                Arc::new(Field::new("metadata", DataType::Binary, false)),
+                typed_value_field,
+            ]),
+            vec![metadata, typed_value],
+            None,
+        )
+        .unwrap(),
+    );
+
+    let error = normalize_variant_storage(&physical).unwrap_err();
+    assert!(error.to_string().contains("Parquet UUID is not supported"));
 }
 
 #[test]

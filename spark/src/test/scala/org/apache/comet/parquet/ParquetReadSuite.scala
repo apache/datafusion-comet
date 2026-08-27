@@ -319,6 +319,60 @@ abstract class ParquetReadSuite extends CometTestBase {
     }
   }
 
+  test("inferTimestampNTZ disabled Variant children fall back to Spark") {
+    assume(CometSparkSessionExtensions.isSpark40Plus, "VariantType requires Spark 4.0+")
+
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "timestamp-ntz-variant.parquet")
+      val parquetSchema = MessageTypeParser.parseMessageType("""message root {
+          |  optional group v {
+          |    required binary metadata;
+          |    required int64 typed_value (TIMESTAMP(MICROS,false));
+          |  }
+          |}
+          |""".stripMargin)
+      val variant = sql("SELECT parse_json('0')").head().get(0)
+      val metadata =
+        variant.getClass.getMethod("getMetadata").invoke(variant).asInstanceOf[Array[Byte]]
+      val writer = createParquetWriter(parquetSchema, path, dictionaryEnabled = false)
+      try {
+        val row = new SimpleGroup(parquetSchema)
+        val group = row.addGroup(0)
+        group.add(0, Binary.fromConstantByteArray(metadata))
+        group.add(1, 1704067200123456L)
+        writer.write(row)
+      } finally {
+        writer.close()
+      }
+
+      withTable("variant_timestamp_ntz") {
+        sql(s"""CREATE TABLE variant_timestamp_ntz(v VARIANT)
+               |USING parquet LOCATION '${dir.getCanonicalPath}'""".stripMargin)
+        val readerConfs = Seq(
+          SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> "true",
+          SQLConf.PARQUET_INFER_TIMESTAMP_NTZ_ENABLED.key -> "false",
+          SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Los_Angeles",
+          "spark.sql.variant.allowReadingShredded" -> "true",
+          "spark.sql.variant.pushVariantIntoScan" -> "false",
+          "spark.sql.variant.inferShreddingSchema" -> "false")
+        var expected = Seq.empty[Seq[Any]]
+        withSQLConf((readerConfs :+ (CometConf.COMET_ENABLED.key -> "false")): _*) {
+          expected = normalizedVariantRows(sql("SELECT v FROM variant_timestamp_ntz"), 0)
+        }
+        withSQLConf(readerConfs: _*) {
+          val result = sql("SELECT v FROM variant_timestamp_ntz")
+          assert(normalizedVariantRows(result, 0) == expected)
+          val plan = result.queryExecution.executedPlan
+          assert(collect(plan) { case _: CometNativeScanExec => true }.isEmpty)
+          val fallbackReasons = new ExtendedExplainInfo().getFallbackReasons(plan)
+          assert(
+            fallbackReasons.exists(_.contains(SQLConf.PARQUET_INFER_TIMESTAMP_NTZ_ENABLED.key)),
+            s"Expected inferTimestampNTZ fallback, found: ${fallbackReasons.mkString(", ")}")
+        }
+      }
+    }
+  }
+
   test("native scan preserves Variant existence default pairing") {
     assume(CometSparkSessionExtensions.isSpark40Plus, "VariantType requires Spark 4.0+")
 
@@ -329,7 +383,9 @@ abstract class ParquetReadSuite extends CometTestBase {
         sql("ALTER TABLE variant_defaults ADD COLUMNS(n INT DEFAULT 7)")
       }
 
-      withSQLConf("spark.sql.variant.pushVariantIntoScan" -> "false") {
+      withSQLConf(
+        "spark.sql.variant.allowReadingShredded" -> "true",
+        "spark.sql.variant.pushVariantIntoScan" -> "false") {
         val df = sql("SELECT v, n FROM variant_defaults")
         assert(normalizedVariantRows(df, 0) == Seq(Seq("42", 7)))
         val cometPlan = df.queryExecution.executedPlan
@@ -370,7 +426,9 @@ abstract class ParquetReadSuite extends CometTestBase {
           Seq(3, null, 9),
           Seq(4, "null", 10)))
 
-      withSQLConf("spark.sql.variant.pushVariantIntoScan" -> "false") {
+      withSQLConf(
+        "spark.sql.variant.allowReadingShredded" -> "true",
+        "spark.sql.variant.pushVariantIntoScan" -> "false") {
         val df = sql(query)
         assert(normalizedVariantRows(df, 1) == expected)
         val cometPlan = df.queryExecution.executedPlan
@@ -389,6 +447,52 @@ abstract class ParquetReadSuite extends CometTestBase {
         val (_, cometPlan) =
           checkSparkAnswerAndOperator(sql(s"SELECT `$fieldName` FROM nul_field"))
         assert(collect(cometPlan) { case _: CometNativeScanExec => true }.size == 1)
+      }
+    }
+  }
+
+  test("native scan preserves unannotated fixed-length Variant binary") {
+    assume(CometSparkSessionExtensions.isSpark40Plus, "VariantType requires Spark 4.0+")
+
+    Seq(8, 16, 20).foreach { length =>
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "fixed-binary-variant.parquet")
+        val parquetSchema = MessageTypeParser.parseMessageType(s"""message root {
+            |  optional group v {
+            |    required binary metadata;
+            |    required fixed_len_byte_array($length) typed_value;
+            |  }
+            |}
+            |""".stripMargin)
+        val variant = sql("SELECT parse_json('0')").head().get(0)
+        val metadata =
+          variant.getClass.getMethod("getMetadata").invoke(variant).asInstanceOf[Array[Byte]]
+        val bytes = Array.tabulate(length)(_.toByte)
+        val writer = createParquetWriter(parquetSchema, path, dictionaryEnabled = false)
+        try {
+          val row = new SimpleGroup(parquetSchema)
+          val group = row.addGroup(0)
+          group.add(0, Binary.fromConstantByteArray(metadata))
+          group.add(1, Binary.fromConstantByteArray(bytes))
+          writer.write(row)
+        } finally {
+          writer.close()
+        }
+
+        withTable("fixed_binary_variant") {
+          sql(s"""CREATE TABLE fixed_binary_variant(v VARIANT)
+                 |USING parquet LOCATION '${dir.getCanonicalPath}'""".stripMargin)
+          withSQLConf(
+            "spark.sql.variant.allowReadingShredded" -> "true",
+            "spark.sql.variant.pushVariantIntoScan" -> "false") {
+            val df = sql("SELECT v FROM fixed_binary_variant")
+            val expected = "\"" + Base64.getEncoder.encodeToString(bytes) + "\""
+            assert(normalizedVariantRows(df, 0) == Seq(Seq(expected)))
+            assert(collect(df.queryExecution.executedPlan) { case _: CometNativeScanExec =>
+              true
+            }.size == 1)
+          }
+        }
       }
     }
   }

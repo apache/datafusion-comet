@@ -143,6 +143,16 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
         "Full native scan disabled because spark.sql.legacy.parquet.nanosAsLong is enabled")
     }
 
+    // Spark interprets unadjusted Parquet timestamps as TimestampType when NTZ inference is
+    // disabled, while Arrow exposes them as timezone-free TimestampNTZ values. The Variant schema
+    // does not expose shredded leaf types, so preserve Spark's vectorized-reader semantics.
+    if (hasVariant && !SQLConf.get.parquetInferTimestampNTZEnabled) {
+      withFallbackReason(
+        scanExec,
+        s"Full native scan disabled because " +
+          s"${SQLConf.PARQUET_INFER_TIMESTAMP_NTZ_ENABLED.key} is disabled")
+    }
+
     // the scan is supported if no fallback reasons were added to the node
     !hasFallbackReason(scanExec)
   }
