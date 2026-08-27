@@ -610,17 +610,11 @@ impl PhysicalPlanner {
 
                 // WideDecimalBinaryExpr already handles overflow — skip redundant check
                 // but only if its output type matches CheckOverflow's declared type. A binary
-                // expression with query context is already wrapped in CheckedBinaryExpr, so
-                // inspect through that single layer too.
-                let is_wide_decimal = child.downcast_ref::<WideDecimalBinaryExpr>().is_some()
-                    || child
-                        .downcast_ref::<CheckedBinaryExpr>()
-                        .is_some_and(|checked| {
-                            checked
-                                .child()
-                                .downcast_ref::<WideDecimalBinaryExpr>()
-                                .is_some()
-                        });
+                // expression with query context is wrapped in CheckedBinaryExpr, so look
+                // through any such wrappers.
+                let is_wide_decimal = unwrap_checked(&child)
+                    .downcast_ref::<WideDecimalBinaryExpr>()
+                    .is_some();
                 if is_wide_decimal {
                     let child_type = child.data_type(&input_schema)?;
                     if child_type == data_type {
@@ -3796,6 +3790,16 @@ fn rewrite_physical_expr(
     );
 
     Ok(expr.rewrite(&mut rewriter).data()?)
+}
+
+/// Strip any [`CheckedBinaryExpr`] wrappers so callers can inspect the expression
+/// they decorate, however many context-wrapping layers the planner emitted.
+fn unwrap_checked(expr: &Arc<dyn PhysicalExpr>) -> &Arc<dyn PhysicalExpr> {
+    let mut current = expr;
+    while let Some(checked) = current.downcast_ref::<CheckedBinaryExpr>() {
+        current = checked.child();
+    }
+    current
 }
 
 pub fn from_protobuf_eval_mode(value: i32) -> Result<EvalMode, prost::UnknownEnumValue> {

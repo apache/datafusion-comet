@@ -242,6 +242,32 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("ANSI cast overflow reports the cast's own context") {
+    // The child divide proto carries its own expr_id and context, while the outer Cast proto is
+    // built fresh by its serde and must still receive the cast's own context. Pins the
+    // conditional expr_id assignment in QueryPlanSerde.exprToProtoInternal.
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+      withTable("cast_div_overflow") {
+        sql("CREATE TABLE cast_div_overflow (a DECIMAL(10, 2), b DECIMAL(10, 2)) USING PARQUET")
+        sql("INSERT INTO cast_div_overflow VALUES (100.00, 1.00)")
+
+        val df = sql("SELECT CAST(a / b AS DECIMAL(3, 2)) FROM cast_div_overflow")
+        checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
+        checkSparkAnswerMaybeThrows(df) match {
+          case (Some(sparkException), Some(cometException)) =>
+            val expected = arithmeticError(sparkException)
+            val actual = arithmeticError(cometException)
+            assert(actual.getErrorClass == expected.getErrorClass)
+            assert(actual.getSqlState == expected.getSqlState)
+            assert(
+              actual.getQueryContext.map(_.fragment()).toSeq ==
+                expected.getQueryContext.map(_.fragment()).toSeq)
+          case errors => fail(s"Expected Spark and Comet cast-overflow errors, got $errors")
+        }
+      }
+    }
+  }
+
   test("Integral Division Overflow Handling Matches Spark Behavior") {
     withSQLConf(SQLConf.ANSI_ENABLED.key -> "false") {
       withTable("t1") {
