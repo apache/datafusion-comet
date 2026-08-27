@@ -24,6 +24,7 @@ import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.channels.FileChannel;
+import java.util.LinkedList;
 import java.util.Optional;
 import javax.annotation.Nullable;
 
@@ -176,6 +177,10 @@ final class CometBypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V>
                   CometShuffleExternalSorter.MAXIMUM_PAGE_SIZE_BYTES,
                   memoryManager.pageSizeBytes()));
 
+      // This task's disk writers. Under memory pressure a writer spills its sibling writers in
+      // this list, never those of other tasks.
+      final LinkedList<CometDiskBlockWriter> taskWriters = new LinkedList<>();
+
       // Allocate the disk writers, and open the files that we'll be writing to
       for (int i = 0; i < numPartitions; i++) {
         final Tuple2<TempShuffleBlockId, File> tempShuffleBlockIdPlusFile =
@@ -190,7 +195,8 @@ final class CometBypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V>
                 schema,
                 writeMetrics,
                 conf,
-                tracingEnabled);
+                tracingEnabled,
+                taskWriters);
         if (partitionChecksums.length > 0) {
           writer.setChecksum(partitionChecksums[i]);
           writer.setChecksumAlgo(checksumAlgorithm);

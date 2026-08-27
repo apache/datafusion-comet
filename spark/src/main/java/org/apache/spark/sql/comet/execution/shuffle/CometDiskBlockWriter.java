@@ -62,11 +62,11 @@ public final class CometDiskBlockWriter {
   private static final Logger logger = LoggerFactory.getLogger(CometDiskBlockWriter.class);
   private static final ClassTag<Object> OBJECT_CLASS_TAG = ClassTag$.MODULE$.Object();
 
-  /** List of all `NativeDiskBlockArrowIPCWriter`s of same shuffle task. */
-  private static final LinkedList<CometDiskBlockWriter> currentWriters = new LinkedList<>();
-
-  /** List of `ArrowIPCWriter`s which are spilling. */
-  private final LinkedList<ArrowIPCWriter> spillingWriters = new LinkedList<>();
+  /**
+   * All writers of the same shuffle task. Spilling under memory pressure only ever touches this
+   * task's writers, never those of other tasks.
+   */
+  private final LinkedList<CometDiskBlockWriter> currentWriters;
 
   private final TaskContext taskContext;
 
@@ -131,8 +131,10 @@ public final class CometDiskBlockWriter {
       StructType schema,
       ShuffleWriteMetricsReporter writeMetrics,
       SparkConf conf,
-      boolean tracingEnabled) {
+      boolean tracingEnabled,
+      LinkedList<CometDiskBlockWriter> taskWriters) {
     this.nativeLib = new Native();
+    this.currentWriters = taskWriters;
     this.allocator = allocator;
     this.taskContext = taskContext;
     this.serializer = serializer;
@@ -275,9 +277,6 @@ public final class CometDiskBlockWriter {
   }
 
   void freeMemory() {
-    for (ArrowIPCWriter writer : spillingWriters) {
-      writer.freeMemory();
-    }
     activeWriter.freeMemory();
   }
 
