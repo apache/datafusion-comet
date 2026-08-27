@@ -3464,15 +3464,16 @@ impl PhysicalPlanner {
             }
             PartitioningStruct::SinglePartition(_) => Ok(CometPartitioning::SinglePartition),
             PartitioningStruct::RoundRobinPartition(rr_partition) => {
-                // Treat negative max_hash_columns as 0 (no limit)
-                let max_hash_columns = if rr_partition.max_hash_columns <= 0 {
-                    0
+                let strategy = if rr_partition.batch_granular {
+                    crate::execution::shuffle::RoundRobinStrategy::WholeBatch
                 } else {
-                    rr_partition.max_hash_columns as usize
+                    // Treat negative max_hash_columns as 0 (no limit).
+                    let max_hash_columns = rr_partition.max_hash_columns.max(0) as usize;
+                    crate::execution::shuffle::RoundRobinStrategy::HashAll { max_hash_columns }
                 };
                 Ok(CometPartitioning::RoundRobin(
                     rr_partition.num_partitions as usize,
-                    max_hash_columns,
+                    strategy,
                 ))
             }
         }

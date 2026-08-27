@@ -19,6 +19,20 @@ use arrow::row::{OwnedRow, RowConverter};
 use datafusion::physical_expr::{LexOrdering, PhysicalExpr};
 use std::sync::Arc;
 
+/// How Comet's RoundRobin partitioning assigns rows to output partitions.
+#[derive(Debug, Clone)]
+pub enum RoundRobinStrategy {
+    /// Hash every row across up to `max_hash_columns` columns (0 means no limit)
+    /// and assign rows individually. Deterministic under retry regardless of upstream
+    /// order preservation, but pays the per-row hash cost.
+    HashAll { max_hash_columns: usize },
+    /// Assign each incoming RecordBatch as a whole to one output partition, based on
+    /// the input partition id and a per-task batch sequence number. Skips per-row
+    /// hashing entirely. Retry-safe only when the upstream operator emits the same
+    /// batches in the same order under retry.
+    WholeBatch,
+}
+
 /// Partitioning scheme for distributing rows across shuffle output partitions.
 #[derive(Debug, Clone)]
 pub enum CometPartitioning {
@@ -32,10 +46,9 @@ pub enum CometPartitioning {
     /// Rows for comparing to 4) OwnedRows that represent the boundaries of each partition, used with
     /// LexOrdering to bin each value in the RecordBatch to a partition.
     RangePartitioning(LexOrdering, usize, Arc<RowConverter>, Vec<OwnedRow>),
-    /// Round robin partitioning. Distributes rows across partitions by sorting them by hash
-    /// (computed from columns) and then assigning partitions sequentially. Args are:
-    /// 1) number of partitions, 2) max columns to hash (0 means no limit).
-    RoundRobin(usize, usize),
+    /// Round robin partitioning. Args are the number of partitions and the strategy that
+    /// decides how rows are assigned. See [`RoundRobinStrategy`] for the trade-offs.
+    RoundRobin(usize, RoundRobinStrategy),
 }
 
 impl CometPartitioning {

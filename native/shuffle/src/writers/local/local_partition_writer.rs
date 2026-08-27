@@ -61,7 +61,7 @@ enum DataOutput {
 /// Writes shuffle output to a single data file plus an index file recording the
 /// byte offset where each partition begins. See [`DataOutput`] for how the
 /// single- and multi-partition modes differ.
-pub(crate) struct LocalPartitionWriter {
+pub struct LocalPartitionWriter {
     output_index_file: String,
     data_output: DataOutput,
     /// Start offset of each partition in the data file, plus a trailing entry
@@ -77,7 +77,7 @@ pub(crate) struct LocalPartitionWriter {
 }
 
 impl LocalPartitionWriter {
-    pub(crate) fn try_new(
+    pub fn try_new(
         output_data_file: String,
         output_index_file: String,
         shuffle_block_writer: ShuffleBlockWriter,

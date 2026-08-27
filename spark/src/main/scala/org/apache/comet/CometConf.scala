@@ -423,6 +423,18 @@ object CometConf extends ShimCometConf {
         "The maximum number of columns to hash for round robin partitioning must be non-negative.")
       .createWithDefault(0)
 
+  val COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_BATCH_GRANULAR: ConfigEntry[Boolean] =
+    conf("spark.comet.shuffle.native.partitioning.roundrobin.batchGranular")
+      .category(CATEGORY_SHUFFLE)
+      .doc(
+        "When true, Comet's native round-robin shuffle assigns each RecordBatch as a whole " +
+          "to one output partition instead of hashing every column of every row. This is much " +
+          "cheaper on wide/nested schemas. Distribution is quasi-even at batch granularity. " +
+          "Retry-safe only when the upstream operator emits the same batches in the same order " +
+          "under retry (Comet's Parquet scan and other order-preserving operators satisfy this).")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_SHUFFLE_CONVERT_FROM_SPARK_PLAN_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.shuffle.convertFromSparkPlan.enabled")
       .withAlternative(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.convertFromSparkPlan.enabled")

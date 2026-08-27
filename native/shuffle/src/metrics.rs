@@ -20,7 +20,7 @@ use datafusion::physical_plan::metrics::{
 };
 
 /// Execution metrics for a shuffle partition operation.
-pub(crate) struct ShufflePartitionerMetrics {
+pub struct ShufflePartitionerMetrics {
     /// metrics
     pub(crate) baseline: BaselineMetrics,
 
@@ -54,7 +54,7 @@ pub(crate) struct ShufflePartitionerMetrics {
 }
 
 impl ShufflePartitionerMetrics {
-    pub(crate) fn new(metrics: &ExecutionPlanMetricsSet, partition: usize) -> Self {
+    pub fn new(metrics: &ExecutionPlanMetricsSet, partition: usize) -> Self {
         Self {
             baseline: BaselineMetrics::new(metrics, partition),
             repart_time: MetricBuilder::new(metrics).subset_time("repart_time", partition),
