@@ -17,17 +17,19 @@
  * under the License.
  */
 
-package org.apache.comet.shims
+package org.apache.comet.shuffle;
 
-import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
-import org.apache.spark.sql.execution.datasources.parquet.ParquetRowIndexUtil
-import org.apache.spark.sql.types.StructType
+import java.io.IOException;
 
-object ShimFileFormat {
-  // A name for a temporary column that holds row indexes computed by the file format reader
-  // until they can be placed in the _metadata struct.
-  val ROW_INDEX_TEMPORARY_COLUMN_NAME = ParquetFileFormat.ROW_INDEX_TEMPORARY_COLUMN_NAME
+/**
+ * Receives complete encoded shuffle blocks from a native partition writer.
+ *
+ * <p>Instances belong to one Spark task. Implementations must be safe to invoke from native worker
+ * threads, which do not inherit the Spark task thread's thread-local context.
+ */
+@FunctionalInterface
+public interface ShufflePartitionPusher {
 
-  def findRowIndexColumnIndexInSchema(sparkSchema: StructType): Int =
-    ParquetRowIndexUtil.findRowIndexColumnIndexInSchema(sparkSchema)
+  /** Pushes one complete, length-prefixed Arrow IPC block for the given output partition. */
+  void pushPartitionData(int partitionId, byte[] data, int length) throws IOException;
 }

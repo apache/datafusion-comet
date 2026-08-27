@@ -29,6 +29,7 @@ import org.apache.spark.sql.comet.{CometNativeExec, CometNativeScanExec, CometSc
 import org.apache.spark.sql.execution.{FileSourceScanExec, InSubqueryExec, SubqueryAdaptiveBroadcastExec}
 import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.types.{ArrayType, DataType, MapType, StructField, StructType}
 
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometConf.COMET_EXEC_ENABLED
@@ -39,11 +40,25 @@ import org.apache.comet.serde.{CometOperatorSerde, Compatible, OperatorOuterClas
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde.{exprToProto, serializeDataType}
+import org.apache.comet.shims.CometTypeShim
 
 /**
  * Validation and serde logic for Comet's native Parquet scan.
  */
-object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
+object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeShim with Logging {
+
+  // DataFusion's table_partition_cols literal substitution matches by name, so a bare name
+  // like "file_size" could collide with a real column of the same name. Prefix to avoid it.
+  private val constantMetadataFieldPrefix = "_comet_metadata_"
+
+  private def containsVariantType(dataType: DataType): Boolean = dataType match {
+    case dt if isVariantType(dt) => true
+    case StructType(fields) => fields.exists(field => containsVariantType(field.dataType))
+    case ArrayType(elementType, _) => containsVariantType(elementType)
+    case MapType(keyType, valueType, _) =>
+      containsVariantType(keyType) || containsVariantType(valueType)
+    case _ => false
+  }
 
   /** Determine whether the scan is supported and tag the Spark plan with any fallback reasons */
   def isSupported(scanExec: FileSourceScanExec): Boolean = {
@@ -165,23 +180,50 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
         .headOption
         .map(_.getPath.toUri)
 
-      val partitionSchema = schema2Proto(scan.relation.partitionSchema)
+      // Constant metadata columns (file_path, file_name, file_size, file_block_start,
+      // file_block_length, file_modification_time) are known before opening the file and
+      // constant for every row read from it, exactly like partition columns. Spark places
+      // them immediately after partition columns in `scan.output`
+      // (FileSourceStrategy.scala: readDataColumns ++ generatedMetadataColumns ++
+      // partitionColumns ++ constantMetadataColumns), so appending them after the real
+      // partition schema here keeps the two in lockstep.
+      val constantMetadataFields = scan.wrapped.fileConstantMetadataColumns.map(attr =>
+        StructField(s"$constantMetadataFieldPrefix${attr.name}", attr.dataType, attr.nullable))
+      val partitionSchemaFields = scan.relation.partitionSchema.fields.toSeq ++
+        constantMetadataFields
+      val partitionSchema = schema2Proto(partitionSchemaFields)
       val requiredSchema = schema2Proto(scan.requiredSchema)
-      val dataSchema = schema2Proto(scan.relation.dataSchema)
+
+      // Spark's required schema can prune a Variant column, including a Variant nested under an
+      // unrequested struct. The complete relation schema still contains that unsupported type,
+      // and serializing it would throw even though the native reader never needs those bytes.
+      // Keep ordinary fields unchanged and replace a requested Variant-bearing root with its
+      // already-validated, pruned required field. A requested actual Variant never reaches this
+      // point because CometScanRule keeps those scans on Spark.
+      val nativeDataSchema = StructType(scan.relation.dataSchema.fields.flatMap { field =>
+        if (containsVariantType(field.dataType)) {
+          scan.requiredSchema.fields.find(requiredField =>
+            scan.conf.resolver(requiredField.name, field.name))
+        } else {
+          Some(field)
+        }
+      })
+      val dataSchema = schema2Proto(nativeDataSchema)
 
       val dataSchemaIndexes = scan.requiredSchema.map(field => {
-        scan.relation.dataSchema.fieldIndex(field.name)
+        nativeDataSchema.fieldIndex(field.name)
       })
-      val partitionSchemaIndexes = scan.relation.dataSchema.fields.length until
-        (scan.relation.dataSchema.length + scan.relation.partitionSchema.fields.length)
+      val partitionSchemaIndexes = nativeDataSchema.fields.length until
+        (nativeDataSchema.length + partitionSchemaFields.length)
 
       val projectionVector = (dataSchemaIndexes ++ partitionSchemaIndexes).map(idx =>
         idx.toLong.asInstanceOf[java.lang.Long])
 
       commonBuilder.addAllProjectionVector(projectionVector.asJava)
 
-      // In `CometScanRule`, we ensure partitionSchema is supported.
-      assert(partitionSchema.length == scan.relation.partitionSchema.fields.length)
+      // In `CometScanRule`, we ensure partitionSchema (including constant metadata columns)
+      // is supported.
+      assert(partitionSchema.length == partitionSchemaFields.length)
 
       commonBuilder.addAllDataSchema(dataSchema.asJava)
       commonBuilder.addAllRequiredSchema(requiredSchema.asJava)

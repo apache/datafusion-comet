@@ -16,7 +16,8 @@
 -- under the License.
 
 -- ANSI mode: Spark's NextDay throws on a malformed dayOfWeek (SparkIllegalArgumentException /
--- ILLEGAL_DAY_OF_WEEK on 3.5+, IllegalArgumentException on 3.4) when spark.sql.ansi.enabled=true.
+-- ILLEGAL_DAY_OF_WEEK on 4.0+, _LEGACY_ERROR_TEMP_2000 on 3.x) when
+-- spark.sql.ansi.enabled=true.
 -- Comet's native next_day now throws the same "Illegal input for day of week" message under ANSI
 -- instead of returning NULL.
 -- Config: spark.sql.ansi.enabled=true

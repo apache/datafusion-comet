@@ -245,6 +245,14 @@
 - Spark 3.5.8 (audited 2026-05-27): registry alias of `Upper`. Same support as `upper`.
 - Spark 4.0.1 (audited 2026-05-27): unchanged alias of `Upper`.
 
+## unbase64
+
+- Spark 3.4.3 (audited 2026-08-24): identical to 3.5.8.
+- Spark 3.5.8 (audited 2026-08-24): baseline. `doGenCode` emits `java.util.Base64.getMimeDecoder().decode(child.toString())`. The MIME decoder skips every byte outside the base64 alphabet, so CRLF-wrapped output from Spark's own `base64` round-trips cleanly; four terminal-shape errors surface as `IllegalArgumentException`. `failOnError = true` is set only when the node is constructed from `to_binary('base64')` / `try_to_binary`, which use a stricter RFC 4648 validator.
+- Spark 4.0.1 (audited 2026-08-24): `NullIntolerant` becomes `override def nullIntolerant: Boolean = true`; `inputTypes` widens to `StringTypeWithCollation(supportsTrimCollation = true)`. Behaviour is byte-level and collation-independent, so no divergence for `UTF8_BINARY` and no shim is needed.
+- Spark 4.1.1 (audited 2026-08-24): adds `contextIndependentFoldable`; no behavioural change on the decode path.
+- Comet native implementation (`spark_unbase64`, `native/spark-expr/src/string_funcs/unbase64.rs`) ports the JDK MIME decoder rules: 256-entry decode LUT, a reused per-batch scratch `Vec<u8>` copied into a preallocated `BinaryBuilder`, all four error messages reproduced verbatim. `CometUnBase64` handles `failOnError = false` natively; `failOnError = true` (reachable from `to_binary('base64')` / `try_to_binary`) requires strict RFC 4648 validation and is not yet implemented natively, so those cases stay on the JVM codegen dispatcher via `CodegenDispatchFallback`.
+
 ## upper
 
 - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
