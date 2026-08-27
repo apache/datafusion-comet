@@ -280,11 +280,12 @@ object Utils extends CometTypeShim with Logging {
    * it alongside. As with [[serializeBatches]], the batch's vectors are cleared once written.
    */
   def serializeBatchColumns(batch: ColumnarBatch): Array[ChunkedByteBuffer] = {
-    val (fieldVectors, batchProviderOpt) = getBatchFieldVectors(batch)
-    val provider = batchProviderOpt.getOrElse(new CDataDictionaryProvider)
     val codec = CompressionCodec.createCodec(SparkEnv.get.conf)
 
-    fieldVectors.map { fieldVector =>
+    // Each column is written with the provider it was decoded with, not the batch's first one:
+    // columns decoded from separate streams have independent dictionary ID namespaces.
+    getBatchFieldVectorsWithProviders(batch).map { case (fieldVector, providerOpt) =>
+      val provider = providerOpt.getOrElse(new CDataDictionaryProvider)
       val cbbos = new ChunkedByteBufferOutputStream(1024 * 1024, ByteBuffer.allocate)
       val out = new DataOutputStream(codec.compressedOutputStream(cbbos))
 
@@ -440,35 +441,58 @@ object Utils extends CometTypeShim with Logging {
    * rather than being materialized column by column.
    */
   def isArrowBacked(batch: ColumnarBatch): Boolean =
-    (0 until batch.numCols()).forall(i => batch.column(i).isInstanceOf[CometVector])
+    (0 until batch.numCols()).forall { i =>
+      batch.column(i) match {
+        // Not every CometVector can be handed to getFieldVector: a CometPlainVector can wrap a
+        // LargeVarCharVector or LargeVarBinaryVector (an accelerated mapInArrow returning
+        // pa.large_string(), for instance), which it rejects. Answering true for those would
+        // send a batch down the direct write path that then fails, so check the vector itself
+        // and let the caller convert instead.
+        case v: CometVector => isSupportedFieldVector(v.getValueVector)
+        case _ => false
+      }
+    }
 
   def getBatchFieldVectors(
       batch: ColumnarBatch): (Seq[FieldVector], Option[DictionaryProvider]) = {
-    var provider: Option[DictionaryProvider] = None
+    val columns = getBatchFieldVectorsWithProviders(batch)
+    (columns.map(_._1), columns.flatMap(_._2).headOption)
+  }
+
+  /**
+   * Field vectors of `batch` paired with the dictionary provider each column was decoded with.
+   *
+   * [[getBatchFieldVectors]] collapses these to the first provider, which is right when every
+   * column came from the same reader. Comet's cache decodes each column from its own stream, so a
+   * batch's dictionary-backed columns can carry independent providers whose IDs collide; writing
+   * such a batch back out with one column's provider cannot resolve the others. Callers that
+   * serialize columns individually use this instead.
+   */
+  def getBatchFieldVectorsWithProviders(
+      batch: ColumnarBatch): Seq[(FieldVector, Option[DictionaryProvider])] = {
     val rows = batch.numRows()
-    val fieldVectors = (0 until batch.numCols()).map { index =>
+    (0 until batch.numCols()).map { index =>
       batch.column(index) match {
         case a: CometVector =>
           val valueVector = a.getValueVector
-          if (valueVector.getField.getDictionary != null) {
-            if (provider.isEmpty) {
-              provider = Some(a.getDictionaryProvider)
-            }
-          }
+          val provider =
+            if (valueVector.getField.getDictionary != null) Some(a.getDictionaryProvider)
+            else None
 
-          getFieldVector(valueVector, "serialize")
+          (getFieldVector(valueVector, "serialize"), provider)
 
         case cv: ConstantColumnVector =>
           // Spark wraps file-source partition columns and other per-batch constants in
           // `ConstantColumnVector`. Materialise to an Arrow vector so the serialisation path
           // doesn't reject the batch. "UTC" is intentional -- see `ConstantColumnVectors`.
-          ConstantColumnVectors.materialize(
+          val materialized = ConstantColumnVectors.materialize(
             cv,
             cv.dataType(),
             rows,
             s"_const_$index",
             org.apache.comet.CometArrowAllocator,
             "UTC")
+          (materialized, None)
 
         case c =>
           throw new SparkException(
@@ -482,19 +506,24 @@ object Utils extends CometTypeShim with Logging {
               "data to Arrow format automatically.")
       }
     }
-    (fieldVectors, provider)
+  }
+
+  /** Whether [[getFieldVector]] accepts this vector, without throwing to find out. */
+  def isSupportedFieldVector(valueVector: ValueVector): Boolean = valueVector match {
+    case _: BitVector | _: TinyIntVector | _: SmallIntVector | _: IntVector | _: BigIntVector |
+        _: Float4Vector | _: Float8Vector | _: VarCharVector | _: DecimalVector |
+        _: DateDayVector | _: TimeStampMicroTZVector | _: VarBinaryVector |
+        _: FixedSizeBinaryVector | _: TimeStampMicroVector | _: StructVector | _: ListVector |
+        _: MapVector | _: NullVector | _: TimeNanoVector =>
+      true
+    case _ => false
   }
 
   def getFieldVector(valueVector: ValueVector, reason: String): FieldVector = {
-    valueVector match {
-      case v @ (_: BitVector | _: TinyIntVector | _: SmallIntVector | _: IntVector |
-          _: BigIntVector | _: Float4Vector | _: Float8Vector | _: VarCharVector |
-          _: DecimalVector | _: DateDayVector | _: TimeStampMicroTZVector | _: VarBinaryVector |
-          _: FixedSizeBinaryVector | _: TimeStampMicroVector | _: StructVector | _: ListVector |
-          _: MapVector | _: NullVector | _: TimeNanoVector) =>
-        v.asInstanceOf[FieldVector]
-      case _ =>
-        throw new SparkException(s"Unsupported Arrow Vector for $reason: ${valueVector.getClass}")
+    if (isSupportedFieldVector(valueVector)) {
+      valueVector.asInstanceOf[FieldVector]
+    } else {
+      throw new SparkException(s"Unsupported Arrow Vector for $reason: ${valueVector.getClass}")
     }
   }
 }

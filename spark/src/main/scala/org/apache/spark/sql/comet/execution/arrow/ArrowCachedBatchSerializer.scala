@@ -20,6 +20,7 @@
 package org.apache.spark.sql.comet.execution.arrow
 
 import scala.collection.JavaConverters._
+import scala.util.control.NonFatal
 
 import org.apache.spark.TaskContext
 import org.apache.spark.rdd.RDD
@@ -366,8 +367,34 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
   // this yields a single-element iterator that closes on exhaustion, matching what
   // ArrowReaderIterator did when the payload was one stream.
   private class ColumnReaders(buffers: Array[ChunkedByteBuffer], numRows: Int) {
-    private val readers: Array[Iterator[ColumnarBatch]] =
-      buffers.map(Utils.decodeBatches(_, "CometCache"))
+    // decodeBatches opens a reader and eagerly decodes its first batch, so it allocates. If a
+    // later column throws, the readers already opened here are unreachable: the task-completion
+    // listener cannot release them because `current` is only assigned once this constructor
+    // returns, so they would leak off-heap for the life of the executor.
+    private val readers: Array[Iterator[ColumnarBatch]] = {
+      val opened = new Array[Iterator[ColumnarBatch]](buffers.length)
+      var i = 0
+      try {
+        while (i < buffers.length) {
+          opened(i) = Utils.decodeBatches(buffers(i), "CometCache")
+          i += 1
+        }
+      } catch {
+        case NonFatal(e) =>
+          var j = 0
+          while (j < i) {
+            opened(j) match {
+              case reader: ArrowReaderIterator =>
+                try reader.close()
+                catch { case NonFatal(closeError) => e.addSuppressed(closeError) }
+              case _ => ()
+            }
+            j += 1
+          }
+          throw e
+      }
+      opened
+    }
     private var closed = false
 
     def close(): Unit = synchronized {

@@ -29,12 +29,11 @@ import org.apache.spark.sql.catalyst.expressions.{And, Attribute, Expression, Gr
 import org.apache.spark.sql.columnar.{CachedBatch, SimpleMetricsCachedBatch}
 import org.apache.spark.sql.comet.CometInMemoryTableScanExec
 import org.apache.spark.sql.comet.execution.arrow.CometCachedBatchHelper
-import org.apache.spark.sql.execution.columnar.CometInMemoryRelationHelper
+import org.apache.spark.sql.execution.columnar.{CometInMemoryRelationHelper, InMemoryRelation}
 import org.apache.spark.sql.internal.{SQLConf, StaticSQLConf}
-import org.apache.spark.sql.types.BooleanType
 import org.apache.spark.storage.StorageLevel
 
-import org.apache.comet.CometConf
+import org.apache.comet.{CometArrowAllocator, CometConf}
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.vector.CometVector
 
@@ -1098,11 +1097,11 @@ class CometInMemoryCacheSuite extends CometTestBase {
     }
   }
 
-  test("Comet in-memory cache scans one narrow column for a row-count-only query") {
-    // SELECT count(*) needs no columns, but the native plan needs a non-empty scan schema, so the
-    // scan has to ask for something. It asks for one cheap column: since the serializer decodes
-    // exactly what it is asked for, falling back to the whole cache schema would make the
-    // cheapest query in a workload decode every cached column.
+  test("Comet in-memory cache scans no columns for a row-count-only query") {
+    // SELECT count(*) selects no columns, and the scan must keep it that way. Widening it -- to
+    // the whole cache schema, or to a single placeholder column -- makes the emitted batches
+    // disagree with the scan's declared output, which is wrong for any consumer that reads by
+    // ordinal instead of by row count. See the join regression below.
     withSQLConf(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
       CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true",
@@ -1129,14 +1128,137 @@ class CometInMemoryCacheSuite extends CometTestBase {
       assert(scan.isDefined, "expected a native cache scan")
       assert(scan.get.output.isEmpty, "a count-only scan declares no output")
       assert(
-        scan.get.scanOutput.length == 1,
-        s"expected one scanned column, got ${scan.get.scanOutput.map(_.name).mkString(",")}")
-      assert(
-        scan.get.scanOutput.head.dataType == BooleanType,
-        "expected the cheapest column to decode, not a string or the first column")
+        scan.get.scanOutput.isEmpty,
+        s"expected no scanned columns, got ${scan.get.scanOutput.map(_.name).mkString(",")}")
 
       checkSparkAnswer(df)
       spark.catalog.clearCache()
+    }
+  }
+
+  test("Comet in-memory cache joins correctly over an empty-output cache scan") {
+    // An empty-output cache scan can feed a join, not only a count-style aggregate. A join reads
+    // its inputs by ordinal, so any column the scan emits beyond its declared output shifts the
+    // right side's positions and silently produces wrong results rather than failing.
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true",
+      "spark.comet.sparkToColumnar.enabled" -> "true") {
+
+      spark.catalog.clearCache()
+      val left = spark.range(10L, 13L).cache()
+      left.collect()
+      left.createOrReplaceTempView("cached_left")
+
+      // 3 left rows joined to 2 right rows, summing only the right side: 3 * (0 + 1) == 3.
+      // Leaking the left id column into the scan output made this read 10 + 11 + 12 twice.
+      checkSparkAnswer(spark.sql("""
+          |SELECT /*+ BROADCAST(r) */ sum(r.id)
+          |FROM cached_left l JOIN range(2) r ON true
+        """.stripMargin))
+
+      checkSparkAnswer(spark.sql("""
+          |SELECT /*+ BROADCAST(r) */ r.id
+          |FROM cached_left l JOIN range(2) r ON true
+        """.stripMargin))
+
+      spark.catalog.clearCache()
+    }
+  }
+
+  test(
+    "Comet in-memory cache re-encodes a decoded batch whose columns have separate dictionaries") {
+    // Each cached column is decoded from its own stream, so dictionary-backed columns come back
+    // with independent providers whose IDs collide. Re-encoding such a batch with only the first
+    // column's provider cannot resolve the later columns' dictionary IDs. Spark's columnar Union
+    // hands decoded cached batches straight back to this serializer, so caching a union of a
+    // cached relation exercises exactly that.
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
+      "spark.comet.sparkToColumnar.enabled" -> "true") {
+
+      spark.catalog.clearCache()
+      val first = spark
+        .range(0, 200, 1, 2)
+        .selectExpr(
+          "concat('a_', cast(id % 3 as string)) AS s1",
+          "concat('b_', cast(id % 4 as string)) AS s2")
+        .repartition(2)
+        .cache()
+      assert(first.count() == 200)
+
+      withSQLConf(
+        CometConf.COMET_EXEC_ENABLED.key -> "false",
+        CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "false") {
+        val second = first.union(first).cache()
+        assert(second.count() == 400)
+        second.unpersist()
+      }
+
+      first.unpersist()
+      spark.catalog.clearCache()
+    }
+  }
+
+  test("Comet in-memory cache does not build the cached RDD while planning") {
+    // CachedRDDBuilder.cachedColumnBuffers builds its RDD by executing the cached plan, so
+    // touching it during planning runs jobs before the outer query is even submitted. With an
+    // adaptively-cached relation that also finalizes the cached plan. EXPLAIN must launch nothing.
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true",
+      "spark.comet.sparkToColumnar.enabled" -> "true") {
+
+      spark.catalog.clearCache()
+      val cached = spark.range(100).repartition(2).cache()
+      cached.createOrReplaceTempView("cached_adaptive")
+
+      val builder = spark
+        .sql("SELECT * FROM cached_adaptive")
+        .queryExecution
+        .optimizedPlan
+        .collectFirst { case r: InMemoryRelation => r.cacheBuilder }
+        .get
+      // The cached plan is adaptive and has not run, so AQE has not finalized it. Building the
+      // cached RDD executes that plan, which finalizes it; isCachedColumnBuffersLoaded is not the
+      // signal to use here, since it additionally requires the blocks to be populated.
+      assert(
+        builder.cachedPlan.toString.contains("isFinalPlan=false"),
+        "cached plan was already finalized before the test ran")
+
+      spark.sql("SELECT * FROM cached_adaptive").explain()
+
+      assert(
+        builder.cachedPlan.toString.contains("isFinalPlan=false"),
+        "planning must not build the cached RDD: doing so executes the cached plan")
+
+      // It must still be built when the query actually runs.
+      assert(spark.sql("SELECT * FROM cached_adaptive").count() == 100)
+
+      cached.unpersist()
+      spark.catalog.clearCache()
+    }
+  }
+
+  test("Comet in-memory cache releases opened readers when a later column fails to decode") {
+    // A cached batch is several independent Arrow streams and decodeBatches opens each eagerly.
+    // If a later column throws, the readers already opened are unreachable: the task-completion
+    // listener cannot release them, because the holder is only published once its constructor
+    // returns. The failure would then leak off-heap for the life of the executor.
+    withProjectionCache { (relation, batches) =>
+      // Corrupt the second selected column, so the first is opened successfully first.
+      val selected = Seq(relation.output(0), relation.output(1))
+      batches.foreach(b => CometCachedBatchHelper.corruptColumnStream(b, 1))
+
+      val before = CometArrowAllocator.getAllocatedMemory
+      intercept[Exception] {
+        decodedRowCount(relation, batches, selected)
+      }
+      assert(
+        CometArrowAllocator.getAllocatedMemory == before,
+        "readers opened before the failure must be released")
     }
   }
 }

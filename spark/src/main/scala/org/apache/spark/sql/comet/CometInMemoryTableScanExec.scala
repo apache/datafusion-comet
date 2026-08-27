@@ -23,11 +23,10 @@ import scala.collection.JavaConverters._
 
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.expressions.Attribute
-import org.apache.spark.sql.columnar.{CachedBatch, CachedBatchSerializer}
+import org.apache.spark.sql.columnar.CachedBatchSerializer
 import org.apache.spark.sql.execution.LeafExecNode
-import org.apache.spark.sql.execution.columnar.InMemoryTableScanExec
+import org.apache.spark.sql.execution.columnar.{CachedRDDBuilder, InMemoryTableScanExec}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
-import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import org.apache.comet.CometConf
@@ -49,7 +48,7 @@ import org.apache.comet.serde.QueryPlanSerde.serializeDataType
 case class CometInMemoryTableScanExec(
     originalPlan: InMemoryTableScanExec,
     serializer: CachedBatchSerializer,
-    cachedBuffers: RDD[CachedBatch],
+    cacheBuilder: CachedRDDBuilder,
     relationOutput: Seq[Attribute],
     scanOutput: Seq[Attribute])
     extends CometExec
@@ -58,10 +57,11 @@ case class CometInMemoryTableScanExec(
   override lazy val metrics: Map[String, SQLMetric] = Map(
     "numOutputRows" -> SQLMetrics.createMetric(sparkContext, "number of output rows"))
 
-  // For an empty-projection scan (`SELECT count(*)`) this is empty while `scanOutput` holds one
-  // placeholder column, so the emitted batches are wider than the declared output. That is safe
-  // because the only consumer of an empty-output scan is a count-style aggregate, which reads the
-  // row count rather than any column; see `scanOutputFor` for why the scan cannot simply be empty.
+  // `scanOutput` always equals this, including when it is empty. An empty-output scan
+  // (`SELECT count(*)`) emits genuinely zero-column batches carrying only a row count: widening it
+  // to a placeholder column, or to the whole cache schema, makes the emitted batches disagree with
+  // the declared output, and a consumer that reads by ordinal rather than by row count -- a join,
+  // for instance -- then reads the wrong column.
   override def output: Seq[Attribute] = originalPlan.output
 
   // Use the serializer's vector types because the cached batch layout is owned by the serializer.
@@ -79,6 +79,13 @@ case class CometInMemoryTableScanExec(
   // knob a user reaching for it is specifically trying to control.
   override def doExecuteColumnar(): RDD[ColumnarBatch] = {
     val numOutputRows = longMetric("numOutputRows")
+
+    // Resolved here rather than at planning time. CachedRDDBuilder.cachedColumnBuffers is not a
+    // metadata lookup: it builds the RDD by calling execute/executeColumnar on the cached plan,
+    // so touching it while Comet is still planning the outer query runs jobs during planning --
+    // visibly, an EXPLAIN of a query over an adaptively-cached relation would launch a job and
+    // finalize that plan.
+    val cachedBuffers = cacheBuilder.cachedColumnBuffers
 
     val filteredBuffers =
       if (originalPlan.predicates.nonEmpty && conf.inMemoryPartitionPruning) {
@@ -107,7 +114,7 @@ object CometInMemoryTableScanExec extends CometOperatorSerde[InMemoryTableScanEx
       builder: OperatorOuterClass.Operator.Builder,
       childOp: Operator*): Option[Operator] = {
 
-    val scanTypes = scanOutputFor(op).flatMap(attr => serializeDataType(attr.dataType))
+    val scanTypes = op.output.flatMap(attr => serializeDataType(attr.dataType))
 
     val scanBuilder = OperatorOuterClass.Scan
       .newBuilder()
@@ -127,43 +134,9 @@ object CometInMemoryTableScanExec extends CometOperatorSerde[InMemoryTableScanEx
       CometInMemoryTableScanExec(
         op,
         relation.cacheBuilder.serializer,
-        relation.cacheBuilder.cachedColumnBuffers,
+        relation.cacheBuilder,
         relation.output,
-        scanOutputFor(op)))
+        op.output))
   }
 
-  /**
-   * Columns the cache scan asks the serializer to decode.
-   *
-   * An empty-output scan (`SELECT count(*)`) still needs a non-empty schema for native planning,
-   * and the batches the node emits have to match that schema. Falling back to the whole cache
-   * schema satisfies both, but the serializer decodes exactly what it is asked for, so the
-   * cheapest query in the workload would decode every cached column. One column is enough: the
-   * aggregate above an empty-output scan reads the row count and never a value, so pick the
-   * cheapest to decode rather than all of them.
-   *
-   * `convert` and `createExec` must choose identically, or the native scan's declared schema and
-   * the batches fed to it disagree.
-   */
-  private def scanOutputFor(op: InMemoryTableScanExec): Seq[Attribute] = {
-    if (op.output.nonEmpty) {
-      op.output
-    } else if (op.relation.output.isEmpty) {
-      Nil
-    } else {
-      Seq(op.relation.output.minBy(a => decodeCostRank(a.dataType)))
-    }
-  }
-
-  // Rank by how much work decoding a column of this type costs, cheapest first. Fixed-width types
-  // decode to a flat buffer; variable-width and nested ones carry offsets, children and possibly
-  // dictionaries.
-  private def decodeCostRank(dt: DataType): Int = dt match {
-    case BooleanType | ByteType => 0
-    case ShortType => 1
-    case IntegerType | FloatType | DateType => 2
-    case LongType | DoubleType | TimestampType | TimestampNTZType => 3
-    case _: DecimalType => 4
-    case _ => 5
-  }
 }
