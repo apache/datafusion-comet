@@ -368,6 +368,78 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  for (adaptive <- Seq(false, true)) {
+    test(s"COUNT preserves safe native partials across a Spark shuffle (AQE=$adaptive)") {
+      val data = Seq((0, None), (0, None), (1, Some(3)), (1, None), (1, Some(4)))
+      withParquetTable(data, "count_fallback", false) {
+        for (finalEnabled <- Seq(false, true)) {
+          withSQLConf(
+            SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+            SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED.key -> "false",
+            CometConf.COMET_SHUFFLE_ENABLED.key -> "false",
+            CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.key -> finalEnabled.toString) {
+            for (query <- Seq(
+                "SELECT _1, COUNT(_2), COUNT(*) FROM count_fallback GROUP BY _1",
+                "SELECT COUNT(_2), COUNT(*) FROM count_fallback WHERE _1 = 0",
+                "SELECT COUNT(_2), COUNT(*) FROM count_fallback WHERE _1 < 0")) {
+              val df = sql(query)
+              val initialPlan = stripAQEPlan(df.queryExecution.executedPlan)
+              assert(collect(initialPlan) {
+                case agg: CometHashAggregateExec if agg.modes == Seq(Partial) => agg
+              }.size == 1)
+              assert(collect(initialPlan) {
+                case agg: BaseAggregateExec
+                    if agg.aggregateExpressions.map(_.mode).distinct == Seq(Final) =>
+                  agg
+              }.size == 1)
+              checkSparkAnswer(df)
+            }
+          }
+        }
+      }
+    }
+
+    for (fn <- Seq("collect_list", "collect_set")) {
+      test(s"$fn falls back when enabled native shuffle is ineligible (AQE=$adaptive)") {
+        val data = (0 until 30).map(i => (i % 3, if (i % 7 == 0) None else Some(i % 5)))
+        withParquetTable(data, "collect_fallback", false) {
+          withSQLConf(
+            SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+            SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED.key -> "false",
+            SQLConf.USE_OBJECT_HASH_AGG.key -> "true",
+            CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+            CometConf.COMET_SHUFFLE_MODE.key -> "native",
+            CometConf.COMET_SHUFFLE_NATIVE_HASH_PARTITIONING_ENABLED.key -> "false") {
+            // Integer keys isolate this from the wide-decimal shuffle restriction in #5420.
+            // The native Partial emits an Array buffer, but Spark's Final expects Binary.
+            val query = s"SELECT _1, sort_array($fn(_2)), COUNT(*) " +
+              "FROM collect_fallback WHERE _1 >= 0 GROUP BY _1"
+            val df = sql(query)
+            val initialPlan = stripAQEPlan(df.queryExecution.executedPlan)
+            checkSparkAnswer(df)
+            for (plan <- Seq(initialPlan, df.queryExecution.executedPlan)) {
+              assert(collect(plan) { case agg: CometHashAggregateExec => agg }.isEmpty)
+              val partials = collect(plan) {
+                case agg: BaseAggregateExec
+                    if agg.aggregateExpressions.map(_.mode).distinct == Seq(Partial) =>
+                  agg
+              }
+              assert(partials.size == 1)
+              assert(partials.head.getTagValue(CometExecRule.COMET_UNSAFE_PARTIAL).isDefined)
+              assert(collect(plan) { case filter: CometFilterExec => filter }.nonEmpty)
+            }
+            // A fully native producer/consumer pair can still use its native buffer format.
+            withSQLConf(CometConf.COMET_SHUFFLE_NATIVE_HASH_PARTITIONING_ENABLED.key -> "true") {
+              val native = sql(query)
+              checkSparkAnswer(native)
+              assert(getNumCometHashAggregate(native) == 2)
+            }
+          }
+        }
+      }
+    }
+  }
+
   test("stddev_pop should return NaN for some cases") {
     withSQLConf(CometConf.COMET_SHUFFLE_ENABLED.key -> "true") {
       Seq(true, false).foreach { nullOnDivideByZero =>
@@ -718,10 +790,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             dictionaryEnabled) {
             val n = if (nativeShuffleEnabled) 2 else 1
             checkSparkAnswerAndNumOfAggregates("SELECT _2, SUM(_1) FROM tbl GROUP BY _2", n)
-            // COUNT is not declared safe for mixed execution, unlike the other aggregates here.
-            checkSparkAnswerAndNumOfAggregates(
-              "SELECT _2, COUNT(_1) FROM tbl GROUP BY _2",
-              if (nativeShuffleEnabled) 2 else 0)
+            checkSparkAnswerAndNumOfAggregates("SELECT _2, COUNT(_1) FROM tbl GROUP BY _2", n)
             checkSparkAnswerAndNumOfAggregates("SELECT _2, MIN(_1) FROM tbl GROUP BY _2", n)
             checkSparkAnswerAndNumOfAggregates("SELECT _2, MAX(_1) FROM tbl GROUP BY _2", n)
             checkSparkAnswerAndNumOfAggregates("SELECT _2, AVG(_1) FROM tbl GROUP BY _2", n)
