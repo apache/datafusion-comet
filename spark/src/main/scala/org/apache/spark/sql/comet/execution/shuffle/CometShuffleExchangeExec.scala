@@ -115,6 +115,9 @@ case class CometShuffleExchangeExec(
     case _ => None
   }
 
+  @transient private lazy val nativeChildMetricNode: CometMetricNode =
+    CometMetricNode.fromCometPlan(child)
+
   @transient lazy val inputRDD: RDD[_] = if (shuffleType == CometNativeShuffle) {
     nativeChildContext match {
       case Some(ctx) =>
@@ -123,6 +126,7 @@ case class CometShuffleExchangeExec(
           ctx.inputs,
           ctx.numPartitions,
           ctx.shuffleScanIndices,
+          CometMetricNode(metrics, Seq(nativeChildMetricNode)),
           ctx.perPartitionByKey)
       case None =>
         // Non-native child (e.g. CometSparkToColumnarExec): no subtree to inline. The dep gets
@@ -179,7 +183,11 @@ case class CometShuffleExchangeExec(
           // RangePartitioner needs real rows for sampling. Reuse the precomputed context so we
           // don't re-walk the SparkPlan tree or re-broadcast the encryption Hadoop conf.
           val samplingRDD: Option[RDD[ColumnarBatch]] = outputPartitioning match {
-            case _: RangePartitioning => Some(nativeChild.executeColumnarWithContext(ctx))
+            case _: RangePartitioning =>
+              Some(
+                nativeChild.executeColumnarWithContext(
+                  ctx,
+                  nativeChildMetricNode.withoutAggregateMetrics(nativeChild)))
             case _ => None
           }
           CometShuffleExchangeExec.prepareNativeShuffleDependency(
@@ -189,10 +197,7 @@ case class CometShuffleExchangeExec(
             outputPartitioning,
             serializer,
             metrics,
-            NativeShuffleSpec(
-              nativeChild.nativeOp,
-              CometMetricNode.fromCometPlan(nativeChild),
-              ctx))
+            NativeShuffleSpec(nativeChild.nativeOp, nativeChildMetricNode, ctx))
         case None =>
           CometShuffleExchangeExec.prepareShuffleDependency(
             inputRDD.asInstanceOf[RDD[ColumnarBatch]],
@@ -717,11 +722,13 @@ object CometShuffleExchangeExec
       CometArrowStream.NATIVE_TIMEZONE,
       "ShuffleWriterInput")
 
+    val childMetricNode = CometMetricNode(Map.empty)
     val thinRDD = new CometNativeShuffleInputRDD(
       rdd.sparkContext,
       Seq(streamRDD),
       rdd.getNumPartitions,
-      shuffleScanIndices = Set.empty)
+      shuffleScanIndices = Set.empty,
+      spillMetricNode = CometMetricNode(metrics, Seq(childMetricNode)))
 
     val ctx = NativeExecContext(
       inputs = Seq(streamRDD),
@@ -743,7 +750,7 @@ object CometShuffleExchangeExec
       outputPartitioning,
       serializer,
       metrics,
-      NativeShuffleSpec(scanOp, CometMetricNode(Map.empty), ctx))
+      NativeShuffleSpec(scanOp, childMetricNode, ctx))
   }
 
   /**

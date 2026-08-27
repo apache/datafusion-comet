@@ -19,6 +19,8 @@ pub(crate) mod comet_partitioning;
 pub mod ipc;
 pub(crate) mod metrics;
 pub(crate) mod partitioners;
+#[cfg(test)]
+mod rss_execution_tests;
 mod schema_align;
 mod shuffle_writer;
 mod spark_crc32c_hasher;
@@ -28,5 +30,5 @@ pub(crate) mod writers;
 pub use comet_partitioning::CometPartitioning;
 pub use ipc::read_ipc_compressed;
 pub use schema_align::SchemaAlignExec;
-pub use shuffle_writer::ShuffleWriterExec;
+pub use shuffle_writer::{ShuffleWriterDestination, ShuffleWriterExec};
 pub use writers::{CompressionCodec, ShuffleBlockWriter};

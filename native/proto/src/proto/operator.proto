@@ -66,6 +66,7 @@ message Operator {
     ShuffleScan shuffle_scan = 116;
     BroadcastNestedLoopJoin broadcast_nested_loop_join = 117;
     Sample sample = 118;
+    WindowGroupLimit window_group_limit = 119;
     // Extension point for optional, out-of-tree contrib scans (Delta, Lance, ...). The concrete
     // scan message (e.g. `DeltaScan`) is packed into this envelope on the JVM side and dispatched
     // by `type_url` on the native side. Using a single permanent field -- rather than a new oneof
@@ -685,8 +686,28 @@ enum CompressionCodec {
   Gzip = 4;
 }
 
+// Selects where encoded shuffle partitions are written.
+message PartitionWriter {
+  oneof writer {
+    LocalPartitionWriter local = 1;
+    RssPartitionWriter rss = 2;
+  }
+}
+
+// Local shuffle output consists of a data file and its partition-offset index.
+message LocalPartitionWriter {
+  string output_data_file = 1;
+  string output_index_file = 2;
+}
+
+// Marker for remote shuffle output. The task-owned callback is bound outside
+// the serialized plan and is never transmitted through protobuf.
+message RssPartitionWriter {}
+
 message ShuffleWriter {
   spark.spark_partitioning.Partitioning partitioning = 1;
+  // Retained for compatibility with native binaries that predate partition_writer.
+  // Local plans also carry these paths in partition_writer.local.
   string output_data_file = 3;
   string output_index_file = 4;
   CompressionCodec codec = 5;
@@ -704,6 +725,8 @@ message ShuffleWriter {
   // Maximum number of bytes that the writer buffers in memory before spilling to disk.
   // Zero means no limit, in which case spilling is driven only by memory pool pressure.
   uint64 max_buffer_bytes = 10;
+  // Explicit output destination. When absent, use the legacy output file fields.
+  PartitionWriter partition_writer = 11;
 }
 
 message ParquetWriter {
@@ -859,4 +882,20 @@ message Window {
   repeated spark.spark_expression.Expr order_by_list = 2;
   repeated spark.spark_expression.Expr partition_by_list = 3;
   Operator child = 4;
+}
+
+// Top-K rows per partition group. Corresponds to Spark's WindowGroupLimitExec
+// (Spark 3.5+). Rank-like function drives the semantics; the operator only
+// accepts ROW_NUMBER, RANK, and DENSE_RANK.
+message WindowGroupLimit {
+  repeated spark.spark_expression.Expr partition_by_list = 1;
+  repeated spark.spark_expression.Expr order_by_list = 2;
+  int32 limit = 3;
+  RankLikeFunction rank_like_function = 4;
+}
+
+enum RankLikeFunction {
+  RowNumber = 0;
+  Rank = 1;
+  DenseRank = 2;
 }
