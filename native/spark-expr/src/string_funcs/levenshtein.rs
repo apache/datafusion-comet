@@ -26,10 +26,21 @@ use datafusion::common::{cast::as_generic_string_array, DataFusionError, Result}
 use datafusion::physical_plan::ColumnarValue;
 use std::sync::Arc;
 
+const MAX_RETAINED_CAPACITY: usize = 1024;
+
 // Thread-local scratch buffers to avoid heap allocations in the row processing loop
 thread_local! {
     static LEVENSHTEIN_SCRATCH: std::cell::RefCell<(Vec<i32>, Vec<i32>)> =
         std::cell::RefCell::new((Vec::with_capacity(64), Vec::with_capacity(64)));
+}
+
+#[inline]
+fn prepare_scratch(buf: &mut Vec<i32>, len: usize, default_val: i32) {
+    if buf.capacity() > MAX_RETAINED_CAPACITY && len <= MAX_RETAINED_CAPACITY {
+        *buf = Vec::with_capacity(MAX_RETAINED_CAPACITY);
+    }
+    buf.clear();
+    buf.resize(len, default_val);
 }
 
 /// Computes the Levenshtein edit distance between two UTF-8 strings.
@@ -58,21 +69,17 @@ fn levenshtein_distance(s: &str, t: &str) -> i32 {
             let mut borrow = scratch.borrow_mut();
             let (prev, curr) = &mut *borrow;
 
-            prev.resize(m + 1, 0);
-            curr.resize(m + 1, 0);
+            prepare_scratch(prev, m + 1, 0);
+            prepare_scratch(curr, m + 1, 0);
 
             for (i, val) in prev.iter_mut().enumerate() {
                 *val = i as i32;
             }
 
-            for j in 1..=n {
-                curr[0] = j as i32;
+            for (j, &t_byte) in t_bytes.iter().enumerate().take(n) {
+                curr[0] = (j + 1) as i32;
                 for i in 1..=m {
-                    let cost = if s_bytes[i - 1] == t_bytes[j - 1] {
-                        0
-                    } else {
-                        1
-                    };
+                    let cost = if s_bytes[i - 1] == t_byte { 0 } else { 1 };
                     curr[i] = (prev[i] + 1).min(curr[i - 1] + 1).min(prev[i - 1] + cost);
                 }
                 std::mem::swap(prev, curr);
@@ -161,46 +168,46 @@ fn levenshtein_distance_with_threshold(s: &str, t: &str, threshold: i32) -> i32 
             let mut borrow = scratch.borrow_mut();
             let (prev, curr) = &mut *borrow;
 
-            prev.resize(m + 1, out_of_band);
-            curr.resize(m + 1, out_of_band);
+            prepare_scratch(prev, m + 1, out_of_band);
+            prepare_scratch(curr, m + 1, out_of_band);
 
             for (i, value) in prev.iter_mut().enumerate().take(m.min(threshold) + 1) {
                 *value = i as i32;
             }
 
-            for j in 1..=n {
-                let start = 1.max(j.saturating_sub(threshold));
-                let end = m.min(j.saturating_add(threshold));
+            for (j_idx, &t_char) in longer.iter().enumerate() {
+                let j = j_idx + 1;
+                let start = j.saturating_sub(threshold).max(1);
+                let end = (j + threshold).min(m);
+
                 if start > end {
                     return -1;
                 }
 
-                curr[0] = if j <= threshold {
-                    j as i32
-                } else {
-                    out_of_band
-                };
-                curr[start - 1] = if start == 1 { curr[0] } else { out_of_band };
-
-                for i in start..=end {
-                    let cost = if shorter[i - 1] == longer[j - 1] {
-                        0
-                    } else {
-                        1
-                    };
-                    curr[i] = prev[i]
-                        .saturating_add(1)
-                        .min(curr[i - 1].saturating_add(1))
-                        .min(prev[i - 1].saturating_add(cost));
+                if start > 1 {
+                    curr[start - 1] = out_of_band;
                 }
+
+                if j <= threshold {
+                    curr[0] = j as i32;
+                }
+
+                for (i_idx, &s_char) in shorter.iter().enumerate().take(end).skip(start - 1) {
+                    let i = i_idx + 1;
+                    let cost = if s_char == t_char { 0 } else { 1 };
+                    curr[i] = (prev[i] + 1).min(curr[i - 1] + 1).min(prev[i - 1] + cost);
+                }
+
                 if end < m {
                     curr[end + 1] = out_of_band;
                 }
+
                 std::mem::swap(prev, curr);
             }
 
-            if prev[m] <= threshold as i32 {
-                prev[m]
+            let result = prev[m];
+            if result <= threshold as i32 {
+                result
             } else {
                 -1
             }
@@ -609,6 +616,85 @@ mod tests {
         assert_eq!(
             levenshtein_distance_with_threshold("short", "a much longer string", 2),
             -1
+        );
+    }
+
+    #[test]
+    fn test_batch_scratch_state_leak_order_invariance() {
+        // Dataset mix:
+        // 1. Pathologically long string to expand thread-local scratch buffer
+        // 2. Long string with small threshold (maximum uninitialized band cells)
+        // 3. Short strings, edge cases, and non-ASCII (accents/umlauts)
+        let s_vec = vec![
+            "the_quick_brown_fox_jumps_over_the_lazy_dog_and_runs_away_very_far_beyond_the_hills",
+            "abcdefghijklmnopqrstuvwxyz_0123456789_abcdefghijklmnopqrstuvwxyz_window_test",
+            "kitten",
+            "café_au_lait_with_crème_brûlée_and_smörgåsbord_delight",
+            "rust",
+            "naïve_coöperation",
+            "spark",
+        ];
+
+        let t_vec = vec![
+            "the_quick_brown_fox_jumps_over_the_lazy_dog_and_runs_away_far_away_beyond_the_hills",
+            "abcdefghijklmnopqrstuvwxyz_0123456789_abcdefghijklmnopqrstuvwxyz_window_diff",
+            "sitting",
+            "cafe_au_lait_with_creme_brulee_and_smorgasbord_delight",
+            "rust_lang",
+            "naive_cooperation",
+            "park",
+        ];
+
+        // Small thresholds for edge cases where uninitialized cells could leak
+        let thresh_vec = vec![10, 2, 3, 5, 5, 2, 1];
+
+        let run_batch =
+            |s_list: Vec<&str>, t_list: Vec<&str>, th_list: Vec<i32>| -> Vec<Option<i32>> {
+                let s_arr = Arc::new(StringArray::from(s_list)) as ArrayRef;
+                let t_arr = Arc::new(StringArray::from(t_list)) as ArrayRef;
+                let th_arr = Arc::new(Int32Array::from(th_list)) as ArrayRef;
+
+                let result = spark_levenshtein(&[
+                    ColumnarValue::Array(s_arr),
+                    ColumnarValue::Array(t_arr),
+                    ColumnarValue::Array(th_arr),
+                ])
+                .unwrap();
+
+                if let ColumnarValue::Array(res_arr) = result {
+                    let int_arr = res_arr.as_any().downcast_ref::<Int32Array>().unwrap();
+                    (0..int_arr.len())
+                        .map(|i| {
+                            if int_arr.is_null(i) {
+                                None
+                            } else {
+                                Some(int_arr.value(i))
+                            }
+                        })
+                        .collect()
+                } else {
+                    panic!("Expected Array result");
+                }
+            };
+
+        // Forward batch evaluation
+        let forward_results = run_batch(s_vec.clone(), t_vec.clone(), thresh_vec.clone());
+
+        // Reverse batch evaluation
+        let mut s_rev = s_vec.clone();
+        let mut t_rev = t_vec.clone();
+        let mut th_rev = thresh_vec.clone();
+        s_rev.reverse();
+        t_rev.reverse();
+        th_rev.reverse();
+
+        let mut reverse_results = run_batch(s_rev, t_rev, th_rev);
+        reverse_results.reverse();
+
+        // Ensure results are strictly identical and independent of evaluation order
+        assert_eq!(
+            forward_results, reverse_results,
+            "Results differed depending on row evaluation order in scratch buffer"
         );
     }
 }
