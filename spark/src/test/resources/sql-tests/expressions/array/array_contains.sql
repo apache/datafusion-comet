@@ -75,6 +75,7 @@ INSERT INTO test_array_contains_fp VALUES
   (array(1.0D, NULL), cast(NULL as double)),
   (array(1.0D, NULL), 4.0D),
   (NULL, 1.0D)
+
 query
 SELECT array_contains(arr, val) FROM test_array_contains_fp
 

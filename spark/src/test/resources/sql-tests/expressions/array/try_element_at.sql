@@ -43,7 +43,7 @@ query
 SELECT try_element_at(CAST(NULL AS ARRAY<INT>), 1)
 
 -- literal array arguments: same codegen bug as element_at with literal arrays
-query ignore(Spark codegen bug with literal element_at when constant folding is disabled)
+query
 SELECT try_element_at(array(10, 20, 30), 1), try_element_at(array(10, 20, 30), 99)
 
 -- map input
