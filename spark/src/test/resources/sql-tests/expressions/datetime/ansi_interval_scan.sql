@@ -15,6 +15,9 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
+-- Parquet is read through the V1 source by default; the config below only pins that default so
+-- the fixture stays on the native scan path this coverage targets. The V2 path
+-- (CometBatchScanExec) does not accept ANSI intervals and falls back to Spark.
 -- Config: spark.sql.sources.useV1SourceList=parquet
 
 statement
@@ -32,6 +35,12 @@ INSERT INTO test_ansi_interval_scan VALUES
 
 query
 SELECT id, ym, dt FROM test_ansi_interval_scan
+
+query
+SELECT id FROM test_ansi_interval_scan WHERE ym > INTERVAL '1-0' YEAR TO MONTH
+
+query
+SELECT id FROM test_ansi_interval_scan WHERE dt > INTERVAL '0 12:00:00' DAY TO SECOND
 
 statement
 CREATE TABLE test_ansi_interval_partition_scan(
