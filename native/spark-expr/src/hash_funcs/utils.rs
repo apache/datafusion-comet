@@ -169,13 +169,21 @@ macro_rules! hash_array_interval_month_day_nano {
                 )
             });
 
+        // The `nanoseconds / 1_000` below is exact: Spark's `CalendarInterval` is
+        // microsecond-based, and both JVM-to-Arrow producers
+        // (`ArrowWriters.CalendarIntervalWriter` and the codegen dispatch kernel) convert
+        // with `Math.multiplyExact(microseconds, 1000L)`, so the nanoseconds field is
+        // always an exact multiple of 1000 and out-of-range intervals throw at
+        // conversion time instead of reaching this hasher.
         if array.null_count() == 0 {
             // Fast path: no nulls, use direct indexing
             for i in 0..$hashes.len() {
                 let value = array.value(i);
                 // Match Spark 4.2 generated code, which omits the days field:
                 // https://github.com/apache/spark/blob/v4.2.0/sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/expressions/hash.scala#L428-L431
-                // SPARK-58236 includes days starting in Spark 4.3.
+                // SPARK-58236 includes days starting in Spark 4.3; the version
+                // switch for that is tracked in
+                // https://github.com/apache/datafusion-comet/issues/5498.
                 $hashes[i] =
                     $hash_method((value.nanoseconds / 1_000).to_le_bytes(), $hashes[i]);
                 $hashes[i] = $hash_method(value.months.to_le_bytes(), $hashes[i]);
