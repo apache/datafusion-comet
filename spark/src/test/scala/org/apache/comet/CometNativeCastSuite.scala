@@ -1574,9 +1574,12 @@ class CometNativeCastSuite
           SQLConf.ANSI_ENABLED.key -> ansi,
           CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true") {
           assertNoCodegenRan {
+            // Direct Array<Date> to Array<Timestamp> has a separate support restriction;
+            // Array<Struct> exercises recursive serialization on an admitted native path.
             checkSparkAnswerAndOperator(
               s"SELECT CAST(make_date(_1, _2, _3) AS $target), " +
-                s"CAST(array(make_date(_1, _2, _3)) AS ARRAY<$target>) FROM wide_dates")
+                s"CAST(array(named_struct('d', make_date(_1, _2, _3))) " +
+                s"AS ARRAY<STRUCT<d: $target>>) FROM wide_dates")
           }
         }
       }
