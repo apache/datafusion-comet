@@ -197,7 +197,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             (Some(Float.NegativeInfinity), Some(Double.NegativeInfinity)),
             (Some(Float.PositiveInfinity), Some(Double.PositiveInfinity)),
             (None, None))
-          withParquetDataFrame(rows, withDictionary = false) { df =>
+          val identifiedRows = rows.zipWithIndex.map { case ((f, d), id) => (f, d, id) }
+          withParquetDataFrame(identifiedRows, withDictionary = false) { df =>
             // Parquet canonicalizes stored NaNs, so construct the signed/payload literals here.
             // Compare Boolean results so Spark's NaN-aware answer checker cannot hide a mismatch.
             val value = df(column)
@@ -215,14 +216,73 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                 checkSparkAnswerAndOperator(
                   df.select(comparisons: _*),
                   Seq(classOf[CometProjectExec]))
+                comparisons.foreach { comparison =>
+                  // Compare surviving identities, not just NaN-aware row values. Keep Parquet
+                  // pushdown disabled so every ordering predicate executes in CometFilterExec.
+                  checkSparkAnswerAndOperator(
+                    df.filter(comparison).select("_3"),
+                    Seq(classOf[CometFilterExec]))
+                }
               }
-              checkSparkAnswerAndOperator(
-                df.filter(value === literal),
-                Seq(classOf[CometFilterExec]))
             }
           }
         }
       }
+  }
+
+  for ((name, threshold) <- Seq(("In", 10), ("InSet", 1))) {
+    test(s"floating $name and NOT $name normalize NaNs and signed zeros") {
+      withSQLConf(
+        SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED.key -> "false",
+        "spark.sql.optimizer.inSetConversionThreshold" -> threshold.toString) {
+        val rows = Seq(
+          (0, Some(Float.NaN), Some(Double.NaN)),
+          (1, Some(0.0f), Some(0.0d)),
+          (2, Some(-0.0f), Some(-0.0d)),
+          (3, Some(13.0f), Some(13.0d)),
+          (4, Some(1.0f), Some(1.0d)),
+          (5, None, None))
+        withParquetDataFrame(rows, withDictionary = false) { df =>
+          val cases = Seq(
+            (
+              java.lang.Float.intBitsToFloat(0x7fc00001),
+              java.lang.Double.longBitsToDouble(0x7ff8000000000001L)),
+            (
+              java.lang.Float.intBitsToFloat(0xffc00002),
+              java.lang.Double.longBitsToDouble(0xfff8000000000002L)),
+            (0.0f, 0.0d),
+            (-0.0f, -0.0d))
+          for ((f, d) <- cases; includeNull <- Seq(false, true)) {
+            val floatCandidates: Seq[Any] = Seq(f, 13.0f) ++ (if (includeNull) Seq(null) else Nil)
+            val doubleCandidates: Seq[Any] =
+              Seq(d, 13.0d) ++ (if (includeNull) Seq(null) else Nil)
+            // Negation creates negative NaNs after the Parquet scan, so the membership value
+            // must be normalized as well as the programmatically constructed list literals.
+            val predicates = Seq(df("_2"), -df("_2")).map(_.isin(floatCandidates: _*)) ++
+              Seq(df("_3"), -df("_3")).map(_.isin(doubleCandidates: _*))
+            val projected = df.select(df("_1") +: predicates.flatMap(p => Seq(p, !p)): _*)
+            val optimized = projected.queryExecution.optimizedPlan
+            val membership = optimized.expressions.flatMap(_.collect {
+              case _: org.apache.spark.sql.catalyst.expressions.In => "In"
+              case _: org.apache.spark.sql.catalyst.expressions.InSet => "InSet"
+            })
+            // A singleton IN is rewritten to equality and would not exercise the faulty kernel.
+            assert(membership.nonEmpty && membership.forall(_ == name), optimized.toString)
+            checkSparkAnswerAndOperator(projected, Seq(classOf[CometProjectExec]))
+            for (p <- predicates; negate <- Seq(false, true)) {
+              val filtered = df.filter(if (negate) !p else p).select("_1")
+              if (includeNull && negate) {
+                // NOT IN with a null candidate can never be true. Spark legitimately replaces
+                // this filter with an empty LocalRelation before physical planning.
+                checkSparkAnswer(filtered)
+              } else {
+                checkSparkAnswerAndOperator(filtered, Seq(classOf[CometFilterExec]))
+              }
+            }
+          }
+        }
+      }
+    }
   }
 
   test("parquet default values") {

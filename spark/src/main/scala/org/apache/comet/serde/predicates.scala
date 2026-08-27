@@ -21,9 +21,10 @@ package org.apache.comet.serde
 
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.sql.catalyst.expressions.{And, Attribute, BinaryExpression, EqualNullSafe, EqualTo, Expression, GreaterThan, GreaterThanOrEqual, In, InSet, IsNaN, IsNotNull, IsNull, LessThan, LessThanOrEqual, Literal, Not, Or}
+import org.apache.spark.sql.catalyst.expressions.{And, Attribute, BinaryExpression, EqualNullSafe, EqualTo, Expression, GreaterThan, GreaterThanOrEqual, In, InSet, IsNaN, IsNotNull, IsNull, KnownFloatingPointNormalized, LessThan, LessThanOrEqual, Literal, Not, Or}
+import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.BooleanType
+import org.apache.spark.sql.types.{BooleanType, DoubleType, FloatType}
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
@@ -365,6 +366,19 @@ object ComparisonUtils {
   val inUnsupportedReasons: Seq[String] =
     Seq(nonDefaultCollationDocReason, legacyNullInEmptyListReason)
 
+  private def normalizeInOperand(expr: Expression): Expression = expr.dataType match {
+    case FloatType | DoubleType =>
+      expr match {
+        case _: KnownFloatingPointNormalized => expr
+        // DataFusion's static IN filter hashes raw floating-point bits. Fold literal
+        // normalization here so the list remains scalar and can still use that filter.
+        case literal: Literal =>
+          Literal(NormalizeNaNAndZero(literal).eval(), literal.dataType)
+        case _ => KnownFloatingPointNormalized(NormalizeNaNAndZero(expr))
+      }
+    case _ => expr
+  }
+
   def in(
       expr: Expression,
       value: Expression,
@@ -372,8 +386,10 @@ object ComparisonUtils {
       inputs: Seq[Attribute],
       binding: Boolean,
       negate: Boolean): Option[Expr] = {
-    val valueExpr = exprToProtoInternal(value, inputs, binding)
-    val listExprs = list.map(exprToProtoInternal(_, inputs, binding))
+    // Spark treats all NaNs as equal and both signs of zero as equal in IN and InSet too.
+    // Normalize both sides, including the fused NOT IN path that calls this method directly.
+    val valueExpr = exprToProtoInternal(normalizeInOperand(value), inputs, binding)
+    val listExprs = list.map(e => exprToProtoInternal(normalizeInOperand(e), inputs, binding))
     if (valueExpr.isDefined && listExprs.forall(_.isDefined)) {
       val builder = ExprOuterClass.In.newBuilder()
       builder.setInValue(valueExpr.get)
