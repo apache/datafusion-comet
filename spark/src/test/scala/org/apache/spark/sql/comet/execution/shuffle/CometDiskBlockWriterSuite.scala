@@ -21,20 +21,25 @@ package org.apache.spark.sql.comet.execution.shuffle
 
 import java.io.File
 import java.util.{LinkedList => JLinkedList, Properties}
+import java.util.concurrent.CountDownLatch
 
+import org.scalatest.concurrent.{Signaler, ThreadSignaler, TimeLimits}
 import org.scalatest.funsuite.AnyFunSuite
+import org.scalatest.time.{Seconds, Span}
 
 import org.apache.spark.{SparkConf, TaskContextImpl}
 import org.apache.spark.executor.{ShuffleWriteMetrics, TaskMetrics}
-import org.apache.spark.memory.{TaskMemoryManager, TestMemoryManager}
-import org.apache.spark.shuffle.comet.CometShuffleMemoryAllocator
+import org.apache.spark.memory.{SparkOutOfMemoryError, TaskMemoryManager, TestMemoryManager}
+import org.apache.spark.shuffle.comet.{CometBoundedShuffleMemoryAllocator, CometShuffleMemoryAllocator, CometShuffleMemoryAllocatorTrait}
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.UnsafeProjection
 import org.apache.spark.sql.execution.UnsafeRowSerializer
 import org.apache.spark.sql.types.{BinaryType, StructField, StructType}
 import org.apache.spark.util.Utils
 
-class CometDiskBlockWriterSuite extends AnyFunSuite {
+class CometDiskBlockWriterSuite extends AnyFunSuite with TimeLimits {
+
+  private implicit val signaler: Signaler = ThreadSignaler
 
   private val schema = StructType(Seq(StructField("a", BinaryType)))
   private val pageSize: Long = 256 * 1024
@@ -200,19 +205,22 @@ class CometDiskBlockWriterSuite extends AnyFunSuite {
         writer.insertRow(toUnsafe(InternalRow(new Array[Byte](1024))), 0)
       }
 
-      // Task B fills the whole 1 MiB pool (4 pages) and idles.
+      // Task B fills the whole 1 MiB pool (4 pages) on its own thread, idles for a while, and
+      // then finishes, freeing the pool.
       var rowsB = 0L
-      while (writerB.getActiveMemoryUsage < 4 * pageSize) {
-        insertOne(writerB)
-        rowsB += 1
-      }
-
-      // Task B finishes a bit later on its own thread, freeing the pool.
+      var segmentBLength = 0L
+      val poolFilled = new CountDownLatch(1)
       val threadB = new Thread(() => {
+        while (writerB.getActiveMemoryUsage < 4 * pageSize) {
+          insertOne(writerB)
+          rowsB += 1
+        }
+        poolFilled.countDown()
         Thread.sleep(500)
-        writerB.close()
+        segmentBLength = writerB.close().length
       })
       threadB.start()
+      poolFilled.await()
 
       // Task A's first insert finds the pool exhausted and has nothing of its own to spill; it
       // must wait for task B to finish instead of throwing SparkOutOfMemoryError.
@@ -227,6 +235,7 @@ class CometDiskBlockWriterSuite extends AnyFunSuite {
       assert(writerA.getOutputRecords == rowsA)
       assert(writerB.getOutputRecords == rowsB)
       assert(segmentA.length > 0)
+      assert(segmentBLength > 0)
       // Neither task spilled: A waited instead of stealing B's memory, and B was never touched.
       assert(taskContextA.taskMetrics.diskBytesSpilled == 0)
       assert(taskContextB.taskMetrics.diskBytesSpilled == 0)
@@ -236,6 +245,128 @@ class CometDiskBlockWriterSuite extends AnyFunSuite {
       tmmB.cleanUpAllAllocatedMemory()
       resetOnHeapAllocatorSingleton()
     }
+  }
+
+  test("on-heap shared pool: unsatisfiable allocations fail fast instead of waiting") {
+    val conf = new SparkConf().set("spark.comet.memoryOverhead", "1") // 1 MiB shared pool
+    resetOnHeapAllocatorSingleton()
+    val memoryManager = new TestMemoryManager(conf)
+    val tmm = new TaskMemoryManager(memoryManager, 0L)
+    val taskContext = newTaskContext(tmm, 0L)
+    val allocator = CometShuffleMemoryAllocator.getInstance(conf, tmm, pageSize)
+    val tempDir = Utils.createTempDir()
+    try {
+      val writer = newWriter(new File(tempDir, "unsatisfiable"), allocator, taskContext, conf)
+      val toUnsafe = UnsafeProjection.create(schema)
+      failAfter(Span(60, Seconds)) {
+        // A row larger than the whole pool can never be satisfied.
+        intercept[SparkOutOfMemoryError] {
+          writer.insertRow(toUnsafe(InternalRow(new Array[Byte](2 * 1024 * 1024))), 0)
+        }
+        // A request that does not fit next to memory this thread itself retains (like the
+        // sorter's pointer array, which survives an empty spill) can never be satisfied either.
+        val bounded = allocator.asInstanceOf[CometBoundedShuffleMemoryAllocator]
+        val retained = bounded.allocateArray(pageSize / 8) // retain one page worth of longs
+        try {
+          intercept[SparkOutOfMemoryError] {
+            writer.insertRow(toUnsafe(InternalRow(new Array[Byte](900 * 1024))), 0)
+          }
+        } finally {
+          bounded.freeArray(retained)
+        }
+      }
+      writer.freeMemory()
+    } finally {
+      Utils.deleteRecursively(tempDir)
+      tmm.cleanUpAllAllocatedMemory()
+      resetOnHeapAllocatorSingleton()
+    }
+  }
+
+  test("on-heap shared pool: interrupting a waiting task does not throw a fatal error") {
+    val conf = new SparkConf().set("spark.comet.memoryOverhead", "1") // 1 MiB shared pool
+    resetOnHeapAllocatorSingleton()
+    val memoryManager = new TestMemoryManager(conf)
+    val tmmHolder = new TaskMemoryManager(memoryManager, 0L)
+    val tmmWaiter = new TaskMemoryManager(memoryManager, 1L)
+    val taskContextHolder = newTaskContext(tmmHolder, 0L)
+    val taskContextWaiter = newTaskContext(tmmWaiter, 1L)
+    val allocatorHolder = CometShuffleMemoryAllocator.getInstance(conf, tmmHolder, pageSize)
+    val allocatorWaiter = CometShuffleMemoryAllocator.getInstance(conf, tmmWaiter, pageSize)
+    val tempDir = Utils.createTempDir()
+    try {
+      val writerHolder =
+        newWriter(new File(tempDir, "holder"), allocatorHolder, taskContextHolder, conf)
+      val writerWaiter =
+        newWriter(new File(tempDir, "waiter"), allocatorWaiter, taskContextWaiter, conf)
+      val toUnsafe = UnsafeProjection.create(schema)
+      def insertOne(writer: CometDiskBlockWriter): Unit = {
+        writer.insertRow(toUnsafe(InternalRow(new Array[Byte](1024))), 0)
+      }
+
+      failAfter(Span(60, Seconds)) {
+        // The holder fills the whole pool on its own thread and keeps it until released.
+        val poolFilled = new CountDownLatch(1)
+        val release = new CountDownLatch(1)
+        val holderThread = new Thread(() => {
+          while (writerHolder.getActiveMemoryUsage < 4 * pageSize) {
+            insertOne(writerHolder)
+          }
+          poolFilled.countDown()
+          release.await()
+          writerHolder.freeMemory()
+        })
+        holderThread.start()
+        poolFilled.await()
+
+        // The waiter blocks on its first insert, and is then killed via interrupt.
+        @volatile var thrown: Throwable = null
+        val waiterThread = new Thread(() => {
+          try insertOne(writerWaiter)
+          catch { case t: Throwable => thrown = t }
+        })
+        waiterThread.start()
+        while (waiterThread.getState != Thread.State.WAITING) {
+          Thread.sleep(10)
+        }
+        waiterThread.interrupt()
+        waiterThread.join()
+
+        // The interruption must not surface as a fatal error such as SparkOutOfMemoryError,
+        // otherwise an intentional task kill is reported as ExceptionFailure instead of
+        // TaskKilled.
+        assert(thrown != null)
+        assert(!thrown.isInstanceOf[OutOfMemoryError])
+        assert(thrown.isInstanceOf[RuntimeException])
+        assert(thrown.getCause.isInstanceOf[InterruptedException])
+
+        release.countDown()
+        holderThread.join()
+        writerWaiter.freeMemory()
+      }
+    } finally {
+      Utils.deleteRecursively(tempDir)
+      tmmHolder.cleanUpAllAllocatedMemory()
+      tmmWaiter.cleanUpAllAllocatedMemory()
+      resetOnHeapAllocatorSingleton()
+    }
+  }
+
+  private def newWriter(
+      file: File,
+      allocator: CometShuffleMemoryAllocatorTrait,
+      taskContext: TaskContextImpl,
+      conf: SparkConf): CometDiskBlockWriter = {
+    new CometDiskBlockWriter(
+      file,
+      allocator,
+      taskContext,
+      new UnsafeRowSerializer(1).newInstance(),
+      schema,
+      new ShuffleWriteMetrics,
+      conf,
+      false,
+      new JLinkedList[CometDiskBlockWriter]())
   }
 
   /** Clears the CometShuffleMemoryAllocator singleton so this suite controls its pool size. */

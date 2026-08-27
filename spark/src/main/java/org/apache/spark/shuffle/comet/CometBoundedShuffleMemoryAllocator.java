@@ -21,6 +21,8 @@ package org.apache.spark.shuffle.comet;
 
 import java.io.IOException;
 import java.util.BitSet;
+import java.util.HashMap;
+import java.util.HashSet;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -72,6 +74,15 @@ public final class CometBoundedShuffleMemoryAllocator extends CometShuffleMemory
   private final MemoryBlock[] pageTable = new MemoryBlock[PAGE_TABLE_SIZE];
   private final BitSet allocatedPages = new BitSet(PAGE_TABLE_SIZE);
 
+  /** The thread that allocated each page, used to decide whether a blocked wait can succeed. */
+  private final Thread[] pageOwners = new Thread[PAGE_TABLE_SIZE];
+
+  /** Pool memory currently retained by each thread. */
+  private final HashMap<Thread, Long> retainedMemory = new HashMap<>();
+
+  /** Threads currently blocked in {@link #allocateBlocking(long)}. */
+  private final HashSet<Thread> waitingThreads = new HashSet<>();
+
   private static final int OFFSET_BITS = 51;
   private static final long MASK_LONG_LOWER_51_BITS = 0x7FFFFFFFFFFFFL;
 
@@ -121,31 +132,64 @@ public final class CometBoundedShuffleMemoryAllocator extends CometShuffleMemory
   /**
    * Like {@link #allocate(long)}, but waits for other tasks of this shared pool to free memory,
    * mirroring how Spark's unified memory manager blocks a task until memory becomes available.
-   * Callers must only use this after spilling their own buffered data, so a waiting task holds no
-   * pool memory itself and the tasks still holding memory can always progress and eventually free
-   * it. Interrupting the task (e.g. task kill) aborts the wait.
+   * Callers must only use this after spilling their own buffered data. The wait fails fast when it
+   * can never succeed: when the request does not fit next to the memory this thread itself still
+   * retains (e.g. the sorter's pointer array), or when all allocated memory is retained by threads
+   * that are themselves blocked here. Interrupting the task (e.g. task kill) aborts the wait.
    */
   @Override
   public synchronized MemoryBlock allocateBlocking(long required) {
     long size = Math.max(pageSize, required);
+    Thread self = Thread.currentThread();
     boolean logged = false;
-    while (true) {
-      try {
-        return allocateMemoryBlock(size);
-      } catch (SparkOutOfMemoryError e) {
-        if (!logged) {
-          logger.warn(
-              "Waiting for other tasks to free up {} bytes of Comet shuffle pool memory", size);
-          logged = true;
-        }
+    try {
+      while (true) {
         try {
-          wait();
-        } catch (InterruptedException ie) {
-          Thread.currentThread().interrupt();
-          throw e;
+          return allocateMemoryBlock(size);
+        } catch (SparkOutOfMemoryError e) {
+          if (waitingThreads.add(self)) {
+            // Wake existing waiters so they re-evaluate the deadlock check against the enlarged
+            // waiting set.
+            notifyAll();
+          }
+          // This thread cannot free what it retains while it waits, so a request that does not
+          // fit next to its own retained memory can never be satisfied.
+          if (size > totalMemory - retainedMemory.getOrDefault(self, 0L)) {
+            throw e;
+          }
+          // The allocation just failed, so the request does not fit in the unallocated pool. If
+          // all allocated memory is retained by blocked threads, nothing can be freed anymore
+          // and waiting would deadlock.
+          if (allocatedMemory <= retainedByWaitingThreads()) {
+            throw e;
+          }
+          if (!logged) {
+            logger.warn(
+                "Waiting for other tasks to free up {} bytes of Comet shuffle pool memory", size);
+            logged = true;
+          }
+          try {
+            wait();
+          } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+            // Not an allocation failure: stay non-fatal so that an intentional task kill is
+            // classified as TaskKilled rather than ExceptionFailure.
+            throw new RuntimeException(
+                "Interrupted while waiting for Comet shuffle pool memory", ie);
+          }
         }
       }
+    } finally {
+      waitingThreads.remove(self);
     }
+  }
+
+  private long retainedByWaitingThreads() {
+    long retained = 0;
+    for (Thread thread : waitingThreads) {
+      retained += retainedMemory.getOrDefault(thread, 0L);
+    }
+    return retained;
   }
 
   private synchronized MemoryBlock allocateMemoryBlock(long required) {
@@ -178,6 +222,8 @@ public final class CometBoundedShuffleMemoryAllocator extends CometShuffleMemory
     block.pageNumber = pageNumber;
     pageTable[pageNumber] = block;
     allocatedPages.set(pageNumber);
+    pageOwners[pageNumber] = Thread.currentThread();
+    retainedMemory.merge(Thread.currentThread(), got, Long::sum);
 
     return block;
   }
@@ -190,6 +236,12 @@ public final class CometBoundedShuffleMemoryAllocator extends CometShuffleMemory
     }
     long blockSize = block.size();
     allocatedMemory -= blockSize;
+
+    Thread owner = pageOwners[block.pageNumber];
+    pageOwners[block.pageNumber] = null;
+    if (owner != null) {
+      retainedMemory.computeIfPresent(owner, (t, v) -> v - blockSize <= 0 ? null : v - blockSize);
+    }
 
     pageTable[block.pageNumber] = null;
     allocatedPages.clear(block.pageNumber);
