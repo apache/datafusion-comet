@@ -237,6 +237,15 @@ object Utils extends CometTypeShim with Logging {
     }
   }
 
+  /**
+   * Returns true only for the Spark-tagged `CalendarIntervalType` struct produced by
+   * [[toArrowField]]. Matching the field shape (`months: Int32`, `days: Int32`, `microseconds:
+   * Int64`, all non-nullable) is not sufficient: a user-defined `struct<months:int, days:int,
+   * microseconds:bigint>` has the same shape, so this also requires the
+   * `SPARK::calendarInterval::struct` metadata marker on the `months` child. Only fields carrying
+   * the marker round-trip back to `CalendarIntervalType`; unmarked structs stay plain
+   * `StructType`s.
+   */
   def isCalendarIntervalStructField(field: Field): Boolean = {
     val children = field.getChildren
     def child(index: Int, name: String, bits: Int): Boolean = {
