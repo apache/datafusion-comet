@@ -37,7 +37,15 @@ import org.apache.comet.serde.QueryPlanSerde.{exprToProto, serializeDataType}
 
 object CometExecUtils {
 
-  /** Expose Spark's package-private recursive floating-point normalizer to Comet serde. */
+  /**
+   * Expose Spark's package-private recursive floating-point normalizer to Comet serde.
+   *
+   * Compatibility note: `NormalizeFloatingNumbers.normalize` is `private[sql]` with no stability
+   * guarantee. It has existed with this signature in every Spark version Comet supports (3.4
+   * through 4.2). Because this is a direct compile-time reference (not reflection), any rename or
+   * signature change in a future Spark version fails the build for that profile loudly; if that
+   * happens, shim this method per Spark version like other `Shim*` classes.
+   */
   def normalizeFloatingNumbers(expr: Expression): Expression =
     NormalizeFloatingNumbers.normalize(expr)
 

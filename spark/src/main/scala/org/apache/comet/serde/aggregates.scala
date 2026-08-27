@@ -831,6 +831,19 @@ object CometBloomFilterAggregate extends CometAggregateExpressionSerde[BloomFilt
 
 object CometCollectSet extends CometAggregateExpressionSerde[CollectSet] {
 
+  override def getCompatibleNotes(): Seq[String] =
+    if (isSpark42Plus) {
+      Seq(
+        "On Spark 4.2+, `collect_set` inputs are normalized with Spark's recursive" +
+          " floating-point normalizer to match SPARK-57298. For array inputs containing" +
+          " floating-point values the normalizer produces `ArrayTransform`, which Comet" +
+          " executes through the JVM codegen dispatcher instead of fully natively (scalar and" +
+          " struct inputs stay native). When `spark.comet.exec.scalaUDF.codegen.enabled=false`," +
+          " those array cases fall back to Spark.")
+    } else {
+      Nil
+    }
+
   override def getIncompatibleReasons(): Seq[String] = {
     if (isSpark42Plus) {
       Nil
@@ -882,9 +895,12 @@ object CometCollectSet extends CometAggregateExpressionSerde[CollectSet] {
       binding: Boolean,
       conf: SQLConf): Option[ExprOuterClass.AggExpr] = {
     val child = aggExpr.mode match {
-      // Spark 4.2 introduced this normalization. Keep older versions unchanged to avoid adding
-      // JVM codegen dispatch for nested arrays; their floating-point behavior is documented as
-      // incompatible.
+      // Spark 4.2 (SPARK-57298) normalizes NaN and -0.0 inside CollectSet's buffer conversion
+      // (`convertToBufferElement`/`eval` in collect.scala), so the normalization is invisible in
+      // the plan Comet receives and must be reapplied here on the raw input. `normalize` is
+      // idempotent: it short-circuits on `KnownFloatingPointNormalized`, so an already-normalized
+      // child is never wrapped twice. Keep older versions unchanged to avoid adding JVM codegen
+      // dispatch for nested arrays; their floating-point behavior is documented as incompatible.
       case Partial | Complete if isSpark42Plus =>
         CometExecUtils.normalizeFloatingNumbers(expr.children.head)
       case _ =>
