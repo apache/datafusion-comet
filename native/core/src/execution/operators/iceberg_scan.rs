@@ -93,11 +93,12 @@ pub struct IcebergScanExec {
     ///
     /// Concurrency note: in the ordered path each partition reads exactly one task, so
     /// `data_file_concurrency_limit` no longer bounds cross-file concurrency; instead the wrapping
-    /// SortPreservingMergeExec drives one reader per file to merge them. That fan-out (files per
-    /// Spark partition) is intrinsic to a k-way merge of per-file sorted streams -- the files must
-    /// be read as separate streams to stay individually sorted -- and is the natural granularity
-    /// for a sorted Iceberg table. `data_file_concurrency_limit` still bounds delete-file stats and
-    /// the unordered path.
+    /// SortPreservingMergeExec drives one reader per file to merge them. The planner only takes
+    /// this ordered/merge path when a partition has at most `sortMerge.maxFilesPerPartition` files;
+    /// above that it reads the partition unordered and wraps a spillable `SortExec`, so this fan-out
+    /// (one reader per file) is capped rather than unbounded. A finer, bound-driven admission scheme
+    /// that reads a subset of files at a time using per-file min/max is tracked in #5343.
+    /// `data_file_concurrency_limit` still bounds delete-file stats and the unordered path.
     ordering: Option<LexOrdering>,
     /// Metrics
     metrics: ExecutionPlanMetricsSet,

@@ -332,6 +332,12 @@ message IcebergScanCommon {
   // common message from growing with the number of references.
   repeated IcebergDeleteFile delete_file_pool = 14;
 
+  // Max files in one Spark partition the native scan will k-way merge to preserve sort order. A
+  // merge opens one reader per file at once, so above this the scan reads the partition unordered
+  // and sorts with a spillable SortExec instead (still sorted output). 0 means never merge -- used
+  // when sortMerge.enabled is off, where the order is still reported and honoured via the sort.
+  uint32 max_files_per_partition = 17;
+
   // Iceberg's SparkScan.hashCode() (folds in pushed filters, snapshot, branch, and read schema).
   // A self-join/self-merge can read the same table (same metadata_location) twice with different
   // projections or filters, so PlanDataInjector keys planning data by

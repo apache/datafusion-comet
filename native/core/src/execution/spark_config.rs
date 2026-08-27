@@ -26,21 +26,6 @@ pub(crate) const COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED: &str =
     "spark.comet.parquet.rowFilterPushdown.enabled";
 pub(crate) const SPARK_EXECUTOR_CORES: &str = "spark.executor.cores";
 
-/// Above this many files in a single Spark partition, the native Iceberg scan does not attempt a
-/// per-file-stream k-way merge (which would open one reader per file at once); it reads the
-/// partition unordered and sorts with a spillable SortExec instead. Read from the config below and
-/// carried to the physical planner as an [`IcebergSortMergeConfig`] session extension.
-pub(crate) const COMET_ICEBERG_SORT_MERGE_MAX_FILES_PER_PARTITION: &str =
-    "spark.comet.scan.icebergNative.sortMerge.maxFilesPerPartition";
-pub(crate) const DEFAULT_ICEBERG_SORT_MERGE_MAX_FILES_PER_PARTITION: usize = 64;
-
-/// Comet planner settings carried on the DataFusion `SessionConfig` as a type-keyed extension, so
-/// the physical planner can read Comet scan configs that are not DataFusion options.
-#[derive(Debug)]
-pub(crate) struct IcebergSortMergeConfig {
-    pub max_files_per_partition: usize,
-}
-
 pub(crate) trait SparkConfig {
     fn get_bool(&self, name: &str) -> bool;
     fn get_u64(&self, name: &str, default_value: u64) -> u64;

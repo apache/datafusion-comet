@@ -891,16 +891,12 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       ordering: Option[Seq[SortOrder]],
       output: Seq[Attribute],
       unsafeColumns: Set[String] = Set.empty): Seq[SortOrder] = {
-    if (!CometConf.COMET_ICEBERG_SORT_MERGE_ENABLED.get()) {
-      Nil
-    } else {
-      ordering match {
-        case Some(orders)
-            if orders.nonEmpty && orders.forall(isReportable(_, output, unsafeColumns)) =>
-          orders
-        case _ =>
-          Nil
-      }
+    ordering match {
+      case Some(orders)
+          if orders.nonEmpty && orders.forall(isReportable(_, output, unsafeColumns)) =>
+        orders
+      case _ =>
+        Nil
     }
   }
 
@@ -954,7 +950,6 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
   def serializePartitions(
       scanExec: BatchScanExec,
       output: Seq[Attribute],
-      reportedOrdering: Seq[SortOrder],
       metadata: CometIcebergNativeScanMetadata): (Array[Byte], Array[Array[Byte]]) = {
 
     val commonBuilder = OperatorOuterClass.IcebergScanCommon.newBuilder()
@@ -1000,6 +995,16 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     commonBuilder.setMetadataLocation(metadata.metadataLocation)
     commonBuilder.setDataFileConcurrencyLimit(
       CometConf.COMET_ICEBERG_DATA_FILE_CONCURRENCY_LIMIT.get())
+    // sortMerge.enabled = false keeps the scan native and still honours the reported order, but
+    // via the spillable SortExec rather than the k-way merge. Express that as "merge at most 0
+    // files per partition" so the planner always takes the sort path; when enabled, carry the
+    // configured cap. Lives on the proto next to data_file_concurrency_limit, so the default is
+    // defined once (in CometConf) and the native side reads common.max_files_per_partition.
+    commonBuilder.setMaxFilesPerPartition(if (CometConf.COMET_ICEBERG_SORT_MERGE_ENABLED.get()) {
+      CometConf.COMET_ICEBERG_SORT_MERGE_MAX_FILES_PER_PARTITION.get()
+    } else {
+      0
+    })
     metadata.catalogName.foreach(commonBuilder.setCatalogName)
     metadata.catalogProperties.foreach { case (key, value) =>
       commonBuilder.putCatalogProperties(key, value)
@@ -1014,11 +1019,12 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       commonBuilder.addRequiredSchema(field.build())
     }
 
-    // Serialize the ordering the exec already decided to report (reportedOrdering), so the gate is
-    // evaluated exactly once. Reporting an order to Spark but not merging natively would drop a
-    // Sort and return wrong results, so if any reported order fails to serialize we throw rather
-    // than silently write a partial/empty list. Bind against `output` so each SortOrder child
-    // becomes a BoundReference into required_schema.
+    // Serialize the ordering the gate already decided to report (metadata.reportedOrdering), so
+    // the gate is evaluated exactly once (in CometScanRule). Reporting an order to Spark but not
+    // merging natively would drop a Sort and return wrong results, so if any reported order fails
+    // to serialize we throw rather than silently write a partial/empty list. Bind against `output`
+    // so each SortOrder child becomes a BoundReference into required_schema.
+    val reportedOrdering = metadata.reportedOrdering
     if (reportedOrdering.nonEmpty) {
       val protoOrders = reportedOrdering.map(exprToProto(_, output))
       require(

@@ -98,9 +98,6 @@ use iceberg::expr::Bind;
 
 use crate::execution::operators::ExecutionError::GeneralError;
 use crate::execution::shuffle::{CometPartitioning, CompressionCodec};
-use crate::execution::spark_config::{
-    IcebergSortMergeConfig, DEFAULT_ICEBERG_SORT_MERGE_MAX_FILES_PER_PARTITION,
-};
 use crate::execution::spark_plan::SparkPlan;
 use crate::parquet::parquet_support::prepare_object_store_with_configs;
 use datafusion::common::scalar::ScalarStructBuilder;
@@ -442,19 +439,6 @@ impl PhysicalPlanner {
     /// Return session context of this planner.
     pub fn session_ctx(&self) -> &Arc<SessionContext> {
         &self.session_ctx
-    }
-
-    /// Max files in one Spark partition the native Iceberg scan will k-way merge. Above this, the
-    /// scan reads unordered and sorts with a spillable SortExec instead, to bound the number of
-    /// concurrently-open file readers. Carried on the session config as a type-keyed extension by
-    /// prepare_datafusion_session_context.
-    fn iceberg_sort_merge_max_files_per_partition(&self) -> usize {
-        self.session_ctx
-            .state()
-            .config()
-            .get_extension::<IcebergSortMergeConfig>()
-            .map(|c| c.max_files_per_partition)
-            .unwrap_or(DEFAULT_ICEBERG_SORT_MERGE_MAX_FILES_PER_PARTITION)
     }
 
     /// Return partition id of this planner.
@@ -1858,6 +1842,7 @@ impl PhysicalPlanner {
                 let tasks = parse_file_scan_tasks_from_common(common, &scan.file_scan_tasks)?;
                 let tasks_len = tasks.len();
                 let data_file_concurrency_limit = common.data_file_concurrency_limit as usize;
+                let max_files_per_partition = common.max_files_per_partition as usize;
 
                 // Table sort order Iceberg reported. Empty unless sortMerge is on and the order
                 // passed the identity gate in CometIcebergNativeScan. The SortOrder children are
@@ -1877,9 +1862,9 @@ impl PhysicalPlanner {
                 // configured limit we instead read the partition unordered (bounded by
                 // data_file_concurrency_limit) and sort with a spillable SortExec, which bounds both
                 // open readers and memory. Both paths still produce sorted output, so the ordering
-                // Spark eliminated its Sort on is honoured either way.
-                let use_merge = ordering.is_some()
-                    && tasks_len <= self.iceberg_sort_merge_max_files_per_partition();
+                // Spark eliminated its Sort on is honoured either way. A limit of 0 (sortMerge
+                // disabled) always takes the sort path.
+                let use_merge = ordering.is_some() && tasks_len <= max_files_per_partition;
 
                 // Only the merge path is multi-partition (one sorted stream per file). The sort
                 // fallback and the no-ordering path read a single unordered partition.
@@ -7226,7 +7211,7 @@ mod tests {
 
     /// Builds an IcebergScan Operator with `num_files` file-scan tasks and a reported identity
     /// ordering on a single Int column, so create_plan takes the sort-merge path.
-    fn iceberg_scan_op_with_ordering(num_files: usize) -> Operator {
+    fn iceberg_scan_op_with_ordering(num_files: usize, max_files_per_partition: u32) -> Operator {
         let schema_json = serde_json::to_string(
             &iceberg::spec::Schema::builder()
                 .with_schema_id(0)
@@ -7279,6 +7264,7 @@ mod tests {
             project_field_ids_pool: vec![spark_operator::ProjectFieldIdList { field_ids: vec![1] }],
             required_schema,
             table_sort_orders: vec![sort_order],
+            max_files_per_partition,
             ..Default::default()
         };
 
@@ -7301,11 +7287,11 @@ mod tests {
         }
     }
 
-    // At or below the max-files-per-partition limit (default 64), a reported ordering makes the
-    // scan multi-partition and the planner wraps it in a SortPreservingMergeExec.
+    // At or below the max-files-per-partition limit, a reported ordering makes the scan
+    // multi-partition and the planner wraps it in a SortPreservingMergeExec.
     #[test]
     fn iceberg_scan_merges_when_files_within_limit() {
-        let op = iceberg_scan_op_with_ordering(4);
+        let op = iceberg_scan_op_with_ordering(4, 64);
         let planner = PhysicalPlanner::default();
         let (_, _, plan) = planner.create_plan(&op, &mut vec![], 1).unwrap();
         assert_eq!("SortPreservingMergeExec", plan.native_plan.name());
@@ -7315,9 +7301,25 @@ mod tests {
     // single unordered read wrapped in a spillable SortExec (still sorted output).
     #[test]
     fn iceberg_scan_falls_back_to_sort_above_file_limit() {
-        let op = iceberg_scan_op_with_ordering(65);
+        let op = iceberg_scan_op_with_ordering(65, 64);
         let planner = PhysicalPlanner::default();
         let (_, _, plan) = planner.create_plan(&op, &mut vec![], 1).unwrap();
+        assert_eq!("SortExec", plan.native_plan.name());
+    }
+
+    // The limit that decides merge-vs-sort comes from the proto (common.max_files_per_partition),
+    // not a compiled-in constant, so a low limit must flip the same 3-file scan from merge to sort.
+    // This proves the value is actually read from the plan: with max_files_per_partition = 2, a
+    // 3-file partition exceeds the limit and takes the SortExec path.
+    #[test]
+    fn iceberg_scan_honors_max_files_per_partition_from_proto() {
+        let merge = iceberg_scan_op_with_ordering(3, 3);
+        let planner = PhysicalPlanner::default();
+        let (_, _, plan) = planner.create_plan(&merge, &mut vec![], 1).unwrap();
+        assert_eq!("SortPreservingMergeExec", plan.native_plan.name());
+
+        let sort = iceberg_scan_op_with_ordering(3, 2);
+        let (_, _, plan) = planner.create_plan(&sort, &mut vec![], 1).unwrap();
         assert_eq!("SortExec", plan.native_plan.name());
     }
 }

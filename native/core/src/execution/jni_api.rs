@@ -110,11 +110,9 @@ use crate::execution::tracing::{
 
 use crate::execution::memory_pools::logging_pool::LoggingMemoryPool;
 use crate::execution::spark_config::{
-    IcebergSortMergeConfig, SparkConfig, COMET_DEBUG_ENABLED, COMET_DEBUG_MEMORY,
-    COMET_EXPLAIN_NATIVE_ENABLED, COMET_ICEBERG_SORT_MERGE_MAX_FILES_PER_PARTITION,
+    SparkConfig, COMET_DEBUG_ENABLED, COMET_DEBUG_MEMORY, COMET_EXPLAIN_NATIVE_ENABLED,
     COMET_MAX_TEMP_DIRECTORY_SIZE, COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED,
-    COMET_TRACING_ENABLED, DEFAULT_ICEBERG_SORT_MERGE_MAX_FILES_PER_PARTITION,
-    SPARK_EXECUTOR_CORES,
+    COMET_TRACING_ENABLED, SPARK_EXECUTOR_CORES,
 };
 use crate::parquet::encryption_support::{CometEncryptionFactory, ENCRYPTION_FACTORY_ID};
 use datafusion_comet_proto::spark_operator::operator::OpStruct;
@@ -688,18 +686,6 @@ fn prepare_datafusion_session_context(
             session_config = session_config.set_str(&df_key, value);
         }
     }
-
-    // Carry the Iceberg sort-merge max-files-per-partition setting to the physical planner as a
-    // session extension (it is a Comet scan config, not a DataFusion option). Above this many files
-    // in one partition the planner reads unordered and sorts with a spillable SortExec instead of a
-    // per-file k-way merge, to bound concurrently-open readers.
-    let iceberg_sort_merge_max_files = spark_config.get_usize(
-        COMET_ICEBERG_SORT_MERGE_MAX_FILES_PER_PARTITION,
-        DEFAULT_ICEBERG_SORT_MERGE_MAX_FILES_PER_PARTITION,
-    );
-    session_config = session_config.with_extension(Arc::new(IcebergSortMergeConfig {
-        max_files_per_partition: iceberg_sort_merge_max_files,
-    }));
 
     let runtime = rt_config.build()?;
 

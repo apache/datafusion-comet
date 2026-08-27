@@ -31,7 +31,7 @@ import scala.jdk.CollectionConverters._
 import org.apache.hadoop.conf.Configuration
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.catalyst.expressions.{Attribute, DynamicPruningExpression, Expression, GenericInternalRow, InputFileBlockLength, InputFileBlockStart, InputFileName, PlanExpression}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, DynamicPruningExpression, Expression, GenericInternalRow, InputFileBlockLength, InputFileBlockStart, InputFileName, PlanExpression, SortOrder}
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.util.{sideBySide, ArrayBasedMapData, GenericArrayData, MetadataColumnHelper}
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
@@ -918,26 +918,35 @@ case class CometScanRule(session: SparkSession)
         // above this scan (it decides that on the vanilla BatchScanExec, before Comet converts the
         // scan). If the native scan cannot guarantee that ordering, reading unordered here would
         // silently return wrong results, so stay on Spark -- its Iceberg reader produces the sorted
-        // output it promised. reportableOrdering is the same gate the native scan/serde use, so the
-        // decision here cannot diverge from what the native path would do.
-        val orderingHonored: Boolean = {
-          val reported = scanExec.ordering.getOrElse(Nil)
-          if (reported.isEmpty) {
-            true
+        // output it promised. Evaluate the gate exactly once here and stash the result on the
+        // metadata; CometIcebergNativeScanExec.outputOrdering and the proto serde both read that
+        // stashed value, so the reported order cannot diverge from what native advertises.
+        val icebergReportsOrdering: Boolean = scanExec.ordering.exists(_.nonEmpty)
+        val reportedOrdering: Seq[SortOrder] = {
+          if (!icebergReportsOrdering) {
+            Nil
           } else {
-            val unsafe = IcebergReflection.orderingUnsafeColumns(metadata.tableSchema)
-            val honorable =
-              CometIcebergNativeScan.reportableOrdering(
-                scanExec.ordering,
-                scanExec.output,
-                unsafe)
-            if (honorable.isEmpty) {
-              fallbackReasons += "Iceberg reports a sort order the native scan cannot guarantee " +
-                "(sort-merge disabled, or a transform / unsafe-type sort key); staying on Spark " +
-                "so the reported ordering is preserved"
+            // None means the schema could not be read, so we cannot rule out an unsafe (UUID) sort
+            // key -- refuse the ordering rather than assume it is safe.
+            IcebergReflection.orderingUnsafeColumns(metadata.tableSchema) match {
+              case Some(unsafe) =>
+                CometIcebergNativeScan
+                  .reportableOrdering(scanExec.ordering, scanExec.output, unsafe)
+              case None => Nil
             }
-            honorable.nonEmpty
           }
+        }
+        val orderingHonored: Boolean = {
+          // Convert when Iceberg reports nothing (plain unordered read) or when we can honour the
+          // order it reports. Refuse only when Iceberg reported an order we cannot honour: Spark
+          // has already dropped the Sort, so an unordered native read there would be wrong.
+          val honored = !icebergReportsOrdering || reportedOrdering.nonEmpty
+          if (!honored) {
+            fallbackReasons += "Iceberg reports a sort order the native scan cannot guarantee " +
+              "(a transform or unsafe-type sort key, or the schema could not be read); staying " +
+              "on Spark so the reported ordering is preserved"
+          }
+          honored
         }
 
         if (schemaSupported && fileIOCompatible && formatVersionSupported &&
@@ -949,7 +958,7 @@ case class CometScanRule(session: SparkSession)
           CometBatchScanExec(
             scanExec.clone().asInstanceOf[BatchScanExec],
             runtimeFilters = scanExec.runtimeFilters,
-            nativeIcebergScanMetadata = Some(metadata))
+            nativeIcebergScanMetadata = Some(metadata.copy(reportedOrdering = reportedOrdering)))
         } else {
           withFallbackReasons(scanExec, fallbackReasons.toSet)
         }
