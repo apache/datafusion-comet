@@ -47,7 +47,7 @@ use crate::execution::{
     serde::to_arrow_datatype,
     shuffle::{SchemaAlignExec, ShuffleWriterDestination, ShuffleWriterExec},
 };
-use crate::jvm_bridge::{jni_call, JVMClasses, JavaShufflePartitionPusher, ShufflePartitionPusher};
+use crate::jvm_bridge::{jni_call, JVMClasses, ShufflePartitionPusher};
 use arrow::compute::CastOptions;
 use arrow::datatypes::{DataType, Field, FieldRef, Schema, TimeUnit, DECIMAL128_MAX_PRECISION};
 use arrow::ffi_stream::FFI_ArrowArrayStream;
@@ -3994,7 +3994,7 @@ fn shuffle_writer_destination(
 
             Ok(ShuffleWriterDestination::Rss {
                 pusher: Arc::clone(pusher),
-                max_frame_size: JavaShufflePartitionPusher::MAX_PAYLOAD_SIZE,
+                max_frame_size: pusher.max_frame_size(),
             })
         }
         None => Err(GeneralError(
@@ -4860,6 +4860,24 @@ mod tests {
         }
     }
 
+    struct BoundedShufflePartitionPusher {
+        max_frame_size: usize,
+    }
+
+    impl ShufflePartitionPusher for BoundedShufflePartitionPusher {
+        fn push_partition_data(
+            &self,
+            _partition_id: i32,
+            _data: &[u8],
+        ) -> datafusion::common::Result<()> {
+            Ok(())
+        }
+
+        fn max_frame_size(&self) -> usize {
+            self.max_frame_size
+        }
+    }
+
     fn local_shuffle_partition_writer(
         output_data_file: &str,
         output_index_file: &str,
@@ -5050,6 +5068,24 @@ mod tests {
             } => {
                 assert!(Arc::ptr_eq(&pusher, &callback));
                 assert_eq!(max_frame_size, JavaShufflePartitionPusher::MAX_PAYLOAD_SIZE);
+            }
+            destination => panic!("expected an RSS shuffle destination, got {destination:?}"),
+        }
+    }
+
+    #[test]
+    fn shuffle_partition_writer_uses_its_task_callback_frame_limit() {
+        let writer = spark_operator::ShuffleWriter {
+            partition_writer: Some(rss_shuffle_partition_writer()),
+            ..Default::default()
+        };
+        let callback: Arc<dyn ShufflePartitionPusher> = Arc::new(BoundedShufflePartitionPusher {
+            max_frame_size: 4096,
+        });
+
+        match super::shuffle_writer_destination(&writer, Some(&callback)).unwrap() {
+            ShuffleWriterDestination::Rss { max_frame_size, .. } => {
+                assert_eq!(max_frame_size, 4096);
             }
             destination => panic!("expected an RSS shuffle destination, got {destination:?}"),
         }
