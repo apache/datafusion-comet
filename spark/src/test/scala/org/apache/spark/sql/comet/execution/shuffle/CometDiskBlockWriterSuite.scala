@@ -326,7 +326,7 @@ class CometDiskBlockWriterSuite extends AnyFunSuite with TimeLimits {
           catch { case t: Throwable => thrown = t }
         })
         waiterThread.start()
-        while (waiterThread.getState != Thread.State.WAITING) {
+        while (!isBlockedInWait(waiterThread)) {
           Thread.sleep(10)
         }
         waiterThread.interrupt()
@@ -396,8 +396,7 @@ class CometDiskBlockWriterSuite extends AnyFunSuite with TimeLimits {
         largeWaiter.start()
         smallWaiter.start()
         arraysAllocated.await()
-        while (largeWaiter.getState != Thread.State.WAITING ||
-          smallWaiter.getState != Thread.State.WAITING) {
+        while (!isBlockedInWait(largeWaiter) || !isBlockedInWait(smallWaiter)) {
           Thread.sleep(10)
         }
 
@@ -428,6 +427,12 @@ class CometDiskBlockWriterSuite extends AnyFunSuite with TimeLimits {
       conf,
       false,
       new JLinkedList[CometDiskBlockWriter]())
+  }
+
+  /** Whether the thread is parked in `Object.wait` (the allocator uses a timed wait). */
+  private def isBlockedInWait(thread: Thread): Boolean = {
+    val state = thread.getState
+    state == Thread.State.WAITING || state == Thread.State.TIMED_WAITING
   }
 
   /** Clears the CometShuffleMemoryAllocator singleton so this suite controls its pool size. */

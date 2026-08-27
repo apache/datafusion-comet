@@ -64,6 +64,9 @@ public final class CometBoundedShuffleMemoryAllocator extends CometShuffleMemory
   private final long totalMemory;
   private long allocatedMemory = 0L;
 
+  /** How often a thread blocked in {@link #allocateBlocking(long)} logs that it is waiting. */
+  private static final long WAIT_LOG_INTERVAL_MS = 30_000L;
+
   /** The number of bits used to address the page table. */
   private static final int PAGE_NUMBER_BITS = 13;
 
@@ -141,7 +144,8 @@ public final class CometBoundedShuffleMemoryAllocator extends CometShuffleMemory
   public synchronized MemoryBlock allocateBlocking(long required) {
     long size = Math.max(pageSize, required);
     Thread self = Thread.currentThread();
-    boolean logged = false;
+    long waitStart = 0;
+    long lastLog = 0;
     try {
       while (true) {
         try {
@@ -164,17 +168,31 @@ public final class CometBoundedShuffleMemoryAllocator extends CometShuffleMemory
           if (allocatedMemory <= retainedByWaitingThreads() && !anyWaiterCanProceed()) {
             throw e;
           }
-          if (!logged) {
+          // Log when the wait starts and periodically while it lasts, so a stalled task is
+          // visible in the executor logs.
+          long now = System.currentTimeMillis();
+          if (waitStart == 0) {
+            waitStart = now;
+            lastLog = now;
             logger.warn(
                 "Waiting for other tasks to free up {} bytes of Comet shuffle pool memory", size);
-            logged = true;
+          } else if (now - lastLog >= WAIT_LOG_INTERVAL_MS) {
+            lastLog = now;
+            logger.warn(
+                "Still waiting ({} ms so far) for {} bytes of Comet shuffle pool memory; "
+                    + "{} bytes free, {} thread(s) waiting",
+                now - waitStart,
+                size,
+                totalMemory - allocatedMemory,
+                waitingThreads.size());
           }
           try {
-            wait();
+            wait(WAIT_LOG_INTERVAL_MS);
           } catch (InterruptedException ie) {
             Thread.currentThread().interrupt();
             // Not an allocation failure: stay non-fatal so that an intentional task kill is
-            // classified as TaskKilled rather than ExceptionFailure.
+            // classified as TaskKilled rather than ExceptionFailure (Spark's killed-task handler
+            // only matches `InterruptedException | NonFatal(_)`).
             throw new RuntimeException(
                 "Interrupted while waiting for Comet shuffle pool memory", ie);
           }
