@@ -199,6 +199,49 @@ from both operator counts:
   Counting reused exchanges once is tracked as item 3 of
   [#5203](https://github.com/apache/datafusion-comet/issues/5203).
 
+### `spark.comet.explain.planOnly.enabled`
+
+When enabled, Comet leaves every query for Spark to execute and, once the query
+finishes, logs the Comet plan it would have executed along with a coverage
+summary. Use this to evaluate how much of a workload Comet would accelerate
+without changing how that workload runs.
+
+Comet's conversion rules return the plan untouched while this is on, so the plan
+Spark executes is the plan it would have built with Comet switched off. The
+report is built afterwards from the plan that ran, and then discarded.
+
+The log line is prefixed with `[Comet plan-only]` and carries the same annotated
+plan and summary that `spark.comet.explain.format=verbose` produces for a real
+Comet plan. It is written once per action, so a plan that is built but never
+executed — `df.explain()`, or reading `queryExecution.executedPlan` — is not
+reported, and a DataFrame collected twice is reported twice.
+
+The preview goes through the whole Comet planning sequence rather than operator
+conversion alone: Spark's columnar transitions are inserted and Comet's
+post-columnar rules (`RevertNativeForTransitionHeavyStages`,
+`EliminateRedundantTransitions`) are applied, so a stage Comet would have handed
+back to Spark for having too many transitions is reported as handed back.
+
+Two things to keep in mind when reading the percentage:
+
+- The estimate reflects Scala-side conversion only. The plan is never handed to
+  DataFusion, so anything that would have failed in DataFusion's `create_plan`
+  still counts as accelerated. Treat the percentage as an upper bound.
+- Under AQE the report describes the plan AQE settled on, not the query as
+  written, because that is the plan Comet would have been asked to run. If a
+  stage materialized empty and AQE replaced the query with an empty relation,
+  that is what gets reported. The transition count can also be slightly lower
+  than a real Comet run's, because Spark inserts transitions one query stage at
+  a time whereas the report is produced from the whole plan in one pass. The
+  operator counts behind the percentage are not affected.
+
+A reused exchange is expanded in the report, so its subtree appears once per
+reference. That matches how coverage is counted for a real Comet plan; see the
+note under `spark.comet.explain.format` above.
+
+The config requires `spark.comet.exec.enabled=true`. With Comet exec disabled
+the rule that arranges the report does not run.
+
 ### `spark.comet.explain.native.enabled`
 
 When enabled, each executor task logs the DataFusion plan it executes,

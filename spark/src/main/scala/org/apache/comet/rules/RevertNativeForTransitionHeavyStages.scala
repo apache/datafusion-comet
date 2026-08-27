@@ -52,6 +52,18 @@ case class RevertNativeForTransitionHeavyStages(session: SparkSession)
     }
   }
 
+  /**
+   * Applies the revert decision to every stage of `plan`, regardless of whether AQE is enabled.
+   *
+   * `apply` picks the AQE branch when AQE is on because Spark hands it a single query stage at a
+   * time there, so only the topmost stage of `plan` is considered. A caller holding a whole plan
+   * that has not been split into stages - the plan-only preview in `CometPlanOnly` - needs every
+   * shuffle boundary visited to see the reversions that the real per-stage applications made.
+   */
+  private[rules] def applyToAllStages(plan: SparkPlan): SparkPlan = {
+    if (!enabled) plan else applyForNonAQE(plan)
+  }
+
   private def applyForAQE(plan: SparkPlan): SparkPlan = {
     plan match {
       case _: BroadcastExchangeLike => plan
