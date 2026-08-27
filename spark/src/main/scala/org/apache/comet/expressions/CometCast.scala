@@ -19,7 +19,10 @@
 
 package org.apache.comet.expressions
 
+import java.time.ZoneOffset
+
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Expression, Literal}
+import org.apache.spark.sql.catalyst.util.DateTimeUtils
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DecimalType, MapType, NullType, StructType, TimestampNTZType, TimestampType}
 
@@ -143,7 +146,14 @@ object CometCast
         } else {
           val childExpr = exprToProtoInternal(cast.child, inputs, binding)
           if (childExpr.isDefined) {
-            castToProto(cast, cast.timeZoneId, cast.dataType, childExpr.get, cometEvalMode)
+            val timeZoneId = cast.timeZoneId.map { timezone =>
+              if (containsDateTimestampCast(cast.child.dataType, cast.dataType)) {
+                nativeDateTimestampTimezone(timezone).getOrElse(timezone)
+              } else {
+                timezone
+              }
+            }
+            castToProto(cast, timeZoneId, cast.dataType, childExpr.get, cometEvalMode)
           } else {
             None
           }
@@ -494,13 +504,13 @@ object CometCast
     toType match {
       case DataTypes.TimestampType =>
         val timezone = timeZoneId.getOrElse("UTC")
-        if (timezone == "UTC" || timezone.matches("[+-][0-9]{2}:[0-9]{2}")) {
+        if (nativeDateTimestampTimezone(timezone).isDefined) {
           Compatible()
         } else {
           // DateType extends beyond chrono's calendar. Let Spark handle region-zone rules
           // across the entire date range, including future DST and historical offsets.
           Unsupported(
-            Some("Date-to-timestamp casts are native only in UTC or +/-HH:MM timezones"))
+            Some("Native date-to-timestamp casts require a fixed whole-minute timezone offset"))
         }
       case _: TimestampNTZType =>
         Compatible()
@@ -509,6 +519,18 @@ object CometCast
           DataTypes.DoubleType | _: DecimalType if evalMode == CometEvalMode.LEGACY =>
         Compatible()
       case _ => Unsupported(Some(s"Cast from DateType to $toType is not supported"))
+    }
+
+  /**
+   * Resolve fixed-zone aliases with Spark's rules, then serialize only the subset understood by
+   * the native fixed-offset parser. Checking `isFixedOffset` alone would admit UTC aliases that
+   * chrono rejects and offsets with seconds that chrono can silently truncate to whole minutes.
+   */
+  private[comet] def nativeDateTimestampTimezone(timezone: String): Option[String] =
+    DateTimeUtils.getZoneId(timezone).normalized() match {
+      case offset: ZoneOffset if offset.getTotalSeconds % 60 == 0 =>
+        Some(if (offset.getTotalSeconds == 0) "UTC" else offset.getId)
+      case _ => None
     }
 
   private def unsupported(fromType: DataType, toType: DataType): Unsupported = {

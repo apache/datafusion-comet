@@ -76,6 +76,10 @@ name = "cast_numeric"
 harness = false
 
 [[bench]]
+name = "cast_nested"
+harness = false
+
+[[bench]]
 name = "conditional"
 harness = false
 

@@ -21,6 +21,7 @@ package org.apache.comet
 
 import java.io.File
 import java.nio.charset.StandardCharsets
+import java.time.ZoneOffset
 
 import scala.collection.mutable.ListBuffer
 import scala.jdk.CollectionConverters._
@@ -29,7 +30,7 @@ import scala.util.Random
 import org.apache.hadoop.fs.Path
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row, SaveMode}
-import org.apache.spark.sql.catalyst.expressions.Cast
+import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Cast}
 import org.apache.spark.sql.catalyst.parser.ParseException
 import org.apache.spark.sql.comet.CometProjectExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
@@ -1511,6 +1512,37 @@ class CometNativeCastSuite
     }
   }
 
+  test("cast DateType to TimestampType canonicalizes fixed timezone aliases") {
+    val date = AttributeReference("d", DateType, nullable = true)()
+    val aliases = Seq(
+      "GMT" -> "UTC",
+      "Etc/UTC" -> "UTC",
+      "Z" -> "UTC",
+      "UTC+00:00" -> "UTC",
+      "+00:00" -> "UTC",
+      "-00:00" -> "UTC",
+      "Etc/GMT+8" -> "-08:00",
+      "GMT+05:30" -> "+05:30")
+    val minuteOffsets = (-18 * 60 to 18 * 60).map { minutes =>
+      val offset = ZoneOffset.ofTotalSeconds(minutes * 60).getId
+      offset -> (if (minutes == 0) "UTC" else offset)
+    }
+    (aliases ++ minuteOffsets).foreach { case (timezone, expected) =>
+      val cast = Cast(date, TimestampType, Some(timezone))
+      assert(CometCast.getSupportLevel(cast) == Compatible(), timezone)
+      val serialized = CometCast.convert(cast, Seq(date), binding = true).get.getCast
+      assert(serialized.getTimezone == expected, timezone)
+    }
+    Seq("America/Los_Angeles", "Asia/Kolkata", "+05:30:15", "UTC-00:00:01").foreach { timezone =>
+      assert(CometCast.nativeDateTimestampTimezone(timezone).isEmpty, timezone)
+      assert(
+        CometCast
+          .getSupportLevel(Cast(date, TimestampType, Some(timezone)))
+          .isInstanceOf[Unsupported],
+        timezone)
+    }
+  }
+
   test("cast DateType to timestamps preserves wide make_date results") {
     // Store the components, not dates: this both avoids Parquet rebasing and prevents Spark
     // from constant-folding make_date before it reaches the native cast.
@@ -1519,12 +1551,20 @@ class CometNativeCastSuite
       (Some(-262144), 1, 1),
       (Some(1970), 1, 1),
       (Some(2024), 11, 3),
+      // Inside chrono's calendar, but chrono-tz 0.10.4 uses the wrong Los Angeles DST offset.
+      (Some(2101), 7, 4),
       (None, 1, 1))
     withParquetTable(input, "wide_dates") {
       for {
         (target, tz) <- Seq(
           ("TIMESTAMP_NTZ", "America/Los_Angeles"),
           ("TIMESTAMP", "UTC"),
+          ("TIMESTAMP", "GMT"),
+          ("TIMESTAMP", "Etc/UTC"),
+          ("TIMESTAMP", "Z"),
+          ("TIMESTAMP", "UTC+00:00"),
+          ("TIMESTAMP", "GMT+05:30"),
+          ("TIMESTAMP", "Etc/GMT+8"),
           ("TIMESTAMP", "+05:30"),
           ("TIMESTAMP", "-08:00"))
         ansi <- Seq("false", "true")
@@ -1535,14 +1575,15 @@ class CometNativeCastSuite
           CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true") {
           assertNoCodegenRan {
             checkSparkAnswerAndOperator(
-              s"SELECT CAST(make_date(_1, _2, _3) AS $target) FROM wide_dates")
+              s"SELECT CAST(make_date(_1, _2, _3) AS $target), " +
+                s"CAST(array(make_date(_1, _2, _3)) AS ARRAY<$target>) FROM wide_dates")
           }
         }
       }
 
       // Named regions and offsets with seconds must use Spark's timezone rules instead of
       // constructing chrono dates. Neither the wide positive nor negative year fits chrono.
-      Seq("America/Los_Angeles", "GMT", "+05:30:15").foreach { tz =>
+      Seq("America/Los_Angeles", "+05:30:15", "UTC-00:00:01").foreach { tz =>
         withSQLConf(
           SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz,
           CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true") {
@@ -1573,7 +1614,10 @@ class CometNativeCastSuite
         (target, tz, overflowDays) <- Seq(
           ("TIMESTAMP_NTZ", "America/Los_Angeles", Seq(-106751992, 106751992)),
           ("TIMESTAMP", "UTC", Seq(-106751992, 106751992)),
+          ("TIMESTAMP", "Etc/UTC", Seq(-106751992, 106751992)),
           ("TIMESTAMP", "+18:00", Seq(-106751991)),
+          ("TIMESTAMP", "GMT+18:00", Seq(-106751991)),
+          ("TIMESTAMP", "UTC-18:00", Seq(106751991)),
           ("TIMESTAMP", "-18:00", Seq(106751991)))
         ansi <- Seq("false", "true")
       } {

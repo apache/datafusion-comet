@@ -230,7 +230,7 @@ pub(crate) fn cast_array(
         return Ok(Arc::new(array));
     }
 
-    let array = prepare_nested_cast_input(array)?;
+    let array = prepare_nested_cast_input(array, to_type)?;
     let array = array_with_timezone(array, cast_options.timezone.clone(), Some(to_type))?;
     let eval_mode = cast_options.eval_mode;
 
@@ -419,8 +419,33 @@ pub(crate) fn cast_array(
     Ok(spark_cast_postprocess(cast_result?, &from_type, to_type))
 }
 
-/// Recursive casts must not evaluate child values hidden by a null parent or outside a slice.
-fn prepare_nested_cast_input(array: ArrayRef) -> DataFusionResult<ArrayRef> {
+/// True only for casts whose child values cannot fail in any evaluation mode.
+/// This is deliberately a whitelist, not a replacement for the cast support matrix.
+fn is_infallible_cast(from_type: &DataType, to_type: &DataType) -> bool {
+    use DataType::*;
+    if from_type == to_type {
+        return true;
+    }
+    match (from_type, to_type) {
+        (Int8, Int16 | Int32 | Int64) | (Int16, Int32 | Int64) | (Int32, Int64) => true,
+        (Struct(from), Struct(to)) => {
+            from.len() == to.len()
+                && from
+                    .iter()
+                    .zip(to)
+                    .all(|(from, to)| is_infallible_cast(from.data_type(), to.data_type()))
+        }
+        (List(from), List(to)) | (Map(from, _), Map(to, _)) => {
+            is_infallible_cast(from.data_type(), to.data_type())
+        }
+        // In particular, DATE to TIMESTAMP can overflow even in legacy mode. Retain
+        // normalization for every conversion not proven safe above, including TRY casts.
+        _ => false,
+    }
+}
+
+/// Fallible recursive casts must ignore child values hidden by a null parent or outside a slice.
+fn prepare_nested_cast_input(array: ArrayRef, to_type: &DataType) -> DataFusionResult<ArrayRef> {
     let has_unused_values = match array.data_type() {
         DataType::Struct(_) => false,
         DataType::List(_) => {
@@ -435,7 +460,18 @@ fn prepare_nested_cast_input(array: ArrayRef) -> DataFusionResult<ArrayRef> {
         }
         _ => return Ok(array),
     };
-    if array.null_count() == 0 && !has_unused_values {
+    let null_count = array.null_count();
+    if null_count == 0 && !has_unused_values {
+        return Ok(array);
+    }
+
+    // Widening integers does not need a copy to mask hidden children. Still compact slices
+    // and dense-null lists/maps: retaining most of their unused children can make even an
+    // infallible cast slower. Struct children always have one slot per parent row.
+    if !has_unused_values
+        && is_infallible_cast(array.data_type(), to_type)
+        && !should_compact_infallible_values(&array)
+    {
         return Ok(array);
     }
 
@@ -447,6 +483,27 @@ fn prepare_nested_cast_input(array: ArrayRef) -> DataFusionResult<ArrayRef> {
         array.nulls().cloned(),
     );
     Ok(take(array.as_ref(), &indices, None)?)
+}
+
+fn should_compact_infallible_values(array: &ArrayRef) -> bool {
+    let offsets = match array.data_type() {
+        DataType::List(_) => array.as_list::<i32>().value_offsets(),
+        DataType::Map(_, _) => array.as_map().value_offsets(),
+        _ => return false,
+    };
+    // Keep the existing path for dense parents without scanning their offsets. In the sparse
+    // case, count child values too: a single null list/map can contain most of the batch.
+    if array.null_count() > array.len() / 4 {
+        return true;
+    }
+    let visible_values: usize = array
+        .nulls()
+        .unwrap()
+        .valid_slices()
+        .map(|(start, end)| (offsets[end] - offsets[start]) as usize)
+        .sum();
+    let total_values = offsets[array.len()] as usize;
+    visible_values < total_values - total_values / 4
 }
 
 /// Determines if DataFusion supports the given cast in a way that is
@@ -1305,6 +1362,167 @@ mod tests {
                 .unwrap_err();
                 assert!(error.to_string().contains("long overflow"));
             }
+        }
+    }
+
+    #[test]
+    fn test_infallible_nested_casts_reuse_input_buffers() {
+        let values: ArrayRef = Arc::new(Int32Array::from(vec![i32::MIN, 42, i32::MAX, 0]));
+        let nulls = Some(NullBuffer::from(vec![true, false, true, true]));
+        let offsets = OffsetBuffer::new(vec![0, 1, 2, 3, 4].into());
+        let field = Arc::new(Field::new("value", DataType::Int32, false));
+        let wide_field = Arc::new(Field::new("value", DataType::Int64, false));
+        let entry_fields: Fields = vec![
+            Arc::new(Field::new("key", DataType::Int32, false)),
+            Arc::clone(&field),
+        ]
+        .into();
+        let wide_entry_fields: Fields =
+            vec![Arc::clone(&entry_fields[0]), Arc::clone(&wide_field)].into();
+        let struct_values: ArrayRef = Arc::new(StructArray::new(
+            vec![Arc::clone(&field)].into(),
+            vec![Arc::clone(&values)],
+            None,
+        ));
+        let inputs: Vec<(ArrayRef, DataType)> = vec![
+            (
+                Arc::new(StructArray::new(
+                    vec![Arc::clone(&field)].into(),
+                    vec![Arc::clone(&values)],
+                    nulls.clone(),
+                )),
+                DataType::Struct(vec![Arc::clone(&wide_field)].into()),
+            ),
+            (
+                Arc::new(ListArray::new(
+                    Arc::clone(&field),
+                    offsets.clone(),
+                    Arc::clone(&values),
+                    nulls.clone(),
+                )),
+                DataType::List(Arc::clone(&wide_field)),
+            ),
+            (
+                Arc::new(MapArray::new(
+                    Arc::new(Field::new(
+                        "entries",
+                        DataType::Struct(entry_fields.clone()),
+                        false,
+                    )),
+                    offsets.clone(),
+                    StructArray::new(entry_fields, vec![Arc::clone(&values), values], None),
+                    nulls.clone(),
+                    false,
+                )),
+                DataType::Map(
+                    Arc::new(Field::new(
+                        "entries",
+                        DataType::Struct(wide_entry_fields),
+                        false,
+                    )),
+                    false,
+                ),
+            ),
+            (
+                Arc::new(ListArray::new(
+                    Arc::new(Field::new("item", struct_values.data_type().clone(), false)),
+                    offsets,
+                    struct_values,
+                    nulls,
+                )),
+                DataType::List(Arc::new(Field::new(
+                    "item",
+                    DataType::Struct(vec![wide_field].into()),
+                    false,
+                ))),
+            ),
+        ];
+
+        for (array, to_type) in inputs {
+            let prepared = prepare_nested_cast_input(Arc::clone(&array), &to_type).unwrap();
+            assert!(
+                Arc::ptr_eq(&array, &prepared),
+                "unexpected copy for {to_type}"
+            );
+            let indices = UInt64Array::new(vec![0, 1, 2, 3].into(), array.nulls().cloned());
+            let normalized = take(array.as_ref(), &indices, None).unwrap();
+            for mode in [EvalMode::Legacy, EvalMode::Ansi, EvalMode::Try] {
+                let options = SparkCastOptions::new(mode, "UTC", false);
+                let actual = cast_array(Arc::clone(&array), &to_type, &options).unwrap();
+                let expected = cast_array(Arc::clone(&normalized), &to_type, &options).unwrap();
+                // Arrow equality compares visible values and validity, allowing unused child
+                // slots under a null parent to retain their original (legal) contents.
+                assert_eq!(actual.to_data(), expected.to_data());
+                assert_eq!(actual.nulls(), array.nulls());
+                actual.to_data().validate_full().unwrap();
+                if matches!(actual.data_type(), DataType::Map(_, _)) {
+                    assert!(Arc::ptr_eq(array.as_map().keys(), actual.as_map().keys()));
+                    assert_eq!(actual.as_map().keys().null_count(), 0);
+                }
+                for input in [array.slice(1, 2), array.slice(1, 0)] {
+                    let casted = cast_array(Arc::clone(&input), &to_type, &options).unwrap();
+                    casted.to_data().validate_full().unwrap();
+                    assert_eq!(casted.to_data(), actual.slice(1, input.len()).to_data());
+                    assert_eq!(casted.nulls(), input.nulls());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_infallible_cast_whitelist_keeps_checked_conversions() {
+        for from in [DataType::Int8, DataType::Int16, DataType::Int32] {
+            assert!(is_infallible_cast(&from, &DataType::Int64));
+        }
+        for (from, to) in [
+            (DataType::Int64, DataType::Int32),
+            (DataType::Utf8, DataType::Int32),
+            (
+                DataType::Date32,
+                DataType::Timestamp(TimeUnit::Microsecond, None),
+            ),
+        ] {
+            assert!(!is_infallible_cast(&from, &to));
+            let from = DataType::Struct(
+                vec![
+                    Field::new("widen", DataType::Int32, false),
+                    Field::new("checked", from, false),
+                ]
+                .into(),
+            );
+            let to = DataType::Struct(
+                vec![
+                    Field::new("widen", DataType::Int64, false),
+                    Field::new("checked", to, false),
+                ]
+                .into(),
+            );
+            assert!(!is_infallible_cast(&from, &to));
+        }
+    }
+
+    #[test]
+    fn test_infallible_cast_still_compacts_a_large_hidden_list() {
+        let array: ArrayRef = Arc::new(ListArray::new(
+            Arc::new(Field::new("item", DataType::Int32, false)),
+            OffsetBuffer::new(vec![0, 1, 98, 99, 100].into()),
+            Arc::new(Int32Array::from_iter_values(0..100)),
+            Some(NullBuffer::from(vec![true, false, true, true])),
+        ));
+        let target = DataType::List(Arc::new(Field::new("item", DataType::Int64, false)));
+        let prepared = prepare_nested_cast_input(Arc::clone(&array), &target).unwrap();
+        assert!(!Arc::ptr_eq(&array, &prepared));
+        assert_eq!(prepared.as_list::<i32>().values().len(), 3);
+        for mode in [EvalMode::Legacy, EvalMode::Ansi, EvalMode::Try] {
+            let result = cast_array(
+                Arc::clone(&array),
+                &target,
+                &SparkCastOptions::new(mode, "UTC", false),
+            )
+            .unwrap();
+            assert_eq!(result.as_list::<i32>().values().len(), 3);
+            assert_eq!(result.nulls(), array.nulls());
+            result.to_data().validate_full().unwrap();
         }
     }
 
