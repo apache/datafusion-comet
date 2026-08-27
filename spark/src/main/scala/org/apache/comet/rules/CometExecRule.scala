@@ -699,6 +699,14 @@ case class CometExecRule(session: SparkSession)
           // originalPlan can still point to a subtree hidden inside that logical leaf, which
           // AQE cannot replace in the current logical plan. Only preserve a direct stage link,
           // not a link inherited from an ancestor.
+          // On the ordinary exchange path, the exchange itself is behind a QueryStageExec
+          // leaf and is not visited by this transform.
+          // Spark 4.1.3 returns the existing root in LogicalQueryStageStrategy and then calls
+          // setLogicalLink from SparkStrategies.plan:
+          // scalastyle:off line.size.limit
+          // https://github.com/apache/spark/blob/v4.1.3/sql/core/src/main/scala/org/apache/spark/sql/execution/adaptive/LogicalQueryStageStrategy.scala#L64-L65
+          // https://github.com/apache/spark/blob/v4.1.3/sql/core/src/main/scala/org/apache/spark/sql/execution/SparkStrategies.scala#L78-L87
+          // scalastyle:on line.size.limit
           op
         case op: CometExec =>
           if (op.originalPlan.logicalLink.isEmpty) {
