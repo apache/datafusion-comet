@@ -226,3 +226,15 @@ harness = false
 [[bench]]
 name = "cast_int_to_decimal"
 harness = false
+
+[[bench]]
+name = "log"
+harness = false
+
+[[bench]]
+name = "pow"
+harness = false
+
+[[bench]]
+name = "abs"
+harness = false
