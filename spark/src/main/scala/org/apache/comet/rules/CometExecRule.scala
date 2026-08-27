@@ -141,9 +141,6 @@ object CometExecRule {
   /** `executionId:planFingerprint` keys that plan-only mode has already reported. */
   private val planOnlyReportedPlans = new BoundedKeySet(PLAN_ONLY_REPORTED_LIMIT)
 
-  /** Execution IDs for which AQE has begun cutting the plan into query stages. */
-  private val planOnlyStagedExecutions = new BoundedKeySet(PLAN_ONLY_REPORTED_LIMIT)
-
   /**
    * Set on the root of every plan that plan-only mode has reported. Catalyst copies a node's tags
    * onto the node that replaces it (`TreeNode.copyTagsFrom`), so the mark survives the rewrites
@@ -151,6 +148,18 @@ object CometExecRule {
    * application recognize a plan it has already described.
    */
   private val PLAN_ONLY_REPORTED: TreeNodeTag[Unit] = TreeNodeTag[Unit]("comet.planOnlyReported")
+
+  /**
+   * The same mark, placed on the logical plan the reported physical plan was linked to.
+   *
+   * AQE can replace the physical tree wholesale - a stage that materializes empty collapses the
+   * whole plan to an empty relation - leaving a tree that shares no node with the one already
+   * reported and holds no query stage either, so [[PLAN_ONLY_REPORTED]] cannot reach it. Every
+   * such tree is planned from a logical plan derived from the one already reported, and Catalyst
+   * copies tags onto replacement nodes there too, so the logical mark does reach it.
+   */
+  private val PLAN_ONLY_REPORTED_LOGICAL: TreeNodeTag[Unit] =
+    TreeNodeTag[Unit]("comet.planOnlyReportedLogical")
 
   /**
    * Whether `plan` is the plan of a query stage AQE has just cut, which reaches the columnar rule
@@ -176,15 +185,15 @@ object CometExecRule {
    * `AdaptiveSparkPlanExec` is a leaf as far as `exists` is concerned, so the wrapper is matched
    * by name rather than through its contents. A re-optimized plan holds `QueryStageExec` nodes
    * for the stages already materialized. A final plan for a query AQE never had to cut into
-   * stages holds neither, and is recognized by the mark left when it was first reported.
-   *
-   * @param queryStagePrep
-   *   whether the calling rule instance is registered as a query-stage-prep rule.
+   * stages holds neither, and is recognized by the mark left when it was first reported. A plan
+   * AQE rebuilt from scratch carries none of those, and is recognized by the mark on the logical
+   * plan it was built from.
    */
   private def isReapplication(plan: SparkPlan): Boolean = {
     plan.exists(p =>
       p.isInstanceOf[QueryStageExec] || p.isInstanceOf[AdaptiveSparkPlanExec] ||
-        p.getTagValue(PLAN_ONLY_REPORTED).isDefined)
+        p.getTagValue(PLAN_ONLY_REPORTED).isDefined) ||
+    plan.logicalLink.exists(_.getTagValue(PLAN_ONLY_REPORTED_LOGICAL).isDefined)
   }
 
   /**
@@ -200,22 +209,20 @@ object CometExecRule {
    *   - the re-optimized plan after each stage materializes, through the prep rule;
    *   - the final plan once every stage has materialized, as a columnar rule.
    *
-   * Three mechanisms sort those out, because no one of them covers every shape:
+   * Two mechanisms sort those out, because neither on its own covers every shape:
    *
-   *   - Each scalar subquery and DPP subquery is prepared as its own top-level plan, and that
-   *     happens *before* the outer plan reaches the conversion rules. A single report slot per
-   *     SQL execution therefore let a nested subquery consume the slot and suppressed the outer
-   *     plan, which is the plan being evaluated. Marking plans individually gives the outer plan
-   *     its own report and each separately prepared subquery theirs; see [[isReapplication]].
-   *   - A mark cannot survive AQE replacing the physical tree wholesale, which is what happens
-   *     when a stage materializes empty and the plan collapses to an empty relation: the new plan
-   *     shares no nodes with the one reported and holds no query stages either. Once AQE has cut
-   *     a stage for an execution, though, everything that arrives afterwards is AQE re-planning
-   *     something already reported, and subqueries are all compiled before the first stage is
-   *     cut, so suppressing the rest of the execution costs no report.
+   *   - A mark on the plan already reported, both on the physical tree and on the logical plan it
+   *     was built from, so that a later application recognizes it however AQE rewrote it; see
+   *     [[isReapplication]]. Marking plans individually, rather than holding one report slot per
+   *     SQL execution, is what gives the outer query a report of its own: each scalar subquery
+   *     and DPP subquery is prepared as a top-level plan in its own right, and for most of them
+   *     that happens *before* the outer plan reaches the conversion rules, so a single slot would
+   *     be consumed by a subquery and the plan being evaluated would never be described.
    *   - A subquery referenced from more than one place in the outer plan is prepared once per
-   *     reference, as a separate but identical plan each time. Neither of the above catches
-   *     those, so within one SQL execution the plan's structural hash dedupes them.
+   *     reference, as a separate plan each time, differing only in expression IDs; Spark then
+   *     collapses them to one `ReusedSubqueryExec`. No mark connects those, so within one SQL
+   *     execution the canonicalized plan's hash dedupes them. Canonicalization is what makes the
+   *     expression IDs drop out; the raw structural hash sees two different plans.
    *
    * @param queryStagePrep
    *   whether the calling rule instance is registered as a query-stage-prep rule.
@@ -225,20 +232,15 @@ object CometExecRule {
       plan: SparkPlan,
       queryStagePrep: Boolean,
       aqeEnabled: Boolean): Boolean = {
-    if (isQueryStage(plan, queryStagePrep, aqeEnabled)) {
-      // Record that AQE has started executing this query before dropping the stage itself.
-      executionId.foreach(planOnlyStagedExecutions.add)
-      false
-    } else if (isReapplication(plan)) {
-      false
-    } else if (executionId.exists(planOnlyStagedExecutions.contains)) {
+    if (isQueryStage(plan, queryStagePrep, aqeEnabled) || isReapplication(plan)) {
       false
     } else {
       plan.setTagValue(PLAN_ONLY_REPORTED, ())
-      // Node tags are not part of a plan's structural hash, so the mark set above does not
-      // perturb the key. Without an execution ID there is nothing to scope the state to, and the
-      // checks above have already ruled out the repeat applications AQE makes, so report.
-      executionId.forall(id => planOnlyReportedPlans.add(s"$id:${plan.hashCode()}"))
+      plan.logicalLink.foreach(_.setTagValue(PLAN_ONLY_REPORTED_LOGICAL, ()))
+      // Node tags are not part of a plan's canonical form, so the marks set above do not perturb
+      // the key. Without an execution ID there is nothing to scope the state to, and the checks
+      // above have already ruled out the repeat applications AQE makes, so report.
+      executionId.forall(id => planOnlyReportedPlans.add(s"$id:${plan.canonicalized.hashCode()}"))
     }
   }
 }
