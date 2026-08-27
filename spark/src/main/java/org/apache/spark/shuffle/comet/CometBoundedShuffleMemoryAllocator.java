@@ -22,7 +22,6 @@ package org.apache.spark.shuffle.comet;
 import java.io.IOException;
 import java.util.BitSet;
 import java.util.HashMap;
-import java.util.HashSet;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -80,8 +79,8 @@ public final class CometBoundedShuffleMemoryAllocator extends CometShuffleMemory
   /** Pool memory currently retained by each thread. */
   private final HashMap<Thread, Long> retainedMemory = new HashMap<>();
 
-  /** Threads currently blocked in {@link #allocateBlocking(long)}. */
-  private final HashSet<Thread> waitingThreads = new HashSet<>();
+  /** Threads currently blocked in {@link #allocateBlocking(long)} and their request sizes. */
+  private final HashMap<Thread, Long> waitingThreads = new HashMap<>();
 
   private static final int OFFSET_BITS = 51;
   private static final long MASK_LONG_LOWER_51_BITS = 0x7FFFFFFFFFFFFL;
@@ -135,7 +134,8 @@ public final class CometBoundedShuffleMemoryAllocator extends CometShuffleMemory
    * Callers must only use this after spilling their own buffered data. The wait fails fast when it
    * can never succeed: when the request does not fit next to the memory this thread itself still
    * retains (e.g. the sorter's pointer array), or when all allocated memory is retained by threads
-   * that are themselves blocked here. Interrupting the task (e.g. task kill) aborts the wait.
+   * that are themselves blocked here and none of their requests fits in the free pool. Interrupting
+   * the task (e.g. task kill) aborts the wait.
    */
   @Override
   public synchronized MemoryBlock allocateBlocking(long required) {
@@ -147,7 +147,7 @@ public final class CometBoundedShuffleMemoryAllocator extends CometShuffleMemory
         try {
           return allocateMemoryBlock(size);
         } catch (SparkOutOfMemoryError e) {
-          if (waitingThreads.add(self)) {
+          if (waitingThreads.put(self, size) == null) {
             // Wake existing waiters so they re-evaluate the deadlock check against the enlarged
             // waiting set.
             notifyAll();
@@ -157,10 +157,11 @@ public final class CometBoundedShuffleMemoryAllocator extends CometShuffleMemory
           if (size > totalMemory - retainedMemory.getOrDefault(self, 0L)) {
             throw e;
           }
-          // The allocation just failed, so the request does not fit in the unallocated pool. If
-          // all allocated memory is retained by blocked threads, nothing can be freed anymore
-          // and waiting would deadlock.
-          if (allocatedMemory <= retainedByWaitingThreads()) {
+          // The allocation just failed, so the request does not fit in the unallocated pool.
+          // Waiting can only succeed while some thread can still free memory: either a thread
+          // outside the waiting set retains pool memory, or another waiter's request fits in the
+          // free pool, in which case that waiter can proceed and eventually free what it retains.
+          if (allocatedMemory <= retainedByWaitingThreads() && !anyWaiterCanProceed()) {
             throw e;
           }
           if (!logged) {
@@ -186,10 +187,20 @@ public final class CometBoundedShuffleMemoryAllocator extends CometShuffleMemory
 
   private long retainedByWaitingThreads() {
     long retained = 0;
-    for (Thread thread : waitingThreads) {
+    for (Thread thread : waitingThreads.keySet()) {
       retained += retainedMemory.getOrDefault(thread, 0L);
     }
     return retained;
+  }
+
+  private boolean anyWaiterCanProceed() {
+    long free = totalMemory - allocatedMemory;
+    for (long requested : waitingThreads.values()) {
+      if (requested <= free) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private synchronized MemoryBlock allocateMemoryBlock(long required) {

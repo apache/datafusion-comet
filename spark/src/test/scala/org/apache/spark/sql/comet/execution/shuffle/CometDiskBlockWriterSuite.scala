@@ -352,6 +352,67 @@ class CometDiskBlockWriterSuite extends AnyFunSuite with TimeLimits {
     }
   }
 
+  test("on-heap shared pool: no false deadlock while another waiter can proceed") {
+    // Two waiters each retain a small pointer array while a holder owns most of the pool. When
+    // the holder frees, the large waiter's request still does not fit, but the small waiter's
+    // does: the small waiter must be allowed to proceed and finish, unblocking the large one,
+    // instead of either waiter being declared deadlocked.
+    val conf = new SparkConf().set("spark.comet.memoryOverhead", "1") // 1 MiB shared pool
+    resetOnHeapAllocatorSingleton()
+    val memoryManager = new TestMemoryManager(conf)
+    val tmm = new TaskMemoryManager(memoryManager, 0L)
+    val bounded = CometShuffleMemoryAllocator
+      .getInstance(conf, tmm, pageSize)
+      .asInstanceOf[CometBoundedShuffleMemoryAllocator]
+    try {
+      failAfter(Span(60, Seconds)) {
+        val holderBlock = bounded.allocate(900 * 1024)
+
+        @volatile var largeError: Throwable = null
+        @volatile var smallError: Throwable = null
+        val arraysAllocated = new CountDownLatch(2)
+        val largeWaiter = new Thread(() => {
+          val array = bounded.allocateArray(4096) // retains 32768 bytes
+          arraysAllocated.countDown()
+          try {
+            bounded.free(bounded.allocateBlocking(999448))
+          } catch {
+            case t: Throwable => largeError = t
+          } finally {
+            bounded.freeArray(array)
+          }
+        })
+        val smallWaiter = new Thread(() => {
+          val array = bounded.allocateArray(4096) // retains 32768 bytes
+          arraysAllocated.countDown()
+          try {
+            bounded.free(bounded.allocateBlocking(262144))
+          } catch {
+            case t: Throwable => smallError = t
+          } finally {
+            bounded.freeArray(array)
+          }
+        })
+        largeWaiter.start()
+        smallWaiter.start()
+        arraysAllocated.await()
+        while (largeWaiter.getState != Thread.State.WAITING ||
+          smallWaiter.getState != Thread.State.WAITING) {
+          Thread.sleep(10)
+        }
+
+        bounded.free(holderBlock)
+        largeWaiter.join()
+        smallWaiter.join()
+        assert(largeError == null)
+        assert(smallError == null)
+      }
+    } finally {
+      tmm.cleanUpAllAllocatedMemory()
+      resetOnHeapAllocatorSingleton()
+    }
+  }
+
   private def newWriter(
       file: File,
       allocator: CometShuffleMemoryAllocatorTrait,
