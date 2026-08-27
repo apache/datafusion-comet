@@ -124,3 +124,58 @@ fn insert_metric_value(metrics: &mut HashMap<String, i64>, value: &MetricValue) 
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use datafusion::physical_plan::metrics::{
+        ExecutionPlanMetricsSet, MetricBuilder, MetricCategory, SpillMetrics,
+    };
+
+    fn metric_values(metrics: &ExecutionPlanMetricsSet) -> HashMap<String, i64> {
+        let mut values = HashMap::new();
+        metrics
+            .clone_inner()
+            .aggregate_by_name()
+            .iter()
+            .for_each(|metric| insert_metric_value(&mut values, metric.value()));
+        values
+    }
+
+    #[test]
+    fn preserves_absent_and_registered_aggregate_metrics() {
+        let aggregate_metric_names = [
+            "spill_count",
+            "spilled_bytes",
+            "spilled_rows",
+            "peak_mem_used",
+        ];
+
+        let absent = metric_values(&ExecutionPlanMetricsSet::new());
+        for name in aggregate_metric_names {
+            assert!(!absent.contains_key(name));
+        }
+
+        let metrics = ExecutionPlanMetricsSet::new();
+        let spill_metrics = SpillMetrics::new(&metrics, 0);
+        let peak_mem_used = MetricBuilder::new(&metrics)
+            .with_category(MetricCategory::Bytes)
+            .gauge("peak_mem_used", 0);
+
+        let registered_zero = metric_values(&metrics);
+        for name in aggregate_metric_names {
+            assert_eq!(registered_zero.get(name), Some(&0));
+        }
+
+        spill_metrics.spill_file_count.add(2);
+        spill_metrics.spilled_bytes.add(4096);
+        spill_metrics.spilled_rows.add(128);
+        peak_mem_used.set(8192);
+
+        let updated = metric_values(&metrics);
+        assert_eq!(updated.get("spill_count"), Some(&2));
+        assert_eq!(updated.get("spilled_bytes"), Some(&4096));
+        assert_eq!(updated.get("spilled_rows"), Some(&128));
+        assert_eq!(updated.get("peak_mem_used"), Some(&8192));
+    }
+}
