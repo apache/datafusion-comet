@@ -97,6 +97,8 @@ impl ScalarUDFImpl for SparkArrayExtrema {
         let result = match array.data_type() {
             DataType::List(_) => array_extrema(array.as_list::<i32>(), self.is_min)?,
             DataType::LargeList(_) => array_extrema(array.as_list::<i64>(), self.is_min)?,
+            // The delegated return_type above rejects an outer FixedSizeList. Supporting it as
+            // a nested element in spark_comparator does not broaden the function's signature.
             other => return exec_err!("{} does not support type {other}", self.name()),
         };
 
@@ -138,6 +140,9 @@ fn array_extrema<O: OffsetSizeTrait>(
 
 /// Scan the flat value buffer for every list length. Arrow's float min/max kernels
 /// use a different ordering, so long lists must not switch to those kernels.
+/// Checking only Arrow's winner cannot establish that its answer agrees with Spark:
+/// for max([-NaN, 1.0]), Arrow's total ordering selects 1.0 while Spark selects NaN.
+/// A corrective scan triggered only by a zero or NaN winner would miss that case.
 fn float_extrema<O: OffsetSizeTrait, T: ArrowPrimitiveType>(
     array: &GenericListArray<O>,
     is_min: bool,
@@ -315,6 +320,8 @@ fn spark_comparator(array: &ArrayRef) -> Result<DynComparator> {
         DataType::Dictionary(_, value_type) => {
             // Decode only for comparisons. Recursing after decoding also covers
             // dictionaries whose values are nested arrays or structs with floats.
+            // Comparator construction happens once per child array/batch, not per comparison;
+            // the decoded array is retained by the comparator for the subsequent index scan.
             spark_comparator(&cast(array.as_ref(), value_type)?)
         }
         _ => Ok(make_comparator(
