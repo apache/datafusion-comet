@@ -21,7 +21,7 @@ use arrow::{
     },
     buffer::NullBuffer,
     compute::{cast, cast_with_options},
-    datatypes::{DataType, FieldRef, TimeUnit},
+    datatypes::{DataType, FieldRef, TimeUnit, DECIMAL128_MAX_PRECISION},
     error::ArrowError,
 };
 use datafusion::common::{
@@ -128,6 +128,11 @@ fn normalize_variant_type(data_type: &DataType) -> Option<DataType> {
         // Spark reads Parquet UINT_64 as Decimal(20, 0). This is lossless for the full range and
         // lets the existing Spark-compatible rebuild choose the Variant decimal width per value.
         DataType::UInt64 => Some(DataType::Decimal128(20, 0)),
+        // Arrow chooses Decimal256 from the physical byte width, but Spark's DecimalType is
+        // precision-based and stores every supported precision (<= 38) in 128 bits.
+        DataType::Decimal256(precision, scale) if *precision <= DECIMAL128_MAX_PRECISION => {
+            Some(DataType::Decimal128(*precision, *scale))
+        }
         DataType::Timestamp(TimeUnit::Millisecond, timezone) => {
             Some(DataType::Timestamp(TimeUnit::Microsecond, timezone.clone()))
         }

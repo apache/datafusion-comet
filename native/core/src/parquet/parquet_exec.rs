@@ -306,9 +306,17 @@ mod tests {
     use datafusion_comet_spark_expr::test_common::file_util::get_temp_filename;
     use futures::StreamExt;
     use parquet::arrow::{arrow_writer::ArrowWriterOptions, ArrowWriter};
+    use parquet::basic::{LogicalType, Repetition, Type as PhysicalType};
+    use parquet::data_type::{
+        ByteArray, ByteArrayType, DataType as ParquetDataType, FixedLenByteArray,
+        FixedLenByteArrayType,
+    };
     use parquet::file::properties::{EnabledStatistics, WriterProperties};
+    use parquet::file::writer::SerializedFileWriter;
+    use parquet::schema::types::{Type as ParquetType, TypePtr};
     use parquet::variant::{Variant, VariantArray, VariantBuilder, VariantDecimal4, VariantType};
     use std::fs::File;
+    use std::path::PathBuf;
 
     fn required_variant_schema() -> SchemaRef {
         Arc::new(Schema::new(vec![Field::new(
@@ -361,6 +369,60 @@ mod tests {
         writer.write(&batch).unwrap();
         writer.close().unwrap();
 
+        scan_variant_file(filename).await
+    }
+
+    fn write_variant_typed_value<T: ParquetDataType>(
+        typed_value: TypePtr,
+        values: &[T::T],
+    ) -> PathBuf {
+        let filename = get_temp_filename();
+        let file = File::create(&filename).unwrap();
+        let metadata = Arc::new(
+            ParquetType::primitive_type_builder("metadata", PhysicalType::BYTE_ARRAY)
+                .with_repetition(Repetition::REQUIRED)
+                .build()
+                .unwrap(),
+        );
+        let variant = Arc::new(
+            ParquetType::group_type_builder("v")
+                .with_repetition(Repetition::REQUIRED)
+                .with_logical_type(Some(LogicalType::Variant {
+                    specification_version: None,
+                }))
+                .with_fields(vec![metadata, typed_value])
+                .build()
+                .unwrap(),
+        );
+        let schema = Arc::new(
+            ParquetType::group_type_builder("schema")
+                .with_fields(vec![variant])
+                .build()
+                .unwrap(),
+        );
+        let mut writer = SerializedFileWriter::new(file, schema, Default::default()).unwrap();
+        let mut row_group = writer.next_row_group().unwrap();
+
+        let (metadata, _) = VariantBuilder::new().finish();
+        let metadata = (0..values.len())
+            .map(|_| ByteArray::from(metadata.clone()))
+            .collect::<Vec<_>>();
+        let mut column = row_group.next_column().unwrap().unwrap();
+        column
+            .typed::<ByteArrayType>()
+            .write_batch(&metadata, None, None)
+            .unwrap();
+        column.close().unwrap();
+
+        let mut column = row_group.next_column().unwrap().unwrap();
+        column.typed::<T>().write_batch(values, None, None).unwrap();
+        column.close().unwrap();
+        row_group.close().unwrap();
+        writer.close().unwrap();
+        filename
+    }
+
+    async fn scan_variant_file(filename: PathBuf) -> VariantArray {
         let partitioned_file =
             PartitionedFile::from_path(filename.to_string_lossy().into_owned()).unwrap();
         let session_ctx = Arc::new(SessionContext::new());
@@ -543,5 +605,72 @@ mod tests {
             panic!("expected DATE-annotated physical value")
         };
         assert_eq!(date.to_string(), "1970-01-02");
+    }
+
+    #[tokio::test]
+    async fn variant_scan_preserves_parquet_enum_string_and_binary_semantics() {
+        for (logical_type, expected_string) in [
+            (Some(LogicalType::Enum), true),
+            (Some(LogicalType::String), true),
+            (None, false),
+        ] {
+            let typed_value = Arc::new(
+                ParquetType::primitive_type_builder("typed_value", PhysicalType::BYTE_ARRAY)
+                    .with_repetition(Repetition::REQUIRED)
+                    .with_logical_type(logical_type)
+                    .build()
+                    .unwrap(),
+            );
+            let filename = write_variant_typed_value::<ByteArrayType>(
+                typed_value,
+                &[ByteArray::from(b"red".to_vec())],
+            );
+
+            let output = scan_variant_file(filename).await;
+            if expected_string {
+                assert_eq!(output.value(0).as_string(), Some("red"));
+            } else {
+                assert_eq!(output.value(0), Variant::Binary(b"red"));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn variant_scan_reads_wide_physical_decimal_as_decimal128() {
+        for width in [17, 32] {
+            let values = [123_i128, -123_i128]
+                .into_iter()
+                .map(|value| {
+                    let mut bytes = vec![if value.is_negative() { 0xff } else { 0 }; width];
+                    bytes[width - 16..].copy_from_slice(&value.to_be_bytes());
+                    FixedLenByteArray::from(bytes)
+                })
+                .collect::<Vec<_>>();
+            let typed_value = Arc::new(
+                ParquetType::primitive_type_builder(
+                    "typed_value",
+                    PhysicalType::FIXED_LEN_BYTE_ARRAY,
+                )
+                .with_repetition(Repetition::REQUIRED)
+                .with_logical_type(Some(LogicalType::Decimal {
+                    scale: 2,
+                    precision: 38,
+                }))
+                .with_length(width as i32)
+                .with_precision(38)
+                .with_scale(2)
+                .build()
+                .unwrap(),
+            );
+            let filename = write_variant_typed_value::<FixedLenByteArrayType>(typed_value, &values);
+
+            let output = scan_variant_file(filename).await;
+            for (index, value) in [123, -123].into_iter().enumerate() {
+                assert_eq!(
+                    output.value(index),
+                    Variant::Decimal4(VariantDecimal4::try_new(value, 2).unwrap())
+                );
+            }
+        }
     }
 }

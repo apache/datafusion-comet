@@ -46,11 +46,12 @@
 //! Filed upstream as apache/datafusion#23978. Revert this once the opener merges its deferred
 //! page-index load back into `FileMetadataCache` instead of bypassing it.
 //!
-//! For unencrypted scans that project Variant, this factory also removes the advisory
-//! `ARROW:schema` footer entry before Arrow schema inference. Spark infers from the physical
-//! Parquet schema instead:
+//! For unencrypted scans that project Variant, this factory also replaces the advisory
+//! `ARROW:schema` footer entry with physical Parquet schema inference. The only added hint maps
+//! Parquet ENUM leaves to Arrow Utf8, matching Spark's physical-schema interpretation:
 //! https://github.com/apache/spark/blob/v4.2.0/sql/core/src/main/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFileFormat.scala#L585-L599
 
+use arrow::datatypes::{DataType, FieldRef, Schema};
 use bytes::Bytes;
 use datafusion::common::Result as DFResult;
 use datafusion::datasource::physical_plan::parquet::metadata::DFParquetMetadata;
@@ -64,10 +65,16 @@ use futures::future::BoxFuture;
 use futures::FutureExt;
 use object_store::ObjectStore;
 use parquet::arrow::async_reader::{AsyncFileReader, ParquetObjectReader};
-use parquet::arrow::{arrow_reader::ArrowReaderOptions, ARROW_SCHEMA_META_KEY};
-use parquet::file::metadata::{
-    FileMetaData, PageIndexPolicy, ParquetMetaData, ParquetMetaDataBuilder,
+use parquet::arrow::{
+    arrow_reader::ArrowReaderOptions, encode_arrow_schema, parquet_to_arrow_schema,
+    ARROW_SCHEMA_META_KEY,
 };
+use parquet::basic::{ConvertedType, LogicalType};
+use parquet::errors::{ParquetError, Result as ParquetResult};
+use parquet::file::metadata::{
+    FileMetaData, KeyValue, PageIndexPolicy, ParquetMetaData, ParquetMetaDataBuilder,
+};
+use parquet::schema::types::{ColumnDescPtr, SchemaDescriptor};
 use std::fmt::Debug;
 use std::ops::Range;
 use std::sync::Arc;
@@ -137,40 +144,131 @@ struct EagerPageIndexReader {
     skip_arrow_schema: bool,
 }
 
-/// Drop only the Arrow schema hint so ambiguous leaves such as Date64 retain Spark semantics.
-fn without_arrow_schema(metadata: Arc<ParquetMetaData>) -> Arc<ParquetMetaData> {
-    let file = metadata.file_metadata();
-    let Some(key_values) = file.key_value_metadata() else {
-        return metadata;
+fn is_enum_column(column: &ColumnDescPtr) -> bool {
+    matches!(column.logical_type_ref(), Some(LogicalType::Enum))
+        || column.converted_type() == ConvertedType::ENUM
+}
+
+fn spark_enum_field(
+    field: &FieldRef,
+    columns: &[ColumnDescPtr],
+    column_index: &mut usize,
+) -> ParquetResult<FieldRef> {
+    let rewrite =
+        |field: &FieldRef, data_type| Arc::new(field.as_ref().clone().with_data_type(data_type));
+    let data_type = match field.data_type() {
+        DataType::Struct(fields) => DataType::Struct(
+            fields
+                .iter()
+                .map(|field| spark_enum_field(field, columns, column_index))
+                .collect::<ParquetResult<Vec<_>>>()?
+                .into(),
+        ),
+        DataType::List(child) => DataType::List(spark_enum_field(child, columns, column_index)?),
+        DataType::LargeList(child) => {
+            DataType::LargeList(spark_enum_field(child, columns, column_index)?)
+        }
+        DataType::FixedSizeList(child, size) => {
+            DataType::FixedSizeList(spark_enum_field(child, columns, column_index)?, *size)
+        }
+        DataType::ListView(child) => {
+            DataType::ListView(spark_enum_field(child, columns, column_index)?)
+        }
+        DataType::LargeListView(child) => {
+            DataType::LargeListView(spark_enum_field(child, columns, column_index)?)
+        }
+        DataType::Map(child, sorted) => {
+            DataType::Map(spark_enum_field(child, columns, column_index)?, *sorted)
+        }
+        _ => {
+            let column = columns.get(*column_index).ok_or_else(|| {
+                ParquetError::General(
+                    "Arrow schema contains more leaves than the Parquet schema".to_string(),
+                )
+            })?;
+            *column_index += 1;
+            if is_enum_column(column) {
+                DataType::Utf8
+            } else {
+                return Ok(Arc::clone(field));
+            }
+        }
     };
-    if !key_values
+    Ok(rewrite(field, data_type))
+}
+
+/// Arrow maps Parquet ENUM to Binary, while Spark maps it to String. Build the smallest physical
+/// schema hint needed to preserve Spark's interpretation without restoring the file's advisory
+/// `ARROW:schema` types such as Date64 or Decimal256.
+/// https://github.com/apache/arrow-rs/blob/58.4.0/parquet/src/arrow/schema/primitive.rs#L285-L293
+/// https://github.com/apache/spark/blob/v4.2.0/sql/core/src/main/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaConverter.scala#L357-L363
+fn spark_enum_schema(schema: &SchemaDescriptor) -> ParquetResult<Option<Schema>> {
+    let columns = schema.columns();
+    if !columns.iter().any(is_enum_column) {
+        return Ok(None);
+    }
+
+    let arrow_schema = parquet_to_arrow_schema(schema, None)?;
+    let mut column_index = 0;
+    let fields = arrow_schema
+        .fields()
         .iter()
-        .any(|key_value| key_value.key == ARROW_SCHEMA_META_KEY)
-    {
-        return metadata;
+        .map(|field| spark_enum_field(field, columns, &mut column_index))
+        .collect::<ParquetResult<Vec<_>>>()?;
+    if column_index != columns.len() {
+        return Err(ParquetError::General(
+            "Parquet schema contains more leaves than the Arrow schema".to_string(),
+        ));
+    }
+    Ok(Some(Schema::new_with_metadata(
+        fields,
+        arrow_schema.metadata().clone(),
+    )))
+}
+
+/// Ignore the file's Arrow schema hint so ambiguous leaves such as Date64 retain Spark semantics.
+/// Add back only a physical-schema-derived hint for Parquet ENUM, which Spark reads as String.
+fn with_spark_arrow_schema(metadata: Arc<ParquetMetaData>) -> ParquetResult<Arc<ParquetMetaData>> {
+    let file = metadata.file_metadata();
+    let has_arrow_schema = file.key_value_metadata().is_some_and(|key_values| {
+        key_values
+            .iter()
+            .any(|key_value| key_value.key == ARROW_SCHEMA_META_KEY)
+    });
+    let enum_schema = spark_enum_schema(file.schema_descr())?;
+    if !has_arrow_schema && enum_schema.is_none() {
+        return Ok(metadata);
+    }
+
+    let mut key_values = file
+        .key_value_metadata()
+        .into_iter()
+        .flatten()
+        .filter(|key_value| key_value.key != ARROW_SCHEMA_META_KEY)
+        .cloned()
+        .collect::<Vec<_>>();
+    if let Some(schema) = enum_schema {
+        key_values.push(KeyValue {
+            key: ARROW_SCHEMA_META_KEY.to_string(),
+            value: Some(encode_arrow_schema(&schema)),
+        });
     }
 
     let file = FileMetaData::new(
         file.version(),
         file.num_rows(),
         file.created_by().map(str::to_owned),
-        Some(
-            key_values
-                .iter()
-                .filter(|key_value| key_value.key != ARROW_SCHEMA_META_KEY)
-                .cloned()
-                .collect(),
-        ),
+        Some(key_values),
         file.schema_descr_ptr(),
         file.column_orders().cloned(),
     );
-    Arc::new(
+    Ok(Arc::new(
         ParquetMetaDataBuilder::new(file)
             .set_row_groups(metadata.row_groups().to_vec())
             .set_column_index(metadata.column_index().cloned())
             .set_offset_index(metadata.offset_index().cloned())
             .build(),
-    )
+    ))
 }
 
 impl AsyncFileReader for EagerPageIndexReader {
@@ -228,7 +326,7 @@ impl AsyncFileReader for EagerPageIndexReader {
                     ))
                 })?;
             Ok(if skip_arrow_schema && !encrypted {
-                without_arrow_schema(metadata)
+                with_spark_arrow_schema(metadata)?
             } else {
                 metadata
             })

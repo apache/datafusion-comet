@@ -93,7 +93,33 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
           "spark.sql.variant.pushVariantIntoScan" -> "false") {
           val (_, cometPlan) = checkSparkAnswerAndFallbackReason(
             sql(s"SELECT `é`, `σ`, `k`, `s` FROM $table"),
-            "case-insensitive Unicode Variant column names")
+            "case-insensitive Unicode column names in Variant scans")
+          assert(collect(cometPlan) { case scan: CometNativeScanExec => scan }.isEmpty)
+        }
+      }
+    }
+  }
+
+  test("case-insensitive Unicode sibling of Variant column falls back") {
+    assume(isSpark40Plus, "VariantType requires Spark 4.0+")
+
+    withTempPath { path =>
+      withSQLConf(
+        CometConf.COMET_ENABLED.key -> "false",
+        "spark.sql.variant.writeShredding.enabled" -> "false") {
+        sql("SELECT parse_json('42') AS v, 7 AS `É`").write.parquet(path.toString)
+      }
+
+      val table = s"variant_unicode_sibling_${System.currentTimeMillis()}"
+      withTable(table) {
+        sql(s"CREATE TABLE $table (v VARIANT, `é` INT) USING parquet OPTIONS (path '$path')")
+        withSQLConf(
+          SQLConf.CASE_SENSITIVE.key -> "false",
+          "spark.sql.variant.allowReadingShredded" -> "true",
+          "spark.sql.variant.pushVariantIntoScan" -> "false") {
+          val (_, cometPlan) = checkSparkAnswerAndFallbackReason(
+            sql(s"SELECT v, `é` FROM $table"),
+            "case-insensitive Unicode column names in Variant scans")
           assert(collect(cometPlan) { case scan: CometNativeScanExec => scan }.isEmpty)
         }
       }

@@ -971,15 +971,17 @@ case class CometScanRule(session: SparkSession)
     val fallbackReasons = new ListBuffer[String]()
     val typeChecker = CometScanTypeChecker()
     // Java equalsIgnoreCase also lets ASCII i/k/s match non-ASCII dotted/dotless I, Kelvin sign,
-    // and long s. The physical Parquet name is unavailable here, so keep either side of such a
-    // match on Spark until the native adapter implements the same Unicode comparison.
+    // and long s. The physical Parquet name is unavailable here, so keep a Variant-bearing scan
+    // with any potentially ambiguous name on Spark until the native adapter implements the same
+    // Unicode comparison.
     if (!session.sessionState.conf.caseSensitiveAnalysis &&
+      scanExec.requiredSchema.exists(field => isVariantType(field.dataType)) &&
       scanExec.requiredSchema.exists(field =>
-        isVariantType(field.dataType) &&
-          field.name.exists(ch => ch > '\u007f' || "iIkKsS".contains(ch)))) {
+        field.name.exists(ch => ch > '\u007f' || "iIkKsS".contains(ch)))) {
       withFallbackReason(
         scanExec,
-        "Native Parquet scan does not support case-insensitive Unicode Variant column names")
+        "Native Parquet scan does not support case-insensitive Unicode column names in " +
+          "Variant scans")
       return false
     }
     val schemaSupported = scanExec.requiredSchema.fields.forall { field =>
