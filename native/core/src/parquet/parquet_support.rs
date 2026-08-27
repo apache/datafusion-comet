@@ -37,7 +37,7 @@ use datafusion::physical_plan::ColumnarValue;
 use datafusion_comet_spark_expr::EvalMode;
 use log::debug;
 use object_store::path::Path;
-use object_store::{parse_url, ObjectStore};
+use object_store::{parse_url, ObjectStore, ObjectStoreScheme};
 use parquet::arrow::PARQUET_FIELD_ID_META_KEY;
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -469,9 +469,9 @@ fn create_hdfs_object_store(
     })
 }
 
-type ObjectStoreCache = RwLock<HashMap<(String, u64, bool), Arc<dyn ObjectStore>>>;
+type ObjectStoreCache = RwLock<HashMap<(String, u64), Arc<dyn ObjectStore>>>;
 
-/// Process-wide cache of object stores, keyed by `(scheme://host:port, config_hash, hdfs_backend)`.
+/// Process-wide cache of object stores, keyed by `(scheme://host:port, config_hash)`.
 ///
 /// ## Why static / process lifetime?
 ///
@@ -486,8 +486,8 @@ type ObjectStoreCache = RwLock<HashMap<(String, u64, bool), Arc<dyn ObjectStore>
 ///
 /// ## Unbounded size
 ///
-/// Cache entries are indexed by `(scheme://host:port, hash-of-configs, hdfs_backend)`.  A typical
-/// Spark job accesses a small, fixed set of buckets with a stable configuration, so the number of
+/// Cache entries are indexed by `(scheme://host:port, hash-of-configs)`.  A typical Spark
+/// job accesses a small, fixed set of buckets with a stable configuration, so the number of
 /// distinct keys is O(buckets × credential-configs) and remains small throughout the job.
 /// Entries are cheap relative to the cost of creating a new object store (new HTTP
 /// connection pool + DNS resolution), and there is no meaningful benefit from eviction, so
@@ -519,17 +519,43 @@ fn hash_object_store_configs(configs: &HashMap<String, String>) -> u64 {
     hasher.finish()
 }
 
-/// Parses the url, registers the object store with configurations, and returns a tuple of the object store url
-/// and object store path
+/// The selected backend, independent of the URL used to register it in DataFusion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ObjectStoreBackend {
+    Local,
+    Remote,
+    Other,
+}
+
+fn object_store_backend(url: &Url, is_hdfs: bool) -> Result<ObjectStoreBackend, ExecutionError> {
+    if is_hdfs {
+        // Custom libhdfs schemes may look like cloud URLs but retain their own range-read API.
+        return Ok(ObjectStoreBackend::Other);
+    }
+    let (scheme, _) =
+        ObjectStoreScheme::parse(url).map_err(|e| ExecutionError::GeneralError(e.to_string()))?;
+    Ok(match scheme {
+        ObjectStoreScheme::Local => ObjectStoreBackend::Local,
+        ObjectStoreScheme::AmazonS3
+        | ObjectStoreScheme::GoogleCloudStorage
+        | ObjectStoreScheme::MicrosoftAzure
+        | ObjectStoreScheme::Http => ObjectStoreBackend::Remote,
+        // Memory and future backends are not implicitly classified as remote network traffic.
+        _ => ObjectStoreBackend::Other,
+    })
+}
+
+/// Parses the URL, selects and registers the backend, and returns its registry URL, path, and
+/// classification. Callers must use this classification rather than infer it from a scheme alias.
 pub(crate) fn prepare_object_store_with_configs(
     runtime_env: Arc<RuntimeEnv>,
     url: String,
     object_store_configs: &HashMap<String, String>,
-) -> Result<(ObjectStoreUrl, Path), ExecutionError> {
+) -> Result<(ObjectStoreUrl, Path, ObjectStoreBackend), ExecutionError> {
     let mut url = Url::parse(url.as_str())
         .map_err(|e| ExecutionError::GeneralError(format!("Error parsing URL {url}: {e}")))?;
-    let original_url = url.clone();
     let is_hdfs_scheme = is_hdfs_scheme(&url, object_store_configs);
+    let backend = object_store_backend(&url, is_hdfs_scheme)?;
     let mut scheme = url.scheme();
     if !is_hdfs_scheme && scheme == "s3a" {
         scheme = "s3";
@@ -544,7 +570,7 @@ pub(crate) fn prepare_object_store_with_configs(
     );
 
     let config_hash = hash_object_store_configs(object_store_configs);
-    let cache_key = (url_key.clone(), config_hash, is_hdfs_scheme);
+    let cache_key = (url_key.clone(), config_hash);
 
     // Check the cache first to reuse existing object store instances.
     // This enables HTTP connection pooling and avoids redundant DNS lookups.
@@ -582,33 +608,65 @@ pub(crate) fn prepare_object_store_with_configs(
             (store, path)
         };
 
-    let object_store_url = ObjectStoreUrl::parse(url_key.as_str())?;
-    let registration_url = if scheme != "file"
-        && runtime_env
-            .object_store(&object_store_url)
-            .is_ok_and(|existing| !Arc::ptr_eq(&existing, &object_store))
-    {
-        let backend = if is_hdfs_scheme { "hdfs" } else { "native" };
-        Url::parse(&format!(
-            "{}+comet-{config_hash:016x}-{backend}://{}",
-            original_url.scheme(),
-            &url[url::Position::BeforeHost..url::Position::AfterPort],
-        ))
-        .map_err(|e| ExecutionError::GeneralError(e.to_string()))?
-    } else {
-        url
-    };
-    let object_store_url = ObjectStoreUrl::parse(format!(
-        "{}://{}",
-        registration_url.scheme(),
-        &registration_url[url::Position::BeforeHost..url::Position::AfterPort],
-    ))?;
-    runtime_env.register_object_store(&registration_url, object_store);
-    Ok((object_store_url, object_store_path))
+    let object_store_url = ObjectStoreUrl::parse(url_key.clone())?;
+    runtime_env.register_object_store(&url, object_store);
+    Ok((object_store_url, object_store_path, backend))
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn classifies_the_selected_backend_using_object_store_parser() {
+        use super::{is_hdfs_scheme, object_store_backend, ObjectStoreBackend};
+        let configs = std::collections::HashMap::from([(
+            "fs.comet.libhdfs.schemes".to_string(),
+            "s3,abfs".to_string(),
+        )]);
+        for address in [
+            "s3://bucket/path",
+            "s3a://bucket/path",
+            "gs://bucket/path",
+            "az://container/path",
+            "adl://container/path",
+            "azure://container/path",
+            "abfs://container/path",
+            "abfss://container/path",
+            "http://example.com/path",
+            "https://example.com/path",
+            "https://account.blob.core.windows.net/container/path",
+        ] {
+            let url = url::Url::parse(address).unwrap();
+            assert_eq!(
+                object_store_backend(&url, false).unwrap(),
+                ObjectStoreBackend::Remote,
+                "{address}"
+            );
+            if is_hdfs_scheme(&url, &configs) {
+                assert_eq!(
+                    object_store_backend(&url, true).unwrap(),
+                    ObjectStoreBackend::Other
+                );
+            }
+        }
+        assert_eq!(
+            object_store_backend(&url::Url::parse("file:///tmp/a").unwrap(), false).unwrap(),
+            ObjectStoreBackend::Local
+        );
+        assert_eq!(
+            object_store_backend(&url::Url::parse("memory:///a").unwrap(), false).unwrap(),
+            ObjectStoreBackend::Other
+        );
+        // These spellings are not accepted native backends in pinned object_store 0.13.2.
+        for scheme in ["gcs", "wasb", "wasbs", "s3n"] {
+            let url = url::Url::parse(&format!("{scheme}://bucket/path")).unwrap();
+            assert!(object_store_backend(&url, false).is_err());
+            assert_eq!(
+                object_store_backend(&url, true).unwrap(),
+                ObjectStoreBackend::Other
+            );
+        }
+    }
+
     #[cfg(not(feature = "hdfs-opendal"))]
     use datafusion::execution::object_store::ObjectStoreUrl;
     #[cfg(not(feature = "hdfs-opendal"))]
@@ -625,128 +683,6 @@ mod tests {
     #[cfg(not(feature = "hdfs-opendal"))]
     use std::collections::HashMap;
 
-    #[test]
-    fn cache_distinguishes_backend_routing_for_normalized_s3_aliases() {
-        let configs = std::collections::HashMap::from([(
-            "fs.comet.libhdfs.schemes".to_string(),
-            "s3".to_string(),
-        )]);
-        let cloud_url = url::Url::parse("s3a://scan-io-backend-routing").unwrap();
-        let hdfs_url = url::Url::parse("s3://scan-io-backend-routing").unwrap();
-        let config_hash = super::hash_object_store_configs(&configs);
-        let cloud_key = (
-            "s3://scan-io-backend-routing".to_string(),
-            config_hash,
-            super::is_hdfs_scheme(&cloud_url, &configs),
-        );
-        let hdfs_key = (
-            "s3://scan-io-backend-routing".to_string(),
-            config_hash,
-            super::is_hdfs_scheme(&hdfs_url, &configs),
-        );
-        let cloud_store: std::sync::Arc<dyn object_store::ObjectStore> =
-            std::sync::Arc::new(object_store::memory::InMemory::new());
-        let hdfs_store: std::sync::Arc<dyn object_store::ObjectStore> =
-            std::sync::Arc::new(object_store::memory::InMemory::new());
-
-        {
-            let mut cache = super::object_store_cache().write().unwrap();
-            cache.insert(cloud_key.clone(), std::sync::Arc::clone(&cloud_store));
-            cache.insert(hdfs_key.clone(), std::sync::Arc::clone(&hdfs_store));
-        }
-
-        let runtime_env =
-            std::sync::Arc::new(datafusion::execution::runtime_env::RuntimeEnv::default());
-        let (cloud_object_store_url, _) = super::prepare_object_store_with_configs(
-            std::sync::Arc::clone(&runtime_env),
-            cloud_url.to_string(),
-            &configs,
-        )
-        .unwrap();
-        let (hdfs_object_store_url, _) = super::prepare_object_store_with_configs(
-            std::sync::Arc::clone(&runtime_env),
-            hdfs_url.to_string(),
-            &configs,
-        )
-        .unwrap();
-
-        assert_ne!(cloud_object_store_url, hdfs_object_store_url);
-        assert!(std::sync::Arc::ptr_eq(
-            &runtime_env.object_store(&cloud_object_store_url).unwrap(),
-            &cloud_store
-        ));
-        assert!(std::sync::Arc::ptr_eq(
-            &runtime_env.object_store(&hdfs_object_store_url).unwrap(),
-            &hdfs_store
-        ));
-
-        let mut cache = super::object_store_cache().write().unwrap();
-        cache.remove(&cloud_key);
-        cache.remove(&hdfs_key);
-    }
-
-    #[test]
-    fn registry_distinguishes_backend_routing_across_configurations() {
-        let cloud_configs = std::collections::HashMap::from([(
-            "fs.comet.libhdfs.schemes".to_string(),
-            "s3".to_string(),
-        )]);
-        let hdfs_configs = std::collections::HashMap::from([(
-            "fs.comet.libhdfs.schemes".to_string(),
-            "s3a".to_string(),
-        )]);
-        let url = url::Url::parse("s3a://scan-io-mixed-backend-routing").unwrap();
-        let cloud_key = (
-            "s3://scan-io-mixed-backend-routing".to_string(),
-            super::hash_object_store_configs(&cloud_configs),
-            false,
-        );
-        let hdfs_key = (
-            "s3a://scan-io-mixed-backend-routing".to_string(),
-            super::hash_object_store_configs(&hdfs_configs),
-            true,
-        );
-        let cloud_store: std::sync::Arc<dyn object_store::ObjectStore> =
-            std::sync::Arc::new(object_store::memory::InMemory::new());
-        let hdfs_store: std::sync::Arc<dyn object_store::ObjectStore> =
-            std::sync::Arc::new(object_store::memory::InMemory::new());
-
-        {
-            let mut cache = super::object_store_cache().write().unwrap();
-            cache.insert(cloud_key.clone(), std::sync::Arc::clone(&cloud_store));
-            cache.insert(hdfs_key.clone(), std::sync::Arc::clone(&hdfs_store));
-        }
-
-        let runtime_env =
-            std::sync::Arc::new(datafusion::execution::runtime_env::RuntimeEnv::default());
-        let (hdfs_object_store_url, _) = super::prepare_object_store_with_configs(
-            std::sync::Arc::clone(&runtime_env),
-            url.to_string(),
-            &hdfs_configs,
-        )
-        .unwrap();
-        let (cloud_object_store_url, _) = super::prepare_object_store_with_configs(
-            std::sync::Arc::clone(&runtime_env),
-            url.to_string(),
-            &cloud_configs,
-        )
-        .unwrap();
-
-        assert_ne!(cloud_object_store_url, hdfs_object_store_url);
-        assert!(std::sync::Arc::ptr_eq(
-            &runtime_env.object_store(&cloud_object_store_url).unwrap(),
-            &cloud_store
-        ));
-        assert!(std::sync::Arc::ptr_eq(
-            &runtime_env.object_store(&hdfs_object_store_url).unwrap(),
-            &hdfs_store
-        ));
-
-        let mut cache = super::object_store_cache().write().unwrap();
-        cache.remove(&cloud_key);
-        cache.remove(&hdfs_key);
-    }
-
     /// Parses the url, registers the object store, and returns a tuple of the object store url and object store path
     #[cfg(not(feature = "hdfs-opendal"))]
     pub(crate) fn prepare_object_store(
@@ -755,6 +691,7 @@ mod tests {
     ) -> Result<(ObjectStoreUrl, Path), ExecutionError> {
         use crate::parquet::parquet_support::prepare_object_store_with_configs;
         prepare_object_store_with_configs(runtime_env, url, &HashMap::new())
+            .map(|(url, path, _)| (url, path))
     }
 
     #[cfg(not(feature = "hdfs-opendal"))]

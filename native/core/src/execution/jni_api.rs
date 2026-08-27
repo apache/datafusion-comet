@@ -95,7 +95,6 @@ use std::time::{Duration, Instant};
 use std::{sync::Arc, task::Poll};
 use tokio::runtime::{Handle, Runtime};
 use tokio::sync::mpsc;
-use tokio::task::JoinHandle;
 
 use crate::execution::memory_pools::{
     create_memory_pool, handle_task_shared_pool_release, parse_memory_pool_config, MemoryPoolConfig,
@@ -325,7 +324,6 @@ struct ExecutionContext {
     pub stream: Option<SendableRecordBatchStream>,
     /// Receives batches from a spawned tokio task (async I/O path)
     pub batch_receiver: Option<mpsc::Receiver<DataFusionResult<RecordBatch>>>,
-    pub batch_producer: Option<JoinHandle<()>>,
     /// Native metrics
     pub metrics: Arc<Global<JObject<'static>>>,
     // The interval in milliseconds to update metrics
@@ -539,7 +537,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 input_sources,
                 stream: None,
                 batch_receiver: None,
-                batch_producer: None,
                 metrics,
                 metrics_update_interval,
                 metrics_last_update_time: Instant::now(),
@@ -838,7 +835,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                     // decreasing to 1 would serialize production and consumption.
                     let (tx, rx) = mpsc::channel(2);
                     let mut stream = stream;
-                    let producer = get_runtime().spawn(async move {
+                    get_runtime().spawn(async move {
                         let result = std::panic::AssertUnwindSafe(async {
                             while let Some(batch) = stream.next().await {
                                 if tx.send(batch).await.is_err() {
@@ -865,7 +862,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                         }
                     });
                     exec_context.batch_receiver = Some(rx);
-                    exec_context.batch_producer = Some(producer);
                 } else {
                     exec_context.stream = Some(stream);
                 }
@@ -970,11 +966,6 @@ pub extern "system" fn Java_org_apache_comet_Native_releasePlan(
     try_unwrap_or_throw(&e, |env| unsafe {
         let execution_context = get_execution_context(exec_context);
 
-        execution_context.batch_receiver.take();
-        if let Some(producer) = execution_context.batch_producer.take() {
-            stop_batch_producer(producer);
-        }
-
         // Update metrics
         update_metrics(env, execution_context)?;
 
@@ -996,17 +987,6 @@ pub extern "system" fn Java_org_apache_comet_Native_releasePlan(
         let _: Box<ExecutionContext> = Box::from_raw(execution_context);
         Ok(())
     })
-}
-
-fn stop_batch_producer(producer: JoinHandle<()>) {
-    producer.abort();
-    let deadline = Instant::now() + Duration::from_millis(100);
-    while !producer.is_finished() {
-        if Instant::now() >= deadline {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(1));
-    }
 }
 
 fn update_metrics(env: &mut Env, exec_context: &mut ExecutionContext) -> CometResult<()> {
@@ -1394,67 +1374,4 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_columnarToRowClose(
         }
         Ok(())
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn waits_for_background_batch_producer_shutdown() {
-        let (sender, receiver) = std::sync::mpsc::channel::<()>();
-        let producer = get_runtime().spawn(async move {
-            let _sender = sender;
-            futures::future::pending::<()>().await;
-        });
-
-        stop_batch_producer(producer);
-
-        assert_eq!(
-            receiver.try_recv(),
-            Err(std::sync::mpsc::TryRecvError::Disconnected)
-        );
-    }
-
-    #[test]
-    fn does_not_wait_indefinitely_for_blocked_batch_producer() {
-        let (started_sender, started_receiver) = std::sync::mpsc::channel();
-        let (release_sender, release_receiver) = std::sync::mpsc::channel();
-        let producer = get_runtime().spawn(async move {
-            started_sender.send(()).unwrap();
-            release_receiver.recv().unwrap();
-        });
-        started_receiver.recv().unwrap();
-
-        let release_thread = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(500));
-            release_sender.send(()).unwrap();
-        });
-        let started = Instant::now();
-        stop_batch_producer(producer);
-        let elapsed = started.elapsed();
-        release_thread.join().unwrap();
-
-        assert!(elapsed < Duration::from_millis(400));
-    }
-
-    #[test]
-    fn stops_finished_batch_producer_with_exhausted_runtime_budget() {
-        let (sender, receiver) = std::sync::mpsc::channel();
-
-        get_runtime().spawn(async move {
-            let producer = get_runtime().spawn(async {});
-            while !producer.is_finished() {
-                tokio::task::yield_now().await;
-            }
-            while tokio::task::coop::has_budget_remaining() {
-                tokio::task::coop::consume_budget().await;
-            }
-
-            stop_batch_producer(producer);
-            sender.send(()).unwrap();
-        });
-
-        assert_eq!(receiver.recv_timeout(Duration::from_millis(500)), Ok(()));
-    }
 }

@@ -18,6 +18,7 @@
 use crate::execution::operators::ExecutionError;
 use crate::parquet::eager_page_index_reader_factory::{EagerPageIndexReaderFactory, ScanIoSource};
 use crate::parquet::encryption_support::{CometEncryptionConfig, ENCRYPTION_FACTORY_ID};
+use crate::parquet::parquet_support::ObjectStoreBackend;
 use crate::parquet::parquet_support::SparkParquetOptions;
 use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
 use arrow::datatypes::{Field, SchemaRef};
@@ -62,7 +63,7 @@ pub(crate) fn init_datasource_exec(
     data_schema: Option<SchemaRef>,
     partition_schema: Option<SchemaRef>,
     object_store_url: ObjectStoreUrl,
-    is_hdfs_object_store: bool,
+    object_store_backend: ObjectStoreBackend,
     file_groups: Vec<Vec<PartitionedFile>>,
     projection_vector: Option<Vec<usize>>,
     data_filters: Option<Vec<Arc<dyn PhysicalExpr>>>,
@@ -159,10 +160,14 @@ pub(crate) fn init_datasource_exec(
     // cached with the footer, at the cost of losing the skip's benefit when it would have
     // applied. Filed upstream as apache/datafusion#23978; revert this once that's fixed.
     //
+    // Preserve bytes_scanned's existing requested data/Bloom-filter range accounting. Footer
+    // and page-index reads through get_metadata bypass it, and coalescing may fetch extra bytes.
+    // The scan I/O counters expose those gaps without changing task inputMetrics.bytesRead or
+    // scan_efficiency_ratio, which continue to derive from bytes_scanned.
     let runtime_env = session_ctx.runtime_env();
     let store = runtime_env.object_store(&object_store_url)?;
     let metadata_cache = runtime_env.cache_manager.get_file_metadata_cache();
-    let scan_io_source = scan_io_source(&object_store_url, is_hdfs_object_store);
+    let scan_io_source = scan_io_source(object_store_backend);
     let reader_factory = Arc::new(EagerPageIndexReaderFactory::new(
         store,
         metadata_cache,
@@ -220,26 +225,12 @@ pub(crate) fn init_datasource_exec(
     Ok(data_source_exec)
 }
 
-fn scan_io_source(object_store_url: &ObjectStoreUrl, is_hdfs_object_store: bool) -> ScanIoSource {
-    if is_hdfs_object_store {
-        return ScanIoSource::OtherObjectStore;
+fn scan_io_source(backend: ObjectStoreBackend) -> ScanIoSource {
+    match backend {
+        ObjectStoreBackend::Local => ScanIoSource::Local,
+        ObjectStoreBackend::Remote => ScanIoSource::ObjectStore,
+        ObjectStoreBackend::Other => ScanIoSource::OtherObjectStore,
     }
-
-    match physical_object_store_scheme(object_store_url) {
-        "file" => ScanIoSource::Local,
-        "s3" | "s3a" | "gs" | "az" | "abfs" | "abfss" | "http" | "https" => {
-            ScanIoSource::ObjectStore
-        }
-        _ => ScanIoSource::OtherObjectStore,
-    }
-}
-
-fn physical_object_store_scheme(object_store_url: &ObjectStoreUrl) -> &str {
-    let store_url: &url::Url = object_store_url.as_ref();
-    store_url
-        .scheme()
-        .split_once("+comet-")
-        .map_or_else(|| store_url.scheme(), |(scheme, _)| scheme)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -302,15 +293,10 @@ fn get_options(
     spark_parquet_options.allow_timestamp_ltz_to_ntz = allow_timestamp_ltz_to_ntz;
 
     if encryption_enabled {
-        let store_url: &url::Url = object_store_url.as_ref();
         table_parquet_options.crypto.configure_factory(
             ENCRYPTION_FACTORY_ID,
             &CometEncryptionConfig {
-                uri_base: format!(
-                    "{}://{}/",
-                    physical_object_store_scheme(object_store_url),
-                    &store_url[url::Position::BeforeHost..url::Position::AfterPort],
-                ),
+                uri_base: object_store_url.to_string(),
             },
         );
     }
@@ -403,7 +389,7 @@ mod tests {
             Some(data_schema),
             None,
             ObjectStoreUrl::local_filesystem(),
-            false,
+            ObjectStoreBackend::Local,
             vec![vec![partitioned_file]],
             projection,
             filters,
@@ -489,69 +475,6 @@ mod tests {
         assert_eq!(global.coerce_int96_tz, Some("UTC".to_string()));
     }
 
-    #[test]
-    fn preserves_custom_hdfs_backend_range_reads_for_cloud_schemes() {
-        let options = HashMap::from([(
-            "fs.comet.libhdfs.schemes".to_string(),
-            "abfs,s3".to_string(),
-        )]);
-
-        for scheme in ["abfs", "s3"] {
-            let url = ObjectStoreUrl::parse(format!("{scheme}://bucket")).unwrap();
-            let original_url = url::Url::parse(format!("{scheme}://bucket").as_str()).unwrap();
-            let is_hdfs_store =
-                crate::parquet::parquet_support::is_hdfs_scheme(&original_url, &options);
-            assert_eq!(scan_io_source(&url, false), ScanIoSource::ObjectStore);
-            assert_eq!(
-                scan_io_source(&url, is_hdfs_store),
-                ScanIoSource::OtherObjectStore
-            );
-        }
-
-        let s3a_original_url = url::Url::parse("s3a://bucket").unwrap();
-        let normalized_s3_url = ObjectStoreUrl::parse("s3://bucket").unwrap();
-        let preserved_s3a_url = ObjectStoreUrl::parse("s3a://bucket").unwrap();
-        let isolated_s3a_url =
-            ObjectStoreUrl::parse("s3a+comet-0123456789abcdef-native://bucket").unwrap();
-        let is_hdfs_store =
-            crate::parquet::parquet_support::is_hdfs_scheme(&s3a_original_url, &options);
-        assert_eq!(
-            scan_io_source(&normalized_s3_url, is_hdfs_store),
-            ScanIoSource::ObjectStore
-        );
-        assert_eq!(
-            scan_io_source(&preserved_s3a_url, is_hdfs_store),
-            ScanIoSource::ObjectStore
-        );
-        assert_eq!(
-            scan_io_source(&isolated_s3a_url, is_hdfs_store),
-            ScanIoSource::ObjectStore
-        );
-    }
-
-    #[test]
-    fn preserves_physical_uri_for_isolated_encrypted_object_stores() {
-        let object_store_url =
-            ObjectStoreUrl::parse("s3a+comet-0123456789abcdef-native://bucket").unwrap();
-        let (table_parquet_options, _) = get_options(
-            "UTC",
-            true,
-            false,
-            false,
-            false,
-            &object_store_url,
-            true,
-            &ParquetOptions::default(),
-        );
-        let encryption_options: CometEncryptionConfig = table_parquet_options
-            .crypto
-            .factory_options
-            .to_extension_options()
-            .unwrap();
-
-        assert_eq!(encryption_options.uri_base, "s3a://bucket/");
-    }
-
     // Regression test for #3978: DataFusion's opener requests `PageIndexPolicy::Skip` on the
     // initial metadata load and only loads the page index later, on demand, when row-group
     // pruning shows it is still needed (apache/datafusion#22857). That on-demand load bypasses
@@ -595,7 +518,7 @@ mod tests {
             None,
             None,
             ObjectStoreUrl::local_filesystem(),
-            false,
+            ObjectStoreBackend::Local,
             vec![vec![partitioned_file]],
             None,
             None,
@@ -1043,15 +966,20 @@ mod tests {
 
     #[tokio::test]
     async fn reports_encrypted_footer_before_key_retrieval() {
-        assert_encrypted_footer_before_key_retrieval(0).await;
+        assert_encrypted_footer_before_key_retrieval(0, false).await;
     }
 
     #[tokio::test]
     async fn does_not_report_encrypted_footer_before_payload_is_read() {
-        assert_encrypted_footer_before_key_retrieval(512 * 1024).await;
+        assert_encrypted_footer_before_key_retrieval(512 * 1024, false).await;
     }
 
-    async fn assert_encrypted_footer_before_key_retrieval(footer_padding: usize) {
+    #[tokio::test]
+    async fn counts_complete_encrypted_footer_even_when_authentication_fails() {
+        assert_encrypted_footer_before_key_retrieval(0, true).await;
+    }
+
+    async fn assert_encrypted_footer_before_key_retrieval(footer_padding: usize, corrupt: bool) {
         struct ObservingKeyRetriever {
             key: Vec<u8>,
             metrics: Arc<ExecutionPlanMetricsSet>,
@@ -1096,13 +1024,18 @@ mod tests {
         writer.write(&batch).unwrap();
         writer.close().unwrap();
 
-        let file_bytes = std::fs::read(&filename).unwrap();
+        let mut file_bytes = std::fs::read(&filename).unwrap();
         let file_size = file_bytes.len();
         let footer_bytes = usize::try_from(u32::from_le_bytes(
             file_bytes[file_size - 8..file_size - 4].try_into().unwrap(),
         ))
         .unwrap();
         let location = object_store::path::Path::from("encrypted-footer.parquet");
+        if corrupt {
+            // Corrupt the encrypted payload's authentication tag, preserving its length/trailer
+            // and key metadata. Complete I/O is counted before decryption is attempted.
+            file_bytes[file_size - 9] ^= 1;
+        }
         let store: Arc<dyn ObjectStore> = if footer_padding > 0 {
             assert!(footer_bytes > 512 * 1024);
             Arc::new(ThrottledStore::new(
@@ -1169,6 +1102,8 @@ mod tests {
             }
 
             metadata.await.unwrap();
+        } else if corrupt {
+            assert!(reader.get_metadata(Some(&options)).await.is_err());
         } else {
             reader.get_metadata(Some(&options)).await.unwrap();
         }

@@ -94,7 +94,7 @@ use iceberg::expr::Bind;
 use crate::execution::operators::ExecutionError::GeneralError;
 use crate::execution::shuffle::{CometPartitioning, CompressionCodec};
 use crate::execution::spark_plan::SparkPlan;
-use crate::parquet::parquet_support::{is_hdfs_scheme, prepare_object_store_with_configs};
+use crate::parquet::parquet_support::prepare_object_store_with_configs;
 use datafusion::common::scalar::ScalarStructBuilder;
 use datafusion::common::{
     tree_node::{Transformed, TransformedResult, TreeNode, TreeNodeRecursion, TreeNodeRewriter},
@@ -1631,13 +1631,12 @@ impl PhysicalPlanner {
                     .iter()
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect();
-                let is_hdfs_object_store = url::Url::parse(&one_file)
-                    .is_ok_and(|url| is_hdfs_scheme(&url, &object_store_options));
-                let (object_store_url, _) = prepare_object_store_with_configs(
-                    self.session_ctx.runtime_env(),
-                    one_file,
-                    &object_store_options,
-                )?;
+                let (object_store_url, _, object_store_backend) =
+                    prepare_object_store_with_configs(
+                        self.session_ctx.runtime_env(),
+                        one_file,
+                        &object_store_options,
+                    )?;
 
                 // Get files for this partition
                 let files = self.get_partitioned_files(partition_files)?;
@@ -1648,7 +1647,7 @@ impl PhysicalPlanner {
                     Some(data_schema),
                     Some(partition_schema),
                     object_store_url,
-                    is_hdfs_object_store,
+                    object_store_backend,
                     file_groups,
                     Some(projection_vector),
                     Some(data_filters?),
@@ -1686,7 +1685,7 @@ impl PhysicalPlanner {
                     .and_then(|f| f.partitioned_file.first())
                     .map(|f| f.file_path.clone())
                     .ok_or(GeneralError("Failed to locate file".to_string()))?;
-                let (object_store_url, _) = prepare_object_store_with_configs(
+                let (object_store_url, _, _) = prepare_object_store_with_configs(
                     self.session_ctx.runtime_env(),
                     one_file,
                     &object_store_options,

@@ -311,7 +311,7 @@ impl ParquetWriterExec {
             #[cfg(feature = "hdfs-opendal")]
             {
                 // Use prepare_object_store_with_configs to create and register the object store
-                let (_object_store_url, object_store_path) = prepare_object_store_with_configs(
+                let (_object_store_url, object_store_path, _) = prepare_object_store_with_configs(
                     _runtime_env,
                     output_file_path.to_string(),
                     object_store_options,

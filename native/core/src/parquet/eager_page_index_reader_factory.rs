@@ -225,8 +225,14 @@ struct EagerPageIndexReader {
 }
 
 impl AsyncFileReader for EagerPageIndexReader {
+    // Pinned parquet 58.4 uses this single-range entry point for Bloom filters, and the
+    // multi-range entry point below for data pages. Footer/page-index loading is instrumented
+    // separately in get_metadata. The scan tests pin this method contract; revisit it when
+    // upgrading parquet rather than assuming an offset alone identifies metadata.
     fn get_bytes(&mut self, range: Range<u64>) -> BoxFuture<'_, parquet::errors::Result<Bytes>> {
         let requested = range_bytes(&range);
+        // Preserve the existing requested-range metric. Metadata fetched through get_metadata
+        // bypasses it, and object-store coalescing can fetch more bytes than these ranges.
         self.file_metrics.bytes_scanned.add(requested);
         let scan_io_metrics = Arc::clone(&self.scan_io_metrics);
         let future = self.inner.get_bytes(range);
@@ -397,6 +403,13 @@ impl ScanIoObjectStore {
         }
     }
 
+    // Footer accounting follows the DataFusion 54.1/parquet 58.4 metadata push decoder: a tail
+    // read supplies the payload length, then one or more reads supply the complete payload.
+    // Plaintext payloads are retained here and counted only after metadata succeeds, or when
+    // get_ranges observes the subsequent page-index request wholly below the footer. Thus a
+    // later index failure does not erase a decoded footer. Encrypted payloads are counted as
+    // soon as complete, before key retrieval/decryption; their counter measures payload I/O,
+    // not successful authentication. Recheck this protocol when upgrading the decoder.
     fn record_returned(&self, range: Option<&Range<u64>>, bytes: &Bytes) {
         match &self.role {
             ScanIoStoreRole::ObjectStore => self
@@ -435,6 +448,9 @@ impl ScanIoObjectStore {
                         })
                 {
                     if *record_footer_immediately {
+                        // Encrypted opens bypass the shared cache and retrieve the key only after
+                        // the complete encrypted payload is read. Count completed payload I/O,
+                        // even if key retrieval, authentication, or metadata decoding later fails.
                         self.record_footer(footer_bytes);
                     } else if let Some(range) = range {
                         let payload_start =
@@ -534,6 +550,11 @@ impl ObjectStore for ScanIoObjectStore {
     ) -> ObjectStoreResult<Vec<Bytes>> {
         match &self.role {
             ScanIoStoreRole::ObjectStore => {
+                // Supported native cloud stores use object_store's default coalescing. Apply it
+                // here so get_opts observes the coalesced requests, not just logical ranges.
+                // This deliberately bypasses an inner get_ranges override: a cache or custom
+                // backend must define that observation boundary before being composed here.
+                // Local/custom HDFS backends are not wrapped in this role and keep delegation.
                 coalesce_ranges(
                     ranges,
                     |range| self.get_range(location, range),
@@ -558,6 +579,11 @@ impl ObjectStore for ScanIoObjectStore {
                             ranges.iter().all(|range| range.end <= footer_start)
                         })
                 {
+                    // In parquet 58.4, plaintext page-index requests below the footer begin only
+                    // after its metadata payload has decoded successfully. Record that footer
+                    // before awaiting the indexes, so a later index-read failure does not erase
+                    // a successful footer read. Encrypted opens use the complete-payload path
+                    // above; cached plaintext opens are recorded only after metadata succeeds.
                     self.record_footer(footer_bytes);
                 }
                 self.record_request(ranges_bytes(ranges));
@@ -625,5 +651,162 @@ impl Drop for EagerPageIndexReader {
         self.file_metrics
             .scan_efficiency_ratio
             .set_total(self.partitioned_file.object_meta.size as usize);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use object_store::memory::InMemory;
+
+    #[derive(Debug)]
+    struct RecordingRangeStore {
+        inner: InMemory,
+        range_calls: AtomicUsize,
+        get_calls: AtomicUsize,
+    }
+
+    impl Display for RecordingRangeStore {
+        fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+            write!(f, "recording-range-store")
+        }
+    }
+
+    #[async_trait]
+    impl ObjectStore for RecordingRangeStore {
+        async fn put_opts(
+            &self,
+            p: &Path,
+            v: PutPayload,
+            o: PutOptions,
+        ) -> ObjectStoreResult<PutResult> {
+            self.inner.put_opts(p, v, o).await
+        }
+
+        async fn put_multipart_opts(
+            &self,
+            p: &Path,
+            o: PutMultipartOptions,
+        ) -> ObjectStoreResult<Box<dyn MultipartUpload>> {
+            self.inner.put_multipart_opts(p, o).await
+        }
+
+        async fn get_opts(&self, p: &Path, o: GetOptions) -> ObjectStoreResult<GetResult> {
+            self.get_calls.fetch_add(1, Ordering::Relaxed);
+            self.inner.get_opts(p, o).await
+        }
+
+        async fn get_ranges(
+            &self,
+            p: &Path,
+            ranges: &[Range<u64>],
+        ) -> ObjectStoreResult<Vec<Bytes>> {
+            self.range_calls.fetch_add(1, Ordering::Relaxed);
+            self.inner.get_ranges(p, ranges).await
+        }
+
+        fn delete_stream(
+            &self,
+            paths: futures::stream::BoxStream<'static, ObjectStoreResult<Path>>,
+        ) -> futures::stream::BoxStream<'static, ObjectStoreResult<Path>> {
+            self.inner.delete_stream(paths)
+        }
+
+        fn list(
+            &self,
+            p: Option<&Path>,
+        ) -> futures::stream::BoxStream<'static, ObjectStoreResult<ObjectMeta>> {
+            self.inner.list(p)
+        }
+
+        async fn list_with_delimiter(&self, p: Option<&Path>) -> ObjectStoreResult<ListResult> {
+            self.inner.list_with_delimiter(p).await
+        }
+
+        async fn copy_opts(
+            &self,
+            from: &Path,
+            to: &Path,
+            options: CopyOptions,
+        ) -> ObjectStoreResult<()> {
+            self.inner.copy_opts(from, to, options).await
+        }
+
+        async fn rename_opts(
+            &self,
+            from: &Path,
+            to: &Path,
+            options: RenameOptions,
+        ) -> ObjectStoreResult<()> {
+            self.inner.rename_opts(from, to, options).await
+        }
+    }
+
+    #[tokio::test]
+    async fn preserves_custom_range_delegation_for_local_and_other_backends() {
+        assert_range_read_contract(ScanIoSource::Local).await;
+        // This is also the classification returned for custom libhdfs schemes, including s3.
+        assert_range_read_contract(ScanIoSource::OtherObjectStore).await;
+    }
+
+    #[tokio::test]
+    async fn remote_metrics_observe_default_coalescing_instead_of_inner_override() {
+        assert_range_read_contract(ScanIoSource::ObjectStore).await;
+    }
+
+    async fn assert_range_read_contract(source: ScanIoSource) {
+        let store = Arc::new(RecordingRangeStore {
+            inner: InMemory::new(),
+            range_calls: AtomicUsize::new(0),
+            get_calls: AtomicUsize::new(0),
+        });
+        let location = Path::from("ranges.parquet");
+        store
+            .put(&location, Bytes::from_static(b"0123456789").into())
+            .await
+            .unwrap();
+        let runtime = datafusion::execution::runtime_env::RuntimeEnv::default();
+        let metrics = ExecutionPlanMetricsSet::new();
+        let factory = EagerPageIndexReaderFactory::new(
+            Arc::clone(&store) as Arc<dyn ObjectStore>,
+            runtime.cache_manager.get_file_metadata_cache(),
+            source,
+            &metrics,
+        );
+        let mut reader = factory
+            .create_reader(
+                0,
+                PartitionedFile::new(location.to_string(), 10),
+                None,
+                &metrics,
+            )
+            .unwrap();
+        let result = reader.get_byte_ranges(vec![0..2, 4..6]).await.unwrap();
+        assert_eq!(
+            result,
+            vec![Bytes::from_static(b"01"), Bytes::from_static(b"45")]
+        );
+        let remote = source == ScanIoSource::ObjectStore;
+        assert_eq!(
+            store.range_calls.load(Ordering::Relaxed),
+            usize::from(!remote)
+        );
+        assert_eq!(store.get_calls.load(Ordering::Relaxed), usize::from(remote));
+        assert_eq!(
+            metrics
+                .clone_inner()
+                .sum_by_name("scan_io_data_bytes")
+                .unwrap()
+                .as_usize(),
+            4
+        );
+        assert_eq!(
+            metrics
+                .clone_inner()
+                .sum_by_name("scan_io_object_store_response_bytes_read")
+                .unwrap()
+                .as_usize(),
+            if remote { 6 } else { 0 }
+        );
     }
 }
