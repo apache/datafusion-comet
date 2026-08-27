@@ -28,7 +28,7 @@ import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, GenericInternalRow, IsNotNull, IsNull, UnsafeProjection}
 import org.apache.spark.sql.columnar.{CachedBatch, SimpleMetricsCachedBatch, SimpleMetricsCachedBatchSerializer}
 import org.apache.spark.sql.comet.util.Utils
-import org.apache.spark.sql.execution.columnar.DefaultCachedBatchSerializer
+import org.apache.spark.sql.execution.columnar.{DefaultCachedBatch, DefaultCachedBatchSerializer}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
@@ -536,4 +536,35 @@ object ArrowCachedBatchSerializer {
 
   def supportsSchema(schema: Seq[Attribute]): Boolean =
     schema.forall(a => supportsType(a.dataType))
+
+  /**
+   * The classes a `CometCachedBatch` adds on top of [[org.apache.comet.CometKryoRegistrator]]'s
+   * shared Arrow-bytes classes.
+   *
+   * Spark serializes a `CachedBatch` with `spark.serializer` whenever the block leaves the heap:
+   * the disk half of `MEMORY_AND_DISK`, the `_SER` levels, replication, and cross-executor
+   * fetches. Under `spark.kryo.registrationRequired=true` Kryo rejects any class it has not been
+   * told about, so an ordinary `df.cache()` that spills would fail with "Class is not registered"
+   * rather than anything naming this feature. Spark registers its own `ArrowCachedBatch` in
+   * `KryoSerializer.loadableSparkClasses` for the same reason; Comet cannot add to that list, so
+   * `CometKryoRegistrator` registers these instead.
+   */
+  def kryoClasses: Seq[Class[_]] = Seq(
+    classOf[CometCachedBatch],
+    // The statistics row, whose values are bounds in Spark's internal representation: boxed
+    // primitives, which Kryo registers by default, plus UTF8String and Decimal, which it does not.
+    // A Decimal above Long precision holds a scala.math.BigDecimal, which Chill's Scala registrar
+    // already covers with a serializer that writes the java.math.BigDecimal inside it as a
+    // class-and-object, so that one has to be registered here.
+    classOf[GenericInternalRow],
+    classOf[Array[Any]],
+    classOf[UTF8String],
+    classOf[Decimal],
+    classOf[java.math.BigDecimal],
+    classOf[java.math.BigInteger],
+    // A relation whose schema this serializer cannot store is delegated to Spark's
+    // DefaultCachedBatchSerializer, so its payload has to survive Kryo too. Spark registers
+    // DefaultCachedBatch itself only from 4.1 onwards, so on 3.4, 3.5 and 4.0 the delegated path
+    // fails without this. Registering it twice on 4.1 is a no-op.
+    classOf[DefaultCachedBatch])
 }

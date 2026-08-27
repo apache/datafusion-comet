@@ -302,6 +302,22 @@ object Utils extends CometTypeShim with Logging {
   }
 
   /**
+   * The classes that carry the output of [[serializeBatches]] and [[serializeBatchColumns]] out
+   * of Comet, for Kryo registration by [[org.apache.comet.CometKryoRegistrator]].
+   *
+   * Spark registers `ChunkedByteBuffer` itself but not an array of them, and
+   * `CometBroadcastExchangeExec` broadcasts exactly that array, so a native broadcast fails under
+   * `spark.kryo.registrationRequired=true` whichever Comet features are enabled. Comet's cache
+   * format stores one buffer per column and so needs the same registrations.
+   */
+  def arrowBytesKryoClasses: Seq[Class[_]] = Seq(
+    classOf[ChunkedByteBuffer],
+    classOf[Array[ChunkedByteBuffer]],
+    // A ChunkedByteBuffer's own chunks. ChunkedByteBufferOutputStream allocates them on heap.
+    classOf[Array[ByteBuffer]],
+    ByteBuffer.allocate(1).getClass)
+
+  /**
    * Decodes the byte arrays back to ColumnarBatchs and put them into buffer.
    *
    * @param bytes

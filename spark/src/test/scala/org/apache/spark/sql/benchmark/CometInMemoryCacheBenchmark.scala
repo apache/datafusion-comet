@@ -113,13 +113,13 @@ object CometInMemoryCacheBenchmark extends CometBenchmarkBase {
 
       val benchmark = new Benchmark(name, numRows, output = output)
 
-      benchmark.addCase("Comet cache disabled") { _ =>
+      benchmark.addCase("Spark cache scan + CometSparkColumnarToColumnar") { _ =>
         withSQLConf(cacheConf(nativeCacheEnabled = false): _*) {
           spark.sql(query).noop()
         }
       }
 
-      benchmark.addCase("Comet cache enabled") { _ =>
+      benchmark.addCase("CometInMemoryTableScan") { _ =>
         withSQLConf(cacheConf(nativeCacheEnabled = true): _*) {
           spark.sql(query).noop()
         }
@@ -132,14 +132,19 @@ object CometInMemoryCacheBenchmark extends CometBenchmarkBase {
   private def withCachedTable(f: => Unit): Unit = {
     spark.catalog.clearCache()
 
-    // Materialize the cache once using Comet's cache serializer.
-    // The benchmark measures repeated cache reads by comparing the
-    // fallback read path against CometInMemoryTableScan.
+    // Materialize the cache once using Comet's cache serializer, then read it both ways.
     //
-    // Both cases therefore read a Comet-written cache: spark.sql.cache.serializer is a static
-    // conf, so a single session cannot also materialize a DefaultCachedBatch to compare against.
-    // "Comet cache disabled" here means Spark execution over CometCachedBatch, NOT Spark's own
-    // cache format, and these numbers are not a baseline for it.
+    // What the two cases isolate is the cache-scan boundary, not the execution engine above it.
+    // cacheConf turns Comet execution on for both, so the aggregation runs on Comet either way;
+    // the only flag that moves is COMET_EXEC_IN_MEMORY_CACHE_ENABLED. Disabled, Spark's
+    // InMemoryTableScanExec feeds those same Comet operators through a
+    // CometSparkColumnarToColumnar bridge; enabled, CometInMemoryTableScan feeds them directly.
+    // So the numbers measure "keep the cached scan native" against "fall back to a Spark cache
+    // scan and convert" -- which is the overhead this feature exists to remove.
+    //
+    // Neither case is a baseline for Spark's own cache format. spark.sql.cache.serializer is a
+    // static conf, so a single session cannot also materialize a DefaultCachedBatch to compare
+    // against; both cases read the same Comet-written CometCachedBatch.
     withSQLConf(cacheConf(nativeCacheEnabled = true): _*) {
       spark
         .sql(s"SELECT id, k, v, s1, s2, s3 FROM $sourceTable")
@@ -155,6 +160,10 @@ object CometInMemoryCacheBenchmark extends CometBenchmarkBase {
     }
   }
 
+  // Pins the shape the case labels claim: enabled reads the cache natively with no conversion,
+  // disabled reads it through Spark's cache scan and a CometSparkColumnarToColumnar bridge. The
+  // bridge is what makes the disabled case a scan-boundary comparison rather than a Spark-vs-Comet
+  // execution one, since a Spark-columnar-to-Arrow transition only exists to feed Comet operators.
   private def verifyPlan(query: String, nativeCacheEnabled: Boolean): Unit = {
     val plan = spark.sql(query).queryExecution.executedPlan.toString()
 
@@ -165,6 +174,9 @@ object CometInMemoryCacheBenchmark extends CometBenchmarkBase {
       assert(
         !plan.contains("CometInMemoryTableScan"),
         s"Native cache scan should be disabled:\n$plan")
+      assert(
+        plan.contains("CometSparkColumnarToColumnar"),
+        s"Expected the fallback read to bridge into Comet operators:\n$plan")
     }
   }
 

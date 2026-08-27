@@ -271,7 +271,10 @@ object CometConf extends ShimCometConf {
           "format. Each cached column is stored as its own compressed Arrow IPC stream, so a " +
           "scan decodes only the columns it projected. Reads that feed Spark operators rather " +
           "than Comet ones still pay a row conversion the default format avoids, and can be " +
-          "slower than Spark's cache.")
+          "slower than Spark's cache. With spark.kryo.registrationRequired=true, also set " +
+          "spark.kryo.registrator=org.apache.comet.CometKryoRegistrator before creating the " +
+          "SparkContext, otherwise caching fails as soon as a block is serialized, including " +
+          "the disk half of the default MEMORY_AND_DISK storage level.")
       .booleanConf
       .createWithDefault(false)
 
