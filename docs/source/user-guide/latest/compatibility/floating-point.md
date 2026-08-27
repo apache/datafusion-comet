@@ -34,3 +34,16 @@ greater than non-NaN values. The original first equal element is retained: for e
 `array_min(array(0.0D, -0.0D))` returns `0.0`, while reversing those elements returns `-0.0`.
 The same ordering applies recursively to floating-point fields in arrays and structs. These
 expressions do not require Spark's codegen dispatcher for floating-point compatibility.
+
+## Ordering: signed zero (`-0.0` vs `+0.0`)
+
+Spark's `ORDER BY`, `RANK`, `DENSE_RANK`, and window frame comparisons route through
+`SQLOrderingUtil.compareDoubles` / `compareFloats`, which explicitly define `-0.0 == 0.0`. Comet's
+native sort and `WindowGroupLimitExec` use the `arrow-row` row-format encoder for `ORDER BY` keys,
+which applies Rust's total-ordering transform to the raw IEEE-754 bits. Under that encoding `-0.0`
+sorts strictly less than `+0.0`, so a partition that mixes the two zeros can produce a rank
+distribution that differs from Spark. For example, `RANK() OVER (ORDER BY v ASC)` over
+`[-0.0, 0.0, 1.0]` filtered to `rk <= 1` returns two rows in Spark (both zeros tied at rank 1) but
+one row in Comet (`-0.0` at rank 1, `+0.0` at rank 2). If your workload materially mixes `-0.0`
+and `+0.0` in a ranked column, prefer Spark for that stage or normalize the column to `+0.0`
+upstream.
