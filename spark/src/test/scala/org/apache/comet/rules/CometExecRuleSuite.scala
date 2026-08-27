@@ -362,7 +362,7 @@ class CometExecRuleSuite extends CometTestBase {
     }
   }
 
-  test("CometExecRule should allow AVG mixed Comet partial and Spark final") {
+  test("CometExecRule should not allow AVG Comet partial and Spark final before buffer repair") {
     withTempView("test_data") {
       createTestDataFrame.createOrReplaceTempView("test_data")
       val sparkPlan =
@@ -372,8 +372,9 @@ class CometExecRuleSuite extends CometTestBase {
         CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.key -> "false",
         CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
         val transformedPlan = applyCometExecRule(sparkPlan)
-        assert(countOperators(transformedPlan, classOf[HashAggregateExec]) == 1) // final
-        assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 1) // partial
+        // Matching field types do not make native AVG's empty (null, 0) state safe for Spark.
+        assert(countOperators(transformedPlan, classOf[HashAggregateExec]) == 2)
+        assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 0)
       }
     }
   }
