@@ -124,12 +124,14 @@ object CometConf extends ShimCometConf {
   val COMET_ICEBERG_SORT_MERGE_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.scan.icebergNative.sortMerge.enabled")
       .category(CATEGORY_SCAN)
-      .doc("Whether the native Iceberg scan reports the table sort order and performs a " +
-        "per-partition streaming merge of already-sorted files. When enabled and Iceberg reports " +
-        "an ordering (requires Iceberg's spark.sql.iceberg.planning.preserve-data-ordering), " +
-        "each Spark partition reads its files as separate sorted streams merged into one sorted " +
-        "output, and the ordering is surfaced to Spark so redundant sorts are eliminated. When " +
-        "disabled, files are read unordered as before.")
+      .doc("Whether the native Iceberg scan performs a per-partition streaming k-way merge of " +
+        "already-sorted files. When enabled and Iceberg reports an ordering (requires Iceberg's " +
+        "spark.sql.iceberg.planning.preserve-data-ordering), each Spark partition reads its " +
+        "files as separate sorted streams merged into one sorted output. When disabled, the scan " +
+        "native and the ordering is still reported and honoured, but via a single unordered read " +
+        "wrapped in a spillable sort instead of the k-way merge (equivalent to setting " +
+        "maxFilesPerPartition to 0). Either way the ordering is surfaced to Spark so redundant " +
+        "sorts are eliminated.")
       .booleanConf
       .createWithDefault(true)
 
