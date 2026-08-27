@@ -419,27 +419,36 @@ pub(crate) fn cast_array(
     Ok(spark_cast_postprocess(cast_result?, &from_type, to_type))
 }
 
-/// True only for casts whose child values cannot fail in any evaluation mode.
-/// This is deliberately a whitelist, not a replacement for the cast support matrix.
-fn is_infallible_cast(from_type: &DataType, to_type: &DataType) -> bool {
+/// True only for infallible casts whose leaves all have fixed width. Even an identity cast on
+/// a variable-width child could retain a large payload hidden by a null ancestor. Structs keep
+/// one slot per parent; lists/maps are only considered at the current preparation boundary,
+/// where their offsets let us bound the hidden values. This is not a cast support matrix.
+fn is_infallible_fixed_width_cast(from_type: &DataType, to_type: &DataType) -> bool {
     use DataType::*;
-    if from_type == to_type {
-        return true;
-    }
     match (from_type, to_type) {
         (Int8, Int16 | Int32 | Int64) | (Int16, Int32 | Int64) | (Int32, Int64) => true,
         (Struct(from), Struct(to)) => {
             from.len() == to.len()
-                && from
-                    .iter()
-                    .zip(to)
-                    .all(|(from, to)| is_infallible_cast(from.data_type(), to.data_type()))
-        }
-        (List(from), List(to)) | (Map(from, _), Map(to, _)) => {
-            is_infallible_cast(from.data_type(), to.data_type())
+                && from.iter().zip(to).all(|(from, to)| {
+                    is_infallible_fixed_width_cast(from.data_type(), to.data_type())
+                })
         }
         // In particular, DATE to TIMESTAMP can overflow even in legacy mode. Retain
-        // normalization for every conversion not proven safe above, including TRY casts.
+        // normalization for every changed leaf not proven safe above, including TRY casts.
+        _ => {
+            (from_type.is_primitive() || matches!(from_type, Boolean | Null))
+                && from_type == to_type
+        }
+    }
+}
+
+fn has_infallible_fixed_width_children(from_type: &DataType, to_type: &DataType) -> bool {
+    use DataType::*;
+    match (from_type, to_type) {
+        (Struct(_), Struct(_)) => is_infallible_fixed_width_cast(from_type, to_type),
+        (List(from), List(to)) | (Map(from, _), Map(to, _)) => {
+            is_infallible_fixed_width_cast(from.data_type(), to.data_type())
+        }
         _ => false,
     }
 }
@@ -467,9 +476,10 @@ fn prepare_nested_cast_input(array: ArrayRef, to_type: &DataType) -> DataFusionR
 
     // Widening integers does not need a copy to mask hidden children. Still compact slices
     // and dense-null lists/maps: retaining most of their unused children can make even an
-    // infallible cast slower. Struct children always have one slot per parent row.
+    // infallible cast slower. Reuse only fixed-width leaves (possibly inside structs), so a
+    // hidden nested list/map or unchanged string cannot escape this container's density check.
     if !has_unused_values
-        && is_infallible_cast(array.data_type(), to_type)
+        && has_infallible_fixed_width_children(array.data_type(), to_type)
         && !should_compact_infallible_values(&array)
     {
         return Ok(array);
@@ -939,7 +949,9 @@ mod tests {
         BinaryArray, Date32Array, ListArray, NullArray, PrimitiveArray, StringArray,
     };
     use arrow::buffer::{NullBuffer, OffsetBuffer};
-    use arrow::datatypes::{Field, Fields, Int32Type, TimeUnit, TimestampMicrosecondType};
+    use arrow::datatypes::{
+        Field, Fields, Int32Type, Int64Type, TimeUnit, TimestampMicrosecondType,
+    };
 
     #[test]
     fn test_cast_to_dictionary_is_rejected() {
@@ -1476,7 +1488,23 @@ mod tests {
     #[test]
     fn test_infallible_cast_whitelist_keeps_checked_conversions() {
         for from in [DataType::Int8, DataType::Int16, DataType::Int32] {
-            assert!(is_infallible_cast(&from, &DataType::Int64));
+            assert!(is_infallible_fixed_width_cast(&from, &DataType::Int64));
+        }
+        for fixed in [
+            DataType::Int32,
+            DataType::Date32,
+            DataType::Boolean,
+            DataType::Null,
+        ] {
+            assert!(is_infallible_fixed_width_cast(&fixed, &fixed));
+        }
+        for variable in [
+            DataType::Utf8,
+            DataType::Binary,
+            DataType::List(Arc::new(Field::new("item", DataType::Int32, false))),
+            DataType::Struct(vec![Field::new("text", DataType::Utf8, false)].into()),
+        ] {
+            assert!(!is_infallible_fixed_width_cast(&variable, &variable));
         }
         for (from, to) in [
             (DataType::Int64, DataType::Int32),
@@ -1486,7 +1514,7 @@ mod tests {
                 DataType::Timestamp(TimeUnit::Microsecond, None),
             ),
         ] {
-            assert!(!is_infallible_cast(&from, &to));
+            assert!(!is_infallible_fixed_width_cast(&from, &to));
             let from = DataType::Struct(
                 vec![
                     Field::new("widen", DataType::Int32, false),
@@ -1501,7 +1529,7 @@ mod tests {
                 ]
                 .into(),
             );
-            assert!(!is_infallible_cast(&from, &to));
+            assert!(!is_infallible_fixed_width_cast(&from, &to));
         }
     }
 
@@ -1526,6 +1554,159 @@ mod tests {
             .unwrap();
             assert_eq!(result.as_list::<i32>().values().len(), 3);
             assert_eq!(result.nulls(), array.nulls());
+            result.to_data().validate_full().unwrap();
+        }
+    }
+
+    #[test]
+    fn test_infallible_cast_preserves_compaction_through_variable_width_children() {
+        // Each immediate child has one slot, but a null outer parent hides most leaf values.
+        let hidden_values = 65_536;
+        let values: ArrayRef = Arc::new(ListArray::new(
+            Arc::new(Field::new("item", DataType::Int32, false)),
+            OffsetBuffer::new(
+                vec![
+                    0,
+                    1,
+                    hidden_values + 1,
+                    hidden_values + 2,
+                    hidden_values + 3,
+                ]
+                .into(),
+            ),
+            Arc::new(Int32Array::from_iter_values(0..hidden_values + 3)),
+            None,
+        ));
+        let target_values = DataType::List(Arc::new(Field::new("item", DataType::Int64, false)));
+        let nulls = Some(NullBuffer::from(vec![true, false, true, true]));
+        let offsets = OffsetBuffer::new(vec![0, 1, 2, 3, 4].into());
+        let entries = StructArray::new(
+            vec![
+                Field::new("key", DataType::Int32, false),
+                Field::new("value", values.data_type().clone(), false),
+            ]
+            .into(),
+            vec![
+                Arc::new(Int32Array::from_iter_values(0..4)),
+                Arc::clone(&values),
+            ],
+            None,
+        );
+        let inputs: Vec<(ArrayRef, DataType)> = vec![
+            (
+                Arc::new(StructArray::new(
+                    vec![Field::new("value", values.data_type().clone(), false)].into(),
+                    vec![Arc::clone(&values)],
+                    nulls.clone(),
+                )),
+                DataType::Struct(vec![Field::new("value", target_values.clone(), false)].into()),
+            ),
+            (
+                Arc::new(ListArray::new(
+                    Arc::new(Field::new("item", values.data_type().clone(), false)),
+                    offsets.clone(),
+                    values,
+                    nulls.clone(),
+                )),
+                DataType::List(Arc::new(Field::new("item", target_values.clone(), false))),
+            ),
+            (
+                Arc::new(MapArray::new(
+                    Arc::new(Field::new("entries", entries.data_type().clone(), false)),
+                    offsets,
+                    entries,
+                    nulls,
+                    false,
+                )),
+                DataType::Map(
+                    Arc::new(Field::new(
+                        "entries",
+                        DataType::Struct(
+                            vec![
+                                Field::new("key", DataType::Int32, false),
+                                Field::new("value", target_values, false),
+                            ]
+                            .into(),
+                        ),
+                        false,
+                    )),
+                    false,
+                ),
+            ),
+        ];
+
+        fn leaf_values(array: &ArrayRef) -> &ArrayRef {
+            let lists = match array.data_type() {
+                DataType::Struct(_) => array.as_struct().column(0),
+                DataType::List(_) => array.as_list::<i32>().values(),
+                DataType::Map(_, _) => array.as_map().values(),
+                _ => unreachable!(),
+            };
+            lists.as_list::<i32>().values()
+        }
+
+        for (array, target) in inputs {
+            let prepared = prepare_nested_cast_input(Arc::clone(&array), &target).unwrap();
+            assert!(!Arc::ptr_eq(&array, &prepared), "{target}");
+            assert_eq!(leaf_values(&prepared).len(), 3, "{target}");
+            for mode in [EvalMode::Legacy, EvalMode::Ansi, EvalMode::Try] {
+                let options = SparkCastOptions::new(mode, "UTC", false);
+                let result = cast_array(Arc::clone(&array), &target, &options).unwrap();
+                let expected = cast_array(Arc::clone(&prepared), &target, &options).unwrap();
+                assert_eq!(result.to_data(), expected.to_data());
+                assert_eq!(result.nulls(), array.nulls());
+                assert_eq!(
+                    leaf_values(&result)
+                        .as_primitive::<Int64Type>()
+                        .values()
+                        .as_ref(),
+                    &[
+                        0,
+                        i64::from(hidden_values + 1),
+                        i64::from(hidden_values + 2)
+                    ]
+                );
+                result.to_data().validate_full().unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn test_infallible_cast_preserves_compaction_of_variable_width_identity_values() {
+        // An unchanged string child needs no conversion, but reusing it would retain the
+        // large hidden payload in the output of the changed struct cast.
+        let hidden = "x".repeat(65_536);
+        let array: ArrayRef = Arc::new(StructArray::new(
+            vec![
+                Field::new("widen", DataType::Int32, false),
+                Field::new("unchanged", DataType::Utf8, false),
+            ]
+            .into(),
+            vec![
+                Arc::new(Int32Array::from_iter_values(0..4)),
+                Arc::new(StringArray::from(vec!["a", hidden.as_str(), "b", "c"])),
+            ],
+            Some(NullBuffer::from(vec![true, false, true, true])),
+        ));
+        let target = DataType::Struct(
+            vec![
+                Field::new("widen", DataType::Int64, false),
+                Field::new("unchanged", DataType::Utf8, false),
+            ]
+            .into(),
+        );
+        let prepared = prepare_nested_cast_input(Arc::clone(&array), &target).unwrap();
+        assert!(!Arc::ptr_eq(&array, &prepared));
+        for mode in [EvalMode::Legacy, EvalMode::Ansi, EvalMode::Try] {
+            let options = SparkCastOptions::new(mode, "UTC", false);
+            let result = cast_array(Arc::clone(&array), &target, &options).unwrap();
+            let expected = cast_array(Arc::clone(&prepared), &target, &options).unwrap();
+            assert_eq!(result.to_data(), expected.to_data());
+            assert_eq!(result.nulls(), array.nulls());
+            assert_eq!(
+                result.as_struct().column(1).as_string::<i32>().value_data(),
+                b"abc"
+            );
             result.to_data().validate_full().unwrap();
         }
     }
