@@ -52,12 +52,12 @@ case class CometLocalTableScanExec(
   override lazy val metrics: Map[String, SQLMetric] = Map(
     "numOutputRows" -> SQLMetrics.createMetric(sparkContext, "number of output rows"))
 
-  @transient private lazy val unsafeRows: Array[InternalRow] = {
+  @transient private lazy val unsafeRows: IndexedSeq[InternalRow] = {
     if (rows.isEmpty) {
-      Array.empty
+      IndexedSeq.empty
     } else {
       val proj = UnsafeProjection.create(output, output)
-      rows.map(r => proj(r).copy()).toArray
+      rows.iterator.map(r => proj(r).copy()).toIndexedSeq
     }
   }
 

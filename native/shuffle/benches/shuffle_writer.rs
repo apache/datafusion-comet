@@ -18,6 +18,7 @@
 use arrow::array::builder::{Date32Builder, Decimal128Builder, Int32Builder};
 use arrow::array::{builder::StringBuilder, Array, Int32Array, RecordBatch};
 use arrow::datatypes::{DataType, Field, Schema};
+use arrow::ipc::writer::CompressionContext;
 use arrow::row::{RowConverter, SortField};
 use criterion::{criterion_group, criterion_main, Criterion};
 use datafusion::datasource::memory::MemorySourceConfig;
@@ -53,10 +54,12 @@ fn criterion_benchmark(c: &mut Criterion) {
             let ipc_time = Time::default();
             let w =
                 ShuffleBlockWriter::try_new(&batch.schema(), compression_codec.clone()).unwrap();
+            let mut compression_context = CompressionContext::default();
             b.iter(|| {
                 buffer.clear();
                 let mut cursor = Cursor::new(&mut buffer);
-                w.write_batch(&batch, &mut cursor, &ipc_time).unwrap();
+                w.write_batch(&batch, &mut cursor, &mut compression_context, &ipc_time)
+                    .unwrap();
             });
         });
     }
@@ -75,6 +78,8 @@ fn criterion_benchmark(c: &mut Criterion) {
                 let exec = create_shuffle_writer_exec(
                     compression_codec.clone(),
                     CometPartitioning::Hash(vec![Arc::new(Column::new("a", 0))], 16),
+                    8192,
+                    10,
                 );
                 b.iter(|| {
                     let task_ctx = ctx.task_ctx();
@@ -123,8 +128,43 @@ fn criterion_benchmark(c: &mut Criterion) {
             format!("shuffle_writer: end to end (partitioning={partitioning:?})"),
             |b| {
                 let ctx = SessionContext::new();
-                let exec =
-                    create_shuffle_writer_exec(compression_codec.clone(), partitioning.clone());
+                let exec = create_shuffle_writer_exec(
+                    compression_codec.clone(),
+                    partitioning.clone(),
+                    8192,
+                    10,
+                );
+                b.iter(|| {
+                    let task_ctx = ctx.task_ctx();
+                    let stream = exec.execute(0, task_ctx).unwrap();
+                    let rt = Runtime::new().unwrap();
+                    rt.block_on(collect(stream)).unwrap();
+                });
+            },
+        );
+    }
+
+    // Single-partition writes, varying only how the input is chunked relative to the
+    // session `batch_size` (8192). The two cases exercise different paths through the
+    // writer's `BatchCoalescer`:
+    //
+    // - `rows_per_batch=8192` divides `batch_size` evenly, so each batch is handed to the
+    //   coalescer at exactly `batch_size` and takes the zero-copy passthrough.
+    // - `rows_per_batch=3000` does not, so batches accumulate in the coalescer's builders
+    //   and are copied there before being emitted.
+    //
+    // Total rows are held roughly constant so the two are comparable.
+    for (rows_per_batch, num_batches) in [(8192usize, 10usize), (3000, 27)] {
+        group.bench_function(
+            format!("shuffle_writer: end to end (partitioning=SinglePartition, rows_per_batch={rows_per_batch})"),
+            |b| {
+                let ctx = SessionContext::new();
+                let exec = create_shuffle_writer_exec(
+                    CompressionCodec::None,
+                    CometPartitioning::SinglePartition,
+                    rows_per_batch,
+                    num_batches,
+                );
                 b.iter(|| {
                     let task_ctx = ctx.task_ctx();
                     let stream = exec.execute(0, task_ctx).unwrap();
@@ -139,8 +179,10 @@ fn criterion_benchmark(c: &mut Criterion) {
 fn create_shuffle_writer_exec(
     compression_codec: CompressionCodec,
     partitioning: CometPartitioning,
+    rows_per_batch: usize,
+    num_batches: usize,
 ) -> ShuffleWriterExec {
-    let batches = create_batches(8192, 10);
+    let batches = create_batches(rows_per_batch, num_batches);
     let schema = batches[0].schema();
     let partitions = &[batches];
     ShuffleWriterExec::try_new(
@@ -214,12 +256,15 @@ fn schema_encoding_benchmark(c: &mut Criterion) {
         let writer =
             ShuffleBlockWriter::try_new(batch.schema().as_ref(), CompressionCodec::None).unwrap();
         let ipc_time = Time::default();
+        let mut compression_context = CompressionContext::default();
         group.bench_function(format!("write_batch ({name} schema)"), |b| {
             let mut buffer = vec![];
             b.iter(|| {
                 buffer.clear();
                 let mut cursor = Cursor::new(&mut buffer);
-                writer.write_batch(&batch, &mut cursor, &ipc_time).unwrap();
+                writer
+                    .write_batch(&batch, &mut cursor, &mut compression_context, &ipc_time)
+                    .unwrap();
             });
         });
     }

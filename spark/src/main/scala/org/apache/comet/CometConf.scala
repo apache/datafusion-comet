@@ -121,6 +121,26 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(true)
 
+  val COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.write.iceberg.splitOperator.enabled")
+      .category(CATEGORY_TESTING)
+      .doc(
+        "Whether to rewrite Iceberg V2 writes from Spark's combined V2 write/commit operator " +
+          "into Comet's two-operator shape: a file writer exec (inside AQE) and a committer " +
+          "(outside AQE).")
+      .booleanConf
+      .createWithDefault(false)
+
+  val COMET_ICEBERG_NATIVE_WRITE_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.iceberg.write.enabled")
+      .category(CATEGORY_TESTING)
+      .doc(
+        "Whether to delegate the executor-side Parquet write to Comet's native (iceberg-rust) " +
+          "writer when the table's properties allow it. Requires " +
+          "`spark.comet.write.iceberg.splitOperator.enabled = true`. Off by default.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_ICEBERG_DATA_FILE_CONCURRENCY_LIMIT: ConfigEntry[Int] =
     conf("spark.comet.scan.icebergNative.dataFileConcurrencyLimit")
       .category(CATEGORY_SCAN)
@@ -229,10 +249,14 @@ object CometConf extends ShimCometConf {
     createExecEnabledConfig("explode", defaultValue = true)
   val COMET_EXEC_WINDOW_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("window", defaultValue = true)
+  val COMET_EXEC_WINDOW_GROUP_LIMIT_ENABLED: ConfigEntry[Boolean] =
+    createExecEnabledConfig("windowGroupLimit", defaultValue = true)
   val COMET_EXEC_TAKE_ORDERED_AND_PROJECT_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("takeOrderedAndProject", defaultValue = true)
   val COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("localTableScan", defaultValue = false)
+  val COMET_EXEC_SAMPLE_ENABLED: ConfigEntry[Boolean] =
+    createExecEnabledConfig("sample", defaultValue = true)
 
   val COMET_NATIVE_COLUMNAR_TO_ROW_ENABLED: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.columnarToRow.native.enabled")
@@ -240,10 +264,10 @@ object CometConf extends ShimCometConf {
       .doc(
         "Whether to enable native columnar to row conversion. When enabled, Comet will use " +
           "native Rust code to convert Arrow columnar data to Spark UnsafeRow format instead " +
-          "of the JVM implementation. This can improve performance for queries that need to " +
-          "convert between columnar and row formats.")
+          "of the JVM implementation. The native conversion carries a fixed JNI cost per batch " +
+          "and is slower than the JVM implementation for small batches.")
       .booleanConf
-      .createWithDefault(true)
+      .createWithDefault(false)
 
   val COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.sortMergeJoinWithJoinFilter.enabled")
@@ -254,7 +278,7 @@ object CometConf extends ShimCometConf {
       .createWithDefault(true)
 
   val COMET_PYARROW_UDF_ENABLED: ConfigEntry[Boolean] =
-    conf("spark.comet.exec.pyarrowUdf.enabled")
+    conf("spark.comet.exec.pyarrowUDF.enabled")
       .category(CATEGORY_EXEC)
       .doc(
         "Experimental: whether to enable optimized execution of PyArrow UDFs " +
@@ -279,8 +303,9 @@ object CometConf extends ShimCometConf {
     .bytesConf(ByteUnit.MiB)
     .createWithDefault(1024)
 
-  val COMET_EXEC_SHUFFLE_ENABLED: ConfigEntry[Boolean] =
-    conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.enabled")
+  val COMET_SHUFFLE_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.shuffle.enabled")
+      .withAlternative(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.enabled")
       .category(CATEGORY_SHUFFLE)
       .doc(
         "Whether to enable Comet native shuffle. " +
@@ -292,17 +317,19 @@ object CometConf extends ShimCometConf {
       .createWithDefault(true)
 
   val COMET_SHUFFLE_DIRECT_READ_ENABLED: ConfigEntry[Boolean] =
-    conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.directRead.enabled")
+    conf("spark.comet.shuffle.directRead.enabled")
+      .withAlternative(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.directRead.enabled")
       .category(CATEGORY_SHUFFLE)
       .doc(
         "When enabled, native operators that consume shuffle output will read " +
           "compressed shuffle blocks directly in native code, bypassing Arrow FFI. " +
           "Applies to both native shuffle and JVM columnar shuffle. " +
-          "Requires spark.comet.exec.shuffle.enabled to be true.")
+          "Requires spark.comet.shuffle.enabled to be true.")
       .booleanConf
       .createWithDefault(true)
 
-  val COMET_SHUFFLE_MODE: ConfigEntry[String] = conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.mode")
+  val COMET_SHUFFLE_MODE: ConfigEntry[String] = conf("spark.comet.shuffle.mode")
+    .withAlternative(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.mode")
     .category(CATEGORY_SHUFFLE)
     .doc(
       "This is test config to allow tests to force a particular shuffle implementation to be " +
@@ -348,22 +375,25 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(true)
 
-  val COMET_EXEC_SHUFFLE_WITH_HASH_PARTITIONING_ENABLED: ConfigEntry[Boolean] =
-    conf("spark.comet.native.shuffle.partitioning.hash.enabled")
+  val COMET_SHUFFLE_NATIVE_HASH_PARTITIONING_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.shuffle.native.partitioning.hash.enabled")
+      .withAlternative("spark.comet.native.shuffle.partitioning.hash.enabled")
       .category(CATEGORY_SHUFFLE)
       .doc("Whether to enable hash partitioning for Comet native shuffle.")
       .booleanConf
       .createWithDefault(true)
 
-  val COMET_EXEC_SHUFFLE_WITH_RANGE_PARTITIONING_ENABLED: ConfigEntry[Boolean] =
-    conf("spark.comet.native.shuffle.partitioning.range.enabled")
+  val COMET_SHUFFLE_NATIVE_RANGE_PARTITIONING_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.shuffle.native.partitioning.range.enabled")
+      .withAlternative("spark.comet.native.shuffle.partitioning.range.enabled")
       .category(CATEGORY_SHUFFLE)
       .doc("Whether to enable range partitioning for Comet native shuffle.")
       .booleanConf
       .createWithDefault(true)
 
-  val COMET_EXEC_SHUFFLE_WITH_ROUND_ROBIN_PARTITIONING_ENABLED: ConfigEntry[Boolean] =
-    conf("spark.comet.native.shuffle.partitioning.roundrobin.enabled")
+  val COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.shuffle.native.partitioning.roundrobin.enabled")
+      .withAlternative("spark.comet.native.shuffle.partitioning.roundrobin.enabled")
       .category(CATEGORY_SHUFFLE)
       .doc(
         "Whether to enable round robin partitioning for Comet native shuffle. " +
@@ -377,8 +407,9 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
-  val COMET_EXEC_SHUFFLE_WITH_ROUND_ROBIN_PARTITIONING_MAX_HASH_COLUMNS: ConfigEntry[Int] =
-    conf("spark.comet.native.shuffle.partitioning.roundrobin.maxHashColumns")
+  val COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_MAX_HASH_COLUMNS: ConfigEntry[Int] =
+    conf("spark.comet.shuffle.native.partitioning.roundrobin.maxHashColumns")
+      .withAlternative("spark.comet.native.shuffle.partitioning.roundrobin.maxHashColumns")
       .category(CATEGORY_SHUFFLE)
       .doc(
         "The maximum number of columns to hash for round robin partitioning. " +
@@ -392,8 +423,9 @@ object CometConf extends ShimCometConf {
         "The maximum number of columns to hash for round robin partitioning must be non-negative.")
       .createWithDefault(0)
 
-  val COMET_EXEC_SHUFFLE_CONVERT_FROM_SPARK_PLAN_ENABLED: ConfigEntry[Boolean] =
-    conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.convertFromSparkPlan.enabled")
+  val COMET_SHUFFLE_CONVERT_FROM_SPARK_PLAN_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.shuffle.convertFromSparkPlan.enabled")
+      .withAlternative(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.convertFromSparkPlan.enabled")
       .category(CATEGORY_SHUFFLE)
       .doc(
         "When enabled, Comet will convert a Spark `ShuffleExchangeExec` to a Comet columnar " +
@@ -403,8 +435,9 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(true)
 
-  val COMET_EXEC_SHUFFLE_REVERT_REDUNDANT_COLUMNAR_ENABLED: ConfigEntry[Boolean] =
-    conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.revertRedundantColumnar.enabled")
+  val COMET_SHUFFLE_REVERT_REDUNDANT_COLUMNAR_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.shuffle.revertRedundantColumnar.enabled")
+      .withAlternative(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.revertRedundantColumnar.enabled")
       .category(CATEGORY_SHUFFLE)
       .doc(
         "When enabled, Comet reverts a `CometShuffleExchangeExec` with `CometColumnarShuffle` " +
@@ -443,8 +476,9 @@ object CometConf extends ShimCometConf {
       .checkValue(_ >= 0, "Must be >= 0.")
       .createWithDefault(2)
 
-  val COMET_EXEC_SHUFFLE_COMPRESSION_CODEC: ConfigEntry[String] =
-    conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.compression.codec")
+  val COMET_SHUFFLE_COMPRESSION_CODEC: ConfigEntry[String] =
+    conf("spark.comet.shuffle.compression.codec")
+      .withAlternative(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.compression.codec")
       .category(CATEGORY_SHUFFLE)
       .doc(
         "The codec of Comet native shuffle used to compress shuffle data. lz4, zstd, and " +
@@ -454,16 +488,19 @@ object CometConf extends ShimCometConf {
       .checkValues(Set("zstd", "lz4", "snappy"))
       .createWithDefault("lz4")
 
-  val COMET_EXEC_SHUFFLE_COMPRESSION_ZSTD_LEVEL: ConfigEntry[Int] =
-    conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.compression.zstd.level")
+  val COMET_SHUFFLE_COMPRESSION_ZSTD_LEVEL: ConfigEntry[Int] =
+    conf("spark.comet.shuffle.compression.zstd.level")
+      .withAlternative(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.compression.zstd.level")
       .category(CATEGORY_SHUFFLE)
       .doc("The compression level to use when compressing shuffle files with zstd.")
       .intConf
       .createWithDefault(1)
 
-  val COMET_COLUMNAR_SHUFFLE_MAX_WRITERS_PER_EXECUTOR: ConfigEntry[Int] = {
-    conf("spark.comet.columnar.shuffle.max.writers.per.executor")
-      .withAlternative("spark.comet.columnar.shuffle.async.max.thread.num")
+  val COMET_SHUFFLE_JVM_MAX_WRITERS_PER_EXECUTOR: ConfigEntry[Int] = {
+    conf("spark.comet.shuffle.jvm.maxWritersPerExecutor")
+      .withAlternative(
+        "spark.comet.columnar.shuffle.max.writers.per.executor",
+        "spark.comet.columnar.shuffle.async.max.thread.num")
       .category(CATEGORY_SHUFFLE)
       .doc(
         "Maximum number of concurrent hash-based shuffle writers per executor. Comet's " +
@@ -474,11 +511,12 @@ object CometConf extends ShimCometConf {
       .createWithDefault(100)
   }
 
-  val COMET_COLUMNAR_SHUFFLE_SPILL_THRESHOLD: ConfigEntry[Int] =
-    conf("spark.comet.columnar.shuffle.spill.threshold")
+  val COMET_SHUFFLE_JVM_SPILL_THRESHOLD: ConfigEntry[Int] =
+    conf("spark.comet.shuffle.jvm.spillThreshold")
+      .withAlternative("spark.comet.columnar.shuffle.spill.threshold")
       .category(CATEGORY_SHUFFLE)
       .doc(
-        "Number of rows to be spilled used for Comet columnar shuffle. " +
+        "Number of rows to be spilled used for Comet JVM (columnar) shuffle. " +
           "For every configured number of rows, a new spill file will be created. " +
           "Higher value means more memory requirement to buffer shuffle data before " +
           "flushing to disk. As Comet uses columnar shuffle which is columnar format, " +
@@ -488,11 +526,12 @@ object CometConf extends ShimCometConf {
       .intConf
       .createWithDefault(Int.MaxValue)
 
-  val COMET_ONHEAP_SHUFFLE_MEMORY_FACTOR: ConfigEntry[Double] =
-    conf("spark.comet.columnar.shuffle.memory.factor")
+  val COMET_SHUFFLE_JVM_MEMORY_FACTOR: ConfigEntry[Double] =
+    conf("spark.comet.shuffle.jvm.memoryFactor")
+      .withAlternative("spark.comet.columnar.shuffle.memory.factor")
       .category(CATEGORY_TESTING)
-      .doc("Fraction of Comet memory to be allocated per executor process for columnar shuffle " +
-        s"when running in on-heap mode. $TUNING_GUIDE.")
+      .doc("Fraction of Comet memory to be allocated per executor process for JVM (columnar) " +
+        s"shuffle when running in on-heap mode. $TUNING_GUIDE.")
       .doubleConf
       .checkValue(
         factor => factor > 0,
@@ -506,8 +545,9 @@ object CometConf extends ShimCometConf {
     .checkValue(v => v > 0, "Batch size must be positive")
     .createWithDefault(8192)
 
-  val COMET_COLUMNAR_SHUFFLE_BATCH_SIZE: ConfigEntry[Int] =
-    conf("spark.comet.columnar.shuffle.batch.size")
+  val COMET_SHUFFLE_JVM_BATCH_SIZE: ConfigEntry[Int] =
+    conf("spark.comet.shuffle.jvm.batchSize")
+      .withAlternative("spark.comet.columnar.shuffle.batch.size")
       .category(CATEGORY_SHUFFLE)
       .doc("Batch size when writing out sorted spill files on the native side. Note that " +
         "this should not be larger than batch size (i.e., `spark.comet.batchSize`). Otherwise " +
@@ -518,8 +558,9 @@ object CometConf extends ShimCometConf {
         "Should not be larger than batch size `spark.comet.batchSize`")
       .createWithDefault(8192)
 
-  val COMET_SHUFFLE_WRITE_BUFFER_SIZE: ConfigEntry[Long] =
-    conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.writeBufferSize")
+  val COMET_SHUFFLE_NATIVE_WRITE_BUFFER_SIZE: ConfigEntry[Long] =
+    conf("spark.comet.shuffle.native.writeBufferSize")
+      .withAlternative(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.writeBufferSize")
       .category(CATEGORY_SHUFFLE)
       .doc("Size of the write buffer in bytes used by the native shuffle writer when writing " +
         "shuffle data to disk. Larger values may improve write performance by reducing " +
@@ -529,15 +570,16 @@ object CometConf extends ShimCometConf {
       .checkValue(v => v > 0, "Write buffer size must be positive")
       .createWithDefault(1)
 
-  val COMET_SHUFFLE_PREFER_DICTIONARY_RATIO: ConfigEntry[Double] = conf(
-    "spark.comet.shuffle.preferDictionary.ratio")
+  val COMET_SHUFFLE_JVM_PREFER_DICTIONARY_RATIO: ConfigEntry[Double] = conf(
+    "spark.comet.shuffle.jvm.preferDictionary.ratio")
+    .withAlternative("spark.comet.shuffle.preferDictionary.ratio")
     .category(CATEGORY_SHUFFLE)
     .doc(
       "The ratio of total values to distinct values in a string column to decide whether to " +
         "prefer dictionary encoding when shuffling the column. If the ratio is higher than " +
         "this config, dictionary encoding will be used on shuffling string column. This config " +
         "is effective if it is higher than 1.0. Note that this " +
-        "config is only used when `spark.comet.exec.shuffle.mode` is `jvm`.")
+        "config is only used when `spark.comet.shuffle.mode` is `jvm`.")
     .doubleConf
     .createWithDefault(10.0)
 
@@ -552,8 +594,8 @@ object CometConf extends ShimCometConf {
     .doubleConf
     .createWithDefault(1.0)
 
-  val COMET_SHUFFLE_MAX_BUFFER_BYTES: ConfigEntry[Long] =
-    conf("spark.comet.shuffle.maxBufferBytes")
+  val COMET_SHUFFLE_NATIVE_MAX_BUFFER_BYTES: ConfigEntry[Long] =
+    conf("spark.comet.shuffle.native.maxBufferBytes")
       .category(CATEGORY_SHUFFLE)
       .doc(
         "Maximum number of bytes that the native shuffle writer will buffer in memory " +
@@ -648,6 +690,35 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_STRICT_FALLBACK_REASONS: ConfigEntry[Boolean] =
+    conf("spark.comet.explain.fallback.strict.enabled")
+      .category(CATEGORY_TESTING)
+      .doc(
+        "Test-only. When enabled, Comet throws if it declines to convert an operator that it " +
+          "could otherwise have converted (all children are already native) without recording a " +
+          "fallback reason on the operator or on any of its expressions. Without this check, a " +
+          "serde that returns `None` and forgets to state a reason silently produces a generic " +
+          "'<operator> is not supported' message instead of a visible failure. Enabled for all " +
+          "Comet test suites via `CometTestBase`.")
+      .internal()
+      .booleanConf
+      .createWithDefault(false)
+
+  val COMET_SCAN_CONTRIB_DETECT_CONFLICTS: ConfigEntry[Boolean] =
+    conf("spark.comet.scan.contrib.detectConflicts.enabled")
+      .category(CATEGORY_TESTING)
+      .doc(
+        "Diagnostic. Out-of-tree scan contribs are normally offered a scan one at a time and " +
+          "the first to claim it wins, so a contrib that wrongly claims another format's scan " +
+          "silently hides it. When this is enabled, every registered contrib is offered the " +
+          "scan and a warning is logged if more than one claims it; the first claim is still " +
+          "the one used, so behaviour is unchanged. Off by default because it makes every " +
+          "contrib do its (potentially expensive) planning work on every scan, even after one " +
+          "has already claimed it. Only meaningful when two or more contribs are registered.")
+      .internal()
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_ONHEAP_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.onHeap.enabled")
       .category(CATEGORY_TESTING)
@@ -694,18 +765,6 @@ object CometConf extends ShimCometConf {
         "Otherwise, an error will be thrown and the Spark job will be aborted.")
     .booleanConf
     .createWithDefault(false)
-
-  val COMET_EXCEPTION_ON_LEGACY_DATE_TIMESTAMP: ConfigEntry[Boolean] =
-    conf("spark.comet.exceptionOnDatetimeRebase")
-      .category(CATEGORY_EXEC)
-      .doc("Whether to throw exception when seeing dates/timestamps from the legacy hybrid " +
-        "(Julian + Gregorian) calendar. Since Spark 3, dates/timestamps were written according " +
-        "to the Proleptic Gregorian calendar. When this is true, Comet will " +
-        "throw exceptions when seeing these dates/timestamps that were written by Spark version " +
-        "before 3.0. If this is false, these dates/timestamps will be read as if they were " +
-        "written to the Proleptic Gregorian calendar and will not be rebased.")
-      .booleanConf
-      .createWithDefault(false)
 
   val COMET_ENABLE_PARTIAL_HASH_AGGREGATE: ConfigEntry[Boolean] =
     conf("spark.comet.testing.aggregate.partialMode.enabled")
@@ -822,8 +881,12 @@ object CometConf extends ShimCometConf {
   // Used on native side. Check spark_config.rs how the config is used
   val COMET_MAX_TEMP_DIRECTORY_SIZE: ConfigEntry[Long] =
     conf("spark.comet.maxTempDirectorySize")
-      .category(CATEGORY_EXEC)
-      .doc("The maximum amount of data (in bytes) stored inside the temporary directories.")
+      .category(CATEGORY_TUNING)
+      .doc(
+        "The maximum amount of data (in bytes) stored inside the temporary directories " +
+          "used by native operators when spilling. Applied per Spark task, so an executor " +
+          "running N concurrent tasks may use up to N times this value on shared local disks. " +
+          "Once the limit is reached, further spills will fail and the query will error out.")
       .bytesConf(ByteUnit.BYTE)
       .createWithDefault(100L * 1024 * 1024 * 1024) // 100 GB
 
@@ -948,7 +1011,7 @@ object ConfigHelpers {
   def timeFromString(str: String, unit: TimeUnit): Long = JavaUtils.timeStringAs(str, unit)
 
   def timeToString(v: Long, unit: TimeUnit): String =
-    TimeUnit.MILLISECONDS.convert(v, unit) + "ms"
+    s"${TimeUnit.MILLISECONDS.convert(v, unit)}ms"
 
   def byteFromString(str: String, unit: ByteUnit): Long = {
     val (input, multiplier) =
@@ -960,7 +1023,8 @@ object ConfigHelpers {
     multiplier * JavaUtils.byteStringAs(input, unit)
   }
 
-  def byteToString(v: Long, unit: ByteUnit): String = unit.convertTo(v, ByteUnit.BYTE) + "b"
+  def byteToString(v: Long, unit: ByteUnit): String =
+    s"${unit.convertTo(v, ByteUnit.BYTE)}b"
 }
 
 private class TypedConfigBuilder[T](

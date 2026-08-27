@@ -129,7 +129,7 @@
 ## lower
 
 - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
-- Spark 3.5.8 (audited 2026-05-27): baseline. JVM default-locale `toLowerCase` on `UTF8String`. Comet routes to DataFusion `lower` (Rust Unicode default case mapping, no locale awareness) and is unconditionally `Incompatible`; users opt in via the standard `spark.comet.expression.Lower.allowIncompatible=true`.
+- Spark 3.5.8 (audited 2026-05-27): baseline. JVM default-locale `toLowerCase` on `UTF8String`. Comet routes through the JVM codegen dispatcher by default, so results are byte-exact. The native path (DataFusion `lower`, Rust Unicode default case mapping with no locale awareness) is opt-in via `spark.comet.caseConversion.enabled=true`.
 - Spark 4.0.1 (audited 2026-05-27): routes through `CollationSupport.Lower.exec(v, collationId, useICU)` with `SQLConf.ICU_CASE_MAPPINGS_ENABLED`; `inputTypes` widened to `StringTypeWithCollation`. Comet ignores collation and ICU mode, so non-default collations or `ICU_CASE_MAPPINGS_ENABLED=true` diverge even after opting in ([#2190](https://github.com/apache/datafusion-comet/issues/2190)).
 
 ## lpad
@@ -157,7 +157,7 @@
 - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
 - Spark 3.5.8 (audited 2026-05-27): baseline. `RegExpReplace(subject, regexp, rep, pos)` with foldable `pos > 0`; uses Java `Pattern`. Comet supports only `pos = 1` (other offsets fall back) and injects a `'g'` flag because DataFusion's `regexp_replace` stops at the first match by default.
 - Spark 4.0.1 (audited 2026-05-27): adds raw-string literal support at the parser level and `nullIntolerant: Boolean = true`; runtime semantics unchanged.
-- Known limitation: regex semantics differ (Rust `regex` crate vs Java `Pattern`); `RegExp.isSupportedPattern` currently returns `false` for every pattern, so the path always requires `spark.comet.expression.regexp.allowIncompatible=true`.
+- Known limitation: regex semantics differ (Rust `regex` crate vs Java `Pattern`). `CometRegExpReplace` therefore routes through the JVM codegen dispatcher by default; the native path is opt-in via `spark.comet.expression.RegExpReplace.allowIncompatible=true` and only applies when `pos` is the literal `1`.
 
 ## repeat
 
@@ -245,10 +245,18 @@
 - Spark 3.5.8 (audited 2026-05-27): registry alias of `Upper`. Same support as `upper`.
 - Spark 4.0.1 (audited 2026-05-27): unchanged alias of `Upper`.
 
+## unbase64
+
+- Spark 3.4.3 (audited 2026-08-24): identical to 3.5.8.
+- Spark 3.5.8 (audited 2026-08-24): baseline. `doGenCode` emits `java.util.Base64.getMimeDecoder().decode(child.toString())`. The MIME decoder skips every byte outside the base64 alphabet, so CRLF-wrapped output from Spark's own `base64` round-trips cleanly; four terminal-shape errors surface as `IllegalArgumentException`. `failOnError = true` is set only when the node is constructed from `to_binary('base64')` / `try_to_binary`, which use a stricter RFC 4648 validator.
+- Spark 4.0.1 (audited 2026-08-24): `NullIntolerant` becomes `override def nullIntolerant: Boolean = true`; `inputTypes` widens to `StringTypeWithCollation(supportsTrimCollation = true)`. Behaviour is byte-level and collation-independent, so no divergence for `UTF8_BINARY` and no shim is needed.
+- Spark 4.1.1 (audited 2026-08-24): adds `contextIndependentFoldable`; no behavioural change on the decode path.
+- Comet native implementation (`spark_unbase64`, `native/spark-expr/src/string_funcs/unbase64.rs`) ports the JDK MIME decoder rules: 256-entry decode LUT, a reused per-batch scratch `Vec<u8>` copied into a preallocated `BinaryBuilder`, all four error messages reproduced verbatim. `CometUnBase64` handles `failOnError = false` natively; `failOnError = true` (reachable from `to_binary('base64')` / `try_to_binary`) requires strict RFC 4648 validation and is not yet implemented natively, so those cases stay on the JVM codegen dispatcher via `CodegenDispatchFallback`.
+
 ## upper
 
 - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
-- Spark 3.5.8 (audited 2026-05-27): baseline. JVM default-locale `toUpperCase` on `UTF8String`. Comet routes to DataFusion `upper` (Rust Unicode default case mapping, no locale awareness) and is unconditionally `Incompatible`; users opt in via the standard `spark.comet.expression.Upper.allowIncompatible=true`.
+- Spark 3.5.8 (audited 2026-05-27): baseline. JVM default-locale `toUpperCase` on `UTF8String`. Comet routes through the JVM codegen dispatcher by default, so results are byte-exact. The native path (DataFusion `upper`, Rust Unicode default case mapping with no locale awareness) is opt-in via `spark.comet.caseConversion.enabled=true`.
 - Spark 4.0.1 (audited 2026-05-27): routes through `CollationSupport.Upper.exec(v, collationId, useICU)` with `SQLConf.ICU_CASE_MAPPINGS_ENABLED`. Comet does not propagate collation or ICU mode; non-default collations or `ICU_CASE_MAPPINGS_ENABLED=true` diverge even after opting in ([#2190](https://github.com/apache/datafusion-comet/issues/2190)).
 
 [Spark Expression Support]: ../../user-guide/latest/expressions.md

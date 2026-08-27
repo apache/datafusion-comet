@@ -21,6 +21,7 @@ package org.apache.comet
 
 import java.lang.management.ManagementFactory
 
+import org.apache.arrow.c.ArrowArrayStream
 import org.apache.hadoop.conf.Configuration
 import org.apache.spark._
 import org.apache.spark.broadcast.Broadcast
@@ -36,6 +37,7 @@ import org.apache.comet.Tracing.withTrace
 import org.apache.comet.exceptions.CometQueryExecutionException
 import org.apache.comet.parquet.CometFileKeyUnwrapper
 import org.apache.comet.serde.Config.ConfigMap
+import org.apache.comet.shuffle.ShufflePartitionPusher
 import org.apache.comet.vector.NativeUtil
 
 /**
@@ -60,6 +62,8 @@ import org.apache.comet.vector.NativeUtil
  *   The index of the partition.
  * @param encryptedFilePaths
  *   Paths to encrypted Parquet files that need key unwrapping.
+ * @param shufflePartitionPusher
+ *   Optional task-owned callback that receives remote shuffle output.
  */
 class CometExecIterator(
     val id: Long,
@@ -72,7 +76,8 @@ class CometExecIterator(
     broadcastedHadoopConfForEncryption: Option[Broadcast[SerializableConfiguration]] = None,
     encryptedFilePaths: Seq[String] = Seq.empty,
     shuffleBlockIterators: Map[Int, CometShuffleBlockIterator] = Map.empty,
-    taskFilePaths: Seq[String] = Seq.empty)
+    taskFilePaths: Seq[String] = Seq.empty,
+    shufflePartitionPusher: Option[ShufflePartitionPusher] = None)
     extends Iterator[ColumnarBatch]
     with Logging {
 
@@ -80,7 +85,7 @@ class CometExecIterator(
   private val memoryMXBean = ManagementFactory.getMemoryMXBean
   private val nativeLib = new Native()
   private val nativeUtil = new NativeUtil()
-  private val taskAttemptId = TaskContext.get().taskAttemptId
+  private val taskAttemptId = TaskContext.get().taskAttemptId()
   private val taskCPUs = TaskContext.get().cpus()
   private val cometTaskMemoryManager = new CometTaskMemoryManager(id, taskAttemptId)
 
@@ -106,7 +111,7 @@ class CometExecIterator(
 
     val memoryConfig = CometExecIterator.getMemoryConfig(conf)
 
-    nativeLib.createPlan(
+    val createdPlan = nativeLib.createPlan(
       id,
       inputObjects,
       protobufQueryPlan,
@@ -125,8 +130,53 @@ class CometExecIterator(
       taskCPUs,
       keyUnwrapper,
       // Propagated to Tokio workers running JVM UDFs so they see this Spark task's
-      // TaskContext. See CometUdfBridge.evaluate.
-      TaskContext.get())
+      // TaskContext and context ClassLoader. Read here because this class is only ever
+      // constructed on a Spark task thread (see `taskAttemptId` above); a JNI-attached Tokio
+      // worker has neither. See CometUdfBridge.evaluate.
+      TaskContext.get(),
+      Thread.currentThread().getContextClassLoader)
+
+    // Bind task-owned callbacks separately to preserve the existing createPlan JNI signature.
+    try {
+      shufflePartitionPusher.foreach { pusher =>
+        nativeLib.setShufflePartitionPusher(createdPlan, pusher)
+      }
+      createdPlan
+    } catch {
+      case failure: Throwable =>
+        // The task-completion listener is not installed until iterator construction succeeds.
+        try {
+          nativeUtil.close()
+        } catch {
+          case closeFailure: Throwable => failure.addSuppressed(closeFailure)
+        }
+
+        // Native only takes ownership of Arrow streams during the first executePlan call.
+        inputObjects.foreach {
+          case stream: ArrowArrayStream =>
+            try {
+              stream.release()
+            } catch {
+              case releaseFailure: Throwable => failure.addSuppressed(releaseFailure)
+            }
+          case _ =>
+        }
+
+        shuffleBlockIterators.values.foreach { iterator =>
+          try {
+            iterator.close()
+          } catch {
+            case closeFailure: Throwable => failure.addSuppressed(closeFailure)
+          }
+        }
+
+        try {
+          nativeLib.releasePlan(createdPlan)
+        } catch {
+          case releaseFailure: Throwable => failure.addSuppressed(releaseFailure)
+        }
+        throw failure
+    }
   }
 
   private var nextBatch: Option[ColumnarBatch] = None
@@ -293,7 +343,7 @@ object CometExecIterator extends Logging {
       val memoryLimit = (offHeapSize * memoryFraction).toLong
       val memoryLimitPerTask = (memoryLimit.toDouble * coresPerTask / numCores).toLong
       val memoryPoolType = COMET_OFFHEAP_MEMORY_POOL_TYPE.get()
-      logInfo(
+      logDebug(
         s"memoryPoolType=$memoryPoolType, " +
           s"offHeapSize=${toMB(offHeapSize)}, " +
           s"memoryFraction=$memoryFraction, " +
@@ -308,7 +358,7 @@ object CometExecIterator extends Logging {
       // in memory_limit_per_task = 16 GB * 4 / 16 = 16 GB / 4 = 4GB
       val memoryLimitPerTask = (memoryLimit.toDouble * coresPerTask / numCores).toLong
       val memoryPoolType = COMET_ONHEAP_MEMORY_POOL_TYPE.get()
-      logInfo(
+      logDebug(
         s"memoryPoolType=$memoryPoolType, " +
           s"memoryLimit=${toMB(memoryLimit)}, " +
           s"memoryLimitPerTask=${toMB(memoryLimitPerTask)}")

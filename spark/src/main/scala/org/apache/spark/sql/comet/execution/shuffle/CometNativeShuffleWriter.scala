@@ -97,10 +97,14 @@ class CometNativeShuffleWriter[K, V](
     val unifiedPlan = buildUnifiedPlan(tempDataFilename, tempIndexFilename)
     val ctx = spec.execContext
     val finalNativePlan = if (ctx.commonByKey.nonEmpty) {
-      val partitionDataByKey = ctx.perPartitionByKey.map { case (k, arr) =>
-        k -> arr(partitionIdx)
-      }
-      PlanDataInjector.injectPlanData(unifiedPlan, ctx.commonByKey, partitionDataByKey)
+      // This partition's plan-data slice rides on the input iterator's Partition object (populated
+      // in CometNativeShuffleInputRDD.getPartitions on the driver), not on the spec. The spec's
+      // execContext.perPartitionByKey is emptied in prepareNativeShuffleDependency so the full
+      // O(numPartitions) map stays out of the broadcast task binary.
+      PlanDataInjector.injectPlanData(
+        unifiedPlan,
+        ctx.commonByKey,
+        shuffleInputIter.planDataByKey)
     } else {
       unifiedPlan
     }
@@ -109,16 +113,18 @@ class CometNativeShuffleWriter[K, V](
       "elapsed_compute",
       "encode_time",
       "repart_time",
+      "interleave_time",
       "input_batches",
       "spill_count",
-      "spilled_bytes")
+      "spilled_bytes",
+      "memory_spilled_bytes")
     val metricsOutputRows = new SQLMetric("outputRows")
     val metricsWriteTime = new SQLMetric("writeTime")
     val shuffleWriterSQLMetrics = Map(
       "output_rows" -> metricsOutputRows,
       "data_size" -> metrics("dataSize"),
       "write_time" -> metricsWriteTime) ++
-      metrics.filterKeys(detailedMetrics.contains)
+      metrics.filter { case (name, _) => detailedMetrics.contains(name) }
 
     // ShuffleWriter metrics at the root; child's metric tree underneath so the SQL UI's per-node
     // breakdown matches what the split-driver flow showed.
@@ -181,14 +187,6 @@ class CometNativeShuffleWriter[K, V](
     metricsReporter.incRecordsWritten(metricsOutputRows.value)
     metricsReporter.incWriteTime(metricsWriteTime.value)
 
-    // Report spill metrics to Spark's task metrics so they appear in
-    // Spark UI task summaries (not just SQL metrics)
-    val spilledBytes = shuffleWriterSQLMetrics.get("spilled_bytes").map(_.value).getOrElse(0L)
-    if (spilledBytes > 0) {
-      context.taskMetrics().incMemoryBytesSpilled(spilledBytes)
-      context.taskMetrics().incDiskBytesSpilled(spilledBytes)
-    }
-
     // commit
     shuffleBlockResolver.writeMetadataFileAndCommit(
       shuffleId,
@@ -217,11 +215,23 @@ class CometNativeShuffleWriter[K, V](
    */
   private def buildUnifiedPlan(dataFile: String, indexFile: String): Operator = {
     val shuffleWriterBuilder = OperatorOuterClass.ShuffleWriter.newBuilder()
+    // Keep the legacy output fields populated so older native libraries can still consume local
+    // shuffle plans while newer libraries use the explicit partition-writer destination.
     shuffleWriterBuilder.setOutputDataFile(dataFile)
     shuffleWriterBuilder.setOutputIndexFile(indexFile)
+    shuffleWriterBuilder.setPartitionWriter(
+      OperatorOuterClass.PartitionWriter
+        .newBuilder()
+        .setLocal(
+          OperatorOuterClass.LocalPartitionWriter
+            .newBuilder()
+            .setOutputDataFile(dataFile)
+            .setOutputIndexFile(indexFile)
+            .build())
+        .build())
 
     if (SparkEnv.get.conf.getBoolean("spark.shuffle.compress", true)) {
-      val codec = CometConf.COMET_EXEC_SHUFFLE_COMPRESSION_CODEC.get() match {
+      val codec = CometConf.COMET_SHUFFLE_COMPRESSION_CODEC.get() match {
         case "zstd" => CompressionCodec.Zstd
         case "lz4" => CompressionCodec.Lz4
         case "snappy" => CompressionCodec.Snappy
@@ -231,11 +241,10 @@ class CometNativeShuffleWriter[K, V](
     } else {
       shuffleWriterBuilder.setCodec(CompressionCodec.None)
     }
-    shuffleWriterBuilder.setCompressionLevel(
-      CometConf.COMET_EXEC_SHUFFLE_COMPRESSION_ZSTD_LEVEL.get)
+    shuffleWriterBuilder.setCompressionLevel(CometConf.COMET_SHUFFLE_COMPRESSION_ZSTD_LEVEL.get())
     shuffleWriterBuilder.setWriteBufferSize(
-      CometConf.COMET_SHUFFLE_WRITE_BUFFER_SIZE.get().min(Int.MaxValue).toInt)
-    shuffleWriterBuilder.setMaxBufferBytes(CometConf.COMET_SHUFFLE_MAX_BUFFER_BYTES.get())
+      CometConf.COMET_SHUFFLE_NATIVE_WRITE_BUFFER_SIZE.get().min(Int.MaxValue).toInt)
+    shuffleWriterBuilder.setMaxBufferBytes(CometConf.COMET_SHUFFLE_NATIVE_MAX_BUFFER_BYTES.get())
 
     outputPartitioning match {
       case p if isSinglePartitioning(p) =>
@@ -330,7 +339,7 @@ class CometNativeShuffleWriter[K, V](
         val partitioning = PartitioningOuterClass.RoundRobinPartition.newBuilder()
         partitioning.setNumPartitions(outputPartitioning.numPartitions)
         partitioning.setMaxHashColumns(
-          CometConf.COMET_EXEC_SHUFFLE_WITH_ROUND_ROBIN_PARTITIONING_MAX_HASH_COLUMNS.get())
+          CometConf.COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_MAX_HASH_COLUMNS.get())
 
         val partitioningBuilder = PartitioningOuterClass.Partitioning.newBuilder()
         shuffleWriterBuilder.setPartitioning(
@@ -347,7 +356,6 @@ class CometNativeShuffleWriter[K, V](
     // declared return type drifts from Spark catalyst (see comet#4515).
     val expectedFields = outputAttributes
       .map(a => StructField(a.name, a.dataType, a.nullable, a.metadata))
-      .toArray
     schema2Proto(expectedFields).foreach(shuffleWriterBuilder.addExpectedOutputSchema)
 
     OperatorOuterClass.Operator

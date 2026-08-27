@@ -103,88 +103,36 @@ Comet Performance
 
 It may be possible to reduce Comet's memory overhead by reducing batch sizes or increasing number of partitions.
 
-## Optimizing Sorting on Floating-Point Values
+### Batch Size
 
-Sorting on floating-point data types (or complex types containing floating-point values) is not compatible with
-Spark if the data contains both zero and negative zero. This is likely an edge case that is not of concern for many users
-and sorting on floating-point data can be enabled by setting `spark.comet.expression.SortOrder.allowIncompatible=true`.
+Comet processes data in columnar batches. The batch size is controlled by `spark.comet.batchSize` (default
+`8192` rows). Larger batches generally improve throughput by amortizing per-batch overhead, but they also
+increase peak memory usage — a batch holds all projected columns in Arrow format at once. Reduce this value
+if you see frequent spilling or out-of-memory errors on wide tables; increase it (for example to `16384`) on
+narrow tables when memory is plentiful.
 
-## Optimizing Joins
+`spark.comet.shuffle.jvm.batchSize` controls the batch size used when the JVM columnar shuffle writer
+flushes sorted spill files. It must not exceed `spark.comet.batchSize`.
 
-Spark often chooses `SortMergeJoin` over `ShuffledHashJoin` for stability reasons. If the build-side of a
-`ShuffledHashJoin` is very large then it could lead to OOM in Spark.
+### Limiting Spill Disk Usage
 
-Vectorized query engines tend to perform better with `ShuffledHashJoin`, so for best performance it is often preferable
-to configure Comet to convert `SortMergeJoin` to `ShuffledHashJoin`. Comet does not yet provide spill-to-disk for
-`ShuffledHashJoin` so this could result in OOM. Also, `SortMergeJoin` may still be faster in some cases. It is best
-to test with both for your specific workloads.
+Native operators that spill to disk (aggregate, sort, shuffle) are collectively bounded by
+`spark.comet.maxTempDirectorySize` (default 100 GB). The limit is applied per Spark task, so an
+executor running `N` concurrent tasks may use up to `N` times this value on shared local disks.
+If the limit is reached, further spills fail and the query errors out. Raise this on workloads
+with large sort/aggregate/shuffle spills, or lower it to protect executors on shared disks
+(remembering to divide by task concurrency to reason about the aggregate).
 
-To configure Comet to convert `SortMergeJoin` to `ShuffledHashJoin`, set `spark.comet.exec.forceShuffledHashJoin=true`.
+## Parquet Reader Tuning
 
-## Shuffle
+### Filter Pushdown / Late Materialization
 
-Comet provides accelerated shuffle implementations that can be used to improve the performance of your queries.
-
-To enable Comet shuffle, set the following configuration in your Spark configuration:
-
-```
-spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager
-spark.comet.exec.shuffle.enabled=true
-```
-
-`spark.shuffle.manager` is a Spark static configuration which cannot be changed at runtime.
-It must be set before the Spark context is created. You can enable or disable Comet shuffle
-at runtime by setting `spark.comet.exec.shuffle.enabled` to `true` or `false`.
-Once it is disabled, Comet will fall back to the default Spark shuffle manager.
-
-### Shuffle Implementations
-
-Comet provides two shuffle implementations: Native Shuffle and Columnar Shuffle. Comet will first try to use Native
-Shuffle and if that is not possible it will try to use Columnar Shuffle. If neither can be applied, it will fall
-back to Spark for shuffle operations.
-
-#### Native Shuffle
-
-Comet provides a fully native shuffle implementation, which generally provides the best performance. Native shuffle
-supports `HashPartitioning`, `RangePartitioning` and `SinglePartitioning` but currently only supports primitive type
-partitioning keys. Columns that are not partitioning keys may contain complex types like maps, structs, and arrays.
-
-#### Columnar (JVM) Shuffle
-
-Comet Columnar shuffle is JVM-based and supports `HashPartitioning`, `RoundRobinPartitioning`, `RangePartitioning`, and
-`SinglePartitioning`. This shuffle implementation supports complex data types as partitioning keys.
-
-By default, Comet will convert a Spark `ShuffleExchangeExec` to columnar shuffle even when the shuffle's child is a
-non-Comet (Spark) plan. The benefit is that the next query stage can start as native Comet execution, since the
-shuffle output is already in Arrow format. The cost is a row to columnar conversion at the shuffle boundary on the
-write side. To restrict columnar shuffle to cases where the child is already a Comet plan, set
-`spark.comet.exec.shuffle.convertFromSparkPlan.enabled=false`. Shuffles whose child is a Spark plan will then be left
-as native Spark shuffles, which avoids the row to columnar conversion but means the downstream stage will also start
-on Spark.
-
-#### Automatic Revert to Spark Shuffle
-
-When a Comet columnar shuffle ends up between two non-Comet operators (for example, a partial/final hash aggregate
-pair that Comet could not convert), Comet reverts it to Spark's built-in shuffle. Keeping columnar shuffle between
-two row-based operators would add `row -> Arrow -> shuffle -> Arrow -> row` conversions with no Comet consumer on
-either side to benefit from columnar output.
-
-This shifts the affected shuffles from Comet's off-heap memory pool back to the JVM execution memory pool. Clusters
-tuned for a small JVM heap may see `ExternalSorter` spills on queries where this revert fires. Shuffle I/O may also
-grow marginally because Spark's row-based serializer generally compresses less well than Comet's Arrow IPC format.
-
-Each revert is logged at `INFO` level on the driver as `Reverting Comet columnar shuffle to Spark shuffle between
-<parent> and <child>`, which lets you correlate any unexpected behavior with this optimization.
-
-This optimization is enabled by default and can be disabled by setting
-`spark.comet.exec.shuffle.revertRedundantColumnar.enabled=false`, in which case Comet will keep the columnar shuffle
-even when both its parent and child are non-Comet operators.
-
-### Shuffle Compression
-
-By default, Spark compresses shuffle files using LZ4 compression. Comet overrides this behavior with ZSTD compression.
-Compression can be disabled by setting `spark.shuffle.compress=false`, which may result in faster shuffle times in
-certain environments, such as single-node setups with fast NVMe drives, at the expense of increased disk space usage.
+Setting `spark.comet.parquet.rowFilterPushdown.enabled=true` pushes filter evaluation into the Parquet
+decode step and lazily materializes projected columns for surviving rows. This can significantly reduce
+CPU and memory when the filter is highly selective on a small subset of columns. It is disabled by default
+because it can hurt when the filter is not selective or when most columns must be read anyway. Row-group,
+page-index, and bloom-filter pruning happen regardless of this flag whenever Spark's
+`spark.sql.parquet.filterPushdown` is on.
 
 ### Parquet Native Scans
 
@@ -218,6 +166,131 @@ more splits overall, so some idle tasks may remain — tune the value against yo
 
 See [#3817](https://github.com/apache/datafusion-comet/issues/3817#issuecomment-4193279630) for a
 worked example and further discussion.
+
+## Iceberg Scan Tuning
+
+Comet's native Iceberg scan (`spark.comet.scan.icebergNative.enabled`, enabled by default) reads each
+task's data files one at a time by default. For tables with many small files or high-latency storage,
+increase `spark.comet.scan.icebergNative.dataFileConcurrencyLimit` (default `1`; values of 2–8 are
+suggested) to overlap I/O across files at the cost of extra memory.
+
+## Optimizing Sorting on Floating-Point Values
+
+Sorting on floating-point data types (or complex types containing floating-point values) is not compatible with
+Spark if the data contains both zero and negative zero. This is likely an edge case that is not of concern for many users
+and sorting on floating-point data can be enabled by setting `spark.comet.expression.SortOrder.allowIncompatible=true`.
+
+## Optimizing Joins
+
+Spark often chooses `SortMergeJoin` over `ShuffledHashJoin` for stability reasons. If the build-side of a
+`ShuffledHashJoin` is very large then it could lead to OOM in Spark.
+
+Vectorized query engines tend to perform better with `ShuffledHashJoin`, so for best performance it is often preferable
+to configure Comet to convert `SortMergeJoin` to `ShuffledHashJoin`. Comet does not yet provide spill-to-disk for
+`ShuffledHashJoin` so this could result in OOM. Also, `SortMergeJoin` may still be faster in some cases. It is best
+to test with both for your specific workloads.
+
+To configure Comet to convert `SortMergeJoin` to `ShuffledHashJoin`, set `spark.comet.exec.forceShuffledHashJoin=true`.
+
+## Shuffle
+
+Comet provides accelerated shuffle implementations that can be used to improve the performance of your queries.
+
+To enable Comet shuffle, set the following configuration in your Spark configuration:
+
+```
+spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager
+spark.comet.shuffle.enabled=true
+```
+
+`spark.shuffle.manager` is a Spark static configuration which cannot be changed at runtime.
+It must be set before the Spark context is created. You can enable or disable Comet shuffle
+at runtime by setting `spark.comet.shuffle.enabled` to `true` or `false`.
+Once it is disabled, Comet will fall back to the default Spark shuffle manager.
+
+### Shuffle Implementations
+
+Comet provides two shuffle implementations: Native Shuffle and Columnar Shuffle. Comet will first try to use Native
+Shuffle and if that is not possible it will try to use Columnar Shuffle. If neither can be applied, it will fall
+back to Spark for shuffle operations.
+
+#### Native Shuffle
+
+Comet provides a fully native shuffle implementation, which generally provides the best performance. Native shuffle
+supports `HashPartitioning`, `RangePartitioning` and `SinglePartitioning` but currently only supports primitive type
+partitioning keys. Columns that are not partitioning keys may contain complex types like maps, structs, and arrays.
+
+#### Columnar (JVM) Shuffle
+
+Comet Columnar shuffle is JVM-based and supports `HashPartitioning`, `RoundRobinPartitioning`, `RangePartitioning`, and
+`SinglePartitioning`. This shuffle implementation supports complex data types as partitioning keys.
+
+By default, Comet will convert a Spark `ShuffleExchangeExec` to columnar shuffle even when the shuffle's child is a
+non-Comet (Spark) plan. The benefit is that the next query stage can start as native Comet execution, since the
+shuffle output is already in Arrow format. The cost is a row to columnar conversion at the shuffle boundary on the
+write side. To restrict columnar shuffle to cases where the child is already a Comet plan, set
+`spark.comet.shuffle.convertFromSparkPlan.enabled=false`. Shuffles whose child is a Spark plan will then be left
+as native Spark shuffles, which avoids the row to columnar conversion but means the downstream stage will also start
+on Spark.
+
+#### Automatic Revert to Spark Shuffle
+
+When a Comet columnar shuffle ends up between two non-Comet operators (for example, a partial/final hash aggregate
+pair that Comet could not convert), Comet reverts it to Spark's built-in shuffle. Keeping columnar shuffle between
+two row-based operators would add `row -> Arrow -> shuffle -> Arrow -> row` conversions with no Comet consumer on
+either side to benefit from columnar output.
+
+This shifts the affected shuffles from Comet's off-heap memory pool back to the JVM execution memory pool. Clusters
+tuned for a small JVM heap may see `ExternalSorter` spills on queries where this revert fires. Shuffle I/O may also
+grow marginally because Spark's row-based serializer generally compresses less well than Comet's Arrow IPC format.
+
+Each revert is logged at `INFO` level on the driver as `Reverting Comet columnar shuffle to Spark shuffle between
+<parent> and <child>`, which lets you correlate any unexpected behavior with this optimization.
+
+This optimization is enabled by default and can be disabled by setting
+`spark.comet.shuffle.revertRedundantColumnar.enabled=false`, in which case Comet will keep the columnar shuffle
+even when both its parent and child are non-Comet operators.
+
+### Shuffle Compression
+
+`spark.comet.shuffle.compression.codec` controls the codec used to compress shuffle data written by
+both Comet's native shuffle and the JVM columnar shuffle writer. Supported values are `lz4` (default),
+`zstd`, and `snappy`. LZ4 favors CPU efficiency; ZSTD produces smaller shuffle files at higher CPU cost —
+useful when shuffle I/O or network bandwidth is the bottleneck. When ZSTD is selected, the level is
+controlled by `spark.comet.shuffle.compression.zstd.level` (default `1`).
+
+`spark.shuffle.compress=false` disables compression for Comet's native shuffle only. It has no effect on
+the JVM columnar shuffle writer, which always compresses spill files with the codec above. Disabling
+compression on the native path may result in faster shuffle times in certain environments, such as
+single-node setups with fast NVMe drives, at the expense of increased disk space usage.
+
+## Reducing Row/Columnar Conversion Overhead
+
+When a query stage contains many operators that fall back to Spark row-based execution, Comet may insert
+repeated columnar-to-row and row-to-columnar conversions that dominate stage runtime. Set
+`spark.comet.exec.transitionRevert.enabled=true` to have Comet revert the entire stage to Spark row execution
+when the number of columnar-to-row transitions exceeds
+`spark.comet.exec.transitionRevert.maxTransitions` (default `2`). This trades native execution of a small
+subset of operators for eliminating conversion overhead across the stage.
+
+### Entire-Plan Fallback for Wide or Deeply Nested Schemas
+
+The cost of each conversion also grows sharply with schema shape: for wide or deeply nested schemas,
+columnar-to-row conversion is especially expensive because the conversion work scales with the number of
+columns and nested fields. If profiling shows these conversions dominating a query over such a schema, set
+`spark.comet.exec.transitionRevert.enabled=true` and lower
+`spark.comet.exec.transitionRevert.maxTransitions` (default `2`) to `1`. Note that this causes the entire
+plan to fall back to Spark row-based execution — Comet removes its native operators rather than running a
+mix of native and fallback operators joined by repeated conversions — which can be cheaper than paying the
+expensive conversions again and again.
+
+## Metrics Overhead
+
+Comet exposes rich native operator metrics for observability (see [Metrics](metrics.md)), but they are
+disabled by default because traversing the Spark plan on every task adds measurable overhead, and metrics
+require an external sink (for example Prometheus) to be useful. Enable them with
+`spark.comet.metrics.enabled=true` when you have a metrics sink configured. This setting must be applied
+before the `SparkSession` is created.
 
 ## Explain Plan
 

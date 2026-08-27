@@ -25,7 +25,7 @@ import scala.collection.mutable
 import scala.collection.mutable.ListBuffer
 
 import org.apache.spark.sql.catalyst.analysis.FunctionRegistry
-import org.apache.spark.sql.catalyst.expressions.Cast
+import org.apache.spark.sql.catalyst.expressions.{Cast, Expression}
 
 import org.apache.comet.CometConf.COMET_ONHEAP_MEMORY_OVERHEAD
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
@@ -38,7 +38,8 @@ import org.apache.comet.serde.{CodegenDispatchFallback, CometAggregateExpression
  */
 object GenerateDocs {
 
-  private val publicConfigs: Set[ConfigEntry[_]] = CometConf.allConfs.filter(_.isPublic).toSet
+  private val corePublicConfigs: Set[ConfigEntry[_]] =
+    CometConf.allConfs.filter(_.isPublic).toSet
 
   /**
    * Documentation notes for a single expression.
@@ -107,52 +108,29 @@ object GenerateDocs {
    * that category from the serde maps in `QueryPlanSerde`. Filenames are resolved relative to the
    * per-Spark-version compatibility/expressions directory.
    */
-  private def categoryPages: Map[String, (String, () => CategoryNotes)] = Map(
-    "array" -> ("array.md",
-    () =>
-      QueryPlanSerde.arrayExpressions.toSeq.map { case (cls, serde) =>
-        exprNotes(cls, serde)
-      }),
-    "datetime" -> ("datetime.md",
-    () =>
-      QueryPlanSerde.temporalExpressions.toSeq.map { case (cls, serde) =>
-        exprNotes(cls, serde)
-      }),
-    "math" -> ("math.md",
-    () =>
-      QueryPlanSerde.mathExpressions.toSeq.map { case (cls, serde) =>
-        exprNotes(cls, serde)
-      }),
-    "struct" -> ("struct.md",
-    () =>
-      QueryPlanSerde.structExpressions.toSeq.map { case (cls, serde) =>
-        exprNotes(cls, serde)
-      }),
-    "aggregate" -> ("aggregate.md",
-    () =>
-      QueryPlanSerde.aggrSerdeMap.toSeq.map { case (cls, serde) =>
-        aggExprNotes(cls, serde)
-      }),
-    "string" -> ("string.md",
-    () =>
-      QueryPlanSerde.stringExpressions.toSeq.map { case (cls, serde) =>
-        exprNotes(cls, serde)
-      }),
-    "map" -> ("map.md",
-    () =>
-      QueryPlanSerde.mapExpressions.toSeq.map { case (cls, serde) =>
-        exprNotes(cls, serde)
-      }),
-    "misc" -> ("misc.md",
-    () =>
-      QueryPlanSerde.miscExpressions.toSeq.map { case (cls, serde) =>
-        exprNotes(cls, serde)
-      }),
-    "url" -> ("url.md",
-    () =>
-      QueryPlanSerde.urlExpressions.toSeq.map { case (cls, serde) =>
-        exprNotes(cls, serde)
-      }))
+  private def categoryPages: Map[String, (String, () => CategoryNotes)] = {
+    // The serde maps are passed by name so that they are only read when the notes are generated.
+    def exprPage(
+        filename: String,
+        serdes: => Map[Class[_ <: Expression], CometExpressionSerde[_]])
+        : (String, () => CategoryNotes) =
+      (filename, () => serdes.toSeq.map { case (cls, serde) => exprNotes(cls, serde) })
+
+    def aggPage(filename: String, serdes: => Map[Class[_], CometAggregateExpressionSerde[_]])
+        : (String, () => CategoryNotes) =
+      (filename, () => serdes.toSeq.map { case (cls, serde) => aggExprNotes(cls, serde) })
+
+    Map(
+      "array" -> exprPage("array.md", QueryPlanSerde.arrayExpressions),
+      "datetime" -> exprPage("datetime.md", QueryPlanSerde.temporalExpressions),
+      "math" -> exprPage("math.md", QueryPlanSerde.mathExpressions),
+      "struct" -> exprPage("struct.md", QueryPlanSerde.structExpressions),
+      "aggregate" -> aggPage("aggregate.md", QueryPlanSerde.aggrSerdeMap),
+      "string" -> exprPage("string.md", QueryPlanSerde.stringExpressions),
+      "map" -> exprPage("map.md", QueryPlanSerde.mapExpressions),
+      "misc" -> exprPage("misc.md", QueryPlanSerde.miscExpressions),
+      "url" -> exprPage("url.md", QueryPlanSerde.urlExpressions))
+  }
 
   /**
    * Args:
@@ -173,6 +151,14 @@ object GenerateDocs {
     updateExpressionsPageImplementation(s"$userGuideLocation/expressions.md")
     for ((category, (filename, notesFn)) <- categoryPages) {
       generateExpressionCompatNotes(s"$compatPagesDir/$filename", category, notesFn())
+    }
+    // Optional, out-of-tree contribs document their configs on their own page. Empty on a default
+    // build, which is why core's configs.md above stays identical no matter which contrib profiles
+    // were enabled. See CometConfigProvider for why a contrib's entries are otherwise invisible.
+    for (provider <- CometConfigProvider.providers) {
+      generateConfigReference(
+        s"$userGuideLocation/${provider.docPage}",
+        provider.configs.filter(_.isPublic).toSet)
     }
   }
 
@@ -296,7 +282,14 @@ object GenerateDocs {
     buffer.toSeq
   }
 
-  private def generateConfigReference(filename: String): Unit = {
+  /**
+   * Fill the `CONFIG_TABLE` markers in `filename` from `configs`. Defaults to core's public
+   * configs; a contrib passes its own set so its entries are documented on its own page without
+   * ever entering core's tables.
+   */
+  private def generateConfigReference(
+      filename: String,
+      publicConfigs: Set[ConfigEntry[_]] = corePublicConfigs): Unit = {
     val pattern = "<!--BEGIN:CONFIG_TABLE\\[(.*)]-->".r
     val lines = readFile(filename)
     val w = new BufferedOutputStream(new FileOutputStream(filename))

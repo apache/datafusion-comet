@@ -44,7 +44,7 @@ omitted from the tables below and may be reconsidered based on demand:
 
 - **Structured Streaming operators** (`StateStoreSaveExec`, `StateStoreRestoreExec`, `StreamingSymmetricHashJoinExec`, and similar): Comet targets batch execution.
 - **Cartesian / cross joins** (`CartesianProductExec`): rare and expensive, with little acceleration benefit.
-- **Sampling and range generation** (`SampleExec`, `RangeExec`): niche leaf operators.
+- **Range generation** (`RangeExec`): niche leaf operator.
 - **Pickled (non-Arrow) Python UDFs** (`BatchEvalPythonExec`): Comet accelerates Arrow-based Python UDFs only ([#4234](https://github.com/apache/datafusion-comet/pull/4234)).
 
 ## Scans
@@ -58,10 +58,11 @@ omitted from the tables below and may be reconsidered based on demand:
 
 ## Projection and filtering
 
-| Operator      | Status | Notes |
-| ------------- | ------ | ----- |
-| `ProjectExec` | ✅     |       |
-| `FilterExec`  | ✅     |       |
+| Operator      | Status | Notes                                                                                        |
+| ------------- | ------ | -------------------------------------------------------------------------------------------- |
+| `ProjectExec` | ✅     |                                                                                              |
+| `FilterExec`  | ✅     |                                                                                              |
+| `SampleExec`  | ⚠️     | Sampling without replacement only. See [Operator Compatibility](compatibility/operators.md). |
 
 ## Sorting and limiting
 
@@ -102,16 +103,16 @@ omitted from the tables below and may be reconsidered based on demand:
 | Operator               | Status | Notes                                                                                                                                                                                            |
 | ---------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `WindowExec`           | ⚠️     | Runs natively and is enabled by default. A broad set of window functions is accelerated; unsupported shapes fall back to Spark. See [window function compatibility](compatibility/operators.md). |
-| `WindowGroupLimitExec` | 🔜     | Window-based limit pushdown falls back today ([#4837](https://github.com/apache/datafusion-comet/issues/4837)).                                                                                  |
+| `WindowGroupLimitExec` | ✅     | Streaming per-partition top-K pushdown for `ROW_NUMBER`, `RANK`, and `DENSE_RANK`.                                                                                                               |
 
 ## Generators and set operations
 
-| Operator       | Status | Notes                                                                                                                      |
-| -------------- | ------ | -------------------------------------------------------------------------------------------------------------------------- |
-| `GenerateExec` | ✅     | Supports `explode` and `posexplode` over arrays. The `_outer` variants are incompatible, and `inline` / `stack` fall back. |
-| `ExpandExec`   | ✅     |                                                                                                                            |
-| `UnionExec`    | ✅     |                                                                                                                            |
-| `CoalesceExec` | ✅     |                                                                                                                            |
+| Operator       | Status | Notes                                                                                                            |
+| -------------- | ------ | ---------------------------------------------------------------------------------------------------------------- |
+| `GenerateExec` | ✅     | Supports `explode`, `explode_outer`, `posexplode`, `posexplode_outer` over arrays. `inline` / `stack` fall back. |
+| `ExpandExec`   | ✅     |                                                                                                                  |
+| `UnionExec`    | ✅     |                                                                                                                  |
+| `CoalesceExec` | ✅     |                                                                                                                  |
 
 ## Writes
 

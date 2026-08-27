@@ -80,13 +80,17 @@ abstract class CometTestBase
     conf.set(CometConf.COMET_ENABLED.key, "true")
     conf.set(CometConf.COMET_ONHEAP_ENABLED.key, "true")
     conf.set(CometConf.COMET_EXEC_ENABLED.key, "true")
-    conf.set(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key, "true")
+    conf.set(CometConf.COMET_SHUFFLE_ENABLED.key, "true")
     conf.set(CometConf.COMET_SPARK_TO_ARROW_ENABLED.key, "true")
     conf.set(CometConf.COMET_NATIVE_SCAN_ENABLED.key, "true")
     conf.set(CometConf.COMET_PARQUET_UNSIGNED_SMALL_INT_CHECK.key, "false")
     conf.set(CometConf.COMET_SCAN_ALLOW_DISABLED_PARQUET_VECTORIZED_READER.key, "true")
     conf.set(CometConf.COMET_ONHEAP_MEMORY_OVERHEAD.key, "2g")
     conf.set(CometConf.COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED.key, "true")
+    // Fail loudly if a serde declines an operator without stating why, rather than letting the
+    // generic "<operator> is not supported" message mask the missing reason.
+    // See https://github.com/apache/datafusion-comet/issues/5230.
+    conf.set(CometConf.COMET_STRICT_FALLBACK_REASONS.key, "true")
     // SortOrder is incompatible for mixed zero and negative zero floating point values, but
     // this is an edge case, and we expect most users to allow sorts on floating point, so we
     // enable this for the tests
@@ -111,6 +115,9 @@ abstract class CometTestBase
     }
   }
 
+  protected def causeChain(error: Throwable): Seq[Throwable] =
+    Iterator.iterate(error)(_.getCause).takeWhile(_ != null).toSeq
+
   protected def internalCheckSparkAnswer(
       df: => DataFrame,
       assertCometNative: Boolean,
@@ -118,11 +125,11 @@ abstract class CometTestBase
       excludedClasses: Seq[Class[_]] = Seq.empty,
       withTol: Option[Double] = None): (SparkPlan, SparkPlan) = {
 
-    var expected: Array[Row] = Array.empty
+    var expected: Seq[Row] = Seq.empty
     var sparkPlan = null.asInstanceOf[SparkPlan]
     withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
       val dfSpark = datasetOfRows(spark, df.logicalPlan)
-      expected = dfSpark.collect()
+      expected = dfSpark.collect().toSeq
       sparkPlan = dfSpark.queryExecution.executedPlan
     }
     val dfComet = datasetOfRows(spark, df.logicalPlan)
@@ -1180,7 +1187,7 @@ abstract class CometTestBase
       df: DataFrame,
       cometExchangeNum: Int,
       native: Boolean): Seq[CometShuffleExchangeExec] = {
-    if (CometConf.COMET_EXEC_SHUFFLE_ENABLED.get()) {
+    if (CometConf.COMET_SHUFFLE_ENABLED.get()) {
       val sparkPlan = stripAQEPlan(df.queryExecution.executedPlan)
 
       val cometShuffleExecs = sparkPlan.collect { case b: CometShuffleExchangeExec => b }

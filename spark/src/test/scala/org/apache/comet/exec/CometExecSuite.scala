@@ -60,7 +60,7 @@ class CometExecSuite extends CometTestBase {
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
       pos: Position): Unit = {
     super.test(testName, testTags: _*) {
-      withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
+      withSQLConf(CometConf.COMET_SHUFFLE_ENABLED.key -> "true") {
         testFun
       }
     }
@@ -83,6 +83,92 @@ class CometExecSuite extends CometTestBase {
         val deserialized: ConfigMap = roundtrip
         assert(
           value == deserialized.getEntriesMap.get(CometConf.COMET_EXPLAIN_NATIVE_ENABLED.key))
+      }
+    }
+  }
+
+  test("sample without replacement") {
+    withParquetTable((0 until 1000).map(i => (i, i + 1)), "tbl") {
+      val df = sql("SELECT * FROM tbl").sample(withReplacement = false, fraction = 0.3, seed = 42)
+      checkSparkAnswerAndOperator(df, Seq(classOf[CometSampleExec]))
+    }
+  }
+
+  // The sampler is seeded per partition with `seed + partitionIndex`, so a multi-partition input
+  // is what catches a native side that ignores the partition index.
+  test("sample without replacement over multiple partitions") {
+    withTempPath { dir =>
+      spark.range(0, 4000).repartition(4).write.parquet(dir.getCanonicalPath)
+      withParquetTable(dir.getCanonicalPath, "tbl") {
+        val df =
+          sql("SELECT * FROM tbl").sample(withReplacement = false, fraction = 0.2, seed = 7)
+        assert(df.rdd.getNumPartitions > 1)
+        checkSparkAnswerAndOperator(df, Seq(classOf[CometSampleExec]))
+      }
+    }
+  }
+
+  test("sample without replacement with non-zero lower bound (randomSplit)") {
+    withParquetTable((0 until 1000).map(i => (i, i + 1)), "tbl") {
+      val splits = sql("SELECT * FROM tbl").randomSplit(Array(0.3, 0.7), seed = 42)
+      splits.foreach(checkSparkAnswerAndOperator(_, Seq(classOf[CometSampleExec])))
+    }
+  }
+
+  test("sample via SQL TABLESAMPLE") {
+    withParquetTable((0 until 1000).map(i => (i, i + 1)), "tbl") {
+      val df = sql("SELECT * FROM tbl TABLESAMPLE (30 PERCENT) REPEATABLE (42)")
+      checkSparkAnswerAndOperator(df, Seq(classOf[CometSampleExec]))
+    }
+  }
+
+  // Sampling only drops rows, so above an order-preserving input the output must stay sorted and
+  // match Spark row-for-row. The logical plan contains a Sort, so checkSparkAnswerAndOperator
+  // compares results in order rather than sorting both sides first.
+  test("sample preserves ordering of sorted input") {
+    withParquetTable((0 until 1000).reverse.map(i => (i, i + 1)), "tbl") {
+      val df = sql("SELECT * FROM tbl")
+        .orderBy("_1")
+        .sample(withReplacement = false, fraction = 0.3, seed = 42)
+      checkSparkAnswerAndOperator(df, Seq(classOf[CometSampleExec]))
+      val ids = df.collect().map(_.getInt(0))
+      assert(ids.nonEmpty && ids.sameElements(ids.sorted))
+    }
+  }
+
+  // Above an operator where Comet may emit rows in a different order than Spark, such as an
+  // aggregate, the sampler sees a different row sequence and can select different rows, but the
+  // result must still be a valid sample of the same expected size.
+  test("sample above aggregate produces a valid sample of the expected size") {
+    withParquetTable((0 until 10000).map(i => (i % 1000, i)), "tbl") {
+      val agg = sql("SELECT _1, SUM(_2) FROM tbl GROUP BY _1")
+      val df = agg.sample(withReplacement = false, fraction = 0.5, seed = 42)
+      val sampled = df.collect()
+      val plan = stripAQEPlan(df.queryExecution.executedPlan)
+      assert(plan.collect { case s: CometSampleExec => s }.nonEmpty)
+      // Every sampled row must be a distinct row of the aggregate output.
+      val full = agg.collect().toSet
+      assert(sampled.length == sampled.distinct.length)
+      assert(sampled.forall(full.contains))
+      // 1000 Bernoulli(0.5) draws have a standard deviation of ~15.8, so a tolerance of 100
+      // is a ~6-sigma bound.
+      assert(math.abs(sampled.length - 500) < 100)
+    }
+  }
+
+  test("sample with replacement falls back to Spark") {
+    withParquetTable((0 until 1000).map(i => (i, i + 1)), "tbl") {
+      val df = sql("SELECT * FROM tbl").sample(withReplacement = true, fraction = 0.3, seed = 42)
+      checkSparkAnswerAndFallbackReason(df, "Sampling with replacement is not supported")
+    }
+  }
+
+  test("sample falls back to Spark when disabled") {
+    withSQLConf(CometConf.COMET_EXEC_SAMPLE_ENABLED.key -> "false") {
+      withParquetTable((0 until 1000).map(i => (i, i + 1)), "tbl") {
+        val df =
+          sql("SELECT * FROM tbl").sample(withReplacement = false, fraction = 0.3, seed = 42)
+        checkSparkAnswerAndFallbackReason(df, "spark.comet.exec.sample.enabled=true")
       }
     }
   }
@@ -1837,7 +1923,7 @@ class CometExecSuite extends CometTestBase {
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
       SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> "false",
       CometConf.COMET_EXEC_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
       CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
       val data1 =
         Seq(Tuple1(null), Tuple1((1, "a")), Tuple1((2, null)), Tuple1((3, "b")), Tuple1(null))
@@ -1871,7 +1957,7 @@ class CometExecSuite extends CometTestBase {
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
       SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> "false",
       CometConf.COMET_EXEC_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
       CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
 
       sql("""
@@ -1897,7 +1983,7 @@ class CometExecSuite extends CometTestBase {
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
       SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> "false",
       CometConf.COMET_EXEC_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
       CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
 
       sql("""
@@ -1925,7 +2011,7 @@ class CometExecSuite extends CometTestBase {
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
       SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> "false",
       CometConf.COMET_EXEC_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
       CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
 
       sql("""
@@ -1952,7 +2038,7 @@ class CometExecSuite extends CometTestBase {
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
       SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> "false",
       CometConf.COMET_EXEC_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
       CometConf.COMET_EXEC_SORT_ENABLED.key -> "true",
       CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
 
@@ -2167,7 +2253,7 @@ class CometExecSuite extends CometTestBase {
         "DECIMAL(38, 10)")
     dataTypes.map { subqueryType =>
       withSQLConf(
-        CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+        CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
         CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
         withParquetTable((0 until 5).map(i => (i, i + 1)), "tbl") {
           var column1 = s"CAST(max(_1) AS $subqueryType)"
@@ -2228,7 +2314,7 @@ class CometExecSuite extends CometTestBase {
       CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
       CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true",
       CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
       CometConf.COMET_SHUFFLE_MODE.key -> "native") {
       withParquetTable((0 until 10).map(i => (i, i)), "t") {
         val df = sql("SELECT * FROM t DISTRIBUTE BY (_1 + (SELECT max(_2) FROM t))")
@@ -2242,7 +2328,7 @@ class CometExecSuite extends CometTestBase {
   // This confirms the "Subquery N not found" crash is specific to the native shuffle path.
   test("scalar subquery in repartition (columnar shuffle)") {
     withSQLConf(
-      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
       CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
       withParquetTable((0 until 10).map(i => (i, i)), "t") {
         val df = sql("SELECT * FROM t DISTRIBUTE BY (_1 + (SELECT max(_2) FROM t))")
@@ -2483,7 +2569,7 @@ class CometExecSuite extends CometTestBase {
       SQLConf.EXCHANGE_REUSE_ENABLED.key -> "true",
       SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
       SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
-      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
       CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
       withTable(tableName, dim) {
 
@@ -2539,7 +2625,7 @@ class CometExecSuite extends CometTestBase {
     withSQLConf(
       SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
       SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "10485760",
-      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
       CometConf.COMET_SHUFFLE_MODE.key -> "native") {
       withParquetTable((0 until 100).map(i => (i, i + 1)), "tbl_a") {
         withParquetTable((0 until 100).map(i => (i, i + 2)), "tbl_b") {
@@ -2574,7 +2660,7 @@ class CometExecSuite extends CometTestBase {
     withSQLConf(
       SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
       SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "10485760",
-      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
       CometConf.COMET_SHUFFLE_MODE.key -> "auto") {
       withParquetTable((0 until 100).map(i => (i, i + 1)), "tbl_a") {
         withParquetTable((0 until 100).map(i => (i, i + 2)), "tbl_b") {
@@ -2848,7 +2934,7 @@ class CometExecSuite extends CometTestBase {
   }
 
   test("final aggregation") {
-    withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
+    withSQLConf(CometConf.COMET_SHUFFLE_ENABLED.key -> "true") {
       withParquetTable(
         (0 until 100)
           .map(_ => (Random.nextInt(), Random.nextInt() % 5)),
@@ -2897,7 +2983,7 @@ class CometExecSuite extends CometTestBase {
   test("global sort (columnar shuffle only)") {
     withSQLConf(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
-      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
       CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
       withParquetTable((0 until 5).map(i => (i, i + 1)), "tbl") {
         val df = sql("SELECT * FROM tbl").sort($"_1".desc)
@@ -2948,7 +3034,7 @@ class CometExecSuite extends CometTestBase {
   test("limit") {
     Seq("native", "jvm").foreach { columnarShuffleMode =>
       withSQLConf(
-        CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+        CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
         CometConf.COMET_SHUFFLE_MODE.key -> columnarShuffleMode) {
         withParquetTable((0 until 5).map(i => (i, i + 1)), "tbl_a") {
           val df = sql("SELECT * FROM tbl_a")
@@ -3445,7 +3531,7 @@ class CometExecSuite extends CometTestBase {
   }
 
   test("coalesce") {
-    withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
+    withSQLConf(CometConf.COMET_SHUFFLE_ENABLED.key -> "true") {
       withTable("t1") {
         (0 until 5)
           .map(i => (i, (i + 1).toLong))
@@ -4114,11 +4200,7 @@ class CometExecSuite extends CometTestBase {
         }
         // Spark reports its own per-file read failures as FAILED_READ_FILE carrying the path.
         // Comet's native scan must do the same instead of leaking a raw CometNativeException.
-        val messages = Iterator
-          .iterate(e: Throwable)(_.getCause)
-          .takeWhile(_ != null)
-          .map(t => s"${t.getClass.getName}: ${t.getMessage}")
-          .toList
+        val messages = causeChain(e).map(t => s"${t.getClass.getName}: ${t.getMessage}")
         val chain = messages.mkString("\n  ")
         // `cannotReadFilesError` is the FAILED_READ_FILE path. Its message is version-stable
         // ("Encountered error while reading file ..."); only Spark 4.x prepends the
@@ -4153,11 +4235,7 @@ class CometExecSuite extends CometTestBase {
         val e = intercept[Throwable] {
           df.collect()
         }
-        val messages = Iterator
-          .iterate(e: Throwable)(_.getCause)
-          .takeWhile(_ != null)
-          .map(t => s"${t.getClass.getName}: ${t.getMessage}")
-          .toList
+        val messages = causeChain(e).map(t => s"${t.getClass.getName}: ${t.getMessage}")
         val chain = messages.mkString("\n  ")
         assert(
           messages.exists(m =>

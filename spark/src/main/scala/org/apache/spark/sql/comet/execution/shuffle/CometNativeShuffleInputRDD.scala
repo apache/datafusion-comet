@@ -21,7 +21,7 @@ package org.apache.spark.sql.comet.execution.shuffle
 
 import org.apache.spark._
 import org.apache.spark.rdd.RDD
-import org.apache.spark.sql.comet.CometExecRDD
+import org.apache.spark.sql.comet.{CometExecRDD, CometMetricNode}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import org.apache.comet.CometShuffleBlockIterator
@@ -38,7 +38,9 @@ private[shuffle] class CometNativeShuffleInputRDD(
     sc: SparkContext,
     var inputRDDs: Seq[RDD[_]],
     numPartitionsParam: Int,
-    shuffleScanIndices: Set[Int])
+    shuffleScanIndices: Set[Int],
+    spillMetricNode: CometMetricNode,
+    @transient perPartitionByKey: Map[String, Array[Array[Byte]]] = Map.empty)
     extends RDD[Product2[Int, ColumnarBatch]](
       sc,
       inputRDDs.map(rdd => new OneToOneDependency(rdd))) {
@@ -50,12 +52,19 @@ private[shuffle] class CometNativeShuffleInputRDD(
       // `leafRdd.partitions` on the executor, which would otherwise trigger getPartitions and
       // hit the @transient-null trap (e.g. CometExecRDD.perPartitionByKey).
       val inputParts = inputRDDs.map(_.partitions(i)).toArray
-      new CometNativeShuffleInputPartition(i, inputParts)
+      // Slice this partition's plan data off the @transient full map here on the driver. Carrying
+      // only the per-partition slice on the Partition object (serialized per task) keeps the full
+      // O(numPartitions) map out of the broadcast task binary, which otherwise blows the 2GB
+      // ByteArrayOutputStream limit on jobs with tens of millions of partitions. Mirrors
+      // CometExecRDD.getPartitions.
+      val planDataByKey = perPartitionByKey.map { case (key, arr) => key -> arr(i) }
+      new CometNativeShuffleInputPartition(i, inputParts, planDataByKey)
     }.toArray
 
   override def compute(
       split: Partition,
       context: TaskContext): Iterator[Product2[Int, ColumnarBatch]] = {
+    spillMetricNode.reportSpillMetrics(context)
     val partition = split.asInstanceOf[CometNativeShuffleInputPartition]
     val (inputObjects, shuffleBlockIters) =
       CometExecRDD.resolveInputObjects(
@@ -63,7 +72,11 @@ private[shuffle] class CometNativeShuffleInputRDD(
         partition.inputPartitions,
         shuffleScanIndices,
         context)
-    new CometNativeShuffleInputIterator(partition.index, inputObjects, shuffleBlockIters)
+    new CometNativeShuffleInputIterator(
+      partition.index,
+      inputObjects,
+      shuffleBlockIters,
+      partition.planDataByKey)
   }
 
   override def getPreferredLocations(split: Partition): Seq[String] = {
@@ -84,19 +97,23 @@ private[shuffle] class CometNativeShuffleInputRDD(
 
 private[shuffle] class CometNativeShuffleInputPartition(
     override val index: Int,
-    val inputPartitions: Array[Partition])
+    val inputPartitions: Array[Partition],
+    val planDataByKey: Map[String, Array[Byte]])
     extends Partition
 
 /**
  * Iterator handed to [[CometNativeShuffleWriter.write]] via Spark's ShuffleMapTask. Reports no
- * elements; the writer downcasts and reads `partitionIndex`, `inputObjects`, and
- * `shuffleBlockIterators` directly to drive the unified native plan. `inputObjects` are the
- * already-resolved native input slots (see [[CometExecRDD.resolveInputObjects]]).
+ * elements; the writer downcasts and reads `partitionIndex`, `inputObjects`,
+ * `shuffleBlockIterators`, and `planDataByKey` directly to drive the unified native plan.
+ * `inputObjects` are the already-resolved native input slots (see
+ * [[CometExecRDD.resolveInputObjects]]). `planDataByKey` is this partition's slice of the scan
+ * plan data (one entry per scan key); the writer injects it into the native plan.
  */
 private[shuffle] class CometNativeShuffleInputIterator(
     val partitionIndex: Int,
     val inputObjects: Array[Object],
-    val shuffleBlockIterators: Map[Int, CometShuffleBlockIterator])
+    val shuffleBlockIterators: Map[Int, CometShuffleBlockIterator],
+    val planDataByKey: Map[String, Array[Byte]])
     extends Iterator[Product2[Int, ColumnarBatch]] {
 
   override def hasNext: Boolean = false

@@ -25,6 +25,7 @@ import org.apache.spark.{CometTaskMemoryManager, TaskContext}
 import org.apache.spark.sql.comet.CometMetricNode
 
 import org.apache.comet.parquet.CometFileKeyUnwrapper
+import org.apache.comet.shuffle.ShufflePartitionPusher
 
 class Native extends NativeBase {
 
@@ -48,6 +49,11 @@ class Native extends NativeBase {
    * @param taskMemoryManager
    *   the task-level memory manager that is responsible for tracking memory usage across JVM and
    *   native side.
+   * @param taskContext
+   *   the driving Spark task's `TaskContext`, propagated to Tokio workers running JVM UDFs.
+   * @param classLoader
+   *   the calling Spark task thread's context ClassLoader, propagated to Tokio workers running
+   *   JVM UDFs. Must be read on the task thread; see `CometUdfBridge.evaluate`.
    * @return
    *   the address to native query plan.
    */
@@ -70,8 +76,22 @@ class Native extends NativeBase {
       taskAttemptId: Long,
       taskCPUs: Long,
       keyUnwrapper: CometFileKeyUnwrapper,
-      taskContext: TaskContext): Long
+      taskContext: TaskContext,
+      classLoader: ClassLoader): Long
   // scalastyle:on
+
+  /**
+   * Bind a task-owned remote shuffle callback to an existing native query plan.
+   *
+   * The callback must be registered before the plan is executed. Its native global reference is
+   * released when the plan is released.
+   *
+   * @param plan
+   *   the address of the native query plan.
+   * @param pusher
+   *   the callback that receives complete encoded shuffle blocks.
+   */
+  @native def setShufflePartitionPusher(plan: Long, pusher: ShufflePartitionPusher): Unit
 
   /**
    * Execute a native query plan based on given input Arrow arrays.
