@@ -44,6 +44,16 @@ for attempt in 1 2 3 4; do
     exit 0
   fi
 
+  # An earlier connection warning may have recovered before a different download
+  # failed permanently. Be conservative when both appear: a known permanent error
+  # must not acquire retries just because the same attempt also logged a timeout.
+  # Do not inspect only a fixed tail: Maven/SBT can print long failure summaries.
+  if grep -Eiq \
+    '(status code:|response code:|HTTP/[0-9.]+|HTTP error|returned error:)[[:space:]]*(400|401|403|404|405|410|422)([^0-9]|$)|Could not find artifact|not found: value|COMPILATION ERROR|There are test failures' \
+    "$download_log"; then
+    exit "$status"
+  fi
+
   # Signals (including cancellation and OOM kills) are not download failures.
   if [ "$status" -ge 128 ] || ! grep -Eiq \
     '(status code:|response code:|HTTP/[0-9.]+|HTTP error|returned error:)[[:space:]]*(429|500|502|503|504)([^0-9]|$)|Connection reset|Connection timed out|ConnectTimeoutException|SocketTimeoutException|Read timed out|Temporary failure in name resolution|Network is unreachable|Remote host terminated the handshake' \

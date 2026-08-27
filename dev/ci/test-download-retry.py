@@ -178,6 +178,32 @@ class DownloadRetryTest(unittest.TestCase):
                 self.assertEqual(len(calls), 1)
                 self.assertEqual(delays, [])
 
+    def test_permanent_failure_overrides_earlier_transient_warning(self):
+        for message in (
+            "status code: 404, reason phrase: Not Found (404)",
+            "Server returned HTTP response code: 403 for URL: https://repo.invalid/a.jar",
+            "curl: (22) The requested URL returned error: 401",
+            "[error] Could not find artifact missing:dependency:jar:1.0",
+            "[error] not found: value invalidBuildSetting",
+            "[ERROR] COMPILATION ERROR",
+            "[ERROR] There are test failures.",
+        ):
+            with self.subTest(message=message):
+                self.calls.unlink(missing_ok=True)
+                self.delays.unlink(missing_ok=True)
+                output = f"[warn] Connection reset; recovered on retry\n{message}"
+                result, calls, delays = self.run_download(output, failures=10, status=42)
+                self.assertEqual(result.returncode, 42)
+                self.assertEqual(len(calls), 1)
+                self.assertEqual(delays, [])
+
+    def test_permanent_failure_is_not_hidden_by_long_summary(self):
+        output = "Connection reset\nstatus code: 404\n" + "resolution details\n" * 1000
+        result, calls, delays = self.run_download(output, failures=10, status=42)
+        self.assertEqual(result.returncode, 42)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(delays, [])
+
     def test_missing_command_fails(self):
         result = subprocess.run(["bash", str(RETRY)], capture_output=True, text=True)
         self.assertEqual(result.returncode, 2)
