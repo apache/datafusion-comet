@@ -100,6 +100,10 @@ name = "base64"
 harness = false
 
 [[bench]]
+name = "unbase64"
+harness = false
+
+[[bench]]
 name = "date_trunc"
 harness = false
 
@@ -233,4 +237,20 @@ harness = false
 
 [[bench]]
 name = "abs"
+harness = false
+
+[[bench]]
+name = "levenshtein"
+harness = false
+
+[[bench]]
+name = "split"
+harness = false
+
+[[bench]]
+name = "regexp_extract_all"
+harness = false
+
+[[bench]]
+name = "contains"
 harness = false

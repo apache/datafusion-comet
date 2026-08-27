@@ -23,13 +23,17 @@ import java.io.File
 
 import scala.collection.mutable
 
-import org.apache.spark.{SparkConf, SparkContext, Success}
+import org.apache.spark.{SparkConf, SparkContext, SparkEnv, Success, TaskContext}
 import org.apache.spark.executor.ShuffleReadMetrics
 import org.apache.spark.executor.ShuffleWriteMetrics
+import org.apache.spark.memory.{TaskMemoryManager, TestMemoryManager}
 import org.apache.spark.scheduler.SparkListener
 import org.apache.spark.scheduler.SparkListenerJobStart
 import org.apache.spark.scheduler.SparkListenerTaskEnd
+import org.apache.spark.shuffle.comet.CometShuffleMemoryAllocator
+import org.apache.spark.shuffle.sort.CometShuffleExternalSorter
 import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.catalyst.expressions.UnsafeRow
 import org.apache.spark.sql.comet.execution.shuffle.CometNativeShuffle
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution.SparkPlan
@@ -37,6 +41,8 @@ import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.execution.command.DataWritingCommandExec
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.types.{IntegerType, StructType}
+import org.apache.spark.unsafe.Platform
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
@@ -76,6 +82,69 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
     assert(metricTree.sumMetricValues("spilled_bytes") == 36L)
     assert(metricTree.sumMetricValues("memory_spilled_bytes") == 20L)
+  }
+
+  test("JVM shuffle peak memory includes a larger earlier spill") {
+    withSQLConf(CometConf.COMET_SHUFFLE_JVM_SPILL_THRESHOLD.key -> Int.MaxValue.toString) {
+      val pageSize = 256L
+      val initialSize = 128
+      val conf = new SparkConf(false)
+        .set("spark.memory.offHeap.enabled", "true")
+        .set("spark.memory.offHeap.size", "10m")
+      val memoryManager = new TestMemoryManager(conf)
+      memoryManager.limit(10 * 1024 * 1024)
+      val taskMemoryManager = new TaskMemoryManager(memoryManager, 0)
+      val allocator =
+        CometShuffleMemoryAllocator.getInstance(conf, taskMemoryManager, pageSize)
+      val taskContext = TaskContext.empty()
+      val writeMetrics = taskContext.taskMetrics.shuffleWriteMetrics
+      val sorter = new CometShuffleExternalSorter(
+        allocator,
+        SparkEnv.get.blockManager,
+        taskContext,
+        initialSize,
+        2,
+        conf,
+        writeMetrics,
+        new StructType().add("id", IntegerType))
+
+      def insert(value: Int): Unit = {
+        val bytes = new Array[Byte](4 + 16)
+        Platform.putInt(bytes, Platform.BYTE_ARRAY_OFFSET, value)
+        val row = new UnsafeRow(1)
+        row.pointTo(bytes, Platform.BYTE_ARRAY_OFFSET + 4, 16)
+        row.setInt(0, value)
+        sorter.insertRecord(bytes, Platform.BYTE_ARRAY_OFFSET, bytes.length, value % 2)
+      }
+
+      try {
+        val initialMemory = allocator.getUsed
+        assert(initialMemory == initialSize * 8L)
+
+        (0 until 21).foreach(insert)
+        val firstHighWater = allocator.getUsed
+        sorter.spill()
+        val firstSpillBytes = taskContext.taskMetrics.memoryBytesSpilled
+
+        (21 until 26).foreach(insert)
+        val secondHighWater = allocator.getUsed
+        sorter.spill()
+        val secondSpillBytes = taskContext.taskMetrics.memoryBytesSpilled - firstSpillBytes
+        val spills = sorter.closeAndGetSpills()
+
+        assert(firstHighWater == initialMemory + firstSpillBytes)
+        assert(secondHighWater == initialMemory + secondSpillBytes)
+        assert(firstHighWater > secondHighWater)
+        assert(spills.length == 2)
+        assert(writeMetrics.recordsWritten == 26L)
+        assert(spills.map(_.file.length()).sum == taskContext.taskMetrics.diskBytesSpilled)
+        assert(spills.map(_.partitionLengths.sum).sum == taskContext.taskMetrics.diskBytesSpilled)
+        assert(sorter.getPeakMemoryUsedBytes() == firstHighWater)
+      } finally {
+        sorter.cleanupResources()
+        assert(taskMemoryManager.cleanUpAllAllocatedMemory() == 0L)
+      }
+    }
   }
 
   test("per-task native shuffle metrics") {
