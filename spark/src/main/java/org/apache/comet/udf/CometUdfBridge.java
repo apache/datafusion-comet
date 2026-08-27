@@ -100,7 +100,15 @@ public class CometUdfBridge {
    *
    * <p>{@code CometExecIterator} calls this before registering its own completion listener. Spark
    * runs completion listeners in reverse registration order, so the native plan is released, and
-   * has stopped calling UDFs, before this state attempts to close its child allocator.
+   * has stopped calling UDFs, before this state marks itself completed.
+   *
+   * <p>That ordering is for orderly shutdown, not memory safety: an evaluation that races task
+   * completion either runs under the normal guards (the allocator only closes once in-flight
+   * evaluations finish and it holds no memory) or is rejected by {@code beginEvaluation} once the
+   * state is completed. A straggler arriving after the state was removed recreates it, and the
+   * completion listener registered on the finished task either completes it immediately (no
+   * listener drain active, so the evaluation is rejected) or is queued behind the active drain,
+   * which completes and removes the state as soon as the straggler finishes.
    */
   public static void registerTask(TaskContext taskContext) {
     if (taskContext != null) {
@@ -365,17 +373,37 @@ public class CometUdfBridge {
   }
 
   private static TaskState taskState(TaskContext taskContext) {
-    return TASKS.computeIfAbsent(
-        taskContext,
-        context -> {
-          TaskState state = new TaskState(context, CometTaskContextShim.taskMemoryManager(context));
-          context.addTaskCompletionListener(
-              (TaskCompletionListener) ignored -> state.taskCompleted());
-          return state;
-        });
+    TaskState state =
+        TASKS.computeIfAbsent(
+            taskContext,
+            context -> new TaskState(context, CometTaskContextShim.taskMemoryManager(context)));
+    // Registered outside computeIfAbsent: on an already-completed task with no listener drain in
+    // progress, Spark invokes the listener on this thread, and the listener removes this entry,
+    // which the computeIfAbsent mapping function is not allowed to do. That immediate invocation
+    // marks a straggler's recreated state completed so its beginEvaluation fails cleanly; during
+    // an active drain the listener is queued instead and cleans the state up right after.
+    state.ensureCompletionListenerRegistered();
+    return state;
   }
 
-  /** Per-task Arrow listener and non-spillable Spark memory consumer. */
+  /**
+   * Per-task Arrow listener and non-spillable Spark memory consumer.
+   *
+   * <p>Spark accounting requires off-heap Tungsten memory ({@code spark.memory.offHeap.enabled}).
+   * Arrow buffers are off-heap, so with on-heap Tungsten memory there is no matching Spark pool to
+   * charge and accounting is skipped entirely; the allocator still tracks buffers for cleanup.
+   *
+   * <p>Lock order: the {@link TaskMemoryManager} monitor, then this {@code TaskState} monitor, then
+   * Spark's {@code MemoryManager} monitor (taken inside {@code acquireExecutionMemory} / {@code
+   * releaseExecutionMemory}). {@link #onPreAllocation} takes all three in that order; every other
+   * path ({@link #onRelease}, {@link #releaseExportedCharge}, {@link #taskCompleted}) takes a
+   * suffix: this monitor, then the MemoryManager monitor via {@code MemoryConsumer.freeMemory},
+   * which never touches the TaskMemoryManager monitor (verified against Spark 3.5 and 4.1). Never
+   * acquire the TaskMemoryManager monitor while holding this monitor. Spark's {@code
+   * acquireExecutionMemory} may call {@code spill()} on other consumers while holding the
+   * TaskMemoryManager monitor; a spill that releases Arrow buffers re-enters {@link #onRelease} in
+   * the same TaskMemoryManager-then-TaskState order, so no inversion arises there either.
+   */
   private static final class TaskState implements AllocationListener {
     private final TaskContext taskContext;
     private final long taskAttemptId;
@@ -388,6 +416,7 @@ public class CometUdfBridge {
     private int evaluationsInFlight;
     private boolean completed;
     private boolean closed;
+    private boolean completionListenerRegistered;
 
     private TaskState(TaskContext taskContext, TaskMemoryManager taskMemoryManager) {
       this.taskContext = taskContext;
@@ -397,6 +426,24 @@ public class CometUdfBridge {
           taskMemoryManager.getTungstenMemoryMode() == MemoryMode.OFF_HEAP
               ? new TaskMemoryConsumer(taskMemoryManager)
               : null;
+      if (consumer == null) {
+        LOG.debug(
+            "JVM UDF Arrow allocations for task {} are not charged to Spark: Tungsten memory "
+                + "mode is on-heap and Arrow buffers are off-heap",
+            taskAttemptId);
+      }
+    }
+
+    private void ensureCompletionListenerRegistered() {
+      synchronized (this) {
+        if (completionListenerRegistered) {
+          return;
+        }
+        completionListenerRegistered = true;
+      }
+      // Outside the monitor: on an already-completed task Spark invokes the listener on this
+      // thread, and taskCompleted takes this monitor itself.
+      taskContext.addTaskCompletionListener((TaskCompletionListener) ignored -> taskCompleted());
     }
 
     private synchronized BufferAllocator allocator() {

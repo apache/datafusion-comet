@@ -55,11 +55,13 @@ import org.apache.spark.util.LongAccumulator;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 public class CometUdfBridgeTest {
   private static SparkSession spark;
   private static JavaSparkContext jsc;
   private static final AtomicReference<ArrowArray> DEFERRED_ARRAY = new AtomicReference<>();
+  private static final AtomicReference<TaskContext> COMPLETED_CONTEXT = new AtomicReference<>();
 
   @BeforeClass
   public static void setUp() {
@@ -216,6 +218,57 @@ public class CometUdfBridgeTest {
       Thread.currentThread().interrupt();
       throw new AssertionError(e);
     }
+  }
+
+  @Test
+  public void stragglerEvaluationsAroundTaskCompletionAreSafe() {
+    LongAccumulator duringTeardown = jsc.sc().longAccumulator("straggler-during-teardown");
+    jsc.parallelize(Collections.singletonList(0), 1)
+        .foreachPartition(
+            (VoidFunction<Iterator<Integer>>)
+                ignored -> {
+                  TaskContext context = TaskContext.get();
+                  COMPLETED_CONTEXT.set(context);
+                  // Registered before registerTask, so Spark's LIFO listener order runs this
+                  // after the bridge's own completion listener: the misordered-registration
+                  // scenario, where a straggler evaluation arrives mid-teardown after task
+                  // state was already completed and removed.
+                  context.addTaskCompletionListener(
+                      ignoredContext -> {
+                        Runnable finishEvaluation = null;
+                        try {
+                          finishEvaluation = CometUdfBridge.beginTaskEvaluation(context);
+                        } catch (IllegalStateException rejectedAsCompleted) {
+                          // Also safe: the recreated state completed before the evaluation began.
+                        } finally {
+                          if (finishEvaluation != null) {
+                            finishEvaluation.run();
+                          }
+                          duringTeardown.add(1L);
+                        }
+                      });
+                  CometUdfBridge.registerTask(context);
+                  CometUdfBridge.taskAllocator(context);
+                });
+    assertEquals(
+        "the mid-teardown straggler must run or be rejected without failing the task",
+        1L,
+        duringTeardown.value().longValue());
+    assertEquals(
+        "a mid-teardown straggler must not leak task state", 0, CometUdfBridge.taskStateCount());
+
+    // A straggler arriving after the task fully finished: registering the completion listener on
+    // the finished task completes the recreated state immediately, so evaluation is rejected.
+    TaskContext completedContext = COMPLETED_CONTEXT.getAndSet(null);
+    assertNotNull("task should publish its TaskContext", completedContext);
+    try {
+      CometUdfBridge.beginTaskEvaluation(completedContext);
+      fail("evaluation for a finished task must be rejected");
+    } catch (IllegalStateException expected) {
+      // expected
+    }
+    assertEquals(
+        "a post-completion straggler must not leak task state", 0, CometUdfBridge.taskStateCount());
   }
 
   @Test
