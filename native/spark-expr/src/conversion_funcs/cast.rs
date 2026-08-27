@@ -1463,7 +1463,11 @@ mod tests {
                     let casted = cast_array(Arc::clone(&input), &to_type, &options).unwrap();
                     casted.to_data().validate_full().unwrap();
                     assert_eq!(casted.to_data(), actual.slice(1, input.len()).to_data());
-                    assert_eq!(casted.nulls(), input.nulls());
+                    assert_eq!(casted.null_count(), input.null_count());
+                    // Arrow may omit the bitmap for an empty or entirely valid slice.
+                    if input.null_count() != 0 {
+                        assert_eq!(casted.nulls(), input.nulls());
+                    }
                 }
             }
         }
