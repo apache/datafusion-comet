@@ -30,7 +30,7 @@ use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::physical_expr::expressions::Column;
 use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
 use datafusion::physical_plan::common::collect;
-use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_plan::{ChildrenPropertiesMode, ExecutionPlan, ReplaceChildrenOptions};
 use datafusion::prelude::SessionContext;
 use datafusion_comet_jni_bridge::ShufflePartitionPusher;
 use std::error::Error;
@@ -408,7 +408,10 @@ fn rss_callback_survives_execution_plan_child_replacement() {
     );
     let replacement_input = memory_input(vec![replacement.clone()], replacement.schema());
     let rewritten = Arc::new(execution)
-        .with_new_children(vec![replacement_input])
+        .replace_children(
+            vec![replacement_input],
+            ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+        )
         .unwrap();
 
     run_execution(rewritten.as_ref()).unwrap();
