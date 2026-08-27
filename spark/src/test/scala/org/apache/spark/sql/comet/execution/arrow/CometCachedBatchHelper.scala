@@ -19,10 +19,17 @@
 
 package org.apache.spark.sql.comet.execution.arrow
 
+import java.io.{DataInputStream, DataOutputStream}
 import java.nio.ByteBuffer
+import java.nio.channels.Channels
 
+import org.apache.arrow.vector.ipc.ArrowStreamReader
+import org.apache.spark.SparkEnv
+import org.apache.spark.io.CompressionCodec
 import org.apache.spark.sql.columnar.CachedBatch
-import org.apache.spark.util.io.ChunkedByteBuffer
+import org.apache.spark.util.io.{ChunkedByteBuffer, ChunkedByteBufferOutputStream}
+
+import org.apache.comet.CometArrowAllocator
 
 /**
  * Test-only access to the internals of `CometCachedBatch`.
@@ -53,4 +60,60 @@ object CometCachedBatchHelper {
     val columns = batch.asInstanceOf[CometCachedBatch].columns
     columns(index) = new ChunkedByteBuffer(Array(ByteBuffer.wrap(Array[Byte](1, 2, 3, 4))))
   }
+
+  /** Whether each column's stream stores that column dictionary encoded, in column order. */
+  def columnsAreDictionaryEncoded(batch: CachedBatch): Seq[Boolean] =
+    batch.asInstanceOf[CometCachedBatch].columns.toSeq.map { buffer =>
+      val in = new DataInputStream(codec.compressedInputStream(buffer.toInputStream()))
+      val reader = new ArrowStreamReader(Channels.newChannel(in), CometArrowAllocator)
+      try {
+        reader.getVectorSchemaRoot.getSchema.getFields.get(0).getDictionary != null
+      } finally {
+        reader.close()
+      }
+    }
+
+  /**
+   * Drop the last `dropBytes` of one column's decoded Arrow stream, in place.
+   *
+   * [[corruptColumnStream]] replaces the stream outright, so a reader over it fails on the very
+   * first message, before it has allocated anything. This keeps the stream genuine up to the cut:
+   * the reader parses the schema and loads the column's dictionary, and only then runs out of
+   * input part way through the record batch that indexes into it. The cut is made on the decoded
+   * bytes rather than the compressed ones because a small column compresses to a single block,
+   * and truncating that fails the decompressor before Arrow reads anything at all.
+   */
+  def truncateColumnStream(batch: CachedBatch, index: Int, dropBytes: Int): Unit = {
+    val columns = batch.asInstanceOf[CometCachedBatch].columns
+
+    val decodedStream = new DataInputStream(
+      codec.compressedInputStream(columns(index).toInputStream()))
+    val decoded =
+      try {
+        val buffer = new java.io.ByteArrayOutputStream()
+        val chunk = new Array[Byte](8192)
+        var read = decodedStream.read(chunk)
+        while (read >= 0) {
+          buffer.write(chunk, 0, read)
+          read = decodedStream.read(chunk)
+        }
+        buffer.toByteArray
+      } finally {
+        decodedStream.close()
+      }
+    require(
+      decoded.length > dropBytes,
+      s"column $index decodes to ${decoded.length} bytes, too few to drop $dropBytes")
+
+    val cbbos = new ChunkedByteBufferOutputStream(1024 * 1024, ByteBuffer.allocate)
+    val out = new DataOutputStream(codec.compressedOutputStream(cbbos))
+    try {
+      out.write(decoded, 0, decoded.length - dropBytes)
+    } finally {
+      out.close()
+    }
+    columns(index) = cbbos.toChunkedByteBuffer
+  }
+
+  private def codec: CompressionCodec = CompressionCodec.createCodec(SparkEnv.get.conf)
 }

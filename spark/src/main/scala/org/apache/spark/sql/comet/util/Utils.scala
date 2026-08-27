@@ -28,7 +28,8 @@ import scala.jdk.CollectionConverters._
 import org.apache.arrow.c.CDataDictionaryProvider
 import org.apache.arrow.vector._
 import org.apache.arrow.vector.complex.{ListVector, MapVector, StructVector}
-import org.apache.arrow.vector.dictionary.DictionaryProvider
+import org.apache.arrow.vector.dictionary.{Dictionary, DictionaryProvider}
+import org.apache.arrow.vector.dictionary.DictionaryProvider.MapDictionaryProvider
 import org.apache.arrow.vector.ipc.{ArrowStreamReader, ArrowStreamWriter}
 import org.apache.arrow.vector.types._
 import org.apache.arrow.vector.types.pojo.{ArrowType, Field, FieldType, Schema}
@@ -456,17 +457,57 @@ object Utils extends CometTypeShim with Logging {
   def getBatchFieldVectors(
       batch: ColumnarBatch): (Seq[FieldVector], Option[DictionaryProvider]) = {
     val columns = getBatchFieldVectorsWithProviders(batch)
-    (columns.map(_._1), columns.flatMap(_._2).headOption)
+    (columns.map(_._1), combineDictionaryProviders(columns))
+  }
+
+  /**
+   * The dictionaries every dictionary-encoded column of `columns` refers to, as one provider.
+   *
+   * Columns of a batch need not share a provider. Comet's cache decodes each column from its own
+   * Arrow stream, so a dictionary-backed column arrives carrying the provider its reader built,
+   * and a batch that reaches [[serializeBatches]] -- a native broadcast of a cache scan, say --
+   * can hold several. Writing the whole batch emits one schema covering every column and resolves
+   * each column's dictionary ID against the single provider the writer was given, so handing it
+   * any one column's provider fails with "Could not find dictionary with ID n" for the others.
+   */
+  private def combineDictionaryProviders(
+      columns: Seq[(FieldVector, Option[DictionaryProvider])]): Option[DictionaryProvider] = {
+    val dictionaries = scala.collection.mutable.LinkedHashMap.empty[Long, Dictionary]
+
+    columns.foreach { case (vector, providerOpt) =>
+      val encoding = vector.getField.getDictionary
+      if (encoding != null) {
+        val id = encoding.getId
+        val dictionary = providerOpt.map(_.lookup(id)).orNull
+        if (dictionary == null) {
+          throw new SparkException(
+            s"Column ${vector.getField.getName} is dictionary encoded with ID $id, but no " +
+              "dictionary with that ID was provided")
+        }
+        dictionaries.get(id) match {
+          // Every provider seen here descends from one upstream reader, which numbers the
+          // dictionaries it hands out, so two columns sharing an ID share the dictionary itself.
+          // A genuine clash would need renumbering, which means rewriting each vector's field,
+          // so refuse rather than silently decode one column against another's dictionary.
+          case Some(existing) if existing.getVector ne dictionary.getVector =>
+            throw new SparkException(
+              s"Columns of the same batch carry different dictionaries under ID $id")
+          case _ => dictionaries.put(id, dictionary)
+        }
+      }
+    }
+
+    if (dictionaries.isEmpty) None
+    else Some(new MapDictionaryProvider(dictionaries.values.toSeq: _*))
   }
 
   /**
    * Field vectors of `batch` paired with the dictionary provider each column was decoded with.
    *
-   * [[getBatchFieldVectors]] collapses these to the first provider, which is right when every
-   * column came from the same reader. Comet's cache decodes each column from its own stream, so a
-   * batch's dictionary-backed columns can carry independent providers whose IDs collide; writing
-   * such a batch back out with one column's provider cannot resolve the others. Callers that
-   * serialize columns individually use this instead.
+   * [[getBatchFieldVectors]] folds these into one provider covering the whole batch, which is
+   * what a single stream over every column needs. Comet's cache decodes each column from its own
+   * stream and writes it back the same way, so it keeps the pairing instead: each column is
+   * written with the provider it was decoded with.
    */
   def getBatchFieldVectorsWithProviders(
       batch: ColumnarBatch): Seq[(FieldVector, Option[DictionaryProvider])] = {

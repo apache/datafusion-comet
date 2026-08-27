@@ -30,6 +30,7 @@ import org.apache.spark.sql.columnar.{CachedBatch, SimpleMetricsCachedBatch}
 import org.apache.spark.sql.comet.CometInMemoryTableScanExec
 import org.apache.spark.sql.comet.execution.arrow.CometCachedBatchHelper
 import org.apache.spark.sql.execution.columnar.{CometInMemoryRelationHelper, InMemoryRelation}
+import org.apache.spark.sql.execution.exchange.{Exchange, ReusedExchangeExec}
 import org.apache.spark.sql.internal.{SQLConf, StaticSQLConf}
 import org.apache.spark.storage.StorageLevel
 
@@ -1208,6 +1209,11 @@ class CometInMemoryCacheSuite extends CometTestBase {
     // adaptively-cached relation that also finalizes the cached plan. EXPLAIN must launch nothing.
     withSQLConf(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+      // Spark caches through a session with some configs forced off, and on 3.4 that list still
+      // includes AQE itself, so the cached plan comes back non-adaptive and there is nothing to
+      // finalize. This conf is what decides that list; 3.5 defaults it on, and 4.0 stopped
+      // disabling AQE either way. Setting it keeps the relation adaptive on every version.
+      SQLConf.CAN_CHANGE_CACHED_PLAN_OUTPUT_PARTITIONING.key -> "true",
       CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true",
       "spark.comet.sparkToColumnar.enabled" -> "true") {
 
@@ -1259,6 +1265,143 @@ class CometInMemoryCacheSuite extends CometTestBase {
       assert(
         CometArrowAllocator.getAllocatedMemory == before,
         "readers opened before the failure must be released")
+    }
+  }
+
+  /**
+   * Cache two low-cardinality string columns and hand the test the cached payload.
+   *
+   * The shuffle is what makes this worth its own fixture: its reader hands the cache writer
+   * dictionary-encoded columns, so each cached column stream carries a dictionary of its own.
+   */
+  private def withDictionaryCache(f: (InMemoryRelation, Array[CachedBatch]) => Unit): Unit = {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
+      "spark.comet.sparkToColumnar.enabled" -> "true") {
+
+      spark.catalog.clearCache()
+      spark
+        .range(0, 2000, 1, 2)
+        .selectExpr(
+          "concat('a_', cast(id % 3 as string)) AS s1",
+          "concat('b_', cast(id % 4 as string)) AS s2")
+        .repartition(2)
+        .createOrReplaceTempView("dictionary_cache")
+      spark.catalog.cacheTable("dictionary_cache")
+      assert(spark.table("dictionary_cache").count() == 2000)
+      assert(
+        cachedBatchTypes("dictionary_cache").sameElements(
+          Array("org.apache.spark.sql.comet.execution.arrow.CometCachedBatch")))
+
+      val relation = spark.sharedState.cacheManager
+        .lookupCachedData(spark.table("dictionary_cache"))
+        .get
+        .cachedRepresentation
+
+      try {
+        f(relation, relation.cacheBuilder.cachedColumnBuffers.collect())
+      } finally {
+        spark.catalog.clearCache()
+      }
+    }
+  }
+
+  test("Comet in-memory cache broadcasts a batch whose columns have separate dictionaries") {
+    // A broadcast of a cache scan re-serializes each decoded batch as one stream covering every
+    // column, and the writer resolves all of their dictionary IDs against the single provider it
+    // is handed. The columns were decoded from separate streams, so they arrive carrying separate
+    // providers: passing any one of them cannot resolve the others.
+    withDictionaryCache { (relation, batches) =>
+      assert(
+        CometCachedBatchHelper.columnsAreDictionaryEncoded(batches.head).forall(identity),
+        "this test is only meaningful over dictionary-encoded cached columns")
+      assert(relation.output.length == 2)
+
+      val df = spark.sql(
+        "SELECT /*+ BROADCAST(c) */ c.s1, c.s2 FROM range(1) r JOIN dictionary_cache c ON true")
+      checkSparkAnswer(df)
+      assert(df.count() == 2000)
+    }
+  }
+
+  test("Comet in-memory cache releases a reader whose own first batch fails to decode") {
+    // A dictionary-encoded column loads its dictionary before the record batch that indexes into
+    // it, so a reader can allocate and then fail while opening. Nothing else can release what it
+    // took: its constructor never returns, so no caller holds the reader it would close, and the
+    // task-completion listener has not been told about it either.
+    withDictionaryCache { (relation, batches) =>
+      assert(
+        CometCachedBatchHelper.columnsAreDictionaryEncoded(batches.head).forall(identity),
+        "this test is only meaningful over dictionary-encoded cached columns")
+
+      // Enough to take out the end-of-stream marker and bite into the record batch body, so the
+      // read fails after the dictionary has been loaded rather than before.
+      batches.foreach(b => CometCachedBatchHelper.truncateColumnStream(b, 0, 64))
+
+      val before = CometArrowAllocator.getAllocatedMemory
+      intercept[Exception] {
+        decodedRowCount(relation, batches, Seq(relation.output.head))
+      }
+      assert(
+        CometArrowAllocator.getAllocatedMemory == before,
+        "a reader that fails while opening must release what it already allocated")
+    }
+  }
+
+  test("Comet in-memory cache scans of one cache canonicalize equal, so exchanges are reused") {
+    // The wrapped Spark scan is a plan-typed field rather than a child, so canonicalization walks
+    // past it and leaves in place the expression IDs of whichever occurrence of the relation
+    // produced it. sameResult is what exchange and broadcast reuse are keyed on, so two
+    // equivalent scans that compare unequal make a query shuffle and aggregate one cache twice.
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
+      "spark.comet.sparkToColumnar.enabled" -> "true") {
+
+      spark.catalog.clearCache()
+      spark
+        .range(0, 400, 1, 2)
+        .selectExpr("id", "id % 10 AS k")
+        .createOrReplaceTempView("reuse_cache")
+      spark.catalog.cacheTable("reuse_cache")
+      assert(spark.table("reuse_cache").count() == 400)
+
+      val df = spark.sql(
+        "SELECT k, count(*) AS c FROM reuse_cache GROUP BY k " +
+          "UNION ALL SELECT k, count(*) AS c FROM reuse_cache GROUP BY k")
+      checkSparkAnswer(df)
+
+      val plan = df.queryExecution.executedPlan
+      val exchanges = plan.collect { case e: Exchange => e }
+      val reused = plan.collect { case r: ReusedExchangeExec => r }
+      assert(
+        exchanges.length == 1 && reused.length == 1,
+        s"expected one exchange and one reuse of it, got ${exchanges.length} exchanges and " +
+          s"${reused.length} reuses:\n$plan")
+
+      // Canonicalization must not simply drop the wrapped scan: scans that differ only in the
+      // predicates pushed into them have to stay distinct.
+      def scanOf(query: String): CometInMemoryTableScanExec =
+        spark
+          .sql(query)
+          .queryExecution
+          .executedPlan
+          .collectFirst { case s: CometInMemoryTableScanExec => s }
+          .get
+
+      val under100 = scanOf("SELECT k FROM reuse_cache WHERE id < 100")
+      val under200 = scanOf("SELECT k FROM reuse_cache WHERE id < 200")
+      assert(
+        under100.originalPlan.predicates.nonEmpty,
+        "expected the filter to be pushed into the cache scan")
+      assert(
+        under100.canonicalized != under200.canonicalized,
+        "cache scans with different pruning predicates must not compare equal")
+
+      spark.catalog.clearCache()
     }
   }
 }

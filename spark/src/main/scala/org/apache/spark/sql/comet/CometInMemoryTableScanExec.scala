@@ -24,7 +24,7 @@ import scala.collection.JavaConverters._
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.columnar.CachedBatchSerializer
-import org.apache.spark.sql.execution.LeafExecNode
+import org.apache.spark.sql.execution.{LeafExecNode, SparkPlan}
 import org.apache.spark.sql.execution.columnar.{CachedRDDBuilder, InMemoryTableScanExec}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.vectorized.ColumnarBatch
@@ -63,6 +63,22 @@ case class CometInMemoryTableScanExec(
   // the declared output, and a consumer that reads by ordinal rather than by row count -- a join,
   // for instance -- then reads the wrong column.
   override def output: Seq[Attribute] = originalPlan.output
+
+  // `originalPlan` is a plan-typed field rather than a child, so QueryPlan's canonicalization
+  // walks straight past it: its attributes and predicates keep the expression IDs of whichever
+  // occurrence of the cached relation produced them. Two scans of one cache then compare unequal,
+  // and since sameResult is what exchange and broadcast reuse are keyed on, a UNION of two
+  // identical aggregates over a cached table runs two shuffles where Spark's own cache scan runs
+  // one and reuses it.
+  //
+  // Defer to `InMemoryTableScanExec`, which normalizes its own attributes and predicates against
+  // the relation's output. Dropping the field instead would also make the scans compare equal,
+  // but it would equate scans carrying different pruning predicates along with them.
+  override protected def doCanonicalize(): SparkPlan =
+    super
+      .doCanonicalize()
+      .asInstanceOf[CometInMemoryTableScanExec]
+      .copy(originalPlan = originalPlan.canonicalized.asInstanceOf[InMemoryTableScanExec])
 
   // Use the serializer's vector types because the cached batch layout is owned by the serializer.
   override def vectorTypes: Option[Seq[String]] =
