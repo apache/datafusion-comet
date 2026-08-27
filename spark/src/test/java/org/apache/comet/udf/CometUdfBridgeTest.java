@@ -40,6 +40,7 @@ import org.apache.arrow.c.Data;
 import org.apache.arrow.memory.ArrowBuf;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.memory.OutOfMemoryException;
+import org.apache.arrow.vector.FieldVector;
 import org.apache.arrow.vector.IntVector;
 import org.apache.spark.TaskContext;
 import org.apache.spark.api.java.JavaSparkContext;
@@ -218,20 +219,15 @@ public class CometUdfBridgeTest {
   }
 
   @Test
-  public void outputAllocationIsChargedUntilFfiRelease() {
-    // This and the restart below make each job the first task in a fresh SparkContext, forcing
-    // taskAttemptId reuse while the first task's exported buffer is still retained.
-    spark.stop();
-    spark = null;
-    jsc = null;
-    startSpark();
-
+  public void outputChargeMovesToNativeOwnershipAtExport() {
     LongAccumulator before = jsc.sc().longAccumulator("udf-memory-before");
     LongAccumulator during = jsc.sc().longAccumulator("udf-memory-during");
-    LongAccumulator retained = jsc.sc().longAccumulator("udf-memory-retained");
+    LongAccumulator afterTransfer = jsc.sc().longAccumulator("udf-memory-after-transfer");
     LongAccumulator released = jsc.sc().longAccumulator("udf-memory-released");
+    LongAccumulator taskAllocatedAfterTransfer =
+        jsc.sc().longAccumulator("task-allocator-after-transfer");
+    LongAccumulator transferredValue = jsc.sc().longAccumulator("transferred-first-value");
     LongAccumulator stateCount = jsc.sc().longAccumulator("udf-state-count");
-    LongAccumulator firstTaskAttemptId = jsc.sc().longAccumulator("first-task-attempt-id");
 
     jsc.parallelize(Collections.singletonList(0), 1)
         .foreachPartition(
@@ -239,74 +235,80 @@ public class CometUdfBridgeTest {
                 ignored -> {
                   TaskContext context = TaskContext.get();
                   CometUdfBridge.registerTask(context);
-                  firstTaskAttemptId.add(context.taskAttemptId());
                   TaskMemoryManager taskMemoryManager =
                       CometTaskContextShim.taskMemoryManager(context);
                   before.add(taskMemoryManager.getMemoryConsumptionForThisTask());
 
+                  BufferAllocator rootAllocator =
+                      org.apache.comet.package$.MODULE$.CometArrowAllocator();
                   BufferAllocator allocator = CometUdfBridge.taskAllocator(context);
-                  try (ArrowArray array =
-                      ArrowArray.allocateNew(
-                          org.apache.comet.package$.MODULE$.CometArrowAllocator())) {
+                  try (ArrowArray array = ArrowArray.allocateNew(rootAllocator)) {
+                    FieldVector exported;
                     try (IntVector vector = new IntVector("result", allocator)) {
                       vector.allocateNew(1024);
+                      vector.setSafe(0, 42);
                       vector.setValueCount(1024);
                       during.add(taskMemoryManager.getMemoryConsumptionForThisTask());
-                      Data.exportVector(allocator, vector, null, array);
+                      exported = CometUdfBridge.transferOutputForExport(context, vector);
                     }
-                    retained.add(taskMemoryManager.getMemoryConsumptionForThisTask());
+                    try {
+                      // The Spark charge moves to native ownership at export, before the FFI
+                      // release, while the buffers are still alive and readable.
+                      afterTransfer.add(taskMemoryManager.getMemoryConsumptionForThisTask());
+                      taskAllocatedAfterTransfer.add(allocator.getAllocatedMemory());
+                      transferredValue.add(((IntVector) exported).get(0));
+                      Data.exportVector(rootAllocator, exported, null, array);
+                    } finally {
+                      exported.close();
+                    }
                     array.release();
                     released.add(taskMemoryManager.getMemoryConsumptionForThisTask());
                   }
 
-                  ArrowArray deferred =
-                      ArrowArray.allocateNew(
-                          org.apache.comet.package$.MODULE$.CometArrowAllocator());
+                  ArrowArray deferred = ArrowArray.allocateNew(rootAllocator);
+                  FieldVector deferredExported;
                   try (IntVector vector = new IntVector("deferred", allocator)) {
                     vector.allocateNew(1024);
                     vector.setValueCount(1024);
-                    Data.exportVector(allocator, vector, null, deferred);
+                    deferredExported = CometUdfBridge.transferOutputForExport(context, vector);
+                  }
+                  try {
+                    Data.exportVector(rootAllocator, deferredExported, null, deferred);
+                  } finally {
+                    deferredExported.close();
                   }
                   DEFERRED_ARRAY.set(deferred);
                   stateCount.add(CometUdfBridge.taskStateCount());
                 });
 
-    assertTrue("Arrow output should be charged to the Spark task", during.value() > before.value());
     assertTrue(
-        "FFI should retain the task charge after the Java vector closes",
-        retained.value() > before.value());
-    assertEquals("FFI release should return to baseline", before.value(), released.value());
+        "Arrow output should be charged to the Spark task while the UDF holds it",
+        during.value() > before.value());
+    assertEquals(
+        "the task charge should move to native ownership at export",
+        before.value(),
+        afterTransfer.value());
+    assertEquals(
+        "exported buffers should leave the task allocator",
+        0L,
+        taskAllocatedAfterTransfer.value().longValue());
+    assertEquals(
+        "transferred buffers should stay readable", 42L, transferredValue.value().longValue());
+    assertEquals(
+        "the FFI release should not free the task charge a second time",
+        before.value(),
+        released.value());
     assertTrue("task state should exist while the task is running", stateCount.value() >= 1L);
     assertEquals(
-        "task state should retain an exported buffer after completion",
-        1,
+        "exported buffers should not retain task state after completion",
+        0,
         CometUdfBridge.taskStateCount());
-
-    spark.stop();
-    spark = null;
-    jsc = null;
-    startSpark();
-
-    LongAccumulator secondTaskAttemptId = jsc.sc().longAccumulator("second-task-attempt-id");
-    jsc.parallelize(Collections.singletonList(0), 1)
-        .foreachPartition(
-            (VoidFunction<Iterator<Integer>>)
-                ignored -> {
-                  TaskContext context = TaskContext.get();
-                  secondTaskAttemptId.add(context.taskAttemptId());
-                  CometUdfBridge.registerTask(context);
-                  CometUdfBridge.taskAllocator(context);
-                });
-    assertEquals(
-        "separate SparkContexts should reuse the task attempt ID in this regression",
-        firstTaskAttemptId.value(),
-        secondTaskAttemptId.value());
 
     ArrowArray deferred = DEFERRED_ARRAY.getAndSet(null);
     assertNotNull("task should export a deferred FFI array", deferred);
     deferred.release();
     deferred.close();
     assertEquals(
-        "FFI release should remove completed task state", 0, CometUdfBridge.taskStateCount());
+        "a deferred FFI release should not involve task state", 0, CometUdfBridge.taskStateCount());
   }
 }

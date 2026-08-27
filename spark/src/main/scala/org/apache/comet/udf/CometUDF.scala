@@ -36,7 +36,9 @@ object CometUDF {
  *   - Scalar (literal-folded) arguments arrive as length-1 vectors and must be read at index 0.
  *   - The returned vector's length must match `numRows`.
  *   - Returned vectors and temporary buffers must use `allocator`. In off-heap mode, allocations
- *     are charged to the current Spark task.
+ *     are charged to the current Spark task while the UDF holds them; when the returned vector is
+ *     handed to native execution its accounting moves with it, so native operators that retain
+ *     the buffers do not charge the task a second time.
  *
  * `numRows` mirrors DataFusion's `ScalarFunctionArgs.number_rows` and is the batch row count.
  * UDFs that always have at least one batch-length input can read length from it and ignore

@@ -20,6 +20,9 @@
 package org.apache.comet.udf;
 
 import java.io.IOException;
+import java.util.Collections;
+import java.util.IdentityHashMap;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -31,10 +34,14 @@ import org.apache.arrow.c.ArrowSchema;
 import org.apache.arrow.c.Data;
 import org.apache.arrow.memory.AllocationListener;
 import org.apache.arrow.memory.AllocationOutcome;
+import org.apache.arrow.memory.ArrowBuf;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.memory.OutOfMemoryException;
+import org.apache.arrow.memory.ReferenceManager;
 import org.apache.arrow.vector.FieldVector;
 import org.apache.arrow.vector.ValueVector;
+import org.apache.arrow.vector.types.pojo.Field;
+import org.apache.arrow.vector.util.TransferPair;
 import org.apache.spark.TaskContext;
 import org.apache.spark.comet.CometTaskContextShim;
 import org.apache.spark.memory.MemoryConsumer;
@@ -77,8 +84,10 @@ public class CometUdfBridge {
   private static final BufferAllocator ROOT_ALLOCATOR = CometUDF.rootAllocator();
 
   /**
-   * Task-scoped UDF instances and output allocator. Entries are removed after task completion and
-   * after any Arrow buffers still exported through FFI have been released.
+   * Task-scoped UDF instances and output allocator. Entries are removed after task completion once
+   * in-flight evaluations finish and the task allocator holds no memory. Exported output buffers do
+   * not pin an entry: their accounting moves to the root allocator when the result is handed to
+   * native execution.
    */
   private static final ConcurrentHashMap<TaskContext, TaskState> TASKS = new ConcurrentHashMap<>();
 
@@ -90,8 +99,8 @@ public class CometUdfBridge {
    * Registers task-scoped UDF state before native execution starts.
    *
    * <p>{@code CometExecIterator} calls this before registering its own completion listener. Spark
-   * runs completion listeners in reverse registration order, so the native plan releases exported
-   * Arrow buffers before this state attempts to close its child allocator.
+   * runs completion listeners in reverse registration order, so the native plan is released, and
+   * has stopped calling UDFs, before this state attempts to close its child allocator.
    */
   public static void registerTask(TaskContext taskContext) {
     if (taskContext != null) {
@@ -228,6 +237,7 @@ public class CometUdfBridge {
 
     ValueVector[] inputs = new ValueVector[inputArrayPtrs.length];
     ValueVector result = null;
+    FieldVector transferred = null;
     try {
       for (int i = 0; i < inputArrayPtrs.length; i++) {
         ArrowArray inArr = ArrowArray.wrap(inputArrayPtrs[i]);
@@ -251,7 +261,22 @@ public class CometUdfBridge {
       }
       ArrowArray outArr = ArrowArray.wrap(outArrayPtr);
       ArrowSchema outSch = ArrowSchema.wrap(outSchemaPtr);
-      Data.exportVector(outputAllocator, (FieldVector) result, null, outArr, outSch);
+      if (state != null) {
+        // Accounting ownership follows the FFI boundary, mirroring the input import above: once
+        // the result is handed to native execution, native operators that retain its buffers
+        // (hash join builds, shuffle buffers) take their own Spark reservations, so keeping the
+        // JVM charge until the FFI release would charge the same physical buffers twice.
+        Field resultField = ((FieldVector) result).getField();
+        transferred = transferForExport(state, outputAllocator, (FieldVector) result);
+        // Export the schema from the result's own Field: a transferred complex vector rebuilds
+        // child names from its runtime data vectors, which Arrow hardcodes to "$data$", losing
+        // names like "item" that native execution expects. The C array carries no names, so it
+        // can come from the transferred vector whose buffers the root allocator now owns.
+        Data.exportField(ROOT_ALLOCATOR, resultField, null, outSch);
+        Data.exportVector(ROOT_ALLOCATOR, transferred, null, outArr);
+      } else {
+        Data.exportVector(ROOT_ALLOCATOR, (FieldVector) result, null, outArr, outSch);
+      }
     } finally {
       for (ValueVector v : inputs) {
         if (v != null) {
@@ -269,7 +294,51 @@ public class CometUdfBridge {
           // do not mask the original throwable
         }
       }
+      if (transferred != null) {
+        try {
+          transferred.close();
+        } catch (RuntimeException ignored) {
+          // do not mask the original throwable
+        }
+      }
     }
+  }
+
+  /**
+   * Moves the result's buffer accounting from the task allocator to the root allocator and drops
+   * the corresponding Spark task charge. Neither the ownership transfer nor the eventual FFI
+   * release is observed by the task allocator's {@link AllocationListener} (Arrow only notifies the
+   * allocator owning a chunk when the chunk is destroyed), so the charge must be released here.
+   *
+   * <p>The returned vector shares the original buffers and must be closed by the caller after
+   * export; the exported FFI array keeps the buffers alive until native execution releases them.
+   */
+  private static FieldVector transferForExport(
+      TaskState state, BufferAllocator outputAllocator, FieldVector result) {
+    long charged = chargedOutputSize(result, outputAllocator);
+    TransferPair transferPair = result.getTransferPair(result.getField(), ROOT_ALLOCATOR);
+    transferPair.transfer();
+    state.releaseExportedCharge(charged);
+    return (FieldVector) transferPair.getTo();
+  }
+
+  /**
+   * Bytes of the result's buffers currently accounted against the task allocator, i.e. the portion
+   * of the Spark task charge that moves to native ownership on export. {@code getAccountedSize()}
+   * is non-zero only on the ledger that owns a chunk, so pass-through input buffers (owned by the
+   * root allocator) and chunks whose ownership already moved on a previous export contribute
+   * nothing.
+   */
+  private static long chargedOutputSize(FieldVector result, BufferAllocator outputAllocator) {
+    long charged = 0L;
+    Set<ReferenceManager> seen = Collections.newSetFromMap(new IdentityHashMap<>());
+    for (ArrowBuf buf : result.getBuffers(false)) {
+      ReferenceManager referenceManager = buf.getReferenceManager();
+      if (referenceManager.getAllocator() == outputAllocator && seen.add(referenceManager)) {
+        charged += referenceManager.getAccountedSize();
+      }
+    }
+    return charged;
   }
 
   /** Visible to the focused allocator test in this package. */
@@ -287,6 +356,12 @@ public class CometUdfBridge {
     TaskState state = taskState(taskContext);
     state.beginEvaluation();
     return state::finishEvaluation;
+  }
+
+  /** Visible to the focused allocator test in this package. */
+  static FieldVector transferOutputForExport(TaskContext taskContext, FieldVector result) {
+    TaskState state = taskState(taskContext);
+    return transferForExport(state, state.allocator(), result);
   }
 
   private static TaskState taskState(TaskContext taskContext) {
@@ -388,6 +463,22 @@ public class CometUdfBridge {
         }
       }
       closeIfIdle();
+    }
+
+    /**
+     * Drops the Spark charge for output buffers whose accounting ownership moved to the root
+     * allocator at export; from that point native execution owns them and {@link #onRelease} will
+     * never fire for their chunks. After completion the consumer was already drained wholesale.
+     */
+    private void releaseExportedCharge(long size) {
+      if (size <= 0) {
+        return;
+      }
+      synchronized (this) {
+        if (!completed && consumer != null) {
+          consumer.freeMemory(size);
+        }
+      }
     }
 
     private synchronized void beginEvaluation() {

@@ -92,7 +92,7 @@ class CometExecIterator(
   private val cometTaskMemoryManager = new CometTaskMemoryManager(id, taskAttemptId)
 
   // Register before this iterator's completion listener so Spark's LIFO cleanup releases the
-  // native plan and its exported UDF buffers before the task-scoped Arrow allocator closes.
+  // native plan, ending any UDF calls, before the task-scoped Arrow allocator closes.
   CometUdfBridge.registerTask(taskContext)
 
   private val plan = {
