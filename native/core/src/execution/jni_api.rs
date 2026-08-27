@@ -95,6 +95,7 @@ use std::time::{Duration, Instant};
 use std::{sync::Arc, task::Poll};
 use tokio::runtime::{Handle, Runtime};
 use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 
 use crate::execution::memory_pools::{
     create_memory_pool, handle_task_shared_pool_release, parse_memory_pool_config, MemoryPoolConfig,
@@ -324,6 +325,8 @@ struct ExecutionContext {
     pub stream: Option<SendableRecordBatchStream>,
     /// Receives batches from a spawned tokio task (async I/O path)
     pub batch_receiver: Option<mpsc::Receiver<DataFusionResult<RecordBatch>>>,
+    /// Owns cancellation of the async I/O producer when Spark closes this context.
+    pub batch_producer: Option<JoinHandle<()>>,
     /// Native metrics
     pub metrics: Arc<Global<JObject<'static>>>,
     // The interval in milliseconds to update metrics
@@ -537,6 +540,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 input_sources,
                 stream: None,
                 batch_receiver: None,
+                batch_producer: None,
                 metrics,
                 metrics_update_interval,
                 metrics_last_update_time: Instant::now(),
@@ -835,7 +839,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                     // decreasing to 1 would serialize production and consumption.
                     let (tx, rx) = mpsc::channel(2);
                     let mut stream = stream;
-                    get_runtime().spawn(async move {
+                    let producer = get_runtime().spawn(async move {
                         let result = std::panic::AssertUnwindSafe(async {
                             while let Some(batch) = stream.next().await {
                                 if tx.send(batch).await.is_err() {
@@ -862,6 +866,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                         }
                     });
                     exec_context.batch_receiver = Some(rx);
+                    exec_context.batch_producer = Some(producer);
                 } else {
                     exec_context.stream = Some(stream);
                 }
@@ -966,7 +971,21 @@ pub extern "system" fn Java_org_apache_comet_Native_releasePlan(
     try_unwrap_or_throw(&e, |env| unsafe {
         let execution_context = get_execution_context(exec_context);
 
-        // Update metrics
+        // Close the channel before cancellation so a producer waiting to send can
+        // also stop naturally. releasePlan is called on Spark's executor thread.
+        drop(execution_context.batch_receiver.take());
+        if let Some(producer) = execution_context.batch_producer.take() {
+            if stop_batch_producer(producer) == BatchProducerShutdown::TimedOut {
+                log::debug!(
+                    "Plan {} batch producer did not finish within {:?}; final metrics may be incomplete",
+                    execution_context.id,
+                    BATCH_PRODUCER_SHUTDOWN_TIMEOUT,
+                );
+            }
+        }
+
+        // A cooperative cancellation drops the stream (and its metric guards)
+        // before this snapshot. A timed-out producer may still update metrics later.
         update_metrics(env, execution_context)?;
 
         handle_task_shared_pool_release(
@@ -987,6 +1006,31 @@ pub extern "system" fn Java_org_apache_comet_Native_releasePlan(
         let _: Box<ExecutionContext> = Box::from_raw(execution_context);
         Ok(())
     })
+}
+
+const BATCH_PRODUCER_SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(100);
+
+#[derive(Debug, PartialEq, Eq)]
+enum BatchProducerShutdown {
+    Finished,
+    TimedOut,
+}
+
+// Best-effort final accounting, not a guarantee that all external task resources
+// outlive producer work. The producer owns its stream and sender, not the raw
+// ExecutionContext pointer. Abort is cooperative: synchronous decoding or I/O may
+// continue until the task next yields. Never wait indefinitely for that work.
+fn stop_batch_producer(producer: JoinHandle<()>) -> BatchProducerShutdown {
+    producer.abort();
+    let deadline = Instant::now() + BATCH_PRODUCER_SHUTDOWN_TIMEOUT;
+    while !producer.is_finished() {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return BatchProducerShutdown::TimedOut;
+        }
+        std::thread::sleep(remaining.min(Duration::from_millis(1)));
+    }
+    BatchProducerShutdown::Finished
 }
 
 fn update_metrics(env: &mut Env, exec_context: &mut ExecutionContext) -> CometResult<()> {
@@ -1374,4 +1418,195 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_columnarToRowClose(
         }
         Ok(())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use datafusion::physical_plan::metrics::Count;
+
+    struct MetricOnDrop(Count);
+
+    impl Drop for MetricOnDrop {
+        fn drop(&mut self) {
+            self.0.add(1);
+        }
+    }
+
+    fn producer_test_runtime() -> Runtime {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .build()
+            .unwrap()
+    }
+
+    fn pending_producer(runtime: &Runtime, metric: &Count) -> JoinHandle<()> {
+        let (started_sender, started_receiver) = std::sync::mpsc::channel();
+        let metric = MetricOnDrop(metric.clone());
+        let producer = runtime.spawn(async move {
+            let _metric = metric;
+            started_sender.send(()).unwrap();
+            futures::future::pending::<()>().await;
+        });
+        started_receiver
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap();
+        producer
+    }
+
+    #[test]
+    fn cooperative_batch_producer_shutdown_publishes_drop_metrics() {
+        let runtime = producer_test_runtime();
+        let metric = Count::new();
+        let producer = pending_producer(&runtime, &metric);
+        assert_eq!(metric.value(), 0);
+
+        assert_eq!(
+            stop_batch_producer(producer),
+            BatchProducerShutdown::Finished
+        );
+        // This is the snapshot releasePlan takes immediately after shutdown.
+        assert_eq!(metric.value(), 1);
+    }
+
+    #[test]
+    fn receiver_close_and_cancellation_release_queued_batch_producer() {
+        let runtime = producer_test_runtime();
+        let metric = Count::new();
+        let (sender, receiver) = mpsc::channel(1);
+        let (started_sender, started_receiver) = std::sync::mpsc::channel();
+        let guard = MetricOnDrop(metric.clone());
+        let producer = runtime.spawn(async move {
+            let _guard = guard;
+            sender.send(()).await.unwrap();
+            started_sender.send(()).unwrap();
+            // The receiver is deliberately not consumed, so this send must wait
+            // until close drops the receiver or abort drops the producer future.
+            let _ = sender.send(()).await;
+        });
+        started_receiver
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap();
+        drop(receiver);
+        assert_eq!(
+            stop_batch_producer(producer),
+            BatchProducerShutdown::Finished
+        );
+        assert_eq!(metric.value(), 1);
+    }
+
+    fn blocked_producer(
+        runtime: &Runtime,
+        metric: &Count,
+    ) -> (JoinHandle<()>, std::sync::mpsc::Sender<()>) {
+        let (started_sender, started_receiver) = std::sync::mpsc::channel();
+        let (release_sender, release_receiver) = std::sync::mpsc::channel();
+        let guard = MetricOnDrop(metric.clone());
+        let producer = runtime.spawn(async move {
+            let _guard = guard;
+            started_sender.send(()).unwrap();
+            // Stand-in for synchronous decoding that cannot observe cancellation.
+            // This occupies only this test's dedicated worker, never get_runtime().
+            let _ = release_receiver.recv_timeout(Duration::from_secs(5));
+        });
+        started_receiver
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap();
+        (producer, release_sender)
+    }
+
+    #[test]
+    fn blocked_batch_producer_times_out_with_incomplete_metric_snapshot() {
+        let runtime = producer_test_runtime();
+        let metric = Count::new();
+        let (producer, release_sender) = blocked_producer(&runtime, &metric);
+        let started = Instant::now();
+        let result = stop_batch_producer(producer);
+        let elapsed = started.elapsed();
+        let snapshot = metric.value();
+        // Release after the helper returns: this structurally proves shutdown did
+        // not wait for the blocked work, without a fragile upper timing assertion.
+        release_sender.send(()).unwrap();
+        drop(runtime);
+
+        assert_eq!(result, BatchProducerShutdown::TimedOut);
+        assert!(elapsed >= BATCH_PRODUCER_SHUTDOWN_TIMEOUT);
+        assert_eq!(snapshot, 0);
+        assert_eq!(metric.value(), 1);
+    }
+
+    #[test]
+    fn finished_batch_producer_ignores_exhausted_runtime_budget() {
+        let runtime = producer_test_runtime();
+        runtime.block_on(async {
+            let producer = tokio::spawn(async {});
+            while !producer.is_finished() {
+                tokio::task::yield_now().await;
+            }
+            while tokio::task::coop::has_budget_remaining() {
+                tokio::task::coop::consume_budget().await;
+            }
+            assert_eq!(
+                stop_batch_producer(producer),
+                BatchProducerShutdown::Finished
+            );
+        });
+    }
+
+    #[test]
+    #[ignore = "manual cancellation-latency measurement; run with --ignored --nocapture"]
+    fn measure_batch_producer_shutdown_latency() {
+        fn summarize(name: &str, mut timings: Vec<Duration>) {
+            timings.sort_unstable();
+            eprintln!(
+                "{name}: samples={}, min={:?}, median={:?}, p95={:?}, max={:?}",
+                timings.len(),
+                timings[0],
+                timings[timings.len() / 2],
+                timings[(timings.len() * 95 / 100).min(timings.len() - 1)],
+                timings[timings.len() - 1],
+            );
+        }
+        let runtime = producer_test_runtime();
+        let mut finished = Vec::new();
+        let mut pending = Vec::new();
+        for _ in 0..100 {
+            let producer = runtime.spawn(async {});
+            while !producer.is_finished() {
+                std::thread::yield_now();
+            }
+            let started = Instant::now();
+            assert_eq!(
+                stop_batch_producer(producer),
+                BatchProducerShutdown::Finished
+            );
+            finished.push(started.elapsed());
+
+            let metric = Count::new();
+            let producer = pending_producer(&runtime, &metric);
+            let started = Instant::now();
+            assert_eq!(
+                stop_batch_producer(producer),
+                BatchProducerShutdown::Finished
+            );
+            pending.push(started.elapsed());
+            assert_eq!(metric.value(), 1);
+        }
+        summarize("finished producer", finished);
+        summarize("pending cooperative producer", pending);
+
+        let mut blocked = Vec::new();
+        for _ in 0..5 {
+            let metric = Count::new();
+            let (producer, release_sender) = blocked_producer(&runtime, &metric);
+            let started = Instant::now();
+            let result = stop_batch_producer(producer);
+            blocked.push(started.elapsed());
+            let snapshot = metric.value();
+            release_sender.send(()).unwrap();
+            assert_eq!(result, BatchProducerShutdown::TimedOut);
+            assert_eq!(snapshot, 0);
+        }
+        summarize("blocked synchronous producer", blocked);
+    }
 }
