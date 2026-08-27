@@ -120,7 +120,7 @@ INSERT INTO test_array_distinct_double VALUES
   (array(CAST('NaN' AS DOUBLE), CAST('NaN' AS DOUBLE), 1.0, 1.0)),
   (array(CAST('NaN' AS DOUBLE), NULL, CAST('NaN' AS DOUBLE), NULL, 1.0)),
   (array(CAST('Infinity' AS DOUBLE), CAST('-Infinity' AS DOUBLE), CAST('Infinity' AS DOUBLE), 0.0)),
-  (array(0.0, -0.0, 1.0))
+  (array(0.0, double('-0.0'), 1.0))
 
 query
 SELECT array_distinct(arr) FROM test_array_distinct_double
@@ -139,7 +139,7 @@ SELECT array_distinct(array(CAST('Infinity' AS DOUBLE), CAST('-Infinity' AS DOUB
 
 -- negative zero
 query
-SELECT array_distinct(array(0.0, -0.0, 1.0))
+SELECT array_distinct(array(0.0, double('-0.0'), 1.0))
 
 -- ===== FLOAT arrays =====
 
@@ -155,7 +155,7 @@ INSERT INTO test_array_distinct_float VALUES
   (array(CAST('NaN' AS FLOAT), CAST('NaN' AS FLOAT), CAST(1.0 AS FLOAT))),
   (array(CAST('NaN' AS FLOAT), NULL, CAST('NaN' AS FLOAT), NULL, CAST(1.0 AS FLOAT))),
   (array(CAST('Infinity' AS FLOAT), CAST('-Infinity' AS FLOAT), CAST('Infinity' AS FLOAT), CAST(0.0 AS FLOAT))),
-  (array(CAST(0.0 AS FLOAT), CAST(-0.0 AS FLOAT), CAST(1.0 AS FLOAT)))
+  (array(CAST(0.0 AS FLOAT), float('-0.0'), CAST(1.0 AS FLOAT)))
 
 query
 SELECT array_distinct(arr) FROM test_array_distinct_float

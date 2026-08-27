@@ -181,7 +181,7 @@ statement
 CREATE TABLE ansi_float_div_zero(a float, b float, c double, d double) USING parquet
 
 statement
-INSERT INTO ansi_float_div_zero VALUES (3.0, 0.0, 3.0, 0.0), (1.0, -0.0, 1.0, -0.0)
+INSERT INTO ansi_float_div_zero VALUES (3.0, 0.0, 3.0, 0.0), (1.0, float('-0.0'), 1.0, double('-0.0'))
 
 -- float column % 0 should throw
 query expect_error(BY_ZERO)
@@ -204,7 +204,7 @@ SELECT c % CAST(0.0 AS DOUBLE) FROM ansi_float_div_zero
 
 -- double column % literal -0.0 should also throw (IEEE 754: -0.0 == 0.0)
 query expect_error(BY_ZERO)
-SELECT c % CAST(-0.0 AS DOUBLE) FROM ansi_float_div_zero
+SELECT c % double('-0.0') FROM ansi_float_div_zero
 
 -- literal double % double column should throw
 query expect_error(BY_ZERO)
@@ -223,7 +223,7 @@ SELECT CAST(1.0 AS DOUBLE) % CAST(0.0 AS DOUBLE)
 
 -- literal double % -0.0 should also throw (IEEE 754: -0.0 == 0.0)
 query expect_error(BY_ZERO)
-SELECT CAST(1.0 AS DOUBLE) % CAST(-0.0 AS DOUBLE)
+SELECT CAST(1.0 AS DOUBLE) % double('-0.0')
 
 -- literal float % 0.0 should throw
 query expect_error(BY_ZERO)

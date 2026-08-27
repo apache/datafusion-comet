@@ -40,9 +40,6 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
   private val crossTimezones =
     Seq("UTC", "America/Los_Angeles", "Europe/London", "Asia/Tokyo")
 
-  private def causeChain(error: Throwable): Seq[Throwable] =
-    Iterator.iterate(error)(_.getCause).takeWhile(_ != null).toSeq
-
   private def deepestSparkThrowable(error: Throwable): SparkThrowable with Throwable =
     causeChain(error)
       .collect { case e: SparkThrowable with Throwable => e }
