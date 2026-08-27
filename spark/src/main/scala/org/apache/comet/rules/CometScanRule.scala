@@ -970,14 +970,13 @@ case class CometScanRule(session: SparkSession)
   private def isSchemaSupported(scanExec: FileSourceScanExec, r: HadoopFsRelation): Boolean = {
     val fallbackReasons = new ListBuffer[String]()
     val typeChecker = CometScanTypeChecker()
-    // Java equalsIgnoreCase also lets ASCII i/k/s match non-ASCII dotted/dotless I, Kelvin sign,
-    // and long s. The physical Parquet name is unavailable here, so keep a Variant-bearing scan
-    // with any potentially ambiguous name on Spark until the native adapter implements the same
-    // Unicode comparison.
+    // The physical Parquet name is unavailable here, so keep a Variant-bearing scan with a
+    // non-ASCII required name on Spark until the native adapter implements Spark's Unicode
+    // case-insensitive comparison. Physical Unicode names resolved to ASCII here remain tracked by
+    // https://github.com/apache/datafusion-comet/issues/5495.
     if (!session.sessionState.conf.caseSensitiveAnalysis &&
       scanExec.requiredSchema.exists(field => isVariantType(field.dataType)) &&
-      scanExec.requiredSchema.exists(field =>
-        field.name.exists(ch => ch > '\u007f' || "iIkKsS".contains(ch)))) {
+      scanExec.requiredSchema.exists(field => field.name.exists(_ > '\u007f'))) {
       withFallbackReason(
         scanExec,
         "Native Parquet scan does not support case-insensitive Unicode column names in " +
