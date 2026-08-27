@@ -33,6 +33,7 @@ import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.{col, count, sum}
 
 import org.apache.comet.CometConf
+import org.apache.comet.serde.OperatorOuterClass
 
 class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
@@ -48,6 +49,74 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
   }
 
   import testImplicits._
+
+  test("native shuffle plan preserves local partition writer and legacy output paths") {
+    val dataFile = "/tmp/comet-shuffle.data"
+    val indexFile = "/tmp/comet-shuffle.index"
+    val localWriter = OperatorOuterClass.LocalPartitionWriter
+      .newBuilder()
+      .setOutputDataFile(dataFile)
+      .setOutputIndexFile(indexFile)
+      .build()
+    val writer = OperatorOuterClass.ShuffleWriter
+      .newBuilder()
+      .setOutputDataFile(dataFile)
+      .setOutputIndexFile(indexFile)
+      .setPartitionWriter(
+        OperatorOuterClass.PartitionWriter.newBuilder().setLocal(localWriter).build())
+      .build()
+
+    val decoded = OperatorOuterClass.ShuffleWriter.parseFrom(writer.toByteArray)
+
+    assert(decoded.hasPartitionWriter)
+    assert(decoded.getPartitionWriter.hasLocal)
+    assert(!decoded.getPartitionWriter.hasRss)
+    assert(decoded.getPartitionWriter.getLocal.getOutputDataFile == dataFile)
+    assert(decoded.getPartitionWriter.getLocal.getOutputIndexFile == indexFile)
+    assert(decoded.getOutputDataFile == dataFile)
+    assert(decoded.getOutputIndexFile == indexFile)
+  }
+
+  test("native shuffle plan preserves RSS partition writer and excludes local destination") {
+    val localWriter = OperatorOuterClass.LocalPartitionWriter
+      .newBuilder()
+      .setOutputDataFile("/tmp/comet-shuffle.data")
+      .setOutputIndexFile("/tmp/comet-shuffle.index")
+      .build()
+    val partitionWriter = OperatorOuterClass.PartitionWriter
+      .newBuilder()
+      .setLocal(localWriter)
+      .setRss(OperatorOuterClass.RssPartitionWriter.getDefaultInstance)
+      .build()
+    val writer = OperatorOuterClass.ShuffleWriter
+      .newBuilder()
+      .setPartitionWriter(partitionWriter)
+      .build()
+
+    val decoded = OperatorOuterClass.ShuffleWriter.parseFrom(writer.toByteArray)
+
+    assert(decoded.hasPartitionWriter)
+    assert(decoded.getPartitionWriter.hasRss)
+    assert(!decoded.getPartitionWriter.hasLocal)
+    assert(decoded.getOutputDataFile.isEmpty)
+    assert(decoded.getOutputIndexFile.isEmpty)
+  }
+
+  test("legacy native shuffle plans remain valid without a partition writer") {
+    val dataFile = "/tmp/legacy-shuffle.data"
+    val indexFile = "/tmp/legacy-shuffle.index"
+    val writer = OperatorOuterClass.ShuffleWriter
+      .newBuilder()
+      .setOutputDataFile(dataFile)
+      .setOutputIndexFile(indexFile)
+      .build()
+
+    val decoded = OperatorOuterClass.ShuffleWriter.parseFrom(writer.toByteArray)
+
+    assert(!decoded.hasPartitionWriter)
+    assert(decoded.getOutputDataFile == dataFile)
+    assert(decoded.getOutputIndexFile == indexFile)
+  }
 
   // TODO: this test takes a long time to run, we should reduce the test time.
   test("fix: Too many task completion listener of ArrowReaderIterator causes OOM") {
@@ -103,6 +172,34 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
               checkShuffleAnswer(df, 1)
             }
           }
+        }
+      }
+    }
+  }
+
+  test("native shuffle over a multi-partition native scan re-threads per-partition plan data") {
+    // End-to-end companion to CometNativeShuffleInputRDDSuite: that suite proves the per-partition
+    // scan plan data no longer rides the broadcast task binary; this one proves each task still
+    // gets its OWN slice at write time. Reading real Parquet files gives a CometNativeScanExec with
+    // several map partitions, so perPartitionByKey holds one file-list slice per partition and a
+    // correct result depends on task i seeing slice i (not partition 0's).
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "multi.parquet")
+      // Spread rows across 8 files so the native scan can yield multiple map partitions.
+      spark
+        .range(0, 10000, 1, numPartitions = 8)
+        .selectExpr("id AS _1", "CAST(id AS STRING) AS _2")
+        .write
+        .parquet(path.toString)
+
+      // Force one scan partition per file split so the per-partition array has multiple distinct
+      // entries; otherwise Spark coalesces the tiny files into a single partition.
+      withSQLConf(
+        "spark.sql.files.maxPartitionBytes" -> "1024",
+        "spark.sql.files.openCostInBytes" -> "0") {
+        readParquetFile(path.toString) { df =>
+          val shuffled = df.repartition(17, col("_1"))
+          checkShuffleAnswer(shuffled, 1, checkNativeOperators = true)
         }
       }
     }

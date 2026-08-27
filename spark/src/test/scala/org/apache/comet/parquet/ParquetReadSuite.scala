@@ -1268,10 +1268,7 @@ abstract class ParquetReadSuite extends CometTestBase {
           }
           // Walk the cause chain: Comet's shim adds an extra SparkException
           // wrap on Spark 3.x compared to vanilla Spark.
-          val chain = Iterator
-            .iterate[Throwable](outer)(_.getCause)
-            .takeWhile(_ != null)
-            .toSeq
+          val chain = causeChain(outer)
           assert(
             chain.exists(_.isInstanceOf[
               org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException]),
