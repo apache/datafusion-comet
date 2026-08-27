@@ -227,13 +227,33 @@ class CometExecIterator(
 
   def close(): Unit = synchronized {
     if (!closed) {
-      if (currentBatch != null) {
-        currentBatch.close()
-        currentBatch = null
+      closed = true
+
+      var failure: Throwable = null
+      try {
+        if (currentBatch != null) {
+          currentBatch.close()
+          currentBatch = null
+        }
+        nativeUtil.close()
+        shuffleBlockIterators.values.foreach(_.close())
+      } catch {
+        case t: Throwable => failure = t
       }
-      nativeUtil.close()
-      shuffleBlockIterators.values.foreach(_.close())
-      nativeLib.releasePlan(plan)
+
+      // Release the native plan even if the teardown above failed. Since this is the only chance
+      // to do so, skipping it would strand the native execution context, which owns this plan's
+      // task-shared memory pool reference and several JNI global refs.
+      try {
+        nativeLib.releasePlan(plan)
+      } catch {
+        case t: Throwable =>
+          if (failure == null) failure = t else failure.addSuppressed(t)
+      }
+
+      if (failure != null) {
+        throw failure
+      }
 
       if (tracingEnabled) {
         traceMemoryUsage()
@@ -243,8 +263,6 @@ class CometExecIterator(
       if (memInUse != 0) {
         logWarning(s"CometExecIterator closed with non-zero memory usage : $memInUse")
       }
-
-      closed = true
     }
   }
 
