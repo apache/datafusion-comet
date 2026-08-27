@@ -45,6 +45,11 @@
 //!
 //! Filed upstream as apache/datafusion#23978. Revert this once the opener merges its deferred
 //! page-index load back into `FileMetadataCache` instead of bypassing it.
+//!
+//! For unencrypted scans that project Variant, this factory also removes the advisory
+//! `ARROW:schema` footer entry before Arrow schema inference. Spark infers from the physical
+//! Parquet schema instead:
+//! https://github.com/apache/spark/blob/v4.2.0/sql/core/src/main/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFileFormat.scala#L585-L599
 
 use bytes::Bytes;
 use datafusion::common::Result as DFResult;
@@ -58,9 +63,11 @@ use datafusion_datasource::PartitionedFile;
 use futures::future::BoxFuture;
 use futures::FutureExt;
 use object_store::ObjectStore;
-use parquet::arrow::arrow_reader::ArrowReaderOptions;
 use parquet::arrow::async_reader::{AsyncFileReader, ParquetObjectReader};
-use parquet::file::metadata::{PageIndexPolicy, ParquetMetaData};
+use parquet::arrow::{arrow_reader::ArrowReaderOptions, ARROW_SCHEMA_META_KEY};
+use parquet::file::metadata::{
+    FileMetaData, PageIndexPolicy, ParquetMetaData, ParquetMetaDataBuilder,
+};
 use std::fmt::Debug;
 use std::ops::Range;
 use std::sync::Arc;
@@ -69,13 +76,19 @@ use std::sync::Arc;
 pub struct EagerPageIndexReaderFactory {
     store: Arc<dyn ObjectStore>,
     metadata_cache: Arc<dyn FileMetadataCache>,
+    skip_arrow_schema: bool,
 }
 
 impl EagerPageIndexReaderFactory {
-    pub fn new(store: Arc<dyn ObjectStore>, metadata_cache: Arc<dyn FileMetadataCache>) -> Self {
+    pub fn new(
+        store: Arc<dyn ObjectStore>,
+        metadata_cache: Arc<dyn FileMetadataCache>,
+        skip_arrow_schema: bool,
+    ) -> Self {
         Self {
             store,
             metadata_cache,
+            skip_arrow_schema,
         }
     }
 }
@@ -109,6 +122,7 @@ impl ParquetFileReaderFactory for EagerPageIndexReaderFactory {
             partitioned_file,
             metadata_cache: Arc::clone(&self.metadata_cache),
             metadata_size_hint,
+            skip_arrow_schema: self.skip_arrow_schema,
         }))
     }
 }
@@ -120,6 +134,43 @@ struct EagerPageIndexReader {
     partitioned_file: PartitionedFile,
     metadata_cache: Arc<dyn FileMetadataCache>,
     metadata_size_hint: Option<usize>,
+    skip_arrow_schema: bool,
+}
+
+/// Drop only the Arrow schema hint so ambiguous leaves such as Date64 retain Spark semantics.
+fn without_arrow_schema(metadata: Arc<ParquetMetaData>) -> Arc<ParquetMetaData> {
+    let file = metadata.file_metadata();
+    let Some(key_values) = file.key_value_metadata() else {
+        return metadata;
+    };
+    if !key_values
+        .iter()
+        .any(|key_value| key_value.key == ARROW_SCHEMA_META_KEY)
+    {
+        return metadata;
+    }
+
+    let file = FileMetaData::new(
+        file.version(),
+        file.num_rows(),
+        file.created_by().map(str::to_owned),
+        Some(
+            key_values
+                .iter()
+                .filter(|key_value| key_value.key != ARROW_SCHEMA_META_KEY)
+                .cloned()
+                .collect(),
+        ),
+        file.schema_descr_ptr(),
+        file.column_orders().cloned(),
+    );
+    Arc::new(
+        ParquetMetaDataBuilder::new(file)
+            .set_row_groups(metadata.row_groups().to_vec())
+            .set_column_index(metadata.column_index().cloned())
+            .set_offset_index(metadata.offset_index().cloned())
+            .build(),
+    )
 }
 
 impl AsyncFileReader for EagerPageIndexReader {
@@ -151,17 +202,19 @@ impl AsyncFileReader for EagerPageIndexReader {
         let metadata_cache = Arc::clone(&self.metadata_cache);
         let store = Arc::clone(&self.store);
         let metadata_size_hint = self.metadata_size_hint;
+        let skip_arrow_schema = self.skip_arrow_schema;
         async move {
             let file_decryption_properties = options
                 .and_then(|o| o.file_decryption_properties())
                 .map(Arc::clone);
+            let encrypted = file_decryption_properties.is_some();
             let page_index_policy = if file_decryption_properties.is_none() {
                 Some(PageIndexPolicy::Optional)
             } else {
                 options.map(|o| o.column_index_policy())
             };
 
-            DFParquetMetadata::new(store.as_ref(), &object_meta)
+            let metadata = DFParquetMetadata::new(store.as_ref(), &object_meta)
                 .with_decryption_properties(file_decryption_properties)
                 .with_file_metadata_cache(Some(metadata_cache))
                 .with_metadata_size_hint(metadata_size_hint)
@@ -173,7 +226,12 @@ impl AsyncFileReader for EagerPageIndexReader {
                         "Failed to fetch metadata for file {}: {e}",
                         object_meta.location,
                     ))
-                })
+                })?;
+            Ok(if skip_arrow_schema && !encrypted {
+                without_arrow_schema(metadata)
+            } else {
+                metadata
+            })
         }
         .boxed()
     }

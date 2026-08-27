@@ -295,8 +295,15 @@ case class CometScanRule(session: SparkSession)
     if (!CometNativeScan.isSupported(scanExec)) {
       return None
     }
-    if (encryptionEnabled(hadoopConf) && !isEncryptionConfigSupported(hadoopConf)) {
+    val encrypted = encryptionEnabled(hadoopConf)
+    if (encrypted && !isEncryptionConfigSupported(hadoopConf)) {
       withFallbackReason(scanExec, "Native Parquet scan does not support encryption")
+      return None
+    }
+    if (encrypted && scanExec.requiredSchema.exists(field => isVariantType(field.dataType))) {
+      withFallbackReason(
+        scanExec,
+        "Native Parquet scan does not support encrypted Variant columns")
       return None
     }
     // input_file_name, input_file_block_start, and input_file_block_length read from
@@ -963,6 +970,18 @@ case class CometScanRule(session: SparkSession)
   private def isSchemaSupported(scanExec: FileSourceScanExec, r: HadoopFsRelation): Boolean = {
     val fallbackReasons = new ListBuffer[String]()
     val typeChecker = CometScanTypeChecker()
+    // Java equalsIgnoreCase also lets ASCII i/k/s match non-ASCII dotted/dotless I, Kelvin sign,
+    // and long s. The physical Parquet name is unavailable here, so keep either side of such a
+    // match on Spark until the native adapter implements the same Unicode comparison.
+    if (!session.sessionState.conf.caseSensitiveAnalysis &&
+      scanExec.requiredSchema.exists(field =>
+        isVariantType(field.dataType) &&
+          field.name.exists(ch => ch > '\u007f' || "iIkKsS".contains(ch)))) {
+      withFallbackReason(
+        scanExec,
+        "Native Parquet scan does not support case-insensitive Unicode Variant column names")
+      return false
+    }
     val schemaSupported = scanExec.requiredSchema.fields.forall { field =>
       isVariantType(field.dataType) ||
       typeChecker.isTypeSupported(field.dataType, field.name, fallbackReasons)

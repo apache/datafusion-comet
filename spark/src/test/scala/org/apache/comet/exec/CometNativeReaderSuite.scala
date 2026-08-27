@@ -24,6 +24,8 @@ import org.scalatest.Tag
 
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.Path
+import org.apache.parquet.crypto.DecryptionPropertiesFactory
+import org.apache.parquet.crypto.keytools.PropertiesDrivenCryptoFactory
 import org.apache.parquet.hadoop.{ParquetFileReader, ParquetWriter}
 import org.apache.parquet.hadoop.api.WriteSupport
 import org.apache.parquet.hadoop.api.WriteSupport.WriteContext
@@ -37,7 +39,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{IntegerType, LongType, NullType, StringType, StructType}
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
+import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, isSpark41Plus}
 
 class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
@@ -63,6 +65,61 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
           sql(s"create table $tbl (A long) using parquet options (path '" + path + "')")
           val df = sql(s"select A from $tbl")
           checkSparkAnswer(df)
+        }
+      }
+    }
+  }
+
+  test("case-insensitive Unicode Variant column names fall back") {
+    assume(isSpark40Plus, "VariantType requires Spark 4.0+")
+
+    withTempPath { path =>
+      withSQLConf(
+        CometConf.COMET_ENABLED.key -> "false",
+        "spark.sql.variant.writeShredding.enabled" -> "false") {
+        sql("""SELECT parse_json('42') AS `É`, parse_json('43') AS `Σ`,
+              |parse_json('44') AS `K`, parse_json('45') AS `ſ`""".stripMargin).write
+          .parquet(path.toString)
+      }
+
+      val table = s"variant_unicode_columns_${System.currentTimeMillis()}"
+      withTable(table) {
+        sql(
+          s"CREATE TABLE $table (`é` VARIANT, `σ` VARIANT, `k` VARIANT, `s` VARIANT) " +
+            s"USING parquet OPTIONS (path '$path')")
+        withSQLConf(
+          SQLConf.CASE_SENSITIVE.key -> "false",
+          "spark.sql.variant.allowReadingShredded" -> "true",
+          "spark.sql.variant.pushVariantIntoScan" -> "false") {
+          val (_, cometPlan) = checkSparkAnswerAndFallbackReason(
+            sql(s"SELECT `é`, `σ`, `k`, `s` FROM $table"),
+            "case-insensitive Unicode Variant column names")
+          assert(collect(cometPlan) { case scan: CometNativeScanExec => scan }.isEmpty)
+        }
+      }
+    }
+  }
+
+  test("Variant scan falls back when Parquet encryption is configured") {
+    assume(isSpark40Plus, "VariantType requires Spark 4.0+")
+
+    withTempPath { path =>
+      withSQLConf(
+        CometConf.COMET_ENABLED.key -> "false",
+        "spark.sql.variant.writeShredding.enabled" -> "false") {
+        sql("SELECT parse_json('42') AS v").write.parquet(path.toString)
+      }
+
+      withParquetTable(path.toString, "encrypted_variant") {
+        withSQLConf(
+          DecryptionPropertiesFactory.CRYPTO_FACTORY_CLASS_PROPERTY_NAME ->
+            classOf[PropertiesDrivenCryptoFactory].getName,
+          "spark.sql.variant.allowReadingShredded" -> "true",
+          "spark.sql.variant.pushVariantIntoScan" -> "false") {
+          val (_, cometPlan) = checkSparkAnswerAndFallbackReason(
+            sql("SELECT v FROM encrypted_variant"),
+            "encrypted Variant columns")
+          assert(collect(cometPlan) { case scan: CometNativeScanExec => scan }.isEmpty)
         }
       }
     }

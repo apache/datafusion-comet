@@ -16,6 +16,7 @@
 // under the License.
 
 use crate::execution::operators::ExecutionError;
+use crate::execution::serde::is_variant_field;
 use crate::parquet::eager_page_index_reader_factory::EagerPageIndexReaderFactory;
 use crate::parquet::encryption_support::{CometEncryptionConfig, ENCRYPTION_FACTORY_ID};
 use crate::parquet::parquet_support::SparkParquetOptions;
@@ -164,8 +165,12 @@ pub(crate) fn init_datasource_exec(
     let runtime_env = session_ctx.runtime_env();
     let store = runtime_env.object_store(&object_store_url)?;
     let metadata_cache = runtime_env.cache_manager.get_file_metadata_cache();
+    let skip_arrow_schema = required_schema
+        .fields()
+        .iter()
+        .any(|field| is_variant_field(field));
     parquet_source = parquet_source.with_parquet_file_reader_factory(Arc::new(
-        EagerPageIndexReaderFactory::new(store, metadata_cache),
+        EagerPageIndexReaderFactory::new(store, metadata_cache, skip_arrow_schema),
     ));
 
     // Route data filters through `try_pushdown_filters` rather than calling
@@ -291,16 +296,99 @@ fn get_options(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::Int32Array;
-    use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::array::{
+        ArrayRef, BinaryArray, Date64Array, Decimal256Array, Int32Array, StructArray,
+    };
+    use arrow::datatypes::{i256, DataType, Field, Fields, Schema};
     use arrow::record_batch::RecordBatch;
     use datafusion::datasource::physical_plan::parquet::metadata::CachedParquetMetaData;
     use datafusion::physical_plan::ExecutionPlan;
     use datafusion_comet_spark_expr::test_common::file_util::get_temp_filename;
     use futures::StreamExt;
-    use parquet::arrow::ArrowWriter;
+    use parquet::arrow::{arrow_writer::ArrowWriterOptions, ArrowWriter};
     use parquet::file::properties::{EnabledStatistics, WriterProperties};
+    use parquet::variant::{Variant, VariantArray, VariantBuilder, VariantDecimal4, VariantType};
     use std::fs::File;
+
+    fn required_variant_schema() -> SchemaRef {
+        Arc::new(Schema::new(vec![Field::new(
+            "v",
+            DataType::Struct(Fields::from(vec![
+                Field::new("value", DataType::Binary, false),
+                Field::new("metadata", DataType::Binary, false),
+            ])),
+            false,
+        )
+        .with_extension_type(VariantType)]))
+    }
+
+    async fn write_and_scan_shredded_variant(
+        typed_value: ArrayRef,
+        coerce_types: bool,
+    ) -> VariantArray {
+        let (metadata, _) = VariantBuilder::new().finish();
+        let metadata: ArrayRef = Arc::new(BinaryArray::from(vec![Some(metadata.as_slice())]));
+        let physical: ArrayRef = Arc::new(
+            StructArray::try_new(
+                Fields::from(vec![
+                    Field::new("metadata", DataType::Binary, false),
+                    Field::new("typed_value", typed_value.data_type().clone(), false),
+                ]),
+                vec![metadata, typed_value],
+                None,
+            )
+            .unwrap(),
+        );
+        let file_schema = Arc::new(Schema::new(vec![Field::new(
+            "v",
+            physical.data_type().clone(),
+            false,
+        )
+        .with_extension_type(VariantType)]));
+        let batch = RecordBatch::try_new(Arc::clone(&file_schema), vec![physical]).unwrap();
+
+        let filename = get_temp_filename();
+        let file = File::create(&filename).unwrap();
+        let properties = WriterProperties::builder()
+            .set_coerce_types(coerce_types)
+            .build();
+        let mut writer = ArrowWriter::try_new_with_options(
+            file,
+            file_schema,
+            ArrowWriterOptions::new().with_properties(properties),
+        )
+        .unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+
+        let partitioned_file =
+            PartitionedFile::from_path(filename.to_string_lossy().into_owned()).unwrap();
+        let session_ctx = Arc::new(SessionContext::new());
+        let scan = init_datasource_exec(
+            required_variant_schema(),
+            None,
+            None,
+            ObjectStoreUrl::local_filesystem(),
+            vec![vec![partitioned_file]],
+            None,
+            None,
+            None,
+            "UTC",
+            true,
+            false,
+            false,
+            false,
+            &session_ctx,
+            false,
+            false,
+            false,
+        )
+        .unwrap();
+        let mut stream = scan.execute(0, session_ctx.task_ctx()).unwrap();
+        let batch = stream.next().await.unwrap().unwrap();
+        assert!(stream.next().await.is_none());
+        VariantArray::try_new(batch.column(0).as_ref()).unwrap()
+    }
 
     // Regression test for #4990: a fresh `TableParquetOptions::new()` ignored session-level
     // `datafusion.execution.parquet.*` settings entirely, so `spark.comet.datafusion.
@@ -431,5 +519,29 @@ mod tests {
             parquet_meta.column_index().is_some() && parquet_meta.offset_index().is_some(),
             "cached metadata must include the page index"
         );
+    }
+
+    #[tokio::test]
+    async fn variant_scan_uses_parquet_physical_types_instead_of_arrow_schema_hints() {
+        let decimal: ArrayRef = Arc::new(
+            Decimal256Array::from(vec![i256::from_i128(123)])
+                .with_precision_and_scale(38, 2)
+                .unwrap(),
+        );
+        let output = write_and_scan_shredded_variant(decimal, false).await;
+        assert_eq!(
+            output.value(0),
+            Variant::Decimal4(VariantDecimal4::try_new(123, 2).unwrap())
+        );
+
+        let date64: ArrayRef = Arc::new(Date64Array::from(vec![86_400_000]));
+        let output = write_and_scan_shredded_variant(Arc::clone(&date64), false).await;
+        assert_eq!(output.value(0).as_int64(), Some(86_400_000));
+
+        let output = write_and_scan_shredded_variant(date64, true).await;
+        let Variant::Date(date) = output.value(0) else {
+            panic!("expected DATE-annotated physical value")
+        };
+        assert_eq!(date.to_string(), "1970-01-02");
     }
 }
