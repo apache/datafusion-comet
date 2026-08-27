@@ -107,7 +107,16 @@ buckets. New tests are assigned automatically. Nested classes and all parameteri
 with their enclosing class; Gradle's existing includes, exclusions, and JUnit configuration are
 unchanged. The extensions and shaded-runtime targets remain unsharded.
 
-Each worker uploads its candidate-class inventory and JUnit XML reports. The runtime job also
+The matrix and partition count come from the same definition in `dev/ci/check-iceberg-shards.py`;
+adding another matrix dimension does not change the partition count. Each worker records its
+unsharded candidate set with only the Comet shard predicate disabled, then restores the predicate
+before recording its selected set and executing tests. Both inventories and the JUnit XML reports
+are uploaded. A dependent coverage job requires all shard indices, matching unsharded inventories,
+and selected sets whose disjoint union equals that inventory. It downloads only artifacts for the
+same Iceberg/Spark/Scala/JDK configuration in the current workflow run and uses the latest available
+attempt per shard, so rerunning only failed jobs can reuse earlier successful shards' inventories.
+
+These candidate inventories include classes that JUnit may not execute, so the runtime job also
 runs `dev/ci/check-iceberg-shards.py`, a small Gradle/JUnit fixture that checks the four shards'
 combined candidate classes and executed test cases equal an unsharded run exactly once. It also
 checks nested, parameterized, inherited, and dynamically generated tests, existing exclusions,

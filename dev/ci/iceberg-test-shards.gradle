@@ -66,27 +66,45 @@ gradle.projectsEvaluated {
   }
   testTask.inputs.property('cometShardIndex', shardIndex)
   testTask.inputs.property('cometShardCount', shardCount)
+  int runAttempt = Integer.parseInt(System.getenv('GITHUB_RUN_ATTEMPT') ?: '1')
+  testTask.inputs.property('cometShardRunAttempt', runAttempt)
   testTask.inputs.files(gradle.startParameter.initScripts).withPropertyName('cometShardScripts')
+  boolean applyShardFilter = true
   testTask.exclude { FileTreeElement entry ->
-    !entry.directory && entry.name.endsWith('.class') &&
+    applyShardFilter && !entry.directory && entry.name.endsWith('.class') &&
         CometIcebergTestShard.owner(entry.name, shardCount) != shardIndex
   }
 
   // Keep a machine-readable inventory next to the normal JUnit reports. This is
-  // Gradle's final candidate set, so existing include/exclude rules still apply.
+  // Gradle's candidate set, not the number of tests that JUnit actually executes.
   def manifest = testTask.project.layout.buildDirectory
       .file("comet-shards/${testTask.name}-${shardIndex}.json").get().asFile
   testTask.outputs.file(manifest)
   testTask.doFirst {
-    def candidates = new TreeSet<String>()
-    testTask.candidateClassFiles.visit { entry ->
-      if (!entry.directory && entry.name.endsWith('.class')) {
-        candidates.add(entry.relativePath.pathString)
+    def inventory = {
+      def candidates = new TreeSet<String>()
+      testTask.candidateClassFiles.visit { entry ->
+        if (!entry.directory && entry.name.endsWith('.class')) {
+          candidates.add(entry.relativePath.pathString)
+        }
       }
+      candidates
     }
+    // Compilation has completed by this point. Disable only our predicate while
+    // recording the baseline, preserving even upstream exclusion closures. Then
+    // restore it before collecting the selected candidates and executing tests.
+    def unshardedCandidates
+    applyShardFilter = false
+    try {
+      unshardedCandidates = inventory()
+    } finally {
+      applyShardFilter = true
+    }
+    def candidates = inventory()
     manifest.parentFile.mkdirs()
     manifest.text = JsonOutput.prettyPrint(JsonOutput.toJson([
-        task: testTask.path, shard: shardIndex, count: shardCount, candidates: candidates])) + '\n'
+        task: testTask.path, shard: shardIndex, count: shardCount, attempt: runAttempt,
+        candidates: candidates, unshardedCandidates: unshardedCandidates])) + '\n'
     testTask.logger.lifecycle("Iceberg shard ${shardIndex}/${shardCount}: ${candidates.size()} candidate classes")
   }
 }
