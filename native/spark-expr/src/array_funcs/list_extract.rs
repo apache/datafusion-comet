@@ -387,6 +387,8 @@ fn list_extract_without_default<O: OffsetSizeTrait>(
     }
 
     let indices = indices.finish();
+    // Every gathered index was validated by `resolve_row` against its row's list bounds,
+    // and `take` masks null index slots, so the default unchecked `TakeOptions` is safe.
     Ok(ColumnarValue::Array(take(values.as_ref(), &indices, None)?))
 }
 
