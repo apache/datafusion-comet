@@ -183,7 +183,11 @@ case class CometShuffleExchangeExec(
           // RangePartitioner needs real rows for sampling. Reuse the precomputed context so we
           // don't re-walk the SparkPlan tree or re-broadcast the encryption Hadoop conf.
           val samplingRDD: Option[RDD[ColumnarBatch]] = outputPartitioning match {
-            case _: RangePartitioning => Some(nativeChild.executeColumnarWithContext(ctx))
+            case _: RangePartitioning =>
+              Some(
+                nativeChild.executeColumnarWithContext(
+                  ctx,
+                  nativeChildMetricNode.withoutAggregateMetrics(nativeChild)))
             case _ => None
           }
           CometShuffleExchangeExec.prepareNativeShuffleDependency(
