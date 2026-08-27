@@ -686,8 +686,28 @@ enum CompressionCodec {
   Gzip = 4;
 }
 
+// Selects where encoded shuffle partitions are written.
+message PartitionWriter {
+  oneof writer {
+    LocalPartitionWriter local = 1;
+    RssPartitionWriter rss = 2;
+  }
+}
+
+// Local shuffle output consists of a data file and its partition-offset index.
+message LocalPartitionWriter {
+  string output_data_file = 1;
+  string output_index_file = 2;
+}
+
+// Marker for remote shuffle output. The task-owned callback is bound outside
+// the serialized plan and is never transmitted through protobuf.
+message RssPartitionWriter {}
+
 message ShuffleWriter {
   spark.spark_partitioning.Partitioning partitioning = 1;
+  // Retained for compatibility with native binaries that predate partition_writer.
+  // Local plans also carry these paths in partition_writer.local.
   string output_data_file = 3;
   string output_index_file = 4;
   CompressionCodec codec = 5;
@@ -705,6 +725,8 @@ message ShuffleWriter {
   // Maximum number of bytes that the writer buffers in memory before spilling to disk.
   // Zero means no limit, in which case spilling is driven only by memory pool pressure.
   uint64 max_buffer_bytes = 10;
+  // Explicit output destination. When absent, use the legacy output file fields.
+  PartitionWriter partition_writer = 11;
 }
 
 message ParquetWriter {

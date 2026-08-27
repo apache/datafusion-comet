@@ -24,7 +24,7 @@ use crate::{
         metrics::utils::update_comet_metric, planner::PhysicalPlanner, serde::to_arrow_datatype,
         shuffle::spark_unsafe::row::process_sorted_row_partition, sort::RdxSort,
     },
-    jvm_bridge::JVMClasses,
+    jvm_bridge::{JVMClasses, JavaShufflePartitionPusher, ShufflePartitionPusher},
 };
 use std::collections::HashSet;
 
@@ -393,6 +393,9 @@ struct ExecutionContext {
     /// it has to travel with the plan. `None` when no driving Spark task is present (unit tests,
     /// direct native driver runs). Lifetime is as for `task_context` above.
     pub class_loader: Option<Arc<Global<JObject<'static>>>>,
+    /// Task-owned remote shuffle callback, registered before native planning starts.
+    /// The callback owns a JNI global reference and can safely run on Tokio workers.
+    pub shuffle_partition_pusher: Option<Arc<dyn ShufflePartitionPusher>>,
     /// Removes this context's tracing memory-pool entry on every exit path.
     memory_pool_registration: Option<ThreadMemoryPoolRegistration>,
 }
@@ -583,11 +586,50 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 tracing_event_name,
                 task_context,
                 class_loader,
+                shuffle_partition_pusher: None,
                 memory_pool_registration,
             });
 
             Ok(Box::into_raw(exec_context) as i64)
         })
+    })
+}
+
+/// Binds one task-owned shuffle callback before native execution is initialized.
+///
+/// Keeping callback registration separate preserves the existing `createPlan` JNI ABI for
+/// all local shuffle and non-shuffle callers.
+#[no_mangle]
+pub extern "system" fn Java_org_apache_comet_Native_setShufflePartitionPusher(
+    e: EnvUnowned,
+    _class: JClass,
+    exec_context: jlong,
+    callback: JObject,
+) {
+    try_unwrap_or_throw(&e, |env| {
+        if exec_context == 0 {
+            return Err(CometError::NullPointer(
+                "Remote shuffle callback requires a valid native execution plan".to_string(),
+            ));
+        }
+
+        let exec_context = get_execution_context(exec_context);
+        if exec_context.root_op.is_some() {
+            return Err(CometError::Internal(
+                "Remote shuffle callback cannot be registered after native execution starts"
+                    .to_string(),
+            ));
+        }
+
+        if exec_context.shuffle_partition_pusher.is_some() {
+            return Err(CometError::Internal(
+                "Remote shuffle callback has already been registered for this task".to_string(),
+            ));
+        }
+
+        let pusher = JavaShufflePartitionPusher::try_new(env, &callback)?;
+        exec_context.shuffle_partition_pusher = Some(Arc::new(pusher));
+        Ok(())
     })
 }
 
@@ -833,7 +875,10 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                         .with_exec_id(exec_context_id)
                         .with_sql_text_pool(&exec_context.spark_plan)
                         .with_task_context(exec_context.task_context.clone())
-                        .with_class_loader(exec_context.class_loader.clone());
+                        .with_class_loader(exec_context.class_loader.clone())
+                        .with_shuffle_partition_pusher(
+                            exec_context.shuffle_partition_pusher.clone(),
+                        );
                 let (scans, shuffle_scans, root_op) = planner.create_plan(
                     &exec_context.spark_plan,
                     &mut exec_context.input_sources.clone(),
