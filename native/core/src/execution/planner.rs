@@ -4332,6 +4332,12 @@ fn parse_file_scan_tasks_from_common(
                 } else {
                     Some(del.equality_ids.clone())
                 },
+                // Deletion-vector metadata is not part of Comet's delete-file serde, so these
+                // are left unset. iceberg-rust only requires them when reading a Puffin DV blob.
+                referenced_data_file: None,
+                content_offset: None,
+                content_size_in_bytes: None,
+                record_count: None,
                 // Plaintext StandardKeyMetadata forwarded verbatim from the JVM; decoded by
                 // iceberg-rust with no KMS unwrap. None for unencrypted delete files.
                 key_metadata: del.key_metadata.clone().map(Vec::into_boxed_slice),

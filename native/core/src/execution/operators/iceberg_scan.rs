@@ -591,6 +591,10 @@ mod tests {
             file_size_in_bytes: 0,
             partition_spec_id: 0,
             equality_ids: None,
+            referenced_data_file: None,
+            content_offset: None,
+            content_size_in_bytes: None,
+            record_count: None,
             key_metadata: None,
         }
     }
