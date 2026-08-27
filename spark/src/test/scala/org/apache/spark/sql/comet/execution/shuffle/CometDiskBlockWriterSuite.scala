@@ -27,14 +27,17 @@ import org.scalatest.concurrent.{Signaler, ThreadSignaler, TimeLimits}
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.time.{Seconds, Span}
 
-import org.apache.spark.{SparkConf, TaskContextImpl}
+import org.apache.spark.{Partitioner, SparkConf, SparkContext, SparkEnv, TaskContextImpl}
 import org.apache.spark.executor.{ShuffleWriteMetrics, TaskMetrics}
 import org.apache.spark.memory.{SparkOutOfMemoryError, TaskMemoryManager, TestMemoryManager}
+import org.apache.spark.shuffle.api.{ShuffleExecutorComponents, ShuffleMapOutputWriter, ShufflePartitionWriter}
+import org.apache.spark.shuffle.api.metadata.MapOutputCommitMessage
 import org.apache.spark.shuffle.comet.{CometBoundedShuffleMemoryAllocator, CometShuffleMemoryAllocator, CometShuffleMemoryAllocatorTrait}
 import org.apache.spark.shuffle.sort.SpillSorter
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.UnsafeProjection
+import org.apache.spark.sql.catalyst.expressions.{UnsafeProjection, UnsafeRow}
 import org.apache.spark.sql.execution.UnsafeRowSerializer
+import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.types.{BinaryType, StructField, StructType}
 import org.apache.spark.unsafe.UnsafeAlignedOffset
 import org.apache.spark.util.Utils
@@ -429,6 +432,89 @@ class CometDiskBlockWriterSuite extends AnyFunSuite with TimeLimits {
       conf,
       false,
       new JLinkedList[CometDiskBlockWriter]())
+  }
+
+  test("on-heap shared pool: a fatal error during write() frees the task's buffered pages") {
+    // Spark's ShuffleWriteProcessor only calls stop(false) when write() throws an Exception, so
+    // a fatal error such as SparkOutOfMemoryError skips it. The buffered pages live in the
+    // executor-shared bounded pool where Spark's task-memory cleanup cannot see them, so
+    // write() itself must free them on the way out or they starve other tasks forever.
+    val conf = new SparkConf()
+      .setMaster("local[1]")
+      .setAppName("CometDiskBlockWriterSuite")
+      .set("spark.comet.memoryOverhead", "1") // 1 MiB shared pool
+      .set("spark.buffer.pageSize", "256k")
+    resetOnHeapAllocatorSingleton()
+    val sc = new SparkContext(conf)
+    val memoryManager = new TestMemoryManager(conf)
+    val tmm = new TaskMemoryManager(memoryManager, 0L)
+    try {
+      val taskContext = newTaskContext(tmm, 0L)
+      val partitioner = new Partitioner {
+        override def numPartitions: Int = 3
+        override def getPartition(key: Any): Int = key.asInstanceOf[Int] % 3
+      }
+      val dep = new CometShuffleDependency[Int, UnsafeRow, UnsafeRow](
+        _rdd = sc.parallelize(Seq.empty[(Int, UnsafeRow)], 1),
+        partitioner = partitioner,
+        serializer = new UnsafeRowSerializer(1),
+        schema = Some(schema),
+        decodeTime = new SQLMetric("nsTiming"))
+      val components = new ShuffleExecutorComponents {
+        override def initializeExecutor(
+            appId: String,
+            execId: String,
+            extraConfigs: java.util.Map[String, String]): Unit = {}
+        override def createMapOutputWriter(
+            shuffleId: Int,
+            mapTaskId: Long,
+            numPartitions: Int): ShuffleMapOutputWriter = new ShuffleMapOutputWriter {
+          override def getPartitionWriter(reducePartitionId: Int): ShufflePartitionWriter =
+            throw new UnsupportedOperationException
+          override def commitAllPartitions(checksums: Array[Long]): MapOutputCommitMessage =
+            throw new UnsupportedOperationException
+          override def abort(error: Throwable): Unit = {}
+        }
+      }
+      val writer = new CometBypassMergeSortShuffleWriter[Int, UnsafeRow](
+        SparkEnv.get.blockManager,
+        tmm,
+        taskContext,
+        new CometBypassMergeSortShuffleHandle[Int, UnsafeRow](0, dep),
+        0L,
+        conf,
+        taskContext.taskMetrics.shuffleWriteMetrics,
+        components,
+        null)
+
+      // Buffer three pages worth of rows, then hit a fatal error mid-write.
+      val toUnsafe = UnsafeProjection.create(schema)
+      val rows: Iterator[Product2[Int, UnsafeRow]] =
+        (0 until 700).iterator.map { i =>
+          (i % 3, toUnsafe(InternalRow(new Array[Byte](1024))))
+        } ++ new Iterator[Product2[Int, UnsafeRow]] {
+          override def hasNext: Boolean = true
+          override def next(): Product2[Int, UnsafeRow] = {
+            throw new SparkOutOfMemoryError(
+              "UNABLE_TO_ACQUIRE_MEMORY",
+              java.util.Map.of("requestedBytes", "1", "receivedBytes", "0"))
+          }
+        }
+      intercept[SparkOutOfMemoryError] {
+        writer.write(rows)
+      }
+
+      // All pages buffered by the failed task were reclaimed, so a full-pool allocation
+      // succeeds; without the reclaim the orphaned pages would make it fail forever.
+      val bounded = CometShuffleMemoryAllocator
+        .getInstance(conf, tmm, pageSize)
+        .asInstanceOf[CometBoundedShuffleMemoryAllocator]
+      bounded.free(bounded.allocate(1024 * 1024))
+    } finally {
+      sc.stop()
+      tmm.cleanUpAllAllocatedMemory()
+      resetOnHeapAllocatorSingleton()
+    }
   }
 
   test("on-heap shared pool: a failed SpillSorter constructor does not leak pool memory") {

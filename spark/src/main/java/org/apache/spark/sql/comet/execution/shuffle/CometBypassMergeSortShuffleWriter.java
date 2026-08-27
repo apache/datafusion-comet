@@ -259,7 +259,21 @@ final class CometBypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V>
       // TODO: We probably can move checksum generation here when concatenating partition files
       partitionLengths = writePartitionedData(mapOutputWriter);
       mapStatus = MapStatusHelper.apply(blockManager.shuffleServerId(), partitionLengths, mapId);
-    } catch (Exception e) {
+    } catch (Throwable e) {
+      // Spark only calls stop(false) when write() throws an Exception; a fatal error such as
+      // SparkOutOfMemoryError skips it, and the buffered pages are invisible to Spark's
+      // task-memory cleanup (in on-heap mode they live in an executor-shared pool). Free them
+      // here so they cannot starve other tasks' allocations.
+      if (partitionWriters != null) {
+        for (CometDiskBlockWriter writer : partitionWriters) {
+          try {
+            writer.freeMemory();
+          } catch (Exception e2) {
+            logger.error("Failed to free memory of partition writer", e2);
+            e.addSuppressed(e2);
+          }
+        }
+      }
       try {
         mapOutputWriter.abort(e);
       } catch (Exception e2) {
