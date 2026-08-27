@@ -141,6 +141,14 @@ class CometExecIteratorLifecycleSuite extends CometTestBase {
         new CometShuffleBlockIterator(new ByteArrayInputStream(Array.emptyByteArray)) {
           override def close(): Unit = throw boom
         }
+      @volatile var laterInputClosed = false
+      val trackingBlockIter =
+        new CometShuffleBlockIterator(new ByteArrayInputStream(Array.emptyByteArray)) {
+          override def close(): Unit = {
+            laterInputClosed = true
+            super.close()
+          }
+        }
       val limitOp =
         CometExecUtils.getLimitNativePlan(Seq(PrettyAttribute("test", LongType)), 100).get
       val iter = new CometExecIterator(
@@ -151,10 +159,13 @@ class CometExecIteratorLifecycleSuite extends CometTestBase {
         nativeMetrics = CometMetricNode(Map.empty),
         numParts = 1,
         partitionIndex = 0,
-        shuffleBlockIterators = Map(0 -> throwingBlockIter))
+        shuffleBlockIterators = Map(0 -> throwingBlockIter, 1 -> trackingBlockIter))
 
       val thrown = intercept[java.io.IOException](iter.close())
       assert(thrown eq boom)
+      // One input's close failure must not skip the remaining resources: this close() is the only
+      // chance to release them, since the task-completion retry is a no-op once `closed` is set.
+      assert(laterInputClosed, "a later shuffle input was not closed after an earlier one threw")
       // The first close() must have marked the iterator closed and released the plan despite the
       // teardown failure: a second close() re-running releasePlan would free the native
       // execution context twice, and skipping the release would strand it.
