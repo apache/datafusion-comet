@@ -124,6 +124,17 @@ impl PhysicalExpr for FromJson {
     }
 }
 
+/// Whether `s` is blank per Spark's own definition (SPARK-19543): Spark's `JacksonParser`
+/// treats input as blank when the underlying Jackson `JsonParser` finds no first token, which
+/// happens when only JSON whitespace precedes EOF. RFC 8259 defines JSON whitespace as exactly
+/// space, tab, CR, and LF -- a narrower set than Rust's Unicode-aware `str::trim()` (which also
+/// trims e.g. NBSP, U+2028) and than ASCII "control or space" (which also trims e.g. NUL, BEL,
+/// vertical tab -- not JSON whitespace, so Jackson would fail to tokenize them and PERMISSIVE
+/// mode would produce a non-null struct, not NULL).
+fn is_blank(s: &str) -> bool {
+    s.trim_matches([' ', '\t', '\n', '\r']).is_empty()
+}
+
 /// Parse JSON string array into struct array
 fn json_string_to_struct(arr: &Arc<dyn Array>, schema: &DataType) -> Result<ArrayRef> {
     use arrow::array::StringArray;
@@ -150,26 +161,34 @@ fn json_string_to_struct(arr: &Arc<dyn Array>, schema: &DataType) -> Result<Arra
         } else {
             let json_str = string_array.value(row_idx);
 
-            // Parse JSON (PERMISSIVE mode: return null fields on error)
-            match serde_json::from_str::<serde_json::Value>(json_str) {
-                Ok(json_value) => {
-                    if let serde_json::Value::Object(obj) = json_value {
-                        // Struct is not null, extract each field
-                        *struct_null = true;
-                        for (field, builder) in fields.iter().zip(field_builders.iter_mut()) {
-                            let field_value = obj.get(field.name());
-                            append_field_value(builder, field, field_value)?;
+            if is_blank(json_str) {
+                // Blank input (empty or whitespace only) is NULL, not a struct with null
+                // fields (SPARK-19543) -- distinct from a non-blank string that fails to
+                // parse, which PERMISSIVE mode below turns into a struct with null fields.
+                *struct_null = false;
+                append_null_to_all_builders(&mut field_builders);
+            } else {
+                // Parse JSON (PERMISSIVE mode: return null fields on error)
+                match serde_json::from_str::<serde_json::Value>(json_str) {
+                    Ok(json_value) => {
+                        if let serde_json::Value::Object(obj) = json_value {
+                            // Struct is not null, extract each field
+                            *struct_null = true;
+                            for (field, builder) in fields.iter().zip(field_builders.iter_mut()) {
+                                let field_value = obj.get(field.name());
+                                append_field_value(builder, field, field_value)?;
+                            }
+                        } else {
+                            // Not an object -> struct with null fields
+                            *struct_null = true;
+                            append_null_to_all_builders(&mut field_builders);
                         }
-                    } else {
-                        // Not an object -> struct with null fields
+                    }
+                    Err(_) => {
+                        // Parse error -> struct with null fields (PERMISSIVE mode)
                         *struct_null = true;
                         append_null_to_all_builders(&mut field_builders);
                     }
-                }
-                Err(_) => {
-                    // Parse error -> struct with null fields (PERMISSIVE mode)
-                    *struct_null = true;
-                    append_null_to_all_builders(&mut field_builders);
                 }
             }
         }
@@ -180,11 +199,15 @@ fn json_string_to_struct(arr: &Arc<dyn Array>, schema: &DataType) -> Result<Arra
         .map(finish_builder)
         .collect::<Result<Vec<_>>>()?;
     let null_buffer = NullBuffer::from(struct_nulls);
-    Ok(Arc::new(StructArray::new(
-        fields.clone(),
-        arrays,
-        Some(null_buffer),
-    )))
+    // `StructArray::new` derives its length from the first child array, so it panics when
+    // `fields` is empty (a legitimate zero-field target schema, e.g. `from_json(_, 'struct<>')`).
+    // `new_empty_fields` takes the length explicitly instead.
+    let struct_array: ArrayRef = if fields.is_empty() {
+        Arc::new(StructArray::new_empty_fields(num_rows, Some(null_buffer)))
+    } else {
+        Arc::new(StructArray::new(fields.clone(), arrays, Some(null_buffer)))
+    };
+    Ok(struct_array)
 }
 
 /// Builder enum for different data types
@@ -393,7 +416,17 @@ fn finish_builder(builder: FieldBuilder) -> Result<ArrayRef> {
                 .map(finish_builder)
                 .collect::<Result<Vec<_>>>()?;
             let null_buf = arrow::buffer::NullBuffer::from(null_buffer);
-            Arc::new(StructArray::new(fields, nested_arrays, Some(null_buf)))
+            // `StructArray::new` derives its row count from the first child array; a zero-field
+            // schema (e.g. a `struct<>`-typed field nested inside a larger schema) has no child
+            // arrays to derive it from, so the count is supplied explicitly here instead.
+            if fields.is_empty() {
+                Arc::new(StructArray::new_empty_fields(
+                    null_buf.len(),
+                    Some(null_buf),
+                ))
+            } else {
+                Arc::new(StructArray::new(fields, nested_arrays, Some(null_buf)))
+            }
         }
     })
 }

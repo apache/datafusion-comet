@@ -22,10 +22,10 @@ package org.apache.comet
 import scala.util.Random
 
 import org.apache.hadoop.fs.Path
-import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.{CometTestBase, Row}
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.BinaryType
+import org.apache.spark.sql.types.{BinaryType, IntegerType, MapType, StructField, StructType}
 
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator, SchemaGenOptions}
@@ -269,6 +269,31 @@ class CometMapExpressionSuite extends CometTestBase {
       import testImplicits._
       val df = Seq(Map(1 -> 100, 2 -> 200)).toDF("m")
       checkSparkAnswerAndOperator(df.selectExpr("map_entries(m)"))
+    }
+  }
+
+  test("map lookup with an empty-struct key type falls back to Spark") {
+    // DataFusion's `map_extract` coercion rewrites the lookup key to the map's exact Arrow key
+    // type; Comet's planner then casts the key literal, and casting the zero-field `e` child
+    // errors ("no field name overlap"). Both `m[key]` (GetMapValue) and `element_at(m, key)`
+    // lower to `map_extract` -- see SupportLevel.emptyStructMapKeyReason.
+    withSQLConf(
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+        "org.apache.spark.sql.catalyst.optimizer.ConvertToLocalRelation") {
+      import scala.jdk.CollectionConverters._
+      val keyType = StructType(Seq(StructField("e", StructType(Nil))))
+      val schema = StructType(Seq(StructField("m", MapType(keyType, IntegerType))))
+      val data = java.util.List.of[Row](Row(Map(Row(Row()) -> 10)))
+      val df = spark.createDataFrame(data, schema)
+      df.createOrReplaceTempView("empty_struct_map")
+
+      checkSparkAnswerAndFallbackReason(
+        "SELECT m[named_struct('e', struct())] FROM empty_struct_map",
+        "empty struct in the key type is not supported")
+      checkSparkAnswerAndFallbackReason(
+        "SELECT element_at(m, named_struct('e', struct())) FROM empty_struct_map",
+        "empty struct in the key type is not supported")
     }
   }
 

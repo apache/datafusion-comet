@@ -1073,7 +1073,8 @@ case class CometExecRule(session: SparkSession)
     if (groupingExpressions.isEmpty && aggregateExpressions.isEmpty) return false
 
     if (groupingExpressions.exists(e =>
-        SupportLevel.containsType(e.dataType, classOf[MapType]))) {
+        SupportLevel.containsType(e.dataType, classOf[MapType]) ||
+          SupportLevel.containsEmptyStruct(e.dataType))) {
       return false
     }
 

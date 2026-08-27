@@ -19,6 +19,7 @@
 
 package org.apache.comet.exec
 
+import scala.jdk.CollectionConverters._
 import scala.util.Random
 
 import org.scalactic.source.Position
@@ -33,7 +34,7 @@ import org.apache.spark.sql.execution.window.{WindowExec => SparkWindowExec}
 import org.apache.spark.sql.expressions.Window
 import org.apache.spark.sql.functions.{count, lead, sum}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.DecimalType
+import org.apache.spark.sql.types.{ArrayType, DecimalType, IntegerType, StructField, StructType}
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
@@ -923,6 +924,75 @@ class CometWindowExecSuite extends CometTestBase {
       """)
       checkSparkAnswerAndOperator(df)
     }
+  }
+
+  test("window: FIRST_VALUE/LAST_VALUE decline an empty-struct input") {
+    // DataFusion's ScalarValue::compact panics reconstructing a zero-field StructArray, so
+    // CometFirst/CometLast must decline this schema and let the window run on Spark instead
+    // of letting CometWindowExec crash -- see SupportLevel.containsEmptyStruct.
+    val schema =
+      StructType(Seq(StructField("id", IntegerType), StructField("marker", StructType(Nil))))
+    val data = (0 until 3).map(i => Row(i, Row())).asJava
+    spark.createDataFrame(data, schema).createOrReplaceTempView("empty_struct_window")
+
+    checkSparkAnswerAndFallbackReason(
+      "SELECT first_value(marker) OVER () FROM empty_struct_window",
+      "FIRST/LAST on a schema containing an empty struct is not supported")
+    checkSparkAnswerAndFallbackReason(
+      "SELECT last_value(marker) OVER () FROM empty_struct_window",
+      "FIRST/LAST on a schema containing an empty struct is not supported")
+    // NTH_VALUE goes through a different DataFusion code path (a built-in window function,
+    // not an AggregateExpression accumulator) and doesn't hit ScalarValue::compact, so it
+    // needs no equivalent guard -- pinned here so a future regression would be caught.
+    checkSparkAnswer(
+      sql("SELECT nth_value(marker, 1) OVER (ORDER BY id) FROM empty_struct_window"))
+  }
+
+  test("window: LAG/LEAD decline a typed-NULL empty-struct-array default") {
+    // DataFusion casts the literal default to the input type when building the window expr,
+    // and its cast errors on a zero-field struct even when source and target agree ("no field
+    // name overlap") -- see SupportLevel.containsEmptyStruct.
+    val schema = StructType(
+      Seq(StructField("id", IntegerType), StructField("arr", ArrayType(StructType(Nil)))))
+    val data = (0 until 3).map(i => Row(i, Array(Row()))).asJava
+    spark.createDataFrame(data, schema).createOrReplaceTempView("empty_struct_array_window")
+
+    checkSparkAnswerAndFallbackReason(
+      """
+      SELECT lag(arr, 1, CAST(NULL AS ARRAY<STRUCT<>>)) OVER (ORDER BY id)
+      FROM empty_struct_array_window
+      """,
+      "LAG with an empty-struct-typed default value is not supported")
+    checkSparkAnswerAndFallbackReason(
+      """
+      SELECT lead(arr, 1, CAST(NULL AS ARRAY<STRUCT<>>)) OVER (ORDER BY id)
+      FROM empty_struct_array_window
+      """,
+      "LEAD with an empty-struct-typed default value is not supported")
+
+    // The omitted-default and plain-NULL-literal forms don't go through the typed-NULL cast
+    // that panics -- they should stay native, not fall back with the rest of this schema.
+    checkSparkAnswerAndOperator(
+      sql("SELECT lag(arr, 1) OVER (ORDER BY id) FROM empty_struct_array_window"))
+    checkSparkAnswerAndOperator(
+      sql("SELECT lag(arr, 1, NULL) OVER (ORDER BY id) FROM empty_struct_array_window"))
+  }
+
+  test("window: RANGE frame declines an empty-struct ORDER BY key") {
+    // DataFusion's `ScalarValue::partial_cmp_struct` flattens a struct into its leaf columns to
+    // compare RANGE peers; a zero-field struct contributes no columns, so a NULL struct and a
+    // non-null empty struct compare equal instead of ordering NULL first -- misgrouping peers.
+    val schema = StructType(
+      Seq(
+        StructField("s", StructType(Seq(StructField("e", StructType(Nil))))),
+        StructField("k", IntegerType)))
+    val data = Seq(Row(Row(null), 1), Row(Row(Row()), 1), Row(Row(null), 2)).asJava
+    spark.createDataFrame(data, schema).createOrReplaceTempView("empty_struct_range_window")
+
+    checkSparkAnswerAndFallbackReason(
+      "SELECT COUNT(*) OVER (ORDER BY s, k RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) " +
+        "FROM empty_struct_range_window",
+      "RANGE frame ordering on a schema containing an empty struct is not supported")
   }
 
   test("window: LAST_VALUE with ROWS frame") {

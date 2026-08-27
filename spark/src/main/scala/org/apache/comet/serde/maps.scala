@@ -64,6 +64,12 @@ object CometMapValues extends CometExpressionSerde[MapValues] {
 
 object CometMapExtract extends CometExpressionSerde[GetMapValue] {
 
+  override def getSupportLevel(expr: GetMapValue): SupportLevel =
+    SupportLevel
+      .emptyStructMapKeyReason(expr.child.dataType)
+      .map(r => Unsupported(Some(r)))
+      .getOrElse(Compatible())
+
   override def convert(
       expr: GetMapValue,
       inputs: Seq[Attribute],

@@ -84,6 +84,43 @@ object SupportLevel {
   }
 
   /**
+   * Whether `dt` is, or contains (recursively, through struct/array/map), a zero-field struct.
+   * Several DataFusion 54.1 code paths that reconstruct a struct -- `ScalarValue::compact`
+   * (backing the `FirstValue`/`LastValue`/`DistinctArrayAggAccumulator` accumulators),
+   * `GroupValuesRows::emit`'s dictionary-encoding step, and the cast applied to a window
+   * function's typed default value -- assume at least one child array (or a non-empty field-name
+   * overlap) to work from, and panic or error for a zero-field struct. Callers that would
+   * otherwise reach one of those paths decline such schemas instead; see
+   * https://github.com/apache/datafusion-comet/pull/5414.
+   */
+  def containsEmptyStruct(dt: DataType): Boolean = dt match {
+    case StructType(fields) if fields.isEmpty => true
+    case StructType(fields) => fields.exists(f => containsEmptyStruct(f.dataType))
+    case ArrayType(elementType, _) => containsEmptyStruct(elementType)
+    case MapType(keyType, valueType, _) =>
+      containsEmptyStruct(keyType) || containsEmptyStruct(valueType)
+    case _ => false
+  }
+
+  /**
+   * Fallback reason for a `map_extract` lookup (Spark `GetMapValue` / `element_at(map, key)`)
+   * whose map key type contains a zero-field struct. DataFusion's `map_extract` coercion rewrites
+   * the lookup key to the map's exact Arrow key type, and Comet's planner then inserts a
+   * `CastExpr` for any Arrow-level difference -- including a struct/list field *name* that
+   * Spark's `DataType` cannot express. Casting a zero-field struct fails with "no field name
+   * overlap", so such lookups stay on Spark. See
+   * https://github.com/apache/datafusion-comet/pull/5414.
+   */
+  def emptyStructMapKeyReason(mapType: DataType): Option[String] = mapType match {
+    case MapType(keyType, _, _) if containsEmptyStruct(keyType) =>
+      Some(
+        "map lookup with an empty struct in the key type is not supported (DataFusion's " +
+          "map_extract coerces the lookup key to the map's exact key type, which casts a " +
+          "zero-field struct and errors)")
+    case _ => None
+  }
+
+  /**
    * Gate for [[CometConf.COMET_EXEC_STRICT_FLOATING_POINT]]: returns the standard incompatibility
    * reason when strict mode is enabled and `dt` contains a float or double (at any nesting
    * level), and `None` otherwise. Callers wrap the reason with `Incompatible` or pass it to
