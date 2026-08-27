@@ -35,20 +35,32 @@ fn is_null(i: usize, null_ratio: f64) -> bool {
         true
     } else {
         let stride = (1.0 / null_ratio).round() as usize;
-        stride != 0 && i % stride == 0
+        stride != 0 && i.is_multiple_of(stride)
     }
 }
 
 pub fn f64_array(rows: usize, null_ratio: f64, value: impl Fn(usize) -> f64) -> ArrayRef {
     let arr: Float64Array = (0..rows)
-        .map(|i| if is_null(i, null_ratio) { None } else { Some(value(i)) })
+        .map(|i| {
+            if is_null(i, null_ratio) {
+                None
+            } else {
+                Some(value(i))
+            }
+        })
         .collect();
     Arc::new(arr)
 }
 
 pub fn i64_array(rows: usize, null_ratio: f64, value: impl Fn(usize) -> i64) -> ArrayRef {
     let arr: Int64Array = (0..rows)
-        .map(|i| if is_null(i, null_ratio) { None } else { Some(value(i)) })
+        .map(|i| {
+            if is_null(i, null_ratio) {
+                None
+            } else {
+                Some(value(i))
+            }
+        })
         .collect();
     Arc::new(arr)
 }
