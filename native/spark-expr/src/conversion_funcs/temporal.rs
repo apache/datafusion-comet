@@ -51,6 +51,7 @@ pub(crate) fn cast_date_to_timestamp(
         0
     } else {
         // Reject any unexpected region-zone call safely instead of constructing a chrono date.
+        // CometCast canonicalizes fixed-zone aliases to UTC or +/-HH:MM before serialization.
         cast_options
             .timezone
             .parse::<FixedOffset>()
@@ -87,6 +88,31 @@ pub(crate) fn cast_date_to_timestamp(
 mod tests {
     use super::*;
     use std::sync::Arc;
+
+    #[test]
+    fn test_cast_date_to_timestamp_accepts_canonical_minute_offsets() {
+        use arrow::array::Date32Array;
+        use arrow::datatypes::TimestampMicrosecondType;
+
+        let dates: ArrayRef = Arc::new(Date32Array::from(vec![Some(0), None]));
+        for minutes in -18_i32 * 60..=18 * 60 {
+            let sign = if minutes < 0 { '-' } else { '+' };
+            let timezone = format!("{sign}{:02}:{:02}", minutes.abs() / 60, minutes.abs() % 60);
+            let result = cast_date_to_timestamp(
+                &dates,
+                &SparkCastOptions::new(EvalMode::Ansi, &timezone, false),
+                &Some("UTC".into()),
+            )
+            .unwrap();
+            assert_eq!(
+                result.as_primitive::<TimestampMicrosecondType>().value(0),
+                -i64::from(minutes) * 60_000_000,
+                "{timezone}"
+            );
+            assert_eq!(result.nulls(), dates.nulls());
+        }
+    }
+
     #[test]
     fn test_cast_date_to_timestamp() {
         use crate::EvalMode;
