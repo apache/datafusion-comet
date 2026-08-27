@@ -17,13 +17,14 @@
 # specific language governing permissions and limitations
 # under the License.
 
-"""Offline regression tests for the actual CI dependency retry script."""
+"""Regression tests for CI download handling; cache-path checks require Java."""
 
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -34,6 +35,7 @@ import unittest
 RETRY = Path(__file__).with_name("retry-download.sh")
 RESOLVE_SPARK = Path(__file__).with_name("resolve-spark-dependencies.sh")
 REPO = Path(__file__).resolve().parents[2]
+MAVEN_CACHE_PATH = REPO / ".github/actions/setup-maven/cache-path.sh"
 
 
 class DownloadRetryTest(unittest.TestCase):
@@ -215,6 +217,91 @@ class DownloadRetryTest(unittest.TestCase):
                 self.assertEqual(result.returncode, 2)
                 self.assertEqual(calls, [])
                 self.assertEqual(delays, [])
+
+
+class MavenCachePathTest(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="comet-maven-cache-test-")
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.java = shutil.which("java")
+        self.assertIsNotNone(self.java, "Maven cache-path tests require Java")
+
+    def cache_path(self, **overrides):
+        env = dict(os.environ)
+        for name in (
+            "MAVEN_OPTS", "MAVEN_USER_HOME", "JAVA_HOME", "JAVACMD",
+            "JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "_JAVA_OPTIONS",
+        ):
+            env.pop(name, None)
+        env["JAVACMD"] = self.java
+        env.update(overrides)
+        return subprocess.run(
+            ["bash", str(MAVEN_CACHE_PATH)], cwd=self.root, env=env,
+            capture_output=True, text=True, timeout=15,
+        )
+
+    def test_host_runner_caches_only_its_accessible_distribution(self):
+        runner_home = self.root / "runner"
+        distribution = runner_home / ".m2/wrapper/dists"
+        distribution.mkdir(parents=True)
+        marker = distribution / "downloaded-maven"
+        marker.write_text("cached")
+        result = self.cache_path(MAVEN_OPTS=f"-Duser.home={runner_home}")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        paths = result.stdout.splitlines()
+        self.assertEqual(paths, [str(distribution)])
+        # Every emitted path can be traversed without touching /root. The old
+        # shared list aborted cache save with EACCES on the host runner.
+        self.assertEqual([p for path in paths for p in Path(path).iterdir()], [marker])
+
+    def test_container_uses_jvm_home_instead_of_shell_home(self):
+        result = self.cache_path(MAVEN_OPTS="-Duser.home=/root")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "/root/.m2/wrapper/dists")
+
+    def test_uses_java_home_or_path_when_javacmd_is_unset(self):
+        runner_home = self.root / "runner"
+        for java_home in (str(Path(self.java).resolve().parents[1]), ""):
+            with self.subTest(java_home=java_home):
+                result = self.cache_path(
+                    JAVACMD="", JAVA_HOME=java_home,
+                    MAVEN_OPTS=f"-Duser.home={runner_home}",
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.strip(), str(runner_home / ".m2/wrapper/dists"))
+
+    def test_wrapper_home_overrides_follow_wrapper_precedence(self):
+        configured_home = self.root / "wrapper"
+        env_home = self.root / "wrapper with spaces"
+        (self.root / ".mvn").mkdir()
+        config = self.root / ".mvn/jvm.config"
+        config.write_text(f"-Dmaven.user.home={configured_home}\n-Xmx128m\n")
+        result = self.cache_path(MAVEN_USER_HOME=str(env_home))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), str(configured_home / "wrapper/dists"))
+        config.unlink()
+        result = self.cache_path(MAVEN_USER_HOME=str(env_home))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), str(env_home / "wrapper/dists"))
+
+    def test_maven_opts_override_jvm_config_and_javacmd_overrides_java_home(self):
+        configured_home = self.root / "configured"
+        effective_home = self.root / "effective"
+        (self.root / ".mvn").mkdir()
+        (self.root / ".mvn/jvm.config").write_text(f"-Dmaven.user.home={configured_home}\n")
+        result = self.cache_path(
+            JAVA_HOME=str(self.root / "missing-jdk"),
+            MAVEN_OPTS=f"-Xmx128m\n-Dmaven.user.home={effective_home}",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), str(effective_home / "wrapper/dists"))
+
+    def test_invalid_jvm_options_fail_instead_of_caching_a_guessed_path(self):
+        result = self.cache_path(MAVEN_OPTS="-XX:CometInvalidOption")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("CometInvalidOption", result.stderr)
 
 
 @unittest.skipUnless(

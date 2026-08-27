@@ -40,14 +40,22 @@ runs:
 
     # Maven itself is stored outside the dependency repository. Keep its cache
     # independent of pom.xml changes and preserve the macOS cache workaround.
+    # Globbing /root on a host runner aborts cache save with EACCES, so select
+    # only the directory this JVM's wrapper actually uses.
+    - name: Locate Maven distribution cache
+      id: maven-cache-path
+      if: ${{ runner.os != 'macOS' }}
+      shell: bash
+      run: |
+        cache_path=$(bash "$GITHUB_ACTION_PATH/cache-path.sh")
+        printf 'path=%s\n' "$cache_path" >> "$GITHUB_OUTPUT"
+
     - name: Restore Maven distribution
       id: maven-distribution
       if: ${{ runner.os != 'macOS' }}
       uses: actions/cache/restore@v5
       with:
-        path: |
-          ~/.m2/wrapper/dists
-          /root/.m2/wrapper/dists
+        path: ${{ steps.maven-cache-path.outputs.path }}
         key: ${{ runner.os }}-${{ runner.arch }}-maven-wrapper-${{ hashFiles('.mvn/wrapper/maven-wrapper.properties') }}
 
     # Retry only the wrapper download, never compilation or test execution.
@@ -73,7 +81,5 @@ runs:
       if: ${{ runner.os != 'macOS' && steps.maven-distribution.outputs.cache-hit != 'true' }}
       uses: actions/cache/save@v5
       with:
-        path: |
-          ~/.m2/wrapper/dists
-          /root/.m2/wrapper/dists
+        path: ${{ steps.maven-cache-path.outputs.path }}
         key: ${{ steps.maven-distribution.outputs.cache-primary-key }}
