@@ -20,6 +20,7 @@
 package org.apache.comet.rules
 
 import scala.collection.mutable.ListBuffer
+import scala.util.control.NonFatal
 
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.{Divide, DoubleLiteral, EqualNullSafe, EqualTo, Expression, FloatLiteral, GreaterThan, GreaterThanOrEqual, KnownFloatingPointNormalized, LessThan, LessThanOrEqual, NamedExpression, Remainder}
@@ -132,8 +133,6 @@ object CometExecRule {
 
     /** Adds `key`, returning true if it was not already present. */
     def add(key: String): Boolean = keys.put(key, java.lang.Boolean.TRUE) == null
-
-    def contains(key: String): Boolean = keys.containsKey(key)
   }
 
   private val PLAN_ONLY_REPORTED_LIMIT = 1024
@@ -724,12 +723,30 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
   }
 
   /**
-   * Build the Comet plan we would have executed and log it. Called from `_apply` in plan-only
-   * mode; the built plan is discarded.
+   * If `plan` is one plan-only mode has not already described, build the Comet plan we would have
+   * executed and log it. Called from `_apply` in plan-only mode; the built plan is discarded.
+   *
+   * Nothing here may fail the query. Plan-only mode exists so that a workload can be assessed
+   * without taking on risk, and the preview rebuilds and rewrites a plan Spark has already
+   * prepared, so a plan shape it mishandles has to cost the report rather than the query.
    */
   private def reportPlanOnlyCoverage(plan: SparkPlan): Unit = {
-    val preview = buildPreview(plan, topLevel = true)
-    logWarning(s"[Comet plan-only]\n${new ExtendedExplainInfo().generateExtendedInfo(preview)}")
+    try {
+      val executionId = Option(
+        session.sparkContext.getLocalProperty(SQLExecution.EXECUTION_ID_KEY))
+      if (CometExecRule.shouldReportPlanOnly(
+          executionId,
+          plan,
+          queryStagePrep,
+          conf.adaptiveExecutionEnabled)) {
+        val preview = buildPreview(plan, topLevel = true)
+        logWarning(
+          s"[Comet plan-only]\n${new ExtendedExplainInfo().generateExtendedInfo(preview)}")
+      }
+    } catch {
+      case NonFatal(e) =>
+        logWarning("[Comet plan-only] could not build a coverage report for this query", e)
+    }
   }
 
   /**
@@ -847,15 +864,7 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
       // the preview. Placed before `normalizePlan`/`RewriteJoin`/`tagUnsafePartialAggregates`
       // so their work is not wasted on the discarded outer pass.
       if (!forPreview && CometConf.COMET_EXPLAIN_PLAN_ONLY_ENABLED.get()) {
-        val executionId = Option(
-          session.sparkContext.getLocalProperty(SQLExecution.EXECUTION_ID_KEY))
-        if (CometExecRule.shouldReportPlanOnly(
-            executionId,
-            plan,
-            queryStagePrep,
-            conf.adaptiveExecutionEnabled)) {
-          reportPlanOnlyCoverage(plan)
-        }
+        reportPlanOnlyCoverage(plan)
         return plan
       }
 

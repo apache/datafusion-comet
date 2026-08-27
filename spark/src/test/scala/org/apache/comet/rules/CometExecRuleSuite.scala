@@ -1215,7 +1215,7 @@ class CometExecRuleSuite extends CometTestBase {
         val reports = capturePlanOnlyReports(sql(query).collect())
         assert(
           reports.size == 2,
-          s"expected a report for the outer query and one for the DPP build plan, got " +
+          "expected a report for the outer query and one for the DPP build plan, got " +
             s"${reports.size}:\n${reports.mkString("\n\n")}")
         assert(
           reports.count(_.contains("BroadcastHashJoin")) == 1,
