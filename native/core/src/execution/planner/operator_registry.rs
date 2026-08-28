@@ -151,6 +151,7 @@ fn get_operator_type(spark_operator: &Operator) -> Option<OperatorType> {
         OpStruct::Explode(_) => None, // Not yet in OperatorType enum
         OpStruct::CsvScan(_) => Some(OperatorType::CsvScan),
         OpStruct::ShuffleScan(_) => None, // Not yet in OperatorType enum
+        OpStruct::BroadcastScan(_) => None, // Not yet in OperatorType enum
         OpStruct::BroadcastNestedLoopJoin(_) => None,
         OpStruct::Sample(_) => None, // Not yet in OperatorType enum
         // Generic extension point for out-of-tree contrib scans (Delta, Lance, ...); not in

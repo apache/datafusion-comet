@@ -306,6 +306,7 @@ fn op_name(op: &OpStruct) -> &'static str {
         OpStruct::Explode(_) => "Explode",
         OpStruct::CsvScan(_) => "CsvScan",
         OpStruct::ShuffleScan(_) => "ShuffleScan",
+        OpStruct::BroadcastScan(_) => "BroadcastScan",
         OpStruct::BroadcastNestedLoopJoin(_) => "BroadcastNestedLoopJoin",
         OpStruct::Sample(_) => "Sample",
         OpStruct::ContribScan(_) => "ContribScan",
@@ -350,7 +351,7 @@ struct ExecutionContext {
     pub root_op: Option<Arc<SparkPlan>>,
     /// The input sources for the DataFusion plan
     pub scans: Vec<ScanExec>,
-    /// The shuffle scan input sources for the DataFusion plan
+    /// The shuffle and broadcast direct-block scan sources for the DataFusion plan
     pub shuffle_scans: Vec<ShuffleScanExec>,
     /// The global reference of input sources for the DataFusion plan
     pub input_sources: Vec<Arc<Global<JObject<'static>>>>,

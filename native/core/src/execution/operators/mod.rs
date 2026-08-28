@@ -41,6 +41,7 @@ mod scan;
 mod shuffle_scan;
 pub use csv_scan::init_csv_datasource_exec;
 pub use shuffle_scan::ShuffleScanExec;
+pub type BroadcastScanExec = ShuffleScanExec;
 
 /// Fixtures for the nested-nullability drift from
 /// <https://github.com/apache/datafusion-comet/issues/5137>, shared by the `expand` and

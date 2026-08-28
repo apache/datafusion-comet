@@ -19,9 +19,10 @@
 
 package org.apache.spark.sql.comet.util
 
-import java.io.{DataInputStream, DataOutputStream, File}
+import java.io.{DataOutputStream, File, InputStream, PushbackInputStream}
 import java.nio.ByteBuffer
 import java.nio.channels.Channels
+import java.util.Arrays
 
 import scala.jdk.CollectionConverters._
 
@@ -49,6 +50,8 @@ import org.apache.comet.shims.CometTypeShim
 import org.apache.comet.vector.CometVector
 
 object Utils extends CometTypeShim with Logging {
+  private val NATIVE_IPC_LZ4_PREFIX = Array[Byte](0x4c, 0x5a, 0x34, 0x5f)
+
   def getConfPath(confFileName: String): String = {
     sys.env
       .get(COMET_CONF_DIR_ENV)
@@ -240,12 +243,25 @@ object Utils extends CometTypeShim with Logging {
    *   the output stream
    */
   def serializeBatches(batches: Iterator[ColumnarBatch]): Iterator[(Long, ChunkedByteBuffer)] = {
+    serializeBatches(batches, nativeIpc = false)
+  }
+
+  /**
+   * Serializes broadcast batches in the codec-prefixed format consumed by native direct scans.
+   */
+  def serializeBroadcastBatches(
+      batches: Iterator[ColumnarBatch]): Iterator[(Long, ChunkedByteBuffer)] = {
+    serializeBatches(batches, nativeIpc = true)
+  }
+
+  private def serializeBatches(
+      batches: Iterator[ColumnarBatch],
+      nativeIpc: Boolean): Iterator[(Long, ChunkedByteBuffer)] = {
     batches.map { batch =>
       val dictionaryProvider: CDataDictionaryProvider = new CDataDictionaryProvider
 
-      val codec = CompressionCodec.createCodec(SparkEnv.get.conf)
       val cbbos = new ChunkedByteBufferOutputStream(1024 * 1024, ByteBuffer.allocate)
-      val out = new DataOutputStream(codec.compressedOutputStream(cbbos))
+      val out = compressedIpcOutputStream(cbbos, nativeIpc)
 
       val (fieldVectors, batchProviderOpt) = getBatchFieldVectors(batch)
       val root = new VectorSchemaRoot(fieldVectors.asJava)
@@ -332,12 +348,38 @@ object Utils extends CometTypeShim with Logging {
       return Iterator.empty
     }
 
-    // use Spark's compression codec (LZ4 by default) and not Comet's compression
-    val codec = CompressionCodec.createCodec(SparkEnv.get.conf)
-    val cbbis = bytes.toInputStream()
-    val ins = new DataInputStream(codec.compressedInputStream(cbbis))
     // batches are in Arrow IPC format
-    new ArrowReaderIterator(Channels.newChannel(ins), source)
+    new ArrowReaderIterator(Channels.newChannel(compressedIpcInputStream(bytes)), source)
+  }
+
+  private def compressedIpcOutputStream(
+      output: ChunkedByteBufferOutputStream,
+      nativeIpc: Boolean): DataOutputStream = {
+    if (nativeIpc) {
+      output.write(NATIVE_IPC_LZ4_PREFIX)
+      new DataOutputStream(new net.jpountz.lz4.LZ4FrameOutputStream(output))
+    } else {
+      val codec = CompressionCodec.createCodec(SparkEnv.get.conf)
+      new DataOutputStream(codec.compressedOutputStream(output))
+    }
+  }
+
+  /**
+   * Opens either the existing Spark-codec stream or the codec-prefixed direct-read stream. This
+   * keeps non-native broadcast consumers compatible when direct read is enabled.
+   */
+  private def compressedIpcInputStream(bytes: ChunkedByteBuffer): InputStream = {
+    val input = new PushbackInputStream(bytes.toInputStream(), NATIVE_IPC_LZ4_PREFIX.length)
+    val prefix = new Array[Byte](NATIVE_IPC_LZ4_PREFIX.length)
+    val read = input.read(prefix)
+    if (read == prefix.length && Arrays.equals(prefix, NATIVE_IPC_LZ4_PREFIX)) {
+      new net.jpountz.lz4.LZ4FrameInputStream(input)
+    } else {
+      if (read > 0) {
+        input.unread(prefix, 0, read)
+      }
+      CompressionCodec.createCodec(SparkEnv.get.conf).compressedInputStream(input)
+    }
   }
 
   /**
@@ -358,10 +400,23 @@ object Utils extends CometTypeShim with Logging {
    * a single Arrow IPC stream.
    */
   def coalesceBroadcastBatches(
-      input: Iterator[ChunkedByteBuffer]): (Array[ChunkedByteBuffer], Long, Long) = {
+      input: Iterator[ChunkedByteBuffer],
+      nativeIpc: Boolean = false): (Array[ChunkedByteBuffer], Long, Long) = {
     val buffers = input.filterNot(_.size == 0).toArray
     if (buffers.isEmpty) {
       return (Array.empty, 0L, 0L)
+    }
+
+    val totalInputBytes = buffers.foldLeft(0L) { (total, buffer) =>
+      if (Long.MaxValue - total < buffer.size) Long.MaxValue else total + buffer.size
+    }
+    if (shouldSkipDirectBroadcastCoalesce(nativeIpc, totalInputBytes)) {
+      // The JNI block protocol reports a block length as an Int. Preserve the independently
+      // serialized input buffers rather than combining them into a block that cannot be read.
+      logInfo(
+        s"Skipping native broadcast coalesce because the input is $totalInputBytes bytes, " +
+          s"above the maximum direct block size of ${Integer.MAX_VALUE} bytes")
+      return (buffers, 0L, 0L)
     }
 
     val allocator = org.apache.comet.CometArrowAllocator
@@ -371,13 +426,10 @@ object Utils extends CometTypeShim with Logging {
       var totalRows = 0L
       var batchCount = 0
 
-      val codec = CompressionCodec.createCodec(SparkEnv.get.conf)
       try {
         for (bytes <- buffers) {
-          val compressedInputStream =
-            new DataInputStream(codec.compressedInputStream(bytes.toInputStream()))
           val reader =
-            new ArrowStreamReader(Channels.newChannel(compressedInputStream), allocator)
+            new ArrowStreamReader(Channels.newChannel(compressedIpcInputStream(bytes)), allocator)
           try {
             // Comet decodes dictionaries during execution, so this shouldn't happen.
             // If it does, fall back to the original uncoalesced buffers because each
@@ -425,8 +477,7 @@ object Utils extends CometTypeShim with Logging {
         logInfo(s"Coalesced $batchCount broadcast batches into 1 ($totalRows rows)")
 
         val outputStream = new ChunkedByteBufferOutputStream(1024 * 1024, ByteBuffer.allocate)
-        val compressedOutputStream =
-          new DataOutputStream(codec.compressedOutputStream(outputStream))
+        val compressedOutputStream = compressedIpcOutputStream(outputStream, nativeIpc)
         val writer =
           new ArrowStreamWriter(targetRoot, null, Channels.newChannel(compressedOutputStream))
         try {
@@ -469,6 +520,11 @@ object Utils extends CometTypeShim with Logging {
         case _ => false
       }
     }
+
+  private[comet] def shouldSkipDirectBroadcastCoalesce(
+      nativeIpc: Boolean,
+      totalInputBytes: Long): Boolean =
+    nativeIpc && totalInputBytes > Integer.MAX_VALUE
 
   def getBatchFieldVectors(
       batch: ColumnarBatch): (Seq[FieldVector], Option[DictionaryProvider]) = {

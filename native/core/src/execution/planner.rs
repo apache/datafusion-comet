@@ -39,8 +39,8 @@ use crate::execution::{
     expressions::list_positions::ListPositionsExpr,
     expressions::subquery::Subquery,
     operators::{
-        ExecutionError, ExpandExec, ParquetCompression, ParquetWriterExec, SampleExec, ScanExec,
-        ShuffleScanExec,
+        BroadcastScanExec, ExecutionError, ExpandExec, ParquetCompression, ParquetWriterExec,
+        SampleExec, ScanExec, ShuffleScanExec,
     },
     planner::expression_registry::ExpressionRegistry,
     planner::operator_registry::OperatorRegistry,
@@ -2506,6 +2506,36 @@ impl PhysicalPlanner {
                     Arc::new(SparkPlan::new(
                         spark_plan.plan_id,
                         Arc::new(shuffle_scan),
+                        vec![],
+                    )),
+                ))
+            }
+            OpStruct::BroadcastScan(scan) => {
+                let data_types = scan.fields.iter().map(to_arrow_datatype).collect_vec();
+
+                if self.exec_context_id != TEST_EXEC_CONTEXT_ID && inputs.is_empty() {
+                    return Err(GeneralError("No input for broadcast scan".to_string()));
+                }
+
+                let input_source =
+                    if self.exec_context_id == TEST_EXEC_CONTEXT_ID && inputs.is_empty() {
+                        None
+                    } else {
+                        Some(inputs.remove(0))
+                    };
+
+                let broadcast_scan = BroadcastScanExec::new_broadcast(
+                    self.exec_context_id,
+                    input_source,
+                    data_types,
+                )?;
+
+                Ok((
+                    vec![],
+                    vec![broadcast_scan.clone()],
+                    Arc::new(SparkPlan::new(
+                        spark_plan.plan_id,
+                        Arc::new(broadcast_scan),
                         vec![],
                     )),
                 ))

@@ -43,9 +43,9 @@ private[spark] class CometExecPartition(
 
 /**
  * Unified RDD for Comet native execution. Non-shuffle input slots are `RDD[ArrowArrayStream]`
- * (consumed natively via the C Stream Interface); shuffle input slots are `CometShuffledBatchRDD`
- * (consumed via `CometShuffleBlockIterator`). Slot order matches the scan-input order in the
- * serialized native plan.
+ * (consumed natively via the C Stream Interface); direct-read shuffle and broadcast slots expose
+ * `CometShuffleBlockIterator`'s JNI block protocol. Slot order matches the scan-input order in
+ * the serialized native plan.
  *
  * Solves the closure-capture problem: instead of capturing all partitions' data in the closure
  * (which gets serialized to every task), each `CometExecPartition` carries only its own data.
@@ -66,7 +66,7 @@ private[spark] class CometExecRDD(
     subqueries: Seq[ScalarSubquery],
     broadcastedHadoopConfForEncryption: Option[Broadcast[SerializableConfiguration]] = None,
     encryptedFilePaths: Seq[String] = Seq.empty,
-    shuffleScanIndices: Set[Int] = Set.empty,
+    blockScanIndices: Set[Int] = Set.empty,
     @transient perPartitionFilePaths: Array[Seq[String]] = Array.empty)
     extends RDD[ColumnarBatch](sc, inputRDDs.map(rdd => new OneToOneDependency(rdd))) {
 
@@ -105,11 +105,11 @@ private[spark] class CometExecRDD(
 
     val partition = split.asInstanceOf[CometExecPartition]
 
-    val (inputObjects, shuffleBlockIters) =
+    val (inputObjects, blockIters) =
       CometExecRDD.resolveInputObjects(
         inputRDDs,
         partition.inputPartitions,
-        shuffleScanIndices,
+        blockScanIndices,
         context)
 
     // Only inject if we have per-partition planning data
@@ -132,7 +132,7 @@ private[spark] class CometExecRDD(
       partition.index,
       broadcastedHadoopConfForEncryption,
       encryptedFilePaths,
-      shuffleBlockIters,
+      blockIters,
       taskFilePaths = partition.filePaths)
 
     // Register ScalarSubqueries so native code can look them up
@@ -168,44 +168,91 @@ object CometExecRDD {
 
   /**
    * Resolve the per-partition native input slots for `createPlan`, in scan-input order. A slot is
-   * either a `CometShuffleBlockIterator` (for slots in `shuffleScanIndices`, fed by a
-   * `CometShuffledBatchRDD` consumed via the JNI block-iteration protocol) or the single
-   * `ArrowArrayStream` exported by a non-shuffle `RDD[ArrowArrayStream]`. Returned alongside the
-   * subset that are shuffle-block iterators, which `CometExecIterator` needs to drive block
-   * iteration. Shared by [[CometExecRDD.compute]] and the native-shuffle path so both classify
-   * and resolve slots identically.
+   * either a `CometShuffleBlockIterator` (for slots in `blockScanIndices`, fed by shuffle or
+   * broadcast block RDDs through the JNI block-iteration protocol) or the single
+   * `ArrowArrayStream` exported by another `RDD[ArrowArrayStream]`. Returned alongside the subset
+   * that are block iterators, which `CometExecIterator` needs to drive block iteration. Shared by
+   * [[CometExecRDD.compute]] and the native-shuffle path so both classify and resolve slots
+   * identically.
    */
   def resolveInputObjects(
       inputRDDs: Seq[RDD[_]],
       inputPartitions: Array[Partition],
-      shuffleScanIndices: Set[Int],
+      blockScanIndices: Set[Int],
       context: TaskContext): (Array[Object], Map[Int, CometShuffleBlockIterator]) = {
-    val shuffleBlockIters = scala.collection.mutable.Map.empty[Int, CometShuffleBlockIterator]
-    val inputObjects: Array[Object] = inputRDDs
-      .zip(inputPartitions)
-      .zipWithIndex
-      .map { case ((rdd, part), idx) =>
-        if (shuffleScanIndices.contains(idx)) {
-          rdd match {
-            case shuffleRDD: CometShuffledBatchRDD =>
-              val it = shuffleRDD.computeAsShuffleBlockIterator(part, context)
-              shuffleBlockIters(idx) = it
-              it.asInstanceOf[Object]
-            case other =>
+    val blockIters = scala.collection.mutable.Map.empty[Int, CometShuffleBlockIterator]
+    val resolvedObjects = scala.collection.mutable.ArrayBuffer.empty[Object]
+    try {
+      val inputObjects: Array[Object] = inputRDDs
+        .zip(inputPartitions)
+        .zipWithIndex
+        .map { case ((rdd, part), idx) =>
+          val inputObject = if (blockScanIndices.contains(idx)) {
+            rdd match {
+              case shuffleRDD: CometShuffledBatchRDD =>
+                val it = shuffleRDD.computeAsShuffleBlockIterator(part, context)
+                blockIters(idx) = it
+                it.asInstanceOf[Object]
+              case broadcastRDD: CometBroadcastBlockRDD =>
+                val iterators = broadcastRDD.iterator(part, context)
+                if (!iterators.hasNext) {
+                  throw new CometRuntimeException(
+                    s"Empty broadcast block iterator RDD partition for slot $idx")
+                }
+                val it = iterators.next()
+                blockIters(idx) = it
+                if (iterators.hasNext) {
+                  val failure = new CometRuntimeException(
+                    s"Multiple broadcast block iterators in RDD partition for slot $idx")
+                  iterators.foreach { extraIterator =>
+                    try {
+                      extraIterator.close()
+                    } catch {
+                      case closeFailure: Throwable => failure.addSuppressed(closeFailure)
+                    }
+                  }
+                  throw failure
+                }
+                it.asInstanceOf[Object]
+              case other =>
+                throw new CometRuntimeException(
+                  s"Slot $idx is marked as a direct block scan but the input RDD is " +
+                    s"${other.getClass.getName}, expected CometShuffledBatchRDD or " +
+                    "CometBroadcastBlockRDD")
+            }
+          } else {
+            val streams = rdd.iterator(part, context).asInstanceOf[Iterator[ArrowArrayStream]]
+            if (!streams.hasNext) {
               throw new CometRuntimeException(
-                s"Slot $idx is marked as a shuffle scan but the input RDD is " +
-                  s"${other.getClass.getName}, expected CometShuffledBatchRDD")
+                s"Empty ArrowArrayStream RDD partition for slot $idx")
+            }
+            streams.next().asInstanceOf[Object]
           }
-        } else {
-          val streams = rdd.iterator(part, context).asInstanceOf[Iterator[ArrowArrayStream]]
-          if (!streams.hasNext) {
-            throw new CometRuntimeException(s"Empty ArrowArrayStream RDD partition for slot $idx")
-          }
-          streams.next().asInstanceOf[Object]
+          resolvedObjects += inputObject
+          inputObject
         }
-      }
-      .toArray
-    (inputObjects, shuffleBlockIters.toMap)
+        .toArray
+      (inputObjects, blockIters.toMap)
+    } catch {
+      case failure: Throwable =>
+        resolvedObjects.foreach {
+          case stream: ArrowArrayStream =>
+            try {
+              stream.release()
+            } catch {
+              case closeFailure: Throwable => failure.addSuppressed(closeFailure)
+            }
+          case _ =>
+        }
+        blockIters.values.foreach { iterator =>
+          try {
+            iterator.close()
+          } catch {
+            case closeFailure: Throwable => failure.addSuppressed(closeFailure)
+          }
+        }
+        throw failure
+    }
   }
 
   /**
@@ -224,7 +271,7 @@ object CometExecRDD {
       subqueries: Seq[ScalarSubquery],
       broadcastedHadoopConfForEncryption: Option[Broadcast[SerializableConfiguration]] = None,
       encryptedFilePaths: Seq[String] = Seq.empty,
-      shuffleScanIndices: Set[Int] = Set.empty,
+      blockScanIndices: Set[Int] = Set.empty,
       perPartitionFilePaths: Array[Seq[String]] = Array.empty): CometExecRDD = {
     // scalastyle:on
 
@@ -240,7 +287,7 @@ object CometExecRDD {
       subqueries,
       broadcastedHadoopConfForEncryption,
       encryptedFilePaths,
-      shuffleScanIndices,
+      blockScanIndices,
       perPartitionFilePaths)
   }
 }

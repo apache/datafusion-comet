@@ -90,6 +90,74 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
       .toByteArray
   }
 
+  test("failed native plan creation closes every Arrow and block input") {
+    val results = spark.sparkContext
+      .parallelize(Seq(17), 1)
+      .mapPartitions { _ =>
+        var readerClosed = false
+        var ownedBuffer: ArrowBuf = null
+        val arrowInput = CometArrowStream
+          .stream(
+            "native-plan-creation-failure-test",
+            allocator => {
+              ownedBuffer = allocator.buffer(128)
+              new ArrowReader(allocator) {
+                override protected def readSchema(): Schema =
+                  new Schema(java.util.Collections.emptyList[Field]())
+
+                override def loadNextBatch(): Boolean = false
+
+                override def bytesRead(): Long = 0L
+
+                override protected def closeReadSource(): Unit = {
+                  ownedBuffer.close()
+                  readerClosed = true
+                }
+              }
+            })
+          .next()
+        val closedInputs = mutable.ArrayBuffer.empty[String]
+        val failingInput = new ByteArrayInputStream(Array.empty[Byte]) {
+          override def close(): Unit = {
+            closedInputs += "failing"
+            throw new IOException("block input cleanup sentinel")
+          }
+        }
+        val remainingInput = new ByteArrayInputStream(Array.empty[Byte]) {
+          override def close(): Unit = closedInputs += "remaining"
+        }
+        val blockInputs = Map(
+          0 -> new CometShuffleBlockIterator(failingInput),
+          1 -> new CometShuffleBlockIterator(remainingInput))
+
+        try {
+          // A truncated protobuf varint makes createPlan fail before native execution can take
+          // ownership of any JVM input.
+          new CometExecIterator(
+            CometExec.newIterId,
+            Array[Object](arrowInput),
+            0,
+            Array(0x80.toByte),
+            CometMetricNode(Map.empty),
+            1,
+            0,
+            shuffleBlockIterators = blockInputs)
+          Iterator.single((false, false, false))
+        } catch {
+          case failure: Throwable =>
+            Iterator.single(
+              (
+                readerClosed && ownedBuffer.refCnt() == 0,
+                closedInputs.toSet == Set("failing", "remaining"),
+                failure.getSuppressed.exists(
+                  _.getMessage.contains("block input cleanup sentinel"))))
+        }
+      }
+      .collect()
+
+    assert(results.sameElements(Array((true, true, true))))
+  }
+
   test("native shuffle callback registration preserves the existing createPlan JNI signature") {
     val createPlan = classOf[Native].getDeclaredMethods.find(_.getName == "createPlan").get
     assert(createPlan.getParameterTypes.last == classOf[ClassLoader])
