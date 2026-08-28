@@ -65,9 +65,8 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
           val filename = path.toString
           val random = new Random(42)
           withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-            ParquetGenerator.makeParquetFile(
+            makeNativeParquetFile(
               random,
-              spark,
               filename,
               100,
               SchemaGenOptions(
@@ -76,7 +75,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
                 generateMap = false),
               DataGenOptions(allowNull = true, generateNegativeZero = true))
           }
-          val table = spark.read.parquet(filename)
+          val table = readNativeParquetInput(filename)
           table.createOrReplaceTempView("t1")
           // test with array of each column
           val fieldNames =
@@ -281,15 +280,14 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
           val filename = path.toString
           val random = new Random(42)
           withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-            ParquetGenerator.makeParquetFile(
+            makeNativeParquetFile(
               random,
-              spark,
               filename,
               100,
               SchemaGenOptions(generateArray = true, generateStruct = true, generateMap = false),
               DataGenOptions(allowNull = true, generateNegativeZero = true))
           }
-          val table = spark.read.parquet(filename)
+          val table = readNativeParquetInput(filename)
           table.createOrReplaceTempView("t1")
           val complexTypeFields =
             table.schema.fields.filter(field => isComplexType(field.dataType))
@@ -714,9 +712,8 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
       val filename = path.toString
       val random = new Random(42)
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-        ParquetGenerator.makeParquetFile(
+        makeNativeParquetFile(
           random,
-          spark,
           filename,
           100,
           SchemaGenOptions(generateArray = false, generateStruct = false, generateMap = false),
@@ -724,7 +721,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
       }
       withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[ArrayExcept]) -> "true") {
         withTempView("t1", "t2") {
-          val table = spark.read.parquet(filename)
+          val table = readNativeParquetInput(filename)
           table.createOrReplaceTempView("t1")
           // test with array of each column
           val fields =
@@ -816,15 +813,14 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
         val filename = path.toString
         val random = new Random(42)
         withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-          ParquetGenerator.makeParquetFile(
+          makeNativeParquetFile(
             random,
-            spark,
             filename,
             100,
             SchemaGenOptions(generateArray = false, generateStruct = false, generateMap = false),
             DataGenOptions(allowNull = true, generateNegativeZero = true))
         }
-        val table = spark.read.parquet(filename)
+        val table = readNativeParquetInput(filename)
         table.createOrReplaceTempView("t1")
         val fieldNames =
           table.schema.fields

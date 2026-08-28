@@ -1567,7 +1567,7 @@ class CometNativeCastSuite
         Cast(Literal.create(null, DateType), TimestampNTZType),
         Cast(BoundReference(0, DateType, nullable = true), TimestampType, Some("UTC")),
         Cast(BoundReference(0, ShortType, nullable = true), LongType)).foreach { cast =>
-        assert(CometCast.getSupportLevel(cast) == Compatible())
+        assert(CometCast.getSupportLevel(cast).isInstanceOf[Compatible])
         assert(CometBatchKernelCodegen.canHandle(cast).isEmpty)
       }
     }
@@ -1705,7 +1705,9 @@ class CometNativeCastSuite
     }
     (aliases ++ minuteOffsets).foreach { case (timezone, expected) =>
       val cast = Cast(date, TimestampType, Some(timezone))
-      assert(CometCast.getSupportLevel(cast) == Compatible(), timezone)
+      assert(
+        CometCast.getSupportLevel(cast) == Compatible(Some(CometCast.dateToTimestampSupportNote)),
+        timezone)
       val serialized = CometCast.convert(cast, Seq(date), binding = true).get.getCast
       assert(serialized.getTimezone == expected, timezone)
     }

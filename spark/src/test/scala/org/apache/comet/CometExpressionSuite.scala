@@ -794,7 +794,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "timestamp_trunc_with_format.parquet")
         makeDateTimeWithFormatTable(path, dictionaryEnabled = dictionaryEnabled, numRows)
-        withParquetTable(path.toString, "timeformattbl") {
+        withMaterializedTimestampTable(path.toString) {
           withSQLConf(
             CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true",
             CometConf.getExprAllowIncompatConfigKey(classOf[TruncTimestamp]) -> "true") {
@@ -807,7 +807,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                 "date_trunc(format, _3), " +
                 "date_trunc(format, _4), " +
                 "date_trunc(format, _5) " +
-                " from timeformattbl ")
+                " from timetbl ")
           }
         }
       }

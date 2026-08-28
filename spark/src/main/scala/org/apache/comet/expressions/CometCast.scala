@@ -57,6 +57,9 @@ object CometCast
   private[comet] val dateToTimestampNtzOverflowReason: String =
     "DATE to TIMESTAMP_NTZ requires Spark row execution unless its date range is known to be safe"
 
+  private[comet] val dateToTimestampSupportNote: String =
+    "Native execution requires a fixed whole-minute timezone offset; other timezones use Spark"
+
   private[comet] val dateToTimestampNtzSupportNote: String =
     "Non-TRY casts use Spark row execution unless the input is a safe date literal/null or " +
       "date_from_unix_date of a byte/short. This also excludes JVM batch dispatch. " +
@@ -551,7 +554,7 @@ object CometCast
       case DataTypes.TimestampType =>
         val timezone = timeZoneId.getOrElse("UTC")
         if (nativeDateTimestampTimezone(timezone).isDefined) {
-          Compatible()
+          Compatible(Some(dateToTimestampSupportNote))
         } else {
           // DateType extends beyond chrono's calendar. Let Spark handle region-zone rules
           // across the entire date range, including future DST and historical offsets.
