@@ -49,3 +49,7 @@ SELECT map_concat(map(1, 'x', 2, 'y'), map(3, 'z'))
 -- a NULL literal map makes the whole result NULL
 query
 SELECT map_concat(map('a', 1), CAST(NULL AS map<string, int>))
+
+-- untyped operands leave the result as MapType(NullType, NullType)
+query
+SELECT map_concat(map(), map())
