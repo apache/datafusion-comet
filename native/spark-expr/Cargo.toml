@@ -89,6 +89,10 @@ name = "aggregate"
 harness = false
 
 [[bench]]
+name = "approx_percentile"
+harness = false
+
+[[bench]]
 name = "bloom_filter_agg"
 harness = false
 
