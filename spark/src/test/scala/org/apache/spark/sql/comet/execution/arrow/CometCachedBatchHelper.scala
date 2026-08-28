@@ -19,17 +19,19 @@
 
 package org.apache.spark.sql.comet.execution.arrow
 
-import java.io.{DataInputStream, DataOutputStream}
-import java.nio.ByteBuffer
+import java.io.ByteArrayInputStream
 import java.nio.channels.Channels
 
-import org.apache.arrow.vector.ipc.ArrowStreamReader
-import org.apache.spark.SparkEnv
-import org.apache.spark.io.CompressionCodec
-import org.apache.spark.sql.columnar.CachedBatch
-import org.apache.spark.util.io.{ChunkedByteBuffer, ChunkedByteBufferOutputStream}
+import scala.jdk.CollectionConverters._
 
-import org.apache.comet.CometArrowAllocator
+import org.apache.arrow.flatbuf.{MessageHeader, RecordBatch => FlatBufRecordBatch}
+import org.apache.arrow.vector.TypeLayout
+import org.apache.arrow.vector.ipc.ReadChannel
+import org.apache.arrow.vector.ipc.message.MessageSerializer
+import org.apache.arrow.vector.types.pojo.Field
+import org.apache.spark.sql.columnar.CachedBatch
+import org.apache.spark.sql.comet.util.Utils
+import org.apache.spark.sql.types.StructType
 
 /**
  * Test-only access to the internals of `CometCachedBatch`.
@@ -37,83 +39,210 @@ import org.apache.comet.CometArrowAllocator
  * A top-level `private` class in Scala is visible to its own package, so this shim needs no
  * reflection; it exists so tests outside `org.apache.spark.sql.comet.execution.arrow` can assert
  * on the cached payload's shape.
+ *
+ * The IPC buffer arithmetic below is deliberately re-derived here rather than reused from
+ * `CachedBatchIpc`. A helper that called into the code under test would inherit any bug in it and
+ * still agree with itself, so the assertions built on this would pass for the wrong reason.
  */
 object CometCachedBatchHelper {
 
-  /** Number of independently decodable column streams in a cached batch. */
-  def numColumnStreams(batch: CachedBatch): Int =
-    batch.asInstanceOf[CometCachedBatch].columns.length
+  /** The raw cached payload: one encapsulated Arrow IPC record batch message and its body. */
+  private def payload(batch: CachedBatch): Array[Byte] =
+    batch.asInstanceOf[CometCachedBatch].bytes
 
-  /** Serialized size of each column stream, in column order. */
-  def columnStreamSizes(batch: CachedBatch): Seq[Long] =
-    batch.asInstanceOf[CometCachedBatch].columns.map(_.size).toSeq
+  /** Stored size of the whole cached batch, in bytes. */
+  def payloadSize(batch: CachedBatch): Long = payload(batch).length.toLong
 
   /**
-   * Replace one column's stream with bytes that cannot be decoded, in place.
+   * Whether the payload begins with a Schema message rather than going straight to the record
+   * batch.
    *
-   * Reading a column this has corrupted fails; reading any other column only succeeds if that
-   * column's stream was never touched. That is the difference between decoding what was projected
-   * and decoding everything and projecting afterwards, so it is what the projection tests assert
-   * on rather than timings.
+   * Comet stores no schema per cached batch -- the reader rebuilds it from the cached relation's
+   * attributes -- so this is false, and a regression to a self-describing stream would show up
+   * here rather than only as a footprint number.
    */
-  def corruptColumnStream(batch: CachedBatch, index: Int): Unit = {
-    val columns = batch.asInstanceOf[CometCachedBatch].columns
-    columns(index) = new ChunkedByteBuffer(Array(ByteBuffer.wrap(Array[Byte](1, 2, 3, 4))))
-  }
+  def hasSchemaMessage(batch: CachedBatch): Boolean =
+    readMetadata(payload(batch))._1.headerType() == MessageHeader.Schema
 
-  /** Whether each column's stream stores that column dictionary encoded, in column order. */
-  def columnsAreDictionaryEncoded(batch: CachedBatch): Seq[Boolean] =
-    batch.asInstanceOf[CometCachedBatch].columns.toSeq.map { buffer =>
-      val in = new DataInputStream(codec.compressedInputStream(buffer.toInputStream()))
-      val reader = new ArrowStreamReader(Channels.newChannel(in), CometArrowAllocator)
-      try {
-        reader.getVectorSchemaRoot.getSchema.getFields.get(0).getDictionary != null
-      } finally {
-        reader.close()
+  /**
+   * The on-body (offset, length) of every Arrow buffer belonging to each top-level column, in
+   * column order.
+   */
+  def columnBufferRanges(batch: CachedBatch, cacheSchema: StructType): Seq[Seq[(Long, Long)]] = {
+    val data = payload(batch)
+    val (_, recordBatch) = readMetadata(data)
+    val fields = arrowFields(cacheSchema)
+    val starts = fields.scanLeft(0)(_ + bufferCount(_)).toArray
+
+    fields.indices.map { i =>
+      (starts(i) until starts(i) + bufferCount(fields(i))).map { j =>
+        val buffer = recordBatch.buffers(j)
+        (buffer.offset(), buffer.length())
       }
     }
+  }
+
+  /** Stored size of each top-level column: the sum of its buffers' on-body lengths. */
+  def columnSizes(batch: CachedBatch, cacheSchema: StructType): Seq[Long] =
+    columnBufferRanges(batch, cacheSchema).map(_.map(_._2).sum)
 
   /**
-   * Drop the last `dropBytes` of one column's decoded Arrow stream, in place.
+   * Whether any of a column's buffers is actually stored compressed.
    *
-   * [[corruptColumnStream]] replaces the stream outright, so a reader over it fails on the very
-   * first message, before it has allocated anything. This keeps the stream genuine up to the cut:
-   * the reader parses the schema and loads the column's dictionary, and only then runs out of
-   * input part way through the record batch that indexes into it. The cut is made on the decoded
-   * bytes rather than the compressed ones because a small column compresses to a single block,
-   * and truncating that fails the decompressor before Arrow reads anything at all.
+   * Arrow prefixes each compressed buffer with its uncompressed length, and falls back to storing
+   * a buffer verbatim (length prefix `-1`) when compressing it would not make it smaller. Small
+   * buffers routinely take that fallback, so [[corruptColumn]] only has something to corrupt when
+   * this is true; the projection tests assert it as a precondition rather than assuming it.
    */
-  def truncateColumnStream(batch: CachedBatch, index: Int, dropBytes: Int): Unit = {
-    val columns = batch.asInstanceOf[CometCachedBatch].columns
+  def columnIsCompressed(batch: CachedBatch, cacheSchema: StructType, index: Int): Boolean = {
+    val data = payload(batch)
+    val start = bodyStart(data)
+    columnBufferRanges(batch, cacheSchema)(index).exists { case (offset, length) =>
+      length > 8 && uncompressedLength(data, start + offset.toInt) > 0
+    }
+  }
 
-    val decodedStream = new DataInputStream(
-      codec.compressedInputStream(columns(index).toInputStream()))
-    val decoded =
-      try {
-        val buffer = new java.io.ByteArrayOutputStream()
-        val chunk = new Array[Byte](8192)
-        var read = decodedStream.read(chunk)
-        while (read >= 0) {
-          buffer.write(chunk, 0, read)
-          read = decodedStream.read(chunk)
+  /**
+   * Scramble one column's compressed bytes in place, leaving every other column byte-identical.
+   *
+   * Reading a column this has corrupted fails in the decompressor; reading any other column only
+   * succeeds if this column's buffers were never copied out of the payload. That is the
+   * difference between decoding what was projected and decoding everything and projecting
+   * afterwards, so it is what the projection tests assert on rather than timings.
+   *
+   * Each buffer's 8-byte uncompressed-length prefix is left intact and only the compressed bytes
+   * after it are overwritten, so a read of this column fails while decompressing rather than by
+   * trying to allocate a nonsense length. Requires the column to have a genuinely compressed
+   * buffer -- see [[columnIsCompressed]].
+   */
+  def corruptColumn(batch: CachedBatch, cacheSchema: StructType, index: Int): Unit = {
+    val data = payload(batch)
+    val start = bodyStart(data)
+    var corrupted = false
+
+    columnBufferRanges(batch, cacheSchema)(index).foreach { case (offset, length) =>
+      val bufferStart = start + offset.toInt
+      if (length > 8 && uncompressedLength(data, bufferStart) > 0) {
+        var i = bufferStart + 8
+        while (i < bufferStart + length.toInt) {
+          // A fixed pattern rather than random bytes, so a failure reproduces exactly.
+          data(i) = (0xa5 ^ i).toByte
+          i += 1
         }
-        buffer.toByteArray
-      } finally {
-        decodedStream.close()
+        corrupted = true
       }
-    require(
-      decoded.length > dropBytes,
-      s"column $index decodes to ${decoded.length} bytes, too few to drop $dropBytes")
-
-    val cbbos = new ChunkedByteBufferOutputStream(1024 * 1024, ByteBuffer.allocate)
-    val out = new DataOutputStream(codec.compressedOutputStream(cbbos))
-    try {
-      out.write(decoded, 0, decoded.length - dropBytes)
-    } finally {
-      out.close()
     }
-    columns(index) = cbbos.toChunkedByteBuffer
+
+    require(
+      corrupted,
+      s"column $index of the cached batch has no compressed buffer to corrupt; " +
+        "the test needs data that Arrow actually compresses")
   }
 
-  private def codec: CompressionCodec = CompressionCodec.createCodec(SparkEnv.get.conf)
+  /**
+   * Truncate the tail of one column's compressed bytes, in place, padding with zeros so every
+   * other column keeps its offset.
+   *
+   * [[corruptColumn]] rewrites the whole compressed payload, which fails as soon as the
+   * decompressor looks at it. This keeps the leading bytes genuine, so a decoder gets a stream
+   * that starts out valid and then runs out, exercising a failure part way through a column
+   * rather than at its first byte.
+   */
+  def truncateColumn(batch: CachedBatch, cacheSchema: StructType, index: Int): Unit = {
+    val data = payload(batch)
+    val start = bodyStart(data)
+    var truncated = false
+
+    columnBufferRanges(batch, cacheSchema)(index).foreach { case (offset, length) =>
+      val bufferStart = start + offset.toInt
+      if (length > 32 && uncompressedLength(data, bufferStart) > 0 && !truncated) {
+        var i = bufferStart + length.toInt - 16
+        while (i < bufferStart + length.toInt) {
+          data(i) = 0
+          i += 1
+        }
+        truncated = true
+      }
+    }
+
+    require(
+      truncated,
+      s"column $index of the cached batch has no compressed buffer long enough to truncate")
+  }
+
+  /**
+   * Scramble only the last compressed buffer of one column, leaving its earlier buffers genuine.
+   *
+   * A string column stores offsets and data as separate compressed buffers, so this makes the
+   * decoder decompress one buffer of the column successfully and then fail on the next. That is a
+   * different failure point from [[corruptColumn]], which takes out a column's first buffer and
+   * so fails before anything of it has been decompressed.
+   */
+  def corruptTrailingBuffer(batch: CachedBatch, cacheSchema: StructType, index: Int): Unit = {
+    val data = payload(batch)
+    val start = bodyStart(data)
+    val compressed = columnBufferRanges(batch, cacheSchema)(index).filter {
+      case (offset, length) =>
+        length > 8 && uncompressedLength(data, start + offset.toInt) > 0
+    }
+    require(
+      compressed.length > 1,
+      s"column $index has ${compressed.length} compressed buffers; this needs at least two so a " +
+        "decode can succeed on one and then fail on the next")
+
+    val (offset, length) = compressed.last
+    val bufferStart = start + offset.toInt
+    var i = bufferStart + 8
+    while (i < bufferStart + length.toInt) {
+      data(i) = (0xa5 ^ i).toByte
+      i += 1
+    }
+  }
+
+  /** The Arrow fields the read path rebuilds for `cacheSchema`. */
+  private def arrowFields(cacheSchema: StructType): Seq[Field] =
+    Utils
+      .toArrowSchema(cacheSchema, CometArrowStream.NATIVE_TIMEZONE)
+      .getFields
+      .asScala
+      .toSeq
+
+  /**
+   * Buffers a field occupies in the record batch body, including every descendant, in the
+   * depth-first order the body lays them out.
+   */
+  private def bufferCount(field: Field): Int =
+    TypeLayout.getTypeBufferCount(field.getType) +
+      field.getChildren.asScala.map(bufferCount).sum
+
+  private def readMetadata(data: Array[Byte]) = {
+    val channel = new ReadChannel(Channels.newChannel(new ByteArrayInputStream(data)))
+    val metadata = MessageSerializer.readMessage(channel)
+    require(metadata != null, "cached payload holds no IPC message")
+    (
+      metadata.getMessage,
+      metadata.getMessage.header(new FlatBufRecordBatch()).asInstanceOf[FlatBufRecordBatch])
+  }
+
+  /** Offset of the record batch body within the payload; the body is its tail. */
+  private def bodyStart(data: Array[Byte]): Int = {
+    val channel = new ReadChannel(Channels.newChannel(new ByteArrayInputStream(data)))
+    val metadata = MessageSerializer.readMessage(channel)
+    require(metadata != null, "cached payload holds no IPC message")
+    data.length - metadata.getMessageBodyLength.toInt
+  }
+
+  /**
+   * The uncompressed-length prefix Arrow writes ahead of a compressed buffer, little-endian. A
+   * value of -1 means the buffer was stored verbatim because compressing it did not pay.
+   */
+  private def uncompressedLength(data: Array[Byte], bufferStart: Int): Long = {
+    var value = 0L
+    var i = 7
+    while (i >= 0) {
+      value = (value << 8) | (data(bufferStart + i) & 0xffL)
+      i -= 1
+    }
+    value
+  }
 }

@@ -85,9 +85,10 @@ object CometInMemoryCacheBenchmark extends CometBenchmarkBase {
            |WHERE id >= 4500000 AND id < 4750000
          """.stripMargin)
 
-      // A CometCachedBatch stores each column as its own stream, so a scan decodes only what it
-      // projected and cost tracks the width of the projection. These three cases span that range
-      // over one cached relation: no columns, one column, and all six.
+      // A CometCachedBatch records where each column's buffers sit in its payload, so a scan
+      // copies out and decompresses only what it projected and cost tracks the width of the
+      // projection. These three cases span that range over one cached relation: no columns, one
+      // column, and all six.
       runCacheBenchmark(
         "in-memory cache row count only (0 of 6 columns)",
         s"SELECT count(*) FROM $cacheTable")

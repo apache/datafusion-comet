@@ -61,6 +61,10 @@ under the License.
       <artifactId>arrow-vector</artifactId>
     </dependency>
     <dependency>
+      <groupId>org.apache.arrow</groupId>
+      <artifactId>arrow-compression</artifactId>
+    </dependency>
+    <dependency>
       <groupId>org.scala-lang.modules</groupId>
       <artifactId>scala-collection-compat_${scala.binary.version}</artifactId>
     </dependency>

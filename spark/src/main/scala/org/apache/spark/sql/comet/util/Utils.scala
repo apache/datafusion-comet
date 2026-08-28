@@ -270,45 +270,12 @@ object Utils extends CometTypeShim with Logging {
   }
 
   /**
-   * Serializes each column of `batch` into its own compressed Arrow IPC stream, in column order.
-   *
-   * [[serializeBatches]] writes one stream covering every column, so a reader has to inflate all
-   * of them before it can project. Comet's in-memory cache stores columns separately instead, so
-   * a scan decodes only the ones it selected. Each stream is self-contained, including its schema
-   * and any dictionaries the column needs.
-   *
-   * The row count is not recoverable from the result when `batch` has no columns, so callers keep
-   * it alongside. As with [[serializeBatches]], the batch's vectors are cleared once written.
-   */
-  def serializeBatchColumns(batch: ColumnarBatch): Array[ChunkedByteBuffer] = {
-    val codec = CompressionCodec.createCodec(SparkEnv.get.conf)
-
-    // Each column is written with the provider it was decoded with, not the batch's first one:
-    // columns decoded from separate streams have independent dictionary ID namespaces.
-    getBatchFieldVectorsWithProviders(batch).map { case (fieldVector, providerOpt) =>
-      val provider = providerOpt.getOrElse(new CDataDictionaryProvider)
-      val cbbos = new ChunkedByteBufferOutputStream(1024 * 1024, ByteBuffer.allocate)
-      val out = new DataOutputStream(codec.compressedOutputStream(cbbos))
-
-      val root = new VectorSchemaRoot(Seq(fieldVector).asJava)
-      val writer = new ArrowStreamWriter(root, provider, Channels.newChannel(out))
-      writer.start()
-      writer.writeBatch()
-      root.clear()
-      writer.close()
-
-      cbbos.toChunkedByteBuffer
-    }.toArray
-  }
-
-  /**
-   * The classes that carry the output of [[serializeBatches]] and [[serializeBatchColumns]] out
-   * of Comet, for Kryo registration by [[org.apache.comet.CometKryoRegistrator]].
+   * The classes that carry the output of [[serializeBatches]] out of Comet, for Kryo registration
+   * by [[org.apache.comet.CometKryoRegistrator]].
    *
    * Spark registers `ChunkedByteBuffer` itself but not an array of them, and
    * `CometBroadcastExchangeExec` broadcasts exactly that array, so a native broadcast fails under
-   * `spark.kryo.registrationRequired=true` whichever Comet features are enabled. Comet's cache
-   * format stores one buffer per column and so needs the same registrations.
+   * `spark.kryo.registrationRequired=true` whichever Comet features are enabled.
    */
   def arrowBytesKryoClasses: Seq[Class[_]] = Seq(
     classOf[ChunkedByteBuffer],
