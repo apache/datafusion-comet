@@ -241,7 +241,9 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           (2, Some(-0.0f), Some(-0.0d)),
           (3, Some(13.0f), Some(13.0d)),
           (4, Some(1.0f), Some(1.0d)),
-          (5, None, None))
+          (5, None, None),
+          (6, Some(Float.PositiveInfinity), Some(Double.PositiveInfinity)),
+          (7, Some(Float.NegativeInfinity), Some(Double.NegativeInfinity)))
         withParquetDataFrame(rows, withDictionary = false) { df =>
           val cases = Seq(
             (
@@ -251,7 +253,9 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               java.lang.Float.intBitsToFloat(0xffc00002),
               java.lang.Double.longBitsToDouble(0xfff8000000000002L)),
             (0.0f, 0.0d),
-            (-0.0f, -0.0d))
+            (-0.0f, -0.0d),
+            (Float.PositiveInfinity, Double.PositiveInfinity),
+            (Float.NegativeInfinity, Double.NegativeInfinity))
           for ((f, d) <- cases; includeNull <- Seq(false, true)) {
             val floatCandidates: Seq[Any] = Seq(f, 13.0f) ++ (if (includeNull) Seq(null) else Nil)
             val doubleCandidates: Seq[Any] =

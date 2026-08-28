@@ -114,7 +114,7 @@ class CometExecRuleSuite extends CometTestBase {
   }
 
   for (dataType <- Seq(FloatType, DoubleType)) {
-    test(s"floating ${dataType.sql} IN serialization preserves prunable finite literal lists") {
+    test(s"floating ${dataType.sql} IN serialization preserves prunable literal lists") {
       withSQLConf("spark.sql.legacy.nullInEmptyListBehavior" -> "false") {
         val value = AttributeReference("value", dataType)()
         val other = AttributeReference("other", dataType)()
@@ -123,14 +123,19 @@ class CometExecRuleSuite extends CometTestBase {
           case DoubleType => Literal(v)
         }
         val ordinary = Seq(1.0d, 3.0d).map(literal)
+        val infinities = Seq(Double.PositiveInfinity, Double.NegativeInfinity).map(literal)
         val nullLiteral = Literal.create(null, dataType)
         val lists: Seq[(Seq[Expression], Boolean)] = Seq(
           ordinary -> false,
           (ordinary :+ nullLiteral) -> false,
+          infinities -> false,
+          (infinities :+ nullLiteral) -> false,
           Seq(nullLiteral) -> false,
           Seq(value, other) -> true) ++
-          Seq(Double.NaN, 0.0d, -0.0d, Double.PositiveInfinity, Double.NegativeInfinity)
-            .map(v => (ordinary :+ literal(v)) -> true) ++
+          Seq(Double.PositiveInfinity, Double.NegativeInfinity)
+            .map(v => (ordinary :+ literal(v)) -> false) ++
+          Seq(Double.NaN, 0.0d, -0.0d)
+            .flatMap(v => Seq(ordinary, infinities).map(list => (list :+ literal(v)) -> true)) ++
           (if (isSpark35Plus) Seq(Seq.empty[Expression] -> false) else Nil)
         for ((list, needsNormalization) <- lists;
           asSet <- Seq(false, true) if !asSet || list.forall(_.isInstanceOf[Literal]);
