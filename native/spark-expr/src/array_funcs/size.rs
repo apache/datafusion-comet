@@ -119,7 +119,9 @@ fn spark_size_array(array: &ArrayRef) -> Result<ArrayRef, DataFusionError> {
 fn spark_size_list_like(array: &ArrayRef) -> Result<ArrayRef, DataFusionError> {
     let lengths = length(array.as_ref())?;
     // Arrow's `length` returns Int32 for List and builds an Int32Array for
-    // FixedSizeList; LargeList (the only Int64 producer) is routed elsewhere.
+    // FixedSizeList. LargeList (the only Int64 producer) is routed to the
+    // offset path above. Fail loudly rather than silently paying for a
+    // cast we do not expect.
     if !matches!(lengths.data_type(), DataType::Int32) {
         return exec_err!(
             "unexpected type from length kernel: {:?}",
