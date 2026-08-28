@@ -59,9 +59,26 @@ object CometRegex {
   private val MetaEscapes: Set[Char] =
     Set('.', '*', '+', '?', '(', ')', '[', ']', '{', '}', '|', '^', '$', '\\')
 
-  // Conservative compile-size gates. Rust `regex` rejects large counted
-  // expansions and deep nesting; a single `{n}` cap is not enough because
-  // nested repetition multiplies. Stay well below crate defaults (nest 250).
+  // Conservative structural heuristics for native admission. These are not a
+  // compiled-byte budget and do not map directly to the Rust `regex` crate's
+  // default 10 MiB compiled-program size limit. Staying under these caps does
+  // not prove that `Regex::new` will succeed; exceeding one keeps the pattern
+  // on the JVM dispatcher.
+  //
+  // The values stay well below crate defaults and reject shapes reproduced
+  // during review as compiled-size or nesting-depth failures:
+  // `a{1000000}`, `[^;]{20000}`, `(a{100}){100}`,
+  // `(([^;]{256}){0,}){256}`, and 251 nested groups. The `regex-syntax`
+  // default nesting limit is 250.
+  //
+  // Raising a cap does not mean the resulting patterns remain below 10 MiB.
+  // Re-check `Regex::new` against these pattern classes before changing one.
+  //
+  // MaxGroupDepth caps group nesting at 32.
+  // MaxCountedBound caps each numeric `{n}`, `{n,}`, or `{n,m}` bound at 256.
+  // MaxExpansion caps the aggregate structural estimate at 4096 across
+  // concatenation, alternation, and counted repetition. Unbounded `{n,}` uses
+  // a multiplier of at least 1 so `{0,}` cannot hide its inner compile cost.
   private val MaxGroupDepth = 32
   private val MaxCountedBound = 256
   private val MaxExpansion = 4096L

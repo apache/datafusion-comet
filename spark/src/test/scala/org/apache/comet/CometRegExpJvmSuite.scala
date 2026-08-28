@@ -451,8 +451,9 @@ class CometRegExpJvmSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("rlike: Java-only pattern with allowIncompatible keeps existing opt-in behavior") {
-    // Pre-existing: opt-in sends any literal to native. Rust cannot compile lookaround, so
-    // native plan construction fails. This PR does not add a fallback for that case.
+    // Pre-existing: opt-in sends a non-null default-collation literal to native. Rust cannot
+    // compile lookaround, so native plan construction fails. This PR does not add a fallback
+    // for that case.
     withSQLConf(CometConf.getExprAllowIncompatConfigKey("RLike") -> "true") {
       withSubjects("foobar") {
         val ex = intercept[Throwable](sql(s"SELECT s rlike '$lookahead' FROM t").collect())
@@ -508,6 +509,38 @@ class CometRegExpJvmSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         assert(
           explain.contains("JVM codegen dispatcher: rlike"),
           s"expected dispatcher for collated pattern, got:\n$explain")
+      }
+    }
+  }
+
+  test("rlike: collated subject stays on dispatcher even with allowIncompatible") {
+    assume(isSpark40Plus)
+    withRLikeExplain {
+      withSQLConf(CometConf.getExprAllowIncompatConfigKey("RLike") -> "true") {
+        withSubjects("abc123", "ABC123", null) {
+          val df = sql("SELECT CAST(s AS STRING COLLATE UTF8_LCASE) rlike 'abc[0-9]+' FROM t")
+          checkSparkAnswerAndOperator(df)
+          val explain = explainOf(df)
+          assert(
+            explain.contains("JVM codegen dispatcher: rlike"),
+            s"expected dispatcher for collated subject with allowIncompatible, got:\n$explain")
+        }
+      }
+    }
+  }
+
+  test("rlike: collated pattern stays on dispatcher even with allowIncompatible") {
+    assume(isSpark40Plus)
+    withRLikeExplain {
+      withSQLConf(CometConf.getExprAllowIncompatConfigKey("RLike") -> "true") {
+        withSubjects("abc123", "xyz", null) {
+          val df = sql("SELECT s rlike CAST('abc[0-9]+' AS STRING COLLATE UTF8_LCASE) FROM t")
+          checkSparkAnswerAndOperator(df)
+          val explain = explainOf(df)
+          assert(
+            explain.contains("JVM codegen dispatcher: rlike"),
+            s"expected dispatcher for collated pattern with allowIncompatible, got:\n$explain")
+        }
       }
     }
   }

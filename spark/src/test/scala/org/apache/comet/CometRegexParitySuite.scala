@@ -85,6 +85,13 @@ class CometRegexParitySuite extends CometTestBase with AdaptiveSparkPlanHelper {
     "\n",
     "\r",
     "\r\n",
+    "\t", // TAB
+    "\u000B", // vertical tab
+    "\u000C", // form feed
+    "\u0000", // NUL
+    "\u007F", // DEL
+    "\u00A0", // NBSP
+    "\uFEFF", // BOM
     "\u0085",
     "\u2028",
     "\u2029",

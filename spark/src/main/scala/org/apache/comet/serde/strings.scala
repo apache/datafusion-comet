@@ -365,10 +365,10 @@ object CometEndsWith
  * engine. A `UTF8_BINARY` literal pattern that the analyzer proves equivalent to Java regex runs
  * natively by default. Every other case stays on the JVM codegen dispatcher (Spark's own
  * `doGenCode` inside the Comet pipeline) unless the user sets
- * `spark.comet.expression.RLike.allowIncompatible=true`, which forces the native Rust path for
- * any non-null string literal, including patterns the analyzer cannot prove equivalent. A
- * non-literal or NULL pattern always stays on the dispatcher. Falls through to Spark when the
- * dispatcher is disabled.
+ * `spark.comet.expression.RLike.allowIncompatible=true`, which can force native execution for a
+ * non-null default-collation literal. Non-default collations remain on the JVM dispatcher because
+ * the native kernel does not implement Spark collation semantics. A non-literal or NULL pattern
+ * always stays on the dispatcher. Falls through to Spark when the dispatcher is disabled.
  */
 object CometRLike
     extends CometExpressionSerde[RLike]
@@ -394,17 +394,18 @@ object CometRLike
     hasNonDefaultStringCollation(expr.left.dataType) ||
       hasNonDefaultStringCollation(expr.right.dataType)
 
-  private def nativeApplicable(expr: RLike): Boolean = literalPattern(expr).isDefined
+  private def nativeApplicable(expr: RLike): Boolean =
+    !hasNonDefaultCollation(expr) && literalPattern(expr).isDefined
 
   private def provablyCompatible(expr: RLike): Boolean =
-    !hasNonDefaultCollation(expr) &&
+    nativeApplicable(expr) &&
       literalPattern(expr).exists { p =>
         CometRegex.supportLevel(p, RegexFlavor.RLike).isInstanceOf[Compatible]
       }
 
   override def getSupportLevel(expr: RLike): SupportLevel = {
     val allowIncompat = CometConf.isExprAllowIncompat(getExprConfigName(expr))
-    if (provablyCompatible(expr) || allowIncompat) {
+    if (provablyCompatible(expr) || (allowIncompat && nativeApplicable(expr))) {
       Compatible()
     } else if (nativeApplicable(expr)) {
       Compatible(nativeOptIn =
