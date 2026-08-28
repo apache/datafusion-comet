@@ -1,0 +1,52 @@
+TakeOrderedAndProject
++- Project
+   +- BroadcastHashJoin
+      :- CometColumnarToRow
+      :  +- CometProject
+      :     +- CometBroadcastHashJoin
+      :        :- CometProject
+      :        :  +- CometBroadcastHashJoin
+      :        :     :- CometFilter
+      :        :     :  +- CometNativeScan parquet spark_catalog.default.store
+      :        :     +- CometBroadcastExchange
+      :        :        +- CometFilter
+      :        :           +- CometHashAggregate
+      :        :              +- CometExchange
+      :        :                 +- CometHashAggregate
+      :        :                    +- CometProject
+      :        :                       +- CometBroadcastHashJoin
+      :        :                          :- CometFilter
+      :        :                          :  +- CometNativeScan parquet spark_catalog.default.store_sales
+      :        :                          :        +- CometSubqueryBroadcast
+      :        :                          :           +- CometBroadcastExchange
+      :        :                          :              +- CometProject
+      :        :                          :                 +- CometFilter
+      :        :                          :                    +- CometNativeScan parquet spark_catalog.default.date_dim
+      :        :                          +- CometBroadcastExchange
+      :        :                             +- CometProject
+      :        :                                +- CometFilter
+      :        :                                   +- CometNativeScan parquet spark_catalog.default.date_dim
+      :        +- CometBroadcastExchange
+      :           +- CometProject
+      :              +- CometFilter
+      :                 +- CometNativeScan parquet spark_catalog.default.item
+      +- BroadcastExchange
+         +- Filter
+            +-  HashAggregate [COMET: Grouped decimal AVG in ANSI mode requires Spark's lazy group evaluation]
+               +- Exchange
+                  +-  HashAggregate [COMET: Grouped decimal AVG in ANSI mode requires Spark's lazy group evaluation]
+                     +- CometColumnarToRow
+                        +- CometHashAggregate
+                           +- CometExchange
+                              +- CometHashAggregate
+                                 +- CometProject
+                                    +- CometBroadcastHashJoin
+                                       :- CometFilter
+                                       :  +- CometNativeScan parquet spark_catalog.default.store_sales
+                                       :        +- ReusedSubquery
+                                       +- CometBroadcastExchange
+                                          +- CometProject
+                                             +- CometFilter
+                                                +- CometNativeScan parquet spark_catalog.default.date_dim
+
+Comet accelerated 39 out of 47 eligible operators (82%). Final plan contains 2 transitions between Spark and Comet. Accelerated expressions: 8 native, 0 codegen dispatch.

@@ -43,7 +43,13 @@ intermediate sum and check precision after dividing by the count. Comet instead 
 overflow while accumulating that sum, which can discard a valid average.
 
 Both partial and final aggregates stay in Spark, including when a shuffle separates them.
-Grouped averages and narrower decimal averages remain eligible for native execution.
+Narrower ungrouped decimal averages remain eligible for native execution.
+
+Grouped `AVG` whose input remains `DECIMAL` after Spark optimization falls back in ANSI mode
+at every precision to preserve Spark's lazy overflow evaluation. Every stage evaluating that AVG,
+including other functions in the same aggregate operator, runs in Spark even without `LIMIT`.
+Grouped `TRY_AVG`, legacy-mode decimal `AVG`, and non-decimal `AVG` remain eligible for native
+execution, subject to their other restrictions.
 
 ## Window Functions
 
