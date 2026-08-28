@@ -238,3 +238,19 @@ harness = false
 [[bench]]
 name = "abs"
 harness = false
+
+[[bench]]
+name = "levenshtein"
+harness = false
+
+[[bench]]
+name = "split"
+harness = false
+
+[[bench]]
+name = "regexp_extract_all"
+harness = false
+
+[[bench]]
+name = "contains"
+harness = false
