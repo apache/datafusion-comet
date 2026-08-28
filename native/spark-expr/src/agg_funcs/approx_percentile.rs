@@ -272,6 +272,9 @@ impl Accumulator for ApproxPercentileAccumulator {
     }
 
     fn size(&self) -> usize {
+        // Summary and scratch swap buffers during flush/compress/merge, but
+        // each allocation is owned by exactly one of them at any time, so the
+        // two heap_size terms never double-count.
         size_of_val(self)
             + self.summary.heap_size()
             + self.scratch.heap_size()
@@ -440,6 +443,10 @@ impl GroupsAccumulator for ApproxPercentileGroupsAccumulator {
     }
 
     fn size(&self) -> usize {
+        // `summaries_heap_size` is the running sum of every group's
+        // `QuantileSummaries::heap_size`; the single shared scratch buffer is
+        // counted once here and never inside a summary, so nothing is
+        // double-counted when buffers swap between them.
         size_of_val(self)
             + self.summaries.capacity() * size_of::<QuantileSummaries>()
             + self.summaries_heap_size

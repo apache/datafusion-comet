@@ -46,17 +46,21 @@ pub struct Stats {
 
 /// Reusable workspace owned by an accumulator rather than by each summary.
 #[derive(Debug, Default)]
-pub(crate) struct QuantileSummariesScratch {
+pub struct QuantileSummariesScratch {
     sampled: Vec<Stats>,
 }
 
 impl QuantileSummariesScratch {
-    pub(crate) fn heap_size(&self) -> usize {
+    /// Heap bytes of the workspace buffer. Flush/compress/merge swap this
+    /// buffer with a summary's `sampled`, so a given allocation is owned by
+    /// exactly one of the two at any time; summing this with each summary's
+    /// [`QuantileSummaries::heap_size`] never double-counts.
+    pub fn heap_size(&self) -> usize {
         self.sampled.capacity() * std::mem::size_of::<Stats>()
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct QuantileSummaries {
     compress_threshold: usize,
     relative_error: f64,
@@ -64,6 +68,41 @@ pub struct QuantileSummaries {
     count: i64,
     compressed: bool,
     head_sampled: Vec<f64>,
+}
+
+/// Hand-written (not derived) so that `clone_from` reuses the destination's
+/// `Vec` allocations: the derived impl keeps the default `clone_from`, which
+/// is `*self = source.clone()` and reallocates both vectors.
+impl Clone for QuantileSummaries {
+    fn clone(&self) -> Self {
+        Self {
+            compress_threshold: self.compress_threshold,
+            relative_error: self.relative_error,
+            sampled: self.sampled.clone(),
+            count: self.count,
+            compressed: self.compressed,
+            head_sampled: self.head_sampled.clone(),
+        }
+    }
+
+    fn clone_from(&mut self, source: &Self) {
+        // Destructuring makes adding a field a compile error here instead of
+        // a silently missing copy.
+        let Self {
+            compress_threshold,
+            relative_error,
+            sampled,
+            count,
+            compressed,
+            head_sampled,
+        } = source;
+        self.compress_threshold = *compress_threshold;
+        self.relative_error = *relative_error;
+        self.sampled.clone_from(sampled);
+        self.count = *count;
+        self.compressed = *compressed;
+        self.head_sampled.clone_from(head_sampled);
+    }
 }
 
 impl QuantileSummaries {
@@ -87,7 +126,10 @@ impl QuantileSummaries {
         self.count
     }
 
-    /// Heap bytes held by this summary (excluding the struct itself).
+    /// Heap bytes currently owned by this summary (excluding the struct
+    /// itself): the `sampled` and `head_sampled` capacities. The shared
+    /// scratch buffer is accounted separately by
+    /// [`QuantileSummariesScratch::heap_size`].
     pub fn heap_size(&self) -> usize {
         self.sampled.capacity() * std::mem::size_of::<Stats>()
             + self.head_sampled.capacity() * std::mem::size_of::<f64>()
@@ -99,7 +141,7 @@ impl QuantileSummaries {
         self.head_sampled.reserve(additional);
     }
 
-    pub(crate) fn insert(&mut self, x: f64, scratch: &mut QuantileSummariesScratch) {
+    pub fn insert(&mut self, x: f64, scratch: &mut QuantileSummariesScratch) {
         self.head_sampled.push(x);
         self.compressed = false;
         if self.head_sampled.len() >= Self::DEFAULT_HEAD_SIZE {
@@ -159,7 +201,7 @@ impl QuantileSummaries {
         self.count = current_count;
     }
 
-    pub(crate) fn compress(&mut self, scratch: &mut QuantileSummariesScratch) {
+    pub fn compress(&mut self, scratch: &mut QuantileSummariesScratch) {
         // Already compressed and the head buffer is empty (insert clears the
         // flag whenever it stages a value), so there is nothing to do. This
         // mirrors Spark's `PercentileDigest.isCompressed` guard, which also
@@ -204,24 +246,16 @@ impl QuantileSummaries {
         res.reverse();
     }
 
-    pub(crate) fn merge(
-        &mut self,
-        other: &QuantileSummaries,
-        scratch: &mut QuantileSummariesScratch,
-    ) {
+    pub fn merge(&mut self, other: &QuantileSummaries, scratch: &mut QuantileSummariesScratch) {
         debug_assert!(self.head_sampled.is_empty(), "compress before merge");
         debug_assert!(other.head_sampled.is_empty(), "compress before merge");
         if other.count == 0 {
             return;
         }
         if self.count == 0 {
-            self.compress_threshold = other.compress_threshold;
-            self.relative_error = other.relative_error;
-            self.sampled.clear();
-            self.sampled.extend_from_slice(&other.sampled);
-            self.count = other.count;
-            self.compressed = other.compressed;
-            self.head_sampled.clear();
+            // `other.head_sampled` is empty (asserted above), so this only
+            // copies `sampled`, reusing our existing buffer.
+            self.clone_from(other);
             return;
         }
         let merged_relative_error = self.relative_error.max(other.relative_error);
