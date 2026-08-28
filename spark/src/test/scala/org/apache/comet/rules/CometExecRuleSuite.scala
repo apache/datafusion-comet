@@ -523,14 +523,16 @@ class CometExecRuleSuite extends CometTestBase {
       // Precision must be large enough (prec + 4 > 15) that Spark's own DecimalAggregates
       // optimizer rule does not rewrite AVG to operate on the unscaled Long value, which would
       // sidestep the decimal buffer path this test is meant to exercise.
-      val sparkPlan =
-        createSparkPlan(
-          spark,
-          "SELECT AVG(CAST(id AS DECIMAL(20, 2))) FROM test_data GROUP BY (id % 3)")
-      assert(countOperators(sparkPlan, classOf[HashAggregateExec]) == 2)
       withSQLConf(
+        // Reach the mixed-buffer check rather than the grouped ANSI decimal AVG fallback.
+        SQLConf.ANSI_ENABLED.key -> "false",
         CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.key -> "false",
         CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+        val sparkPlan =
+          createSparkPlan(
+            spark,
+            "SELECT AVG(CAST(id AS DECIMAL(20, 2))) FROM test_data GROUP BY (id % 3)")
+        assert(countOperators(sparkPlan, classOf[HashAggregateExec]) == 2)
         val transformedPlan = applyCometExecRule(sparkPlan)
         // Decimal AVG is deferred (its overflow path nulls count differently from Spark), so
         // mixed execution is unsafe and the partial must also fall back to Spark.
@@ -550,6 +552,8 @@ class CometExecRuleSuite extends CometTestBase {
 
         for (fallback <- Seq("disabled hash partitioning", "prior shuffle fallback", "none")) {
           withSQLConf(
+            // Preserve native eligibility so this exercises the shuffle/buffer boundary.
+            SQLConf.ANSI_ENABLED.key -> "false",
             CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
             CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
             CometConf.COMET_SHUFFLE_MODE.key -> "native",
