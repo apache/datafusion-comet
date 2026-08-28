@@ -293,7 +293,12 @@ mod tests {
         .unwrap();
 
         let expr = RLike::try_new(Arc::new(Column::new("s", 0)), "R[a-z]+").unwrap();
-        assert_bool_results(expr.evaluate(&batch).unwrap(), &[Some(true), Some(false)]);
+        let ColumnarValue::Array(arr) = expr.evaluate(&batch).unwrap() else {
+            panic!("expected array result");
+        };
+        // All-valid input must not allocate a null buffer (filter fast path).
+        assert!(arr.nulls().is_none());
+        assert_bool_results(ColumnarValue::Array(arr), &[Some(true), Some(false)]);
     }
 
     #[test]
