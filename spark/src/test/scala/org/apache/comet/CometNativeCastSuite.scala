@@ -1578,7 +1578,7 @@ class CometNativeCastSuite
             // Array<Struct> exercises recursive serialization on an admitted native path.
             checkSparkAnswerAndOperator(
               s"SELECT CAST(make_date(_1, _2, _3) AS $target), " +
-                s"CAST(array(named_struct('d', make_date(_1, _2, _3))) " +
+                "CAST(array(named_struct('d', make_date(_1, _2, _3))) " +
                 s"AS ARRAY<STRUCT<d: $target>>) FROM wide_dates")
           }
         }
