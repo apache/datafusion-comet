@@ -1050,6 +1050,14 @@ under the License.
 <td><p>When enabled, Comet reverts a <code class="docutils literal notranslate"><span class="pre">CometShuffleExchangeExec</span></code> with <code class="docutils literal notranslate"><span class="pre">CometColumnarShuffle</span></code> back to Spark’s <code class="docutils literal notranslate"><span class="pre">ShuffleExchangeExec</span></code> when both its parent and child are non-Comet hash aggregate operators. This avoids a redundant row -&gt; Arrow -&gt; shuffle -&gt; Arrow -&gt; row conversion when no Comet operator on either side can consume columnar output. Disable to keep Comet columnar shuffle even in that case, which preserves Comet’s off-heap shuffle memory accounting at the cost of the extra conversion.</p></td>
 <td><p>true</p></td>
 </tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.rss.maxFrameBytes</span></code></p></td>
+<td><p>Maximum encoded size of one complete native shuffle frame sent to a remote shuffle service. Frames are never split across remote push requests.</p></td>
+<td><p>67108864b</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.rss.maxInFlightBytes</span></code></p></td>
+<td><p>Maximum shuffle bytes admitted concurrently by native Comet map attempts sharing an executor-side remote shuffle client. Admission includes native encoding scratch and overlapping native, JNI, and remote shuffle frame copies. A frame must fit its codec and Arrow workspace as well as its encoded bytes; too-small limits fail before encoding. Encrypted native RSS is not supported; use ordinary Spark shuffle when spark.io.encryption.enabled is true.</p></td>
+<td><p>268435456b</p></td>
+</tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.sizeInBytesMultiplier</span></code></p></td>
 <td><p>Comet reports smaller sizes for shuffle due to using Arrow’s columnar memory format and this can result in Spark choosing a different join strategy due to the estimated size of the exchange being smaller. Comet will multiple sizeInBytes by this amount to avoid regressions in join strategy.</p></td>
 <td><p>1.0</p></td>
