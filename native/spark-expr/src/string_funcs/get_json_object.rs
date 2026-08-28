@@ -667,6 +667,30 @@ mod tests {
     }
 
     #[test]
+    fn test_null_reached_through_array_serializes_as_null_text() {
+        // A null reached through array traversal is a match and serializes as
+        // JSON text, matching Spark; a null directly under a named field is
+        // not a match (see test_evaluate_null_value).
+        let path = parse_json_path("$.a[0]").unwrap();
+        assert_eq!(
+            evaluate_path(r#"{"a":[null]}"#, &path),
+            Some("null".to_string())
+        );
+
+        let path = parse_json_path("$.a[*]").unwrap();
+        assert_eq!(
+            evaluate_path(r#"{"a":[null]}"#, &path),
+            Some("null".to_string())
+        );
+
+        let path = parse_json_path("$.a[*]").unwrap();
+        assert_eq!(
+            evaluate_path(r#"{"a":[null,1]}"#, &path),
+            Some("[null,1]".to_string())
+        );
+    }
+
+    #[test]
     fn test_evaluate_missing_field() {
         let path = parse_json_path("$.c").unwrap();
         assert_eq!(evaluate_path(r#"{"a":"b"}"#, &path), None);
