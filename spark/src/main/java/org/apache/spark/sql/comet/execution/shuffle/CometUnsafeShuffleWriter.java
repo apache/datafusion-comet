@@ -71,6 +71,7 @@ import org.apache.spark.sql.types.StructType;
 import org.apache.spark.storage.BlockManager;
 import org.apache.spark.storage.TimeTrackingOutputStream;
 import org.apache.spark.unsafe.Platform;
+import org.apache.spark.util.TaskCompletionListener;
 import org.apache.spark.util.Utils;
 
 import com.google.common.annotations.VisibleForTesting;
@@ -177,6 +178,20 @@ public class CometUnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
         (int) (long) sparkConf.get(package$.MODULE$.SHUFFLE_FILE_BUFFER_SIZE()) * 1024;
     this.tracingEnabled = (boolean) CometConf.COMET_TRACING_ENABLED().get();
     this.encodeTimeMetric = encodeTimeMetric;
+    // The sorter allocates its pointer array at construction time, before Spark has evaluated
+    // the shuffle input iterator and called write(). A fatal error in between (Spark only calls
+    // stop() for exceptions) would orphan that allocation, which Spark's task-memory cleanup
+    // does not own, so reclaim it at task completion. cleanupResources() is idempotent, making
+    // this a no-op whenever write()/stop() already cleaned up.
+    if (taskContext != null) {
+      taskContext.addTaskCompletionListener(
+          (TaskCompletionListener)
+              context -> {
+                if (sorter != null) {
+                  sorter.cleanupResources();
+                }
+              });
+    }
     open();
   }
 

@@ -460,22 +460,6 @@ class CometDiskBlockWriterSuite extends AnyFunSuite with TimeLimits {
         serializer = new UnsafeRowSerializer(1),
         schema = Some(schema),
         decodeTime = new SQLMetric("nsTiming"))
-      val components = new ShuffleExecutorComponents {
-        override def initializeExecutor(
-            appId: String,
-            execId: String,
-            extraConfigs: java.util.Map[String, String]): Unit = {}
-        override def createMapOutputWriter(
-            shuffleId: Int,
-            mapTaskId: Long,
-            numPartitions: Int): ShuffleMapOutputWriter = new ShuffleMapOutputWriter {
-          override def getPartitionWriter(reducePartitionId: Int): ShufflePartitionWriter =
-            throw new UnsupportedOperationException
-          override def commitAllPartitions(checksums: Array[Long]): MapOutputCommitMessage =
-            throw new UnsupportedOperationException
-          override def abort(error: Throwable): Unit = {}
-        }
-      }
       val writer = new CometBypassMergeSortShuffleWriter[Int, UnsafeRow](
         SparkEnv.get.blockManager,
         tmm,
@@ -484,7 +468,7 @@ class CometDiskBlockWriterSuite extends AnyFunSuite with TimeLimits {
         0L,
         conf,
         taskContext.taskMetrics.shuffleWriteMetrics,
-        components,
+        newShuffleExecutorComponents(),
         null)
 
       // Buffer three pages worth of rows, then hit a fatal error mid-write.
@@ -557,6 +541,81 @@ class CometDiskBlockWriterSuite extends AnyFunSuite with TimeLimits {
     } finally {
       tmm.cleanUpAllAllocatedMemory()
       resetOnHeapAllocatorSingleton()
+    }
+  }
+
+  test("on-heap shared pool: task completion reclaims the unsafe writer's pre-write allocation") {
+    // The unsafe writer's sorter allocates its pointer array at construction, before Spark has
+    // evaluated the shuffle input iterator and called write(). When iterator evaluation fails
+    // with a fatal error, neither write() cleanup nor stop(false) runs; the task-completion
+    // listener must reclaim the allocation so other tasks are not starved by it.
+    val conf = new SparkConf()
+      .setMaster("local[1]")
+      .setAppName("CometDiskBlockWriterSuite")
+      .set("spark.comet.memoryOverhead", "1") // 1 MiB shared pool
+      .set("spark.buffer.pageSize", "256k")
+    resetOnHeapAllocatorSingleton()
+    val sc = new SparkContext(conf)
+    val memoryManager = new TestMemoryManager(conf)
+    val tmm = new TaskMemoryManager(memoryManager, 0L)
+    try {
+      val taskContext = newTaskContext(tmm, 0L)
+      val partitioner = new Partitioner {
+        override def numPartitions: Int = 4
+        override def getPartition(key: Any): Int = key.asInstanceOf[Int] % 4
+      }
+      val dep = new CometShuffleDependency[Int, UnsafeRow, UnsafeRow](
+        _rdd = sc.parallelize(Seq.empty[(Int, UnsafeRow)], 1),
+        partitioner = partitioner,
+        serializer = new UnsafeRowSerializer(1),
+        schema = Some(schema),
+        decodeTime = new SQLMetric("nsTiming"))
+      // Construct the writer exactly as Spark does before evaluating the input iterator; its
+      // sorter allocates the pointer array from the shared pool.
+      new CometUnsafeShuffleWriter[Int, UnsafeRow](
+        SparkEnv.get.blockManager,
+        tmm,
+        new CometSerializedShuffleHandle[Int, UnsafeRow](0, dep),
+        0L,
+        taskContext,
+        conf,
+        taskContext.taskMetrics.shuffleWriteMetrics,
+        newShuffleExecutorComponents(),
+        null)
+      val bounded = CometShuffleMemoryAllocator
+        .getInstance(conf, tmm, pageSize)
+        .asInstanceOf[CometBoundedShuffleMemoryAllocator]
+      // The pre-write pointer array occupies the pool...
+      intercept[SparkOutOfMemoryError] {
+        bounded.allocate(1024 * 1024)
+      }
+      // ... and after the task completes without write() or stop() ever running, the
+      // allocation is reclaimed instead of starving other tasks forever.
+      taskContext.markTaskCompleted(None)
+      bounded.free(bounded.allocate(1024 * 1024))
+    } finally {
+      sc.stop()
+      tmm.cleanUpAllAllocatedMemory()
+      resetOnHeapAllocatorSingleton()
+    }
+  }
+
+  private def newShuffleExecutorComponents(): ShuffleExecutorComponents = {
+    new ShuffleExecutorComponents {
+      override def initializeExecutor(
+          appId: String,
+          execId: String,
+          extraConfigs: java.util.Map[String, String]): Unit = {}
+      override def createMapOutputWriter(
+          shuffleId: Int,
+          mapTaskId: Long,
+          numPartitions: Int): ShuffleMapOutputWriter = new ShuffleMapOutputWriter {
+        override def getPartitionWriter(reducePartitionId: Int): ShufflePartitionWriter =
+          throw new UnsupportedOperationException
+        override def commitAllPartitions(checksums: Array[Long]): MapOutputCommitMessage =
+          throw new UnsupportedOperationException
+        override def abort(error: Throwable): Unit = {}
+      }
     }
   }
 
