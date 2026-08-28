@@ -166,6 +166,24 @@ fn remap_physical_schema(
     } else {
         std::collections::HashSet::new()
     };
+    // Names of logical fields that resolve by ID (their ID is present in the file). Spark
+    // never name-matches these (`matchIdField` runs first), so any other physical field
+    // carrying such a name must be hidden from the adapter's name lookup, otherwise a
+    // first-name match can select the wrong physical column ahead of the ID-matched one
+    // (e.g. physical `v BINARY` ID 2 shadowing `other VARIANT` ID 1 renamed to `v`).
+    let id_matched_logical_names: Vec<String> = if should_match_by_id {
+        logical_schema
+            .fields()
+            .iter()
+            .filter_map(|lf| {
+                parse_field_id(lf)
+                    .filter(|id| id_to_phys_names.contains_key(id))
+                    .map(|_| lf.name().clone())
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
     let mut fake_counter: usize = 0;
 
     let mut name_map: HashMap<String, String> = HashMap::new();
@@ -202,6 +220,27 @@ fn remap_physical_schema(
             {
                 fake_counter += 1;
                 let fake_name = format!("__comet_unmatched_field_id_{}", fake_counter);
+                return Arc::new(
+                    Field::new(fake_name, field.data_type().clone(), field.is_nullable())
+                        .with_metadata(field.metadata().clone()),
+                );
+            }
+
+            // A physical field that was not ID-matched must not keep a name that an
+            // ID-matched logical field resolves to; hide it like Spark's fake-name scheme
+            // so the ID-matched column stays the only name match. Exact names collide in
+            // case-sensitive mode; ASCII-case-insensitive names collide otherwise.
+            if should_match_by_id
+                && id_matched_logical_names.iter().any(|name| {
+                    if case_sensitive {
+                        name == field.name()
+                    } else {
+                        name.eq_ignore_ascii_case(field.name())
+                    }
+                })
+            {
+                fake_counter += 1;
+                let fake_name = format!("__comet_id_shadowed_field_{}", fake_counter);
                 return Arc::new(
                     Field::new(fake_name, field.data_type().clone(), field.is_nullable())
                         .with_metadata(field.metadata().clone()),
@@ -350,29 +389,50 @@ fn check_column_duplicate(col_name: &str, physical_schema: &SchemaRef) -> Option
     }
 }
 
-/// Detect a physical Parquet column that Spark's case-insensitive resolver would match to
-/// `col_name` but the ASCII-only matcher cannot. Spark groups physical names by Unicode
-/// lowercasing (`toLowerCase(Locale.ROOT)` in `ParquetReadSupport`), so a physical name such
-/// as `K` (U+212A KELVIN SIGN) resolves to a requested ASCII `k` there while staying
-/// unmatched here, and the scan-planning gate cannot see physical file names. Returns the
-/// folded physical name when no ASCII-insensitive match exists but a non-ASCII physical name
-/// Unicode-lowercases to the same string as `col_name`.
-fn check_column_unicode_fold_mismatch(
+/// Outcome of Spark-parity Unicode fold analysis for one requested column name.
+enum UnicodeFoldIssue {
+    /// More than one physical name folds to the requested name; Spark rejects the read as
+    /// ambiguous, so the native scan must raise the same duplicate-field error. Carries the
+    /// bracketed matched-name list in Spark's message format.
+    Ambiguous(String),
+    /// Exactly one physical name folds to the requested name, but the ASCII-only matcher
+    /// cannot see it, so the column would be silently null-filled. Carries that name.
+    FoldOnlyMatch(String),
+}
+
+/// Compare Spark's case-insensitive resolution of `col_name` against the ASCII-only matcher.
+/// Spark groups physical names by Unicode lowercasing (`toLowerCase(Locale.ROOT)` in
+/// `ParquetReadSupport`), so a physical name such as `K` (U+212A KELVIN SIGN) resolves to a
+/// requested ASCII `k` there while staying unmatched here, and two physical names that both
+/// fold to the requested name are ambiguous there even when only one matches here. The
+/// scan-planning gate cannot see physical file names, so this runs per opened file.
+fn check_column_unicode_fold(
     col_name: &str,
     physical_schema: &SchemaRef,
-) -> Option<String> {
-    if physical_schema
+) -> Option<UnicodeFoldIssue> {
+    let folded = col_name.to_lowercase();
+    let matches: Vec<&str> = physical_schema
         .fields()
         .iter()
-        .any(|pf| pf.name().eq_ignore_ascii_case(col_name))
-    {
-        return None;
+        .filter(|pf| pf.name().to_lowercase() == folded)
+        .map(|pf| pf.name().as_str())
+        .collect();
+    match matches.as_slice() {
+        [] => None,
+        [single] => {
+            // An ASCII-case-insensitive match always folds equal, so a single fold match
+            // that the ASCII matcher also sees is the ordinary working case.
+            if single.eq_ignore_ascii_case(col_name) {
+                None
+            } else {
+                Some(UnicodeFoldIssue::FoldOnlyMatch(single.to_string()))
+            }
+        }
+        _ => Some(UnicodeFoldIssue::Ambiguous(format!(
+            "[{}]",
+            matches.join(", ")
+        ))),
     }
-    physical_schema
-        .fields()
-        .iter()
-        .find(|pf| !pf.name().is_ascii() && pf.name().to_lowercase() == col_name.to_lowercase())
-        .map(|pf| pf.name().clone())
 }
 
 impl PhysicalExprAdapterFactory for SparkPhysicalExprAdapterFactory {
@@ -519,19 +579,31 @@ impl PhysicalExprAdapter for SparkPhysicalExprAdapter {
                             )));
                         }
                         if column_err.is_none() && variant_scan {
-                            if let Some(phys) =
-                                check_column_unicode_fold_mismatch(col.name(), orig_physical)
-                            {
-                                column_err = Some(DataFusionError::Execution(format!(
-                                    "Case-insensitive scan of a Variant-bearing schema requires \
-                                     Unicode column matching: requested column '{name}' resolves \
-                                     to physical Parquet column '{phys}' only under Unicode case \
-                                     folding, which Comet's native scan does not support yet \
-                                     (https://github.com/apache/datafusion-comet/issues/5495). \
-                                     Retry with spark.comet.enabled=false, or align the column \
-                                     name case.",
-                                    name = col.name(),
-                                )));
+                            match check_column_unicode_fold(col.name(), orig_physical) {
+                                Some(UnicodeFoldIssue::Ambiguous(matched)) => {
+                                    // Spark rejects the fold-ambiguous read, so raise its
+                                    // duplicate-field error rather than serving one match.
+                                    column_err = Some(DataFusionError::External(Box::new(
+                                        SparkError::DuplicateFieldCaseInsensitive {
+                                            required_field_name: col.name().to_string(),
+                                            matched_fields: matched,
+                                        },
+                                    )));
+                                }
+                                Some(UnicodeFoldIssue::FoldOnlyMatch(phys)) => {
+                                    column_err = Some(DataFusionError::Execution(format!(
+                                        "Case-insensitive scan of a Variant-bearing schema \
+                                         requires Unicode column matching: requested column \
+                                         '{name}' resolves to physical Parquet column '{phys}' \
+                                         only under Unicode case folding, which Comet's native \
+                                         scan does not support yet \
+                                         (https://github.com/apache/datafusion-comet/issues/5495). \
+                                         Retry with spark.comet.enabled=false, or align the \
+                                         column name case.",
+                                        name = col.name(),
+                                    )));
+                                }
+                                None => {}
                             }
                         }
                     }
@@ -2067,8 +2139,8 @@ mod test {
     }
 
     #[test]
-    fn test_check_column_unicode_fold_mismatch() {
-        use super::check_column_unicode_fold_mismatch;
+    fn test_check_column_unicode_fold() {
+        use super::{check_column_unicode_fold, UnicodeFoldIssue};
 
         // Physical `K` (U+212A KELVIN SIGN) folds to `k` in Spark's Unicode resolver but not
         // in the ASCII matcher: the guard must report it.
@@ -2077,14 +2149,25 @@ mod test {
             DataType::Int32,
             true,
         )]));
-        assert_eq!(
-            check_column_unicode_fold_mismatch("k", &kelvin),
-            Some("\u{212A}".to_string())
-        );
+        assert!(matches!(
+            check_column_unicode_fold("k", &kelvin),
+            Some(UnicodeFoldIssue::FoldOnlyMatch(name)) if name == "\u{212A}"
+        ));
 
         // ASCII case differences are handled by the existing matcher.
         let ascii: SchemaRef = Arc::new(Schema::new(vec![Field::new("K", DataType::Int32, true)]));
-        assert_eq!(check_column_unicode_fold_mismatch("k", &ascii), None);
+        assert!(check_column_unicode_fold("k", &ascii).is_none());
+
+        // ASCII `K` and Kelvin `K` both fold to `k`: Spark rejects the read as ambiguous,
+        // so the guard must report the duplicate instead of letting the ASCII match win.
+        let ambiguous: SchemaRef = Arc::new(Schema::new(vec![
+            Field::new("K", DataType::Int32, true),
+            Field::new("\u{212A}", DataType::Int32, true),
+        ]));
+        assert!(matches!(
+            check_column_unicode_fold("k", &ambiguous),
+            Some(UnicodeFoldIssue::Ambiguous(matched)) if matched == "[K, \u{212A}]"
+        ));
 
         // `ſ` (U+017F) does not lowercase to `s`, so Spark also treats the requested column
         // as missing; both engines agree on the missing-column path.
@@ -2093,7 +2176,7 @@ mod test {
             DataType::Int32,
             true,
         )]));
-        assert_eq!(check_column_unicode_fold_mismatch("s", &long_s), None);
+        assert!(check_column_unicode_fold("s", &long_s).is_none());
 
         // A genuinely missing column reports nothing.
         let other: SchemaRef = Arc::new(Schema::new(vec![Field::new(
@@ -2101,7 +2184,7 @@ mod test {
             DataType::Int32,
             true,
         )]));
-        assert_eq!(check_column_unicode_fold_mismatch("k", &other), None);
+        assert!(check_column_unicode_fold("k", &other).is_none());
     }
 
     fn variant_field(name: &str, id: Option<i32>) -> Field {
@@ -2234,5 +2317,38 @@ mod test {
         ]));
         let err = rewrite_column(logical, physical, false, "v").unwrap_err();
         assert!(err.to_string().contains("Found duplicate field"), "{err}");
+    }
+
+    #[test]
+    fn test_unicode_fold_ambiguity_raises_duplicate_error() {
+        // ASCII `K` and Kelvin `K` both fold to the requested `k` in Spark's resolver, which
+        // rejects the read as ambiguous; serving the single ASCII match would diverge.
+        let logical: SchemaRef = Arc::new(Schema::new(vec![variant_field("k", None)]));
+        let physical: SchemaRef = Arc::new(Schema::new(vec![
+            variant_field("K", None),
+            variant_field("\u{212A}", None),
+        ]));
+        let err = rewrite_column(logical, physical, false, "k").unwrap_err();
+        assert!(err.to_string().contains("Found duplicate field"), "{err}");
+    }
+
+    #[test]
+    fn test_id_matched_name_shadowed_by_wrong_id_physical_field() {
+        // Physical `v BINARY` (ID 2) precedes `other VARIANT` (ID 1). Spark resolves the
+        // requested `v` (ID 1) by field ID to `other`; the remap renames `other` to `v` and
+        // must hide the wrong-ID physical `v` so the first-name lookup cannot select the
+        // Binary column ahead of the ID-matched one.
+        let logical: SchemaRef = Arc::new(Schema::new(vec![variant_field("v", Some(1))]));
+        let physical_v = {
+            let field = Field::new("v", DataType::Binary, true);
+            let mut metadata = std::collections::HashMap::new();
+            metadata.insert("PARQUET:field_id".to_string(), "2".to_string());
+            field.with_metadata(metadata)
+        };
+        let physical: SchemaRef = Arc::new(Schema::new(vec![
+            physical_v,
+            variant_field("other", Some(1)),
+        ]));
+        rewrite_column(logical, physical, true, "v").unwrap();
     }
 }
