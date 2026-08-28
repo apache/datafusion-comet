@@ -24,7 +24,7 @@ use crate::{
         metrics::utils::update_comet_metric, planner::PhysicalPlanner, serde::to_arrow_datatype,
         shuffle::spark_unsafe::row::process_sorted_row_partition, sort::RdxSort,
     },
-    jvm_bridge::JVMClasses,
+    jvm_bridge::{JVMClasses, JavaShufflePartitionPusher, ShufflePartitionPusher},
 };
 use std::collections::HashSet;
 
@@ -146,6 +146,36 @@ fn register_memory_pool(thread_id: u64, context_id: i64, pool: Arc<dyn MemoryPoo
         .entry(thread_id)
         .or_default()
         .insert(context_id, pool);
+}
+
+struct ThreadMemoryPoolRegistration {
+    thread_id: u64,
+    context_id: i64,
+    registered: bool,
+}
+
+impl ThreadMemoryPoolRegistration {
+    fn new(thread_id: u64, context_id: i64, pool: Arc<dyn MemoryPool>) -> Self {
+        register_memory_pool(thread_id, context_id, pool);
+        Self {
+            thread_id,
+            context_id,
+            registered: true,
+        }
+    }
+
+    fn unregister_and_total(mut self) -> usize {
+        self.registered = false;
+        unregister_and_total(self.thread_id, self.context_id)
+    }
+}
+
+impl Drop for ThreadMemoryPoolRegistration {
+    fn drop(&mut self) {
+        if self.registered {
+            unregister_and_total(self.thread_id, self.context_id);
+        }
+    }
 }
 
 /// Unregister a context's pool and return the remaining total reserved for the thread.
@@ -276,6 +306,7 @@ fn op_name(op: &OpStruct) -> &'static str {
         OpStruct::BroadcastNestedLoopJoin(_) => "BroadcastNestedLoopJoin",
         OpStruct::Sample(_) => "Sample",
         OpStruct::ContribScan(_) => "ContribScan",
+        OpStruct::WindowGroupLimit(_) => "WindowGroupLimit",
     }
 }
 
@@ -362,6 +393,11 @@ struct ExecutionContext {
     /// it has to travel with the plan. `None` when no driving Spark task is present (unit tests,
     /// direct native driver runs). Lifetime is as for `task_context` above.
     pub class_loader: Option<Arc<Global<JObject<'static>>>>,
+    /// Task-owned remote shuffle callback, registered before native planning starts.
+    /// The callback owns a JNI global reference and can safely run on Tokio workers.
+    pub shuffle_partition_pusher: Option<Arc<dyn ShufflePartitionPusher>>,
+    /// Removes this context's tracing memory-pool entry on every exit path.
+    memory_pool_registration: Option<ThreadMemoryPoolRegistration>,
 }
 
 /// Accept serialized query plan and return the address of the native query plan.
@@ -445,6 +481,13 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
             let memory_pool =
                 create_memory_pool(&memory_pool_config, task_memory_manager, task_attempt_id);
 
+            // Register the shared base pool before wrapping it for per-plan debug logging. The
+            // guard removes the entry if any later plan setup step fails.
+            let rust_thread_id = get_thread_id();
+            let memory_pool_registration = tracing_enabled.then(|| {
+                ThreadMemoryPoolRegistration::new(rust_thread_id, id, Arc::clone(&memory_pool))
+            });
+
             let memory_pool = if logging_memory_pool {
                 Arc::new(LoggingMemoryPool::new(task_attempt_id as u64, memory_pool))
             } else {
@@ -493,17 +536,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
             }
 
             let session = Arc::new(session);
-
-            // Register this context's memory pool so we can sum all pools
-            // on the same thread when emitting tracing metrics.
-            let rust_thread_id = get_thread_id();
-            if tracing_enabled {
-                register_memory_pool(
-                    rust_thread_id,
-                    id,
-                    Arc::clone(&session.runtime_env().memory_pool),
-                );
-            }
 
             let tracing_event_name = if tracing_enabled {
                 build_tracing_event_name(&spark_plan)
@@ -554,10 +586,50 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 tracing_event_name,
                 task_context,
                 class_loader,
+                shuffle_partition_pusher: None,
+                memory_pool_registration,
             });
 
             Ok(Box::into_raw(exec_context) as i64)
         })
+    })
+}
+
+/// Binds one task-owned shuffle callback before native execution is initialized.
+///
+/// Keeping callback registration separate preserves the existing `createPlan` JNI ABI for
+/// all local shuffle and non-shuffle callers.
+#[no_mangle]
+pub extern "system" fn Java_org_apache_comet_Native_setShufflePartitionPusher(
+    e: EnvUnowned,
+    _class: JClass,
+    exec_context: jlong,
+    callback: JObject,
+) {
+    try_unwrap_or_throw(&e, |env| {
+        if exec_context == 0 {
+            return Err(CometError::NullPointer(
+                "Remote shuffle callback requires a valid native execution plan".to_string(),
+            ));
+        }
+
+        let exec_context = get_execution_context(exec_context);
+        if exec_context.root_op.is_some() {
+            return Err(CometError::Internal(
+                "Remote shuffle callback cannot be registered after native execution starts"
+                    .to_string(),
+            ));
+        }
+
+        if exec_context.shuffle_partition_pusher.is_some() {
+            return Err(CometError::Internal(
+                "Remote shuffle callback has already been registered for this task".to_string(),
+            ));
+        }
+
+        let pusher = JavaShufflePartitionPusher::try_new(env, &callback)?;
+        exec_context.shuffle_partition_pusher = Some(Arc::new(pusher));
+        Ok(())
     })
 }
 
@@ -801,7 +873,10 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                         .with_exec_id(exec_context_id)
                         .with_sql_text_pool(&exec_context.spark_plan)
                         .with_task_context(exec_context.task_context.clone())
-                        .with_class_loader(exec_context.class_loader.clone());
+                        .with_class_loader(exec_context.class_loader.clone())
+                        .with_shuffle_partition_pusher(
+                            exec_context.shuffle_partition_pusher.clone(),
+                        );
                 let (scans, shuffle_scans, root_op) = planner.create_plan(
                     &exec_context.spark_plan,
                     &mut exec_context.input_sources.clone(),
@@ -966,6 +1041,10 @@ pub extern "system" fn Java_org_apache_comet_Native_releasePlan(
     try_unwrap_or_throw(&e, |env| unsafe {
         let execution_context = get_execution_context(exec_context);
 
+        // Move the guard out before the fallible metrics update. On error it unregisters while
+        // leaving the raw execution context alive for the JVM's existing release retry.
+        let memory_pool_registration = execution_context.memory_pool_registration.take();
+
         // Update metrics
         update_metrics(env, execution_context)?;
 
@@ -975,9 +1054,8 @@ pub extern "system" fn Java_org_apache_comet_Native_releasePlan(
         );
 
         // Unregister this context's pool and emit the remaining total for the thread
-        if execution_context.tracing_enabled {
-            let remaining =
-                unregister_and_total(execution_context.rust_thread_id, execution_context.id);
+        if let Some(memory_pool_registration) = memory_pool_registration {
+            let remaining = memory_pool_registration.unregister_and_total();
             log_memory_usage(
                 &execution_context.tracing_memory_metric_name,
                 remaining as u64,
@@ -1374,4 +1452,70 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_columnarToRowClose(
         }
         Ok(())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use datafusion::execution::memory_pool::{MemoryConsumer, UnboundedMemoryPool};
+
+    fn entry_count(thread_id: u64) -> usize {
+        get_thread_memory_pools()
+            .lock()
+            .get(&thread_id)
+            .map(HashMap::len)
+            .unwrap_or(0)
+    }
+
+    #[test]
+    fn thread_memory_pool_registration_is_scoped_and_deduplicates_base_pool() {
+        const THREAD_ID: u64 = u64::MAX;
+        let pool: Arc<dyn MemoryPool> = Arc::new(UnboundedMemoryPool::default());
+        let reservation = MemoryConsumer::new("test").register(&pool);
+        reservation.grow(4096);
+        let weak = Arc::downgrade(&pool);
+
+        let first_wrapper: Arc<dyn MemoryPool> =
+            Arc::new(LoggingMemoryPool::new(1, Arc::clone(&pool)));
+        let second_wrapper: Arc<dyn MemoryPool> =
+            Arc::new(LoggingMemoryPool::new(1, Arc::clone(&pool)));
+        assert!(!Arc::ptr_eq(&first_wrapper, &second_wrapper));
+
+        let first = ThreadMemoryPoolRegistration::new(THREAD_ID, 1, Arc::clone(&pool));
+        let second = ThreadMemoryPoolRegistration::new(THREAD_ID, 2, Arc::clone(&pool));
+        assert_eq!(entry_count(THREAD_ID), 2);
+        assert_eq!(total_reserved_for_thread(THREAD_ID), pool.reserved());
+
+        let metrics_result: Result<(), ()> = {
+            let _registration = first;
+            Err(())
+        };
+        assert!(metrics_result.is_err());
+        assert_eq!(entry_count(THREAD_ID), 1);
+        drop(second);
+        assert_eq!(entry_count(THREAD_ID), 0);
+
+        for context_id in 0..100 {
+            let create_result: Result<(), ()> = {
+                let _registration =
+                    ThreadMemoryPoolRegistration::new(THREAD_ID, context_id, Arc::clone(&pool));
+                Err(())
+            };
+            assert!(create_result.is_err());
+
+            let metrics_result: Result<(), ()> = {
+                let _registration =
+                    ThreadMemoryPoolRegistration::new(THREAD_ID, context_id, Arc::clone(&pool));
+                Err(())
+            };
+            assert!(metrics_result.is_err());
+            assert_eq!(entry_count(THREAD_ID), 0);
+        }
+
+        drop(first_wrapper);
+        drop(second_wrapper);
+        drop(reservation);
+        drop(pool);
+        assert!(weak.upgrade().is_none());
+    }
 }
