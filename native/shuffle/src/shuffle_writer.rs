@@ -22,10 +22,10 @@ use crate::partitioners::{
     EmptySchemaShufflePartitioner, MultiPartitionShuffleRepartitioner, ShufflePartitioner,
     SinglePartitionShufflePartitioner,
 };
-use crate::writers::LocalPartitionWriter;
+use crate::writers::{LocalPartitionWriter, PartitionWriter, RssPartitionWriter};
 use crate::{CometPartitioning, CompressionCodec, ShuffleBlockWriter};
 use async_trait::async_trait;
-use datafusion::common::exec_datafusion_err;
+use datafusion::common::{exec_datafusion_err, DataFusionError};
 use datafusion::physical_expr::{EquivalenceProperties, Partitioning};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::EmptyRecordBatchStream;
@@ -39,12 +39,51 @@ use datafusion::{
         DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, SendableRecordBatchStream,
     },
 };
+use datafusion_comet_jni_bridge::ShufflePartitionPusher;
 use futures::{StreamExt, TryStreamExt};
 use std::{
     fmt,
     fmt::{Debug, Formatter},
     sync::Arc,
 };
+
+/// Storage destination for a native shuffle writer.
+#[derive(Clone)]
+pub enum ShuffleWriterDestination {
+    /// Writes partition data and offsets to local shuffle files.
+    Local {
+        /// Path of the local shuffle data file.
+        output_data_file: String,
+        /// Path of the local shuffle index file.
+        output_index_file: String,
+    },
+    /// Pushes complete encoded partition blocks to a task-owned callback.
+    Rss {
+        /// Callback that owns the remote shuffle transport for this task.
+        pusher: Arc<dyn ShufflePartitionPusher>,
+        /// Largest complete encoded shuffle block accepted by the callback.
+        max_frame_size: usize,
+    },
+}
+
+impl Debug for ShuffleWriterDestination {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Local {
+                output_data_file,
+                output_index_file,
+            } => f
+                .debug_struct("Local")
+                .field("output_data_file", output_data_file)
+                .field("output_index_file", output_index_file)
+                .finish(),
+            Self::Rss { max_frame_size, .. } => f
+                .debug_struct("Rss")
+                .field("max_frame_size", max_frame_size)
+                .finish(),
+        }
+    }
+}
 
 /// The shuffle writer operator maps each input partition to M output partitions based on a
 /// partitioning scheme. No guarantees are made about the order of the resulting partitions.
@@ -54,10 +93,8 @@ pub struct ShuffleWriterExec {
     input: Arc<dyn ExecutionPlan>,
     /// Partitioning scheme to use
     partitioning: CometPartitioning,
-    /// Output data file path
-    output_data_file: String,
-    /// Output index file path
-    output_index_file: String,
+    /// Task-owned output destination for encoded partition data.
+    destination: ShuffleWriterDestination,
     /// Metrics
     metrics: ExecutionPlanMetricsSet,
     /// Cache for expensive-to-compute plan properties
@@ -72,7 +109,7 @@ pub struct ShuffleWriterExec {
 }
 
 impl ShuffleWriterExec {
-    /// Create a new ShuffleWriterExec
+    /// Creates a shuffle writer that writes to local data and index files.
     #[allow(clippy::too_many_arguments)]
     pub fn try_new(
         input: Arc<dyn ExecutionPlan>,
@@ -80,6 +117,30 @@ impl ShuffleWriterExec {
         codec: CompressionCodec,
         output_data_file: String,
         output_index_file: String,
+        tracing_enabled: bool,
+        write_buffer_size: usize,
+        max_buffer_bytes: Option<usize>,
+    ) -> Result<Self> {
+        Self::try_new_with_destination(
+            input,
+            partitioning,
+            codec,
+            ShuffleWriterDestination::Local {
+                output_data_file,
+                output_index_file,
+            },
+            tracing_enabled,
+            write_buffer_size,
+            max_buffer_bytes,
+        )
+    }
+
+    /// Creates a shuffle writer for a local or task-owned remote destination.
+    pub fn try_new_with_destination(
+        input: Arc<dyn ExecutionPlan>,
+        partitioning: CometPartitioning,
+        codec: CompressionCodec,
+        destination: ShuffleWriterDestination,
         tracing_enabled: bool,
         write_buffer_size: usize,
         max_buffer_bytes: Option<usize>,
@@ -95,8 +156,7 @@ impl ShuffleWriterExec {
             input,
             partitioning,
             metrics: ExecutionPlanMetricsSet::new(),
-            output_data_file,
-            output_index_file,
+            destination,
             cache,
             codec,
             tracing_enabled,
@@ -149,12 +209,11 @@ impl ExecutionPlan for ShuffleWriterExec {
         children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         match children.len() {
-            1 => Ok(Arc::new(ShuffleWriterExec::try_new(
+            1 => Ok(Arc::new(ShuffleWriterExec::try_new_with_destination(
                 Arc::clone(&children[0]),
                 self.partitioning.clone(),
                 self.codec.clone(),
-                self.output_data_file.clone(),
-                self.output_index_file.clone(),
+                self.destination.clone(),
                 self.tracing_enabled,
                 self.write_buffer_size,
                 self.max_buffer_bytes,
@@ -179,8 +238,7 @@ impl ExecutionPlan for ShuffleWriterExec {
             futures::stream::once(external_shuffle(
                 input,
                 partition,
-                self.output_data_file.clone(),
-                self.output_index_file.clone(),
+                self.destination.clone(),
                 self.partitioning.clone(),
                 metrics,
                 context,
@@ -198,8 +256,7 @@ impl ExecutionPlan for ShuffleWriterExec {
 async fn external_shuffle(
     mut input: SendableRecordBatchStream,
     partition: usize,
-    output_data_file: String,
-    output_index_file: String,
+    destination: ShuffleWriterDestination,
     partitioning: CometPartitioning,
     metrics: ShufflePartitionerMetrics,
     context: Arc<TaskContext>,
@@ -210,41 +267,57 @@ async fn external_shuffle(
 ) -> Result<SendableRecordBatchStream> {
     let schema = input.schema();
 
-    let shuffle_block_writer = ShuffleBlockWriter::try_new(schema.as_ref(), codec.clone())?;
-    let local_partition_writer = LocalPartitionWriter::try_new(
-        output_data_file,
-        output_index_file,
-        shuffle_block_writer,
-        partitioning.partition_count(),
-        context.session_config().batch_size(),
-        write_buffer_size,
-        context.runtime_env(),
-    )?;
-
-    let mut repartitioner: Box<dyn ShufflePartitioner> = match &partitioning {
-        _ if schema.fields().is_empty() => {
-            log::debug!("found empty schema, overriding {partitioning:?} partitioning with EmptySchemaShufflePartitioner");
-            Box::new(EmptySchemaShufflePartitioner::try_new(
-                local_partition_writer,
-                Arc::clone(&schema),
+    let mut repartitioner = match destination {
+        ShuffleWriterDestination::Local {
+            output_data_file,
+            output_index_file,
+        } => {
+            let shuffle_block_writer = ShuffleBlockWriter::try_new(schema.as_ref(), codec.clone())?;
+            let writer = LocalPartitionWriter::try_new(
+                output_data_file,
+                output_index_file,
+                shuffle_block_writer,
                 partitioning.partition_count(),
+                context.session_config().batch_size(),
+                write_buffer_size,
+                context.runtime_env(),
+            )?;
+
+            create_repartitioner(
+                writer,
+                partition,
+                Arc::clone(&schema),
+                partitioning,
                 metrics,
-            )?)
+                context.as_ref(),
+                tracing_enabled,
+                max_buffer_bytes,
+            )?
         }
-        any if any.partition_count() == 1 => Box::new(SinglePartitionShufflePartitioner::new(
-            local_partition_writer,
-            metrics,
-        )),
-        _ => Box::new(MultiPartitionShuffleRepartitioner::try_new(
-            partition,
-            local_partition_writer,
-            partitioning,
-            metrics,
-            context.runtime_env(),
-            context.session_config().batch_size(),
-            tracing_enabled,
-            max_buffer_bytes,
-        )?),
+        ShuffleWriterDestination::Rss {
+            pusher,
+            max_frame_size,
+        } => {
+            let shuffle_block_writer =
+                ShuffleBlockWriter::try_new_rss(Arc::clone(&schema), codec.clone())?;
+            let writer = RssPartitionWriter::try_new(
+                shuffle_block_writer,
+                pusher,
+                partitioning.partition_count(),
+                max_frame_size,
+            )?;
+
+            create_repartitioner(
+                writer,
+                partition,
+                Arc::clone(&schema),
+                partitioning,
+                metrics,
+                context.as_ref(),
+                tracing_enabled,
+                max_buffer_bytes,
+            )?
+        }
     };
 
     while let Some(batch) = input.next().await {
@@ -255,15 +328,65 @@ async fn external_shuffle(
         repartitioner
             .insert_batch(batch?)
             .await
-            .map_err(|err| exec_datafusion_err!("Error inserting batch: {err}"))?;
+            .map_err(|error| contextualize_shuffle_error(error, "inserting batch"))?;
     }
 
     repartitioner
         .shuffle_write()
-        .map_err(|err| exec_datafusion_err!("Error in shuffle write: {err}"))?;
+        .map_err(|error| contextualize_shuffle_error(error, "in shuffle write"))?;
 
     // shuffle writer always has empty output
     Ok(Box::pin(EmptyRecordBatchStream::new(Arc::clone(&schema))) as SendableRecordBatchStream)
+}
+
+/// Constructs the existing schema-appropriate partitioner for either writer backend.
+#[allow(clippy::too_many_arguments)]
+fn create_repartitioner<T: PartitionWriter + 'static>(
+    writer: T,
+    partition: usize,
+    schema: SchemaRef,
+    partitioning: CometPartitioning,
+    metrics: ShufflePartitionerMetrics,
+    context: &TaskContext,
+    tracing_enabled: bool,
+    max_buffer_bytes: Option<usize>,
+) -> Result<Box<dyn ShufflePartitioner>> {
+    let partition_count = partitioning.partition_count();
+
+    if schema.fields().is_empty() {
+        log::debug!(
+            "found empty schema, overriding {partitioning:?} partitioning with EmptySchemaShufflePartitioner"
+        );
+        Ok(Box::new(EmptySchemaShufflePartitioner::try_new(
+            writer,
+            schema,
+            partition_count,
+            metrics,
+        )?))
+    } else if partition_count == 1 {
+        Ok(Box::new(SinglePartitionShufflePartitioner::new(
+            writer, metrics,
+        )))
+    } else {
+        Ok(Box::new(MultiPartitionShuffleRepartitioner::try_new(
+            partition,
+            writer,
+            partitioning,
+            metrics,
+            context.runtime_env(),
+            context.session_config().batch_size(),
+            tracing_enabled,
+            max_buffer_bytes,
+        )?))
+    }
+}
+
+/// Preserves Java throwables while retaining existing context for ordinary shuffle failures.
+fn contextualize_shuffle_error(error: DataFusionError, phase: &str) -> DataFusionError {
+    match error {
+        external @ DataFusionError::External(_) => external,
+        other => exec_datafusion_err!("Error {phase}: {other}"),
+    }
 }
 
 #[cfg(test)]
