@@ -128,14 +128,14 @@ The result is always a wall-clock timestamp with no timezone conversion or DST a
 
 Comet supports the following `TIMESTAMP_NTZ` casts natively:
 
-| Cast                               | Compatible | Notes                                                             |
-| ---------------------------------- | ---------- | ----------------------------------------------------------------- |
-| `CAST(timestamp_ntz AS STRING)`    | Yes        | Formats local time as-is, timezone-independent                    |
-| `CAST(timestamp_ntz AS DATE)`      | Yes        | Extracts the date component, timezone-independent                 |
-| `CAST(timestamp_ntz AS TIMESTAMP)` | Yes        | Interprets NTZ as local time in session TZ, converts to UTC epoch |
+| Cast                               | Compatible | Notes                                                              |
+| ---------------------------------- | ---------- | ------------------------------------------------------------------ |
+| `CAST(timestamp_ntz AS STRING)`    | Yes        | Formats local time as-is, timezone-independent                     |
+| `CAST(timestamp_ntz AS DATE)`      | Yes        | Extracts the date component, timezone-independent                  |
+| `CAST(timestamp_ntz AS TIMESTAMP)` | Yes        | Interprets NTZ as local time in session TZ, converts to UTC epoch  |
 | `CAST(date AS TIMESTAMP_NTZ)`      | Yes        | See [Date to TimestampNTZ](#date-to-timestampntz) for restrictions |
-| `CAST(timestamp AS TIMESTAMP_NTZ)` | Yes        | Shifts UTC epoch to local time in session TZ                      |
-| `CAST(string AS TIMESTAMP_NTZ)`    | Yes        | See [String to TimestampNTZ](#string-to-timestampntz) above       |
+| `CAST(timestamp AS TIMESTAMP_NTZ)` | Yes        | Shifts UTC epoch to local time in session TZ                       |
+| `CAST(string AS TIMESTAMP_NTZ)`    | Yes        | See [String to TimestampNTZ](#string-to-timestampntz) above        |
 
 The NTZ-to-Timestamp and Timestamp-to-NTZ casts are session-timezone-dependent (the session
 timezone determines the UTC offset). All other NTZ casts are timezone-independent and produce
