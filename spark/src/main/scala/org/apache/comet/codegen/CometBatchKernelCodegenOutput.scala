@@ -179,6 +179,7 @@ private[codegen] object CometBatchKernelCodegenOutput extends CometTypeShim {
     case _: ArrayType => classOf[ListVector].getName
     case _: StructType => classOf[StructVector].getName
     case _: MapType => classOf[MapVector].getName
+    case NullType => classOf[NullVector].getName
     case other =>
       throw new UnsupportedOperationException(
         s"CometBatchKernelCodegen.outputVectorClass: unsupported output type $other")
@@ -209,6 +210,11 @@ private[codegen] object CometBatchKernelCodegenOutput extends CometTypeShim {
       dataType: DataType,
       ctx: CodegenContext,
       nested: Boolean = false): OutputEmit = dataType match {
+    case NullType =>
+      // A NullType value is null by definition: nothing to read from `source`, and `NullVector`
+      // has no data buffer. `setNull` is a no-op; the all-null semantics come from
+      // `CometScalaUDFCodegen.evaluate`'s post-`process` `setValueCount`.
+      OutputEmit("", s"$targetVec.setNull($idx);")
     case BooleanType =>
       val set = if (nested) "setSafe" else "set"
       OutputEmit("", s"$targetVec.$set($idx, $source ? 1 : 0);")
@@ -407,6 +413,7 @@ private[codegen] object CometBatchKernelCodegenOutput extends CometTypeShim {
    */
   private def emitSpecializedGetterExpr(target: String, idx: String, elemType: DataType): String =
     elemType match {
+      case NullType => "null"
       case BooleanType => s"$target.getBoolean($idx)"
       case ByteType => s"$target.getByte($idx)"
       case ShortType => s"$target.getShort($idx)"
