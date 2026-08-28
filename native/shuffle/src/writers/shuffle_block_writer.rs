@@ -44,9 +44,9 @@ pub enum CompressionCodec {
     Snappy,
 }
 
-/// How a writer encodes the Arrow IPC schema at the start of each block. The two arms are mutually
-/// exclusive by schema shape, decided once in [`ShuffleBlockWriter::try_new`], so the retained
-/// state never carries both a pre-encoded message and a schema at the same time.
+/// How a writer encodes the Arrow IPC schema at the start of each block. Local writers cache
+/// dictionary-free schemas; RSS serializes under admission. The retained state never carries
+/// both a pre-encoded message and a schema at the same time.
 ///
 /// Both arms hold their payload behind an `Arc` because a `ShuffleBlockWriter` is cloned once per
 /// output partition (see `LocalPartitionWriter`), and a shuffle can request millions of partitions.
@@ -57,8 +57,8 @@ enum SchemaEncoding {
     /// Dictionary-free schema: the IPC schema message, pre-encoded once, is written verbatim at the
     /// start of every block instead of being re-serialized per block.
     Precoded(Arc<[u8]>),
-    /// Schema containing dictionary types: the schema and record batch must share a dictionary
-    /// tracker, so each block is encoded with `StreamWriter`, which re-serializes the schema.
+    /// Dictionary schemas and all RSS schemas: each block is encoded with `StreamWriter`, which
+    /// re-serializes the schema while sharing its dictionary tracker with the record batch.
     Fallback(SchemaRef),
 }
 
@@ -66,8 +66,8 @@ enum SchemaEncoding {
 ///
 /// Each block is a self-contained Arrow IPC stream (schema message, dictionary messages, record
 /// batch message, end-of-stream marker). For the common case of a schema with no dictionary types,
-/// the schema flatbuffer is encoded once in [`Self::try_new`] and written verbatim at the start of
-/// every block, rather than being re-serialized per block as `StreamWriter::try_new` would do.
+/// the schema flatbuffer for local writers is encoded once in [`Self::try_new`] and written verbatim
+/// at the start of every block, rather than re-serialized per block by `StreamWriter::try_new`.
 /// Schemas that contain dictionary types fall back to `StreamWriter`, whose dictionary-id
 /// bookkeeping ties schema and batch encoding together.
 #[derive(Clone)]
@@ -83,7 +83,56 @@ pub struct ShuffleBlockWriter {
 }
 
 impl ShuffleBlockWriter {
+    /// Working memory for the RSS-only codec settings, excluding IPC and destination buffers.
+    ///
+    /// LZ4 uses a fixed 64 KiB input block, its compression-bound output, and a 16 KiB hash table.
+    /// Snappy uses a 64 KiB input block, a 76,490-byte output block, and its hash table. 256 KiB
+    /// conservatively covers either encoder. Zstd's streaming estimate includes the C-allocated
+    /// context, window, and input/output buffers; its Rust writer adds a fixed 32 KiB output Vec.
+    pub(crate) fn rss_codec_workspace(&self) -> Result<usize> {
+        match self.codec {
+            CompressionCodec::None => Ok(0),
+            CompressionCodec::Lz4Frame | CompressionCodec::Snappy => Ok(256 * 1024),
+            CompressionCodec::Zstd(level) => {
+                // The C estimator loops through the requested levels. Bound arbitrary user
+                // configuration before calling it (the encoder itself clamps to this range).
+                let levels = zstd::compression_level_range();
+                let level = level.clamp(*levels.start(), *levels.end());
+                // SAFETY: this pure estimator accepts an integer compression level and does not
+                // retain pointers. Our streaming encoder uses no dictionary or worker threads.
+                let estimate =
+                    unsafe { zstd::zstd_safe::zstd_sys::ZSTD_estimateCStreamSize(level) };
+                // SAFETY: ZSTD_isError accepts every size_t returned by the estimator.
+                if unsafe { zstd::zstd_safe::zstd_sys::ZSTD_isError(estimate) } != 0 {
+                    return Err(DataFusionError::Execution(
+                        "Cannot estimate remote shuffle Zstd workspace".to_string(),
+                    ));
+                }
+                estimate.checked_add(64 * 1024).ok_or_else(|| {
+                    DataFusionError::Execution(
+                        "Remote shuffle Zstd workspace exceeds the native integer limit"
+                            .to_string(),
+                    )
+                })
+            }
+        }
+    }
+
     pub fn try_new(schema: &Schema, codec: CompressionCodec) -> Result<Self> {
+        Self::try_new_inner(schema, codec, None)
+    }
+
+    /// RSS cannot pre-encode a potentially large schema before its per-frame admission. Retain
+    /// the input's shared schema and serialize it inside the admitted encoding invocation instead.
+    pub(crate) fn try_new_rss(schema: SchemaRef, codec: CompressionCodec) -> Result<Self> {
+        Self::try_new_inner(schema.as_ref(), codec, Some(Arc::clone(&schema)))
+    }
+
+    fn try_new_inner(
+        schema: &Schema,
+        codec: CompressionCodec,
+        rss_schema: Option<SchemaRef>,
+    ) -> Result<Self> {
         // Header layout: 8-byte block length placeholder + 8-byte field count (usize) + 4-byte
         // codec tag = 20 bytes.
         let mut header_bytes = Vec::with_capacity(20);
@@ -109,16 +158,16 @@ impl ShuffleBlockWriter {
         // marker for V5. Alignment 64 and non-legacy framing match the arrow defaults.
         let write_options = IpcWriteOptions::try_new(64, false, MetadataVersion::V5)?;
 
-        // `flattened_fields` walks the full nested field tree, so this catches dictionary types
-        // nested under any container arrow itself recurses into when emitting dictionaries.
-        let has_dictionaries = schema
+        // For dictionary-free schemas, pre-encode the IPC schema message once so it does not have
+        // to be re-serialized per local block. RSS always delays serialization until admission.
+        // `flattened_fields` walks the full nested field tree for the local dictionary fallback.
+        let schema_encoding = if let Some(schema) = rss_schema {
+            SchemaEncoding::Fallback(schema)
+        } else if schema
             .flattened_fields()
             .iter()
-            .any(|f| matches!(f.data_type(), DataType::Dictionary(_, _)));
-
-        // For dictionary-free schemas, pre-encode the IPC schema message once so it does not have
-        // to be re-serialized per block. Dictionary schemas use the `StreamWriter` fallback.
-        let schema_encoding = if has_dictionaries {
+            .any(|f| matches!(f.data_type(), DataType::Dictionary(_, _)))
+        {
             SchemaEncoding::Fallback(Arc::new(schema.clone()))
         } else {
             let data_gen = IpcDataGenerator::default();
@@ -187,6 +236,29 @@ impl ShuffleBlockWriter {
         compression_context: &mut CompressionContext,
         ipc_time: &Time,
     ) -> Result<usize> {
+        self.write_batch_with_codec_limits(batch, output, compression_context, ipc_time, false)
+    }
+
+    /// Encode with the codec settings covered by [`Self::rss_codec_workspace`]. Local shuffle
+    /// retains its existing adaptive LZ4 block sizing through [`Self::write_batch`].
+    pub(crate) fn write_rss_batch<W: Write + Seek>(
+        &self,
+        batch: &RecordBatch,
+        output: &mut W,
+        compression_context: &mut CompressionContext,
+        ipc_time: &Time,
+    ) -> Result<usize> {
+        self.write_batch_with_codec_limits(batch, output, compression_context, ipc_time, true)
+    }
+
+    fn write_batch_with_codec_limits<W: Write + Seek>(
+        &self,
+        batch: &RecordBatch,
+        output: &mut W,
+        compression_context: &mut CompressionContext,
+        ipc_time: &Time,
+        bounded_rss_codec: bool,
+    ) -> Result<usize> {
         if batch.num_rows() == 0 {
             return Ok(0);
         }
@@ -202,7 +274,14 @@ impl ShuffleBlockWriter {
                 self.encode_ipc_stream(batch, output, compression_context)?;
             }
             CompressionCodec::Lz4Frame => {
-                let mut wtr = lz4_flex::frame::FrameEncoder::new(&mut *output);
+                let frame_info = if bounded_rss_codec {
+                    lz4_flex::frame::FrameInfo::new()
+                        .block_size(lz4_flex::frame::BlockSize::Max64KB)
+                } else {
+                    lz4_flex::frame::FrameInfo::default()
+                };
+                let mut wtr =
+                    lz4_flex::frame::FrameEncoder::with_frame_info(frame_info, &mut *output);
                 self.encode_ipc_stream(batch, &mut wtr, compression_context)?;
                 wtr.finish().map_err(|e| {
                     DataFusionError::Execution(format!("lz4 compression error: {e}"))
@@ -247,6 +326,22 @@ impl ShuffleBlockWriter {
 mod tests {
     use super::*;
     use arrow::datatypes::{DataType, Field};
+
+    #[test]
+    fn rss_zstd_workspace_accounts_for_compression_level_without_unbounded_estimator_loops() {
+        let schema = Arc::new(Schema::empty());
+        let estimate = |level| {
+            ShuffleBlockWriter::try_new_rss(Arc::clone(&schema), CompressionCodec::Zstd(level))
+                .unwrap()
+                .rss_codec_workspace()
+                .unwrap()
+        };
+        let levels = zstd::compression_level_range();
+        assert!(estimate(1) > 64 * 1024);
+        assert!(estimate(*levels.end()) > estimate(1));
+        assert_eq!(estimate(i32::MAX), estimate(*levels.end()));
+        assert_eq!(estimate(i32::MIN), estimate(*levels.start()));
+    }
 
     /// A `ShuffleBlockWriter` is cloned once per output partition (see `LocalPartitionWriter`), and
     /// a shuffle can request millions of partitions (e.g. the SPARK-48037 test uses more than 16
