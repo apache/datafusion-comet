@@ -6493,6 +6493,11 @@ mod tests {
     /// non-nullable ones. `collect_list` / `collect_set` derive their state type from the
     /// declared type but emit the runtime type, so without the coercion the drift reaches
     /// `AggregateExec` and it fails validating its own output batch.
+    ///
+    /// The first assertion deliberately pins the upstream behaviour this coercion defends
+    /// against. If `ScalarValue::new_list` is ever fixed to honour its `data_type` for non-empty
+    /// input, the drift disappears and that assertion starts failing — that is the signal to drop
+    /// `coerce_collect_child_nullability` entirely, not a regression.
     #[test]
     fn test_collect_agg_absorbs_nested_nullability_drift() {
         let plan_schema = collect_agg_schema(collect_agg_struct_type(true));
