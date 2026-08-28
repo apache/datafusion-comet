@@ -29,6 +29,10 @@ INSERT INTO test_ct_dispatch VALUES
   (timestamp_ntz'2021-07-01 12:00:00', 'America/New_York', 'Asia/Tokyo'),
   (NULL, 'UTC', 'Asia/Tokyo')
 
+-- Fully read NTZ Parquet input before testing native kernels.
+statement
+CACHE TABLE test_ct_dispatch
+
 query
 SELECT convert_timezone(src, tgt, ts) FROM test_ct_dispatch
 

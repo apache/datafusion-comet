@@ -30,14 +30,14 @@ import org.apache.parquet.hadoop.metadata.CompressionCodecName
 import org.apache.parquet.hadoop.util.HadoopInputFile
 import org.apache.parquet.schema.{MessageType, Type}
 import org.apache.spark.sql.{AnalysisException, CometTestBase, DataFrame, Row, SaveMode}
-import org.apache.spark.sql.comet.{CometBatchScanExec, CometNativeScanExec, CometNativeWriteExec, CometScanExec}
+import org.apache.spark.sql.comet.{CometBatchScanExec, CometNativeScanExec, CometNativeWriteExec, CometScanExec, CometSparkToColumnarExec}
 import org.apache.spark.sql.execution.{FileSourceScanExec, QueryExecution, SparkPlan}
 import org.apache.spark.sql.execution.command.DataWritingCommandExec
 import org.apache.spark.sql.functions.{array, map, struct, when}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ArrayType, LongType, MapType, Metadata, MetadataBuilder, StringType, StructField, StructType}
+import org.apache.spark.sql.types.{ArrayType, LongType, MapType, Metadata, MetadataBuilder, StringType, StructField, StructType, TimestampNTZType}
 
-import org.apache.comet.CometConf
+import org.apache.comet.{CometConf, CometExplainInfo}
 import org.apache.comet.CometSparkSessionExtensions.isSpark35Plus
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, SchemaGenOptions}
 
@@ -876,7 +876,7 @@ class CometParquetWriterSuite extends CometTestBase {
     withSQLConf(
       CometConf.COMET_EXEC_ENABLED.key -> "false",
       SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Denver") {
-      df.write.parquet(inputPath)
+      writeNativeParquetInput(df, inputPath)
     }
     inputPath
   }
@@ -1002,7 +1002,7 @@ class CometParquetWriterSuite extends CometTestBase {
       inputPath: String,
       outputPath: String,
       num_partitions: Option[Int] = None): Option[SparkPlan] = {
-    val df = spark.read.parquet(inputPath)
+    val df = readNativeParquetInput(inputPath)
 
     val plan = captureWritePlan(
       path => num_partitions.fold(df)(n => df.repartition(n)).write.parquet(path),
@@ -1099,7 +1099,7 @@ class CometParquetWriterSuite extends CometTestBase {
       withSQLConf(
         CometConf.COMET_ENABLED.key -> "false",
         SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Denver") {
-        inputDf.write.parquet(inputPath)
+        writeNativeParquetInput(inputDf, inputPath)
       }
 
       // read the generated Parquet file and write with Comet native writer
@@ -1113,7 +1113,7 @@ class CometParquetWriterSuite extends CometTestBase {
         // use a different timezone to make sure that timezone handling works with nested types
         SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Halifax") {
 
-        val parquetDf = spark.read.parquet(inputPath)
+        val parquetDf = readNativeParquetInput(inputPath)
 
         // Capture plan and verify CometNativeWriteExec is used
         val plan = captureWritePlan(path => parquetDf.write.parquet(path), outputPath)
@@ -1174,9 +1174,40 @@ class CometParquetWriterSuite extends CometTestBase {
     withSQLConf(CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "true") {
       val df = spark.read.parquet(path)
       val plan = df.queryExecution.executedPlan
-      assert(
-        hasCometScan(plan),
-        s"Expected Comet scan when COMET_NATIVE_SCAN_ENABLED=true:\n${plan.treeString}")
+      if (df.schema.fields.exists(_.dataType == TimestampNTZType)) {
+        // Preserve the writer's full output schema while checking its NTZ reader fallback.
+        // Unaffected columns must still support a native reread when NTZ is pruned.
+        assert(
+          hasSparkScan(plan) && !hasCometScan(plan),
+          s"Expected Spark scan for top-level NTZ output:\n${plan.treeString}")
+        assert(collect(plan) { case bridge: CometSparkToColumnarExec => bridge }.isEmpty, plan)
+        val reason =
+          "Parquet TIMESTAMP_NTZ data columns require Spark's reader to preserve conversion error timing"
+        val scans = collect(plan) { case scan: FileSourceScanExec => scan }
+        assert(scans.nonEmpty, plan)
+        assert(
+          scans.forall(
+            _.getTagValue(CometExplainInfo.FALLBACK_REASONS)
+              .getOrElse(Set.empty[String])
+              .contains(reason)),
+          plan)
+
+        val nativeColumns = df.schema.fields
+          .filterNot(_.dataType == TimestampNTZType)
+          .map(field => df(field.name))
+        if (nativeColumns.nonEmpty) {
+          val nativeProjection = df.select(nativeColumns: _*)
+          val nativePlan = nativeProjection.queryExecution.executedPlan
+          assert(
+            hasCometScan(nativePlan),
+            s"Expected Comet scan after pruning top-level NTZ output:\n${nativePlan.treeString}")
+          checkSparkAnswerAndOperator(nativeProjection)
+        }
+      } else {
+        assert(
+          hasCometScan(plan),
+          s"Expected Comet scan when COMET_NATIVE_SCAN_ENABLED=true:\n${plan.treeString}")
+      }
       rows = df.collect()
     }
     rows

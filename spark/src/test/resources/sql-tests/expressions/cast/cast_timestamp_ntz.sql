@@ -31,6 +31,10 @@ INSERT INTO test_ts_ntz VALUES
   (TIMESTAMP_NTZ'2020-06-15 23:00:00', TIMESTAMP'2020-06-15 23:00:00 UTC', DATE'2020-06-15', 5),
   (NULL, NULL, NULL, 6)
 
+-- Fully read NTZ Parquet input before testing native kernels.
+statement
+CACHE TABLE test_ts_ntz
+
 -- NTZ → String (timezone-independent: formats local time as-is)
 query
 SELECT cast(ts_ntz as string), id FROM test_ts_ntz ORDER BY id

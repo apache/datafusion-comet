@@ -182,19 +182,13 @@ class CometMapExpressionSuite extends CometTestBase {
             generateStruct = false,
             primitiveTypes = SchemaGenOptions.defaultPrimitiveTypes.filterNot(_ == BinaryType))
         val dataGenOptions = DataGenOptions(allowNull = false, generateNegativeZero = false)
-        ParquetGenerator.makeParquetFile(
-          random,
-          spark,
-          filename,
-          100,
-          schemaGenOptions,
-          dataGenOptions)
+        makeNativeParquetFile(random, filename, 100, schemaGenOptions, dataGenOptions)
       }
       withSQLConf(
         CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
         CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true",
         CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true") {
-        val df = spark.read.parquet(filename)
+        val df = readNativeParquetInput(filename)
         df.createOrReplaceTempView("t1")
         for (field <- df.schema.fieldNames) {
           checkSparkAnswerAndOperator(
@@ -217,15 +211,9 @@ class CometMapExpressionSuite extends CometTestBase {
             generateStruct = false,
             primitiveTypes = SchemaGenOptions.defaultPrimitiveTypes.filterNot(_ == BinaryType))
         val dataGenOptions = DataGenOptions(allowNull = false, generateNegativeZero = false)
-        ParquetGenerator.makeParquetFile(
-          random,
-          spark,
-          filename,
-          100,
-          schemaGenOptions,
-          dataGenOptions)
+        makeNativeParquetFile(random, filename, 100, schemaGenOptions, dataGenOptions)
       }
-      val df = spark.read.parquet(filename)
+      val df = readNativeParquetInput(filename)
       df.createOrReplaceTempView("t1")
       for (field <- df.schema.fieldNames) {
         checkSparkAnswerAndOperator(

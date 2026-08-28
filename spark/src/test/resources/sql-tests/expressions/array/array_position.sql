@@ -269,15 +269,17 @@ query
 SELECT array_position(arr, val) FROM test_ap_ts
 
 -- timestamp_ntz arrays
+-- Keep the RHS nested so this fixture retains native Parquet array input. A top-level NTZ
+-- data column uses Spark's reader, whose Arrow bridge does not support array columns.
 statement
-CREATE TABLE test_ap_ts_ntz(arr array<timestamp_ntz>, val timestamp_ntz) USING parquet
+CREATE TABLE test_ap_ts_ntz(arr array<timestamp_ntz>, val struct<v:timestamp_ntz>) USING parquet
 
 statement
 INSERT INTO test_ap_ts_ntz VALUES
-  (array(timestamp_ntz '2024-01-01 00:00:00', timestamp_ntz '2024-06-15 12:30:00'), timestamp_ntz '2024-06-15 12:30:00'),
-  (array(timestamp_ntz '2000-01-01 00:00:00'), timestamp_ntz '1999-12-31 23:59:59'),
-  (NULL, timestamp_ntz '2024-01-01 00:00:00'),
+  (array(timestamp_ntz '2024-01-01 00:00:00', timestamp_ntz '2024-06-15 12:30:00'), named_struct('v', timestamp_ntz '2024-06-15 12:30:00')),
+  (array(timestamp_ntz '2000-01-01 00:00:00'), named_struct('v', timestamp_ntz '1999-12-31 23:59:59')),
+  (NULL, named_struct('v', timestamp_ntz '2024-01-01 00:00:00')),
   (array(timestamp_ntz '2024-01-01 00:00:00'), NULL)
 
 query
-SELECT array_position(arr, val) FROM test_ap_ts_ntz
+SELECT array_position(arr, val.v) FROM test_ap_ts_ntz

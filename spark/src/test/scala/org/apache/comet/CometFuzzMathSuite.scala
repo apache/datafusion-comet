@@ -33,7 +33,7 @@ class CometFuzzMathSuite extends CometFuzzTestBase {
 
   for (op <- Seq("+", "-", "*", "/", "div")) {
     test(s"integer math: $op") {
-      val df = spark.read.parquet(filename)
+      val df = readNativeParquetInput(filename)
       val cols = df.schema.fields
         .filter(_.dataType match {
           case _: IntegerType => true
@@ -55,7 +55,7 @@ class CometFuzzMathSuite extends CometFuzzTestBase {
 
   for (op <- Seq("+", "-", "*", "/", "div")) {
     test(s"decimal math: $op") {
-      val df = spark.read.parquet(filename)
+      val df = readNativeParquetInput(filename)
       val cols = df.schema.fields.filter(_.dataType.isInstanceOf[DecimalType]).map(_.name)
       df.createOrReplaceTempView("t1")
       val sql =

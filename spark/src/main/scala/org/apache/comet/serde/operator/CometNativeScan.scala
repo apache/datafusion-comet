@@ -27,9 +27,9 @@ import org.apache.spark.sql.catalyst.expressions.{Expression, Literal}
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
 import org.apache.spark.sql.comet.{CometNativeExec, CometNativeScanExec, CometScanExec}
 import org.apache.spark.sql.execution.{FileSourceScanExec, InSubqueryExec, SubqueryAdaptiveBroadcastExec}
-import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
+import org.apache.spark.sql.execution.datasources.parquet.{ParquetFileFormat, ParquetUtils}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ArrayType, DataType, MapType, StructField, StructType}
+import org.apache.spark.sql.types.{ArrayType, DataType, MapType, StructField, StructType, TimestampNTZType}
 
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometConf.COMET_EXEC_ENABLED
@@ -59,6 +59,24 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
       containsVariantType(keyType) || containsVariantType(valueType)
     case _ => false
   }
+
+  /**
+   * A requested NTZ column can be backed by a Parquet DATE column. Its checked conversion must
+   * follow Spark's reader batch and row-group boundaries, before row filtering. The logical
+   * schema cannot distinguish that conversion from an ordinary NTZ file, so keep both on Spark.
+   * Only top-level scalar schema adaptations use the checked temporal Cast; nested conversions
+   * use the separate parquet_convert_array path. Pruned and partition columns are also
+   * unaffected.
+   */
+  private[comet] def timestampNtzReadFallbackReason(scan: FileSourceScanExec): Option[String] =
+    scan.relation.fileFormat match {
+      case _: ParquetFileFormat
+          if scan.requiredSchema.fields.exists(_.dataType == TimestampNTZType) =>
+        Some(
+          "Parquet TIMESTAMP_NTZ data columns require Spark's reader " +
+            "to preserve conversion error timing")
+      case _ => None
+    }
 
   /** Determine whether the scan is supported and tag the Spark plan with any fallback reasons */
   def isSupported(scanExec: FileSourceScanExec): Boolean = {

@@ -30,6 +30,10 @@ INSERT INTO test_convert_timezone VALUES
   (timestamp_ntz'2021-12-06 08:00:00', NULL, 'Asia/Tokyo'),
   (timestamp_ntz'2021-12-06 08:00:00', 'UTC', NULL)
 
+-- Fully read NTZ Parquet input before testing native kernels.
+statement
+CACHE TABLE test_convert_timezone
+
 query
 SELECT convert_timezone('UTC', 'America/Los_Angeles', timestamp_ntz'2021-12-06 08:00:00')
 

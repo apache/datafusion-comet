@@ -912,6 +912,19 @@ case class CometExecRule(session: SparkSession)
   }
 
   private def shouldApplySparkToColumnar(conf: SQLConf, op: SparkPlan): Boolean = {
+    // Recheck even when native scans are disabled or AQE revisits the Spark scan. Informational
+    // fallback tags do not prevent this bridge. The row bridge can read ahead, and even when
+    // the columnar bridge preserves Spark batches, native filters can combine them before LIMIT.
+    op match {
+      case scan: FileSourceScanExec =>
+        CometNativeScan.timestampNtzReadFallbackReason(scan) match {
+          case Some(reason) =>
+            withFallbackReason(scan, reason)
+            return false
+          case None =>
+        }
+      case _ =>
+    }
     // Only consider converting leaf nodes to columnar currently, so that all the following
     // operators can have a chance to be converted to columnar. Leaf operators that output
     // columnar batches, such as Spark's vectorized readers, will also be converted to native

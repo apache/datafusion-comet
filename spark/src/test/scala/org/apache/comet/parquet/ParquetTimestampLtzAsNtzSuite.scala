@@ -32,8 +32,8 @@ import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
  * Tests for reading Parquet TimestampLTZ columns as TimestampNTZ.
  *
  * Prior to Spark 4.0, Spark raises an error (SPARK-36182) when asked to read TimestampLTZ as
- * TimestampNTZ. Comet should match this behavior. In Spark 4.0+, this read is permitted
- * (SPARK-47447) and Comet should produce matching results.
+ * TimestampNTZ. In Spark 4.0+, this read is permitted (SPARK-47447). Comet keeps requested NTZ
+ * data columns on Spark's reader, preserving both versions' behavior.
  *
  * See https://github.com/apache/datafusion-comet/issues/4219
  */
@@ -85,7 +85,9 @@ class ParquetTimestampLtzAsNtzSuite extends CometTestBase {
           val path = dir.getCanonicalPath
           Seq(Timestamp.valueOf("2020-01-01 12:00:00")).toDF("ts").write.parquet(path)
 
-          checkSparkAnswerAndOperator(spark.read.schema("ts timestamp_ntz").parquet(path))
+          checkSparkAnswerAndFallbackReason(
+            spark.read.schema("ts timestamp_ntz").parquet(path),
+            "Parquet TIMESTAMP_NTZ data columns require Spark's reader to preserve conversion error timing")
         }
       }
     }

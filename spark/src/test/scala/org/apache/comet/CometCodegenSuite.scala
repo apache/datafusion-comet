@@ -751,6 +751,13 @@ class CometCodegenSuite
     test(s"identity ScalaUDF on ${c.label} routes through dispatcher") {
       c.register()
       withTypedCol(c.sqlType, c.values: _*) {
+        if (c.output == TimestampNTZType) {
+          // Materialize the NTZ reader before testing the native dispatcher's Arrow input.
+          // withTable drops the table and its cache after the test.
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            sql("CACHE TABLE t")
+          }
+        }
         assertCodegenRan {
           checkSparkAnswerAndOperator(sql(s"SELECT ${c.udfName}(c) FROM t"))
         }

@@ -70,13 +70,7 @@ class CometFuzzTestBase extends CometTestBase with AdaptiveSparkPlanHelper {
       SQLConf.SESSION_LOCAL_TIMEZONE.key -> defaultTimezone) {
       val schemaGenOptions =
         SchemaGenOptions(generateArray = true, generateStruct = true)
-      ParquetGenerator.makeParquetFile(
-        random,
-        spark,
-        filename,
-        1000,
-        schemaGenOptions,
-        dataGenOptions)
+      makeNativeParquetFile(random, filename, 1000, schemaGenOptions, dataGenOptions)
     }
 
     // generate Parquet file with complex nested types

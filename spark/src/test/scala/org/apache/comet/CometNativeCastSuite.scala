@@ -2840,12 +2840,14 @@ class CometNativeCastSuite
         sql(
           "SELECT id, date_add(DATE '1970-01-01', IF(id = 0, 0, 213503983)) AS d " +
             "FROM range(0, 2, 1, 1)").write.parquet(dates)
-        sql("SELECT id, TIMESTAMP_NTZ '1970-01-01 00:00:00' AS t FROM range(0, 1, 1, 1)").write
-          .parquet(left)
+        // Keep the NTZ comparison input native so these tests reach the cast admission guard.
+        writeNativeParquetInput(
+          sql("SELECT id, TIMESTAMP_NTZ '1970-01-01 00:00:00' AS t FROM range(0, 1, 1, 1)"),
+          left)
       }
       withTempView("date_rows", "date_left") {
         spark.read.parquet(dates).createOrReplaceTempView("date_rows")
-        spark.read.parquet(left).createOrReplaceTempView("date_left")
+        readNativeParquetInput(left).createOrReplaceTempView("date_left")
         Seq("false", "true").foreach { enabled =>
           withSQLConf(CometConf.COMET_ENABLED.key -> enabled) {
             assert(
@@ -2918,13 +2920,33 @@ class CometNativeCastSuite
     }
   }
 
+  private def withParquetCastInput(input: DataFrame)(f: DataFrame => Unit): Unit = {
+    withTempPath { dir =>
+      val data = roundtripParquet(input, dir).coalesce(1)
+      if (data.schema.fields.exists(_.dataType == TimestampNTZType)) {
+        // Finish the Spark Parquet read before testing native cast kernels. Caching keeps
+        // these fixtures independent of the NTZ reader's conversion error timing.
+        try {
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            data.cache()
+            data.count()
+          }
+          f(data)
+        } finally {
+          data.unpersist()
+        }
+      } else {
+        f(data)
+      }
+    }
+  }
+
   private def castTimestampTest(
       input: DataFrame,
       toType: DataType,
       assertNative: Boolean = false,
       assertSparkRows: Boolean = false) = {
-    withTempPath { dir =>
-      val data = roundtripParquet(input, dir).coalesce(1)
+    withParquetCastInput(input) { data =>
       data.createOrReplaceTempView("t")
 
       withSQLConf((SQLConf.ANSI_ENABLED.key, "false")) {
@@ -2998,8 +3020,7 @@ class CometNativeCastSuite
       expectAnsiFailure: Boolean = false,
       useDataFrameDiff: Boolean = false): Unit = {
 
-    withTempPath { dir =>
-      val data = roundtripParquet(input, dir).coalesce(1)
+    withParquetCastInput(input) { data =>
       val dataWithRowId = data.withColumn("__row_id", monotonically_increasing_id())
 
       withSQLConf((SQLConf.ANSI_ENABLED.key, "false")) {

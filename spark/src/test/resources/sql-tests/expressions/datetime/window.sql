@@ -34,6 +34,10 @@ INSERT INTO window_tbl VALUES
   (timestamp('2024-07-04 23:59:59'), cast('2024-07-04 23:59:59' as timestamp_ntz)),
   (NULL, NULL)
 
+-- Fully read NTZ Parquet input before testing native kernels.
+statement
+CACHE TABLE window_tbl
+
 -- Tumbling window: Project + HashAggregate + Exchange, all native.
 query
 SELECT window(ts, '10 minutes').start AS s, window(ts, '10 minutes').end AS e, count(*)

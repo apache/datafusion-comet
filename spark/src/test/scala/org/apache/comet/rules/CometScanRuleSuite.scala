@@ -19,15 +19,21 @@
 
 package org.apache.comet.rules
 
+import java.time.LocalDateTime
+
 import scala.util.Random
 
 import org.apache.spark.sql._
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.QueryStageExec
+import org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
 
-import org.apache.comet.CometConf
+import org.apache.comet.{CometConf, CometExplainInfo}
+import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
+import org.apache.comet.serde.operator.CometNativeScan
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
 /**
@@ -66,6 +72,272 @@ class CometScanRuleSuite extends CometTestBase {
         countOperators(stage.plan, opClass)
       case op if op.getClass.isAssignableFrom(opClass) => 1
     }.sum
+  }
+
+  private val timestampNtzReadReason =
+    "Parquet TIMESTAMP_NTZ data columns require Spark's reader to preserve conversion error timing"
+
+  private def writeDateReadFixture(path: String, rows: Int, badRow: Int): Unit = {
+    withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+      spark
+        .range(0L, rows.toLong, 1L, 1)
+        .selectExpr(
+          "id",
+          s"date_from_unix_date(CASE WHEN id = $badRow THEN 213503983 ELSE 0 END) AS d")
+        .write
+        .parquet(path)
+      val input = spark.read.parquet(path)
+      assert(input.inputFiles.length == 1)
+      assert(input.rdd.getNumPartitions == 1)
+    }
+  }
+
+  private def timestampNtzRead(path: String, filterFirstRow: Boolean = false): DataFrame = {
+    val input = spark.read.schema("id BIGINT, d TIMESTAMP_NTZ").parquet(path)
+    val filtered = if (filterFirstRow) input.filter("id = 0") else input
+    filtered.select("d").limit(1)
+  }
+
+  private def checkTimestampNtzRead(
+      query: => DataFrame,
+      expectedOverflow: Boolean,
+      expectedColumnar: Option[Boolean] = None,
+      expectedSchemaMismatch: Boolean = false): Unit = {
+    // Establish Spark's result or precise error independently before checking the Comet route.
+    // A comparison that merely runs the same fallback twice would not pin the consumed rows.
+    for (cometEnabled <- Seq(false, true)) {
+      withSQLConf(CometConf.COMET_ENABLED.key -> cometEnabled.toString) {
+        val df = query
+        val initialPlan = df.queryExecution.executedPlan
+        if (expectedSchemaMismatch) {
+          // Spark 3.x rejects physical DATE as NTZ before any value can be converted.
+          val error = intercept[Exception](df.collect())
+          val mismatch = causeChain(error).collectFirst {
+            case cause: SchemaColumnConvertNotSupportedException => cause
+          }
+          assert(mismatch.isDefined, error)
+          assert(mismatch.get.getColumn == "[d]")
+          assert(mismatch.get.getPhysicalType == "INT32")
+          assert(mismatch.get.getLogicalType == "timestamp_ntz")
+        } else if (expectedOverflow) {
+          val error = intercept[Exception](df.collect())
+          assert(causeChain(error).exists { cause =>
+            cause.getClass == classOf[ArithmeticException] && cause.getMessage == "long overflow"
+          })
+        } else {
+          checkAnswer(df, Seq(Row(LocalDateTime.of(1970, 1, 1, 0, 0))))
+        }
+
+        for (plan <- Seq(initialPlan, df.queryExecution.executedPlan)) {
+          val scans = collect(plan) { case scan: FileSourceScanExec => scan }
+          assert(scans.size == 1, plan)
+          assert(collect(plan) { case scan: CometNativeScanExec => scan }.isEmpty, plan)
+          expectedColumnar.foreach { expected =>
+            assert(scans.head.supportsColumnar == expected, plan)
+          }
+          val bridges = collect(plan) { case scan: CometSparkToColumnarExec => scan }
+          assert(bridges.isEmpty, plan)
+          if (cometEnabled) {
+            assert(
+              scans.head
+                .getTagValue(CometExplainInfo.FALLBACK_REASONS)
+                .getOrElse(Set.empty[String])
+                .contains(timestampNtzReadReason))
+          }
+        }
+      }
+    }
+  }
+
+  for (adaptive <- Seq(false, true)) {
+    test(s"Parquet NTZ read schema preserves Spark conversion timing (AQE=$adaptive)") {
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+        SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "true",
+        SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC",
+        SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> "true",
+        "spark.sql.parquet.datetimeRebaseModeInWrite" -> "CORRECTED",
+        "spark.sql.parquet.datetimeRebaseModeInRead" -> "CORRECTED",
+        SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED.key -> "true",
+        CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "true",
+        CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "false") {
+        withTempDir { dir =>
+          val late = s"${dir.getCanonicalPath}/late"
+          val early = s"${dir.getCanonicalPath}/early"
+          val valid = s"${dir.getCanonicalPath}/valid"
+          writeDateReadFixture(late, 5001, 5000)
+          writeDateReadFixture(early, 2, 1)
+          writeDateReadFixture(valid, 5001, -1)
+
+          val cases = Seq(
+            ("default batches", late, 4096, 8192, false, false),
+            ("inverse batches", late, 8192, 4096, true, false),
+            ("equal batches consume overflow", late, 8192, 8192, true, false),
+            ("equal batches stop before overflow", late, 4096, 4096, false, false),
+            ("valid data", valid, 4096, 8192, false, false),
+            ("filter stops before unread overflow", late, 4096, 8192, false, true),
+            ("filter cannot hide a decoded overflow", early, 8192, 8192, true, true))
+          for {
+            (label, path, sparkBatch, cometBatch, overflow, filtered) <- cases
+            bridge <- Seq(false, true)
+          } {
+            withClue(s"$label, bridge=$bridge: ") {
+              withSQLConf(
+                "spark.sql.parquet.columnarReaderBatchSize" -> sparkBatch.toString,
+                CometConf.COMET_BATCH_SIZE.key -> cometBatch.toString,
+                CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> bridge.toString) {
+                // Spark converts the entire reader batch before applying the filter or LIMIT.
+                // Capping to min(Spark, Comet) would incorrectly suppress the inverse error.
+                checkTimestampNtzRead(
+                  timestampNtzRead(path, filtered),
+                  overflow,
+                  expectedSchemaMismatch = !isSpark40Plus)
+              }
+            }
+          }
+        }
+      }
+    }
+
+    test(s"Parquet NTZ read schema blocks row and columnar bridge reentry (AQE=$adaptive)") {
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+        SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC",
+        SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> "true",
+        "spark.sql.parquet.datetimeRebaseModeInWrite" -> "CORRECTED",
+        "spark.sql.parquet.datetimeRebaseModeInRead" -> "CORRECTED",
+        "spark.sql.parquet.columnarReaderBatchSize" -> "1",
+        CometConf.COMET_BATCH_SIZE.key -> "8192",
+        CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "false") {
+        withTempPath { path =>
+          writeDateReadFixture(path.getCanonicalPath, 2, 1)
+          for {
+            nativeScan <- Seq(false, true)
+            wholeStage <- Seq(false, true)
+          } {
+            withClue(s"nativeScan=$nativeScan, wholeStage=$wholeStage: ") {
+              withSQLConf(
+                CometConf.COMET_NATIVE_SCAN_ENABLED.key -> nativeScan.toString,
+                SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> wholeStage.toString) {
+                // With whole-stage codegen off, the Spark reader can return rows. Repacking
+                // those rows into an Arrow batch must not read the overflowing second row.
+                checkTimestampNtzRead(
+                  timestampNtzRead(path.getCanonicalPath),
+                  expectedOverflow = false,
+                  expectedColumnar = Some(wholeStage),
+                  expectedSchemaMismatch = !isSpark40Plus)
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("Parquet NTZ scan fallback is scoped to requested data columns") {
+    withSQLConf(
+      SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC",
+      SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> "true",
+      CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "true",
+      CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "false") {
+      withTempDir { dir =>
+        val dataPath = s"${dir.getCanonicalPath}/data"
+        val partitionPath = s"${dir.getCanonicalPath}/partitioned"
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          sql(
+            "SELECT CAST(0 AS BIGINT) AS id, DATE '1970-01-01' AS d, " +
+              "CAST('1970-01-01 00:00:00' AS TIMESTAMP_LTZ) AS ltz, " +
+              "CAST('1970-01-01 00:00:00' AS TIMESTAMP_NTZ) AS ntz").write
+            .parquet(dataPath)
+          spark.read
+            .parquet(dataPath)
+            .select("id", "ntz")
+            .write
+            .partitionBy("ntz")
+            .parquet(partitionPath)
+        }
+
+        // Even a real NTZ file is conservatively protected: its logical schema cannot prove
+        // that every selected file has timestamp storage rather than a DATE annotation.
+        checkTimestampNtzRead(
+          spark.read.parquet(dataPath).select("ntz"),
+          expectedOverflow = false)
+
+        val prunedExpected = Seq(
+          Row(
+            0L,
+            java.sql.Date.valueOf("1970-01-01"),
+            java.sql.Timestamp.from(java.time.Instant.EPOCH)))
+        val partitionExpected = Seq(Row(0L, LocalDateTime.of(1970, 1, 1, 0, 0)))
+        for (cometEnabled <- Seq(false, true)) {
+          withSQLConf(CometConf.COMET_ENABLED.key -> cometEnabled.toString) {
+            // NTZ remains in the relation schema but is absent from the requested file data.
+            // DATE and LTZ columns retain their native scan support.
+            val pruned = spark.read.parquet(dataPath).select("id", "d", "ltz")
+            checkAnswer(pruned, prunedExpected)
+            val partitioned = spark.read
+              .schema("id BIGINT, ntz TIMESTAMP_NTZ")
+              .parquet(partitionPath)
+            checkAnswer(partitioned, partitionExpected)
+            for (df <- Seq(pruned, partitioned)) {
+              val nativeScans = collect(df.queryExecution.executedPlan) {
+                case scan: CometNativeScanExec => scan
+              }
+              assert(nativeScans.size == (if (cometEnabled) 1 else 0))
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("Parquet NTZ read policy checks top-level scalar types, not nested or partition types") {
+    withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> "parquet") {
+      withTempPath { path =>
+        var scan: FileSourceScanExec = null
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          spark.range(1).write.parquet(path.getCanonicalPath)
+          val df = spark.read.parquet(path.getCanonicalPath)
+          val scans = collect(df.queryExecution.executedPlan) { case scan: FileSourceScanExec =>
+            scan
+          }
+          assert(scans.size == 1)
+          scan = scans.head
+        }
+        val requestedNtz = scan.copy(requiredSchema = StructType.fromDDL("v TIMESTAMP_NTZ"))
+        assert(
+          CometNativeScan
+            .timestampNtzReadFallbackReason(requestedNtz)
+            .contains(timestampNtzReadReason))
+        // Nested conversions use parquet_convert_array rather than the newly checked scalar
+        // temporal Cast. This guard must not disable their existing native scan support.
+        for (ddl <- Seq(
+            "v STRUCT<a: TIMESTAMP_NTZ>",
+            "v ARRAY<TIMESTAMP_NTZ>",
+            "v MAP<TIMESTAMP_NTZ, INT>",
+            "v MAP<INT, TIMESTAMP_NTZ>",
+            "v STRUCT<a: ARRAY<STRUCT<b: TIMESTAMP_NTZ>>>",
+            "v DATE",
+            "v TIMESTAMP_LTZ",
+            "v ARRAY<STRUCT<a: TIMESTAMP_LTZ>>")) {
+          withClue(s"$ddl: ") {
+            val requested = scan.copy(requiredSchema = StructType.fromDDL(ddl))
+            assert(CometNativeScan.timestampNtzReadFallbackReason(requested).isEmpty)
+          }
+        }
+        val partitionRelation =
+          scan.relation.copy(partitionSchema = StructType.fromDDL("p TIMESTAMP_NTZ"))(spark)
+        val partitionOnly = scan.copy(relation = partitionRelation)
+        assert(CometNativeScan.timestampNtzReadFallbackReason(partitionOnly).isEmpty)
+      }
+    }
   }
 
   test("CometExecRule should replace FileSourceScanExec, but only when Comet is enabled") {

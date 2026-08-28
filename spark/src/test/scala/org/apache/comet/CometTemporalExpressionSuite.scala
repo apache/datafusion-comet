@@ -359,21 +359,31 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
         // Read with different session timezones and verify results are identical
         for (readTz <- readTimezones) {
           withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> readTz) {
-            spark.read.parquet(dir.toString).createOrReplaceTempView("ntz_cross_tz")
-            // Casts and unix_timestamp are supported natively for NTZ in any session TZ
-            checkSparkAnswerAndOperator(
-              "SELECT ts_ntz, CAST(ts_ntz AS STRING) FROM ntz_cross_tz ORDER BY ts_ntz")
-            checkSparkAnswerAndOperator(
-              "SELECT ts_ntz, CAST(ts_ntz AS DATE) FROM ntz_cross_tz ORDER BY ts_ntz")
-            checkSparkAnswerAndOperator(
-              "SELECT ts_ntz, unix_timestamp(ts_ntz) FROM ntz_cross_tz ORDER BY ts_ntz")
-            // hour/minute/second run natively for NTZ without timezone conversion (issue #3180),
-            // and date_trunc is Incompatible when the session timezone is non-UTC (issue #2649),
-            // so the latter rides the codegen dispatcher; both stay native while matching Spark.
-            checkSparkAnswerAndOperator(
-              "SELECT ts_ntz, hour(ts_ntz), minute(ts_ntz), second(ts_ntz) FROM ntz_cross_tz ORDER BY ts_ntz")
-            checkSparkAnswerAndOperator(
-              "SELECT ts_ntz, date_trunc('HOUR', ts_ntz) FROM ntz_cross_tz ORDER BY ts_ntz")
+            val data = spark.read.parquet(dir.toString)
+            try {
+              // Materialize under this read timezone before testing the native kernels.
+              withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+                data.cache()
+                data.count()
+              }
+              data.createOrReplaceTempView("ntz_cross_tz")
+              // Casts and unix_timestamp are supported natively for NTZ in any session TZ
+              checkSparkAnswerAndOperator(
+                "SELECT ts_ntz, CAST(ts_ntz AS STRING) FROM ntz_cross_tz ORDER BY ts_ntz")
+              checkSparkAnswerAndOperator(
+                "SELECT ts_ntz, CAST(ts_ntz AS DATE) FROM ntz_cross_tz ORDER BY ts_ntz")
+              checkSparkAnswerAndOperator(
+                "SELECT ts_ntz, unix_timestamp(ts_ntz) FROM ntz_cross_tz ORDER BY ts_ntz")
+              // hour/minute/second run natively for NTZ without timezone conversion (issue #3180),
+              // and date_trunc is Incompatible when the session timezone is non-UTC (issue #2649),
+              // so the latter rides the codegen dispatcher; both stay native while matching Spark.
+              checkSparkAnswerAndOperator(
+                "SELECT ts_ntz, hour(ts_ntz), minute(ts_ntz), second(ts_ntz) FROM ntz_cross_tz ORDER BY ts_ntz")
+              checkSparkAnswerAndOperator(
+                "SELECT ts_ntz, date_trunc('HOUR', ts_ntz) FROM ntz_cross_tz ORDER BY ts_ntz")
+            } finally {
+              data.unpersist()
+            }
           }
         }
       }

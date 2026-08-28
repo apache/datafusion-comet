@@ -596,6 +596,23 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  private def withMaterializedTimestampTable(path: String)(f: => Unit): Unit = {
+    withParquetTable(path, "timetbl") {
+      // These tests exercise native expressions on timestamp values, after Spark has finished
+      // reading the NTZ fixture. Reader conversion timing is covered by CometScanRuleSuite.
+      val data = spark.table("timetbl")
+      try {
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          data.cache()
+          data.count()
+        }
+        f
+      } finally {
+        data.unpersist()
+      }
+    }
+  }
+
   test("cast timestamp and timestamp_ntz") {
     withSQLConf(
       SESSION_LOCAL_TIMEZONE.key -> "Asia/Kathmandu",
@@ -604,7 +621,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         withTempDir { dir =>
           val path = new Path(dir.toURI.toString, "timestamp_trunc.parquet")
           makeRawTimeParquetFile(path, dictionaryEnabled = dictionaryEnabled, 10000)
-          withParquetTable(path.toString, "timetbl") {
+          withMaterializedTimestampTable(path.toString) {
             checkSparkAnswerAndOperator(
               "SELECT " +
                 "cast(_2 as timestamp) tz_millis, " +
@@ -626,7 +643,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         withTempDir { dir =>
           val path = new Path(dir.toURI.toString, "timestamp_trunc.parquet")
           makeRawTimeParquetFile(path, dictionaryEnabled = dictionaryEnabled, 2001)
-          withParquetTable(path.toString, "timetbl") {
+          withMaterializedTimestampTable(path.toString) {
             checkSparkAnswerAndOperator(
               "SELECT " +
                 "cast(_2 as string) tz_millis, " +
@@ -648,7 +665,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         withTempDir { dir =>
           val path = new Path(dir.toURI.toString, "timestamp_trunc.parquet")
           makeRawTimeParquetFile(path, dictionaryEnabled = dictionaryEnabled, 10000)
-          withParquetTable(path.toString, "timetbl") {
+          withMaterializedTimestampTable(path.toString) {
             checkSparkAnswerAndOperator(
               "SELECT " +
                 "cast(_2 as long) tz_millis, " +
@@ -742,7 +759,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         withTempDir { dir =>
           val path = new Path(dir.toURI.toString, "timestamp_trunc.parquet")
           makeRawTimeParquetFile(path, dictionaryEnabled = dictionaryEnabled, 10000)
-          withParquetTable(path.toString, "timetbl") {
+          withMaterializedTimestampTable(path.toString) {
             Seq(
               "YEAR",
               "YYYY",

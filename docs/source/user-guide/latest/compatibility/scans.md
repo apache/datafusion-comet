@@ -36,6 +36,16 @@ The following features are not supported and cause Comet to fall back to Spark:
   This behavior can be disabled by setting `spark.comet.scan.unsignedSmallIntSafetyCheck=false`. Note that `ByteType`
   columns are always safe because they can only come from signed `INT8`, where truncation preserves the signed value.
 - Default values that are nested types (e.g., maps, arrays, structs). Literal default values are supported.
+- V1 Parquet scans requesting top-level `TIMESTAMP_NTZ` data columns. In Spark 4.0+, a requested NTZ
+  column can be backed by a `DATE` column whose conversion overflows. Spark converts one reader batch
+  within a row group before filtering; native batch sizes and filtering can change whether `LIMIT`
+  encounters that error. Spark 3.x instead rejects this DATE-to-NTZ read conversion, which the
+  fallback also preserves. The logical schema cannot identify the physical conversion, so ordinary NTZ
+  files also use Spark's reader. `spark.comet.convert.parquet.enabled=true` does not override this
+  fallback: both Arrow bridge paths are disabled, since native consumers can request extra Spark
+  batches before returning a row. Nested fields use a separate conversion path and retain their
+  existing support. Pruned NTZ fields, partition-only NTZ columns, and native Iceberg scans are
+  not restricted by this guard.
 - Spark's Datasource V2 API. When `spark.sql.sources.useV1SourceList` does not include `parquet`, Spark uses the
   V2 API for Parquet scans. Comet's Parquet scan only supports the V1 API.
 - `_metadata.row_index`. Other `_metadata` columns (`file_path`, `file_name`, `file_size`, `file_block_start`,
@@ -70,13 +80,11 @@ The following limitations raise an error at scan time rather than falling back t
   Separately, non-UTF-8 bytes that reach native execution from a JVM-side columnar source are not
   currently validated at the Arrow FFI import boundary. See [#4121](https://github.com/apache/datafusion-comet/issues/4121)
   and the tracking issue [#4764](https://github.com/apache/datafusion-comet/issues/4764).
-- Reading `TimestampLTZ` as `TimestampNTZ` on Spark 3.x. Spark raises an error per
-  [SPARK-36182](https://issues.apache.org/jira/browse/SPARK-36182) because LTZ encodes UTC-adjusted
-  instants that cannot be safely reinterpreted as timezone-free values, and Comet matches this by
-  rejecting the read. This applies to all LTZ physical encodings (INT96, TIMESTAMP_MICROS,
-  TIMESTAMP_MILLIS). On Spark 4.0+, this read is permitted
-  ([SPARK-47447](https://issues.apache.org/jira/browse/SPARK-47447)) and Comet matches Spark's
-  behavior.
+
+V1 reads of `TimestampLTZ` as `TimestampNTZ` use Spark's reader under the NTZ fallback above.
+Spark 3.x rejects them ([SPARK-36182](https://issues.apache.org/jira/browse/SPARK-36182)); Spark 4.0+
+permits them ([SPARK-47447](https://issues.apache.org/jira/browse/SPARK-47447)). This applies to INT96,
+TIMESTAMP_MICROS, and TIMESTAMP_MILLIS encodings.
 
 ### Schema Mismatch Handling
 
