@@ -42,3 +42,7 @@ FROM test_array_sort
 -- all literals
 query
 SELECT array_sort(array(3, 1, 2), (l, r) -> CASE WHEN l < r THEN 1 WHEN l > r THEN -1 ELSE 0 END)
+
+-- an untyped empty array leaves the element type as NullType
+query
+SELECT array_sort(array(), (l, r) -> 0)
