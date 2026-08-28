@@ -31,9 +31,11 @@ Comet evaluates Spark regular-expression expressions (`rlike`, `regexp_replace`,
 - **Native (rust) engine** — the Rust [`regex`] crate, run natively with no JNI overhead. It is
   faster but has different semantics from Java regex (see below). For `rlike`, a plan-time
   analyzer admits a conservative subset of `UTF8_BINARY` literal patterns and runs those natively
-  **by default**. Every other `rlike` pattern, and every other regex expression, still requires
-  that expression's `allowIncompatible` flag. `regexp_instr` has no native implementation and
-  always runs through the codegen dispatcher.
+  **by default**. Out-of-subset default-collation literals still require
+  `spark.comet.expression.RLike.allowIncompatible`. Non-literal patterns, NULL patterns, and
+  non-default collations stay on the codegen dispatcher even with that flag. Every other regex
+  expression still requires its own `allowIncompatible` flag. `regexp_instr` has no native
+  implementation and always runs through the codegen dispatcher.
 
 | SQL                  | Native (rust) opt-in config                                 |
 | -------------------- | ----------------------------------------------------------- |
@@ -43,8 +45,9 @@ Comet evaluates Spark regular-expression expressions (`rlike`, `regexp_replace`,
 | `regexp_extract_all` | `spark.comet.expression.RegExpExtractAll.allowIncompatible` |
 | `split`              | `spark.comet.expression.StringSplit.allowIncompatible`      |
 
-`spark.comet.expression.RLike.allowIncompatible` only forces the native Rust path for literal
-patterns the analyzer cannot prove equivalent to Java regex. It is not needed for in-subset
+`allowIncompatible` can force native execution for a non-null default-collation
+literal. Non-default collations remain on the JVM dispatcher because the native
+kernel does not implement Spark collation semantics. It is not needed for in-subset
 literals, and it does not apply to non-literal or NULL patterns.
 
 When the native path is selected but a case has no native implementation (for example a
@@ -79,9 +82,11 @@ the engine selector:
 
 The **Rust engine** is faster but cannot match Java regex semantics for every pattern. For `rlike`,
 Comet therefore runs only the analyzer-admitted subset natively by default. Setting
-`spark.comet.expression.RLike.allowIncompatible=true` forces the Rust path for other literal
-patterns and declares acceptance of any remaining differences. The other regex expressions still
-require their own `allowIncompatible` flag.
+`spark.comet.expression.RLike.allowIncompatible=true` can force native execution for a non-null
+default-collation literal that the analyzer cannot prove equivalent, and declares acceptance of
+any remaining differences. Non-default collations remain on the JVM dispatcher because the native
+kernel does not implement Spark collation semantics. The other regex expressions still require
+their own `allowIncompatible` flag.
 
 The **codegen dispatcher** is enabled by `spark.comet.exec.scalaUDF.codegen.enabled`, so it can be
 disabled globally to fall back to Spark for out-of-subset regex expressions.
@@ -151,6 +156,10 @@ budget stay on the Java engine. Any unrecognized construct also stays on the Jav
 For `regexp_replace`, `split`, `regexp_extract`, and `regexp_extract_all`, the native path is
 still opt-in via `allowIncompatible`. If you are confident those patterns fit the same ASCII,
 non-anchored shape, opting in is generally safe.
+
+Native `rlike` operates on Arrow string values and assumes well-formed UTF-8.
+Behavior for malformed string data supplied outside Arrow's StringArray invariants
+has not been established.
 
 For anything that uses backreferences, lookaround, or relies on Java's specific Unicode or
 line-handling defaults, use the Java engine.
