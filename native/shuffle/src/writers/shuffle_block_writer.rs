@@ -245,7 +245,7 @@ impl ShuffleBlockWriter {
         &self,
         batch: &RecordBatch,
         output: &mut W,
-        compression_context: &mut CompressionContext,
+        compression_context: &mut IpcWriteContext,
         ipc_time: &Time,
     ) -> Result<usize> {
         self.write_batch_with_codec_limits(batch, output, compression_context, ipc_time, true)
@@ -255,7 +255,7 @@ impl ShuffleBlockWriter {
         &self,
         batch: &RecordBatch,
         output: &mut W,
-        compression_context: &mut CompressionContext,
+        compression_context: &mut IpcWriteContext,
         ipc_time: &Time,
         bounded_rss_codec: bool,
     ) -> Result<usize> {
