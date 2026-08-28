@@ -64,8 +64,11 @@ public final class CometBoundedShuffleMemoryAllocator extends CometShuffleMemory
   private final long totalMemory;
   private long allocatedMemory = 0L;
 
-  /** How often a thread blocked in {@link #allocateBlocking(long)} logs that it is waiting. */
-  private static final long WAIT_LOG_INTERVAL_MS = 30_000L;
+  /**
+   * How often a thread blocked in {@link #allocateBlocking(long)} wakes up to re-check progress and
+   * log that it is waiting. Not final so that tests can shorten it.
+   */
+  private static long WAIT_LOG_INTERVAL_MS = 30_000L;
 
   /** The number of bits used to address the page table. */
   private static final int PAGE_NUMBER_BITS = 13;
@@ -168,6 +171,17 @@ public final class CometBoundedShuffleMemoryAllocator extends CometShuffleMemory
           if (allocatedMemory <= retainedByWaitingThreads() && !anyWaiterCanProceed()) {
             throw e;
           }
+          // A thread parked waiting for Spark execution memory cannot free its pool memory
+          // either, and Spark's pool may in turn be waiting for a task blocked here: a cycle
+          // across the two pools that no amount of waiting resolves. Unwind (after at least one
+          // full wait interval, to let transient states settle) so the failed task releases its
+          // memory and the tasks in the other pool can progress.
+          if (waitStart != 0
+              && allocatedMemory
+                  <= retainedByWaitingThreads() + retainedByThreadsBlockedOnSparkMemory()
+              && !anyWaiterCanProceed()) {
+            throw e;
+          }
           // Log when the wait starts and periodically while it lasts, so a stalled task is
           // visible in the executor logs.
           long now = System.currentTimeMillis();
@@ -219,6 +233,30 @@ public final class CometBoundedShuffleMemoryAllocator extends CometShuffleMemory
       }
     }
     return false;
+  }
+
+  /**
+   * Pool memory retained by threads that are parked in an untimed wait inside Spark's
+   * execution-memory pool. Such a thread frees nothing until Spark memory is released, which may
+   * itself depend on a task blocked in this pool. Sleeping, latch-parked, or computing owners
+   * deliberately do not match: only a stack currently inside Spark's memory arbitration does.
+   */
+  private long retainedByThreadsBlockedOnSparkMemory() {
+    long retained = 0;
+    for (java.util.Map.Entry<Thread, Long> entry : retainedMemory.entrySet()) {
+      Thread thread = entry.getKey();
+      if (!waitingThreads.containsKey(thread) && thread.getState() == Thread.State.WAITING) {
+        for (StackTraceElement frame : thread.getStackTrace()) {
+          String className = frame.getClassName();
+          if (className.equals("org.apache.spark.memory.ExecutionMemoryPool")
+              || className.equals("org.apache.spark.memory.UnifiedMemoryManager")) {
+            retained += entry.getValue();
+            break;
+          }
+        }
+      }
+    }
+    return retained;
   }
 
   private synchronized MemoryBlock allocateMemoryBlock(long required) {

@@ -29,7 +29,7 @@ import org.scalatest.time.{Seconds, Span}
 
 import org.apache.spark.{Partitioner, SparkConf, SparkContext, SparkEnv, TaskContextImpl}
 import org.apache.spark.executor.{ShuffleWriteMetrics, TaskMetrics}
-import org.apache.spark.memory.{SparkOutOfMemoryError, TaskMemoryManager, TestMemoryManager}
+import org.apache.spark.memory.{MemoryConsumer, MemoryMode, SparkOutOfMemoryError, TaskMemoryManager, TestMemoryManager, UnifiedMemoryManager}
 import org.apache.spark.shuffle.api.{ShuffleExecutorComponents, ShuffleMapOutputWriter, ShufflePartitionWriter}
 import org.apache.spark.shuffle.api.metadata.MapOutputCommitMessage
 import org.apache.spark.shuffle.comet.{CometBoundedShuffleMemoryAllocator, CometShuffleMemoryAllocator, CometShuffleMemoryAllocatorTrait}
@@ -572,6 +572,76 @@ class CometDiskBlockWriterSuite extends AnyFunSuite with TimeLimits {
     }
   }
 
+  test("on-heap shared pool: a waiter unwinds when the holder is blocked on Spark memory") {
+    // Cross-pool cycle: a task blocked in Spark's execution-memory pool retains Comet pool
+    // memory, while another task waits in the Comet pool for memory that only the blocked task
+    // could free. Spark's pool may in turn only be freed by the Comet waiter, so no amount of
+    // waiting resolves it; the Comet waiter must unwind so its task can release memory.
+    val conf = new SparkConf()
+      .set("spark.comet.memoryOverhead", "1") // 1 MiB Comet pool
+      .set("spark.testing.memory", (8 * 1024 * 1024).toString)
+      .set("spark.testing.reservedMemory", "0")
+      .set("spark.memory.fraction", "1.0")
+    resetOnHeapAllocatorSingleton()
+    val unified = UnifiedMemoryManager(conf, numCores = 2)
+    val tmmSparkHog = new TaskMemoryManager(unified, 0L)
+    val tmmHolder = new TaskMemoryManager(unified, 1L)
+    val bounded = CometShuffleMemoryAllocator
+      .getInstance(conf, new TaskMemoryManager(new TestMemoryManager(conf), 2L), pageSize)
+      .asInstanceOf[CometBoundedShuffleMemoryAllocator]
+    def newConsumer(tmm: TaskMemoryManager): MemoryConsumer =
+      new MemoryConsumer(tmm, 1024 * 1024, MemoryMode.ON_HEAP) {
+        override def spill(size: Long, trigger: MemoryConsumer): Long = 0
+      }
+    val oldInterval = setAllocatorWaitInterval(100)
+    try {
+      failAfter(Span(60, Seconds)) {
+        // Another task owns the whole Spark execution pool.
+        val sparkHog = newConsumer(tmmSparkHog)
+        assert(sparkHog.acquireMemory(8 * 1024 * 1024) == 8 * 1024 * 1024)
+
+        // The holder retains Comet pool memory and then blocks acquiring Spark memory.
+        val holderReleased = new CountDownLatch(1)
+        val holderThread = new Thread(() => {
+          val cometBlock = bounded.allocate(500 * 1024)
+          val holderConsumer = newConsumer(tmmHolder)
+          try {
+            val got = holderConsumer.acquireMemory(1024 * 1024) // blocks until sparkHog frees
+            holderConsumer.freeMemory(got)
+          } finally {
+            bounded.free(cometBlock)
+            holderReleased.countDown()
+          }
+        })
+        holderThread.start()
+        def parkedOnSparkMemory: Boolean =
+          holderThread.getState == Thread.State.WAITING &&
+            holderThread.getStackTrace
+              .exists(_.getClassName == "org.apache.spark.memory.ExecutionMemoryPool")
+        while (!parkedOnSparkMemory) {
+          Thread.sleep(10)
+        }
+
+        // The Comet waiter cannot fit next to the blocked holder's memory and must unwind
+        // instead of waiting for a release that can never come.
+        intercept[SparkOutOfMemoryError] {
+          bounded.allocateBlocking(800 * 1024)
+        }
+
+        // Once Spark memory frees, the holder resumes and releases its Comet memory.
+        sparkHog.freeMemory(8 * 1024 * 1024)
+        holderReleased.await()
+        holderThread.join()
+        bounded.free(bounded.allocate(1024 * 1024))
+      }
+    } finally {
+      setAllocatorWaitInterval(oldInterval)
+      tmmSparkHog.cleanUpAllAllocatedMemory()
+      tmmHolder.cleanUpAllAllocatedMemory()
+      resetOnHeapAllocatorSingleton()
+    }
+  }
+
   test("on-heap shared pool: the unsafe writer allocates nothing before write()") {
     // Spark evaluates the shuffle input iterator between constructing the writer and calling
     // write(), and that evaluation can block on Spark's execution-memory pool (e.g. an eager
@@ -665,6 +735,16 @@ class CometDiskBlockWriterSuite extends AnyFunSuite with TimeLimits {
   private def isBlockedInWait(thread: Thread): Boolean = {
     val state = thread.getState
     state == Thread.State.WAITING || state == Thread.State.TIMED_WAITING
+  }
+
+  /** Shortens the allocator's wait/re-check interval for tests; returns the previous value. */
+  private def setAllocatorWaitInterval(ms: Long): Long = {
+    val field =
+      classOf[CometBoundedShuffleMemoryAllocator].getDeclaredField("WAIT_LOG_INTERVAL_MS")
+    field.setAccessible(true)
+    val previous = field.getLong(null)
+    field.setLong(null, ms)
+    previous
   }
 
   /** Clears the CometShuffleMemoryAllocator singleton so this suite controls its pool size. */

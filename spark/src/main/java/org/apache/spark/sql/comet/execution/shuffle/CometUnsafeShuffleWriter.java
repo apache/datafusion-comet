@@ -225,12 +225,6 @@ public class CometUnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
 
   @Override
   public void write(scala.collection.Iterator<Product2<K, V>> records) throws IOException {
-    // Allocate the sorter (and its pointer array) only now: Spark evaluates the shuffle input
-    // iterator between constructing this writer and calling write(), and that evaluation can
-    // block on Spark's execution-memory pool (e.g. an eager input sort). Allocating earlier
-    // would retain Comet pool memory across that wait, which can form a cross-pool cycle with
-    // a task waiting on the Comet pool.
-    open();
     // Keep track of success so we know if we encountered an exception
     // We do this rather than a standard try/catch/re-throw to handle
     // generic throwables.
@@ -241,7 +235,19 @@ public class CometUnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
     String offheapMemKey = "thread_" + nativeLib.getRustThreadId() + "_comet_jvm_shuffle";
     try {
       while (records.hasNext()) {
+        // Allocate the sorter (and its pointer array) only after the input produced a record:
+        // both the evaluation of the input iterator (between constructing this writer and
+        // calling write()) and hasNext() on lazy input (e.g. a sort materializing its child)
+        // can block on Spark's execution-memory pool, and retaining Comet pool memory across
+        // that wait can form a cross-pool cycle with a task waiting on the Comet pool.
+        if (sorter == null) {
+          open();
+        }
         insertRecordIntoSorter(records.next());
+      }
+      if (sorter == null) {
+        // Empty input: the output path below still needs the sorter.
+        open();
       }
       if (tracingEnabled) {
         nativeLib.logMemoryUsage(offheapMemKey, this.allocator.getUsed());
