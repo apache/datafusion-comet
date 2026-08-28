@@ -121,6 +121,26 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(true)
 
+  val COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.write.iceberg.splitOperator.enabled")
+      .category(CATEGORY_TESTING)
+      .doc(
+        "Whether to rewrite Iceberg V2 writes from Spark's combined V2 write/commit operator " +
+          "into Comet's two-operator shape: a file writer exec (inside AQE) and a committer " +
+          "(outside AQE).")
+      .booleanConf
+      .createWithDefault(false)
+
+  val COMET_ICEBERG_NATIVE_WRITE_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.iceberg.write.enabled")
+      .category(CATEGORY_TESTING)
+      .doc(
+        "Whether to delegate the executor-side Parquet write to Comet's native (iceberg-rust) " +
+          "writer when the table's properties allow it. Requires " +
+          "`spark.comet.write.iceberg.splitOperator.enabled = true`. Off by default.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_ICEBERG_DATA_FILE_CONCURRENCY_LIMIT: ConfigEntry[Int] =
     conf("spark.comet.scan.icebergNative.dataFileConcurrencyLimit")
       .category(CATEGORY_SCAN)
@@ -229,6 +249,8 @@ object CometConf extends ShimCometConf {
     createExecEnabledConfig("explode", defaultValue = true)
   val COMET_EXEC_WINDOW_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("window", defaultValue = true)
+  val COMET_EXEC_WINDOW_GROUP_LIMIT_ENABLED: ConfigEntry[Boolean] =
+    createExecEnabledConfig("windowGroupLimit", defaultValue = true)
   val COMET_EXEC_TAKE_ORDERED_AND_PROJECT_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("takeOrderedAndProject", defaultValue = true)
   val COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED: ConfigEntry[Boolean] =
@@ -256,7 +278,7 @@ object CometConf extends ShimCometConf {
       .createWithDefault(true)
 
   val COMET_PYARROW_UDF_ENABLED: ConfigEntry[Boolean] =
-    conf("spark.comet.exec.pyarrowUdf.enabled")
+    conf("spark.comet.exec.pyarrowUDF.enabled")
       .category(CATEGORY_EXEC)
       .doc(
         "Experimental: whether to enable optimized execution of PyArrow UDFs " +
@@ -585,6 +607,34 @@ object CometConf extends ShimCometConf {
       .checkValue(v => v >= 0, "Must not be negative")
       .createWithDefault(0)
 
+  val COMET_SHUFFLE_RSS_MAX_FRAME_BYTES: ConfigEntry[Long] =
+    conf("spark.comet.shuffle.rss.maxFrameBytes")
+      .category(CATEGORY_SHUFFLE)
+      .doc("Maximum encoded size of one complete native shuffle frame sent to a remote " +
+        "shuffle service. Frames are never split across remote push requests.")
+      .bytesConf(ByteUnit.BYTE)
+      .checkValue(
+        value => value >= 20 && value <= Int.MaxValue - 16,
+        "Remote shuffle frame size must fit a complete Comet frame and a Celeborn request")
+      .createWithDefault(64L * 1024 * 1024)
+
+  val COMET_SHUFFLE_RSS_MAX_IN_FLIGHT_BYTES: ConfigEntry[Long] =
+    conf("spark.comet.shuffle.rss.maxInFlightBytes")
+      .category(CATEGORY_SHUFFLE)
+      .doc(
+        "Maximum shuffle bytes admitted concurrently by native Comet map attempts sharing " +
+          "an executor-side remote shuffle client. Admission includes native encoding " +
+          "scratch and overlapping native, JNI, and remote shuffle frame copies. " +
+          "A frame must fit its codec and Arrow workspace as well as its encoded bytes; " +
+          "too-small limits fail before encoding. Encrypted native RSS is not supported; " +
+          "use ordinary Spark shuffle when spark.io.encryption.enabled is true.")
+      .bytesConf(ByteUnit.BYTE)
+      .checkValue(
+        value => value >= 76 && value <= Int.MaxValue,
+        "Remote shuffle in-flight byte limit must fit three complete frame copies and a " +
+          "Celeborn request header")
+      .createWithDefault(256L * 1024 * 1024)
+
   val COMET_DEBUG_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.debug.enabled")
       .category(CATEGORY_EXEC)
@@ -668,6 +718,35 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_STRICT_FALLBACK_REASONS: ConfigEntry[Boolean] =
+    conf("spark.comet.explain.fallback.strict.enabled")
+      .category(CATEGORY_TESTING)
+      .doc(
+        "Test-only. When enabled, Comet throws if it declines to convert an operator that it " +
+          "could otherwise have converted (all children are already native) without recording a " +
+          "fallback reason on the operator or on any of its expressions. Without this check, a " +
+          "serde that returns `None` and forgets to state a reason silently produces a generic " +
+          "'<operator> is not supported' message instead of a visible failure. Enabled for all " +
+          "Comet test suites via `CometTestBase`.")
+      .internal()
+      .booleanConf
+      .createWithDefault(false)
+
+  val COMET_SCAN_CONTRIB_DETECT_CONFLICTS: ConfigEntry[Boolean] =
+    conf("spark.comet.scan.contrib.detectConflicts.enabled")
+      .category(CATEGORY_TESTING)
+      .doc(
+        "Diagnostic. Out-of-tree scan contribs are normally offered a scan one at a time and " +
+          "the first to claim it wins, so a contrib that wrongly claims another format's scan " +
+          "silently hides it. When this is enabled, every registered contrib is offered the " +
+          "scan and a warning is logged if more than one claims it; the first claim is still " +
+          "the one used, so behaviour is unchanged. Off by default because it makes every " +
+          "contrib do its (potentially expensive) planning work on every scan, even after one " +
+          "has already claimed it. Only meaningful when two or more contribs are registered.")
+      .internal()
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_ONHEAP_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.onHeap.enabled")
       .category(CATEGORY_TESTING)
@@ -714,18 +793,6 @@ object CometConf extends ShimCometConf {
         "Otherwise, an error will be thrown and the Spark job will be aborted.")
     .booleanConf
     .createWithDefault(false)
-
-  val COMET_EXCEPTION_ON_LEGACY_DATE_TIMESTAMP: ConfigEntry[Boolean] =
-    conf("spark.comet.exceptionOnDatetimeRebase")
-      .category(CATEGORY_EXEC)
-      .doc("Whether to throw exception when seeing dates/timestamps from the legacy hybrid " +
-        "(Julian + Gregorian) calendar. Since Spark 3, dates/timestamps were written according " +
-        "to the Proleptic Gregorian calendar. When this is true, Comet will " +
-        "throw exceptions when seeing these dates/timestamps that were written by Spark version " +
-        "before 3.0. If this is false, these dates/timestamps will be read as if they were " +
-        "written to the Proleptic Gregorian calendar and will not be rebased.")
-      .booleanConf
-      .createWithDefault(false)
 
   val COMET_ENABLE_PARTIAL_HASH_AGGREGATE: ConfigEntry[Boolean] =
     conf("spark.comet.testing.aggregate.partialMode.enabled")
@@ -972,7 +1039,7 @@ object ConfigHelpers {
   def timeFromString(str: String, unit: TimeUnit): Long = JavaUtils.timeStringAs(str, unit)
 
   def timeToString(v: Long, unit: TimeUnit): String =
-    TimeUnit.MILLISECONDS.convert(v, unit) + "ms"
+    s"${TimeUnit.MILLISECONDS.convert(v, unit)}ms"
 
   def byteFromString(str: String, unit: ByteUnit): Long = {
     val (input, multiplier) =
@@ -984,7 +1051,8 @@ object ConfigHelpers {
     multiplier * JavaUtils.byteStringAs(input, unit)
   }
 
-  def byteToString(v: Long, unit: ByteUnit): String = unit.convertTo(v, ByteUnit.BYTE) + "b"
+  def byteToString(v: Long, unit: ByteUnit): String =
+    s"${unit.convertTo(v, ByteUnit.BYTE)}b"
 }
 
 private class TypedConfigBuilder[T](

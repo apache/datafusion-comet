@@ -15,7 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::{timezone, EvalMode, SparkError, SparkResult};
+use crate::conversion_funcs::trim::{trim_all, trim_all_bytes, trim_all_range, trim_java_string};
+use crate::{EvalMode, SparkError, SparkResult};
+use arrow::array::timezone::Tz;
 use arrow::array::{
     Array, ArrayRef, ArrowPrimitiveType, BooleanArray, Decimal128Builder, GenericStringArray,
     OffsetSizeTrait, PrimitiveArray, PrimitiveBuilder, StringArray,
@@ -207,7 +209,10 @@ where
         if arr.is_null(i) {
             builder.append_null();
         } else {
-            let str_value = arr.value(i).trim();
+            // `Double.parseDouble` calls `String.trim` before parsing, so only bytes <= 0x20
+            // are trimmed here -- `0x7F` is not whitespace to this cast, and no non-ASCII
+            // whitespace is trimmed by any Spark cast.
+            let str_value = trim_java_string(arr.value(i));
             match parse_string_to_float(str_value) {
                 Some(v) => builder.append_value(v),
                 None => {
@@ -268,9 +273,9 @@ where
     let output_array = array
         .iter()
         .map(|value| match value {
-            Some(value) => match value.to_ascii_lowercase().trim() {
-                "t" | "true" | "y" | "yes" | "1" => Ok(Some(true)),
-                "f" | "false" | "n" | "no" | "0" => Ok(Some(false)),
+            Some(value) => match trim_all(value) {
+                v if is_true_string(v) => Ok(Some(true)),
+                v if is_false_string(v) => Ok(Some(false)),
                 _ if eval_mode == EvalMode::Ansi => Err(SparkError::CastInvalidValue {
                     value: value.to_string(),
                     from_type: "STRING".to_string(),
@@ -283,6 +288,28 @@ where
         .collect::<Result<BooleanArray, _>>()?;
 
     Ok(Arc::new(output_array))
+}
+
+/// Equivalent to `org.apache.spark.sql.catalyst.util.StringUtils.isTrueString`, minus the trim
+/// that the caller has already applied.
+///
+/// Spark lowercases with `UTF8String.toLowerCase` before comparing, but every candidate is
+/// ASCII, and no non-ASCII character lowercases into an ASCII one that would complete any of
+/// them, so an ASCII-insensitive comparison gives the same answer without allocating.
+#[inline]
+fn is_true_string(trimmed: &str) -> bool {
+    ["t", "true", "y", "yes", "1"]
+        .iter()
+        .any(|v| trimmed.eq_ignore_ascii_case(v))
+}
+
+/// Equivalent to `org.apache.spark.sql.catalyst.util.StringUtils.isFalseString`; see
+/// [`is_true_string`] for why the comparison is ASCII-only.
+#[inline]
+fn is_false_string(trimmed: &str) -> bool {
+    ["f", "false", "n", "no", "0"]
+        .iter()
+        .any(|v| trimmed.eq_ignore_ascii_case(v))
 }
 
 pub(crate) fn cast_string_to_decimal(
@@ -481,8 +508,25 @@ const POW10_I128: [i128; 39] = {
 
 /// `10^exp`, or `None` when the exponent overflows an `i128` (exp >= 39).
 #[inline]
-fn pow10_i128(exp: u32) -> Option<i128> {
+pub(crate) fn pow10_i128(exp: u32) -> Option<i128> {
     POW10_I128.get(exp as usize).copied()
+}
+
+/// Divide by a power of ten with HALF_UP rounding, matching `BigDecimal.setScale`: a tie
+/// rounds away from zero.
+///
+/// `divisor` must be `10^n` for `n >= 1`, so `divisor / 2` is exact and a zero remainder
+/// can never be mistaken for a tie.
+#[inline]
+pub(crate) fn div_round_half_up_i128(numerator: i128, divisor: i128) -> i128 {
+    debug_assert!(divisor >= 10);
+    let quotient = numerator / divisor;
+    let remainder = numerator % divisor;
+    if remainder.abs() >= divisor / 2 {
+        quotient + numerator.signum()
+    } else {
+        quotient
+    }
 }
 
 /// Accumulate an ASCII-digit slice into an `i128`, returning `None` on overflow.
@@ -490,7 +534,7 @@ fn pow10_i128(exp: u32) -> Option<i128> {
 /// The first 38 digits always fit (`i128::MAX` is ~1.7e38), so only the digits past
 /// them need the per-digit overflow checks.
 #[inline]
-fn digits_to_i128(digits: &[u8]) -> Option<i128> {
+pub(crate) fn digits_to_i128(digits: &[u8]) -> Option<i128> {
     let (head, tail) = digits.split_at(digits.len().min(38));
     let mut value: i128 = 0;
     for &d in head {
@@ -534,23 +578,12 @@ fn is_special_value(trimmed: &str) -> bool {
 /// e.g., "123.45" -> (12345, 2), "-0.001" -> (-1, 3) , 0e50 -> (0,50) etc
 /// Parse a string to decimal following Spark's behavior
 fn parse_string_to_decimal(input_str: &str, precision: u8, scale: i8) -> SparkResult<Option<i128>> {
-    let string_bytes = input_str.as_bytes();
-    let mut start = 0;
-    let mut end = string_bytes.len();
-
-    // Trim ASCII whitespace and null bytes from both ends. Spark's UTF8String
-    // trims null bytes the same way it trims whitespace: "123\u0000" and
-    // "\u0000123" both parse as 123. Null bytes in the middle are not trimmed
-    // and will fail the digit validation in parse_decimal_str, producing NULL.
-    while start < end && (string_bytes[start].is_ascii_whitespace() || string_bytes[start] == 0) {
-        start += 1;
-    }
-    while end > start && (string_bytes[end - 1].is_ascii_whitespace() || string_bytes[end - 1] == 0)
-    {
-        end -= 1;
-    }
-
-    let trimmed = &input_str[start..end];
+    // Spark parses via `new java.math.BigDecimal(str.toString.trim)`, so the trim set is
+    // `String.trim`'s: every byte <= 0x20, which includes the null byte ("123\u0000" and
+    // "\u0000123" both parse as 123) but not 0x7F or any non-ASCII whitespace. Null bytes in
+    // the middle are not trimmed and will fail the digit validation in parse_decimal_str,
+    // producing NULL.
+    let trimmed = trim_java_string(input_str);
 
     // Normalize fullwidth digits to ASCII. Fast path skips the allocation for
     // pure-ASCII strings, which is the common case.
@@ -601,28 +634,10 @@ fn parse_string_to_decimal(input_str: &str, precision: u8, scale: i8) -> SparkRe
             return Ok(Some(0));
         }
 
-        // Bounded above, so pow10_i128 always returns Some.
+        // Bounded above, so pow10_i128 always returns Some. The adjustment is at least 1
+        // here, so the divisor is a power of ten no smaller than 10.
         let divisor = pow10_i128(abs_scale_adjustment).unwrap();
-        let quotient_opt = mantissa.checked_div(divisor);
-        // Check if divisor is 0
-        if quotient_opt.is_none() {
-            return Ok(None);
-        }
-        let quotient = quotient_opt.unwrap();
-        let remainder = mantissa % divisor;
-
-        // Round half up: if abs(remainder) >= divisor/2, round away from zero
-        let half_divisor = divisor / 2;
-        let rounded = if remainder.abs() >= half_divisor {
-            if mantissa >= 0 {
-                quotient + 1
-            } else {
-                quotient - 1
-            }
-        } else {
-            quotient
-        };
-        Some(rounded)
+        Some(div_round_half_up_i128(mantissa, divisor))
     };
 
     match scaled_value {
@@ -793,7 +808,7 @@ pub(crate) fn cast_string_to_timestamp(
         .downcast_ref::<GenericStringArray<i32>>()
         .expect("Expected a string array");
 
-    let tz = &timezone::Tz::from_str(timezone_str)
+    let tz = &Tz::from_str(timezone_str)
         .map_err(|_| SparkError::Internal(format!("Invalid timezone string: {timezone_str}")))?;
 
     let cast_array: ArrayRef = match to_type {
@@ -929,7 +944,7 @@ fn do_parse_string_to_int_legacy<T: Integer + CheckedSub + CheckedNeg + From<u8>
     str: &str,
     min_value: T,
 ) -> SparkResult<Option<T>> {
-    let trimmed_bytes = str.as_bytes().trim_ascii();
+    let trimmed_bytes = trim_all_bytes(str.as_bytes());
 
     let (negative, digits) = match parse_sign(trimmed_bytes) {
         Some(result) => result,
@@ -980,7 +995,7 @@ fn do_parse_string_to_int_ansi<T: Integer + CheckedSub + CheckedNeg + From<u8> +
 ) -> SparkResult<Option<T>> {
     let error = || Err(invalid_value(str, "STRING", type_name));
 
-    let trimmed_bytes = str.as_bytes().trim_ascii();
+    let trimmed_bytes = trim_all_bytes(str.as_bytes());
 
     let (negative, digits) = match parse_sign(trimmed_bytes) {
         Some(result) => result,
@@ -1016,7 +1031,7 @@ fn do_parse_string_to_int_try<T: Integer + CheckedSub + CheckedNeg + From<u8> + 
     str: &str,
     min_value: T,
 ) -> SparkResult<Option<T>> {
-    let trimmed_bytes = str.as_bytes().trim_ascii();
+    let trimmed_bytes = trim_all_bytes(str.as_bytes());
 
     let (negative, digits) = match parse_sign(trimmed_bytes) {
         Some(result) => result,
@@ -1220,7 +1235,7 @@ fn is_leap_year(year: i64) -> bool {
 /// Days since 1970-01-01 for a proleptic Gregorian year/month/day, or `None` when the
 /// combination is not a real calendar date. Unlike `NaiveDate::from_ymd_opt`, this accepts
 /// any year that fits in `i64`.
-fn ymd_to_epoch_day(year: i64, month: i64, day: i64) -> Option<i64> {
+pub(crate) fn ymd_to_epoch_day(year: i64, month: i64, day: i64) -> Option<i64> {
     const DAYS_IN_MONTH: [i64; 12] = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
     let mut max_day = *DAYS_IN_MONTH.get(usize::try_from(month.checked_sub(1)?).ok()?)?;
     if month == 2 && is_leap_year(year) {
@@ -1514,14 +1529,14 @@ fn parse_sign_offset(s: &str) -> Option<i32> {
     Some(sign * (h * 3600 + m * 60))
 }
 
-/// Constructs a `timezone::Tz` from an offset measured in seconds.
+/// Constructs a [`Tz`] from an offset measured in seconds.
 /// E.g. `+7*3600 + 30*60` -> `"+07:30"`.
-fn tz_from_offset_secs(secs: i32) -> Option<timezone::Tz> {
+fn tz_from_offset_secs(secs: i32) -> Option<Tz> {
     let abs = secs.abs();
     let h = abs / 3600;
     let m = (abs % 3600) / 60;
     let sign = if secs >= 0 { '+' } else { '-' };
-    timezone::Tz::from_str(&format!("{}{:02}:{:02}", sign, h, m)).ok()
+    Tz::from_str(&format!("{}{:02}:{:02}", sign, h, m)).ok()
 }
 
 /// Returns the last (rightmost) byte position where `needle` starts inside `haystack`.
@@ -1549,7 +1564,7 @@ fn rfind_str(haystack: &str, needle: &str) -> Option<usize> {
 ///
 /// **The caller must ensure the value does not already match a base timestamp pattern.**
 /// Without that guard a bare '-' in "2015-03-18" would be misread as a -18:00 offset.
-fn extract_offset_suffix(value: &str) -> Option<(&str, timezone::Tz)> {
+fn extract_offset_suffix(value: &str) -> Option<(&str, Tz)> {
     // 1. Z suffix
     if let Some(stripped) = value.strip_suffix('Z') {
         return Some((stripped, tz_from_offset_secs(0)?));
@@ -1593,7 +1608,7 @@ fn extract_offset_suffix(value: &str) -> Option<(&str, timezone::Tz)> {
     if let Some(space_pos) = value.rfind(' ') {
         let tz_name = &value[space_pos + 1..];
         if tz_name.contains('/') {
-            if let Ok(tz) = timezone::Tz::from_str(tz_name) {
+            if let Ok(tz) = Tz::from_str(tz_name) {
                 return Some((&value[..space_pos], tz));
             }
         }
@@ -1881,26 +1896,6 @@ fn parse_str_to_time_only_timestamp<T: TimeZone>(value: &str, tz: &T) -> SparkRe
 //a string to date parser - port of spark's SparkDateTimeUtils#stringToDate.
 fn date_parser(date_str: &str, eval_mode: EvalMode) -> SparkResult<Option<i32>> {
     // local functions
-    fn get_trimmed_start(bytes: &[u8]) -> usize {
-        let mut start = 0;
-        while start < bytes.len() && is_whitespace_or_iso_control(bytes[start]) {
-            start += 1;
-        }
-        start
-    }
-
-    fn get_trimmed_end(start: usize, bytes: &[u8]) -> usize {
-        let mut end = bytes.len() - 1;
-        while end > start && is_whitespace_or_iso_control(bytes[end]) {
-            end -= 1;
-        }
-        end + 1
-    }
-
-    fn is_whitespace_or_iso_control(byte: u8) -> bool {
-        byte.is_ascii_whitespace() || byte.is_ascii_control()
-    }
-
     /// Decodes a run of ASCII digits, or `None` if any byte is not a digit.
     fn decode_digits(bytes: &[u8]) -> Option<i64> {
         bytes.iter().try_fold(0i64, |acc, b| {
@@ -1966,8 +1961,10 @@ fn date_parser(date_str: &str, eval_mode: EvalMode) -> SparkResult<Option<i32>> 
 
     let bytes = date_str.as_bytes();
 
-    let mut j = get_trimmed_start(bytes);
-    let str_end_trimmed = get_trimmed_end(j, bytes);
+    // `SparkDateTimeUtils.getTrimmedStart`/`getTrimmedEnd` trim the same byte set as
+    // `UTF8String.trimAll`.
+    let (start, str_end_trimmed) = trim_all_range(bytes);
+    let mut j = start;
 
     if j == str_end_trimmed {
         return return_result(date_str, eval_mode);
@@ -2110,7 +2107,7 @@ mod tests {
             Some("0119704"),
             Some("2024001"),
         ]));
-        let tz = &timezone::Tz::from_str("UTC").unwrap();
+        let tz = &Tz::from_str("UTC").unwrap();
 
         let string_array = array
             .as_any()
@@ -2146,7 +2143,7 @@ mod tests {
             Some("2020-01-01T12:34:56.123456"),
             Some("not_a_timestamp"),
         ]));
-        let tz = &timezone::Tz::from_str("UTC").unwrap();
+        let tz = &Tz::from_str("UTC").unwrap();
         let string_array = array
             .as_any()
             .downcast_ref::<GenericStringArray<i32>>()
@@ -2175,7 +2172,7 @@ mod tests {
         let array: ArrayRef = Arc::new(StringArray::from(vec![
             Some("91\n3       "), // trailing spaces after a newline in the middle
         ]));
-        let tz = &timezone::Tz::from_str("UTC").unwrap();
+        let tz = &Tz::from_str("UTC").unwrap();
         let string_array = array
             .as_any()
             .downcast_ref::<GenericStringArray<i32>>()
@@ -2199,6 +2196,137 @@ mod tests {
                 );
             }
             other => panic!("Expected InvalidInputInCastToDatetime error, got {other:?}"),
+        }
+    }
+
+    /// The codepoint matrix from
+    /// <https://github.com/apache/datafusion-comet/issues/5149>: the ASCII control bytes and
+    /// DELETE, plus the non-ASCII codepoints that are whitespace to Unicode but that no Spark
+    /// cast trims. `CometNativeCastSuite` runs the same matrix with Spark itself as the oracle.
+    fn trim_pads() -> Vec<String> {
+        let mut pads: Vec<String> = (0x00u8..=0x20).map(|b| String::from(b as char)).collect();
+        pads.push("\u{7f}".to_string());
+        pads.extend(
+            [
+                "\u{85}", "\u{a0}", "\u{1680}", "\u{2000}", "\u{2005}", "\u{200a}", "\u{2028}",
+                "\u{2029}", "\u{202f}", "\u{205f}", "\u{3000}",
+            ]
+            .iter()
+            .map(|s| s.to_string()),
+        );
+        pads
+    }
+
+    /// Asserts that the cast to `to_type` trims each [`trim_pads`] entry exactly when `regime`
+    /// -- the trim helper that Spark's cast to `to_type` uses -- trims it: a value in every eval
+    /// mode when it is trimmed, NULL (or an ANSI error) when it is not. Interior padding, padding
+    /// on its own and the empty string must never parse.
+    fn assert_trim_parity(to_type: &DataType, valid: &str, regime: fn(&str) -> &str) {
+        let split = valid.char_indices().nth(1).map(|(i, _)| i).unwrap();
+        // The empty string reaches the same empty-slice branch that fully-trimmed padding does.
+        let mut cases = vec![("empty".to_string(), String::new(), false)];
+        for pad in trim_pads() {
+            // The regime trims this padding iff trimming the padding alone leaves nothing.
+            let trimmed = regime(&pad).is_empty();
+            cases.extend([
+                (format!("leading {pad:?}"), format!("{pad}{valid}"), trimmed),
+                (
+                    format!("trailing {pad:?}"),
+                    format!("{valid}{pad}"),
+                    trimmed,
+                ),
+                (
+                    format!("both ends {pad:?}"),
+                    format!("{pad}{valid}{pad}"),
+                    trimmed,
+                ),
+                (
+                    format!("interior {pad:?}"),
+                    format!("{}{pad}{}", &valid[..split], &valid[split..]),
+                    false,
+                ),
+                (format!("only {pad:?}"), pad.clone(), false),
+            ]);
+        }
+        for (position, input, expect_value) in cases {
+            for eval_mode in [EvalMode::Legacy, EvalMode::Try, EvalMode::Ansi] {
+                let array: ArrayRef = Arc::new(StringArray::from(vec![Some(input.as_str())]));
+                let options = SparkCastOptions::new(eval_mode, "UTC", false);
+                let result = cast_array(array, to_type, &options);
+                let context = format!("cast {input:?} ({position}) to {to_type} in {eval_mode:?}");
+                if expect_value {
+                    let array = result.unwrap_or_else(|e| panic!("{context}: {e}"));
+                    assert!(!array.is_null(0), "{context}: expected a value, got NULL");
+                } else if eval_mode == EvalMode::Ansi {
+                    assert!(result.is_err(), "{context}: expected an error");
+                } else {
+                    let array = result.unwrap_or_else(|e| panic!("{context}: {e}"));
+                    assert!(array.is_null(0), "{context}: expected NULL");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_cast_string_to_boolean_trim_parity() {
+        assert_trim_parity(&DataType::Boolean, "true", trim_all);
+    }
+
+    #[test]
+    fn test_cast_string_to_int_trim_parity() {
+        for to_type in [
+            DataType::Int8,
+            DataType::Int16,
+            DataType::Int32,
+            DataType::Int64,
+        ] {
+            assert_trim_parity(&to_type, "12", trim_all);
+        }
+    }
+
+    #[test]
+    fn test_cast_string_to_date_trim_parity() {
+        assert_trim_parity(&DataType::Date32, "2020-01-01", trim_all);
+    }
+
+    /// Float, double and decimal all use the narrower `String.trim` set, which keeps `0x7F`.
+    #[test]
+    fn test_cast_string_to_float_and_decimal_trim_parity() {
+        for to_type in [
+            DataType::Float32,
+            DataType::Float64,
+            DataType::Decimal128(10, 2),
+        ] {
+            assert_trim_parity(&to_type, "1.5", trim_java_string);
+        }
+    }
+
+    /// Pins the one trim divergence this PR leaves behind, so that resolving
+    /// <https://github.com/apache/datafusion-comet/issues/5149> has to update this test rather
+    /// than change behaviour silently. `timestamp_parser` and `timestamp_ntz_parser` still use
+    /// `str::trim`, so they accept the non-ASCII whitespace that Spark's
+    /// `SparkDateTimeUtils.getTrimmedStart` / `getTrimmedEnd` leave in place, where Spark returns
+    /// NULL. `CometNativeCastSuite` cannot cover this, because Spark is the oracle there and Comet does
+    /// not fall back -- it silently returns a value.
+    #[test]
+    fn test_cast_string_to_timestamp_unicode_whitespace_divergence() {
+        let to_types = [
+            DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+            DataType::Timestamp(TimeUnit::Microsecond, None),
+        ];
+        for pad in ["\u{85}", "\u{a0}", "\u{2028}", "\u{3000}"] {
+            for to_type in &to_types {
+                let input = format!("{pad}2020-01-01 12:34:56{pad}");
+                let array: ArrayRef = Arc::new(StringArray::from(vec![Some(input.as_str())]));
+                let options = SparkCastOptions::new(EvalMode::Legacy, "UTC", false);
+                let result = cast_array(array, to_type, &options).unwrap();
+                assert!(
+                    !result.is_null(0),
+                    "cast {input:?} to {to_type}: Comet still trims {pad:?} where Spark returns \
+                     NULL. If this now returns NULL, the parsers have moved to the trim helpers \
+                     -- delete this test and extend `assert_trim_parity` to the timestamp targets."
+                );
+            }
         }
     }
 
@@ -2379,7 +2507,7 @@ mod tests {
 
     #[test]
     fn extreme_year_boundary_test() {
-        let tz = &timezone::Tz::from_str("UTC").unwrap();
+        let tz = &Tz::from_str("UTC").unwrap();
         // Long.MaxValue = 9223372036854775807 μs -> 294247-01-10T04:00:54.775807Z
         assert_eq!(
             timestamp_parser("294247-01-10T04:00:54.775807Z", EvalMode::Legacy, tz, true).unwrap(),
@@ -2404,7 +2532,7 @@ mod tests {
 
     #[test]
     fn test_leading_whitespace_t_hm() {
-        let tz = &timezone::Tz::from_str("UTC").unwrap();
+        let tz = &Tz::from_str("UTC").unwrap();
         // Spark 4.0+ rejects leading whitespace for ALL T-prefixed time-only patterns.
         for ws_input in &[" T2:30", "\tT2:30", "\nT2:30", " T2", "\tT2", "\nT2"] {
             assert!(
@@ -2439,7 +2567,7 @@ mod tests {
 
     #[test]
     fn plus_sign_year_test() {
-        let tz = &timezone::Tz::from_str("UTC").unwrap();
+        let tz = &Tz::from_str("UTC").unwrap();
         // Spark accepts '+year' prefix on full date-time strings for TIMESTAMP casts.
         // "+2020-01-01T12:34:56" -> 2020-01-01T12:34:56 UTC = 1577882096 seconds.
         assert_eq!(
@@ -2458,7 +2586,7 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore)] // test takes too long with miri
     fn timestamp_parser_test() {
-        let tz = &timezone::Tz::from_str("UTC").unwrap();
+        let tz = &Tz::from_str("UTC").unwrap();
         // write for all formats
         assert_eq!(
             timestamp_parser("2020", EvalMode::Legacy, tz, true).unwrap(),
@@ -2604,7 +2732,7 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore)]
     fn timestamp_parser_fraction_scaling_test() {
-        let tz = &timezone::Tz::from_str("UTC").unwrap();
+        let tz = &Tz::from_str("UTC").unwrap();
         // Base: "2020-01-01T12:34:56" = 1577882096000000 µs (confirmed by timestamp_parser_test)
         let base = 1577882096000000i64;
 
@@ -2648,7 +2776,7 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore)]
     fn timestamp_parser_tz_offset_formats_test() {
-        let tz = &timezone::Tz::from_str("UTC").unwrap();
+        let tz = &Tz::from_str("UTC").unwrap();
         // All of these represent 2020-01-01T12:34:56 UTC = 1577882096000000 µs.
         let utc = 1577882096000000i64;
         // +05:30 offset -> UTC = 12:34:56 − 5h30m = 07:04:56 UTC = 1577862296000000 µs
@@ -2787,7 +2915,7 @@ mod tests {
         // DST spring-forward: America/New_York springs forward 2020-03-08 02:00 -> 03:00.
         // 02:30 does not exist; Spark advances to 03:30 EDT (UTC-4) = 07:30 UTC.
         // 2020-03-08T07:30:00Z = 1577836800 + 67*86400 + 27000 = 1583652600 seconds.
-        let ny_tz = &timezone::Tz::from_str("America/New_York").unwrap();
+        let ny_tz = &Tz::from_str("America/New_York").unwrap();
         assert_eq!(
             timestamp_parser("2020-03-08 02:30:00", EvalMode::Legacy, ny_tz, true).unwrap(),
             Some(1583652600000000)

@@ -22,6 +22,7 @@ package org.apache.comet.parquet
 import java.io.File
 import java.math.{BigDecimal, BigInteger}
 import java.time.{ZoneId, ZoneOffset}
+import java.util.{Base64, Collections}
 
 import scala.reflect.ClassTag
 import scala.reflect.runtime.universe.TypeTag
@@ -29,8 +30,11 @@ import scala.reflect.runtime.universe.TypeTag
 import org.scalactic.source.Position
 import org.scalatest.Tag
 
+import org.apache.arrow.vector.types.pojo.{ArrowType, DictionaryEncoding, Field => ArrowField, FieldType, Schema => ArrowSchema}
 import org.apache.hadoop.fs.Path
 import org.apache.parquet.example.data.simple.SimpleGroup
+import org.apache.parquet.hadoop.example.ExampleParquetWriter
+import org.apache.parquet.io.api.Binary
 import org.apache.parquet.schema.MessageTypeParser
 import org.apache.spark.SparkException
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
@@ -78,6 +82,61 @@ abstract class ParquetReadSuite extends CometTestBase {
   test("simple count") {
     withParquetTable((0 until 10).map(i => (i, i.toString)), "tbl") {
       assert(sql("SELECT * FROM tbl WHERE _1 % 2 == 0").count() == 5)
+    }
+  }
+
+  // Spark ignores ARROW:schema during Parquet schema inference:
+  // https://github.com/apache/spark/blob/v4.2.0/sql/core/src/main/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFileFormat.scala#L585-L599
+  // With binaryAsString, Spark maps unannotated BINARY to StringType:
+  // https://github.com/apache/spark/blob/v4.2.0/sql/core/src/main/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaConverter.scala#L344-L350
+  test("native scan casts Arrow dictionary binary values with Spark semantics") {
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "dictionary-binary.parquet")
+      val parquetSchema = MessageTypeParser.parseMessageType("""message root {
+          |  optional binary value;
+          |}
+          |""".stripMargin)
+      val arrowField = new ArrowField(
+        "value",
+        new FieldType(
+          true,
+          ArrowType.Binary.INSTANCE,
+          new DictionaryEncoding(0L, false, new ArrowType.Int(32, true))),
+        Collections.emptyList[ArrowField]())
+      val arrowSchema = new ArrowSchema(Collections.singletonList(arrowField))
+      val metadata = Collections.singletonMap(
+        "ARROW:schema",
+        Base64.getEncoder.encodeToString(arrowSchema.serializeAsMessage()))
+      val writer = ExampleParquetWriter
+        .builder(path)
+        .withType(parquetSchema)
+        .withDictionaryEncoding(true)
+        .withExtraMetaData(metadata)
+        .withConf(spark.sessionState.newHadoopConf())
+        .build()
+
+      try {
+        Seq(
+          Array[Byte](0x66, 0x80.toByte, 0x6f),
+          Array[Byte](0x66, 0x80.toByte, 0x6f),
+          Array[Byte](0x76, 0x61, 0x6c, 0x69, 0x64)).foreach { bytes =>
+          val row = new SimpleGroup(parquetSchema)
+          row.add(0, Binary.fromConstantByteArray(bytes))
+          writer.write(row)
+        }
+      } finally {
+        writer.close()
+      }
+
+      withSQLConf(SQLConf.PARQUET_BINARY_AS_STRING.key -> "true") {
+        withParquetTable(path.toString, "dictionary_binary") {
+          val (_, cometPlan) =
+            checkSparkAnswerAndOperator(sql("SELECT value FROM dictionary_binary"))
+          assert(
+            collect(cometPlan) { case scan: CometNativeScanExec => scan }.nonEmpty,
+            "Expected a CometNativeScanExec")
+        }
+      }
     }
   }
 
@@ -518,6 +577,196 @@ abstract class ParquetReadSuite extends CometTestBase {
           assert(df.filter("col > 90").count() == 10)
         }
       }
+    }
+  }
+
+  test("read _metadata constant columns via native scan") {
+    // TODO(https://github.com/apache/datafusion-comet/issues/3432): `_metadata.row_index` is
+    // generated per row by the reader, not constant per file, so it needs DataFusion's
+    // virtual-column mechanism rather than the partition-value path used here. Not covered.
+    withTempPath { dir =>
+      (1 to 100).toDF("id").repartition(1).write.parquet(dir.getCanonicalPath)
+      val df = spark.read
+        .parquet(dir.getCanonicalPath)
+        .select(
+          $"id",
+          $"_metadata.file_path",
+          $"_metadata.file_name",
+          $"_metadata.file_size",
+          $"_metadata.file_block_start",
+          $"_metadata.file_block_length",
+          $"_metadata.file_modification_time")
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  /**
+   * Two tiny files easily fit in one Spark partition by data volume, but
+   * spark.sql.files.minPartitionNum defaults to the session's target parallelism, which pushes
+   * maxSplitBytes down to spark.sql.files.openCostInBytes; a single file's own virtual open-cost
+   * surcharge then already consumes that budget, so Spark schedules one file per task instead of
+   * packing both together. Forcing minPartitionNum to 1 is what actually gets both files into one
+   * partition, so partition2Proto's multi-file loop is exercised instead of one file per task.
+   */
+  private val forceSinglePartitionConf: (String, String) =
+    SQLConf.FILES_MIN_PARTITION_NUM.key -> "1"
+
+  /**
+   * Writes two Parquet files with distinct row counts (and thus distinct file sizes) into `dir`,
+   * and returns their (file_path, file_size) pairs sorted by size. Discovers them with Comet
+   * disabled so the tests below filter on ground truth rather than hardcoded assumptions.
+   */
+  private def writeTwoFilesAndDiscoverMetadata(dir: File): Array[(String, Long)] = {
+    (1 to 5).toDF("id").repartition(1).write.mode("overwrite").parquet(dir.getCanonicalPath)
+    (1000 to 1999).toDF("id").repartition(1).write.mode("append").parquet(dir.getCanonicalPath)
+    var files: Array[(String, Long)] = null
+    withSQLConf(forceSinglePartitionConf) {
+      assert(
+        spark.read.parquet(dir.getCanonicalPath).rdd.getNumPartitions == 1,
+        "expected both files to be packed into the same Spark partition, to exercise " +
+          "partition2Proto's multi-file loop rather than one file per task")
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        files = spark.read
+          .parquet(dir.getCanonicalPath)
+          .select($"_metadata.file_path", $"_metadata.file_size")
+          .distinct()
+          .as[(String, Long)]
+          .collect()
+          .sortBy(_._2)
+      }
+    }
+    files
+  }
+
+  test("filter on _metadata.file_size selects rows from the matching file only") {
+    withTempPath { dir =>
+      val files = writeTwoFilesAndDiscoverMetadata(dir)
+      assert(files.length == 2, s"expected two distinct files, got ${files.toSeq}")
+      val (_, smallerSize) = files(0)
+
+      withSQLConf(forceSinglePartitionConf) {
+        val df = spark.read
+          .parquet(dir.getCanonicalPath)
+          .filter($"_metadata.file_size" === smallerSize)
+          .select($"id")
+        checkSparkAnswerAndOperator(df)
+      }
+    }
+  }
+
+  test("filter on _metadata.file_size using a range predicate") {
+    withTempPath { dir =>
+      val files = writeTwoFilesAndDiscoverMetadata(dir)
+      val (_, smallerSize) = files(0)
+
+      withSQLConf(forceSinglePartitionConf) {
+        val df = spark.read
+          .parquet(dir.getCanonicalPath)
+          .filter($"_metadata.file_size" > smallerSize)
+          .select($"id")
+        checkSparkAnswerAndOperator(df)
+      }
+    }
+  }
+
+  test("filter combining _metadata column and a data column") {
+    withTempPath { dir =>
+      val files = writeTwoFilesAndDiscoverMetadata(dir)
+      val (_, largerSize) = files(1)
+
+      withSQLConf(forceSinglePartitionConf) {
+        val df = spark.read
+          .parquet(dir.getCanonicalPath)
+          .filter($"_metadata.file_size" === largerSize && $"id" > 1500)
+          .select($"id")
+        checkSparkAnswerAndOperator(df)
+      }
+    }
+  }
+
+  test("filter on _metadata.file_path exact match") {
+    withTempPath { dir =>
+      val files = writeTwoFilesAndDiscoverMetadata(dir)
+      val (targetPath, _) = files(0)
+
+      withSQLConf(forceSinglePartitionConf) {
+        val df = spark.read
+          .parquet(dir.getCanonicalPath)
+          .filter($"_metadata.file_path" === targetPath)
+          .select($"id")
+        checkSparkAnswerAndOperator(df)
+      }
+    }
+  }
+
+  test("read _metadata constant columns together with a real Hive partition column") {
+    withTempPath { dir =>
+      Seq((1, "a"), (2, "a"), (3, "b"), (4, "b"))
+        .toDF("id", "pcol")
+        .repartition(1)
+        .write
+        .partitionBy("pcol")
+        .parquet(dir.getCanonicalPath)
+      val df = spark.read
+        .parquet(dir.getCanonicalPath)
+        .select($"id", $"pcol", $"_metadata.file_path", $"_metadata.file_size")
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("filter combining a real Hive partition column and a metadata column") {
+    withTempPath { dir =>
+      Seq((1, "a"), (2, "a"), (3, "b"), (4, "b"))
+        .toDF("id", "pcol")
+        .repartition(1)
+        .write
+        .partitionBy("pcol")
+        .parquet(dir.getCanonicalPath)
+      val df = spark.read
+        .parquet(dir.getCanonicalPath)
+        .filter($"pcol" === "b" && $"_metadata.file_size" > 0)
+        .select($"id")
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("_metadata.file_path and file_name are url-encoded for a directory with a space") {
+    withTempDir { parent =>
+      val dir = new File(parent, "dir with space")
+      (1 to 10).toDF("id").repartition(1).write.parquet(dir.getCanonicalPath)
+      val df = spark.read
+        .parquet(dir.getCanonicalPath)
+        .select($"id", $"_metadata.file_path", $"_metadata.file_name")
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("_metadata column does not collide with a data column of the same name") {
+    withTempPath { dir =>
+      Seq((1L, 10), (2L, 20))
+        .toDF("file_size", "x")
+        .repartition(1)
+        .write
+        .parquet(dir.getCanonicalPath)
+      val df = spark.read
+        .parquet(dir.getCanonicalPath)
+        .select($"file_size", $"x", $"_metadata.file_size".as("meta_size"))
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("_metadata column does not collide with a partition column of the same name") {
+    withTempPath { dir =>
+      Seq((1, 100L), (2, 200L))
+        .toDF("id", "file_size")
+        .repartition(1)
+        .write
+        .partitionBy("file_size")
+        .parquet(dir.getCanonicalPath)
+      val df = spark.read
+        .parquet(dir.getCanonicalPath)
+        .select($"id", $"file_size", $"_metadata.file_size")
+      checkSparkAnswerAndOperator(df)
     }
   }
 
@@ -1019,10 +1268,7 @@ abstract class ParquetReadSuite extends CometTestBase {
           }
           // Walk the cause chain: Comet's shim adds an extra SparkException
           // wrap on Spark 3.x compared to vanilla Spark.
-          val chain = Iterator
-            .iterate[Throwable](outer)(_.getCause)
-            .takeWhile(_ != null)
-            .toSeq
+          val chain = causeChain(outer)
           assert(
             chain.exists(_.isInstanceOf[
               org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException]),
@@ -1202,7 +1448,7 @@ abstract class ParquetReadSuite extends CometTestBase {
     checkAnswer(
       // Decimal column in this file is encoded using plain dictionary
       readResourceParquetFile("test-data/dec-in-fixed-len.parquet"),
-      spark.range(1 << 4).select('id % 10 cast DecimalType(10, 2) as 'fixed_len_dec))
+      spark.range(1 << 4).select($"id" % 10 cast DecimalType(10, 2) as "fixed_len_dec"))
   }
 
   test("read long decimals with precision <= 9") {
