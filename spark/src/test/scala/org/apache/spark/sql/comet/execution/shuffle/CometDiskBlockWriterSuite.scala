@@ -572,11 +572,12 @@ class CometDiskBlockWriterSuite extends AnyFunSuite with TimeLimits {
     }
   }
 
-  test("on-heap shared pool: task completion reclaims the unsafe writer's pre-write allocation") {
-    // The unsafe writer's sorter allocates its pointer array at construction, before Spark has
-    // evaluated the shuffle input iterator and called write(). When iterator evaluation fails
-    // with a fatal error, neither write() cleanup nor stop(false) runs; the task-completion
-    // listener must reclaim the allocation so other tasks are not starved by it.
+  test("on-heap shared pool: the unsafe writer allocates nothing before write()") {
+    // Spark evaluates the shuffle input iterator between constructing the writer and calling
+    // write(), and that evaluation can block on Spark's execution-memory pool (e.g. an eager
+    // input sort). The writer must not retain Comet pool memory across that window, or two
+    // tasks can deadlock across the two pools; and when write() fails, even with a fatal
+    // error, everything it allocated must be reclaimed.
     val conf = new SparkConf()
       .setMaster("local[1]")
       .setAppName("CometDiskBlockWriterSuite")
@@ -598,9 +599,8 @@ class CometDiskBlockWriterSuite extends AnyFunSuite with TimeLimits {
         serializer = new UnsafeRowSerializer(1),
         schema = Some(schema),
         decodeTime = new SQLMetric("nsTiming"))
-      // Construct the writer exactly as Spark does before evaluating the input iterator; its
-      // sorter allocates the pointer array from the shared pool.
-      new CometUnsafeShuffleWriter[Int, UnsafeRow](
+      // Construct the writer exactly as Spark does before evaluating the input iterator.
+      val writer = new CometUnsafeShuffleWriter[Int, UnsafeRow](
         SparkEnv.get.blockManager,
         tmm,
         new CometSerializedShuffleHandle[Int, UnsafeRow](0, dep),
@@ -613,12 +613,26 @@ class CometDiskBlockWriterSuite extends AnyFunSuite with TimeLimits {
       val bounded = CometShuffleMemoryAllocator
         .getInstance(conf, tmm, pageSize)
         .asInstanceOf[CometBoundedShuffleMemoryAllocator]
-      // The pre-write pointer array occupies the pool...
+      // Construction must not have taken anything from the shared pool.
+      bounded.free(bounded.allocate(1024 * 1024))
+
+      // A fatal error from the record iterator mid-write must not leak the sorter's pages or
+      // pointer array either, and the task-completion listener stays a no-op afterwards.
+      val toUnsafe = UnsafeProjection.create(schema)
+      val rows: Iterator[Product2[Int, UnsafeRow]] =
+        (0 until 100).iterator.map { i =>
+          (i % 4, toUnsafe(InternalRow(new Array[Byte](1024))))
+        } ++ new Iterator[Product2[Int, UnsafeRow]] {
+          override def hasNext: Boolean = true
+          override def next(): Product2[Int, UnsafeRow] = {
+            throw new SparkOutOfMemoryError(
+              "UNABLE_TO_ACQUIRE_MEMORY",
+              java.util.Map.of("requestedBytes", "1", "receivedBytes", "0"))
+          }
+        }
       intercept[SparkOutOfMemoryError] {
-        bounded.allocate(1024 * 1024)
+        writer.write(rows)
       }
-      // ... and after the task completes without write() or stop() ever running, the
-      // allocation is reclaimed instead of starving other tasks forever.
       taskContext.markTaskCompleted(None)
       bounded.free(bounded.allocate(1024 * 1024))
     } finally {

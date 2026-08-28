@@ -178,10 +178,9 @@ public class CometUnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
         (int) (long) sparkConf.get(package$.MODULE$.SHUFFLE_FILE_BUFFER_SIZE()) * 1024;
     this.tracingEnabled = (boolean) CometConf.COMET_TRACING_ENABLED().get();
     this.encodeTimeMetric = encodeTimeMetric;
-    // The sorter allocates its pointer array at construction time, before Spark has evaluated
-    // the shuffle input iterator and called write(). A fatal error in between (Spark only calls
-    // stop() for exceptions) would orphan that allocation, which Spark's task-memory cleanup
-    // does not own, so reclaim it at task completion. cleanupResources() is idempotent, making
+    // Reclaim the sorter's memory at task completion if no other cleanup path ran first: Spark
+    // only calls stop() for exceptions, so a fatal error could otherwise orphan an allocation
+    // that Spark's task-memory cleanup does not own. cleanupResources() is idempotent, making
     // this a no-op whenever write()/stop() already cleaned up.
     if (taskContext != null) {
       taskContext.addTaskCompletionListener(
@@ -192,7 +191,6 @@ public class CometUnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
                 }
               });
     }
-    open();
   }
 
   private static OutputStream openStreamUnchecked(ShufflePartitionWriter writer) {
@@ -227,6 +225,12 @@ public class CometUnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
 
   @Override
   public void write(scala.collection.Iterator<Product2<K, V>> records) throws IOException {
+    // Allocate the sorter (and its pointer array) only now: Spark evaluates the shuffle input
+    // iterator between constructing this writer and calling write(), and that evaluation can
+    // block on Spark's execution-memory pool (e.g. an eager input sort). Allocating earlier
+    // would retain Comet pool memory across that wait, which can form a cross-pool cycle with
+    // a task waiting on the Comet pool.
+    open();
     // Keep track of success so we know if we encountered an exception
     // We do this rather than a standard try/catch/re-throw to handle
     // generic throwables.
