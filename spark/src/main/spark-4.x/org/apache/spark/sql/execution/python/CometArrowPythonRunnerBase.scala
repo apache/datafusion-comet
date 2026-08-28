@@ -111,6 +111,7 @@ private[python] trait CometArrowPythonRunnerBase
       private var currentGroup: Iterator[ColumnarBatch] = _
       private var arrowWriter: ArrowStreamWriter = _
       private var writeRoot: VectorSchemaRoot = _
+      private var sourceFields: Seq[Field] = _
 
       // The runner's input schema is a single struct column ("struct") whose children are the
       // user's input columns (see `schema` above). Cast once here rather than at each use site.
@@ -175,6 +176,7 @@ private[python] trait CometArrowPythonRunnerBase
             .getValueVector
             .asInstanceOf[FieldVector]
         }
+        val batchFields = sourceVectors.map(_.getField)
 
         if (arrowWriter == null) {
           // Build the schema-only struct root once from the first batch's child fields.
@@ -187,12 +189,18 @@ private[python] trait CometArrowPythonRunnerBase
           // rather than the session zone vanilla Spark would label it with; this is a documented
           // limitation (see pyarrow-udfs.md), not a value difference, since the stored instant is
           // identical.
+          sourceFields = batchFields
           val childNames = inputStructType.fieldNames
-          val childFields = sourceVectors.zipWithIndex.map { case (vector, i) =>
-            renamed(vector.getField, childNames(i), forceNullable = true)
+          val childFields = sourceFields.zipWithIndex.map { case (field, i) =>
+            renamed(field, childNames(i), forceNullable = true)
           }
           startWriter(childFields, dataOut)
         }
+
+        // Compare raw fields: the advertised fields have names and nullability normalized.
+        require(
+          batchFields == sourceFields,
+          s"Arrow input schema changed between batches: expected $sourceFields, got $batchFields")
 
         CometArrowPythonRunnerBase.serializeBatch(
           new WriteChannel(Channels.newChannel(dataOut)),

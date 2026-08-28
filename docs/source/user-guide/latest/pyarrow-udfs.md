@@ -203,9 +203,12 @@ on the unoptimized path.
   session time zone such a UDF can diverge from the unoptimized path. Set
   `spark.comet.exec.pyarrowUDF.enabled=false` for those UDFs.
 - `spark.sql.execution.arrow.useLargeVarTypes=true` is not supported. With this conf enabled,
-  Spark expects `StringType` and `BinaryType` to use Arrow's 8-byte-offset variants, while
-  Comet's source vectors always use 4-byte offsets. `EliminateRedundantTransitions` skips the
-  rewrite for this incompatible layout and vanilla Spark handles the operation.
+  Spark supplies `large_string` and `large_binary` input columns with 8-byte offsets. Native
+  Comet vectors use 4-byte offsets, and direct serialization advertises their matching `string`
+  and `binary` types. This produces a valid IPC stream, but does not preserve the input types
+  requested by the configuration. `EliminateRedundantTransitions` therefore skips the rewrite
+  and vanilla Spark handles the operation. Comet can read `large_string` and `large_binary`
+  columns returned by a Python worker; that output support does not widen the input vectors.
 - Comet writes input Arrow IPC record batches directly from its existing vector buffers. The
   only additional Arrow buffer is the validity bitmap for the non-null struct that wraps the
   input columns. Writing the IPC bytes to the Python worker's pipe still requires one copy;

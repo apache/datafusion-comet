@@ -22,12 +22,14 @@ package org.apache.spark.sql.execution.python
 import java.io.{ByteArrayInputStream, ByteArrayOutputStream, IOException}
 import java.nio.ByteBuffer
 import java.nio.channels.{Channels, WritableByteChannel}
+import java.nio.file.{Files, Paths}
 
 import scala.jdk.CollectionConverters._
 
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
 
+import org.apache.arrow.c.{ArrowArray, ArrowSchema, Data}
 import org.apache.arrow.memory.{BufferAllocator, RootAllocator}
 import org.apache.arrow.vector.{FieldVector, IntVector, NullVector, VarCharVector, VectorSchemaRoot}
 import org.apache.arrow.vector.complex.{ListVector, MapVector, StructVector}
@@ -110,6 +112,102 @@ class CometArrowPythonRunnerSuite extends AnyFunSuite with Matchers {
       vector.close()
       writerAllocator.close()
       sourceAllocator.close()
+    }
+  }
+
+  for (failSerialization <- Seq(false, true)) {
+    test(s"direct FFI batches release temporary references (write failure: $failSerialization)") {
+      // Arrow's JNI loader extracts its library here; Maven's target/tmp may not exist yet.
+      Files.createDirectories(Paths.get(System.getProperty("java.io.tmpdir")))
+      val sourceAllocator = new RootAllocator(Long.MaxValue)
+      val importAllocator = new RootAllocator(Long.MaxValue)
+      val writerAllocator = new RootAllocator(1024)
+      val source = new VarCharVector("payload", sourceAllocator)
+      val array = ArrowArray.allocateNew(sourceAllocator)
+      val schema = ArrowSchema.allocateNew(sourceAllocator)
+      var imported: VarCharVector = null
+      var failWrites = false
+      val output = new ByteArrayOutputStream() {
+        override def write(bytes: Array[Byte], offset: Int, length: Int): Unit = {
+          if (failWrites) {
+            throw new IOException("injected Arrow IPC write failure")
+          }
+          super.write(bytes, offset, length)
+        }
+      }
+      try {
+        val payload = Array.fill[Byte](16 * 1024)('x'.toByte)
+        source.allocateNew(payload.length.toLong, 2)
+        source.setSafe(0, payload)
+        source.setNull(1)
+        source.setValueCount(2)
+
+        Data.exportVector(sourceAllocator, source, null, array, schema)
+        imported =
+          Data.importVector(importAllocator, array, schema, null).asInstanceOf[VarCharVector]
+        imported.getDataBuffer.memoryAddress() shouldBe source.getDataBuffer.memoryAddress()
+        // Only the C Data Interface release callback now keeps the original buffers alive.
+        source.close()
+
+        val buffers = imported.getFieldBuffers.asScala.toSeq
+        val originalReferenceCounts = buffers.map(_.refCnt())
+        val originalImportAllocation = importAllocator.getAllocatedMemory
+        val originalSourceAllocation = sourceAllocator.getAllocatedMemory
+        originalSourceAllocation should be > 0L
+
+        withWriter(Seq(imported.getField), writerAllocator, Channels.newChannel(output)) {
+          channel =>
+            val originalWriterAllocation = writerAllocator.getAllocatedMemory
+            failWrites = failSerialization
+            try {
+              if (failSerialization) {
+                val error = intercept[IOException] {
+                  serializeBatch(new WriteChannel(channel), Seq(imported), 2, writerAllocator)
+                }
+                error.getMessage shouldBe "injected Arrow IPC write failure"
+              } else {
+                serializeBatch(new WriteChannel(channel), Seq(imported), 2, writerAllocator)
+              }
+            } finally {
+              failWrites = false
+            }
+
+            buffers.map(_.refCnt()) shouldBe originalReferenceCounts
+            importAllocator.getAllocatedMemory shouldBe originalImportAllocation
+            sourceAllocator.getAllocatedMemory shouldBe originalSourceAllocation
+            writerAllocator.getAllocatedMemory shouldBe originalWriterAllocation
+            imported.getValueCount shouldBe 2
+            imported.get(0) shouldBe payload
+            imported.isNull(1) shouldBe true
+        }
+
+        if (!failSerialization) {
+          withReader(output.toByteArray) { reader =>
+            reader.loadNextBatch() shouldBe true
+            val struct = reader.getVectorSchemaRoot.getVector(0).asInstanceOf[StructVector]
+            val result = struct.getChild("payload").asInstanceOf[VarCharVector]
+            result.get(0) shouldBe payload
+            result.isNull(1) shouldBe true
+            reader.loadNextBatch() shouldBe false
+          }
+        }
+
+        imported.close()
+        imported = null
+        importAllocator.getAllocatedMemory shouldBe 0L
+        sourceAllocator.getAllocatedMemory shouldBe 0L
+        writerAllocator.getAllocatedMemory shouldBe 0L
+      } finally {
+        if (imported != null) {
+          imported.close()
+        }
+        schema.close()
+        array.close()
+        source.close()
+        writerAllocator.close()
+        importAllocator.close()
+        sourceAllocator.close()
+      }
     }
   }
 

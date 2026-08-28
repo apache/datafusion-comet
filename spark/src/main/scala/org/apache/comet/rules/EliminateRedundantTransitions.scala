@@ -112,9 +112,10 @@ case class EliminateRedundantTransitions(session: SparkSession)
       // 4.1+ matches the renamed `MapInArrowExec`.
       //
       // Falls back to vanilla Spark when `spark.sql.execution.arrow.useLargeVarTypes` is enabled:
-      // Comet's source string/binary vectors use 4-byte offsets, while Spark expects 8-byte
-      // offsets when this conf is on. Direct IPC serialization cannot change the source vectors'
-      // physical layout, so forwarding them under Spark's widened schema would corrupt the stream.
+      // Native Comet string/binary vectors use 4-byte offsets. The IPC schema follows these
+      // vectors, so the stream is internally consistent, but the worker would receive string /
+      // binary instead of the large_string / large_binary input types requested by this conf.
+      // Keep the fallback to preserve Spark's input type contract.
       //
       // `EligibleMapInBatch` matches whenever the operator would run natively if the feature were
       // enabled. When it is disabled (the default) we leave the vanilla Spark operator in place

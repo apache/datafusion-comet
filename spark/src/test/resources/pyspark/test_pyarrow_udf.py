@@ -1063,9 +1063,9 @@ def test_map_in_arrow_deeply_nested(spark, tmp_path, accelerated):
 def test_map_in_arrow_falls_back_when_use_large_var_types(spark, tmp_path):
     """
     `spark.sql.execution.arrow.useLargeVarTypes=true` widens StringType / BinaryType to
-    LargeUtf8 / LargeBinary in Spark's expected IPC schema (8-byte offsets). Comet's source
-    vectors always use 4-byte offsets; serializing those source vectors directly cannot
-    satisfy the 8-byte offset schema expected in this configuration.
+    LargeUtf8 / LargeBinary in Spark's input IPC schema (8-byte offsets). Native Comet
+    vectors use 4-byte offsets; direct serialization advertises their matching types,
+    producing a valid stream but not the large input types requested by the configuration.
     EliminateRedundantTransitions must skip the rewrite in that case so vanilla Spark
     handles the operation. This test does not use the `accelerated` fixture: it sets
     pyarrowUDF.enabled=true AND useLargeVarTypes=true and asserts the plan still falls
