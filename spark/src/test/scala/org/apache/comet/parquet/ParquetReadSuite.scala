@@ -202,6 +202,51 @@ abstract class ParquetReadSuite extends CometTestBase {
     }
   }
 
+  test("native scan projects an entirely null Variant column") {
+    assume(CometSparkSessionExtensions.isSpark40Plus, "VariantType requires Spark 4.0+")
+
+    Seq(false, true).foreach { shredded =>
+      withTable("variant_all_null") {
+        withSQLConf(
+          CometConf.COMET_ENABLED.key -> "false",
+          "spark.sql.variant.writeShredding.enabled" -> shredded.toString,
+          "spark.sql.variant.forceShreddingSchemaForTest" -> "a BIGINT") {
+          sql("CREATE TABLE variant_all_null(id INT, v VARIANT, tail STRING) USING parquet")
+          sql("""INSERT INTO variant_all_null VALUES
+                |(1, CAST(NULL AS VARIANT), 'first'),
+                |(2, CAST(NULL AS VARIANT), NULL),
+                |(3, CAST(NULL AS VARIANT), 'third')""".stripMargin)
+        }
+
+        val queries = Seq(
+          "SELECT v FROM variant_all_null" -> 0,
+          "SELECT id, v, tail FROM variant_all_null" -> 1)
+        var expected = Seq.empty[Seq[Seq[Any]]]
+        withSQLConf(
+          CometConf.COMET_ENABLED.key -> "false",
+          "spark.sql.variant.allowReadingShredded" -> "true") {
+          expected = queries.map { case (query, variantOrdinal) =>
+            normalizedVariantRows(sql(query), variantOrdinal)
+          }
+        }
+
+        withSQLConf(
+          "spark.sql.variant.allowReadingShredded" -> "true",
+          "spark.sql.variant.pushVariantIntoScan" -> "false") {
+          queries.zip(expected).foreach { case ((query, variantOrdinal), expectedRows) =>
+            val df = sql(query)
+            val rows = normalizedVariantRows(df, variantOrdinal)
+            assert(rows == expectedRows)
+            assert(rows.forall(_(variantOrdinal) == null))
+            assert(collect(df.queryExecution.executedPlan) { case _: CometNativeScanExec =>
+              true
+            }.size == 1)
+          }
+        }
+      }
+    }
+  }
+
   test("native scan honors Spark's shredded Variant reader configuration") {
     assume(CometSparkSessionExtensions.isSpark40Plus, "VariantType requires Spark 4.0+")
 

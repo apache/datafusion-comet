@@ -165,6 +165,10 @@ pub(crate) fn init_datasource_exec(
     let runtime_env = session_ctx.runtime_env();
     let store = runtime_env.object_store(&object_store_url)?;
     let metadata_cache = runtime_env.cache_manager.get_file_metadata_cache();
+    // Load-bearing scope: the `ARROW:schema` footer-hint replacement applies only to scans whose
+    // pruned required schema projects a marked top-level Variant, and the factory further limits
+    // it to unencrypted opens. Non-Variant scans must keep the embedded hint untouched, because
+    // replacing it would change how ordinary columns (e.g. Date64, Decimal256) are read (#5477).
     let skip_arrow_schema = required_schema
         .fields()
         .iter()
