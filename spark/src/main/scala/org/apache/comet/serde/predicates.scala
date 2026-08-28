@@ -388,8 +388,10 @@ object ComparisonUtils {
       negate: Boolean): Option[Expr] = {
     // Spark treats all NaNs as equal and both signs of zero as equal in IN and InSet too.
     // Normalize both sides, including the fused NOT IN path that calls this method directly.
-    val valueExpr = exprToProtoInternal(normalizeInOperand(value), inputs, binding)
-    val listExprs = list.map(e => exprToProtoInternal(normalizeInOperand(e), inputs, binding))
+    val normalizedValue = normalizeInOperand(value)
+    val normalizedList = list.map(normalizeInOperand)
+    val valueExpr = exprToProtoInternal(normalizedValue, inputs, binding)
+    val listExprs = normalizedList.map(exprToProtoInternal(_, inputs, binding))
     if (valueExpr.isDefined && listExprs.forall(_.isDefined)) {
       val builder = ExprOuterClass.In.newBuilder()
       builder.setInValue(valueExpr.get)
@@ -401,6 +403,10 @@ object ComparisonUtils {
           .setIn(builder)
           .build())
     } else {
+      // Normalization creates temporary wrappers and literals outside the original tree. Keep
+      // their failure reasons on the membership expression so the operator can explain fallback.
+      liftFallbackReasons(normalizedValue, expr)
+      normalizedList.foreach(liftFallbackReasons(_, expr))
       None
     }
   }
