@@ -228,6 +228,18 @@ name = "cast_int_to_decimal"
 harness = false
 
 [[bench]]
+name = "spark_pow"
+harness = false
+
+[[bench]]
+name = "cast_decimal_to_boolean"
+harness = false
+
+[[bench]]
+name = "array_insert"
+harness = false
+
+[[bench]]
 name = "log"
 harness = false
 
