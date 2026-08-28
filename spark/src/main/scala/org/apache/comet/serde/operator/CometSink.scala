@@ -19,7 +19,6 @@
 
 package org.apache.comet.serde.operator
 
-import scala.collection.mutable.ListBuffer
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.sql.comet.{CometNativeExec, CometSinkPlaceHolder}
@@ -29,7 +28,7 @@ import org.apache.spark.sql.execution.adaptive.ShuffleQueryStageExec
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.types.{ArrayType, DataType, DayTimeIntervalType, MapType, StructType, YearMonthIntervalType}
 
-import org.apache.comet.{CometConf, DataTypeSupport}
+import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.ConfigEntry
 import org.apache.comet.serde.{CometOperatorSerde, OperatorOuterClass}
@@ -40,7 +39,7 @@ import org.apache.comet.serde.QueryPlanSerde.{serializeDataType, supportedDataTy
  * CometSink is the base class for transformations from a Spark operator to a Comet operator where
  * the native plan is a ScanExec that will read data from the Comet operator running the JVM.
  */
-abstract class CometSink[T <: SparkPlan] extends CometOperatorSerde[T] with DataTypeSupport {
+abstract class CometSink[T <: SparkPlan] extends CometOperatorSerde[T] {
 
   override def enabledConfig: Option[ConfigEntry[Boolean]] = None
 
@@ -51,7 +50,7 @@ abstract class CometSink[T <: SparkPlan] extends CometOperatorSerde[T] with Data
     case ArrayType(elementType, _) => supportedSinkDataType(elementType)
     case MapType(keyType, valueType, _) =>
       supportedSinkDataType(keyType) && supportedSinkDataType(valueType)
-    case _ => supportedDataType(dt) || isTypeSupported(dt, "", ListBuffer.empty)
+    case _ => supportedDataType(dt)
   }
 
   /**
