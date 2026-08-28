@@ -199,7 +199,7 @@ impl CometCastColumnExpr {
             )
         ) {
             return Err(DataFusionError::Plan(format!(
-                "Cannot adapt Spark timestamp field '{}' from {physical_type} to {target_type}: Spark read schemas represent logical timestamps in microseconds",
+                "Cannot adapt Spark timestamp field '{}' from {physical_type} to {target_type}: Spark read schemas represent logical timestamps in microseconds. This indicates a bug in Comet's schema handling; please report it at https://github.com/apache/datafusion-comet/issues. As a workaround, set spark.comet.scan.enabled=false",
                 physical_field.name()
             )));
         }

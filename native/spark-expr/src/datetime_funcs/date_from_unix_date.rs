@@ -60,6 +60,9 @@ impl ScalarUDFImpl for SparkDateFromUnixDate {
 
     fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
         let [unix_date] = take_function_args(self.name(), args.args)?;
+        // The input is guaranteed to be Int32 by `Signature::exact` and the Comet serde
+        // (Spark's DateFromUnixDate only accepts IntegerType), so the casts below take
+        // Arrow's zero-copy `Int32 -> Date32` reinterpret path.
         match unix_date {
             ColumnarValue::Array(arr) => Ok(ColumnarValue::Array(cast_with_options(
                 arr.as_ref(),
