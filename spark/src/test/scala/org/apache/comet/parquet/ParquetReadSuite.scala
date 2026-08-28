@@ -285,11 +285,32 @@ abstract class ParquetReadSuite extends CometTestBase {
             |}
             |""".stripMargin)
           val writer = createParquetWriter(schema, path, dictionaryEnabled)
-          val record = new SimpleGroup(schema)
-          record.add(0, millis)
-          record.add(1, millis)
-          writer.write(record)
+          // A single row falls back to PLAIN even with dictionary encoding enabled, because
+          // a one-entry dictionary page is not smaller than the raw values. Write enough
+          // repeated rows for the writer to keep dictionary-encoded data pages.
+          (0 until 16).foreach { _ =>
+            val record = new SimpleGroup(schema)
+            record.add(0, millis)
+            record.add(1, millis)
+            writer.write(record)
+          }
           writer.close()
+
+          val footerReader = org.apache.parquet.hadoop.ParquetFileReader.open(
+            org.apache.parquet.hadoop.util.HadoopInputFile
+              .fromPath(path, spark.sessionState.newHadoopConf()))
+          try {
+            footerReader.getFooter.getBlocks.forEach { block =>
+              block.getColumns.forEach { column =>
+                assert(
+                  column.getEncodingStats.hasDictionaryEncodedPages == dictionaryEnabled,
+                  s"expected hasDictionaryEncodedPages=$dictionaryEnabled " +
+                    s"for column ${column.getPath}")
+              }
+            }
+          } finally {
+            footerReader.close()
+          }
 
           Seq(false, true).foreach { ansiEnabled =>
             withSQLConf(SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString) {
