@@ -172,6 +172,10 @@ name = "arrays_overlap"
 harness = false
 
 [[bench]]
+name = "array_extrema"
+harness = false
+
+[[bench]]
 name = "checked_arithmetic"
 harness = false
 

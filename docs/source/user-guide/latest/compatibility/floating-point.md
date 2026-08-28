@@ -28,6 +28,13 @@ to Spark in some cases, especially when the data contains both positive and nega
 case that is not of concern for many users. If it is a concern, setting `spark.comet.exec.strictFloatingPoint=true`
 will make relevant operations fall back to Spark.
 
+`array_min` and `array_max` use Spark-compatible native comparisons in both strict and non-strict
+floating-point modes. Signed zeros compare equal, and all NaN representations compare equal and
+greater than non-NaN values. The original first equal element is retained: for example,
+`array_min(array(0.0D, -0.0D))` returns `0.0`, while reversing those elements returns `-0.0`.
+The same ordering applies recursively to floating-point fields in arrays and structs. These
+expressions do not require Spark's codegen dispatcher for floating-point compatibility.
+
 ## Ordering: signed zero (`-0.0` vs `+0.0`)
 
 Spark's `ORDER BY`, `RANK`, `DENSE_RANK`, and window frame comparisons route through

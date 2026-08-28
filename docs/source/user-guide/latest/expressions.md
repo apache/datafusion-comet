@@ -156,8 +156,8 @@ The tables below list every Spark built-in expression with its current status.
 | `array_insert` | ✅ | Native |  |
 | `array_intersect` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default; the incompatible native path is opt-in via allowIncompatible ([details](compatibility/expressions/array.md)) |
 | `array_join` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default; the incompatible native path is opt-in via allowIncompatible ([details](compatibility/expressions/array.md)) |
-| `array_max` | ✅ | Native | NaN ordering may differ ([details](compatibility/floating-point.md)) |
-| `array_min` | ✅ | Native | NaN ordering may differ ([details](compatibility/floating-point.md)) |
+| `array_max` | ✅ | Native | Spark-compatible floating-point and nested ordering; non-default string collations fall back ([details](compatibility/expressions/array.md)) |
+| `array_min` | ✅ | Native | Spark-compatible floating-point and nested ordering; non-default string collations fall back ([details](compatibility/expressions/array.md)) |
 | `array_position` | ✅ | Native | Binary/struct/map/null elements fall back |
 | `array_prepend` | ✅ | — |  |
 | `array_remove` | ✅ | Native |  |

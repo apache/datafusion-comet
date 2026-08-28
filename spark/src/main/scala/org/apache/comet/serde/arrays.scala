@@ -215,7 +215,26 @@ object CometArrayIntersect
   }
 }
 
+private object ArrayExtremaSupport extends CometTypeShim {
+  val incompatReason: String =
+    "Array extrema use binary string ordering for non-UTF8_BINARY collations " +
+      "(https://github.com/apache/datafusion-comet/issues/4496)."
+
+  def getSupportLevel(elementType: DataType): SupportLevel = {
+    if (hasNonDefaultStringCollation(elementType)) {
+      Incompatible(Some(incompatReason))
+    } else {
+      Compatible()
+    }
+  }
+}
+
 object CometArrayMax extends CometExpressionSerde[ArrayMax] {
+  override def getIncompatibleReasons(): Seq[String] = Seq(ArrayExtremaSupport.incompatReason)
+
+  override def getSupportLevel(expr: ArrayMax): SupportLevel =
+    ArrayExtremaSupport.getSupportLevel(expr.dataType)
+
   override def convert(
       expr: ArrayMax,
       inputs: Seq[Attribute],
@@ -229,6 +248,11 @@ object CometArrayMax extends CometExpressionSerde[ArrayMax] {
 }
 
 object CometArrayMin extends CometExpressionSerde[ArrayMin] {
+  override def getIncompatibleReasons(): Seq[String] = Seq(ArrayExtremaSupport.incompatReason)
+
+  override def getSupportLevel(expr: ArrayMin): SupportLevel =
+    ArrayExtremaSupport.getSupportLevel(expr.dataType)
+
   override def convert(
       expr: ArrayMin,
       inputs: Seq[Attribute],

@@ -15,13 +15,16 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
+-- Config: spark.comet.exec.scalaUDF.codegen.enabled=false
+-- Config: spark.comet.expression.ArrayMax.allowIncompatible=false
+
 statement
 CREATE TABLE test_array_max(arr array<int>) USING parquet
 
 statement
 INSERT INTO test_array_max VALUES (array(1, 2, 3)), (array(3, 1, 2)), (array()), (NULL), (array(NULL, 1, 2)), (array(-1, -2, -3))
 
-query spark_answer_only
+query
 SELECT array_max(arr) FROM test_array_max
 
 -- literal arguments
@@ -68,3 +71,44 @@ INSERT INTO test_array_max_float VALUES
 
 query
 SELECT array_max(arr) FROM test_array_max_float
+
+-- Regression for https://github.com/apache/datafusion-comet/issues/5401:
+-- Spark preserves the first equal zero (-0.0 here), and native execution must do the same.
+statement
+CREATE TABLE test_array_max_negzero(d array<double>, f array<float>) USING parquet
+
+statement
+INSERT INTO test_array_max_negzero VALUES
+  (array(double('-0.0'), double('0.0')), array(float('-0.0'), float('0.0')))
+
+query
+SELECT array_max(d), array_max(f) FROM test_array_max_negzero
+
+-- Default-mode non-floating native controls, including nested nulls-first ordering.
+statement
+CREATE TABLE test_array_max_nested_non_fp(
+  id int, a array<array<int>>, s array<struct<k:int,v:string>>) USING parquet
+
+statement
+INSERT INTO test_array_max_nested_non_fp VALUES
+  (1, array(array(1, NULL), array(1, 0)),
+      array(named_struct('k', 1, 'v', NULL), named_struct('k', 1, 'v', 'a'))),
+  (2, array(array(1, 0), array(1, NULL)),
+      array(named_struct('k', 1, 'v', 'a'), named_struct('k', 1, 'v', NULL))),
+  (3, array(array(), array(NULL)),
+      array(NULL, named_struct('k', NULL, 'v', 'a'))),
+  (4, array(array(1), array(1, NULL)),
+      array(named_struct('k', NULL, 'v', 'b'), named_struct('k', NULL, 'v', 'a'))),
+  (5, array(NULL, array(0)), array(NULL, named_struct('k', NULL, 'v', NULL))),
+  (6, array(NULL, NULL), array(NULL, NULL)),
+  (7, array(), array()),
+  (8, NULL, NULL)
+
+query
+SELECT id, array_max(a), array_max(s) FROM test_array_max_nested_non_fp
+
+query
+SELECT array_max(array(false, true, NULL)),
+       array_max(array('z', 'A', 'a')),
+       array_max(array(CAST(1.25 AS decimal(8, 2)), CAST(-2.5 AS decimal(8, 2)))),
+       array_max(array(DATE '2024-01-01', DATE '1969-12-31'))
