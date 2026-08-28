@@ -1,0 +1,67 @@
+TakeOrderedAndProject
++- Project
+   +- BroadcastHashJoin
+      :- Project
+      :  +- BroadcastHashJoin
+      :     :- Project
+      :     :  +- BroadcastHashJoin
+      :     :     :- CometColumnarToRow
+      :     :     :  +- CometFilter
+      :     :     :     +- CometHashAggregate
+      :     :     :        +- CometExchange
+      :     :     :           +- CometHashAggregate
+      :     :     :              +- CometProject
+      :     :     :                 +- CometBroadcastHashJoin
+      :     :     :                    :- CometProject
+      :     :     :                    :  +- CometBroadcastHashJoin
+      :     :     :                    :     :- CometFilter
+      :     :     :                    :     :  +- CometNativeScan parquet spark_catalog.default.web_returns
+      :     :     :                    :     :        +- CometSubqueryBroadcast
+      :     :     :                    :     :           +- CometBroadcastExchange
+      :     :     :                    :     :              +- CometProject
+      :     :     :                    :     :                 +- CometFilter
+      :     :     :                    :     :                    +- CometNativeScan parquet spark_catalog.default.date_dim
+      :     :     :                    :     +- CometBroadcastExchange
+      :     :     :                    :        +- CometProject
+      :     :     :                    :           +- CometFilter
+      :     :     :                    :              +- CometNativeScan parquet spark_catalog.default.date_dim
+      :     :     :                    +- CometBroadcastExchange
+      :     :     :                       +- CometProject
+      :     :     :                          +- CometFilter
+      :     :     :                             +- CometNativeScan parquet spark_catalog.default.customer_address
+      :     :     +- BroadcastExchange
+      :     :        +- Filter
+      :     :           +-  HashAggregate [COMET: Grouped decimal AVG in ANSI mode requires Spark's lazy group evaluation]
+      :     :              +- Exchange
+      :     :                 +-  HashAggregate [COMET: Grouped decimal AVG in ANSI mode requires Spark's lazy group evaluation]
+      :     :                    +- CometColumnarToRow
+      :     :                       +- CometHashAggregate
+      :     :                          +- CometExchange
+      :     :                             +- CometHashAggregate
+      :     :                                +- CometProject
+      :     :                                   +- CometBroadcastHashJoin
+      :     :                                      :- CometProject
+      :     :                                      :  +- CometBroadcastHashJoin
+      :     :                                      :     :- CometFilter
+      :     :                                      :     :  +- CometNativeScan parquet spark_catalog.default.web_returns
+      :     :                                      :     :        +- ReusedSubquery
+      :     :                                      :     +- CometBroadcastExchange
+      :     :                                      :        +- CometProject
+      :     :                                      :           +- CometFilter
+      :     :                                      :              +- CometNativeScan parquet spark_catalog.default.date_dim
+      :     :                                      +- CometBroadcastExchange
+      :     :                                         +- CometProject
+      :     :                                            +- CometFilter
+      :     :                                               +- CometNativeScan parquet spark_catalog.default.customer_address
+      :     +- BroadcastExchange
+      :        +- CometColumnarToRow
+      :           +- CometProject
+      :              +- CometFilter
+      :                 +- CometNativeScan parquet spark_catalog.default.customer
+      +- BroadcastExchange
+         +- CometColumnarToRow
+            +- CometProject
+               +- CometFilter
+                  +- CometNativeScan parquet spark_catalog.default.customer_address
+
+Comet accelerated 46 out of 60 eligible operators (76%). Final plan contains 4 transitions between Spark and Comet. Accelerated expressions: 7 native, 0 codegen dispatch.
