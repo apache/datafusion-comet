@@ -39,3 +39,37 @@ SELECT map(1, named_struct('x', 10, 'x', 20))
 -- Distinct field names are unaffected.
 query
 SELECT map(1, named_struct('x', 10, 'y', 20))
+
+-- ===== untyped constructors leave NullType children =====
+-- `map()` is MapType(NullType, NullType) and `map(k, NULL)` is MapType(_, NullType).
+
+query
+SELECT map()
+
+query
+SELECT map('a', NULL)
+
+query
+SELECT map(k, NULL) FROM test_create_map
+
+query
+SELECT id, map() FROM (SELECT explode(sequence(1, 3)) AS id)
+
+query
+SELECT size(map()), size(map('a', NULL))
+
+query
+SELECT map_keys(map()), map_values(map('a', NULL))
+
+query
+SELECT array(map()), struct(map(), map('a', NULL))
+
+query
+SELECT map('a', array(NULL)), map('a', map())
+
+query
+SELECT map_from_arrays(array(), array())
+
+-- carry the NullType children through a sort so the vector survives copy/spill paths
+query
+SELECT k, map(), map('a', NULL) FROM test_create_map ORDER BY k

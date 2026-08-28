@@ -43,3 +43,7 @@ SELECT zip_with(a, b, (x, y) -> struct(x AS l, y AS r)) FROM test_zip_with
 -- all literals
 query
 SELECT zip_with(array(1, 2), array(3, 4), (x, y) -> x * y)
+
+-- untyped empty arrays leave the element type as NullType
+query
+SELECT zip_with(array(), array(), (x, y) -> x)
