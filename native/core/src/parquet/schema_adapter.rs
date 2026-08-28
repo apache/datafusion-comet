@@ -495,24 +495,30 @@ impl PhysicalExprAdapter for SparkPhysicalExprAdapter {
             let mut column_err: Option<DataFusionError> = None;
             let _ = Arc::<dyn PhysicalExpr>::clone(&expr).transform(|e| {
                 if let Some(col) = e.downcast_ref::<Column>() {
-                    if let Some((req, matched)) = check_column_duplicate(col.name(), orig_physical)
-                    {
-                        column_err = Some(DataFusionError::External(Box::new(
-                            SparkError::DuplicateFieldCaseInsensitive {
-                                required_field_name: req,
-                                matched_fields: matched,
-                            },
-                        )));
-                    }
-                    if column_err.is_none() && variant_scan {
-                        let id_matched = should_match_by_id
-                            && self
-                                .logical_file_schema
-                                .field_with_name(col.name())
-                                .ok()
-                                .and_then(parse_field_id)
-                                .is_some();
-                        if !id_matched {
+                    // Spark resolves an ID-bearing requested field by unique field ID before
+                    // any name matching (`ParquetReadSupport.matchIdField`), so file name
+                    // collisions and Unicode folds never affect it; duplicate-ID validation
+                    // runs in `remap_physical_schema`. All other fields fall through to the
+                    // name matcher and get both checks.
+                    let id_matched = should_match_by_id
+                        && self
+                            .logical_file_schema
+                            .field_with_name(col.name())
+                            .ok()
+                            .and_then(parse_field_id)
+                            .is_some();
+                    if !id_matched {
+                        if let Some((req, matched)) =
+                            check_column_duplicate(col.name(), orig_physical)
+                        {
+                            column_err = Some(DataFusionError::External(Box::new(
+                                SparkError::DuplicateFieldCaseInsensitive {
+                                    required_field_name: req,
+                                    matched_fields: matched,
+                                },
+                            )));
+                        }
+                        if column_err.is_none() && variant_scan {
                             if let Some(phys) =
                                 check_column_unicode_fold_mismatch(col.name(), orig_physical)
                             {
@@ -2204,5 +2210,29 @@ mod test {
             variant_field("\u{212A}", Some(2)),
         ]));
         rewrite_column(logical, physical, true, "k").unwrap();
+    }
+
+    #[test]
+    fn test_duplicate_name_validation_exempts_id_resolved_columns() {
+        // A case-sensitive Spark write can produce `v`/`V` siblings. With field-ID reads,
+        // Spark resolves the requested `v` by unique ID before any name matching
+        // (`ParquetReadSupport.matchIdField`), so the case-insensitive duplicate error must
+        // not fire for it.
+        let logical: SchemaRef = Arc::new(Schema::new(vec![variant_field("v", Some(1))]));
+        let physical: SchemaRef = Arc::new(Schema::new(vec![
+            variant_field("v", Some(1)),
+            int_field("V", Some(2)),
+        ]));
+        rewrite_column(logical, physical, true, "v").unwrap();
+
+        // Without field IDs the requested name falls through to name matching, which keeps
+        // Spark's ambiguity error.
+        let logical: SchemaRef = Arc::new(Schema::new(vec![variant_field("v", None)]));
+        let physical: SchemaRef = Arc::new(Schema::new(vec![
+            variant_field("v", None),
+            int_field("V", None),
+        ]));
+        let err = rewrite_column(logical, physical, false, "v").unwrap_err();
+        assert!(err.to_string().contains("Found duplicate field"), "{err}");
     }
 }

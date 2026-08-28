@@ -34,9 +34,10 @@ import org.apache.parquet.schema.MessageTypeParser
 import org.apache.spark.sql.{CometTestBase, Row}
 import org.apache.spark.sql.comet.CometNativeScanExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
 import org.apache.spark.sql.functions.{array, col}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{IntegerType, LongType, NullType, StringType, StructType}
+import org.apache.spark.sql.types.{IntegerType, LongType, MetadataBuilder, NullType, StringType, StructType}
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, isSpark41Plus}
@@ -207,6 +208,41 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
             .mkString("\n")
           assert(messages.contains("Unicode case folding"), messages)
         }
+      }
+    }
+  }
+
+  test("case-insensitive Variant scan resolves duplicate names by field ID") {
+    assume(isSpark40Plus, "VariantType requires Spark 4.0+")
+
+    def fieldId(id: Int) =
+      new MetadataBuilder().putLong(ParquetUtils.FIELD_ID_METADATA_KEY, id).build()
+
+    withTempPath { path =>
+      withSQLConf(
+        CometConf.COMET_ENABLED.key -> "false",
+        SQLConf.CASE_SENSITIVE.key -> "true",
+        "spark.sql.variant.writeShredding.enabled" -> "false") {
+        sql("SELECT parse_json('42') AS v, 7 AS V")
+          .select(col("v").as("v", fieldId(1)), col("V").as("V", fieldId(2)))
+          .write
+          .parquet(path.toString)
+      }
+
+      val variantField = StructType.fromDDL("v VARIANT").fields.head
+      val readSchema = StructType(Seq(variantField.copy(metadata = fieldId(1))))
+
+      withSQLConf(
+        SQLConf.CASE_SENSITIVE.key -> "false",
+        SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "true",
+        "spark.sql.parquet.filterPushdown" -> "false",
+        "spark.sql.variant.allowReadingShredded" -> "true",
+        "spark.sql.variant.pushVariantIntoScan" -> "false") {
+        // Spark resolves the unique field ID before name matching, so the physical `v`/`V`
+        // name collision must not raise the case-insensitive duplicate error for `v`.
+        val (_, cometPlan) =
+          checkSparkAnswer(spark.read.schema(readSchema).parquet(path.toString))
+        assert(collect(cometPlan) { case s: CometNativeScanExec => s }.size == 1)
       }
     }
   }
