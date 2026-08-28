@@ -22,9 +22,8 @@ use arrow::compute::can_cast_types;
 use arrow::datatypes::{FieldRef, Fields};
 use arrow::{
     array::{
-        cast::AsArray, new_null_array, types::Int32Type, types::TimestampMicrosecondType,
-        types::TimestampMillisecondType, Array, ArrayRef, ArrowNativeTypeOp, DictionaryArray,
-        StructArray,
+        cast::AsArray, new_null_array, types::TimestampMicrosecondType,
+        types::TimestampMillisecondType, Array, ArrayRef, ArrowNativeTypeOp, StructArray,
     },
     compute::{cast_with_options, CastOptions},
     datatypes::{DataType, TimeUnit},
