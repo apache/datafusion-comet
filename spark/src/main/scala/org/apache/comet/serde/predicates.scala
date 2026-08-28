@@ -386,12 +386,12 @@ object ComparisonUtils {
       inputs: Seq[Attribute],
       binding: Boolean,
       negate: Boolean): Option[Expr] = {
-    // NaNs and either sign of zero cannot match a finite nonzero literal. Leave such lists
+    // NaNs and either sign of zero cannot match a non-NaN nonzero literal. Leave such lists
     // unwrapped so native Parquet scans can still prune using the column's statistics.
     val needsNormalization = !list.forall {
       case Literal(null, _) => true
-      case Literal(v: Float, FloatType) => java.lang.Float.isFinite(v) && v != 0.0f
-      case Literal(v: Double, DoubleType) => java.lang.Double.isFinite(v) && v != 0.0d
+      case Literal(v: Float, FloatType) => !java.lang.Float.isNaN(v) && v != 0.0f
+      case Literal(v: Double, DoubleType) => !java.lang.Double.isNaN(v) && v != 0.0d
       case _ => false
     }
     // Otherwise normalize both sides for Spark's NaN/zero equality, including fused NOT IN.
