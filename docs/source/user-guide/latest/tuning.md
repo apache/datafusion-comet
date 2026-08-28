@@ -206,7 +206,8 @@ spark.comet.shuffle.enabled=true
 `spark.shuffle.manager` is a Spark static configuration which cannot be changed at runtime.
 It must be set before the Spark context is created. You can enable or disable Comet shuffle
 at runtime by setting `spark.comet.shuffle.enabled` to `true` or `false`.
-Once it is disabled, Comet will fall back to the default Spark shuffle manager.
+Once it is disabled, the configured shuffle manager handles ordinary Spark shuffle dependencies
+without Comet's shuffle implementation.
 
 ### Shuffle Implementations
 
@@ -250,6 +251,55 @@ Each revert is logged at `INFO` level on the driver as `Reverting Comet columnar
 This optimization is enabled by default and can be disabled by setting
 `spark.comet.shuffle.revertRedundantColumnar.enabled=false`, in which case Comet will keep the columnar shuffle
 even when both its parent and child are non-Comet operators.
+
+### Remote Shuffle with Celeborn
+
+Applications using Apache Celeborn can opt into Comet's native shuffle writer and reader with
+the composite shuffle manager:
+
+```properties
+spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometCelebornShuffleManager
+spark.comet.exec.enabled=true
+spark.comet.shuffle.enabled=true
+spark.comet.shuffle.mode=native
+spark.celeborn.client.spark.stageRerun.enabled=true
+```
+
+Set the shuffle manager and Celeborn configuration before creating the Spark context. Celeborn is
+an optional application dependency, not bundled with Comet: provide a compatible Celeborn Spark
+client matching the application's Spark and Scala versions on both the driver and executors,
+alongside the Comet JAR. Keep the application's existing Celeborn service configuration.
+
+Native Celeborn shuffle requires explicit `spark.comet.shuffle.mode=native`. The default `auto`
+mode and `jvm` mode retain ordinary Spark shuffle through the delegated Celeborn manager; they do
+not select Comet's JVM columnar shuffle. Comet execution can still accelerate other operators.
+With native mode enabled, exchanges with unsupported children, data types, or partitioning also
+retain the ordinary Spark/Celeborn shuffle path. The local `CometShuffleManager` keeps its existing
+native-to-columnar fallback behavior.
+
+Stage reruns must remain enabled so failed or ambiguous map attempts can recover through a new
+Celeborn shuffle generation. Native RSS does not support `spark.io.encryption.enabled=true`;
+encrypted applications retain ordinary Spark/Celeborn shuffle instead. Do not disable encryption
+required by the application to enable native RSS. Eligibility uses the manager's application-time
+configuration, including Celeborn's effective defaults and legacy aliases, rather than later SQL
+session overrides.
+
+Celeborn's fallback policy remains application-owned. An effective
+`spark.celeborn.client.spark.shuffle.fallback.policy=ALWAYS`, or an `AUTO` partition-count
+threshold that the exchange reaches, keeps the exchange on Spark. Worker availability and quota
+can still cause Celeborn to choose local fallback during registration. Once an exchange has been
+planned as native, Comet rejects that local handle and fails the registration: native Arrow frames
+cannot be passed to Spark's ordinary local shuffle writer. Set
+`spark.celeborn.client.spark.shuffle.fallback.policy=NEVER` only if the application also wants
+Celeborn to prohibit local fallback for ordinary Spark shuffles.
+
+Native frames retain Comet's configured compression; the raw Celeborn client path bypasses
+Celeborn's additional row compression and decompression. Use
+`spark.comet.shuffle.rss.maxFrameBytes` and `spark.comet.shuffle.rss.maxInFlightBytes` to bound
+encoded frame size and executor-side push admission. These limits include framing and overlapping
+native/JNI/client copies; a frame that cannot fit is rejected rather than split across requests.
+AQE reducer coalescing and mapper-range reads are supported, but Celeborn physical-skew chunk reads
+are not.
 
 ### Shuffle Compression
 
