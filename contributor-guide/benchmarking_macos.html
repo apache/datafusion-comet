@@ -563,7 +563,7 @@ management may throttle CPU cores.</p>
 mkdir<span class="w"> </span>benchmark_data
 <span class="nb">cd</span><span class="w"> </span>benchmark_data
 tpchgen-cli<span class="w"> </span>-s<span class="w"> </span><span class="m">100</span><span class="w"> </span>--format<span class="o">=</span>parquet
-<span class="nb">export</span><span class="w"> </span><span class="nv">$BENCH_DATA</span><span class="o">=</span><span class="sb">`</span><span class="nb">pwd</span><span class="sb">`</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">BENCH_DATA</span><span class="o">=</span><span class="sb">`</span><span class="nb">pwd</span><span class="sb">`</span>
 </pre></div>
 </div>
 <p>Create a temp folder for spark events emitted during benchmarking</p>
@@ -627,7 +627,7 @@ In order to start local Apache Spark cluster on <code class="docutils literal no
 <span class="w">    </span>--conf<span class="w"> </span>spark.eventLog.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
 <span class="w">    </span><span class="nv">$DF_BENCH</span>/runners/datafusion-comet/tpcbench.py<span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--benchmark<span class="w"> </span>tpch<span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--data<span class="w"> </span><span class="nv">$BENCH_DATA</span>/tpch-data/<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--data<span class="w"> </span><span class="nv">$BENCH_DATA</span>/<span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--queries<span class="w"> </span><span class="nv">$DF_BENCH</span>/tpch/queries<span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--output<span class="w"> </span>.<span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--iterations<span class="w"> </span><span class="m">1</span>
@@ -666,7 +666,7 @@ In order to start local Apache Spark cluster on <code class="docutils literal no
 <span class="w">    </span>--conf<span class="w"> </span>spark.comet.exec.forceShuffledHashJoin<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
 <span class="w">    </span><span class="nv">$DF_BENCH</span>/runners/datafusion-comet/tpcbench.py<span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--benchmark<span class="w"> </span>tpch<span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--data<span class="w"> </span><span class="nv">$BENCH_DATA</span>/tpch-data/<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--data<span class="w"> </span><span class="nv">$BENCH_DATA</span>/<span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--queries<span class="w"> </span><span class="nv">$DF_BENCH</span>/tpch/queries<span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--output<span class="w"> </span>.<span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--iterations<span class="w"> </span><span class="m">1</span>
