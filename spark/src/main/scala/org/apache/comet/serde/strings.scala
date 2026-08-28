@@ -718,7 +718,9 @@ object CometBase64 extends CometExpressionSerde[Base64] {
 // `unbase64(...)`) only when the child is a column reference or literal, since native
 // ScalarFunctionExpr evaluates its arguments eagerly and would bypass Spark's short-circuit
 // semantics for compound children (see apache/datafusion-comet#5451). More complex children
-// stay on the JVM codegen dispatcher via CodegenDispatchFallback. When failOnError = true
+// stay on the JVM codegen dispatcher via CodegenDispatchFallback. CometExecRule preserves
+// row evaluation below LIMIT and in first-match join conditions for both execution paths.
+// When failOnError = true
 // (from `to_binary('base64')` / `try_to_binary`), Spark uses a stricter RFC 4648 validator, so
 // those cases also stay on the dispatcher. Error messages match Spark byte-for-byte (pinned in
 // the Rust unit tests), but the wrapping exception class does not; kept as Compatible() because
@@ -733,8 +735,12 @@ object CometUnBase64 extends CometExpressionSerde[UnBase64] with CodegenDispatch
     "unbase64 with a non-trivial child expression uses the JVM codegen dispatcher to preserve" +
       " Spark's short-circuit evaluation (native path is limited to column and literal children)"
 
+  private val maskedEvaluationReason =
+    "unbase64 below LIMIT or in first-match join conditions falls back to Spark so malformed" +
+      " input is not decoded on rows Spark skips"
+
   override def getUnsupportedReasons(): Seq[String] =
-    Seq(failOnErrorReason, nonTrivialChildReason)
+    Seq(failOnErrorReason, nonTrivialChildReason, maskedEvaluationReason)
 
   override def getSupportLevel(expr: UnBase64): SupportLevel = {
     if (expr.failOnError) {

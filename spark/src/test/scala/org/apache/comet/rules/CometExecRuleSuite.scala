@@ -23,18 +23,25 @@ import scala.util.Random
 
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.FunctionIdentifier
-import org.apache.spark.sql.catalyst.expressions.{Expression, ExpressionInfo}
+import org.apache.spark.sql.catalyst.expressions.{Alias, Ascending, AttributeReference, BoundReference, Expression, ExpressionInfo, GreaterThan, Literal, SortOrder, UnBase64}
 import org.apache.spark.sql.catalyst.expressions.aggregate.BloomFilterAggregate
+import org.apache.spark.sql.catalyst.optimizer.BuildRight
+import org.apache.spark.sql.catalyst.plans.{JoinType, LeftAnti, LeftSemi}
+import org.apache.spark.sql.catalyst.plans.logical.LocalRelation
+import org.apache.spark.sql.catalyst.plans.physical.{IdentityBroadcastMode, SinglePartition}
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution._
-import org.apache.spark.sql.execution.adaptive.QueryStageExec
+import org.apache.spark.sql.execution.adaptive.{LogicalQueryStage, QueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{HashAggregateExec, ObjectHashAggregateExec}
-import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ShuffleExchangeExec}
+import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ShuffleExchangeExec, ShuffleExchangeLike}
+import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, HashedRelationBroadcastMode, ShuffledHashJoinExec, SortMergeJoinExec}
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
 
-import org.apache.comet.{CometConf, CometExplainInfo}
+import org.apache.comet.{CometConf, CometExplainInfo, ExtendedExplainInfo}
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark42Plus}
+import org.apache.comet.shims.ShimCometWindowGroupLimit
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
 /**
@@ -75,6 +82,238 @@ class CometExecRuleSuite extends CometTestBase {
         countOperators(stage.plan, opClass)
       case op if op.getClass.isAssignableFrom(opClass) => 1
     }.sum
+  }
+
+  private def withUnbase64Project(f: ProjectExec => Unit): Unit = {
+    for (codegenDispatch <- Seq(false, true)) {
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false",
+        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+        CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> codegenDispatch.toString) {
+        val input =
+          createSparkPlan(spark, "SELECT * FROM VALUES (1, 'YWJj'), (2, 'A') AS inputs(id, bad)")
+        withClue(s"codegenDispatch=$codegenDispatch: ") {
+          f(
+            ProjectExec(
+              Seq(input.output.head, Alias(UnBase64(input.output(1)), "decoded")()),
+              input))
+        }
+      }
+    }
+  }
+
+  test("unbase64 stays in Spark below every physical LIMIT") {
+    withUnbase64Project { project =>
+      val limits: Seq[SparkPlan => SparkPlan] = Seq(
+        child => CollectLimitExec(1, child),
+        child => LocalLimitExec(1, child),
+        child => GlobalLimitExec(1, child))
+      limits.foreach { limit =>
+        val plan = limit(ProjectExec(project.projectList, project.child))
+        val transformed = applyCometExecRule(plan)
+        withClue(plan.nodeName) {
+          assert(transformed.getClass == plan.getClass)
+          assert(countOperators(transformed, classOf[ProjectExec]) == 1)
+          assert(countOperators(transformed, classOf[CometProjectExec]) == 0)
+          assert(countOperators(transformed, classOf[CometLocalTableScanExec]) == 1)
+        }
+      }
+    }
+  }
+
+  test("unbase64 LIMIT fallback survives an isolated shuffle stage pass") {
+    withUnbase64Project { project =>
+      val plan =
+        GlobalLimitExec(1, ShuffleExchangeExec(SinglePartition, LocalLimitExec(1, project)))
+      val transformed = applyCometExecRule(plan)
+      val exchange = transformed.collectFirst { case shuffle: ShuffleExchangeLike => shuffle }.get
+      for (replanned <- Seq(applyCometExecRule(transformed), applyCometExecRule(exchange))) {
+        assert(countOperators(replanned, classOf[LocalLimitExec]) == 1)
+        assert(countOperators(replanned, classOf[ProjectExec]) == 1)
+        assert(countOperators(replanned, classOf[CometProjectExec]) == 0)
+      }
+    }
+  }
+
+  test("unbase64 stays native below LIMIT materialization barriers") {
+    withUnbase64Project { project =>
+      val barriers: Seq[SparkPlan => SparkPlan] = Seq(
+        child => SortExec(Seq(SortOrder(child.output.head, Ascending)), global = false, child),
+        child => ShuffleExchangeExec(SinglePartition, child))
+      barriers.foreach { barrier =>
+        val blocking = barrier(ProjectExec(project.projectList, project.child))
+        // Check both an original Spark subtree and a native subtree reused by AQE.
+        for (child <- Seq(blocking, applyCometExecRule(blocking))) {
+          val transformed = applyCometExecRule(LocalLimitExec(1, child))
+          withClue(blocking.nodeName) {
+            assert(countOperators(transformed, classOf[CometProjectExec]) == 1)
+            assert(countOperators(transformed, classOf[ProjectExec]) == 0)
+          }
+        }
+      }
+    }
+  }
+
+  test("unbase64 protects ordered top-K inputs but keeps its output projection native") {
+    withUnbase64Project { project =>
+      val order = Seq(SortOrder(project.child.output.head, Ascending))
+      val ordered = project.withNewChildren(Seq(SortExec(order, global = false, project.child)))
+      val masked = TakeOrderedAndProjectExec(1, order, ordered.output, ordered)
+      assert(SortOrder.orderingSatisfies(ordered.outputOrdering, order))
+      val transformed = applyCometExecRule(masked)
+      assert(transformed.isInstanceOf[TakeOrderedAndProjectExec])
+      assert(countOperators(transformed, classOf[ProjectExec]) == 1)
+      assert(countOperators(transformed, classOf[CometSortExec]) == 1)
+
+      // This projection runs after top-K has sliced the rows, so it needs no fallback.
+      val safe = TakeOrderedAndProjectExec(1, order, project.projectList, project.child)
+      assert(applyCometExecRule(safe).isInstanceOf[CometTakeOrderedAndProjectExec])
+    }
+  }
+
+  test("unbase64 protects ordered WindowGroupLimit inputs across ranks and modes") {
+    assume(isSpark35Plus, "WindowGroupLimit requires Spark 3.5+")
+    withUnbase64Project { project =>
+      withSQLConf(
+        "spark.sql.optimizer.windowGroupLimitThreshold" -> "1000",
+        "spark.sql.execution.topKSortFallbackThreshold" -> "0") {
+        val windowLimitClass = ShimCometWindowGroupLimit.windowGroupLimitClass.get
+        for (rank <- Seq("row_number", "rank", "dense_rank")) {
+          val template = createSparkPlan(
+            spark,
+            s"""SELECT * FROM (
+               |  SELECT id, $rank() OVER (ORDER BY id) AS rn FROM range(0, 4, 1, 2)
+               |) WHERE rn <= 1""".stripMargin)
+          val limits = template.collect {
+            case node if windowLimitClass.isInstance(node) =>
+              node.transformExpressions { case _: AttributeReference => project.output.head }
+          }
+          assert(limits.size == 2, s"Expected partial and final limits: $template")
+          limits.foreach { limit =>
+            val order = limit.requiredChildOrdering.head
+            val ordered =
+              project.withNewChildren(Seq(SortExec(order, global = false, project.child)))
+            // AQE may reuse a decoder that has already been converted to native execution.
+            for (child <- Seq(ordered, applyCometExecRule(ordered))) {
+              assert(SortOrder.orderingSatisfies(child.outputOrdering, order))
+              val transformed = applyCometExecRule(limit.withNewChildren(Seq(child)))
+              for (replanned <- Seq(transformed, applyCometExecRule(transformed))) {
+                assert(windowLimitClass.isInstance(replanned))
+                assert(countOperators(replanned, classOf[ProjectExec]) == 1)
+                assert(countOperators(replanned, classOf[CometProjectExec]) == 0)
+                assert(countOperators(replanned, classOf[CometSortExec]) == 1)
+              }
+            }
+
+            // A sort above the decoder consumes every row, so batching remains safe.
+            val sorted =
+              SortExec(order, global = false, ProjectExec(project.projectList, project.child))
+            val safe = applyCometExecRule(limit.withNewChildren(Seq(sorted)))
+            assert(countOperators(safe, classOf[CometProjectExec]) == 1)
+            assert(countOperators(safe, classOf[ProjectExec]) == 0)
+
+            // Before ordering is satisfied, the limit has no safe early-stop boundary.
+            val unordered = ProjectExec(project.projectList, project.child)
+            assert(!SortOrder.orderingSatisfies(unordered.outputOrdering, order))
+            val pendingSort = applyCometExecRule(limit.withNewChildren(Seq(unordered)))
+            assert(countOperators(pendingSort, classOf[CometProjectExec]) == 1)
+          }
+        }
+      }
+    }
+  }
+
+  test("unbase64 LIMIT fallback rebuilds reused native ancestors and removes batch bridges") {
+    withUnbase64Project { project =>
+      val bridges: Seq[SparkPlan => SparkPlan] = Seq(
+        child => child,
+        child => RowToColumnarExec(ColumnarToRowExec(child)),
+        child => CometSparkToColumnarExec(CometColumnarToRowExec(child)),
+        child => CometSparkToColumnarExec(CometNativeColumnarToRowExec(child)))
+      bridges.foreach { bridge =>
+        val decoded = ProjectExec(project.projectList, project.child)
+        val native = applyCometExecRule(ProjectExec(decoded.output, decoded))
+        assert(countOperators(native, classOf[CometProjectExec]) == 2)
+        val logicalStage = LogicalQueryStage(LocalRelation(native.output), native)
+        native.setLogicalLink(logicalStage)
+        val transformed = applyCometExecRule(LocalLimitExec(1, bridge(native)))
+        for (replanned <- Seq(transformed, applyCometExecRule(transformed))) {
+          assert(countOperators(replanned, classOf[ProjectExec]) == 2)
+          assert(countOperators(replanned, classOf[CometProjectExec]) == 0)
+          assert(replanned.collect { case r: RowToColumnarTransition => r }.isEmpty)
+          assert(
+            replanned.children.head
+              .getTagValue(SparkPlan.LOGICAL_PLAN_TAG)
+              .exists(_ eq logicalStage))
+        }
+      }
+    }
+  }
+
+  test("unbase64 LIMIT fallback keeps incompatible aggregate buffers in Spark") {
+    withUnbase64Project { _ =>
+      val aggregate = createSparkPlan(
+        spark,
+        """SELECT unbase64(bad) AS decoded, collect_list(k) AS collected
+          |FROM VALUES (1, 'YWJj'), (2, 'YWJj') AS inputs(k, bad)
+          |GROUP BY bad""".stripMargin)
+      assert(countOperators(aggregate, classOf[ObjectHashAggregateExec]) == 2)
+      val native = applyCometExecRule(aggregate)
+      assert(countOperators(native, classOf[CometHashAggregateExec]) == 2)
+
+      // The final aggregate evaluates the decoder in its result expressions. Once it falls
+      // back below LIMIT, its partial must not emit Comet's incompatible collect_list buffer.
+      // Also cover a native subtree reused by AQE before the limiting consumer is applied.
+      for (child <- Seq(aggregate, native)) {
+        val transformed = applyCometExecRule(CollectLimitExec(1, child))
+        for (replanned <- Seq(transformed, applyCometExecRule(transformed))) {
+          assert(countOperators(replanned, classOf[ObjectHashAggregateExec]) == 2)
+          assert(countOperators(replanned, classOf[CometHashAggregateExec]) == 0)
+        }
+      }
+    }
+  }
+
+  test("unbase64 first-match conditions stay in Spark for every join strategy") {
+    withUnbase64Project { project =>
+      val left = project.child
+      val right = createSparkPlan(spark, "SELECT * FROM VALUES (1, 'YWJj') AS inputs(id, bad)")
+      val condition = Some(GreaterThan(UnBase64(right.output(1)), Literal(Array[Byte](97, 98))))
+      val leftKeys = Seq(left.output.head)
+      val rightKeys = Seq(right.output.head)
+      val hashed = BroadcastExchangeExec(
+        HashedRelationBroadcastMode(Seq(BoundReference(0, DataTypes.IntegerType, false))),
+        right)
+      val broadcast = BroadcastExchangeExec(IdentityBroadcastMode, right)
+      val joinTypes: Seq[JoinType] = Seq(LeftSemi, LeftAnti)
+      joinTypes.foreach { joinType =>
+        val joins: Seq[SparkPlan] = Seq(
+          BroadcastHashJoinExec(
+            leftKeys,
+            rightKeys,
+            joinType,
+            BuildRight,
+            condition,
+            left,
+            hashed),
+          ShuffledHashJoinExec(leftKeys, rightKeys, joinType, BuildRight, condition, left, right),
+          SortMergeJoinExec(leftKeys, rightKeys, joinType, condition, left, right),
+          BroadcastNestedLoopJoinExec(left, broadcast, BuildRight, joinType, condition))
+        joins.foreach { join =>
+          val transformed = applyCometExecRule(join)
+          withClue(s"${join.nodeName} $joinType") {
+            assert(transformed.getClass == join.getClass)
+            assert(
+              new ExtendedExplainInfo()
+                .getFallbackReasons(transformed)
+                .exists(_.contains("first-match join conditions")))
+            assert(countOperators(transformed, classOf[CometBroadcastExchangeExec]) == 0)
+            assert(countOperators(transformed, classOf[CometLocalTableScanExec]) == 2)
+          }
+        }
+      }
+    }
   }
 
   test("expression-level fallback reasons are rolled up onto the operator that falls back") {
