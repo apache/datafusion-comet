@@ -42,3 +42,7 @@ SELECT map_filter(m, (k, v) -> v > threshold) FROM test_map_filter
 -- all literals
 query
 SELECT map_filter(map('a', 1, 'b', 2), (k, v) -> v > 1)
+
+-- an untyped value leaves the value type as NullType
+query
+SELECT map_filter(map('a', NULL), (k, v) -> true)

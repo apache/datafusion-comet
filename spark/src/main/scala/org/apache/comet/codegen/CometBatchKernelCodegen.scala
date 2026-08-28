@@ -102,8 +102,15 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim with Come
    * operator against the Catalyst `DataType`, which keeps its collation, and does not depend on
    * what this predicate admits. Rejecting collated strings here would force a full Spark fallback
    * for a route that is already correct.
+   *
+   * `NullType` is output-only: [[CometBatchKernelCodegenOutput]] can write an all-null Arrow
+   * `NullVector`, but `CometScalaUDFCodegen.specFor` cannot build an [[ArrowColumnSpec]] for one,
+   * so a `NullType` input (nested or not) has to keep falling back to Spark.
    */
-  def isSupportedDataType(dt: DataType): Boolean = dt match {
+  def isSupportedDataType(dt: DataType): Boolean = isSupportedDataType(dt, allowNullType = false)
+
+  private def isSupportedDataType(dt: DataType, allowNullType: Boolean): Boolean = dt match {
+    case NullType => allowNullType
     case BooleanType | ByteType | ShortType | IntegerType | LongType => true
     case FloatType | DoubleType => true
     case _: DecimalType => true
@@ -111,13 +118,15 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim with Come
     case DateType | TimestampType | TimestampNTZType => true
     case dt if isTimeType(dt) => true
     case _: YearMonthIntervalType | _: DayTimeIntervalType | CalendarIntervalType => true
-    case ArrayType(inner, _) => isSupportedDataType(inner)
+    case ArrayType(inner, _) => isSupportedDataType(inner, allowNullType)
     case st: StructType =>
       // `fieldNames` rebuilds an array on each call, so read it once.
       val names = st.fieldNames
       names.distinct.length == names.length &&
-      st.fields.forall(f => isSupportedDataType(f.dataType))
-    case mt: MapType => isSupportedDataType(mt.keyType) && isSupportedDataType(mt.valueType)
+      st.fields.forall(f => isSupportedDataType(f.dataType, allowNullType))
+    case mt: MapType =>
+      isSupportedDataType(mt.keyType, allowNullType) &&
+      isSupportedDataType(mt.valueType, allowNullType)
     case _ => false
   }
 
@@ -142,7 +151,7 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim with Come
    * nested-field count on `spark.sql.codegen.maxFields`.
    */
   def canHandle(boundExpr: Expression): Option[String] = {
-    if (!isSupportedDataType(boundExpr.dataType)) {
+    if (!isSupportedDataType(boundExpr.dataType, allowNullType = true)) {
       return Some(s"codegen dispatch: unsupported output type ${boundExpr.dataType}")
     }
     // Mirror WSCG's `spark.sql.codegen.maxFields` gate. Wide schemas blow the generated class's
