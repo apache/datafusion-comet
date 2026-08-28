@@ -26,6 +26,8 @@ use datafusion::common::{cast::as_generic_string_array, DataFusionError, Result}
 use datafusion::physical_plan::ColumnarValue;
 use std::sync::Arc;
 
+/// Maximum retained scratch buffer capacity (1024 elements * 4 bytes = 4 KB).
+/// Inputs requiring larger buffers bypass TLS to avoid unbounded memory retention.
 const MAX_RETAINED_CAPACITY: usize = 1024;
 
 // Thread-local scratch buffers to avoid heap allocations in the row processing loop
@@ -34,16 +36,39 @@ thread_local! {
         std::cell::RefCell::new((Vec::with_capacity(64), Vec::with_capacity(64)));
 }
 
+/// Executes a closure using scratch buffers.
+/// For sizes up to `MAX_RETAINED_CAPACITY`, reuses TLS buffers.
+/// For oversized rows, allocates temporary vectors to prevent TLS memory bloat.
+/// Executes a closure using scratch buffers.
+/// For sizes up to `MAX_RETAINED_CAPACITY`, reuses TLS buffers.
+/// For oversized rows, allocates temporary vectors to prevent TLS memory bloat.
 #[inline]
-fn prepare_scratch(buf: &mut Vec<i32>, len: usize, default_val: i32) {
-    if buf.capacity() > MAX_RETAINED_CAPACITY && len <= MAX_RETAINED_CAPACITY {
-        *buf = Vec::with_capacity(MAX_RETAINED_CAPACITY);
+fn with_scratch_buffers<F, R>(len: usize, default_val: i32, f: F) -> R
+where
+    F: FnOnce(&mut Vec<i32>, &mut Vec<i32>) -> R,
+{
+    if len > MAX_RETAINED_CAPACITY {
+        let mut prev = vec![default_val; len];
+        let mut curr = vec![default_val; len];
+        f(&mut prev, &mut curr)
+    } else {
+        LEVENSHTEIN_SCRATCH.with(|scratch| {
+            let mut borrow = scratch.borrow_mut();
+            let (prev, curr) = &mut *borrow;
+
+            prev.clear();
+            prev.resize(len, default_val);
+            curr.clear();
+            curr.resize(len, default_val);
+
+            f(prev, curr)
+        })
     }
-    buf.clear();
-    buf.resize(len, default_val);
 }
 
 /// Computes the Levenshtein edit distance between two UTF-8 strings.
+///
+/// This uses the standard dynamic programming algorithm with O(min(m,n)) space.
 fn levenshtein_distance(s: &str, t: &str) -> i32 {
     // Fast path for ASCII strings: operate directly on raw bytes without vector allocations
     if s.is_ascii() && t.is_ascii() {
@@ -65,13 +90,7 @@ fn levenshtein_distance(s: &str, t: &str) -> i32 {
             (s_bytes, t_bytes, m, n)
         };
 
-        return LEVENSHTEIN_SCRATCH.with(|scratch| {
-            let mut borrow = scratch.borrow_mut();
-            let (prev, curr) = &mut *borrow;
-
-            prepare_scratch(prev, m + 1, 0);
-            prepare_scratch(curr, m + 1, 0);
-
+        return with_scratch_buffers(m + 1, 0, |prev, curr| {
             for (i, val) in prev.iter_mut().enumerate() {
                 *val = i as i32;
             }
@@ -95,6 +114,7 @@ fn levenshtein_distance(s: &str, t: &str) -> i32 {
     let m = s_chars.len();
     let n = t_chars.len();
 
+    // Optimization: if one string is empty, distance is the length of the other
     if m == 0 {
         return n as i32;
     }
@@ -102,31 +122,23 @@ fn levenshtein_distance(s: &str, t: &str) -> i32 {
         return m as i32;
     }
 
+    // Use the shorter string for the "column" to minimize space usage
     let (s_chars, t_chars, m, n) = if m > n {
         (t_chars, s_chars, n, m)
     } else {
         (s_chars, t_chars, m, n)
     };
 
-    LEVENSHTEIN_SCRATCH.with(|scratch| {
-        let mut borrow = scratch.borrow_mut();
-        let (prev, curr) = &mut *borrow;
-
-        prev.resize(m + 1, 0);
-        curr.resize(m + 1, 0);
-
+    with_scratch_buffers(m + 1, 0, |prev, curr| {
+        // Initialize base case: distance from empty string
         for (i, val) in prev.iter_mut().enumerate() {
             *val = i as i32;
         }
 
-        for j in 1..=n {
-            curr[0] = j as i32;
+        for (j, &t_char) in t_chars.iter().enumerate().take(n) {
+            curr[0] = (j + 1) as i32;
             for i in 1..=m {
-                let cost = if s_chars[i - 1] == t_chars[j - 1] {
-                    0
-                } else {
-                    1
-                };
+                let cost = if s_chars[i - 1] == t_char { 0 } else { 1 };
                 curr[i] = (prev[i] + 1).min(curr[i - 1] + 1).min(prev[i - 1] + cost);
             }
             std::mem::swap(prev, curr);
@@ -137,6 +149,10 @@ fn levenshtein_distance(s: &str, t: &str) -> i32 {
 }
 
 /// Computes the Levenshtein distance up to `threshold` using a diagonal band.
+///
+/// Spark's three-argument form uses the threshold to avoid evaluating cells that cannot
+/// contribute to a result within the requested distance. This keeps the complexity at
+/// O(threshold * max(m, n)) when the threshold is small rather than always using O(m * n).
 fn levenshtein_distance_with_threshold(s: &str, t: &str, threshold: i32) -> i32 {
     if threshold < 0 {
         return -1;
@@ -164,13 +180,7 @@ fn levenshtein_distance_with_threshold(s: &str, t: &str, threshold: i32) -> i32 
 
         let out_of_band = n.saturating_add(1) as i32;
 
-        return LEVENSHTEIN_SCRATCH.with(|scratch| {
-            let mut borrow = scratch.borrow_mut();
-            let (prev, curr) = &mut *borrow;
-
-            prepare_scratch(prev, m + 1, out_of_band);
-            prepare_scratch(curr, m + 1, out_of_band);
-
+        return with_scratch_buffers(m + 1, out_of_band, |prev, curr| {
             for (i, value) in prev.iter_mut().enumerate().take(m.min(threshold) + 1) {
                 *value = i as i32;
             }
@@ -188,8 +198,11 @@ fn levenshtein_distance_with_threshold(s: &str, t: &str, threshold: i32) -> i32 
                     curr[start - 1] = out_of_band;
                 }
 
+                // Explicitly set curr[0] to out_of_band when outside the threshold band
                 if j <= threshold {
                     curr[0] = j as i32;
+                } else {
+                    curr[0] = out_of_band;
                 }
 
                 for (i_idx, &s_char) in shorter.iter().enumerate().take(end).skip(start - 1) {
@@ -214,7 +227,7 @@ fn levenshtein_distance_with_threshold(s: &str, t: &str, threshold: i32) -> i32 
         });
     }
 
-    // General Unicode path
+    // General Unicode path for non-ASCII strings with threshold
     let s_chars: Vec<char> = s.chars().collect();
     let t_chars: Vec<char> = t.chars().collect();
     let (shorter, longer) = if s_chars.len() <= t_chars.len() {
@@ -235,130 +248,135 @@ fn levenshtein_distance_with_threshold(s: &str, t: &str, threshold: i32) -> i32 
 
     let out_of_band = n.saturating_add(1) as i32;
 
-    LEVENSHTEIN_SCRATCH.with(|scratch| {
-        let mut borrow = scratch.borrow_mut();
-        let (prev, curr) = &mut *borrow;
-
-        prev.resize(m + 1, out_of_band);
-        curr.resize(m + 1, out_of_band);
-
+    with_scratch_buffers(m + 1, out_of_band, |prev, curr| {
         for (i, value) in prev.iter_mut().enumerate().take(m.min(threshold) + 1) {
             *value = i as i32;
         }
 
-        for j in 1..=n {
-            let start = 1.max(j.saturating_sub(threshold));
-            let end = m.min(j.saturating_add(threshold));
+        for (j_idx, &t_char) in longer.iter().enumerate() {
+            let j = j_idx + 1;
+            let start = j.saturating_sub(threshold).max(1);
+            let end = (j + threshold).min(m);
+
             if start > end {
                 return -1;
             }
 
-            curr[0] = if j <= threshold {
-                j as i32
-            } else {
-                out_of_band
-            };
-            curr[start - 1] = if start == 1 { curr[0] } else { out_of_band };
-
-            for i in start..=end {
-                let cost = if shorter[i - 1] == longer[j - 1] {
-                    0
-                } else {
-                    1
-                };
-                curr[i] = prev[i]
-                    .saturating_add(1)
-                    .min(curr[i - 1].saturating_add(1))
-                    .min(prev[i - 1].saturating_add(cost));
+            if start > 1 {
+                curr[start - 1] = out_of_band;
             }
+
+            // Explicitly set curr[0] to out_of_band when outside the threshold band
+            if j <= threshold {
+                curr[0] = j as i32;
+            } else {
+                curr[0] = out_of_band;
+            }
+
+            for (i_idx, &s_char) in shorter.iter().enumerate().take(end).skip(start - 1) {
+                let i = i_idx + 1;
+                let cost = if s_char == t_char { 0 } else { 1 };
+                curr[i] = (prev[i] + 1).min(curr[i - 1] + 1).min(prev[i - 1] + cost);
+            }
+
             if end < m {
                 curr[end + 1] = out_of_band;
             }
+
             std::mem::swap(prev, curr);
         }
 
-        if prev[m] <= threshold as i32 {
-            prev[m]
+        let result = prev[m];
+        if result <= threshold as i32 {
+            result
         } else {
             -1
         }
     })
 }
 
-fn evaluate_levenshtein<LeftOffset, RightOffset>(
+fn evaluate_levenshtein<LeftOffset: OffsetSizeTrait, RightOffset: OffsetSizeTrait>(
     left: &GenericStringArray<LeftOffset>,
     right: &GenericStringArray<RightOffset>,
     threshold: Option<&Int32Array>,
-) -> Int32Array
-where
-    LeftOffset: OffsetSizeTrait,
-    RightOffset: OffsetSizeTrait,
-{
-    left.iter()
-        .zip(right.iter())
-        .enumerate()
-        .map(|(i, (left_value, right_value))| {
-            if threshold.is_some_and(|values| values.is_null(i)) {
-                return None;
-            }
+) -> Result<ArrayRef> {
+    let mut builder = Int32Array::builder(left.len());
 
-            match (left_value, right_value) {
-                (Some(left_value), Some(right_value)) => Some(match threshold {
-                    Some(values) => levenshtein_distance_with_threshold(
-                        left_value,
-                        right_value,
-                        values.value(i),
-                    ),
-                    None => levenshtein_distance(left_value, right_value),
-                }),
-                _ => None,
+    for i in 0..left.len() {
+        if left.is_null(i) || right.is_null(i) {
+            builder.append_null();
+            continue;
+        }
+
+        if let Some(threshold_arr) = threshold {
+            if threshold_arr.is_null(i) {
+                builder.append_null();
+                continue;
             }
-        })
-        .collect()
+            let s = left.value(i);
+            let t = right.value(i);
+            let th = threshold_arr.value(i);
+            builder.append_value(levenshtein_distance_with_threshold(s, t, th));
+        } else {
+            let s = left.value(i);
+            let t = right.value(i);
+            builder.append_value(levenshtein_distance(s, t));
+        }
+    }
+
+    Ok(Arc::new(builder.finish()))
 }
 
 fn evaluate_string_arrays(
     left: &ArrayRef,
     right: &ArrayRef,
     threshold: Option<&Int32Array>,
-) -> Result<Int32Array> {
+) -> Result<ArrayRef> {
     match (left.data_type(), right.data_type()) {
-        (DataType::Utf8, DataType::Utf8) => Ok(evaluate_levenshtein::<i32, i32>(
-            as_generic_string_array::<i32>(left)?,
-            as_generic_string_array::<i32>(right)?,
-            threshold,
-        )),
-        (DataType::Utf8, DataType::LargeUtf8) => Ok(evaluate_levenshtein::<i32, i64>(
-            as_generic_string_array::<i32>(left)?,
-            as_generic_string_array::<i64>(right)?,
-            threshold,
-        )),
-        (DataType::LargeUtf8, DataType::Utf8) => Ok(evaluate_levenshtein::<i64, i32>(
-            as_generic_string_array::<i64>(left)?,
-            as_generic_string_array::<i32>(right)?,
-            threshold,
-        )),
-        (DataType::LargeUtf8, DataType::LargeUtf8) => Ok(evaluate_levenshtein::<i64, i64>(
-            as_generic_string_array::<i64>(left)?,
-            as_generic_string_array::<i64>(right)?,
-            threshold,
-        )),
+        (DataType::Utf8, DataType::Utf8) => {
+            let left = as_generic_string_array::<i32>(left)?;
+            let right = as_generic_string_array::<i32>(right)?;
+            evaluate_levenshtein(left, right, threshold)
+        }
+        (DataType::Utf8, DataType::LargeUtf8) => {
+            let left = as_generic_string_array::<i32>(left)?;
+            let right = as_generic_string_array::<i64>(right)?;
+            evaluate_levenshtein(left, right, threshold)
+        }
+        (DataType::LargeUtf8, DataType::Utf8) => {
+            let left = as_generic_string_array::<i64>(left)?;
+            let right = as_generic_string_array::<i32>(right)?;
+            evaluate_levenshtein(left, right, threshold)
+        }
+        (DataType::LargeUtf8, DataType::LargeUtf8) => {
+            let left = as_generic_string_array::<i64>(left)?;
+            let right = as_generic_string_array::<i64>(right)?;
+            evaluate_levenshtein(left, right, threshold)
+        }
         other => Err(DataFusionError::Internal(format!(
-            "levenshtein not supported for types {:?} and {:?}",
-            other.0, other.1
+            "Unsupported types for spark_levenshtein: {:?}",
+            other
         ))),
     }
 }
 
 /// Spark-compatible levenshtein scalar function.
+///
+/// Accepts two or three arguments:
+/// - `levenshtein(str1, str2)` -> edit distance
+/// - `levenshtein(str1, str2, threshold)` -> edit distance if <= threshold, else -1
+///
+/// The threshold argument can be either a scalar or a column (array).
+/// NULL inputs produce NULL outputs. NULL threshold produces NULL output for that row.
 pub fn spark_levenshtein(args: &[ColumnarValue]) -> Result<ColumnarValue> {
     if args.len() < 2 || args.len() > 3 {
         return Err(DataFusionError::Internal(format!(
-            "levenshtein requires 2 or 3 arguments, got {}",
+            "spark_levenshtein expects 2 or 3 arguments, got {}",
             args.len()
         )));
     }
 
+    // Determine array length from any array argument
     let len = args
         .iter()
         .find_map(|arg| match arg {
@@ -367,36 +385,87 @@ pub fn spark_levenshtein(args: &[ColumnarValue]) -> Result<ColumnarValue> {
         })
         .unwrap_or(1);
 
-    let left = args[0].clone().into_array(len)?;
-    let right = args[1].clone().into_array(len)?;
-    if left.len() != len || right.len() != len {
-        return Err(DataFusionError::Internal(
-            "levenshtein arguments must have the same length".to_string(),
+    // If all arguments are scalars, compute directly
+    if args
+        .iter()
+        .all(|arg| matches!(arg, ColumnarValue::Scalar(_)))
+    {
+        let left = match &args[0] {
+            ColumnarValue::Scalar(datafusion::scalar::ScalarValue::Utf8(Some(s)))
+            | ColumnarValue::Scalar(datafusion::scalar::ScalarValue::LargeUtf8(Some(s))) => {
+                s.as_str()
+            }
+            _ => {
+                return Ok(ColumnarValue::Scalar(
+                    datafusion::scalar::ScalarValue::Int32(None),
+                ))
+            }
+        };
+
+        let right = match &args[1] {
+            ColumnarValue::Scalar(datafusion::scalar::ScalarValue::Utf8(Some(s)))
+            | ColumnarValue::Scalar(datafusion::scalar::ScalarValue::LargeUtf8(Some(s))) => {
+                s.as_str()
+            }
+            _ => {
+                return Ok(ColumnarValue::Scalar(
+                    datafusion::scalar::ScalarValue::Int32(None),
+                ))
+            }
+        };
+
+        if args.len() == 3 {
+            let threshold = match &args[2] {
+                ColumnarValue::Scalar(datafusion::scalar::ScalarValue::Int32(Some(t))) => *t,
+                _ => {
+                    return Ok(ColumnarValue::Scalar(
+                        datafusion::scalar::ScalarValue::Int32(None),
+                    ))
+                }
+            };
+            return Ok(ColumnarValue::Scalar(
+                datafusion::scalar::ScalarValue::Int32(Some(levenshtein_distance_with_threshold(
+                    left, right, threshold,
+                ))),
+            ));
+        }
+
+        return Ok(ColumnarValue::Scalar(
+            datafusion::scalar::ScalarValue::Int32(Some(levenshtein_distance(left, right))),
         ));
     }
 
+    let left = match &args[0] {
+        ColumnarValue::Array(a) => Arc::clone(a),
+        ColumnarValue::Scalar(s) => s.to_array_of_size(len)?,
+    };
+
+    let right = match &args[1] {
+        ColumnarValue::Array(a) => Arc::clone(a),
+        ColumnarValue::Scalar(s) => s.to_array_of_size(len)?,
+    };
+
     let threshold_array = if args.len() == 3 {
-        let threshold_array = args[2].clone().into_array(len)?;
-        if threshold_array.len() != len {
-            return Err(DataFusionError::Internal(
-                "levenshtein threshold must have the same length as string arguments".to_string(),
-            ));
-        }
-        Some(threshold_array)
+        let array = match &args[2] {
+            ColumnarValue::Array(a) => Arc::clone(a),
+            ColumnarValue::Scalar(s) => s.to_array_of_size(len)?,
+        };
+        let int_array = array
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .ok_or_else(|| {
+                DataFusionError::Internal(
+                    "Threshold argument to levenshtein must be Int32".to_string(),
+                )
+            })?
+            .clone();
+        Some(int_array)
     } else {
         None
     };
-    let threshold = threshold_array
-        .as_ref()
-        .map(|array| {
-            array.as_any().downcast_ref::<Int32Array>().ok_or_else(|| {
-                DataFusionError::Internal("levenshtein threshold must be Int32".to_string())
-            })
-        })
-        .transpose()?;
 
-    let result = evaluate_string_arrays(&left, &right, threshold)?;
-    Ok(ColumnarValue::Array(Arc::new(result) as ArrayRef))
+    let result = evaluate_string_arrays(&left, &right, threshold_array.as_ref())?;
+    Ok(ColumnarValue::Array(result))
 }
 
 #[cfg(test)]
@@ -696,5 +765,12 @@ mod tests {
             forward_results, reverse_results,
             "Results differed depending on row evaluation order in scratch buffer"
         );
+    }
+
+    #[test]
+    fn test_threshold_out_of_band_reset() {
+        // ("a", "bb", 1) -> edit distance is 2, threshold is 1 -> must return -1
+        assert_eq!(levenshtein_distance_with_threshold("a", "bb", 1), -1);
+        assert_eq!(levenshtein_distance_with_threshold("bb", "a", 1), -1);
     }
 }
