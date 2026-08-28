@@ -43,8 +43,6 @@ import org.apache.comet.{CometConf, CometKryoRegistrator}
  */
 class CometInMemoryCacheKryoSuite extends CometTestBase {
 
-  import testImplicits._
-
   override protected def beforeAll(): Unit = {
     CometInMemoryRelationHelper.clearSerializer()
     super.beforeAll()
