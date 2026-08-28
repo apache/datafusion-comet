@@ -24,15 +24,14 @@ INSERT INTO test_element_at VALUES (array(1, 2, 3)), (array(10)), (NULL)
 query
 SELECT element_at(arr, 1), element_at(arr, -1) FROM test_element_at
 
--- literal arguments
-query
-SELECT element_at(array(1, 2, 3), 1), element_at(array(1, 2, 3), -1)
-
 statement
 CREATE TABLE t(id int) USING parquet
 
 statement
 INSERT INTO t VALUES (1), (2), (3), (-1), (NULL)
+
+query
+SELECT element_at(array(1, 2, 3), id), element_at(array(1, 2, 3), -id) FROM t
 
 query
 SELECT element_at(element_at(array(CAST(NULL AS ARRAY<BIGINT>),array(monotonically_increasing_id(), CAST(NULL AS BIGINT))),id),id - 1) FROM t
