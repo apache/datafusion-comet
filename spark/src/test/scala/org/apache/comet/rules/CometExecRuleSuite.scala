@@ -23,8 +23,9 @@ import scala.util.Random
 
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.FunctionIdentifier
-import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Expression, ExpressionInfo, In, Literal, Not}
+import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Expression, ExpressionInfo, In, InSet, KnownFloatingPointNormalized, Literal, Not}
 import org.apache.spark.sql.catalyst.expressions.aggregate.BloomFilterAggregate
+import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution._
@@ -113,6 +114,69 @@ class CometExecRuleSuite extends CometTestBase {
   }
 
   for (dataType <- Seq(FloatType, DoubleType)) {
+    test(s"floating ${dataType.sql} IN serialization preserves prunable finite literal lists") {
+      withSQLConf("spark.sql.legacy.nullInEmptyListBehavior" -> "false") {
+        val value = AttributeReference("value", dataType)()
+        val other = AttributeReference("other", dataType)()
+        def literal(v: Double): Literal = dataType match {
+          case FloatType => Literal(v.toFloat)
+          case DoubleType => Literal(v)
+        }
+        val ordinary = Seq(1.0d, 3.0d).map(literal)
+        val nullLiteral = Literal.create(null, dataType)
+        val lists: Seq[(Seq[Expression], Boolean)] = Seq(
+          ordinary -> false,
+          (ordinary :+ nullLiteral) -> false,
+          Seq(nullLiteral) -> false,
+          Seq(value, other) -> true) ++
+          Seq(Double.NaN, 0.0d, -0.0d, Double.PositiveInfinity, Double.NegativeInfinity)
+            .map(v => (ordinary :+ literal(v)) -> true) ++
+          (if (isSpark35Plus) Seq(Seq.empty[Expression] -> false) else Nil)
+        for ((list, needsNormalization) <- lists;
+          asSet <- Seq(false, true) if !asSet || list.forall(_.isInstanceOf[Literal]);
+          negate <- Seq(false, true);
+          alreadyNormalized <- Seq(false, true)) {
+          withClue(s"list=$list, asSet=$asSet, negate=$negate, normalized=$alreadyNormalized: ") {
+            val needle = if (alreadyNormalized) {
+              KnownFloatingPointNormalized(NormalizeNaNAndZero(value))
+            } else {
+              value
+            }
+            val in = if (asSet) {
+              InSet(needle, list.collect { case l: Literal => l.value }.toSet)
+            } else {
+              In(needle, list)
+            }
+            val result = QueryPlanSerde
+              .exprToProto(if (negate) Not(in) else in, Seq(value, other))
+              .get
+            // NOT InSet uses a separate Not node; NOT In is fused into the membership node.
+            val serialized = if (result.hasNot) result.getNot.getChild else result
+            assert(serialized.hasIn)
+            assert(result.hasNot == (asSet && negate))
+            assert(serialized.getIn.getNegated == (negate && !asSet))
+            val serializedValue = serialized.getIn.getInValue
+            if (needsNormalization || alreadyNormalized) {
+              assert(serializedValue.hasNormalizeNanAndZero)
+              assert(serializedValue.getNormalizeNanAndZero.getChild.hasBound)
+            } else {
+              assert(serializedValue.hasBound)
+            }
+            assert(serialized.getIn.getListsCount == list.size)
+            for (i <- list.indices) {
+              val candidate = serialized.getIn.getLists(i)
+              if (list(i).isInstanceOf[Literal]) {
+                assert(candidate.hasLiteral)
+              } else {
+                assert(candidate.hasNormalizeNanAndZero)
+                assert(candidate.getNormalizeNanAndZero.getChild.hasBound)
+              }
+            }
+          }
+        }
+      }
+    }
+
     test(
       s"floating ${dataType.sql} IN serialization retains normalized operand fallback reasons") {
       val expressionNames = Seq("Literal", "KnownFloatingPointNormalized")
@@ -127,8 +191,8 @@ class CometExecRuleSuite extends CometTestBase {
             val value = AttributeReference("value", dataType)()
             val other = AttributeReference("other", dataType)()
             val literals = dataType match {
-              case FloatType => Seq(Literal(1.0f), Literal(3.0f))
-              case DoubleType => Seq(Literal(1.0d), Literal(3.0d))
+              case FloatType => Seq(Literal(0.0f), Literal(3.0f))
+              case DoubleType => Seq(Literal(0.0d), Literal(3.0d))
             }
             // Exercise temporary literals and normalizers in both the value and the list.
             val in =
@@ -179,7 +243,7 @@ class CometExecRuleSuite extends CometTestBase {
             val predicate = if (literalValue) {
               s"CAST(1 AS ${dataType.sql}) IN ($column, -$column)"
             } else {
-              s"$column IN (CAST(1 AS ${dataType.sql}), CAST(3 AS ${dataType.sql}))"
+              s"$column IN (CAST(0 AS ${dataType.sql}), CAST(3 AS ${dataType.sql}))"
             }
             val expression = if (negate) s"NOT ($predicate)" else predicate
             val df = sql(s"SELECT $expression AS hit FROM range(0, 4, 1, 1)")
