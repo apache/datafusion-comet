@@ -386,10 +386,17 @@ object ComparisonUtils {
       inputs: Seq[Attribute],
       binding: Boolean,
       negate: Boolean): Option[Expr] = {
-    // Spark treats all NaNs as equal and both signs of zero as equal in IN and InSet too.
-    // Normalize both sides, including the fused NOT IN path that calls this method directly.
-    val normalizedValue = normalizeInOperand(value)
-    val normalizedList = list.map(normalizeInOperand)
+    // NaNs and either sign of zero cannot match a finite nonzero literal. Leave such lists
+    // unwrapped so native Parquet scans can still prune using the column's statistics.
+    val needsNormalization = !list.forall {
+      case Literal(null, _) => true
+      case Literal(v: Float, FloatType) => java.lang.Float.isFinite(v) && v != 0.0f
+      case Literal(v: Double, DoubleType) => java.lang.Double.isFinite(v) && v != 0.0d
+      case _ => false
+    }
+    // Otherwise normalize both sides for Spark's NaN/zero equality, including fused NOT IN.
+    val normalizedValue = if (needsNormalization) normalizeInOperand(value) else value
+    val normalizedList = if (needsNormalization) list.map(normalizeInOperand) else list
     val valueExpr = exprToProtoInternal(normalizedValue, inputs, binding)
     val listExprs = normalizedList.map(exprToProtoInternal(_, inputs, binding))
     if (valueExpr.isDefined && listExprs.forall(_.isDefined)) {
