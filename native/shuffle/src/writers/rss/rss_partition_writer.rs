@@ -50,7 +50,6 @@ pub(crate) struct RssPartitionWriter {
     num_partitions: usize,
     max_frame_size: usize,
     compression_context: IpcWriteContext,
-    frame: Vec<u8>,
     next_partition_to_finish: usize,
     finished: bool,
     failed: bool,
@@ -92,7 +91,6 @@ impl RssPartitionWriter {
             num_partitions,
             max_frame_size,
             compression_context: IpcWriteContext::default(),
-            frame: Vec::new(),
             next_partition_to_finish: 0,
             finished: false,
             failed: false,
@@ -1180,7 +1178,7 @@ mod buffer_tests {
             .write_rss_batch(
                 &batch,
                 &mut output,
-                &mut CompressionContext::default(),
+                &mut IpcWriteContext::default(),
                 &Time::default(),
             )
             .unwrap();
