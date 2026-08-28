@@ -19,14 +19,14 @@
 -- Config: spark.comet.exec.scalaUDF.codegen.enabled=true
 
 statement
-CREATE TABLE test_divide_dt_interval(days int, hours int, minutes int, seconds decimal(18,6), b tinyint, s smallint, i int, l long, f float, d double, dec decimal(10,2)) USING parquet
+CREATE TABLE test_divide_dt_interval(days int, hours int, minutes int, seconds decimal(18,6), b tinyint, s smallint, i int, l long, f float, d double, dec decimal(10,2), dec_wide decimal(38,18), dec_big decimal(38,0)) USING parquet
 
 statement
 INSERT INTO test_divide_dt_interval VALUES
-  (1, 2, 3, 4.500000, CAST(2 AS TINYINT), CAST(3 AS SMALLINT), 2, CAST(3 AS BIGINT), CAST(1.5 AS FLOAT), CAST(2.5 AS DOUBLE), CAST(2.50 AS DECIMAL(10, 2))),
-  (-1, 0, 30, 15.250000, CAST(-2 AS TINYINT), CAST(-3 AS SMALLINT), -2, CAST(-3 AS BIGINT), CAST(-1.5 AS FLOAT), CAST(-2.5 AS DOUBLE), CAST(-2.50 AS DECIMAL(10, 2))),
-  (0, 0, 0, 0.000001, CAST(2 AS TINYINT), CAST(2 AS SMALLINT), 2, CAST(2 AS BIGINT), CAST(2.0 AS FLOAT), CAST(2.0 AS DOUBLE), CAST(2.00 AS DECIMAL(10, 2))),
-  (2, -6, 0, 0.000000, NULL, NULL, NULL, NULL, NULL, NULL, NULL)
+  (1, 2, 3, 4.500000, CAST(2 AS TINYINT), CAST(3 AS SMALLINT), 2, CAST(3 AS BIGINT), CAST(1.5 AS FLOAT), CAST(2.5 AS DOUBLE), CAST(2.50 AS DECIMAL(10, 2)), CAST(2.5 AS DECIMAL(38, 18)), CAST(3 AS DECIMAL(38, 0))),
+  (-1, 0, 30, 15.250000, CAST(-2 AS TINYINT), CAST(-3 AS SMALLINT), -2, CAST(-3 AS BIGINT), CAST(-1.5 AS FLOAT), CAST(-2.5 AS DOUBLE), CAST(-2.50 AS DECIMAL(10, 2)), CAST(-2.5 AS DECIMAL(38, 18)), CAST(-3 AS DECIMAL(38, 0))),
+  (0, 0, 0, 0.000001, CAST(2 AS TINYINT), CAST(2 AS SMALLINT), 2, CAST(2 AS BIGINT), CAST(2.0 AS FLOAT), CAST(2.0 AS DOUBLE), CAST(2.00 AS DECIMAL(10, 2)), CAST(2.0 AS DECIMAL(38, 18)), CAST(2 AS DECIMAL(38, 0))),
+  (2, -6, 0, 0.000000, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL)
 
 query
 SELECT
@@ -39,6 +39,14 @@ SELECT
   make_dt_interval(days, hours, minutes, seconds) / dec
 FROM test_divide_dt_interval
 
+-- Wide decimal divisors: DECIMAL(38, 18) reads through the DecimalVector slow path
+-- (precision > 18 does not fit an unscaled long) and DECIMAL(38, 0) covers scale 0.
+query
+SELECT
+  make_dt_interval(days, hours, minutes, seconds) / dec_wide,
+  make_dt_interval(days, hours, minutes, seconds) / dec_big
+FROM test_divide_dt_interval
+
 -- literal interval input
 query
 SELECT INTERVAL '1 02:03:04.500000' DAY TO SECOND / i FROM test_divide_dt_interval
@@ -49,6 +57,8 @@ SELECT
   make_dt_interval(1, 2, 3, 4.5) / 2,
   INTERVAL '0.000001' SECOND / 2,
   INTERVAL '0.000001' SECOND / CAST(2.00 AS DECIMAL(10, 2)),
+  INTERVAL '1 02:03:04.500000' DAY TO SECOND / CAST(2.5 AS DECIMAL(38, 18)),
+  INTERVAL '1 02:03:04.500000' DAY TO SECOND / CAST(3 AS DECIMAL(38, 0)),
   make_dt_interval(-1, 0, 30, 15.25) / 1.5D
 
 -- null interval input
