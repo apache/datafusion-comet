@@ -84,8 +84,10 @@ def _build_spark() -> SparkSession:
         .config("spark.plugins", "org.apache.spark.CometPlugin")
         .config("spark.comet.enabled", "true")
         .config("spark.comet.exec.enabled", "true")
-        # Keep Comet's scan and execution rules active with Spark's default shuffle manager.
-        .config("spark.comet.shuffle.enabled", "false")
+        .config(
+            "spark.shuffle.manager",
+            "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager",
+        )
         .config("spark.memory.offHeap.enabled", "true")
         .config("spark.memory.offHeap.size", "4g")
         .config("spark.driver.memory", "4g")
