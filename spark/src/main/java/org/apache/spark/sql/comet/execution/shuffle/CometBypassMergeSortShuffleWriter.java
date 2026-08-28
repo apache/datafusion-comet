@@ -266,6 +266,9 @@ final class CometBypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V>
       // here so they cannot starve other tasks' allocations.
       if (partitionWriters != null) {
         for (CometDiskBlockWriter writer : partitionWriters) {
+          if (writer == null) {
+            continue;
+          }
           try {
             writer.freeMemory();
           } catch (Exception e2) {

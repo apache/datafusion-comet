@@ -38,7 +38,7 @@ import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{UnsafeProjection, UnsafeRow}
 import org.apache.spark.sql.execution.UnsafeRowSerializer
 import org.apache.spark.sql.execution.metric.SQLMetric
-import org.apache.spark.sql.types.{BinaryType, StructField, StructType}
+import org.apache.spark.sql.types.{BinaryType, IntegerType, MetadataBuilder, StructField, StructType}
 import org.apache.spark.unsafe.UnsafeAlignedOffset
 import org.apache.spark.util.Utils
 
@@ -537,6 +537,34 @@ class CometDiskBlockWriterSuite extends AnyFunSuite with TimeLimits {
       bounded.free(holderBlock)
       // With the constructor cleanup the pool is empty again, so a full-pool allocation
       // succeeds; a leaked constructor allocation would make it fail forever.
+      bounded.free(bounded.allocate(1024 * 1024))
+
+      // A failure after the pointer array is adopted (here: schema serialization rejecting an
+      // out-of-range parquet.field.id) must free the adopted array as well. The enclosing
+      // sorter field is never assigned in this case, so not even the unsafe writer's
+      // task-completion listener could see the allocation.
+      val badField = StructField(
+        "a",
+        IntegerType,
+        nullable = true,
+        new MetadataBuilder().putLong("parquet.field.id", 2147483648L).build())
+      val badSchema = StructType(Seq(StructField("s", StructType(Seq(badField)))))
+      intercept[IllegalArgumentException] {
+        new SpillSorter(
+          bounded,
+          4096,
+          badSchema,
+          UnsafeAlignedOffset.getUaoSize(),
+          1.0,
+          "zstd",
+          1,
+          "adler32",
+          new Array[Long](0),
+          new ShuffleWriteMetrics,
+          taskContext,
+          new JLinkedList[SpillInfo](),
+          () => ())
+      }
       bounded.free(bounded.allocate(1024 * 1024))
     } finally {
       tmm.cleanUpAllAllocatedMemory()
