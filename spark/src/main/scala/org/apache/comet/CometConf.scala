@@ -526,6 +526,18 @@ object CometConf extends ShimCometConf {
       .intConf
       .createWithDefault(Int.MaxValue)
 
+  val COMET_SHUFFLE_JVM_MEMORY_WAIT_TIMEOUT: ConfigEntry[Long] =
+    conf("spark.comet.shuffle.jvm.memoryWaitTimeout")
+      .category(CATEGORY_SHUFFLE)
+      .doc(
+        "How long a Comet JVM (columnar) shuffle task running in on-heap mode waits for other " +
+          "tasks to free shared shuffle pool memory before failing with an out-of-memory error " +
+          "(Spark may then retry the task). The wait ends earlier when it provably cannot " +
+          "succeed. This is an internal config for testing purpose or advanced tuning.")
+      .internal()
+      .timeConf(TimeUnit.MILLISECONDS)
+      .createWithDefault(TimeUnit.MINUTES.toMillis(5))
+
   val COMET_SHUFFLE_JVM_MEMORY_FACTOR: ConfigEntry[Double] =
     conf("spark.comet.shuffle.jvm.memoryFactor")
       .withAlternative("spark.comet.columnar.shuffle.memory.factor")

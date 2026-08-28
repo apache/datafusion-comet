@@ -36,6 +36,7 @@ import org.apache.spark.unsafe.array.LongArray;
 import org.apache.spark.unsafe.memory.MemoryBlock;
 import org.apache.spark.unsafe.memory.UnsafeMemoryAllocator;
 
+import org.apache.comet.CometConf$;
 import org.apache.comet.CometSparkSessionExtensions$;
 
 /**
@@ -64,11 +65,11 @@ public final class CometBoundedShuffleMemoryAllocator extends CometShuffleMemory
   private final long totalMemory;
   private long allocatedMemory = 0L;
 
-  /**
-   * How often a thread blocked in {@link #allocateBlocking(long)} wakes up to re-check progress and
-   * log that it is waiting. Not final so that tests can shorten it.
-   */
-  private static long WAIT_LOG_INTERVAL_MS = 30_000L;
+  /** How often a thread blocked in {@link #allocateBlocking(long)} logs that it is waiting. */
+  private static final long WAIT_LOG_INTERVAL_MS = 30_000L;
+
+  /** How long {@link #allocateBlocking(long)} waits in total before giving up. */
+  private final long memoryWaitTimeoutMs;
 
   /** The number of bits used to address the page table. */
   private static final int PAGE_NUMBER_BITS = 13;
@@ -97,6 +98,8 @@ public final class CometBoundedShuffleMemoryAllocator extends CometShuffleMemory
     this.pageSize = pageSize;
     this.totalMemory =
         CometSparkSessionExtensions$.MODULE$.getCometShuffleMemorySize(conf, SQLConf.get());
+    this.memoryWaitTimeoutMs =
+        (long) CometConf$.MODULE$.COMET_SHUFFLE_JVM_MEMORY_WAIT_TIMEOUT().get();
   }
 
   private synchronized long _acquireMemory(long size) {
@@ -140,8 +143,11 @@ public final class CometBoundedShuffleMemoryAllocator extends CometShuffleMemory
    * Callers must only use this after spilling their own buffered data. The wait fails fast when it
    * can never succeed: when the request does not fit next to the memory this thread itself still
    * retains (e.g. the sorter's pointer array), or when all allocated memory is retained by threads
-   * that are themselves blocked here and none of their requests fits in the free pool. Interrupting
-   * the task (e.g. task kill) aborts the wait.
+   * that are themselves blocked here and none of their requests fits in the free pool. Because the
+   * holders it depends on may in turn be blocked on resources outside this pool that only a task
+   * waiting here can release, the wait is also bounded by
+   * `spark.comet.shuffle.jvm.memoryWaitTimeout`, after which the managed allocation error is thrown
+   * and Spark's task retry can recover. Interrupting the task (e.g. task kill) aborts the wait.
    */
   @Override
   public synchronized MemoryBlock allocateBlocking(long required) {
@@ -171,25 +177,25 @@ public final class CometBoundedShuffleMemoryAllocator extends CometShuffleMemory
           if (allocatedMemory <= retainedByWaitingThreads() && !anyWaiterCanProceed()) {
             throw e;
           }
-          // A thread parked waiting for Spark execution memory cannot free its pool memory
-          // either, and Spark's pool may in turn be waiting for a task blocked here: a cycle
-          // across the two pools that no amount of waiting resolves. Unwind (after at least one
-          // full wait interval, to let transient states settle) so the failed task releases its
-          // memory and the tasks in the other pool can progress.
-          if (waitStart != 0
-              && allocatedMemory
-                  <= retainedByWaitingThreads() + retainedByThreadsBlockedOnSparkMemory()
-              && !anyWaiterCanProceed()) {
-            throw e;
-          }
-          // Log when the wait starts and periodically while it lasts, so a stalled task is
-          // visible in the executor logs.
+          // The holders this wait depends on may themselves be blocked on resources outside
+          // this pool (Spark execution memory, locks, I/O) that only a task waiting here can
+          // release - a cycle this allocator cannot observe. Bound the wait so such cycles
+          // unwind with the managed allocation error instead of hanging the executor; Spark's
+          // task retry can then recover.
           long now = System.currentTimeMillis();
           if (waitStart == 0) {
             waitStart = now;
             lastLog = now;
             logger.warn(
                 "Waiting for other tasks to free up {} bytes of Comet shuffle pool memory", size);
+          } else if (now - waitStart >= memoryWaitTimeoutMs) {
+            logger.warn(
+                "Giving up after waiting {} ms for {} bytes of Comet shuffle pool memory "
+                    + "(see {})",
+                now - waitStart,
+                size,
+                CometConf$.MODULE$.COMET_SHUFFLE_JVM_MEMORY_WAIT_TIMEOUT().key());
+            throw e;
           } else if (now - lastLog >= WAIT_LOG_INTERVAL_MS) {
             lastLog = now;
             logger.warn(
@@ -201,7 +207,9 @@ public final class CometBoundedShuffleMemoryAllocator extends CometShuffleMemory
                 waitingThreads.size());
           }
           try {
-            wait(WAIT_LOG_INTERVAL_MS);
+            wait(
+                Math.max(
+                    1L, Math.min(WAIT_LOG_INTERVAL_MS, memoryWaitTimeoutMs - (now - waitStart))));
           } catch (InterruptedException ie) {
             Thread.currentThread().interrupt();
             // Not an allocation failure: stay non-fatal so that an intentional task kill is
@@ -233,30 +241,6 @@ public final class CometBoundedShuffleMemoryAllocator extends CometShuffleMemory
       }
     }
     return false;
-  }
-
-  /**
-   * Pool memory retained by threads that are parked in an untimed wait inside Spark's
-   * execution-memory pool. Such a thread frees nothing until Spark memory is released, which may
-   * itself depend on a task blocked in this pool. Sleeping, latch-parked, or computing owners
-   * deliberately do not match: only a stack currently inside Spark's memory arbitration does.
-   */
-  private long retainedByThreadsBlockedOnSparkMemory() {
-    long retained = 0;
-    for (java.util.Map.Entry<Thread, Long> entry : retainedMemory.entrySet()) {
-      Thread thread = entry.getKey();
-      if (!waitingThreads.containsKey(thread) && thread.getState() == Thread.State.WAITING) {
-        for (StackTraceElement frame : thread.getStackTrace()) {
-          String className = frame.getClassName();
-          if (className.equals("org.apache.spark.memory.ExecutionMemoryPool")
-              || className.equals("org.apache.spark.memory.UnifiedMemoryManager")) {
-            retained += entry.getValue();
-            break;
-          }
-        }
-      }
-    }
-    return retained;
   }
 
   private synchronized MemoryBlock allocateMemoryBlock(long required) {
