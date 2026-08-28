@@ -39,3 +39,7 @@ SELECT map_zip_with(m, n, (k, v1, v2) -> struct(v1 AS left, v2 AS right)) FROM t
 -- all literals
 query
 SELECT map_zip_with(map('a', 1), map('a', 2, 'b', 3), (k, v1, v2) -> coalesce(v1, 0) + coalesce(v2, 0))
+
+-- untyped operands leave both key and value types as NullType
+query
+SELECT map_zip_with(map(), map(), (k, v1, v2) -> v1)
