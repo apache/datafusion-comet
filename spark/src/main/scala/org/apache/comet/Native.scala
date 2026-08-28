@@ -201,6 +201,19 @@ class Native extends NativeBase {
       tracingEnabled: Boolean): Long
 
   /**
+   * Decode a remote shuffle block with Arrow buffer/offset and logical type validation. The
+   * expected schema is serialized as a ShuffleScan protobuf. Keep the existing local decoder
+   * entry point unchanged so trusted local shuffle reads retain their fast path.
+   */
+  @native def decodeShuffleBlockWithValidation(
+      shuffleBlock: ByteBuffer,
+      length: Int,
+      arrayAddrs: Array[Long],
+      schemaAddrs: Array[Long],
+      tracingEnabled: Boolean,
+      expectedSchema: Array[Byte]): Long
+
+  /**
    * Log the beginning of an event.
    * @param name
    *   The name of the event.

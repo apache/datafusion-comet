@@ -40,17 +40,23 @@ import org.apache.comet.util.ClassLoaders
  * binding native Comet map output to Celeborn's application-owned client.
  *
  * Celeborn is an optional, application-provided dependency, so its shuffle manager is loaded
- * reflectively. Native reduce-side reads and JVM Comet shuffles remain unsupported.
+ * reflectively. Native map and reduce paths are available, but planner enablement is separate;
+ * JVM Comet shuffle remains unsupported.
  */
 class CometCelebornShuffleManager private[shuffle] (
     conf: SparkConf,
     isDriver: Boolean,
-    backendFactory: (SparkConf, Boolean) => ShuffleManager)
+    backendFactory: (SparkConf, Boolean) => ShuffleManager,
+    readerApi: CelebornRawPartitionReader.Api = CelebornRawPartitionReader.reflectedApi)
     extends ShuffleManager {
 
   /** Constructor used by Spark on both the driver and executors. */
   def this(conf: SparkConf, isDriver: Boolean) =
-    this(conf, isDriver, CometCelebornShuffleManager.createBackend)
+    this(
+      conf,
+      isDriver,
+      CometCelebornShuffleManager.createBackend,
+      CelebornRawPartitionReader.reflectedApi)
 
   private val backend = Option(backendFactory(conf, isDriver)).getOrElse {
     throw new IllegalStateException("Celeborn Spark shuffle manager factory returned null")
@@ -171,18 +177,51 @@ class CometCelebornShuffleManager private[shuffle] (
       endPartition: Int,
       context: TaskContext,
       metrics: ShuffleReadMetricsReporter): ShuffleReader[K, C] = {
-    if (nativeDependency(handle).nonEmpty) {
-      rejectCometShuffle()
+    nativeDependency(handle) match {
+      case Some(dependency) =>
+        if (startMapIndex > endMapIndex) {
+          throw new UnsupportedOperationException(
+            "Celeborn physical-skew chunk reads are not supported by native Comet shuffle")
+        }
+        val backendReader = backend.getReader[K, C](
+          handle,
+          startMapIndex,
+          endMapIndex,
+          startPartition,
+          endPartition,
+          context,
+          metrics)
+        val rawReader = CelebornRawPartitionReader.fromBackendReader(
+          conf,
+          handle,
+          backendReader,
+          CelebornRawPartitionReader.ReadRange(
+            startMapIndex,
+            endMapIndex,
+            startPartition,
+            endPartition),
+          context,
+          metrics,
+          client => ownedNativeClients.put(client, java.lang.Boolean.TRUE),
+          (client, celebornShuffleId) => {
+            nativeShuffleClients
+              .computeIfAbsent(handle.shuffleId, _ => new ConcurrentHashMap[Int, AnyRef]())
+              .put(celebornShuffleId, client)
+          },
+          readerApi)
+        new CometCelebornShuffleReader[K, C](dependency, context, metrics, rawReader)
+
+      case None =>
+        rejectCometHandle(handle)
+        backend.getReader(
+          handle,
+          startMapIndex,
+          endMapIndex,
+          startPartition,
+          endPartition,
+          context,
+          metrics)
     }
-    rejectCometHandle(handle)
-    backend.getReader(
-      handle,
-      startMapIndex,
-      endMapIndex,
-      startPartition,
-      endPartition,
-      context,
-      metrics)
   }
 
   override def shuffleBlockResolver: ShuffleBlockResolver = backend.shuffleBlockResolver
@@ -354,7 +393,7 @@ class CometCelebornShuffleManager private[shuffle] (
 
   private def rejectCometShuffle(): Nothing = {
     throw new UnsupportedOperationException(
-      "Comet shuffle over Celeborn is not supported for JVM shuffle, local handles, or reads")
+      "Comet shuffle over Celeborn is not supported for JVM shuffle or local handles")
   }
 }
 

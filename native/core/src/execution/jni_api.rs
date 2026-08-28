@@ -41,7 +41,7 @@ use datafusion::{
     physical_plan::{display::DisplayableExecutionPlan, SendableRecordBatchStream},
     prelude::{SessionConfig, SessionContext},
 };
-use datafusion_comet_proto::spark_operator::Operator;
+use datafusion_comet_proto::spark_operator::{Operator, ShuffleScan};
 use datafusion_comet_spark_expr::url_funcs::{CometParseUrl, CometTryParseUrl};
 use datafusion_spark::function::array::array_contains::SparkArrayContains;
 use datafusion_spark::function::array::repeat::SparkArrayRepeat;
@@ -89,6 +89,7 @@ use jni::{
     Env, EnvUnowned,
 };
 use parking_lot::Mutex;
+use prost::Message;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -100,7 +101,9 @@ use crate::execution::memory_pools::{
     create_memory_pool, handle_task_shared_pool_release, parse_memory_pool_config, MemoryPoolConfig,
 };
 use crate::execution::operators::{ScanExec, ShuffleScanExec};
-use crate::execution::shuffle::{read_ipc_compressed, CompressionCodec};
+use crate::execution::shuffle::{
+    read_ipc_compressed, read_ipc_compressed_validated, validate_remote_schema, CompressionCodec,
+};
 use crate::execution::spark_plan::SparkPlan;
 
 use crate::execution::tracing::{
@@ -1249,13 +1252,65 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_decodeShuffleBlock(
 ) -> jlong {
     try_unwrap_or_throw(&e, |env| {
         with_trace("decodeShuffleBlock", tracing_enabled != JNI_FALSE, || {
-            let raw_pointer = env.get_direct_buffer_address(&byte_buffer)?;
-            let length = length as usize;
-            let slice: &[u8] = unsafe { std::slice::from_raw_parts(raw_pointer, length) };
-            let batch = read_ipc_compressed(slice)?;
-            prepare_output(env, array_addrs, schema_addrs, batch, false)
+            decode_shuffle_block(env, byte_buffer, length, array_addrs, schema_addrs, None)
         })
     })
+}
+
+#[no_mangle]
+/// Decode a remote native shuffle block with Arrow array and logical type validation enabled.
+/// # Safety
+/// This function is inherently unsafe since it deals with raw pointers passed from JNI.
+pub unsafe extern "system" fn Java_org_apache_comet_Native_decodeShuffleBlockWithValidation(
+    e: EnvUnowned,
+    _class: JClass,
+    byte_buffer: JByteBuffer,
+    length: jint,
+    array_addrs: JLongArray,
+    schema_addrs: JLongArray,
+    tracing_enabled: jboolean,
+    expected_schema: JByteArray,
+) -> jlong {
+    try_unwrap_or_throw(&e, |env| {
+        with_trace("decodeShuffleBlock", tracing_enabled != JNI_FALSE, || {
+            let bytes = env.convert_byte_array(expected_schema)?;
+            let schema = ShuffleScan::decode(bytes.as_slice()).map_err(|error| {
+                CometError::Internal(format!("Invalid expected remote shuffle schema: {error}"))
+            })?;
+            let expected_types: Vec<_> = schema.fields.iter().map(to_arrow_datatype).collect();
+            decode_shuffle_block(
+                env,
+                byte_buffer,
+                length,
+                array_addrs,
+                schema_addrs,
+                Some(&expected_types),
+            )
+        })
+    })
+}
+
+fn decode_shuffle_block(
+    env: &mut Env,
+    byte_buffer: JByteBuffer,
+    length: jint,
+    array_addrs: JLongArray,
+    schema_addrs: JLongArray,
+    expected_types: Option<&[ArrowDataType]>,
+) -> CometResult<jlong> {
+    let raw_pointer = env.get_direct_buffer_address(&byte_buffer)?;
+    let length = length as usize;
+    let slice: &[u8] = unsafe { std::slice::from_raw_parts(raw_pointer, length) };
+    let batch = if let Some(expected_types) = expected_types {
+        let batch = read_ipc_compressed_validated(slice)?;
+        // Reject incompatible remote schemas before exporting arrays to the JVM. Casting or
+        // importing first can silently change values or bypass remote fetch-failure reporting.
+        validate_remote_schema(&batch, expected_types)?;
+        batch
+    } else {
+        read_ipc_compressed(slice)?
+    };
+    prepare_output(env, array_addrs, schema_addrs, batch, false)
 }
 
 #[no_mangle]
