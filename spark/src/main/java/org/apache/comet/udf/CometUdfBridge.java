@@ -22,6 +22,7 @@ package org.apache.comet.udf;
 import java.io.IOException;
 import java.util.Collections;
 import java.util.IdentityHashMap;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
@@ -314,9 +315,10 @@ public class CometUdfBridge {
 
   /**
    * Moves the result's buffer accounting from the task allocator to the root allocator and drops
-   * the corresponding Spark task charge. Neither the ownership transfer nor the eventual FFI
-   * release is observed by the task allocator's {@link AllocationListener} (Arrow only notifies the
-   * allocator owning a chunk when the chunk is destroyed), so the charge must be released here.
+   * the Spark task charge for the chunks the result owns exclusively (see {@link
+   * #chargedOutputSize}). Neither the ownership transfer nor the eventual FFI release is observed
+   * by the task allocator's {@link AllocationListener} (Arrow only notifies the allocator owning a
+   * chunk when the chunk is destroyed), so the charge must be released here.
    *
    * <p>The returned vector shares the original buffers and must be closed by the caller after
    * export; the exported FFI array keeps the buffers alive until native execution releases them.
@@ -336,17 +338,50 @@ public class CometUdfBridge {
    * is non-zero only on the ledger that owns a chunk, so pass-through input buffers (owned by the
    * root allocator) and chunks whose ownership already moved on a previous export contribute
    * nothing.
+   *
+   * <p>Buffers are enumerated recursively from each vector's physical field buffers rather than
+   * through {@code getBuffers(false)}: that method omits the allocated buffers of zero-length
+   * children (an empty list's data vector still holds its allocated capacity), but {@code
+   * TransferPair.transfer()} moves those chunks to the root allocator all the same, and a charge
+   * not counted here would never be released.
+   *
+   * <p>A chunk is counted only when every live reference to its ledger comes from the result tree
+   * ({@code getRefCount()} equals the number of distinct result buffers on that ledger). A chunk
+   * shared with a retained scratch vector (the documented per-task scratch-buffer contract, e.g. an
+   * aligned {@code splitAndTransfer} slice) keeps its Spark charge: when native execution releases
+   * the FFI result, Arrow hands ownership back to the surviving scratch ledger without any listener
+   * callback, and the eventual scratch close fires {@link TaskState#onRelease}, which must then
+   * release a charge exactly once. Dropping the charge at export as well would release it twice. If
+   * the scratch side instead closes while native still holds the buffers, the retained charge is
+   * dropped wholesale at task completion, matching the pre-export accounting model.
    */
   private static long chargedOutputSize(FieldVector result, BufferAllocator outputAllocator) {
+    Set<ArrowBuf> seenBuffers = Collections.newSetFromMap(new IdentityHashMap<>());
+    IdentityHashMap<ReferenceManager, Integer> resultRefs = new IdentityHashMap<>();
+    collectPhysicalBuffers(result, seenBuffers, resultRefs);
     long charged = 0L;
-    Set<ReferenceManager> seen = Collections.newSetFromMap(new IdentityHashMap<>());
-    for (ArrowBuf buf : result.getBuffers(false)) {
-      ReferenceManager referenceManager = buf.getReferenceManager();
-      if (referenceManager.getAllocator() == outputAllocator && seen.add(referenceManager)) {
+    for (Map.Entry<ReferenceManager, Integer> entry : resultRefs.entrySet()) {
+      ReferenceManager referenceManager = entry.getKey();
+      if (referenceManager.getAllocator() == outputAllocator
+          && referenceManager.getRefCount() == entry.getValue()) {
         charged += referenceManager.getAccountedSize();
       }
     }
     return charged;
+  }
+
+  private static void collectPhysicalBuffers(
+      FieldVector vector,
+      Set<ArrowBuf> seenBuffers,
+      IdentityHashMap<ReferenceManager, Integer> resultRefs) {
+    for (ArrowBuf buf : vector.getFieldBuffers()) {
+      if (seenBuffers.add(buf)) {
+        resultRefs.merge(buf.getReferenceManager(), 1, Integer::sum);
+      }
+    }
+    for (FieldVector child : vector.getChildrenFromFields()) {
+      collectPhysicalBuffers(child, seenBuffers, resultRefs);
+    }
   }
 
   /** Visible to the focused allocator test in this package. */

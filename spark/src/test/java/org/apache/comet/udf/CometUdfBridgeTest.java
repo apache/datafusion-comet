@@ -42,6 +42,10 @@ import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.memory.OutOfMemoryException;
 import org.apache.arrow.vector.FieldVector;
 import org.apache.arrow.vector.IntVector;
+import org.apache.arrow.vector.complex.ListVector;
+import org.apache.arrow.vector.types.Types;
+import org.apache.arrow.vector.types.pojo.FieldType;
+import org.apache.arrow.vector.util.TransferPair;
 import org.apache.spark.TaskContext;
 import org.apache.spark.api.java.JavaSparkContext;
 import org.apache.spark.api.java.function.VoidFunction;
@@ -363,5 +367,154 @@ public class CometUdfBridgeTest {
     deferred.close();
     assertEquals(
         "a deferred FFI release should not involve task state", 0, CometUdfBridge.taskStateCount());
+  }
+
+  @Test
+  public void emptyChildAllocationsReleaseSparkChargeAtExport() {
+    LongAccumulator before = jsc.sc().longAccumulator("empty-child-before");
+    LongAccumulator during = jsc.sc().longAccumulator("empty-child-during");
+    LongAccumulator afterTransfer = jsc.sc().longAccumulator("empty-child-after-transfer");
+    LongAccumulator released = jsc.sc().longAccumulator("empty-child-released");
+
+    jsc.parallelize(Collections.singletonList(0), 1)
+        .foreachPartition(
+            (VoidFunction<Iterator<Integer>>)
+                ignored -> {
+                  TaskContext context = TaskContext.get();
+                  CometUdfBridge.registerTask(context);
+                  TaskMemoryManager taskMemoryManager =
+                      CometTaskContextShim.taskMemoryManager(context);
+                  before.add(taskMemoryManager.getMemoryConsumptionForThisTask());
+
+                  BufferAllocator rootAllocator =
+                      org.apache.comet.package$.MODULE$.CometArrowAllocator();
+                  BufferAllocator allocator = CometUdfBridge.taskAllocator(context);
+                  try (ArrowArray array = ArrowArray.allocateNew(rootAllocator)) {
+                    FieldVector exported;
+                    try (ListVector list = ListVector.empty("result", allocator)) {
+                      list.addOrGetVector(FieldType.nullable(Types.MinorType.INT.getType()));
+                      list.setInitialCapacity(1024);
+                      list.allocateNew();
+                      // All-empty lists: the child data vector keeps its allocated capacity but
+                      // reports a zero buffer size, the case getBuffers(false) omits.
+                      list.setValueCount(1024);
+                      during.add(taskMemoryManager.getMemoryConsumptionForThisTask());
+                      exported = CometUdfBridge.transferOutputForExport(context, list);
+                    }
+                    try {
+                      afterTransfer.add(taskMemoryManager.getMemoryConsumptionForThisTask());
+                      Data.exportVector(rootAllocator, exported, null, array);
+                    } finally {
+                      exported.close();
+                    }
+                    array.release();
+                    released.add(taskMemoryManager.getMemoryConsumptionForThisTask());
+                  }
+                });
+
+    assertTrue(
+        "allocated empty children should be charged to the Spark task",
+        during.value() > before.value());
+    assertEquals(
+        "the full charge, including allocated empty children, should move to native "
+            + "ownership at export",
+        before.value(),
+        afterTransfer.value());
+    assertEquals("no charge should remain after the FFI release", before.value(), released.value());
+  }
+
+  @Test
+  public void sharedScratchChunkChargeIsReleasedExactlyOnce() {
+    LongAccumulator before = jsc.sc().longAccumulator("scratch-before");
+    LongAccumulator afterScratch = jsc.sc().longAccumulator("scratch-allocated");
+    LongAccumulator afterTransfer = jsc.sc().longAccumulator("scratch-after-transfer");
+    LongAccumulator afterFfiRelease = jsc.sc().longAccumulator("scratch-after-ffi-release");
+    LongAccumulator sliceValue = jsc.sc().longAccumulator("scratch-slice-value");
+    LongAccumulator afterScratchClose = jsc.sc().longAccumulator("scratch-after-close");
+    LongAccumulator unrelatedCharge = jsc.sc().longAccumulator("scratch-unrelated-charge");
+    LongAccumulator end = jsc.sc().longAccumulator("scratch-end");
+
+    jsc.parallelize(Collections.singletonList(0), 1)
+        .foreachPartition(
+            (VoidFunction<Iterator<Integer>>)
+                ignored -> {
+                  TaskContext context = TaskContext.get();
+                  CometUdfBridge.registerTask(context);
+                  TaskMemoryManager taskMemoryManager =
+                      CometTaskContextShim.taskMemoryManager(context);
+                  long beforeCharge = taskMemoryManager.getMemoryConsumptionForThisTask();
+                  before.add(beforeCharge);
+
+                  BufferAllocator rootAllocator =
+                      org.apache.comet.package$.MODULE$.CometArrowAllocator();
+                  BufferAllocator allocator = CometUdfBridge.taskAllocator(context);
+                  IntVector scratch = new IntVector("scratch", allocator);
+                  scratch.allocateNew(2048);
+                  for (int i = 0; i < 2048; i++) {
+                    scratch.set(i, i);
+                  }
+                  scratch.setValueCount(2048);
+                  afterScratch.add(taskMemoryManager.getMemoryConsumptionForThisTask());
+
+                  // Aligned sub-range slice: shares the scratch chunks without copying, the
+                  // documented custom-CometUDF scratch-buffer pattern.
+                  TransferPair slicePair = scratch.getTransferPair(allocator);
+                  slicePair.splitAndTransfer(1024, 512);
+                  FieldVector slice = (FieldVector) slicePair.getTo();
+                  FieldVector exported;
+                  try {
+                    exported = CometUdfBridge.transferOutputForExport(context, slice);
+                  } finally {
+                    slice.close();
+                  }
+                  try (ArrowArray array = ArrowArray.allocateNew(rootAllocator)) {
+                    try {
+                      afterTransfer.add(taskMemoryManager.getMemoryConsumptionForThisTask());
+                      Data.exportVector(rootAllocator, exported, null, array);
+                    } finally {
+                      exported.close();
+                    }
+                    // Native releases the FFI result: Arrow silently returns chunk ownership
+                    // to the retained scratch ledger with no listener callback.
+                    array.release();
+                  }
+                  long afterFfiReleaseCharge = taskMemoryManager.getMemoryConsumptionForThisTask();
+                  afterFfiRelease.add(afterFfiReleaseCharge);
+                  sliceValue.add(scratch.get(1024));
+
+                  ArrowBuf unrelated = allocator.buffer(8192);
+                  unrelatedCharge.add(
+                      taskMemoryManager.getMemoryConsumptionForThisTask() - afterFfiReleaseCharge);
+                  scratch.close();
+                  afterScratchClose.add(taskMemoryManager.getMemoryConsumptionForThisTask());
+                  unrelated.close();
+                  end.add(taskMemoryManager.getMemoryConsumptionForThisTask());
+                });
+
+    assertTrue(
+        "the scratch allocation should be charged to the Spark task",
+        afterScratch.value() > before.value());
+    assertEquals(
+        "a chunk shared with retained scratch must keep its Spark charge at export",
+        afterScratch.value(),
+        afterTransfer.value());
+    assertEquals(
+        "the FFI release returns ownership to scratch without changing the charge",
+        afterScratch.value(),
+        afterFfiRelease.value());
+    assertEquals(
+        "scratch buffers should stay readable after the FFI release returns ownership",
+        1024L,
+        sliceValue.value().longValue());
+    assertTrue("an unrelated allocation should add its own charge", unrelatedCharge.value() > 0L);
+    assertEquals(
+        "closing scratch must release the shared-chunk charge exactly once",
+        before.value() + unrelatedCharge.value(),
+        afterScratchClose.value().longValue());
+    assertEquals(
+        "no over-release: the unrelated charge must survive the scratch close and be "
+            + "returned by its own close",
+        before.value(),
+        end.value());
   }
 }
