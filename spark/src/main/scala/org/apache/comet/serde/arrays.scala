@@ -673,10 +673,17 @@ object CometElementAt extends CometExpressionSerde[ElementAt] {
         notNull <- isNotNullExpr
         nullLit <- nullLiteralProto
       } yield {
+        // The generic serde path attaches this ElementAt's expr_id and QueryContext to the CASE we
+        // return here, but the lookup that actually throws under ANSI (ListExtract, for the array
+        // case) is nested inside the THEN branch. Attach them to that inner Expr too, so a native
+        // INVALID_ARRAY_INDEX_IN_ELEMENT_AT / INVALID_INDEX_OF_ZERO error still renders Spark's
+        // `== SQL ... ==` query context. (map_extract ignores expr_id, so the map case is
+        // unaffected and never throws an index error anyway.)
+        val guardedBase = QueryPlanSerde.attachExprIdAndContext(expr, base)
         val caseWhenExpr = ExprOuterClass.CaseWhen
           .newBuilder()
           .addWhen(notNull)
-          .addThen(base)
+          .addThen(guardedBase)
           .setElseExpr(nullLit)
           .build()
         ExprOuterClass.Expr

@@ -23,6 +23,7 @@ import scala.util.Random
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.catalyst.expressions.ArrayContains
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.BinaryType
@@ -352,18 +353,27 @@ class CometMapExpressionSuite extends CometTestBase {
     }
   }
 
-  // `map_contains_key` lowers to `array_contains(map_keys(...), key)`; neither `map_keys` nor
-  // `array_contains` gates the key type, so a folded map with floating-point keys would reach them
-  // and compare `-0.0` against a normalized `+0.0` key bytewise, unlike Spark. The double-keyed map
-  // is nested inside an INT-keyed outer map, so the lookup guard on the outer `element_at` does not
-  // see it; expansion has to inspect nested map key types and decline. Spark returns `7, NULL, NULL`.
+  // `map_contains_key` lowers to `array_contains(map_keys(...), key)`. `CometArrayContains` reports
+  // Incompatible for floating-point element types, because native `array_contains` compares
+  // -0.0/+0.0 and NaN bitwise unlike Spark. So under the default config it codegen-dispatches to
+  // Spark and the query stays native with Spark-exact results and no fallback. Forcing the native
+  // kernel with `ArrayContains.allowIncompatible=true` makes it serialize its children instead, so
+  // the folded double-keyed map literal reaches the literal-expansion path. That map is nested
+  // inside the INT-keyed outer map, past the outer `element_at` key guard which only sees the INT
+  // key. The nested-key walk in the expansion (`mapKeyTypesExpandable`) is what has to decline the
+  // floating-point keys. Otherwise a rebuilt `CreateMap` would reach the native kernel whose key
+  // equality disagrees with Spark. Spark returns `7, NULL, NULL`.
   test("map_contains_key over nested floating-point map keys falls back (multirow)") {
     withParquetTable((1 until 4).map(i => (i, i.toLong)), "tbl") {
       val negZero = "CAST(concat('-', CAST(_1 - 1 AS STRING), '.0') AS DOUBLE)"
-      checkSparkAnswerAndFallbackReason(
-        "SELECT _1 AS id, map_contains_key(" +
-          s"element_at(map(1, map(CAST(0 AS DOUBLE), 7)), _1), $negZero) AS present FROM tbl",
-        "Unsupported data type MapType")
+      // allowIncompatible flips array_contains from codegen dispatch to the native kernel, so the
+      // nested-map literal is actually serialized and the expansion guard runs.
+      withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[ArrayContains]) -> "true") {
+        checkSparkAnswerAndFallbackReason(
+          "SELECT _1 AS id, map_contains_key(" +
+            s"element_at(map(1, map(CAST(0 AS DOUBLE), 7)), _1), $negZero) AS present FROM tbl",
+          "Unsupported data type MapType")
+      }
     }
   }
 
