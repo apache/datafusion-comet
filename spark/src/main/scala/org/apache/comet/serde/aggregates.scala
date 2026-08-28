@@ -144,7 +144,12 @@ object CometAverage extends CometAggregateExpressionSerde[Average] {
     !fn.child.dataType.isInstanceOf[DecimalType]
 
   override def getUnsupportedReasons(): Seq[String] = Seq(
-    "YearMonthIntervalType and DayTimeIntervalType inputs are not supported")
+    "YearMonthIntervalType and DayTimeIntervalType inputs are not supported",
+    "Grouped decimal `AVG` in ANSI mode falls back to Spark so an overflow in a group that " +
+      "`LIMIT` does not consume cannot fail the query. Every stage evaluating this `AVG`, " +
+      "including other functions in the same aggregate operator, runs in Spark. Grouped " +
+      "`TRY_AVG`, legacy-mode " +
+      "decimal `AVG`, and non-decimal `AVG` remain eligible for native execution.")
 
   override def getSupportLevel(expr: Average): SupportLevel =
     if (AggSerde.avgDataTypeSupported(expr.dataType)) {
