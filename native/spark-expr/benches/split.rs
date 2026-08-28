@@ -16,33 +16,51 @@
 // under the License.
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
+use datafusion::common::ScalarValue;
 use datafusion::physical_plan::ColumnarValue;
-use datafusion_comet_spark_expr::spark_levenshtein;
+use datafusion_comet_spark_expr::{spark_split, spark_split_sql};
 use std::hint::black_box;
-use std::sync::Arc;
 
 #[path = "common/mod.rs"]
 mod common;
 use common::{string_array, NULL_RATIOS, ROW_COUNTS};
 
+const INPUT: &str = "apple,banana,cherry";
+
 fn criterion_benchmark(c: &mut Criterion) {
-    let mut group = c.benchmark_group("spark_levenshtein");
+    let sep = ColumnarValue::Scalar(ScalarValue::Utf8(Some(",".to_string())));
+
+    let mut split_group = c.benchmark_group("spark_split");
     for rows in ROW_COUNTS {
-        let right = string_array(rows, 0.0, |_| "sitting".to_string());
         for (null_ratio, tag) in NULL_RATIOS {
-            let left = string_array(rows, null_ratio, |_| "kitten".to_string());
             let args = vec![
-                ColumnarValue::Array(left),
-                ColumnarValue::Array(Arc::clone(&right)),
+                ColumnarValue::Array(string_array(rows, null_ratio, |_| INPUT.to_string())),
+                sep.clone(),
             ];
-            group.bench_with_input(
+            split_group.bench_with_input(
                 BenchmarkId::from_parameter(format!("{rows}/{tag}")),
                 &args,
-                |b, args| b.iter(|| black_box(spark_levenshtein(black_box(args)).unwrap())),
+                |b, args| b.iter(|| black_box(spark_split(black_box(args)).unwrap())),
             );
         }
     }
-    group.finish();
+    split_group.finish();
+
+    let mut split_sql_group = c.benchmark_group("spark_split_sql");
+    for rows in ROW_COUNTS {
+        for (null_ratio, tag) in NULL_RATIOS {
+            let args = vec![
+                ColumnarValue::Array(string_array(rows, null_ratio, |_| INPUT.to_string())),
+                sep.clone(),
+            ];
+            split_sql_group.bench_with_input(
+                BenchmarkId::from_parameter(format!("{rows}/{tag}")),
+                &args,
+                |b, args| b.iter(|| black_box(spark_split_sql(black_box(args)).unwrap())),
+            );
+        }
+    }
+    split_sql_group.finish();
 }
 
 criterion_group!(benches, criterion_benchmark);

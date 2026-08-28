@@ -114,9 +114,20 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
           StructType(Nil),
           "native-rss-callback-test")
         val captured = mutable.ArrayBuffer.empty[(Int, Int, Int, Long)]
+        val ownership = mutable.ArrayBuffer.empty[String]
         val pusher = new ShufflePartitionPusher {
+          override def maxReservationBytes(): Int = 1024 * 1024
+
+          override def reservePartitionData(bytes: Int): Unit = {
+            assert(bytes > 0 && bytes <= maxReservationBytes())
+            ownership += "reserve"
+          }
+
+          override def releasePartitionDataReservation(): Unit = ownership += "release"
+
           override def pushPartitionData(partitionId: Int, data: Array[Byte], length: Int)
               : Unit = {
+            ownership += "push"
             val encodedLength = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN).getLong
             captured.synchronized {
               captured += ((partitionId, data.length, length, encodedLength))
@@ -137,6 +148,7 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
           while (iterator.hasNext) {
             iterator.next().close()
           }
+          assert(ownership.takeRight(3).toSeq == Seq("reserve", "push", "release"))
           captured.iterator
         } finally {
           iterator.close()
@@ -164,9 +176,17 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
           StructType(Nil),
           "native-rss-callback-failure-test")
         val expected = new IOException("remote shuffle callback sentinel")
+        val ownership = mutable.ArrayBuffer.empty[String]
         val pusher = new ShufflePartitionPusher {
-          override def pushPartitionData(partitionId: Int, data: Array[Byte], length: Int): Unit =
+          override def reservePartitionData(bytes: Int): Unit = ownership += "reserve"
+
+          override def releasePartitionDataReservation(): Unit = ownership += "release"
+
+          override def pushPartitionData(partitionId: Int, data: Array[Byte], length: Int)
+              : Unit = {
+            ownership += "push"
             throw expected
+          }
         }
         val iterator = new CometExecIterator(
           CometExec.newIterId,
@@ -183,7 +203,9 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
             iterator.hasNext
             Iterator.single((false, "callback unexpectedly succeeded"))
           } catch {
-            case actual: IOException => Iterator.single((actual eq expected, actual.getMessage))
+            case actual: IOException =>
+              assert(ownership.takeRight(3).toSeq == Seq("reserve", "push", "release"))
+              Iterator.single((actual eq expected, actual.getMessage))
           }
         } finally {
           iterator.close()
@@ -192,6 +214,50 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
       .collect()
 
     assert(failures.sameElements(Array((true, "remote shuffle callback sentinel"))))
+  }
+
+  test("native RSS checks the callback's admission limit before allocating or reserving") {
+    val planBytes = rssShufflePlanBytes
+    val failures = spark.sparkContext
+      .parallelize(Seq(17), 1)
+      .mapPartitions { rowCounts =>
+        val batch = new ColumnarBatch(Array.empty[ColumnVector], rowCounts.next())
+        val inputs = CometArrowStream.inputObjects(
+          Iterator.single(batch),
+          StructType(Nil),
+          "native-rss-admission-limit-test")
+        var callbacks = 0
+        val pusher = new ShufflePartitionPusher {
+          override def maxReservationBytes(): Int = 1
+
+          override def reservePartitionData(bytes: Int): Unit = callbacks += 1
+
+          override def pushPartitionData(partitionId: Int, data: Array[Byte], length: Int): Unit =
+            callbacks += 1
+        }
+        val iterator = new CometExecIterator(
+          CometExec.newIterId,
+          inputs,
+          0,
+          planBytes,
+          CometMetricNode(Map.empty),
+          1,
+          0,
+          shufflePartitionPusher = Some(pusher))
+        try {
+          try {
+            iterator.hasNext
+            Iterator.single((false, callbacks))
+          } catch {
+            case failure: Exception =>
+              Iterator.single((failure.getMessage.contains("admission budget"), callbacks))
+          }
+        } finally {
+          iterator.close()
+        }
+      }
+      .collect()
+    assert(failures.sameElements(Array((true, 0))))
   }
 
   test(

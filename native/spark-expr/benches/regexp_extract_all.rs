@@ -16,29 +16,32 @@
 // under the License.
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
+use datafusion::common::ScalarValue;
 use datafusion::physical_plan::ColumnarValue;
-use datafusion_comet_spark_expr::spark_levenshtein;
+use datafusion_comet_spark_expr::spark_regexp_extract_all;
 use std::hint::black_box;
-use std::sync::Arc;
 
 #[path = "common/mod.rs"]
 mod common;
 use common::{string_array, NULL_RATIOS, ROW_COUNTS};
 
+const INPUT: &str =
+    "datafusion has datafusion-python, datafusion-comet, datafusion-java as sub projects";
+const PATTERN: &str = r"(\w+)-(\w+)";
+
 fn criterion_benchmark(c: &mut Criterion) {
-    let mut group = c.benchmark_group("spark_levenshtein");
+    let mut group = c.benchmark_group("spark_regexp_extract_all");
     for rows in ROW_COUNTS {
-        let right = string_array(rows, 0.0, |_| "sitting".to_string());
         for (null_ratio, tag) in NULL_RATIOS {
-            let left = string_array(rows, null_ratio, |_| "kitten".to_string());
             let args = vec![
-                ColumnarValue::Array(left),
-                ColumnarValue::Array(Arc::clone(&right)),
+                ColumnarValue::Array(string_array(rows, null_ratio, |_| INPUT.to_string())),
+                ColumnarValue::Scalar(ScalarValue::Utf8(Some(PATTERN.to_string()))),
+                ColumnarValue::Scalar(ScalarValue::Int32(Some(1))),
             ];
             group.bench_with_input(
                 BenchmarkId::from_parameter(format!("{rows}/{tag}")),
                 &args,
-                |b, args| b.iter(|| black_box(spark_levenshtein(black_box(args)).unwrap())),
+                |b, args| b.iter(|| black_box(spark_regexp_extract_all(black_box(args)).unwrap())),
             );
         }
     }
