@@ -948,6 +948,14 @@ under the License.
 <li><p>DataFusion’s translate iterates over Unicode graphemes (Spark uses code points) and substitutes U+0000 instead of treating it as a deletion sentinel</p></li>
 </ul>
 </section>
+<section id="unbase64">
+<h2>UnBase64<a class="headerlink" href="#unbase64" title="Link to this heading">#</a></h2>
+<p>The following cases have no native implementation and always run in the JVM using Spark’s code-generated implementation (inside the Comet pipeline):</p>
+<ul class="simple">
+<li><p>unbase64 with failOnError = true uses stricter RFC 4648 validation that is not yet implemented natively</p></li>
+<li><p>unbase64 with a non-trivial child expression uses the JVM codegen dispatcher to preserve Spark’s short-circuit evaluation (native path is limited to column and literal children)</p></li>
+</ul>
+</section>
 <section id="upper">
 <h2>Upper<a class="headerlink" href="#upper" title="Link to this heading">#</a></h2>
 <p>By default, <code class="docutils literal notranslate"><span class="pre">Upper</span></code> is evaluated in the JVM using Spark’s own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.caseConversion.enabled=true</span></code> to opt into Comet’s native implementation instead, which has the following differences from Spark:</p>
@@ -1027,6 +1035,7 @@ under the License.
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#stringreplace">StringReplace</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#stringsplit">StringSplit</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#stringtranslate">StringTranslate</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#unbase64">UnBase64</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#upper">Upper</a></li>
 </ul>
   </nav></div>

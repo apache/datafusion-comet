@@ -414,7 +414,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | Function | Status | Implementation | Notes |
 | --- | --- | --- | --- |
 | `%` | ✅ | Native |  |
-| `*` | ✅ | Native | Interval multiplication falls back |
+| `*` | ✅ | Native | DayTime interval multiplication routes through the JVM codegen dispatcher; YearMonth and Calendar interval multiplication fall back |
 | `+` | ✅ | Native |  |
 | `-` | ✅ | Native |  |
 | `/` | ✅ | Native |  |
@@ -615,7 +615,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `try_to_binary` | ✅ | — | Runs natively (rewrites to `try_eval(to_binary(...))`) |
 | `try_to_number` | ✅ | Codegen dispatch | Routed through the JVM codegen dispatcher |
 | `ucase` | ✅ | Hybrid |  |
-| `unbase64` | ✅ | Codegen dispatch |  |
+| `unbase64` | ✅ | Hybrid |  |
 | `upper` | ✅ | Hybrid |  |
 
 ---

@@ -164,6 +164,13 @@ The following incompatibilities cause `StringTranslate` to fall back to Spark by
 
 - DataFusion's translate iterates over Unicode graphemes (Spark uses code points) and substitutes U+0000 instead of treating it as a deletion sentinel
 
+## UnBase64
+
+The following cases have no native implementation and always run in the JVM using Spark's code-generated implementation (inside the Comet pipeline):
+
+- unbase64 with failOnError = true uses stricter RFC 4648 validation that is not yet implemented natively
+- unbase64 with a non-trivial child expression uses the JVM codegen dispatcher to preserve Spark's short-circuit evaluation (native path is limited to column and literal children)
+
 ## Upper
 
 By default, `Upper` is evaluated in the JVM using Spark's own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set `spark.comet.caseConversion.enabled=true` to opt into Comet's native implementation instead, which has the following differences from Spark:

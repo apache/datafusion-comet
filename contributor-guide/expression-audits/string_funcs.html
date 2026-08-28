@@ -848,6 +848,16 @@ under the License.
 <li><p>Spark 4.0.1 (audited 2026-05-27): unchanged alias of <code class="docutils literal notranslate"><span class="pre">Upper</span></code>.</p></li>
 </ul>
 </section>
+<section id="unbase64">
+<h2>unbase64<a class="headerlink" href="#unbase64" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3 (audited 2026-08-24): identical to 3.5.8.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-08-24): baseline. <code class="docutils literal notranslate"><span class="pre">doGenCode</span></code> emits <code class="docutils literal notranslate"><span class="pre">java.util.Base64.getMimeDecoder().decode(child.toString())</span></code>. The MIME decoder skips every byte outside the base64 alphabet, so CRLF-wrapped output from Spark’s own <code class="docutils literal notranslate"><span class="pre">base64</span></code> round-trips cleanly; four terminal-shape errors surface as <code class="docutils literal notranslate"><span class="pre">IllegalArgumentException</span></code>. <code class="docutils literal notranslate"><span class="pre">failOnError</span> <span class="pre">=</span> <span class="pre">true</span></code> is set only when the node is constructed from <code class="docutils literal notranslate"><span class="pre">to_binary('base64')</span></code> / <code class="docutils literal notranslate"><span class="pre">try_to_binary</span></code>, which use a stricter RFC 4648 validator.</p></li>
+<li><p>Spark 4.0.1 (audited 2026-08-24): <code class="docutils literal notranslate"><span class="pre">NullIntolerant</span></code> becomes <code class="docutils literal notranslate"><span class="pre">override</span> <span class="pre">def</span> <span class="pre">nullIntolerant:</span> <span class="pre">Boolean</span> <span class="pre">=</span> <span class="pre">true</span></code>; <code class="docutils literal notranslate"><span class="pre">inputTypes</span></code> widens to <code class="docutils literal notranslate"><span class="pre">StringTypeWithCollation(supportsTrimCollation</span> <span class="pre">=</span> <span class="pre">true)</span></code>. Behaviour is byte-level and collation-independent, so no divergence for <code class="docutils literal notranslate"><span class="pre">UTF8_BINARY</span></code> and no shim is needed.</p></li>
+<li><p>Spark 4.1.1 (audited 2026-08-24): adds <code class="docutils literal notranslate"><span class="pre">contextIndependentFoldable</span></code>; no behavioural change on the decode path.</p></li>
+<li><p>Comet native implementation (<code class="docutils literal notranslate"><span class="pre">spark_unbase64</span></code>, <code class="docutils literal notranslate"><span class="pre">native/spark-expr/src/string_funcs/unbase64.rs</span></code>) ports the JDK MIME decoder rules: 256-entry decode LUT, a reused per-batch scratch <code class="docutils literal notranslate"><span class="pre">Vec&lt;u8&gt;</span></code> copied into a preallocated <code class="docutils literal notranslate"><span class="pre">BinaryBuilder</span></code>, all four error messages reproduced verbatim. <code class="docutils literal notranslate"><span class="pre">CometUnBase64</span></code> handles <code class="docutils literal notranslate"><span class="pre">failOnError</span> <span class="pre">=</span> <span class="pre">false</span></code> natively; <code class="docutils literal notranslate"><span class="pre">failOnError</span> <span class="pre">=</span> <span class="pre">true</span></code> (reachable from <code class="docutils literal notranslate"><span class="pre">to_binary('base64')</span></code> / <code class="docutils literal notranslate"><span class="pre">try_to_binary</span></code>) requires strict RFC 4648 validation and is not yet implemented natively, so those cases stay on the JVM codegen dispatcher via <code class="docutils literal notranslate"><span class="pre">CodegenDispatchFallback</span></code>.</p></li>
+</ul>
+</section>
 <section id="upper">
 <h2>upper<a class="headerlink" href="#upper" title="Link to this heading">#</a></h2>
 <ul class="simple">
@@ -941,6 +951,7 @@ under the License.
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#translate">translate</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#trim">trim</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#ucase">ucase</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#unbase64">unbase64</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#upper">upper</a></li>
 </ul>
   </nav></div>

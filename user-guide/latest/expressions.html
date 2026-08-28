@@ -2260,7 +2260,7 @@ expressions. The following function families are <strong>not currently planned</
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">*</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Native</p></td>
-<td><p>Interval multiplication falls back</p></td>
+<td><p>DayTime interval multiplication routes through the JVM codegen dispatcher; YearMonth and Calendar interval multiplication fall back</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">+</span></code></p></td>
 <td><p>✅</p></td>
@@ -3207,7 +3207,7 @@ expressions. The following function families are <strong>not currently planned</
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">unbase64</span></code></p></td>
 <td><p>✅</p></td>
-<td><p>Codegen dispatch</p></td>
+<td><p>Hybrid</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">upper</span></code></p></td>
