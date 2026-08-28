@@ -15,7 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::array::{ArrayRef, Float64Array};
+use arrow::array::{ArrayRef, Datum, Float64Array, Scalar};
+use arrow::buffer::NullBuffer;
+use arrow::compute::kernels::numeric::add;
 use criterion::{criterion_group, criterion_main, Criterion};
 use datafusion::common::ScalarValue;
 use datafusion::physical_plan::ColumnarValue;
@@ -36,6 +38,42 @@ fn create_f64_array(rows: usize, null_every: usize) -> ArrayRef {
         })
         .collect();
     Arc::new(arr)
+}
+
+/// Build a Float64 column of `rows` rows with approximately `null_pct`% nulls striped
+/// across the batch (`i % 100 < null_pct` marks a null). Payload in null slots is
+/// the default 0. Meant as input for a downstream Arrow op (like `add`) whose
+/// output is what feeds `spark_pow`.
+fn create_f64_array_with_null_pct(rows: usize, null_pct: usize) -> ArrayRef {
+    let arr: Float64Array = (0..rows)
+        .map(|i| {
+            if null_pct != 0 && i % 100 < null_pct {
+                None
+            } else {
+                Some(0.5 + ((i % 10) as f64) * 0.5)
+            }
+        })
+        .collect();
+    Arc::new(arr)
+}
+
+/// Build a Float64 column whose null slots still carry a real (non-zero) payload,
+/// simulating the output of `a + 2.5D` where the addition preserves null bits but
+/// writes a real value into every slot. `null_pct` is the target fraction of null rows
+/// in `0..=100`. Nulls are striped across the batch modulo 100
+/// (`i % 100 < null_pct` marks a null).
+fn create_f64_array_with_payload_in_nulls(rows: usize, null_pct: usize) -> ArrayRef {
+    let values: Vec<f64> = (0..rows).map(|i| 2.5 + ((i % 10) as f64) * 0.1).collect();
+    let nulls = if null_pct == 0 {
+        None
+    } else {
+        Some(NullBuffer::from(
+            (0..rows)
+                .map(|i| i % 100 >= null_pct)
+                .collect::<Vec<bool>>(),
+        ))
+    };
+    Arc::new(Float64Array::new(values.into(), nulls))
 }
 
 fn criterion_benchmark(c: &mut Criterion) {
@@ -97,6 +135,97 @@ fn criterion_benchmark(c: &mut Criterion) {
     c.bench_function("spark_pow: null scalar short-circuit", |b| {
         b.iter(|| black_box(spark_pow(black_box(&null_scalar_args)).unwrap()))
     });
+
+    // Composed-nullable: models `pow(a + 2.5D, b)` where null slots carry a real
+    // payload (Arrow arithmetic preserves the null bit but overwrites the value).
+    // Sweeps null density to locate the crossover between the raw-buffer kernels
+    // (unary/binary) and a null-skipping path.
+    for null_pct in [50usize, 70, 80, 90, 99] {
+        let a = create_f64_array_with_payload_in_nulls(rows, null_pct);
+        let b = create_f64_array_with_payload_in_nulls(rows, null_pct);
+
+        let arr_arr_args = vec![
+            ColumnarValue::Array(Arc::clone(&a)),
+            ColumnarValue::Array(Arc::clone(&b)),
+        ];
+        c.bench_function(
+            &format!("spark_pow: array/array composed nulls {null_pct}%"),
+            move |bencher| bencher.iter(|| black_box(spark_pow(black_box(&arr_arr_args)).unwrap())),
+        );
+
+        let a = create_f64_array_with_payload_in_nulls(rows, null_pct);
+        let scalar_arr_args = vec![
+            ColumnarValue::Scalar(ScalarValue::Float64(Some(2.5))),
+            ColumnarValue::Array(Arc::clone(&a)),
+        ];
+        c.bench_function(
+            &format!("spark_pow: scalar/array composed nulls {null_pct}%"),
+            move |bencher| {
+                bencher.iter(|| black_box(spark_pow(black_box(&scalar_arr_args)).unwrap()))
+            },
+        );
+
+        let a = create_f64_array_with_payload_in_nulls(rows, null_pct);
+        let arr_scalar_args = vec![
+            ColumnarValue::Array(Arc::clone(&a)),
+            ColumnarValue::Scalar(ScalarValue::Float64(Some(3.0))),
+        ];
+        c.bench_function(
+            &format!("spark_pow: array/scalar composed nulls {null_pct}%"),
+            move |bencher| {
+                bencher.iter(|| black_box(spark_pow(black_box(&arr_scalar_args)).unwrap()))
+            },
+        );
+    }
+
+    // End-to-end pipeline. The `add` step preserves null bits but overwrites the
+    // underlying payload, which is the exact shape the reviewer flagged for a null-skipping
+    // kernel. Timing includes both the Arrow `add` and the `spark_pow` call so it reflects
+    // the real query cost, not a pre-materialised intermediate. Two shapes:
+    //   1. `pow(a + 2.5D, 3)` — array/scalar dispatch (`pow_array_scalar_null_aware`)
+    //   2. `pow(a + 2.5D, b)` — array/array dispatch (`pow_binary_null_aware`), with
+    //      nullable `a` and a non-null array of finite fractional exponents.
+    let exp_arg = ColumnarValue::Scalar(ScalarValue::Float64(Some(3.0)));
+    let two_point_five: Arc<dyn Datum> = Arc::new(Scalar::new(Float64Array::from(vec![2.5])));
+    let fractional_exponents: ArrayRef = Arc::new(Float64Array::from(
+        (0..rows)
+            .map(|i| 1.25 + (i % 10) as f64 * 0.1)
+            .collect::<Vec<_>>(),
+    ));
+    for null_pct in [50usize, 70, 80, 90, 99] {
+        let base: ArrayRef = create_f64_array_with_null_pct(rows, null_pct);
+        let scalar = Arc::clone(&two_point_five);
+        let exp = exp_arg.clone();
+        c.bench_function(
+            &format!("spark_pow: pipeline pow(a + 2.5D, 3) nulls {null_pct}%"),
+            move |bencher| {
+                bencher.iter(|| {
+                    let composed =
+                        add(black_box(&base.as_ref()), black_box(scalar.as_ref())).unwrap();
+                    let args = [ColumnarValue::Array(composed), exp.clone()];
+                    black_box(spark_pow(black_box(&args)).unwrap())
+                })
+            },
+        );
+
+        let base: ArrayRef = create_f64_array_with_null_pct(rows, null_pct);
+        let scalar = Arc::clone(&two_point_five);
+        let exp = Arc::clone(&fractional_exponents);
+        c.bench_function(
+            &format!("spark_pow: pipeline pow(a + 2.5D, b) nulls {null_pct}%"),
+            move |bencher| {
+                bencher.iter(|| {
+                    let composed_base =
+                        add(black_box(&base.as_ref()), black_box(scalar.as_ref())).unwrap();
+                    let args = [
+                        ColumnarValue::Array(composed_base),
+                        ColumnarValue::Array(Arc::clone(&exp)),
+                    ];
+                    black_box(spark_pow(black_box(&args)).unwrap())
+                })
+            },
+        );
+    }
 }
 
 criterion_group!(benches, criterion_benchmark);

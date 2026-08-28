@@ -110,7 +110,11 @@ impl PhysicalExpr for ArrayInsert {
         //   2. pos only when src is non-null
         //   3. item only when src and pos are non-null
 
-        // Check that src array is actually an array and get it's value type
+        // Check that src array is actually an array and get it's value type.
+        // `into_array(batch.num_rows())` broadcasts scalar results to the batch length, so
+        // `src_value.len() == batch.num_rows()`. `is_not_null(&src_value)` below inherits
+        // that length; without the broadcast the mask would be short and the downstream
+        // `and` / `evaluate_selection` would fail on length mismatch.
         let src_value = self
             .src_array_expr
             .evaluate(batch)?

@@ -3467,6 +3467,40 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("regression: cast Decimal(0, 0) to Boolean via Java UDF") {
+    // Reachable via a Java UDF that declares return type `DecimalType(0, 0)` and returns
+    // either `BigInteger.ZERO` or `null`. Spark accepts the schema; Arrow rejects
+    // `precision == 0` inside `Decimal128Array::with_precision_and_scale`, so the native
+    // cast kernel used to error. Enabling the ScalaUDF codegen dispatcher routes the UDF
+    // output straight into the native cast, so this test exercises the actual native path
+    // rather than falling back to Spark. The mixed valid + null batch covers the
+    // precision-zero fast path that reads the raw i128 payload; the all-null batch covers
+    // the earlier all-null shortcut.
+    withSQLConf(
+      CometConf.COMET_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_ENABLED.key -> "true",
+      CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true") {
+      spark.udf.register(
+        "zero_decimal",
+        new org.apache.spark.sql.api.java.UDF1[java.lang.Long, java.math.BigInteger] {
+          override def call(id: java.lang.Long): java.math.BigInteger =
+            if (id == 0L) java.math.BigInteger.ZERO else null
+        },
+        DecimalType(0, 0))
+      // id = 0 -> BigInteger.ZERO -> Decimal(0,0) 0 -> false
+      // id = 1 -> null -> null
+      val mixed = spark.range(0, 2).selectExpr("CAST(zero_decimal(id) AS BOOLEAN) AS b")
+      checkSparkAnswerAndOperator(mixed)
+      checkAnswer(mixed, Seq(Row(false), Row(null)))
+
+      // All-null batch: exercises the earlier `null_count() == len()` fast path that
+      // bypasses the zero-scalar construction entirely.
+      val allNull = spark.range(1, 3).selectExpr("CAST(zero_decimal(id) AS BOOLEAN) AS b")
+      checkSparkAnswerAndOperator(allNull)
+      checkAnswer(allNull, Seq(Row(null), Row(null)))
+    }
+  }
+
   test("NativeOptIn message and Compatible field") {
     import org.apache.comet.serde.{Compatible, NativeOptIn}
     val key = "spark.comet.expression.RLike.allowIncompatible"

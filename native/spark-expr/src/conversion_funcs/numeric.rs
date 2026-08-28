@@ -24,6 +24,7 @@ use arrow::array::{
     GenericStringBuilder, Int16Array, Int32Array, Int64Array, Int8Array, OffsetSizeTrait,
     PrimitiveArray, Scalar, StringBuilder, TimestampMicrosecondBuilder,
 };
+use arrow::buffer::BooleanBuffer;
 use arrow::compute::kernels::cmp::neq;
 use arrow::datatypes::{
     i256, is_validate_decimal_precision, ArrowPrimitiveType, DataType, Decimal128Type, Float32Type,
@@ -853,10 +854,25 @@ pub(crate) fn spark_cast_int_to_int(
 
 pub(crate) fn spark_cast_decimal_to_boolean(array: &dyn Array) -> SparkResult<ArrayRef> {
     let decimal_array = array.as_primitive::<Decimal128Type>();
-    // All-null fast path avoids constructing a zero scalar with the input's precision/scale,
-    // which would fail validation for Decimal128(0, 0) inputs that Spark accepts as nullable.
+    // All-null fast path: skips the zero-scalar construction for a batch whose output
+    // is trivially all-null. Also covers all-null `Decimal128(0, 0)`, which the default
+    // path cannot handle (see the precision-zero fast path below).
     if decimal_array.null_count() == decimal_array.len() {
         return Ok(Arc::new(BooleanArray::new_null(decimal_array.len())));
+    }
+    // Precision-zero fast path. Arrow rejects `precision == 0` in `with_precision_and_scale`,
+    // so the default `neq`-against-zero path cannot round-trip a `Decimal128(0, 0)` batch
+    // even when it has valid slots. Spark reaches this shape via JVM-side writers that do
+    // not validate precision (e.g. a UDF returning `BigInteger.ZERO` written through
+    // `DecimalVector.setSafe(long)`). The type contract says only 0 is representable, but
+    // we still cast the raw i128 payload (`v != 0`) rather than hard-coding `false`, so an
+    // out-of-contract non-zero value in a valid slot still round-trips correctly.
+    if decimal_array.precision() == 0 {
+        let values: BooleanBuffer = decimal_array.values().iter().map(|&v| v != 0).collect();
+        return Ok(Arc::new(BooleanArray::new(
+            values,
+            decimal_array.nulls().cloned(),
+        )));
     }
     // Arrow has no Decimal-to-Boolean cast. `neq` against a zero of the same
     // precision/scale is exactly `!value.is_zero()`, including null handling.
@@ -1352,6 +1368,38 @@ mod tests {
         // asserted for completeness; null_count is trivially 0 on any empty array.
         let result = spark_cast_decimal_to_boolean(&array).unwrap();
         assert_eq!(result.as_boolean().len(), 0);
+
+        // Mixed valid + null Decimal128(0, 0). Reachable via JVM-side writers that do not
+        // validate precision (e.g. a Java UDF returning `BigInteger.ZERO` declared as
+        // `DecimalType(0, 0)`, written through `DecimalVector.setSafe(long)`). The all-null
+        // fast path does not cover this: `null_count() < len()` yet the batch still cannot
+        // round-trip through a zero scalar. We build a 3-row batch where slot 0 is a valid
+        // zero, slot 1 is null, and slot 2 is an out-of-contract non-zero i128; the path
+        // must read the raw value (not hard-code `false`) so slot 2 comes back as `true`.
+        // Expected output: `[false, null, true]`.
+        // SAFETY: len = 3; values buffer = 48 bytes = 3 * 16, with i128(0), i128(0),
+        // i128(7) laid out little-endian; null bit buffer 0b0000_0101 = slots 0 and 2
+        // valid, slot 1 null.
+        let mut vals = [0u8; 48];
+        vals[32..48].copy_from_slice(&7i128.to_le_bytes()); // slot 2 = 7
+        let array_data = unsafe {
+            arrow::array::ArrayData::builder(DataType::Decimal128(0, 0))
+                .len(3)
+                .null_bit_buffer(Some(arrow::buffer::Buffer::from(&[0b0000_0101u8])))
+                .add_buffer(arrow::buffer::Buffer::from(&vals))
+                .build_unchecked()
+        };
+        let array: ArrayRef = Arc::new(Decimal128Array::from(array_data));
+        assert_eq!(array.data_type(), &DataType::Decimal128(0, 0));
+        assert_eq!(array.null_count(), 1);
+        let result = spark_cast_decimal_to_boolean(&array).unwrap();
+        let bool_array = result.as_boolean();
+        assert_eq!(bool_array.len(), 3);
+        assert!(!bool_array.is_null(0));
+        assert!(!bool_array.value(0)); // valid zero -> false
+        assert!(bool_array.is_null(1)); // null -> null
+        assert!(!bool_array.is_null(2));
+        assert!(bool_array.value(2)); // valid non-zero i128 -> true (raw-value cast)
     }
 
     #[test]
