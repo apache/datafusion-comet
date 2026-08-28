@@ -102,6 +102,43 @@ fn remap_physical_schema(
         )));
     }
 
+    // Spark resolves case-insensitive names by Unicode lowercasing (`toLowerCase(Locale.ROOT)`
+    // in `ParquetReadSupport`), while the matcher below folds ASCII only. A physical name such
+    // as `K` (U+212A KELVIN SIGN) resolves to a requested ASCII `k` in Spark but stays
+    // unmatched here, and the scan-planning gate cannot see physical file names, so the column
+    // would be silently null-filled as missing. Until #5495 brings Spark-parity Unicode
+    // matching, fail Variant-bearing scans whose resolution would differ under Unicode folding
+    // rather than return values that disagree with Spark.
+    if !case_sensitive
+        && !should_match_by_id
+        && logical_schema.fields().iter().any(|f| is_variant_field(f))
+    {
+        for logical_field in logical_schema.fields() {
+            let name = logical_field.name();
+            if physical_schema
+                .fields()
+                .iter()
+                .any(|pf| pf.name().eq_ignore_ascii_case(name))
+            {
+                continue;
+            }
+            if let Some(pf) = physical_schema
+                .fields()
+                .iter()
+                .find(|pf| !pf.name().is_ascii() && pf.name().to_lowercase() == name.to_lowercase())
+            {
+                return Err(DataFusionError::Execution(format!(
+                    "Case-insensitive scan of a Variant-bearing schema requires Unicode column \
+                     matching: requested column '{name}' resolves to physical Parquet column \
+                     '{phys}' only under Unicode case folding, which Comet's native scan does \
+                     not support yet (https://github.com/apache/datafusion-comet/issues/5495). \
+                     Retry with spark.comet.enabled=false, or align the column name case.",
+                    phys = pf.name(),
+                )));
+            }
+        }
+    }
+
     // Build id -> all matching physical field names. We need the full list so we can mirror
     // Spark's `_LEGACY_ERROR_TEMP_2094` "Found duplicate field(s)" error when an ID-bearing
     // logical field would resolve to more than one physical field.
@@ -1993,5 +2030,70 @@ mod test {
             err_msg.contains("Found duplicate field"),
             "Expected duplicate field error, got: {err_msg}"
         );
+    }
+
+    #[test]
+    fn test_case_insensitive_variant_scan_rejects_unicode_folded_physical_name() {
+        use super::remap_physical_schema;
+
+        let variant_storage = DataType::Struct(Fields::from(vec![
+            Field::new("value", DataType::Binary, true),
+            Field::new("metadata", DataType::Binary, true),
+        ]));
+        let variant_logical: SchemaRef = Arc::new(Schema::new(vec![Field::new(
+            "k",
+            variant_storage.clone(),
+            true,
+        )
+        .with_extension_type(VariantType)]));
+
+        // Physical `K` (U+212A KELVIN SIGN) folds to `k` in Spark's Unicode resolver but not
+        // in the ASCII matcher: the scan must fail closed instead of null-filling `k`.
+        let kelvin: SchemaRef = Arc::new(Schema::new(vec![Field::new(
+            "\u{212A}",
+            variant_storage.clone(),
+            true,
+        )]));
+        let err =
+            remap_physical_schema(&variant_logical, &kelvin, false, false, false).unwrap_err();
+        assert!(err.to_string().contains("Unicode case folding"), "{err}");
+        assert!(err.to_string().contains("5495"), "{err}");
+
+        // ASCII case differences still match natively.
+        let ascii: SchemaRef = Arc::new(Schema::new(vec![Field::new(
+            "K",
+            variant_storage.clone(),
+            true,
+        )]));
+        let (remapped, name_map) =
+            remap_physical_schema(&variant_logical, &ascii, false, false, false).unwrap();
+        assert_eq!(remapped.field(0).name(), "k");
+        assert_eq!(name_map.get("k").map(String::as_str), Some("K"));
+
+        // `ſ` (U+017F) does not lowercase to `s`, so Spark also treats the requested column
+        // as missing; the existing missing-column path is kept.
+        let long_s: SchemaRef = Arc::new(Schema::new(vec![Field::new(
+            "\u{17F}",
+            variant_storage.clone(),
+            true,
+        )]));
+        let variant_s: SchemaRef = Arc::new(Schema::new(vec![Field::new(
+            "s",
+            variant_storage.clone(),
+            true,
+        )
+        .with_extension_type(VariantType)]));
+        assert!(remap_physical_schema(&variant_s, &long_s, false, false, false).is_ok());
+
+        // Without a marked Variant field in the required schema the pre-#5495 behavior is
+        // unchanged.
+        let plain_logical: SchemaRef =
+            Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, true)]));
+        let plain_kelvin: SchemaRef = Arc::new(Schema::new(vec![Field::new(
+            "\u{212A}",
+            DataType::Int32,
+            true,
+        )]));
+        assert!(remap_physical_schema(&plain_logical, &plain_kelvin, false, false, false).is_ok());
     }
 }

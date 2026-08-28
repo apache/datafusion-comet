@@ -126,6 +126,50 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
     }
   }
 
+  test("case-insensitive ASCII Variant name with Unicode physical column fails closed") {
+    assume(isSpark40Plus, "VariantType requires Spark 4.0+")
+
+    withTempPath { path =>
+      withSQLConf(
+        CometConf.COMET_ENABLED.key -> "false",
+        "spark.sql.variant.writeShredding.enabled" -> "false") {
+        // Physical `K` (U+212A KELVIN SIGN) and `ſ` (U+017F LATIN SMALL LETTER LONG S).
+        sql("SELECT parse_json('44') AS `K`, parse_json('45') AS `ſ`").write
+          .parquet(path.toString)
+      }
+
+      val table = s"variant_unicode_physical_${System.currentTimeMillis()}"
+      withTable(table) {
+        sql(
+          s"CREATE TABLE $table (`k` VARIANT, `s` VARIANT) USING parquet OPTIONS (path '$path')")
+        withSQLConf(
+          SQLConf.CASE_SENSITIVE.key -> "false",
+          "spark.sql.variant.allowReadingShredded" -> "true",
+          "spark.sql.variant.pushVariantIntoScan" -> "false") {
+          // The requested name is ASCII, so the planning gate admits a native scan; Spark
+          // resolves physical `K` by Unicode lowercasing, which the native ASCII matcher
+          // cannot see, so the scan must fail closed instead of null-filling `k` (#5495).
+          val df = sql(s"SELECT `k` FROM $table")
+          assert(collect(df.queryExecution.executedPlan) { case s: CometNativeScanExec =>
+            s
+          }.size == 1)
+          val error = intercept[Exception](df.collect())
+          val messages = Iterator
+            .iterate(error: Throwable)(_.getCause)
+            .takeWhile(_ != null)
+            .map(_.getMessage)
+            .mkString("\n")
+          assert(messages.contains("Unicode case folding"), messages)
+
+          // `ſ` does not lowercase to `s`, so Spark treats the requested column as missing
+          // too: both engines null-fill and the scan stays native.
+          val (_, cometPlan) = checkSparkAnswer(sql(s"SELECT `s` FROM $table"))
+          assert(collect(cometPlan) { case s: CometNativeScanExec => s }.size == 1)
+        }
+      }
+    }
+  }
+
   test("Variant scan falls back when Parquet encryption is configured") {
     assume(isSpark40Plus, "VariantType requires Spark 4.0+")
 
