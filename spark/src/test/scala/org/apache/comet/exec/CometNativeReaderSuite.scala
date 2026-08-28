@@ -170,6 +170,47 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
     }
   }
 
+  test("case-insensitive Variant scan ignores unused Unicode physical columns") {
+    assume(isSpark40Plus, "VariantType requires Spark 4.0+")
+
+    withTempPath { path =>
+      withSQLConf(
+        CometConf.COMET_ENABLED.key -> "false",
+        "spark.sql.variant.writeShredding.enabled" -> "false") {
+        // Physical `K` (U+212A KELVIN SIGN) beside an ordinary Variant column.
+        sql("SELECT parse_json('42') AS v, 7 AS `K`").write.parquet(path.toString)
+      }
+
+      val table = s"variant_unicode_unused_${System.currentTimeMillis()}"
+      withTable(table) {
+        sql(s"CREATE TABLE $table (v VARIANT, `k` INT) USING parquet OPTIONS (path '$path')")
+        withSQLConf(
+          SQLConf.CASE_SENSITIVE.key -> "false",
+          "spark.sql.variant.allowReadingShredded" -> "true",
+          "spark.sql.variant.pushVariantIntoScan" -> "false") {
+          // `k` stays in the native data schema even though `SELECT v` never reads it: the
+          // Unicode fail-closed guard must only inspect referenced columns, so this scan
+          // succeeds natively.
+          val (_, cometPlan) = checkSparkAnswer(sql(s"SELECT v FROM $table"))
+          assert(collect(cometPlan) { case s: CometNativeScanExec => s }.size == 1)
+
+          // Referencing `k` alongside the Variant column still fails closed (#5495).
+          val df = sql(s"SELECT v, `k` FROM $table")
+          assert(collect(df.queryExecution.executedPlan) { case s: CometNativeScanExec =>
+            s
+          }.size == 1)
+          val error = intercept[Exception](df.collect())
+          val messages = Iterator
+            .iterate(error: Throwable)(_.getCause)
+            .takeWhile(_ != null)
+            .map(_.getMessage)
+            .mkString("\n")
+          assert(messages.contains("Unicode case folding"), messages)
+        }
+      }
+    }
+  }
+
   test("Variant scan falls back when Parquet encryption is configured") {
     assume(isSpark40Plus, "VariantType requires Spark 4.0+")
 
