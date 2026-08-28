@@ -60,7 +60,7 @@ SELECT id, v, tail FROM test_variant
 statement
 SET spark.sql.variant.pushVariantIntoScan=true
 
-query expect_fallback(shredded; not supported by native scan)
+query expect_fallback(rewritten by spark.sql.variant.pushVariantIntoScan)
 SELECT v FROM test_variant
 
 statement

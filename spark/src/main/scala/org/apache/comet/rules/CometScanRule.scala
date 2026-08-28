@@ -1024,11 +1024,14 @@ case class CometScanTypeChecker() extends DataTypeSupport with CometTypeShim {
         // is a convenient place to force the whole query to fall back to Spark for now
         false
       case s: StructType if isVariantStruct(s) =>
-        // Spark 4.0's PushVariantIntoScan rewrites a VariantType column into a struct of typed
-        // fields plus per-field VariantMetadata, expecting the scan to honor Parquet variant
-        // shredding semantics. Comet's native scan does not, so fall back to Spark.
+        // Spark's PushVariantIntoScan (enabled by default on Spark 4.1+) rewrites a VariantType
+        // column into a struct of typed fields plus per-field VariantMetadata, expecting the scan
+        // to honor Parquet variant shredding semantics. Comet's native scan does not, so fall
+        // back to Spark. Setting spark.sql.variant.pushVariantIntoScan=false keeps whole-value
+        // Variant projections on the native scan.
         fallbackReasons +=
-          s"Unsupported $name of type VariantType (shredded; not supported by native scan)"
+          s"Unsupported $name of type VariantType (rewritten by " +
+            "spark.sql.variant.pushVariantIntoScan; not supported by native scan)"
         false
       case s: StructType if s.fields.isEmpty =>
         false
