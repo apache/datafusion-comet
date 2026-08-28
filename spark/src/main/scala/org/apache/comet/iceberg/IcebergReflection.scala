@@ -58,6 +58,7 @@ object IcebergReflection extends Logging {
     val TABLE = "org.apache.iceberg.Table"
     val PARTITIONING = "org.apache.iceberg.Partitioning"
     val SPARK_WRITE = "org.apache.iceberg.spark.source.SparkWrite"
+    val TABLE_PROPERTIES = "org.apache.iceberg.TableProperties"
 
     // Iceberg 1.5.2 uses its own `ReplaceIcebergData` due to lack of `ReplaceData` in Spark 3.4.
     val REPLACE_ICEBERG_DATA = "org.apache.spark.sql.catalyst.plans.logical.ReplaceIcebergData"
@@ -145,6 +146,29 @@ object IcebergReflection extends Logging {
   /** Whether `write` is an Iceberg `SparkWrite` (false if Iceberg isn't on the classpath). */
   def isIcebergSparkWrite(write: Any): Boolean =
     sparkWriteClassOpt.exists(_.isInstance(write))
+
+  def isIcebergBatchWrite(batchWrite: Any): Boolean = {
+    if (batchWrite == null) return false
+    batchWrite.getClass.getName.startsWith(ClassNames.SPARK_WRITE + "$")
+  }
+
+  def getOuterSparkWrite(batchWrite: Any): Option[Any] = {
+    if (batchWrite == null) None
+    else {
+      try {
+        val field = batchWrite.getClass.getDeclaredField("this$0")
+        field.setAccessible(true)
+        Option(field.get(batchWrite))
+      } catch {
+        case _: NoSuchFieldException =>
+          None
+        case e: Exception =>
+          logError(
+            s"Iceberg reflection failure: outer SparkWrite from BatchWrite: ${e.getMessage}")
+          None
+      }
+    }
+  }
 
   def isReplaceIcebergData(plan: Any): Boolean =
     plan != null && plan.getClass.getName == ClassNames.REPLACE_ICEBERG_DATA
@@ -305,31 +329,22 @@ object IcebergReflection extends Logging {
    * Different Iceberg versions expose file paths differently:
    *   - Newer versions: location() returns String
    *   - Older versions: path() returns CharSequence
+   *
+   * `None` means neither accessor is declared; a genuine invoke failure propagates instead.
    */
-  def extractFileLocation(contentFileClass: Class[_], file: Any): Option[String] = {
-    try {
-      findMethod(contentFileClass, "location") match {
-        case Some(locationMethod) => Some(locationMethod.invoke(file).asInstanceOf[String])
-        case None =>
-          findMethod(contentFileClass, "path")
-            .map(_.invoke(file).asInstanceOf[CharSequence].toString)
-      }
-    } catch {
-      case _: Exception => None
+  def extractFileLocation(contentFileClass: Class[_], file: Any): Option[String] =
+    findMethod(contentFileClass, "location") match {
+      case Some(locationMethod) => Some(locationMethod.invoke(file).asInstanceOf[String])
+      case None =>
+        findMethod(contentFileClass, "path")
+          .map(_.invoke(file).asInstanceOf[CharSequence].toString)
     }
-  }
 
   /**
    * Extracts file location from ContentFile instance using dynamic class lookup.
    */
-  def extractFileLocation(file: Any): Option[String] = {
-    try {
-      val contentFileClass = loadClass(ClassNames.CONTENT_FILE)
-      extractFileLocation(contentFileClass, file)
-    } catch {
-      case _: Exception => None
-    }
-  }
+  def extractFileLocation(file: Any): Option[String] =
+    tryLoadClass(ClassNames.CONTENT_FILE).flatMap(extractFileLocation(_, file))
 
   /**
    * The file format of a ContentFile (data or delete file), e.g. "PARQUET", "AVRO", "ORC".
@@ -337,14 +352,11 @@ object IcebergReflection extends Logging {
    * `contentFileClass` is the public ContentFile interface, which callers already hold: Iceberg's
    * concrete file impls are package-private, so `format()` resolved on the concrete class throws
    * IllegalAccessException when invoked.
+   *
+   * `None` means `format()` isn't declared; a genuine invoke failure propagates instead.
    */
-  def getFileFormat(contentFileClass: Class[_], file: Any): Option[String] = {
-    try {
-      findMethod(contentFileClass, "format").map(_.invoke(file).toString)
-    } catch {
-      case _: Exception => None
-    }
-  }
+  def getFileFormat(contentFileClass: Class[_], file: Any): Option[String] =
+    findMethod(contentFileClass, "format").map(_.invoke(file).toString)
 
   /**
    * Gets the Iceberg Table from a SparkScan.
@@ -762,20 +774,18 @@ object IcebergReflection extends Logging {
    *   An Iceberg DeleteFile object
    * @return
    *   List of field IDs used in equality deletes, or empty list for position deletes
+   *
+   * Empty means either `equalityFieldIds()` isn't declared, or it returned `null` (Iceberg's
+   * normal contract for a position-delete file). A genuine invoke failure propagates instead of
+   * collapsing into empty.
    */
-  def getEqualityFieldIds(deleteFileClass: Class[_], deleteFile: Any): java.util.List[_] = {
-    try {
-      val ids =
-        getMethod(deleteFileClass, "equalityFieldIds")
-          .invoke(deleteFile)
-          .asInstanceOf[java.util.List[_]]
-      if (ids == null) new java.util.ArrayList[Any]() else ids
-    } catch {
-      case _: Exception =>
-        // Position delete files return null/empty for equalityFieldIds
-        new java.util.ArrayList[Any]()
+  def getEqualityFieldIds(deleteFileClass: Class[_], deleteFile: Any): java.util.List[_] =
+    findMethod(deleteFileClass, "equalityFieldIds") match {
+      case None => new java.util.ArrayList[Any]()
+      case Some(method) =>
+        val ids = method.invoke(deleteFile).asInstanceOf[java.util.List[_]]
+        if (ids == null) new java.util.ArrayList[Any]() else ids
     }
-  }
 
   /**
    * Gets field name and type from schema by field ID.
@@ -1032,6 +1042,73 @@ object IcebergReflection extends Logging {
   def encryptionDataKeyLength(table: Any): Option[Int] =
     getTableProperties(table).filter(_.containsKey("encryption.key-id")).map { props =>
       Option(props.get("encryption.data-key-length")).map(_.toInt).getOrElse(16)
+    }
+
+  private def getSparkWriteField(sparkWrite: Any, fieldName: String): Option[Any] =
+    sparkWriteClassOpt.flatMap { cls =>
+      try {
+        val field = cls.getDeclaredField(fieldName)
+        field.setAccessible(true)
+        Option(field.get(sparkWrite))
+      } catch {
+        case _: NoSuchFieldException => None
+        case e: Exception =>
+          logError(
+            s"Iceberg reflection failure: Failed to read SparkWrite.$fieldName: ${e.getMessage}")
+          None
+      }
+    }
+
+  def getFormatFromSparkWrite(sparkWrite: Any): Option[String] =
+    getSparkWriteField(sparkWrite, "format")
+      .map(_.toString.toLowerCase(java.util.Locale.ROOT))
+
+  def getTableFromSparkWrite(sparkWrite: Any): Option[Any] =
+    getSparkWriteField(sparkWrite, "table")
+
+  def getWritePropertiesFromSparkWrite(sparkWrite: Any): Option[Map[String, String]] = {
+    import scala.jdk.CollectionConverters._
+    getSparkWriteField(sparkWrite, "writeProperties")
+      .map(_.asInstanceOf[java.util.Map[String, String]].asScala.toMap)
+  }
+
+  private lazy val tablePropertiesClassOpt: Option[Class[_]] =
+    tryLoadClass(ClassNames.TABLE_PROPERTIES)
+
+  def tablePropertyConstant(fieldName: String): String =
+    readTablePropertiesField(fieldName).asInstanceOf[String]
+
+  def tablePropertyIntConstant(fieldName: String): Int =
+    readTablePropertiesField(fieldName).asInstanceOf[Integer].intValue()
+
+  private def readTablePropertiesField(fieldName: String): Any = {
+    val cls = tablePropertiesClassOpt.getOrElse(
+      throw new IllegalStateException(s"${ClassNames.TABLE_PROPERTIES} is not on the classpath"))
+    try cls.getField(fieldName).get(null)
+    catch {
+      case e: NoSuchFieldException =>
+        throw new IllegalStateException(
+          s"${ClassNames.TABLE_PROPERTIES}.$fieldName not found " +
+            "(unsupported Iceberg version?)",
+          e)
+    }
+  }
+
+  def getDataLocation(table: Any): Option[String] =
+    try {
+      val locationProviderMethod =
+        findMethodInHierarchy(table.getClass, "locationProvider").getOrElse(
+          throw new NoSuchMethodException(
+            s"locationProvider() not found on ${table.getClass.getName}"))
+      val provider = locationProviderMethod.invoke(table)
+      val newDataLocMethod = provider.getClass.getMethod("newDataLocation", classOf[String])
+      newDataLocMethod.setAccessible(true)
+      val location = newDataLocMethod.invoke(provider, "").asInstanceOf[String]
+      Some(location.stripSuffix("/"))
+    } catch {
+      case e: Exception =>
+        logError(s"Iceberg reflection failure: Failed to get data location: ${e.getMessage}", e)
+        None
     }
 }
 

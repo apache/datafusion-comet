@@ -83,7 +83,7 @@ INSERT INTO test_cast_struct_to_string VALUES
     4,
     named_struct('col1', cast(null as int), 'col2', cast(null as string)),
     named_struct('a', cast(null as int), 'b', cast(null as string), 'c', cast(null as boolean)),
-    named_struct('f', cast(-0.0 as float), 'd', cast(-0.0 as double)),
+    named_struct('f', float('-0.0'), 'd', double('-0.0')),
     named_struct('b', cast(null as tinyint), 's', cast(null as smallint), 'i', cast(null as int), 'l', cast(null as bigint)),
     named_struct('d1', cast(null as decimal(10, 2)), 'd2', cast(null as decimal(38, 18))),
     named_struct('dt', cast(null as date), 'ts', cast(null as timestamp)),
@@ -260,7 +260,7 @@ SELECT cast(a_nested as string), id FROM test_cast_array_to_string ORDER BY id
 
 -- Array of floats / doubles with NaN / ±0 / ±Infinity / NULL.
 query
-SELECT cast(array(cast(1.5 as float), cast('NaN' as float), cast(-0.0 as float), cast(null as float)) as string)
+SELECT cast(array(cast(1.5 as float), cast('NaN' as float), float('-0.0'), cast(null as float)) as string)
 
 query
 SELECT cast(array(cast(1.5 as double), cast('NaN' as double), cast('-Infinity' as double), cast(null as double)) as string)
@@ -318,7 +318,7 @@ SELECT cast(map('a', X'616263', 'b', X'', 'c', cast(null as binary)) as string)
 
 -- Map with float / double values: NaN / ±0 / ±Infinity / NULL.
 query
-SELECT cast(map('nan', cast('NaN' as float), 'neg0', cast(-0.0 as float), 'null', cast(null as float)) as string)
+SELECT cast(map('nan', cast('NaN' as float), 'neg0', float('-0.0'), 'null', cast(null as float)) as string)
 
 query
 SELECT cast(map('nan', cast('NaN' as double), 'inf', cast('Infinity' as double), 'ninf', cast('-Infinity' as double), 'null', cast(null as double)) as string)

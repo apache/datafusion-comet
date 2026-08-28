@@ -55,7 +55,7 @@ import org.apache.comet.CometSparkSessionExtensions._
 import org.apache.comet.rules.CometExecRule.allExecs
 import org.apache.comet.serde._
 import org.apache.comet.serde.operator._
-import org.apache.comet.shims.{ShimCometStreaming, ShimSubqueryBroadcast}
+import org.apache.comet.shims.{ShimCometStreaming, ShimCometWindowGroupLimit, ShimSubqueryBroadcast}
 
 object CometExecRule {
 
@@ -71,7 +71,7 @@ object CometExecRule {
    * Fully native operators.
    */
   val nativeExecs: Map[Class[_ <: SparkPlan], CometOperatorSerde[_]] =
-    Map(
+    Map[Class[_ <: SparkPlan], CometOperatorSerde[_]](
       classOf[ProjectExec] -> CometProjectExec,
       classOf[FilterExec] -> CometFilterExec,
       classOf[LocalLimitExec] -> CometLocalLimitExec,
@@ -87,7 +87,9 @@ object CometExecRule {
       classOf[SortExec] -> CometSortExec,
       classOf[LocalTableScanExec] -> CometLocalTableScanExec,
       classOf[SampleExec] -> CometSampleExec,
-      classOf[WindowExec] -> CometWindowExec)
+      classOf[WindowExec] -> CometWindowExec) ++
+      // WindowGroupLimitExec exists only on Spark 3.5+; the shim returns None on 3.4.
+      ShimCometWindowGroupLimit.windowGroupLimitClass.map(_ -> CometWindowGroupLimitExec)
 
   /**
    * Sinks that have a native plan of ScanExec.
@@ -266,6 +268,15 @@ case class CometExecRule(session: SparkSession)
   // spotless:on
   private def transform(plan: SparkPlan): SparkPlan = {
     def convertNode(op: SparkPlan): SparkPlan = op match {
+      // Scan marker produced by an optional, out-of-tree scan contrib (e.g. contrib/delta).
+      // Matched by trait (no compile-time dependency on the contrib) and present only when that
+      // contrib is on the classpath. The marker carries its own serde handler and typically wraps
+      // the original, link-bearing scan, so the produced exec's originalPlan keeps its logicalLink
+      // with no workaround. If conversion declines, the marker itself falls back to the vanilla
+      // Spark scan, so leaving it in the plan is safe.
+      case marker: CometContribScanMarker =>
+        convertToComet(marker, marker.scanHandler).getOrElse(marker)
+
       // Fully native scan for V1. CometScanExec must always convert to a native scan; the JVM
       // fallback path has been removed. If conversion fails, fall back to the original Spark scan.
       case scan: CometScanExec =>
@@ -297,6 +308,9 @@ case class CometExecRule(session: SparkSession)
 
       case op: DataWritingCommandExec =>
         convertToComet(op, CometDataWritingCommand).getOrElse(op)
+
+      case op: IcebergWriteExec if CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.get(op.conf) =>
+        convertToComet(op, CometIcebergNativeWrite).getOrElse(op)
 
       // For AQE broadcast stage on a Comet broadcast exchange
       case s @ BroadcastQueryStageExec(_, _: CometBroadcastExchangeExec, _) =>
