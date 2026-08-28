@@ -17,6 +17,7 @@
 
 -- Run once per session timezone to exercise TZ-sensitive casts (NTZ↔Timestamp)
 -- ConfigMatrix: spark.sql.session.timeZone=UTC,America/Los_Angeles,America/New_York,Asia/Kolkata
+-- ConfigMatrix: spark.comet.exec.scalaUDF.codegen.enabled=true,false
 
 statement
 CREATE TABLE test_ts_ntz(ts_ntz timestamp_ntz, ts timestamp, d date, id int) USING parquet
@@ -43,8 +44,9 @@ SELECT cast(ts_ntz as date), id FROM test_ts_ntz ORDER BY id
 query
 SELECT cast(ts_ntz as timestamp), id FROM test_ts_ntz ORDER BY id
 
--- Date → NTZ (timezone-independent: pure days * 86400 * 1000000 arithmetic)
-query
+-- An arbitrary DATE column can overflow NTZ microseconds. Retain Spark row evaluation even
+-- for these ordinary values, with dispatch enabled or disabled; the enclosing operator falls back.
+query expect_fallback(DATE to TIMESTAMP_NTZ requires Spark row execution)
 SELECT cast(d as timestamp_ntz), id FROM test_ts_ntz ORDER BY id
 
 -- Timestamp → NTZ (session-TZ dependent: shifts UTC epoch to local time, stores as local epoch)

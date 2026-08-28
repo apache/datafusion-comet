@@ -21,7 +21,8 @@ package org.apache.comet.expressions
 
 import java.time.ZoneOffset
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Expression, Literal}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, DateFromUnixDate, Expression, Literal}
+import org.apache.spark.sql.catalyst.util.DateTimeConstants.MICROS_PER_DAY
 import org.apache.spark.sql.catalyst.util.DateTimeUtils
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DecimalType, MapType, NullType, StructType, TimestampNTZType, TimestampType}
@@ -52,6 +53,15 @@ object CometCast
   // `CodegenDispatchFallback`. The flag is internal in Spark 4.0 and defaults to false.
   private[comet] val legacyCastComplexTypesToStringReason: String =
     "spark.sql.legacy.castComplexTypesToString.enabled=true is not supported"
+
+  private[comet] val dateToTimestampNtzOverflowReason: String =
+    "DATE to TIMESTAMP_NTZ requires Spark row execution unless its date range is known to be safe"
+
+  private[comet] val dateToTimestampNtzSupportNote: String =
+    "Non-TRY casts use Spark row execution unless the input is a safe date literal/null or " +
+      "date_from_unix_date of a byte/short. This also excludes JVM batch dispatch. " +
+      "TRY_CAST remains eligible for native execution only for nullable scalar output; " +
+      "non-nullable or nested TRY_CAST requires Spark row execution"
 
   private def legacyCastComplexTypesToString: Boolean =
     SQLConf.get
@@ -84,13 +94,15 @@ object CometCast
       DataTypes.TimestampNTZType)
 
   // Note: `getIncompatibleReasons` / `getUnsupportedReasons` are intentionally not
-  // overridden here. The per-pair `isSupported` matrix is the canonical source of cast
-  // reasons: `cast.md` is generated directly from it (see `GenerateDocs.writeCastMatrixForMode`)
-  // and EXPLAIN surfaces the per-pair reason via `getSupportLevel`. A single static sentence
-  // would only duplicate the matrix and risk drifting from it.
+  // overridden here. The per-pair `isSupported` matrix is the source of type-level cast reasons
+  // and notes: `cast.md` is generated from it (see `GenerateDocs.writeCastMatrixForMode`). The
+  // expression-level execution and nullability guards below can further restrict admission;
+  // EXPLAIN surfaces their reasons via `getSupportLevel`.
 
   override def getSupportLevel(cast: Cast): SupportLevel = {
-    if (requiresSparkDateTimestampTryCast(cast)) {
+    if (cast.exists(requiresSparkDateTimestampNtzCast)) {
+      Unsupported(Some(dateToTimestampNtzOverflowReason))
+    } else if (requiresSparkDateTimestampTryCast(cast)) {
       Unsupported(Some("TRY_CAST date-to-timestamp nullability requires Spark row execution"))
     } else if (cast.child.isInstanceOf[Literal]) {
       // A cast whose child is a literal is folded by Spark at planning time via `cast.eval()`
@@ -108,6 +120,35 @@ object CometCast
   }
 
   /**
+   * A checked DATE to TIMESTAMP_NTZ cast can overflow in both ANSI and legacy mode. Neither a
+   * native expression nor a JVM dispatch kernel preserves Spark's row/candidate consumption: they
+   * can evaluate later rows before LIMIT, or later semi/anti join candidates after a match. Keep
+   * unbounded date inputs in Spark operators, including casts inside complex types. TRY remains
+   * safe for nullable scalar output; its separate nullability guard still applies.
+   *
+   * This deliberately does not infer bounds from filters or the surrounding plan. Ordinary date
+   * columns also fall back unless the expression itself proves the cast cannot overflow.
+   */
+  private[comet] def requiresSparkDateTimestampNtzCast(expr: Expression): Boolean = expr match {
+    case cast: Cast if evalMode(cast) != CometEvalMode.TRY =>
+      containsDateTimestampCast(cast.child.dataType, cast.dataType, ntzOnly = true) &&
+      !isSafeDateForTimestampNtz(cast.child)
+    case _ => false
+  }
+
+  private def isSafeDateForTimestampNtz(expr: Expression): Boolean = expr match {
+    case Literal(null, _) => true
+    case Literal(days: Int, DataTypes.DateType) =>
+      days >= Long.MinValue / MICROS_PER_DAY && days <= Long.MaxValue / MICROS_PER_DAY
+    // Spark widens byte/short arguments to INT when resolving date_from_unix_date. These
+    // ranges fit in timestamp microseconds; an arbitrary INT day does not. Do not evaluate
+    // foldable expressions here: Spark's optimizer owns constant folding and its errors.
+    case DateFromUnixDate(cast: Cast) if cast.dataType == DataTypes.IntegerType =>
+      cast.child.dataType == DataTypes.ByteType || cast.child.dataType == DataTypes.ShortType
+    case _ => false
+  }
+
+  /**
    * Spark's cast nullability inference can miss date-to-timestamp overflow. A TRY cast can
    * therefore produce a null with non-nullable metadata, including map keys and struct fields.
    * Keep those casts out of both native Arrow arrays and the Arrow-based codegen dispatcher.
@@ -119,15 +160,20 @@ object CometCast
     case _ => false
   }
 
-  private def containsDateTimestampCast(fromType: DataType, toType: DataType): Boolean =
+  private def containsDateTimestampCast(
+      fromType: DataType,
+      toType: DataType,
+      ntzOnly: Boolean = false): Boolean =
     (fromType, toType) match {
-      case (DataTypes.DateType, TimestampType | TimestampNTZType) => true
-      case (ArrayType(from, _), ArrayType(to, _)) => containsDateTimestampCast(from, to)
+      case (DataTypes.DateType, TimestampNTZType) => true
+      case (DataTypes.DateType, TimestampType) => !ntzOnly
+      case (ArrayType(from, _), ArrayType(to, _)) => containsDateTimestampCast(from, to, ntzOnly)
       case (MapType(fromKey, fromValue, _), MapType(toKey, toValue, _)) =>
-        containsDateTimestampCast(fromKey, toKey) || containsDateTimestampCast(fromValue, toValue)
+        containsDateTimestampCast(fromKey, toKey, ntzOnly) ||
+        containsDateTimestampCast(fromValue, toValue, ntzOnly)
       case (from: StructType, to: StructType) =>
         from.fields.zip(to.fields).exists { case (a, b) =>
-          containsDateTimestampCast(a.dataType, b.dataType)
+          containsDateTimestampCast(a.dataType, b.dataType, ntzOnly)
         }
       case _ => false
     }
@@ -513,7 +559,7 @@ object CometCast
             Some("Native date-to-timestamp casts require a fixed whole-minute timezone offset"))
         }
       case _: TimestampNTZType =>
-        Compatible()
+        Compatible(Some(dateToTimestampNtzSupportNote))
       case DataTypes.BooleanType | DataTypes.ByteType | DataTypes.ShortType |
           DataTypes.IntegerType | DataTypes.LongType | DataTypes.FloatType |
           DataTypes.DoubleType | _: DecimalType if evalMode == CometEvalMode.LEGACY =>
