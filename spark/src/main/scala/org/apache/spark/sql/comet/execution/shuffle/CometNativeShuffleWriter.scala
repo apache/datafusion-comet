@@ -21,6 +21,8 @@ package org.apache.spark.sql.comet.execution.shuffle
 
 import java.nio.{ByteBuffer, ByteOrder}
 import java.nio.file.{Files, Paths}
+import java.util.concurrent.{ScheduledFuture, TimeUnit}
+import java.util.concurrent.atomic.AtomicBoolean
 
 import scala.collection.mutable
 import scala.jdk.CollectionConverters._
@@ -35,11 +37,13 @@ import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, Partition
 import org.apache.spark.sql.comet.{CometExec, CometMetricNode, CometScalarSubquery, PlanDataInjector}
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.types.StructField
+import org.apache.spark.util.{ThreadUtils, Utils}
 
 import org.apache.comet.{CometConf, CometExecIterator}
 import org.apache.comet.serde.{OperatorOuterClass, PartitioningOuterClass, QueryPlanSerde}
 import org.apache.comet.serde.OperatorOuterClass.{CompressionCodec, Operator}
 import org.apache.comet.serde.operator.schema2Proto
+import org.apache.comet.shuffle.{CelebornShufflePartitionPusher, CelebornShufflePusherFactory, ShufflePartitionPusher}
 
 /**
  * Drives the native shuffle write in a single [[CometExecIterator]] per partition. The plan is
@@ -60,7 +64,8 @@ class CometNativeShuffleWriter[K, V](
     mapId: Long,
     context: TaskContext,
     metricsReporter: ShuffleWriteMetricsReporter,
-    rangePartitionBounds: Option[Seq[InternalRow]] = None)
+    rangePartitionBounds: Option[Seq[InternalRow]] = None,
+    remoteDestination: Option[CelebornNativeShuffleDestination] = None)
     extends ShuffleWriter[K, V]
     with Logging {
 
@@ -68,16 +73,55 @@ class CometNativeShuffleWriter[K, V](
 
   var partitionLengths: Array[Long] = _
   var mapStatus: MapStatus = _
+  private var stopped = false
+  private lazy val effectivePartitionCount =
+    remoteDestination.map(_.numPartitions).getOrElse(outputPartitioning.numPartitions)
+
+  private val cancellationWatch: Option[ScheduledFuture[_]] = remoteDestination.flatMap {
+    destination =>
+      Option(context).map { taskContext =>
+        val watcher = CelebornNativeShuffleDestination.watchForCancellation(
+          taskContext,
+          destination.pusher,
+          failure =>
+            logWarning("Could not abort an interrupted Celeborn shuffle map attempt", failure))
+        taskContext.addTaskCompletionListener[Unit] { _ =>
+          watcher.cancel(false)
+          destination.pusher.abort()
+        }
+        watcher
+      }
+  }
 
   override def write(inputs: Iterator[Product2[K, V]]): Unit = {
-    val shuffleBlockResolver =
-      SparkEnv.get.shuffleManager.shuffleBlockResolver.asInstanceOf[IndexShuffleBlockResolver]
-    val dataFile = shuffleBlockResolver.getDataFile(shuffleId, mapId)
-    val indexFile = shuffleBlockResolver.getIndexFile(shuffleId, mapId)
-    val tempDataFilename = dataFile.getPath.replace(".data", ".data.tmp")
-    val tempIndexFilename = indexFile.getPath.replace(".index", ".index.tmp")
-    val tempDataFilePath = Paths.get(tempDataFilename)
-    val tempIndexFilePath = Paths.get(tempIndexFilename)
+    try {
+      writeInternal(inputs)
+    } catch {
+      case failure: Throwable =>
+        remoteDestination.foreach { destination =>
+          try destination.pusher.abort()
+          catch {
+            case cleanupFailure: Throwable => failure.addSuppressed(cleanupFailure)
+          }
+        }
+        throw failure
+    }
+  }
+
+  private def writeInternal(inputs: Iterator[Product2[K, V]]): Unit = {
+    val localOutput = if (remoteDestination.isEmpty) {
+      val resolver =
+        SparkEnv.get.shuffleManager.shuffleBlockResolver.asInstanceOf[IndexShuffleBlockResolver]
+      val dataFile = resolver.getDataFile(shuffleId, mapId)
+      val indexFile = resolver.getIndexFile(shuffleId, mapId)
+      Some(
+        LocalShuffleOutput(
+          resolver,
+          dataFile.getPath.replace(".data", ".data.tmp"),
+          indexFile.getPath.replace(".index", ".index.tmp")))
+    } else {
+      None
+    }
 
     // The dep's _rdd is always a CometNativeShuffleInputRDD on this path. Pattern-match instead
     // of asInstanceOf so a future RDD-layering change produces a clear error here rather than a
@@ -94,7 +138,10 @@ class CometNativeShuffleWriter[K, V](
     val inputObjects = shuffleInputIter.inputObjects
     val shuffleBlockIters = shuffleInputIter.shuffleBlockIterators
 
-    val unifiedPlan = buildUnifiedPlan(tempDataFilename, tempIndexFilename)
+    val unifiedPlan = localOutput match {
+      case Some(output) => buildUnifiedPlan(output.dataFile, output.indexFile)
+      case None => buildUnifiedPlan("", "")
+    }
     val ctx = spec.execContext
     val finalNativePlan = if (ctx.commonByKey.nonEmpty) {
       // This partition's plan-data slice rides on the input iterator's Partition object (populated
@@ -147,7 +194,8 @@ class CometNativeShuffleWriter[K, V](
       partitionIdx,
       ctx.broadcastedHadoopConfForEncryption,
       ctx.encryptedFilePaths,
-      shuffleBlockIters)
+      shuffleBlockIters,
+      shufflePartitionPusher = remoteDestination.map(_.callback))
 
     // Register subqueries against the iterator id so native callbacks resolve them to values.
     ctx.subqueries.foreach { sub =>
@@ -161,51 +209,77 @@ class CometNativeShuffleWriter[K, V](
       }
     }
 
-    while (cometIter.hasNext) {
-      cometIter.next()
+    CometNativeShuffleWriter.drainAndClose(cometIter, () => cometIter.close())
+
+    remoteDestination match {
+      case Some(destination) =>
+        val completionStart = System.nanoTime()
+        val authorized = if (destination.commitAuthorized) {
+          destination.commitValidator()
+        } else {
+          SparkEnv.get.outputCommitCoordinator.canCommit(
+            context.stageId(),
+            context.stageAttemptNumber(),
+            context.partitionId(),
+            context.attemptNumber())
+        }
+        if (!authorized) {
+          throw CelebornShufflePusherFactory.commitDenied(context)
+        }
+        partitionLengths = destination.pusher.finish()
+        if (destination.commitAuthorized && !destination.commitValidator()) {
+          throw CelebornShufflePusherFactory.commitDenied(context)
+        }
+        metricsReporter.incBytesWritten(partitionLengths.sum)
+        metricsReporter.incWriteTime(System.nanoTime() - completionStart)
+        mapStatus = MapStatus.apply(
+          SparkEnv.get.blockManager.shuffleServerId,
+          partitionLengths,
+          context.taskAttemptId())
+
+      case None =>
+        val output = localOutput.get
+        val tempDataFilePath = Paths.get(output.dataFile)
+        val tempIndexFilePath = Paths.get(output.indexFile)
+
+        var offset = 0L
+        partitionLengths = Files
+          .readAllBytes(tempIndexFilePath)
+          .grouped(OFFSET_LENGTH)
+          .drop(1)
+          .map(indexBytes => {
+            val partitionOffset =
+              ByteBuffer.wrap(indexBytes).order(ByteOrder.LITTLE_ENDIAN).getLong
+            val partitionLength = partitionOffset - offset
+            offset = partitionOffset
+            partitionLength
+          })
+          .toArray
+        Files.delete(tempIndexFilePath)
+
+        metricsReporter.incBytesWritten(Files.size(tempDataFilePath))
+        output.resolver.writeMetadataFileAndCommit(
+          shuffleId,
+          mapId,
+          partitionLengths,
+          Array.empty,
+          tempDataFilePath.toFile)
+        mapStatus =
+          MapStatus.apply(SparkEnv.get.blockManager.shuffleServerId, partitionLengths, mapId)
     }
-    cometIter.close()
 
-    // get partition lengths from shuffle write output index file
-    var offset = 0L
-    partitionLengths = Files
-      .readAllBytes(tempIndexFilePath)
-      .grouped(OFFSET_LENGTH)
-      .drop(1) // first partition offset is always 0
-      .map(indexBytes => {
-        val partitionOffset =
-          ByteBuffer.wrap(indexBytes).order(ByteOrder.LITTLE_ENDIAN).getLong
-        val partitionLength = partitionOffset - offset
-        offset = partitionOffset
-        partitionLength
-      })
-      .toArray
-    Files.delete(tempIndexFilePath)
-
-    // Total written bytes at native
-    metricsReporter.incBytesWritten(Files.size(tempDataFilePath))
     metricsReporter.incRecordsWritten(metricsOutputRows.value)
     metricsReporter.incWriteTime(metricsWriteTime.value)
-
-    // commit
-    shuffleBlockResolver.writeMetadataFileAndCommit(
-      shuffleId,
-      mapId,
-      partitionLengths,
-      Array.empty, // TODO: add checksums
-      tempDataFilePath.toFile)
-    mapStatus =
-      MapStatus.apply(SparkEnv.get.blockManager.shuffleServerId, partitionLengths, mapId)
   }
 
   private def isSinglePartitioning(p: Partitioning): Boolean = p match {
     case SinglePartition => true
-    case rp: RangePartitioning =>
+    case _: RangePartitioning =>
       // Spark sometimes generates RangePartitioning schemes with numPartitions == 1,
       // or the computed bounds results in a single target partition.
       // In this case Comet just serializes a SinglePartition scheme to native.
-      rp.numPartitions == 1 || rangePartitionBounds.forall(_.isEmpty)
-    case hp: HashPartitioning => hp.numPartitions == 1
+      effectivePartitionCount == 1 || rangePartitionBounds.forall(_.isEmpty)
+    case _: HashPartitioning => effectivePartitionCount == 1
     case _ => false
   }
 
@@ -213,22 +287,30 @@ class CometNativeShuffleWriter[K, V](
    * Build the unified `ShuffleWriter(child = childNativeOp)` plan with the partitioning serde,
    * compression settings, and output file paths.
    */
-  private def buildUnifiedPlan(dataFile: String, indexFile: String): Operator = {
+  private[shuffle] def buildUnifiedPlan(dataFile: String, indexFile: String): Operator = {
     val shuffleWriterBuilder = OperatorOuterClass.ShuffleWriter.newBuilder()
-    // Keep the legacy output fields populated so older native libraries can still consume local
-    // shuffle plans while newer libraries use the explicit partition-writer destination.
-    shuffleWriterBuilder.setOutputDataFile(dataFile)
-    shuffleWriterBuilder.setOutputIndexFile(indexFile)
-    shuffleWriterBuilder.setPartitionWriter(
-      OperatorOuterClass.PartitionWriter
-        .newBuilder()
-        .setLocal(
-          OperatorOuterClass.LocalPartitionWriter
+    remoteDestination match {
+      case Some(_) =>
+        shuffleWriterBuilder.setPartitionWriter(
+          OperatorOuterClass.PartitionWriter
             .newBuilder()
-            .setOutputDataFile(dataFile)
-            .setOutputIndexFile(indexFile)
+            .setRss(OperatorOuterClass.RssPartitionWriter.getDefaultInstance)
             .build())
-        .build())
+      case None =>
+        // Keep legacy paths for older native libraries while newer libraries use the destination.
+        shuffleWriterBuilder.setOutputDataFile(dataFile)
+        shuffleWriterBuilder.setOutputIndexFile(indexFile)
+        shuffleWriterBuilder.setPartitionWriter(
+          OperatorOuterClass.PartitionWriter
+            .newBuilder()
+            .setLocal(
+              OperatorOuterClass.LocalPartitionWriter
+                .newBuilder()
+                .setOutputDataFile(dataFile)
+                .setOutputIndexFile(indexFile)
+                .build())
+            .build())
+    }
 
     if (SparkEnv.get.conf.getBoolean("spark.shuffle.compress", true)) {
       val codec = CometConf.COMET_SHUFFLE_COMPRESSION_CODEC.get() match {
@@ -255,7 +337,7 @@ class CometNativeShuffleWriter[K, V](
       case _: HashPartitioning =>
         val hashPartitioning = outputPartitioning.asInstanceOf[HashPartitioning]
         val partitioning = PartitioningOuterClass.HashPartition.newBuilder()
-        partitioning.setNumPartitions(outputPartitioning.numPartitions)
+        partitioning.setNumPartitions(effectivePartitionCount)
 
         val partitionExprs = hashPartitioning.expressions
           .flatMap(e => QueryPlanSerde.exprToProto(e, outputAttributes))
@@ -273,7 +355,7 @@ class CometNativeShuffleWriter[K, V](
       case _: RangePartitioning =>
         val rangePartitioning = outputPartitioning.asInstanceOf[RangePartitioning]
         val partitioning = PartitioningOuterClass.RangePartition.newBuilder()
-        partitioning.setNumPartitions(outputPartitioning.numPartitions)
+        partitioning.setNumPartitions(effectivePartitionCount)
 
         // Detect duplicates by tracking expressions directly, similar to DataFusion's LexOrdering
         // DataFusion will deduplicate identical sort expressions in LexOrdering,
@@ -337,7 +419,7 @@ class CometNativeShuffleWriter[K, V](
 
       case _: RoundRobinPartitioning =>
         val partitioning = PartitioningOuterClass.RoundRobinPartition.newBuilder()
-        partitioning.setNumPartitions(outputPartitioning.numPartitions)
+        partitioning.setNumPartitions(effectivePartitionCount)
         partitioning.setMaxHashColumns(
           CometConf.COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_MAX_HASH_COLUMNS.get())
 
@@ -366,12 +448,112 @@ class CometNativeShuffleWriter[K, V](
   }
 
   override def stop(success: Boolean): Option[MapStatus] = {
-    if (success) {
-      Some(mapStatus)
-    } else {
-      None
+    remoteDestination match {
+      case None => if (success) Some(mapStatus) else None
+      case Some(destination) =>
+        synchronized {
+          if (stopped) {
+            None
+          } else {
+            stopped = true
+            try {
+              if (success) {
+                if (mapStatus == null) {
+                  throw new IllegalStateException(
+                    "Cannot complete a Celeborn shuffle map task before writing its data")
+                }
+                Some(mapStatus)
+              } else {
+                None
+              }
+            } finally {
+              cancellationWatch.foreach(_.cancel(false))
+              destination.pusher.abort()
+            }
+          }
+        }
     }
   }
 
   override def getPartitionLengths(): Array[Long] = partitionLengths
+
+  private final case class LocalShuffleOutput(
+      resolver: IndexShuffleBlockResolver,
+      dataFile: String,
+      indexFile: String)
+}
+
+private[shuffle] object CometNativeShuffleWriter {
+  def drainAndClose(iterator: Iterator[_], close: () => Unit): Unit = {
+    Utils.tryWithSafeFinally {
+      while (iterator.hasNext) {
+        iterator.next()
+      }
+    } {
+      // In particular, cleanup must not replace a typed FetchFailedException that Spark needs
+      // to trigger stage recovery. The original failure retains cleanup errors as suppressed.
+      close()
+    }
+  }
+}
+
+/** A task-owned remote destination whose callback never crosses map-attempt boundaries. */
+private[shuffle] final case class CelebornNativeShuffleDestination(
+    pusher: CelebornShufflePartitionPusher,
+    maxFrameBytes: Int,
+    numPartitions: Int,
+    commitAuthorized: Boolean = false,
+    commitValidator: () => Boolean = () => true) {
+  require(pusher != null, "The Celeborn shuffle partition pusher must not be null")
+  require(maxFrameBytes >= 20, "The Celeborn shuffle frame limit must fit a complete frame")
+  require(
+    maxFrameBytes <= pusher.maxFrameBytes(),
+    "The Celeborn shuffle destination cannot exceed its task-owned pusher's frame limit")
+  require(
+    numPartitions == pusher.numPartitions(),
+    "The Celeborn shuffle destination must use its actual reducer partition count")
+
+  // SQL execution configuration can impose a tighter bound than the executor SparkConf used to
+  // create the pusher. Native planning reads the bound from its registered task-owned callback.
+  private[shuffle] val callback: ShufflePartitionPusher = new ShufflePartitionPusher {
+    override def pushPartitionData(partitionId: Int, data: Array[Byte], length: Int): Unit =
+      pusher.pushPartitionData(partitionId, data, length)
+
+    override def reservePartitionData(bytes: Int): Unit = pusher.reservePartitionData(bytes)
+
+    override def releasePartitionDataReservation(): Unit =
+      pusher.releasePartitionDataReservation()
+
+    override def maxFrameBytes(): Int = CelebornNativeShuffleDestination.this.maxFrameBytes
+
+    override def maxReservationBytes(): Int = pusher.maxReservationBytes()
+  }
+}
+
+private[shuffle] object CelebornNativeShuffleDestination {
+  // One daemon bounds cancellation-polling threads per executor; each task cancels its scheduled
+  // future on completion, so the process-lifetime scheduler does not retain completed callbacks.
+  private val cancellationWatcher =
+    ThreadUtils.newDaemonSingleThreadScheduledExecutor("comet-celeborn-task-cancellation")
+
+  private[shuffle] def watchForCancellation(
+      taskContext: TaskContext,
+      pusher: CelebornShufflePartitionPusher,
+      reportFailure: Throwable => Unit): ScheduledFuture[_] = {
+    val handled = new AtomicBoolean(false)
+    cancellationWatcher.scheduleWithFixedDelay(
+      new Runnable {
+        override def run(): Unit = {
+          if (taskContext.isInterrupted() && handled.compareAndSet(false, true)) {
+            try pusher.abort()
+            catch {
+              case failure: Throwable => reportFailure(failure)
+            }
+          }
+        }
+      },
+      0L,
+      25L,
+      TimeUnit.MILLISECONDS)
+  }
 }
