@@ -23,7 +23,7 @@ import org.apache.spark.sql.catalyst.expressions.{Attribute, JsonObjectKeys, Len
 
 import org.apache.comet.CometConf
 import org.apache.comet.serde.ExprOuterClass.Expr
-import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithFallbackReason, scalarFunctionExprToProto}
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, scalarFunctionExprToProto}
 
 /**
  * `json_array_length` runs Spark's own implementation through the codegen dispatcher by default,
@@ -32,7 +32,22 @@ import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithFa
  * `spark.comet.expression.LengthOfJsonArray.allowIncompatible`; otherwise it rides the codegen
  * dispatcher via [[CometCodegenDispatch]].
  */
-object CometLengthOfJsonArray extends CometCodegenDispatch[LengthOfJsonArray] {
+object CometLengthOfJsonArray
+    extends CometCodegenDispatch[LengthOfJsonArray]
+    with NativeOptInAvailable {
+
+  override def getIncompatibleReasons(): Seq[String] =
+    Seq(
+      "The native implementation is incompatible with Spark for single-quoted JSON," +
+        " unescaped control characters, and trailing content")
+
+  override def getSupportLevel(expr: LengthOfJsonArray): SupportLevel =
+    if (!CometConf.isExprAllowIncompat(getExprConfigName(expr))) {
+      Compatible(nativeOptIn =
+        Some(NativeOptIn(CometConf.getExprAllowIncompatConfigKey(getExprConfigName(expr)))))
+    } else {
+      Compatible()
+    }
 
   override def convert(
       expr: LengthOfJsonArray,
@@ -41,7 +56,7 @@ object CometLengthOfJsonArray extends CometCodegenDispatch[LengthOfJsonArray] {
     if (CometConf.isExprAllowIncompat(getExprConfigName(expr))) {
       val childExpr = expr.children.map(exprToProtoInternal(_, inputs, binding))
       val optExpr = scalarFunctionExprToProto("json_array_length", childExpr: _*)
-      optExprWithFallbackReason(optExpr, expr, expr.children: _*)
+      optExpr
     } else {
       super.convert(expr, inputs, binding)
     }

@@ -21,6 +21,10 @@
 
 > Audit notes for expressions in this category that have been audited. Absence of an entry means the expression has not been audited yet, not that it is unsupported. See the user guide [Spark Expression Support] for current support status.
 
+## avg (window)
+
+- 4.1.1, audited 2026-06-25: `AVG(<decimal>)` over a window runs natively on Spark 4.x. Spark wraps the result as `Cast(avg(UnscaledValue(v)) / pow10 as decimal)`; `CometWindowExec.convert` unwraps that shape alongside `Alias(WindowExpression)` and `Alias(MakeDecimal(WindowExpression))`, so the `AvgDecimal` native window branch in `process_agg_func` is reachable. Non-decimal `AVG` runs natively. Sliding-frame decimal `AVG` is guarded by the same fallback as decimal `SUM` (see below) so that it cannot hit the DataFusion built-in overflow divergence.
+
 ## lag
 
 - Supported via `CometWindowExec` (operator level), not the expression serde.
@@ -28,5 +32,9 @@
 ## lead
 
 - Supported via `CometWindowExec` (operator level), not the expression serde.
+
+## sum (window)
+
+- 4.1.1, audited 2026-06-25: `SUM(<decimal>)` over a sliding window frame (lower bound not `UNBOUNDED PRECEDING`) falls back to Spark. The native sliding path would use DataFusion's built-in `sum`, which wraps on overflow rather than returning Spark's NULL, and overflow cannot be detected at plan time, so the whole sliding decimal `SUM` case falls back. Ever-expanding frames use Comet's overflow-aware `SumDecimal` UDAF and run natively, matching Spark including overflow-to-NULL. Bigint sliding `SUM` overflow matches Spark (both wrap) and stays native.
 
 [Spark Expression Support]: ../../user-guide/latest/expressions.md

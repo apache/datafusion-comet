@@ -19,12 +19,13 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, ExpressionImplUtils, Literal, StringDecode, TryEval, UrlCodec}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Base64, ExpressionImplUtils, Literal, StringDecode, TryEval, UrlCodec}
 import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
 import org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils
+import org.apache.spark.sql.types.StringType
 
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
-import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithFallbackReason, scalarFunctionExprToProto}
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType}
 
 object CometStaticInvoke extends CometExpressionSerde[StaticInvoke] {
 
@@ -44,7 +45,11 @@ object CometStaticInvoke extends CometExpressionSerde[StaticInvoke] {
       // Spark 4.0 lowers `decode(bin, charset)` to `StaticInvoke(StringDecode.decode, ...)`
       // carrying the `legacyCharsets` / `legacyErrorAction` flags. Routing through the codegen
       // dispatcher runs Spark's own decoder so both flags are honored. See #4465.
-      ("decode", classOf[StringDecode]) -> CometStaticInvokeCodegenDispatch)
+      ("decode", classOf[StringDecode]) -> CometStaticInvokeCodegenDispatch,
+      // Spark 3.5+ makes `Base64` RuntimeReplaceable, lowering `base64(bin)` to
+      // `StaticInvoke(Base64.encode, Seq(child, chunkBase64), ...)`. On Spark 3.4 the `Base64`
+      // node survives and is handled directly (see CometBase64).
+      ("encode", classOf[Base64]) -> CometBase64StaticInvoke)
 
   override def convert(
       expr: StaticInvoke,
@@ -56,8 +61,7 @@ object CometStaticInvoke extends CometExpressionSerde[StaticInvoke] {
       case None =>
         withFallbackReason(
           expr,
-          s"Static invoke expression: ${expr.functionName} is not supported",
-          expr.children: _*)
+          s"Static invoke expression: ${expr.functionName} is not supported")
         None
     }
   }
@@ -70,7 +74,7 @@ object CometUrlEncodeStaticInvoke extends CometExpressionSerde[StaticInvoke] {
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val childExpr = exprToProtoInternal(expr.children.head, inputs, binding)
     val optExpr = scalarFunctionExprToProto("url_encode", childExpr)
-    optExprWithFallbackReason(optExpr, expr, expr.children: _*)
+    optExpr
   }
 }
 
@@ -86,7 +90,29 @@ object CometUrlDecodeStaticInvoke extends CometExpressionSerde[StaticInvoke] {
     val funcName = if (failOnError) "url_decode" else "try_url_decode"
     val childExpr = exprToProtoInternal(expr.children.head, inputs, binding)
     val optExpr = scalarFunctionExprToProto(funcName, childExpr)
-    optExprWithFallbackReason(optExpr, expr, expr.children: _*)
+    optExpr
+  }
+}
+
+/**
+ * Handles `base64(bin)` on Spark 3.5+, where it lowers to `StaticInvoke(Base64.encode, Seq(child,
+ * chunkBase64))`. The `chunkBase64` literal carries `spark.sql.chunkBase64String.enabled`
+ * (default true) and is passed through to the native function, which honors both modes.
+ */
+object CometBase64StaticInvoke extends CometExpressionSerde[StaticInvoke] {
+  override def convert(
+      expr: StaticInvoke,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val childExpr = exprToProtoInternal(expr.arguments.head, inputs, binding)
+    val chunkExpr = exprToProtoInternal(expr.arguments(1), inputs, binding)
+    val optExpr = scalarFunctionExprToProtoWithReturnType(
+      "base64",
+      StringType,
+      failOnError = false,
+      childExpr,
+      chunkExpr)
+    optExpr
   }
 }
 

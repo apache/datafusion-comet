@@ -560,6 +560,33 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     }
   }
 
+  test("arrays_overlap - runtime NaN representations") {
+    val floatNaN = java.lang.Float.intBitsToFloat(0x7fc01234 | Int.MinValue)
+    val doubleNaN = java.lang.Double.longBitsToDouble(0x7ff8000000001234L | Long.MinValue)
+
+    withParquetTable(
+      Seq((floatNaN, doubleNaN)),
+      "floating_point_overlap",
+      withDictionary = false) {
+      // The behavioral cases live in arrays_overlap.sql. SQL equality cannot distinguish NaN
+      // representations, so verify here that Parquet canonicalizes the inputs and that native
+      // runtime negation produces noncanonical NaNs after the scan.
+      val query = sql("SELECT _1, -_1, _2, -_2 FROM floating_point_overlap")
+      checkSparkAnswerAndOperator(query)
+      val row = query.head()
+      val canonicalFloatNaNBits = java.lang.Float.floatToRawIntBits(Float.NaN)
+      val canonicalDoubleNaNBits = java.lang.Double.doubleToRawLongBits(Double.NaN)
+      assert(java.lang.Float.floatToRawIntBits(row.getFloat(0)) == canonicalFloatNaNBits)
+      assert(
+        java.lang.Float.floatToRawIntBits(row.getFloat(1)) ==
+          (canonicalFloatNaNBits | Int.MinValue))
+      assert(java.lang.Double.doubleToRawLongBits(row.getDouble(2)) == canonicalDoubleNaNBits)
+      assert(
+        java.lang.Double.doubleToRawLongBits(row.getDouble(3)) ==
+          (canonicalDoubleNaNBits | Long.MinValue))
+    }
+  }
+
   test("arrays_overlap - null handling behavior verification") {
     withSQLConf(
       "spark.sql.optimizer.excludedRules" -> "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
@@ -1143,6 +1170,37 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
             map(lit("k"), struct(col("_1").as("id"), when(col("_1") === 0, lit("b")).as("ct"))))
             .as("arr"))
       checkSparkAnswerAndFallbackReason(df, "CreateArray children have mismatched data types")
+    }
+  }
+
+  // Local table scan carries non-null array child fields (an in-memory Seq encodes
+  // containsNull=false) into native kernels that promise nullable elements. ConvertToLocalRelation
+  // must be disabled or the optimizer folds the expression at plan time and nothing runs natively.
+  // https://github.com/apache/datafusion-comet/issues/4789
+  private def withLocalTableScanNoFold(f: => Unit): Unit = {
+    withSQLConf(
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      "spark.sql.optimizer.excludedRules" ->
+        "org.apache.spark.sql.catalyst.optimizer.ConvertToLocalRelation") {
+      f
+    }
+  }
+
+  test("slice on non-null element array from local table scan (#4789)") {
+    withLocalTableScanNoFold {
+      import testImplicits._
+      val df = Seq(Seq(1, 2, 3), Seq(4, 5)).toDF("x")
+      checkSparkAnswerAndOperator(df.selectExpr("slice(x, 2, 2)"))
+    }
+  }
+
+  test("array_insert on non-null element array from local table scan (#4789)") {
+    assume(isSpark35Plus)
+    withLocalTableScanNoFold {
+      import testImplicits._
+      val df = Seq(Seq(1, 2, 3), Seq(4, 5)).toDF("x")
+      // SPARK-41233 array prepend lowers to array_insert at position 1
+      checkSparkAnswerAndOperator(df.selectExpr("array_insert(x, 1, 0)"))
     }
   }
 

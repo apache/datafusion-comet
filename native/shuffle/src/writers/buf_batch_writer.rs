@@ -18,6 +18,7 @@
 use super::ShuffleBlockWriter;
 use arrow::array::RecordBatch;
 use arrow::compute::kernels::coalesce::BatchCoalescer;
+use arrow::ipc::writer::CompressionContext;
 use datafusion::physical_plan::metrics::Time;
 use std::borrow::Borrow;
 use std::io::{Cursor, Seek, SeekFrom, Write};
@@ -26,14 +27,18 @@ use std::io::{Cursor, Seek, SeekFrom, Write};
 /// The record batches were first written by ShuffleBlockWriter into an internal buffer.
 /// Once the buffer exceeds the max size, the buffer will be flushed to the writer.
 ///
-/// Small batches are coalesced using Arrow's [`BatchCoalescer`] before serialization,
-/// producing exactly `batch_size`-row output batches to reduce per-block IPC schema overhead.
-/// The coalescer is lazily initialized on the first write.
+/// Small batches are coalesced using Arrow's [`BatchCoalescer`] before serialization, reducing
+/// per-block IPC schema overhead. Output batches hold at least `batch_size` rows, apart from the
+/// remainder emitted on flush. The coalescer is lazily initialized on the first write and
+/// configured (via `biggest_coalesce_batch_size`) to pass batches that are already at least
+/// `batch_size` rows straight through, verbatim and without copying them, so an oversized input
+/// batch is written as a single oversized block.
 pub(crate) struct BufBatchWriter<S: Borrow<ShuffleBlockWriter>, W: Write> {
     shuffle_block_writer: S,
     writer: W,
     buffer: Vec<u8>,
     buffer_max_size: usize,
+    compression_context: CompressionContext,
     /// Coalesces small batches into target_batch_size before serialization.
     /// Lazily initialized on first write to capture the schema.
     coalescer: Option<BatchCoalescer>,
@@ -53,6 +58,7 @@ impl<S: Borrow<ShuffleBlockWriter>, W: Write> BufBatchWriter<S, W> {
             writer,
             buffer: vec![],
             buffer_max_size,
+            compression_context: CompressionContext::default(),
             coalescer: None,
             batch_size,
         }
@@ -64,9 +70,21 @@ impl<S: Borrow<ShuffleBlockWriter>, W: Write> BufBatchWriter<S, W> {
         encode_time: &Time,
         write_time: &Time,
     ) -> datafusion::common::Result<usize> {
-        let coalescer = self
-            .coalescer
-            .get_or_insert_with(|| BatchCoalescer::new(batch.schema(), self.batch_size));
+        let batch_size = self.batch_size;
+        let coalescer = self.coalescer.get_or_insert_with(|| {
+            // Enable BatchCoalescer's zero-copy passthrough for batches that are already big
+            // enough, so we don't `copy_rows` the whole batch into the in-progress builders just
+            // to re-emit a same-sized batch. The passthrough fires for batches strictly larger
+            // than the limit, so set it to `batch_size - 1` to include batches of exactly
+            // `batch_size`, which is what `PartitionedBatchIterator` emits (except the tail),
+            // removing a full copy of the shuffle payload. Block boundaries are unchanged for
+            // that iterator since it never emits more than `batch_size` rows. The
+            // single-partition path routes `>= batch_size` batches here directly, so those now
+            // form one oversized block rather than being split at `batch_size`. Rows are written
+            // in the same order either way.
+            BatchCoalescer::new(batch.schema(), batch_size)
+                .with_biggest_coalesce_batch_size(Some(batch_size.saturating_sub(1)))
+        });
         coalescer.push_batch(batch.clone())?;
 
         // Drain completed batches into a local vec so the coalescer borrow ends
@@ -92,10 +110,12 @@ impl<S: Borrow<ShuffleBlockWriter>, W: Write> BufBatchWriter<S, W> {
     ) -> datafusion::common::Result<usize> {
         let mut cursor = Cursor::new(&mut self.buffer);
         cursor.seek(SeekFrom::End(0))?;
-        let bytes_written =
-            self.shuffle_block_writer
-                .borrow()
-                .write_batch(batch, &mut cursor, encode_time)?;
+        let bytes_written = self.shuffle_block_writer.borrow().write_batch(
+            batch,
+            &mut cursor,
+            &mut self.compression_context,
+            encode_time,
+        )?;
         let pos = cursor.position();
         if pos >= self.buffer_max_size as u64 {
             let mut write_timer = write_time.timer();

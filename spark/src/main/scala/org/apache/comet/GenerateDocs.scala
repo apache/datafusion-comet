@@ -24,11 +24,12 @@ import java.io.{BufferedOutputStream, BufferedReader, FileOutputStream, FileRead
 import scala.collection.mutable
 import scala.collection.mutable.ListBuffer
 
-import org.apache.spark.sql.catalyst.expressions.Cast
+import org.apache.spark.sql.catalyst.analysis.FunctionRegistry
+import org.apache.spark.sql.catalyst.expressions.{Cast, Expression}
 
 import org.apache.comet.CometConf.COMET_ONHEAP_MEMORY_OVERHEAD
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
-import org.apache.comet.serde.{CodegenDispatchFallback, CometAggregateExpressionSerde, CometExpressionSerde, Compatible, Incompatible, QueryPlanSerde, Unsupported}
+import org.apache.comet.serde.{CodegenDispatchFallback, CometAggregateExpressionSerde, CometCodegenDispatch, CometExpressionSerde, Compatible, Incompatible, NativeOptInAvailable, QueryPlanSerde, Unsupported}
 
 /**
  * Utility for generating markdown documentation from the configs.
@@ -37,7 +38,8 @@ import org.apache.comet.serde.{CodegenDispatchFallback, CometAggregateExpression
  */
 object GenerateDocs {
 
-  private val publicConfigs: Set[ConfigEntry[_]] = CometConf.allConfs.filter(_.isPublic).toSet
+  private val corePublicConfigs: Set[ConfigEntry[_]] =
+    CometConf.allConfs.filter(_.isPublic).toSet
 
   /**
    * Documentation notes for a single expression.
@@ -49,29 +51,44 @@ object GenerateDocs {
    * @param incompatibleReasons
    *   reasons the native implementation is incompatible with Spark
    * @param unsupportedReasons
-   *   cases that Comet does not support
-   * @param codegenDispatch
-   *   whether the serde opts into codegen-dispatch fallback for its incompatible cases, so that
-   *   the expression stays native and Spark-compatible by default instead of falling back to
-   *   Spark
+   *   cases that Comet's native implementation does not handle
+   * @param nativeOptIn
+   *   whether the serde implements `NativeOptInAvailable`, meaning the expression runs a
+   *   Spark-compatible path by default and the user can opt into a native path
+   * @param nativeOptInConfigKey
+   *   the config key the user sets to opt into the native path
+   * @param codegenDispatchFallback
+   *   whether the serde mixes in `CodegenDispatchFallback`, meaning `unsupportedReasons` cases
+   *   route through the JVM codegen dispatcher instead of falling back to Spark
    */
   private case class ExprNotes(
       name: String,
       compatibleNotes: Seq[String],
       incompatibleReasons: Seq[String],
       unsupportedReasons: Seq[String],
-      codegenDispatch: Boolean)
+      nativeOptIn: Boolean,
+      nativeOptInConfigKey: String,
+      codegenDispatchFallback: Boolean)
 
   private type CategoryNotes = Seq[ExprNotes]
 
   /** Build the documentation notes for a single expression serde. */
-  private def exprNotes(cls: Class[_], serde: CometExpressionSerde[_]): ExprNotes =
+  private def exprNotes(cls: Class[_], serde: CometExpressionSerde[_]): ExprNotes = {
+    val optIn = serde.isInstanceOf[NativeOptInAvailable]
+    val key = serde match {
+      case n: NativeOptInAvailable =>
+        n.nativeOptInConfigKeyOverride.getOrElse(CometConf.getExprAllowIncompatConfigKey(cls))
+      case _ => CometConf.getExprAllowIncompatConfigKey(cls)
+    }
     ExprNotes(
       cls.getSimpleName,
       serde.getCompatibleNotes(),
       serde.getIncompatibleReasons(),
       serde.getUnsupportedReasons(),
-      serde.isInstanceOf[CodegenDispatchFallback])
+      optIn,
+      key,
+      codegenDispatchFallback = serde.isInstanceOf[CodegenDispatchFallback])
+  }
 
   /** Build the documentation notes for a single aggregate expression serde. */
   private def aggExprNotes(cls: Class[_], serde: CometAggregateExpressionSerde[_]): ExprNotes =
@@ -80,8 +97,10 @@ object GenerateDocs {
       serde.getCompatibleNotes(),
       serde.getIncompatibleReasons(),
       serde.getUnsupportedReasons(),
-      // Aggregate serdes do not participate in codegen-dispatch fallback.
-      codegenDispatch = false)
+      // Aggregate serdes do not have a native opt-in path.
+      nativeOptIn = false,
+      nativeOptInConfigKey = CometConf.getExprAllowIncompatConfigKey(cls),
+      codegenDispatchFallback = false)
 
   /**
    * Mapping from expression category to the compatibility guide filename where that category's
@@ -89,52 +108,29 @@ object GenerateDocs {
    * that category from the serde maps in `QueryPlanSerde`. Filenames are resolved relative to the
    * per-Spark-version compatibility/expressions directory.
    */
-  private def categoryPages: Map[String, (String, () => CategoryNotes)] = Map(
-    "array" -> ("array.md",
-    () =>
-      QueryPlanSerde.arrayExpressions.toSeq.map { case (cls, serde) =>
-        exprNotes(cls, serde)
-      }),
-    "datetime" -> ("datetime.md",
-    () =>
-      QueryPlanSerde.temporalExpressions.toSeq.map { case (cls, serde) =>
-        exprNotes(cls, serde)
-      }),
-    "math" -> ("math.md",
-    () =>
-      QueryPlanSerde.mathExpressions.toSeq.map { case (cls, serde) =>
-        exprNotes(cls, serde)
-      }),
-    "struct" -> ("struct.md",
-    () =>
-      QueryPlanSerde.structExpressions.toSeq.map { case (cls, serde) =>
-        exprNotes(cls, serde)
-      }),
-    "aggregate" -> ("aggregate.md",
-    () =>
-      QueryPlanSerde.aggrSerdeMap.toSeq.map { case (cls, serde) =>
-        aggExprNotes(cls, serde)
-      }),
-    "string" -> ("string.md",
-    () =>
-      QueryPlanSerde.stringExpressions.toSeq.map { case (cls, serde) =>
-        exprNotes(cls, serde)
-      }),
-    "map" -> ("map.md",
-    () =>
-      QueryPlanSerde.mapExpressions.toSeq.map { case (cls, serde) =>
-        exprNotes(cls, serde)
-      }),
-    "misc" -> ("misc.md",
-    () =>
-      QueryPlanSerde.miscExpressions.toSeq.map { case (cls, serde) =>
-        exprNotes(cls, serde)
-      }),
-    "url" -> ("url.md",
-    () =>
-      QueryPlanSerde.urlExpressions.toSeq.map { case (cls, serde) =>
-        exprNotes(cls, serde)
-      }))
+  private def categoryPages: Map[String, (String, () => CategoryNotes)] = {
+    // The serde maps are passed by name so that they are only read when the notes are generated.
+    def exprPage(
+        filename: String,
+        serdes: => Map[Class[_ <: Expression], CometExpressionSerde[_]])
+        : (String, () => CategoryNotes) =
+      (filename, () => serdes.toSeq.map { case (cls, serde) => exprNotes(cls, serde) })
+
+    def aggPage(filename: String, serdes: => Map[Class[_], CometAggregateExpressionSerde[_]])
+        : (String, () => CategoryNotes) =
+      (filename, () => serdes.toSeq.map { case (cls, serde) => aggExprNotes(cls, serde) })
+
+    Map(
+      "array" -> exprPage("array.md", QueryPlanSerde.arrayExpressions),
+      "datetime" -> exprPage("datetime.md", QueryPlanSerde.temporalExpressions),
+      "math" -> exprPage("math.md", QueryPlanSerde.mathExpressions),
+      "struct" -> exprPage("struct.md", QueryPlanSerde.structExpressions),
+      "aggregate" -> aggPage("aggregate.md", QueryPlanSerde.aggrSerdeMap),
+      "string" -> exprPage("string.md", QueryPlanSerde.stringExpressions),
+      "map" -> exprPage("map.md", QueryPlanSerde.mapExpressions),
+      "misc" -> exprPage("misc.md", QueryPlanSerde.miscExpressions),
+      "url" -> exprPage("url.md", QueryPlanSerde.urlExpressions))
+  }
 
   /**
    * Args:
@@ -152,12 +148,148 @@ object GenerateDocs {
     }
     generateConfigReference(s"$userGuideLocation/configs.md")
     generateCompatibilityGuide(s"$compatPagesDir/cast.md")
+    updateExpressionsPageImplementation(s"$userGuideLocation/expressions.md")
     for ((category, (filename, notesFn)) <- categoryPages) {
       generateExpressionCompatNotes(s"$compatPagesDir/$filename", category, notesFn())
     }
+    // Optional, out-of-tree contribs document their configs on their own page. Empty on a default
+    // build, which is why core's configs.md above stays identical no matter which contrib profiles
+    // were enabled. See CometConfigProvider for why a contrib's entries are otherwise invisible.
+    for (provider <- CometConfigProvider.providers) {
+      generateConfigReference(
+        s"$userGuideLocation/${provider.docPage}",
+        provider.configs.filter(_.isPublic).toSet)
+    }
   }
 
-  private def generateConfigReference(filename: String): Unit = {
+  private val ImplNative = "Native"
+  private val ImplCodegen = "Codegen dispatch"
+  private val ImplHybrid = "Hybrid"
+  private val ImplUnknown: String = new String(Array(8212.toChar))
+
+  /**
+   * Classify an expression serde by which execution path it exposes.
+   *
+   *   - `NativeOptInAvailable` (and its subtype `CodegenDispatchFallback`) means the serde has
+   *     both a native path and a Spark-compatible (typically codegen-dispatch) path.
+   *   - A plain `CometCodegenDispatch` means the serde has only a codegen-dispatch path.
+   *   - Everything else is a plain native serde.
+   */
+  private def classifySerde(serde: CometExpressionSerde[_]): String = {
+    if (serde.isInstanceOf[NativeOptInAvailable]) ImplHybrid
+    else if (serde.isInstanceOf[CometCodegenDispatch[_]]) ImplCodegen
+    else ImplNative
+  }
+
+  /**
+   * Build a map from Spark built-in SQL function name (e.g. `array_max`) to its implementation
+   * kind, resolving each name through Spark's `FunctionRegistry` to the backing Catalyst
+   * expression class and then looking that class up in `QueryPlanSerde`'s serde maps.
+   */
+  private def buildFunctionNameToKind(): Map[String, String] = {
+    val classNameToKind: Map[String, String] = {
+      val exprKinds = QueryPlanSerde.exprSerdeMap.iterator.map { case (cls, serde) =>
+        cls.getName -> classifySerde(serde)
+      }
+      // Aggregate serdes have no codegen-dispatch or opt-in path; they are always native.
+      val aggKinds = QueryPlanSerde.aggrSerdeMap.iterator.map { case (cls, _) =>
+        cls.getName -> ImplNative
+      }
+      (exprKinds ++ aggKinds).toMap
+    }
+    FunctionRegistry.expressions.iterator.map { case (name, (info, _)) =>
+      name -> classNameToKind.getOrElse(info.getClassName, ImplUnknown)
+    }.toMap
+  }
+
+  /**
+   * Update the Implementation column of every markdown table in `expressions.md` in place.
+   *
+   * The generator recognises table blocks by their header row (`| Function | Status |
+   * Implementation | Notes |`), skips the separator row, and rewrites the Implementation cell of
+   * each data row based on the function name in the first column. Rows whose function name is
+   * either not registered in Spark's `FunctionRegistry` or has no serde in `QueryPlanSerde`
+   * (planned, rewritten to another expression, or operator-level) get the em-dash placeholder.
+   */
+  private def updateExpressionsPageImplementation(filename: String): Unit = {
+    val nameToKind = buildFunctionNameToKind()
+    val lines = readFileVerbatim(filename)
+    val w = new BufferedOutputStream(new FileOutputStream(filename))
+    var implColumnIdx = -1
+    var afterSeparator = false
+    for (line <- lines) {
+      val trimmed = line.trim
+      if (trimmed.startsWith("|")) {
+        val cells = splitTableRow(trimmed)
+        val headerIdx = cells.indexWhere(_.trim == "Implementation")
+        val isHeader = headerIdx >= 0 && cells.exists(_.trim == "Function") &&
+          cells.exists(_.trim == "Status") && cells.exists(_.trim == "Notes")
+        val isSeparator =
+          implColumnIdx >= 0 && cells.length > 1 &&
+            cells.drop(1).dropRight(1).forall(c => c.trim.matches("-+"))
+        if (isHeader) {
+          implColumnIdx = headerIdx
+          afterSeparator = false
+          w.write(s"${line.stripTrailing()}\n".getBytes)
+        } else if (isSeparator) {
+          afterSeparator = true
+          w.write(s"${line.stripTrailing()}\n".getBytes)
+        } else if (afterSeparator && implColumnIdx >= 0 && cells.length > implColumnIdx) {
+          // Data row: extract SQL function name from column 1 (0-indexed cells: [empty, name,
+          // status, impl, notes, empty]). Unescape any `\|` back to `|` since markdown requires
+          // pipes inside table cells to be backslash-escaped.
+          val nameCell = cells(1).trim
+          val name = nameCell.stripPrefix("`").stripSuffix("`").replace("\\|", "|")
+          val kind = nameToKind.getOrElse(name, ImplUnknown)
+          val updated = cells.updated(implColumnIdx, s" $kind ")
+          w.write(s"${updated.mkString("|").stripTrailing()}\n".getBytes)
+        } else {
+          w.write(s"${line.stripTrailing()}\n".getBytes)
+        }
+      } else {
+        // Any non-table line ends the current table block.
+        implColumnIdx = -1
+        afterSeparator = false
+        w.write(s"${line.stripTrailing()}\n".getBytes)
+      }
+    }
+    w.close()
+  }
+
+  /**
+   * Split a markdown table row on `|`. Ordinary `String.split` drops trailing empty tokens, so `|
+   * a | b |` would come back as three elements instead of four. Passing `-1` as the limit
+   * preserves them, which we need so that column indices stay aligned with the header row.
+   *
+   * `\|` (the markdown escape for a literal pipe inside a cell) is temporarily replaced with a
+   * placeholder before splitting so the escaped pipe is not treated as a column boundary.
+   */
+  private def splitTableRow(row: String): Array[String] = {
+    val placeholder = "\u0001"
+    row.replace("\\|", placeholder).split("\\|", -1).map(_.replace(placeholder, "\\|"))
+  }
+
+  /** Read a file without stripping the BEGIN/END autogen markers used elsewhere. */
+  private def readFileVerbatim(filename: String): Seq[String] = {
+    val r = new BufferedReader(new FileReader(filename))
+    val buffer = new ListBuffer[String]()
+    var line = r.readLine()
+    while (line != null) {
+      buffer += line
+      line = r.readLine()
+    }
+    r.close()
+    buffer.toSeq
+  }
+
+  /**
+   * Fill the `CONFIG_TABLE` markers in `filename` from `configs`. Defaults to core's public
+   * configs; a contrib passes its own set so its entries are documented on its own page without
+   * ever entering core's tables.
+   */
+  private def generateConfigReference(
+      filename: String,
+      publicConfigs: Set[ConfigEntry[_]] = corePublicConfigs): Unit = {
     val pattern = "<!--BEGIN:CONFIG_TABLE\\[(.*)]-->".r
     val lines = readFile(filename)
     val w = new BufferedOutputStream(new FileOutputStream(filename))
@@ -265,11 +397,11 @@ object GenerateDocs {
         }
       }
       if (n.incompatibleReasons.nonEmpty) {
-        val header = if (n.codegenDispatch) {
-          s"\nBy default, Comet accelerates `$name` using JVM codegen dispatch, which runs" +
-            " Spark's generated code inside Comet's native pipeline and matches Spark exactly." +
-            s" Set `spark.comet.expression.$name.allowIncompatible=true` to use Comet's faster" +
-            " native implementation instead, which has the following differences from Spark:\n\n"
+        val header = if (n.nativeOptIn) {
+          s"\nBy default, `$name` is evaluated in the JVM using Spark's own code-generated" +
+            " implementation (run inside the Comet pipeline), which matches Spark exactly." +
+            s" Set `${n.nativeOptInConfigKey}=true` to opt into Comet's native implementation" +
+            " instead, which has the following differences from Spark:\n\n"
         } else {
           s"\nThe following incompatibilities cause `$name` to fall back to Spark by default." +
             s" Set `spark.comet.expression.$name.allowIncompatible=true` to enable Comet" +
@@ -281,7 +413,14 @@ object GenerateDocs {
         }
       }
       if (n.unsupportedReasons.nonEmpty) {
-        w.write("\nThe following cases are not supported by Comet:\n\n".getBytes)
+        val header = if (n.codegenDispatchFallback) {
+          "\nThe following cases have no native implementation and always run in the JVM using" +
+            " Spark's code-generated implementation (inside the Comet pipeline):\n\n"
+        } else {
+          "\nThe following cases are not supported by Comet and always fall back to Spark," +
+            " regardless of any `allowIncompatible` setting:\n\n"
+        }
+        w.write(header.getBytes)
         for (reason <- n.unsupportedReasons) {
           w.write(s"- $reason\n".getBytes)
         }
@@ -323,7 +462,7 @@ object GenerateDocs {
         } else {
           val supportLevel = CometCast.isSupported(fromType, toType, None, mode)
           supportLevel match {
-            case Compatible(notes) =>
+            case Compatible(notes, _) =>
               notes.filter(_.trim.nonEmpty).foreach { note =>
                 annotations += ((fromTypeName, toTypeName, note.trim.replace("(10,2)", "")))
               }

@@ -19,6 +19,9 @@
 
 package org.apache.spark.sql.comet
 
+import java.util.IdentityHashMap
+import java.util.concurrent.ConcurrentHashMap
+
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.{SparkContext, TaskContext}
@@ -62,6 +65,46 @@ case class CometMetricNode(metrics: Map[String, SQLMetric], children: Seq[CometM
   }
 
   /**
+   * Sums `metricName` across this metric tree. A shared accumulator reachable through multiple
+   * paths in the tree contributes only once, and unset size metrics (initialized to -1) count as
+   * zero.
+   */
+  private[comet] def sumMetricValues(metricName: String): Long =
+    sumMetricValues(metricName, new IdentityHashMap[SQLMetric, java.lang.Boolean]())
+
+  private def sumMetricValues(
+      metricName: String,
+      seenMetrics: IdentityHashMap[SQLMetric, java.lang.Boolean]): Long = {
+    def sumFromNode(metricNode: CometMetricNode): Long = {
+      val nodeValue = metricNode.metrics.get(metricName).fold(0L) { metric =>
+        if (seenMetrics.put(metric, java.lang.Boolean.TRUE) == null) {
+          math.max(metric.value, 0L)
+        } else {
+          0L
+        }
+      }
+      nodeValue + metricNode.children.iterator.map(sumFromNode).sum
+    }
+
+    sumFromNode(this)
+  }
+
+  /**
+   * Range sampling executes aggregate inputs again for the actual shuffle, so exclude aggregate
+   * metrics during sampling to avoid counting their spills and memory usage twice.
+   */
+  private[comet] def withoutAggregateMetrics(plan: SparkPlan): CometMetricNode =
+    CometMetricNode(
+      if (plan.isInstanceOf[CometHashAggregateExec]) {
+        metrics -- CometMetricNode.aggregateMetricNames
+      } else {
+        metrics
+      },
+      children.zip(plan.children).map { case (child, childPlan) =>
+        child.withoutAggregateMetrics(childPlan)
+      })
+
+  /**
    * Reports aggregated scan input metrics (bytesRead, recordsRead) to Spark's task metrics.
    * Aggregates across all scan leaf nodes to handle plans with multiple scans (e.g., joins). Must
    * be called in a TaskCompletionListener after the iterator is fully consumed.
@@ -100,6 +143,34 @@ case class CometMetricNode(metrics: Map[String, SQLMetric], children: Seq[CometM
       }
       metrics.get("rows_written").foreach { m =>
         ctx.taskMetrics().outputMetrics.setRecordsWritten(m.value)
+      }
+    }
+  }
+
+  /**
+   * Reports this node's and its descendants' native spill metrics to Spark's task metrics,
+   * preserving the distinction between on-disk bytes and uncompressed in-memory bytes.
+   *
+   * Must be registered on the task thread before [[org.apache.comet.CometExecIterator]] so its
+   * completion listener publishes final SQL metrics before this listener runs, including when the
+   * attempt fails.
+   *
+   * A task may register several trees that share accumulators: an outer tree spans nested native
+   * blocks behind union/coalesce input boundaries, and a coalesced partition registers the same
+   * tree once per parent partition. All of a task's listeners claim accumulators from a shared
+   * per-task registry, so each accumulator is counted once while disjoint trees still all report.
+   */
+  def reportSpillMetrics(ctx: TaskContext): Unit = {
+    val seenMetrics = CometMetricNode.taskSeenSpillMetrics(ctx)
+    ctx.addTaskCompletionListener[Unit] { _ =>
+      val diskBytesSpilled = sumMetricValues("spilled_bytes", seenMetrics.disk)
+      if (diskBytesSpilled > 0L) {
+        ctx.taskMetrics().incDiskBytesSpilled(diskBytesSpilled)
+      }
+
+      val memoryBytesSpilled = sumMetricValues("memory_spilled_bytes", seenMetrics.memory)
+      if (memoryBytesSpilled > 0L) {
+        ctx.taskMetrics().incMemoryBytesSpilled(memoryBytesSpilled)
       }
     }
   }
@@ -151,6 +222,33 @@ case class CometMetricNode(metrics: Map[String, SQLMetric], children: Seq[CometM
 
 object CometMetricNode {
 
+  private val aggregateMetricNames =
+    Set("spill_count", "spilled_bytes", "spilled_rows", "peak_mem_used")
+
+  private case class SeenSpillMetrics(
+      disk: IdentityHashMap[SQLMetric, java.lang.Boolean],
+      memory: IdentityHashMap[SQLMetric, java.lang.Boolean])
+
+  // Per running task attempt: the spill accumulators already claimed by a reporting listener,
+  // one identity set per metric name (see reportSpillMetrics). The first registration installs
+  // a cleanup listener ahead of every reporting listener, so it runs last (reverse registration
+  // order) and removes the entry.
+  private val seenSpillMetricsByTask = new ConcurrentHashMap[Long, SeenSpillMetrics]()
+
+  private def taskSeenSpillMetrics(ctx: TaskContext): SeenSpillMetrics = {
+    val attemptId = ctx.taskAttemptId()
+    val existing = seenSpillMetricsByTask.get(attemptId)
+    if (existing != null) {
+      existing
+    } else {
+      // The task thread is the only registrant for its attempt id, so there is no put race.
+      val created = SeenSpillMetrics(new IdentityHashMap(), new IdentityHashMap())
+      seenSpillMetricsByTask.put(attemptId, created)
+      ctx.addTaskCompletionListener[Unit](_ => seenSpillMetricsByTask.remove(attemptId))
+      created
+    }
+  }
+
   /**
    * The baseline SQL metrics for DataFusion `BaselineMetrics`.
    */
@@ -160,6 +258,14 @@ object CometMetricNode {
       "elapsed_compute" -> SQLMetrics.createNanoTimingMetric(
         sc,
         "total time (in ms) spent in this operator"))
+  }
+
+  def aggregateMetrics(sc: SparkContext): Map[String, SQLMetric] = {
+    Map(
+      "spill_count" -> SQLMetrics.createMetric(sc, "number of spills"),
+      "spilled_bytes" -> SQLMetrics.createSizeMetric(sc, "total spilled bytes"),
+      "spilled_rows" -> SQLMetrics.createMetric(sc, "number of spilled rows"),
+      "peak_mem_used" -> SQLMetrics.createSizeMetric(sc, "peak native aggregate memory"))
   }
 
   /**
@@ -217,7 +323,7 @@ object CometMetricNode {
       "time_elapsed_scanning_total" ->
         SQLMetrics.createNanoTimingMetric(
           sc,
-          "Elapsed wall clock time for for scanning " +
+          "Total elapsed wall clock time for scanning " +
             "+ record batch decompression / decoding"),
       "time_elapsed_processing" ->
         SQLMetrics.createNanoTimingMetric(
@@ -229,6 +335,16 @@ object CometMetricNode {
         SQLMetrics.createMetric(sc, "Count of errors scanning file"),
       "predicate_evaluation_errors" ->
         SQLMetrics.createMetric(sc, "Number of times the predicate could not be evaluated"),
+      "num_predicate_creation_errors" ->
+        SQLMetrics.createMetric(sc, "Number of errors building file-level predicate"),
+      "files_ranges_pruned_statistics" ->
+        SQLMetrics.createMetric(
+          sc,
+          "Number of file ranges pruned by partition or file level statistics"),
+      "files_ranges_matched_statistics" ->
+        SQLMetrics.createMetric(
+          sc,
+          "Number of file ranges matched by partition or file level statistics (not pruned)"),
       "row_groups_matched_bloom_filter" ->
         SQLMetrics.createMetric(
           sc,
@@ -241,6 +357,10 @@ object CometMetricNode {
           "Number of row groups whose statistics were checked and matched (not pruned)"),
       "row_groups_pruned_statistics" ->
         SQLMetrics.createMetric(sc, "Number of row groups pruned by statistics"),
+      "limit_pruned_row_groups" ->
+        SQLMetrics.createMetric(sc, "Number of row groups pruned due to limit pruning"),
+      "limit_matched_row_groups" ->
+        SQLMetrics.createMetric(sc, "Number of row groups matched by limit pruning (not pruned)"),
       "bytes_scanned" ->
         SQLMetrics.createSizeMetric(sc, "Number of bytes scanned"),
       "pushdown_rows_pruned" ->
@@ -259,12 +379,30 @@ object CometMetricNode {
         SQLMetrics.createMetric(sc, "Rows filtered out by parquet page index"),
       "page_index_rows_matched" ->
         SQLMetrics.createMetric(sc, "Rows passed through the parquet page index"),
+      "page_index_pages_pruned" ->
+        SQLMetrics.createMetric(sc, "Pages filtered out by parquet page index"),
+      "page_index_pages_matched" ->
+        SQLMetrics.createMetric(sc, "Pages passed through the parquet page index"),
       "page_index_eval_time" ->
         SQLMetrics.createNanoTimingMetric(sc, "Time spent evaluating parquet page index filters"),
       "metadata_load_time" ->
         SQLMetrics.createNanoTimingMetric(
           sc,
-          "Time spent reading and parsing metadata from the footer"))
+          "Total time spent reading and parsing metadata from the footer"),
+      "predicate_cache_inner_records" ->
+        SQLMetrics.createMetric(
+          sc,
+          "Predicate cache: rows physically read and decoded from the Parquet file " +
+            "(cache misses)"),
+      "predicate_cache_records" ->
+        SQLMetrics.createMetric(
+          sc,
+          "Predicate cache: records read from the cache (reused after predicate evaluation)"),
+      "scan_efficiency_ratio_total" ->
+        SQLMetrics.createSizeMetric(
+          sc,
+          "Total file size, denominator of scan_efficiency_ratio = bytes_scanned " +
+            "/ total_file_size"))
   }
 
   /**
@@ -313,10 +451,12 @@ object CometMetricNode {
     Map(
       "elapsed_compute" -> SQLMetrics.createNanoTimingMetric(sc, "native shuffle writer time"),
       "repart_time" -> SQLMetrics.createNanoTimingMetric(sc, "repartition time"),
+      "interleave_time" -> SQLMetrics.createNanoTimingMetric(sc, "partition interleaving time"),
       "encode_time" -> SQLMetrics.createNanoTimingMetric(sc, "encoding and compression time"),
       "decode_time" -> SQLMetrics.createNanoTimingMetric(sc, "decoding and decompression time"),
       "spill_count" -> SQLMetrics.createMetric(sc, "number of spills"),
-      "spilled_bytes" -> SQLMetrics.createSizeMetric(sc, "spilled bytes"),
+      "spilled_bytes" -> SQLMetrics.createSizeMetric(sc, "disk spilled bytes"),
+      "memory_spilled_bytes" -> SQLMetrics.createSizeMetric(sc, "memory spilled bytes"),
       "input_batches" -> SQLMetrics.createMetric(sc, "number of input batches"))
   }
 

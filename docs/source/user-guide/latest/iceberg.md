@@ -26,7 +26,7 @@ then serialized to Comet's native execution engine (see
 [PR #2528](https://github.com/apache/datafusion-comet/pull/2528)).
 
 The example below uses Spark's package downloader to retrieve Comet $COMET_VERSION and Iceberg
-1.8.1, but Comet has been tested with Iceberg 1.5, 1.7, 1.8, 1.9, and 1.10. The native Iceberg
+1.8.1, but Comet has been tested with Iceberg 1.5, 1.7, 1.8, 1.9, 1.10, and 1.11. The native Iceberg
 reader is enabled by default. To disable it, set `spark.comet.scan.icebergNative.enabled=false`.
 
 The example uses the Spark 3.5 / Scala 2.12 build of Comet; substitute the Comet artifact
@@ -43,10 +43,12 @@ $SPARK_HOME/bin/spark-shell \
     --conf spark.sql.catalog.spark_catalog.warehouse=/tmp/warehouse \
     --conf spark.plugins=org.apache.spark.CometPlugin \
     --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
-    --conf spark.comet.explainFallback.enabled=true \
+    --conf spark.comet.explain.fallback.enabled=true \
     --conf spark.memory.offHeap.enabled=true \
     --conf spark.memory.offHeap.size=2g
 ```
+
+Catalog configuration is standard Iceberg-on-Spark and independent of Comet. The native reader has been tested with Hadoop, Hive, and REST catalogs. The example above uses a Hadoop catalog. For the full catalog configuration reference, see Iceberg's [Spark catalog configuration](https://iceberg.apache.org/docs/latest/spark-configuration/#catalogs).
 
 ### Tuning
 
@@ -61,7 +63,15 @@ The native Iceberg reader supports the following features:
 
 **Table specifications:**
 
-- Iceberg table spec v1 and v2 (v3 will fall back to Spark)
+- Iceberg table spec v1, v2, and v3
+
+**Encryption:**
+
+- Encrypted v3 tables using 128-bit or 256-bit AES-GCM data keys (requires Iceberg 1.11 or newer).
+  Iceberg-Java unwraps the key envelope on the driver during planning and stores the plaintext data
+  key in each file's `key_metadata`, which the native reader uses directly, so no KMS integration is
+  needed on the native side. Iceberg-Java also permits 192-bit data keys; those tables fall back to
+  Spark (no AES-192-GCM in the underlying crypto).
 
 **Schema and data types:**
 
@@ -118,7 +128,7 @@ $SPARK_HOME/bin/spark-shell \
     --conf spark.sql.catalog.rest_cat.warehouse=/tmp/warehouse \
     --conf spark.plugins=org.apache.spark.CometPlugin \
     --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
-    --conf spark.comet.explainFallback.enabled=true \
+    --conf spark.comet.explain.fallback.enabled=true \
     --conf spark.memory.offHeap.enabled=true \
     --conf spark.memory.offHeap.size=2g
 ```
@@ -132,19 +142,41 @@ scala> spark.sql("INSERT INTO rest_cat.db.test_table VALUES (1, 'Alice'), (2, 'B
 scala> spark.sql("SELECT * FROM rest_cat.db.test_table").show()
 ```
 
+### Object store configuration (S3)
+
+The native reader has its own Rust object store client and does not go through Iceberg's JVM FileIO, neither `S3FileIO` nor the older Hadoop S3A filesystem. It configures that client from the catalog's `s3.*` properties (the same keys `S3FileIO` reads) or from `spark.hadoop.fs.s3a.*` settings, so S3 configuration only reaches the native reader through one of those two channels.
+
+For a custom S3-compatible endpoint, configure the catalog with the endpoint, path-style access, region, and credentials (Hive shown):
+
+```shell
+    --conf spark.sql.catalog.s3_cat=org.apache.iceberg.spark.SparkCatalog \
+    --conf spark.sql.catalog.s3_cat.type=hive \
+    --conf spark.sql.catalog.s3_cat.uri=thrift://metastore:9083 \
+    --conf spark.sql.catalog.s3_cat.io-impl=org.apache.iceberg.aws.s3.S3FileIO \
+    --conf spark.sql.catalog.s3_cat.s3.endpoint=https://s3.example.com:9000 \
+    --conf spark.sql.catalog.s3_cat.s3.path-style-access=true \
+    --conf spark.sql.catalog.s3_cat.client.region=us-east-1 \
+    --conf spark.sql.catalog.s3_cat.s3.access-key-id=... \
+    --conf spark.sql.catalog.s3_cat.s3.secret-access-key=...
+```
+
+These `s3.*` storage properties are not specific to the Hive catalog shown here. When `s3.access-key-id` / `s3.secret-access-key` are omitted, credentials come from the standard AWS chain (environment variables, instance profiles, and so on). `client.region` is auto-detected for AWS but should be set for non-AWS endpoints. If your REST catalog vends temporary credentials, the native reader does not consume them automatically, and wiring that requires the credential provider bridge. See Iceberg's [S3 FileIO](https://iceberg.apache.org/docs/latest/aws/#s3-fileio) docs for the full property list, and [S3 Credential Providers](s3-credential-providers.md) for vended or per-request credentials.
+
 ### Current limitations
 
-The following scenarios will fall back to Spark's native Iceberg reader:
+The following scenarios will fall back to the JVM Iceberg reader:
 
-- Iceberg table spec v3 scans
+- Iceberg table spec v4 or newer
+- v3 tables with columns that declare an initial default value
+- v3 column types the native reader cannot read (`variant`, `geometry`, `geography`, `unknown`)
+- Encrypted tables with 192-bit data keys (no AES-192-GCM in the underlying crypto)
+- Deletion vectors (v3 Puffin deletes); positional and equality deletes in Parquet are supported
 - Iceberg writes (reads are accelerated, writes use Spark)
 - Tables backed by Avro or ORC data files (only Parquet is accelerated)
 - Tables partitioned on `BINARY` or `DECIMAL` (with precision >28) columns
 - Scans with residual filters using `truncate`, `bucket`, `year`, `month`, `day`, or `hour`
   transform functions (partition pruning still works, but row-level filtering of these
   transforms falls back)
-- Dynamic Partition Pruning under Adaptive Query Execution (non-AQE DPP is supported);
-  see [#3510](https://github.com/apache/datafusion-comet/issues/3510)
 
 ### Iceberg UDFs
 

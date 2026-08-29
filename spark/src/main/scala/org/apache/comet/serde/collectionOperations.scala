@@ -19,10 +19,12 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Reverse}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Reverse, Shuffle}
 import org.apache.spark.sql.types.ArrayType
 
+import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.serde.ExprOuterClass.Expr
+import org.apache.comet.serde.QueryPlanSerde.exprToProtoInternal
 import org.apache.comet.shims.CometTypeShim
 
 object CometReverse
@@ -55,6 +57,34 @@ object CometReverse
       CometArrayReverse.convert(expr, inputs, binding)
     } else {
       super.convert(expr, inputs, binding)
+    }
+  }
+}
+
+object CometShuffle extends CometExpressionSerde[Shuffle] with ArraysBase {
+
+  // Comet reproduces Spark's random permutation exactly: the resolved seed is combined with the
+  // partition index and drives the same MersenneTwister-based inside-out Fisher-Yates shuffle as
+  // org.apache.spark.sql.catalyst.util.RandomIndicesGenerator, so results match Spark bit for bit.
+  override def getSupportLevel(expr: Shuffle): SupportLevel = childTypesSupportLevel(expr)
+
+  override def convert(expr: Shuffle, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
+    // In a resolved plan `randomSeed` is always defined (resolution requires it). Guard anyway.
+    expr.randomSeed match {
+      case Some(seed) =>
+        exprToProtoInternal(expr.child, inputs, binding).map { child =>
+          ExprOuterClass.Expr
+            .newBuilder()
+            .setShuffle(
+              ExprOuterClass.Shuffle
+                .newBuilder()
+                .setChild(child)
+                .setSeed(seed))
+            .build()
+        }
+      case None =>
+        withFallbackReason(expr, "shuffle requires a resolved random seed")
+        None
     }
   }
 }

@@ -59,7 +59,7 @@ jobs:
           protoc-architecture: aarch_64
 
       - name: Restore Cargo cache
-        uses: actions/cache/restore@v5
+        uses: actions/cache/restore@v6
         with:
           path: |
             ~/.cargo/registry
@@ -86,7 +86,7 @@ jobs:
           retention-days: 1
 
       - name: Save Cargo cache
-        uses: actions/cache/save@v5
+        uses: actions/cache/save@v6
         if: github.ref == 'refs/heads/main'
         with:
           path: |
@@ -128,7 +128,10 @@ jobs:
               org.apache.spark.sql.comet.ParquetEncryptionITCase
               org.apache.comet.exec.CometNativeReaderSuite
               org.apache.comet.CometIcebergNativeSuite
+              org.apache.comet.CometIcebergEncryptionSuite
               org.apache.comet.CometIcebergRewriteActionSuite
+              org.apache.comet.CometIcebergWriteActionSuite
+              org.apache.comet.CometIcebergWriteDetectionSuite
               org.apache.comet.iceberg.IcebergReflectionSuite
               org.apache.comet.csv.CometCsvNativeReadSuite
               org.apache.comet.CometFuzzTestSuite
@@ -140,30 +143,45 @@ jobs:
               org.apache.comet.exec.CometShuffle4_0Suite
               org.apache.comet.exec.CometNativeColumnarToRowSuite
               org.apache.comet.exec.CometNativeShuffleSuite
+              org.apache.comet.shuffle.CelebornShufflePartitionPusherSuite
+              org.apache.spark.sql.comet.execution.shuffle.CometCelebornShuffleManagerSuite
+              org.apache.spark.sql.comet.execution.shuffle.CometCelebornNativeShuffleWriterSuite
+              org.apache.spark.sql.comet.execution.shuffle.CometCelebornShuffleReaderSuite
+              org.apache.spark.sql.comet.execution.shuffle.CometNativeShuffleInputRDDSuite
               org.apache.comet.exec.CometShuffleEncryptionSuite
               org.apache.comet.exec.CometShuffleManagerSuite
               org.apache.comet.exec.CometAsyncShuffleSuite
               org.apache.comet.exec.DisableAQECometShuffleSuite
               org.apache.comet.exec.DisableAQECometAsyncShuffleSuite
+              org.apache.spark.shuffle.comet.CometBoundedShuffleMemoryAllocatorSuite
               org.apache.spark.shuffle.sort.SpillSorterSuite
           - name: "exec"
             value: |
               org.apache.comet.exec.CometAggregateSuite
               org.apache.comet.exec.CometExec3_4PlusSuite
               org.apache.comet.exec.CometExecSuite
+              org.apache.comet.exec.CometInMemoryCacheSuite
+              org.apache.comet.exec.CometInMemoryCacheKryoSuite
               org.apache.comet.exec.CometGenerateExecSuite
               org.apache.comet.exec.CometWindowExecSuite
               org.apache.comet.exec.CometJoinSuite
+              org.apache.spark.sql.comet.CometMapInBatchSuite
               org.apache.comet.CometNativeSuite
+              org.apache.comet.CometConfSuite
+              org.apache.comet.CometPublicApiSuite
+              org.apache.comet.QueryContextInternerSuite
               org.apache.comet.CometSetOpWithGroupBySuite
               org.apache.comet.CometSparkSessionExtensionsSuite
               org.apache.spark.CometPluginsSuite
+              org.apache.spark.CometTaskMemoryManagerSuite
               org.apache.spark.CometPluginsDefaultSuite
               org.apache.spark.CometPluginsNonOverrideSuite
               org.apache.spark.CometPluginsUnifiedModeOverrideSuite
               org.apache.comet.rules.CometScanRuleSuite
+              org.apache.comet.rules.CometScanContribSuite
               org.apache.comet.rules.CometScanSchemeFallbackSuite
               org.apache.comet.rules.CometExecRuleSuite
+              org.apache.comet.rules.RevertNativeForTransitionHeavyStagesSuite
               org.apache.spark.sql.CometTPCDSQuerySuite
               org.apache.spark.sql.CometTPCDSQueryTestSuite
               org.apache.spark.sql.CometTPCHQuerySuite
@@ -174,12 +192,16 @@ jobs:
               org.apache.spark.sql.comet.CometShuffleFallbackStickinessSuite
               org.apache.spark.sql.comet.PlanDataInjectorSuite
               org.apache.spark.sql.comet.CometDecimalArithmeticViewSuite
+              org.apache.spark.sql.comet.CometDecimalPromotionSuite
+              org.apache.spark.sql.comet.CometScanWithPlanDataSuite
               org.apache.spark.sql.comet.util.UtilsSuite
+              org.apache.comet.vector.NativeUtilSuite
               org.apache.comet.objectstore.NativeConfigSuite
               org.apache.spark.sql.CometToPrettyStringSuite
               org.apache.spark.sql.CometCollationSuite
               org.apache.comet.CometFuzzAggregateSuite
               org.apache.spark.sql.comet.execution.arrow.CometArrowStreamSuite
+              org.apache.spark.sql.CometSparkInternalFunctionsSuite
           - name: "expressions"
             value: |
               org.apache.comet.CometExpressionSuite
@@ -188,7 +210,7 @@ jobs:
               org.apache.comet.CometHashExpressionSuite
               org.apache.comet.CometTemporalExpressionSuite
               org.apache.comet.CometArrayExpressionSuite
-              org.apache.comet.CometCastSuite
+              org.apache.comet.CometNativeCastSuite
               org.apache.comet.CometDateTimeUtilsSuite
               org.apache.comet.CometMathExpressionSuite
               org.apache.comet.CometStringExpressionSuite
@@ -203,12 +225,18 @@ jobs:
               org.apache.comet.expressions.conditional.CometCaseWhenSuite
               org.apache.comet.CometRegExpJvmSuite
               org.apache.comet.CometCodegenSuite
+              org.apache.comet.CometCoverageStatsSuite
               org.apache.comet.CometCodegenSourceSuite
               org.apache.comet.CometCodegenHOFSuite
               org.apache.comet.CometFuzzMathSuite
               org.apache.comet.CometCodegenFuzzSuite
+              org.apache.comet.CometScalaUDFClassLoaderSuite
+              org.apache.comet.codegen.CometSpecializedGettersDispatchSuite
               org.apache.comet.CometStringDecodeSuite
               org.apache.comet.CometWidthBucketSuite
+              org.apache.comet.CometUuidExpressionSuite
+              org.apache.comet.serde.CometScalarFunctionSuite
+              org.apache.comet.CometFallbackInvarianceSuite
 
       fail-fast: false
     name: ${{ matrix.os }}/${{ matrix.profile.name }} [${{ matrix.suite.name }}]
@@ -233,7 +261,7 @@ jobs:
 
       # Restore cargo registry cache (for any cargo commands that might run)
       - name: Cache Cargo registry
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry

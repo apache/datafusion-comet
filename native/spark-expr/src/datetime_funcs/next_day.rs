@@ -23,8 +23,9 @@ use datafusion::common::{utils::take_function_args, DataFusionError, Result};
 use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
 };
-use std::any::Any;
 use std::sync::Arc;
+
+use crate::SparkError;
 
 /// Spark-compatible `next_day(start_date, day_of_week)` function.
 ///
@@ -80,10 +81,6 @@ fn next_date_for_day_of_week(days: i32, weekday: Weekday) -> Option<i32> {
 }
 
 impl ScalarUDFImpl for SparkNextDay {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn name(&self) -> &str {
         "next_day"
     }
@@ -151,9 +148,10 @@ impl ScalarUDFImpl for SparkNextDay {
                 },
                 None => {
                     if self.fail_on_error {
-                        return Err(DataFusionError::Execution(format!(
-                            "Illegal input for day of week: {day_of_week}"
-                        )));
+                        return Err(SparkError::IllegalDayOfWeek {
+                            input: day_of_week.to_string(),
+                        }
+                        .into());
                     }
                     builder.append_null();
                 }

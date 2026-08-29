@@ -33,7 +33,6 @@ pub use struct_funcs::{CreateNamedStruct, GetStructField};
 mod csv_funcs;
 mod json_funcs;
 pub mod test_common;
-pub mod timezone;
 mod unbound;
 pub use unbound::UnboundColumn;
 mod predicate_funcs;
@@ -77,16 +76,18 @@ pub use comet_scalar_funcs::{
 pub use csv_funcs::*;
 pub use datetime_funcs::{
     spark_day_name, spark_month_name, spark_to_time, SparkDateDiff, SparkDateFromUnixDate,
-    SparkDateTrunc, SparkHour, SparkHoursTransform, SparkMakeDate, SparkMakeTime, SparkMinute,
-    SparkNextDay, SparkSecond, SparkSecondsToTimestamp, SparkUnixTimestamp, TimestampTruncExpr,
+    SparkDateTrunc, SparkHour, SparkHoursTransform, SparkMakeDate, SparkMakeInterval,
+    SparkMakeTime, SparkMinute, SparkNextDay, SparkSecond, SparkSecondsToTimestamp,
+    SparkUnixTimestamp, TimestampTruncExpr,
 };
 pub use error::{decimal_overflow_error, SparkError, SparkErrorWithContext, SparkResult};
 pub use hash_funcs::*;
 pub use json_funcs::{FromJson, ToJson};
 pub use math_funcs::{
-    create_modulo_expr, create_negate_expr, spark_ceil, spark_decimal_div,
-    spark_decimal_integral_div, spark_floor, spark_log, spark_make_decimal, spark_round,
-    spark_unhex, spark_unscaled_value, CheckOverflow, DecimalRescaleCheckOverflow, NegativeExpr,
+    abs, checked_add, checked_div, checked_mul, checked_sub, create_modulo_expr,
+    create_negate_expr, spark_ceil, spark_decimal_div, spark_decimal_integral_div, spark_floor,
+    spark_log, spark_make_decimal, spark_modulo, spark_pow, spark_round, spark_unhex,
+    spark_unscaled_value, CheckOverflow, DecimalRescaleCheckOverflow, NegativeExpr,
     NormalizeNaNAndZero, WideDecimalBinaryExpr, WideDecimalOp,
 };
 pub use query_context::{create_query_context_map, QueryContext, QueryContextMap};
@@ -134,6 +135,10 @@ pub(crate) fn decimal_sum_overflow_error(function_name: &str) -> SparkError {
 
 pub(crate) fn divide_by_zero_error() -> SparkError {
     SparkError::DivideByZero
+}
+
+pub(crate) fn integral_divide_overflow_error() -> SparkError {
+    SparkError::IntegralDivideOverflow
 }
 
 pub(crate) fn remainder_by_zero_error() -> SparkError {

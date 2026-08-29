@@ -18,13 +18,13 @@
 use arrow::array::{Array, Date32Array, Int32Array};
 use arrow::compute::cast;
 use arrow::datatypes::DataType;
-use chrono::NaiveDate;
 use datafusion::common::{utils::take_function_args, DataFusionError, Result};
 use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
 };
-use std::any::Any;
 use std::sync::Arc;
+
+use crate::{conversion_funcs::ymd_to_epoch_day, SparkError};
 
 /// Spark-compatible make_date function.
 /// Creates a date from year, month, and day columns.
@@ -54,8 +54,8 @@ impl Default for SparkMakeDate {
 
 /// Build the error message Spark surfaces for an invalid date under ANSI mode. Spark wraps the
 /// `java.time.DateTimeException` raised by `LocalDate.of` (via `ansiDateTimeArgumentOutOfRange` /
-/// `ansiDateTimeError`), so we reproduce `java.time`'s messages and validation order: month range,
-/// then day range, then the day-vs-month check.
+/// `ansiDateTimeError`), so we reproduce `java.time`'s messages and validation order: year range,
+/// month range, day range, then the day-vs-month check.
 fn invalid_date_message(year: i32, month: i32, day: i32) -> String {
     const MONTH_NAMES: [&str; 12] = [
         "JANUARY",
@@ -71,6 +71,9 @@ fn invalid_date_message(year: i32, month: i32, day: i32) -> String {
         "NOVEMBER",
         "DECEMBER",
     ];
+    if !(-999_999_999..=999_999_999).contains(&year) {
+        return format!("Invalid value for Year (valid values -999999999 - 999999999): {year}");
+    }
     if !(1..=12).contains(&month) {
         return format!("Invalid value for MonthOfYear (valid values 1 - 12): {month}");
     }
@@ -94,25 +97,13 @@ fn cast_to_int32(arr: &Arc<dyn Array>) -> Result<Arc<dyn Array>> {
 }
 
 /// Convert year, month, day to days since Unix epoch (1970-01-01).
-/// Returns None if the date is invalid.
+/// Returns None if the date is invalid or its epoch day does not fit Date32.
 fn make_date(year: i32, month: i32, day: i32) -> Option<i32> {
-    // Validate month and day ranges first
-    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
-        return None;
-    }
-
-    // Try to create a valid date
-    NaiveDate::from_ymd_opt(year, month as u32, day as u32).map(|date| {
-        date.signed_duration_since(NaiveDate::from_ymd_opt(1970, 1, 1).unwrap())
-            .num_days() as i32
-    })
+    ymd_to_epoch_day(year.into(), month.into(), day.into())
+        .and_then(|days| i32::try_from(days).ok())
 }
 
 impl ScalarUDFImpl for SparkMakeDate {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn name(&self) -> &str {
         "make_date"
     }
@@ -183,7 +174,10 @@ impl ScalarUDFImpl for SparkMakeDate {
                     Some(days) => builder.append_value(days),
                     None => {
                         if self.fail_on_error {
-                            return Err(DataFusionError::Execution(invalid_date_message(y, m, d)));
+                            return Err(SparkError::DatetimeFieldOutOfBounds {
+                                range_message: invalid_date_message(y, m, d),
+                            }
+                            .into());
                         }
                         builder.append_null();
                     }
@@ -243,33 +237,13 @@ mod tests {
     }
 
     #[test]
-    fn test_make_date_extreme_years() {
-        // Spark supports dates from 0001-01-01 to 9999-12-31 (Proleptic Gregorian calendar)
+    fn test_make_date_wide_year_range() {
+        assert_eq!(make_date(0, 1, 1), Some(-719_528));
+        assert_eq!(make_date(-1, 1, 1), Some(-719_893));
+        assert_eq!(make_date(300_000, 6, 15), Some(108_853_388));
+        assert_eq!(make_date(300_000, 2, 29), Some(108_853_281));
 
-        // Minimum valid date in Spark: 0001-01-01
-        assert!(make_date(1, 1, 1).is_some(), "Year 1 should be valid");
-
-        // Maximum valid date in Spark: 9999-12-31
-        assert!(
-            make_date(9999, 12, 31).is_some(),
-            "Year 9999 should be valid"
-        );
-
-        // Year 0 - In Proleptic Gregorian calendar, year 0 = 1 BCE
-        // Spark returns NULL for year 0 in make_date
-        // chrono supports year 0, but we should match Spark's behavior
-        // For now, chrono allows it - this may need adjustment for full Spark compatibility
-        let year_0_result = make_date(0, 1, 1);
-        // chrono allows year 0 (1 BCE in proleptic Gregorian)
-        assert!(year_0_result.is_some(), "chrono allows year 0");
-
-        // Negative years - Spark returns NULL for negative years
-        // chrono supports negative years (BCE dates)
-        let negative_year_result = make_date(-1, 1, 1);
-        // chrono allows negative years
-        assert!(
-            negative_year_result.is_some(),
-            "chrono allows negative years"
-        );
+        assert_eq!(make_date(5_881_580, 7, 11), Some(i32::MAX));
+        assert_eq!(make_date(-5_877_641, 6, 23), Some(i32::MIN));
     }
 }

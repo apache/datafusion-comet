@@ -29,8 +29,6 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{FloatType, LongType, StringType, TimestampType}
 
 class CometShuffle4_0Suite extends CometColumnarShuffleSuite {
-  override protected val asyncShuffleEnable: Boolean = false
-
   protected val adaptiveExecutionEnabled: Boolean = true
 
   override def beforeAll(): Unit = {

@@ -60,6 +60,9 @@ message DataType {
     MAP = 15;
     STRUCT = 16;
     TIME = 17;
+    YEAR_MONTH_INTERVAL = 18;
+    DAY_TIME_INTERVAL = 19;
+    CALENDAR_INTERVAL = 20;
   }
   DataTypeId type_id = 1;
 
@@ -80,12 +83,17 @@ message DataType {
   message ListInfo {
     DataType element_type = 1;
     bool contains_null = 2;
+    // Parquet field ID for the synthetic list element, when provided by Catalyst metadata.
+    optional int32 element_field_id = 3;
   }
 
   message MapInfo {
     DataType key_type = 1;
     DataType value_type = 2;
     bool value_contains_null = 3;
+    // Parquet field IDs for the synthetic map fields, when provided by Catalyst metadata.
+    optional int32 key_field_id = 4;
+    optional int32 value_field_id = 5;
   }
 
   message StructInfo {

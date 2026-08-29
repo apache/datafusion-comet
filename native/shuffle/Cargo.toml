@@ -30,6 +30,7 @@ publish = false
 
 [dependencies]
 arrow = { workspace = true }
+arrow-select = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
 clap = { version = "4", features = ["derive"], optional = true }
@@ -43,13 +44,13 @@ futures = { workspace = true }
 itertools = "0.15.0"
 jni = "0.21"
 log = "0.4"
-lz4_flex = { version = "0.13.1", default-features = false, features = ["frame"] }
+lz4_flex = { version = "0.14.0", default-features = false, features = ["frame"] }
 # parquet is only used by the shuffle_bench binary (shuffle-bench feature)
 parquet = { workspace = true, optional = true }
 simd-adler32 = "0.3.9"
 snap = "1.1"
 tokio = { version = "1", features = ["rt-multi-thread"] }
-zstd = "0.13.3"
+zstd = { version = "0.13.3", features = ["experimental"] }
 
 [dev-dependencies]
 criterion = { version = "0.7", features = ["async", "async_tokio", "async_std"] }

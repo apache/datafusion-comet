@@ -27,7 +27,6 @@ use datafusion::logical_expr::ColumnarValue;
 use datafusion::physical_expr::PhysicalExpr;
 use std::hash::Hash;
 use std::{
-    any::Any,
     fmt::{Debug, Display, Formatter},
     sync::Arc,
 };
@@ -75,10 +74,6 @@ impl GetArrayStructFields {
 }
 
 impl PhysicalExpr for GetArrayStructFields {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn data_type(&self, input_schema: &Schema) -> DataFusionResult<DataType> {
         let struct_field = self.child_field(input_schema)?;
         match self.child.data_type(input_schema)? {

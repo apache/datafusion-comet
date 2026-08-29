@@ -63,7 +63,7 @@ object CometCreateNamedStruct extends CometExpressionSerde[CreateNamedStruct] {
           .setCreateNamedStruct(structBuilder)
           .build())
     } else {
-      withFallbackReason(expr, "unsupported arguments for CreateNamedStruct", expr.valExprs: _*)
+      withFallbackReason(expr, "unsupported arguments for CreateNamedStruct")
       None
     }
 
@@ -108,7 +108,7 @@ object CometGetArrayStructFields extends CometExpressionSerde[GetArrayStructFiel
           .setGetArrayStructFields(arrayStructFieldsBuilder)
           .build())
     } else {
-      withFallbackReason(expr, "unsupported arguments for GetArrayStructFields", expr.child)
+      withFallbackReason(expr, "unsupported arguments for GetArrayStructFields")
       None
     }
   }
@@ -122,10 +122,23 @@ object CometGetArrayStructFields extends CometExpressionSerde[GetArrayStructFiel
  * (unsupported types or options) falls through to the codegen dispatcher via
  * [[CometCodegenDispatch]].
  */
-object CometStructsToJson extends CometCodegenDispatch[StructsToJson] {
+object CometStructsToJson extends CometCodegenDispatch[StructsToJson] with NativeOptInAvailable {
+
+  override def getIncompatibleReasons(): Seq[String] =
+    Seq(
+      "Does not support `+Infinity` and `-Infinity` for numeric types (float, double)." +
+        " (https://github.com/apache/datafusion-comet/issues/3016)")
 
   private def nativeSupported(expr: StructsToJson): Boolean =
     expr.options.isEmpty && isSupportedType(expr.child.dataType)
+
+  override def getSupportLevel(expr: StructsToJson): SupportLevel =
+    if (!CometConf.isExprAllowIncompat(getExprConfigName(expr)) && nativeSupported(expr)) {
+      Compatible(nativeOptIn =
+        Some(NativeOptIn(CometConf.getExprAllowIncompatConfigKey(getExprConfigName(expr)))))
+    } else {
+      Compatible()
+    }
 
   override def convert(
       expr: StructsToJson,
@@ -147,7 +160,6 @@ object CometStructsToJson extends CometCodegenDispatch[StructsToJson] {
               .setToJson(toJson)
               .build())
         case _ =>
-          withFallbackReason(expr, expr.child)
           None
       }
     } else {
@@ -180,10 +192,21 @@ object CometStructsToJson extends CometCodegenDispatch[StructsToJson] {
  * `spark.comet.expression.JsonToStructs.allowIncompatible` and only for schemas it supports; any
  * other case falls through to the codegen dispatcher via [[CometCodegenDispatch]].
  */
-object CometJsonToStructs extends CometCodegenDispatch[JsonToStructs] {
+object CometJsonToStructs extends CometCodegenDispatch[JsonToStructs] with NativeOptInAvailable {
+
+  override def getIncompatibleReasons(): Seq[String] =
+    Seq("Partially implemented and not comprehensively tested")
 
   private def nativeSupported(expr: JsonToStructs): Boolean =
     expr.schema != null && isSupportedSchema(expr.schema)
+
+  override def getSupportLevel(expr: JsonToStructs): SupportLevel =
+    if (!CometConf.isExprAllowIncompat(getExprConfigName(expr)) && nativeSupported(expr)) {
+      Compatible(nativeOptIn =
+        Some(NativeOptIn(CometConf.getExprAllowIncompatConfigKey(getExprConfigName(expr)))))
+    } else {
+      Compatible()
+    }
 
   override def convert(
       expr: JsonToStructs,

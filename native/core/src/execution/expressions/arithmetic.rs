@@ -77,10 +77,6 @@ impl Hash for CheckedBinaryExpr {
 }
 
 impl PhysicalExpr for CheckedBinaryExpr {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn fmt_sql(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         self.child.fmt_sql(f)
     }
@@ -219,6 +215,7 @@ impl ExpressionBuilder for IntegralDivideBuilder {
             input_schema,
             BinaryExprOptions {
                 is_integral_div: true,
+                check_divide_overflow: expr.check_divide_overflow,
             },
             eval_mode,
         )
