@@ -427,15 +427,10 @@ object CometArrayInsert extends CometExpressionSerde[ArrayInsert] with ArraysBas
     val item = expr.children(2)
     val srcElementType = srcArray.dataType.asInstanceOf[ArrayType].elementType
 
-    // Native ArrayInsert requires the item's Arrow type to equal the source array's element type
-    // exactly, including nested nullability. For complex element types the two sides can disagree:
-    // a `CreateArray` source is widened to a deeply-nullable element type (see CometCreateArray),
-    // while a standalone item (e.g. `map(2, coalesce(id, 0))`) keeps Spark's Catalyst nullability.
-    // Cast BOTH sides in lockstep to the same deeply-nullable element type so their Arrow types
-    // match; Spark's `ArrayInsert.dataType` is `first.dataType.asNullable`, so this also
-    // matches the declared output element type. Casting only widens metadata and never
-    // changes values. Primitive element types are byte-identical on both sides, so the gate
-    // leaves them untouched.
+    // Spark declares ArrayInsert's result as first.dataType.asNullable, including nested fields.
+    // Cast the source and item to that common element type so both the insertion kernel and its
+    // consumers see the declared output type. Widening nullability changes metadata, not values;
+    // primitive element types do not need a cast.
     val (srcChild, itemChild) = if (isComplexType(srcElementType)) {
       val elementType = deepNullable(srcElementType)
       val arrayType = ArrayType(elementType, containsNull = true)
@@ -510,6 +505,8 @@ object CometArrayUnion extends CometExpressionSerde[ArrayUnion] {
 }
 
 object CometCreateArray extends CometExpressionSerde[CreateArray] with ArraysBase {
+  import org.apache.comet.expressions.{CometCast, CometEvalMode}
+
   override def convert(
       expr: CreateArray,
       inputs: Seq[Attribute],
@@ -534,14 +531,30 @@ object CometCreateArray extends CometExpressionSerde[CreateArray] with ArraysBas
     // deeply-nullable element type instead (every array/map/struct field nullable at all nesting
     // levels; the cast only widens metadata and never changes values), so `make_array` always sees
     // identical Arrow types. A child whose cast is unsupported declines below.
-    val elementType = deepNullable(expr.dataType.asInstanceOf[ArrayType].elementType)
+    val declaredElementType = expr.dataType.asInstanceOf[ArrayType].elementType
+    val elementType = deepNullable(declaredElementType)
     val childExprs = children.map { c =>
       val unified = if (c.dataType == elementType) c else Cast(c, elementType)
       exprToProtoInternal(unified, inputs, binding)
     }
 
     if (childExprs.forall(_.isDefined)) {
-      scalarFunctionExprToProto("make_array", childExprs: _*)
+      val arrayExpr = scalarFunctionExprToProto("make_array", childExprs: _*)
+      if (elementType == declaredElementType) {
+        arrayExpr
+      } else {
+        // Deep nullability is only needed while constructing the array. Restore Spark's declared
+        // nested element type so consumers such as Slice and conditional branches see consistent
+        // Arrow types. Keep the outer containsNull=true convention used by native list functions.
+        arrayExpr.flatMap { child =>
+          CometCast.castToProto(
+            expr,
+            None,
+            ArrayType(declaredElementType, containsNull = true),
+            child,
+            CometEvalMode.LEGACY)
+        }
+      }
     } else {
       withFallbackReason(expr, "unsupported arguments for CreateArray")
       None

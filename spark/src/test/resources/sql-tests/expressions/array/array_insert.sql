@@ -283,10 +283,9 @@ SELECT array_insert(array(CAST(1.1 AS FLOAT), CAST(2.2 AS FLOAT)), 2, CAST(3.3 A
 
 -- ============================================================
 -- Array of maps (complex element type)
--- The source array's map value is widened to nullable by CometCreateArray, while the standalone
--- item map keeps value non-null because coalesce(id, 0) is non-null. Native ArrayInsert requires
--- the item Arrow type to equal the source element type exactly, so the serde casts both sides to a
--- common deeply-nullable element type. id includes a NULL row (coalesce yields 0).
+-- Both input maps have non-null values, while ArrayInsert declares a deeply-nullable result type.
+-- The serde casts both operands to that common element type so the insertion kernel and downstream
+-- consumers agree on the output schema. id includes a NULL row (coalesce yields 0).
 -- ============================================================
 
 statement

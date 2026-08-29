@@ -1213,6 +1213,40 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     }
   }
 
+  test("constructed arrays retain nested map types for downstream expressions") {
+    import testImplicits._
+
+    withSQLConf(
+      "spark.sql.optimizer.excludedRules" -> "",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+      CometConf.COMET_BATCH_SIZE.key -> "8192") {
+      withTempPath { dir =>
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          Seq(1, 2, 3).toDF("id").coalesce(1).write.parquet(dir.toString)
+        }
+        withTempView("nested_array_types") {
+          spark.read.parquet(dir.toString).createOrReplaceTempView("nested_array_types")
+          val constructed = "array(map(1, coalesce(id, 0)))"
+          val repeated = "array_repeat(map(2, coalesce(id, 0)), 1)"
+          checkSparkAnswerAndOperator(
+            s"SELECT id, slice($constructed, 1, 1) FROM nested_array_types")
+          checkSparkAnswerAndOperator(
+            "SELECT id, slice(array(map(1, 2), map(2, coalesce(id, 0))), 1, 2) " +
+              "FROM nested_array_types")
+          // All-false batches use a different native conditional path than mixed batches.
+          for {
+            condition <- Seq("id < 0", "id > 0", "id = 1")
+            (whenTrue, whenFalse) <- Seq(constructed -> repeated, repeated -> constructed)
+          } {
+            checkSparkAnswerAndOperator(
+              s"SELECT id, IF($condition, $whenTrue, $whenFalse) FROM nested_array_types")
+          }
+        }
+      }
+    }
+  }
+
   // The whole `array(...)` folds to one `ArrayType(MapType(IntegerType, IntegerType, true))`
   // literal, so every rebuilt element must report the unified nullable value type.
   test("folded array of maps with a NULL value (multirow)") {
