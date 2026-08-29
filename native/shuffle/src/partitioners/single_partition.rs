@@ -22,19 +22,19 @@ use arrow::array::RecordBatch;
 use std::iter;
 use tokio::time::Instant;
 
-/// A partitioner that writes all shuffle data to a single file and a single index file.
+/// A partitioner that streams all shuffle data to output partition zero.
 ///
-/// Batches are streamed straight to the long-lived `BufBatchWriter` inside the
-/// [`PartitionWriter`], whose internal `BatchCoalescer` combines sub-`batch_size` batches
-/// into `batch_size`-row IPC blocks across calls. A batch that is already `>= batch_size`
-/// and lands on an empty coalescer buffer is passed through and written verbatim as a
-/// single block, which may exceed `batch_size` (see the `BatchCoalescer` bypass in
-/// `BufBatchWriter`). Block boundaries therefore depend on how the input is chunked, but
-/// every row is written exactly once in order.
+/// Batches are streamed straight to the underlying [`PartitionWriter`]. For local output, its
+/// long-lived `BufBatchWriter` uses an internal `BatchCoalescer` to combine sub-`batch_size`
+/// batches into `batch_size`-row IPC blocks across calls. A batch that is already `>= batch_size`
+/// and lands on an empty coalescer buffer is passed through and written verbatim as a single
+/// block, which may exceed `batch_size` (see the `BatchCoalescer` bypass in `BufBatchWriter`).
+/// Remote output instead sends each encoded batch directly to its task-owned callback. In either
+/// case every row is written exactly once in order.
 ///
-/// The partitioner does no buffering or concatenation of its own. A concat layer here
-/// would be redundant with the coalescer, and actively wasteful whenever its output landed
-/// below `batch_size` and so missed the bypass: those rows would be copied once by the
+/// The partitioner does no buffering or concatenation of its own. For local output, a concat
+/// layer here would be redundant with the coalescer, and actively wasteful whenever its output
+/// landed below `batch_size` and so missed the bypass: those rows would be copied once by the
 /// concat and again into the coalescer's builders. That happens whenever the input batch
 /// size does not divide `batch_size` evenly. When it does divide evenly the concat output
 /// hit the bypass and only one copy was made either way, so streaming costs nothing there
@@ -64,7 +64,7 @@ impl<T: PartitionWriter> ShufflePartitioner for SinglePartitionShufflePartitione
             self.metrics.data_size.add(batch.get_array_memory_size());
             self.metrics.baseline.record_output(num_rows);
 
-            // Stream directly to the writer; its BatchCoalescer handles batching to batch_size.
+            // Stream directly to the writer; each destination owns its encoding and batching.
             self.partition_writer
                 .write(0, &mut iter::once(Ok(batch)), &self.metrics)?;
         }

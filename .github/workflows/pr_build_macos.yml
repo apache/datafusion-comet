@@ -143,18 +143,25 @@ jobs:
               org.apache.comet.exec.CometShuffle4_0Suite
               org.apache.comet.exec.CometNativeColumnarToRowSuite
               org.apache.comet.exec.CometNativeShuffleSuite
+              org.apache.comet.shuffle.CelebornShufflePartitionPusherSuite
+              org.apache.spark.sql.comet.execution.shuffle.CometCelebornShuffleManagerSuite
+              org.apache.spark.sql.comet.execution.shuffle.CometCelebornNativeShuffleWriterSuite
+              org.apache.spark.sql.comet.execution.shuffle.CometCelebornShuffleReaderSuite
               org.apache.spark.sql.comet.execution.shuffle.CometNativeShuffleInputRDDSuite
               org.apache.comet.exec.CometShuffleEncryptionSuite
               org.apache.comet.exec.CometShuffleManagerSuite
               org.apache.comet.exec.CometAsyncShuffleSuite
               org.apache.comet.exec.DisableAQECometShuffleSuite
               org.apache.comet.exec.DisableAQECometAsyncShuffleSuite
+              org.apache.spark.shuffle.comet.CometBoundedShuffleMemoryAllocatorSuite
               org.apache.spark.shuffle.sort.SpillSorterSuite
           - name: "exec"
             value: |
               org.apache.comet.exec.CometAggregateSuite
               org.apache.comet.exec.CometExec3_4PlusSuite
               org.apache.comet.exec.CometExecSuite
+              org.apache.comet.exec.CometInMemoryCacheSuite
+              org.apache.comet.exec.CometInMemoryCacheKryoSuite
               org.apache.comet.exec.CometGenerateExecSuite
               org.apache.comet.exec.CometWindowExecSuite
               org.apache.comet.exec.CometJoinSuite
@@ -166,6 +173,7 @@ jobs:
               org.apache.comet.CometSetOpWithGroupBySuite
               org.apache.comet.CometSparkSessionExtensionsSuite
               org.apache.spark.CometPluginsSuite
+              org.apache.spark.CometTaskMemoryManagerSuite
               org.apache.spark.CometPluginsDefaultSuite
               org.apache.spark.CometPluginsNonOverrideSuite
               org.apache.spark.CometPluginsUnifiedModeOverrideSuite
