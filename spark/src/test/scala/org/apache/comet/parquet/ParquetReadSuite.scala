@@ -343,6 +343,9 @@ abstract class ParquetReadSuite extends CometTestBase {
         val schema = MessageTypeParser.parseMessageType("""
           |message root {
           |  optional int64 ts(TIMESTAMP_MILLIS);
+          |  optional group s {
+          |    optional int64 ts(TIMESTAMP_MILLIS);
+          |  }
           |}
           |""".stripMargin)
         val writer = createParquetWriter(schema, path, dictionaryEnabled)
@@ -350,10 +353,16 @@ abstract class ParquetReadSuite extends CometTestBase {
           val record = new SimpleGroup(schema)
           // Milliseconds that overflow Long when converted to microseconds
           record.add(0, 9223372036854776L)
+          record.addGroup(1).add(0, 9223372036854776L)
           writer.write(record)
         }
         writer.close()
 
+        val predicates = Seq(
+          "ts < timestamp'1970-01-01 00:00:00'",
+          "ts IN (timestamp'1970-01-01 00:00:00', timestamp'1970-01-02 00:00:00')",
+          "ts <=> timestamp'1970-01-01 00:00:00'",
+          "s.ts < timestamp'1970-01-01 00:00:00'")
         Seq(false, true).foreach { ansiEnabled =>
           Seq(false, true).foreach { rowFilterPushdown =>
             withSQLConf(
@@ -361,11 +370,13 @@ abstract class ParquetReadSuite extends CometTestBase {
               CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED.key ->
                 rowFilterPushdown.toString) {
               readParquetFile(path.toString) { df =>
-                val filtered = df.where("ts < timestamp'1970-01-01 00:00:00'")
-                assert(collect(filtered.queryExecution.executedPlan) {
-                  case _: CometNativeScanExec => true
-                }.nonEmpty)
-                checkSparkAnswer(filtered)
+                predicates.foreach { predicate =>
+                  val filtered = df.where(predicate)
+                  assert(collect(filtered.queryExecution.executedPlan) {
+                    case _: CometNativeScanExec => true
+                  }.nonEmpty)
+                  checkSparkAnswer(filtered)
+                }
               }
             }
           }

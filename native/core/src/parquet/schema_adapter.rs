@@ -24,7 +24,7 @@ use datafusion::common::tree_node::{Transformed, TransformedResult, TreeNode};
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
 use datafusion::logical_expr::Operator;
 use datafusion::physical_expr::expressions::{
-    BinaryExpr, Column, IsNotNullExpr, IsNullExpr, Literal,
+    in_list, BinaryExpr, Column, InListExpr, IsNotNullExpr, IsNullExpr, Literal,
 };
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::ColumnarValue;
@@ -553,17 +553,18 @@ fn as_millis_to_micros_cast(expr: &Arc<dyn PhysicalExpr>) -> Option<MillisCastPa
     }
 }
 
-/// If `expr` is a non-null microsecond timestamp literal, return its value.
-fn as_micros_literal(expr: &Arc<dyn PhysicalExpr>) -> Option<i64> {
+/// If `expr` is a microsecond timestamp literal (null or not), return its value.
+fn as_micros_literal(expr: &Arc<dyn PhysicalExpr>) -> Option<Option<i64>> {
     match expr.downcast_ref::<Literal>()?.value() {
-        ScalarValue::TimestampMicrosecond(Some(micros), _) => Some(*micros),
+        ScalarValue::TimestampMicrosecond(micros, _) => Some(*micros),
         _ => None,
     }
 }
 
 impl SparkPhysicalExprAdapter {
     /// Rewrite predicate expressions over a `TIMESTAMP_MILLIS` file column read as
-    /// microseconds into the millisecond domain, mirroring Spark's `ParquetFilters`,
+    /// microseconds into the millisecond domain — comparisons (including null-safe
+    /// `<=>`), `IN` lists, and null checks — mirroring Spark's `ParquetFilters`,
     /// which pushes timestamp predicates down in the file's physical unit:
     /// https://github.com/apache/spark/blob/v4.2.0/sql/core/src/main/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFilters.scala#L192-L196
     ///
@@ -593,6 +594,16 @@ impl SparkPhysicalExprAdapter {
             }
         }
 
+        // `ts IN (...)` / `ts NOT IN (...)`: rescale every microsecond literal in the
+        // list. DataFusion's pruning predicate understands `InListExpr` (up to 20
+        // elements), so keeping the raw column visible restores row-group pruning,
+        // mirroring Spark's `ParquetFilters` handling of `In`.
+        if let Some(in_list_expr) = expr.downcast_ref::<InListExpr>() {
+            if let Some((inner, file_tz)) = as_millis_to_micros_cast(in_list_expr.expr()) {
+                return self.rewrite_millis_in_list(&expr, in_list_expr, inner, file_tz);
+            }
+        }
+
         let Some(binary) = expr.downcast_ref::<BinaryExpr>() else {
             return Ok(Transformed::no(expr));
         };
@@ -613,6 +624,31 @@ impl SparkPhysicalExprAdapter {
             return Ok(Transformed::no(expr));
         };
 
+        let Some(micros) = micros else {
+            // NULL literal. The ordinary comparisons return NULL for every row on both
+            // sides of the rewrite, so rescaling the literal to a NULL millisecond
+            // literal is exact. The null-safe comparisons test null-ness of the value,
+            // which the checked conversion preserves, so probe the raw column.
+            let rewritten: Arc<dyn PhysicalExpr> = match op {
+                Operator::IsNotDistinctFrom => Arc::new(IsNullExpr::new(inner)),
+                Operator::IsDistinctFrom => Arc::new(IsNotNullExpr::new(inner)),
+                Operator::Lt
+                | Operator::LtEq
+                | Operator::Gt
+                | Operator::GtEq
+                | Operator::Eq
+                | Operator::NotEq => Arc::new(BinaryExpr::new(
+                    inner,
+                    op,
+                    Arc::new(Literal::new(ScalarValue::TimestampMillisecond(
+                        None, file_tz,
+                    ))),
+                )),
+                _ => return Ok(Transformed::no(expr)),
+            };
+            return Ok(Transformed::yes(rewritten));
+        };
+
         // For a file value `m` (milliseconds) the logical value is exactly `m * 1000`
         // microseconds, so `m * 1000 OP L` rewrites to an exact comparison on `m`.
         let floor = micros.div_euclid(1_000);
@@ -625,12 +661,27 @@ impl SparkPhysicalExprAdapter {
             Operator::GtEq => (Operator::GtEq, ceil),
             Operator::Eq if exact => (Operator::Eq, floor),
             Operator::NotEq if exact => (Operator::NotEq, floor),
+            Operator::IsNotDistinctFrom if exact => (Operator::IsNotDistinctFrom, floor),
+            Operator::IsDistinctFrom if exact => (Operator::IsDistinctFrom, floor),
             // A sub-millisecond literal can never equal `m * 1000`. `col < i64::MIN`
             // (resp. `col >= i64::MIN`) is false (resp. true) for every non-null value
             // and NULL for nulls, matching `=` / `!=` null semantics while remaining a
             // plain, prunable comparison.
             Operator::Eq => (Operator::Lt, i64::MIN),
             Operator::NotEq => (Operator::GtEq, i64::MIN),
+            // The null-safe comparisons never return NULL, so an impossible literal
+            // folds to a constant. DataFusion's pruning predicate evaluates boolean
+            // literals, so `false` still prunes every row group.
+            Operator::IsNotDistinctFrom => {
+                return Ok(Transformed::yes(Arc::new(Literal::new(
+                    ScalarValue::Boolean(Some(false)),
+                ))));
+            }
+            Operator::IsDistinctFrom => {
+                return Ok(Transformed::yes(Arc::new(Literal::new(
+                    ScalarValue::Boolean(Some(true)),
+                ))));
+            }
             _ => return Ok(Transformed::no(expr)),
         };
         let literal = Arc::new(Literal::new(ScalarValue::TimestampMillisecond(
@@ -640,6 +691,61 @@ impl SparkPhysicalExprAdapter {
         Ok(Transformed::yes(Arc::new(BinaryExpr::new(
             inner, op, literal,
         ))))
+    }
+
+    /// Rewrite `ts IN (...)` / `ts NOT IN (...)` over a millis->micros conversion into
+    /// the millisecond domain. Divisible literals rescale exactly; sub-millisecond
+    /// literals can never equal `m * 1000` and drop out of the list, which preserves
+    /// IN's three-valued logic (a dropped element contributes `false` to the OR / `true`
+    /// to the AND for every non-null probe, and the null-probe result stays NULL either
+    /// way). A list emptied this way degenerates to the same always-false /
+    /// always-true-with-null-semantics sentinels the `=` / `!=` rewrite uses.
+    fn rewrite_millis_in_list(
+        &self,
+        original: &Arc<dyn PhysicalExpr>,
+        in_list_expr: &InListExpr,
+        inner: Arc<dyn PhysicalExpr>,
+        file_tz: Option<Arc<str>>,
+    ) -> DataFusionResult<Transformed<Arc<dyn PhysicalExpr>>> {
+        let mut millis_list: Vec<Arc<dyn PhysicalExpr>> = Vec::new();
+        for item in in_list_expr.list() {
+            // Any non-literal or non-timestamp element: leave the expression alone.
+            let Some(micros) = as_micros_literal(item) else {
+                return Ok(Transformed::no(Arc::clone(original)));
+            };
+            match micros {
+                None => millis_list.push(Arc::new(Literal::new(
+                    ScalarValue::TimestampMillisecond(None, file_tz.clone()),
+                ))),
+                Some(v) if v % 1_000 == 0 => millis_list.push(Arc::new(Literal::new(
+                    ScalarValue::TimestampMillisecond(Some(v / 1_000), file_tz.clone()),
+                ))),
+                Some(_) => {}
+            }
+        }
+        let negated = in_list_expr.negated();
+        if millis_list.is_empty() {
+            let (op, sentinel) = if negated {
+                (Operator::GtEq, i64::MIN)
+            } else {
+                (Operator::Lt, i64::MIN)
+            };
+            return Ok(Transformed::yes(Arc::new(BinaryExpr::new(
+                inner,
+                op,
+                Arc::new(Literal::new(ScalarValue::TimestampMillisecond(
+                    Some(sentinel),
+                    file_tz,
+                ))),
+            ))));
+        }
+        let rewritten = in_list(
+            inner,
+            millis_list,
+            &negated,
+            self.physical_file_schema.as_ref(),
+        )?;
+        Ok(Transformed::yes(rewritten))
     }
 
     /// Wrap ALL Column expressions that have type mismatches with CometCastColumnExpr.
@@ -1898,7 +2004,7 @@ mod test {
     use arrow::datatypes::TimeUnit;
     use datafusion::logical_expr::Operator;
     use datafusion::physical_expr::expressions::{
-        BinaryExpr, Column, IsNotNullExpr, IsNullExpr, Literal,
+        in_list, BinaryExpr, Column, InListExpr, IsNotNullExpr, IsNullExpr, Literal,
     };
     use datafusion::physical_expr::PhysicalExpr;
     use datafusion::scalar::ScalarValue;
@@ -2020,5 +2126,156 @@ mod test {
             .downcast_ref::<IsNotNullExpr>()
             .expect("expected IsNotNullExpr");
         assert!(is_not_null.arg().downcast_ref::<Column>().is_some());
+    }
+
+    #[test]
+    fn test_millis_timestamp_null_safe_equality_rewrites() {
+        let adapter = millis_file_adapter();
+        let col: Arc<dyn PhysicalExpr> = Arc::new(Column::new("ts", 0));
+
+        // Divisible literal: same operator, rescaled.
+        for (op, expected_op) in [
+            (Operator::IsNotDistinctFrom, Operator::IsNotDistinctFrom),
+            (Operator::IsDistinctFrom, Operator::IsDistinctFrom),
+        ] {
+            let pred: Arc<dyn PhysicalExpr> =
+                Arc::new(BinaryExpr::new(Arc::clone(&col), op, micros_lit(2_000)));
+            let rewritten = adapter.rewrite(pred).unwrap();
+            assert_millis_comparison(&rewritten, expected_op, 2);
+        }
+
+        // Sub-millisecond literal: null-safe comparisons never return NULL, so the
+        // expression folds to a boolean constant.
+        for (op, expected) in [
+            (Operator::IsNotDistinctFrom, false),
+            (Operator::IsDistinctFrom, true),
+        ] {
+            let pred: Arc<dyn PhysicalExpr> =
+                Arc::new(BinaryExpr::new(Arc::clone(&col), op, micros_lit(1_500)));
+            let rewritten = adapter.rewrite(pred).unwrap();
+            let literal = rewritten
+                .downcast_ref::<Literal>()
+                .expect("expected boolean Literal");
+            assert_eq!(literal.value(), &ScalarValue::Boolean(Some(expected)));
+        }
+
+        // NULL literal: `<=> NULL` tests null-ness of the raw value.
+        let null_lit: Arc<dyn PhysicalExpr> = Arc::new(Literal::new(
+            ScalarValue::TimestampMicrosecond(None, Some(Arc::from("UTC"))),
+        ));
+        let pred: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+            Arc::clone(&col),
+            Operator::IsNotDistinctFrom,
+            Arc::clone(&null_lit),
+        ));
+        let rewritten = adapter.rewrite(pred).unwrap();
+        assert!(rewritten.downcast_ref::<IsNullExpr>().is_some());
+
+        let pred: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+            Arc::clone(&col),
+            Operator::IsDistinctFrom,
+            Arc::clone(&null_lit),
+        ));
+        let rewritten = adapter.rewrite(pred).unwrap();
+        assert!(rewritten.downcast_ref::<IsNotNullExpr>().is_some());
+
+        // NULL literal with an ordinary comparison: NULL result either way, so the
+        // literal rescales to a NULL millisecond literal.
+        let pred: Arc<dyn PhysicalExpr> =
+            Arc::new(BinaryExpr::new(Arc::clone(&col), Operator::Lt, null_lit));
+        let rewritten = adapter.rewrite(pred).unwrap();
+        let binary = rewritten
+            .downcast_ref::<BinaryExpr>()
+            .expect("expected BinaryExpr");
+        let literal = binary
+            .right()
+            .downcast_ref::<Literal>()
+            .expect("expected Literal");
+        assert_eq!(
+            literal.value(),
+            &ScalarValue::TimestampMillisecond(None, Some(Arc::from("UTC")))
+        );
+    }
+
+    fn millis_values_of(list: &[Arc<dyn PhysicalExpr>]) -> Vec<Option<i64>> {
+        list.iter()
+            .map(|item| {
+                match item
+                    .downcast_ref::<Literal>()
+                    .expect("expected Literal list element")
+                    .value()
+                {
+                    ScalarValue::TimestampMillisecond(v, _) => *v,
+                    other => panic!("expected millisecond literal, got {other:?}"),
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_millis_timestamp_in_list_rewrites_to_millis_domain() {
+        let adapter = millis_file_adapter();
+        let physical = Schema::new(vec![Field::new(
+            "ts",
+            DataType::Timestamp(TimeUnit::Millisecond, Some(Arc::from("UTC"))),
+            true,
+        )]);
+        let col: Arc<dyn PhysicalExpr> = Arc::new(Column::new("ts", 0));
+
+        for negated in [false, true] {
+            // Divisible literals rescale, a sub-millisecond literal drops out, and a
+            // NULL literal stays NULL.
+            let null_lit: Arc<dyn PhysicalExpr> = Arc::new(Literal::new(
+                ScalarValue::TimestampMicrosecond(None, Some(Arc::from("UTC"))),
+            ));
+            let logical = Schema::new(vec![Field::new(
+                "ts",
+                DataType::Timestamp(TimeUnit::Microsecond, Some(Arc::from("UTC"))),
+                true,
+            )]);
+            let pred = in_list(
+                Arc::clone(&col),
+                vec![micros_lit(2_000), micros_lit(1_500), null_lit],
+                &negated,
+                &logical,
+            )
+            .unwrap();
+            let rewritten = adapter.rewrite(pred).unwrap();
+            let rewritten_in_list = rewritten
+                .downcast_ref::<InListExpr>()
+                .expect("expected InListExpr");
+            assert!(rewritten_in_list.expr().downcast_ref::<Column>().is_some());
+            assert_eq!(rewritten_in_list.negated(), negated);
+            assert_eq!(
+                millis_values_of(rewritten_in_list.list()),
+                vec![Some(2), None]
+            );
+            assert_eq!(
+                rewritten_in_list.expr().data_type(&physical).unwrap(),
+                DataType::Timestamp(TimeUnit::Millisecond, Some(Arc::from("UTC")))
+            );
+
+            // A list of only impossible literals degenerates to the always-false /
+            // always-true sentinel comparison with IN's null semantics.
+            let logical = Schema::new(vec![Field::new(
+                "ts",
+                DataType::Timestamp(TimeUnit::Microsecond, Some(Arc::from("UTC"))),
+                true,
+            )]);
+            let pred = in_list(
+                Arc::clone(&col),
+                vec![micros_lit(1_500), micros_lit(-1)],
+                &negated,
+                &logical,
+            )
+            .unwrap();
+            let rewritten = adapter.rewrite(pred).unwrap();
+            let expected_op = if negated {
+                Operator::GtEq
+            } else {
+                Operator::Lt
+            };
+            assert_millis_comparison(&rewritten, expected_op, i64::MIN);
+        }
     }
 }

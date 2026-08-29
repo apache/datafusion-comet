@@ -33,10 +33,17 @@ use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr_adapter::PhysicalExprAdapterFactory;
 use datafusion::prelude::SessionContext;
 use datafusion::scalar::ScalarValue;
-use datafusion_comet_spark_expr::EvalMode;
+use datafusion_comet_spark_expr::{EvalMode, GetStructField};
 use datafusion_datasource::TableSchema;
 use std::collections::HashMap;
 use std::sync::Arc;
+
+/// True when the expression reads a struct field (directly or in any child), i.e. the
+/// predicate references a nested column.
+fn references_nested_field(expr: &Arc<dyn PhysicalExpr>) -> bool {
+    expr.downcast_ref::<GetStructField>().is_some()
+        || expr.children().iter().any(|c| references_nested_field(c))
+}
 
 /// Initializes a DataSourceExec plan with a ParquetSource for Comet's native Parquet scan.
 ///
@@ -93,6 +100,16 @@ pub(crate) fn init_datasource_exec(
     );
     spark_parquet_options.use_field_id = use_field_id;
     spark_parquet_options.ignore_missing_field_id = ignore_missing_field_id;
+    // Spark only avoids the TIMESTAMP_MILLIS overflow error for filtered-out values through
+    // row-group statistics pruning. DataFusion can neither prune nested-field predicates
+    // (`PruningPredicate` has no nested-field support) nor evaluate them as Parquet row
+    // filters (struct columns are classified non-pushable), so a scan carrying such a
+    // predicate would decode row groups Spark prunes and fail on the checked conversion of
+    // any overflowing top-level column. Fall back to the safe cast (overflow -> NULL) for
+    // these scans; the filter above the scan then discards the rows like Spark's pruning.
+    spark_parquet_options.checked_timestamp_overflow = !data_filters
+        .as_ref()
+        .is_some_and(|filters| filters.iter().any(references_nested_field));
 
     // Determine the schema and projection to use for ParquetSource.
     // When data_schema is provided, use it as the base schema so DataFusion knows the full

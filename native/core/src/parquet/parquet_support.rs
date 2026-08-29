@@ -99,6 +99,16 @@ pub struct SparkParquetOptions {
     /// (Spark 3.x, SPARK-36182). Mirrors Comet's per-Spark-version constant
     /// in ShimCometConf.
     pub allow_timestamp_ltz_to_ntz: bool,
+    /// When true (the default), a top-level TIMESTAMP_MILLIS column that overflows during
+    /// the millis->micros upscale raises an error, matching Spark's checked
+    /// `millisToMicros`. Scans whose data filters reference nested struct fields set this
+    /// to false and fall back to the safe cast (overflow -> NULL): Spark only avoids the
+    /// overflow error for filtered-out values through row-group statistics pruning, and
+    /// DataFusion can neither prune (`PruningPredicate` has no nested-field support) nor
+    /// row-filter (struct columns are classified non-pushable in
+    /// `can_expr_be_pushed_down_with_schemas`) such predicates, so a checked conversion
+    /// would fail queries Spark answers with zero rows.
+    pub checked_timestamp_overflow: bool,
 }
 
 impl SparkParquetOptions {
@@ -115,6 +125,7 @@ impl SparkParquetOptions {
             ignore_missing_field_id: false,
             allow_type_promotion: false,
             allow_timestamp_ltz_to_ntz: false,
+            checked_timestamp_overflow: true,
         }
     }
 
@@ -131,6 +142,7 @@ impl SparkParquetOptions {
             ignore_missing_field_id: false,
             allow_type_promotion: false,
             allow_timestamp_ltz_to_ntz: false,
+            checked_timestamp_overflow: true,
         }
     }
 }
@@ -168,6 +180,15 @@ fn parquet_convert_array(
     to_type: &DataType,
     parquet_options: &SparkParquetOptions,
 ) -> DataFusionResult<ArrayRef> {
+    parquet_convert_array_impl(array, to_type, parquet_options, true)
+}
+
+fn parquet_convert_array_impl(
+    array: ArrayRef,
+    to_type: &DataType,
+    parquet_options: &SparkParquetOptions,
+    top_level: bool,
+) -> DataFusionResult<ArrayRef> {
     use DataType::*;
     let from_type = array.data_type();
 
@@ -182,10 +203,11 @@ fn parquet_convert_array(
         )?),
         (List(_), List(to_inner_type)) => {
             let list_arr: &ListArray = array.as_list();
-            let cast_field = parquet_convert_array(
+            let cast_field = parquet_convert_array_impl(
                 Arc::clone(list_arr.values()),
                 to_inner_type.data_type(),
                 parquet_options,
+                false,
             )?;
 
             Ok(Arc::new(ListArray::new(
@@ -198,12 +220,19 @@ fn parquet_convert_array(
         (
             Timestamp(TimeUnit::Millisecond, _),
             Timestamp(TimeUnit::Microsecond, target_tz),
-        ) => {
+        ) if top_level && parquet_options.checked_timestamp_overflow => {
             // Spark's Parquet reader calls the checked `millisToMicros` conversion for both
             // direct and dictionary values, independent of CAST evaluation mode:
             // https://github.com/apache/spark/blob/v4.2.0/sql/core/src/main/java/org/apache/spark/sql/execution/datasources/parquet/ParquetVectorUpdaterFactory.java#L817-L833
             // `millisToMicros` uses `Math.multiplyExact`:
             // https://github.com/apache/spark/blob/v4.2.0/sql/api/src/main/scala/org/apache/spark/sql/catalyst/util/SparkDateTimeUtils.scala#L103-L108
+            //
+            // The checked conversion is limited to TOP-LEVEL columns. Spark only avoids the
+            // error for filtered-out values through row-group statistics pruning, and
+            // DataFusion's PruningPredicate does not support nested fields yet, so a checked
+            // conversion on a nested field would fail queries whose predicates Spark prunes
+            // (e.g. `WHERE s.ts < X` over an all-overflowing file). Nested fields keep the
+            // pre-existing safe-cast behavior below (overflow -> NULL).
             let micros = array
                 .as_primitive::<TimestampMillisecondType>()
                 .try_unary::<_, TimestampMicrosecondType, _>(|value| value.mul_checked(1_000))?
@@ -315,10 +344,11 @@ fn parquet_convert_struct_to_struct(
                 };
 
                 if let Some(from_index) = from_index {
-                    cast_fields.push(parquet_convert_array(
+                    cast_fields.push(parquet_convert_array_impl(
                         Arc::clone(array.column(from_index)),
                         to_field.data_type(),
                         parquet_options,
+                        false,
                     )?);
                     field_overlap = true;
                 } else {
@@ -366,15 +396,17 @@ fn parquet_convert_map_to_map(
                 "map is missing value field".to_string(),
             ))?;
 
-            let key_array = parquet_convert_array(
+            let key_array = parquet_convert_array_impl(
                 Arc::clone(from.keys()),
                 key_field.data_type(),
                 parquet_options,
+                false,
             )?;
-            let value_array = parquet_convert_array(
+            let value_array = parquet_convert_array_impl(
                 Arc::clone(from.values()),
                 value_field.data_type(),
                 parquet_options,
+                false,
             )?;
 
             Ok(Arc::new(MapArray::new(
@@ -670,5 +702,73 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn test_millis_to_micros_overflow_checked_only_at_top_level() {
+        use crate::parquet::parquet_support::{parquet_convert_array, SparkParquetOptions};
+        use arrow::array::{Array, ArrayRef, StructArray, TimestampMillisecondArray};
+        use arrow::datatypes::{DataType, Field, Fields, TimeUnit};
+        use datafusion_comet_spark_expr::EvalMode;
+        use std::sync::Arc;
+
+        let options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        let overflow_millis = 9_223_372_036_854_776_i64;
+        let millis: ArrayRef = Arc::new(TimestampMillisecondArray::from(vec![
+            Some(overflow_millis),
+            None,
+        ]));
+        let micros_type = DataType::Timestamp(TimeUnit::Microsecond, None);
+
+        // Top-level: checked, matching Spark's `millisToMicros` (`Math.multiplyExact`).
+        let err = parquet_convert_array(Arc::clone(&millis), &micros_type, &options)
+            .expect_err("top-level overflow must error");
+        assert!(
+            err.to_string().to_lowercase().contains("overflow"),
+            "unexpected error: {err}"
+        );
+
+        // Scans whose data filters reference nested fields disable the checked
+        // conversion (DataFusion cannot prune or row-filter those predicates the way
+        // Spark's statistics pruning protects them), falling back to overflow -> NULL.
+        let mut unchecked_options = options.clone();
+        unchecked_options.checked_timestamp_overflow = false;
+        let converted =
+            parquet_convert_array(Arc::clone(&millis), &micros_type, &unchecked_options)
+                .expect("unchecked overflow must not error");
+        assert!(converted.is_null(0), "overflow must become NULL");
+        assert!(converted.is_null(1));
+
+        // Nested: DataFusion's PruningPredicate cannot prune nested fields, so a
+        // checked conversion would fail queries whose predicates Spark satisfies via
+        // row-group statistics pruning. The nested field keeps the safe-cast behavior:
+        // overflow becomes NULL.
+        let child_field = Arc::new(Field::new(
+            "ts",
+            DataType::Timestamp(TimeUnit::Millisecond, None),
+            true,
+        ));
+        let strukt: ArrayRef = Arc::new(StructArray::new(
+            Fields::from(vec![Arc::clone(&child_field)]),
+            vec![millis],
+            None,
+        ));
+        let target = DataType::Struct(Fields::from(vec![Arc::new(Field::new(
+            "ts",
+            micros_type.clone(),
+            true,
+        ))]));
+        let converted = parquet_convert_array(strukt, &target, &options)
+            .expect("nested overflow must not error");
+        let converted_child = Arc::clone(
+            converted
+                .as_any()
+                .downcast_ref::<StructArray>()
+                .unwrap()
+                .column(0),
+        );
+        assert_eq!(converted_child.data_type(), &micros_type);
+        assert!(converted_child.is_null(0), "overflow must become NULL");
+        assert!(converted_child.is_null(1));
     }
 }
