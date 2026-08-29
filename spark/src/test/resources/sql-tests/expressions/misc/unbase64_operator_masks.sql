@@ -100,6 +100,17 @@ SELECT hex(unbase64(bad)), sort_array(collect_list(k))
 FROM test_unbase64_operator_valid WHERE bad = 'YWJj'
 GROUP BY bad LIMIT 1
 
+-- An offset-only collect does not stop input early. With one row, AQE can remove the sort
+-- after the native partial collect_list has materialized; the final must remain native.
+statement
+CREATE TABLE test_unbase64_operator_offset USING parquet AS
+SELECT 1 AS k, 'YWJj' AS bad
+
+query
+SELECT unbase64(bad) AS decoded, collect_list(k)
+FROM test_unbase64_operator_offset
+GROUP BY bad ORDER BY decoded OFFSET 1
+
 query
 SELECT hex(unbase64(bad)) FROM test_unbase64_operator_valid
 

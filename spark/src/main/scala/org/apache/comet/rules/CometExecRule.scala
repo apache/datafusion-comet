@@ -767,7 +767,10 @@ case class CometExecRule(session: SparkSession)
       }
     }
 
-    def protect(node: SparkPlan, belowLimit: Boolean): (SparkPlan, Option[String]) = {
+    def protect(
+        node: SparkPlan,
+        belowLimit: Boolean,
+        hasLimitAncestor: Boolean): (SparkPlan, Option[String]) = {
       val original = node match {
         case scan: CometScanExec =>
           scan.wrapped
@@ -778,7 +781,9 @@ case class CometExecRule(session: SparkSession)
         case _ => node
       }
       val startsLimit = original match {
-        case _: CollectLimitExec | _: LocalLimitExec | _: GlobalLimitExec => true
+        // Offset-only collection does not stop its input early.
+        case collect: CollectLimitExec => collect.limit >= 0
+        case _: LocalLimitExec | _: GlobalLimitExec => true
         case topK: TakeOrderedAndProjectExec =>
           SortOrder.orderingSatisfies(node.children.head.outputOrdering, topK.sortOrder)
         case windowLimit
@@ -801,8 +806,11 @@ case class CometExecRule(session: SparkSession)
           true
         case _ => false
       }
+      // A top-K is still a LIMIT even when its current input requires sorting.
+      val limitAncestor = hasLimitAncestor || startsLimit ||
+        original.isInstanceOf[TakeOrderedAndProjectExec]
       val protectedChildren = node.children.map { child =>
-        protect(child, startsLimit || (belowLimit && !materializesInput))
+        protect(child, startsLimit || (belowLimit && !materializesInput), limitAncestor)
       }
       val childReason = protectedChildren.flatMap(_._2).headOption
       val condition = original match {
@@ -811,13 +819,35 @@ case class CometExecRule(session: SparkSession)
         case join: BroadcastNestedLoopJoinExec if firstMatch(join.joinType) => join.condition
         case _ => None
       }
+      val finalAggregate = original match {
+        case agg: BaseAggregateExec
+            if (agg.isInstanceOf[HashAggregateExec] ||
+              agg.isInstanceOf[ObjectHashAggregateExec]) &&
+              agg.aggregateExpressions.map(_.mode).distinct == Seq(Final) =>
+          Some(agg)
+        case _ => None
+      }
       val limitName = if (belowLimit) {
-        original.expressions.iterator.flatMap(findEvaluationMaskName).take(1).toSeq.headOption
+        // Final merges buffers; it does not reevaluate the aggregate's original inputs.
+        val expressions = finalAggregate.map(_.resultExpressions).getOrElse(original.expressions)
+        expressions.iterator.flatMap(findEvaluationMaskName).take(1).toSeq.headOption
+      } else {
+        None
+      }
+      // AQE can remove an intervening sort after a native Partial has materialized. Choose
+      // compatible buffers before that happens, even if a current operator drains its input.
+      val aggregateBufferName = if (hasLimitAncestor && conf.adaptiveExecutionEnabled) {
+        finalAggregate
+          .filterNot(agg => QueryPlanSerde.allAggsSupportMixedExecution(agg.aggregateExpressions))
+          .flatMap(
+            _.resultExpressions.iterator.flatMap(findEvaluationMaskName).take(1).toSeq.headOption)
       } else {
         None
       }
       val ownReason = limitName
         .map(name => s"$name requires Spark evaluation below LIMIT")
+        .orElse(aggregateBufferName.map(name =>
+          s"$name requires Spark aggregate buffers below LIMIT with AQE"))
         .orElse(
           condition
             .flatMap(findEvaluationMaskName)
@@ -856,7 +886,7 @@ case class CometExecRule(session: SparkSession)
       (prepared, reason)
     }
 
-    protect(plan, belowLimit = false)._1
+    protect(plan, belowLimit = false, hasLimitAncestor = false)._1
   }
 
   /** Convert a Spark plan to a Comet plan using the specified serde handler */

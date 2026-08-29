@@ -32,7 +32,7 @@ import org.apache.spark.sql.catalyst.plans.physical.{IdentityBroadcastMode, Sing
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution._
-import org.apache.spark.sql.execution.adaptive.{LogicalQueryStage, QueryStageExec}
+import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, LogicalQueryStage, QueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{HashAggregateExec, ObjectHashAggregateExec}
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ShuffleExchangeExec, ShuffleExchangeLike}
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, HashedRelationBroadcastMode, ShuffledHashJoinExec, SortMergeJoinExec}
@@ -288,6 +288,204 @@ class CometExecRuleSuite extends CometTestBase {
         for (replanned <- Seq(transformed, applyCometExecRule(transformed))) {
           assert(countOperators(replanned, classOf[ObjectHashAggregateExec]) == 2)
           assert(countOperators(replanned, classOf[CometHashAggregateExec]) == 0)
+        }
+      }
+    }
+  }
+
+  test("unbase64 AQE LIMIT protects aggregate buffers across materialization") {
+    withUnbase64Project { _ =>
+      for {
+        aqe <- Seq(false, true)
+        decoderInResult <- Seq(false, true)
+        boundary <- Seq("direct", "sort", "shuffle", "top-k", "offset")
+      } {
+        val result = if (decoderInResult) {
+          "unbase64(bad) AS decoded, collect_list(k) AS collected"
+        } else {
+          // Final only merges this buffer; its original decoder input is not evaluated again.
+          "bad, collect_list(unbase64(bad)) AS collected"
+        }
+        val aggregate = createSparkPlan(
+          spark,
+          s"""SELECT $result
+             |FROM VALUES (1, 'YWJj'), (2, 'YWJj') AS inputs(k, bad)
+             |GROUP BY bad""".stripMargin)
+        val order = Seq(SortOrder(aggregate.output.head, Ascending))
+        val plan = boundary match {
+          case "direct" => CollectLimitExec(1, aggregate)
+          case "sort" => CollectLimitExec(1, SortExec(order, global = false, aggregate))
+          case "shuffle" => CollectLimitExec(1, ShuffleExchangeExec(SinglePartition, aggregate))
+          case "top-k" => TakeOrderedAndProjectExec(1, order, aggregate.output, aggregate)
+          case "offset" =>
+            CollectLimitExec(-1, SortExec(order, global = false, aggregate), offset = 1)
+        }
+        withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe.toString) {
+          withClue(s"AQE=$aqe, decoderInResult=$decoderInResult, boundary=$boundary: ") {
+            val transformed = applyCometExecRule(plan)
+            val sparkBuffers = decoderInResult &&
+              (boundary == "direct" || (aqe && boundary != "offset"))
+            for (replanned <- Seq(transformed, applyCometExecRule(transformed))) {
+              assert(
+                countOperators(replanned, classOf[ObjectHashAggregateExec]) ==
+                  (if (sparkBuffers) 2 else 0))
+              assert(
+                countOperators(replanned, classOf[CometHashAggregateExec]) ==
+                  (if (sparkBuffers) 0 else 2))
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("unbase64 LIMIT after an AQE join change keeps aggregate buffers compatible") {
+    withSQLConf(
+      "spark.sql.codegen.wholeStage" -> "true",
+      "spark.sql.shuffle.partitions" -> "1",
+      "spark.sql.autoBroadcastJoinThreshold" -> "-1",
+      "spark.sql.adaptive.autoBroadcastJoinThreshold" -> "10485760",
+      "spark.sql.join.preferSortMergeJoin" -> "true",
+      "spark.sql.adaptive.maxShuffledHashJoinLocalMapThreshold" -> "0",
+      CometConf.COMET_FORCE_SHJ.key -> "false") {
+      withTempPath { dir =>
+        withTempView("aqe_valid", "aqe_bad_last", "aqe_bad_only", "aqe_right") {
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            spark
+              .range(0, 12, 1, 1)
+              .selectExpr("1 AS k", "base64(cast(cast(id as string) as binary)) AS bad")
+              .write
+              .parquet(dir.getCanonicalPath + "/valid")
+            // With one file and one shuffle partition, Spark emits the valid first group
+            // before the malformed last group. A streamed LIMIT can skip the latter.
+            spark
+              .range(0, 12, 1, 1)
+              .selectExpr(
+                "1 AS k",
+                "CASE WHEN id=11 THEN 'A' " +
+                  "ELSE base64(cast(cast(id as string) as binary)) END AS bad")
+              .write
+              .parquet(dir.getCanonicalPath + "/bad_last")
+            spark
+              .range(0, 1, 1, 1)
+              .selectExpr("'MA==' AS bad")
+              .write
+              .parquet(dir.getCanonicalPath + "/right")
+            // Two groups prevent AQE from removing LIMIT through its one-row bound.
+            spark
+              .range(0, 2, 1, 1)
+              .selectExpr("1 AS k", "CASE WHEN id=0 THEN 'A' ELSE 'B' END AS bad")
+              .write
+              .parquet(dir.getCanonicalPath + "/bad_only")
+          }
+          spark.read
+            .parquet(dir.getCanonicalPath + "/valid")
+            .createOrReplaceTempView("aqe_valid")
+          spark.read
+            .parquet(dir.getCanonicalPath + "/bad_last")
+            .createOrReplaceTempView("aqe_bad_last")
+          spark.read
+            .parquet(dir.getCanonicalPath + "/right")
+            .createOrReplaceTempView("aqe_right")
+          spark.read
+            .parquet(dir.getCanonicalPath + "/bad_only")
+            .createOrReplaceTempView("aqe_bad_only")
+
+          for {
+            aqe <- Seq(false, true)
+            dispatch <- Seq(false, true)
+            join <- Seq("INNER", "LEFT SEMI")
+          } {
+            withSQLConf(
+              "spark.sql.adaptive.enabled" -> aqe.toString,
+              CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> dispatch.toString) {
+              withClue(s"AQE=$aqe, dispatcher=$dispatch, join=$join: ") {
+                def query(
+                    input: String,
+                    decoder: String = "bad",
+                    agg: String = "collect_list(k)") =
+                  s"""SELECT a.decoded, a.collected FROM (
+                     |  SELECT bad, unbase64($decoder) AS decoded, $agg AS collected
+                     |  FROM $input GROUP BY bad
+                     |) a $join JOIN aqe_right b ON a.bad = b.bad LIMIT 1""".stripMargin
+
+                def checkSuccess(input: String, agg: String = "collect_list(k)"): SparkPlan = {
+                  val sqlText = query(input, agg = agg)
+                  var expected = Seq.empty[Row]
+                  withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+                    expected = sql(sqlText).collect().toSeq
+                  }
+                  val df = sql(sqlText)
+                  val initial = df.queryExecution.executedPlan
+                  val initialNativeAggregates =
+                    collect(initial) { case a: CometHashAggregateExec => a }.size
+                  val initialSparkAggregates =
+                    collect(initial) { case a: ObjectHashAggregateExec => a }.size
+                  assert(
+                    collect(initial) {
+                      case _: SortMergeJoinExec => true
+                      case _: CometSortMergeJoinExec => true
+                    }.size == 1,
+                    initial.toString)
+                  checkAnswer(df, expected)
+                  if (aqe && agg == "collect_list(k)") {
+                    // Keep buffers in Spark before AQE can materialize an incompatible partial.
+                    assert(initialNativeAggregates == 0 && initialSparkAggregates == 2)
+                  }
+                  val plan = df.queryExecution.executedPlan
+                  if (aqe) {
+                    assert(plan.asInstanceOf[AdaptiveSparkPlanExec].isFinalPlan)
+                    assert(
+                      collect(plan) {
+                        case j: BroadcastHashJoinExec => j.buildSide
+                        case j: CometBroadcastHashJoinExec => j.buildSide
+                      } == Seq(BuildRight),
+                      plan.toString)
+                  }
+                  plan
+                }
+
+                val valid = checkSuccess("aqe_valid")
+                val native = collect(valid) { case a: CometHashAggregateExec => a }
+                val sparkAggs = collect(valid) { case a: ObjectHashAggregateExec => a }
+                if (aqe) {
+                  assert(native.isEmpty && sparkAggs.size == 2, valid.toString)
+                } else {
+                  assert(native.size == 2 && sparkAggs.isEmpty, valid.toString)
+                }
+
+                def checkDecodeError(sqlText: String): Unit = {
+                  val (sparkError, cometError) = checkSparkAnswerMaybeThrows(sql(sqlText))
+                  Seq(sparkError, cometError).foreach { error =>
+                    val failure = error.getOrElse(fail("Expected malformed Base64 to throw"))
+                    assert(causeChain(failure).exists(e =>
+                      Option(e.getMessage).exists(
+                        _.contains("Last unit does not have enough valid bits"))))
+                  }
+                }
+
+                // Retaining the native final alone would avoid the buffer crash but eagerly
+                // decode the malformed group. AQE-off sorting must still consume that group.
+                // LEFT SEMI keeps the aggregate on the streamed side. INNER may also
+                // materialize a left broadcast candidate, which must decode all its rows.
+                if (aqe && join == "LEFT SEMI") checkSuccess("aqe_bad_last")
+                else if (!aqe) checkDecodeError(query("aqe_bad_last"))
+                checkDecodeError(query("aqe_valid", "CASE WHEN bad='MA==' THEN 'A' ELSE bad END"))
+                // ObjectHashAggregate evaluates its result before a nonmatching join can
+                // discard it. Extracting a fused projection must not suppress that error.
+                checkDecodeError(query("aqe_bad_only"))
+
+                // A compatible aggregate may keep its native partial below a Spark final.
+                val compatible = checkSuccess("aqe_valid", "max(k)")
+                assert(collect(compatible) { case a: CometHashAggregateExec => a }.nonEmpty)
+                if (aqe && join == "LEFT SEMI") {
+                  // A codegen-compatible HashAggregate can leave its output projection lazy;
+                  // unlike ObjectHashAggregate, the nonmatching keys need no decoding.
+                  checkSuccess("aqe_bad_only", "max(k)")
+                }
+              }
+            }
+          }
         }
       }
     }

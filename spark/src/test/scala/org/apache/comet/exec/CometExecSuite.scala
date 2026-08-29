@@ -3627,11 +3627,10 @@ class CometExecSuite extends CometTestBase {
 
   test("unbase64 subclasses in JVM-dispatched expressions preserve LIMIT evaluation") {
     val functionName = "comet_test_unbase64"
-    val functionId = FunctionIdentifier(functionName)
-    spark.sessionState.functionRegistry.registerFunction(
-      functionId,
-      new ExpressionInfo(classOf[LimitUnBase64].getName, functionName),
-      children => new LimitUnBase64(children.head))
+    spark.sessionState.functionRegistry.createOrReplaceTempFunction(
+      functionName,
+      children => new LimitUnBase64(children.head),
+      "scala_udf")
     try {
       withSQLConf(
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
@@ -3694,7 +3693,7 @@ class CometExecSuite extends CometTestBase {
         }
       }
     } finally {
-      spark.sessionState.functionRegistry.dropFunction(functionId)
+      spark.sessionState.catalog.dropTempFunction(functionName, ignoreIfNotExists = true)
     }
   }
 
