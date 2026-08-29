@@ -315,7 +315,7 @@ class CometRegExpJvmSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("rlike: compile-budget boundary stays native") {
     withRLikeExplain {
       withSubjects("a", "aaa", null) {
-        val pat = "(a{64}){64}"
+        val pat = "(?:a{64}){64}"
         val df = sql(s"SELECT s, s rlike '$pat' FROM t")
         checkSparkAnswerAndOperator(df)
         assert(
@@ -363,6 +363,28 @@ class CometRegExpJvmSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         assert(
           explainOf(df).contains("JVM codegen dispatcher: rlike"),
           s"expected dispatcher for nested quantified stars, got:\n${explainOf(df)}")
+      }
+    }
+  }
+
+  test("rlike: capturing groups copied by counted repetition stay on the dispatcher") {
+    withRLikeExplain {
+      withSubjects("x", ";", null) {
+        val q = (1 to 7).foldLeft("[^;]") { (p, _) => s"($p)*" }
+        val wrapped = ("(" * 16) + q + (")" * 16)
+        val pat = (wrapped + "{256}") * 16
+        val df = sql(s"SELECT s, s rlike '$pat' FROM t")
+        checkSparkAnswerAndOperator(df)
+        assert(
+          explainOf(df).contains("JVM codegen dispatcher: rlike"),
+          s"expected dispatcher for capture-cost residual, got:\n${explainOf(df)}")
+      }
+      withSubjects("x", "y", null) {
+        val df = sql("SELECT s, s rlike '[^x]{256}' FROM t")
+        checkSparkAnswerAndOperator(df)
+        assert(
+          !explainOf(df).contains("JVM codegen dispatcher: rlike"),
+          s"expected native path for [^x]{256}, got:\n${explainOf(df)}")
       }
     }
   }
