@@ -25,7 +25,7 @@ import org.apache.arrow.vector._
 import org.apache.spark.{SparkConf, SparkEnv, TaskContext}
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.api.java.UDF1
-import org.apache.spark.sql.catalyst.expressions.{BoundReference, CreateArray, CreateMap, CreateNamedStruct, Expression, Literal, MapConcat}
+import org.apache.spark.sql.catalyst.expressions.{BoundReference, CreateArray, CreateMap, CreateNamedStruct, Expression, IsNull, Literal, MapConcat}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
@@ -78,6 +78,28 @@ class CometCodegenSuite
         sql(s"INSERT INTO t VALUES ${tuples.mkString(", ")}")
       }
       f
+    }
+  }
+
+  test("codegen dispatch compiles a primitive expression over a NullType column") {
+    val input = new NullVector("in", 2)
+    val expr = IsNull(BoundReference(0, NullType, nullable = true))
+    val field = CometBatchKernelCodegen.toFfiArrowField("out", BooleanType, nullable = false)
+    val output = CometBatchKernelCodegen.allocateOutput(field, 2, 0)
+    try {
+      input.setValueCount(2)
+      val spec = ArrowColumnSpec(classOf[NullVector], nullable = true)
+      val kernel = CometBatchKernelCodegen.compile(expr, IndexedSeq(spec)).newInstance()
+      kernel.init(0)
+      kernel.process(Array(input), output, 2)
+      output.setValueCount(2)
+
+      val comet = CometVector.getVector(output, null)
+      assert(comet.getBoolean(0))
+      assert(comet.getBoolean(1))
+    } finally {
+      output.close()
+      input.close()
     }
   }
 
