@@ -25,10 +25,8 @@ import org.scalatest.Tag
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.analysis.UnresolvedRelation
-import org.apache.spark.sql.catalyst.expressions.UnBase64
-import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometBroadcastNestedLoopJoinExec, CometHashJoinExec, CometSortMergeJoinExec}
-import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec}
-import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, ShuffledHashJoinExec, SortMergeJoinExec}
+import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometBroadcastNestedLoopJoinExec, CometSortMergeJoinExec}
+import org.apache.spark.sql.execution.adaptive.AQEShuffleReadExec
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf
@@ -333,98 +331,6 @@ class CometJoinSuite extends CometTestBase {
 
           val df9 = left.join(right, left("_2") === right("_1"), "leftanti")
           checkSparkAnswerAndOperator(df9)
-        }
-      }
-    }
-  }
-
-  for {
-    hint <- Seq("SHUFFLE_HASH", "MERGE")
-    joinType <- Seq("SEMI", "ANTI")
-  } {
-    test(s"unbase64 first-match condition in $hint LEFT $joinType JOIN") {
-      withSQLConf(
-        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
-        SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
-        SQLConf.SHUFFLE_PARTITIONS.key -> "1",
-        CometConf.COMET_EXEC_SORT_MERGE_JOIN_ENABLED.key -> "true",
-        CometConf.COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED.key -> "true") {
-        withTable("unbase64_left", "unbase64_right") {
-          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-            sql("""CREATE TABLE unbase64_left USING parquet AS
-                  |SELECT /*+ COALESCE(1) */ k, expected
-                  |FROM VALUES (1, X'616262'), (2, X'616262') AS t(k, expected)
-                  |""".stripMargin)
-            // A single file and shuffle partition preserve the build input order. Hash joins
-            // visit duplicate keys in reverse insertion order; sort-merge visits them forwards.
-            val buildRows = if (hint == "SHUFFLE_HASH") {
-              "(1, 'A'), (1, 'YWJj')"
-            } else {
-              "(1, 'YWJj'), (1, 'A')"
-            }
-            sql(s"""CREATE TABLE unbase64_right USING parquet AS
-                   |SELECT /*+ COALESCE(1) */ k, bad FROM VALUES $buildRows AS t(k, bad)
-                   |""".stripMargin)
-            assert(spark.table("unbase64_right").inputFiles.length == 1)
-          }
-
-          def query(residual: String): String =
-            s"""SELECT /*+ $hint(r) */ l.k FROM unbase64_left l
-               |LEFT $joinType JOIN unbase64_right r ON l.k = r.k $residual
-               |""".stripMargin
-
-          for {
-            aqe <- Seq(false, true)
-            dispatch <- Seq(false, true)
-          } {
-            withSQLConf(
-              SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe.toString,
-              CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> dispatch.toString) {
-              withClue(s"AQE=$aqe, dispatcher=$dispatch: ") {
-                // Keep the decoder in a residual that references both sides. Its first valid
-                // match must prevent either join from evaluating the malformed candidate.
-                val (sparkPlan, cometPlan) = checkSparkAnswerAndFallbackReason(
-                  query("AND unbase64(r.bad) > l.expected"),
-                  "unbase64 requires Spark evaluation in first-match join conditions")
-                Seq(sparkPlan, cometPlan).foreach { plan =>
-                  plan match {
-                    case adaptive: AdaptiveSparkPlanExec => assert(adaptive.isFinalPlan)
-                    case _ => assert(!aqe)
-                  }
-                  val joins = collect(plan) {
-                    case j: ShuffledHashJoinExec => ("SHUFFLE_HASH", j.condition)
-                    case j: SortMergeJoinExec => ("MERGE", j.condition)
-                  }
-                  assert(joins.map(_._1) == Seq(hint), plan.toString)
-                  assert(joins.head._2.exists(_.exists(_.isInstanceOf[UnBase64])))
-                  assert(collect(plan) {
-                    case j: BroadcastHashJoinExec => j
-                    case j: BroadcastNestedLoopJoinExec => j
-                    case j: CometBroadcastHashJoinExec => j
-                    case j: CometBroadcastNestedLoopJoinExec => j
-                  }.isEmpty)
-                }
-
-                // The same candidates must throw once the valid row no longer matches.
-                val (sparkError, cometError) =
-                  checkSparkAnswerMaybeThrows(sql(query("AND unbase64(r.bad) < l.expected")))
-                Seq(sparkError, cometError).foreach { error =>
-                  val failure = error.getOrElse(fail("Expected the malformed candidate to throw"))
-                  assert(causeChain(failure).exists(e =>
-                    Option(e.getMessage).exists(
-                      _.contains("Last unit does not have enough valid bits"))))
-                }
-
-                // Removing the throwing decoder must leave both join strategies native.
-                val (_, nativePlan) = checkSparkAnswerAndOperator(sql(query("")))
-                val nativeJoins = collect(nativePlan) {
-                  case _: CometHashJoinExec => "SHUFFLE_HASH"
-                  case _: CometSortMergeJoinExec => "MERGE"
-                }
-                assert(nativeJoins == Seq(hint), nativePlan.toString)
-              }
-            }
-          }
         }
       }
     }

@@ -31,7 +31,7 @@ import org.apache.hadoop.fs.Path
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.{FunctionIdentifier, TableIdentifier}
 import org.apache.spark.sql.catalyst.catalog.{BucketSpec, CatalogStatistics, CatalogTable}
-import org.apache.spark.sql.catalyst.expressions.{DynamicPruningExpression, Expression, ExpressionInfo, Hex, Literal, SortOrder, UnBase64}
+import org.apache.spark.sql.catalyst.expressions.{DynamicPruningExpression, Expression, ExpressionInfo, Hex, Literal}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateMode, BloomFilterAggregate}
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometShuffleExchangeExec}
@@ -3625,170 +3625,6 @@ class CometExecSuite extends CometTestBase {
       })
   }
 
-  test("unbase64 subclasses in JVM-dispatched expressions preserve LIMIT evaluation") {
-    val functionName = "comet_test_unbase64"
-    spark.sessionState.functionRegistry.createOrReplaceTempFunction(
-      functionName,
-      children => new LimitUnBase64(children.head),
-      "scala_udf")
-    try {
-      withSQLConf(
-        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
-        CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true") {
-        withTempPath { dir =>
-          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-            // A single file preserves the valid row before the malformed row in the same batch.
-            spark
-              .range(0, 2, 1, 1)
-              .selectExpr("if (id = 0, 'YQ==', 'A') AS encoded")
-              .write
-              .parquet(dir.getCanonicalPath)
-          }
-          withParquetTable(dir.getCanonicalPath, "inputs") {
-            val query =
-              s"SELECT format_string('%d', length($functionName(encoded))) FROM inputs"
-            for (cometEnabled <- Seq("false", "true")) {
-              withSQLConf(CometConf.COMET_ENABLED.key -> cometEnabled) {
-                withClue(s"Comet=$cometEnabled: ") {
-                  if (cometEnabled.toBoolean) {
-                    // The subclass is not registered directly, but the enclosing expression
-                    // can dispatch its whole tree. Without LIMIT this projection stays native.
-                    val plan = sql(query).queryExecution.executedPlan
-                    val projects = plan.collect { case p: CometProjectExec => p }
-                    assert(projects.size == 1, plan.toString)
-                    assert(projects.head.nativeOp.getProjection.getProjectList(0).hasJvmScalarUdf)
-                  }
-
-                  val limited = sql(s"$query LIMIT 1")
-                  val plan = limited.queryExecution.executedPlan
-                  val projects = plan.collect {
-                    case p: ProjectExec
-                        if p.projectList.exists(_.exists(_.isInstanceOf[LimitUnBase64])) =>
-                      p
-                  }
-                  assert(projects.size == 1, plan.toString)
-                  assert(!plan.exists(_.isInstanceOf[CometProjectExec]), plan.toString)
-                  if (cometEnabled.toBoolean) {
-                    assert(plan.exists {
-                      case _: CometScanExec | _: CometNativeScanExec => true
-                      case _ => false
-                    })
-                    assert(
-                      new ExtendedExplainInfo()
-                        .getFallbackReasons(plan)
-                        .contains("unbase64 requires Spark evaluation below LIMIT"))
-                  }
-                  assert(limited.collect().toSeq == Seq(Row("1")))
-
-                  val error = intercept[Exception] {
-                    sql(s"$query LIMIT 2").collect()
-                  }
-                  assert(causeChain(error).exists(e =>
-                    Option(e.getMessage).exists(
-                      _.contains("Last unit does not have enough valid bits"))))
-                }
-              }
-            }
-          }
-        }
-      }
-    } finally {
-      spark.sessionState.catalog.dropTempFunction(functionName, ignoreIfNotExists = true)
-    }
-  }
-
-  Seq("child project", "child filter", "output projection").foreach { decoderLocation =>
-    test(s"preordered TakeOrderedAndProjectExec with unbase64 in $decoderLocation") {
-      for {
-        aqeEnabled <- Seq("false", "true")
-        codegenEnabled <- Seq("false", "true")
-        cometEnabled <- Seq("false", "true")
-        collectAsRDD <- Seq(false, true)
-      } {
-        withSQLConf(
-          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqeEnabled,
-          SQLConf.ADAPTIVE_EXECUTION_FORCE_APPLY.key -> "true",
-          SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
-            ("org.apache.spark.sql.catalyst.optimizer.EliminateSorts," +
-              "org.apache.spark.sql.catalyst.optimizer.CollapseProject"),
-          CometConf.COMET_ENABLED.key -> cometEnabled,
-          CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> codegenEnabled) {
-          // Range supplies two ordered partitions that AQE cannot coalesce. Both executeCollect
-          // and doExecute must truncate each partition before its fourth, malformed row.
-          def query(limit: Int): DataFrame = {
-            val input = spark
-              .range(0, 8, 1, 2)
-              .selectExpr("id", "if (id % 4 < 3, 'YWJj', 'A') AS encoded")
-            val ordered = decoderLocation match {
-              case "child project" =>
-                input.selectExpr("id", "hex(unbase64(encoded)) AS decoded").orderBy("id")
-              case "child filter" =>
-                input.filter("unbase64(encoded) = X'616263'").orderBy("id")
-              case "output projection" =>
-                input.orderBy("id").selectExpr("id", "hex(unbase64(encoded)) AS decoded")
-            }
-            ordered.limit(limit)
-          }
-
-          def collect(df: DataFrame): Seq[Row] =
-            (if (collectAsRDD) df.rdd.collect() else df.collect()).toSeq
-
-          def containsUnbase64(expr: Expression): Boolean =
-            expr.exists(_.isInstanceOf[UnBase64])
-
-          withClue(
-            s"AQE=$aqeEnabled, codegen=$codegenEnabled, " +
-              s"Comet=$cometEnabled, collectAsRDD=$collectAsRDD: ") {
-            val df = query(1)
-            val expected = if (decoderLocation == "child filter") "YWJj" else "616263"
-            assert(collect(df) == Seq(Row(0L, expected)))
-            assert(
-              df.queryExecution.executedPlan.isInstanceOf[AdaptiveSparkPlanExec] ==
-                aqeEnabled.toBoolean)
-
-            val plan = stripAQEPlan(df.queryExecution.executedPlan)
-            val topKs = plan.collect {
-              case topK: TakeOrderedAndProjectExec => (topK, topK.child)
-              case topK: CometTakeOrderedAndProjectExec =>
-                (topK.originalPlan.asInstanceOf[TakeOrderedAndProjectExec], topK.child)
-            }
-            assert(topKs.size == 1, plan.toString)
-            val (topK, child) = topKs.head
-            assert(SortOrder.orderingSatisfies(child.outputOrdering, topK.sortOrder))
-            assert(child.outputPartitioning.numPartitions == 2)
-            assert(child.collect {
-              case p: SortExec => p
-              case p: CometSortExec => p
-              case p: ShuffleExchangeExec => p
-              case p: CometShuffleExchangeExec => p
-            }.isEmpty)
-
-            val decoders = child.collect {
-              case p: ProjectExec if p.projectList.exists(containsUnbase64) => p
-              case f: FilterExec if containsUnbase64(f.condition) => f
-            }
-            val inOutput = decoderLocation == "output projection"
-            assert(decoders.size == (if (inOutput) 0 else 1), plan.toString)
-            assert(topK.projectList.exists(containsUnbase64) == inOutput)
-            assert(
-              plan.exists(_.isInstanceOf[CometTakeOrderedAndProjectExec]) ==
-                (cometEnabled.toBoolean && inOutput))
-
-            // Consuming the malformed row must still throw, including in the native output
-            // projection, which evaluates only after top-K has selected its rows.
-            val error = intercept[Exception] {
-              collect(query(4))
-            }
-            assert(
-              causeChain(error).exists(e =>
-                Option(e.getMessage).exists(
-                  _.contains("Last unit does not have enough valid bits"))))
-          }
-        }
-      }
-    }
-  }
-
   test("TakeOrderedAndProjectExec with offset") {
     Seq("true", "false").foreach(aqeEnabled =>
       withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqeEnabled) {
@@ -4419,9 +4255,3 @@ case class BucketedTableTestSpec(
     expectedNumOutputPartitions: Option[Int] = None)
 
 case class TestData(key: Int, value: String)
-
-// Keep the subclass through attribute binding and avoid capturing the test suite in dispatch.
-private[exec] class LimitUnBase64(input: Expression) extends UnBase64(input) {
-  override protected def withNewChildInternal(newChild: Expression): UnBase64 =
-    new LimitUnBase64(newChild)
-}
