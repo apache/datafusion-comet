@@ -32,6 +32,10 @@ inputs:
     description: 'Skip cloning Spark and applying patches (when apache-spark/ is pre-staged from a build-jvm artifact)'
     required: false
     default: 'false'
+  sbt-projects:
+    description: 'Space-separated Spark projects whose test dependencies are needed'
+    required: false
+    default: 'catalyst sql hive'
 runs:
   using: "composite"
   steps:
@@ -60,6 +64,9 @@ runs:
         key: ${{ runner.os }}-spark-sql-${{ hashFiles('common/**/pom.xml', 'spark/**/pom.xml') }}
         restore-keys: |
           ${{ runner.os }}-spark-sql-
+
+    - name: Setup Maven
+      uses: ./.github/actions/setup-maven
 
     - name: Build Comet (with native)
       if: ${{ inputs.skip-native-build != 'true' }}
@@ -93,3 +100,52 @@ runs:
               "$(dirname "$pom")/_remote.repositories"
           done
         done
+
+    - name: Remove incomplete Parquet test dependencies
+      shell: bash
+      run: |
+        # Maven installs Parquet POMs and main JARs, but not all test classifiers.
+        # Coursier treats those entries as local and will not fetch the missing
+        # tests.jar remotely. Do this before dependency resolution, not tests.
+        rm -rf "$HOME/.m2/repository/org/apache/parquet" /root/.m2/repository/org/apache/parquet
+
+    - name: Restore SBT dependency cache
+      id: sbt-dependencies
+      uses: actions/cache/restore@v6
+      with:
+        path: |
+          ~/.cache/coursier
+          /root/.cache/coursier
+          ~/.sbt/boot
+          /root/.sbt/boot
+          ~/.ivy2/cache
+          /root/.ivy2/cache
+        key: ${{ runner.os }}-${{ runner.arch }}-spark-sbt-v1-${{ inputs.spark-version }}-${{ hashFiles('**/pom.xml', '!**/target/**', 'apache-spark/project/build.properties', 'apache-spark/project/*.sbt', 'apache-spark/project/*.scala') }}
+        restore-keys: |
+          ${{ runner.os }}-${{ runner.arch }}-spark-sbt-v1-${{ inputs.spark-version }}-
+
+    - name: Resolve Spark dependencies
+      shell: bash
+      env:
+        SBT_PROJECTS: ${{ inputs.sbt-projects }}
+      run: |
+        cd apache-spark
+        read -r -a projects <<< "$SBT_PROJECTS"
+        ../dev/ci/resolve-spark-dependencies.sh "${projects[@]}"
+
+    # Keep a successful download even if a later compilation or test fails.
+    # Only the build job, which resolves all three projects, may publish this
+    # shared immutable key. A writer-only or shard job must not fill it with
+    # partial coverage and prevent the full build from saving its downloads.
+    - name: Save SBT dependency cache
+      if: inputs.sbt-projects == 'catalyst sql hive' && steps.sbt-dependencies.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v6
+      with:
+        path: |
+          ~/.cache/coursier
+          /root/.cache/coursier
+          ~/.sbt/boot
+          /root/.sbt/boot
+          ~/.ivy2/cache
+          /root/.ivy2/cache
+        key: ${{ steps.sbt-dependencies.outputs.cache-primary-key }}

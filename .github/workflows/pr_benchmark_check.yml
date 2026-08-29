@@ -69,6 +69,9 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-benchmark-maven-
 
+      - name: Setup Maven
+        uses: ./.github/actions/setup-maven
+
       - name: Check Scala compilation and linting
         # Pin to spark-4.0 (Scala 2.13.16) because the default profile is now
         # spark-4.1 / Scala 2.13.17, and semanticdb-scalac_2.13.17 is not yet

@@ -49,6 +49,9 @@ jobs:
           java-version: '17'
           cache: 'maven'
 
+      - name: Setup Maven
+        uses: ./.github/actions/setup-maven
+
       - name: Install dependencies
         run: |
           set -x

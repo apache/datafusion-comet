@@ -87,6 +87,32 @@ jobs:
           rust-version: ${{ env.RUST_VERSION }}
           jdk-version: 17
 
+      - name: Compute Delta Maven cache key
+        id: delta-maven-cache-key
+        run: echo "hash=${{ hashFiles('**/pom.xml', '.mvn/wrapper/maven-wrapper.properties') }}" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Delta Maven dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.m2/repository
+            /root/.m2/repository
+          key: ${{ runner.os }}-${{ runner.arch }}-delta-maven-jdk17-${{ steps.delta-maven-cache-key.outputs.hash }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-delta-maven-jdk17-
+
+      - name: Setup Maven
+        uses: ./.github/actions/setup-maven
+
       - name: Run dev/verify-contrib-delta-gate.sh
         run: |
           dev/verify-contrib-delta-gate.sh
+
+      - name: Upload Delta gate logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: delta-build-gate-logs
+          path: artifactlog/delta-build-gate/
+          if-no-files-found: ignore
+          retention-days: 7

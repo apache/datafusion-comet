@@ -43,6 +43,7 @@ on:
       - "spark/src/test/resources/pyspark/test_pyarrow_udf.py"
       - "spark/src/test/spark-3.5/org/apache/spark/sql/comet/CometMapInBatchSuite.scala"
       - "spark/src/test/spark-4.x/org/apache/spark/sql/comet/CometMapInBatchSuite.scala"
+      - ".github/actions/setup-maven/**"
       - ".github/workflows/pyarrow_udf_test.yml"
   pull_request:
     paths: *feature-paths
@@ -99,6 +100,9 @@ jobs:
           key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}-pyarrow-udf-${{ matrix.pyspark }}
           restore-keys: |
             ${{ runner.os }}-java-maven-
+
+      - name: Setup Maven
+        uses: ./.github/actions/setup-maven
 
       - name: Build Comet (debug, ${{ matrix.name }} / Scala 2.13)
         run: |

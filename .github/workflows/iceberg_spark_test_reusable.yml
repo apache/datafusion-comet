@@ -129,6 +129,8 @@ jobs:
         with:
           name: native-lib-iceberg
           path: native/target/release/
+      - name: Setup Maven
+        uses: ./.github/actions/setup-maven
       - name: Build Comet
         run: |
           ./mvnw install -Prelease -DskipTests -Pspark-${{ inputs.spark-short }} -Pscala-${{ inputs.scala }}
@@ -164,6 +166,8 @@ jobs:
         with:
           name: native-lib-iceberg
           path: native/target/release/
+      - name: Setup Maven
+        uses: ./.github/actions/setup-maven
       - name: Build Comet
         run: |
           ./mvnw install -Prelease -DskipTests -Pspark-${{ inputs.spark-short }} -Pscala-${{ inputs.scala }}
@@ -199,6 +203,8 @@ jobs:
         with:
           name: native-lib-iceberg
           path: native/target/release/
+      - name: Setup Maven
+        uses: ./.github/actions/setup-maven
       - name: Build Comet
         run: |
           ./mvnw install -Prelease -DskipTests -Pspark-${{ inputs.spark-short }} -Pscala-${{ inputs.scala }}

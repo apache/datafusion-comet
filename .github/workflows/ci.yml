@@ -68,6 +68,9 @@ jobs:
           distribution: temurin
           java-version: 11
 
+      - name: Setup Maven
+        uses: ./.github/actions/setup-maven
+
       - name: Apache RAT license check
         run: ./mvnw -B -N apache-rat:check
 
@@ -87,6 +90,13 @@ jobs:
 
       - name: Check micro benchmark runner
         run: python3 dev/ci/check-benchmark-runner.py
+
+      - name: Check CI download handling
+        env:
+          COMET_TEST_MAVEN_DOWNLOADS: "1"
+        run: |
+          python3 dev/ci/test-download-retry.py
+          python3 dev/ci/test-delta-gate.py
 
       - name: Install actionlint
         run: |
