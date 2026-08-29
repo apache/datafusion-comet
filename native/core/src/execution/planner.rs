@@ -49,7 +49,9 @@ use crate::execution::{
 };
 use crate::jvm_bridge::{jni_call, JVMClasses, ShufflePartitionPusher};
 use arrow::compute::CastOptions;
-use arrow::datatypes::{DataType, Field, FieldRef, Schema, TimeUnit, DECIMAL128_MAX_PRECISION};
+use arrow::datatypes::{
+    DataType, Field, FieldRef, Fields, Schema, TimeUnit, DECIMAL128_MAX_PRECISION,
+};
 use arrow::ffi_stream::FFI_ArrowArrayStream;
 use datafusion::functions_aggregate::bit_and_or_xor::{bit_and_udaf, bit_or_udaf, bit_xor_udaf};
 use datafusion::functions_aggregate::count::count_udaf;
@@ -214,6 +216,39 @@ fn make_all_fields_nullable(data_type: &DataType) -> DataType {
                 _ => data_type.clone(),
             }
         }
+        other => other.clone(),
+    }
+}
+
+/// Return a copy of a `Map` type with only the outer entries `value` field marked nullable, keeping
+/// the key field non-nullable and every nested key/value type byte-for-byte unchanged. Any non-`Map`
+/// type is returned unchanged.
+///
+/// This is the shallow counterpart of `make_all_fields_nullable`, used for `map_entries`.
+/// `map_entries` reuses the input map's entries array as its output list values but declares that
+/// element's `value` field nullable (`Struct(key non-null, value nullable)`), deriving both nested
+/// types verbatim from the input. Arrow's `GenericListArray::try_new` compares the declared element
+/// field's type against the reused values array's type in full, so the ONLY field that can mismatch
+/// is the entries `value` field's own `nullable` flag; widening just that field is sufficient.
+/// Recursing into nested types (as `make_all_fields_nullable` does) would additionally flip, say, a
+/// nested `Map`'s `valueContainsNull`, which then diverges from the Spark-serialized `return_type`
+/// and makes a downstream `make_array` see unequal map types and panic.
+fn widen_map_entry_value_nullable(data_type: &DataType) -> DataType {
+    match data_type {
+        DataType::Map(entries, sorted) => match entries.data_type() {
+            DataType::Struct(kv) if kv.len() == 2 && !kv[1].is_nullable() => {
+                let new_value = Arc::new(kv[1].as_ref().clone().with_nullable(true));
+                let new_kv: Fields = vec![Arc::clone(&kv[0]), new_value].into();
+                let new_entries = Arc::new(
+                    entries
+                        .as_ref()
+                        .clone()
+                        .with_data_type(DataType::Struct(new_kv)),
+                );
+                DataType::Map(new_entries, *sorted)
+            }
+            _ => data_type.clone(),
+        },
         other => other.clone(),
     }
 }
@@ -3490,6 +3525,17 @@ impl PhysicalPlanner {
             .collect::<Result<Vec<_>, _>>()?;
 
         let fun_name = &expr.func;
+        // `map_entries` needs its argument's entry `value` field widened to nullable first (only
+        // that outer field). See `widen_map_entry_value_nullable`.
+        let args = if fun_name == "map_entries" {
+            args.into_iter()
+                .map(|arg| {
+                    Self::coerce_child_to(arg, &input_schema, widen_map_entry_value_nullable)
+                })
+                .collect::<Result<Vec<_>, ExecutionError>>()?
+        } else {
+            args
+        };
         let input_expr_types = args
             .iter()
             .map(|x| x.data_type(input_schema.as_ref()))
@@ -3651,6 +3697,26 @@ impl PhysicalPlanner {
         }
         let nullable_type = make_all_fields_nullable(&child_type);
         Ok(Arc::new(CastExpr::new(child, nullable_type, None)))
+    }
+
+    /// Casts `child` so its type matches `widen(child_type)`, wrapping it in a `CastExpr` only when
+    /// the widened type differs. Used for the `map_entries` argument widening (with
+    /// `widen_map_entry_value_nullable`). Unlike `coerce_collect_child_nullability`, which casts
+    /// unconditionally as a normalization barrier for aggregate accumulators, this casts only when
+    /// the type actually changes. That is sufficient for the scalar `map_entries`, whose reused
+    /// entries array only needs its declared element type to line up.
+    fn coerce_child_to(
+        child: Arc<dyn PhysicalExpr>,
+        schema: &SchemaRef,
+        widen: impl Fn(&DataType) -> DataType,
+    ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
+        let child_type = child.data_type(schema.as_ref())?;
+        let widened = widen(&child_type);
+        if child_type.equals_datatype(&widened) {
+            Ok(child)
+        } else {
+            Ok(Arc::new(CastExpr::new(child, widened, None)))
+        }
     }
 
     fn create_aggr_func_expr(
