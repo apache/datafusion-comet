@@ -30,6 +30,7 @@ pub(crate) mod unhex;
 mod utils;
 mod wide_decimal_binary_expr;
 
+pub use abs::abs;
 pub use ceil::spark_ceil;
 pub use checked_arithmetic::{checked_add, checked_div, checked_mul, checked_sub};
 pub use div::spark_decimal_div;

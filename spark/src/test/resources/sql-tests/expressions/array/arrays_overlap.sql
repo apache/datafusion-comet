@@ -117,7 +117,7 @@ statement
 CREATE TABLE test_overlap_dbl(a array<double>, b array<double>) USING parquet
 
 statement
-INSERT INTO test_overlap_dbl VALUES (array(1.0, 2.0), array(2.0, 3.0)), (array(1.0, double('NaN')), array(double('NaN'), 2.0)), (array(double('Infinity'), 1.0), array(double('Infinity'))), (array(double('-Infinity')), array(double('Infinity'))), (array(0.0), array(-0.0)), (array(1.0, NULL), array(2.0, NULL))
+INSERT INTO test_overlap_dbl VALUES (array(1.0, 2.0), array(2.0, 3.0)), (array(1.0, double('NaN')), array(double('NaN'), 2.0)), (array(double('Infinity'), 1.0), array(double('Infinity'))), (array(double('-Infinity')), array(double('Infinity'))), (array(0.0), array(double('-0.0'))), (array(1.0, NULL), array(2.0, NULL))
 
 query
 SELECT a, b, arrays_overlap(a, b) FROM test_overlap_dbl

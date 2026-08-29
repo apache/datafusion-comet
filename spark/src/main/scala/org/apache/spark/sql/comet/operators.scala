@@ -539,7 +539,12 @@ private[comet] case class NativeExecContext(
     broadcastedHadoopConfForEncryption: Option[Broadcast[SerializableConfiguration]],
     encryptedFilePaths: Seq[String],
     commonByKey: Map[String, Array[Byte]],
-    perPartitionByKey: Map[String, Array[Array[Byte]]],
+    // @transient: this holds one serialized scan-plan-data blob per partition, so at high partition
+    // counts it is huge. It is only read on the driver (to slice per partition onto each task's
+    // Partition object - see CometNativeShuffleInputRDD / CometExecRDD); the executor reads its own
+    // slice, never this map. Keeping it off the wire stops it from bloating the broadcast task
+    // binary when this context rides on the non-transient CometShuffleDependency.nativeShuffleSpec.
+    @transient perPartitionByKey: Map[String, Array[Array[Byte]]],
     shuffleScanIndices: Set[Int],
     hasScanInput: Boolean) {
   // Catch shape divergence (e.g. broadcast scans with different partition counts after DPP
@@ -597,11 +602,15 @@ abstract class CometNativeExec extends CometExec {
    * shuffle path can sample (RangePartitioning) without re-walking the SparkPlan tree and
    * re-broadcasting the encryption Hadoop conf.
    */
-  private[comet] def executeColumnarWithContext(ctx: NativeExecContext): RDD[ColumnarBatch] = {
+  private[comet] def executeColumnarWithContext(ctx: NativeExecContext): RDD[ColumnarBatch] =
+    executeColumnarWithContext(ctx, CometMetricNode.fromCometPlan(this))
+
+  private[comet] def executeColumnarWithContext(
+      ctx: NativeExecContext,
+      nativeMetrics: CometMetricNode): RDD[ColumnarBatch] = {
     val serializedPlan = serializedPlanOpt.plan.getOrElse(
       throw new CometRuntimeException(
         s"CometNativeExec should not be executed directly without a serialized plan: $this"))
-    val nativeMetrics = CometMetricNode.fromCometPlan(this)
 
     new CometExecRDD(
       sparkContext,
@@ -2093,6 +2102,15 @@ case class CometHashAggregateExec(
 
   override def hashCode(): Int =
     Objects.hashCode(output, groupingExpressions, aggregateExpressions, input, modes, child)
+
+  override lazy val metrics: Map[String, SQLMetric] = {
+    val baseline = CometMetricNode.baselineMetrics(sparkContext)
+    if (groupingExpressions.nonEmpty) {
+      baseline ++ CometMetricNode.aggregateMetrics(sparkContext)
+    } else {
+      baseline
+    }
+  }
 
   override protected def outputExpressions: Seq[NamedExpression] = resultExpressions
 }
