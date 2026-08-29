@@ -332,6 +332,48 @@ abstract class ParquetReadSuite extends CometTestBase {
     }
   }
 
+  test("TIMESTAMP_MILLIS overflow rows skipped by filter pruning do not fail") {
+    // Spark prunes the row group from the TIMESTAMP_MILLIS statistics before the
+    // vectorized reader ever calls the checked millisToMicros conversion, so the
+    // query returns no rows instead of failing. The native scan must preserve that
+    // behavior: values Spark never reads must not raise overflow errors.
+    Seq(false, true).foreach { dictionaryEnabled =>
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "part-r-0.parquet")
+        val schema = MessageTypeParser.parseMessageType("""
+          |message root {
+          |  optional int64 ts(TIMESTAMP_MILLIS);
+          |}
+          |""".stripMargin)
+        val writer = createParquetWriter(schema, path, dictionaryEnabled)
+        (0 until 16).foreach { _ =>
+          val record = new SimpleGroup(schema)
+          // Milliseconds that overflow Long when converted to microseconds
+          record.add(0, 9223372036854776L)
+          writer.write(record)
+        }
+        writer.close()
+
+        Seq(false, true).foreach { ansiEnabled =>
+          Seq(false, true).foreach { rowFilterPushdown =>
+            withSQLConf(
+              SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString,
+              CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED.key ->
+                rowFilterPushdown.toString) {
+              readParquetFile(path.toString) { df =>
+                val filtered = df.where("ts < timestamp'1970-01-01 00:00:00'")
+                assert(collect(filtered.queryExecution.executedPlan) {
+                  case _: CometNativeScanExec => true
+                }.nonEmpty)
+                checkSparkAnswer(filtered)
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
   test("timestamp as int96") {
     import testImplicits._
 

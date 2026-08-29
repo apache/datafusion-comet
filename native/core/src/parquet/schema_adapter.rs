@@ -18,11 +18,14 @@
 use crate::parquet::cast_column::CometCastColumnExpr;
 use crate::parquet::parquet_support::{spark_parquet_convert, SparkParquetOptions};
 use arrow::array::new_empty_array;
-use arrow::datatypes::{DataType, Field, FieldRef, Schema, SchemaRef};
+use arrow::datatypes::{DataType, Field, FieldRef, Schema, SchemaRef, TimeUnit};
 use arrow::record_batch::RecordBatch;
 use datafusion::common::tree_node::{Transformed, TransformedResult, TreeNode};
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
-use datafusion::physical_expr::expressions::Column;
+use datafusion::logical_expr::Operator;
+use datafusion::physical_expr::expressions::{
+    BinaryExpr, Column, IsNotNullExpr, IsNullExpr, Literal,
+};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::ColumnarValue;
 use datafusion::scalar::ScalarValue;
@@ -496,6 +499,15 @@ impl PhysicalExprAdapter for SparkPhysicalExprAdapter {
             }
         };
 
+        // Rewrite predicate comparisons over a millisecond timestamp file column into
+        // the millisecond domain so DataFusion can prune row groups from statistics and
+        // the row filter never runs the checked millis->micros conversion on values the
+        // filter would discard. Values that survive the filter still go through the
+        // checked conversion when the scan output is adapted.
+        let expr = expr
+            .transform(|e| self.rewrite_millis_timestamp_comparison(e))
+            .data()?;
+
         // For case-insensitive mode: remap column names from logical back to
         // original physical names. The default adapter was given a remapped
         // physical schema (with logical names) so it could find columns. But
@@ -522,7 +534,114 @@ impl PhysicalExprAdapter for SparkPhysicalExprAdapter {
     }
 }
 
+/// The wrapped expression and the file column's timezone of a millis->micros cast.
+type MillisCastParts = (Arc<dyn PhysicalExpr>, Option<Arc<str>>);
+
+/// If `expr` is a checked millis->micros [`CometCastColumnExpr`], return its wrapped
+/// expression and the file column's timezone.
+fn as_millis_to_micros_cast(expr: &Arc<dyn PhysicalExpr>) -> Option<MillisCastParts> {
+    let cast = expr.downcast_ref::<CometCastColumnExpr>()?;
+    match (
+        cast.input_physical_field().data_type(),
+        cast.target_field().data_type(),
+    ) {
+        (
+            DataType::Timestamp(TimeUnit::Millisecond, file_tz),
+            DataType::Timestamp(TimeUnit::Microsecond, _),
+        ) => Some((Arc::clone(cast.expr()), file_tz.clone())),
+        _ => None,
+    }
+}
+
+/// If `expr` is a non-null microsecond timestamp literal, return its value.
+fn as_micros_literal(expr: &Arc<dyn PhysicalExpr>) -> Option<i64> {
+    match expr.downcast_ref::<Literal>()?.value() {
+        ScalarValue::TimestampMicrosecond(Some(micros), _) => Some(*micros),
+        _ => None,
+    }
+}
+
 impl SparkPhysicalExprAdapter {
+    /// Rewrite predicate expressions over a `TIMESTAMP_MILLIS` file column read as
+    /// microseconds into the millisecond domain, mirroring Spark's `ParquetFilters`,
+    /// which pushes timestamp predicates down in the file's physical unit:
+    /// https://github.com/apache/spark/blob/v4.2.0/sql/core/src/main/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFilters.scala#L192-L196
+    ///
+    /// The wrapped `CometCastColumnExpr` is opaque to DataFusion's pruning-predicate
+    /// analyzer, so leaving the conversion inside the predicate defeats row-group
+    /// statistics pruning — and the checked conversion then raises overflow errors for
+    /// values Spark never reads, because Spark prunes them from the millisecond
+    /// statistics. Comparing raw millisecond values against a rescaled literal is exact
+    /// (`m * 1000 OP lit` over the integers), never overflows, and DataFusion can prune
+    /// with it. Values that survive the filter still go through the checked conversion
+    /// when the scan output is adapted, so genuine reads of overflowing values keep
+    /// failing like Spark's `millisToMicros`.
+    fn rewrite_millis_timestamp_comparison(
+        &self,
+        expr: Arc<dyn PhysicalExpr>,
+    ) -> DataFusionResult<Transformed<Arc<dyn PhysicalExpr>>> {
+        // `ts IS NULL` / `ts IS NOT NULL`: the checked conversion preserves null-ness
+        // (it errors rather than producing nulls), so test the raw column directly.
+        if let Some(is_null) = expr.downcast_ref::<IsNullExpr>() {
+            if let Some((inner, _)) = as_millis_to_micros_cast(is_null.arg()) {
+                return Ok(Transformed::yes(Arc::new(IsNullExpr::new(inner))));
+            }
+        }
+        if let Some(is_not_null) = expr.downcast_ref::<IsNotNullExpr>() {
+            if let Some((inner, _)) = as_millis_to_micros_cast(is_not_null.arg()) {
+                return Ok(Transformed::yes(Arc::new(IsNotNullExpr::new(inner))));
+            }
+        }
+
+        let Some(binary) = expr.downcast_ref::<BinaryExpr>() else {
+            return Ok(Transformed::no(expr));
+        };
+        let matched = if let (Some(cast), Some(micros)) = (
+            as_millis_to_micros_cast(binary.left()),
+            as_micros_literal(binary.right()),
+        ) {
+            Some((cast, *binary.op(), micros))
+        } else if let (Some(micros), Some(cast)) = (
+            as_micros_literal(binary.left()),
+            as_millis_to_micros_cast(binary.right()),
+        ) {
+            binary.op().swap().map(|op| (cast, op, micros))
+        } else {
+            None
+        };
+        let Some(((inner, file_tz), op, micros)) = matched else {
+            return Ok(Transformed::no(expr));
+        };
+
+        // For a file value `m` (milliseconds) the logical value is exactly `m * 1000`
+        // microseconds, so `m * 1000 OP L` rewrites to an exact comparison on `m`.
+        let floor = micros.div_euclid(1_000);
+        let ceil = floor + i64::from(micros.rem_euclid(1_000) != 0);
+        let exact = micros % 1_000 == 0;
+        let (op, millis) = match op {
+            Operator::Lt => (Operator::Lt, ceil),
+            Operator::LtEq => (Operator::LtEq, floor),
+            Operator::Gt => (Operator::Gt, floor),
+            Operator::GtEq => (Operator::GtEq, ceil),
+            Operator::Eq if exact => (Operator::Eq, floor),
+            Operator::NotEq if exact => (Operator::NotEq, floor),
+            // A sub-millisecond literal can never equal `m * 1000`. `col < i64::MIN`
+            // (resp. `col >= i64::MIN`) is false (resp. true) for every non-null value
+            // and NULL for nulls, matching `=` / `!=` null semantics while remaining a
+            // plain, prunable comparison.
+            Operator::Eq => (Operator::Lt, i64::MIN),
+            Operator::NotEq => (Operator::GtEq, i64::MIN),
+            _ => return Ok(Transformed::no(expr)),
+        };
+        let literal = Arc::new(Literal::new(ScalarValue::TimestampMillisecond(
+            Some(millis),
+            file_tz,
+        )));
+        Ok(Transformed::yes(Arc::new(BinaryExpr::new(
+            inner, op, literal,
+        ))))
+    }
+
     /// Wrap ALL Column expressions that have type mismatches with CometCastColumnExpr.
     /// This is the fallback path when the default adapter fails (e.g., for complex
     /// nested type casts like List<Struct> or Map). Uses `spark_parquet_convert`
@@ -1774,5 +1893,132 @@ mod test {
             err_msg.contains("Found duplicate field"),
             "Expected duplicate field error, got: {err_msg}"
         );
+    }
+
+    use arrow::datatypes::TimeUnit;
+    use datafusion::logical_expr::Operator;
+    use datafusion::physical_expr::expressions::{
+        BinaryExpr, Column, IsNotNullExpr, IsNullExpr, Literal,
+    };
+    use datafusion::physical_expr::PhysicalExpr;
+    use datafusion::scalar::ScalarValue;
+    use datafusion_physical_expr_adapter::PhysicalExprAdapter;
+
+    fn millis_file_adapter() -> Arc<dyn PhysicalExprAdapter> {
+        let tz: Arc<str> = Arc::from("UTC");
+        let logical = Arc::new(Schema::new(vec![Field::new(
+            "ts",
+            DataType::Timestamp(TimeUnit::Microsecond, Some(Arc::clone(&tz))),
+            true,
+        )]));
+        let physical = Arc::new(Schema::new(vec![Field::new(
+            "ts",
+            DataType::Timestamp(TimeUnit::Millisecond, Some(tz)),
+            true,
+        )]));
+        SparkPhysicalExprAdapterFactory::new(
+            SparkParquetOptions::new(EvalMode::Legacy, "UTC", false),
+            None,
+        )
+        .create(logical, physical)
+        .unwrap()
+    }
+
+    fn micros_lit(value: i64) -> Arc<dyn PhysicalExpr> {
+        Arc::new(Literal::new(ScalarValue::TimestampMicrosecond(
+            Some(value),
+            Some(Arc::from("UTC")),
+        )))
+    }
+
+    fn assert_millis_comparison(
+        rewritten: &Arc<dyn PhysicalExpr>,
+        expected_op: Operator,
+        expected_millis: i64,
+    ) {
+        let binary = rewritten
+            .downcast_ref::<BinaryExpr>()
+            .expect("expected BinaryExpr");
+        assert!(
+            binary.left().downcast_ref::<Column>().is_some(),
+            "expected raw column on the left, got {binary}"
+        );
+        assert_eq!(*binary.op(), expected_op);
+        let literal = binary
+            .right()
+            .downcast_ref::<Literal>()
+            .expect("expected Literal");
+        assert_eq!(
+            literal.value(),
+            &ScalarValue::TimestampMillisecond(Some(expected_millis), Some(Arc::from("UTC")))
+        );
+    }
+
+    #[test]
+    fn test_millis_timestamp_predicate_rewrites_to_millis_domain() {
+        let adapter = millis_file_adapter();
+        let col: Arc<dyn PhysicalExpr> = Arc::new(Column::new("ts", 0));
+
+        // (predicate op, literal micros, expected op, expected millis)
+        let cases = vec![
+            // Exact multiples of 1000 rescale directly.
+            (Operator::Lt, 2_000, Operator::Lt, 2),
+            (Operator::LtEq, 2_000, Operator::LtEq, 2),
+            (Operator::Gt, 2_000, Operator::Gt, 2),
+            (Operator::GtEq, 2_000, Operator::GtEq, 2),
+            (Operator::Eq, 2_000, Operator::Eq, 2),
+            (Operator::NotEq, 2_000, Operator::NotEq, 2),
+            // m * 1000 < 1500 iff m < 2, and m * 1000 <= 1500 iff m <= 1.
+            (Operator::Lt, 1_500, Operator::Lt, 2),
+            (Operator::LtEq, 1_500, Operator::LtEq, 1),
+            (Operator::Gt, 1_500, Operator::Gt, 1),
+            (Operator::GtEq, 1_500, Operator::GtEq, 2),
+            // Negative literals round toward the correct side (floor/ceil, not
+            // truncation): m * 1000 < -1500 iff m < -1.
+            (Operator::Lt, -1_500, Operator::Lt, -1),
+            (Operator::LtEq, -1_500, Operator::LtEq, -2),
+            (Operator::Gt, -1_500, Operator::Gt, -2),
+            (Operator::GtEq, -1_500, Operator::GtEq, -1),
+            // Sub-millisecond equality can never hold for any file value; the
+            // rewrite keeps NULL semantics with an always-false / always-true
+            // comparison.
+            (Operator::Eq, 1_500, Operator::Lt, i64::MIN),
+            (Operator::NotEq, 1_500, Operator::GtEq, i64::MIN),
+        ];
+        for (op, micros, expected_op, expected_millis) in cases {
+            let pred: Arc<dyn PhysicalExpr> =
+                Arc::new(BinaryExpr::new(Arc::clone(&col), op, micros_lit(micros)));
+            let rewritten = adapter.rewrite(pred).unwrap();
+            assert_millis_comparison(&rewritten, expected_op, expected_millis);
+
+            // The literal-on-left form swaps the operator and rescales the same way.
+            let pred: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+                micros_lit(micros),
+                op.swap().unwrap(),
+                Arc::clone(&col),
+            ));
+            let rewritten = adapter.rewrite(pred).unwrap();
+            assert_millis_comparison(&rewritten, expected_op, expected_millis);
+        }
+    }
+
+    #[test]
+    fn test_millis_timestamp_null_checks_rewrite_to_raw_column() {
+        let adapter = millis_file_adapter();
+        let col: Arc<dyn PhysicalExpr> = Arc::new(Column::new("ts", 0));
+
+        let pred: Arc<dyn PhysicalExpr> = Arc::new(IsNullExpr::new(Arc::clone(&col)));
+        let rewritten = adapter.rewrite(pred).unwrap();
+        let is_null = rewritten
+            .downcast_ref::<IsNullExpr>()
+            .expect("expected IsNullExpr");
+        assert!(is_null.arg().downcast_ref::<Column>().is_some());
+
+        let pred: Arc<dyn PhysicalExpr> = Arc::new(IsNotNullExpr::new(col));
+        let rewritten = adapter.rewrite(pred).unwrap();
+        let is_not_null = rewritten
+            .downcast_ref::<IsNotNullExpr>()
+            .expect("expected IsNotNullExpr");
+        assert!(is_not_null.arg().downcast_ref::<Column>().is_some());
     }
 }

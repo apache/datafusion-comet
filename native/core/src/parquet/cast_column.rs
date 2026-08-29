@@ -214,6 +214,21 @@ impl CometCastColumnExpr {
     }
 
     /// Set Spark parquet options to enable complex nested type conversions.
+    /// The wrapped input expression.
+    pub fn expr(&self) -> &Arc<dyn PhysicalExpr> {
+        &self.expr
+    }
+
+    /// The Parquet/Iceberg file field this expression reads from.
+    pub fn input_physical_field(&self) -> &FieldRef {
+        &self.input_physical_field
+    }
+
+    /// The Spark logical field this expression converts to.
+    pub fn target_field(&self) -> &FieldRef {
+        &self.target_field
+    }
+
     pub fn with_parquet_options(mut self, options: SparkParquetOptions) -> Self {
         self.parquet_options = Some(options);
         self
