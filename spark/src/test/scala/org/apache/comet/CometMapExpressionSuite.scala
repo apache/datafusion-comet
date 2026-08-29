@@ -28,7 +28,7 @@ import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.BinaryType
 
-import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
+import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator, SchemaGenOptions}
 
 class CometMapExpressionSuite extends CometTestBase {
@@ -431,18 +431,49 @@ class CometMapExpressionSuite extends CometTestBase {
     }
   }
 
-  // A folded nested INT-keyed map is admitted natively (all key-type guards pass), so the outer
-  // `element_at` runs as native `map_extract`. With ANSI disabled, a remainder-by-zero lookup key
-  // evaluates to NULL instead of throwing, so `map_extract(NULL_map, NULL)` returns NULL and the
-  // result matches Spark's 7, NULL, NULL. Under ANSI, native scalar functions evaluate the key
-  // eagerly and throw where Spark short-circuits after the NULL inner map -- a pre-existing eager
-  // evaluation difference in native `ElementAt`, not specific to folded literals.
-  test("folded nested map lookup with per-row key evaluation (multirow, non-ansi)") {
-    withSQLConf(SQLConf.ANSI_ENABLED.key -> "false") {
-      withParquetTable((1 until 4).map(i => (i, i.toLong)), "tbl") {
-        checkSparkAnswerAndOperator(
-          "SELECT _1 AS id, element_at(element_at(map(1, map(0, 7)), _1), _1 % (_1 - 2)) AS v " +
-            "FROM tbl")
+  // Keep folding enabled so the inner map takes the new literal expansion path. A null map must
+  // skip the key even in non-ANSI mode: an element_at index of zero throws in both modes.
+  for (ansi <- Seq(false, true)) {
+    test(s"folded nested map lookups skip throwing keys for null maps (ansi=$ansi)") {
+      withSQLConf(
+        SQLConf.ANSI_ENABLED.key -> ansi.toString,
+        "spark.sql.optimizer.excludedRules" -> "") {
+        withParquetTable((1 until 4).map(i => (i, i.toLong)), "tbl") {
+          val map = "element_at(map(1, map(0, 7)), _1)"
+          val key = if (ansi) "_1 % (_1 - 2)" else "element_at(array(0), _1 - 2)"
+          val lookups = Seq(s"element_at($map, $key)", s"($map)[$key]") ++
+            (if (isSpark35Plus) Seq(s"try_element_at($map, $key)") else Seq.empty)
+          lookups.foreach { lookup =>
+            checkSparkAnswerAndOperator(s"SELECT _1 AS id, $lookup AS v FROM tbl")
+          }
+        }
+      }
+    }
+  }
+
+  test("map lookup evaluates a stateful key only for non-null maps") {
+    import testImplicits._
+
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+      CometConf.COMET_BATCH_SIZE.key -> "8192") {
+      withTempPath { dir =>
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          Seq(1, 2).toDF("id").coalesce(1).write.parquet(dir.toString)
+        }
+        withTempView("stateful_map_lookup") {
+          val input = spark.read.parquet(dir.toString)
+          assert(input.rdd.getNumPartitions == 1)
+          assert(input.collect().map(_.getInt(0)).toSeq == Seq(1, 2))
+          input.createOrReplaceTempView("stateful_map_lookup")
+          Seq(false, true).foreach { ansi =>
+            withSQLConf(SQLConf.ANSI_ENABLED.key -> ansi.toString) {
+              checkSparkAnswerAndOperator("SELECT id, element_at(IF(id = 1, NULL, map(0, 7)), " +
+                "CAST(monotonically_increasing_id() AS INT)) AS v FROM stateful_map_lookup")
+            }
+          }
+        }
       }
     }
   }

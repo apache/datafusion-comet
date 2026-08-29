@@ -623,7 +623,7 @@ object CometElementAt extends CometExpressionSerde[ElementAt] {
     val childExpr = exprToProtoInternal(expr.left, inputs, binding)
     val ordinalExpr = exprToProtoInternal(expr.right, inputs, binding)
 
-    val baseExpr = expr.left.dataType match {
+    expr.left.dataType match {
       case _: MapType =>
         scalarFunctionExprToProto("map_extract", childExpr, ordinalExpr)
       case _ =>
@@ -652,48 +652,6 @@ object CometElementAt extends CometExpressionSerde[ElementAt] {
         }
     }
 
-    // Spark's ElementAt is a BinaryExpression: for a NULL map/array it returns NULL WITHOUT
-    // evaluating the key/index child. Native scalar functions evaluate the key eagerly over the
-    // whole batch, so under ANSI (failOnError) a throwing key (e.g. a divide-by-zero) fires even on
-    // rows whose map/array is NULL, where Spark short-circuits. When the left can actually be NULL,
-    // guard the lookup with CASE WHEN left IS NOT NULL THEN <lookup> ELSE null so the key is only
-    // evaluated on the selected rows (DataFusion's CaseExpr filters the batch before the THEN
-    // branch), reproducing the short-circuit. Mirrors the CASE-WHEN idiom in CometArrayAppend /
-    // CometSize; the ELSE null literal carries the result type, as in CometArraysZip.
-    if (expr.failOnError && expr.left.nullable) {
-      val isNotNullExpr = createUnaryExpr(
-        expr,
-        expr.left,
-        inputs,
-        binding,
-        (builder, unaryExpr) => builder.setIsNotNull(unaryExpr))
-      val nullLiteralProto = exprToProto(Literal(null, expr.dataType), Seq.empty)
-      for {
-        base <- baseExpr
-        notNull <- isNotNullExpr
-        nullLit <- nullLiteralProto
-      } yield {
-        // The generic serde path attaches this ElementAt's expr_id and QueryContext to the CASE we
-        // return here, but the lookup that actually throws under ANSI (ListExtract, for the array
-        // case) is nested inside the THEN branch. Attach them to that inner Expr too, so a native
-        // INVALID_ARRAY_INDEX_IN_ELEMENT_AT / INVALID_INDEX_OF_ZERO error still renders Spark's
-        // `== SQL ... ==` query context. (map_extract ignores expr_id, so the map case is
-        // unaffected and never throws an index error anyway.)
-        val guardedBase = QueryPlanSerde.attachExprIdAndContext(expr, base)
-        val caseWhenExpr = ExprOuterClass.CaseWhen
-          .newBuilder()
-          .addWhen(notNull)
-          .addThen(guardedBase)
-          .setElseExpr(nullLit)
-          .build()
-        ExprOuterClass.Expr
-          .newBuilder()
-          .setCaseWhen(caseWhenExpr)
-          .build()
-      }
-    } else {
-      baseExpr
-    }
   }
 }
 

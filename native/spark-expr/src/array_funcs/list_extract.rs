@@ -15,7 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::array::{Array, GenericListArray, Int32Array, OffsetSizeTrait};
+use arrow::array::{
+    new_null_array, Array, BooleanArray, GenericListArray, Int32Array, OffsetSizeTrait,
+};
 use arrow::datatypes::{DataType, FieldRef, Schema};
 use arrow::{array::MutableArrayData, datatypes::ArrowNativeType, record_batch::RecordBatch};
 use datafusion::common::{
@@ -135,9 +137,29 @@ impl PhysicalExpr for ListExtract {
     }
 
     fn evaluate(&self, batch: &RecordBatch) -> DataFusionResult<ColumnarValue> {
-        let child_value = self.child.evaluate(batch)?.into_array(batch.num_rows())?;
-        let ordinal_value = self.ordinal.evaluate(batch)?.into_array(batch.num_rows())?;
         let element_type = self.data_type(&batch.schema())?;
+        let num_rows = batch.num_rows();
+        if num_rows == 0 {
+            return Ok(ColumnarValue::Array(new_null_array(&element_type, 0)));
+        }
+
+        // Spark evaluates the array once, then evaluates the index only for non-null arrays.
+        // Keep that order in every mode: an index expression can throw even without ANSI, and
+        // evaluating stateful children on a different set of rows changes their results.
+        let child_value = self.child.evaluate(batch)?.into_array(num_rows)?;
+        if child_value.null_count() == num_rows {
+            return Ok(ColumnarValue::Array(new_null_array(
+                &element_type,
+                num_rows,
+            )));
+        }
+        let ordinal_value = if child_value.null_count() == 0 {
+            self.ordinal.evaluate(batch)?
+        } else {
+            let selection = BooleanArray::new(child_value.nulls().unwrap().inner().clone(), None);
+            self.ordinal.evaluate_selection(batch, &selection)?
+        }
+        .into_array(num_rows)?;
 
         let default_value = self
             .default_value
@@ -334,11 +356,185 @@ impl Display for ListExtract {
 #[cfg(test)]
 mod test {
     use super::*;
-    use arrow::array::{Array, Int32Array, ListArray};
+    use arrow::array::{Array, ArrayRef, Int32Array, LargeListArray, ListArray};
     use arrow::datatypes::{Field, Int32Type};
     use datafusion::common::{Result, ScalarValue};
-    use datafusion::physical_expr::expressions::Column;
+    use datafusion::logical_expr::Operator;
+    use datafusion::physical_expr::expressions::{BinaryExpr, CastExpr, Column, Literal};
     use datafusion::physical_plan::ColumnarValue;
+
+    use crate::nondetermenistic_funcs::monotonically_increasing_id::MonotonicallyIncreasingId;
+
+    #[test]
+    fn test_list_extract_skips_throwing_index_for_null_array() -> Result<()> {
+        for one_based in [false, true] {
+            for fail_on_error in [false, true] {
+                let list = ListArray::from_iter_primitive::<Int32Type, _, _>(vec![
+                    None,
+                    Some(vec![Some(99)]),
+                ]);
+                let index_list = ListArray::from_iter_primitive::<Int32Type, _, _>(vec![
+                    Some(vec![Some(i32::from(one_based))]),
+                    Some(vec![Some(i32::from(one_based))]),
+                ]);
+                let batch = RecordBatch::try_from_iter(vec![
+                    ("arr", Arc::new(list) as ArrayRef),
+                    ("index_arr", Arc::new(index_list) as ArrayRef),
+                    ("index", Arc::new(Int32Array::from(vec![0, 1])) as ArrayRef),
+                ])?;
+                // Index zero throws even without ANSI, but belongs to the null outer array.
+                let ordinal = Arc::new(ListExtract::new(
+                    Arc::new(Column::new("index_arr", 1)),
+                    Arc::new(Column::new("index", 2)),
+                    None,
+                    true,
+                    false,
+                    None,
+                    crate::create_query_context_map(),
+                ));
+                assert!(ordinal.evaluate(&batch).is_err());
+                let expr = ListExtract::new(
+                    Arc::new(Column::new("arr", 0)),
+                    ordinal,
+                    None,
+                    one_based,
+                    fail_on_error,
+                    None,
+                    crate::create_query_context_map(),
+                );
+                let result = expr.evaluate(&batch)?.into_array(2)?;
+                assert_eq!(
+                    result.to_data(),
+                    Int32Array::from(vec![None, Some(99)]).to_data()
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_list_extract_skips_index_for_null_and_empty_input() -> Result<()> {
+        let lists: Vec<ArrayRef> = vec![
+            Arc::new(ListArray::from_iter_primitive::<Int32Type, _, _>(vec![
+                None::<Vec<Option<i32>>>,
+                None,
+            ])),
+            Arc::new(LargeListArray::from_iter_primitive::<Int32Type, _, _>(
+                vec![None::<Vec<Option<i32>>>, None],
+            )),
+        ];
+        for list in lists {
+            let batch = RecordBatch::try_from_iter(vec![("arr", Arc::clone(&list))])?;
+            let throwing_index: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+                Arc::new(Literal::new(ScalarValue::Int32(Some(1)))),
+                Operator::Divide,
+                Arc::new(Literal::new(ScalarValue::Int32(Some(0)))),
+            ));
+            assert!(throwing_index.evaluate(&batch).is_err());
+            let children: Vec<Arc<dyn PhysicalExpr>> = vec![
+                Arc::new(Column::new("arr", 0)),
+                Arc::new(Literal::new(ScalarValue::try_new_null(list.data_type())?)),
+            ];
+            for child in children {
+                for fail_on_error in [false, true] {
+                    let expr = ListExtract::new(
+                        Arc::clone(&child),
+                        Arc::clone(&throwing_index),
+                        None,
+                        true,
+                        fail_on_error,
+                        None,
+                        crate::create_query_context_map(),
+                    );
+                    for input in [&batch, &batch.slice(0, 0)] {
+                        let result = expr.evaluate(input)?.into_array(input.num_rows())?;
+                        assert_eq!(result.data_type(), &DataType::Int32);
+                        assert_eq!(result.null_count(), input.num_rows());
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_list_extract_advances_stateful_index_only_for_non_null_arrays() -> Result<()> {
+        for fail_on_error in [false, true] {
+            let ordinal = Arc::new(CastExpr::new(
+                Arc::new(MonotonicallyIncreasingId::from_offset(0)),
+                DataType::Int32,
+                None,
+            ));
+            let expr = ListExtract::new(
+                Arc::new(Column::new("arr", 0)),
+                ordinal,
+                None,
+                false,
+                fail_on_error,
+                None,
+                crate::create_query_context_map(),
+            );
+            for (values, expected) in [([10, 11], 10), ([20, 21], 21)] {
+                let list = ListArray::from_iter_primitive::<Int32Type, _, _>(vec![
+                    None,
+                    Some(values.map(Some).to_vec()),
+                ]);
+                let batch = RecordBatch::try_from_iter(vec![("arr", Arc::new(list) as ArrayRef)])?;
+                // Neither an all-null batch nor an empty batch may advance the index counter.
+                expr.evaluate(&batch.slice(0, 1))?;
+                expr.evaluate(&batch.slice(0, 0))?;
+                let result = expr.evaluate(&batch)?.into_array(2)?;
+                assert_eq!(
+                    result.to_data(),
+                    Int32Array::from(vec![None, Some(expected)]).to_data()
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_list_extract_short_circuits_sliced_large_list() -> Result<()> {
+        let list = LargeListArray::from_iter_primitive::<Int32Type, _, _>(vec![
+            Some(vec![Some(99)]),
+            None,
+            Some(vec![Some(10)]),
+            None,
+            Some(vec![Some(20)]),
+        ]);
+        let batch = RecordBatch::try_from_iter(vec![
+            ("arr", Arc::new(list) as ArrayRef),
+            (
+                "denominator",
+                Arc::new(Int32Array::from(vec![1, 0, 1, 0, 1])) as ArrayRef,
+            ),
+        ])?
+        .slice(1, 4);
+        assert_eq!(batch.column(0).nulls().unwrap().inner().offset(), 1);
+        let ordinal: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+            Arc::new(Literal::new(ScalarValue::Int32(Some(1)))),
+            Operator::Divide,
+            Arc::new(Column::new("denominator", 1)),
+        ));
+        assert!(ordinal.evaluate(&batch).is_err());
+        for fail_on_error in [false, true] {
+            let expr = ListExtract::new(
+                Arc::new(Column::new("arr", 0)),
+                Arc::clone(&ordinal),
+                None,
+                true,
+                fail_on_error,
+                None,
+                crate::create_query_context_map(),
+            );
+            let result = expr.evaluate(&batch)?.into_array(4)?;
+            assert_eq!(
+                result.to_data(),
+                Int32Array::from(vec![None, Some(10), None, Some(20)]).to_data()
+            );
+        }
+        Ok(())
+    }
 
     #[test]
     fn test_nullable_when_array_is_nullable() -> Result<()> {

@@ -23,6 +23,7 @@ pub mod comparison;
 pub mod list_empty_to_null;
 pub mod list_positions;
 pub mod logical;
+pub mod map_extract;
 pub mod nullcheck;
 pub mod partition;
 pub mod random;

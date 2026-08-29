@@ -1134,6 +1134,41 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     }
   }
 
+  test("element_at evaluates stateful operands only on the required rows") {
+    import testImplicits._
+
+    // Both rows must share a partition and batch: a duplicated left operand would give its
+    // independent THEN-side counter only the second row, producing 0 instead of Spark's 1.
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+      CometConf.COMET_BATCH_SIZE.key -> "8192") {
+      withTempPath { dir =>
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          Seq(1, 2).toDF("id").coalesce(1).write.parquet(dir.toString)
+        }
+        withTempView("stateful_lookup") {
+          val input = spark.read.parquet(dir.toString)
+          assert(input.rdd.getNumPartitions == 1)
+          assert(input.collect().map(_.getInt(0)).toSeq == Seq(1, 2))
+          input.createOrReplaceTempView("stateful_lookup")
+          Seq(false, true).foreach { ansi =>
+            withSQLConf(SQLConf.ANSI_ENABLED.key -> ansi.toString) {
+              checkSparkAnswerAndOperator(
+                "SELECT id, element_at(element_at(" +
+                  "array(CAST(NULL AS ARRAY<BIGINT>), " +
+                  "array(monotonically_increasing_id(), CAST(NULL AS BIGINT))), id), " +
+                  "id - 1) AS v FROM stateful_lookup")
+              // A stateful index must advance only for the non-null array row.
+              checkSparkAnswerAndOperator("SELECT id, element_at(IF(id = 1, NULL, array(7)), " +
+                "CAST(monotonically_increasing_id() AS INT) + 1) AS v FROM stateful_lookup")
+            }
+          }
+        }
+      }
+    }
+  }
+
   // The tests below deliberately live in this suite, not a `sql-tests` fixture: constant folding is
   // enabled by default here, so each `map(...)` collapses to a MapType Literal and the outer
   // `array(...)` reaches `CometCreateArray` with folded-Literal children, which `CometLiteral`

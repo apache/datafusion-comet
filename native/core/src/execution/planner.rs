@@ -36,6 +36,7 @@ use crate::execution::operators::IcebergScanExec;
 use crate::execution::{
     expressions::list_empty_to_null::ListEmptyToNullExpr,
     expressions::list_positions::ListPositionsExpr,
+    expressions::map_extract::MapExtractExpr,
     expressions::subquery::Subquery,
     operators::{
         ExecutionError, ExpandExec, ParquetCompression, ParquetWriterExec, SampleExec, ScanExec,
@@ -3528,13 +3529,18 @@ impl PhysicalPlanner {
             })
             .collect::<Vec<_>>();
 
-        let scalar_expr: Arc<dyn PhysicalExpr> = Arc::new(ScalarFunctionExpr::new(
+        let scalar_expr = ScalarFunctionExpr::new(
             fun_name,
             fun_expr,
             args.to_vec(),
             Arc::new(Field::new(fun_name, data_type.clone(), true)),
             Arc::new(ConfigOptions::default()),
-        ));
+        );
+        let scalar_expr: Arc<dyn PhysicalExpr> = if fun_name == "map_extract" {
+            Arc::new(MapExtractExpr::try_new(scalar_expr)?)
+        } else {
+            Arc::new(scalar_expr)
+        };
 
         // DF53 changed some UDFs (e.g. md5) to return StringViewArray at execution
         // time (apache/datafusion#20045). Comet does not yet support view types, so
