@@ -22,10 +22,11 @@ package org.apache.comet
 import scala.util.Random
 
 import org.apache.arrow.vector._
+import org.apache.arrow.vector.complex.ListVector
 import org.apache.spark.{SparkConf, SparkEnv, TaskContext}
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.api.java.UDF1
-import org.apache.spark.sql.catalyst.expressions.{BoundReference, Cast, Coalesce, CreateArray, CreateMap, CreateNamedStruct, Expression, Literal, MapConcat}
+import org.apache.spark.sql.catalyst.expressions.{BoundReference, Cast, Coalesce, CreateArray, CreateMap, CreateNamedStruct, Expression, GetArrayItem, IsNull, Literal, MapConcat}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
@@ -33,7 +34,7 @@ import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
 import org.apache.comet.codegen.CometBatchKernelCodegen
-import org.apache.comet.codegen.CometBatchKernelCodegen.ArrowColumnSpec
+import org.apache.comet.codegen.CometBatchKernelCodegen.{ArrayColumnSpec, ArrowColumnSpec, ScalarColumnSpec}
 import org.apache.comet.udf.codegen.CometScalaUDFCodegen
 import org.apache.comet.vector.CometVector
 
@@ -100,6 +101,71 @@ class CometCodegenSuite
       val comet = CometVector.getVector(output, null)
       assert(comet.getInt(0) === 42)
       assert(comet.getInt(1) === 42)
+    } finally {
+      output.close()
+      input.close()
+    }
+  }
+
+  test("codegen dispatch reads an Array<NullType> element in a primitive expression") {
+    val arrayType = ArrayType(NullType, containsNull = true)
+    val inputField = CometBatchKernelCodegen.toFfiArrowField("in", arrayType, nullable = false)
+    val input = CometBatchKernelCodegen
+      .allocateOutput(inputField, 2, 0)
+      .asInstanceOf[ListVector]
+    val expr = IsNull(
+      GetArrayItem(
+        BoundReference(0, arrayType, nullable = false),
+        Literal(0),
+        failOnError = false))
+    val outputField =
+      CometBatchKernelCodegen.toFfiArrowField("out", BooleanType, nullable = false)
+    val output = CometBatchKernelCodegen.allocateOutput(outputField, 2, 0)
+    try {
+      input.startNewValue(0)
+      input.endValue(0, 1)
+      input.startNewValue(1)
+      input.endValue(1, 1)
+      input.getDataVector.asInstanceOf[NullVector].setValueCount(2)
+      input.setValueCount(2)
+
+      val spec = ArrayColumnSpec(
+        nullable = false,
+        elementSparkType = NullType,
+        element = ScalarColumnSpec(classOf[NullVector], nullable = true))
+      val kernel = CometBatchKernelCodegen.compile(expr, IndexedSeq(spec)).newInstance()
+      kernel.init(0)
+      kernel.process(Array(input), output, 2)
+      output.setValueCount(2)
+
+      val comet = CometVector.getVector(output, null)
+      assert(comet.getBoolean(0))
+      assert(comet.getBoolean(1))
+    } finally {
+      output.close()
+      input.close()
+    }
+  }
+
+  test("codegen dispatch writes Array<NullType> output") {
+    val input = new NullVector("in", 2)
+    val expr = CreateArray(Seq(BoundReference(0, NullType, nullable = true)))
+    val outputField =
+      CometBatchKernelCodegen.toFfiArrowField("out", expr.dataType, nullable = false)
+    val output = CometBatchKernelCodegen.allocateOutput(outputField, 2, 0)
+    try {
+      input.setValueCount(2)
+      val spec = ArrowColumnSpec(classOf[NullVector], nullable = true)
+      val kernel = CometBatchKernelCodegen.compile(expr, IndexedSeq(spec)).newInstance()
+      kernel.init(0)
+      kernel.process(Array(input), output, 2)
+      output.setValueCount(2)
+
+      val comet = CometVector.getVector(output, null)
+      val first = comet.getArray(0)
+      val second = comet.getArray(1)
+      assert(first.numElements() === 1 && first.isNullAt(0))
+      assert(second.numElements() === 1 && second.isNullAt(0))
     } finally {
       output.close()
       input.close()
