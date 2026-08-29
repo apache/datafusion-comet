@@ -4830,8 +4830,8 @@ mod tests {
     };
 
     use arrow::array::{
-        Array, ArrayRef, BinaryArray, DictionaryArray, Int32Array, Int8Array, ListArray, RecordBatch,
-        StringArray,
+        Array, ArrayRef, BinaryArray, DictionaryArray, Int32Array, Int8Array, ListArray,
+        RecordBatch, StringArray,
     };
     use arrow::datatypes::{DataType, Field, FieldRef, Fields, Schema, SchemaRef};
     use datafusion::catalog::memory::DataSourceExec;
