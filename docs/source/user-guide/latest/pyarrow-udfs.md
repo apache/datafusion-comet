@@ -202,15 +202,15 @@ on the unoptimized path.
   `mapInPandas` UDF that strips the tz and treats the value as naive local time): under a non-UTC
   session time zone such a UDF can diverge from the unoptimized path. Set
   `spark.comet.exec.pyarrowUDF.enabled=false` for those UDFs.
-- `spark.sql.execution.arrow.useLargeVarTypes=true` is not supported. With this conf enabled,
-  Spark supplies `large_string` and `large_binary` input columns with 8-byte offsets. Native
-  Comet vectors use 4-byte offsets, and direct serialization advertises their matching `string`
-  and `binary` types. This produces a valid IPC stream, but does not preserve the input types
-  requested by the configuration. `EliminateRedundantTransitions` therefore skips the rewrite
-  and vanilla Spark handles the operation. Comet can read `large_string` and `large_binary`
-  columns returned by a Python worker; that output support does not widen the input vectors.
-- Comet writes input Arrow IPC record batches directly from its existing vector buffers. The
-  only additional Arrow buffer is the validity bitmap for the non-null struct that wraps the
-  input columns. Writing the IPC bytes to the Python worker's pipe still requires one copy;
-  that copy is inherent to Spark's process-based Python transport. This path does not transfer
-  buffers between Arrow allocators or change their ownership.
+- `spark.sql.execution.arrow.useLargeVarTypes=true` is supported by the accelerated path.
+  Comet supplies `large_string` and `large_binary` input fields, including nested fields, by
+  widening ordinary 4-byte offsets to 8-byte offsets. The value and validity buffers remain
+  shared with the source batch, and inputs that already have large offsets are reused directly.
+  This conversion does not remove the 32-bit size limits of native producers that construct
+  ordinary string or binary arrays before the Python boundary.
+- Comet writes input Arrow IPC record batches directly from its existing vector buffers. With
+  the default `useLargeVarTypes=false`, the only additional Arrow buffer is the validity bitmap
+  for the non-null struct that wraps the input columns. Enabling large variable types also
+  allocates temporary widened offset buffers. Writing the IPC bytes to the Python worker's pipe
+  still requires one copy; that copy is inherent to Spark's process-based Python transport.
+  This path does not transfer buffers between Arrow allocators or change their ownership.

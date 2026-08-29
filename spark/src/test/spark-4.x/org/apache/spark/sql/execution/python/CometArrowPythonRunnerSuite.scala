@@ -30,12 +30,12 @@ import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
 
 import org.apache.arrow.c.{ArrowArray, ArrowSchema, Data}
-import org.apache.arrow.memory.{BufferAllocator, RootAllocator}
-import org.apache.arrow.vector.{FieldVector, IntVector, NullVector, VarCharVector, VectorSchemaRoot}
+import org.apache.arrow.memory.{BufferAllocator, OutOfMemoryException, RootAllocator}
+import org.apache.arrow.vector.{FieldVector, IntVector, LargeVarBinaryVector, LargeVarCharVector, NullVector, VarBinaryVector, VarCharVector, VectorSchemaRoot}
 import org.apache.arrow.vector.complex.{ListVector, MapVector, StructVector}
 import org.apache.arrow.vector.ipc.{ArrowStreamReader, ArrowStreamWriter, WriteChannel}
 import org.apache.arrow.vector.types.pojo.{ArrowType, DictionaryEncoding, Field, FieldType, Schema}
-import org.apache.spark.sql.execution.python.CometArrowPythonRunnerBase.{hasCompatibleSchema, serializeBatch}
+import org.apache.spark.sql.execution.python.CometArrowPythonRunnerBase.{hasCompatibleSchema, serializeBatch, withLargeVarTypes}
 
 class CometArrowPythonRunnerSuite extends AnyFunSuite with Matchers {
 
@@ -169,8 +169,12 @@ class CometArrowPythonRunnerSuite extends AnyFunSuite with Matchers {
     }
   }
 
-  for (failSerialization <- Seq(false, true)) {
-    test(s"direct FFI batches release temporary references (write failure: $failSerialization)") {
+  for {
+    failSerialization <- Seq(false, true)
+    useLargeVarTypes <- Seq(false, true)
+  } {
+    test(
+      s"direct FFI batches release references (failure: $failSerialization, large: $useLargeVarTypes)") {
       // Arrow's JNI loader extracts its library here; Maven's target/tmp may not exist yet.
       Files.createDirectories(Paths.get(System.getProperty("java.io.tmpdir")))
       val sourceAllocator = new RootAllocator(Long.MaxValue)
@@ -209,38 +213,50 @@ class CometArrowPythonRunnerSuite extends AnyFunSuite with Matchers {
         val originalSourceAllocation = sourceAllocator.getAllocatedMemory
         originalSourceAllocation should be > 0L
 
-        withWriter(Seq(imported.getField), writerAllocator, Channels.newChannel(output)) {
-          channel =>
-            val originalWriterAllocation = writerAllocator.getAllocatedMemory
-            failWrites = failSerialization
-            try {
-              if (failSerialization) {
-                val error = intercept[IOException] {
-                  serializeBatch(new WriteChannel(channel), Seq(imported), 2, writerAllocator)
-                }
-                error.getMessage shouldBe "injected Arrow IPC write failure"
-              } else {
-                serializeBatch(new WriteChannel(channel), Seq(imported), 2, writerAllocator)
+        val field =
+          if (useLargeVarTypes) withLargeVarTypes(imported.getField) else imported.getField
+        withWriter(Seq(field), writerAllocator, Channels.newChannel(output)) { channel =>
+          val originalWriterAllocation = writerAllocator.getAllocatedMemory
+          failWrites = failSerialization
+          try {
+            if (failSerialization) {
+              val error = intercept[IOException] {
+                serializeBatch(
+                  new WriteChannel(channel),
+                  Seq(imported),
+                  2,
+                  writerAllocator,
+                  useLargeVarTypes)
               }
-            } finally {
-              failWrites = false
+              error.getMessage shouldBe "injected Arrow IPC write failure"
+            } else {
+              serializeBatch(
+                new WriteChannel(channel),
+                Seq(imported),
+                2,
+                writerAllocator,
+                useLargeVarTypes)
             }
+          } finally {
+            failWrites = false
+          }
 
-            buffers.map(_.refCnt()) shouldBe originalReferenceCounts
-            importAllocator.getAllocatedMemory shouldBe originalImportAllocation
-            sourceAllocator.getAllocatedMemory shouldBe originalSourceAllocation
-            writerAllocator.getAllocatedMemory shouldBe originalWriterAllocation
-            imported.getValueCount shouldBe 2
-            imported.get(0) shouldBe payload
-            imported.isNull(1) shouldBe true
+          buffers.map(_.refCnt()) shouldBe originalReferenceCounts
+          importAllocator.getAllocatedMemory shouldBe originalImportAllocation
+          sourceAllocator.getAllocatedMemory shouldBe originalSourceAllocation
+          writerAllocator.getAllocatedMemory shouldBe originalWriterAllocation
+          imported.getValueCount shouldBe 2
+          imported.get(0) shouldBe payload
+          imported.isNull(1) shouldBe true
         }
 
         if (!failSerialization) {
           withReader(output.toByteArray) { reader =>
             reader.loadNextBatch() shouldBe true
             val struct = reader.getVectorSchemaRoot.getVector(0).asInstanceOf[StructVector]
-            val result = struct.getChild("payload").asInstanceOf[VarCharVector]
-            result.get(0) shouldBe payload
+            val result = struct.getChild("payload")
+            result.getField.getType shouldBe field.getType
+            result.getObject(0).toString shouldBe new String(payload, "UTF-8")
             result.isNull(1) shouldBe true
             reader.loadNextBatch() shouldBe false
           }
@@ -262,6 +278,177 @@ class CometArrowPythonRunnerSuite extends AnyFunSuite with Matchers {
         importAllocator.close()
         sourceAllocator.close()
       }
+    }
+  }
+
+  test("large input types widen offsets without copying string or binary payloads") {
+    val sourceAllocator = new RootAllocator(Long.MaxValue)
+    val writerAllocator = new RootAllocator(1024)
+    val text = new VarCharVector("text", sourceAllocator)
+    val binary = new VarBinaryVector("binary", sourceAllocator)
+    val output = new ByteArrayOutputStream()
+    try {
+      val strings = Seq(
+        Array.fill[Byte](16 * 1024)('x'.toByte),
+        Array.emptyByteArray,
+        "λ中文".getBytes("UTF-8"))
+      val bytes =
+        Seq(Array.fill[Byte](16 * 1024)(0xff.toByte), Array.emptyByteArray, Array[Byte](0, 1, -1))
+      text.allocateNew()
+      binary.allocateNew()
+      Seq(0, 2, 3).zipWithIndex.foreach { case (row, i) =>
+        text.setSafe(row, strings(i))
+        binary.setSafe(row, bytes(i))
+      }
+      text.setNull(1)
+      binary.setNull(1)
+      text.setValueCount(4)
+      binary.setValueCount(4)
+      val vectors = Seq[FieldVector](text, binary)
+      val buffers = vectors.flatMap(_.getFieldBuffers.asScala)
+      val refs = buffers.map(_.refCnt())
+      val sourceBytes = sourceAllocator.getAllocatedMemory
+
+      withWriter(
+        vectors.map(v => withLargeVarTypes(v.getField)),
+        writerAllocator,
+        Channels.newChannel(output)) { channel =>
+        serializeBatch(
+          new WriteChannel(channel),
+          vectors,
+          4,
+          writerAllocator,
+          useLargeVarTypes = true)
+        writerAllocator.getAllocatedMemory shouldBe 0L
+        sourceAllocator.getAllocatedMemory shouldBe sourceBytes
+        buffers.map(_.refCnt()) shouldBe refs
+        text.getLastSet shouldBe 3
+        binary.getLastSet shouldBe 3
+        text.get(3) shouldBe strings(2)
+        binary.get(3) shouldBe bytes(2)
+      }
+      withReader(output.toByteArray) { reader =>
+        reader.loadNextBatch() shouldBe true
+        val struct = reader.getVectorSchemaRoot.getVector(0).asInstanceOf[StructVector]
+        val resultText = struct.getChild("text").asInstanceOf[LargeVarCharVector]
+        val resultBinary = struct.getChild("binary").asInstanceOf[LargeVarBinaryVector]
+        Seq(0, 2, 3).zipWithIndex.foreach { case (row, i) =>
+          resultText.get(row) shouldBe strings(i)
+          resultBinary.get(row) shouldBe bytes(i)
+        }
+        resultText.isNull(1) shouldBe true
+        resultBinary.isNull(1) shouldBe true
+        reader.loadNextBatch() shouldBe false
+      }
+    } finally {
+      binary.close()
+      text.close()
+      writerAllocator.close()
+      sourceAllocator.close()
+    }
+  }
+
+  test("large input types preserve empty batches and reuse already-large offsets") {
+    val sourceAllocator = new RootAllocator(Long.MaxValue)
+    val writerAllocator = new RootAllocator(64)
+    val first = new VarCharVector("value", sourceAllocator)
+    val empty = new VarCharVector("value", sourceAllocator)
+    val last = new LargeVarCharVector("value", sourceAllocator)
+    val output = new ByteArrayOutputStream()
+    try {
+      first.allocateNew()
+      first.setSafe(0, "first".getBytes("UTF-8"))
+      first.setValueCount(1)
+      last.allocateNew()
+      last.setSafe(0, "last".getBytes("UTF-8"))
+      last.setValueCount(1)
+      val largeBuffers = last.getFieldBuffers.asScala.toSeq
+      val largeRefs = largeBuffers.map(_.refCnt())
+      val largeField = withLargeVarTypes(first.getField)
+      hasCompatibleSchema(Seq(largeField), Seq(withLargeVarTypes(last.getField))) shouldBe true
+
+      withWriter(Seq(largeField), writerAllocator, Channels.newChannel(output)) { channel =>
+        serializeBatch(
+          new WriteChannel(channel),
+          Seq(first),
+          1,
+          writerAllocator,
+          useLargeVarTypes = true)
+        serializeBatch(
+          new WriteChannel(channel),
+          Seq(empty),
+          0,
+          writerAllocator,
+          useLargeVarTypes = true)
+        // Only the wrapping bitmap fits: an already-large input must not allocate new offsets.
+        writerAllocator.setLimit(8L)
+        serializeBatch(
+          new WriteChannel(channel),
+          Seq(last),
+          1,
+          writerAllocator,
+          useLargeVarTypes = true)
+        largeBuffers.map(_.refCnt()) shouldBe largeRefs
+        writerAllocator.getAllocatedMemory shouldBe 0L
+      }
+      withReader(output.toByteArray) { reader =>
+        Seq(Some("first"), None, Some("last")).foreach { expected =>
+          reader.loadNextBatch() shouldBe true
+          reader.getVectorSchemaRoot.getRowCount shouldBe expected.size
+          val struct = reader.getVectorSchemaRoot.getVector(0).asInstanceOf[StructVector]
+          val value = struct.getChild("value").asInstanceOf[LargeVarCharVector]
+          expected.foreach(v => value.getObject(0).toString shouldBe v)
+        }
+        reader.loadNextBatch() shouldBe false
+      }
+    } finally {
+      last.close()
+      empty.close()
+      first.close()
+      writerAllocator.close()
+      sourceAllocator.close()
+    }
+  }
+
+  test("large input conversion releases earlier offsets when a later allocation fails") {
+    val sourceAllocator = new RootAllocator(Long.MaxValue)
+    // The wrapping bitmap and one 32-byte offset buffer fit, but the second offset buffer cannot.
+    val writerAllocator = new RootAllocator(40)
+    val vectors = Seq(
+      new VarCharVector("first", sourceAllocator),
+      new VarCharVector("second", sourceAllocator))
+    val output = new ByteArrayOutputStream()
+    try {
+      vectors.foreach { vector =>
+        vector.allocateNew()
+        (0 until 3).foreach(i => vector.setSafe(i, s"value-$i".getBytes("UTF-8")))
+        vector.setValueCount(3)
+      }
+      val buffers = vectors.flatMap(_.getFieldBuffers.asScala)
+      val refs = buffers.map(_.refCnt())
+      val sourceBytes = sourceAllocator.getAllocatedMemory
+      withWriter(
+        vectors.map(v => withLargeVarTypes(v.getField)),
+        writerAllocator,
+        Channels.newChannel(output)) { channel =>
+        intercept[OutOfMemoryException] {
+          serializeBatch(
+            new WriteChannel(channel),
+            vectors,
+            3,
+            writerAllocator,
+            useLargeVarTypes = true)
+        }
+        writerAllocator.getPeakMemoryAllocation should be > 8L
+        writerAllocator.getAllocatedMemory shouldBe 0L
+        buffers.map(_.refCnt()) shouldBe refs
+        sourceAllocator.getAllocatedMemory shouldBe sourceBytes
+        vectors.foreach(_.getObject(2).toString shouldBe "value-2")
+      }
+    } finally {
+      vectors.foreach(_.close())
+      writerAllocator.close()
+      sourceAllocator.close()
     }
   }
 

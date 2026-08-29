@@ -112,6 +112,13 @@ private[python] trait CometArrowPythonRunnerBase
       private var arrowWriter: ArrowStreamWriter = _
       private var writeRoot: VectorSchemaRoot = _
       private var streamFields: Seq[Field] = _
+      // This map is captured on the driver; do not resolve SQLConf from the task closure.
+      private val useLargeVarTypes = workerConf
+        .getOrElse(SQLConf.ARROW_EXECUTION_USE_LARGE_VAR_TYPES.key, "false")
+        .toBoolean
+
+      private def inputField(field: Field): Field =
+        if (useLargeVarTypes) CometArrowPythonRunnerBase.withLargeVarTypes(field) else field
 
       // The runner's input schema is a single struct column ("struct") whose children are the
       // user's input columns (see `schema` above). Cast once here rather than at each use site.
@@ -158,7 +165,7 @@ private[python] trait CometArrowPythonRunnerBase
               // no sample batch, so derive the schema from the Spark input schema. The timezone is
               // irrelevant here because no rows are exchanged.
               val childFields = inputStructType.fields.toSeq.map(f =>
-                Utils.toArrowField(f.name, f.dataType, nullable = true, "UTC"))
+                inputField(Utils.toArrowField(f.name, f.dataType, nullable = true, "UTC")))
               startWriter(childFields, dataOut)
             }
             arrowWriter.end()
@@ -176,15 +183,15 @@ private[python] trait CometArrowPythonRunnerBase
             .getValueVector
             .asInstanceOf[FieldVector]
         }
-        val batchFields = sourceVectors.map(_.getField)
+        val batchFields = sourceVectors.map(vector => inputField(vector.getField))
 
         if (arrowWriter == null) {
           // Build the schema-only struct root once from the first batch's child fields.
           // mapInArrow/mapInPandas exchange the columns under a single non-nullable struct.
           // Comet's FFI-imported vectors leave the Arrow Field name null, so restore the real
           // column names from the input schema (the worker reads columns by name, and shaded
-          // Arrow rejects a null field name). Keep the field types and child structure as-is so
-          // the advertised schema matches the source buffers. Keeping the type as-is also means
+          // Arrow rejects a null field name). Apart from optional string/binary offset widening,
+          // keep the field types and child structure consistent with the source buffers. This means
           // a TimestampType reaches the worker with Comet's UTC time zone
           // rather than the session zone vanilla Spark would label it with; this is a documented
           // limitation (see pyarrow-udfs.md), not a value difference, since the stored instant is
@@ -206,7 +213,8 @@ private[python] trait CometArrowPythonRunnerBase
           new WriteChannel(Channels.newChannel(dataOut)),
           sourceVectors,
           cometBatch.numRows(),
-          allocator)
+          allocator,
+          useLargeVarTypes)
 
         pythonMetrics("pythonDataSent") += dataOut.size() - startData
         true
@@ -329,6 +337,24 @@ private[python] trait CometArrowPythonRunnerBase
 
 private[python] object CometArrowPythonRunnerBase {
 
+  /** Match Spark's large string/binary input types, including fields nested in containers. */
+  private[python] def withLargeVarTypes(field: Field): Field = {
+    val fieldType = field.getFieldType
+    val dataType = fieldType.getType match {
+      case ArrowType.Utf8.INSTANCE => ArrowType.LargeUtf8.INSTANCE
+      case ArrowType.Binary.INSTANCE => ArrowType.LargeBinary.INSTANCE
+      case other => other
+    }
+    new Field(
+      field.getName,
+      new FieldType(
+        fieldType.isNullable,
+        dataType,
+        fieldType.getDictionary,
+        fieldType.getMetadata),
+      field.getChildren.asScala.map(withLargeVarTypes).asJava)
+  }
+
   // Extensions can change interpretation even when their underlying storage types match.
   private val extensionMetadataKeys = Seq(
     ArrowType.ExtensionType.EXTENSION_METADATA_KEY_NAME,
@@ -350,7 +376,8 @@ private[python] object CometArrowPythonRunnerBase {
    *
    * VectorUnloader recursively retains the source buffers without moving them between allocators.
    * The wrapping record batch takes its own references, so closing both temporary batches
-   * restores the original reference counts after the synchronous pipe write. The borrowed
+   * restores the original reference counts after the synchronous pipe write. Large variable types
+   * replace only the offset buffers and release those allocations after the write. The borrowed
    * VectorSchemaRoot must never be closed because its vectors are owned by the input
    * ColumnarBatch.
    */
@@ -358,7 +385,8 @@ private[python] object CometArrowPythonRunnerBase {
       writeChannel: WriteChannel,
       sourceVectors: Seq[FieldVector],
       numRows: Int,
-      allocator: BufferAllocator): Unit = {
+      allocator: BufferAllocator,
+      useLargeVarTypes: Boolean = false): Unit = {
     val sourceRoot =
       new VectorSchemaRoot(sourceVectors.map(_.getField).asJava, sourceVectors.asJava, numRows)
     val sourceBatch = new VectorUnloader(sourceRoot).getRecordBatch
@@ -379,17 +407,27 @@ private[python] object CometArrowPythonRunnerBase {
         buffers.add(structValidity)
         buffers.addAll(sourceBatch.getBuffers)
 
-        val wrappedBatch = new ArrowRecordBatch(
-          numRows,
-          nodes,
-          buffers,
-          sourceBatch.getBodyCompression,
-          sourceBatch.getVariadicBufferCounts,
-          true)
+        val widenedOffsets = if (useLargeVarTypes) new ArrayList[ArrowBuf]() else null
         try {
-          MessageSerializer.serialize(writeChannel, wrappedBatch)
+          if (useLargeVarTypes) {
+            widenOffsets(sourceVectors, buffers, widenedOffsets, allocator)
+          }
+          val wrappedBatch = new ArrowRecordBatch(
+            numRows,
+            nodes,
+            buffers,
+            sourceBatch.getBodyCompression,
+            sourceBatch.getVariadicBufferCounts,
+            true)
+          try {
+            MessageSerializer.serialize(writeChannel, wrappedBatch)
+          } finally {
+            wrappedBatch.close()
+          }
         } finally {
-          wrappedBatch.close()
+          if (widenedOffsets != null) {
+            widenedOffsets.asScala.foreach(_.close())
+          }
         }
       } finally {
         structValidity.close()
@@ -397,5 +435,42 @@ private[python] object CometArrowPythonRunnerBase {
     } finally {
       sourceBatch.close()
     }
+  }
+
+  /**
+   * Replace only 32-bit offsets; validity and payload buffers remain borrowed from the source.
+   */
+  private def widenOffsets(
+      sourceVectors: Seq[FieldVector],
+      buffers: ArrayList[ArrowBuf],
+      widenedOffsets: ArrayList[ArrowBuf],
+      allocator: BufferAllocator): Unit = {
+    // Skip the wrapping struct's validity buffer, then follow VectorUnloader's depth-first order.
+    var bufferIndex = 1
+    def visit(vector: FieldVector): Unit = {
+      vector.getField.getType match {
+        case ArrowType.Utf8.INSTANCE | ArrowType.Binary.INSTANCE =>
+          val source = buffers.get(bufferIndex + 1)
+          val count = vector.getValueCount.toLong + 1L
+          val offsets = allocator.buffer(count * 8L)
+          // Register each allocation before populating it so partial conversion failures clean up.
+          widenedOffsets.add(offsets)
+          if (vector.getValueCount == 0 && source.readableBytes() == 0L) {
+            offsets.setLong(0L, 0L)
+          } else {
+            var i = 0L
+            while (i < count) {
+              offsets.setLong(i * 8L, source.getInt(i * 4L).toLong)
+              i += 1L
+            }
+          }
+          offsets.writerIndex(count * 8L)
+          buffers.set(bufferIndex + 1, offsets)
+        case _ =>
+      }
+      bufferIndex += vector.getFieldBuffers.size()
+      vector.getChildrenFromFields.asScala.foreach(visit)
+    }
+    sourceVectors.foreach(visit)
   }
 }
