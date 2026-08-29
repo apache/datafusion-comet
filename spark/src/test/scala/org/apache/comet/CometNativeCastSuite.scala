@@ -34,7 +34,7 @@ import org.apache.spark.sql.catalyst.parser.ParseException
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.{col, monotonically_increasing_id}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DataTypes, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, StructField, StructType, TimestampType}
+import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, CalendarIntervalType, DataType, DataTypes, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, StructField, StructType, TimestampType}
 
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
 import org.apache.comet.rules.CometScanTypeChecker
@@ -1895,6 +1895,19 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         None,
         CometEvalMode.LEGACY) ==
         Compatible())
+  }
+
+  test("cast MapType propagates Unsupported from nested value cast") {
+    val unsupportedValueType = CalendarIntervalType
+    val expectedMessage =
+      s"Cast from $unsupportedValueType to ${DataTypes.StringType} is not supported"
+    assert(
+      CometCast.isSupported(
+        MapType(IntegerType, unsupportedValueType),
+        DataTypes.StringType,
+        None,
+        CometEvalMode.LEGACY) ==
+        Unsupported(Some(expectedMessage)))
   }
 
   test("cast ArrayType(DateType) to unsupported ArrayType routes through codegen dispatch") {
