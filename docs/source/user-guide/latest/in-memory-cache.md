@@ -70,8 +70,8 @@ six-column relation:
 
 | Codec  | Materialize | Footprint | Read 1 of 6 | Read 6 of 6 |
 | ------ | ----------: | --------: | ----------: | ----------: |
-| `zstd` |      347 ms |     2 MiB |       52 ms |       63 ms |
-| `none` |     1743 ms |    13 MiB |       74 ms |       79 ms |
+| `zstd` |      363 ms |     2 MiB |       56 ms |       62 ms |
+| `none` |     1776 ms |    13 MiB |       78 ms |       81 ms |
 
 Arrow's other IPC codec, LZ4, is deliberately not offered. It is commons-compress's pure-Java
 implementation and is unrelated to the JNI-accelerated lz4-java behind `spark.io.compression.codec`;
@@ -101,11 +101,11 @@ SPARK_GENERATE_BENCHMARK_FILES=1 \
 
 | Query shape                    | Spark cache scan + convert | `CometInMemoryTableScan` | Relative |
 | ------------------------------ | -------------------------: | -----------------------: | -------: |
-| Repeated scan (3 of 6 columns) |                     156 ms |                   118 ms |     1.3x |
-| Selective filter               |                      44 ms |                    39 ms |     1.1x |
-| Row count only (0 of 6)        |                      32 ms |                    28 ms |     1.1x |
-| Narrow projection (1 of 6)     |                      50 ms |                    39 ms |     1.3x |
-| Full projection (6 of 6)       |                     316 ms |                   135 ms |     2.3x |
+| Repeated scan (3 of 6 columns) |                     157 ms |                   116 ms |     1.4x |
+| Selective filter               |                      44 ms |                    38 ms |     1.1x |
+| Row count only (0 of 6)        |                      30 ms |                    28 ms |     1.1x |
+| Narrow projection (1 of 6)     |                      49 ms |                    39 ms |     1.3x |
+| Full projection (6 of 6)       |                     299 ms |                   135 ms |     2.2x |
 
 Read what this compares carefully. Comet execution is on in both columns, so the aggregation runs
 on Comet either way and only the cache-scan boundary moves: on the left, Spark's

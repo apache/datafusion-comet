@@ -22,7 +22,6 @@ package org.apache.comet.shims
 import scala.annotation.nowarn
 
 import org.apache.spark.sql.types.{DataType, StructType}
-import org.apache.spark.unsafe.types.{ByteArray, UTF8String}
 
 trait CometTypeShim {
   @nowarn // Spark 4 feature; stubbed to false in Spark 3.x for compatibility.
@@ -42,15 +41,4 @@ trait CometTypeShim {
 
   @nowarn // Spark 4.1 feature; TimeType doesn't exist in Spark 3.x.
   def isTimeType(dt: DataType): Boolean = false
-
-  /**
-   * Compare two strings under the collation of `dt`, which must be a `StringType`.
-   *
-   * Spark 3.x has no collations, so every string comparison is byte order. Callers that record
-   * comparable bounds (Comet's cache statistics, for instance) use this so the ordering they
-   * store is the one Spark's own comparison would produce.
-   */
-  @nowarn // Collation is a Spark 4 feature; on 3.x every StringType compares as bytes.
-  def compareStrings(left: UTF8String, right: UTF8String, dt: DataType): Int =
-    ByteArray.compareBinary(left.getBytes, right.getBytes)
 }

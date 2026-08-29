@@ -21,7 +21,6 @@ package org.apache.comet.shims
 
 import org.apache.spark.sql.execution.datasources.VariantMetadata
 import org.apache.spark.sql.types.{ArrayType, DataType, MapType, StringType, StructType, VariantType}
-import org.apache.spark.unsafe.types.UTF8String
 
 trait CometTypeShim {
   // A `StringType` carries collation metadata in Spark 4.0. Only non-default (non-UTF8_BINARY)
@@ -65,14 +64,4 @@ trait CometTypeShim {
     dt.getClass.getSimpleName.startsWith("TimeType")
 
   def hasCollationSupport: Boolean = true
-
-  /**
-   * Compare two strings under the collation of `dt`, which must be a `StringType`.
-   *
-   * `semanticCompare` is the comparison Spark's own expressions use for the type, so bounds
-   * recorded with it order the same way a predicate over the column does. For the default
-   * UTF8_BINARY collation it is byte order, which is what Spark 3.x always does.
-   */
-  def compareStrings(left: UTF8String, right: UTF8String, dt: DataType): Int =
-    left.semanticCompare(right, dt.asInstanceOf[StringType].collationId)
 }
