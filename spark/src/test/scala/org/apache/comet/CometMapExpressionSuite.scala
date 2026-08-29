@@ -377,19 +377,79 @@ class CometMapExpressionSuite extends CometTestBase {
     }
   }
 
-  // The collated counterpart of the double-key `map_contains_key` case above: a nested
-  // `UTF8_LCASE`-keyed map would reach `array_contains` with bytewise comparison. Expansion declines
-  // the folded literal so the case-insensitive lookup stays on Spark. The outer lookup key is the
-  // dynamic `_1` so the inner map survives as a literal (a constant key would let Spark fold
-  // `map_keys` into a collated-string array literal instead, which never reaches this guard).
-  test("map_contains_key over nested collated map keys falls back (multirow)") {
+  // `map_contains_key` lowers to `array_contains(map_keys(...), key)`. Collated membership must
+  // dispatch the whole expression to Spark's codegen, including the folded map literal, even when
+  // the native floating-point opt-in is enabled. The dynamic outer key keeps the lookup unfolded.
+  test("map_contains_key over nested collated map keys uses codegen (multirow)") {
     assume(isSpark40Plus)
-    withParquetTable((1 until 4).map(i => (i, i.toLong)), "tbl") {
-      checkSparkAnswerAndFallbackReason(
-        "SELECT _1 AS id, map_contains_key(" +
-          "element_at(map(1, map(CAST('A1' AS STRING COLLATE UTF8_LCASE), 7)), _1), " +
-          "CAST('a1' AS STRING COLLATE UTF8_LCASE)) AS present FROM tbl",
-        "Unsupported data type MapType")
+    withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true") {
+      withParquetTable((1 until 4).map(i => (i, i.toLong)), "tbl") {
+        Seq(false, true).foreach { allowIncompatible =>
+          withSQLConf(
+            CometConf.getExprAllowIncompatConfigKey(classOf[ArrayContains]) ->
+              allowIncompatible.toString) {
+            checkSparkAnswerAndOperator(
+              "SELECT _1 AS id, map_contains_key(" +
+                "element_at(map(1, map(CAST('A1' AS STRING COLLATE UTF8_LCASE), 7)), _1), " +
+                "CAST('a1' AS STRING COLLATE UTF8_LCASE)) AS present FROM tbl")
+          }
+        }
+      }
+    }
+  }
+
+  // These maps have only integer keys, so the map-key guards cannot protect their collated values.
+  // Keep normal constant folding enabled: the map folds to a literal but its dynamic outer lookup
+  // leaves map_values and array_contains to execute. Plain strings retain case-sensitive equality.
+  test("array_contains over folded map string values honors collation (multirow)") {
+    assume(isSpark40Plus)
+    withSQLConf(
+      "spark.sql.optimizer.excludedRules" -> "",
+      CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true") {
+      withParquetTable(Seq((1, "a1"), (1, "A1"), (1, "missing"), (2, "a1"), (1, null)), "tbl") {
+        for {
+          stringType <- Seq("STRING", "STRING COLLATE UTF8_LCASE")
+          allowIncompatible <- Seq(false, true)
+        } {
+          withSQLConf(
+            CometConf.getExprAllowIncompatConfigKey(classOf[ArrayContains]) ->
+              allowIncompatible.toString) {
+            checkSparkAnswerAndOperator(
+              "SELECT _1 AS id, _2 AS lookup, array_contains(map_values(element_at(" +
+                s"map(1, map(1, CAST('A1' AS $stringType))), _1)), " +
+                s"CAST(_2 AS $stringType)) AS present FROM tbl")
+          }
+        }
+      }
+    }
+  }
+
+  // The collation check must recurse into arrays and structs. The DOUBLE field also verifies that
+  // a mixed struct cannot bypass collation handling via ArrayContains.allowIncompatible=true.
+  test("array_contains over folded map values preserves nested collations (multirow)") {
+    assume(isSpark40Plus)
+    withSQLConf(
+      "spark.sql.optimizer.excludedRules" -> "",
+      CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true") {
+      withParquetTable(Seq((1, "a1"), (1, "A1"), (1, "missing"), (2, "a1"), (1, null)), "tbl") {
+        val value = "CAST('A1' AS STRING COLLATE UTF8_LCASE)"
+        val lookup = "CAST(_2 AS STRING COLLATE UTF8_LCASE)"
+        val nestedValues = Seq(
+          s"array($value)" -> s"array($lookup)",
+          s"named_struct('s', $value, 'd', 0D)" -> s"named_struct('s', $lookup, 'd', 0D)")
+        for {
+          (nestedValue, nestedLookup) <- nestedValues
+          allowIncompatible <- Seq(false, true)
+        } {
+          withSQLConf(
+            CometConf.getExprAllowIncompatConfigKey(classOf[ArrayContains]) ->
+              allowIncompatible.toString) {
+            checkSparkAnswerAndOperator(
+              "SELECT _1 AS id, _2 AS lookup, array_contains(map_values(element_at(" +
+                s"map(1, map(1, $nestedValue)), _1)), $nestedLookup) AS present FROM tbl")
+          }
+        }
+      }
     }
   }
 

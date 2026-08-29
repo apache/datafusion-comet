@@ -111,17 +111,26 @@ object CometArrayContains
 
   override def getIncompatibleReasons(): Seq[String] = Seq(floatingPointReason)
 
-  override def getSupportLevel(expr: ArrayContains): SupportLevel = expr.left.dataType match {
-    // Native array_contains compares floating-point elements bitwise, disagreeing with Spark for
-    // -0.0/+0.0 and NaN. Report Incompatible (not Unsupported) for float/double element types (at
-    // any nesting level) so the expression routes through the JVM codegen dispatcher (Spark's own
-    // doGenCode) and stays native + Spark-exact under the default config, while non-float arrays
-    // keep the fast native kernel. Under allowIncompatible=true the native kernel is used
-    // as before.
-    case ArrayType(elementType, _)
-        if SupportLevel.containsType(elementType, classOf[FloatType], classOf[DoubleType]) =>
-      Incompatible(Some(floatingPointReason))
-    case _ => Compatible()
+  override def getUnsupportedReasons(): Seq[String] =
+    Seq(ComparisonUtils.nonDefaultCollationDocReason)
+
+  override def getSupportLevel(expr: ArrayContains): SupportLevel = {
+    // Match the other comparison predicates: native equality cannot honour collations, including
+    // strings inside nested arrays or structs. Dispatch the whole expression to Spark's codegen
+    // even with allowIncompatible=true. Check this before floating-point types so a mixed struct
+    // cannot opt into bytewise string comparison through the floating-point compatibility flag.
+    if (ComparisonUtils.hasCollatedOperand(expr.left, expr.right)) {
+      Unsupported(Some(ComparisonUtils.nonDefaultCollationReason("array_contains")))
+    } else {
+      expr.left.dataType match {
+        // Native array_contains compares floating-point elements bitwise, disagreeing with Spark
+        // for -0.0/+0.0 and NaN. Keep the existing native opt-in for these element types.
+        case ArrayType(elementType, _)
+            if SupportLevel.containsType(elementType, classOf[FloatType], classOf[DoubleType]) =>
+          Incompatible(Some(floatingPointReason))
+        case _ => Compatible()
+      }
+    }
   }
 
   override def convert(
