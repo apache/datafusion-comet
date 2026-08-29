@@ -114,27 +114,6 @@ object CometCachedBatchHelper {
   }
 
   /**
-   * Zero the tail of one column's compressed bytes, in place, leaving every other column's bytes
-   * and offsets untouched.
-   *
-   * [[corruptColumn]] rewrites the whole compressed payload, which fails as soon as the
-   * decompressor looks at it. This keeps the leading bytes genuine, so a decoder gets a stream
-   * that starts out valid and then runs out, exercising a failure part way through a column
-   * rather than at its first byte.
-   */
-  def truncateColumn(batch: CachedBatch, cacheSchema: StructType, index: Int): Unit = {
-    val data = payload(batch)
-    val target = compressedRanges(batch, cacheSchema, index).find { case (_, length) =>
-      length > 32
-    }
-    require(
-      target.isDefined,
-      s"column $index of the cached batch has no compressed buffer long enough to truncate")
-    val (start, length) = target.get
-    java.util.Arrays.fill(data, (start + length - 16).toInt, (start + length).toInt, 0.toByte)
-  }
-
-  /**
    * The absolute (start, length) of each of a column's buffers that Arrow actually compressed.
    *
    * `start` is an index into the payload, not an offset within the body, so callers can write
@@ -154,7 +133,15 @@ object CometCachedBatchHelper {
     }
   }
 
-  /** Overwrite a compressed buffer's payload, leaving its uncompressed-length prefix intact. */
+  /**
+   * Overwrite a compressed buffer's payload, leaving its uncompressed-length prefix intact.
+   *
+   * The whole payload is rewritten, frame header included, so every zstd release rejects it
+   * outright. Corrupting only a frame's tail is not enough: whether that is detected depends on
+   * the zstd-jni each Spark version ships -- Comet takes it from Spark rather than from
+   * arrow-compression, and 1.5.5 (Spark 3.4, 3.5) decodes a frame whose last bytes have been
+   * zeroed that 1.5.7 (Spark 4.x) reports as corrupt.
+   */
   private def scramble(data: Array[Byte], start: Long, length: Long): Unit = {
     var i = (start + 8).toInt
     val end = (start + length).toInt

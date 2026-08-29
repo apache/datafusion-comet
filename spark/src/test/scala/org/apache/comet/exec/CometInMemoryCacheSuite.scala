@@ -1406,12 +1406,12 @@ class CometInMemoryCacheSuite extends CometTestBase {
   }
 
   /**
-   * Cache two low-cardinality string columns and hand the test the cached payload.
+   * Cache two low-cardinality string columns and hand the test the cached relation.
    *
    * The shuffle is what makes this worth its own fixture: its reader hands the cache writer
    * dictionary-encoded columns, which the writer has to decode before storing them.
    */
-  private def withDictionaryCache(f: (InMemoryRelation, Array[CachedBatch]) => Unit): Unit = {
+  private def withDictionaryCache(f: InMemoryRelation => Unit): Unit = {
     withSQLConf(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
       CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true",
@@ -1438,7 +1438,7 @@ class CometInMemoryCacheSuite extends CometTestBase {
         .cachedRepresentation
 
       try {
-        f(relation, relation.cacheBuilder.cachedColumnBuffers.collect())
+        f(relation)
       } finally {
         spark.catalog.clearCache()
       }
@@ -1473,7 +1473,7 @@ class CometInMemoryCacheSuite extends CometTestBase {
     // column either way, so a writer that stored the index vector as-is would hand the loader
     // integer indices to read as strings. Reading the values back correctly is what proves the
     // writer decoded them first; a row count alone would not.
-    withDictionaryCache { (relation, _) =>
+    withDictionaryCache { relation =>
       assert(relation.output.length == 2)
 
       val df = spark.sql("SELECT s1, s2 FROM dictionary_cache")
@@ -1489,33 +1489,13 @@ class CometInMemoryCacheSuite extends CometTestBase {
   test("Comet in-memory cache broadcasts a batch read back from the cache") {
     // A broadcast of a cache scan re-serializes each decoded batch through serializeBatches,
     // which is a different writer from the one that produced the cached payload.
-    withDictionaryCache { (relation, _) =>
+    withDictionaryCache { relation =>
       assert(relation.output.length == 2)
 
       val df = spark.sql(
         "SELECT /*+ BROADCAST(c) */ c.s1, c.s2 FROM range(1) r JOIN dictionary_cache c ON true")
       checkSparkAnswer(df)
       assert(df.count() == 2000)
-    }
-  }
-
-  test("Comet in-memory cache releases its vectors when a column fails part way through") {
-    // Distinct from the corrupted-column case above: there the compressed bytes are wrong from
-    // their first byte, so the decompressor rejects them outright. Here the bytes start out
-    // genuine and only the tail is destroyed, so the failure lands after the loader has already
-    // begun filling vectors. Nothing else can release them -- the holder's constructor never
-    // returns, so no caller holds it and the task-completion listener has not been told about it.
-    withDictionaryCache { (relation, batches) =>
-      val cacheSchema = Utils.fromAttributes(relation.output)
-      batches.foreach(b => CometCachedBatchHelper.truncateColumn(b, cacheSchema, 0))
-
-      val before = CometArrowAllocator.getAllocatedMemory
-      interceptDecodeFailure {
-        decodedRowCount(relation, batches, Seq(relation.output.head))
-      }
-      assert(
-        CometArrowAllocator.getAllocatedMemory == before,
-        "a read that fails while loading must release what it already allocated")
     }
   }
 
