@@ -353,6 +353,20 @@ class CometRegExpJvmSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("rlike: nested quantified stars stay on the dispatcher") {
+    withRLikeExplain {
+      withSubjects("b", "c", null) {
+        val q = (1 to 30).foldLeft("a") { (p, _) => s"($p)*" }
+        val pat = s"(($q){255}){16}b"
+        val df = sql(s"SELECT s, s rlike '$pat' FROM t")
+        checkSparkAnswerAndOperator(df)
+        assert(
+          explainOf(df).contains("JVM codegen dispatcher: rlike"),
+          s"expected dispatcher for nested quantified stars, got:\n${explainOf(df)}")
+      }
+    }
+  }
+
   test("rlike: unsafe literal pattern stays on the JVM dispatcher by default") {
     withRLikeExplain {
       withSubjects("abc123", "no digits", null) {

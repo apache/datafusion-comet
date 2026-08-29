@@ -174,4 +174,17 @@ class CometRegexSuite extends AnyFunSuite {
       "a{256}" * 16 + "a{0}")
       .foreach(assertIncompatible)
   }
+
+  test("rejects nested quantified patterns that can exceed the Rust compile budget") {
+    def nestedStars(n: Int): String =
+      (1 to n).foldLeft("a") { (p, _) => s"($p)*" }
+
+    assertCompatible(nestedStars(CometRegex.MaxQuantifierNesting))
+    assertIncompatible(nestedStars(CometRegex.MaxQuantifierNesting + 1))
+    // Concatenated siblings take max nesting, not sum.
+    assertCompatible(List.fill(CometRegex.MaxQuantifierNesting + 1)("a*").mkString)
+
+    val q = nestedStars(30)
+    assertIncompatible(s"(($q){255}){16}b")
+  }
 }

@@ -150,8 +150,9 @@ the Rust engine by default: printable ASCII literals, simple ASCII character cla
 quantifiers (`*`, `+`, `?`, `{n}`, `{n,}`, `{n,m}`), capturing and non-capturing groups, and
 alternation. Anchors (`^`, `$`), `.`, `\d` / `\w` / `\s`, inline flags, lookaround, Rust-only
 class set operators (`&&`, `~~`, `--`), unescaped class delimiters used as atoms or range
-endpoints, and counted, aggregate, or nested patterns that exceed a conservative compile-size
-budget stay on the Java engine. Any unrecognized construct also stays on the Java engine.
+endpoints, and counted, aggregate, nested-group, or nested-quantifier patterns that exceed a
+conservative compile-size budget stay on the Java engine. Any unrecognized construct also stays
+on the Java engine.
 
 For `regexp_replace`, `split`, `regexp_extract`, and `regexp_extract_all`, the native path is
 still opt-in via `allowIncompatible`. If you are confident those patterns fit the same ASCII,
