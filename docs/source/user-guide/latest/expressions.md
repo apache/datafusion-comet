@@ -615,7 +615,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `try_to_binary` | ✅ | — | Runs natively (rewrites to `try_eval(to_binary(...))`) |
 | `try_to_number` | ✅ | Codegen dispatch | Routed through the JVM codegen dispatcher |
 | `ucase` | ✅ | Hybrid |  |
-| `unbase64` | ✅ | Codegen dispatch |  |
+| `unbase64` | ✅ | Codegen dispatch | Native decoding accepts column and literal inputs; strict validation and compound inputs use JVM dispatch when enabled. Where limits, preordered top-K or unpartitioned window limits, or first-match semi/anti join conditions can skip malformed input, the affected pipeline stays in Spark's row execution. |
 | `upper` | ✅ | Hybrid |  |
 
 ---

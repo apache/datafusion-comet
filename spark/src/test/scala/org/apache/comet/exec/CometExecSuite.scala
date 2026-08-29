@@ -31,7 +31,7 @@ import org.apache.hadoop.fs.Path
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.{FunctionIdentifier, TableIdentifier}
 import org.apache.spark.sql.catalyst.catalog.{BucketSpec, CatalogStatistics, CatalogTable}
-import org.apache.spark.sql.catalyst.expressions.{DynamicPruningExpression, Expression, ExpressionInfo, Hex, Literal}
+import org.apache.spark.sql.catalyst.expressions.{DynamicPruningExpression, Expression, ExpressionInfo, Hex, Literal, SortOrder, UnBase64}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateMode, BloomFilterAggregate}
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometShuffleExchangeExec}
@@ -3623,6 +3623,98 @@ class CometExecSuite extends CometTestBase {
           checkSparkAnswerAndOperator(df)
         }
       })
+  }
+
+  Seq("child project", "child filter", "output projection").foreach { decoderLocation =>
+    test(s"preordered TakeOrderedAndProjectExec with unbase64 in $decoderLocation") {
+      for {
+        aqeEnabled <- Seq("false", "true")
+        codegenEnabled <- Seq("false", "true")
+        cometEnabled <- Seq("false", "true")
+        collectAsRDD <- Seq(false, true)
+      } {
+        withSQLConf(
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqeEnabled,
+          SQLConf.ADAPTIVE_EXECUTION_FORCE_APPLY.key -> "true",
+          SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+            ("org.apache.spark.sql.catalyst.optimizer.EliminateSorts," +
+              "org.apache.spark.sql.catalyst.optimizer.CollapseProject"),
+          CometConf.COMET_ENABLED.key -> cometEnabled,
+          CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> codegenEnabled) {
+          // Range supplies two ordered partitions that AQE cannot coalesce. Both executeCollect
+          // and doExecute must truncate each partition before its fourth, malformed row.
+          def query(limit: Int): DataFrame = {
+            val input = spark
+              .range(0, 8, 1, 2)
+              .selectExpr("id", "if (id % 4 < 3, 'YWJj', 'A') AS encoded")
+            val ordered = decoderLocation match {
+              case "child project" =>
+                input.selectExpr("id", "hex(unbase64(encoded)) AS decoded").orderBy("id")
+              case "child filter" =>
+                input.filter("unbase64(encoded) = X'616263'").orderBy("id")
+              case "output projection" =>
+                input.orderBy("id").selectExpr("id", "hex(unbase64(encoded)) AS decoded")
+            }
+            ordered.limit(limit)
+          }
+
+          def collect(df: DataFrame): Seq[Row] =
+            (if (collectAsRDD) df.rdd.collect() else df.collect()).toSeq
+
+          def containsUnbase64(expr: Expression): Boolean =
+            expr.exists(_.isInstanceOf[UnBase64])
+
+          withClue(
+            s"AQE=$aqeEnabled, codegen=$codegenEnabled, " +
+              s"Comet=$cometEnabled, collectAsRDD=$collectAsRDD: ") {
+            val df = query(1)
+            val expected = if (decoderLocation == "child filter") "YWJj" else "616263"
+            assert(collect(df) == Seq(Row(0L, expected)))
+            assert(
+              df.queryExecution.executedPlan.isInstanceOf[AdaptiveSparkPlanExec] ==
+                aqeEnabled.toBoolean)
+
+            val plan = stripAQEPlan(df.queryExecution.executedPlan)
+            val topKs = plan.collect {
+              case topK: TakeOrderedAndProjectExec => (topK, topK.child)
+              case topK: CometTakeOrderedAndProjectExec =>
+                (topK.originalPlan.asInstanceOf[TakeOrderedAndProjectExec], topK.child)
+            }
+            assert(topKs.size == 1, plan.toString)
+            val (topK, child) = topKs.head
+            assert(SortOrder.orderingSatisfies(child.outputOrdering, topK.sortOrder))
+            assert(child.outputPartitioning.numPartitions == 2)
+            assert(child.collect {
+              case p: SortExec => p
+              case p: CometSortExec => p
+              case p: ShuffleExchangeExec => p
+              case p: CometShuffleExchangeExec => p
+            }.isEmpty)
+
+            val decoders = child.collect {
+              case p: ProjectExec if p.projectList.exists(containsUnbase64) => p
+              case f: FilterExec if containsUnbase64(f.condition) => f
+            }
+            val inOutput = decoderLocation == "output projection"
+            assert(decoders.size == (if (inOutput) 0 else 1), plan.toString)
+            assert(topK.projectList.exists(containsUnbase64) == inOutput)
+            assert(
+              plan.exists(_.isInstanceOf[CometTakeOrderedAndProjectExec]) ==
+                (cometEnabled.toBoolean && inOutput))
+
+            // Consuming the malformed row must still throw, including in the native output
+            // projection, which evaluates only after top-K has selected its rows.
+            val error = intercept[Exception] {
+              collect(query(4))
+            }
+            assert(
+              causeChain(error).exists(e =>
+                Option(e.getMessage).exists(
+                  _.contains("Last unit does not have enough valid bits"))))
+          }
+        }
+      }
+    }
   }
 
   test("TakeOrderedAndProjectExec with offset") {

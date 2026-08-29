@@ -172,18 +172,20 @@ class CometExecRuleSuite extends CometTestBase {
     }
   }
 
-  test("unbase64 protects ordered WindowGroupLimit inputs across ranks and modes") {
+  test("unbase64 protects WindowGroupLimit inputs only when a consumer can stop early") {
     assume(isSpark35Plus, "WindowGroupLimit requires Spark 3.5+")
     withUnbase64Project { project =>
       withSQLConf(
         "spark.sql.optimizer.windowGroupLimitThreshold" -> "1000",
         "spark.sql.execution.topKSortFallbackThreshold" -> "0") {
         val windowLimitClass = ShimCometWindowGroupLimit.windowGroupLimitClass.get
-        for (rank <- Seq("row_number", "rank", "dense_rank")) {
+        for (partitioned <- Seq(false, true); rank <- Seq("row_number", "rank", "dense_rank")) {
+          val partitionBy = if (partitioned) "PARTITION BY id % 2 " else ""
           val template = createSparkPlan(
             spark,
             s"""SELECT * FROM (
-               |  SELECT id, $rank() OVER (ORDER BY id) AS rn FROM range(0, 4, 1, 2)
+               |  SELECT id, $rank() OVER (${partitionBy}ORDER BY id) AS rn
+               |  FROM range(0, 4, 1, 2)
                |) WHERE rn <= 1""".stripMargin)
           val limits = template.collect {
             case node if windowLimitClass.isInstance(node) =>
@@ -191,18 +193,34 @@ class CometExecRuleSuite extends CometTestBase {
           }
           assert(limits.size == 2, s"Expected partial and final limits: $template")
           limits.foreach { limit =>
+            assert(
+              ShimCometWindowGroupLimit.extract(limit).get.partitionSpec.nonEmpty == partitioned)
             val order = limit.requiredChildOrdering.head
-            val ordered =
-              project.withNewChildren(Seq(SortExec(order, global = false, project.child)))
-            // AQE may reuse a decoder that has already been converted to native execution.
-            for (child <- Seq(ordered, applyCometExecRule(ordered))) {
-              assert(SortOrder.orderingSatisfies(child.outputOrdering, order))
-              val transformed = applyCometExecRule(limit.withNewChildren(Seq(child)))
-              for (replanned <- Seq(transformed, applyCometExecRule(transformed))) {
-                assert(windowLimitClass.isInstance(replanned))
-                assert(countOperators(replanned, classOf[ProjectExec]) == 1)
-                assert(countOperators(replanned, classOf[CometProjectExec]) == 0)
-                assert(countOperators(replanned, classOf[CometSortExec]) == 1)
+            // Partitioned limits do not stop input themselves. They must still preserve an
+            // outer LIMIT's mask, including when AQE reuses an already native decoder.
+            for (outerLimit <- Seq(false, true); nativeChild <- Seq(false, true)) {
+              val ordered =
+                project.withNewChildren(Seq(SortExec(order, global = false, project.child)))
+              val child = if (nativeChild) applyCometExecRule(ordered) else ordered
+              val window = limit.withNewChildren(Seq(child))
+              val plan = if (outerLimit) LocalLimitExec(1, window) else window
+              val requiresFallback = !partitioned || outerLimit
+              withClue(
+                s"partitioned=$partitioned, outerLimit=$outerLimit, native=$nativeChild: ") {
+                assert(SortOrder.orderingSatisfies(child.outputOrdering, order))
+                val transformed = applyCometExecRule(plan)
+                for (replanned <- Seq(transformed, applyCometExecRule(transformed))) {
+                  if (!outerLimit && requiresFallback) {
+                    assert(windowLimitClass.isInstance(replanned))
+                  }
+                  assert(
+                    countOperators(replanned, classOf[ProjectExec]) ==
+                      (if (requiresFallback) 1 else 0))
+                  assert(
+                    countOperators(replanned, classOf[CometProjectExec]) ==
+                      (if (requiresFallback) 0 else 1))
+                  assert(countOperators(replanned, classOf[CometSortExec]) == 1)
+                }
               }
             }
 

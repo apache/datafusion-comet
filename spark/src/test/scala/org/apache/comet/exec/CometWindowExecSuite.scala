@@ -26,9 +26,9 @@ import org.scalatest.Tag
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, Row}
-import org.apache.spark.sql.catalyst.expressions.{Alias, Cast, Divide, Expression, MakeDecimal, WindowExpression}
-import org.apache.spark.sql.comet.CometWindowExec
-import org.apache.spark.sql.execution.SparkPlan
+import org.apache.spark.sql.catalyst.expressions.{Alias, Cast, Divide, Expression, MakeDecimal, SortOrder, UnBase64, WindowExpression}
+import org.apache.spark.sql.comet.{CometExec, CometProjectExec, CometWindowExec}
+import org.apache.spark.sql.execution.{ProjectExec, SparkPlan, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.window.{WindowExec => SparkWindowExec}
 import org.apache.spark.sql.expressions.Window
 import org.apache.spark.sql.functions.{count, lead, sum}
@@ -36,7 +36,8 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.DecimalType
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
+import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
+import org.apache.comet.shims.ShimCometWindowGroupLimit
 
 class CometWindowExecSuite extends CometTestBase {
 
@@ -115,6 +116,96 @@ class CometWindowExecSuite extends CometTestBase {
       digits.append(('0' + digit).toChar)
     }
     digits.toString()
+  }
+
+  test("partitioned WindowGroupLimit drains unbase64 input unless an outer LIMIT stops it") {
+    assume(isSpark35Plus, "WindowGroupLimit requires Spark 3.5+")
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+        ("org.apache.spark.sql.catalyst.optimizer.EliminateSorts," +
+          "org.apache.spark.sql.catalyst.optimizer.CollapseProject"),
+      "spark.sql.optimizer.windowGroupLimitThreshold" -> "1000",
+      CometConf.COMET_EXEC_WINDOW_GROUP_LIMIT_ENABLED.key -> "true") {
+      def query(malformed: Boolean, limit: String = ""): String = {
+        val encoded = if (malformed) {
+          "IF(id = 15, 'A', 'YWJj')"
+        } else {
+          "IF(id % 2 = 0, 'YWJj', 'YWFh')"
+        }
+        // Sort below the decoder so no materializing operator separates it from the window
+        // limit. The malformed last row is past its group's cutoff, and far enough into a
+        // later group that WindowExec's lookahead will not consume it under the outer LIMIT 1.
+        s"""SELECT k, id, hex(decoded) FROM (
+           |  SELECT k, id, decoded, row_number() OVER (PARTITION BY k ORDER BY id) AS rn
+           |  FROM (
+           |    SELECT k, id, unbase64(bad) AS decoded FROM (
+           |      SELECT id, id DIV 4 AS k, $encoded AS bad FROM range(0, 16, 1, 1)
+           |      ORDER BY k, id
+           |    )
+           |  )
+           |) WHERE rn <= 1 $limit
+           |""".stripMargin
+      }
+
+      def originalPlan(plan: SparkPlan): SparkPlan = plan match {
+        case comet: CometExec => comet.originalPlan
+        case other => other
+      }
+
+      def checkWindowInput(plan: SparkPlan, native: Boolean): Unit = {
+        val windows = collect(plan) {
+          case node if ShimCometWindowGroupLimit.extract(originalPlan(node)).isDefined => node
+        }
+        assert(windows.size == 1, plan.toString)
+        val window = windows.head
+        val original = originalPlan(window)
+        assert(ShimCometWindowGroupLimit.extract(original).get.partitionSpec.nonEmpty)
+        assert(window.isInstanceOf[CometExec] == native, plan.toString)
+        // Only a codegen wrapper may sit between the limit and the decoder. A Sort or
+        // Exchange here would consume the decoder's rows and exercise a different boundary.
+        val child = window.children.head match {
+          case wholeStage: WholeStageCodegenExec => wholeStage.child
+          case other => other
+        }
+        assert(
+          SortOrder.orderingSatisfies(child.outputOrdering, original.requiredChildOrdering.head))
+        assert(child.isInstanceOf[CometProjectExec] == native, plan.toString)
+        originalPlan(child) match {
+          case project: ProjectExec =>
+            assert(project.projectList.exists(_.exists(_.isInstanceOf[UnBase64])))
+          case _ => fail(s"Expected the decoder directly below WindowGroupLimit: $plan")
+        }
+      }
+
+      for (dispatch <- Seq(false, true)) {
+        withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> dispatch.toString) {
+          withClue(s"dispatcher=$dispatch: ") {
+            val (sparkValid, cometValid) =
+              checkSparkAnswerAndOperator(sql(query(malformed = false)))
+            checkWindowInput(sparkValid, native = false)
+            checkWindowInput(cometValid, native = true)
+
+            // A per-group cutoff still drains every group, including its malformed suffix.
+            val (sparkError, cometError) =
+              checkSparkAnswerMaybeThrows(sql(query(malformed = true)))
+            Seq(sparkError, cometError).foreach { error =>
+              val failure = error.getOrElse(fail("Expected the malformed group suffix to throw"))
+              assert(
+                causeChain(failure).exists(e =>
+                  Option(e.getMessage).exists(
+                    _.contains("Last unit does not have enough valid bits"))))
+            }
+
+            val (sparkLimited, cometLimited) = checkSparkAnswerAndFallbackReason(
+              query(malformed = true, limit = "LIMIT 1"),
+              "unbase64 requires Spark evaluation below LIMIT")
+            checkWindowInput(sparkLimited, native = false)
+            checkWindowInput(cometLimited, native = false)
+          }
+        }
+      }
+    }
   }
 
   test("lead/lag should return the default value if the offset row does not exist") {

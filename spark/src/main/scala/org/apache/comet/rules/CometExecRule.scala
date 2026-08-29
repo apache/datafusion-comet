@@ -781,6 +781,9 @@ case class CometExecRule(session: SparkSession)
         case windowLimit
             if ShimCometWindowGroupLimit.windowGroupLimitClass.exists(
               _.isInstance(windowLimit)) =>
+          // Partitioned limits drain each group, but an outer LIMIT can still stop them.
+          // Keep the conservative behavior if a future rank function cannot be extracted.
+          ShimCometWindowGroupLimit.extract(windowLimit).forall(_.partitionSpec.isEmpty) &&
           SortOrder.orderingSatisfies(
             node.children.head.outputOrdering,
             windowLimit.requiredChildOrdering.head)
