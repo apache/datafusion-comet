@@ -259,3 +259,8 @@ INSERT INTO test_slice_nested_str VALUES
 
 query
 SELECT slice(arr, -2, 2) FROM test_slice_nested_str
+
+-- A NullType element built by the JVM codegen dispatcher (containsNull=false in Spark) reaches
+-- native declared nullable; the kernel's result must still match the planned type
+query
+SELECT slice(filter(array(), x -> true), 1, 1) FROM test_slice
