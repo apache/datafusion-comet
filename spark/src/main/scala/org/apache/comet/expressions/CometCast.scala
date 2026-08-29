@@ -336,7 +336,7 @@ object CometCast
         Compatible()
       case MapType(keyType, valueType, _) =>
         isSupported(keyType, DataTypes.StringType, timeZoneId, evalMode) match {
-          case Compatible(_) =>
+          case Compatible(_, _) =>
             isSupported(valueType, DataTypes.StringType, timeZoneId, evalMode)
           case other =>
             other
