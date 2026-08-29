@@ -200,13 +200,12 @@ on the unoptimized path.
   `mapInPandas` UDF that strips the tz and treats the value as naive local time): under a non-UTC
   session time zone such a UDF can diverge from the unoptimized path. Set
   `spark.comet.exec.pyarrowUDF.enabled=false` for those UDFs.
-- `spark.sql.execution.arrow.useLargeVarTypes=true` is not supported. With this conf enabled,
-  Spark supplies `large_string` and `large_binary` input columns with 8-byte offsets. Native
-  Comet vectors use 4-byte offsets, and direct serialization advertises their matching `string`
-  and `binary` types. This produces a valid IPC stream, but does not preserve the input types
-  requested by the configuration. `EliminateRedundantTransitions` therefore skips the rewrite
-  and vanilla Spark handles the operation. Comet can read `large_string` and `large_binary`
-  columns returned by a Python worker; that output support does not widen the input vectors.
+- `spark.sql.execution.arrow.useLargeVarTypes=true` is supported by the accelerated path.
+  Comet supplies `large_string` and `large_binary` input fields, including nested fields, by
+  widening ordinary 4-byte offsets to 8-byte offsets. The value and validity buffers remain
+  shared with the source batch, and inputs that already have large offsets are reused directly.
+  This conversion does not remove the 32-bit size limits of native producers that construct
+  ordinary string or binary arrays before the Python boundary.
 - PySpark does not convert the batches a `mapInArrow` UDF returns to the declared output schema,
   so Comet checks their Arrow schema before reading them. When a column cannot be read as its
   declared type, Comet raises Spark's `ARROW_TYPE_MISMATCH` error (on Spark 4.0, a
@@ -239,7 +238,8 @@ on the unoptimized path.
   shuffle does not produce these nested dictionaries.
 - Comet writes input Arrow IPC record batches directly from plain vector buffers. For an unsplit
   plain batch, the only additional Arrow buffer is the validity bitmap for the non-null struct
-  that wraps the input columns. Slicing may allocate offset or validity buffers. Writing the IPC
+  that wraps the input columns. Slicing may allocate offset or validity buffers. Large variable
+  types also allocate temporary widened offset buffers. Writing the IPC
   bytes to the Python worker's pipe still requires one copy; that copy is inherent to Spark's
   process-based Python transport. Borrowed buffers are not transferred between Arrow allocators or
   given new ownership.
