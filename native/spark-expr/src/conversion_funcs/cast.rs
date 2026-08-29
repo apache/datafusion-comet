@@ -910,8 +910,12 @@ fn cast_binary_to_string<O: OffsetSizeTrait>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::builder::{Int32Builder, MapBuilder, StringBuilder};
-    use arrow::array::{BinaryArray, ListArray, MapFieldNames, NullArray, PrimitiveArray, StringArray};
+    use arrow::array::builder::{
+        Int32Builder, MapBuilder, StringBuilder, TimestampMicrosecondBuilder,
+    };
+    use arrow::array::{
+        BinaryArray, ListArray, MapFieldNames, NullArray, PrimitiveArray, StringArray,
+    };
     use arrow::buffer::OffsetBuffer;
     use arrow::datatypes::{Field, Fields, Int32Type, TimestampMicrosecondType};
 
@@ -1253,6 +1257,57 @@ mod tests {
         assert_eq!(r#"{a -> 1, b -> null}"#, string_array.value(0));
         assert_eq!(r#"{}"#, string_array.value(1));
         assert!(string_array.is_null(2));
+    }
+
+    #[test]
+    fn test_cast_map_to_utf8_ignores_values_outside_slice() {
+        let mut map_builder = MapBuilder::new(
+            None,
+            StringBuilder::new(),
+            TimestampMicrosecondBuilder::new(),
+        );
+        map_builder.keys().append_value("hidden");
+        map_builder.values().append_value(i64::MAX);
+        map_builder.append(true).unwrap();
+        map_builder.keys().append_value("visible");
+        map_builder.values().append_value(0);
+        map_builder.append(true).unwrap();
+
+        let string_array = cast_array(
+            Arc::new(map_builder.finish().slice(1, 1)),
+            &DataType::Utf8,
+            &SparkCastOptions::new(EvalMode::Ansi, "UTC", false),
+        )
+        .unwrap();
+        assert_eq!(
+            "{visible -> 1970-01-01 00:00:00}",
+            string_array.as_string::<i32>().value(0)
+        );
+    }
+
+    #[test]
+    fn test_cast_map_to_utf8_ignores_values_under_null_row() {
+        let mut map_builder = MapBuilder::new(
+            None,
+            StringBuilder::new(),
+            TimestampMicrosecondBuilder::new(),
+        );
+        map_builder.keys().append_value("hidden");
+        map_builder.values().append_value(i64::MAX);
+        map_builder.append(false).unwrap();
+        map_builder.keys().append_value("visible");
+        map_builder.values().append_value(0);
+        map_builder.append(true).unwrap();
+
+        let string_array = cast_array(
+            Arc::new(map_builder.finish()),
+            &DataType::Utf8,
+            &SparkCastOptions::new(EvalMode::Ansi, "UTC", false),
+        )
+        .unwrap();
+        let string_array = string_array.as_string::<i32>();
+        assert!(string_array.is_null(0));
+        assert_eq!("{visible -> 1970-01-01 00:00:00}", string_array.value(1));
     }
 
     #[test]
