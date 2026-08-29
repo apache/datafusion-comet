@@ -47,7 +47,7 @@ use crate::execution::{
     serde::{to_arrow_datatype, to_arrow_field},
     shuffle::{SchemaAlignExec, ShuffleWriterDestination, ShuffleWriterExec},
 };
-use crate::jvm_bridge::{jni_call, JVMClasses, JavaShufflePartitionPusher, ShufflePartitionPusher};
+use crate::jvm_bridge::{jni_call, JVMClasses, ShufflePartitionPusher};
 use arrow::compute::CastOptions;
 use arrow::datatypes::{DataType, Field, FieldRef, Schema, TimeUnit, DECIMAL128_MAX_PRECISION};
 use arrow::ffi_stream::FFI_ArrowArrayStream;
@@ -3635,25 +3635,35 @@ impl PhysicalPlanner {
         Ok(scalar_expr)
     }
 
-    /// `collect_list` / `collect_set` build their result list with all element fields marked
-    /// nullable, regardless of the input's nullability. However `SparkCollectList::return_type`
-    /// (and `SparkCollectSet`) derive the element type directly from the child, preserving any
-    /// non-nullable nested field. When the child is a nested type with a non-nullable inner field
-    /// (e.g. a struct field), the declared aggregate output disagrees with the array the
-    /// accumulator actually produces, and DataFusion's grouped `AggregateExec` fails validating
-    /// its output batch ("column types must match schema types"). Cast the child to the
-    /// all-nullable variant of its type so the declared and produced types stay consistent.
+    /// Normalizes a `collect_list` / `collect_set` argument to the all-nullable variant of its
+    /// declared type.
+    ///
+    /// `SparkCollectList::return_type` / `state_fields` (and `SparkCollectSet`) derive the list
+    /// element type from the argument's *declared* type, while the accumulator builds its list
+    /// from the argument arrays it actually received: `ScalarValue::new_list` honors its
+    /// `data_type` parameter only when the value set is empty, and otherwise just concatenates
+    /// the collected scalars. Nothing forces those two to agree, so if an expression's
+    /// `evaluate()` output type differs from its `data_type()` in nested field nullability, the
+    /// grouped `AggregateExec` fails validating its own output batch ("column types must match
+    /// schema types") — `RecordBatch::try_new` compares with `DataType::equals_datatype`, which
+    /// does compare nested nullability.
+    ///
+    /// Casting unconditionally (rather than only when the declared type has a non-nullable
+    /// nested field) makes this a normalization barrier: the accumulator is guaranteed to see
+    /// arrays of exactly the type the plan declared, whichever direction the drift goes. The
+    /// cast is metadata-only — `cast_struct_to_struct` and `cast_list_values` stamp the target
+    /// fields and clone the child buffers — so it does not copy data.
     fn coerce_collect_child_nullability(
         child: Arc<dyn PhysicalExpr>,
         schema: &SchemaRef,
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
         let child_type = child.data_type(schema.as_ref())?;
-        let nullable_type = make_all_fields_nullable(&child_type);
-        if child_type.equals_datatype(&nullable_type) {
-            Ok(child)
-        } else {
-            Ok(Arc::new(CastExpr::new(child, nullable_type, None)))
+        if !child_type.is_nested() {
+            // Only nested types carry field-level nullability that can drift.
+            return Ok(child);
         }
+        let nullable_type = make_all_fields_nullable(&child_type);
+        Ok(Arc::new(CastExpr::new(child, nullable_type, None)))
     }
 
     fn create_aggr_func_expr(
@@ -4009,7 +4019,7 @@ fn shuffle_writer_destination(
 
             Ok(ShuffleWriterDestination::Rss {
                 pusher: Arc::clone(pusher),
-                max_frame_size: JavaShufflePartitionPusher::MAX_PAYLOAD_SIZE,
+                max_frame_size: pusher.max_frame_size(),
             })
         }
         None => Err(GeneralError(
@@ -4820,10 +4830,10 @@ mod tests {
     };
 
     use arrow::array::{
-        Array, BinaryArray, DictionaryArray, Int32Array, Int8Array, ListArray, RecordBatch,
+        Array, ArrayRef, BinaryArray, DictionaryArray, Int32Array, Int8Array, ListArray, RecordBatch,
         StringArray,
     };
-    use arrow::datatypes::{DataType, Field, FieldRef, Fields, Schema};
+    use arrow::datatypes::{DataType, Field, FieldRef, Fields, Schema, SchemaRef};
     use datafusion::catalog::memory::DataSourceExec;
     use datafusion::config::TableParquetOptions;
     use datafusion::datasource::listing::PartitionedFile;
@@ -4832,13 +4842,17 @@ mod tests {
         FileGroup, FileScanConfigBuilder, FileSource, ParquetSource,
     };
     use datafusion::error::DataFusionError;
+    use datafusion::logical_expr::AggregateUDF;
     use datafusion::logical_expr::ScalarUDF;
+    use datafusion::physical_expr::expressions::Column;
+    use datafusion::physical_expr::PhysicalExpr;
     use datafusion::physical_plan::ExecutionPlan;
     use datafusion::{
         assert_batches_eq, physical_plan::common::collect, prelude::SessionContext,
         scalar::ScalarValue,
     };
     use datafusion_physical_expr_adapter::PhysicalExprAdapterFactory;
+    use datafusion_spark::function::aggregate::collect::{SparkCollectList, SparkCollectSet};
     use tempfile::TempDir;
     use tokio::sync::mpsc;
 
@@ -4877,6 +4891,24 @@ mod tests {
         ) -> datafusion::common::Result<()> {
             self.pushes.fetch_add(1, Ordering::Relaxed);
             Ok(())
+        }
+    }
+
+    struct BoundedShufflePartitionPusher {
+        max_frame_size: usize,
+    }
+
+    impl ShufflePartitionPusher for BoundedShufflePartitionPusher {
+        fn push_partition_data(
+            &self,
+            _partition_id: i32,
+            _data: &[u8],
+        ) -> datafusion::common::Result<()> {
+            Ok(())
+        }
+
+        fn max_frame_size(&self) -> usize {
+            self.max_frame_size
         }
     }
 
@@ -5070,6 +5102,24 @@ mod tests {
             } => {
                 assert!(Arc::ptr_eq(&pusher, &callback));
                 assert_eq!(max_frame_size, JavaShufflePartitionPusher::MAX_PAYLOAD_SIZE);
+            }
+            destination => panic!("expected an RSS shuffle destination, got {destination:?}"),
+        }
+    }
+
+    #[test]
+    fn shuffle_partition_writer_uses_its_task_callback_frame_limit() {
+        let writer = spark_operator::ShuffleWriter {
+            partition_writer: Some(rss_shuffle_partition_writer()),
+            ..Default::default()
+        };
+        let callback: Arc<dyn ShufflePartitionPusher> = Arc::new(BoundedShufflePartitionPusher {
+            max_frame_size: 4096,
+        });
+
+        match super::shuffle_writer_destination(&writer, Some(&callback)).unwrap() {
+            ShuffleWriterDestination::Rss { max_frame_size, .. } => {
+                assert_eq!(max_frame_size, 4096);
             }
             destination => panic!("expected an RSS shuffle destination, got {destination:?}"),
         }
@@ -6459,6 +6509,148 @@ mod tests {
                 }
             }
         });
+    }
+
+    /// `struct<flag: Boolean, items: List<Struct<n: Int32>>>`, with the leaf nullability
+    /// controlled by `nullable`: a non-nullable leaf both directly in the struct and buried
+    /// under a list-of-struct.
+    fn collect_agg_struct_type(nullable: bool) -> DataType {
+        let item = DataType::Struct(Fields::from(vec![Field::new(
+            "n",
+            DataType::Int32,
+            nullable,
+        )]));
+        DataType::Struct(Fields::from(vec![
+            Field::new("flag", DataType::Boolean, nullable),
+            Field::new(
+                "items",
+                DataType::List(Arc::new(Field::new("item", item, true))),
+                true,
+            ),
+        ]))
+    }
+
+    /// A struct array whose actual type has non-nullable leaves.
+    fn collect_agg_struct_array() -> ArrayRef {
+        use arrow::array::{BooleanArray, StructArray};
+        use arrow::buffer::OffsetBuffer;
+
+        let n = Arc::new(Int32Array::from(vec![7, 8])) as ArrayRef;
+        let item_fields = Fields::from(vec![Field::new("n", DataType::Int32, false)]);
+        let items_values = Arc::new(StructArray::new(item_fields.clone(), vec![n], None));
+        let items = Arc::new(ListArray::new(
+            Arc::new(Field::new("item", DataType::Struct(item_fields), true)),
+            OffsetBuffer::new(vec![0, 1, 2].into()),
+            items_values,
+            None,
+        )) as ArrayRef;
+        let flag = Arc::new(BooleanArray::from(vec![true, false])) as ArrayRef;
+        let DataType::Struct(fields) = collect_agg_struct_type(false) else {
+            unreachable!()
+        };
+        Arc::new(StructArray::new(fields, vec![flag, items], None))
+    }
+
+    fn collect_agg_schema(data_type: DataType) -> SchemaRef {
+        Arc::new(Schema::new(vec![Field::new("s", data_type, true)]))
+    }
+
+    /// Builds `func` over `child` against `plan_schema`, feeds it a batch built from
+    /// `batch_schema`, and returns (type declared by `state_fields()`, type of the emitted
+    /// state array). This is the pair `RecordBatch::try_new` compares inside
+    /// `GroupedHashAggregateStream::emit`.
+    fn collect_agg_declared_vs_produced(
+        child: &Arc<dyn PhysicalExpr>,
+        plan_schema: &SchemaRef,
+        batch_schema: &SchemaRef,
+        func: AggregateUDF,
+    ) -> (DataType, DataType) {
+        let agg = PhysicalPlanner::create_aggr_func_expr(
+            "collect",
+            Arc::clone(plan_schema),
+            vec![Arc::clone(child)],
+            func,
+        )
+        .unwrap();
+        let declared = agg.state_fields().unwrap()[0].data_type().clone();
+
+        let batch =
+            RecordBatch::try_new(Arc::clone(batch_schema), vec![collect_agg_struct_array()])
+                .unwrap();
+        let arg = child
+            .evaluate(&batch)
+            .unwrap()
+            .into_array(batch.num_rows())
+            .unwrap();
+        let mut acc = agg.create_accumulator().unwrap();
+        acc.update_batch(&[arg]).unwrap();
+        (declared, acc.state().unwrap()[0].data_type())
+    }
+
+    /// The plan declares nullable leaves while the batch that actually arrives carries
+    /// non-nullable ones. `collect_list` / `collect_set` derive their state type from the
+    /// declared type but emit the runtime type, so without the coercion the drift reaches
+    /// `AggregateExec` and it fails validating its own output batch.
+    ///
+    /// The first assertion deliberately pins the upstream behaviour this coercion defends
+    /// against. If `ScalarValue::new_list` is ever fixed to honour its `data_type` for non-empty
+    /// input, the drift disappears and that assertion starts failing — that is the signal to drop
+    /// `coerce_collect_child_nullability` entirely, not a regression.
+    #[test]
+    fn test_collect_agg_absorbs_nested_nullability_drift() {
+        let plan_schema = collect_agg_schema(collect_agg_struct_type(true));
+        let batch_schema = collect_agg_schema(collect_agg_struct_type(false));
+        let raw = Arc::new(Column::new("s", 0)) as Arc<dyn PhysicalExpr>;
+        let coerced =
+            PhysicalPlanner::coerce_collect_child_nullability(Arc::clone(&raw), &plan_schema)
+                .unwrap();
+
+        for func in [
+            AggregateUDF::new_from_impl(SparkCollectSet::new()),
+            AggregateUDF::new_from_impl(SparkCollectList::new()),
+        ] {
+            // Without the coercion, declared and produced disagree on nested nullability.
+            let (declared, produced) =
+                collect_agg_declared_vs_produced(&raw, &plan_schema, &batch_schema, func.clone());
+            assert!(
+                !declared.equals_datatype(&produced),
+                "expected drift for {}: declared {declared}, produced {produced}",
+                func.name()
+            );
+
+            // With it, the argument is normalized to the declared type before it reaches
+            // the accumulator.
+            let (declared, produced) =
+                collect_agg_declared_vs_produced(&coerced, &plan_schema, &batch_schema, func);
+            assert!(
+                declared.equals_datatype(&produced),
+                "declared {declared} != produced {produced}"
+            );
+        }
+    }
+
+    /// The coercion widens every nested field, so the declared element type is the
+    /// all-nullable variant of the argument's declared type.
+    #[test]
+    fn test_collect_agg_coercion_widens_all_nested_fields() {
+        let plan_schema = collect_agg_schema(collect_agg_struct_type(false));
+        let raw = Arc::new(Column::new("s", 0)) as Arc<dyn PhysicalExpr>;
+        let coerced = PhysicalPlanner::coerce_collect_child_nullability(raw, &plan_schema).unwrap();
+        assert_eq!(
+            coerced.data_type(plan_schema.as_ref()).unwrap(),
+            collect_agg_struct_type(true)
+        );
+    }
+
+    /// Primitive arguments carry no field-level nullability, so no cast is inserted.
+    #[test]
+    fn test_collect_agg_no_coercion_for_primitive_child() {
+        let plan_schema = collect_agg_schema(DataType::Int32);
+        let raw = Arc::new(Column::new("s", 0)) as Arc<dyn PhysicalExpr>;
+        let coerced =
+            PhysicalPlanner::coerce_collect_child_nullability(Arc::clone(&raw), &plan_schema)
+                .unwrap();
+        assert!(Arc::ptr_eq(&raw, &coerced));
     }
 
     #[test]

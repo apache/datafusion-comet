@@ -20,7 +20,9 @@
 //! auto-discovery, which only looks at `benches/*.rs`, does not treat it as a bench target.
 #![allow(dead_code)]
 
-use arrow::array::{builder::StringBuilder, ArrayRef, Float64Array, Int64Array, RecordBatch};
+use arrow::array::{
+    builder::StringBuilder, ArrayRef, Float64Array, Int64Array, RecordBatch, StringArray,
+};
 use arrow::datatypes::{DataType, Field, Schema};
 use std::sync::Arc;
 
@@ -54,6 +56,19 @@ pub fn f64_array(rows: usize, null_ratio: f64, value: impl Fn(usize) -> f64) -> 
 
 pub fn i64_array(rows: usize, null_ratio: f64, value: impl Fn(usize) -> i64) -> ArrayRef {
     let arr: Int64Array = (0..rows)
+        .map(|i| {
+            if is_null(i, null_ratio) {
+                None
+            } else {
+                Some(value(i))
+            }
+        })
+        .collect();
+    Arc::new(arr)
+}
+
+pub fn string_array(rows: usize, null_ratio: f64, value: impl Fn(usize) -> String) -> ArrayRef {
+    let arr: StringArray = (0..rows)
         .map(|i| {
             if is_null(i, null_ratio) {
                 None

@@ -87,6 +87,13 @@ public class CometShuffleBlockIterator implements Closeable {
     // Field count discarded - schema determined by ShuffleScan protobuf fields
     headerBuf.getLong();
 
+    if (compressedLength < 12) {
+      throw new IOException(
+          "Data corrupt: native shuffle length "
+              + compressedLength
+              + " is smaller than the field count and codec header");
+    }
+
     // Subtract 8 because compressedLength includes the 8-byte field count we already read
     long bytesToRead = compressedLength - 8;
     if (bytesToRead > Integer.MAX_VALUE) {
@@ -117,6 +124,21 @@ public class CometShuffleBlockIterator implements Closeable {
     // not the buffer's position/limit. No flip needed.
 
     return currentBlockLength;
+  }
+
+  /**
+   * Reports a native IPC/codec failure to the remote stream that supplied the current block. Called
+   * by ShuffleScan via JNI; local streams preserve the original native exception.
+   */
+  public void onDecodeFailure(String message) throws IOException {
+    if (inputStream instanceof CometShuffleReadFailureHandler) {
+      ((CometShuffleReadFailureHandler) inputStream).onShuffleReadFailure(new IOException(message));
+    }
+  }
+
+  /** Whether fetched Arrow arrays require validation before native consumption. */
+  public boolean requiresValidation() {
+    return inputStream instanceof CometShuffleReadFailureHandler;
   }
 
   /**
