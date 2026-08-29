@@ -1010,6 +1010,10 @@ case class CometScanTypeChecker() extends DataTypeSupport with CometTypeShim {
         false
       case s: StructType if s.fields.isEmpty =>
         false
+      case _: YearMonthIntervalType | _: DayTimeIntervalType =>
+        // Supported by the native scan but not by the shared default, so this arm must stay
+        // above the super call.
+        true
       case _ =>
         super.isTypeSupported(dt, name, fallbackReasons)
     }
