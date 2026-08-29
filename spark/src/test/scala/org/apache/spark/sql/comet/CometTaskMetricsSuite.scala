@@ -24,8 +24,6 @@ import java.io.File
 import scala.collection.mutable
 
 import org.apache.spark.{SparkConf, SparkContext, SparkEnv, Success, TaskContext}
-import org.apache.spark.executor.ShuffleReadMetrics
-import org.apache.spark.executor.ShuffleWriteMetrics
 import org.apache.spark.memory.{TaskMemoryManager, TestMemoryManager}
 import org.apache.spark.scheduler.SparkListener
 import org.apache.spark.scheduler.SparkListenerJobStart
@@ -347,46 +345,24 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("per-task native shuffle metrics") {
-    withParquetTable((0 until 10000).map(i => (i, (i + 1).toLong)), "tbl") {
+  test("native shuffle read reports SQL and task metrics") {
+    val expectedRecords = 10000L
+    withParquetTable((0 until expectedRecords.toInt).map(i => (i, (i + 1).toLong)), "tbl") {
       // Keep a native operator below the exchange so AQE uses ShuffleScan direct read.
       val shuffled =
         sql("SELECT * FROM tbl").repartition(1, $"_1").sortWithinPartitions($"_1".desc)
 
-      val cometShuffle = find(shuffled.queryExecution.executedPlan) {
-        case _: CometShuffleExchangeExec => true
-        case _ => false
-      }
-      assert(cometShuffle.isDefined, "CometShuffleExchangeExec not found in the plan")
-      assert(
-        cometShuffle.get.asInstanceOf[CometShuffleExchangeExec].shuffleType == CometNativeShuffle)
+      val exchange = collectFirst(shuffled.queryExecution.executedPlan) {
+        case native: CometShuffleExchangeExec if native.shuffleType == CometNativeShuffle =>
+          native
+      }.getOrElse(fail("Expected a native shuffle exchange"))
 
-      val shuffleWriteMetricsList = mutable.ArrayBuffer.empty[ShuffleWriteMetrics]
-      val shuffleReadMetricsList = mutable.ArrayBuffer.empty[ShuffleReadMetrics]
-
-      spark.sparkContext.addSparkListener(new SparkListener {
-        override def onTaskEnd(taskEnd: SparkListenerTaskEnd): Unit = {
-          val taskMetrics = taskEnd.taskMetrics
-
-          if (taskEnd.taskType.contains("ShuffleMapTask")) {
-            val shuffleWriteMetrics = taskMetrics.shuffleWriteMetrics
-            shuffleWriteMetricsList.synchronized {
-              shuffleWriteMetricsList += shuffleWriteMetrics
-            }
-          } else {
-            val shuffleReadMetrics = taskMetrics.shuffleReadMetrics
-            shuffleReadMetricsList.synchronized {
-              shuffleReadMetricsList += shuffleReadMetrics
-            }
-          }
-        }
-      })
-
-      // Avoid receiving earlier taskEnd events
+      val store = spark.sparkContext.statusStore
       spark.sparkContext.listenerBus.waitUntilEmpty()
+      val stagesBefore = store.stageList(null).map(_.stageId).toSet
 
       // Run the action to trigger the shuffle
-      shuffled.collect()
+      assert(shuffled.collect().length == expectedRecords)
 
       val shuffleScan = find(shuffled.queryExecution.executedPlan) {
         case native: CometNativeExec =>
@@ -399,20 +375,110 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
       spark.sparkContext.listenerBus.waitUntilEmpty()
 
-      // Check the shuffle write and read metrics
-      assert(shuffleWriteMetricsList.nonEmpty, "No shuffle write metrics found")
-      shuffleWriteMetricsList.foreach { metrics =>
-        assert(metrics.writeTime > 0)
-        assert(metrics.bytesWritten > 0)
-        assert(metrics.recordsWritten > 0)
+      assert(exchange.metrics("recordsRead").value == expectedRecords)
+      assert(
+        exchange.metrics("localBytesRead").value + exchange.metrics("remoteBytesRead").value > 0L)
+
+      val newStages =
+        store.stageList(null).filterNot(stage => stagesBefore.contains(stage.stageId))
+      val shuffleWriteStages = newStages.filter(_.shuffleWriteBytes > 0L)
+      assert(shuffleWriteStages.nonEmpty, "No native shuffle write stage was recorded")
+      assert(shuffleWriteStages.map(_.shuffleWriteRecords).sum == expectedRecords)
+
+      val shuffleReadStages = newStages.filter(_.shuffleReadBytes > 0L)
+      assert(shuffleReadStages.nonEmpty, "No native shuffle read stage was recorded")
+      assert(shuffleReadStages.map(_.shuffleReadRecords).sum == expectedRecords)
+      assert(shuffleReadStages.map(_.shuffleReadBytes).sum > 0L)
+    }
+  }
+
+  test("failed native shuffle read attempts preserve task metrics") {
+    val expectedRecords = 10000L
+    val failedShuffleReadMetrics = mutable.ArrayBuffer.empty[(Long, Long)]
+    val targetStageIds = mutable.HashSet.empty[Int]
+    val jobGroupId = s"failed-native-shuffle-read-metrics-${java.util.UUID.randomUUID().toString}"
+    val listener = new SparkListener {
+      override def onJobStart(jobStart: SparkListenerJobStart): Unit = {
+        val isTargetJob = Option(jobStart.properties)
+          .flatMap(props => Option(props.getProperty(SparkContext.SPARK_JOB_GROUP_ID)))
+          .contains(jobGroupId)
+        if (isTargetJob) {
+          targetStageIds.synchronized {
+            targetStageIds ++= jobStart.stageInfos.map(_.stageId)
+          }
+        }
       }
 
-      assert(shuffleReadMetricsList.nonEmpty, "No shuffle read metrics found")
-      shuffleReadMetricsList.foreach { metrics =>
-        assert(metrics.recordsRead > 0)
-        assert(metrics.totalBytesRead > 0)
+      override def onTaskEnd(taskEnd: SparkListenerTaskEnd): Unit = {
+        val isTargetStage = targetStageIds.synchronized {
+          targetStageIds.contains(taskEnd.stageId)
+        }
+        if (isTargetStage && !taskEnd.taskType.contains("ShuffleMapTask") &&
+          taskEnd.reason != Success) {
+          val shuffleReadMetrics = taskEnd.taskMetrics.shuffleReadMetrics
+          failedShuffleReadMetrics.synchronized {
+            failedShuffleReadMetrics += ((
+              shuffleReadMetrics.recordsRead,
+              shuffleReadMetrics.totalBytesRead))
+          }
+        }
       }
-      assert(shuffleReadMetricsList.map(_.recordsRead).sum == 10000)
+    }
+
+    withParquetTable(
+      (0 until expectedRecords.toInt).map(i => (i, (i + 1).toLong)),
+      "failed_shuffle_read_tbl") {
+      spark.sparkContext.addSparkListener(listener)
+      try {
+        spark.sparkContext.listenerBus.waitUntilEmpty()
+        withSQLConf(
+          CometConf.COMET_SHUFFLE_MODE.key -> "native",
+          SQLConf.ANSI_ENABLED.key -> "true",
+          SQLConf.SHUFFLE_PARTITIONS.key -> "1") {
+          val failing = sql("SELECT * FROM failed_shuffle_read_tbl")
+            .repartition(1, $"_1")
+            .sortWithinPartitions($"_1")
+            .selectExpr("_1", "_1 / CASE WHEN _1 = 8192 THEN 0 ELSE 1 END AS quotient")
+
+          spark.sparkContext.setJobGroup(jobGroupId, "failed native shuffle read metrics")
+          try {
+            val failure = intercept[Exception] {
+              failing.collect()
+            }
+            val messages = causeChain(failure).flatMap(error => Option(error.getMessage))
+            assert(
+              messages.exists(message =>
+                message.contains("DIVIDE_BY_ZERO") || message.contains("Division by zero")),
+              s"Expected the late-row division failure, got:\n${messages.mkString("\n")}")
+          } finally {
+            spark.sparkContext.clearJobGroup()
+          }
+
+          val shuffleScan = find(failing.queryExecution.executedPlan) {
+            case native: CometNativeExec =>
+              native.serializedPlanOpt.plan.exists { bytes =>
+                OperatorOuterClass.Operator.parseFrom(bytes).toString.contains("shuffle_scan")
+              }
+            case _ => false
+          }
+          assert(
+            shuffleScan.isDefined,
+            "native ShuffleScan direct read not found in the failed plan")
+        }
+
+        spark.sparkContext.listenerBus.waitUntilEmpty()
+        val metrics = failedShuffleReadMetrics.synchronized {
+          failedShuffleReadMetrics.toSeq
+        }
+        assert(metrics.nonEmpty, "No failed native shuffle read task was recorded")
+        assert(
+          metrics.exists { case (recordsRead, bytesRead) =>
+            recordsRead == expectedRecords && bytesRead > 0L
+          },
+          s"Failed attempts must preserve native shuffle read metrics: $metrics")
+      } finally {
+        spark.sparkContext.removeSparkListener(listener)
+      }
     }
   }
 

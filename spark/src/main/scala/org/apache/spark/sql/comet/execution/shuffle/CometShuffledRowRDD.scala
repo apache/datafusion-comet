@@ -158,6 +158,8 @@ class CometShuffledBatchRDD(
       context: TaskContext): CometShuffleBlockIterator = {
     val readerAndMetrics: (CometShuffleReader[_, _], SQLShuffleReadMetricsReporter) =
       createReader(split, context)
+    // Register before CometExecIterator so Spark's LIFO completion order closes the native stream
+    // before merging. Task completion also preserves partial metrics for failed attempts.
     context.addTaskCompletionListener[Unit] { _ =>
       context.taskMetrics().mergeShuffleReadMetrics()
     }
