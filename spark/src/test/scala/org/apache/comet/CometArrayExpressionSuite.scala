@@ -19,16 +19,17 @@
 
 package org.apache.comet
 
+import scala.jdk.CollectionConverters._
 import scala.util.Random
 
 import org.apache.hadoop.fs.Path
-import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.{CometTestBase, Row}
 import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayExcept, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayRepeat}
 import org.apache.spark.sql.catalyst.expressions.{ArrayContains, ArrayRemove}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.ArrayType
+import org.apache.spark.sql.types.{ArrayType, IntegerType, StructField, StructType}
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
 import org.apache.comet.DataTypeSupport.isComplexType
@@ -887,6 +888,73 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
           }
         }
       }
+    }
+  }
+
+  test("array literal of empty struct falls back instead of crashing planning") {
+    // `array(array(struct()))` constant-folds to a literal whose (doubly-nested) array element
+    // type is an empty struct. `makeListLiteral` has no case for StructType at all (empty or
+    // not) -- letting this reach the literal path throws a bare `scala.MatchError` at plan
+    // time rather than a graceful fallback. See CometLiteral.isListLiteralElementSupported.
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "test.parquet")
+      spark.range(10).write.parquet(path.toString)
+      withTempView("t1") {
+        spark.read.parquet(path.toString).createOrReplaceTempView("t1")
+        checkSparkAnswerAndFallbackReason(
+          "SELECT id, array(array(struct())) FROM t1",
+          "Unsupported data type array<array<struct")
+      }
+    }
+  }
+
+  test("array of empty-struct elements from differently-named list fields falls back") {
+    // `array_repeat(n, 1).e` and `array_repeat(n.e, 1)` are both `array<struct<>>` to Spark, but
+    // their Arrow element fields are named differently (`e` vs `item`). DataFusion's `make_array`
+    // coercion casts one to the other, and casting a zero-field struct errors ("no field name
+    // overlap"). CometCreateArray cannot see the name difference, so it must fall back.
+    withSQLConf(
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+        "org.apache.spark.sql.catalyst.optimizer.ConvertToLocalRelation") {
+      val schema = StructType(
+        Seq(
+          StructField("id", IntegerType),
+          StructField("n", StructType(Seq(StructField("e", StructType(Nil)))))))
+      val data = Seq(Row(1, Row(Row())), Row(2, Row(null)), Row(3, null)).asJava
+      val df = spark.createDataFrame(data, schema)
+      df.createOrReplaceTempView("empty_struct_create_array")
+
+      checkSparkAnswerAndFallbackReason(
+        "SELECT array(array_repeat(n, 1).e, array_repeat(n.e, 1)) FROM empty_struct_create_array",
+        "an empty struct in the element type is not supported")
+    }
+  }
+
+  test("array_max/array_min decline an empty-struct element type") {
+    // DataFusion's `ScalarValue::partial_cmp_struct` flattens a struct into its leaf columns to
+    // find the extreme element; a zero-field struct contributes no columns, so a NULL element
+    // and a non-null empty-struct element compare equal instead of ordering NULL out.
+    withSQLConf(
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      // Otherwise Catalyst's ConvertToLocalRelation rule evaluates this deterministic,
+      // aggregate-free projection directly over the LocalRelation's rows at plan time,
+      // producing a plan with no ArrayMax expression left to convert (or reject).
+      SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+        "org.apache.spark.sql.catalyst.optimizer.ConvertToLocalRelation") {
+      val elemType = StructType(Seq(StructField("marker", StructType(Nil))))
+      val schema =
+        StructType(Seq(StructField("id", IntegerType), StructField("a", ArrayType(elemType))))
+      val data = Seq(Row(1, Array(Row(null), Row(Row())))).asJava
+      val df = spark.createDataFrame(data, schema)
+      df.createOrReplaceTempView("empty_struct_array_extrema")
+
+      checkSparkAnswerAndFallbackReason(
+        "SELECT array_max(a) FROM empty_struct_array_extrema",
+        "array_max on a schema containing an empty struct is not supported")
+      checkSparkAnswerAndFallbackReason(
+        "SELECT array_min(a) FROM empty_struct_array_extrema",
+        "array_min on a schema containing an empty struct is not supported")
     }
   }
 

@@ -218,6 +218,69 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("collect_set declines an empty-struct input") {
+    // DataFusion's DistinctArrayAggAccumulator (backing SparkCollectSet) calls
+    // ScalarValue::compacted() per non-null input, hitting the same zero-field
+    // StructArray::new panic as First/Last -- see SupportLevel.containsEmptyStruct.
+    withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+      import scala.jdk.CollectionConverters._
+
+      import org.apache.spark.sql.functions.collect_set
+      val schema = StructType(
+        Seq(StructField("id", DataTypes.IntegerType), StructField("marker", StructType(Nil))))
+      val data = (0 until 3).map(i => Row(i, Row())).asJava
+      val df = spark.createDataFrame(data, schema)
+      checkSparkAnswerAndFallbackReason(
+        df.agg(collect_set(col("marker"))),
+        "collect_set on a schema containing an empty struct is not supported")
+    }
+  }
+
+  test("collect_list declines an empty-struct input") {
+    // planner.rs's coerce_collect_child_nullability casts the aggregated value to an all-nullable
+    // variant of its type whenever a nested field is non-nullable (named_struct's literal `n`
+    // field is non-nullable here), and DataFusion errors casting a zero-field struct to itself
+    // even when only a sibling field's nullability changed -- see SupportLevel.containsEmptyStruct.
+    // The plain integer grouping key does not trip the separate grouping-key guard, so this must
+    // be caught by CometCollectList's own support-level check.
+    withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+      import scala.jdk.CollectionConverters._
+
+      val schema = StructType(
+        Seq(StructField("g", DataTypes.IntegerType), StructField("marker", StructType(Nil))))
+      val data = (0 until 3).map(i => Row(i % 2, Row())).asJava
+      val df = spark.createDataFrame(data, schema)
+      df.createOrReplaceTempView("empty_struct_collect_list")
+
+      checkSparkAnswerAndFallbackReason(
+        "SELECT g, collect_list(named_struct('marker', marker, 'n', 1)) " +
+          "FROM empty_struct_collect_list GROUP BY g",
+        "collect_list on a schema containing an empty struct is not supported")
+    }
+  }
+
+  test("grouping on an empty struct falls back to Spark") {
+    // DataFusion's `GroupValuesRows::emit` dictionary-encodes struct-typed group keys via
+    // `StructArray::try_new`, which errors for a zero-field struct -- see
+    // SupportLevel.containsEmptyStruct.
+    withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+      import scala.jdk.CollectionConverters._
+
+      val schema = StructType(
+        Seq(StructField("id", DataTypes.IntegerType), StructField("marker", StructType(Nil))))
+      val data = (0 until 3).map(i => Row(i, Row())).asJava
+      val df = spark.createDataFrame(data, schema)
+      df.createOrReplaceTempView("empty_struct_group")
+
+      checkSparkAnswerAndFallbackReason(
+        "SELECT marker, COUNT(id) FROM empty_struct_group GROUP BY marker",
+        "Grouping on a schema containing an empty struct is not supported")
+      checkSparkAnswerAndFallbackReason(
+        "SELECT DISTINCT marker FROM empty_struct_group",
+        "Grouping on a schema containing an empty struct is not supported")
+    }
+  }
+
   test("min/max floating point with negative zero") {
     val r = new Random(42)
     val schema = StructType(

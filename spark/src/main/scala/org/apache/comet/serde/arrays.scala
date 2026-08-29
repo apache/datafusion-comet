@@ -216,6 +216,17 @@ object CometArrayIntersect
 }
 
 object CometArrayMax extends CometExpressionSerde[ArrayMax] {
+  override def getSupportLevel(expr: ArrayMax): SupportLevel = {
+    // DataFusion's `ScalarValue::partial_cmp_struct` flattens a struct into its leaf columns to
+    // find the extreme element; a zero-field struct contributes no columns, so a NULL element
+    // and a non-null empty-struct element compare equal instead of ordering NULL out.
+    if (SupportLevel.containsEmptyStruct(expr.dataType)) {
+      Unsupported(Some("array_max on a schema containing an empty struct is not supported"))
+    } else {
+      Compatible()
+    }
+  }
+
   override def convert(
       expr: ArrayMax,
       inputs: Seq[Attribute],
@@ -229,6 +240,15 @@ object CometArrayMax extends CometExpressionSerde[ArrayMax] {
 }
 
 object CometArrayMin extends CometExpressionSerde[ArrayMin] {
+  override def getSupportLevel(expr: ArrayMin): SupportLevel = {
+    // Same DataFusion comparator issue as CometArrayMax above.
+    if (SupportLevel.containsEmptyStruct(expr.dataType)) {
+      Unsupported(Some("array_min on a schema containing an empty struct is not supported"))
+    } else {
+      Compatible()
+    }
+  }
+
   override def convert(
       expr: ArrayMin,
       inputs: Seq[Attribute],
@@ -482,6 +502,23 @@ object CometCreateArray extends CometExpressionSerde[CreateArray] {
     //
     // TODO: remove this decline once apache/datafusion#22366 lands; the upstream fix widens the
     // element type via nullability-OR-merge and casts each child before MutableArrayData.
+    // DataFusion's `make_array` coerces its arguments to one common type, and Comet's planner
+    // then inserts a `CastExpr` for any argument whose type differs from that common type --
+    // including when the only difference is an Arrow list/struct field *name* that Spark's
+    // `ArrayType` cannot represent (e.g. `array(array_repeat(n, 1).e, array_repeat(n.e, 1))`,
+    // whose elements are `list<e: struct<>>` vs `list<item: struct<>>`). Casting a zero-field
+    // struct fails with "no field name overlap", and `normalizeContainerNullability` below
+    // cannot see the name difference, so keep any multi-argument `CreateArray` whose element
+    // type contains an empty struct on Spark. See `SupportLevel.containsEmptyStruct`.
+    if (children.size > 1 && SupportLevel.containsEmptyStruct(expr.dataType)) {
+      withFallbackReason(
+        expr,
+        "CreateArray with more than one argument and an empty struct in the element type is " +
+          "not supported (DataFusion's make_array coerces its arguments to a common type, " +
+          "which casts a zero-field struct and errors)")
+      return None
+    }
+
     val normalizedTypes = children.map(c => normalizeContainerNullability(c.dataType))
     if (normalizedTypes.distinct.size > 1) {
       withFallbackReason(
@@ -593,7 +630,13 @@ object CometElementAt extends CometExpressionSerde[ElementAt] {
   override def getSupportLevel(expr: ElementAt): SupportLevel = {
     expr.left.dataType match {
       case _: ArrayType => Compatible()
-      case _: MapType => Compatible()
+      case mapType: MapType =>
+        // element_at(map, key) lowers to the same native map_extract as GetMapValue and hits the
+        // same zero-field-struct key-coercion cast -- see SupportLevel.emptyStructMapKeyReason.
+        SupportLevel
+          .emptyStructMapKeyReason(mapType)
+          .map(r => Unsupported(Some(r)))
+          .getOrElse(Compatible())
       case _ => Unsupported(Some("Input must be an array or map"))
     }
   }

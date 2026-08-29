@@ -240,6 +240,9 @@ object CometFirst extends CometAggregateExpressionSerde[First] {
   override def getCompatibleNotes(): Seq[String] = Seq(
     "This function is not deterministic. Results may not match Spark.")
 
+  override def getSupportLevel(expr: First): SupportLevel =
+    AggSerde.firstLastSupportLevel(expr.dataType)
+
   override def convert(
       aggExpr: AggregateExpression,
       first: First,
@@ -274,6 +277,9 @@ object CometLast extends CometAggregateExpressionSerde[Last] {
 
   override def getCompatibleNotes(): Seq[String] = Seq(
     "This function is not deterministic. Results may not match Spark.")
+
+  override def getSupportLevel(expr: Last): SupportLevel =
+    AggSerde.firstLastSupportLevel(expr.dataType)
 
   override def convert(
       aggExpr: AggregateExpression,
@@ -837,12 +843,20 @@ object CometCollectSet extends CometAggregateExpressionSerde[CollectSet] {
       " `spark.comet.expression.CollectSet.allowIncompatible=true` is set.")
 
   override def getSupportLevel(expr: CollectSet): SupportLevel = {
-    // The native path always drops null inputs. Spark 4.2 added an `ignoreNulls` field to
-    // CollectSet that `RESPECT NULLS` sets to false, preserving nulls in the result; Comet
-    // cannot match that, so fall back. This branch is only reachable on Spark 4.2+: on 3.4
-    // through 4.1 the field does not exist, `RESPECT NULLS`/`IGNORE NULLS` are rejected at
-    // analysis time, and CometCollectShim.ignoreNulls hardcodes true, making this a no-op.
-    if (!CometCollectShim.ignoreNulls(expr)) {
+    // DataFusion's DistinctArrayAggAccumulator (backing SparkCollectSet) calls
+    // ScalarValue::compacted() per non-null input, hitting the same zero-field
+    // StructArray::new panic as First/Last -- see SupportLevel.containsEmptyStruct.
+    if (SupportLevel.containsEmptyStruct(expr.dataType)) {
+      Unsupported(
+        Some(
+          "collect_set on a schema containing an empty struct is not supported " +
+            "(DataFusion's ScalarValue::compacted panics on zero-field structs)"))
+      // The native path always drops null inputs. Spark 4.2 added an `ignoreNulls` field to
+      // CollectSet that `RESPECT NULLS` sets to false, preserving nulls in the result; Comet
+      // cannot match that, so fall back. This branch is only reachable on Spark 4.2+: on 3.4
+      // through 4.1 the field does not exist, `RESPECT NULLS`/`IGNORE NULLS` are rejected at
+      // analysis time, and CometCollectShim.ignoreNulls hardcodes true, making this a no-op.
+    } else if (!CometCollectShim.ignoreNulls(expr)) {
       Unsupported(Some("collect_set with RESPECT NULLS (ignoreNulls = false) is not supported"))
     } else {
       SupportLevel
@@ -887,13 +901,22 @@ object CometCollectSet extends CometAggregateExpressionSerde[CollectSet] {
 object CometCollectList extends CometAggregateExpressionSerde[CollectList] {
 
   override def getSupportLevel(expr: CollectList): SupportLevel = {
-    // The native path delegates to SparkCollectList, which always drops null inputs. Spark 4.2
-    // added an `ignoreNulls` field to CollectList that `RESPECT NULLS` sets to false, preserving
-    // nulls in the result; Comet cannot match that, so fall back. This branch is only reachable
-    // on Spark 4.2+: on 3.4 through 4.1 the field does not exist, `RESPECT NULLS`/`IGNORE NULLS`
-    // are rejected at analysis time, and CometCollectShim.ignoreNulls hardcodes true, making this
-    // a no-op.
-    if (!CometCollectShim.ignoreNulls(expr)) {
+    // planner.rs's coerce_collect_child_nullability casts the child to an all-nullable variant
+    // of its type whenever any nested field is non-nullable (e.g. a named_struct argument), so
+    // that the accumulator's always-nullable output matches the declared schema. DataFusion casts
+    // a struct field-by-field even when only a sibling field's nullability changed, and casting a
+    // zero-field struct to itself still fails -- see SupportLevel.containsEmptyStruct.
+    if (SupportLevel.containsEmptyStruct(expr.dataType)) {
+      Unsupported(
+        Some(
+          "collect_list on a schema containing an empty struct is not supported " +
+            "(DataFusion errors casting a zero-field struct to itself)"))
+      // The native path always drops null inputs. Spark 4.2 added an `ignoreNulls` field to
+      // CollectList that `RESPECT NULLS` sets to false, preserving nulls in the result; Comet
+      // cannot match that, so fall back. This branch is only reachable on Spark 4.2+: on 3.4
+      // through 4.1 the field does not exist, `RESPECT NULLS`/`IGNORE NULLS` are rejected at
+      // analysis time, and CometCollectShim.ignoreNulls hardcodes true, making this a no-op.
+    } else if (!CometCollectShim.ignoreNulls(expr)) {
       Unsupported(Some("collect_list with RESPECT NULLS (ignoreNulls = false) is not supported"))
     } else {
       Compatible()
@@ -1027,6 +1050,18 @@ object AggSerde {
     dt match {
       case ByteType | ShortType | IntegerType | LongType => true
       case _ => false
+    }
+  }
+
+  /** Shared support level for `First` / `Last`, which can't accept an empty struct. */
+  def firstLastSupportLevel(dt: DataType): SupportLevel = {
+    if (SupportLevel.containsEmptyStruct(dt)) {
+      Unsupported(
+        Some(
+          "FIRST/LAST on a schema containing an empty struct is not supported " +
+            "(DataFusion's ScalarValue::compact panics on zero-field structs)"))
+    } else {
+      Compatible()
     }
   }
 

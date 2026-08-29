@@ -294,8 +294,17 @@ object CometInSet extends CometExpressionSerde[InSet] with CodegenDispatchFallba
 trait CollationAwareBinaryPredicate[T <: BinaryExpression]
     extends CometExpressionSerde[T]
     with CodegenDispatchFallback {
-  override def getSupportLevel(expr: T): SupportLevel =
-    ComparisonUtils.collationSupportLevel(expr.prettyName, expr.left, expr.right)
+  override def getSupportLevel(expr: T): SupportLevel = {
+    val collation = ComparisonUtils.collationSupportLevel(expr.prettyName, expr.left, expr.right)
+    if (collation.isInstanceOf[Unsupported]) {
+      collation
+    } else {
+      ComparisonUtils.nestedEmptyStructMismatchSupportLevel(
+        expr.prettyName,
+        expr.left,
+        expr.right)
+    }
+  }
 
   override def getUnsupportedReasons(): Seq[String] =
     Seq(ComparisonUtils.nonDefaultCollationDocReason)
@@ -329,6 +338,30 @@ object ComparisonUtils {
     } else {
       Compatible()
     }
+
+  // DataFusion's nested comparison kernel requires both operands to share an identical type,
+  // including nested field nullability, so `planner.rs`'s `reconcile_nested_comparison_types`
+  // casts whichever operand doesn't already match a merged nullability-union type. DataFusion
+  // casts a struct field-by-field even when only a sibling field's nullability differs, and
+  // casting a zero-field struct to itself still fails -- see SupportLevel.containsEmptyStruct.
+  // Operands with identical types (the common case) never reach that cast, so only a genuine
+  // mismatch is guarded here.
+  def nestedEmptyStructMismatchSupportLevel(
+      exprName: String,
+      left: Expression,
+      right: Expression): SupportLevel = {
+    val (lt, rt) = (left.dataType, right.dataType)
+    if (lt != rt && (SupportLevel.containsEmptyStruct(lt) || SupportLevel.containsEmptyStruct(
+        rt))) {
+      Unsupported(
+        Some(
+          s"$exprName on differently-typed operands containing an empty struct is not " +
+            "supported (DataFusion errors casting a zero-field struct to itself while " +
+            "reconciling the comparison types)"))
+    } else {
+      Compatible()
+    }
+  }
 
   // Spark's `In` / `InSet` return `false` for any operand against an empty list, except under the
   // legacy `null IN ()` behavior, where a `NULL` operand returns `NULL` (SPARK-44550). Comet's

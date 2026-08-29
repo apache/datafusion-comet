@@ -24,6 +24,7 @@ import java.nio.{ByteBuffer, ByteOrder}
 
 import scala.collection.mutable
 import scala.concurrent.duration.DurationInt
+import scala.jdk.CollectionConverters._
 import scala.util.Random
 
 import org.scalactic.source.Position
@@ -40,7 +41,7 @@ import org.apache.spark.sql.comet.execution.arrow.CometArrowStream
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.{col, count, sum}
-import org.apache.spark.sql.types.StructType
+import org.apache.spark.sql.types.{IntegerType, StructField, StructType}
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 
 import org.apache.comet.{CometConf, CometExecIterator, CometShuffleBlockIterator, Native}
@@ -457,6 +458,35 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
           }
         }
       }
+    }
+  }
+
+  test("native shuffle on empty struct") {
+    // A struct with zero fields is a legitimate Arrow value (e.g. Iceberg's `_partition`
+    // metadata column on an unpartitioned table), not a reason to fall back to Spark. The
+    // shuffle's input must itself be Comet-native for this to exercise the real path -- a bare
+    // `LocalRelation` needs COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED to get a native upstream.
+    // For a zero-field struct the parent validity bitmap is the ONLY per-row payload, so the
+    // fixture must mix NULL against `{}` (and, nested, a NULL parent against `{e: {}}` /
+    // `{e: NULL}`) to actually exercise it across the shuffle's serialize/deserialize boundary.
+    withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+      val schema = StructType(
+        Seq(
+          StructField("id", IntegerType),
+          StructField("marker", StructType(Nil)),
+          StructField("nested", StructType(Seq(StructField("e", StructType(Nil)))))))
+      val data = (0 until 50).map { i =>
+        val marker = if (i % 2 == 0) Row() else null
+        val nested = i % 3 match {
+          case 0 => Row(Row())
+          case 1 => Row(null)
+          case _ => null
+        }
+        Row(i, marker, nested)
+      }.asJava
+      val df = spark.createDataFrame(data, schema)
+      val shuffled = df.repartition(10, $"id")
+      checkShuffleAnswer(shuffled, 1, checkNativeOperators = true)
     }
   }
 

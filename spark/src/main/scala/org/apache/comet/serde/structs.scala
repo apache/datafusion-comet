@@ -233,10 +233,15 @@ object CometJsonToStructs extends CometCodegenDispatch[JsonToStructs] with Nativ
       }
     }
 
-    // Convert child expression and schema to protobuf
+    // Convert child expression and schema to protobuf. Serialize `expr.dataType`, not
+    // `expr.schema`: Spark's `JsonToStructs` evaluates against `schema.asNullable` (its
+    // `dataType`), so every field of the result is nullable regardless of how the user wrote the
+    // schema. A parse miss (including a missing field under a `struct<>` target) yields a NULL,
+    // and serializing the user's non-nullable field here would put that NULL under a
+    // non-nullable Arrow field. See SPARK JsonToStructs.nullableSchema.
     for {
       childProto <- exprToProtoInternal(expr.child, inputs, binding)
-      schemaProto <- serializeDataType(expr.schema)
+      schemaProto <- serializeDataType(expr.dataType)
     } yield {
       val fromJson = ExprOuterClass.FromJson
         .newBuilder()
@@ -250,7 +255,9 @@ object CometJsonToStructs extends CometCodegenDispatch[JsonToStructs] with Nativ
 
   private def isSupportedSchema(dt: DataType): Boolean = dt match {
     case StructType(fields) =>
-      fields.nonEmpty && fields.forall(f => isSupportedSchema(f.dataType))
+      // A struct's `fields` can be empty -- e.g. `from_json(col, 'struct<>')`'s target schema.
+      // With no fields to check, this holds vacuously.
+      fields.forall(f => isSupportedSchema(f.dataType))
     case DataTypes.IntegerType | DataTypes.LongType | DataTypes.FloatType | DataTypes.DoubleType |
         DataTypes.BooleanType | DataTypes.StringType =>
       true

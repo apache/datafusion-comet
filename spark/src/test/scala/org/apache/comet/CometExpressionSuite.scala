@@ -44,6 +44,100 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   val DIVIDE_BY_ZERO_EXCEPTION_MSG =
     """Division by zero. Use `try_divide` to tolerate divisor being 0 and return NULL instead"""
 
+  test("struct comparison declines mismatched-nullability operands containing an empty struct") {
+    // planner.rs's reconcile_nested_comparison_types casts whichever comparison operand doesn't
+    // already match the nullability-union of both operand types; a named_struct literal argument
+    // infers a non-nullable field, so comparing it against a schema-nullable column of the same
+    // shape casts one side. DataFusion casts a struct field-by-field even when only that one
+    // field's nullability differs, and casting a zero-field struct to itself still fails -- see
+    // SupportLevel.containsEmptyStruct.
+    withSQLConf(
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+        "org.apache.spark.sql.catalyst.optimizer.ConvertToLocalRelation") {
+      val schema =
+        StructType(Seq(StructField("outer", StructType(Seq(StructField("e", StructType(Nil)))))))
+      val data =
+        java.util.List.of[Row](Row(Row(Row())), Row(Row(null)), Row(null))
+      val df = spark.createDataFrame(data, schema)
+      df.createOrReplaceTempView("empty_struct_cmp")
+
+      checkSparkAnswerAndFallbackReason(
+        "SELECT outer <=> named_struct('e', struct()) FROM empty_struct_cmp",
+        "on differently-typed operands containing an empty struct is not supported")
+    }
+  }
+
+  test("greatest/least decline multi-arg empty-struct operands (nested nullability mismatch)") {
+    // Spark's `TypeCoercion.haveSameType` lets `greatest`/`least` take two structs that match
+    // only up to nullability. DataFusion's `greatest`/`least` coerce every argument to one
+    // common type, and reconciling the nullability difference inserts a struct cast that errors
+    // on the zero-field child -- see SupportLevel.containsEmptyStruct.
+    withSQLConf(
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+        "org.apache.spark.sql.catalyst.optimizer.ConvertToLocalRelation") {
+      val empty = StructType(Nil)
+      val leftType = StructType(
+        Seq(
+          StructField("marker", empty, nullable = true),
+          StructField("value", IntegerType, nullable = false)))
+      val rightType = StructType(
+        Seq(
+          StructField("marker", empty, nullable = true),
+          StructField("value", IntegerType, nullable = true)))
+      val schema = StructType(
+        Seq(
+          StructField("a", leftType, nullable = false),
+          StructField("b", rightType, nullable = false)))
+      val data = java.util.List.of[Row](Row(Row(Row(), 1), Row(Row(), 2)))
+      val df = spark.createDataFrame(data, schema)
+      df.createOrReplaceTempView("empty_struct_least_greatest")
+
+      for (fn <- Seq("greatest", "least")) {
+        checkSparkAnswerAndFallbackReason(
+          s"SELECT $fn(a, b) FROM empty_struct_least_greatest",
+          "whose type contains an empty struct is not supported")
+      }
+    }
+  }
+
+  test("greatest/least decline empty-struct operands with only an Arrow field-name mismatch") {
+    // `array_repeat(n, 1).e` and `array_repeat(n.e, 1)` are both `array<struct<>>` to Spark, so
+    // no unifying Catalyst cast, but their Arrow element fields are named differently (`e` vs
+    // `item`). DataFusion's greatest/least coercion casts one to the other, and casting a
+    // zero-field struct errors -- the guard keys on `containsEmptyStruct` + arg count, not on a
+    // Spark-visible type difference.
+    withSQLConf(
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+        "org.apache.spark.sql.catalyst.optimizer.ConvertToLocalRelation") {
+      val schema = StructType(
+        Seq(
+          StructField("id", IntegerType),
+          StructField("n", StructType(Seq(StructField("e", StructType(Nil)))))))
+      val data = java.util.List.of[Row](Row(1, Row(Row())), Row(2, Row(null)), Row(3, null))
+      val df = spark.createDataFrame(data, schema)
+      df.createOrReplaceTempView("empty_struct_lg_names")
+
+      for (fn <- Seq("greatest", "least")) {
+        checkSparkAnswerAndFallbackReason(
+          s"SELECT $fn(array_repeat(n, 1).e, array_repeat(n.e, 1)) FROM empty_struct_lg_names",
+          "whose type contains an empty struct is not supported")
+      }
+    }
+  }
+
+  test("greatest/least with mismatched operand nullability but no empty struct stay native") {
+    // Control for the guard above: the guard keys on `containsEmptyStruct`, so an ordinary
+    // nullability mismatch (here one nullable and one non-nullable int argument) must not trip
+    // it -- `greatest`/`least` stay on the native path.
+    withParquetTable((0 until 10).map(i => (i, i + 1)), "least_greatest_control") {
+      checkSparkAnswerAndOperator(
+        "SELECT greatest(_1, _2, 5), least(_1, _2, 5) FROM least_greatest_control")
+    }
+  }
+
   // Temporary test to verify checkSparkAnswer failure output labels Comet/Spark correctly.
   ignore("check output labels on mismatch") {
     val cometDf = Seq((1, "apple"), (2, "banana"), (3, "cherry")).toDF("id", "fruit")

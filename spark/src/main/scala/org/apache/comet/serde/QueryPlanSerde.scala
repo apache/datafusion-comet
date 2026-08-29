@@ -132,11 +132,11 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[Expm1] -> CometScalarFunction("expm1"),
       classOf[Factorial] -> CometScalarFunction("factorial"),
       classOf[Floor] -> CometFloor,
-      classOf[Greatest] -> CometScalarFunction("greatest"),
+      classOf[Greatest] -> CometGreatest,
       classOf[Hex] -> CometHex,
       classOf[IntegralDivide] -> CometIntegralDivide,
       classOf[IsNaN] -> CometIsNaN,
-      classOf[Least] -> CometScalarFunction("least"),
+      classOf[Least] -> CometLeast,
       classOf[Log] -> CometLog,
       classOf[Log2] -> CometLog2,
       classOf[Log10] -> CometLog10,
@@ -539,7 +539,9 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     case dt if isTimeType(dt) =>
       true
     case s: StructType if allowComplex =>
-      s.fields.nonEmpty && s.fields.map(_.dataType).forall(supportedDataType(_, allowComplex))
+      // A struct's `fields` can be empty -- e.g. Iceberg's `_partition` metadata column is
+      // exactly that on an unpartitioned table. It's still a value Comet can represent.
+      s.fields.map(_.dataType).forall(supportedDataType(_, allowComplex))
     case a: ArrayType if allowComplex =>
       supportedDataType(a.elementType, allowComplex)
     case m: MapType if allowComplex =>
