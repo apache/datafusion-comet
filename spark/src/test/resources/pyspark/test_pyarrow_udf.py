@@ -586,18 +586,87 @@ def test_map_in_arrow_nested_source_batches(spark, tmp_path, accelerated):
         )
 
 
-@pytest.mark.parametrize("api", ["mapInArrow", "mapInPandas"])
-def test_map_in_batch_union_with_different_nested_nullability(
-    spark, tmp_path, accelerated, api
+@pytest.mark.parametrize(
+    "wrapper,rename_field,api",
+    [
+        (wrapper, rename_field, api)
+        for wrapper, rename_field in [
+            ("{}", False),
+            ("array({})", False),
+            ("map(1,{})", False),
+            ("map({},1)", False),
+            ("map(1,array({}))", False),
+            ("{}", True),
+            ("array({})", True),
+            ("map(1,{})", True),
+        ]
+        for api in ["mapInArrow", "mapInPandas"]
+        # Spark's pandas conversion cannot use dict-valued struct keys in a map.
+        if api == "mapInArrow" or wrapper != "map({},1)"
+    ],
+)
+def test_map_in_batch_union_with_compatible_nested_fields(
+    spark, tmp_path, accelerated, api, wrapper, rename_field
 ):
-    """Union branches may have different raw nullability but the same IPC schema."""
+    """Union batches can vary in names/nullability without changing their buffer layout."""
     rows = [(0, None), (1, 2), (2, 3)]
-    src = str(tmp_path / "union_nullability.parquet")
+    src = str(tmp_path / "union_fields.parquet")
     spark.createDataFrame(rows, "id int, value int").coalesce(1).write.parquet(src)
     source = spark.read.parquet(src)
-    left = source.selectExpr("named_struct('id', id, 'value', 1) AS payload")
-    right = source.selectExpr("named_struct('id', id, 'value', value) AS payload")
+    left_value = "named_struct('id', id, 'value', 1)"
+    right_name = "renamed_value" if rename_field else "value"
+    right_value = f"named_struct('id', id, '{right_name}', value)"
+    if wrapper == "map(1,{})":
+        right_value = f"IF(value IS NULL, NULL, {right_value})"
+    left = source.selectExpr(f"{wrapper.format(left_value)} AS payload")
+    right = source.selectExpr(f"{wrapper.format(right_value)} AS payload")
     combined = left.union(right).coalesce(1)
+    expected = Counter(map(repr, combined.collect()))
+
+    def passthrough(iterator):
+        for batch in iterator:
+            if api == "mapInArrow":
+                data_type = batch.schema.field("payload").type
+                if pa.types.is_map(data_type):
+                    assert not data_type.field(0).nullable  # entries
+                    assert not data_type.key_field.nullable
+                    nested = data_type.key_type
+                    if not pa.types.is_struct(nested):
+                        nested = data_type.item_type
+                        if pa.types.is_struct(nested):
+                            assert data_type.item_field.nullable
+                    if pa.types.is_list(nested):
+                        nested = nested.value_type
+                    assert nested.field("value").nullable
+            yield batch
+
+    result = getattr(combined, api)(passthrough, combined.schema)
+    plan = _executed_plan(result)
+    _assert_plan_matches_mode(
+        plan,
+        accelerated,
+        vanilla_node="MapInArrow" if api == "mapInArrow" else "MapInPandas",
+    )
+    if accelerated:
+        assert "CometUnion" in plan
+    assert Counter(map(repr, result.collect())) == expected
+
+
+@pytest.mark.parametrize("api", ["mapInArrow", "mapInPandas"])
+def test_map_in_batch_union_with_different_field_metadata(
+    spark, tmp_path, accelerated, api
+):
+    """Parquet field IDs describe source columns, not the outgoing IPC buffer layout."""
+    sources = []
+    for field_id in (1, 2):
+        nested = T.StructType(
+            [T.StructField("value", T.IntegerType(), True, {"parquet.field.id": field_id})]
+        )
+        schema = T.StructType([T.StructField("payload", nested)])
+        path = str(tmp_path / f"field_id_{field_id}.parquet")
+        spark.createDataFrame([((10,),), ((None,),)], schema).coalesce(1).write.parquet(path)
+        sources.append(spark.read.parquet(path))
+    combined = sources[0].union(sources[1]).coalesce(1)
 
     def passthrough(iterator):
         yield from iterator
@@ -611,8 +680,7 @@ def test_map_in_batch_union_with_different_nested_nullability(
     )
     if accelerated:
         assert "CometUnion" in plan
-    actual = Counter((row.payload.id, row.payload.value) for row in result.collect())
-    assert actual == Counter(rows + [(index, 1) for index, _ in rows])
+    assert Counter(row.payload.value for row in result.collect()) == Counter({10: 2, None: 2})
 
 
 def test_map_in_arrow_wide_schema(spark, tmp_path, accelerated):

@@ -34,8 +34,8 @@ import org.apache.arrow.memory.{BufferAllocator, RootAllocator}
 import org.apache.arrow.vector.{FieldVector, IntVector, NullVector, VarCharVector, VectorSchemaRoot}
 import org.apache.arrow.vector.complex.{ListVector, MapVector, StructVector}
 import org.apache.arrow.vector.ipc.{ArrowStreamReader, ArrowStreamWriter, WriteChannel}
-import org.apache.arrow.vector.types.pojo.{ArrowType, Field, FieldType, Schema}
-import org.apache.spark.sql.execution.python.CometArrowPythonRunnerBase.serializeBatch
+import org.apache.arrow.vector.types.pojo.{ArrowType, DictionaryEncoding, Field, FieldType, Schema}
+import org.apache.spark.sql.execution.python.CometArrowPythonRunnerBase.{hasCompatibleSchema, serializeBatch}
 
 class CometArrowPythonRunnerSuite extends AnyFunSuite with Matchers {
 
@@ -68,6 +68,60 @@ class CometArrowPythonRunnerSuite extends AnyFunSuite with Matchers {
       reader.close()
       allocator.close()
     }
+  }
+
+  test("input schema compatibility preserves physical types and nested layouts") {
+    val intType = new ArrowType.Int(32, true)
+    def nested(dataType: ArrowType): Seq[Field] = Seq(
+      new Field(
+        "outer",
+        FieldType.nullable(ArrowType.Struct.INSTANCE),
+        Seq(new Field("value", FieldType.nullable(dataType), null)).asJava))
+
+    val renamed = Seq(
+      new Field(
+        "renamed",
+        FieldType.notNullable(ArrowType.Struct.INSTANCE),
+        Seq(new Field("other", FieldType.notNullable(intType), null)).asJava))
+    hasCompatibleSchema(nested(intType), renamed) shouldBe true
+    hasCompatibleSchema(nested(intType), Seq.empty) shouldBe false
+    hasCompatibleSchema(
+      nested(intType),
+      Seq(new Field("outer", FieldType.nullable(ArrowType.Struct.INSTANCE), null))) shouldBe false
+
+    val incompatibleTypes: Seq[(ArrowType, ArrowType)] = Seq(
+      (intType, new ArrowType.Int(64, true)),
+      (intType, new ArrowType.Int(32, false)),
+      (ArrowType.Utf8.INSTANCE, ArrowType.LargeUtf8.INSTANCE),
+      (ArrowType.Binary.INSTANCE, ArrowType.LargeBinary.INSTANCE),
+      (new ArrowType.Decimal(10, 2, 128), new ArrowType.Decimal(10, 3, 128)))
+    incompatibleTypes.foreach { case (expected, actual) =>
+      hasCompatibleSchema(nested(expected), nested(actual)) shouldBe false
+    }
+  }
+
+  test("input schema compatibility preserves extension and dictionary interpretation") {
+    val intType = new ArrowType.Int(32, true)
+    def fields(
+        metadata: Map[String, String] = Map.empty,
+        dictionary: DictionaryEncoding = null): Seq[Field] =
+      Seq(new Field("value", new FieldType(true, intType, dictionary, metadata.asJava), null))
+
+    hasCompatibleSchema(
+      fields(Map("PARQUET:field_id" -> "1")),
+      fields(Map("PARQUET:field_id" -> "2"))) shouldBe true
+    Seq(
+      ArrowType.ExtensionType.EXTENSION_METADATA_KEY_NAME,
+      ArrowType.ExtensionType.EXTENSION_METADATA_KEY_METADATA).foreach { key =>
+      hasCompatibleSchema(
+        fields(Map(key -> "before")),
+        fields(Map(key -> "after"))) shouldBe false
+    }
+    val dictionary = new DictionaryEncoding(1L, false, intType)
+    hasCompatibleSchema(fields(dictionary = dictionary), fields()) shouldBe false
+    hasCompatibleSchema(
+      fields(dictionary = dictionary),
+      fields(dictionary = new DictionaryEncoding(2L, false, intType))) shouldBe false
   }
 
   test("direct batches retain borrowed buffers without copying them into the writer allocator") {

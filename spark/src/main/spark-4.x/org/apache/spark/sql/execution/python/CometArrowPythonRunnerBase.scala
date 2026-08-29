@@ -176,10 +176,7 @@ private[python] trait CometArrowPythonRunnerBase
             .getValueVector
             .asInstanceOf[FieldVector]
         }
-        val childNames = inputStructType.fieldNames
-        val batchFields = sourceVectors.zipWithIndex.map { case (vector, i) =>
-          renamed(vector.getField, childNames(i), forceNullable = true)
-        }
+        val batchFields = sourceVectors.map(_.getField)
 
         if (arrowWriter == null) {
           // Build the schema-only struct root once from the first batch's child fields.
@@ -192,13 +189,17 @@ private[python] trait CometArrowPythonRunnerBase
           // rather than the session zone vanilla Spark would label it with; this is a documented
           // limitation (see pyarrow-udfs.md), not a value difference, since the stored instant is
           // identical.
-          streamFields = batchFields
+          val childNames = inputStructType.fieldNames
+          streamFields = batchFields.zipWithIndex.map { case (field, i) =>
+            renamed(field, childNames(i), forceNullable = true)
+          }
           startWriter(streamFields, dataOut)
         }
 
-        // Compare normalized fields: union branches may differ only in nested nullability.
+        // Union branches may differ in names, nullability, or descriptive metadata. Only
+        // differences that change how the advertised schema interprets the buffers are invalid.
         require(
-          batchFields == streamFields,
+          CometArrowPythonRunnerBase.hasCompatibleSchema(streamFields, batchFields),
           s"Arrow input schema changed between batches: expected $streamFields, got $batchFields")
 
         CometArrowPythonRunnerBase.serializeBatch(
@@ -290,11 +291,14 @@ private[python] trait CometArrowPythonRunnerBase
    * materialize the struct. Keeping the type and structure intact means the advertised schema
    * still mirrors the Comet source vectors serialized directly into each record batch.
    */
-  private def renamed(field: Field, name: String, forceNullable: Boolean): Field = {
-    // A Map's descendants must keep their original nullability: Arrow requires the entries struct
-    // (and its key) to be non-nullable, and `MapVector.createVector` rejects a nullable entries
-    // struct. Stop forcing nullable once we enter a Map subtree.
-    val childrenForceNullable = forceNullable && !field.getType.isInstanceOf[ArrowType.Map]
+  private def renamed(
+      field: Field,
+      name: String,
+      forceNullable: Boolean,
+      isMapEntry: Boolean = false): Field = {
+    // Map entries and keys must stay non-nullable, but values and fields nested inside a
+    // complex key may be nullable. Do not propagate the restriction through the whole subtree.
+    val isMap = field.getType.isInstanceOf[ArrowType.Map]
     val children = field.getChildren
     val newChildren =
       if (children.isEmpty) children
@@ -307,7 +311,8 @@ private[python] trait CometArrowPythonRunnerBase
           renamed(
             child,
             if (child.getName == null) s"_$idx" else child.getName,
-            childrenForceNullable)
+            forceNullable = !isMap && !(isMapEntry && idx == 0),
+            isMapEntry = isMap)
         }.asJava
     // Force the field nullable where allowed. Comet's FFI-imported vectors may carry a
     // non-nullable Arrow `Field` even for columns that contain nulls (Comet uses positional schema
@@ -323,6 +328,22 @@ private[python] trait CometArrowPythonRunnerBase
 }
 
 private[python] object CometArrowPythonRunnerBase {
+
+  // Extensions can change interpretation even when their underlying storage types match.
+  private val extensionMetadataKeys = Seq(
+    ArrowType.ExtensionType.EXTENSION_METADATA_KEY_NAME,
+    ArrowType.ExtensionType.EXTENSION_METADATA_KEY_METADATA)
+
+  /** Names, nullability and ordinary field metadata do not change the IPC buffer layout. */
+  private[python] def hasCompatibleSchema(expected: Seq[Field], actual: Seq[Field]): Boolean = {
+    expected.size == actual.size && expected.zip(actual).forall { case (left, right) =>
+      left.getType == right.getType &&
+      left.getDictionary == right.getDictionary &&
+      extensionMetadataKeys.forall(key =>
+        left.getMetadata.get(key) == right.getMetadata.get(key)) &&
+      hasCompatibleSchema(left.getChildren.asScala.toSeq, right.getChildren.asScala.toSeq)
+    }
+  }
 
   /**
    * Serialize source vectors directly beneath the non-null struct advertised in the IPC stream.
