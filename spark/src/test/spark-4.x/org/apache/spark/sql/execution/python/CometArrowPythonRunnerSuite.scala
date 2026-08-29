@@ -34,6 +34,7 @@ import org.apache.arrow.memory.{BufferAllocator, RootAllocator}
 import org.apache.arrow.vector.{FieldVector, IntVector, NullVector, VarCharVector, VectorSchemaRoot}
 import org.apache.arrow.vector.complex.{ListVector, MapVector, StructVector}
 import org.apache.arrow.vector.ipc.{ArrowStreamReader, ArrowStreamWriter, WriteChannel}
+import org.apache.arrow.vector.types.TimeUnit
 import org.apache.arrow.vector.types.pojo.{ArrowType, DictionaryEncoding, Field, FieldType, Schema}
 import org.apache.spark.sql.execution.python.CometArrowPythonRunnerBase.{hasCompatibleSchema, serializeBatch}
 
@@ -122,6 +123,76 @@ class CometArrowPythonRunnerSuite extends AnyFunSuite with Matchers {
     hasCompatibleSchema(
       fields(dictionary = dictionary),
       fields(dictionary = new DictionaryEncoding(2L, false, intType))) shouldBe false
+  }
+
+  test("input schema compatibility accepts UTC timestamp aliases with matching units") {
+    def fields(unit: TimeUnit, timezone: String): Seq[Field] =
+      Seq(new Field("ts", FieldType.nullable(new ArrowType.Timestamp(unit, timezone)), null))
+    def nested(children: Seq[Field]): Seq[Field] =
+      Seq(new Field("outer", FieldType.nullable(ArrowType.Struct.INSTANCE), children.asJava))
+
+    for (unit <- TimeUnit.values()) {
+      val utc = fields(unit, "UTC")
+      val alias = fields(unit, "Etc/UTC")
+      hasCompatibleSchema(utc, alias) shouldBe true
+      hasCompatibleSchema(alias, utc) shouldBe true
+      hasCompatibleSchema(nested(utc), nested(alias)) shouldBe true
+      hasCompatibleSchema(nested(alias), nested(utc)) shouldBe true
+    }
+
+    for {
+      expectedUnit <- TimeUnit.values()
+      actualUnit <- TimeUnit.values()
+      if expectedUnit != actualUnit
+    } {
+      hasCompatibleSchema(
+        fields(expectedUnit, "UTC"),
+        fields(actualUnit, "Etc/UTC")) shouldBe false
+      hasCompatibleSchema(
+        fields(expectedUnit, "Etc/UTC"),
+        fields(actualUnit, "UTC")) shouldBe false
+    }
+  }
+
+  test("UTC timestamp aliases preserve timezone, dictionary and extension constraints") {
+    def fields(
+        timezone: String,
+        metadata: Map[String, String] = Map.empty,
+        dictionary: DictionaryEncoding = null): Seq[Field] = Seq(
+      new Field(
+        "ts",
+        new FieldType(
+          true,
+          new ArrowType.Timestamp(TimeUnit.MICROSECOND, timezone),
+          dictionary,
+          metadata.asJava),
+        null))
+
+    for {
+      utc <- Seq("UTC", "Etc/UTC")
+      other <- Seq(null, "", "GMT", "+00:00", "America/Los_Angeles")
+    } {
+      hasCompatibleSchema(fields(utc), fields(other)) shouldBe false
+      hasCompatibleSchema(fields(other), fields(utc)) shouldBe false
+    }
+    hasCompatibleSchema(fields(null), fields(null)) shouldBe true
+    hasCompatibleSchema(
+      fields("America/Los_Angeles"),
+      fields("America/Los_Angeles")) shouldBe true
+
+    val dictionary = new DictionaryEncoding(1L, false, new ArrowType.Int(32, true))
+    val otherDictionary = new DictionaryEncoding(2L, false, dictionary.getIndexType)
+    hasCompatibleSchema(fields("UTC", dictionary = dictionary), fields("Etc/UTC")) shouldBe false
+    hasCompatibleSchema(
+      fields("UTC", dictionary = dictionary),
+      fields("Etc/UTC", dictionary = otherDictionary)) shouldBe false
+    Seq(
+      ArrowType.ExtensionType.EXTENSION_METADATA_KEY_NAME,
+      ArrowType.ExtensionType.EXTENSION_METADATA_KEY_METADATA).foreach { key =>
+      hasCompatibleSchema(
+        fields("UTC", Map(key -> "before")),
+        fields("Etc/UTC", Map(key -> "after"))) shouldBe false
+    }
   }
 
   test("direct batches retain borrowed buffers without copying them into the writer allocator") {
