@@ -967,21 +967,17 @@ UDF that reads the Arrow field’s time zone or localizes to wall-clock time (fo
 session time zone such a UDF can diverge from the unoptimized path. Set
 <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.pyarrowUDF.enabled=false</span></code> for those UDFs.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">spark.sql.execution.arrow.useLargeVarTypes=true</span></code> is not supported. With this conf enabled,
-Spark widens <code class="docutils literal notranslate"><span class="pre">StringType</span></code> and <code class="docutils literal notranslate"><span class="pre">BinaryType</span></code> to Arrow’s 8-byte-offset variants in the
-destination IPC root, while Comet’s source vectors always use 4-byte offsets. The buffer-copy
-path cannot bridge that mismatch, so <code class="docutils literal notranslate"><span class="pre">EliminateRedundantTransitions</span></code> skips the rewrite and
-vanilla Spark handles the operation.</p></li>
-<li><p>Each batch is copied twice on the JVM side: once from Comet’s vectors into Spark’s
-destination IPC root (per-buffer <code class="docutils literal notranslate"><span class="pre">setBytes</span></code>), and a second time inside the IPC writer when
-<code class="docutils literal notranslate"><span class="pre">VectorUnloader</span></code> / <code class="docutils literal notranslate"><span class="pre">MessageSerializer.serialize</span></code> walks the root and writes bytes to the
-pipe to the Python worker. The pipe write is structural (Spark’s transport to Python is
-fork + pipe + Arrow IPC, so the buffer bytes must reach the pipe at least once); dropping
-the first copy by serialising directly from Comet’s vectors is tracked in
-<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4294">#4294</a>. Even after that,
-true zero-copy at the JVM boundary is blocked because Comet’s source <code class="docutils literal notranslate"><span class="pre">FieldVector</span></code>s are
-imported from native via Arrow C Data Interface (their buffers route <code class="docutils literal notranslate"><span class="pre">release</span></code> through FFI),
-while Spark’s destination IPC root is a child of <code class="docutils literal notranslate"><span class="pre">ArrowUtils.rootAllocator</span></code>. The two
-reference managers cannot share buffers via <code class="docutils literal notranslate"><span class="pre">TransferPair</span></code>.</p></li>
+Spark supplies <code class="docutils literal notranslate"><span class="pre">large_string</span></code> and <code class="docutils literal notranslate"><span class="pre">large_binary</span></code> input columns with 8-byte offsets. Native
+Comet vectors use 4-byte offsets, and direct serialization advertises their matching <code class="docutils literal notranslate"><span class="pre">string</span></code>
+and <code class="docutils literal notranslate"><span class="pre">binary</span></code> types. This produces a valid IPC stream, but does not preserve the input types
+requested by the configuration. <code class="docutils literal notranslate"><span class="pre">EliminateRedundantTransitions</span></code> therefore skips the rewrite
+and vanilla Spark handles the operation. Comet can read <code class="docutils literal notranslate"><span class="pre">large_string</span></code> and <code class="docutils literal notranslate"><span class="pre">large_binary</span></code>
+columns returned by a Python worker; that output support does not widen the input vectors.</p></li>
+<li><p>Comet writes input Arrow IPC record batches directly from its existing vector buffers. The
+only additional Arrow buffer is the validity bitmap for the non-null struct that wraps the
+input columns. Writing the IPC bytes to the Python worker’s pipe still requires one copy;
+that copy is inherent to Spark’s process-based Python transport. This path does not transfer
+buffers between Arrow allocators or change their ownership.</p></li>
 </ul>
 </section>
 </section>
