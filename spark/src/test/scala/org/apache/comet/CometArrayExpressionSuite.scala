@@ -1160,8 +1160,10 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
                   "array(monotonically_increasing_id(), CAST(NULL AS BIGINT))), id), " +
                   "id - 1) AS v FROM stateful_lookup")
               // A stateful index must advance only for the non-null array row.
-              checkSparkAnswerAndOperator("SELECT id, element_at(IF(id = 1, NULL, array(7)), " +
-                "CAST(monotonically_increasing_id() AS INT) + 1) AS v FROM stateful_lookup")
+              // A null element keeps Spark's ANSI result nullable on older versions.
+              checkSparkAnswerAndOperator(
+                "SELECT id, element_at(IF(id = 1, NULL, array(7, CAST(NULL AS INT))), " +
+                  "CAST(monotonically_increasing_id() AS INT) + 1) AS v FROM stateful_lookup")
             }
           }
         }
