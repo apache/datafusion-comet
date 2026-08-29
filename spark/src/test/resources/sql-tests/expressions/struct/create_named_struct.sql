@@ -33,3 +33,14 @@ SELECT named_struct('x', 1, 'y', 'hello', 'z', 3.14)
 
 query
 SELECT named_struct('x', a, 'y', 'fixed_val', 'z', c) FROM test_named_struct
+
+-- Spark keeps duplicate field names as distinct positional fields, but Arrow's StructVector
+-- keys children by name, so both the native serde and the codegen dispatcher must fall back.
+query expect_fallback(duplicate field names)
+SELECT named_struct('x', a, 'x', b) FROM test_named_struct
+
+query expect_fallback(duplicate struct field name)
+SELECT transform(array(a), v -> named_struct('x', v, 'x', NULL)) FROM test_named_struct
+
+query expect_fallback(duplicate struct field name)
+SELECT transform(array(a), v -> named_struct('x', v, 'x', v + 1)) FROM test_named_struct

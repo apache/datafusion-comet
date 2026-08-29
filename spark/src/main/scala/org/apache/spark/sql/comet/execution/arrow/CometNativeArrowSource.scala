@@ -201,6 +201,10 @@ object CometArrowStream extends Logging {
    * a null and crash native validation. Both inputs are borrowed and unchanged; the returned
    * field owns no buffers. Missing dictionary metadata or provider entries propagate the shared
    * accessor's named column error.
+   *
+   * Children come from the vector too, so a `NullType` map key arrives nullable (see
+   * `Utils.withNonNullableMapKeys`); `ArrowReader.getVectorSchemaRoot` would reject it when it
+   * rebuilds the `MapVector` from this schema.
    */
   private def actualFieldOf(col: CometVector, expected: Field): Field = {
     val raw = col match {
@@ -211,7 +215,7 @@ object CometArrowStream extends Logging {
     val nullable = expected.isNullable || raw.isNullable
     val fieldType =
       new FieldType(nullable, raw.getType, raw.getDictionary, expected.getMetadata)
-    new Field(expected.getName, fieldType, raw.getChildren)
+    Utils.withNonNullableMapKeys(new Field(expected.getName, fieldType, raw.getChildren))
   }
 
   /**
