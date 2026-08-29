@@ -154,6 +154,7 @@ class CometRegexSuite extends AnyFunSuite {
       .foreach(assertIncompatible)
     assertCompatible("a{256}")
     assertCompatible("(a{2}){3}")
+    assertCompatible("(?:a{64}){64}")
     assertCompatible("(([^;]{256}){0}){256}")
     assertCompatible("(([^;]{256}){0,0}){256}")
     assertCompatible("(" * 32 + "a" + ")" * 32)
@@ -162,7 +163,7 @@ class CometRegexSuite extends AnyFunSuite {
   test("rejects aggregate patterns that exceed the Rust compile budget") {
     val maxExpansion = 4096
     assertCompatible("a{256}" * 16)
-    assertCompatible("(a{64}){64}")
+    assertCompatible("(?:a{64}){64}")
     assertCompatible("a{0}" * maxExpansion)
     Seq(
       "a{256}" * 17,
@@ -186,5 +187,21 @@ class CometRegexSuite extends AnyFunSuite {
 
     val q = nestedStars(30)
     assertIncompatible(s"(($q){255}){16}b")
+  }
+
+  test("rejects capturing groups duplicated by counted repetition past the compile budget") {
+    def nestedStars(atom: String, n: Int): String =
+      (1 to n).foldLeft(atom) { (p, _) => s"($p)*" }
+
+    val q = nestedStars("[^;]", 7)
+    val wrapped = ("(" * 16) + q + (")" * 16)
+    assertIncompatible((wrapped + "{256}") * 16)
+
+    assertCompatible("[^x]{256}")
+    assertCompatible("[^;]{256}" * 16)
+    assertCompatible("(?:a{64}){64}")
+    assertCompatible("(?:foo){256}")
+    assertCompatible("(" * 32 + "a" + ")" * 32)
+    assertIncompatible("(a{64}){64}")
   }
 }
