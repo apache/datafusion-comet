@@ -725,7 +725,12 @@ object CometBase64 extends CometExpressionSerde[Base64] {
 // those cases also stay on the dispatcher. Error messages match Spark byte-for-byte (pinned in
 // the Rust unit tests), but the wrapping exception class does not; kept as Compatible() because
 // Spark surfaces these as bare IllegalArgumentException without a SQL error class.
-object CometUnBase64 extends CometExpressionSerde[UnBase64] with CodegenDispatchFallback {
+object CometUnBase64
+    extends CometExpressionSerde[UnBase64]
+    with CodegenDispatchFallback
+    with RequiresSparkEvaluationMask[UnBase64] {
+
+  override def evaluationMaskName(expr: UnBase64): Option[String] = Some("unbase64")
 
   private val failOnErrorReason =
     "unbase64 with failOnError = true uses stricter RFC 4648 validation that is not yet" +

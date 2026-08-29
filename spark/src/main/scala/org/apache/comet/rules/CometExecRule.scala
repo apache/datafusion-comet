@@ -22,7 +22,7 @@ package org.apache.comet.rules
 import scala.collection.mutable.ListBuffer
 
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.catalyst.expressions.{Divide, DoubleLiteral, EqualNullSafe, EqualTo, Expression, FloatLiteral, GreaterThan, GreaterThanOrEqual, KnownFloatingPointNormalized, LessThan, LessThanOrEqual, NamedExpression, Remainder, SortOrder, UnBase64}
+import org.apache.spark.sql.catalyst.expressions.{Divide, DoubleLiteral, EqualNullSafe, EqualTo, Expression, FloatLiteral, GreaterThan, GreaterThanOrEqual, KnownFloatingPointNormalized, LessThan, LessThanOrEqual, NamedExpression, Remainder, SortOrder}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateMode, Final, Partial, PartialMerge}
 import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
 import org.apache.spark.sql.catalyst.plans.{JoinType, LeftAnti, LeftSemi}
@@ -68,8 +68,8 @@ object CometExecRule {
   val COMET_UNSAFE_PARTIAL: TreeNodeTag[String] =
     TreeNodeTag[String]("comet.unsafePartialAgg")
 
-  private[rules] val UNSAFE_UNBASE64_EVALUATION: TreeNodeTag[String] =
-    TreeNodeTag[String]("comet.unsafeUnbase64Evaluation")
+  private[rules] val UNSAFE_EXPRESSION_EVALUATION: TreeNodeTag[String] =
+    TreeNodeTag[String]("comet.unsafeExpressionEvaluation")
 
   /**
    * Fully native operators.
@@ -272,8 +272,8 @@ case class CometExecRule(session: SparkSession)
   // spotless:on
   private def transform(plan: SparkPlan): SparkPlan = {
     def convertNode(op: SparkPlan): SparkPlan = op match {
-      case op if op.getTagValue(CometExecRule.UNSAFE_UNBASE64_EVALUATION).isDefined =>
-        withFallbackReason(op, op.getTagValue(CometExecRule.UNSAFE_UNBASE64_EVALUATION).get)
+      case op if op.getTagValue(CometExecRule.UNSAFE_EXPRESSION_EVALUATION).isDefined =>
+        withFallbackReason(op, op.getTagValue(CometExecRule.UNSAFE_EXPRESSION_EVALUATION).get)
 
       // Scan marker produced by an optional, out-of-tree scan contrib (e.g. contrib/delta).
       // Matched by trait (no compile-time dependency on the contrib) and present only when that
@@ -621,7 +621,7 @@ case class CometExecRule(session: SparkSession)
       // corresponding Final aggregate cannot be converted and the intermediate buffer
       // formats are incompatible. This runs before transform() so the tags are checked
       // during the bottom-up conversion. Tags persist through AQE stage creation.
-      val planWithEvaluationMasks = preserveUnbase64EvaluationMasks(planWithJoinRewritten)
+      val planWithEvaluationMasks = preserveEvaluationMasks(planWithJoinRewritten)
       tagUnsafePartialAggregates(planWithEvaluationMasks)
 
       var newPlan = transform(planWithEvaluationMasks)
@@ -722,13 +722,16 @@ case class CometExecRule(session: SparkSession)
     }
   }
 
-  /** Keep operators that can skip malformed unbase64 inputs in Spark's row pipeline. */
-  private def preserveUnbase64EvaluationMasks(plan: SparkPlan): SparkPlan = {
-    val limitReason = "unbase64 requires Spark evaluation below LIMIT"
-    val joinReason = "unbase64 requires Spark evaluation in first-match join conditions"
-
-    def containsUnbase64(expr: Expression): Boolean =
-      expr.exists(_.isInstanceOf[UnBase64])
+  /** Keep opted-in expressions in Spark's row pipeline where an operator can skip inputs. */
+  private def preserveEvaluationMasks(plan: SparkPlan): SparkPlan = {
+    def findEvaluationMaskName(expr: Expression): Option[String] = {
+      var name: Option[String] = None
+      expr.exists { child =>
+        name = QueryPlanSerde.evaluationMaskName(child)
+        name.isDefined
+      }
+      name
+    }
 
     def firstMatch(joinType: JoinType): Boolean = joinType match {
       case LeftSemi | LeftAnti => true
@@ -808,13 +811,18 @@ case class CometExecRule(session: SparkSession)
         case join: BroadcastNestedLoopJoinExec if firstMatch(join.joinType) => join.condition
         case _ => None
       }
-      val ownReason = if (belowLimit && original.expressions.exists(containsUnbase64)) {
-        Some(limitReason)
-      } else if (condition.exists(containsUnbase64)) {
-        Some(joinReason)
+      val limitName = if (belowLimit) {
+        original.expressions.iterator.flatMap(findEvaluationMaskName).take(1).toSeq.headOption
       } else {
-        node.getTagValue(CometExecRule.UNSAFE_UNBASE64_EVALUATION)
+        None
       }
+      val ownReason = limitName
+        .map(name => s"$name requires Spark evaluation below LIMIT")
+        .orElse(
+          condition
+            .flatMap(findEvaluationMaskName)
+            .map(name => s"$name requires Spark evaluation in first-match join conditions"))
+        .orElse(node.getTagValue(CometExecRule.UNSAFE_EXPRESSION_EVALUATION))
       // Exchanges can restart native execution after consuming a Spark row pipeline.
       val restartsNative = original.isInstanceOf[ShuffleExchangeLike] ||
         original.isInstanceOf[BroadcastExchangeLike]
@@ -844,7 +852,7 @@ case class CometExecRule(session: SparkSession)
           restored
         case _ => node.withNewChildren(children)
       }
-      reason.foreach(prepared.setTagValue(CometExecRule.UNSAFE_UNBASE64_EVALUATION, _))
+      reason.foreach(prepared.setTagValue(CometExecRule.UNSAFE_EXPRESSION_EVALUATION, _))
       (prepared, reason)
     }
 
@@ -1193,7 +1201,7 @@ case class CometExecRule(session: SparkSession)
   private def canAggregateBeConverted(
       agg: BaseAggregateExec,
       expectedMode: AggregateMode): Boolean = {
-    if (agg.getTagValue(CometExecRule.UNSAFE_UNBASE64_EVALUATION).isDefined) return false
+    if (agg.getTagValue(CometExecRule.UNSAFE_EXPRESSION_EVALUATION).isDefined) return false
 
     val handler = allExecs.get(agg.getClass)
     if (handler.isEmpty) return false
