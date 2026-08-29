@@ -39,6 +39,7 @@ Usage:
 
 import datetime as dt
 import os
+from collections import Counter
 from decimal import Decimal
 
 import pyarrow as pa
@@ -583,6 +584,35 @@ def test_map_in_arrow_nested_source_batches(spark, tmp_path, accelerated):
         spark.conf.set(
             "spark.sql.execution.arrow.maxRecordsPerBatch", previous_arrow_batch_size
         )
+
+
+@pytest.mark.parametrize("api", ["mapInArrow", "mapInPandas"])
+def test_map_in_batch_union_with_different_nested_nullability(
+    spark, tmp_path, accelerated, api
+):
+    """Union branches may have different raw nullability but the same IPC schema."""
+    rows = [(0, None), (1, 2), (2, 3)]
+    src = str(tmp_path / "union_nullability.parquet")
+    spark.createDataFrame(rows, "id int, value int").coalesce(1).write.parquet(src)
+    source = spark.read.parquet(src)
+    left = source.selectExpr("named_struct('id', id, 'value', 1) AS payload")
+    right = source.selectExpr("named_struct('id', id, 'value', value) AS payload")
+    combined = left.union(right).coalesce(1)
+
+    def passthrough(iterator):
+        yield from iterator
+
+    result = getattr(combined, api)(passthrough, combined.schema)
+    plan = _executed_plan(result)
+    _assert_plan_matches_mode(
+        plan,
+        accelerated,
+        vanilla_node="MapInArrow" if api == "mapInArrow" else "MapInPandas",
+    )
+    if accelerated:
+        assert "CometUnion" in plan
+    actual = Counter((row.payload.id, row.payload.value) for row in result.collect())
+    assert actual == Counter(rows + [(index, 1) for index, _ in rows])
 
 
 def test_map_in_arrow_wide_schema(spark, tmp_path, accelerated):
