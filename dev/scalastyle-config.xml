@@ -193,6 +193,20 @@ This file is divided into 3 sections:
     ]]></customMessage>
   </check>
 
+  <check customId="arrowstreamwriter" level="error" class="org.scalastyle.file.RegexChecker" enabled="true">
+    <parameters><parameter name="regex">new ArrowStreamWriter</parameter></parameters>
+    <customMessage><![CDATA[
+      Are you sure that you want to use new ArrowStreamWriter? In most cases, you should use
+      Utils.newArrowStreamWriter instead. Arrow's MinorType.NULL factory discards the field it is
+      given and rebuilds a nullable one, so a NullType map key reaches the IPC reader nullable and
+      is rejected with "Map data key type should be a non-nullable".
+      If you must use new ArrowStreamWriter, wrap the code block with
+      // scalastyle:off arrowstreamwriter
+      new ArrowStreamWriter(...)
+      // scalastyle:on arrowstreamwriter
+    ]]></customMessage>
+  </check>
+
   <check customId="caselocale" level="error" class="org.scalastyle.file.RegexChecker" enabled="true">
     <parameters><parameter name="regex">(\.toUpperCase|\.toLowerCase)(?!(\(|\(Locale.ROOT\)))</parameter></parameters>
     <customMessage><![CDATA[

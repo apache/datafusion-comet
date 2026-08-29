@@ -59,3 +59,7 @@ SELECT map_from_arrays(array('a'), NULL)
 
 query
 SELECT map_from_arrays(NULL, NULL)
+
+-- empty arrays produce MapType(NullType, NullType)
+query
+SELECT map_from_arrays(array(), array())

@@ -102,6 +102,22 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
     checkShuffleAnswer(shuffled, 1)
   }
 
+  test("columnar shuffle with Map[NullType, _] column") {
+    // map() leaves a NullType key, which Arrow requires to be non-nullable in the IPC schema;
+    // transform_values keeps a second copy non-foldable so it is built by the child rather than
+    // constant-folded into a literal. `map()` is MapType(NullType, NullType) only while the
+    // legacy flag is off.
+    withSQLConf(SQLConf.LEGACY_CREATE_EMPTY_COLLECTION_USING_STRING_TYPE.key -> "false") {
+      val df = sql(
+        "SELECT id, map() AS m1, transform_values(map(), (k, v) -> id) AS m2 " +
+          "FROM VALUES (1), (2), (3) AS t(id)")
+      assert(df.schema("m1").dataType.asInstanceOf[MapType].keyType === NullType)
+      assert(df.schema("m2").dataType.asInstanceOf[MapType].keyType === NullType)
+      val shuffled = df.repartition(2, $"id")
+      checkShuffleAnswer(shuffled, 1)
+    }
+  }
+
   test("columnar shuffle on nested struct including nulls") {
     Seq(10, 201).foreach { numPartitions =>
       Seq("1.0", "10.0").foreach { ratio =>

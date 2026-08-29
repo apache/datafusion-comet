@@ -45,7 +45,7 @@ This feature is enabled by default. Set `spark.comet.exec.scalaUDF.codegen.enabl
 - Table UDFs and generators.
 - Python `@udf` and Pandas `@pandas_udf`.
 - Hive `GenericUDF` and `SimpleUDF`.
-- `UserDefinedType` arguments and return types, and `NullType` arguments. UDT-typed columns fall back to Spark; to keep execution in the Comet pipeline, store and read the underlying representation directly (e.g. write MLlib `Vector` outputs as `Struct<type: Byte, size: Int, indices: Array<Int>, values: Array<Double>>` rather than `VectorUDT`). A `NullType` *return* type is supported: Comet writes an all-null Arrow vector for it.
+- `UserDefinedType` arguments and return types, and `NullType` arguments. UDT-typed columns fall back to Spark; to keep execution in the Comet pipeline, store and read the underlying representation directly (e.g. write MLlib `Vector` outputs as `Struct<type: Byte, size: Int, indices: Array<Int>, values: Array<Double>>` rather than `VectorUDT`). A `NullType` _return_ type is supported: Comet writes an all-null Arrow vector for it.
 - Trees whose total nested-field count (output plus all input columns the UDF tree references) exceeds `spark.sql.codegen.maxFields` (default 100). Comet refuses these at plan time and the operator falls back to Spark.
 
 When a UDF is rejected, the reason surfaces through Comet's standard fallback diagnostics; the query still runs on Spark.

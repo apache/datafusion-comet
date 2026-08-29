@@ -118,3 +118,8 @@ SELECT array_repeat(CAST(NULL AS INT), cnt) FROM test_array_repeat
 
 query
 SELECT array_repeat(CAST(NULL AS STRING), cnt) FROM test_array_repeat
+
+-- A NullType element built by the JVM codegen dispatcher (containsNull=false in Spark) reaches
+-- native declared nullable; the kernel's result must still match the planned type
+query
+SELECT array_repeat(filter(array(), x -> true), 2) FROM test_array_repeat

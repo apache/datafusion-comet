@@ -277,3 +277,8 @@ INSERT INTO test_slice_map VALUES (1, 10), (2, NULL), (3, 30)
 
 query
 SELECT slice(array(map(k, v), map(k + 1, v)), 1, 1) FROM test_slice_map
+
+-- A NullType element built by the JVM codegen dispatcher (containsNull=false in Spark) reaches
+-- native declared nullable; the kernel's result must still match the planned type
+query
+SELECT slice(filter(array(), x -> true), 1, 1) FROM test_slice

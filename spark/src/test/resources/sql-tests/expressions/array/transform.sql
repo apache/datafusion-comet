@@ -84,3 +84,14 @@ SELECT transform(array(1, 2, 3), x -> x * x)
 -- an untyped empty array leaves the element type as NullType
 query
 SELECT transform(array(), x -> x)
+
+-- Non-empty NullType results nested in list / struct outputs (codegen writes an Arrow NullVector
+-- child; `array()` above only covers the empty case)
+query
+SELECT transform(a, x -> NULL) FROM test_transform
+
+query
+SELECT transform(a, x -> named_struct('v', x, 'n', NULL)) FROM test_transform
+
+query
+SELECT transform(array(NULL), x -> x)
