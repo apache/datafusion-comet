@@ -396,6 +396,13 @@ object Utils extends CometTypeShim with Logging {
             }
             while (reader.loadNextBatch()) {
               val sourceRoot = reader.getVectorSchemaRoot
+              if (targetRoot != null && targetRoot.getSchema != sourceRoot.getSchema) {
+                logWarning(
+                  "Arrow schemas differ during BroadcastExchange coalescing; skipping coalesce")
+                targetRoot.close()
+                targetRoot = null
+                return (buffers, 0L, 0L)
+              }
               if (targetRoot == null) {
                 targetRoot = VectorSchemaRoot.create(sourceRoot.getSchema, allocator)
                 targetRoot.allocateNew()

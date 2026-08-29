@@ -25,7 +25,7 @@ import org.scalatest.Tag
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.analysis.UnresolvedRelation
-import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometBroadcastNestedLoopJoinExec, CometSortMergeJoinExec}
+import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometBroadcastNestedLoopJoinExec, CometSortMergeJoinExec, CometUnionExec}
 import org.apache.spark.sql.execution.adaptive.AQEShuffleReadExec
 import org.apache.spark.sql.internal.SQLConf
 
@@ -653,6 +653,30 @@ class CometJoinSuite extends CometTestBase {
             s"Expected at least $numPartitions coalesced batches, got $coalescedBatches")
           assert(coalescedRows == 10000, s"Expected 10000 coalesced rows, got $coalescedRows")
         }
+      }
+    }
+  }
+
+  test("Broadcast coalescing falls back when union children have different nullability") {
+    withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+      withParquetTable(Seq((1, 10), (2, 20), (3, 30)), "t") {
+        val (_, cometPlan) = checkSparkAnswerAndOperator(
+          sql("""
+              |SELECT /*+ BROADCAST(b) */ p._1, b.v
+              |FROM t p JOIN (
+              |  SELECT _1 AS k, 99 AS v FROM t
+              |  UNION ALL
+              |  SELECT _1 AS k, _2 + 1 AS v FROM t
+              |) b ON p._1 = b.k
+              |""".stripMargin),
+          Seq(
+            classOf[CometBroadcastExchangeExec],
+            classOf[CometBroadcastHashJoinExec],
+            classOf[CometUnionExec]))
+
+        val broadcast = collect(cometPlan) { case b: CometBroadcastExchangeExec => b }.head
+        assert(broadcast.metrics("numCoalescedBatches").value == 0L)
+        assert(broadcast.metrics("numCoalescedRows").value == 0L)
       }
     }
   }
