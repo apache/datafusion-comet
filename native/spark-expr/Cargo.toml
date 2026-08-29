@@ -240,7 +240,15 @@ name = "abs"
 harness = false
 
 [[bench]]
+name = "modulo"
+harness = false
+
+[[bench]]
 name = "levenshtein"
+harness = false
+
+[[bench]]
+name = "negative"
 harness = false
 
 [[bench]]
