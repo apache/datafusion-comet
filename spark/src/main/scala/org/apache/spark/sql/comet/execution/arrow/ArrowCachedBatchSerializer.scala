@@ -20,7 +20,6 @@
 package org.apache.spark.sql.comet.execution.arrow
 
 import scala.collection.JavaConverters._
-import scala.util.control.NonFatal
 
 import org.apache.spark.TaskContext
 import org.apache.spark.rdd.RDD

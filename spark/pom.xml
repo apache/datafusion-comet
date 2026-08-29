@@ -634,6 +634,16 @@ under the License.
                   <shadedPattern>${comet.shade.packageName}.guava.thirdparty</shadedPattern>
                 </relocation>
               </relocations>
+              <transformers>
+                <!-- arrow-compression ships META-INF/services/org.apache.arrow.vector.compression.CompressionCodec$Factory.
+                     Copied verbatim, that file names Spark's own unshaded Arrow interface while
+                     pointing at a provider class that only exists here under the relocated name, so
+                     Spark's ServiceLoader lookup fails and takes CompressionCodec.Factory's static
+                     initializer down with it. This transformer relocates both the service file name
+                     and its contents. -->
+                <transformer
+                  implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer" />
+              </transformers>
             </configuration>
           </execution>
         </executions>
