@@ -224,3 +224,8 @@ SELECT array_union(array(NULL, 99), b) FROM test_array_union
 -- conditional (CASE WHEN) arrays
 query
 SELECT array_union(CASE WHEN a IS NOT NULL THEN a ELSE array(0) END, b) FROM test_array_union
+
+-- A NullType element built by the JVM codegen dispatcher (containsNull=false in Spark) reaches
+-- native declared nullable; the kernel's result must still match the planned type
+query
+SELECT array_union(filter(array(), x -> true), filter(array(), x -> true)) FROM test_array_union

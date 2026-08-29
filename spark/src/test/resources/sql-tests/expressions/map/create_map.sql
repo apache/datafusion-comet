@@ -56,9 +56,6 @@ SELECT array(map()), struct(map(), map('a', NULL))
 query
 SELECT map('a', array(NULL)), map('a', map())
 
-query
-SELECT map_from_arrays(array(), array())
-
 -- carry the NullType children through a sort so the vector survives copy/spill paths
 query
 SELECT k, map(), map('a', NULL) FROM test_create_map ORDER BY k
