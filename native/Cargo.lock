@@ -2040,6 +2040,7 @@ name = "datafusion-comet-shuffle"
 version = "1.1.0"
 dependencies = [
  "arrow",
+ "arrow-select",
  "async-trait",
  "bytes",
  "clap",
@@ -2070,7 +2071,6 @@ dependencies = [
  "arrow",
  "base64 0.23.1",
  "chrono",
- "chrono-tz",
  "criterion",
  "datafusion",
  "datafusion-comet-common",

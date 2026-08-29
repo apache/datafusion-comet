@@ -27,7 +27,7 @@ use arrow::{
 use datafusion::logical_expr::EmitTo;
 use std::sync::Arc;
 
-use crate::timezone::Tz;
+use arrow::array::timezone::Tz;
 use arrow::array::types::TimestampMillisecondType;
 use arrow::datatypes::{MAX_DECIMAL128_FOR_EACH_PRECISION, MIN_DECIMAL128_FOR_EACH_PRECISION};
 use arrow::error::ArrowError;

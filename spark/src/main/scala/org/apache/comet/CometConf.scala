@@ -249,6 +249,8 @@ object CometConf extends ShimCometConf {
     createExecEnabledConfig("explode", defaultValue = true)
   val COMET_EXEC_WINDOW_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("window", defaultValue = true)
+  val COMET_EXEC_WINDOW_GROUP_LIMIT_ENABLED: ConfigEntry[Boolean] =
+    createExecEnabledConfig("windowGroupLimit", defaultValue = true)
   val COMET_EXEC_TAKE_ORDERED_AND_PROJECT_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("takeOrderedAndProject", defaultValue = true)
   val COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED: ConfigEntry[Boolean] =
@@ -604,6 +606,34 @@ object CometConf extends ShimCometConf {
       .bytesConf(ByteUnit.BYTE)
       .checkValue(v => v >= 0, "Must not be negative")
       .createWithDefault(0)
+
+  val COMET_SHUFFLE_RSS_MAX_FRAME_BYTES: ConfigEntry[Long] =
+    conf("spark.comet.shuffle.rss.maxFrameBytes")
+      .category(CATEGORY_SHUFFLE)
+      .doc("Maximum encoded size of one complete native shuffle frame sent to a remote " +
+        "shuffle service. Frames are never split across remote push requests.")
+      .bytesConf(ByteUnit.BYTE)
+      .checkValue(
+        value => value >= 20 && value <= Int.MaxValue - 16,
+        "Remote shuffle frame size must fit a complete Comet frame and a Celeborn request")
+      .createWithDefault(64L * 1024 * 1024)
+
+  val COMET_SHUFFLE_RSS_MAX_IN_FLIGHT_BYTES: ConfigEntry[Long] =
+    conf("spark.comet.shuffle.rss.maxInFlightBytes")
+      .category(CATEGORY_SHUFFLE)
+      .doc(
+        "Maximum shuffle bytes admitted concurrently by native Comet map attempts sharing " +
+          "an executor-side remote shuffle client. Admission includes native encoding " +
+          "scratch and overlapping native, JNI, and remote shuffle frame copies. " +
+          "A frame must fit its codec and Arrow workspace as well as its encoded bytes; " +
+          "too-small limits fail before encoding. Encrypted native RSS is not supported; " +
+          "use ordinary Spark shuffle when spark.io.encryption.enabled is true.")
+      .bytesConf(ByteUnit.BYTE)
+      .checkValue(
+        value => value >= 76 && value <= Int.MaxValue,
+        "Remote shuffle in-flight byte limit must fit three complete frame copies and a " +
+          "Celeborn request header")
+      .createWithDefault(256L * 1024 * 1024)
 
   val COMET_DEBUG_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.debug.enabled")
