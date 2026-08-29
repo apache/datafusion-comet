@@ -150,7 +150,7 @@ The tables below list every Spark built-in expression with its current status.
 | `array` | ✅ | Native |  |
 | `array_append` | ✅ | Native |  |
 | `array_compact` | ✅ | — |  |
-| `array_contains` | ✅ | Native | NaN/signed-zero handling may differ ([details](compatibility/floating-point.md)) |
+| `array_contains` | ✅ | Hybrid | NaN/signed-zero handling may differ ([details](compatibility/floating-point.md)) |
 | `array_distinct` | ✅ | Native | NaN/signed-zero handling may differ ([details](compatibility/floating-point.md)) |
 | `array_except` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default; the incompatible native path is opt-in via allowIncompatible ([details](compatibility/expressions/array.md)) |
 | `array_insert` | ✅ | Native |  |

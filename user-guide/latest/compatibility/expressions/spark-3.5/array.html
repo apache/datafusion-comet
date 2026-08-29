@@ -783,6 +783,13 @@ under the License.
 <section id="array-expressions">
 <h1>Array Expressions<a class="headerlink" href="#array-expressions" title="Link to this heading">#</a></h1>
 <!--BEGIN:EXPR_COMPAT[array]-->
+<section id="arraycontains">
+<h2>ArrayContains<a class="headerlink" href="#arraycontains" title="Link to this heading">#</a></h2>
+<p>By default, <code class="docutils literal notranslate"><span class="pre">ArrayContains</span></code> is evaluated in the JVM using Spark’s own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.ArrayContains.allowIncompatible=true</span></code> to opt into Comet’s native implementation instead, which has the following differences from Spark:</p>
+<ul class="simple">
+<li><p>Spark compares array elements with ordering.equiv, so -0.0 matches +0.0 and all NaNs match each other; Comet’s native array_contains compares the raw Arrow values bitwise</p></li>
+</ul>
+</section>
 <section id="arrayexcept">
 <h2>ArrayExcept<a class="headerlink" href="#arrayexcept" title="Link to this heading">#</a></h2>
 <p>By default, <code class="docutils literal notranslate"><span class="pre">ArrayExcept</span></code> is evaluated in the JVM using Spark’s own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.ArrayExcept.allowIncompatible=true</span></code> to opt into Comet’s native implementation instead, which has the following differences from Spark:</p>
@@ -870,6 +877,7 @@ under the License.
   </div>
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#arraycontains">ArrayContains</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#arrayexcept">ArrayExcept</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#arrayintersect">ArrayIntersect</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#arrayjoin">ArrayJoin</a></li>

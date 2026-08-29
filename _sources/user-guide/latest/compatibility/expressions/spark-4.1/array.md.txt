@@ -21,6 +21,12 @@ under the License.
 
 <!--BEGIN:EXPR_COMPAT[array]-->
 
+## ArrayContains
+
+By default, `ArrayContains` is evaluated in the JVM using Spark's own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set `spark.comet.expression.ArrayContains.allowIncompatible=true` to opt into Comet's native implementation instead, which has the following differences from Spark:
+
+- Spark compares array elements with ordering.equiv, so -0.0 matches +0.0 and all NaNs match each other; Comet's native array_contains compares the raw Arrow values bitwise
+
 ## ArrayExcept
 
 By default, `ArrayExcept` is evaluated in the JVM using Spark's own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set `spark.comet.expression.ArrayExcept.allowIncompatible=true` to opt into Comet's native implementation instead, which has the following differences from Spark:
