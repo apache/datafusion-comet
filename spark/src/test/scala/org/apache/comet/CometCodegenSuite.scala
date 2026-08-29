@@ -25,7 +25,7 @@ import org.apache.arrow.vector._
 import org.apache.spark.{SparkConf, SparkEnv, TaskContext}
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.api.java.UDF1
-import org.apache.spark.sql.catalyst.expressions.{BoundReference, CreateArray, CreateMap, CreateNamedStruct, Expression, IsNull, Literal, MapConcat}
+import org.apache.spark.sql.catalyst.expressions.{BoundReference, Cast, Coalesce, CreateArray, CreateMap, CreateNamedStruct, Expression, Literal, MapConcat}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
@@ -81,10 +81,13 @@ class CometCodegenSuite
     }
   }
 
-  test("codegen dispatch compiles a primitive expression over a NullType column") {
+  test("codegen dispatch safely casts a NullType column to a primitive") {
     val input = new NullVector("in", 2)
-    val expr = IsNull(BoundReference(0, NullType, nullable = true))
-    val field = CometBatchKernelCodegen.toFfiArrowField("out", BooleanType, nullable = false)
+    val expr = Coalesce(
+      Seq(
+        Cast(BoundReference(0, NullType, nullable = true), IntegerType, ansiEnabled = true),
+        Literal(42)))
+    val field = CometBatchKernelCodegen.toFfiArrowField("out", IntegerType, nullable = false)
     val output = CometBatchKernelCodegen.allocateOutput(field, 2, 0)
     try {
       input.setValueCount(2)
@@ -95,8 +98,8 @@ class CometCodegenSuite
       output.setValueCount(2)
 
       val comet = CometVector.getVector(output, null)
-      assert(comet.getBoolean(0))
-      assert(comet.getBoolean(1))
+      assert(comet.getInt(0) === 42)
+      assert(comet.getInt(1) === 42)
     } finally {
       output.close()
       input.close()
