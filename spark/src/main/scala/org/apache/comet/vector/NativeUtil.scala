@@ -254,15 +254,29 @@ class NativeUtil {
   def importVector(arrays: Array[ArrowArray], schemas: Array[ArrowSchema]): Seq[CometVector] = {
     val arrayVectors = mutable.ArrayBuffer.empty[CometVector]
 
-    (0 until arrays.length).foreach { i =>
-      val arrowSchema = schemas(i)
-      val arrowArray = arrays(i)
+    try {
+      (0 until arrays.length).foreach { i =>
+        val arrowSchema = schemas(i)
+        val arrowArray = arrays(i)
 
-      arrayVectors += CometVector.getVector(
-        importer.importVector(arrowArray, arrowSchema, dictionaryProvider),
-        dictionaryProvider)
+        arrayVectors += CometVector.getVector(
+          importer.importVector(arrowArray, arrowSchema, dictionaryProvider),
+          dictionaryProvider)
+      }
+      arrayVectors.toSeq
+    } catch {
+      case failure: Throwable =>
+        val firstUnconsumed = arrayVectors.length
+        arrayVectors.foreach { vector =>
+          try vector.close()
+          catch {
+            case closeFailure: Throwable =>
+              if (closeFailure ne failure) failure.addSuppressed(closeFailure)
+          }
+        }
+        releaseArrowStructs(arrays.drop(firstUnconsumed), schemas.drop(firstUnconsumed), failure)
+        throw failure
     }
-    arrayVectors.toSeq
   }
 
   /**

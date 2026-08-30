@@ -99,6 +99,35 @@ class NativeUtilSuite extends CometTestBase {
     }
   }
 
+  test("getNextBatch releases imported vectors and Arrow structs when vector import fails") {
+    withIsolatedStructAllocator { (nativeUtil, allocator, _) =>
+      val vector = new IntVector("value", allocator)
+      vector.allocateNew(4)
+      vector.setSafe(0, 42)
+      vector.setValueCount(1)
+      try {
+        val failure = intercept[IllegalStateException] {
+          nativeUtil.getNextBatch(
+            2,
+            (arrays, schemas) => {
+              Data.exportVector(
+                allocator,
+                vector,
+                null,
+                ArrowArray.wrap(arrays(0)),
+                ArrowSchema.wrap(schemas(0)))
+              vector.close()
+              1L
+            })
+        }
+        assert(failure.getMessage == "Cannot import released ArrowSchema")
+        assert(allocator.getAllocatedMemory == 0)
+      } finally {
+        vector.close()
+      }
+    }
+  }
+
   test("getNextBatch preserves a native failure and attempts all remaining struct cleanup") {
     withIsolatedStructAllocator { (nativeUtil, allocator, arrays) =>
       val expected = new IOException("native decode failed")
