@@ -209,8 +209,9 @@ on the unoptimized path.
   requested by the configuration. `EliminateRedundantTransitions` therefore skips the rewrite
   and vanilla Spark handles the operation. Comet can read `large_string` and `large_binary`
   columns returned by a Python worker; that output support does not widen the input vectors.
-- Comet writes input Arrow IPC record batches directly from its existing vector buffers. The
-  only additional Arrow buffer is the validity bitmap for the non-null struct that wraps the
-  input columns. Writing the IPC bytes to the Python worker's pipe still requires one copy;
-  that copy is inherent to Spark's process-based Python transport. This path does not transfer
-  buffers between Arrow allocators or change their ownership.
+- Comet writes input Arrow IPC record batches directly from existing plain vector buffers. The
+  only additional Arrow buffer for plain inputs is the validity bitmap for the non-null struct
+  that wraps the input columns. Dictionary-encoded shuffle columns are decoded into temporary
+  logical vectors and released after each synchronous write. Writing the IPC bytes to the Python
+  worker's pipe still requires one copy; that copy is inherent to Spark's process-based Python
+  transport. Borrowed buffers are not transferred between Arrow allocators or given new ownership.
