@@ -70,8 +70,10 @@ object CometRegex {
   // `a{1000000}`, `[^;]{20000}`, counted `(a{100})` wrapped `{100}`,
   // unbounded `{0,}` of `[^;]{256}` wrapped `{256}`, 251 nested groups, and
   // nested `*` wrappers whose structural expansion stays under MaxExpansion
-  // but whose compiled program exceeds 10 MiB, and capturing groups copied
-  // by counted repetition. The `regex-syntax` default nesting limit is 250.
+  // but whose compiled program exceeds 10 MiB, capturing groups copied by
+  // counted repetition, and wide character classes copied by counted
+  // `{256}` under nested non-capturing `*`. The `regex-syntax` default
+  // nesting limit is 250.
   //
   // Raising a cap does not mean the resulting patterns remain below 10 MiB.
   // Re-check `Regex::new` against these pattern classes before changing one.
@@ -79,8 +81,9 @@ object CometRegex {
   // MaxGroupDepth caps group nesting at 32.
   // MaxCountedBound caps each numeric `{n}`, `{n,}`, or `{n,m}` bound at 256.
   // MaxExpansion caps the aggregate structural estimate at 4096 across
-  // concatenation, alternation, and counted repetition. Unbounded `{n,}` uses
-  // a multiplier of at least 1 so `{0,}` cannot hide its inner compile cost.
+  // concatenation, alternation, counted repetition, capture-state cost, and
+  // character-class atom or range complexity. Unbounded `{n,}` uses a
+  // multiplier of at least 1 so `{0,}` cannot hide its inner compile cost.
   // MaxQuantifierNesting caps stacked `*` / `+` / `?` / `{n}` wrappers. Deeply
   // nested quantified expressions can substantially increase Rust regex
   // compilation state without exceeding the structural expansion estimate
@@ -182,7 +185,7 @@ object CometRegex {
         case '\\' =>
           if (parseEscape(inClass = false).isDefined) Some(Parsed(1L, 0, 0)) else None
         case '[' =>
-          if (parseClass()) Some(Parsed(1L, 0, 0)) else None
+          parseClass().map(size => Parsed(size, 0, 0))
         case '(' => parseGroup()
         case '.' | '^' | '$' | '*' | '+' | '?' | '{' | '}' | ')' | ']' | '|' =>
           None
@@ -345,18 +348,22 @@ object CometRegex {
       Some(v.toInt)
     }
 
-    private def parseClass(): Boolean = {
+    // Returns a structural class cost: one per literal or range endpoint,
+    // including escaped literals. The hyphen of a range is not counted.
+    // Negation does not add cost. The result is at least 1.
+    private def parseClass(): Option[Long] = {
       consume() // '['
       if (remaining && peek == '^') {
         consume()
       }
       var contentStarted = false
       var lastAtom: Option[Char] = None
+      var cost = 0L
       while (remaining && !(peek == ']' && contentStarted)) {
         // Rust class set ops (&& / ~~ / --) are not Java literals. Nested
         // classes and unescaped class delimiters as atoms are also out of subset.
         if (startsWith("&&") || startsWith("~~") || startsWith("--") || peek == '[') {
-          return false
+          return None
         }
         val ranging = lastAtom.isDefined && peek == '-' && peekOffset(1).exists(_ != ']')
         if (ranging) {
@@ -364,20 +371,26 @@ object CometRegex {
           parseClassAtom() match {
             case Some(end) if end >= lastAtom.get =>
               lastAtom = None
+              cost += 1
             case _ =>
-              return false
+              return None
           }
         } else {
           parseClassAtom() match {
             case Some(c) =>
               lastAtom = Some(c)
               contentStarted = true
+              cost += 1
             case None =>
-              return false
+              return None
           }
         }
       }
-      remaining && consume() == ']'
+      if (remaining && consume() == ']') {
+        Some(math.max(1L, cost))
+      } else {
+        None
+      }
     }
 
     private def parseClassAtom(): Option[Char] = {
