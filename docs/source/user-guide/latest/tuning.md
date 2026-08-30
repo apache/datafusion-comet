@@ -220,6 +220,12 @@ Comet provides a fully native shuffle implementation, which generally provides t
 supports `HashPartitioning`, `RangePartitioning` and `SinglePartitioning` but currently only supports primitive type
 partitioning keys. Columns that are not partitioning keys may contain complex types like maps, structs, and arrays.
 
+Hash partitioning on decimal keys with precision greater than 18 falls back because native hashing does not match
+Spark's partition assignments. This can affect decimal aggregate overflow behavior, including `AVG(DISTINCT ...)`.
+With `spark.comet.shuffle.mode=auto`, Comet uses Columnar Shuffle when eligible; with `native`, it uses Spark shuffle.
+The restriction applies only to hash partitioning keys: wider decimals remain supported as payload columns and
+range partitioning keys.
+
 #### Columnar (JVM) Shuffle
 
 Comet Columnar shuffle is JVM-based and supports `HashPartitioning`, `RoundRobinPartitioning`, `RangePartitioning`, and

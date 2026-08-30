@@ -30,8 +30,8 @@ import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.internal.Logging
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSet, Expression, ExpressionSet, Generator, NamedExpression, SortOrder}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode, CollectList, CollectSet, Final, First, Last, Partial, PartialMerge, Percentile}
+import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSet, EvalMode, Expression, ExpressionSet, Generator, NamedExpression, SortOrder}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode, Average, CollectList, CollectSet, Final, First, Last, Partial, PartialMerge, Percentile}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
 import org.apache.spark.sql.catalyst.plans._
 import org.apache.spark.sql.catalyst.plans.physical._
@@ -1628,6 +1628,42 @@ case class CometUnionExec(
 
 trait CometBaseAggregate {
 
+  protected def aggregateSupportLevel(op: BaseAggregateExec): SupportLevel = {
+    val groupedAnsiDecimalAverage = op.groupingExpressions.nonEmpty &&
+      op.aggregateExpressions.exists(_.aggregateFunction match {
+        case avg: Average =>
+          avg.child.dataType.isInstanceOf[DecimalType] && avg.evalMode == EvalMode.ANSI
+        case _ => false
+      })
+    val unsupportedAverage = op.groupingExpressions.isEmpty &&
+      op.aggregateExpressions.exists(_.aggregateFunction match {
+        case avg: Average =>
+          avg.sumDataType match {
+            case decimal: DecimalType => decimal.precision == DecimalType.MAX_PRECISION
+            case _ => false
+          }
+        case _ => false
+      })
+
+    if (groupedAnsiDecimalAverage) {
+      // Native aggregation evaluates a batch of groups before its consumer can stop, so an
+      // overflow in an unconsumed group can incorrectly fail LIMIT. Any decimal sum precision
+      // can overflow. Keep every mode in Spark: decimal partial buffers cannot cross engines,
+      // and native PartialMerge can throw before emitting its intermediate state as well.
+      Unsupported(Some("Grouped decimal AVG in ANSI mode requires Spark's lazy group evaluation"))
+    } else if (unsupportedAverage) {
+      // Spark's ungrouped codegen buffers can retain a wider decimal sum until AVG divides
+      // by the count, including while merging partials. Comet records overflow immediately.
+      // Both conversion and unsafe-partial tagging consult this operator support check, so
+      // the partial and final fall back together without exchanging incompatible buffers.
+      Unsupported(
+        Some(
+          "Ungrouped AVG on DECIMAL with maximum-precision intermediate state is not supported"))
+    } else {
+      Compatible()
+    }
+  }
+
   def doConvert(
       aggregate: BaseAggregateExec,
       builder: Operator.Builder,
@@ -1657,7 +1693,7 @@ trait CometBaseAggregate {
 
     if (missingCometProducer) {
       val incompatibleAggs =
-        QueryPlanSerde.aggsNotSupportingMixedExecution(aggregate.aggregateExpressions)
+        QueryPlanSerde.aggsNotSupportingSparkPartialToNativeFinal(aggregate.aggregateExpressions)
       if (incompatibleAggs.nonEmpty) {
         val names = incompatibleAggs.map(_.prettyName).distinct.sorted.mkString(", ")
         withFallbackReason(
@@ -1977,7 +2013,7 @@ object CometHashAggregateExec
       op.aggregateExpressions.exists(_.mode == Final)) {
       return Unsupported(Some("Final aggregates disabled via test config"))
     }
-    Compatible()
+    aggregateSupportLevel(op)
   }
 
   override def convert(
@@ -2019,7 +2055,7 @@ object CometObjectHashAggregateExec
       op.aggregateExpressions.exists(_.mode == Final)) {
       return Unsupported(Some("Final aggregates disabled via test config"))
     }
-    Compatible()
+    aggregateSupportLevel(op)
   }
 
   override def convert(
