@@ -18,13 +18,15 @@
 use crate::{
     errors::CometError,
     execution::{
-        operators::ExecutionError, planner::TEST_EXEC_CONTEXT_ID, shuffle::ipc::read_ipc_compressed,
+        operators::ExecutionError,
+        planner::TEST_EXEC_CONTEXT_ID,
+        shuffle::{read_ipc_compressed, read_ipc_compressed_validated, validate_remote_schema},
     },
     jvm_bridge::{jni_call, JVMClasses},
 };
-use arrow::array::ArrayRef;
+use arrow::array::{ArrayRef, RecordBatch};
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
-use datafusion::common::{arrow_datafusion_err, Result as DataFusionResult};
+use datafusion::common::Result as DataFusionResult;
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::metrics::{
     BaselineMetrics, ExecutionPlanMetricsSet, MetricBuilder, MetricsSet, Time,
@@ -34,6 +36,7 @@ use datafusion::{
     physical_expr::*,
     physical_plan::{ExecutionPlan, *},
 };
+use datafusion_comet_common::cast_and_stamp_schema;
 use futures::Stream;
 use jni::objects::{Global, JByteBuffer, JObject};
 use std::{
@@ -67,6 +70,8 @@ pub struct ShuffleScanExec {
     baseline_metrics: BaselineMetrics,
     /// Time spent decoding compressed shuffle blocks.
     decode_time: Time,
+    /// Remote inputs require Arrow array and logical schema validation; queried once at construction.
+    requires_validation: bool,
 }
 
 impl ShuffleScanExec {
@@ -75,6 +80,16 @@ impl ShuffleScanExec {
         input_source: Option<Arc<Global<JObject<'static>>>>,
         data_types: Vec<DataType>,
     ) -> Result<Self, CometError> {
+        let requires_validation = if exec_context_id == TEST_EXEC_CONTEXT_ID {
+            false
+        } else if let Some(input) = &input_source {
+            JVMClasses::with_env(|env| unsafe {
+                jni_call!(env,
+                    comet_shuffle_block_iterator(input.as_obj()).requires_validation() -> bool)
+            })?
+        } else {
+            false
+        };
         let metrics_set = ExecutionPlanMetricsSet::default();
         let baseline_metrics = BaselineMetrics::new(&metrics_set, 0);
         let decode_time = MetricBuilder::new(&metrics_set).subset_time("decode_time", 0);
@@ -98,6 +113,7 @@ impl ShuffleScanExec {
             baseline_metrics,
             schema,
             decode_time,
+            requires_validation,
         })
     }
 
@@ -122,6 +138,7 @@ impl ShuffleScanExec {
                 self.input_source.as_ref().unwrap().as_obj(),
                 &self.data_types,
                 &self.decode_time,
+                self.requires_validation,
             )?;
             *current_batch = Some(next_batch);
         }
@@ -137,6 +154,7 @@ impl ShuffleScanExec {
         iter: &JObject,
         data_types: &[DataType],
         decode_time: &Time,
+        requires_validation: bool,
     ) -> Result<InputBatch, CometError> {
         if exec_context_id == TEST_EXEC_CONTEXT_ID {
             return Ok(InputBatch::EOF);
@@ -172,7 +190,21 @@ impl ShuffleScanExec {
 
             // Decode the compressed IPC data
             let mut timer = decode_time.timer();
-            let batch = read_ipc_compressed(slice)?;
+            let batch = match decode_shuffle_batch(slice, data_types, requires_validation) {
+                Ok(batch) => batch,
+                Err(failure) => {
+                    // Remote inputs must invalidate the failed shuffle generation even when
+                    // fetching bytes succeeded and only IPC/codec decoding or logical schema
+                    // validation detects the corruption. JNI preserves FetchFailedException.
+                    // Local inputs leave this callback as a no-op and keep the native error.
+                    let message = env.new_string(failure.to_string())?;
+                    unsafe {
+                        jni_call!(env,
+                            comet_shuffle_block_iterator(iter).on_decode_failure(&message) -> ())?;
+                    }
+                    return Err(failure.into());
+                }
+            };
             timer.stop();
 
             let num_rows = batch.num_rows();
@@ -187,17 +219,35 @@ impl ShuffleScanExec {
                 .map(|col| unpack_dictionary(col))
                 .collect();
 
-            debug_assert_eq!(
-                columns.len(),
-                data_types.len(),
-                "Shuffle block column count mismatch: got {} but expected {}",
-                columns.len(),
-                data_types.len()
-            );
-
             Ok(InputBatch::new(columns, Some(num_rows)))
         })
     }
+}
+
+fn decode_shuffle_batch(
+    bytes: &[u8],
+    expected_types: &[DataType],
+    requires_validation: bool,
+) -> DataFusionResult<RecordBatch> {
+    if requires_validation {
+        let batch = read_ipc_compressed_validated(bytes)?;
+        // Validate before unpack_dictionary or cast_and_stamp_schema can hide an incompatible
+        // wire type by changing values. Keep failures inside get_next's recovery callback.
+        validate_remote_schema(&batch, expected_types)?;
+        Ok(batch)
+    } else {
+        check_column_count(read_ipc_compressed(bytes)?, expected_types.len())
+    }
+}
+
+fn check_column_count(batch: RecordBatch, expected: usize) -> DataFusionResult<RecordBatch> {
+    if batch.num_columns() != expected {
+        return Err(datafusion::common::DataFusionError::Execution(format!(
+            "Shuffle block column count mismatch: got {} but expected {expected}",
+            batch.num_columns()
+        )));
+    }
+    Ok(batch)
 }
 
 /// If `array` is dictionary-encoded, cast it to the value type. Otherwise return as-is.
@@ -318,14 +368,16 @@ impl Stream for ShuffleScanStream {
             InputBatch::EOF => Poll::Ready(None),
             InputBatch::Batch(columns, num_rows) => {
                 self.baseline_metrics.record_output(*num_rows);
-                let options =
-                    arrow::array::RecordBatchOptions::new().with_row_count(Some(*num_rows));
-                let maybe_batch = arrow::array::RecordBatch::try_new_with_options(
-                    self.shuffle_scan.schema(),
+                // Reconcile the decoded block with the catalyst-declared schema rather than
+                // stamping it on, so that nested field nullability drift is absorbed here the way
+                // `ScanExec` absorbs it at the FFI boundary.
+                // See https://github.com/apache/datafusion-comet/issues/5137.
+                let maybe_batch = cast_and_stamp_schema(
+                    self.shuffle_scan.name(),
+                    &self.shuffle_scan.schema,
                     columns.clone(),
-                    &options,
-                )
-                .map_err(|e| arrow_datafusion_err!(e));
+                    *num_rows,
+                );
                 Poll::Ready(Some(maybe_batch))
             }
         };
@@ -347,14 +399,116 @@ impl RecordBatchStream for ShuffleScanStream {
 #[cfg(test)]
 mod tests {
     use crate::execution::shuffle::{CompressionCodec, ShuffleBlockWriter};
-    use arrow::array::{Int32Array, StringArray};
+    use arrow::array::{Int32Array, RecordBatchOptions, StringArray, UInt32Array};
     use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::ipc::writer::CompressionContext;
     use arrow::record_batch::RecordBatch;
     use datafusion::physical_plan::metrics::Time;
     use std::io::Cursor;
     use std::sync::Arc;
 
     use crate::execution::shuffle::ipc::read_ipc_compressed;
+
+    fn uncompressed_shuffle_payload(batch: &RecordBatch) -> Vec<u8> {
+        let writer = ShuffleBlockWriter::try_new(&batch.schema(), CompressionCodec::None).unwrap();
+        let mut output = Cursor::new(Vec::new());
+        writer
+            .write_batch(
+                batch,
+                &mut output,
+                &mut CompressionContext::default(),
+                &Time::new(),
+            )
+            .unwrap();
+        // The iterator has already checked the 8-byte frame length and 8-byte field count.
+        output.into_inner()[16..].to_vec()
+    }
+
+    #[test]
+    fn remote_shuffle_rejects_schema_signedness_flip_before_casting() {
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let batch =
+            RecordBatch::try_new(schema, vec![Arc::new(Int32Array::from(vec![-1]))]).unwrap();
+        let mut payload = uncompressed_shuffle_payload(&batch);
+
+        // Corrupt only the schema's signed flag, leaving the field count, row count and all
+        // value buffers valid. The same -1 bytes now represent UINT_MAX, which a later cast to
+        // the Spark IntegerType would silently turn into null.
+        let schema_start = 4 + 8; // codec, then IPC continuation marker and metadata length
+        let signed_flag = {
+            let message = arrow::ipc::root_as_message(&payload[schema_start..]).unwrap();
+            let integer = message
+                .header_as_schema()
+                .unwrap()
+                .fields()
+                .unwrap()
+                .get(0)
+                .type_as_int()
+                .unwrap();
+            assert!(integer.is_signed());
+            let offset = integer._tab.vtable().get(arrow::ipc::Int::VT_IS_SIGNED);
+            assert_ne!(offset, 0);
+            schema_start + integer._tab.loc() + usize::from(offset)
+        };
+        payload[signed_flag] = 0;
+
+        let decoded = super::read_ipc_compressed_validated(&payload).unwrap();
+        assert_eq!(decoded.num_columns(), 1);
+        assert_eq!(decoded.column(0).data_type(), &DataType::UInt32);
+        assert_eq!(
+            decoded
+                .column(0)
+                .as_any()
+                .downcast_ref::<UInt32Array>()
+                .unwrap()
+                .values(),
+            &[u32::MAX]
+        );
+        let error = super::decode_shuffle_batch(&payload, &[DataType::Int32], true)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("type mismatch at column 0"), "{error}");
+        assert!(error.contains("UInt32"), "{error}");
+        assert!(error.contains("Int32"), "{error}");
+
+        // The new logical validation is confined to remote inputs.
+        assert_eq!(
+            super::decode_shuffle_batch(&payload, &[DataType::Int32], false)
+                .unwrap()
+                .column(0)
+                .data_type(),
+            &DataType::UInt32
+        );
+    }
+
+    #[test]
+    fn remote_shuffle_preserves_rows_for_zero_column_batches() {
+        let batch = RecordBatch::try_new_with_options(
+            Arc::new(Schema::empty()),
+            vec![],
+            &RecordBatchOptions::new().with_row_count(Some(3)),
+        )
+        .unwrap();
+        let payload = uncompressed_shuffle_payload(&batch);
+        let decoded = super::decode_shuffle_batch(&payload, &[], true).unwrap();
+        assert_eq!(decoded.num_columns(), 0);
+        assert_eq!(decoded.num_rows(), 3);
+    }
+
+    #[test]
+    fn test_shuffle_column_count_mismatch_returns_error() {
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let batch =
+            RecordBatch::try_new(schema, vec![Arc::new(Int32Array::from(vec![1, 2, 3]))]).unwrap();
+
+        assert!(super::check_column_count(batch.clone(), 1).is_ok());
+        for expected in [0, 2] {
+            let error = super::check_column_count(batch.clone(), expected)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("column count mismatch"), "{error}");
+        }
+    }
 
     #[test]
     #[cfg_attr(miri, ignore)] // Miri cannot call FFI functions (zstd)
@@ -377,7 +531,14 @@ mod tests {
             ShuffleBlockWriter::try_new(&batch.schema(), CompressionCodec::Zstd(1)).unwrap();
         let mut buf = Cursor::new(Vec::new());
         let ipc_time = Time::new();
-        writer.write_batch(&batch, &mut buf, &ipc_time).unwrap();
+        writer
+            .write_batch(
+                &batch,
+                &mut buf,
+                &mut CompressionContext::default(),
+                &ipc_time,
+            )
+            .unwrap();
 
         // Read back (skip 16-byte header: 8 compressed_length + 8 field_count)
         let bytes = buf.into_inner();
@@ -443,13 +604,19 @@ mod tests {
         let mut buf = Cursor::new(Vec::new());
         let ipc_time = Time::new();
         writer
-            .write_batch(&dict_batch, &mut buf, &ipc_time)
+            .write_batch(
+                &dict_batch,
+                &mut buf,
+                &mut CompressionContext::default(),
+                &ipc_time,
+            )
             .unwrap();
         let bytes = buf.into_inner();
         let body = &bytes[16..];
 
-        // Confirm that read_ipc_compressed returns dictionary-encoded arrays
-        let decoded = read_ipc_compressed(body).unwrap();
+        // Remote schema validation must preserve the writer's dictionary representation.
+        let decoded =
+            super::decode_shuffle_batch(body, &[DataType::Int32, DataType::Utf8], true).unwrap();
         assert!(
             matches!(decoded.column(1).data_type(), DataType::Dictionary(_, _)),
             "Expected dictionary-encoded column from IPC, got {:?}",
@@ -497,6 +664,85 @@ mod tests {
             assert_eq!(col1.value(0), "hello");
             assert_eq!(col1.value(1), "world");
             assert_eq!(col1.value(2), "hello");
+        });
+    }
+
+    /// A decoded shuffle block whose nested field nullability is narrower than the catalyst-declared
+    /// type must be reconciled, not rejected. `ShuffleScanExec` used to stamp the declared schema
+    /// straight onto the block, which aborted the task on a single nested `nullable` flag even
+    /// though a non-null child is a strict subset of a nullable one.
+    /// See <https://github.com/apache/datafusion-comet/issues/5137>.
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_nested_nullability_drift_is_reconciled() {
+        use super::*;
+        use crate::execution::operators::nested_nullability_fixture::{
+            list_of_struct, list_of_struct_type,
+        };
+        use arrow::array::Array;
+        use datafusion::physical_plan::ExecutionPlan;
+        use futures::StreamExt;
+
+        // The block carries `List(Struct("id": Int64, "flag": non-null Boolean))` while catalyst
+        // declared the `flag` child nullable.
+        let block_column = list_of_struct(false);
+        let declared = list_of_struct_type(true);
+        let block = RecordBatch::try_from_iter([("payload", block_column)]).unwrap();
+        let payload = uncompressed_shuffle_payload(&block);
+        let decoded =
+            super::decode_shuffle_batch(&payload, std::slice::from_ref(&declared), true).unwrap();
+        let mut scan = ShuffleScanExec::new(
+            super::super::super::planner::TEST_EXEC_CONTEXT_ID,
+            None,
+            vec![declared.clone()],
+        )
+        .unwrap();
+        scan.set_input_batch(InputBatch::new(decoded.columns().to_vec(), Some(2)));
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let ctx = Arc::new(TaskContext::default());
+            let mut stream = scan.execute(0, ctx).unwrap();
+            let batch = stream.next().await.unwrap().unwrap();
+
+            assert_eq!(batch.schema().field(0).data_type(), &declared);
+            assert_eq!(batch.num_rows(), 2);
+            // The values must survive the reconciliation untouched. `ArrayData` equality is
+            // logical, so this holds regardless of whether the cast materialized an all-valid
+            // null buffer for the widened child.
+            assert_eq!(batch.column(0).to_data(), list_of_struct(true).to_data());
+        });
+    }
+
+    /// An unreconcilable column must name the operator and the column, since arrow's own message
+    /// reports only `at column index N`.
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_unreconcilable_column_error_names_operator() {
+        use super::*;
+        use arrow::datatypes::Fields;
+        use datafusion::physical_plan::ExecutionPlan;
+        use futures::StreamExt;
+
+        let declared =
+            DataType::Struct(Fields::from(vec![Field::new("id", DataType::Int64, true)]));
+        let mut scan = ShuffleScanExec::new(
+            super::super::super::planner::TEST_EXEC_CONTEXT_ID,
+            None,
+            vec![declared],
+        )
+        .unwrap();
+        let column: ArrayRef = Arc::new(StringArray::from(vec!["a", "b"]));
+        scan.set_input_batch(InputBatch::new(vec![column], Some(2)));
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let ctx = Arc::new(TaskContext::default());
+            let mut stream = scan.execute(0, ctx).unwrap();
+            let err = stream.next().await.unwrap().unwrap_err().to_string();
+            assert!(err.contains("ShuffleScanExec"), "{err}");
+            assert!(err.contains("col[0]"), "{err}");
+            assert!(err.contains("col_0: expected Struct"), "{err}");
         });
     }
 }

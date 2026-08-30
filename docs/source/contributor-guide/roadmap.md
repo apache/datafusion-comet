@@ -29,8 +29,8 @@ Native window execution runs by default (`spark.comet.exec.window.enabled`). The
 `first_value`, `last_value`), and the `count`, `min`, `max`, `sum`, and `avg` aggregates are accelerated.
 Remaining work is to close the gaps that still fall back to Spark: statistical aggregates (`stddev`, `variance`,
 `corr`, `covar`) and `collect_list` / `collect_set` as window functions ([#4766]), `GROUPS` frames ([#4836]), `RANGE` frames with explicit date or
-decimal offsets ([#4834]), `first_value` / `last_value` on `RANGE` frames with a literal offset ([#4835]),
-non-literal `lag` / `lead` default values ([#4268]), and `WindowGroupLimitExec` ([#4837]). See the
+decimal offsets ([#4834]), `first_value` / `last_value` on `RANGE` frames with a literal offset ([#4835]), and
+non-literal `lag` / `lead` default values ([#4268]). See the
 [window function compatibility guide](../user-guide/latest/compatibility/operators.md) for the complete list of
 supported functions, frames, and fallback cases.
 
@@ -39,7 +39,6 @@ supported functions, frames, and fallback cases.
 [#4834]: https://github.com/apache/datafusion-comet/issues/4834
 [#4835]: https://github.com/apache/datafusion-comet/issues/4835
 [#4836]: https://github.com/apache/datafusion-comet/issues/4836
-[#4837]: https://github.com/apache/datafusion-comet/issues/4837
 
 ## Native Lambda Evaluation
 
@@ -82,13 +81,12 @@ scoping what that work would take.
 
 ## TPC-H and TPC-DS Performance
 
-Comet already delivers substantial speedups over vanilla Spark on both benchmark suites; we publish per-query
-results for [TPC-H] and [TPC-DS] with each release. An independent [AWS Labs benchmark] comparing Comet 0.16.0 with
+Comet already delivers substantial speedups over vanilla Spark on TPC-H and TPC-DS; we publish per-query
+results for [TPC-DS] with each release. An independent [AWS Labs benchmark] comparing Comet 0.16.0 with
 Gluten 1.6.0 on a 3TB TPC-DS workload found that the two accelerators deliver similar overall performance. Increasing
 the speedup further and closing the remaining per-query gaps is an ongoing focus, tracked under [#2004] (TPC-H) and
 [#858] (TPC-DS).
 
-[TPC-H]: benchmark-results/tpc-h.md
 [TPC-DS]: benchmark-results/tpc-ds.md
 [AWS Labs benchmark]: https://awslabs.github.io/data-on-eks/docs/benchmarks/spark-gluten-velox-comet-benchmark
 [#858]: https://github.com/apache/datafusion-comet/issues/858

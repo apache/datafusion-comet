@@ -88,31 +88,6 @@ case class CometScanRule(session: SparkSession)
       case _ => false
     }
 
-    def isIcebergMetadataTable(scanExec: BatchScanExec): Boolean = {
-      // List of Iceberg metadata tables:
-      // https://iceberg.apache.org/docs/latest/spark-queries/#inspecting-tables
-      val metadataTableSuffix = Set(
-        "history",
-        "metadata_log_entries",
-        "snapshots",
-        "entries",
-        "files",
-        "manifests",
-        "partitions",
-        "position_deletes",
-        "all_data_files",
-        "all_delete_files",
-        "all_entries",
-        "all_manifests")
-
-      // Match case-insensitively: metadata tables surface lowercase via the path form
-      // (...metadata.json#all_manifests) but uppercase via the catalog-identifier form
-      // (db.table.ALL_DATA_FILES), and the latter must hit this gate too rather than fall through
-      // to reflection that fails on the metadata-table class.
-      val name = scanExec.table.name().toLowerCase(Locale.ROOT)
-      metadataTableSuffix.exists(name.endsWith)
-    }
-
     val fullPlan = plan
 
     def transformScan(scanNode: SparkPlan): SparkPlan = scanNode match {
@@ -129,12 +104,14 @@ case class CometScanRule(session: SparkSession)
         transformV1Scan(fullPlan, scanExec)
 
       // data source V2
+      //
+      // NOTE: the Iceberg metadata-table bailout is NOT here either, for the same reason. It
+      // matches on a table-name suffix (`files`, `snapshots`, ...), which a contrib's own table
+      // could legitimately end with; rejecting here would decline such a scan before the contrib
+      // is ever offered it. `transformV2Scan` applies the guard right after its contrib hook
+      // declines.
       case scanExec: BatchScanExec =>
-        if (isIcebergMetadataTable(scanExec)) {
-          withFallbackReason(scanExec, "Iceberg Metadata tables are not supported")
-        } else {
-          transformV2Scan(scanExec)
-        }
+        transformV2Scan(scanExec)
     }
 
     plan.transform {
@@ -142,12 +119,66 @@ case class CometScanRule(session: SparkSession)
     }
   }
 
+  /**
+   * Whether this V2 scan reads an Iceberg metadata table, which Comet does not support.
+   *
+   * Matches on the table-name suffix, so it is only meaningful once contribs have had their turn
+   * -- see the call site in `transformV2Scan`.
+   */
+  private def isIcebergMetadataTable(scanExec: BatchScanExec): Boolean = {
+    // List of Iceberg metadata tables:
+    // https://iceberg.apache.org/docs/latest/spark-queries/#inspecting-tables
+    val metadataTableSuffix = Set(
+      "history",
+      "metadata_log_entries",
+      "snapshots",
+      "entries",
+      "files",
+      "manifests",
+      "partitions",
+      "position_deletes",
+      "all_data_files",
+      "all_delete_files",
+      "all_entries",
+      "all_manifests")
+
+    // Match case-insensitively: metadata tables surface lowercase via the path form
+    // (...metadata.json#all_manifests) but uppercase via the catalog-identifier form
+    // (db.table.ALL_DATA_FILES), and the latter must hit this gate too rather than fall through
+    // to reflection that fails on the metadata-table class.
+    val name = scanExec.table.name().toLowerCase(Locale.ROOT)
+    metadataTableSuffix.exists(name.endsWith)
+  }
+
   private def transformV1Scan(plan: SparkPlan, scanExec: FileSourceScanExec): SparkPlan = {
-    val metadataColNames = metadataCols(scanExec)
-    if (metadataColNames.nonEmpty) {
+    // Give any optional, out-of-tree scan contrib (e.g. Delta) first crack at this scan, ahead of
+    // every built-in guard below. A contrib may support things Comet's built-in V1 scan does not
+    // -- the Delta contrib synthesises `_metadata.*` in its own reader -- so applying those guards
+    // first would decline such a scan before the contrib was ever offered it. A registered contrib
+    // either claims the scan (returning its marker node) or declines via its own
+    // `withFallbackReason` message. On a default build no contrib is registered, so this returns
+    // None immediately and the behaviour below is unchanged.
+    scanExec.relation match {
+      case r: HadoopFsRelation =>
+        CometScanContrib.tryTransformV1(plan, session, scanExec, r) match {
+          case Some(handled) => return handled
+          case None => // no contrib claimed it; fall through to Comet's built-in handling
+        }
+      case _ => // not a file relation; the built-in path below reports it
+    }
+
+    // fileConstantMetadataColumns (file_path, file_name, file_size, file_block_start,
+    // file_block_length, file_modification_time) are known before opening the file and
+    // supported below via the same projection mechanism as partition columns. Any other
+    // metadata column (currently only `_metadata.row_index`, generated per row by the reader)
+    // is not.
+    val constantMetadataColNames = scanExec.fileConstantMetadataColumns.map(_.name).toSet
+    val unsupportedMetadataColNames =
+      metadataCols(scanExec).filterNot(constantMetadataColNames.contains)
+    if (unsupportedMetadataColNames.nonEmpty) {
       return withFallbackReason(
         scanExec,
-        s"Metadata column(s) ${metadataColNames.mkString(", ")} is not supported")
+        s"Metadata column(s) ${unsupportedMetadataColNames.mkString(", ")} is not supported")
     }
 
     // On Spark 3.4, injectQueryStageOptimizerRule is unavailable, so
@@ -168,6 +199,9 @@ case class CometScanRule(session: SparkSession)
         if (!CometScanExec.isFileFormatSupported(r.fileFormat)) {
           return withFallbackReason(scanExec, s"Unsupported file format ${r.fileFormat}")
         }
+        // NOTE: the object_store scheme gate lives in `nativeScan` (below), shared with the
+        // non-contrib path. The contrib delegation at the top of this method runs before it, so
+        // contrib scans are unaffected; vanilla V1 scans hit the gate when this calls `nativeScan`.
         val hadoopConf = r.sparkSession.sessionState.newHadoopConfWithOptions(r.options)
 
         // TODO is this restriction valid for all native scan types?
@@ -272,10 +306,6 @@ case class CometScanRule(session: SparkSession)
       withFallbackReason(scanExec, "Native Parquet scan does not support encryption")
       return None
     }
-    if (scanExec.fileConstantMetadataColumns.nonEmpty) {
-      withFallbackReason(scanExec, "Native DataFusion scan does not support metadata columns")
-      return None
-    }
     // input_file_name, input_file_block_start, and input_file_block_length read from
     // InputFileBlockHolder, a thread-local set by Spark's FileScanRDD. The native DataFusion
     // scan does not use FileScanRDD, so these expressions would return empty/default values.
@@ -286,18 +316,41 @@ case class CometScanRule(session: SparkSession)
         }))) {
       withFallbackReason(
         scanExec,
-        "Native DataFusion scan is not compatible with input_file_name, " +
+        "Native Parquet scan is not compatible with input_file_name, " +
           "input_file_block_start, or input_file_block_length")
       return None
     }
     if (ShimFileFormat.findRowIndexColumnIndexInSchema(scanExec.requiredSchema) >= 0) {
-      withFallbackReason(scanExec, "Native DataFusion scan does not support row index generation")
+      withFallbackReason(scanExec, "Native Parquet scan does not support row index generation")
       return None
     }
     Some(CometScanExec(scanExec, session))
   }
 
   private def transformV2Scan(scanExec: BatchScanExec): SparkPlan = {
+
+    // Give any optional, out-of-tree scan contrib (e.g. Lance) first crack at this V2 scan. On a
+    // default build no contrib is registered, so this returns None and we proceed with Comet's
+    // built-in V2 handling below. A registered contrib either claims the scan or declines via its
+    // own `withFallbackReason` fallback message.
+    CometScanContrib.tryTransformV2(scanExec) match {
+      case Some(handled) => return handled
+      case None => // proceed with vanilla logic
+    }
+
+    // Iceberg metadata tables are matched by table-name suffix (`files`, `snapshots`, ...), which
+    // a contrib's own table could legitimately end with. Running the check here -- after the
+    // contrib hook has declined -- means a contrib that owns such a table still gets to claim it,
+    // while the fallback for a genuine Iceberg metadata table is unchanged.
+    if (isIcebergMetadataTable(scanExec)) {
+      return withFallbackReason(scanExec, "Iceberg Metadata tables are not supported")
+    }
+
+    // NOTE: there is no blanket metadata-column guard here. Comet's built-in V2 paths handle
+    // metadata columns individually -- the Iceberg path supports the ones in
+    // `CometIcebergNativeScan.MetadataFieldIds` and rejects the rest, the CSV path rejects all --
+    // and each of those runs below, after the contrib hook. Hoisting a blanket guard to here would
+    // both regress that per-path support and decline a contrib's scan before it was offered.
 
     scanExec.scan match {
       case scan: CSVScan if COMET_CSV_V2_NATIVE_ENABLED.get() =>
@@ -423,7 +476,7 @@ case class CometScanRule(session: SparkSession)
                 tableOpt
                   .flatMap { table =>
                     try {
-                      val locationMethod = table.getClass.getMethod("location")
+                      val locationMethod = IcebergReflection.getMethod(table.getClass, "location")
                       val tableLocation = locationMethod.invoke(table).asInstanceOf[String]
                       Some(tableLocation)
                     } catch {
@@ -541,15 +594,43 @@ case class CometScanRule(session: SparkSession)
             }
           }
 
-        // Comet serializes the whole table/scan schema to native, not just projected columns, so a
-        // type the native reader does not support (e.g. variant) breaks the scan even when that
-        // column is not projected. The readSchema allow-list only covers projected columns, so run
-        // the same allow-list over the full schema Comet may serialize. Reflection failure also
-        // falls back.
+        // The whole Iceberg table schema is serialized to native, but iceberg-rust can represent
+        // Variant in that schema as long as no projected field contains one. Match projected
+        // roots by field ID so historical snapshots still identify renamed columns, check them
+        // strictly, and allow Variant only under entirely unprojected roots. Other unsupported
+        // types still fail closed everywhere. An empty data projection is also strict because
+        // iceberg-rust currently interprets an empty field-id list as a request for every column.
         val schemaTypesSupported =
           try {
             val fullSchema = IcebergReflection.toSparkSchema(metadata.tableSchema)
-            typeChecker.isSchemaSupported(fullSchema, fallbackReasons)
+            val projectedDataColumns = scanExec.output.filterNot(_.isMetadataCol)
+            // DataTypeSupport recursively dispatches back to this override for struct fields,
+            // array elements, and map entries, so Variant is allowed at any nesting depth only
+            // when its entire top-level Iceberg field is unprojected.
+            val unprojectedTypeChecker = new CometScanTypeChecker() {
+              override def isTypeSupported(
+                  dt: DataType,
+                  name: String,
+                  reasons: ListBuffer[String]): Boolean =
+                isVariantType(dt) || super.isTypeSupported(dt, name, reasons)
+            }
+            val resolver = session.sessionState.conf.resolver
+            val tableFieldIds = IcebergReflection.buildFieldIdMapping(metadata.tableSchema)
+            val projectedFieldIds = projectedDataColumns.map { attr =>
+              metadata.globalFieldIdMapping.collectFirst {
+                case (fieldName, fieldId) if resolver(fieldName, attr.name) => fieldId
+              }
+            }
+            val resolvedProjectedFieldIds = projectedFieldIds.flatten.toSet
+            val hasUnresolvedProjectedFieldIds = projectedFieldIds.exists(_.isEmpty)
+
+            fullSchema.fields.forall { field =>
+              val isProjected = projectedDataColumns.isEmpty ||
+                hasUnresolvedProjectedFieldIds ||
+                tableFieldIds.get(field.name).forall(resolvedProjectedFieldIds.contains)
+              val checker = if (isProjected) typeChecker else unprojectedTypeChecker
+              checker.isTypeSupported(field.dataType, field.name, fallbackReasons)
+            }
           } catch {
             case e: Exception =>
               fallbackReasons += "Iceberg reflection failure: could not verify column " +
@@ -716,17 +797,21 @@ case class CometScanRule(session: SparkSession)
             true
         }
 
-        // Check for unsupported struct types in delete files
+        // Check for unsupported struct and Variant types in delete files
         val deleteFileTypesSupported = {
           var hasUnsupportedDeletes = false
 
           try {
             if (!taskValidation.deleteFiles.isEmpty) {
               val historicSchemas = IcebergReflection.getAllSchemas(metadata.table)
+              val contentFileClass =
+                IcebergReflection.loadClass(IcebergReflection.ClassNames.CONTENT_FILE)
+              val deleteFileClass =
+                IcebergReflection.loadClass(IcebergReflection.ClassNames.DELETE_FILE)
               taskValidation.deleteFiles.asScala.foreach { deleteFile =>
                 // iceberg-rust only reads Parquet delete files. Avro/ORC positional or
                 // equality deletes must be applied by Spark.
-                IcebergReflection.getFileFormat(deleteFile) match {
+                IcebergReflection.getFileFormat(contentFileClass, deleteFile) match {
                   case Some(fmt) if fmt.equalsIgnoreCase(IcebergReflection.FileFormats.PARQUET) =>
                   case Some(fmt) =>
                     hasUnsupportedDeletes = true
@@ -740,7 +825,8 @@ case class CometScanRule(session: SparkSession)
                     fallbackReasons += "Could not determine Iceberg delete file format"
                 }
 
-                val equalityFieldIds = IcebergReflection.getEqualityFieldIds(deleteFile)
+                val equalityFieldIds =
+                  IcebergReflection.getEqualityFieldIds(deleteFileClass, deleteFile)
 
                 if (!equalityFieldIds.isEmpty) {
                   equalityFieldIds.asScala.foreach { fieldId =>
@@ -762,12 +848,13 @@ case class CometScanRule(session: SparkSession)
                     }
                     fieldInfo match {
                       case Some((fieldName, fieldType)) =>
-                        if (fieldType.contains("struct")) {
+                        if (fieldType.contains("struct") || fieldType.equalsIgnoreCase(
+                            "variant")) {
                           hasUnsupportedDeletes = true
                           fallbackReasons +=
                             s"Equality delete on unsupported column type '$fieldName' " +
                               s"($fieldType) is not yet supported by iceberg-rust. " +
-                              "Struct types in equality deletes " +
+                              "Struct and Variant types in equality deletes " +
                               "require datum conversion support that is not yet implemented."
                         }
                       case None =>
@@ -987,13 +1074,13 @@ object CometScanRule extends Logging {
     val unboundPredicateClass =
       IcebergReflection.loadClass(IcebergReflection.ClassNames.UNBOUND_PREDICATE)
 
-    // Cache all method lookups outside the loop
-    val fileMethod = contentScanTaskClass.getMethod("file")
-    val formatMethod = contentFileClass.getMethod("format")
-    val pathMethod = contentFileClass.getMethod("path")
-    val residualMethod = contentScanTaskClass.getMethod("residual")
-    val deletesMethod = fileScanTaskClass.getMethod("deletes")
-    val termMethod = unboundPredicateClass.getMethod("term")
+    // Resolve all method lookups outside the loop
+    val fileMethod = IcebergReflection.getMethod(contentScanTaskClass, "file")
+    val formatMethod = IcebergReflection.getMethod(contentFileClass, "format")
+    val pathMethod = IcebergReflection.getMethod(contentFileClass, "path")
+    val residualMethod = IcebergReflection.getMethod(contentScanTaskClass, "residual")
+    val deletesMethod = IcebergReflection.getMethod(fileScanTaskClass, "deletes")
+    val termMethod = IcebergReflection.getMethod(unboundPredicateClass, "term")
 
     val supportedSchemes =
       Set("file", "s3", "s3a", "gs", "gcs", "oss", "abfss", "abfs", "wasbs", "wasb")
@@ -1030,16 +1117,12 @@ object CometScanRule extends Logging {
           val residual = residualMethod.invoke(task)
           if (unboundPredicateClass.isInstance(residual)) {
             val term = termMethod.invoke(residual)
-            try {
-              val transformMethod = term.getClass.getMethod("transform")
-              transformMethod.setAccessible(true)
-              val transform = transformMethod.invoke(term)
-              val transformStr = transform.toString
+            // A term with no transform() is a simple reference, which is fine.
+            IcebergReflection.findMethod(term.getClass, "transform").foreach { transformMethod =>
+              val transformStr = transformMethod.invoke(term).toString
               if (transformStr != IcebergReflection.Transforms.IDENTITY) {
                 nonIdentityTransform = Some(transformStr)
               }
-            } catch {
-              case _: NoSuchMethodException => // No transform = simple reference, OK
             }
           }
         } catch {
