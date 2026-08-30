@@ -195,8 +195,7 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
         case agg: AggregateExpression if agg.filter.isDefined =>
           withFallbackReason(
             windowExpr,
-            "window aggregate with a FILTER (WHERE ...) clause is not supported",
-            expr)
+            "window aggregate with a FILTER (WHERE ...) clause is not supported")
           None
         case agg: AggregateExpression =>
           agg.aggregateFunction match {

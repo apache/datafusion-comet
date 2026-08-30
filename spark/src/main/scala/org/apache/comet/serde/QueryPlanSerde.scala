@@ -816,8 +816,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
         if (aggExpr.mode != Partial) {
           withFallbackReason(
             aggExpr,
-            s"FILTER (WHERE ...) is not supported for aggregate mode ${aggExpr.mode}",
-            aggExpr.filter.get)
+            s"FILTER (WHERE ...) is not supported for aggregate mode ${aggExpr.mode}")
           return None
         }
         val filterProto = exprToProto(aggExpr.filter.get, inputs, binding)
