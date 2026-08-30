@@ -64,6 +64,12 @@ case class CometScanRule(session: SparkSession)
   private lazy val showTransformations = CometConf.COMET_EXPLAIN_TRANSFORMATIONS.get()
 
   override def apply(plan: SparkPlan): SparkPlan = {
+    // Plan-only mode: leave the plan untouched. `CometExecRule.reportPlanOnlyCoverage` calls
+    // `_apply` directly to bypass this short-circuit when it needs the wrapping for the
+    // preview plan.
+    if (CometConf.COMET_EXPLAIN_PLAN_ONLY_ENABLED.get()) {
+      return plan
+    }
     val newPlan = _apply(plan)
     if (showTransformations && !newPlan.fastEquals(plan)) {
       logInfo(s"""
@@ -74,7 +80,7 @@ case class CometScanRule(session: SparkSession)
     newPlan
   }
 
-  private def _apply(plan: SparkPlan): SparkPlan = {
+  private[rules] def _apply(plan: SparkPlan): SparkPlan = {
     if (!isCometLoaded(conf)) return plan
 
     // Comet does not support structured streaming. The parallel guard in

@@ -21,6 +21,7 @@ package org.apache.comet.rules
 
 import scala.util.Random
 
+import org.apache.logging.log4j.Level
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.FunctionIdentifier
 import org.apache.spark.sql.catalyst.expressions.{Expression, ExpressionInfo}
@@ -30,10 +31,12 @@ import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.QueryStageExec
 import org.apache.spark.sql.execution.aggregate.{HashAggregateExec, ObjectHashAggregateExec}
+import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ShuffleExchangeExec}
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
 
-import org.apache.comet.{CometConf, CometExplainInfo}
+import org.apache.comet.{CometConf, CometCoverageStats, CometExplainInfo}
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark42Plus}
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
@@ -797,4 +800,449 @@ class CometExecRuleSuite extends CometTestBase {
     }
   }
 
+  /**
+   * With plan-only mode enabled, plan `sql` over a fresh Parquet table and assert nothing was
+   * offloaded to native. `useV1` toggles between `USE_V1_SOURCE_LIST=parquet` (the V1
+   * `FileSourceScanExec` path) and `USE_V1_SOURCE_LIST=""` (the V2 `BatchScanExec` path).
+   *
+   * The source list has to be set before the table is created. `withParquetTable` resolves the
+   * relation through `spark.read` and registers the result as a temp view, so the choice of V1 or
+   * V2 is baked in at that point; changing the config afterwards leaves both variants planning a
+   * `FileSourceScanExec`. The scan node is asserted below so that this cannot regress unnoticed.
+   */
+  private def runPlanOnlyAndAssertReverted(
+      sql: String,
+      useV1: Boolean = true,
+      aqe: Boolean = true): Unit = {
+    withSQLConf(
+      SQLConf.USE_V1_SOURCE_LIST.key -> (if (useV1) "parquet" else ""),
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe.toString,
+      CometConf.COMET_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_ENABLED.key -> "true",
+      CometConf.COMET_EXPLAIN_PLAN_ONLY_ENABLED.key -> "true") {
+      withParquetTable((0 until 100).map(i => (i, i % 5)), "tbl") {
+        val executed = stripAQEPlan(spark.sql(sql).queryExecution.executedPlan)
+        val cometNodes = executed.collect { case p: CometPlan => p }
+        assert(
+          cometNodes.isEmpty,
+          s"plan-only mode must not offload; found Comet operators: $cometNodes")
+        if (useV1) {
+          assert(
+            executed.exists(_.isInstanceOf[FileSourceScanExec]),
+            s"expected the V1 scan path, got:\n$executed")
+        } else {
+          assert(
+            executed.exists(_.isInstanceOf[BatchScanExec]),
+            s"expected the V2 scan path, got:\n$executed")
+        }
+      }
+    }
+  }
+
+  for {
+    useV1 <- Seq(true, false)
+    aqe <- Seq(true, false)
+  } {
+    val label = s"${if (useV1) "V1" else "V2"} scan, AQE=$aqe"
+    test(s"plan-only mode: $label") {
+      runPlanOnlyAndAssertReverted(
+        "SELECT _2, count(*) FROM tbl GROUP BY _2",
+        useV1 = useV1,
+        aqe = aqe)
+    }
+  }
+
+  test("plan-only mode: scalar subquery is also reverted") {
+    runPlanOnlyAndAssertReverted("SELECT _1 FROM tbl WHERE _1 > (SELECT max(_2) FROM tbl)")
+  }
+
+  test("plan-only mode: same query with the config off runs on Comet") {
+    withSQLConf(
+      SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+      CometConf.COMET_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_ENABLED.key -> "true",
+      CometConf.COMET_EXPLAIN_PLAN_ONLY_ENABLED.key -> "false") {
+      withParquetTable((0 until 100).map(i => (i, i % 5)), "tbl") {
+        val plan =
+          spark.sql("SELECT _2, count(*) FROM tbl GROUP BY _2").queryExecution.executedPlan
+        val cometNodes = stripAQEPlan(plan).collect { case p: CometPlan => p }
+        assert(cometNodes.nonEmpty, "expected Comet operators when plan-only mode is disabled")
+      }
+    }
+  }
+
+  private val PLAN_ONLY_PREFIX = "[Comet plan-only]"
+
+  /** Runs `f` and returns the `[Comet plan-only]` reports that `CometExecRule` logged. */
+  private def capturePlanOnlyReports(f: => Unit): Seq[String] = {
+    val appender = new LogAppender("Comet plan-only reports")
+    withLogAppender(
+      appender,
+      loggerNames = Seq(classOf[CometExecRule].getName),
+      level = Some(Level.WARN)) {
+      f
+    }
+    appender.loggingEvents
+      .map(_.getMessage.getFormattedMessage)
+      .filter(_.startsWith(PLAN_ONLY_PREFIX))
+      .toSeq
+  }
+
+  /** The `Comet accelerated N out of M eligible operators` counts in a plan-only report. */
+  private def coverageOf(report: String): (Int, Int) = {
+    val pattern = """Comet accelerated (\d+) out of (\d+) eligible operators""".r
+    pattern
+      .findFirstMatchIn(report)
+      .map(m => (m.group(1).toInt, m.group(2).toInt))
+      .getOrElse(fail(s"report has no coverage summary:\n$report"))
+  }
+
+  // The outer query is planned after any subquery it contains, so a report slot owned by the
+  // first plan Spark prepares would describe the subquery and never the query being evaluated.
+  for (aqe <- Seq(true, false)) {
+    test(s"plan-only mode: report describes the outer query, not just a subquery (AQE=$aqe)") {
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe.toString,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_EXPLAIN_PLAN_ONLY_ENABLED.key -> "true") {
+        withParquetTable((0 until 100).map(i => (i, i % 5)), "tbl") {
+          val reports = capturePlanOnlyReports {
+            spark.sql("SELECT _1 FROM tbl WHERE _1 > (SELECT max(_2) FROM tbl)").collect()
+          }
+          assert(reports.nonEmpty, "expected a plan-only report")
+          // The outer plan's Filter appears in no subquery plan, so its presence proves the
+          // outer query was reported and not suppressed by the subquery's earlier planning.
+          assert(
+            reports.exists(_.contains("Filter")),
+            s"no report describes the outer query:\n${reports.mkString("\n\n")}")
+          assert(
+            reports.distinct.size == reports.size,
+            s"the same plan was reported more than once:\n${reports.mkString("\n\n")}")
+          // Expected: one report for the subquery plan, one for the outer plan. AQE applies the
+          // rule again per stage and per re-optimization; those must not add reports.
+          assert(
+            reports.size <= 4,
+            s"expected a report per planned plan, got ${reports.size}:\n" +
+              reports.mkString("\n\n"))
+        }
+      }
+    }
+  }
+
+  test("plan-only mode: coverage accounts for post-columnar stage reversion") {
+    withSQLConf(
+      SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+      // AQE off so that Spark applies the post-columnar rules to the whole plan exactly once,
+      // which is what the preview does, making the two directly comparable.
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      CometConf.COMET_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_PROJECT_ENABLED.key -> "false") {
+      withParquetTable((0 until 100).map(i => (i, i % 5)), "tbl") {
+        val query = "SELECT _2, count(*), sum(_1) FROM tbl GROUP BY _2"
+
+        // Comet accelerates part of this plan when the stage is left alone, so a preview that
+        // stopped before the post-columnar rules would report a non-zero count below.
+        withSQLConf(CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "false") {
+          val df = sql(query)
+          df.collect()
+          assert(CometCoverageStats.forPlan(df.queryExecution.executedPlan).cometOperators > 0)
+        }
+
+        withSQLConf(
+          CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "true",
+          CometConf.COMET_EXEC_TRANSITION_REVERT_MAX_TRANSITIONS.key -> "0") {
+          // What Comet really executes with reversion enabled.
+          val df = sql(query)
+          df.collect()
+          val executed = CometCoverageStats.forPlan(df.queryExecution.executedPlan)
+
+          // The assertions stay inside the config block: on Spark 3.4 and 3.5 `withSQLConf` is
+          // declared to return `Unit`, so a value cannot be carried out of one.
+          withSQLConf(CometConf.COMET_EXPLAIN_PLAN_ONLY_ENABLED.key -> "true") {
+            val reports = capturePlanOnlyReports(sql(query).collect())
+            assert(reports.size == 1, s"expected one report, got:\n${reports.mkString("\n\n")}")
+            assert(
+              coverageOf(reports.head) ==
+                (executed.cometOperators, executed.cometOperators + executed.sparkOperators),
+              s"report disagrees with the executed plan ($executed):\n${reports.head}")
+          }
+        }
+      }
+    }
+  }
+
+  // `df.rdd.count()` and reading `executedPlan` without running an action can plan - and in the
+  // first case execute AQE stages - without a SQL execution ID installed, so the reporting state
+  // cannot be scoped to one. Each of these must still produce exactly one report per query, not
+  // one per stage and re-optimization.
+  for (aqe <- Seq(true, false)) {
+    test(s"plan-only mode: one report per query without a SQL execution ID (AQE=$aqe)") {
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe.toString,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_EXPLAIN_PLAN_ONLY_ENABLED.key -> "true") {
+        withParquetTable((0 until 100).map(i => (i, i % 5)), "tbl") {
+          val query = "SELECT _2, count(*) FROM tbl GROUP BY _2"
+
+          val viaRdd = capturePlanOnlyReports(spark.sql(query).rdd.count())
+          assert(
+            viaRdd.size == 1,
+            s"expected one report for df.rdd.count(), got ${viaRdd.size}:\n" +
+              viaRdd.mkString("\n\n"))
+
+          val viaExecutedPlan =
+            capturePlanOnlyReports(spark.sql(query).queryExecution.executedPlan)
+          assert(
+            viaExecutedPlan.size == 1,
+            s"expected one report for executedPlan, got ${viaExecutedPlan.size}:\n" +
+              viaExecutedPlan.mkString("\n\n"))
+        }
+      }
+    }
+  }
+
+  // A scalar subquery is planned as a top-level plan of its own and substituted into the outer
+  // plan, and extended explain counts the plans owned by a node's expressions. The outer preview
+  // therefore has to preview its subqueries too, or it reports operators Comet does accelerate as
+  // Spark. AQE is off here so the preview and the executed plan are the same single pass; see the
+  // user guide for why the two can differ under AQE.
+  test("plan-only mode: outer report coverage matches normal planning for a scalar subquery") {
+    withSQLConf(
+      SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      CometConf.COMET_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_ENABLED.key -> "true") {
+      withParquetTable((0 until 100).map(i => (i, i % 5)), "tbl") {
+        val query = "SELECT _1 FROM tbl WHERE _1 > (SELECT max(_2) FROM tbl)"
+
+        // What Comet really executes, subquery operators included.
+        val df = sql(query)
+        df.collect()
+        val executed = CometCoverageStats.forPlan(df.queryExecution.executedPlan)
+        assert(
+          executed.cometOperators > 0,
+          "test query must be partly accelerated for the comparison to mean anything")
+
+        withSQLConf(CometConf.COMET_EXPLAIN_PLAN_ONLY_ENABLED.key -> "true") {
+          val reports = capturePlanOnlyReports(sql(query).collect())
+          // One report for the separately planned subquery, one for the outer query. Only the
+          // outer one describes the Filter.
+          val outer = reports.filter(_.contains("Filter"))
+          assert(
+            outer.size == 1,
+            s"expected exactly one report for the outer query, got ${outer.size}:\n" +
+              reports.mkString("\n\n"))
+          assert(
+            coverageOf(outer.head) ==
+              (executed.cometOperators, executed.cometOperators + executed.sparkOperators),
+            s"outer report disagrees with the executed plan ($executed):\n${outer.head}")
+        }
+      }
+    }
+  }
+
+  // When a shuffle materializes empty, AQE re-plans from the logical plan and can collapse the
+  // whole tree to an empty relation. That plan shares no nodes with the one already reported and
+  // holds no query stages either, so neither the mark nor the stage check recognizes it.
+  for {
+    aqe <- Seq(true, false)
+    // `collect()` installs a SQL execution ID; going straight to the RDD - the path PySpark's
+    // `df.rdd` takes through `Dataset.javaToPython` - does not, so the suppression cannot be
+    // scoped to one.
+    (action, runIt) <- Seq[(String, org.apache.spark.sql.DataFrame => Unit)](
+      "collect" -> (df => df.collect()),
+      "toRdd.count" -> (df => df.queryExecution.toRdd.count()))
+    // The second shape is the one where the plan that AQE reports back cannot be recognized by a
+    // mark of any kind: `RemoveRedundantSorts` drops the outer sort before this rule sees the
+    // plan, so the mark lands on the join below it, and empty propagation replaces the join and
+    // then the sort, leaving a root that inherited the unmarked sort's tags.
+    (shape, query, marker) <- Seq(
+      (
+        "aggregate",
+        "SELECT id % 2 AS k, count(*) AS n FROM range(20) WHERE id < 0 GROUP BY id % 2",
+        "HashAggregate"),
+      (
+        "join under a removed root sort",
+        """SELECT a.id FROM range(0, 20, 1, 2) a
+          |JOIN range(0, 20, 1, 2) b ON a.id % 7 = b.id % 7
+          |WHERE a.id < 0
+          |SORT BY a.id % 7""".stripMargin,
+        "SortMergeJoin"))
+  } {
+    test(s"plan-only mode: one report when the plan becomes empty ($shape, AQE=$aqe, $action)") {
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe.toString,
+        // Force a shuffled join so the join shape has a stage that can materialize empty.
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+        SQLConf.SHUFFLE_PARTITIONS.key -> "2",
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_EXPLAIN_PLAN_ONLY_ENABLED.key -> "true") {
+        val reports = capturePlanOnlyReports(runIt(spark.sql(query)))
+        assert(
+          reports.size == 1,
+          s"expected one report, got ${reports.size}:\n${reports.mkString("\n\n")}")
+        // The one report must describe the query, not the empty relation AQE replaced it with.
+        assert(
+          reports.head.contains(marker),
+          s"the report does not describe the query:\n${reports.head}")
+      }
+    }
+  }
+
+  // The same nested scalar subquery projected twice is prepared once per reference, as separate
+  // but structurally identical plans that differ only in expression IDs. Spark reuses one of them
+  // through `ReusedSubqueryExec`, so reporting both describes the same work twice.
+  test("plan-only mode: a subquery referenced twice is reported once") {
+    withSQLConf(
+      SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      CometConf.COMET_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_ENABLED.key -> "true",
+      CometConf.COMET_EXPLAIN_PLAN_ONLY_ENABLED.key -> "true") {
+      withParquetTable((0 until 100).map(i => (i, i % 5)), "tbl") {
+        val reports = capturePlanOnlyReports {
+          spark
+            .sql("""SELECT _1,
+                   |  (SELECT max(_2) FROM tbl
+                   |   WHERE _1 > (SELECT min(_2) FROM tbl)) AS a,
+                   |  (SELECT max(_2) FROM tbl
+                   |   WHERE _1 > (SELECT min(_2) FROM tbl)) AS b
+                   |FROM tbl""".stripMargin)
+            .collect()
+        }
+        // One for the innermost `min` subquery, one for the `max` subquery, one for the outer
+        // query. The second reference to the `max` subquery must not add a fourth.
+        assert(
+          reports.size == 3,
+          s"expected three reports, got ${reports.size}:\n${reports.mkString("\n\n")}")
+      }
+    }
+  }
+
+  /** Registers a `fact` table partitioned on the join key plus a small `dim` table. */
+  private def withDppTables(f: => Unit): Unit = {
+    withTempDir { dir =>
+      withSQLConf(CometConf.COMET_EXEC_ENABLED.key -> "false") {
+        val sess = spark
+        import sess.implicits._
+        (0 until 400)
+          .map(i => (i, i % 10, s"f$i"))
+          .toDF("fact_id", "fact_key", "fact_str")
+          .write
+          .partitionBy("fact_key")
+          .parquet(s"${dir.getAbsolutePath}/fact")
+        (0 until 10)
+          .map(i => (i, i, s"d$i"))
+          .toDF("dim_id", "dim_key", "dim_str")
+          .write
+          .parquet(s"${dir.getAbsolutePath}/dim")
+      }
+      spark.read.parquet(s"${dir.getAbsolutePath}/fact").createOrReplaceTempView("fact")
+      spark.read.parquet(s"${dir.getAbsolutePath}/dim").createOrReplaceTempView("dim")
+      withTempView("fact", "dim")(f)
+    }
+  }
+
+  // `PlanDynamicPruningFilters` prepares the DPP build plan and only wraps it in a
+  // `BroadcastExchangeExec` afterwards, so the stage `RevertNativeForTransitionHeavyStages` judged
+  // is the exchange's child. A preview that hands it the exchange instead leaves that child's top
+  // boundary open, the reversion never fires, and the report claims acceleration the executed plan
+  // does not have. Reversion is forced on here so a missed reversion changes the number.
+  test("plan-only mode: outer report coverage matches normal planning for a DPP subquery") {
+    withSQLConf(
+      SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+      // AQE off: the preview describes the pre-adaptive plan, so only the non-adaptive plan is
+      // comparable. Comet also cannot currently run this query with AQE on and reversion enabled.
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true",
+      CometConf.COMET_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_TRANSITION_REVERT_MAX_TRANSITIONS.key -> "0",
+      CometConf.COMET_EXEC_PROJECT_ENABLED.key -> "false") {
+      withDppTables {
+        val query = "SELECT f.fact_id, f.fact_str, d.dim_str FROM fact f " +
+          "JOIN dim d ON f.fact_key = d.dim_key WHERE d.dim_id < 10"
+
+        val df = sql(query)
+        df.collect()
+        val plan = df.queryExecution.executedPlan
+        // `exists` walks children only, and a DPP subquery hangs off the scan's expressions.
+        assert(
+          plan.collectWithSubqueries { case p: SubqueryBroadcastExec => p }.nonEmpty,
+          s"test query must produce a DPP subquery:\n$plan")
+        val executed = CometCoverageStats.forPlan(plan)
+
+        withSQLConf(CometConf.COMET_EXPLAIN_PLAN_ONLY_ENABLED.key -> "true") {
+          val reports = capturePlanOnlyReports(sql(query).collect())
+          // One report for the separately prepared DPP build plan, one for the outer query. Only
+          // the outer one describes the join.
+          val outer = reports.filter(_.contains("BroadcastHashJoin"))
+          assert(
+            outer.size == 1,
+            s"expected exactly one report for the outer query, got ${outer.size}:\n" +
+              reports.mkString("\n\n"))
+          assert(
+            coverageOf(outer.head) ==
+              (executed.cometOperators, executed.cometOperators + executed.sparkOperators),
+            s"outer report disagrees with the executed plan ($executed):\n${outer.head}")
+        }
+      }
+    }
+  }
+
+  // Every plan Spark prepares in its own right gets its own report, including one AQE only plans
+  // once query stages are under way. A DPP build plan is the case in point: it is prepared by
+  // `PlanAdaptiveDynamicPruningFilters`, a stage optimizer rule, so it arrives after the outer
+  // query has been reported and after the first stage has been cut.
+  test("plan-only mode: a DPP subquery planned mid-execution is reported under AQE") {
+    withSQLConf(
+      SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+      SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true",
+      CometConf.COMET_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_ENABLED.key -> "true",
+      CometConf.COMET_EXPLAIN_PLAN_ONLY_ENABLED.key -> "true") {
+      withDppTables {
+        val query = "SELECT f.fact_id, f.fact_str, d.dim_str FROM fact f " +
+          "JOIN dim d ON f.fact_key = d.dim_key WHERE d.dim_id < 10"
+        val reports = capturePlanOnlyReports(sql(query).collect())
+        assert(
+          reports.size == 2,
+          "expected a report for the outer query and one for the DPP build plan, got " +
+            s"${reports.size}:\n${reports.mkString("\n\n")}")
+        assert(
+          reports.count(_.contains("BroadcastHashJoin")) == 1,
+          s"exactly one report should describe the outer query:\n${reports.mkString("\n\n")}")
+      }
+    }
+  }
+
+  // A query AQE cuts into several stages reaches the rules once per stage and once per
+  // re-optimization on top of the initial planning. None of those may add a report.
+  test("plan-only mode: one report for a multi-stage query under AQE") {
+    withSQLConf(
+      SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+      // Force a shuffled join so the plan has more than one shuffle boundary.
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      CometConf.COMET_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_ENABLED.key -> "true",
+      CometConf.COMET_EXPLAIN_PLAN_ONLY_ENABLED.key -> "true") {
+      withParquetTable((0 until 100).map(i => (i, i % 5)), "tbl") {
+        val query = "SELECT a._2, count(*) FROM tbl a JOIN tbl b ON a._1 = b._2 " +
+          "GROUP BY a._2 ORDER BY 1"
+        val reports = capturePlanOnlyReports(sql(query).collect())
+        assert(
+          reports.size == 1,
+          s"expected one report, got ${reports.size}:\n${reports.mkString("\n\n")}")
+      }
+    }
+  }
 }

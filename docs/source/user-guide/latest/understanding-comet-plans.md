@@ -208,6 +208,53 @@ operators were arranged after Comet's serialization). See the
 [Metrics Guide](metrics.md) for details on the DataFusion metrics that appear
 in this output.
 
+### `spark.comet.explain.planOnly.enabled`
+
+When enabled, Comet runs its full conversion pass on every query and logs the
+resulting Comet plan and coverage summary to the driver log, then reverts to
+executing the plan on Spark instead of offloading anything to native. Use this
+to evaluate how much of a workload Comet would accelerate without changing the
+execution.
+
+The log line is prefixed with `[Comet plan-only]` and includes the same
+annotated plan and summary as `spark.comet.explain.format=verbose` produces
+against a normal Comet plan. The preview goes through the whole Comet planning
+sequence, not just operator conversion: Spark's columnar transitions are
+inserted and Comet's post-columnar rules
+(`RevertNativeForTransitionHeavyStages`, `EliminateRedundantTransitions`) are
+applied, so a stage that Comet would have reverted to Spark for having too many
+transitions is reported as reverted.
+
+Spark prepares some plans on their own, ahead of the query that contains them —
+scalar subqueries and dynamic partition pruning subqueries, for instance — so a
+query gets one report per independently planned plan: one for the outer query,
+plus one per such subquery. The outer report counts its subqueries too, the same
+way normal Comet planning does, so the reports for one query describe
+overlapping sets of operators and their counts should not be added up. Repeat
+applications of the same plan are not reported again: under AQE, neither the
+per-stage applications nor the applications that follow each adaptive
+re-optimization add reports, and nor does a plan AQE re-plans wholesale after a
+stage materializes empty.
+
+The estimate reflects Scala-side conversion only. The native plan is never
+handed to DataFusion, so anything that would have failed in DataFusion's
+`create_plan` still counts as accelerated. Treat the percentage as an upper
+bound.
+
+Under AQE the report is an estimate for a second reason: it describes the plan
+as it stands before any adaptive re-planning, and the post-columnar rules are
+applied to that whole plan at once rather than to each stage as it is created.
+Coverage of the plan AQE finally executes can differ. One case is worth calling
+out, because it moves the number the other way: AQE does not plan a subquery
+into the outer plan until after the report has been produced, so the outer
+report counts a subquery's operators as un-accelerated Spark even where Comet
+would accelerate them. For a subquery-heavy query under AQE, read the
+per-subquery reports rather than the outer percentage, or turn AQE off for the
+evaluation run.
+
+The config requires `spark.comet.exec.enabled=true`. With Comet exec disabled
+the rule that emits the report does not run.
+
 ## Programmatic Access to Fallback Reasons
 
 The configs above route fallback reasons to logs or the SQL UI. If you want
