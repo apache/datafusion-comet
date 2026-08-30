@@ -20,6 +20,7 @@
 package org.apache.comet.exec
 
 import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.comet.CometExplodeExec
 import org.apache.spark.sql.functions.col
 
 import org.apache.comet.CometConf
@@ -574,6 +575,39 @@ class CometGenerateExecSuite extends CometTestBase {
         .toDF("id", "arr")
         .selectExpr("id", "explode(arr) as value")
       checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  // N rows each expanding by 2 can exceed spark.comet.batchSize even when no single
+  // array is larger than the batch. Distinct from "explode single row exceeds batch
+  // size" above. leafNodeDefaultParallelism=1 keeps the input in one partition so
+  // UnnestExec can emit one oversized batch for BatchSplitExec to slice.
+  test("native explode splits oversized output batches") {
+    withSQLConf(
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_EXPLODE_ENABLED.key -> "true",
+      CometConf.COMET_BATCH_SIZE.key -> "8",
+      "spark.sql.leafNodeDefaultParallelism" -> "1") {
+      val df = (0 until 16)
+        .map(i => if (i % 2 == 0) "a" else "b")
+        .toDF("s")
+        .selectExpr("explode(array(s, s)) as e")
+      val (_, cometPlan) =
+        checkSparkAnswerAndOperator(df, includeClasses = Seq(classOf[CometExplodeExec]))
+
+      val explode = find(cometPlan) {
+        case _: CometExplodeExec => true
+        case _ => false
+      }.get
+
+      val metrics = explode.metrics
+      assert(metrics.contains("input_rows"))
+      assert(metrics.contains("output_rows"))
+      assert(metrics.contains("batches_split"))
+
+      assert(metrics("input_rows").value == 16L)
+      assert(metrics("output_rows").value == 32L)
+      assert(metrics("batches_split").value > 0L)
     }
   }
 

@@ -1545,7 +1545,10 @@ case class CometExplodeExec(
       Map(
         "input_batches" -> SQLMetrics.createMetric(sparkContext, "number of input batches"),
         "input_rows" -> SQLMetrics.createMetric(sparkContext, "number of input rows"),
-        "output_batches" -> SQLMetrics.createMetric(sparkContext, "number of output batches"))
+        "output_batches" -> SQLMetrics.createMetric(sparkContext, "number of output batches"),
+        "batches_split" -> SQLMetrics.createMetric(
+          sparkContext,
+          "number of output batches produced from oversized input batches"))
 }
 
 object CometUnionExec extends CometSink[UnionExec] {

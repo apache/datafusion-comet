@@ -125,12 +125,83 @@ mod tests {
 
     use arrow::array::{AsArray, Int32Array, RecordBatch};
     use arrow::datatypes::{DataType, Field, Schema};
-    use datafusion::datasource::memory::MemorySourceConfig;
-    use datafusion::datasource::source::DataSourceExec;
     use datafusion::execution::SessionStateBuilder;
+    use datafusion::physical_expr::EquivalenceProperties;
+    use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
     use datafusion::physical_plan::limit::GlobalLimitExec;
+    use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
+    use datafusion::physical_plan::Partitioning;
     use datafusion::prelude::{SessionConfig, SessionContext};
     use futures::StreamExt;
+
+    /// Emits one batch regardless of the session `batch_size`. MemorySource/DataSourceExec
+    /// would split first, so BatchSplitExec would only pass through and `batches_split`
+    /// would stay 0.
+    #[derive(Debug)]
+    struct SingleBatchExec {
+        batch: RecordBatch,
+        cache: Arc<PlanProperties>,
+    }
+
+    impl SingleBatchExec {
+        fn new(batch: RecordBatch) -> Self {
+            let cache = Arc::new(PlanProperties::new(
+                EquivalenceProperties::new(batch.schema()),
+                Partitioning::UnknownPartitioning(1),
+                EmissionType::Incremental,
+                Boundedness::Bounded,
+            ));
+            Self { batch, cache }
+        }
+    }
+
+    impl DisplayAs for SingleBatchExec {
+        fn fmt_as(&self, t: DisplayFormatType, f: &mut Formatter) -> std::fmt::Result {
+            match t {
+                DisplayFormatType::Default | DisplayFormatType::Verbose => {
+                    write!(f, "SingleBatchExec")
+                }
+                DisplayFormatType::TreeRender => unimplemented!(),
+            }
+        }
+    }
+
+    impl ExecutionPlan for SingleBatchExec {
+        fn name(&self) -> &str {
+            "SingleBatchExec"
+        }
+
+        fn properties(&self) -> &Arc<PlanProperties> {
+            &self.cache
+        }
+
+        fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+            vec![]
+        }
+
+        fn with_new_children(
+            self: Arc<Self>,
+            children: Vec<Arc<dyn ExecutionPlan>>,
+        ) -> Result<Arc<dyn ExecutionPlan>> {
+            if !children.is_empty() {
+                return internal_err!("SingleBatchExec expects no children");
+            }
+            Ok(self)
+        }
+
+        fn execute(
+            &self,
+            _partition: usize,
+            _context: Arc<TaskContext>,
+        ) -> Result<SendableRecordBatchStream> {
+            let batch = self.batch.clone();
+            let schema = batch.schema();
+            Ok(Box::pin(RecordBatchStreamAdapter::new(
+                schema,
+                futures::stream::once(async move { Ok(batch) }),
+            )))
+        }
+    }
 
     #[tokio::test]
     async fn splits_batches_at_the_runtime_batch_size_and_preserves_order() {
@@ -140,9 +211,12 @@ mod tests {
             vec![Arc::new(Int32Array::from_iter_values(0..10))],
         )
         .unwrap();
-        let source = MemorySourceConfig::try_new(&[vec![input_batch]], schema, None).unwrap();
-        let source: Arc<dyn ExecutionPlan> = Arc::new(DataSourceExec::new(Arc::new(source)));
-        let input: Arc<dyn ExecutionPlan> = Arc::new(GlobalLimitExec::new(source, 0, None));
+        // Limit records output_rows on the wrapped child so forwarding can be checked.
+        let input: Arc<dyn ExecutionPlan> = Arc::new(GlobalLimitExec::new(
+            Arc::new(SingleBatchExec::new(input_batch)),
+            0,
+            None,
+        ));
         let split = BatchSplitExec::new(input);
 
         let config = SessionConfig::new().with_batch_size(4);
@@ -170,5 +244,11 @@ mod tests {
             .find(|metric| metric.value().name() == "output_rows")
             .expect("wrapped input output_rows metric should be forwarded");
         assert_eq!(output_rows.value().as_usize(), 10);
+
+        let batches_split = metrics
+            .iter()
+            .find(|metric| metric.value().name() == "batches_split")
+            .expect("batches_split metric should be present");
+        assert_eq!(batches_split.value().as_usize(), 3);
     }
 }
