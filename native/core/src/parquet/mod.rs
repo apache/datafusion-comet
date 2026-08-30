@@ -309,9 +309,10 @@ pub extern "system" fn Java_org_apache_comet_parquet_Native_currentColumnBatch(
                 source: ExecutionError::GeneralError("There is no more data to read".to_string()),
             });
         let batch = batch_reader?;
-        let field = batch.schema().field(column_idx as usize).clone();
+        let schema = batch.schema();
+        let field = schema.field(column_idx as usize);
         let data = batch.column(column_idx as usize).into_data();
-        data.move_to_spark(&field, array_addr, schema_addr)
+        data.move_to_spark(field, array_addr, schema_addr)
             .map_err(|e| e.into())
     })
 }

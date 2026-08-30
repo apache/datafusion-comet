@@ -657,7 +657,7 @@ class CometJoinSuite extends CometTestBase {
     }
   }
 
-  test("Broadcast coalescing falls back when union children have different nullability") {
+  test("Broadcast coalescing handles union children with different nullability") {
     withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
       withParquetTable(Seq((1, 10), (2, 20), (3, 30)), "t") {
         val (_, cometPlan) = checkSparkAnswerAndOperator(
@@ -675,8 +675,8 @@ class CometJoinSuite extends CometTestBase {
             classOf[CometUnionExec]))
 
         val broadcast = collect(cometPlan) { case b: CometBroadcastExchangeExec => b }.head
-        assert(broadcast.metrics("numCoalescedBatches").value == 0L)
-        assert(broadcast.metrics("numCoalescedRows").value == 0L)
+        assert(broadcast.metrics("numCoalescedBatches").value > 0L)
+        assert(broadcast.metrics("numCoalescedRows").value == 6L)
       }
     }
   }

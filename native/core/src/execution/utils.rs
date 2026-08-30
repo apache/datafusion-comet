@@ -20,22 +20,8 @@ use crate::execution::operators::ExecutionError;
 use arrow::{
     array::ArrayData,
     datatypes::Field,
-    error::ArrowError,
     ffi::{FFI_ArrowArray, FFI_ArrowSchema},
 };
-
-fn ffi_schema_for_field(field: &Field) -> Result<FFI_ArrowSchema, ArrowError> {
-    if field.name().contains('\0') {
-        // ArrowSchema names are NUL-terminated C strings. Spark owns the logical output name, so
-        // substitute only the exported name while retaining the Field's type and metadata.
-        let field = field
-            .clone()
-            .with_name(field.name().replace('\0', "\u{fffd}"));
-        FFI_ArrowSchema::try_from(&field)
-    } else {
-        FFI_ArrowSchema::try_from(field)
-    }
-}
 
 pub trait SparkArrowConvert {
     /// Move Arrow Arrays to C data interface.
@@ -51,7 +37,10 @@ impl SparkArrowConvert for ArrayData {
         let array_align = std::mem::align_of::<FFI_ArrowArray>();
         let schema_align = std::mem::align_of::<FFI_ArrowSchema>();
         let ffi_array = FFI_ArrowArray::new(self);
-        let ffi_schema = ffi_schema_for_field(field)?;
+        // Spark owns the top-level name and nullability. Preserve the existing anonymous schema
+        // shape while carrying logical extension metadata from the RecordBatch field.
+        let ffi_schema =
+            FFI_ArrowSchema::try_from(self.data_type())?.with_metadata(field.metadata())?;
 
         // Check if the pointer alignment is correct.
         if array_ptr.align_offset(array_align) != 0 || schema_ptr.align_offset(schema_align) != 0 {
@@ -86,22 +75,39 @@ pub use datafusion_comet_common::bytes_to_i128;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::datatypes::DataType;
-    use std::collections::HashMap;
+    use arrow::{
+        array::{Array, Int32Array},
+        datatypes::DataType,
+    };
+    use std::{collections::HashMap, mem::MaybeUninit};
 
     #[test]
-    fn test_ffi_schema_preserves_field_and_sanitizes_nul_name() {
-        let field = Field::new("v\0tail", DataType::Int32, true).with_metadata(HashMap::from([(
+    fn test_move_to_spark_preserves_field_metadata() {
+        let field = Field::new("v", DataType::Int32, true).with_metadata(HashMap::from([(
             "ARROW:extension:name".to_string(),
             "example.logical-type".to_string(),
         )]));
+        let data = Int32Array::from(vec![Some(1), None]).into_data();
+        let mut ffi_array = MaybeUninit::<FFI_ArrowArray>::uninit();
+        let mut ffi_schema = MaybeUninit::<FFI_ArrowSchema>::uninit();
 
-        let ffi_schema = ffi_schema_for_field(&field).unwrap();
+        data.move_to_spark(
+            &field,
+            ffi_array.as_mut_ptr() as i64,
+            ffi_schema.as_mut_ptr() as i64,
+        )
+        .unwrap();
+
+        let ffi_array = unsafe { ffi_array.assume_init() };
+        let ffi_schema = unsafe { ffi_schema.assume_init() };
         let exported = Field::try_from(&ffi_schema).unwrap();
 
-        assert_eq!(exported.name(), "v\u{fffd}tail");
+        assert_eq!(exported.name(), "");
         assert_eq!(exported.data_type(), field.data_type());
-        assert_eq!(exported.is_nullable(), field.is_nullable());
+        assert!(!exported.is_nullable());
         assert_eq!(exported.metadata(), field.metadata());
+
+        drop(ffi_array);
+        drop(ffi_schema);
     }
 }
