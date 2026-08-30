@@ -22,6 +22,7 @@ package org.apache.comet.vector
 import scala.collection.mutable
 
 import org.apache.arrow.c.{ArrowArray, ArrowImporter, ArrowSchema, CDataDictionaryProvider, Data}
+import org.apache.arrow.util.AutoCloseables
 import org.apache.arrow.vector.VectorSchemaRoot
 import org.apache.arrow.vector.dictionary.DictionaryProvider
 import org.apache.spark.SparkException
@@ -43,7 +44,7 @@ import org.apache.comet.CometArrowAllocator
  *
  * NativeUtil must be closed after use to release resources in the dictionary provider.
  */
-class NativeUtil {
+class NativeUtil extends AutoCloseable {
   import Utils._
 
   /** Use the global allocator */
@@ -269,24 +270,14 @@ class NativeUtil {
         } catch {
           case failure: Throwable =>
             val rollback = if (cometVector == null) arrowVector else cometVector
-            try rollback.close()
-            catch {
-              case closeFailure: Throwable =>
-                if (closeFailure ne failure) failure.addSuppressed(closeFailure)
-            }
+            AutoCloseables.close(failure, rollback)
             throw failure
         }
       }
       arrayVectors.toSeq
     } catch {
       case failure: Throwable =>
-        arrayVectors.foreach { vector =>
-          try vector.close()
-          catch {
-            case closeFailure: Throwable =>
-              if (closeFailure ne failure) failure.addSuppressed(closeFailure)
-          }
-        }
+        AutoCloseables.close(failure, arrayVectors.toSeq: _*)
         releaseArrowStructs(arrays.drop(firstUnconsumed), schemas.drop(firstUnconsumed), failure)
         throw failure
     }
@@ -315,7 +306,7 @@ class NativeUtil {
     new ColumnarBatch(arrayVectors.toArray, maxNumRows)
   }
 
-  def close(): Unit = {
+  override def close(): Unit = {
     // closing the dictionary provider also closes the dictionary arrays
     dictionaryProvider.close()
   }

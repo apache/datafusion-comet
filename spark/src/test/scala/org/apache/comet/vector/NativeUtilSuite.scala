@@ -21,6 +21,8 @@ package org.apache.comet.vector
 
 import java.io.IOException
 
+import scala.util.Using
+
 import org.apache.arrow.c.{ArrowArray, ArrowSchema, Data}
 import org.apache.arrow.memory.RootAllocator
 import org.apache.arrow.vector.{IntVector, UInt4Vector, VarCharVector}
@@ -103,11 +105,10 @@ class NativeUtilSuite extends CometTestBase {
 
   test("getNextBatch releases imported vectors and Arrow structs when vector import fails") {
     withIsolatedStructAllocator { (nativeUtil, allocator, _) =>
-      val vector = new IntVector("value", allocator)
-      vector.allocateNew(4)
-      vector.setSafe(0, 42)
-      vector.setValueCount(1)
-      try {
+      Using.resource(new IntVector("value", allocator)) { vector =>
+        vector.allocateNew(4)
+        vector.setSafe(0, 42)
+        vector.setValueCount(1)
         val failure = intercept[IllegalStateException] {
           nativeUtil.getNextBatch(
             2,
@@ -125,19 +126,16 @@ class NativeUtilSuite extends CometTestBase {
         assert(failure.getMessage == "Cannot import released ArrowSchema")
         assert(failure.getSuppressed.isEmpty)
         assert(allocator.getAllocatedMemory == 0)
-      } finally {
-        vector.close()
       }
     }
   }
 
   test("getNextBatch releases an imported vector when its Comet wrapper rejects the type") {
     withIsolatedStructAllocator { (nativeUtil, allocator, _) =>
-      val vector = new UInt4Vector("value", allocator)
-      vector.allocateNew(1)
-      vector.setSafe(0, 42)
-      vector.setValueCount(1)
-      try {
+      Using.resource(new UInt4Vector("value", allocator)) { vector =>
+        vector.allocateNew(1)
+        vector.setSafe(0, 42)
+        vector.setValueCount(1)
         val failure = intercept[UnsupportedOperationException] {
           nativeUtil.getNextBatch(
             2,
@@ -154,8 +152,6 @@ class NativeUtilSuite extends CometTestBase {
         }
         assert(failure.getSuppressed.isEmpty)
         assert(allocator.getAllocatedMemory == 0)
-      } finally {
-        vector.close()
       }
     }
   }

@@ -20,6 +20,7 @@
 package org.apache.arrow.c;
 
 import org.apache.arrow.memory.BufferAllocator;
+import org.apache.arrow.util.AutoCloseables;
 import org.apache.arrow.vector.FieldVector;
 import org.apache.arrow.vector.types.pojo.Field;
 
@@ -59,23 +60,12 @@ public class ArrowImporter {
       return vector;
     } catch (RuntimeException | Error failure) {
       if (vector != null) {
-        runCleanup(failure, vector::close);
+        AutoCloseables.close(failure, vector);
       }
       if (!array.isClosed()) {
-        runCleanup(failure, array::release);
-        runCleanup(failure, array::close);
+        AutoCloseables.close(failure, array::release, array);
       }
       throw failure;
-    }
-  }
-
-  private static void runCleanup(Throwable failure, Runnable cleanup) {
-    try {
-      cleanup.run();
-    } catch (Throwable cleanupFailure) {
-      if (cleanupFailure != failure) {
-        failure.addSuppressed(cleanupFailure);
-      }
     }
   }
 }
