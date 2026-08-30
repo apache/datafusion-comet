@@ -400,7 +400,18 @@ object Utils extends CometTypeShim with Logging {
                 targetRoot = VectorSchemaRoot.create(sourceRoot.getSchema, allocator)
                 targetRoot.allocateNew()
               }
-              VectorSchemaRootAppender.append(targetRoot, sourceRoot)
+              try {
+                VectorSchemaRootAppender.append(targetRoot, sourceRoot)
+              } catch {
+                case e: IllegalArgumentException =>
+                  logWarning(
+                    "Arrow batches cannot be appended during BroadcastExchange coalescing; " +
+                      "skipping coalesce",
+                    e)
+                  targetRoot.close()
+                  targetRoot = null
+                  return (buffers, 0L, 0L)
+              }
               totalRows += sourceRoot.getRowCount
               batchCount += 1
             }

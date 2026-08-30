@@ -28,6 +28,7 @@ import org.apache.spark.sql.catalyst.analysis.UnresolvedRelation
 import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometBroadcastNestedLoopJoinExec, CometSortMergeJoinExec, CometUnionExec}
 import org.apache.spark.sql.execution.adaptive.AQEShuffleReadExec
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.types.{ArrayType, IntegerType, MetadataBuilder, StructField, StructType}
 
 import org.apache.comet.CometConf
 
@@ -677,6 +678,56 @@ class CometJoinSuite extends CometTestBase {
         val broadcast = collect(cometPlan) { case b: CometBroadcastExchangeExec => b }.head
         assert(broadcast.metrics("numCoalescedBatches").value > 0L)
         assert(broadcast.metrics("numCoalescedRows").value == 6L)
+      }
+    }
+  }
+
+  test("Broadcast coalescing falls back for array field metadata mismatch") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "false",
+      SQLConf.IGNORE_MISSING_PARQUET_FIELD_ID.key -> "true") {
+      withTempPath { dir =>
+        val path = dir.getCanonicalPath
+        Seq((1, Seq(10)), (2, Seq(20))).toDF("k", "v").coalesce(1).write.parquet(path)
+
+        def readWithFieldId(fieldId: Long) = {
+          val metadata = new MetadataBuilder()
+            .putLong("parquet.field.id", fieldId)
+            .build()
+          val schema = StructType(
+            Seq(
+              StructField("k", IntegerType, nullable = true),
+              StructField(
+                "v",
+                ArrayType(IntegerType, containsNull = true),
+                nullable = true,
+                metadata)))
+          spark.read.schema(schema).parquet(path)
+        }
+
+        withTempView("metadata_left", "metadata_right") {
+          readWithFieldId(1).createOrReplaceTempView("metadata_left")
+          readWithFieldId(2).createOrReplaceTempView("metadata_right")
+
+          val (_, cometPlan) = checkSparkAnswerAndOperator(
+            sql("""
+                |SELECT /*+ BROADCAST(u) */ p.k, u.v
+                |FROM metadata_left p JOIN (
+                |  SELECT k, v FROM metadata_left
+                |  UNION ALL
+                |  SELECT k, v FROM metadata_right
+                |) u ON p.k = u.k
+                |""".stripMargin),
+            Seq(
+              classOf[CometBroadcastExchangeExec],
+              classOf[CometBroadcastHashJoinExec],
+              classOf[CometUnionExec]))
+
+          val broadcast = collect(cometPlan) { case b: CometBroadcastExchangeExec => b }.head
+          assert(broadcast.metrics("numCoalescedBatches").value == 0L)
+          assert(broadcast.metrics("numCoalescedRows").value == 0L)
+        }
       }
     }
   }
