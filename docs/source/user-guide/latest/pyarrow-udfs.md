@@ -183,8 +183,9 @@ on the unoptimized path.
 - The optimization currently applies only to `mapInArrow` and `mapInPandas`. Scalar pandas UDFs
   (`@pandas_udf`) and grouped operations (`applyInPandas`) are not yet supported.
 - The optimization requires Arrow data on the input side. If a shuffle sits between the upstream
-  Comet operator and the Python UDF, you need Comet's native shuffle for the optimization to
-  apply. Set `spark.shuffle.manager` to
+  Comet operator and the Python UDF, use Comet's columnar shuffle for the optimization to apply.
+  Both the `jvm` and `native` shuffle modes can feed `CometMapInBatch`. Set
+  `spark.shuffle.manager` to
   `org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager` and enable
   `spark.comet.shuffle.enabled=true` at session startup. With a vanilla Spark `Exchange`
   in the plan the data leaves the shuffle as rows and the optimization cannot fire.
@@ -211,7 +212,10 @@ on the unoptimized path.
   columns returned by a Python worker; that output support does not widen the input vectors.
 - Comet writes input Arrow IPC record batches directly from existing plain vector buffers. The
   only additional Arrow buffer for plain inputs is the validity bitmap for the non-null struct
-  that wraps the input columns. Dictionary-encoded shuffle columns are decoded into temporary
-  logical vectors and released after each synchronous write. Writing the IPC bytes to the Python
-  worker's pipe still requires one copy; that copy is inherent to Spark's process-based Python
-  transport. Borrowed buffers are not transferred between Arrow allocators or given new ownership.
+  that wraps the input columns. Before decoding dictionary-encoded shuffle columns, Comet uses
+  Spark's Arrow record threshold and the decoded dictionary size against Spark's byte threshold to
+  split the compact batch. Each temporary logical slice is released after its synchronous write.
+  Plain-only inputs continue to preserve their upstream Comet batch boundaries. Writing the IPC
+  bytes to the Python worker's pipe still requires one copy; that copy is inherent to Spark's
+  process-based Python transport. Borrowed buffers are not transferred between Arrow allocators or
+  given new ownership.

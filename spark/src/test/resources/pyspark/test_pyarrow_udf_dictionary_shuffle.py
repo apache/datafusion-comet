@@ -23,7 +23,7 @@ import os
 import pyarrow as pa
 import pytest
 from conftest import resolve_comet_jar
-from pyspark.sql import SparkSession
+from pyspark.sql import SparkSession, types as T
 
 
 @pytest.fixture(scope="session")
@@ -115,3 +115,97 @@ def test_dictionary_shuffle_input(spark, tmp_path, api: str):
         for index, text, data in rows
     )
     assert actual == expected
+
+
+@pytest.mark.parametrize("api", ["mapInArrow", "mapInPandas"])
+@pytest.mark.parametrize(
+    "max_records,max_bytes,expected_batch_sizes",
+    [
+        (2, 256 * 1024 * 1024, [2, 2, 2, 2, 2]),
+        (100, 4096, [1] * 10),
+    ],
+)
+def test_dictionary_shuffle_input_respects_arrow_batch_limits(
+    spark,
+    tmp_path,
+    api: str,
+    max_records: int,
+    max_bytes: int,
+    expected_batch_sizes: list[int],
+):
+    """Split compact shuffle dictionaries using their decoded logical size."""
+    previous_records = spark.conf.get("spark.sql.execution.arrow.maxRecordsPerBatch")
+    previous_bytes = spark.conf.get("spark.sql.execution.arrow.maxBytesPerBatch")
+    spark.conf.set("spark.sql.execution.arrow.useLargeVarTypes", "false")
+    spark.conf.set("spark.sql.execution.arrow.maxRecordsPerBatch", str(max_records))
+    spark.conf.set("spark.sql.execution.arrow.maxBytesPerBatch", str(max_bytes))
+    try:
+        text_values = ["a" * (32 * 1024), "b" * (32 * 1024)]
+        binary_values = [bytearray(b"c" * (32 * 1024)), bytearray(b"d" * (32 * 1024))]
+        rows = [
+            (index, text_values[index % 2], binary_values[index % 2])
+            for index in range(10)
+        ]
+
+        path = str(tmp_path / "dictionary-shuffle-batch-limits.parquet")
+        spark.createDataFrame(rows, "id int, text string, data binary").coalesce(
+            1
+        ).write.parquet(path)
+        source = spark.read.parquet(path).repartition(1, "id")
+        output_schema = T.StructType(
+            [
+                *source.schema.fields,
+                T.StructField("input_batch_id", T.IntegerType(), nullable=False),
+                T.StructField("input_batch_rows", T.IntegerType(), nullable=False),
+            ]
+        )
+
+        if api == "mapInArrow":
+
+            def annotate_batches(iterator):
+                for batch_id, batch in enumerate(iterator):
+                    yield pa.RecordBatch.from_arrays(
+                        [
+                            *batch.columns,
+                            pa.array([batch_id] * batch.num_rows, type=pa.int32()),
+                            pa.array(
+                                [batch.num_rows] * batch.num_rows, type=pa.int32()
+                            ),
+                        ],
+                        names=output_schema.fieldNames(),
+                    )
+
+            result = source.mapInArrow(annotate_batches, output_schema)
+        else:
+
+            def annotate_batches(iterator):
+                for batch_id, frame in enumerate(iterator):
+                    yield frame.assign(
+                        input_batch_id=batch_id,
+                        input_batch_rows=len(frame),
+                    )
+
+            result = source.mapInPandas(annotate_batches, output_schema)
+
+        plan = result._jdf.queryExecution().executedPlan().toString()
+        assert "CometColumnarExchange" in plan, plan
+        assert "CometMapInBatch" in plan, plan
+        assert "ColumnarToRow" not in plan, plan
+
+        output = result.collect()
+        observed_batches = {}
+        for row in output:
+            observed_batches.setdefault(row.input_batch_id, []).append(row)
+        assert sorted(observed_batches) == list(range(len(expected_batch_sizes)))
+        assert [
+            len(observed_batches[batch_id]) for batch_id in sorted(observed_batches)
+        ] == expected_batch_sizes
+        for batch_rows in observed_batches.values():
+            assert {row.input_batch_rows for row in batch_rows} == {len(batch_rows)}
+
+        actual = sorted(_comparable(row) for row in output)
+        expected = sorted((index, text, bytes(data)) for index, text, data in rows)
+        assert actual == expected
+    finally:
+        spark.conf.set("spark.sql.execution.arrow.maxRecordsPerBatch", previous_records)
+        spark.conf.set("spark.sql.execution.arrow.maxBytesPerBatch", previous_bytes)
