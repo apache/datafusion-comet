@@ -2423,7 +2423,7 @@ index d70bd715879..074a9fa29d9 100644
        })
        checkAnswer(distinctWithId, Seq(Row(1, 0), Row(1, 0)))
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
-index d6d19d21e65..fb103e5dad1 100644
+index d6d19d21e65..c360e8d025b 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
 @@ -27,13 +27,15 @@ import org.apache.spark.SparkException
@@ -2545,17 +2545,7 @@ index d6d19d21e65..fb103e5dad1 100644
      withSQLConf(
        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "80",
-@@ -306,7 +323,8 @@ class AdaptiveQueryExecSuite
-       val localReads = collect(adaptivePlan) {
-         case read: AQEShuffleReadExec if read.isLocalRead => read
-       }
--      assert(localReads.length == 2)
-+      // Comet shuffle changes shuffle metrics
-+      assert(localReads.length == 1)
-       val localShuffleRDD0 = localReads(0).execute().asInstanceOf[ShuffledRowRDD]
-       val localShuffleRDD1 = localReads(1).execute().asInstanceOf[ShuffledRowRDD]
-       // the final parallelism is math.max(1, numReduces / numMappers): math.max(1, 5/2) = 2
-@@ -331,7 +349,9 @@ class AdaptiveQueryExecSuite
+@@ -331,7 +348,9 @@ class AdaptiveQueryExecSuite
            .groupBy($"a").count()
          checkAnswer(testDf, Seq())
          val plan = testDf.queryExecution.executedPlan
@@ -2566,7 +2556,7 @@ index d6d19d21e65..fb103e5dad1 100644
          val coalescedReads = collect(plan) {
            case r: AQEShuffleReadExec => r
          }
-@@ -345,7 +365,9 @@ class AdaptiveQueryExecSuite
+@@ -345,7 +364,9 @@ class AdaptiveQueryExecSuite
            .groupBy($"a").count()
          checkAnswer(testDf, Seq())
          val plan = testDf.queryExecution.executedPlan
@@ -2577,7 +2567,7 @@ index d6d19d21e65..fb103e5dad1 100644
          val coalescedReads = collect(plan) {
            case r: AQEShuffleReadExec => r
          }
-@@ -355,7 +377,7 @@ class AdaptiveQueryExecSuite
+@@ -355,7 +376,7 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -2586,7 +2576,7 @@ index d6d19d21e65..fb103e5dad1 100644
      withSQLConf(
          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
          SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "80") {
-@@ -370,7 +392,7 @@ class AdaptiveQueryExecSuite
+@@ -370,7 +391,7 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -2595,7 +2585,7 @@ index d6d19d21e65..fb103e5dad1 100644
      withSQLConf(
          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
          SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "80") {
-@@ -386,7 +408,7 @@ class AdaptiveQueryExecSuite
+@@ -386,7 +407,7 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -2604,7 +2594,7 @@ index d6d19d21e65..fb103e5dad1 100644
      withSQLConf(
          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
          SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "80") {
-@@ -431,7 +453,7 @@ class AdaptiveQueryExecSuite
+@@ -431,7 +452,7 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -2613,7 +2603,7 @@ index d6d19d21e65..fb103e5dad1 100644
      withSQLConf(
          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
          SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "80") {
-@@ -476,7 +498,7 @@ class AdaptiveQueryExecSuite
+@@ -476,7 +497,7 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -2622,7 +2612,7 @@ index d6d19d21e65..fb103e5dad1 100644
      withSQLConf(
          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
          SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "500") {
-@@ -522,7 +544,7 @@ class AdaptiveQueryExecSuite
+@@ -522,7 +543,7 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -2631,7 +2621,7 @@ index d6d19d21e65..fb103e5dad1 100644
      withSQLConf(
          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
          SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "80") {
-@@ -541,7 +563,7 @@ class AdaptiveQueryExecSuite
+@@ -541,7 +562,7 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -2640,7 +2630,7 @@ index d6d19d21e65..fb103e5dad1 100644
      withSQLConf(
          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
          SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "80") {
-@@ -572,7 +594,9 @@ class AdaptiveQueryExecSuite
+@@ -572,7 +593,9 @@ class AdaptiveQueryExecSuite
        assert(smj.size == 1)
        val bhj = findTopLevelBroadcastHashJoin(adaptivePlan)
        assert(bhj.size == 1)
@@ -2651,7 +2641,7 @@ index d6d19d21e65..fb103e5dad1 100644
        // Even with local shuffle read, the query stage reuse can also work.
        val ex = findReusedExchange(adaptivePlan)
        assert(ex.nonEmpty)
-@@ -593,7 +617,9 @@ class AdaptiveQueryExecSuite
+@@ -593,7 +616,9 @@ class AdaptiveQueryExecSuite
        assert(smj.size == 1)
        val bhj = findTopLevelBroadcastHashJoin(adaptivePlan)
        assert(bhj.size == 1)
@@ -2662,7 +2652,7 @@ index d6d19d21e65..fb103e5dad1 100644
        // Even with local shuffle read, the query stage reuse can also work.
        val ex = findReusedExchange(adaptivePlan)
        assert(ex.isEmpty)
-@@ -602,7 +628,8 @@ class AdaptiveQueryExecSuite
+@@ -602,7 +627,8 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -2672,7 +2662,7 @@ index d6d19d21e65..fb103e5dad1 100644
      withSQLConf(
          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
          SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "20000000",
-@@ -697,7 +724,8 @@ class AdaptiveQueryExecSuite
+@@ -697,7 +723,8 @@ class AdaptiveQueryExecSuite
        val bhj = findTopLevelBroadcastHashJoin(adaptivePlan)
        assert(bhj.size == 1)
        // There is still a SMJ, and its two shuffles can't apply local read.
@@ -2682,7 +2672,7 @@ index d6d19d21e65..fb103e5dad1 100644
      }
    }
  
-@@ -825,7 +853,8 @@ class AdaptiveQueryExecSuite
+@@ -825,7 +852,8 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -2692,7 +2682,7 @@ index d6d19d21e65..fb103e5dad1 100644
      Seq("SHUFFLE_MERGE", "SHUFFLE_HASH").foreach { joinHint =>
        def getJoinNode(plan: SparkPlan): Seq[ShuffledJoin] = if (joinHint == "SHUFFLE_MERGE") {
          findTopLevelSortMergeJoin(plan)
-@@ -1269,7 +1298,8 @@ class AdaptiveQueryExecSuite
+@@ -1269,7 +1297,8 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -2702,7 +2692,7 @@ index d6d19d21e65..fb103e5dad1 100644
      withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true") {
        val (_, adaptivePlan) = runAdaptiveAndVerifyResult(
          "SELECT key FROM testData GROUP BY key")
-@@ -1944,7 +1974,7 @@ class AdaptiveQueryExecSuite
+@@ -1944,7 +1973,7 @@ class AdaptiveQueryExecSuite
          val (_, adaptivePlan) = runAdaptiveAndVerifyResult(
            "SELECT id FROM v1 GROUP BY id DISTRIBUTE BY id")
          assert(collect(adaptivePlan) {
@@ -2711,7 +2701,7 @@ index d6d19d21e65..fb103e5dad1 100644
          }.length == 1)
        }
      }
-@@ -2025,7 +2055,8 @@ class AdaptiveQueryExecSuite
+@@ -2025,7 +2054,8 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -2721,7 +2711,7 @@ index d6d19d21e65..fb103e5dad1 100644
      def hasRepartitionShuffle(plan: SparkPlan): Boolean = {
        find(plan) {
          case s: ShuffleExchangeLike =>
-@@ -2212,6 +2243,9 @@ class AdaptiveQueryExecSuite
+@@ -2212,6 +2242,9 @@ class AdaptiveQueryExecSuite
      def checkNoCoalescePartitions(ds: Dataset[Row], origin: ShuffleOrigin): Unit = {
        assert(collect(ds.queryExecution.executedPlan) {
          case s: ShuffleExchangeExec if s.shuffleOrigin == origin && s.numPartitions == 2 => s
@@ -2731,7 +2721,7 @@ index d6d19d21e65..fb103e5dad1 100644
        }.size == 1)
        ds.collect()
        val plan = ds.queryExecution.executedPlan
-@@ -2220,6 +2254,9 @@ class AdaptiveQueryExecSuite
+@@ -2220,6 +2253,9 @@ class AdaptiveQueryExecSuite
        }.isEmpty)
        assert(collect(plan) {
          case s: ShuffleExchangeExec if s.shuffleOrigin == origin && s.numPartitions == 2 => s
@@ -2741,7 +2731,7 @@ index d6d19d21e65..fb103e5dad1 100644
        }.size == 1)
        checkAnswer(ds, testData)
      }
-@@ -2384,7 +2421,8 @@ class AdaptiveQueryExecSuite
+@@ -2384,7 +2420,8 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -2751,7 +2741,7 @@ index d6d19d21e65..fb103e5dad1 100644
      withTempView("t1", "t2") {
        def checkJoinStrategy(shouldShuffleHashJoin: Boolean): Unit = {
          Seq("100", "100000").foreach { size =>
-@@ -2470,7 +2508,8 @@ class AdaptiveQueryExecSuite
+@@ -2470,7 +2507,8 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -2761,7 +2751,7 @@ index d6d19d21e65..fb103e5dad1 100644
      withTempView("v") {
        withSQLConf(
          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
-@@ -2569,7 +2608,7 @@ class AdaptiveQueryExecSuite
+@@ -2569,7 +2607,7 @@ class AdaptiveQueryExecSuite
                runAdaptiveAndVerifyResult(s"SELECT $repartition key1 FROM skewData1 " +
                  s"JOIN skewData2 ON key1 = key2 GROUP BY key1")
              val shuffles1 = collect(adaptive1) {
@@ -2770,7 +2760,7 @@ index d6d19d21e65..fb103e5dad1 100644
              }
              assert(shuffles1.size == 3)
              // shuffles1.head is the top-level shuffle under the Aggregate operator
-@@ -2582,7 +2621,7 @@ class AdaptiveQueryExecSuite
+@@ -2582,7 +2620,7 @@ class AdaptiveQueryExecSuite
                runAdaptiveAndVerifyResult(s"SELECT $repartition key1 FROM skewData1 " +
                  s"JOIN skewData2 ON key1 = key2")
              val shuffles2 = collect(adaptive2) {
@@ -2779,7 +2769,7 @@ index d6d19d21e65..fb103e5dad1 100644
              }
              if (hasRequiredDistribution) {
                assert(shuffles2.size == 3)
-@@ -2616,7 +2655,8 @@ class AdaptiveQueryExecSuite
+@@ -2616,7 +2654,8 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -2789,7 +2779,7 @@ index d6d19d21e65..fb103e5dad1 100644
      CostEvaluator.instantiate(
        classOf[SimpleShuffleSortCostEvaluator].getCanonicalName, spark.sparkContext.getConf)
      intercept[IllegalArgumentException] {
-@@ -2787,6 +2827,7 @@ class AdaptiveQueryExecSuite
+@@ -2787,6 +2826,7 @@ class AdaptiveQueryExecSuite
            val (_, adaptive) = runAdaptiveAndVerifyResult(query)
            assert(adaptive.collect {
              case sort: SortExec => sort
@@ -2797,7 +2787,7 @@ index d6d19d21e65..fb103e5dad1 100644
            }.size == 1)
            val read = collect(adaptive) {
              case read: AQEShuffleReadExec => read
-@@ -2804,7 +2845,8 @@ class AdaptiveQueryExecSuite
+@@ -2804,7 +2844,8 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -2807,7 +2797,7 @@ index d6d19d21e65..fb103e5dad1 100644
      withTempView("v") {
        withSQLConf(
          SQLConf.ADAPTIVE_OPTIMIZE_SKEWS_IN_REBALANCE_PARTITIONS_ENABLED.key -> "true",
-@@ -2916,7 +2958,7 @@ class AdaptiveQueryExecSuite
+@@ -2916,7 +2957,7 @@ class AdaptiveQueryExecSuite
            runAdaptiveAndVerifyResult("SELECT key1 FROM skewData1 JOIN skewData2 ON key1 = key2 " +
              "JOIN skewData3 ON value2 = value3")
          val shuffles1 = collect(adaptive1) {
@@ -2816,7 +2806,7 @@ index d6d19d21e65..fb103e5dad1 100644
          }
          assert(shuffles1.size == 4)
          val smj1 = findTopLevelSortMergeJoin(adaptive1)
-@@ -2927,7 +2969,7 @@ class AdaptiveQueryExecSuite
+@@ -2927,7 +2968,7 @@ class AdaptiveQueryExecSuite
            runAdaptiveAndVerifyResult("SELECT key1 FROM skewData1 JOIN skewData2 ON key1 = key2 " +
              "JOIN skewData3 ON value1 = value3")
          val shuffles2 = collect(adaptive2) {
@@ -2825,7 +2815,7 @@ index d6d19d21e65..fb103e5dad1 100644
          }
          assert(shuffles2.size == 4)
          val smj2 = findTopLevelSortMergeJoin(adaptive2)
-@@ -3185,6 +3227,7 @@ class AdaptiveQueryExecSuite
+@@ -3185,6 +3226,7 @@ class AdaptiveQueryExecSuite
          }.size == (if (firstAccess) 1 else 0))
          assert(collect(initialExecutedPlan) {
            case s: SortExec => s
@@ -2833,7 +2823,7 @@ index d6d19d21e65..fb103e5dad1 100644
          }.size == (if (firstAccess) 2 else 0))
          assert(collect(initialExecutedPlan) {
            case i: InMemoryTableScanLike => i
-@@ -3197,6 +3240,7 @@ class AdaptiveQueryExecSuite
+@@ -3197,6 +3239,7 @@ class AdaptiveQueryExecSuite
          }.isEmpty)
          assert(collect(finalExecutedPlan) {
            case s: SortExec => s
@@ -2841,7 +2831,7 @@ index d6d19d21e65..fb103e5dad1 100644
          }.isEmpty)
          assert(collect(initialExecutedPlan) {
            case i: InMemoryTableScanLike => i
-@@ -3278,7 +3322,8 @@ class AdaptiveQueryExecSuite
+@@ -3278,7 +3321,8 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -2851,7 +2841,7 @@ index d6d19d21e65..fb103e5dad1 100644
      val emptyDf = spark.range(1).where("false")
      val aggDf1 = emptyDf.agg(sum("id").as("id")).withColumn("name", lit("df1"))
      val aggDf2 = emptyDf.agg(sum("id").as("id")).withColumn("name", lit("df2"))
-@@ -3368,7 +3413,8 @@ class AdaptiveQueryExecSuite
+@@ -3368,7 +3412,8 @@ class AdaptiveQueryExecSuite
  
        val plan = df.queryExecution.executedPlan.asInstanceOf[AdaptiveSparkPlanExec]
        assert(plan.inputPlan.isInstanceOf[TakeOrderedAndProjectExec])

@@ -22,15 +22,15 @@
 -- MinSparkVersion: 4.2
 
 statement
-CREATE TABLE test_window_filter(id INT, val INT, cate STRING) USING parquet
+CREATE TABLE test_window_filter(id INT, val INT, dec_val DECIMAL(8,2), cate STRING) USING parquet
 
 statement
 INSERT INTO test_window_filter VALUES
-  (1, 10, 'a'),
-  (2, 20, 'b'),
-  (3, 30, 'a'),
-  (4, 40, 'b'),
-  (5, NULL, 'a')
+  (1, 10, 10.25, 'a'),
+  (2, 20, 20.50, 'b'),
+  (3, 30, 30.75, 'a'),
+  (4, 40, 40.00, 'b'),
+  (5, NULL, NULL, 'a')
 
 query expect_fallback(FILTER (WHERE ...))
 SELECT id, val, cate,
@@ -51,8 +51,31 @@ SELECT id, val, cate,
     OVER (ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS last_a
 FROM test_window_filter ORDER BY id
 
+-- Spark's DecimalAggregates rule rewrites a low-precision decimal SUM / AVG into a MakeDecimal /
+-- Cast(Divide(...)) wrapper, and Comet unwraps that into a rebuilt window expression before
+-- serializing it. The fallback reason must still reach the Window operator from that rebuilt tree.
+query expect_fallback(FILTER (WHERE ...))
+SELECT id, dec_val, cate,
+  sum(dec_val) FILTER (WHERE cate = 'a')
+    OVER (ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS dec_sum_a
+FROM test_window_filter ORDER BY id
+
+query expect_fallback(FILTER (WHERE ...))
+SELECT id, dec_val, cate,
+  avg(dec_val) FILTER (WHERE cate = 'a')
+    OVER (ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS dec_avg_a
+FROM test_window_filter ORDER BY id
+
 -- An unfiltered window aggregate over the same table still runs natively.
 query
 SELECT id,
   sum(val) OVER (ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS running_sum
+FROM test_window_filter ORDER BY id
+
+-- The same decimal SUM / AVG without a FILTER still runs natively, so the fallbacks above are
+-- attributable to the filter rather than to the DecimalAggregates unwrapping.
+query
+SELECT id,
+  sum(dec_val) OVER (ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS dec_sum,
+  avg(dec_val) OVER (ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS dec_avg
 FROM test_window_filter ORDER BY id

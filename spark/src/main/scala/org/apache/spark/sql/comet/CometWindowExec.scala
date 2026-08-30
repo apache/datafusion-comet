@@ -36,7 +36,7 @@ import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.serde.{AggSerde, CometOperatorSerde, LiteralOuterClass, OperatorOuterClass}
 import org.apache.comet.serde.OperatorOuterClass.Operator
-import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto, scalarFunctionExprToProto, serializeDataType}
+import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto, liftFallbackReasons, scalarFunctionExprToProto, serializeDataType}
 
 object CometWindowExec extends CometOperatorSerde[WindowExec] {
 
@@ -62,6 +62,19 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
     }
 
     val windowExprProto = winExprs.map(windowExprToProto(_, output, op.conf))
+
+    // `extractWindowExpression` rebuilds the tree for the decimal SUM / AVG shapes that Spark's
+    // `DecimalAggregates` rule wraps, so for those the node `windowExprToProto` tags is a copy the
+    // operator does not hold. Lift the reasons onto the operator's own expression, otherwise
+    // `CometExecRule.rollUpFallbackReasons` - which walks `op.expressions` - never sees them and
+    // strict mode reports the fallback as unexplained.
+    op.windowExpression.zip(winExprs).zip(windowExprProto).foreach {
+      case ((original, info), proto) =>
+        if (proto.isEmpty && !original.exists(_ eq info.windowExpression)) {
+          liftFallbackReasons(info.windowExpression, original)
+        }
+    }
+
     val partitionExprs = op.partitionSpec.map(exprToProto(_, op.child.output))
 
     val sortOrders = op.orderSpec.map(exprToProto(_, op.child.output))

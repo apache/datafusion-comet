@@ -902,7 +902,15 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
    * converted, so lifting one off a tree that converted fine would attribute a stale reason to an
    * operator that has no problem.
    */
-  private def liftFallbackReasons(from: Expression, to: Expression): Unit = {
+  /**
+   * Copy every fallback reason recorded anywhere in the `from` tree onto `to`.
+   *
+   * Serde paths that rebuild an expression tree before converting it (`DecimalPrecision.promote`
+   * here, `CometWindowExec`'s `DecimalAggregates` unwrapping) record their reasons on copies the
+   * operator does not hold. The roll-ups in `CometExecRule` walk the operator's own expressions,
+   * so without this the reason is lost and strict mode reports an unexplained fallback.
+   */
+  def liftFallbackReasons(from: Expression, to: Expression): Unit = {
     val reasons = mutable.Set.empty[String]
     from.foreach { e =>
       e.getTagValue(CometExplainInfo.FALLBACK_REASONS).foreach(reasons ++= _)

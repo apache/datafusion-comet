@@ -150,7 +150,7 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
-            for key in build_linux build_macos benchmark docs spark_3_4 spark_3_5 spark_4_0 spark_4_1 iceberg_1_8 iceberg_1_9 iceberg_1_10 iceberg_1_11; do
+            for key in build_linux build_macos benchmark docs spark_3_4 spark_3_5 spark_4_0 spark_4_1 spark_4_2 iceberg_1_8 iceberg_1_9 iceberg_1_10 iceberg_1_11; do
               echo "${key}=true" >> "$GITHUB_OUTPUT"
             done
             exit 0
