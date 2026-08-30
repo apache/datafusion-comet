@@ -77,6 +77,19 @@ private[python] trait CometArrowPythonRunnerBase
   protected def writeUDF(dataOut: DataOutputStream): Unit
 
   /**
+   * Write the worker configuration where Spark 4.0 and 4.1 workers expect it. Spark 4.2 moved
+   * this map into [[BasePythonRunner.runnerConf]], so its subclass overrides this hook with a
+   * no-op.
+   */
+  protected def writeWorkerConf(dataOut: DataOutputStream): Unit = {
+    dataOut.writeInt(workerConf.size)
+    for ((key, value) <- workerConf) {
+      PythonRDD.writeUTF(key, dataOut)
+      PythonRDD.writeUTF(value, dataOut)
+    }
+  }
+
+  /**
    * Input schema as Comet hands it to the runner: a single non-nullable struct named "struct"
    * whose children are the user's input columns. Comet's FFI-imported vectors carry Arrow
    * `Field`s with null names (Comet uses positional schema), so these names are the source of
@@ -126,11 +139,7 @@ private[python] trait CometArrowPythonRunnerBase
 
       protected override def writeCommand(dataOut: DataOutputStream): Unit = {
         // handleMetadataBeforeExec: write the worker config as key/value string pairs.
-        dataOut.writeInt(workerConf.size)
-        for ((k, v) <- workerConf) {
-          PythonRDD.writeUTF(k, dataOut)
-          PythonRDD.writeUTF(v, dataOut)
-        }
+        writeWorkerConf(dataOut)
         writeUDF(dataOut)
       }
 
