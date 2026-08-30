@@ -23,7 +23,9 @@ import java.io.IOException
 
 import org.apache.arrow.c.{ArrowArray, ArrowSchema, Data}
 import org.apache.arrow.memory.RootAllocator
-import org.apache.arrow.vector.IntVector
+import org.apache.arrow.vector.{IntVector, UInt4Vector, VarCharVector}
+import org.apache.arrow.vector.complex.StructVector
+import org.apache.arrow.vector.types.pojo.{ArrowType, FieldType}
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.vectorized.ConstantColumnVector
 import org.apache.spark.sql.types.{IntegerType, StringType, StructField, StructType}
@@ -121,10 +123,80 @@ class NativeUtilSuite extends CometTestBase {
             })
         }
         assert(failure.getMessage == "Cannot import released ArrowSchema")
+        assert(failure.getSuppressed.isEmpty)
         assert(allocator.getAllocatedMemory == 0)
       } finally {
         vector.close()
       }
+    }
+  }
+
+  test("getNextBatch releases an imported vector when its Comet wrapper rejects the type") {
+    withIsolatedStructAllocator { (nativeUtil, allocator, _) =>
+      val vector = new UInt4Vector("value", allocator)
+      vector.allocateNew(1)
+      vector.setSafe(0, 42)
+      vector.setValueCount(1)
+      try {
+        val failure = intercept[UnsupportedOperationException] {
+          nativeUtil.getNextBatch(
+            2,
+            (arrays, schemas) => {
+              Data.exportVector(
+                allocator,
+                vector,
+                null,
+                ArrowArray.wrap(arrays(0)),
+                ArrowSchema.wrap(schemas(0)))
+              vector.close()
+              1L
+            })
+        }
+        assert(failure.getSuppressed.isEmpty)
+        assert(allocator.getAllocatedMemory == 0)
+      } finally {
+        vector.close()
+      }
+    }
+  }
+
+  test("importVector releases partially imported vectors when Arrow array import fails") {
+    withIsolatedStructAllocator { (nativeUtil, allocator, _) =>
+      val intType = FieldType.nullable(new ArrowType.Int(32, true))
+      val stringType = FieldType.nullable(new ArrowType.Utf8())
+      val intStruct = StructVector.empty("int_struct", allocator)
+      val firstInt = intStruct.addOrGet("first", intType, classOf[IntVector])
+      val secondInt = intStruct.addOrGet("second", intType, classOf[IntVector])
+      intStruct.allocateNew()
+      intStruct.setIndexDefined(0)
+      firstInt.setSafe(0, 1)
+      secondInt.setSafe(0, 2)
+      intStruct.setValueCount(1)
+
+      val stringStruct = StructVector.empty("string_struct", allocator)
+      stringStruct.addOrGet("first", intType, classOf[IntVector])
+      stringStruct.addOrGet("second", stringType, classOf[VarCharVector])
+      stringStruct.allocateNew()
+      stringStruct.setValueCount(1)
+
+      val (arrays, schemas) = nativeUtil.allocateArrowStructs(2)
+      Data.exportVector(allocator, intStruct, null, arrays(0), schemas(0))
+      Data.exportVector(allocator, stringStruct, null, arrays(1), schemas(1))
+      intStruct.close()
+      stringStruct.close()
+
+      try {
+        val failure = intercept[IllegalArgumentException] {
+          nativeUtil.importVector(Array(arrays(0)), Array(schemas(1)))
+        }
+        assert(failure.getSuppressed.isEmpty)
+      } finally {
+        arrays(1).release()
+        arrays(1).close()
+        schemas(0).release()
+        schemas(0).close()
+      }
+      assert(allocator.getAllocatedMemory == 0)
     }
   }
 

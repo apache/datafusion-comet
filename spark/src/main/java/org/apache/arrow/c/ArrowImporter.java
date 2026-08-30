@@ -50,10 +50,32 @@ public class ArrowImporter {
 
   public FieldVector importVector(
       ArrowArray array, ArrowSchema schema, CDataDictionaryProvider provider) {
-    Field field = importField(schema, provider);
-    FieldVector vector = field.createVector(allocator);
-    ArrayImporter importer = new ArrayImporter(allocator, vector, provider);
-    importer.importArray(array);
-    return vector;
+    FieldVector vector = null;
+    try {
+      Field field = importField(schema, provider);
+      vector = field.createVector(allocator);
+      ArrayImporter importer = new ArrayImporter(allocator, vector, provider);
+      importer.importArray(array);
+      return vector;
+    } catch (RuntimeException | Error failure) {
+      if (vector != null) {
+        runCleanup(failure, vector::close);
+      }
+      if (!array.isClosed()) {
+        runCleanup(failure, array::release);
+        runCleanup(failure, array::close);
+      }
+      throw failure;
+    }
+  }
+
+  private static void runCleanup(Throwable failure, Runnable cleanup) {
+    try {
+      cleanup.run();
+    } catch (Throwable cleanupFailure) {
+      if (cleanupFailure != failure) {
+        failure.addSuppressed(cleanupFailure);
+      }
+    }
   }
 }
