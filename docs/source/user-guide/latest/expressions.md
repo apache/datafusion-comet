@@ -155,7 +155,7 @@ The tables below list every Spark built-in expression with its current status.
 | `array_except` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default; the incompatible native path is opt-in via allowIncompatible ([details](compatibility/expressions/array.md)) |
 | `array_insert` | ✅ | Native |  |
 | `array_intersect` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default; the incompatible native path is opt-in via allowIncompatible ([details](compatibility/expressions/array.md)) |
-| `array_join` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default; the incompatible native path is opt-in via allowIncompatible ([details](compatibility/expressions/array.md)) |
+| `array_join` | ✅ | Hybrid | Native by default; non-UTF8_BINARY collations route through the JVM codegen dispatcher ([details](compatibility/expressions/array.md)) |
 | `array_max` | ✅ | Native | NaN ordering may differ ([details](compatibility/floating-point.md)) |
 | `array_min` | ✅ | Native | NaN ordering may differ ([details](compatibility/floating-point.md)) |
 | `array_position` | ✅ | Native | Binary/struct/map/null elements fall back |

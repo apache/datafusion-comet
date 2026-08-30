@@ -22,7 +22,7 @@ package org.apache.comet.serde
 import scala.annotation.tailrec
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.sql.catalyst.expressions.{And, ArrayAggregate, ArrayAppend, ArrayContains, ArrayExcept, ArrayExists, ArrayFilter, ArrayForAll, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayPosition, ArrayRemove, ArraySort, ArraysOverlap, ArraysZip, ArrayTransform, ArrayUnion, Attribute, Cast, CreateArray, ElementAt, EmptyRow, Expression, Flatten, GetArrayItem, IsNotNull, LambdaFunction, Literal, NamedLambdaVariable, Reverse, Sequence, Size, Slice, SortArray, ZipWith}
+import org.apache.spark.sql.catalyst.expressions.{And, ArrayAggregate, ArrayAppend, ArrayContains, ArrayExcept, ArrayExists, ArrayFilter, ArrayForAll, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayPosition, ArrayRemove, ArraySort, ArraysOverlap, ArraysZip, ArrayTransform, ArrayUnion, Attribute, Cast, CreateArray, ElementAt, EmptyRow, Expression, Flatten, GetArrayItem, IsNotNull, IsNull, LambdaFunction, Literal, NamedLambdaVariable, Reverse, Sequence, Size, Slice, SortArray, ZipWith}
 import org.apache.spark.sql.catalyst.util.GenericArrayData
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
@@ -335,13 +335,11 @@ object CometArrayJoin
     with CometTypeShim
     with CodegenDispatchFallback {
 
-  private val incompatReason = "Null handling may differ from Spark"
-
   private val collationReason =
     "array_join does not propagate non-UTF8_BINARY collations to the output string " +
       "(https://github.com/apache/datafusion-comet/issues/2190)"
 
-  override def getIncompatibleReasons(): Seq[String] = Seq(incompatReason, collationReason)
+  override def getIncompatibleReasons(): Seq[String] = Seq(collationReason)
 
   override def getSupportLevel(expr: ArrayJoin): SupportLevel = {
     // Spark 4.0 widens ArrayJoin's input to StringTypeWithCollation. Concatenation itself is
@@ -352,7 +350,9 @@ object CometArrayJoin
     if (hasNonDefaultStringCollation(expr.array.dataType)) {
       Incompatible(Some(collationReason))
     } else {
-      Incompatible(Some(incompatReason))
+      // Null handling matched Spark once the nullReplacement guard in convert() landed (#3178);
+      // collation is the only remaining deviation.
+      Compatible()
     }
   }
 
@@ -374,7 +374,28 @@ object CometArrayJoin
           delimiterExprProto,
           nullReplacementExprProto)
 
-        arrayJoinScalarExpr
+        // Spark's ArrayJoin returns null as soon as nullReplacement evaluates to null, whether
+        // or not the array actually contains any nulls. DataFusion's array_to_string instead
+        // reads a null null_string as "omit null elements", which is what the two-argument form
+        // means, so wrap the call in an explicit null guard (#3178). A non-nullable replacement
+        // -- the common literal case -- cannot trigger this and is left unwrapped.
+        if (!nullReplacementExpr.nullable) {
+          arrayJoinScalarExpr
+        } else {
+          for {
+            joined <- arrayJoinScalarExpr
+            replacementIsNull <- exprToProto(IsNull(nullReplacementExpr), inputs, binding)
+            nullLiteral <- exprToProto(Literal(null, expr.dataType), inputs, binding)
+          } yield ExprOuterClass.Expr
+            .newBuilder()
+            .setIf(
+              ExprOuterClass.IfExpr
+                .newBuilder()
+                .setIfExpr(replacementIsNull)
+                .setTrueExpr(nullLiteral)
+                .setFalseExpr(joined))
+            .build()
+        }
       case None =>
         val arrayJoinScalarExpr =
           scalarFunctionExprToProto("array_to_string", arrayExprProto, delimiterExprProto)
