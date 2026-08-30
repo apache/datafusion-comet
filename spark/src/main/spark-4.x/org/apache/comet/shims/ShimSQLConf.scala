@@ -24,5 +24,4 @@ import org.apache.spark.sql.internal.LegacyBehaviorPolicy
 trait ShimSQLConf {
   protected val LEGACY = LegacyBehaviorPolicy.LEGACY
   protected val CORRECTED = LegacyBehaviorPolicy.CORRECTED
-
 }
