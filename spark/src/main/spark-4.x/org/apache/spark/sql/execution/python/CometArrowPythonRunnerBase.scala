@@ -386,7 +386,7 @@ private[python] object CometArrowPythonRunnerBase {
       sourceVectors: Seq[FieldVector],
       numRows: Int,
       allocator: BufferAllocator,
-      useLargeVarTypes: Boolean = false): Unit = {
+      useLargeVarTypes: Boolean): Unit = {
     val sourceRoot =
       new VectorSchemaRoot(sourceVectors.map(_.getField).asJava, sourceVectors.asJava, numRows)
     val sourceBatch = new VectorUnloader(sourceRoot).getRecordBatch
@@ -407,7 +407,7 @@ private[python] object CometArrowPythonRunnerBase {
         buffers.add(structValidity)
         buffers.addAll(sourceBatch.getBuffers)
 
-        val widenedOffsets = if (useLargeVarTypes) new ArrayList[ArrowBuf]() else null
+        val widenedOffsets = new ArrayList[ArrowBuf]()
         try {
           if (useLargeVarTypes) {
             widenOffsets(sourceVectors, buffers, widenedOffsets, allocator)
@@ -425,9 +425,7 @@ private[python] object CometArrowPythonRunnerBase {
             wrappedBatch.close()
           }
         } finally {
-          if (widenedOffsets != null) {
-            widenedOffsets.asScala.foreach(_.close())
-          }
+          widenedOffsets.asScala.foreach(_.close())
         }
       } finally {
         structValidity.close()
