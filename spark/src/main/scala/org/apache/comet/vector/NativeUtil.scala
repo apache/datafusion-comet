@@ -245,6 +245,10 @@ class NativeUtil extends AutoCloseable {
   /**
    * Imports a list of Arrow addresses from native execution, and return a list of Comet vectors.
    *
+   * On failure this releases everything it was given, both the arrays and schemas it has not
+   * imported yet and the vectors it has already imported, so callers must not add cleanup of
+   * their own.
+   *
    * @param arrays
    *   a list of Arrow array
    * @param schemas
@@ -261,18 +265,23 @@ class NativeUtil extends AutoCloseable {
         val arrowSchema = schemas(i)
         val arrowArray = arrays(i)
 
+        // importField's finally consumes the schema. ArrayImporter takes the array normally, while
+        // ArrowImporter's catch releases it if the import fails before that transfer.
         firstUnconsumed = i + 1
         val arrowVector = importer.importVector(arrowArray, arrowSchema, dictionaryProvider)
-        var cometVector: CometVector = null
-        try {
-          cometVector = CometVector.getVector(arrowVector, dictionaryProvider)
-          arrayVectors += cometVector
-        } catch {
-          case failure: Throwable =>
-            val rollback = if (cometVector == null) arrowVector else cometVector
-            AutoCloseables.close(failure, rollback)
-            throw failure
-        }
+        val cometVector =
+          try CometVector.getVector(arrowVector, dictionaryProvider)
+          catch {
+            case failure: Throwable =>
+              // Nothing took ownership of the column, so release both halves: the vector and the
+              // dictionary values the import left in the provider. Read the field before closing,
+              // so the walk never depends on metadata read back from a closed vector.
+              val field = arrowVector.getField
+              AutoCloseables.close(failure, arrowVector: AutoCloseable)
+              ArrowImporter.closeDictionaries(field, dictionaryProvider, failure)
+              throw failure
+          }
+        arrayVectors += cometVector
       }
       arrayVectors.toSeq
     } catch {
