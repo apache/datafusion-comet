@@ -204,4 +204,18 @@ class CometRegexSuite extends AnyFunSuite {
     assertCompatible("(" * 32 + "a" + ")" * 32)
     assertIncompatible("(a{64}){64}")
   }
+
+  test("rejects repeated complex character classes that can exceed the Rust compile budget") {
+    val cls = """[^ "$&(*,.02468:<>@BDFHJLNPRTVXZ\\\^`bdfhjlnprtvxz|~]"""
+    val body = (1 to 7).foldLeft(cls)((p, _) => s"(?:$p)*")
+    val pattern = s"(?:$body){256}" * 16
+    assert(pattern.length == 1552)
+    assertIncompatible(pattern)
+
+    assertCompatible("[^x]{256}")
+    assertCompatible("[a-zA-Z0-9_]{256}")
+    assertCompatible("[^;]{256}" * 16)
+    assertCompatible("[a-zA-Z_][a-zA-Z0-9_]*")
+    assertCompatible("(foo|bar){1,3}")
+  }
 }

@@ -22,6 +22,7 @@ package org.apache.comet
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.comet.{CometFilterExec, CometProjectExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+import org.apache.spark.sql.functions.col
 
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 
@@ -385,6 +386,29 @@ class CometRegExpJvmSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         assert(
           !explainOf(df).contains("JVM codegen dispatcher: rlike"),
           s"expected native path for [^x]{256}, got:\n${explainOf(df)}")
+      }
+    }
+  }
+
+  test("rlike: repeated complex character classes stay on the dispatcher") {
+    withRLikeExplain {
+      withSubjects("x", ";", null) {
+        val cls = """[^ "$&(*,.02468:<>@BDFHJLNPRTVXZ\\\^`bdfhjlnprtvxz|~]"""
+        val body = (1 to 7).foldLeft(cls)((p, _) => s"(?:$p)*")
+        val pattern = s"(?:$body){256}" * 16
+        assert(pattern.length == 1552)
+        val df = spark.table("t").select(col("s"), col("s").rlike(pattern))
+        checkSparkAnswerAndOperator(df)
+        assert(
+          explainOf(df).contains("JVM codegen dispatcher: rlike"),
+          s"expected dispatcher for complex character-class residual, got:\n${explainOf(df)}")
+      }
+      withSubjects("x", "y", null) {
+        val df = sql("SELECT s, s rlike '[a-zA-Z0-9_]{256}' FROM t")
+        checkSparkAnswerAndOperator(df)
+        assert(
+          !explainOf(df).contains("JVM codegen dispatcher: rlike"),
+          s"expected native path for [a-zA-Z0-9_]{256}, got:\n${explainOf(df)}")
       }
     }
   }
