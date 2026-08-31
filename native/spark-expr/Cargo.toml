@@ -31,7 +31,6 @@ arrow = { workspace = true }
 chrono = { workspace = true }
 datafusion = { workspace = true }
 datafusion-spark = { workspace = true }
-chrono-tz = { workspace = true }
 num = { workspace = true }
 regex = { workspace = true }
 # preserve_order: needed for get_json_object to match Spark's JSON key ordering
@@ -98,6 +97,10 @@ harness = false
 
 [[bench]]
 name = "base64"
+harness = false
+
+[[bench]]
+name = "unbase64"
 harness = false
 
 [[bench]]
@@ -222,4 +225,40 @@ harness = false
 
 [[bench]]
 name = "cast_int_to_decimal"
+harness = false
+
+[[bench]]
+name = "log"
+harness = false
+
+[[bench]]
+name = "pow"
+harness = false
+
+[[bench]]
+name = "abs"
+harness = false
+
+[[bench]]
+name = "modulo"
+harness = false
+
+[[bench]]
+name = "levenshtein"
+harness = false
+
+[[bench]]
+name = "negative"
+harness = false
+
+[[bench]]
+name = "split"
+harness = false
+
+[[bench]]
+name = "regexp_extract_all"
+harness = false
+
+[[bench]]
+name = "contains"
 harness = false

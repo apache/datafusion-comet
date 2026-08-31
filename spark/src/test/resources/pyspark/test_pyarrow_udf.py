@@ -39,6 +39,7 @@ Usage:
 
 import datetime as dt
 import os
+from collections import Counter
 from decimal import Decimal
 
 import pyarrow as pa
@@ -361,11 +362,11 @@ def test_map_in_arrow_decimal_precision_sweep(
     spark, tmp_path, accelerated, precision, scale
 ):
     """
-    The Arrow `DecimalVector` that `copyVector` touches is always 16 bytes wide regardless of
-    precision, so there is no buffer-width boundary on the Arrow path (the 8-byte long-backed form
-    is Spark's `UnsafeRow` encoding, a layer this Arrow buffer copy never sees). This sweep instead
-    guards the precision/scale extremes and the 18/19 point where Spark's own decimal handling
-    changes representation, keeping the round trip value-exact. Scale extremes: 0, half, max.
+    Arrow's `DecimalVector` is always 16 bytes wide regardless of precision, so there is no
+    buffer-width boundary on the direct Arrow path (the 8-byte long-backed form is Spark's
+    `UnsafeRow` encoding, a layer this path never sees). This sweep instead guards the
+    precision/scale extremes and the 18/19 point where Spark's own decimal handling changes
+    representation, keeping the round trip value-exact. Scale extremes: 0, half, max.
     """
     schema_in = T.StructType(
         [
@@ -405,10 +406,9 @@ def test_map_in_arrow_null_density_sweep(
     spark, tmp_path, accelerated, null_fraction
 ):
     """
-    Validity-buffer memcpy is where Arrow Java vector copies historically break. Sweep null
-    density across the corner cases: all-non-null, sparse-null, half-null, sparse-non-null,
-    all-null. Catches off-by-one in validity packing and edge cases where source/destination
-    null counts diverge.
+    Sweep validity-buffer density across the corner cases: all-non-null, sparse-null, half-null,
+    sparse-non-null, all-null. Catches off-by-one errors in validity packing and mismatches
+    between field-node null counts and serialized validity buffers.
     """
     schema_in = T.StructType(
         [
@@ -437,11 +437,10 @@ def test_map_in_arrow_null_density_sweep(
 
 def test_map_in_arrow_multi_batch_per_partition(spark, tmp_path, accelerated):
     """
-    Force many small batches in a single partition so the writer runs its per-batch
-    allocate/copy/write loop hundreds of times against a reused struct container (the leaf
-    buffers are reallocated each batch today; see #4383). Catches errors that only appear across
-    the batch boundary: stale value counts, offset/validity sizing on the second and later
-    batches, and variable-width data-buffer sizing as row content changes batch to batch.
+    Exercise the stream across many rows with a small Spark Arrow batch limit. The accelerated
+    path writes complete Comet source batches, so its source-vector turnover is covered separately
+    by test_map_in_arrow_nested_source_batches below. Catches stale value counts and changing
+    variable-width content on the Spark fallback path.
     """
     schema_in = T.StructType(
         [
@@ -472,10 +471,222 @@ def test_map_in_arrow_multi_batch_per_partition(spark, tmp_path, accelerated):
         spark.conf.set("spark.sql.execution.arrow.maxRecordsPerBatch", prev_records)
 
 
+def test_map_in_arrow_nested_source_batches(spark, tmp_path, accelerated):
+    """Serialize changing nested/null source vectors directly across actual worker batches."""
+    item_type = T.StructType(
+        [
+            T.StructField("label", T.StringType()),
+            T.StructField("score", T.IntegerType()),
+        ]
+    )
+    payload_type = T.StructType(
+        [
+            T.StructField("items", T.ArrayType(item_type, containsNull=True)),
+            T.StructField(
+                "attrs",
+                T.MapType(T.StringType(), T.IntegerType(), valueContainsNull=True),
+            ),
+        ]
+    )
+    input_schema = T.StructType(
+        [
+            T.StructField("id", T.LongType(), nullable=False),
+            T.StructField("payload", payload_type),
+        ]
+    )
+    output_schema = T.StructType(
+        [
+            *input_schema.fields,
+            T.StructField("batch_index", T.IntegerType(), nullable=False),
+            T.StructField("batch_size", T.IntegerType(), nullable=False),
+        ]
+    )
+
+    rows = []
+    for index in range(37):
+        if index % 11 == 0:
+            payload = None
+        else:
+            if index % 5 == 0:
+                items = None
+            else:
+                items = [
+                    None
+                    if (index + offset) % 6 == 0
+                    else {
+                        "label": None
+                        if (index + offset) % 4 == 0
+                        else f"item_{index}_{'x' * offset}",
+                        "score": None
+                        if (index + offset) % 3 == 0
+                        else index * 10 + offset,
+                    }
+                    for offset in range(index % 4)
+                ]
+
+            if index % 7 == 0:
+                attrs = None
+            elif index % 6 == 0:
+                attrs = {}
+            else:
+                attrs = {
+                    f"key_{index % 3}": None if index % 4 == 0 else index,
+                    "marker": index * 10,
+                }
+            payload = {"items": items, "attrs": attrs}
+        rows.append((index, payload))
+
+    src = str(tmp_path / "nested_source_batches.parquet")
+    spark.createDataFrame(rows, input_schema).coalesce(1).write.parquet(src)
+
+    batch_size = 7
+    previous_comet_batch_size = spark.conf.get("spark.comet.batchSize", "8192")
+    previous_arrow_batch_size = spark.conf.get(
+        "spark.sql.execution.arrow.maxRecordsPerBatch"
+    )
+    spark.conf.set("spark.comet.batchSize", str(batch_size))
+    spark.conf.set("spark.sql.execution.arrow.maxRecordsPerBatch", str(batch_size))
+    try:
+
+        def annotate_batches(iterator):
+            for batch_index, batch in enumerate(iterator):
+                assert batch.schema.names == ["id", "payload"]
+                yield pa.RecordBatch.from_arrays(
+                    [
+                        *batch.columns,
+                        pa.array([batch_index] * batch.num_rows, type=pa.int32()),
+                        pa.array([batch.num_rows] * batch.num_rows, type=pa.int32()),
+                    ],
+                    names=[*batch.schema.names, "batch_index", "batch_size"],
+                )
+
+        result_df = spark.read.parquet(src).mapInArrow(annotate_batches, output_schema)
+        _assert_plan_matches_mode(_executed_plan(result_df), accelerated)
+
+        output = result_df.collect()
+        assert len(output) == len(rows)
+        expected_payloads = dict(rows)
+        observed_batches = {}
+        for row in output:
+            payload = row["payload"]
+            actual_payload = None if payload is None else payload.asDict(recursive=True)
+            assert actual_payload == expected_payloads[row["id"]]
+            observed_batches.setdefault(row["batch_index"], []).append(row)
+
+        assert sorted(observed_batches) == list(range(6))
+        expected_batch_sizes = [batch_size] * 5 + [2]
+        observed_batch_sizes = [len(observed_batches[index]) for index in range(6)]
+        assert observed_batch_sizes == expected_batch_sizes
+        for batch_rows in observed_batches.values():
+            assert {row["batch_size"] for row in batch_rows} == {len(batch_rows)}
+    finally:
+        spark.conf.set("spark.comet.batchSize", previous_comet_batch_size)
+        spark.conf.set(
+            "spark.sql.execution.arrow.maxRecordsPerBatch", previous_arrow_batch_size
+        )
+
+
+@pytest.mark.parametrize(
+    "wrapper,rename_field,api",
+    [
+        (wrapper, rename_field, api)
+        for wrapper, rename_field in [
+            ("{}", False),
+            ("array({})", False),
+            ("map(1,{})", False),
+            ("map({},1)", False),
+            ("map(1,array({}))", False),
+            ("{}", True),
+            ("array({})", True),
+            ("map(1,{})", True),
+        ]
+        for api in ["mapInArrow", "mapInPandas"]
+        # Spark's pandas conversion cannot use dict-valued struct keys in a map.
+        if api == "mapInArrow" or wrapper != "map({},1)"
+    ],
+)
+def test_map_in_batch_union_with_compatible_nested_fields(
+    spark, tmp_path, accelerated, api, wrapper, rename_field
+):
+    """Union batches can vary in names/nullability without changing their buffer layout."""
+    rows = [(0, None), (1, 2), (2, 3)]
+    src = str(tmp_path / "union_fields.parquet")
+    spark.createDataFrame(rows, "id int, value int").coalesce(1).write.parquet(src)
+    source = spark.read.parquet(src)
+    left_value = "named_struct('id', id, 'value', 1)"
+    right_name = "renamed_value" if rename_field else "value"
+    right_value = f"named_struct('id', id, '{right_name}', value)"
+    if wrapper == "map(1,{})":
+        right_value = f"IF(value IS NULL, NULL, {right_value})"
+    left = source.selectExpr(f"{wrapper.format(left_value)} AS payload")
+    right = source.selectExpr(f"{wrapper.format(right_value)} AS payload")
+    combined = left.union(right).coalesce(1)
+    expected = Counter(map(repr, combined.collect()))
+
+    def passthrough(iterator):
+        for batch in iterator:
+            if api == "mapInArrow":
+                data_type = batch.schema.field("payload").type
+                if pa.types.is_map(data_type):
+                    assert not data_type.field(0).nullable  # entries
+                    assert not data_type.key_field.nullable
+                    nested = data_type.key_type
+                    if not pa.types.is_struct(nested):
+                        nested = data_type.item_type
+                        if pa.types.is_struct(nested):
+                            assert data_type.item_field.nullable
+                    if pa.types.is_list(nested):
+                        nested = nested.value_type
+                    assert nested.field("value").nullable
+            yield batch
+
+    result = getattr(combined, api)(passthrough, combined.schema)
+    plan = _executed_plan(result)
+    _assert_plan_matches_mode(
+        plan,
+        accelerated,
+        vanilla_node="MapInArrow" if api == "mapInArrow" else "MapInPandas",
+    )
+    if accelerated:
+        assert "CometUnion" in plan
+    assert Counter(map(repr, result.collect())) == expected
+
+
+@pytest.mark.parametrize("api", ["mapInArrow", "mapInPandas"])
+def test_map_in_batch_union_with_different_field_metadata(
+    spark, tmp_path, accelerated, api
+):
+    """Parquet field IDs describe source columns, not the outgoing IPC buffer layout."""
+    sources = []
+    for field_id in (1, 2):
+        nested = T.StructType(
+            [T.StructField("value", T.IntegerType(), True, {"parquet.field.id": field_id})]
+        )
+        schema = T.StructType([T.StructField("payload", nested)])
+        path = str(tmp_path / f"field_id_{field_id}.parquet")
+        spark.createDataFrame([((10,),), ((None,),)], schema).coalesce(1).write.parquet(path)
+        sources.append(spark.read.parquet(path))
+    combined = sources[0].union(sources[1]).coalesce(1)
+
+    def passthrough(iterator):
+        yield from iterator
+
+    result = getattr(combined, api)(passthrough, combined.schema)
+    plan = _executed_plan(result)
+    _assert_plan_matches_mode(
+        plan,
+        accelerated,
+        vanilla_node="MapInArrow" if api == "mapInArrow" else "MapInPandas",
+    )
+    if accelerated:
+        assert "CometUnion" in plan
+    assert Counter(row.payload.value for row in result.collect()) == Counter({10: 2, None: 2})
+
+
 def test_map_in_arrow_wide_schema(spark, tmp_path, accelerated):
     """
-    50-column mixed-type schema. The bulk-copy path walks a flattened addresses[] array indexed
-    across the whole vector tree; off-by-one in flattening logic surfaces at depth * width.
+    50-column mixed-type schema. Direct serialization must preserve every source vector and its
+    independent null bitmap when building the IPC field-node and buffer lists.
     """
     fields = [T.StructField("id", T.LongType())]
     for i in range(15):
@@ -664,10 +875,9 @@ def test_map_in_arrow_array_and_struct(spark, tmp_path, accelerated):
 
 def test_map_in_arrow_numeric_scalars(spark, tmp_path, accelerated):
     """
-    Covers the BaseFixedWidthVector branch in CometColumnarPythonInput.copyVector for
-    every fixed-width primitive Comet's scan supports beyond the long/double/int already
-    exercised by other tests: boolean, byte, short, float. Each has a distinct buffer
-    size, and the validity bit handling is independent per column.
+    Covers every fixed-width primitive Comet's scan supports beyond the long/double/int already
+    exercised by other tests: boolean, byte, short, float. Each has a distinct buffer size, and
+    the validity bit handling is independent per directly serialized source vector.
     """
     schema_in = T.StructType(
         [
@@ -781,8 +991,8 @@ def test_map_in_arrow_map_type(spark, tmp_path, accelerated):
     """
     MapType is encoded in Arrow as a List<Struct<key, value>> with extra metadata. The
     buffer layout (offsets + struct child + key/value children) is distinct from a plain
-    list, and CometMapVector is a separate vector class from CometListVector. Without
-    this test the recursive copy path through map-typed columns is unexercised.
+    list, and CometMapVector is a separate vector class from CometListVector. Without this test,
+    direct recursive serialization of map-typed source vectors is unexercised.
     """
     schema_in = T.StructType(
         [
@@ -830,11 +1040,10 @@ def test_map_in_arrow_map_type(spark, tmp_path, accelerated):
 
 def test_map_in_arrow_deeply_nested(spark, tmp_path, accelerated):
     """
-    Exercises the recursive descent in CometColumnarPythonInput.copyVector at depth > 1,
-    in every nesting combination: array-of-array, array-of-struct, struct-of-array,
-    struct-of-struct. Single-level nesting is covered by test_map_in_arrow_array_and_struct;
-    the bug surface here is that setLastSet / setValueCount must be applied bottom-up
-    correctly at every level.
+    Exercises direct source-vector serialization at depth > 1, in every nesting combination:
+    array-of-array, array-of-struct, struct-of-array, struct-of-struct. Single-level nesting is
+    covered by test_map_in_arrow_array_and_struct; the bug surface here is that Arrow field
+    nodes and buffers must remain in the expected depth-first order at every level.
     """
     schema_in = T.StructType(
         [
@@ -952,9 +1161,9 @@ def test_map_in_arrow_deeply_nested(spark, tmp_path, accelerated):
 def test_map_in_arrow_falls_back_when_use_large_var_types(spark, tmp_path):
     """
     `spark.sql.execution.arrow.useLargeVarTypes=true` widens StringType / BinaryType to
-    LargeUtf8 / LargeBinary in the destination IPC root (8-byte offsets). Comet's source
-    vectors always use 4-byte offsets; CometColumnarPythonInput.copyVector does a raw
-    setBytes per buffer and would corrupt the offset buffer in this configuration.
+    LargeUtf8 / LargeBinary in Spark's input IPC schema (8-byte offsets). Native Comet
+    vectors use 4-byte offsets; direct serialization advertises their matching types,
+    producing a valid stream but not the large input types requested by the configuration.
     EliminateRedundantTransitions must skip the rewrite in that case so vanilla Spark
     handles the operation. This test does not use the `accelerated` fixture: it sets
     pyarrowUDF.enabled=true AND useLargeVarTypes=true and asserts the plan still falls

@@ -19,13 +19,105 @@
 
 package org.apache.comet.vector
 
-import org.apache.arrow.c.{ArrowArray, ArrowSchema}
+import java.io.IOException
+
+import org.apache.arrow.c.{ArrowArray, ArrowSchema, Data}
+import org.apache.arrow.memory.RootAllocator
+import org.apache.arrow.vector.IntVector
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.vectorized.ConstantColumnVector
 import org.apache.spark.sql.types.{IntegerType, StringType, StructField, StructType}
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 
 class NativeUtilSuite extends CometTestBase {
+
+  private def withIsolatedStructAllocator(
+      check: (NativeUtil, RootAllocator, () => Array[ArrowArray]) => Unit): Unit = {
+    val allocator = new RootAllocator(Long.MaxValue)
+    var allocatedArrays = Array.empty[ArrowArray]
+    val nativeUtil = new NativeUtil {
+      override def allocateArrowStructs(numCols: Int): (Array[ArrowArray], Array[ArrowSchema]) = {
+        allocatedArrays = Array.fill(numCols)(ArrowArray.allocateNew(allocator))
+        val schemas = Array.fill(numCols)(ArrowSchema.allocateNew(allocator))
+        (allocatedArrays, schemas)
+      }
+    }
+    try check(nativeUtil, allocator, () => allocatedArrays)
+    finally {
+      nativeUtil.close()
+      allocator.close()
+    }
+  }
+
+  test("getNextBatch releases unconsumed Arrow structs on native failure and EOF") {
+    Seq(false, true).foreach { eof =>
+      withIsolatedStructAllocator { (nativeUtil, allocator, _) =>
+        val expected = new IOException("native decode failed")
+        val read = () =>
+          nativeUtil.getNextBatch(
+            2,
+            (_, _) => {
+              if (eof) -1L else throw expected
+            })
+        if (eof) assert(read().isEmpty)
+        else assert(intercept[IOException](read()) eq expected)
+        assert(allocator.getAllocatedMemory == 0)
+      }
+    }
+  }
+
+  test("getNextBatch invokes C release callbacks for partially exported native results") {
+    Seq(false, true).foreach { eof =>
+      withIsolatedStructAllocator { (nativeUtil, allocator, _) =>
+        val vector = new IntVector("value", allocator)
+        vector.allocateNew(4)
+        vector.setSafe(0, 42)
+        vector.setValueCount(1)
+        val expected = new IOException("native decode failed after exporting one column")
+        val read = () =>
+          nativeUtil.getNextBatch(
+            2,
+            (arrays, schemas) => {
+              Data.exportVector(
+                allocator,
+                vector,
+                null,
+                ArrowArray.wrap(arrays(0)),
+                ArrowSchema.wrap(schemas(0)))
+              // Only the exported C data now retains the vector's buffers.
+              vector.close()
+              if (eof) -1L else throw expected
+            })
+        try {
+          if (eof) assert(read().isEmpty)
+          else assert(intercept[IOException](read()) eq expected)
+          assert(allocator.getAllocatedMemory == 0)
+        } finally {
+          vector.close()
+        }
+      }
+    }
+  }
+
+  test("getNextBatch preserves a native failure and attempts all remaining struct cleanup") {
+    withIsolatedStructAllocator { (nativeUtil, allocator, arrays) =>
+      val expected = new IOException("native decode failed")
+      val actual = intercept[IOException] {
+        nativeUtil.getNextBatch(
+          2,
+          (_, _) => {
+            // Simulate another owner retiring one struct before cleanup. Its release() fails,
+            // but that must not hide the decode failure or leave any other struct allocated.
+            arrays()(0).close()
+            throw expected
+          })
+      }
+      assert(actual eq expected)
+      assert(actual.getSuppressed.length == 1)
+      assert(actual.getSuppressed.head.isInstanceOf[NullPointerException])
+      assert(allocator.getAllocatedMemory == 0)
+    }
+  }
 
   test("exportBatch round-trips a ConstantColumnVector through Arrow FFI") {
     // Smoke test for the ConstantColumnVector arm of NativeUtil.exportBatch: a batch carrying

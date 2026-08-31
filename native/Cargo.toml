@@ -18,6 +18,10 @@
 [workspace]
 default-members = ["core", "spark-expr", "common", "proto", "jni-bridge", "shuffle", "comet-udf-sdk", "comet-test-udfs"]
 members = ["core", "spark-expr", "common", "proto", "jni-bridge", "shuffle", "comet-udf-sdk", "comet-test-udfs"]
+# The contrib crate at ../contrib/delta/native is intentionally NOT a workspace member
+# (workspace members must live hierarchically under the workspace root). It's pulled in
+# as a path dep by `core/Cargo.toml` when the `contrib-delta` feature is enabled.
+exclude = ["../contrib"]
 resolver = "2"
 
 [workspace.package]
@@ -35,6 +39,7 @@ rust-version = "1.88"
 
 [workspace.dependencies]
 arrow = { version = "58.4.0", features = ["prettyprint", "ffi", "chrono-tz"] }
+arrow-select = { version = "58.4.0" }
 async-trait = { version = "0.1" }
 bytes = { version = "1.11.1" }
 parquet = { version = "58.4.0", default-features = false, features = ["experimental"] }
@@ -48,7 +53,6 @@ datafusion-comet-jni-bridge = { path = "jni-bridge" }
 datafusion-comet-proto = { path = "proto" }
 datafusion-comet-shuffle = { path = "shuffle" }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
-chrono-tz = { version = "0.10" }
 futures = "0.3.32"
 num = "0.4"
 rand = "0.10"

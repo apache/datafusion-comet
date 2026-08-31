@@ -26,11 +26,10 @@ pub mod operators;
 pub(crate) mod planner;
 pub mod serde;
 pub use datafusion_comet_shuffle as shuffle;
-pub(crate) mod sort;
-pub(crate) mod spark_plan;
-pub use datafusion_comet_spark_expr::timezone;
 mod memory_pools;
+pub(crate) mod sort;
 pub(crate) mod spark_config;
+pub(crate) mod spark_plan;
 pub(crate) mod tracing;
 pub(crate) mod utils;
 

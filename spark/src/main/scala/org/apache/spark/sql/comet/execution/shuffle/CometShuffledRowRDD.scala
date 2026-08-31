@@ -31,8 +31,8 @@ import org.apache.comet.CometShuffleBlockIterator
 
 /**
  * Different from [[org.apache.spark.sql.execution.ShuffledRowRDD]], this RDD is specialized for
- * reading shuffled data through [[CometBlockStoreShuffleReader]]. The shuffled data is read in an
- * iterator of [[Product2[Int, ColumnarBatch]]] instead of [[Product2[Int, InternalRow]]].
+ * reading shuffled data through [[CometShuffleReader]]. The shuffled data is read in an iterator
+ * of [[Product2[Int, ColumnarBatch]]] instead of [[Product2[Int, InternalRow]]].
  */
 class CometShuffledBatchRDD(
     var dependency: ShuffleDependency[Int, _, _],
@@ -92,9 +92,7 @@ class CometShuffledBatchRDD(
     }
   }
 
-  private def createReader(
-      split: Partition,
-      context: TaskContext): CometBlockStoreShuffleReader[_, _] = {
+  private def createReader(split: Partition, context: TaskContext): CometShuffleReader[_, _] = {
     val tempMetrics = context.taskMetrics().createTempShuffleReadMetrics()
     // `SQLShuffleReadMetricsReporter` will update its own metrics for SQL exchange operator,
     // as well as the `tempMetrics` for basic shuffle metrics.
@@ -108,7 +106,7 @@ class CometShuffledBatchRDD(
             endReducerIndex,
             context,
             sqlMetricsReporter)
-          .asInstanceOf[CometBlockStoreShuffleReader[_, _]]
+          .asInstanceOf[CometShuffleReader[_, _]]
 
       case PartialReducerPartitionSpec(reducerIndex, startMapIndex, endMapIndex, _) =>
         SparkEnv.get.shuffleManager
@@ -120,7 +118,7 @@ class CometShuffledBatchRDD(
             reducerIndex + 1,
             context,
             sqlMetricsReporter)
-          .asInstanceOf[CometBlockStoreShuffleReader[_, _]]
+          .asInstanceOf[CometShuffleReader[_, _]]
 
       case PartialMapperPartitionSpec(mapIndex, startReducerIndex, endReducerIndex) =>
         SparkEnv.get.shuffleManager
@@ -132,7 +130,7 @@ class CometShuffledBatchRDD(
             endReducerIndex,
             context,
             sqlMetricsReporter)
-          .asInstanceOf[CometBlockStoreShuffleReader[_, _]]
+          .asInstanceOf[CometShuffleReader[_, _]]
 
       case CoalescedMapperPartitionSpec(startMapIndex, endMapIndex, numReducers) =>
         SparkEnv.get.shuffleManager
@@ -144,7 +142,7 @@ class CometShuffledBatchRDD(
             numReducers,
             context,
             sqlMetricsReporter)
-          .asInstanceOf[CometBlockStoreShuffleReader[_, _]]
+          .asInstanceOf[CometShuffleReader[_, _]]
     }
   }
 
