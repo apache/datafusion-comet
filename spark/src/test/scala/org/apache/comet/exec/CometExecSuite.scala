@@ -32,12 +32,12 @@ import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.{FunctionIdentifier, TableIdentifier}
 import org.apache.spark.sql.catalyst.catalog.{BucketSpec, CatalogStatistics, CatalogTable}
 import org.apache.spark.sql.catalyst.expressions.{DynamicPruningExpression, Expression, ExpressionInfo, Hex, Literal}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateMode, BloomFilterAggregate}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateMode, BloomFilterAggregate, Final}
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.connector.catalog.InMemoryTableCatalog
 import org.apache.spark.sql.execution._
-import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, BroadcastQueryStageExec}
+import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, BroadcastQueryStageExec, LogicalQueryStage}
 import org.apache.spark.sql.execution.columnar.CometInMemoryRelationHelper
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, BroadcastExchangeLike, ReusedExchangeExec, ShuffleExchangeExec}
@@ -2107,6 +2107,54 @@ class CometExecSuite extends CometTestBase {
         }
         assert(reusedExchanges.size == 1)
         assert(reusedExchanges.head.child.isInstanceOf[CometBroadcastExchangeExec])
+      }
+    }
+  }
+
+  test("AQE broadcasts native aggregates after replanning") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "10485760",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "4",
+      CometConf.COMET_SHUFFLE_MODE.key -> "native",
+      CometConf.COMET_SPARK_TO_ARROW_SUPPORTED_OPERATOR_LIST.key -> "Range") {
+      val df = sql("""
+          |WITH s AS (
+          |  SELECT id % 64 AS k, SUM(id) AS v FROM range(0, 4096, 1, 4) GROUP BY id % 64
+          |), r1 AS (
+          |  SELECT id % 64 AS k, SUM(id + 1) AS v FROM range(0, 3072, 1, 4) GROUP BY id % 64
+          |), r2 AS (
+          |  SELECT id % 64 AS k, SUM(id + 7) AS v FROM range(0, 2048, 1, 4) GROUP BY id % 64
+          |), g AS (
+          |  SELECT SUM(id) AS v FROM range(0, 1024, 1, 4)
+          |)
+          |SELECT SUM(s.v + COALESCE(r1.v, 0) + COALESCE(r2.v, 0) + g.v)
+          |FROM s LEFT JOIN r1 ON s.k = r1.k LEFT JOIN r2 ON s.k = r2.k CROSS JOIN g
+          |""".stripMargin)
+      val adaptive = df.queryExecution.executedPlan.asInstanceOf[AdaptiveSparkPlanExec]
+      assert(collect(adaptive.executedPlan) { case b: CometBroadcastHashJoinExec => b }.isEmpty)
+
+      checkAnswer(df, Seq(Row(48738816L)))
+
+      val finalPlan = adaptive.executedPlan
+      assert(collect(finalPlan) { case b: CometBroadcastHashJoinExec => b }.size == 2)
+      val broadcasts = collect(finalPlan) { case b: CometBroadcastExchangeExec => b }
+      val aggregates = broadcasts.flatMap { broadcast =>
+        collect(broadcast.child) {
+          case a: CometHashAggregateExec
+              if a.modes.contains(Final) && a.groupingExpressions.nonEmpty =>
+            a
+        }
+      }
+      assert(aggregates.size == 2)
+      aggregates.foreach { aggregate =>
+        assert(aggregate.longMetric("output_rows").value == 64)
+        assert(aggregate.longMetric("elapsed_compute").value > 0)
+        assert(
+          aggregate
+            .getTagValue(SparkPlan.LOGICAL_PLAN_TAG)
+            .exists(_.isInstanceOf[LogicalQueryStage]))
       }
     }
   }

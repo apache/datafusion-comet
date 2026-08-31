@@ -33,7 +33,7 @@ import org.apache.spark.sql.comet.execution.arrow.ArrowCachedBatchSerializer
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution._
-import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, BroadcastQueryStageExec, ShuffleQueryStageExec}
+import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, BroadcastQueryStageExec, LogicalQueryStage, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec}
 import org.apache.spark.sql.execution.columnar.InMemoryTableScanExec
 import org.apache.spark.sql.execution.command.{DataWritingCommandExec, ExecutedCommandExec}
@@ -691,6 +691,23 @@ case class CometExecRule(session: SparkSession)
 
       // Set up logical links
       newPlan = newPlan.transform {
+        case op: CometExec
+            if op
+              .getTagValue(SparkPlan.LOGICAL_PLAN_TAG)
+              .exists(_.isInstanceOf[LogicalQueryStage]) =>
+          // AQE replanning reuses this physical root and links it to the current logical stage.
+          // originalPlan can still point to a subtree hidden inside that logical leaf, which
+          // AQE cannot replace in the current logical plan. Only preserve a direct stage link,
+          // not a link inherited from an ancestor.
+          // On the ordinary exchange path, the exchange itself is behind a QueryStageExec
+          // leaf and is not visited by this transform.
+          // Spark 4.1.3 returns the existing root in LogicalQueryStageStrategy and then calls
+          // setLogicalLink from SparkStrategies.plan:
+          // scalastyle:off line.size.limit
+          // https://github.com/apache/spark/blob/v4.1.3/sql/core/src/main/scala/org/apache/spark/sql/execution/adaptive/LogicalQueryStageStrategy.scala#L64-L65
+          // https://github.com/apache/spark/blob/v4.1.3/sql/core/src/main/scala/org/apache/spark/sql/execution/SparkStrategies.scala#L78-L87
+          // scalastyle:on line.size.limit
+          op
         case op: CometExec =>
           if (op.originalPlan.logicalLink.isEmpty) {
             op.unsetTagValue(SparkPlan.LOGICAL_PLAN_TAG)
