@@ -238,3 +238,23 @@ harness = false
 [[bench]]
 name = "abs"
 harness = false
+
+[[bench]]
+name = "isnan"
+harness = false
+
+[[bench]]
+name = "rlike"
+harness = false
+
+[[bench]]
+name = "create_named_struct"
+harness = false
+
+[[bench]]
+name = "get_struct_field"
+harness = false
+
+[[bench]]
+name = "from_json"
+harness = false
