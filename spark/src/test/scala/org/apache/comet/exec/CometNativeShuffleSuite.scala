@@ -615,6 +615,63 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
     }
   }
 
+  test("native shuffle on struct data column") {
+    // The native shuffle type gate (CometShuffleExchangeExec.supportedSerializableDataType)
+    // allows struct data columns, but nothing exercised them: struct columns can only reach
+    // native shuffle as DATA, since supportedHashPartitioningDataType rejects them as a
+    // hash key. So partition on a primitive and carry the struct along.
+    Seq(10, 201).foreach { numPartitions =>
+      withParquetTable((0 until 50).map(i => (i, (i + 1, (i + 2).toString), i + 3)), "tbl") {
+        val df = sql("SELECT * FROM tbl")
+          .filter($"_3" > 10)
+          .repartition(numPartitions, $"_1")
+          .sortWithinPartitions($"_1")
+
+        checkShuffleAnswer(df, 1)
+      }
+    }
+  }
+
+  test("native shuffle on struct data column including nulls") {
+    Seq(10, 201).foreach { numPartitions =>
+      val data: Seq[(Int, (Int, String))] =
+        Seq((1, (0, "1")), (2, (3, "3")), (3, null), (4, (5, null)))
+      withParquetTable(data, "tbl") {
+        val df = sql("SELECT * FROM tbl")
+          .repartition(numPartitions, $"_1")
+          .sortWithinPartitions($"_1")
+
+        checkShuffleAnswer(df, 1)
+      }
+    }
+  }
+
+  test("native shuffle on deeply nested data columns") {
+    // struct<array<...>> and array<struct<...>>: the recursive branches of the type gate.
+    Seq(10, 201).foreach { numPartitions =>
+      withParquetTable(
+        (0 until 50).map(i =>
+          (i, (Seq(i + 1, i + 2), (i + 3).toString), Seq((i + 4, (i + 5).toString)))),
+        "tbl") {
+        val df = sql("SELECT * FROM tbl")
+          .repartition(numPartitions, $"_1")
+          .sortWithinPartitions($"_1")
+
+        checkShuffleAnswer(df, 1)
+      }
+    }
+  }
+
+  test("native shuffle on struct data column with map field") {
+    withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+      val df = spark.sql(
+        "SELECT id, named_struct('m', map(id, id + 1), 's', cast(id AS STRING)) AS st " +
+          "FROM VALUES (1), (2), (3) AS t(id)")
+      val shuffled = df.repartition(2, $"id")
+      checkShuffleAnswer(shuffled, 1)
+    }
+  }
+
   test("fix: Comet native shuffle with binary data") {
     withParquetTable((0 until 5).map(i => (i, (i + 1).toLong)), "tbl") {
       val df = sql("SELECT cast(cast(_1 as STRING) as BINARY) as binary, _2 FROM tbl")
