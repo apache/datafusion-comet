@@ -149,10 +149,12 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("collect_list over struct with non-nullable fields") {
-    // Building a struct from non-nullable columns yields non-nullable struct fields. The native
-    // collect_list accumulator emits a list whose element fields are all nullable, so the produced
-    // array must be reconciled with the declared aggregate output type, otherwise the grouped
-    // native aggregate fails with "column types must match schema types".
+    // Building a struct from non-nullable columns yields non-nullable struct fields. Native
+    // collect_list derives its declared output element type from the argument's declared type,
+    // but emits arrays of whatever type the accumulator actually received, so the argument is
+    // normalized to its all-nullable variant first. Without that the two disagree on nested
+    // field nullability and the grouped native aggregate fails with "column types must match
+    // schema types".
     import org.apache.spark.sql.functions.{collect_list, expr}
     import org.apache.spark.sql.execution.LocalTableScanExec
     // One row per (a, b) group keeps each collected list deterministic for the answer comparison.
