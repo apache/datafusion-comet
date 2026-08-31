@@ -334,7 +334,7 @@ private[python] object CometArrowPythonRunnerBase {
     ArrowType.ExtensionType.EXTENSION_METADATA_KEY_NAME,
     ArrowType.ExtensionType.EXTENSION_METADATA_KEY_METADATA)
 
-  private def hasCompatibleType(expected: ArrowType, actual: ArrowType): Boolean = {
+  private def areArrowTypesCompatible(expected: ArrowType, actual: ArrowType): Boolean = {
     if (expected == actual) {
       true
     } else {
@@ -353,7 +353,7 @@ private[python] object CometArrowPythonRunnerBase {
   /** Names, nullability and ordinary field metadata do not change the IPC buffer layout. */
   private[python] def hasCompatibleSchema(expected: Seq[Field], actual: Seq[Field]): Boolean = {
     expected.size == actual.size && expected.zip(actual).forall { case (left, right) =>
-      hasCompatibleType(left.getType, right.getType) &&
+      areArrowTypesCompatible(left.getType, right.getType) &&
       left.getDictionary == right.getDictionary &&
       extensionMetadataKeys.forall(key =>
         left.getMetadata.get(key) == right.getMetadata.get(key)) &&
