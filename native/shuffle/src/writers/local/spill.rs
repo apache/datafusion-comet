@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::codec_context::ShuffleCodecContext;
 use crate::metrics::ShufflePartitionerMetrics;
 use crate::writers::BufBatchWriter;
 use crate::ShuffleBlockWriter;
@@ -50,9 +51,13 @@ impl SpillWriter {
         })
     }
 
+    /// Stages the batches from `iter` into this partition's spill file.
+    ///
+    /// `codec_context` comes from the task-level owner; a `SpillWriter` exists per partition.
     pub(crate) fn write<I: Iterator<Item = datafusion::common::Result<RecordBatch>>>(
         &mut self,
         iter: &mut I,
+        codec_context: &mut ShuffleCodecContext,
         runtime: &RuntimeEnv,
         metrics: &ShufflePartitionerMetrics,
     ) -> datafusion::common::Result<()> {
@@ -67,12 +72,22 @@ impl SpillWriter {
                     self.batch_size,
                 );
                 let initial_position = buf_batch_writer.writer_stream_position()?;
-                buf_batch_writer.write(&batch?, &metrics.encode_time, &metrics.write_time)?;
+                buf_batch_writer.write(
+                    &batch?,
+                    codec_context,
+                    &metrics.encode_time,
+                    &metrics.write_time,
+                )?;
                 for batch in iter.by_ref() {
                     let batch = batch?;
-                    buf_batch_writer.write(&batch, &metrics.encode_time, &metrics.write_time)?;
+                    buf_batch_writer.write(
+                        &batch,
+                        codec_context,
+                        &metrics.encode_time,
+                        &metrics.write_time,
+                    )?;
                 }
-                buf_batch_writer.flush(&metrics.encode_time, &metrics.write_time)?;
+                buf_batch_writer.flush(codec_context, &metrics.encode_time, &metrics.write_time)?;
                 let bytes_written = buf_batch_writer
                     .writer_stream_position()?
                     .saturating_sub(initial_position);

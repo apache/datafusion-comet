@@ -392,10 +392,9 @@ fn contextualize_shuffle_error(error: DataFusionError, phase: &str) -> DataFusio
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::{read_ipc_compressed, ShuffleBlockWriter};
+    use crate::{read_ipc_compressed, ShuffleBlockWriter, ShuffleCodecContext};
     use arrow::array::{Array, Int64Array, StringArray, StringBuilder};
     use arrow::datatypes::{DataType, Field, Schema};
-    use arrow::ipc::writer::CompressionContext;
     use arrow::record_batch::RecordBatch;
     use arrow::row::{RowConverter, SortField};
     use datafusion::datasource::memory::MemorySourceConfig;
@@ -425,14 +424,9 @@ mod test {
             let mut cursor = Cursor::new(&mut output);
             let writer =
                 ShuffleBlockWriter::try_new(batch.schema().as_ref(), codec.clone()).unwrap();
-            let mut compression_context = CompressionContext::default();
+            let mut codec_context = ShuffleCodecContext::default();
             let length = writer
-                .write_batch(
-                    &batch,
-                    &mut cursor,
-                    &mut compression_context,
-                    &Time::default(),
-                )
+                .write_batch(&batch, &mut cursor, &mut codec_context, &Time::default())
                 .unwrap();
             assert_eq!(length, output.len());
 
@@ -471,14 +465,9 @@ mod test {
             let mut output = vec![];
             let mut cursor = Cursor::new(&mut output);
             let writer = ShuffleBlockWriter::try_new(schema.as_ref(), codec.clone()).unwrap();
-            let mut compression_context = CompressionContext::default();
+            let mut codec_context = ShuffleCodecContext::default();
             writer
-                .write_batch(
-                    &batch,
-                    &mut cursor,
-                    &mut compression_context,
-                    &Time::default(),
-                )
+                .write_batch(&batch, &mut cursor, &mut codec_context, &Time::default())
                 .unwrap();
 
             let batch2 = read_ipc_compressed(&output[16..]).unwrap();
@@ -1160,6 +1149,7 @@ mod test {
         let codec = CompressionCodec::Lz4Frame;
         let encode_time = Time::default();
         let write_time = Time::default();
+        let mut codec_context = ShuffleCodecContext::default();
 
         // Write with coalescing (batch_size=8192)
         let mut coalesced_output = Vec::new();
@@ -1172,9 +1162,13 @@ mod test {
                 8192,
             );
             for batch in &small_batches {
-                buf_writer.write(batch, &encode_time, &write_time).unwrap();
+                buf_writer
+                    .write(batch, &mut codec_context, &encode_time, &write_time)
+                    .unwrap();
             }
-            buf_writer.flush(&encode_time, &write_time).unwrap();
+            buf_writer
+                .flush(&mut codec_context, &encode_time, &write_time)
+                .unwrap();
         }
 
         // Write without coalescing (batch_size=1)
@@ -1188,9 +1182,13 @@ mod test {
                 1,
             );
             for batch in &small_batches {
-                buf_writer.write(batch, &encode_time, &write_time).unwrap();
+                buf_writer
+                    .write(batch, &mut codec_context, &encode_time, &write_time)
+                    .unwrap();
             }
-            buf_writer.flush(&encode_time, &write_time).unwrap();
+            buf_writer
+                .flush(&mut codec_context, &encode_time, &write_time)
+                .unwrap();
         }
 
         // Coalesced output should be smaller due to fewer IPC schema blocks
@@ -1281,6 +1279,7 @@ mod test {
         let codec = CompressionCodec::Lz4Frame;
         let encode_time = Time::default();
         let write_time = Time::default();
+        let mut codec_context = ShuffleCodecContext::default();
 
         let mut output = Vec::new();
         {
@@ -1292,9 +1291,13 @@ mod test {
                 batch_size as usize,
             );
             for batch in &inputs {
-                buf_writer.write(batch, &encode_time, &write_time).unwrap();
+                buf_writer
+                    .write(batch, &mut codec_context, &encode_time, &write_time)
+                    .unwrap();
             }
-            buf_writer.flush(&encode_time, &write_time).unwrap();
+            buf_writer
+                .flush(&mut codec_context, &encode_time, &write_time)
+                .unwrap();
         }
 
         let blocks = read_all_ipc_batches(&output);

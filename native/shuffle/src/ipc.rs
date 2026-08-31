@@ -15,23 +15,52 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::codec_context::ShuffleDecodeContext;
 use arrow::array::RecordBatch;
 use arrow::ipc::reader::StreamReader;
 use datafusion::common::DataFusionError;
 use datafusion::error::Result;
+use std::cell::RefCell;
 use std::io::{Error, ErrorKind, Read};
+
+thread_local! {
+    /// Backs the entry points below. They're called from many JVM task threads; a
+    /// thread-local gets each thread context reuse without changing any caller.
+    static DECODE_CONTEXT: RefCell<ShuffleDecodeContext> =
+        RefCell::new(ShuffleDecodeContext::default());
+}
 
 /// Decode trusted local Comet output without revalidating every Arrow array value or offset.
 pub fn read_ipc_compressed(bytes: &[u8]) -> Result<RecordBatch> {
-    read_ipc_compressed_impl(bytes, false)
+    DECODE_CONTEXT.with(|context| read_ipc_compressed_impl(&mut context.borrow_mut(), bytes, false))
 }
 
 /// Decode remotely fetched Comet output, including Arrow buffer and offset validation.
 pub fn read_ipc_compressed_validated(bytes: &[u8]) -> Result<RecordBatch> {
-    read_ipc_compressed_impl(bytes, true)
+    DECODE_CONTEXT.with(|context| read_ipc_compressed_impl(&mut context.borrow_mut(), bytes, true))
 }
 
-fn read_ipc_compressed_impl(bytes: &[u8], validate: bool) -> Result<RecordBatch> {
+/// [`read_ipc_compressed`] with a caller-owned decode context.
+pub fn read_ipc_compressed_with(
+    decode_context: &mut ShuffleDecodeContext,
+    bytes: &[u8],
+) -> Result<RecordBatch> {
+    read_ipc_compressed_impl(decode_context, bytes, false)
+}
+
+/// [`read_ipc_compressed_validated`] with a caller-owned decode context.
+pub fn read_ipc_compressed_validated_with(
+    decode_context: &mut ShuffleDecodeContext,
+    bytes: &[u8],
+) -> Result<RecordBatch> {
+    read_ipc_compressed_impl(decode_context, bytes, true)
+}
+
+fn read_ipc_compressed_impl(
+    decode_context: &mut ShuffleDecodeContext,
+    bytes: &[u8],
+    validate: bool,
+) -> Result<RecordBatch> {
     let codec = bytes.get(..4).ok_or_else(|| {
         DataFusionError::Execution("Failed to decode batch: truncated compression codec".to_owned())
     })?;
@@ -44,7 +73,10 @@ fn read_ipc_compressed_impl(bytes: &[u8], validate: bool) -> Result<RecordBatch>
         )?,
         // The slice already implements BufRead. Adding another BufReader would let read-ahead
         // conceal compressed bytes left over after the decoder reaches its end marker.
-        b"ZSTD" => read_single_batch(zstd::Decoder::with_buffer(&mut encoded)?, validate)?,
+        b"ZSTD" => read_single_batch(
+            zstd::Decoder::with_context(&mut encoded, decode_context.zstd_dctx()?),
+            validate,
+        )?,
         b"NONE" => read_single_batch(&mut encoded, validate)?,
         other => {
             return Err(DataFusionError::Execution(format!(
@@ -114,7 +146,11 @@ fn read_single_batch<R: Read>(input: R, validate: bool) -> Result<RecordBatch> {
 
 #[cfg(test)]
 mod tests {
-    use super::{read_ipc_compressed, read_ipc_compressed_validated};
+    use super::{
+        read_ipc_compressed, read_ipc_compressed_validated, read_ipc_compressed_validated_with,
+        read_ipc_compressed_with,
+    };
+    use crate::codec_context::ShuffleDecodeContext;
     use arrow::array::{Int32Array, RecordBatch, StringArray};
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow::ipc::writer::StreamWriter;
@@ -266,5 +302,36 @@ mod tests {
             assert_eq!(batch.num_columns(), 1);
             assert_eq!(batch, validated);
         }
+    }
+
+    /// One context across many frames, codecs changing between them, must decode exactly
+    /// like fresh per-frame decoders.
+    #[test]
+    #[cfg_attr(miri, ignore)] // Miri cannot call Zstd's C FFI.
+    fn decode_context_reused_across_frames_and_codecs() {
+        let mut ctx = ShuffleDecodeContext::default();
+        for _ in 0..3 {
+            for codec in [b"ZSTD", b"NONE", b"SNAP", b"ZSTD", b"LZ4_", b"ZSTD"] {
+                let frame = encode(codec, &ipc_stream(1));
+                let fresh = read_ipc_compressed(&frame).unwrap();
+                let reused = read_ipc_compressed_with(&mut ctx, &frame).unwrap();
+                let reused_validated =
+                    read_ipc_compressed_validated_with(&mut ctx, &frame).unwrap();
+                assert_eq!(reused, fresh);
+                assert_eq!(reused_validated, fresh);
+            }
+        }
+    }
+
+    /// A truncated frame must not poison the context for the next valid one.
+    #[test]
+    #[cfg_attr(miri, ignore)] // Miri cannot call Zstd's C FFI.
+    fn decode_context_usable_after_error() {
+        let mut ctx = ShuffleDecodeContext::default();
+        let good = encode(b"ZSTD", &ipc_stream(1));
+        let truncated = &good[..good.len() - 7];
+        assert!(read_ipc_compressed_with(&mut ctx, truncated).is_err());
+        let batch = read_ipc_compressed_with(&mut ctx, &good).unwrap();
+        assert_eq!(batch.num_rows(), 3);
     }
 }

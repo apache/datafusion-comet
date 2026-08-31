@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::codec_context::ShuffleCodecContext;
 use crate::metrics::ShufflePartitionerMetrics;
 use crate::writers::partition_writer::PartitionWriter;
 use crate::ShuffleBlockWriter;
@@ -26,7 +27,6 @@ use arrow::array::{
 };
 use arrow::buffer::OffsetBuffer;
 use arrow::datatypes::{DataType, Field, Int16Type, Int32Type, Int64Type};
-use arrow::ipc::writer::CompressionContext;
 use arrow_select::dictionary::garbage_collect_any_dictionary;
 use datafusion::common::{DataFusionError, Result};
 use datafusion_comet_jni_bridge::ShufflePartitionPusher;
@@ -49,7 +49,10 @@ pub(crate) struct RssPartitionWriter {
     pusher: Arc<dyn ShufflePartitionPusher>,
     num_partitions: usize,
     max_frame_size: usize,
-    compression_context: CompressionContext,
+    /// One remote writer serves all of a task's partitions, so the context is task-scoped by
+    /// construction. Only the Arrow IPC scratch persists between blocks; `write_rss_batch`
+    /// frees the zstd workspace with each admitted encode.
+    codec_context: ShuffleCodecContext,
     next_partition_to_finish: usize,
     finished: bool,
     failed: bool,
@@ -90,7 +93,7 @@ impl RssPartitionWriter {
             pusher,
             num_partitions,
             max_frame_size,
-            compression_context: CompressionContext::default(),
+            codec_context: ShuffleCodecContext::default(),
             next_partition_to_finish: 0,
             finished: false,
             failed: false,
@@ -273,7 +276,7 @@ impl RssPartitionWriter {
             if let Err(error) = self.block_writer.write_rss_batch(
                 compacted_batch,
                 &mut output,
-                &mut self.compression_context,
+                &mut self.codec_context,
                 &metrics.encode_time,
             ) {
                 let exceeded = output.exceeded;
@@ -1178,7 +1181,7 @@ mod buffer_tests {
             .write_rss_batch(
                 &batch,
                 &mut output,
-                &mut CompressionContext::default(),
+                &mut ShuffleCodecContext::default(),
                 &Time::default(),
             )
             .unwrap();

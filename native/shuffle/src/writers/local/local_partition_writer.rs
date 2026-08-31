@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::codec_context::ShuffleCodecContext;
 use crate::metrics::ShufflePartitionerMetrics;
 use crate::writers::local::spill::SpillWriter;
 use crate::writers::partition_writer::PartitionWriter;
@@ -64,6 +65,9 @@ enum DataOutput {
 pub(crate) struct LocalPartitionWriter {
     output_index_file: String,
     data_output: DataOutput,
+    /// Compression state shared by every block this task writes; the per-partition
+    /// `BufBatchWriter`s borrow it (see [`ShuffleCodecContext`]).
+    codec_context: ShuffleCodecContext,
     /// Start offset of each partition in the data file, plus a trailing entry
     /// with the total length so partition sizes are simple offset differences.
     /// Has `num_output_partitions + 1` elements.
@@ -121,6 +125,7 @@ impl LocalPartitionWriter {
         Ok(Self {
             output_index_file,
             data_output,
+            codec_context: ShuffleCodecContext::default(),
             offsets: vec![0u64; num_output_partitions + 1],
             batch_size,
             write_buffer_size,
@@ -164,7 +169,12 @@ impl PartitionWriter for LocalPartitionWriter {
                 // `finish_all`.
                 for batch in iter.by_ref() {
                     let batch = batch?;
-                    writer.write(&batch, &metrics.encode_time, &metrics.write_time)?;
+                    writer.write(
+                        &batch,
+                        &mut self.codec_context,
+                        &metrics.encode_time,
+                        &metrics.write_time,
+                    )?;
                 }
             }
             DataOutput::Multi {
@@ -175,7 +185,7 @@ impl PartitionWriter for LocalPartitionWriter {
                 // Multi-partition output buffers each partition's batches into its own
                 // spill file. `finish_partition` later merges the spill files (and any
                 // remaining in-memory batches) into the shuffle output in partition order.
-                spill_writers[pid].write(iter, runtime, metrics)?;
+                spill_writers[pid].write(iter, &mut self.codec_context, runtime, metrics)?;
             }
         }
 
@@ -209,7 +219,12 @@ impl PartitionWriter for LocalPartitionWriter {
                 // flushed once in `finish_all`.
                 for batch in iter.by_ref() {
                     let batch = batch?;
-                    writer.write(&batch, &metrics.encode_time, &metrics.write_time)?;
+                    writer.write(
+                        &batch,
+                        &mut self.codec_context,
+                        &metrics.encode_time,
+                        &metrics.write_time,
+                    )?;
                 }
             }
             DataOutput::Multi {
@@ -243,9 +258,18 @@ impl PartitionWriter for LocalPartitionWriter {
                 );
                 for batch in iter.by_ref() {
                     let batch = batch?;
-                    buf_batch_writer.write(&batch, &metrics.encode_time, &metrics.write_time)?;
+                    buf_batch_writer.write(
+                        &batch,
+                        &mut self.codec_context,
+                        &metrics.encode_time,
+                        &metrics.write_time,
+                    )?;
                 }
-                buf_batch_writer.flush(&metrics.encode_time, &metrics.write_time)?;
+                buf_batch_writer.flush(
+                    &mut self.codec_context,
+                    &metrics.encode_time,
+                    &metrics.write_time,
+                )?;
             }
         }
         Ok(())
@@ -259,7 +283,11 @@ impl PartitionWriter for LocalPartitionWriter {
         // single-partition writer this also finalizes the last coalesced batch.
         let final_offset = match &mut self.data_output {
             DataOutput::Single(writer) => {
-                writer.flush(&metrics.encode_time, &metrics.write_time)?;
+                writer.flush(
+                    &mut self.codec_context,
+                    &metrics.encode_time,
+                    &metrics.write_time,
+                )?;
                 writer.writer_stream_position()?
             }
             DataOutput::Multi { output_writer, .. } => {

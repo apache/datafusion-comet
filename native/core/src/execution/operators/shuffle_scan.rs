@@ -398,10 +398,9 @@ impl RecordBatchStream for ShuffleScanStream {
 
 #[cfg(test)]
 mod tests {
-    use crate::execution::shuffle::{CompressionCodec, ShuffleBlockWriter};
+    use crate::execution::shuffle::{CompressionCodec, ShuffleBlockWriter, ShuffleCodecContext};
     use arrow::array::{Int32Array, RecordBatchOptions, StringArray, UInt32Array};
     use arrow::datatypes::{DataType, Field, Schema};
-    use arrow::ipc::writer::CompressionContext;
     use arrow::record_batch::RecordBatch;
     use datafusion::physical_plan::metrics::Time;
     use std::io::Cursor;
@@ -416,7 +415,7 @@ mod tests {
             .write_batch(
                 batch,
                 &mut output,
-                &mut CompressionContext::default(),
+                &mut ShuffleCodecContext::default(),
                 &Time::new(),
             )
             .unwrap();
@@ -535,7 +534,7 @@ mod tests {
             .write_batch(
                 &batch,
                 &mut buf,
-                &mut CompressionContext::default(),
+                &mut ShuffleCodecContext::default(),
                 &ipc_time,
             )
             .unwrap();
@@ -607,7 +606,7 @@ mod tests {
             .write_batch(
                 &dict_batch,
                 &mut buf,
-                &mut CompressionContext::default(),
+                &mut ShuffleCodecContext::default(),
                 &ipc_time,
             )
             .unwrap();

@@ -16,9 +16,9 @@
 // under the License.
 
 use super::ShuffleBlockWriter;
+use crate::codec_context::ShuffleCodecContext;
 use arrow::array::RecordBatch;
 use arrow::compute::kernels::coalesce::BatchCoalescer;
-use arrow::ipc::writer::CompressionContext;
 use datafusion::physical_plan::metrics::Time;
 use std::borrow::Borrow;
 use std::io::{Cursor, Seek, SeekFrom, Write};
@@ -33,12 +33,14 @@ use std::io::{Cursor, Seek, SeekFrom, Write};
 /// configured (via `biggest_coalesce_batch_size`) to pass batches that are already at least
 /// `batch_size` rows straight through, verbatim and without copying them, so an oversized input
 /// batch is written as a single oversized block.
+///
+/// Encoding methods borrow a [`ShuffleCodecContext`] rather than owning one: these writers
+/// are created per output partition, and codec contexts must stay task-scoped.
 pub(crate) struct BufBatchWriter<S: Borrow<ShuffleBlockWriter>, W: Write> {
     shuffle_block_writer: S,
     writer: W,
     buffer: Vec<u8>,
     buffer_max_size: usize,
-    compression_context: CompressionContext,
     /// Coalesces small batches into target_batch_size before serialization.
     /// Lazily initialized on first write to capture the schema.
     coalescer: Option<BatchCoalescer>,
@@ -58,7 +60,6 @@ impl<S: Borrow<ShuffleBlockWriter>, W: Write> BufBatchWriter<S, W> {
             writer,
             buffer: vec![],
             buffer_max_size,
-            compression_context: CompressionContext::default(),
             coalescer: None,
             batch_size,
         }
@@ -67,6 +68,7 @@ impl<S: Borrow<ShuffleBlockWriter>, W: Write> BufBatchWriter<S, W> {
     pub(crate) fn write(
         &mut self,
         batch: &RecordBatch,
+        codec_context: &mut ShuffleCodecContext,
         encode_time: &Time,
         write_time: &Time,
     ) -> datafusion::common::Result<usize> {
@@ -96,7 +98,8 @@ impl<S: Borrow<ShuffleBlockWriter>, W: Write> BufBatchWriter<S, W> {
 
         let mut bytes_written = 0;
         for batch in &completed {
-            bytes_written += self.write_batch_to_buffer(batch, encode_time, write_time)?;
+            bytes_written +=
+                self.write_batch_to_buffer(batch, codec_context, encode_time, write_time)?;
         }
         Ok(bytes_written)
     }
@@ -105,6 +108,7 @@ impl<S: Borrow<ShuffleBlockWriter>, W: Write> BufBatchWriter<S, W> {
     fn write_batch_to_buffer(
         &mut self,
         batch: &RecordBatch,
+        codec_context: &mut ShuffleCodecContext,
         encode_time: &Time,
         write_time: &Time,
     ) -> datafusion::common::Result<usize> {
@@ -113,7 +117,7 @@ impl<S: Borrow<ShuffleBlockWriter>, W: Write> BufBatchWriter<S, W> {
         let bytes_written = self.shuffle_block_writer.borrow().write_batch(
             batch,
             &mut cursor,
-            &mut self.compression_context,
+            codec_context,
             encode_time,
         )?;
         let pos = cursor.position();
@@ -128,6 +132,7 @@ impl<S: Borrow<ShuffleBlockWriter>, W: Write> BufBatchWriter<S, W> {
 
     pub(crate) fn flush(
         &mut self,
+        codec_context: &mut ShuffleCodecContext,
         encode_time: &Time,
         write_time: &Time,
     ) -> datafusion::common::Result<()> {
@@ -140,7 +145,7 @@ impl<S: Borrow<ShuffleBlockWriter>, W: Write> BufBatchWriter<S, W> {
             }
         }
         for batch in &remaining {
-            self.write_batch_to_buffer(batch, encode_time, write_time)?;
+            self.write_batch_to_buffer(batch, codec_context, encode_time, write_time)?;
         }
 
         // Flush the byte buffer to the underlying writer
