@@ -23,6 +23,7 @@ import java.io.File
 import java.util.Locale
 
 import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.functions.expr
 import org.apache.spark.sql.types._
 
 import org.apache.comet.udf.{CometNativeUDF, CometNativeUdfAbiException, CometNativeUdfLoadException}
@@ -330,6 +331,63 @@ class CometNativeUdfSuite extends CometTestBase {
     // The catalog stub is arity-1, so a 2-arg call is rejected during analysis.
     intercept[Exception] {
       spark.range(0, 2).selectExpr("echo_c(id, id) AS y").collect()
+    }
+  }
+
+  // A native UDF has to be recognized wherever `CometScalaUDF.convert` can be reached, not just in
+  // a projection. Filters, join conditions, grouping keys and window partitioning each route
+  // through a different Comet operator, and a regression in any one of them would show up only as
+  // a fallback to Spark. That is what the catalog stub catches: if Spark evaluates the UDF itself
+  // the stub throws, so each of these tests fails rather than quietly passing on the JVM path.
+
+  test("a native UDF in a filter predicate is evaluated natively") {
+    CometNativeUDF.register(spark, "add_one_c", libPath, Seq(LongType), LongType)
+    val df = spark.range(0, 10).filter("add_one_c(id) > 3").select("id")
+    assert(df.collect().map(_.getLong(0)).sorted.toSeq == (3L to 9L).toSeq)
+  }
+
+  test("a native UDF in a join condition is evaluated natively") {
+    CometNativeUDF.register(spark, "add_one_c", libPath, Seq(LongType), LongType)
+    withTempView("l", "r") {
+      spark.range(0, 5).createOrReplaceTempView("l")
+      spark.range(0, 5).createOrReplaceTempView("r")
+      val rows = spark
+        .sql("SELECT l.id AS l, r.id AS r FROM l JOIN r ON add_one_c(l.id) = r.id")
+        .collect()
+        .map(row => (row.getLong(0), row.getLong(1)))
+        .sorted
+        .toSeq
+      assert(rows == Seq((0L, 1L), (1L, 2L), (2L, 3L), (3L, 4L)))
+    }
+  }
+
+  test("a native UDF in a grouping key is evaluated natively") {
+    CometNativeUDF.register(spark, "add_one_c", libPath, Seq(LongType), LongType)
+    val rows = spark
+      .range(0, 6)
+      .selectExpr("id % 3 AS k")
+      .groupBy(expr("add_one_c(k)").as("g"))
+      .count()
+      .collect()
+      .map(row => (row.getLong(0), row.getLong(1)))
+      .sorted
+      .toSeq
+    assert(rows == Seq((1L, 2L), (2L, 2L), (3L, 2L)))
+  }
+
+  test("a native UDF in a window PARTITION BY is evaluated natively") {
+    CometNativeUDF.register(spark, "add_one_c", libPath, Seq(LongType), LongType)
+    withTempView("w") {
+      spark.range(0, 6).selectExpr("id", "id % 3 AS k").createOrReplaceTempView("w")
+      val rows = spark
+        .sql("SELECT id, row_number() OVER (PARTITION BY add_one_c(k) ORDER BY id) AS rn FROM w")
+        .collect()
+        .map(row => (row.getLong(0), row.getInt(1)))
+        .sorted
+        .toSeq
+      // Rows 0..5 fall into partitions k = 0,1,2,0,1,2, so each partition holds two rows and the
+      // lower id of the pair is numbered first.
+      assert(rows == Seq((0L, 1), (1L, 1), (2L, 1), (3L, 2), (4L, 2), (5L, 2)))
     }
   }
 
