@@ -21,10 +21,10 @@ package org.apache.comet.serde.operator
 
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.sql.comet.{CometNativeExec, CometSinkPlaceHolder}
+import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometNativeExec, CometSinkPlaceHolder}
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution.SparkPlan
-import org.apache.spark.sql.execution.adaptive.ShuffleQueryStageExec
+import org.apache.spark.sql.execution.adaptive.{BroadcastQueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.types.{ArrayType, DataType, DayTimeIntervalType, MapType, StructType, YearMonthIntervalType}
 
@@ -59,6 +59,33 @@ abstract class CometSink[T <: SparkPlan] extends CometOperatorSerde[T] {
    * (see [[org.apache.spark.sql.comet.CometLocalTableScanExec]] and issue #4789).
    */
   protected def scanFieldType(dt: DataType): DataType = dt
+
+  protected final def convertToBroadcastScan(
+      op: SparkPlan,
+      builder: Operator.Builder): Option[OperatorOuterClass.Operator] = {
+    val supportedTypes = op.output.forall(a => supportedSinkDataType(a.dataType))
+
+    if (!supportedTypes) {
+      withFallbackReason(op, "Unsupported data type for broadcast direct read")
+      return None
+    }
+
+    val scanBuilder = OperatorOuterClass.BroadcastScan.newBuilder()
+    val source = op.simpleStringWithNodeId()
+    scanBuilder.setSource(if (source.isEmpty) op.getClass.getSimpleName else source)
+
+    val scanTypes = op.output.flatMap(attr => serializeDataType(scanFieldType(attr.dataType)))
+    if (scanTypes.length == op.output.length) {
+      scanBuilder.addAllFields(scanTypes.asJava)
+      builder.clearChildren()
+      Some(builder.setBroadcastScan(scanBuilder).build())
+    } else {
+      withFallbackReason(
+        op,
+        s"unsupported data types in ${op.nodeName} for broadcast direct read")
+      None
+    }
+  }
 
   override def convert(
       op: T,
@@ -107,10 +134,27 @@ object CometExchangeSink extends CometSink[SparkPlan] {
       op: SparkPlan,
       builder: Operator.Builder,
       childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
-    if (shouldUseShuffleScan(op)) {
+    if (shouldUseBroadcastScan(op)) {
+      convertToBroadcastScan(op, builder)
+    } else if (shouldUseShuffleScan(op)) {
       convertToShuffleScan(op, builder)
     } else {
       super.convert(op, builder, childOp: _*)
+    }
+  }
+
+  private def shouldUseBroadcastScan(op: SparkPlan): Boolean = {
+    op match {
+      case broadcast: CometBroadcastExchangeExec => broadcast.directRead
+      case BroadcastQueryStageExec(_, broadcast: CometBroadcastExchangeExec, _) =>
+        broadcast.directRead
+      case ReusedExchangeExec(_, broadcast: CometBroadcastExchangeExec) => broadcast.directRead
+      case BroadcastQueryStageExec(
+            _,
+            ReusedExchangeExec(_, broadcast: CometBroadcastExchangeExec),
+            _) =>
+        broadcast.directRead
+      case _ => false
     }
   }
 

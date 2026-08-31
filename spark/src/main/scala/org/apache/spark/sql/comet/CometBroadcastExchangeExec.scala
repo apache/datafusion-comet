@@ -24,6 +24,7 @@ import java.util.concurrent.{Future, TimeoutException, TimeUnit}
 
 import scala.concurrent.{ExecutionContext, Promise}
 import scala.concurrent.duration.NANOSECONDS
+import scala.jdk.CollectionConverters._
 import scala.util.control.NonFatal
 
 import org.apache.spark.{broadcast, Partition, SparkContext, SparkException, TaskContext}
@@ -44,7 +45,7 @@ import org.apache.spark.util.io.ChunkedByteBuffer
 
 import com.google.common.base.Objects
 
-import org.apache.comet.{CometConf, ConfigEntry}
+import org.apache.comet.{CometBroadcastBlockIterator, CometConf, ConfigEntry}
 import org.apache.comet.serde.OperatorOuterClass
 import org.apache.comet.serde.operator.CometSink
 import org.apache.comet.shims.ShimCometBroadcastExchangeExec
@@ -64,7 +65,8 @@ case class CometBroadcastExchangeExec(
     originalPlan: SparkPlan,
     override val output: Seq[Attribute],
     mode: BroadcastMode,
-    override val child: SparkPlan)
+    override val child: SparkPlan,
+    directRead: Boolean = CometConf.COMET_EXEC_BROADCAST_DIRECT_READ_ENABLED.get())
     extends BroadcastExchangeLike
     with ShimCometBroadcastExchangeExec
     with CometPlan {
@@ -85,7 +87,7 @@ case class CometBroadcastExchangeExec(
       "number of coalesced rows for broadcast"))
 
   override def doCanonicalize(): SparkPlan = {
-    CometBroadcastExchangeExec(null, null, mode, child.canonicalized)
+    CometBroadcastExchangeExec(null, null, mode, child.canonicalized, directRead)
   }
 
   override def runtimeStatistics: Statistics = {
@@ -111,7 +113,11 @@ case class CometBroadcastExchangeExec(
 
   private def getByteArrayRdd(plan: SparkPlan): RDD[(Long, ChunkedByteBuffer)] = {
     plan.executeColumnar().mapPartitionsInternal { iter =>
-      Utils.serializeBatches(iter)
+      if (directRead) {
+        Utils.serializeBroadcastBatches(iter)
+      } else {
+        Utils.serializeBatches(iter)
+      }
     }
   }
 
@@ -148,7 +154,8 @@ case class CometBroadcastExchangeExec(
         // shuffle block (one per writer task per partition), which is very expensive
         // when there are hundreds of writer tasks and partitions. See the scaladoc
         // on coalesceBroadcastBatches for details.
-        val (batches, coalescedBatches, coalescedRows) = Utils.coalesceBroadcastBatches(input)
+        val (batches, coalescedBatches, coalescedRows) =
+          Utils.coalesceBroadcastBatches(input, nativeIpc = directRead)
         longMetric("numCoalescedBatches") += coalescedBatches
         longMetric("numCoalescedRows") += coalescedRows
 
@@ -227,6 +234,16 @@ case class CometBroadcastExchangeExec(
     new CometBatchRDD(sparkContext, numPartitions, broadcasted)
   }
 
+  /** Returns one raw-block iterator per consumer partition for native direct reads. */
+  def executeAsBlockIterator(numPartitions: Int): RDD[CometBroadcastBlockIterator] = {
+    if (isCanonicalizedPlan) {
+      throw SparkException.internalError("A canonicalized plan is not supposed to be executed.")
+    }
+
+    val broadcasted = executeBroadcast[Array[ChunkedByteBuffer]]()
+    new CometBroadcastBlockRDD(sparkContext, numPartitions, broadcasted)
+  }
+
   override protected[sql] def doExecuteBroadcast[T](): broadcast.Broadcast[T] = {
     try {
       relationFuture.get(timeout, TimeUnit.SECONDS).asInstanceOf[broadcast.Broadcast[T]]
@@ -245,13 +262,14 @@ case class CometBroadcastExchangeExec(
     obj match {
       case other: CometBroadcastExchangeExec =>
         this.originalPlan == other.originalPlan &&
-        this.child == other.child
+        this.child == other.child &&
+        this.directRead == other.directRead
       case _ =>
         false
     }
   }
 
-  override def hashCode(): Int = Objects.hashCode(child)
+  override def hashCode(): Int = Objects.hashCode(child, Boolean.box(directRead))
 
   override def stringArgs: Iterator[Any] = Iterator(output, child)
 
@@ -264,10 +282,24 @@ object CometBroadcastExchangeExec extends CometSink[BroadcastExchangeExec] {
   override def enabledConfig: Option[ConfigEntry[Boolean]] = Some(
     CometConf.COMET_EXEC_BROADCAST_EXCHANGE_ENABLED)
 
+  override def convert(
+      op: BroadcastExchangeExec,
+      builder: OperatorOuterClass.Operator.Builder,
+      childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
+    if (CometConf.COMET_EXEC_BROADCAST_DIRECT_READ_ENABLED.get()) {
+      convertToBroadcastScan(op, builder)
+    } else {
+      super.convert(op, builder, childOp: _*)
+    }
+  }
+
   override def createExec(
       nativeOp: OperatorOuterClass.Operator,
       b: BroadcastExchangeExec): CometNativeExec = {
-    CometSinkPlaceHolder(nativeOp, b, CometBroadcastExchangeExec(b, b.output, b.mode, b.child))
+    CometSinkPlaceHolder(
+      nativeOp,
+      b,
+      CometBroadcastExchangeExec(b, b.output, b.mode, b.child, nativeOp.hasBroadcastScan))
   }
 
   private[comet] val executionContext = ExecutionContext.fromExecutorService(
@@ -301,6 +333,26 @@ class CometBatchRDD(
     val partition = split.asInstanceOf[CometBatchPartition]
     partition.value.value.iterator
       .flatMap(Utils.decodeBatches(_, this.getClass.getSimpleName))
+  }
+}
+
+/** Raw broadcast blocks replicated to each native consumer partition. */
+class CometBroadcastBlockRDD(
+    sc: SparkContext,
+    val numPartitions: Int,
+    value: broadcast.Broadcast[Array[ChunkedByteBuffer]])
+    extends RDD[CometBroadcastBlockIterator](sc, Nil) {
+
+  override def getPartitions: Array[Partition] = (0 until numPartitions).toArray.map { i =>
+    new CometBatchPartition(i, value)
+  }
+
+  override def compute(
+      split: Partition,
+      context: TaskContext): Iterator[CometBroadcastBlockIterator] = {
+    val partition = split.asInstanceOf[CometBatchPartition]
+    val blocks = partition.value.value.iterator.map(_.getChunks()).asJava
+    Iterator.single(new CometBroadcastBlockIterator(blocks))
   }
 }
 

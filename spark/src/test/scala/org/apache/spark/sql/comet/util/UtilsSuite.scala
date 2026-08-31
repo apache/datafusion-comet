@@ -25,7 +25,7 @@ import org.apache.spark.sql.execution.vectorized.ConstantColumnVector
 import org.apache.spark.sql.types.{IntegerType, StringType, StructField, StructType, TimestampType}
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 
-import org.apache.comet.CometArrowAllocator
+import org.apache.comet.{CometArrowAllocator, CometConf}
 import org.apache.comet.vector.CometVector
 
 class UtilsSuite extends CometTestBase {
@@ -39,6 +39,22 @@ class UtilsSuite extends CometTestBase {
 
     val decoded = Utils.decodeBatches(buf, "test").toSeq
     assert(decoded.map(_.numRows()).sum == numRows)
+  }
+
+  test("broadcast direct read is disabled by default and preserves legacy IPC") {
+    assert(!CometConf.COMET_EXEC_BROADCAST_DIRECT_READ_ENABLED.get())
+
+    val batch = new ColumnarBatch(Array.empty[ColumnVector], 1)
+    val (_, buf) = Utils.serializeBatches(Iterator(batch)).next()
+    val prefix = new Array[Byte](4)
+    val input = buf.toInputStream()
+    try {
+      assert(input.read(prefix) == prefix.length)
+    } finally {
+      input.close()
+    }
+    assert(!prefix.sameElements(Array[Byte](0x4c, 0x5a, 0x34, 0x5f)))
+    assert(Utils.decodeBatches(buf, "legacy-broadcast-test").map(_.numRows()).sum == 1)
   }
 
   test("coalesceBroadcastBatches preserves row count across zero-column inputs") {
@@ -56,6 +72,51 @@ class UtilsSuite extends CometTestBase {
 
     val decoded = coalesced.iterator.flatMap(b => Utils.decodeBatches(b, "test")).toSeq
     assert(decoded.map(_.numRows()).sum == expected)
+  }
+
+  test("broadcast direct-read serialization uses native IPC and remains JVM-decodable") {
+    val numRows = 5
+    val batch = new ColumnarBatch(Array.empty[ColumnVector], numRows)
+
+    val (rowCount, buf) = Utils.serializeBroadcastBatches(Iterator(batch)).next()
+    assert(rowCount == numRows)
+
+    val prefix = new Array[Byte](4)
+    val input = buf.toInputStream()
+    try {
+      assert(input.read(prefix) == prefix.length)
+    } finally {
+      input.close()
+    }
+    assert(prefix.sameElements(Array[Byte](0x4c, 0x5a, 0x34, 0x5f)))
+
+    val decoded = Utils.decodeBatches(buf, "test").toSeq
+    assert(decoded.map(_.numRows()).sum == numRows)
+  }
+
+  test("coalesceBroadcastBatches preserves native direct-read format") {
+    val numRows = 4
+    val numBatches = 3
+    val batches =
+      (0 until numBatches).map(_ => new ColumnarBatch(Array.empty[ColumnVector], numRows))
+    val bufs = Utils.serializeBroadcastBatches(batches.iterator).map(_._2).toSeq.iterator
+
+    val (coalesced, batchCount, totalRows) =
+      Utils.coalesceBroadcastBatches(bufs, nativeIpc = true)
+
+    assert(coalesced.length == 1)
+    assert(batchCount == numBatches)
+    assert(totalRows == numRows.toLong * numBatches)
+    val decoded = coalesced.iterator.flatMap(Utils.decodeBatches(_, "test")).toSeq
+    assert(decoded.map(_.numRows()).sum == totalRows)
+  }
+
+  test("native broadcast coalesce preserves blocks above the JNI size limit") {
+    assert(!Utils.shouldSkipDirectBroadcastCoalesce(nativeIpc = true, Integer.MAX_VALUE.toLong))
+    assert(
+      Utils.shouldSkipDirectBroadcastCoalesce(nativeIpc = true, Integer.MAX_VALUE.toLong + 1L))
+    assert(
+      !Utils.shouldSkipDirectBroadcastCoalesce(nativeIpc = false, Integer.MAX_VALUE.toLong + 1L))
   }
 
   test("serializeBatches materializes ConstantColumnVector columns") {

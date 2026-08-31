@@ -229,6 +229,16 @@ object CometConf extends ShimCometConf {
     createExecEnabledConfig("broadcastHashJoin", defaultValue = true)
   val COMET_EXEC_BROADCAST_EXCHANGE_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("broadcastExchange", defaultValue = true)
+  val COMET_EXEC_BROADCAST_DIRECT_READ_ENABLED: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.broadcast.directRead.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Whether native operators read Comet broadcast exchange data directly as compressed " +
+          "Arrow IPC, bypassing JVM-side Arrow deserialization and the Arrow FFI input path. " +
+          s"Each compressed input block must be at most ${Integer.MAX_VALUE} bytes. " +
+          "This feature is experimental and disabled by default.")
+      .booleanConf
+      .createWithDefault(false)
   val COMET_EXEC_HASH_JOIN_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("hashJoin", defaultValue = true)
   val COMET_EXEC_BROADCAST_NESTED_LOOP_JOIN_ENABLED: ConfigEntry[Boolean] =

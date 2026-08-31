@@ -47,11 +47,35 @@ use std::{
 
 use super::scan::InputBatch;
 
-/// ShuffleScanExec reads compressed shuffle blocks from JVM via JNI and decodes them natively.
-/// Unlike ScanExec which receives Arrow arrays via FFI, ShuffleScanExec receives raw compressed
-/// bytes from CometShuffleBlockIterator and decodes them using read_ipc_compressed().
+/// Identifies the JVM source using the shared direct-block protocol.
+#[derive(Debug, Clone, Copy)]
+enum BlockScanKind {
+    Shuffle,
+    Broadcast,
+}
+
+impl BlockScanKind {
+    fn execution_plan_name(self) -> &'static str {
+        match self {
+            Self::Shuffle => "ShuffleScanExec",
+            Self::Broadcast => "BroadcastScanExec",
+        }
+    }
+
+    fn input_name(self) -> &'static str {
+        match self {
+            Self::Shuffle => "shuffle",
+            Self::Broadcast => "broadcast",
+        }
+    }
+}
+
+/// Reads codec-prefixed compressed Arrow IPC blocks from JVM via JNI and decodes them natively.
+/// Shuffle and broadcast scans share the same iterator protocol while retaining distinct plan
+/// names for explain output and diagnostics.
 #[derive(Debug, Clone)]
 pub struct ShuffleScanExec {
+    kind: BlockScanKind,
     /// The ID of the execution context that owns this subquery.
     pub exec_context_id: i64,
     /// The input source: a global reference to a JVM CometShuffleBlockIterator object.
@@ -80,6 +104,33 @@ impl ShuffleScanExec {
         input_source: Option<Arc<Global<JObject<'static>>>>,
         data_types: Vec<DataType>,
     ) -> Result<Self, CometError> {
+        Self::new_with_kind(
+            exec_context_id,
+            input_source,
+            data_types,
+            BlockScanKind::Shuffle,
+        )
+    }
+
+    pub fn new_broadcast(
+        exec_context_id: i64,
+        input_source: Option<Arc<Global<JObject<'static>>>>,
+        data_types: Vec<DataType>,
+    ) -> Result<Self, CometError> {
+        Self::new_with_kind(
+            exec_context_id,
+            input_source,
+            data_types,
+            BlockScanKind::Broadcast,
+        )
+    }
+
+    fn new_with_kind(
+        exec_context_id: i64,
+        input_source: Option<Arc<Global<JObject<'static>>>>,
+        data_types: Vec<DataType>,
+        kind: BlockScanKind,
+    ) -> Result<Self, CometError> {
         let requires_validation = if exec_context_id == TEST_EXEC_CONTEXT_ID {
             false
         } else if let Some(input) = &input_source {
@@ -90,6 +141,7 @@ impl ShuffleScanExec {
         } else {
             false
         };
+
         let metrics_set = ExecutionPlanMetricsSet::default();
         let baseline_metrics = BaselineMetrics::new(&metrics_set, 0);
         let decode_time = MetricBuilder::new(&metrics_set).subset_time("decode_time", 0);
@@ -104,6 +156,7 @@ impl ShuffleScanExec {
         ));
 
         Ok(Self {
+            kind,
             exec_context_id,
             input_source,
             data_types,
@@ -139,6 +192,7 @@ impl ShuffleScanExec {
                 &self.data_types,
                 &self.decode_time,
                 self.requires_validation,
+                self.kind,
             )?;
             *current_batch = Some(next_batch);
         }
@@ -155,6 +209,7 @@ impl ShuffleScanExec {
         data_types: &[DataType],
         decode_time: &Time,
         requires_validation: bool,
+        kind: BlockScanKind,
     ) -> Result<InputBatch, CometError> {
         if exec_context_id == TEST_EXEC_CONTEXT_ID {
             return Ok(InputBatch::EOF);
@@ -162,7 +217,8 @@ impl ShuffleScanExec {
 
         if iter.is_null() {
             return Err(CometError::from(ExecutionError::GeneralError(format!(
-                "Null shuffle block iterator object. Plan id: {exec_context_id}"
+                "Null {} block iterator object. Plan id: {exec_context_id}",
+                kind.input_name()
             ))));
         }
 
@@ -219,6 +275,14 @@ impl ShuffleScanExec {
                 .map(|col| unpack_dictionary(col))
                 .collect();
 
+            debug_assert_eq!(
+                columns.len(),
+                data_types.len(),
+                "{} block column count mismatch: got {} but expected {}",
+                kind.input_name(),
+                columns.len(),
+                data_types.len()
+            );
             Ok(InputBatch::new(columns, Some(num_rows)))
         })
     }
@@ -302,7 +366,7 @@ impl ExecutionPlan for ShuffleScanExec {
     }
 
     fn name(&self) -> &str {
-        "ShuffleScanExec"
+        self.kind.execution_plan_name()
     }
 
     fn metrics(&self) -> Option<MetricsSet> {
@@ -320,7 +384,7 @@ impl DisplayAs for ShuffleScanExec {
                     .enumerate()
                     .map(|(idx, dt)| format!("col_{idx}: {dt}"))
                     .collect();
-                write!(f, "ShuffleScanExec: schema=[{}]", fields.join(", "))?;
+                write!(f, "{}: schema=[{}]", self.name(), fields.join(", "))?;
             }
             DisplayFormatType::TreeRender => unimplemented!(),
         }
@@ -508,6 +572,20 @@ mod tests {
                 .to_string();
             assert!(error.contains("column count mismatch"), "{error}");
         }
+    }
+
+    #[test]
+    fn test_broadcast_scan_has_distinct_plan_name() {
+        use datafusion::physical_plan::ExecutionPlan;
+
+        let scan = super::ShuffleScanExec::new_broadcast(
+            super::super::super::planner::TEST_EXEC_CONTEXT_ID,
+            None,
+            vec![DataType::Int32],
+        )
+        .unwrap();
+
+        assert_eq!(scan.name(), "BroadcastScanExec");
     }
 
     #[test]
