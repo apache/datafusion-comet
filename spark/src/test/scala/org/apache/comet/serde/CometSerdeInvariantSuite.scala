@@ -26,7 +26,7 @@ import org.apache.logging.log4j.core.{LogEvent, Logger => Log4jLogger}
 import org.apache.logging.log4j.core.appender.AbstractAppender
 import org.apache.logging.log4j.core.config.Property
 import org.apache.spark.sql.CometTestBase
-import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, Expression, IsNull, Literal, Unevaluable}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, CreateArray, Expression, IsNull, Literal, Unevaluable}
 import org.apache.spark.sql.types.{DataType, IntegerType}
 
 import org.apache.comet.CometExplainInfo
@@ -34,8 +34,7 @@ import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 
 /**
  * Expression with no entry in `QueryPlanSerde.exprSerdeMap`, so `exprToProtoInternal` always
- * declines it and tags it with a fallback reason. Used as the unconvertible child in the
- * inherited-failure cases below.
+ * declines it. Used as the unconvertible child in the inherited-failure cases below.
  */
 case class TestUnregisteredExpression(child: Expression) extends Expression with Unevaluable {
   override def children: Seq[Expression] = Seq(child)
@@ -100,31 +99,34 @@ class CometSerdeInvariantSuite extends CometTestBase {
     assert(warnings.head.contains("cannot resolve"))
   }
 
-  test("stays quiet when convert declines only because a child could not be converted") {
-    // IsNull is Compatible and does not tag itself; the decline propagates up from the child,
-    // which is not an invariant violation and must not warn once per ancestor.
-    val expr = IsNull(IsNull(TestUnregisteredExpression(Literal(1))))
+  test("stays quiet, once per ancestor, when only a child could not be converted") {
+    // A single unsupported leaf under a deep chain of Compatible serdes. Every ancestor's convert
+    // returns None, but none of them is at fault, so the whole tree must produce no warnings --
+    // not one per level.
+    val depth = 12
+    val expr = (1 to depth).foldLeft[Expression](TestUnregisteredExpression(Literal(1))) {
+      (child, _) => IsNull(child)
+    }
     val warnings = invariantWarnings {
       assert(QueryPlanSerde.exprToProtoInternal(expr, Seq.empty, binding = false).isEmpty)
     }
     assert(warnings.isEmpty, s"expected no warnings, got: $warnings")
   }
 
-  test("stays quiet when the parent tags itself but a child also failed") {
-    // Several serdes record their own reason when a child fails (CometCreateArray,
-    // CometCreateNamedStruct, CometArraysZip). A tag on the node itself must not defeat the
-    // child-failure check, otherwise those serdes warn on every unsupported leaf beneath them.
-    val child = TestUnregisteredExpression(Literal(1))
-    val parent = IsNull(child)
-    withFallbackReason(child, "child is not supported")
-    withFallbackReason(parent, "unsupported arguments for parent")
-    val warnings = captureWarnings {
-      QueryPlanSerde.warnCompatibleButDeclined(parent, TestSerde)
+  test("stays quiet when the parent records its own reason but a child also failed") {
+    // CometCreateArray tags itself when a child declines. A tag on the node must not be read as
+    // evidence that the node is at fault; only the conversion-failure counter decides that.
+    val expr = CreateArray(Seq(TestUnregisteredExpression(Literal(1))))
+    val warnings = invariantWarnings {
+      assert(QueryPlanSerde.exprToProtoInternal(expr, Seq.empty, binding = false).isEmpty)
     }
     assert(warnings.isEmpty, s"expected no warnings, got: $warnings")
+    assert(
+      expr.getTagValue(CometExplainInfo.FALLBACK_REASONS).nonEmpty,
+      "expected CometCreateArray to have recorded its own fallback reason")
   }
 
-  test("warns when the node is the only tagged expression in the tree") {
+  test("warning names the serde and the reason it recorded") {
     val expr = IsNull(Literal(1))
     withFallbackReason(expr, "declined for a reason getSupportLevel should have caught")
     val warnings = invariantWarnings {
