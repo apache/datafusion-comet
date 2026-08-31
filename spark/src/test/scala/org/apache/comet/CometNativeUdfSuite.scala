@@ -333,6 +333,57 @@ class CometNativeUdfSuite extends CometTestBase {
     }
   }
 
+  test("a TimestampType UDF must tag its output as UTC") {
+    // Comet maps Spark's TimestampType to Timestamp(Microsecond, Some("UTC")) and TimestampNTZType
+    // to Timestamp(Microsecond, None), so the timezone tag is the whole difference between the two
+    // and is compared exactly. `echo_c` cannot show this, since it inherits the tag from the array
+    // Comet handed it.
+    CometNativeUDF.register(spark, "make_ts_utc_c", libPath, Seq(LongType), TimestampType)
+    val tagged = spark
+      .range(0, 3)
+      .selectExpr("make_ts_utc_c(id * 1000000) AS t")
+      .collect()
+      .map(_.getTimestamp(0).getTime)
+      .toSeq
+    assert(tagged == Seq(0L, 1000L, 2000L))
+
+    CometNativeUDF.register(spark, "make_ts_naive_c", libPath, Seq(LongType), TimestampNTZType)
+    val naive = spark
+      .range(0, 3)
+      .selectExpr("make_ts_naive_c(id * 1000000) AS t")
+      .collect()
+      .map(_.get(0))
+      .toSeq
+    assert(naive.forall(_ != null))
+  }
+
+  test("an untagged timestamp declared as TimestampType names both types") {
+    CometNativeUDF.register(spark, "make_ts_naive_c", libPath, Seq(LongType), TimestampType)
+    val e = intercept[Exception] {
+      spark.range(0, 3).selectExpr("make_ts_naive_c(id) AS t").collect()
+    }
+    assert(stackTraceContains(e, "was registered as returning"), s"unhelpful error: $e")
+    // The message has to say which axis differs, or the user has to read Comet's source to find
+    // out that a missing timezone is what rejected their UDF.
+    assert(stackTraceContains(e, "timezone"), s"error does not name the timezone: $e")
+  }
+
+  test("a map built with arrow-rs's default field names is accepted") {
+    // MapBuilder::new(None, ..) names a map's children `entries` / `keys` / `values`, while Comet's
+    // own Spark conversion emits `entries` / `key` / `value`. Those names are positional in the
+    // Arrow format, so the two spellings have to be interchangeable rather than a plan-time
+    // rejection over a spelling.
+    val mapType = MapType(StringType, IntegerType, valueContainsNull = true)
+    CometNativeUDF.register(spark, "make_map_c", libPath, Seq(LongType), mapType)
+    val maps = spark
+      .range(0, 3)
+      .selectExpr("make_map_c(id) AS m")
+      .collect()
+      .map(_.getMap[String, Int](0))
+      .toSeq
+    assert(maps == Seq(Map("k" -> 0), Map("k" -> 1), Map("k" -> 2)))
+  }
+
   test("registering a nondeterministic UDF is refused") {
     // Comet plans every native UDF as immutable, so accepting this would let the optimizer
     // constant-fold or CSE a call the caller told us was not safe to reuse. Refuse at

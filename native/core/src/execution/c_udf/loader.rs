@@ -271,6 +271,9 @@ mod tests {
             "add_one_c",
             "echo_c",
             "stringify_c",
+            "make_ts_utc_c",
+            "make_ts_naive_c",
+            "make_map_c",
             "panics_on_invoke",
             "panics_on_return_field",
         ] {

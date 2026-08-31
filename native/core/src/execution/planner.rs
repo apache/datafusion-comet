@@ -1019,7 +1019,11 @@ impl PhysicalPlanner {
                     return Err(GeneralError(format!(
                         "native UDF '{}' was registered as returning {return_type} but its \
                          return_field reports {kernel_return_type} for argument types {arg_types:?}. \
-                         Make the type passed to CometNativeUDF.register match what the UDF returns.",
+                         Make the type passed to CometNativeUDF.register match what the UDF returns. \
+                         Note that a timestamp's timezone, a decimal's precision and scale, and \
+                         struct field names all have to match exactly; Spark's TimestampType is \
+                         Timestamp(Microsecond, Some(\"UTC\")) and TimestampNTZType is \
+                         Timestamp(Microsecond, None).",
                         call.name
                     )));
                 }

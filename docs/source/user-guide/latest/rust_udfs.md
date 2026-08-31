@@ -178,8 +178,9 @@ matching return type each time.
 The two must agree. Comet checks the declared type against what `return_field` reports at planning
 time and fails with both types named if they differ, rather than letting it surface as a type
 assertion partway through execution. Nested nullability (`containsNull`, struct field nullability)
-is not part of that comparison, since Spark and Arrow disagree about it harmlessly, but everything
-that changes how bytes are read is: decimal precision and scale, timestamp unit, and struct field
+is not part of that comparison, since Spark and Arrow disagree about it harmlessly, and neither are
+the positional child names of lists and maps, but everything that changes how bytes are read or how
+Spark addresses them is: decimal precision and scale, timestamp unit and timezone, and struct field
 names and order.
 
 Watch for Spark's own type promotion when declaring: `cast(id as decimal(10,2)) + 0.25` has type
@@ -189,29 +190,44 @@ Watch for Spark's own type promotion when declaring: `cast(id as decimal(10,2)) 
 
 Arguments and return values may be any of:
 
-| Spark type          | Arrow type               |
-| ------------------- | ------------------------ |
-| `BooleanType`       | `Boolean`                |
-| `ByteType`          | `Int8`                   |
-| `ShortType`         | `Int16`                  |
-| `IntegerType`       | `Int32`                  |
-| `LongType`          | `Int64`                  |
-| `FloatType`         | `Float32`                |
-| `DoubleType`        | `Float64`                |
-| `DecimalType(p, s)` | `Decimal128(p, s)`       |
-| `StringType`        | `Utf8`                   |
-| `BinaryType`        | `Binary`                 |
-| `DateType`          | `Date32`                 |
-| `TimestampType`     | `Timestamp(Microsecond)` |
-| `TimestampNTZType`  | `Timestamp(Microsecond)` |
+| Spark type          | Arrow type                            |
+| ------------------- | ------------------------------------- |
+| `BooleanType`       | `Boolean`                             |
+| `ByteType`          | `Int8`                                |
+| `ShortType`         | `Int16`                               |
+| `IntegerType`       | `Int32`                               |
+| `LongType`          | `Int64`                               |
+| `FloatType`         | `Float32`                             |
+| `DoubleType`        | `Float64`                             |
+| `DecimalType(p, s)` | `Decimal128(p, s)`                    |
+| `StringType`        | `Utf8`                                |
+| `BinaryType`        | `Binary`                              |
+| `DateType`          | `Date32`                              |
+| `TimestampType`     | `Timestamp(Microsecond, Some("UTC"))` |
+| `TimestampNTZType`  | `Timestamp(Microsecond, None)`        |
+
+The timezone is what separates the two timestamp types, and it is compared exactly. A UDF that
+returns `TimestampType` must tag its output array as UTC, for example with
+`TimestampMicrosecondArray::from(values).with_timezone("UTC")`; building one without a timezone
+declares `TimestampNTZType` and is rejected at planning time against a `TimestampType`
+registration. Note that the tag is the Arrow type only: the values themselves are the same
+microseconds-since-epoch in both cases, and no conversion happens at the boundary.
 
 Complex types are supported and may be nested arbitrarily:
 
-| Spark type                | Arrow type            |
-| ------------------------- | --------------------- |
-| `ArrayType(t)`            | `List(t)`             |
-| `StructType(f1, f2, ...)` | `Struct(f1, f2, ...)` |
-| `MapType(k, v)`           | `Map(k, v)`           |
+| Spark type                | Arrow type                               |
+| ------------------------- | ---------------------------------------- |
+| `ArrayType(t)`            | `List(item: t)`                          |
+| `StructType(f1, f2, ...)` | `Struct(f1, f2, ...)`                    |
+| `MapType(k, v)`           | `Map(entries: Struct(key: k, value: v))` |
+
+The field names shown for `List` and `Map` are the ones Comet itself emits, but you do not have to
+match them. Arrow addresses a list's element and a map's entries by position, so those names are
+disregarded when the declared type is compared against your `return_field`, and arrow-rs's
+`MapBuilder::new(None, ..)` defaults (`entries` / `keys` / `values`) work unchanged.
+
+Struct field names are different: they are part of the Spark type and are how a caller reads the
+result, so they are compared exactly, in order.
 
 Nulls are preserved in both directions; a null input row arrives as a null slot in the Arrow array
 and your output nulls come back to Spark as nulls.

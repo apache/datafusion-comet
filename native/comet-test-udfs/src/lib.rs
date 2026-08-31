@@ -24,6 +24,11 @@
 //!   Spark type survives the round trip through the ABI with its nulls
 //! - `stringify_c` — `(any) -> Utf8`, which forces the UDF to actually
 //!   decode the values rather than hand the array straight back
+//! - `make_ts_utc_c` / `make_ts_naive_c` — `(Int64) -> Timestamp`, built with
+//!   and without a UTC tag, pinning which one Spark's `TimestampType`
+//!   accepts
+//! - `make_map_c` — `(Int64) -> Map`, built with arrow-rs's default
+//!   `MapBuilder` field names, which differ from the ones Comet emits
 //! - `panics_on_invoke` / `panics_on_return_field` — panic containment
 //!
 //! Note that this crate depends only on `arrow` and `comet-udf-sdk` — no
@@ -33,8 +38,11 @@
 
 use std::sync::Arc;
 
-use arrow::array::{Array, ArrayRef, Int64Array, StringArray};
-use arrow::datatypes::{DataType, Field};
+use arrow::array::{
+    Array, ArrayRef, Int32Builder, Int64Array, MapBuilder, StringArray, StringBuilder,
+    TimestampMicrosecondArray,
+};
+use arrow::datatypes::{DataType, Field, TimeUnit};
 use arrow::util::display::{ArrayFormatter, FormatOptions};
 
 use comet_udf_sdk::c_abi::CometCScalarUdf;
@@ -142,6 +150,126 @@ impl CometCScalarUdf for StringifyC {
     }
 }
 
+/// `(Int64) -> Timestamp(Microsecond, "UTC")`, i.e. Spark's `TimestampType`.
+///
+/// Paired with [`MakeTsNaiveC`] to pin the one difference between Spark's
+/// two timestamp types at the ABI boundary: the timezone tag, and nothing
+/// else, is what tells them apart. `echo_c` cannot cover this, because it
+/// inherits the tag from whatever Comet handed it.
+#[derive(Default)]
+pub struct MakeTsUtcC;
+
+impl CometCScalarUdf for MakeTsUtcC {
+    fn name(&self) -> &str {
+        "make_ts_utc_c"
+    }
+
+    fn return_field(&self, args: &[Field]) -> Result<Field, String> {
+        if args.len() != 1 || args[0].data_type() != &DataType::Int64 {
+            return Err("make_ts_utc_c expects (Int64)".to_string());
+        }
+        Ok(Field::new(
+            "make_ts_utc_c",
+            DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+            true,
+        ))
+    }
+
+    fn invoke(&self, args: &[ArrayRef], _n_rows: usize) -> Result<ArrayRef, String> {
+        Ok(Arc::new(micros(&args[0])?.with_timezone("UTC")))
+    }
+}
+
+/// `(Int64) -> Timestamp(Microsecond, None)`, i.e. Spark's `TimestampNTZType`.
+///
+/// Identical to [`MakeTsUtcC`] but for the missing timezone tag, which is
+/// the mistake an author makes by building a `TimestampMicrosecondArray`
+/// and not calling `with_timezone`.
+#[derive(Default)]
+pub struct MakeTsNaiveC;
+
+impl CometCScalarUdf for MakeTsNaiveC {
+    fn name(&self) -> &str {
+        "make_ts_naive_c"
+    }
+
+    fn return_field(&self, args: &[Field]) -> Result<Field, String> {
+        if args.len() != 1 || args[0].data_type() != &DataType::Int64 {
+            return Err("make_ts_naive_c expects (Int64)".to_string());
+        }
+        Ok(Field::new(
+            "make_ts_naive_c",
+            DataType::Timestamp(TimeUnit::Microsecond, None),
+            true,
+        ))
+    }
+
+    fn invoke(&self, args: &[ArrayRef], _n_rows: usize) -> Result<ArrayRef, String> {
+        Ok(Arc::new(micros(&args[0])?))
+    }
+}
+
+/// Read an `Int64` argument as microseconds since the epoch, preserving nulls.
+fn micros(arg: &ArrayRef) -> Result<TimestampMicrosecondArray, String> {
+    let arr = arg
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .ok_or_else(|| "expected Int64Array".to_string())?;
+    Ok(arr.iter().collect::<TimestampMicrosecondArray>())
+}
+
+/// `(Int64) -> Map(String, Int32)` built through arrow-rs's default
+/// [`MapBuilder`].
+///
+/// That builder names the map's children `entries` / `keys` / `values`,
+/// where Comet's own Spark-to-Arrow conversion emits `entries` / `key` /
+/// `value`. Those names are positional in the Arrow format, so the two
+/// spellings have to be accepted interchangeably; this UDF is what proves
+/// it end to end, since `echo_c` hands back the map Comet gave it and so
+/// always carries Comet's own names.
+#[derive(Default)]
+pub struct MakeMapC;
+
+impl CometCScalarUdf for MakeMapC {
+    fn name(&self) -> &str {
+        "make_map_c"
+    }
+
+    fn return_field(&self, args: &[Field]) -> Result<Field, String> {
+        if args.len() != 1 || args[0].data_type() != &DataType::Int64 {
+            return Err("make_map_c expects (Int64)".to_string());
+        }
+        // Ask the builder itself for the type, so the declared type and the
+        // built array cannot drift apart.
+        let mut builder = MapBuilder::new(None, StringBuilder::new(), Int32Builder::new());
+        builder.append(true).map_err(|e| e.to_string())?;
+        Ok(Field::new(
+            "make_map_c",
+            builder.finish().data_type().clone(),
+            true,
+        ))
+    }
+
+    fn invoke(&self, args: &[ArrayRef], _n_rows: usize) -> Result<ArrayRef, String> {
+        let arr = args[0]
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .ok_or_else(|| "expected Int64Array".to_string())?;
+        let mut builder = MapBuilder::new(None, StringBuilder::new(), Int32Builder::new());
+        for value in arr.iter() {
+            match value {
+                Some(v) => {
+                    builder.keys().append_value("k");
+                    builder.values().append_value(v as i32);
+                    builder.append(true).map_err(|e| e.to_string())?;
+                }
+                None => builder.append(false).map_err(|e| e.to_string())?,
+            }
+        }
+        Ok(Arc::new(builder.finish()))
+    }
+}
+
 /// Panics unconditionally when invoked, so host tests can verify that a
 /// panic inside user code is caught at the FFI boundary and surfaced as a
 /// query error rather than unwinding into the host.
@@ -185,6 +313,9 @@ comet_c_udf_export!(
     AddOneC,
     EchoC,
     StringifyC,
+    MakeTsUtcC,
+    MakeTsNaiveC,
+    MakeMapC,
     PanicsOnInvoke,
     PanicsOnReturnField
 );
