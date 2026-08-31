@@ -19,8 +19,12 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Base64, BitLength, Cast, Concat, ConcatWs, Contains, Elt, Empty2Null, EndsWith, Expression, FindInSet, FormatNumber, FormatString, GetJsonObject, InitCap, Left, Length, Levenshtein, Like, Literal, Lower, Mask, OctetLength, Overlay, RegExpExtract, RegExpExtractAll, RegExpInStr, RegExpReplace, Right, RLike, SoundEx, StartsWith, StringLocate, StringLPad, StringRepeat, StringReplace, StringRPad, StringSplit, StringTranslate, Substring, SubstringIndex, ToCharacter, ToNumber, TryToNumber, UnBase64, Upper}
+import java.nio.charset.StandardCharsets
+import java.util.Arrays
+
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Base64, BitLength, BoundReference, Cast, Concat, ConcatWs, Contains, Elt, Empty2Null, EndsWith, Expression, FindInSet, FormatNumber, FormatString, GetJsonObject, InitCap, Left, Length, Levenshtein, Like, Literal, Lower, Mask, OctetLength, Overlay, RegExpExtract, RegExpExtractAll, RegExpInStr, RegExpReplace, Right, RLike, SoundEx, StartsWith, StringLocate, StringLPad, StringRepeat, StringReplace, StringRPad, StringSplit, StringTranslate, Substring, SubstringIndex, ToCharacter, ToNumber, TryToNumber, UnBase64, Upper}
 import org.apache.spark.sql.types.{BinaryType, DataTypes, IntegerType, LongType, StringType}
+import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometConf
 import org.apache.comet.serde.ExprOuterClass.Expr
@@ -178,29 +182,93 @@ object CometStringReplace
     extends CometScalarFunction[StringReplace]("replace")
     with NativeOptInAvailable {
 
+  /**
+   * The DataFusion `replace` kernel matches Spark only for a non-empty search string. Kernel
+   * compatibility is not enough: `CometLiteral` serializes strings via `UTF8String.toString`
+   * (malformed UTF-8 becomes U+FFFD), DataFusion evaluates every child before `replace` (so a
+   * NULL `src` does not skip a throwing replacement), and scalar literals are broadcast into
+   * Arrow `Utf8` arrays that overflow 32-bit offsets on a large batch.
+   *
+   * The default native path is therefore limited to a plan-time subset that avoids those
+   * boundaries. `src` uses the same whitelist as `replace`: a short well-formed literal or a
+   * column. Nested expressions (`substring`, `concat`, …) stay on the dispatcher so a throwing or
+   * malformed child cannot hide inside the source tree. Non-default collations stay on the
+   * dispatcher. https://github.com/apache/datafusion-comet/issues/4496
+   */
+  private def nativeSafeSubset(expr: StringReplace): Boolean = {
+    val children = expr.children
+    if (children.length != 3) {
+      return false
+    }
+    val sourceIsSafe = isNativeSafeStringArg(children(0), allowEmptyLiteral = true)
+    val searchIsSafe = children(1) match {
+      case Literal(v: UTF8String, _) => isNativeSafeStringLiteral(v, allowEmpty = false)
+      case _ => false
+    }
+    val replacementIsSafe = isNativeSafeStringArg(children(2), allowEmptyLiteral = true)
+    val utf8BinaryCollation =
+      !children.exists(c => QueryPlanSerde.isStringCollationType(c.dataType))
+    utf8BinaryCollation && sourceIsSafe && searchIsSafe && replacementIsSafe
+  }
+
+  /** A column, null literal, or a short well-formed string literal. */
+  private def isNativeSafeStringArg(expr: Expression, allowEmptyLiteral: Boolean): Boolean =
+    expr match {
+      case Literal(null, _) => true
+      case Literal(v: UTF8String, _) => isNativeSafeStringLiteral(v, allowEmptyLiteral)
+      case _: Attribute | _: BoundReference => true
+      case _ => false
+    }
+
+  /**
+   * `CometLiteral` encodes a string as `UTF8String.toString`, so only literals whose bytes
+   * survive that round-trip can be sent natively. The size cap keeps a broadcast scalar under
+   * Arrow `Utf8`'s 32-bit offset limit. Native operators feeding projections must emit batches no
+   * larger than `spark.comet.batchSize`; Comet's explode path enforces that with
+   * `BatchSplitExec`.
+   */
+  private def isNativeSafeStringLiteral(v: UTF8String, allowEmpty: Boolean): Boolean = {
+    if (v == null) {
+      return false
+    }
+    if (!allowEmpty && v.numBytes() == 0) {
+      return false
+    }
+    val maxBytes = Int.MaxValue / math.max(CometConf.COMET_BATCH_SIZE.get(), 1)
+    if (v.numBytes() > maxBytes) {
+      return false
+    }
+    Arrays.equals(v.getBytes, v.toString.getBytes(StandardCharsets.UTF_8))
+  }
+
+  override def getCompatibleNotes(): Seq[String] =
+    Seq(
+      "When `src` and `replace` are each a short well-formed literal or a column, and " +
+        "`search` is a short, well-formed, non-empty `UTF8_BINARY` literal, Comet evaluates " +
+        "`replace` natively by default.")
+
   override def getIncompatibleReasons(): Seq[String] =
     Seq("Produces different results from Spark when the search string is empty")
 
   override def getSupportLevel(expr: StringReplace): SupportLevel =
-    if (!CometConf.isExprAllowIncompat(getExprConfigName(expr))) {
+    if (CometConf.isExprAllowIncompat(getExprConfigName(expr)) || nativeSafeSubset(expr)) {
+      Compatible()
+    } else {
       Compatible(nativeOptIn =
         Some(NativeOptIn(CometConf.getExprAllowIncompatConfigKey(getExprConfigName(expr)))))
-    } else {
-      Compatible()
     }
 
   override def convert(
       expr: StringReplace,
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
-    if (CometConf.isExprAllowIncompat(getExprConfigName(expr))) {
-      // The native DataFusion `replace` avoids the JVM allocations of the codegen
-      // dispatcher but is not Spark-compatible for an empty search string, so it is
-      // only used when incompatibility is explicitly allowed.
+    if (CometConf.isExprAllowIncompat(getExprConfigName(expr)) || nativeSafeSubset(expr)) {
+      // Native path for the plan-time safe subset, or when the user has opted in.
       super.convert(expr, inputs, binding)
     } else {
-      // Run Spark's own generated code inside the Comet pipeline so the result matches Spark
-      // exactly. Falls back to Spark when the codegen dispatcher is disabled.
+      // Nested / malformed / oversized / throwing children, or a non-default collation: run
+      // Spark's own generated code inside the Comet pipeline. Falls back to Spark when the
+      // codegen dispatcher is disabled.
       CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
     }
   }
