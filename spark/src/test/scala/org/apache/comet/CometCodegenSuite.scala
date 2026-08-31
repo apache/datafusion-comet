@@ -25,7 +25,7 @@ import org.apache.arrow.vector._
 import org.apache.spark.{SparkConf, SparkEnv, TaskContext}
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.api.java.UDF1
-import org.apache.spark.sql.catalyst.expressions.{BoundReference, CreateArray, CreateMap, CreateNamedStruct, Expression, Literal, MapConcat}
+import org.apache.spark.sql.catalyst.expressions.{BoundReference, CreateArray, CreateMap, CreateNamedStruct, Expression, FindInSet, Literal, MapConcat}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
@@ -34,6 +34,7 @@ import org.apache.spark.unsafe.types.UTF8String
 import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
 import org.apache.comet.codegen.CometBatchKernelCodegen
 import org.apache.comet.codegen.CometBatchKernelCodegen.ArrowColumnSpec
+import org.apache.comet.serde.{CometFindInSet, CometScalaUDF, Compatible, Unsupported}
 import org.apache.comet.udf.codegen.CometScalaUDFCodegen
 import org.apache.comet.vector.CometVector
 
@@ -1752,6 +1753,36 @@ class CometCodegenSuite
           }
         }
       }
+    }
+  }
+
+  // The two conditions the dispatcher can refuse on are reported from `getSupportLevel` rather
+  // than discovered inside `convert`, so a dispatch-only serde never claims `Compatible` and then
+  // declines. `find_in_set` stands in for the ~62 plain `CometCodegenDispatch` serdes.
+  private def findInSet = FindInSet(Literal("b"), Literal("a,b,c"))
+
+  test("dispatch-only serdes report Compatible when the dispatcher will run the expression") {
+    assert(CometScalaUDF.dispatchSupportLevel(findInSet).isInstanceOf[Compatible])
+    assert(CometFindInSet.getSupportLevel(findInSet).isInstanceOf[Compatible])
+  }
+
+  test("dispatch-only serdes report Unsupported when the dispatcher is disabled") {
+    withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
+      Seq(
+        CometScalaUDF.dispatchSupportLevel(findInSet),
+        CometFindInSet.getSupportLevel(findInSet)).foreach {
+        case Unsupported(Some(reason)) =>
+          assert(reason.contains(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key))
+        case other => fail(s"expected Unsupported, got $other")
+      }
+    }
+  }
+
+  test("dispatch-only serdes report Unsupported when canHandle refuses the tree") {
+    // NullType is outside CometBatchKernelCodegen.isSupportedDataType.
+    CometScalaUDF.dispatchSupportLevel(Literal(null, NullType)) match {
+      case Unsupported(Some(reason)) => assert(reason.contains("unsupported output type"))
+      case other => fail(s"expected Unsupported, got $other")
     }
   }
 }
