@@ -76,6 +76,22 @@ fn schema_has_field_ids(schema: &SchemaRef) -> bool {
     schema.fields().iter().any(|f| parse_field_id(f).is_some())
 }
 
+/// Compare two field names under Spark's Parquet case-folding rules. In
+/// case-sensitive mode the names must be identical. In case-insensitive mode
+/// this mirrors `ParquetReadSupport`, which resolves fields by grouping on
+/// `name.toLowerCase(Locale.ROOT)`. `str::to_lowercase` is the Unicode-aware
+/// equivalent of Java's `toLowerCase(Locale.ROOT)`, so non-ASCII case
+/// differences (e.g. `Ä`/`ä`, `Ω`/`ω`) fold the same way Spark folds them.
+/// ASCII-only folding (`eq_ignore_ascii_case`) would leave those unmatched and
+/// silently read the column as nulls.
+fn names_match(a: &str, b: &str, case_sensitive: bool) -> bool {
+    if case_sensitive {
+        a == b
+    } else {
+        a.to_lowercase() == b.to_lowercase()
+    }
+}
+
 /// Remap physical schema field names to match logical schema field names. Mirrors Spark's
 /// `clipParquetGroupFields`: prefer ID match for any logical field that carries a
 /// `PARQUET:field_id`, fall back to case-insensitive name match otherwise.
@@ -197,7 +213,7 @@ fn remap_physical_schema(
             if should_match_by_id
                 && unmatched_id_logical_names
                     .iter()
-                    .any(|name| name.eq_ignore_ascii_case(field.name()))
+                    .any(|name| names_match(name, field.name(), case_sensitive))
             {
                 fake_counter += 1;
                 let fake_name = format!("__comet_unmatched_field_id_{}", fake_counter);
@@ -212,7 +228,7 @@ fn remap_physical_schema(
             if !case_sensitive {
                 let logical_field = logical_schema.fields().iter().find(|lf| {
                     let lf_has_id = should_match_by_id && parse_field_id(lf).is_some();
-                    !lf_has_id && lf.name().eq_ignore_ascii_case(field.name())
+                    !lf_has_id && names_match(lf.name(), field.name(), case_sensitive)
                 });
                 if let Some(logical_field) = logical_field {
                     if logical_field.name() != field.name() {
@@ -338,7 +354,7 @@ fn check_column_duplicate(col_name: &str, physical_schema: &SchemaRef) -> Option
     let matches: Vec<&str> = physical_schema
         .fields()
         .iter()
-        .filter(|pf| pf.name().eq_ignore_ascii_case(col_name))
+        .filter(|pf| names_match(pf.name(), col_name, false))
         .map(|pf| pf.name().as_str())
         .collect();
     if matches.len() > 1 {
@@ -534,6 +550,7 @@ impl SparkPhysicalExprAdapter {
         expr.transform(|e| {
             if let Some(column) = e.downcast_ref::<Column>() {
                 let col_name = column.name();
+                let case_sensitive = self.parquet_options.case_sensitive;
 
                 // Resolve fields by name because this is the fallback path
                 // that runs on the original expression when the default
@@ -542,40 +559,25 @@ impl SparkPhysicalExprAdapter {
                 // that schema — not the logical or physical file schemas.
                 // DataFusion's DefaultPhysicalExprAdapter::resolve_physical_column
                 // also resolves by name for the same reason.
-                let logical_field = if self.parquet_options.case_sensitive {
-                    self.logical_file_schema
-                        .fields()
-                        .iter()
-                        .find(|f| f.name() == col_name)
-                } else {
-                    self.logical_file_schema
-                        .fields()
-                        .iter()
-                        .find(|f| f.name().eq_ignore_ascii_case(col_name))
-                };
-                let physical_field = if self.parquet_options.case_sensitive {
-                    self.physical_file_schema
-                        .fields()
-                        .iter()
-                        .find(|f| f.name() == col_name)
-                } else {
-                    self.physical_file_schema
-                        .fields()
-                        .iter()
-                        .find(|f| f.name().eq_ignore_ascii_case(col_name))
-                };
+                let logical_field = self
+                    .logical_file_schema
+                    .fields()
+                    .iter()
+                    .find(|f| names_match(f.name(), col_name, case_sensitive));
+                let physical_field = self
+                    .physical_file_schema
+                    .fields()
+                    .iter()
+                    .find(|f| names_match(f.name(), col_name, case_sensitive));
 
                 // Remap the column index to the physical file schema so
                 // downstream evaluation reads the correct column from the
                 // parquet batch.
-                let physical_index = if self.parquet_options.case_sensitive {
-                    self.physical_file_schema.index_of(col_name).ok()
-                } else {
-                    self.physical_file_schema
-                        .fields()
-                        .iter()
-                        .position(|f| f.name().eq_ignore_ascii_case(col_name))
-                };
+                let physical_index = self
+                    .physical_file_schema
+                    .fields()
+                    .iter()
+                    .position(|f| names_match(f.name(), col_name, case_sensitive));
 
                 if let (Some(logical_field), Some(physical_field), Some(phys_idx)) =
                     (logical_field, physical_field, physical_index)
@@ -948,15 +950,10 @@ impl SparkPhysicalExprAdapter {
                 let col_name = col.name();
 
                 // Only include defaults for columns missing from the physical file schema
-                let is_missing = if self.parquet_options.case_sensitive {
-                    self.physical_file_schema.field_with_name(col_name).is_err()
-                } else {
-                    !self
-                        .physical_file_schema
-                        .fields()
-                        .iter()
-                        .any(|f| f.name().eq_ignore_ascii_case(col_name))
-                };
+                let is_missing =
+                    !self.physical_file_schema.fields().iter().any(|f| {
+                        names_match(f.name(), col_name, self.parquet_options.case_sensitive)
+                    });
 
                 if !is_missing {
                     return None;
@@ -1106,10 +1103,10 @@ mod test {
     use arrow::array::UInt32Array;
     use arrow::array::{
         BinaryArray, Date32Array, Decimal128Array, Float32Array, Float64Array, Int32Array,
-        Int64Array, StringArray, TimestampMicrosecondArray,
+        Int64Array, StringArray, StructArray, TimestampMicrosecondArray,
     };
     use arrow::datatypes::SchemaRef;
-    use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::datatypes::{DataType, Field, Fields, Schema};
     use arrow::record_batch::RecordBatch;
     use datafusion::common::DataFusionError;
     use datafusion::datasource::listing::PartitionedFile;
@@ -1774,5 +1771,192 @@ mod test {
             err_msg.contains("Found duplicate field"),
             "Expected duplicate field error, got: {err_msg}"
         );
+    }
+
+    /// Case-insensitive matching must fold non-ASCII characters the same way
+    /// Spark's `ParquetReadSupport` does (`name.toLowerCase(Locale.ROOT)`). The
+    /// file column `MÜNCHEN` must resolve to the requested `münchen`; ASCII-only
+    /// folding leaves the `Ü`/`ü` pair unmatched and reads the column as nulls.
+    #[tokio::test]
+    async fn parquet_case_insensitive_unicode_name_match() -> Result<(), DataFusionError> {
+        let file_schema = Arc::new(Schema::new(vec![Field::new(
+            "MÜNCHEN",
+            DataType::Int32,
+            false,
+        )]));
+        let values = Arc::new(Int32Array::from(vec![1, 2, 3])) as Arc<dyn arrow::array::Array>;
+        let batch = RecordBatch::try_new(Arc::clone(&file_schema), vec![values])?;
+
+        let required_schema = Arc::new(Schema::new(vec![Field::new(
+            "münchen",
+            DataType::Int32,
+            true,
+        )]));
+
+        let result = roundtrip(&batch, required_schema).await?;
+        let col = result
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .expect("Int32Array");
+        let got: Vec<Option<i32>> = col.iter().collect();
+        assert_eq!(
+            got,
+            vec![Some(1), Some(2), Some(3)],
+            "expected values to resolve via Unicode case-insensitive name match"
+        );
+        Ok(())
+    }
+
+    /// Companion duplicate check: a file with `Ω` and `ω` folds both to `ω`
+    /// under `toLowerCase(Locale.ROOT)`, so requesting `ω` case-insensitively is
+    /// ambiguous and must raise the same duplicate-field error as the ASCII case.
+    /// ASCII-only folding would leave the two distinct and silently read `ω`.
+    #[tokio::test]
+    async fn parquet_duplicate_fields_case_insensitive_unicode() {
+        let file_schema = Arc::new(Schema::new(vec![
+            Field::new("Ω", DataType::Int32, false),
+            Field::new("ω", DataType::Int32, false),
+        ]));
+
+        let col_upper = Arc::new(Int32Array::from(vec![1, 2, 3])) as Arc<dyn arrow::array::Array>;
+        let col_lower = Arc::new(Int32Array::from(vec![4, 5, 6])) as Arc<dyn arrow::array::Array>;
+        let batch =
+            RecordBatch::try_new(Arc::clone(&file_schema), vec![col_upper, col_lower]).unwrap();
+
+        let filename = get_temp_filename();
+        let filename = filename.as_path().as_os_str().to_str().unwrap().to_string();
+        let file = File::create(&filename).unwrap();
+        let mut writer = ArrowWriter::try_new(file, Arc::clone(&batch.schema()), None).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+
+        let required_schema = Arc::new(Schema::new(vec![Field::new("ω", DataType::Int32, false)]));
+
+        let mut spark_parquet_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        spark_parquet_options.case_sensitive = false;
+
+        let expr_adapter_factory: Arc<dyn PhysicalExprAdapterFactory> = Arc::new(
+            SparkPhysicalExprAdapterFactory::new(spark_parquet_options, None),
+        );
+
+        let object_store_url = ObjectStoreUrl::local_filesystem();
+        let parquet_source = ParquetSource::new(required_schema);
+        let files = FileGroup::new(vec![
+            PartitionedFile::from_path(filename.to_string()).unwrap()
+        ]);
+        let file_scan_config =
+            FileScanConfigBuilder::new(object_store_url, Arc::new(parquet_source))
+                .with_file_groups(vec![files])
+                .with_expr_adapter(Some(expr_adapter_factory))
+                .build();
+
+        let parquet_exec = DataSourceExec::new(Arc::new(file_scan_config));
+        let mut stream = parquet_exec
+            .execute(0, Arc::new(TaskContext::default()))
+            .unwrap();
+        let result = stream.next().await.unwrap();
+
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("Found duplicate field"),
+            "Expected duplicate field error, got: {err_msg}"
+        );
+    }
+
+    /// Nested struct fields are matched case-insensitively too, in
+    /// `spark_parquet_convert`'s `Struct -> Struct` path. The fold must be
+    /// Unicode-aware to mirror Spark: the file's nested field `GRÜN` must
+    /// resolve to the requested `grün` (and carry its values and nulls through).
+    #[tokio::test]
+    async fn parquet_case_insensitive_unicode_nested_struct_field() -> Result<(), DataFusionError> {
+        let file_inner = Fields::from(vec![Field::new("GRÜN", DataType::Int32, true)]);
+        let inner_values = Arc::new(Int32Array::from(vec![Some(10), None, Some(30)]))
+            as Arc<dyn arrow::array::Array>;
+        let struct_array = StructArray::new(file_inner.clone(), vec![inner_values], None);
+        let file_schema = Arc::new(Schema::new(vec![Field::new(
+            "s",
+            DataType::Struct(file_inner),
+            false,
+        )]));
+        let batch = RecordBatch::try_new(
+            file_schema,
+            vec![Arc::new(struct_array) as Arc<dyn arrow::array::Array>],
+        )?;
+
+        let req_inner = Fields::from(vec![Field::new("grün", DataType::Int32, true)]);
+        let required_schema = Arc::new(Schema::new(vec![Field::new(
+            "s",
+            DataType::Struct(req_inner),
+            true,
+        )]));
+
+        let result = roundtrip(&batch, required_schema).await?;
+        let s = result
+            .column(0)
+            .as_any()
+            .downcast_ref::<StructArray>()
+            .expect("StructArray");
+        let inner = s
+            .column_by_name("grün")
+            .expect("field grün present")
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .expect("Int32Array");
+        let got: Vec<Option<i32>> = inner.iter().collect();
+        assert_eq!(
+            got,
+            vec![Some(10), None, Some(30)],
+            "expected nested values to resolve via Unicode case-insensitive match"
+        );
+        Ok(())
+    }
+
+    /// Combined check: both the top-level column name and a nested struct field
+    /// name differ only by non-ASCII case. `CAFÉ`/`RÉSUMÉ` in the file must
+    /// resolve to the requested `café`/`résumé`, exercising the top-level remap
+    /// (`schema_adapter`) and the nested convert (`spark_parquet_convert`)
+    /// together. ASCII-only folding would miss the top-level `É`/`é` and read
+    /// the whole column as null.
+    #[tokio::test]
+    async fn parquet_case_insensitive_unicode_top_level_and_nested_struct(
+    ) -> Result<(), DataFusionError> {
+        let file_inner = Fields::from(vec![Field::new("RÉSUMÉ", DataType::Int32, true)]);
+        let inner_values =
+            Arc::new(Int32Array::from(vec![Some(7), Some(8)])) as Arc<dyn arrow::array::Array>;
+        let struct_array = StructArray::new(file_inner.clone(), vec![inner_values], None);
+        let file_schema = Arc::new(Schema::new(vec![Field::new(
+            "CAFÉ",
+            DataType::Struct(file_inner),
+            false,
+        )]));
+        let batch = RecordBatch::try_new(
+            file_schema,
+            vec![Arc::new(struct_array) as Arc<dyn arrow::array::Array>],
+        )?;
+
+        let req_inner = Fields::from(vec![Field::new("résumé", DataType::Int32, true)]);
+        let required_schema = Arc::new(Schema::new(vec![Field::new(
+            "café",
+            DataType::Struct(req_inner),
+            true,
+        )]));
+
+        let result = roundtrip(&batch, required_schema).await?;
+        let s = result
+            .column(0)
+            .as_any()
+            .downcast_ref::<StructArray>()
+            .expect("StructArray");
+        let inner = s
+            .column_by_name("résumé")
+            .expect("field résumé present")
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .expect("Int32Array");
+        let got: Vec<Option<i32>> = inner.iter().collect();
+        assert_eq!(got, vec![Some(7), Some(8)]);
+        Ok(())
     }
 }
