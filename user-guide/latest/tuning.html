@@ -938,7 +938,8 @@ to test with both for your specific workloads.</p>
 <p><code class="docutils literal notranslate"><span class="pre">spark.shuffle.manager</span></code> is a Spark static configuration which cannot be changed at runtime.
 It must be set before the Spark context is created. You can enable or disable Comet shuffle
 at runtime by setting <code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.enabled</span></code> to <code class="docutils literal notranslate"><span class="pre">true</span></code> or <code class="docutils literal notranslate"><span class="pre">false</span></code>.
-Once it is disabled, Comet will fall back to the default Spark shuffle manager.</p>
+Once it is disabled, the configured shuffle manager handles ordinary Spark shuffle dependencies
+without Comet’s shuffle implementation.</p>
 <section id="shuffle-implementations">
 <h3>Shuffle Implementations<a class="headerlink" href="#shuffle-implementations" title="Link to this heading">#</a></h3>
 <p>Comet provides two shuffle implementations: Native Shuffle and Columnar Shuffle. Comet will first try to use Native
@@ -976,6 +977,49 @@ grow marginally because Spark’s row-based serializer generally compresses less
 <code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.revertRedundantColumnar.enabled=false</span></code>, in which case Comet will keep the columnar shuffle
 even when both its parent and child are non-Comet operators.</p>
 </section>
+</section>
+<section id="remote-shuffle-with-celeborn">
+<h3>Remote Shuffle with Celeborn<a class="headerlink" href="#remote-shuffle-with-celeborn" title="Link to this heading">#</a></h3>
+<p>Applications using Apache Celeborn can opt into Comet’s native shuffle writer and reader with
+the composite shuffle manager:</p>
+<div class="highlight-properties notranslate"><div class="highlight"><pre><span></span><span class="na">spark.shuffle.manager</span><span class="o">=</span><span class="s">org.apache.spark.sql.comet.execution.shuffle.CometCelebornShuffleManager</span>
+<span class="na">spark.comet.exec.enabled</span><span class="o">=</span><span class="s">true</span>
+<span class="na">spark.comet.shuffle.enabled</span><span class="o">=</span><span class="s">true</span>
+<span class="na">spark.comet.shuffle.mode</span><span class="o">=</span><span class="s">native</span>
+<span class="na">spark.celeborn.client.spark.stageRerun.enabled</span><span class="o">=</span><span class="s">true</span>
+</pre></div>
+</div>
+<p>Set the shuffle manager and Celeborn configuration before creating the Spark context. Celeborn is
+an optional application dependency, not bundled with Comet: provide a compatible Celeborn Spark
+client matching the application’s Spark and Scala versions on both the driver and executors,
+alongside the Comet JAR. Keep the application’s existing Celeborn service configuration.</p>
+<p>Native Celeborn shuffle requires explicit <code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.mode=native</span></code>. The default <code class="docutils literal notranslate"><span class="pre">auto</span></code>
+mode and <code class="docutils literal notranslate"><span class="pre">jvm</span></code> mode retain ordinary Spark shuffle through the delegated Celeborn manager; they do
+not select Comet’s JVM columnar shuffle. Comet execution can still accelerate other operators.
+With native mode enabled, exchanges with unsupported children, data types, or partitioning also
+retain the ordinary Spark/Celeborn shuffle path. The local <code class="docutils literal notranslate"><span class="pre">CometShuffleManager</span></code> keeps its existing
+native-to-columnar fallback behavior.</p>
+<p>Stage reruns must remain enabled so failed or ambiguous map attempts can recover through a new
+Celeborn shuffle generation. Native RSS does not support <code class="docutils literal notranslate"><span class="pre">spark.io.encryption.enabled=true</span></code>;
+encrypted applications retain ordinary Spark/Celeborn shuffle instead. Do not disable encryption
+required by the application to enable native RSS. Eligibility uses the manager’s application-time
+configuration, including Celeborn’s effective defaults and legacy aliases, rather than later SQL
+session overrides.</p>
+<p>Celeborn’s fallback policy remains application-owned. An effective
+<code class="docutils literal notranslate"><span class="pre">spark.celeborn.client.spark.shuffle.fallback.policy=ALWAYS</span></code>, or an <code class="docutils literal notranslate"><span class="pre">AUTO</span></code> partition-count
+threshold that the exchange reaches, keeps the exchange on Spark. Worker availability and quota
+can still cause Celeborn to choose local fallback during registration. Once an exchange has been
+planned as native, Comet rejects that local handle and fails the registration: native Arrow frames
+cannot be passed to Spark’s ordinary local shuffle writer. Set
+<code class="docutils literal notranslate"><span class="pre">spark.celeborn.client.spark.shuffle.fallback.policy=NEVER</span></code> only if the application also wants
+Celeborn to prohibit local fallback for ordinary Spark shuffles.</p>
+<p>Native frames retain Comet’s configured compression; the raw Celeborn client path bypasses
+Celeborn’s additional row compression and decompression. Use
+<code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.rss.maxFrameBytes</span></code> and <code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.rss.maxInFlightBytes</span></code> to bound
+encoded frame size and executor-side push admission. These limits include framing and overlapping
+native/JNI/client copies; a frame that cannot fit is rejected rather than split across requests.
+AQE reducer coalescing and mapper-range reads are supported, but Celeborn physical-skew chunk reads
+are not.</p>
 </section>
 <section id="shuffle-compression">
 <h3>Shuffle Compression<a class="headerlink" href="#shuffle-compression" title="Link to this heading">#</a></h3>
@@ -1095,6 +1139,7 @@ fallback to Spark works, see <a class="reference internal" href="understanding-c
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#automatic-revert-to-spark-shuffle">Automatic Revert to Spark Shuffle</a></li>
 </ul>
 </li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#remote-shuffle-with-celeborn">Remote Shuffle with Celeborn</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#shuffle-compression">Shuffle Compression</a></li>
 </ul>
 </li>
