@@ -141,6 +141,11 @@ impl LocalPartitionWriter {
     }
 
     #[cfg(test)]
+    pub(crate) fn zstd_creation_count(&self) -> u32 {
+        self.codec_context.creation_count()
+    }
+
+    #[cfg(test)]
     pub(crate) fn get_spill_writers(&self) -> &Vec<SpillWriter> {
         match &self.data_output {
             DataOutput::Multi { spill_writers, .. } => spill_writers,

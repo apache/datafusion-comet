@@ -496,6 +496,93 @@ mod tests {
         assert_eq!(read_ipc_compressed(&slow_out[16..]).unwrap(), batch);
     }
 
+    /// Retention is only worth its complexity if consecutive blocks actually share one
+    /// context: two level-6 blocks must cost a single context creation.
+    #[test]
+    #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
+    fn zstd_context_created_once_for_retained_level() {
+        let batch = test_batch(4, 100);
+        let writer =
+            ShuffleBlockWriter::try_new(&test_schema(), CompressionCodec::Zstd(6)).unwrap();
+        let mut ctx = ShuffleCodecContext::default();
+        for _ in 0..2 {
+            let mut out = vec![];
+            writer
+                .write_batch(
+                    &batch,
+                    &mut Cursor::new(&mut out),
+                    &mut ctx,
+                    &Time::default(),
+                )
+                .unwrap();
+            assert_eq!(read_ipc_compressed(&out[16..]).unwrap(), batch);
+        }
+        assert_eq!(
+            ctx.creation_count(),
+            1,
+            "the second block must reuse the first block's context"
+        );
+        assert!(ctx.holds_zstd_cctx());
+    }
+
+    /// Level 9's workspace measures 15,459,857 bytes (zstd-sys 2.0.16+zstd.1.5.7), past the
+    /// 8 MiB retention cap, so each block pays its own context creation and release.
+    #[test]
+    #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
+    fn zstd_context_recreated_per_block_past_retention_cap() {
+        let batch = test_batch(5, 100);
+        let writer =
+            ShuffleBlockWriter::try_new(&test_schema(), CompressionCodec::Zstd(9)).unwrap();
+        let mut ctx = ShuffleCodecContext::default();
+        for _ in 0..2 {
+            let mut out = vec![];
+            writer
+                .write_batch(
+                    &batch,
+                    &mut Cursor::new(&mut out),
+                    &mut ctx,
+                    &Time::default(),
+                )
+                .unwrap();
+            assert_eq!(read_ipc_compressed(&out[16..]).unwrap(), batch);
+            assert!(
+                !ctx.holds_zstd_cctx(),
+                "a level-9 workspace must be released after every block"
+            );
+        }
+        assert_eq!(ctx.creation_count(), 2);
+    }
+
+    /// Level 8's workspace measures 8,119,825 bytes (zstd-sys 2.0.16+zstd.1.5.7) -- about 3%
+    /// under the retention cap. A zstd bump that grows it past the cap would turn off reuse
+    /// at the highest still-retained level with no other symptom; fail loudly here instead.
+    #[test]
+    #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
+    fn zstd_context_retained_at_level_eight_near_cap() {
+        let batch = test_batch(6, 100);
+        let writer =
+            ShuffleBlockWriter::try_new(&test_schema(), CompressionCodec::Zstd(8)).unwrap();
+        let mut ctx = ShuffleCodecContext::default();
+        for _ in 0..2 {
+            let mut out = vec![];
+            writer
+                .write_batch(
+                    &batch,
+                    &mut Cursor::new(&mut out),
+                    &mut ctx,
+                    &Time::default(),
+                )
+                .unwrap();
+            assert_eq!(read_ipc_compressed(&out[16..]).unwrap(), batch);
+        }
+        assert_eq!(
+            ctx.creation_count(),
+            1,
+            "level 8 must stay under the retention cap and keep reusing one context"
+        );
+        assert!(ctx.holds_zstd_cctx());
+    }
+
     /// Accepts a fixed number of bytes, then fails every write.
     struct FailingSink {
         inner: Cursor<Vec<u8>>,

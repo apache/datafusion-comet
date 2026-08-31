@@ -24,8 +24,10 @@ use std::cell::RefCell;
 use std::io::{Error, ErrorKind, Read};
 
 thread_local! {
-    /// Backs the entry points below. They're called from many JVM task threads; a
-    /// thread-local gets each thread context reuse without changing any caller.
+    /// Backs the context-less entry points below. Their only production caller is the JVM's
+    /// static decodeShuffleBlock JNI export, which has no native object that could own a
+    /// context; everything else owns a [`ShuffleDecodeContext`] and uses the `_with`
+    /// variants, so retention there ends with the owner instead of the thread.
     static DECODE_CONTEXT: RefCell<ShuffleDecodeContext> =
         RefCell::new(ShuffleDecodeContext::default());
 }
@@ -63,8 +65,8 @@ fn read_ipc_compressed_impl(
 ) -> Result<RecordBatch> {
     let result = decode_shuffle_frame(decode_context, bytes, validate);
     // Decoding a frame with a large advertised window grows the context past 100 MiB, and
-    // contexts here are long-lived (thread-local per executor thread). Bound what survives
-    // the frame, whether it decoded or not.
+    // contexts here are long-lived (operator-owned, or thread-local for the JNI entry
+    // points). Bound what survives the frame, whether it decoded or not.
     decode_context.release_zstd_if_oversized();
     result
 }
@@ -336,14 +338,74 @@ mod tests {
         }
     }
 
-    /// ZSTD shuffle frame whose header advertises the full level-22 window (streaming
-    /// encode with no pledged source size), so decoding it demands a >100 MiB workspace.
-    fn encode_zstd_wide_window(payload: &[u8]) -> Vec<u8> {
+    /// ZSTD shuffle frame written by a streaming encode with no pledged source size, so its
+    /// header advertises `level`'s full default window and the decoder must allocate it.
+    fn encode_zstd_at_level(payload: &[u8], level: i32) -> Vec<u8> {
         let mut bytes = b"ZSTD".to_vec();
-        let mut writer = zstd::Encoder::new(&mut bytes, 22).unwrap();
+        let mut writer = zstd::Encoder::new(&mut bytes, level).unwrap();
         writer.write_all(payload).unwrap();
         writer.finish().unwrap();
         bytes
+    }
+
+    /// Level 22's window makes decoding demand a >100 MiB workspace.
+    fn encode_zstd_wide_window(payload: &[u8]) -> Vec<u8> {
+        encode_zstd_at_level(payload, 22)
+    }
+
+    /// N small-window frames must cost one context creation, not N; that is the point of
+    /// carrying a context at all. A level-19 frame decodes through the same context but
+    /// inflates its workspace to ~8.47 MiB (zstd-sys 2.0.16+zstd.1.5.7), past the 8 MiB
+    /// retention cap, so it must leave the context released and the next frame pays anew.
+    #[test]
+    #[cfg_attr(miri, ignore)] // Miri cannot call Zstd's C FFI.
+    fn decode_context_creations_track_retention_boundary() {
+        let mut ctx = ShuffleDecodeContext::default();
+        let small = encode(b"ZSTD", &ipc_stream(1));
+        for _ in 0..3 {
+            assert_eq!(
+                read_ipc_compressed_with(&mut ctx, &small)
+                    .unwrap()
+                    .num_rows(),
+                3
+            );
+        }
+        assert_eq!(
+            ctx.creation_count(),
+            1,
+            "small-window frames must share one context"
+        );
+        assert!(ctx.holds_zstd_dctx());
+
+        let level19 = encode_zstd_at_level(&ipc_stream(1), 19);
+        assert_eq!(
+            read_ipc_compressed_with(&mut ctx, &level19)
+                .unwrap()
+                .num_rows(),
+            3
+        );
+        assert_eq!(
+            ctx.creation_count(),
+            1,
+            "the retained context serves the wide frame"
+        );
+        assert!(
+            !ctx.holds_zstd_dctx(),
+            "a level-19 frame's workspace exceeds the retention cap and must be dropped"
+        );
+
+        assert_eq!(
+            read_ipc_compressed_with(&mut ctx, &small)
+                .unwrap()
+                .num_rows(),
+            3
+        );
+        assert_eq!(
+            ctx.creation_count(),
+            2,
+            "the dropped context is re-created lazily"
+        );
+        assert!(ctx.holds_zstd_dctx());
     }
 
     /// Small-window frames keep the context cached for reuse; a frame that inflates the

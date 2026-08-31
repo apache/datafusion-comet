@@ -22,6 +22,23 @@ use zstd::zstd_safe::{CCtx, CParameter, DCtx, ResetDirective};
 /// Largest zstd workspace worth caching between frames. Covers the commonly configured
 /// levels; higher levels (tens to hundreds of MiB of window) fall back to a fresh context
 /// per frame, which is what per-block encoding paid anyway.
+///
+/// Workspace sizes measured against zstd-sys 2.0.16+zstd.1.5.7 (`sizeof()` after one
+/// streaming frame, no pledged source size). Levels 7/8 sit ~3% under the cap, so a zstd
+/// upgrade can silently flip them to release-per-block; re-measure on any dependency bump.
+///
+/// | level | CCtx after encode | DCtx after decode |
+/// |-------|-------------------|-------------------|
+/// |  1    |  1,369,617        | 1,013,552         |
+/// |  2    |  2,090,513        |                   |
+/// |  3    |  3,663,377        | 2,586,416         |
+/// |  4    |  4,974,097        |                   |
+/// |  5    |  5,498,385        |                   |
+/// |  6    |  5,498,385        |                   |
+/// |  7    |  8,119,825        |                   |
+/// |  8    |  8,119,825        |                   |
+/// |  9    | 15,459,857 (over) |                   |
+/// | 19    | 93,848,207 (over) | 8,877,872 (over)  |
 const MAX_RETAINED_ZSTD_CONTEXT_BYTES: usize = 8 * 1024 * 1024;
 
 /// Reusable compression state for encoding shuffle blocks.
@@ -39,6 +56,10 @@ pub struct ShuffleCodecContext {
     pub(crate) arrow_ipc: CompressionContext,
     /// Lazily created, reused across blocks.
     zstd: Option<CCtx<'static>>,
+    /// How many zstd contexts this value has created, so tests can assert that N blocks
+    /// cost fewer than N creations instead of only observing retained/released state.
+    #[cfg(test)]
+    zstd_creations: u32,
 }
 
 impl ShuffleCodecContext {
@@ -51,13 +72,18 @@ impl ShuffleCodecContext {
         &mut self,
         level: i32,
     ) -> io::Result<(&mut CCtx<'static>, &mut CompressionContext)> {
-        let cctx =
-            match &mut self.zstd {
-                Some(cctx) => cctx,
-                none => none.insert(CCtx::try_create().ok_or_else(|| {
+        let cctx = match &mut self.zstd {
+            Some(cctx) => cctx,
+            none => {
+                #[cfg(test)]
+                {
+                    self.zstd_creations += 1;
+                }
+                none.insert(CCtx::try_create().ok_or_else(|| {
                     io::Error::other("failed to allocate zstd compression context")
-                })?),
-            };
+                })?)
+            }
+        };
         cctx.reset(ResetDirective::SessionOnly)
             .map_err(map_zstd_error)?;
         cctx.set_parameter(CParameter::CompressionLevel(level))
@@ -90,6 +116,12 @@ impl ShuffleCodecContext {
     pub(crate) fn holds_zstd_cctx(&self) -> bool {
         self.zstd.is_some()
     }
+
+    /// Test hook: zstd contexts created so far, for pinning reuse across blocks.
+    #[cfg(test)]
+    pub(crate) fn creation_count(&self) -> u32 {
+        self.zstd_creations
+    }
 }
 
 /// Decode-side counterpart of [`ShuffleCodecContext`]: one context serves every frame a
@@ -98,6 +130,19 @@ impl ShuffleCodecContext {
 pub struct ShuffleDecodeContext {
     /// Lazily created, reused across frames.
     zstd: Option<DCtx<'static>>,
+    /// How many zstd contexts this value has created, so tests can assert that N frames
+    /// cost fewer than N creations instead of only observing retained/released state.
+    #[cfg(test)]
+    zstd_creations: u32,
+}
+
+impl std::fmt::Debug for ShuffleDecodeContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // DCtx is an opaque FFI handle; report only whether a workspace is cached.
+        f.debug_struct("ShuffleDecodeContext")
+            .field("zstd_cached", &self.zstd.is_some())
+            .finish()
+    }
 }
 
 impl ShuffleDecodeContext {
@@ -106,9 +151,15 @@ impl ShuffleDecodeContext {
     pub(crate) fn zstd_dctx(&mut self) -> io::Result<&mut DCtx<'static>> {
         let dctx = match &mut self.zstd {
             Some(dctx) => dctx,
-            none => none.insert(DCtx::try_create().ok_or_else(|| {
-                io::Error::other("failed to allocate zstd decompression context")
-            })?),
+            none => {
+                #[cfg(test)]
+                {
+                    self.zstd_creations += 1;
+                }
+                none.insert(DCtx::try_create().ok_or_else(|| {
+                    io::Error::other("failed to allocate zstd decompression context")
+                })?)
+            }
         };
         dctx.reset(ResetDirective::SessionOnly)
             .map_err(map_zstd_error)?;
@@ -132,6 +183,12 @@ impl ShuffleDecodeContext {
     #[cfg(test)]
     pub(crate) fn holds_zstd_dctx(&self) -> bool {
         self.zstd.is_some()
+    }
+
+    /// Test hook: zstd contexts created so far, for pinning reuse across frames.
+    #[cfg(test)]
+    pub(crate) fn creation_count(&self) -> u32 {
+        self.zstd_creations
     }
 }
 

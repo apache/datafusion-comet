@@ -604,12 +604,30 @@ mod test {
         repartitioner.insert_batch(batch.clone()).await.unwrap();
         repartitioner.spill(0).unwrap();
         assert!(
+            repartitioner
+                .partition_writer()
+                .get_spill_writers()
+                .iter()
+                .all(|writer| writer.has_spill_file()),
+            "the burst must encode blocks for every partition"
+        );
+        assert_eq!(
+            repartitioner.partition_writer().zstd_creation_count(),
+            1,
+            "one spill burst across all partitions must create the zstd context exactly once"
+        );
+        assert!(
             !repartitioner.partition_writer().holds_zstd_cctx(),
             "a finished spill burst must not keep the zstd context cached"
         );
 
         repartitioner.insert_batch(batch.clone()).await.unwrap();
         repartitioner.shuffle_write().unwrap();
+        assert_eq!(
+            repartitioner.partition_writer().zstd_creation_count(),
+            2,
+            "the next burst re-creates the context once, not per block"
+        );
         assert!(
             !repartitioner.partition_writer().holds_zstd_cctx(),
             "finish_all must release the zstd context"
