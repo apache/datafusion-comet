@@ -989,7 +989,11 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
           nativeOptIn.foreach { optIn =>
             withInfo(expr, NativeOptIn.message(exprConfName, optIn.configKey))
           }
-          handler.convert(expr, inputs, binding)
+          val converted = handler.convert(expr, inputs, binding)
+          if (converted.isEmpty) {
+            warnCompatibleButDeclined(expr, handler)
+          }
+          converted
       }
     }
 
@@ -1207,6 +1211,54 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
         return None
     }
     Some(ExprOuterClass.Expr.newBuilder().setScalarFunc(builder).build())
+  }
+
+  /**
+   * `getSupportLevel` returning `Compatible` is a promise that `convert` will succeed, so a
+   * `None` from `convert` breaks a serde invariant. It also costs the user real performance: the
+   * `Unsupported` and `Incompatible` arms give a `CodegenDispatchFallback` serde a chance to
+   * route the expression through the JVM codegen dispatcher, whereas a decline from inside
+   * `convert` bypasses that entirely and fails the whole enclosing operator back to Spark. Such
+   * cases belong in `getSupportLevel`. See
+   * https://github.com/apache/datafusion-comet/issues/5574.
+   *
+   * Declining because a *child* could not be serialized is not a violation -- `getSupportLevel`
+   * inspects the node, not the subtree -- so stay quiet when any strict descendant already
+   * carries a fallback reason, which is how a failed child announces itself. Without that check a
+   * single unsupported leaf would warn once for every ancestor on the way up.
+   *
+   * One case warns without being a serde bug: `getSupportLevel` is not given `inputs`, so a
+   * decline that depends on them cannot be moved there. `CometAttributeReference` is the only
+   * such serde today (it declines when `bindReference` cannot resolve the attribute). The warning
+   * is still worth having there -- an unresolvable attribute is a planning anomaly worth
+   * surfacing.
+   *
+   * The warning is silent under the default configuration. Turning the codegen dispatcher off
+   * with `spark.comet.exec.scalaUDF.codegen.enabled=false` makes it fire for every serde that
+   * reports `Compatible` and then routes to `emitJvmCodegenDispatch`, since the disabled-config
+   * check lives in the dispatcher rather than in `getSupportLevel`. Those are genuine instances
+   * of this invariant violation; moving that check up is tracked on the issue above.
+   */
+  private[serde] def warnCompatibleButDeclined(
+      expr: Expression,
+      handler: CometExpressionSerde[_]): Unit = {
+    val childDeclined = expr.children.exists { child =>
+      child.find(_.getTagValue(CometExplainInfo.FALLBACK_REASONS).isDefined).isDefined
+    }
+    if (!childDeclined) {
+      // Serdes are Scala objects, so `getSimpleName` carries a trailing `$`.
+      val serdeName = handler.getClass.getSimpleName.stripSuffix("$")
+      val reasons = expr
+        .getTagValue(CometExplainInfo.FALLBACK_REASONS)
+        .map(_.mkString("; "))
+        .getOrElse("no reason recorded")
+      logWarning(
+        s"$serdeName reported Compatible for $expr but convert() " +
+          s"returned None ($reasons), so the enclosing operator falls back to Spark. This is a " +
+          "serde invariant violation: report the case from getSupportLevel as Unsupported or " +
+          "Incompatible instead, so that a CodegenDispatchFallback serde can route it through " +
+          "the JVM codegen dispatcher.")
+    }
   }
 
   /**
