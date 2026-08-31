@@ -76,9 +76,9 @@ pub struct Regr {
     /// `VariancePop(x)` counts only rows where both `y` and `x` are non-null.
     /// When `false` (Spark 3.4), it counts every row where `x` is non-null.
     filter_var_by_pair_nulls: bool,
-    /// Only consulted for `R2`. When `true` (Spark 4.1+), a constant dependent
+    /// Only consulted for `R2`. When `true` (Spark 3.5+), a constant dependent
     /// variable evaluates to `1.0` and a constant independent variable to `null`.
-    /// When `false` (Spark 3.4/3.5/4.0), those two cases are reversed.
+    /// When `false` (Spark 3.4), those two cases are reversed.
     r2_constant_dependent_is_perfect_fit: bool,
 }
 
@@ -281,13 +281,14 @@ impl Accumulator for RegrCovAccumulator {
 /// (a `PearsonCorrelation`). State layout matches `CorrelationAccumulator`:
 /// count, mean1, mean2, algo_const, m2(y), m2(x).
 ///
-/// Spark's degenerate-case handling (see `RegrR2.evaluateExpression`) changed in
-/// Spark 4.1. In both eras one degenerate case returns `null` and the other
-/// returns `1.0` (a perfect fit), but which is which was swapped:
-/// - Spark 3.4/3.5/4.0: constant dependent `y` (`m2(y) == 0`) -> `null`;
-///   constant independent `x` (`m2(x) == 0`) -> `1.0`.
-/// - Spark 4.1+: constant dependent `y` -> `1.0`; constant independent `x` ->
-///   `null`.
+/// Spark's degenerate-case handling (see `RegrR2.evaluateExpression`) was
+/// swapped by SPARK-55969, which shipped in 3.5.9, 4.0.3 and 4.1.0. In both
+/// eras one degenerate case returns `null` and the other returns `1.0` (a
+/// perfect fit), but which is which differs:
+/// - before SPARK-55969 (Spark 3.4): constant dependent `y` (`m2(y) == 0`) ->
+///   `null`; constant independent `x` (`m2(x) == 0`) -> `1.0`.
+/// - after (the Spark 3.5+ versions Comet builds against): constant dependent
+///   `y` -> `1.0`; constant independent `x` -> `null`.
 ///
 /// `m2(y) == 0` also covers fewer than two rows. DataFusion returns `null` in
 /// both degenerate cases.
@@ -296,7 +297,7 @@ struct RegrR2Accumulator {
     covar: CovarianceAccumulator,
     var_y: VarianceAccumulator,
     var_x: VarianceAccumulator,
-    /// When `true` (Spark 4.1+), a constant dependent variable yields `1.0` and a
+    /// When `true` (Spark 3.5+), a constant dependent variable yields `1.0` and a
     /// constant independent variable yields `null`; reversed when `false`.
     constant_dependent_is_perfect_fit: bool,
 }
@@ -365,12 +366,12 @@ impl Accumulator for RegrR2Accumulator {
         let m2_x = self.var_x.get_m2();
         let m2_y = self.var_y.get_m2();
         // The two degenerate cases (constant dependent y, constant independent x)
-        // return null and 1.0 respectively, but Spark 4.1 swapped which is which.
+        // return null and 1.0 respectively, but SPARK-55969 swapped which is which.
         let (null_case, perfect_fit_case) = if self.constant_dependent_is_perfect_fit {
-            // Spark 4.1+: constant x -> null, constant y -> 1.0.
+            // Spark 3.5+: constant x -> null, constant y -> 1.0.
             (m2_x == 0.0, m2_y == 0.0)
         } else {
-            // Spark 3.4/3.5/4.0: constant y -> null, constant x -> 1.0.
+            // Spark 3.4: constant y -> null, constant x -> 1.0.
             (m2_y == 0.0, m2_x == 0.0)
         };
         if null_case {
@@ -501,8 +502,8 @@ mod tests {
         match regr_type {
             RegrType::SXX | RegrType::SYY => Box::new(RegrMomentAccumulator::try_new().unwrap()),
             RegrType::SXY => Box::new(RegrCovAccumulator::try_new().unwrap()),
-            // Default to pre-Spark-4.1 degenerate-case semantics.
-            RegrType::R2 => Box::new(RegrR2Accumulator::try_new(false).unwrap()),
+            // Default to the post-SPARK-55969 degenerate-case semantics.
+            RegrType::R2 => Box::new(RegrR2Accumulator::try_new(true).unwrap()),
             // Existing tests exercise the Spark 3.5+ both-non-null semantics.
             RegrType::Slope => Box::new(RegrLineAccumulator::try_new(false, true).unwrap()),
             RegrType::Intercept => Box::new(RegrLineAccumulator::try_new(true, true).unwrap()),
@@ -556,16 +557,16 @@ mod tests {
     }
 
     #[test]
-    fn r2_constant_y_is_null() {
-        // Dependent variable constant: Spark's regr_r2 returns NULL.
+    fn r2_constant_y_is_perfect_fit() {
+        // Dependent variable constant: post-SPARK-55969 regr_r2 returns 1.0.
         let y = vec![Some(7.0), Some(7.0), Some(7.0), Some(7.0)];
         let x = vec![Some(1.0), Some(2.0), Some(3.0), Some(4.0)];
-        assert_eq!(eval(RegrType::R2, y, x), None);
+        approx(eval(RegrType::R2, y, x), 1.0);
     }
 
     #[test]
-    fn r2_degenerate_cases_swapped_in_spark_41() {
-        // Spark 4.1 swapped the two degenerate cases relative to 3.4/3.5/4.0.
+    fn r2_degenerate_cases_swapped_by_spark_55969() {
+        // SPARK-55969 swapped the two degenerate cases relative to Spark 3.4.
         let const_y = (
             vec![Some(7.0), Some(7.0), Some(7.0), Some(7.0)],
             vec![Some(1.0), Some(2.0), Some(3.0), Some(4.0)],
@@ -584,10 +585,10 @@ mod tests {
             }
         };
 
-        // Spark 4.1+: constant dependent -> 1.0, constant independent -> null.
+        // Spark 3.5+: constant dependent -> 1.0, constant independent -> null.
         approx(r2(true, const_y.0.clone(), const_y.1.clone()), 1.0);
         assert_eq!(r2(true, const_x.0.clone(), const_x.1.clone()), None);
-        // Spark 3.4/3.5/4.0: constant dependent -> null, constant independent -> 1.0.
+        // Spark 3.4: constant dependent -> null, constant independent -> 1.0.
         assert_eq!(r2(false, const_y.0, const_y.1), None);
         approx(r2(false, const_x.0, const_x.1), 1.0);
     }
@@ -595,12 +596,12 @@ mod tests {
     #[test]
     fn constant_x_edges() {
         // Independent variable constant, dependent varies: slope/intercept are
-        // NULL, but Spark's regr_r2 returns 1.0 (a horizontal line is a perfect fit).
+        // NULL, and post-SPARK-55969 regr_r2 is NULL too.
         let y = vec![Some(1.0), Some(2.0), Some(3.0), Some(4.0)];
         let x = vec![Some(5.0), Some(5.0), Some(5.0), Some(5.0)];
         assert_eq!(eval(RegrType::Slope, y.clone(), x.clone()), None);
         assert_eq!(eval(RegrType::Intercept, y.clone(), x.clone()), None);
-        approx(eval(RegrType::R2, y, x), 1.0);
+        assert_eq!(eval(RegrType::R2, y, x), None);
     }
 
     #[test]

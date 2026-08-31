@@ -144,8 +144,8 @@ SELECT regr_slope(y, x), regr_intercept(y, x), regr_r2(y, x) FROM test_regr_sing
 
 -- edge case: independent variable (x) is constant but y varies.
 -- var_pop(x) = 0, so slope/intercept are NULL and regr_sxx = 0. regr_r2 is a
--- degenerate case whose value depends on the Spark version (1.0 on 3.4/3.5/4.0,
--- NULL on 4.1+), which Comet matches per version.
+-- degenerate case whose value depends on the Spark version (1.0 on 3.4, NULL on
+-- 3.5+ after SPARK-55969), which Comet matches per version.
 statement
 CREATE TABLE test_regr_const_x(y double, x double) USING parquet
 
@@ -160,8 +160,8 @@ SELECT regr_sxx(y, x), regr_syy(y, x), regr_sxy(y, x) FROM test_regr_const_x
 
 -- edge case: dependent variable (y) is constant but x varies.
 -- The slope is 0 and the intercept equals the constant y. regr_r2 is a degenerate
--- case whose value depends on the Spark version (NULL on 3.4/3.5/4.0, 1.0 on
--- 4.1+), which Comet matches per version.
+-- case whose value depends on the Spark version (NULL on 3.4, 1.0 on 3.5+ after
+-- SPARK-55969), which Comet matches per version.
 statement
 CREATE TABLE test_regr_const_y(y double, x double) USING parquet
 

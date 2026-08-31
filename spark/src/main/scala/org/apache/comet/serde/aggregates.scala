@@ -790,10 +790,12 @@ trait CometRegrBase {
       // rows where both y and x are non-null. Spark 3.4 counts every row where x
       // is non-null. The native accumulator only consults this for slope/intercept.
       builder.setFilterVarByPairNulls(isSpark35Plus)
-      // Spark 4.1 swapped regr_r2's degenerate-case handling: a constant dependent
+      // Spark swapped regr_r2's degenerate-case handling: a constant dependent
       // variable now yields 1.0 (was null) and a constant independent variable
-      // yields null (was 1.0). The native accumulator only consults this for R2.
-      builder.setR2ConstantDependentIsPerfectFit(isSpark41Plus)
+      // yields null (was 1.0). The swap is present in the Spark versions Comet
+      // builds against for 3.5 and later (3.5.9, 4.0.3+, 4.1, 4.2) but not in 3.4.
+      // The native accumulator only consults this for R2.
+      builder.setR2ConstantDependentIsPerfectFit(isSpark35Plus)
 
       Some(
         ExprOuterClass.AggExpr
