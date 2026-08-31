@@ -261,6 +261,9 @@ harness = false
 
 [[bench]]
 name = "from_json"
+harness = false
+
+[[bench]]
 name = "modulo"
 harness = false
 
