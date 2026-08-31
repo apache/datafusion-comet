@@ -21,13 +21,16 @@ package org.apache.spark.sql.execution.python
 
 import java.io.{DataInputStream, DataOutputStream}
 import java.nio.channels.Channels
+import java.util.ArrayList
 import java.util.concurrent.atomic.AtomicBoolean
 
 import scala.jdk.CollectionConverters._
 
-import org.apache.arrow.vector.{BaseFixedWidthVector, BaseLargeVariableWidthVector, BaseVariableWidthVector, FieldVector, VectorSchemaRoot}
-import org.apache.arrow.vector.complex.{LargeListVector, ListVector, StructVector}
-import org.apache.arrow.vector.ipc.{ArrowStreamReader, ArrowStreamWriter}
+import org.apache.arrow.memory.{ArrowBuf, BufferAllocator}
+import org.apache.arrow.vector.{FieldVector, VectorSchemaRoot, VectorUnloader}
+import org.apache.arrow.vector.complex.StructVector
+import org.apache.arrow.vector.ipc.{ArrowStreamReader, ArrowStreamWriter, WriteChannel}
+import org.apache.arrow.vector.ipc.message.{ArrowFieldNode, ArrowRecordBatch, MessageSerializer}
 import org.apache.arrow.vector.types.pojo.{ArrowType, Field, FieldType}
 import org.apache.spark.{SparkEnv, TaskContext}
 import org.apache.spark.api.python.{BasePythonRunner, PythonRDD, PythonWorker, SpecialLengths}
@@ -36,7 +39,6 @@ import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
-import org.apache.spark.unsafe.Platform
 
 import org.apache.comet.CometArrowAllocator
 import org.apache.comet.vector.{CometDecodedVector, CometVector}
@@ -53,7 +55,7 @@ import org.apache.comet.vector.{CometDecodedVector, CometVector}
  * Instead it extends only the Arrow-agnostic `BasePythonRunner` and performs the Arrow IPC
  * exchange itself using Comet's (shaded) Arrow. The Python worker only ever sees a standard Arrow
  * IPC byte stream, which is version-neutral, so nothing crosses the shaded/unshaded boundary:
- *   - Input: each Comet `ColumnarBatch` is copied into a shaded struct root and written to the
+ *   - Input: each Comet `ColumnarBatch` is written directly from its shaded Arrow vectors to the
  *     worker with a shaded `ArrowStreamWriter`.
  *   - Output: the worker's Arrow IPC is read with a shaded `ArrowStreamReader` straight into
  *     `CometVector`s, which is exactly what `CometMapInBatchExec` and downstream native operators
@@ -109,7 +111,7 @@ private[python] trait CometArrowPythonRunnerBase
       private var currentGroup: Iterator[ColumnarBatch] = _
       private var arrowWriter: ArrowStreamWriter = _
       private var writeRoot: VectorSchemaRoot = _
-      private var structVec: StructVector = _
+      private var streamFields: Seq[Field] = _
 
       // The runner's input schema is a single struct column ("struct") whose children are the
       // user's input columns (see `schema` above). Cast once here rather than at each use site.
@@ -132,14 +134,14 @@ private[python] trait CometArrowPythonRunnerBase
         writeUDF(dataOut)
       }
 
-      /** Build the destination struct root and start the writer from the given child fields. */
+      /** Build the schema-only struct root and start the writer from the given child fields. */
       private def startWriter(childFields: Seq[Field], dataOut: DataOutputStream): Unit = {
         val structField =
           new Field(
             "struct",
             new FieldType(false, ArrowType.Struct.INSTANCE, null),
             childFields.asJava)
-        structVec = structField.createVector(allocator).asInstanceOf[StructVector]
+        val structVec = structField.createVector(allocator).asInstanceOf[StructVector]
         writeRoot = new VectorSchemaRoot(Seq[FieldVector](structVec).asJava)
         arrowWriter = new ArrowStreamWriter(writeRoot, null, Channels.newChannel(dataOut))
         arrowWriter.start()
@@ -167,49 +169,44 @@ private[python] trait CometArrowPythonRunnerBase
 
         val cometBatch = currentGroup.next()
         val startData = dataOut.size()
-
-        if (arrowWriter == null) {
-          // Build the destination struct root once, sized to the first batch's child fields.
-          // mapInArrow/mapInPandas exchange the columns under a single non-nullable struct.
-          // Comet's FFI-imported vectors leave the Arrow Field name null, so restore the real
-          // column names from the input schema (the worker reads columns by name, and shaded
-          // Arrow rejects a null field name). The field types and child structure are kept as-is
-          // so copyVector still walks the source and destination trees in lockstep. Keeping the
-          // type as-is also means a TimestampType reaches the worker with Comet's UTC time zone
-          // rather than the session zone vanilla Spark would label it with; this is a documented
-          // limitation (see pyarrow-udfs.md), not a value difference, since the stored instant is
-          // identical.
-          val childNames = inputStructType.fieldNames
-          val childFields = (0 until cometBatch.numCols()).map { i =>
-            val vecField =
-              cometBatch.column(i).asInstanceOf[CometDecodedVector].getValueVector.getField
-            renamed(vecField, childNames(i), forceNullable = true)
-          }
-          startWriter(childFields, dataOut)
-        }
-
-        var i = 0
-        while (i < cometBatch.numCols()) {
-          val src = cometBatch
+        val sourceVectors = (0 until cometBatch.numCols()).map { i =>
+          cometBatch
             .column(i)
             .asInstanceOf[CometDecodedVector]
             .getValueVector
             .asInstanceOf[FieldVector]
-          val dst = structVec.getChildByOrdinal(i).asInstanceOf[FieldVector]
-          copyVector(src, dst)
-          i += 1
         }
-        val numRows = cometBatch.numRows()
-        structVec.setValueCount(numRows)
-        // Mark every row of the struct non-null (all-1 validity). The validity buffer is freshly
-        // allocated and zero-initialised, so without this Python would see an all-null struct.
-        val validityBytes = (numRows + 7) / 8
-        Platform.setMemory(
-          structVec.getValidityBuffer.memoryAddress(),
-          0xff.toByte,
-          validityBytes)
-        writeRoot.setRowCount(numRows)
-        arrowWriter.writeBatch()
+        val batchFields = sourceVectors.map(_.getField)
+
+        if (arrowWriter == null) {
+          // Build the schema-only struct root once from the first batch's child fields.
+          // mapInArrow/mapInPandas exchange the columns under a single non-nullable struct.
+          // Comet's FFI-imported vectors leave the Arrow Field name null, so restore the real
+          // column names from the input schema (the worker reads columns by name, and shaded
+          // Arrow rejects a null field name). Keep the field types and child structure as-is so
+          // the advertised schema matches the source buffers. Keeping the type as-is also means
+          // a TimestampType reaches the worker with Comet's UTC time zone
+          // rather than the session zone vanilla Spark would label it with; this is a documented
+          // limitation (see pyarrow-udfs.md), not a value difference, since the stored instant is
+          // identical.
+          val childNames = inputStructType.fieldNames
+          streamFields = batchFields.zipWithIndex.map { case (field, i) =>
+            renamed(field, childNames(i), forceNullable = true)
+          }
+          startWriter(streamFields, dataOut)
+        }
+
+        // Union branches may differ in names, nullability, or descriptive metadata. Only
+        // differences that change how the advertised schema interprets the buffers are invalid.
+        require(
+          CometArrowPythonRunnerBase.hasCompatibleSchema(streamFields, batchFields),
+          s"Arrow input schema changed between batches: expected $streamFields, got $batchFields")
+
+        CometArrowPythonRunnerBase.serializeBatch(
+          new WriteChannel(Channels.newChannel(dataOut)),
+          sourceVectors,
+          cometBatch.numRows(),
+          allocator)
 
         pythonMetrics("pythonDataSent") += dataOut.size() - startData
         true
@@ -291,14 +288,17 @@ private[python] trait CometArrowPythonRunnerBase
   /**
    * Rebuild `field` with `name`, preserving its Arrow type and child structure. Any nested child
    * whose name Comet's FFI import left null is given a positional placeholder so shaded Arrow can
-   * materialize the struct. Keeping the type and structure intact means the destination tree
-   * still mirrors the Comet source tree for [[copyVector]].
+   * materialize the struct. Keeping the type and structure intact means the advertised schema
+   * still mirrors the Comet source vectors serialized directly into each record batch.
    */
-  private def renamed(field: Field, name: String, forceNullable: Boolean): Field = {
-    // A Map's descendants must keep their original nullability: Arrow requires the entries struct
-    // (and its key) to be non-nullable, and `MapVector.createVector` rejects a nullable entries
-    // struct. Stop forcing nullable once we enter a Map subtree.
-    val childrenForceNullable = forceNullable && !field.getType.isInstanceOf[ArrowType.Map]
+  private def renamed(
+      field: Field,
+      name: String,
+      forceNullable: Boolean,
+      isMapEntry: Boolean = false): Field = {
+    // Map entries and keys must stay non-nullable, but values and fields nested inside a
+    // complex key may be nullable. Do not propagate the restriction through the whole subtree.
+    val isMap = field.getType.isInstanceOf[ArrowType.Map]
     val children = field.getChildren
     val newChildren =
       if (children.isEmpty) children
@@ -311,80 +311,107 @@ private[python] trait CometArrowPythonRunnerBase
           renamed(
             child,
             if (child.getName == null) s"_$idx" else child.getName,
-            childrenForceNullable)
+            forceNullable = !isMap && !(isMapEntry && idx == 0),
+            isMapEntry = isMap)
         }.asJava
     // Force the field nullable where allowed. Comet's FFI-imported vectors may carry a
     // non-nullable Arrow `Field` even for columns that contain nulls (Comet uses positional schema
     // and does not round-trip Spark's nullability), and the worker rejects a null value under a
     // non-nullable field (`from_pandas(pdf, schema=batch.schema)` raises). Marking the field
-    // nullable is a safe superset; `copyVector` fills an all-valid validity buffer when the source
-    // has no nulls.
+    // nullable is a safe superset; Arrow IPC permits an empty validity buffer when its field node
+    // reports no null values.
     val ft = field.getFieldType
     val nullable = forceNullable || ft.isNullable
     val newFt = new FieldType(nullable, ft.getType, ft.getDictionary, ft.getMetadata)
     new Field(name, newFt, newChildren)
   }
+}
+
+private[python] object CometArrowPythonRunnerBase {
+
+  // Extensions can change interpretation even when their underlying storage types match.
+  private val extensionMetadataKeys = Seq(
+    ArrowType.ExtensionType.EXTENSION_METADATA_KEY_NAME,
+    ArrowType.ExtensionType.EXTENSION_METADATA_KEY_METADATA)
+
+  private def areArrowTypesCompatible(expected: ArrowType, actual: ArrowType): Boolean = {
+    if (expected == actual) {
+      true
+    } else {
+      (expected, actual) match {
+        case (left: ArrowType.Timestamp, right: ArrowType.Timestamp) =>
+          // Native scans use UTC, while date_trunc can retain the equivalent Etc/UTC session
+          // zone. Both interpret the same instants, so preserve the stream schema and buffers.
+          left.getUnit == right.getUnit &&
+          ((left.getTimezone == "UTC" && right.getTimezone == "Etc/UTC") ||
+            (left.getTimezone == "Etc/UTC" && right.getTimezone == "UTC"))
+        case _ => false
+      }
+    }
+  }
+
+  /** Names, nullability and ordinary field metadata do not change the IPC buffer layout. */
+  private[python] def hasCompatibleSchema(expected: Seq[Field], actual: Seq[Field]): Boolean = {
+    expected.size == actual.size && expected.zip(actual).forall { case (left, right) =>
+      areArrowTypesCompatible(left.getType, right.getType) &&
+      left.getDictionary == right.getDictionary &&
+      extensionMetadataKeys.forall(key =>
+        left.getMetadata.get(key) == right.getMetadata.get(key)) &&
+      hasCompatibleSchema(left.getChildren.asScala.toSeq, right.getChildren.asScala.toSeq)
+    }
+  }
 
   /**
-   * Copy a Comet column into the destination FieldVector. Walks both trees in lockstep: sizes
-   * each destination node from the source, copies every buffer with `ArrowBuf.setBytes`, then
-   * sets value counts bottom-up so `setValueCount` does not rewrite the offset bytes we just
-   * copied. Both source and destination are Comet's (shaded) Arrow vectors, so no shaded /
-   * unshaded type crosses.
+   * Serialize source vectors directly beneath the non-null struct advertised in the IPC stream.
+   *
+   * VectorUnloader recursively retains the source buffers without moving them between allocators.
+   * The wrapping record batch takes its own references, so closing both temporary batches
+   * restores the original reference counts after the synchronous pipe write. The borrowed
+   * VectorSchemaRoot must never be closed because its vectors are owned by the input
+   * ColumnarBatch.
    */
-  private def copyVector(src: FieldVector, dst: FieldVector): Unit = {
-    val valueCount = src.getValueCount
+  private[python] def serializeBatch(
+      writeChannel: WriteChannel,
+      sourceVectors: Seq[FieldVector],
+      numRows: Int,
+      allocator: BufferAllocator): Unit = {
+    val sourceRoot =
+      new VectorSchemaRoot(sourceVectors.map(_.getField).asJava, sourceVectors.asJava, numRows)
+    val sourceBatch = new VectorUnloader(sourceRoot).getRecordBatch
+    try {
+      val validityBytes = (numRows.toLong + 7L) / 8L
+      val structValidity = allocator.buffer(validityBytes)
+      try {
+        if (validityBytes > 0) {
+          structValidity.setOne(0L, validityBytes)
+        }
+        structValidity.writerIndex(validityBytes)
 
-    dst match {
-      case bfwv: BaseFixedWidthVector =>
-        bfwv.allocateNew(valueCount)
-      case bvwv: BaseVariableWidthVector =>
-        bvwv.allocateNew(src.getDataBuffer.readableBytes, valueCount)
-      case blvwv: BaseLargeVariableWidthVector =>
-        blvwv.allocateNew(src.getDataBuffer.readableBytes, valueCount)
-      case _ =>
-        dst.setInitialCapacity(valueCount)
-        dst.allocateNew()
-    }
+        val nodes = new ArrayList[ArrowFieldNode](sourceBatch.getNodes.size() + 1)
+        nodes.add(new ArrowFieldNode(numRows, 0))
+        nodes.addAll(sourceBatch.getNodes)
 
-    val srcBufs = src.getFieldBuffers
-    val dstBufs = dst.getFieldBuffers
-    require(
-      srcBufs.size == dstBufs.size,
-      s"buffer count mismatch for ${dst.getField}: src=${srcBufs.size}, dst=${dstBufs.size}")
-    srcBufs.asScala.zip(dstBufs.asScala).foreach { case (s, d) =>
-      d.setBytes(0, s, 0, s.readableBytes)
-    }
+        val buffers = new ArrayList[ArrowBuf](sourceBatch.getBuffers.size() + 1)
+        buffers.add(structValidity)
+        buffers.addAll(sourceBatch.getBuffers)
 
-    val srcChildren = src.getChildrenFromFields
-    val dstChildren = dst.getChildrenFromFields
-    require(
-      srcChildren.size == dstChildren.size,
-      s"child count mismatch for ${dst.getField}: src=${srcChildren.size}, dst=${dstChildren.size}")
-    srcChildren.asScala.zip(dstChildren.asScala).foreach { case (sc, dc) =>
-      copyVector(sc.asInstanceOf[FieldVector], dc.asInstanceOf[FieldVector])
-    }
-
-    // For vectors that fill offset-buffer "holes" in setValueCount (variable-width and list
-    // types), set lastSet = vc - 1 first so fillHoles is a no-op and the already-copied offset
-    // bytes are preserved.
-    dst match {
-      case v: BaseVariableWidthVector => v.setLastSet(valueCount - 1)
-      case v: BaseLargeVariableWidthVector => v.setLastSet(valueCount - 1)
-      case v: ListVector => v.setLastSet(valueCount - 1)
-      case v: LargeListVector => v.setLastSet(valueCount - 1)
-      case _ =>
-    }
-    dst.setValueCount(valueCount)
-
-    // Every destination field is nullable (see `renamed`), so the worker reads the validity
-    // buffer. When the source has no nulls its validity buffer may be empty (Comet omits it),
-    // which would otherwise leave the freshly-allocated destination validity all-zero and make
-    // the worker see every value as null. Set all-valid in that case. Done after setValueCount,
-    // which can rewrite validity, mirroring the struct-level all-valid fill in writeNextInput.
-    if (valueCount > 0 && dst.getField.isNullable && src.getNullCount == 0) {
-      val validityBytes = (valueCount + 7) / 8
-      Platform.setMemory(dst.getValidityBuffer.memoryAddress(), 0xff.toByte, validityBytes)
+        val wrappedBatch = new ArrowRecordBatch(
+          numRows,
+          nodes,
+          buffers,
+          sourceBatch.getBodyCompression,
+          sourceBatch.getVariadicBufferCounts,
+          true)
+        try {
+          MessageSerializer.serialize(writeChannel, wrappedBatch)
+        } finally {
+          wrappedBatch.close()
+        }
+      } finally {
+        structValidity.close()
+      }
+    } finally {
+      sourceBatch.close()
     }
   }
 }

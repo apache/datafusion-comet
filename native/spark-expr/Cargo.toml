@@ -112,6 +112,10 @@ name = "normalize_nan"
 harness = false
 
 [[bench]]
+name = "sort_float_keys"
+harness = false
+
+[[bench]]
 name = "to_csv"
 harness = false
 
@@ -257,4 +261,25 @@ harness = false
 
 [[bench]]
 name = "from_json"
+name = "modulo"
+harness = false
+
+[[bench]]
+name = "levenshtein"
+harness = false
+
+[[bench]]
+name = "negative"
+harness = false
+
+[[bench]]
+name = "split"
+harness = false
+
+[[bench]]
+name = "regexp_extract_all"
+harness = false
+
+[[bench]]
+name = "contains"
 harness = false

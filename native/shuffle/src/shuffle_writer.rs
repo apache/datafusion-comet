@@ -267,12 +267,12 @@ async fn external_shuffle(
 ) -> Result<SendableRecordBatchStream> {
     let schema = input.schema();
 
-    let shuffle_block_writer = ShuffleBlockWriter::try_new(schema.as_ref(), codec.clone())?;
     let mut repartitioner = match destination {
         ShuffleWriterDestination::Local {
             output_data_file,
             output_index_file,
         } => {
+            let shuffle_block_writer = ShuffleBlockWriter::try_new(schema.as_ref(), codec.clone())?;
             let writer = LocalPartitionWriter::try_new(
                 output_data_file,
                 output_index_file,
@@ -298,6 +298,8 @@ async fn external_shuffle(
             pusher,
             max_frame_size,
         } => {
+            let shuffle_block_writer =
+                ShuffleBlockWriter::try_new_rss(Arc::clone(&schema), codec.clone())?;
             let writer = RssPartitionWriter::try_new(
                 shuffle_block_writer,
                 pusher,
