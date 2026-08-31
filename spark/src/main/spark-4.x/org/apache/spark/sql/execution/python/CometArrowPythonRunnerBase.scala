@@ -334,10 +334,26 @@ private[python] object CometArrowPythonRunnerBase {
     ArrowType.ExtensionType.EXTENSION_METADATA_KEY_NAME,
     ArrowType.ExtensionType.EXTENSION_METADATA_KEY_METADATA)
 
+  private def areArrowTypesCompatible(expected: ArrowType, actual: ArrowType): Boolean = {
+    if (expected == actual) {
+      true
+    } else {
+      (expected, actual) match {
+        case (left: ArrowType.Timestamp, right: ArrowType.Timestamp) =>
+          // Native scans use UTC, while date_trunc can retain the equivalent Etc/UTC session
+          // zone. Both interpret the same instants, so preserve the stream schema and buffers.
+          left.getUnit == right.getUnit &&
+          ((left.getTimezone == "UTC" && right.getTimezone == "Etc/UTC") ||
+            (left.getTimezone == "Etc/UTC" && right.getTimezone == "UTC"))
+        case _ => false
+      }
+    }
+  }
+
   /** Names, nullability and ordinary field metadata do not change the IPC buffer layout. */
   private[python] def hasCompatibleSchema(expected: Seq[Field], actual: Seq[Field]): Boolean = {
     expected.size == actual.size && expected.zip(actual).forall { case (left, right) =>
-      left.getType == right.getType &&
+      areArrowTypesCompatible(left.getType, right.getType) &&
       left.getDictionary == right.getDictionary &&
       extensionMetadataKeys.forall(key =>
         left.getMetadata.get(key) == right.getMetadata.get(key)) &&
