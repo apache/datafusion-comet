@@ -191,14 +191,13 @@ def main(
                 df = spark.sql(sql)
                 df.explain("formatted")
 
-                # Save formatted plan to file before execution (benchmark feature)
                 if plan_dir is not None and is_query:
                     os.makedirs(plan_dir, exist_ok=True)
                     plan_path = os.path.join(plan_dir, f"{name}-q{query_label}.plan.txt")
                     try:
-                        plan_str = df._jdf.queryExecution().explainString(
-                            spark._jvm.org.apache.spark.sql.execution
-                            .ExplainMode.fromString("formatted"))
+                        plan_str = spark._jvm.PythonSQLUtils.explainString(
+                            df._jdf.queryExecution(), "formatted"
+                        )
                         with open(plan_path, "w") as pf:
                             pf.write(plan_str)
                         print(f"Plan saved to {plan_path}")
