@@ -264,9 +264,20 @@ version:
 Add a `spark_X_Y` job to `ci.yml` passing `spark-short`, `spark-full`, and
 `java`, using the closest existing job as a template. A brand-new version
 should be gated behind a `run-spark-X.Y-tests` label so it runs on pushes to
-main but stays off the default PR path. Also add a matching `spark_X_Y`
-entry to `FILTERS` in `dev/ci/compute-changes.py` and expose it as an output
-of the `changes` job, otherwise the new job never fires.
+main but stays off the default PR path.
+
+Four more registrations are needed, and the job is silently skipped if any is
+missed. In `dev/ci/compute-changes.py`, add a matching `spark_X_Y` entry to
+`FILTERS`. In `ci.yml`:
+
+- expose `spark_X_Y` as an output of the `changes` job, otherwise the `if:`
+  gate reads an empty string on every event;
+- add `spark_X_Y` to the `workflow_dispatch` key list in that job's compute
+  step, otherwise a manual run leaves the output unset even though the job's
+  own `if:` accepts `workflow_dispatch`;
+- add `run-spark-X.Y-tests` to the label allowlist in the `preflight` job's
+  `if:`, otherwise the whole workflow is skipped for the `labeled` event and
+  the label never triggers anything.
 
 Before merging, run `make format`, run clippy
 (`cd native && cargo clippy --all-targets --workspace -- -D warnings`), and

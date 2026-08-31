@@ -4222,32 +4222,6 @@ index 1a02a68a069..ee104c6e193 100644
        case h: HiveTableScanExec => h.partitionPruningPred.collect {
          case d: DynamicPruningExpression => d.child
        }
-diff --git a/sql/hive/src/test/scala/org/apache/spark/sql/hive/HiveUDFDynamicLoadSuite.scala b/sql/hive/src/test/scala/org/apache/spark/sql/hive/HiveUDFDynamicLoadSuite.scala
-index 362353ed0b2..9e0fd8f8545 100644
---- a/sql/hive/src/test/scala/org/apache/spark/sql/hive/HiveUDFDynamicLoadSuite.scala
-+++ b/sql/hive/src/test/scala/org/apache/spark/sql/hive/HiveUDFDynamicLoadSuite.scala
-@@ -17,7 +17,7 @@
- 
- package org.apache.spark.sql.hive
- 
--import org.apache.spark.sql.{QueryTest, Row}
-+import org.apache.spark.sql.{IgnoreCometSuite, QueryTest, Row}
- import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Expression}
- import org.apache.spark.sql.hive.HiveShim.HiveFunctionWrapper
- import org.apache.spark.sql.hive.test.{TestHiveSingleton, TestHiveUdfsJar}
-@@ -25,7 +25,11 @@ import org.apache.spark.sql.types.{IntegerType, StringType}
- import org.apache.spark.util.ArrayImplicits._
- import org.apache.spark.util.Utils
- 
--class HiveUDFDynamicLoadSuite extends QueryTest with TestHiveSingleton {
-+// Comet: mix in IgnoreCometSuite so these tests are reported as ignored when Comet is
-+// enabled (ENABLE_COMET=true). These Hive UDF tests are not Comet-specific and have not
-+// been validated against Comet; see https://github.com/apache/datafusion-comet/issues/4098.
-+class HiveUDFDynamicLoadSuite extends QueryTest with TestHiveSingleton
-+  with IgnoreCometSuite {
- 
-   case class UDFTestInformation(
-       identifier: String,
 diff --git a/sql/hive/src/test/scala/org/apache/spark/sql/hive/InsertSuite.scala b/sql/hive/src/test/scala/org/apache/spark/sql/hive/InsertSuite.scala
 index bd2b256e492..9a3f5b9e160 100644
 --- a/sql/hive/src/test/scala/org/apache/spark/sql/hive/InsertSuite.scala
