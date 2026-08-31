@@ -22,9 +22,10 @@ package org.apache.comet.rules
 import scala.collection.mutable.ListBuffer
 
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.catalyst.expressions.{Divide, DoubleLiteral, EqualNullSafe, EqualTo, Expression, FloatLiteral, GreaterThan, GreaterThanOrEqual, KnownFloatingPointNormalized, LessThan, LessThanOrEqual, NamedExpression, Remainder}
+import org.apache.spark.sql.catalyst.expressions.{Divide, DoubleLiteral, EqualNullSafe, EqualTo, Expression, FloatLiteral, GreaterThan, GreaterThanOrEqual, KnownFloatingPointNormalized, LessThan, LessThanOrEqual, NamedExpression, Remainder, SortOrder}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateMode, Final, Partial, PartialMerge}
 import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
+import org.apache.spark.sql.catalyst.plans.{JoinType, LeftAnti, LeftSemi}
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.trees.TreeNodeTag
 import org.apache.spark.sql.catalyst.util.sideBySide
@@ -33,7 +34,7 @@ import org.apache.spark.sql.comet.execution.arrow.ArrowCachedBatchSerializer
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution._
-import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, BroadcastQueryStageExec, ShuffleQueryStageExec}
+import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, BroadcastQueryStageExec, QueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec}
 import org.apache.spark.sql.execution.columnar.InMemoryTableScanExec
 import org.apache.spark.sql.execution.command.{DataWritingCommandExec, ExecutedCommandExec}
@@ -45,8 +46,8 @@ import org.apache.spark.sql.execution.datasources.v2.{BatchScanExec, V2CommandEx
 import org.apache.spark.sql.execution.datasources.v2.csv.CSVScan
 import org.apache.spark.sql.execution.datasources.v2.json.JsonScan
 import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
-import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
-import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, ShuffledHashJoinExec, SortMergeJoinExec}
+import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, BroadcastExchangeLike, ReusedExchangeExec, ShuffleExchangeExec, ShuffleExchangeLike}
+import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, HashJoin, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
@@ -68,6 +69,9 @@ object CometExecRule {
    */
   val COMET_UNSAFE_PARTIAL: TreeNodeTag[String] =
     TreeNodeTag[String]("comet.unsafePartialAgg")
+
+  private[rules] val UNSAFE_EXPRESSION_EVALUATION: TreeNodeTag[String] =
+    TreeNodeTag[String]("comet.unsafeExpressionEvaluation")
 
   /**
    * Fully native operators.
@@ -271,6 +275,9 @@ case class CometExecRule(session: SparkSession)
   // spotless:on
   private def transform(plan: SparkPlan): SparkPlan = {
     def convertNode(op: SparkPlan): SparkPlan = op match {
+      case op if op.getTagValue(CometExecRule.UNSAFE_EXPRESSION_EVALUATION).isDefined =>
+        withFallbackReason(op, op.getTagValue(CometExecRule.UNSAFE_EXPRESSION_EVALUATION).get)
+
       // Scan marker produced by an optional, out-of-tree scan contrib (e.g. contrib/delta).
       // Matched by trait (no compile-time dependency on the contrib) and present only when that
       // contrib is on the classpath. The marker carries its own serde handler and typically wraps
@@ -659,9 +666,10 @@ case class CometExecRule(session: SparkSession)
       // corresponding Final aggregate cannot be converted and the intermediate buffer
       // formats are incompatible. This runs before transform() so the tags are checked
       // during the bottom-up conversion. Tags persist through AQE stage creation.
-      tagUnsafePartialAggregates(planWithJoinRewritten)
+      val planWithEvaluationMasks = preserveEvaluationMasks(planWithJoinRewritten)
+      tagUnsafePartialAggregates(planWithEvaluationMasks)
 
-      var newPlan = transform(planWithJoinRewritten)
+      var newPlan = transform(planWithEvaluationMasks)
 
       // if the plan cannot be run fully natively then explain why (when appropriate
       // config is enabled)
@@ -757,6 +765,173 @@ case class CometExecRule(session: SparkSession)
           op
       }
     }
+  }
+
+  /** Keep opted-in expressions in Spark's row pipeline where an operator can skip inputs. */
+  private def preserveEvaluationMasks(plan: SparkPlan): SparkPlan = {
+    def findEvaluationMaskName(expr: Expression): Option[String] = {
+      var name: Option[String] = None
+      expr.exists { child =>
+        name = QueryPlanSerde.evaluationMaskName(child)
+        name.isDefined
+      }
+      name
+    }
+
+    def firstMatch(joinType: JoinType): Boolean = joinType match {
+      case LeftSemi | LeftAnti => true
+      case _ => false
+    }
+
+    // A reused native Final may need to fall back along with its incompatible Partial buffer.
+    // Restore only that buffer-producing chain so tagUnsafePartialAggregates can protect it.
+    // Do not cross a materialized query stage or descend below the input of a pure Partial.
+    def restoreNativeAggregateBuffers(node: SparkPlan): Option[SparkPlan] = {
+      val original = node match {
+        case agg: CometHashAggregateExec => agg.originalPlan
+        case shuffle: CometShuffleExchangeExec => shuffle.originalPlan
+        case _ => node
+      }
+      def restore(children: Seq[SparkPlan]): SparkPlan = {
+        val restored = original.withNewChildren(children)
+        node.getTagValue(SparkPlan.LOGICAL_PLAN_TAG).foreach(restored.setLogicalLink)
+        restored
+      }
+      original match {
+        case agg: BaseAggregateExec
+            if agg.aggregateExpressions.nonEmpty &&
+              agg.aggregateExpressions.forall(_.mode == Partial) =>
+          if (original ne node) Some(restore(node.children)) else None
+        case agg: BaseAggregateExec
+            if agg.aggregateExpressions.forall(e =>
+              e.mode == Partial || e.mode == PartialMerge) =>
+          restoreNativeAggregateBuffers(node.children.head).map(child => restore(Seq(child)))
+        case _: ShuffleExchangeLike =>
+          restoreNativeAggregateBuffers(node.children.head).map(child => restore(Seq(child)))
+        case _ => None
+      }
+    }
+
+    def protect(
+        node: SparkPlan,
+        belowLimit: Boolean,
+        hasLimitAncestor: Boolean): (SparkPlan, Option[String]) = {
+      val original = node match {
+        case scan: CometScanExec =>
+          scan.wrapped
+            .copy(partitionFilters = scan.partitionFilters, dataFilters = scan.dataFilters)
+        case comet: CometExec => comet.originalPlan
+        case shuffle: CometShuffleExchangeExec => shuffle.originalPlan
+        case broadcast: CometBroadcastExchangeExec => broadcast.originalPlan
+        case _ => node
+      }
+      val startsLimit = original match {
+        // Offset-only collection does not stop its input early.
+        case collect: CollectLimitExec => collect.limit >= 0
+        case _: LocalLimitExec | _: GlobalLimitExec => true
+        case topK: TakeOrderedAndProjectExec =>
+          SortOrder.orderingSatisfies(node.children.head.outputOrdering, topK.sortOrder)
+        case windowLimit
+            if ShimCometWindowGroupLimit.windowGroupLimitClass.exists(
+              _.isInstance(windowLimit)) =>
+          // Partitioned limits drain each group, but an outer LIMIT can still stop them.
+          // Keep the conservative behavior if a future rank function cannot be extracted.
+          ShimCometWindowGroupLimit.extract(windowLimit).forall(_.partitionSpec.isEmpty) &&
+          SortOrder.orderingSatisfies(
+            node.children.head.outputOrdering,
+            windowLimit.requiredChildOrdering.head)
+        case _ => false
+      }
+      // These operators consume their input before yielding rows. Still visit their children:
+      // an inner LocalLimit below an exchange must establish its own evaluation boundary.
+      val materializesInput = original match {
+        case _: SortExec | _: HashAggregateExec | _: ObjectHashAggregateExec |
+            _: ShuffleExchangeLike | _: BroadcastExchangeLike | _: QueryStageExec |
+            _: ReusedExchangeExec =>
+          true
+        case _ => false
+      }
+      // A top-K is still a LIMIT even when its current input requires sorting.
+      val limitAncestor = hasLimitAncestor || startsLimit ||
+        original.isInstanceOf[TakeOrderedAndProjectExec]
+      val protectedChildren = node.children.map { child =>
+        protect(child, startsLimit || (belowLimit && !materializesInput), limitAncestor)
+      }
+      val childReason = protectedChildren.flatMap(_._2).headOption
+      val condition = original match {
+        case join: HashJoin if firstMatch(join.joinType) => join.condition
+        case join: SortMergeJoinExec if firstMatch(join.joinType) => join.condition
+        case join: BroadcastNestedLoopJoinExec if firstMatch(join.joinType) => join.condition
+        case _ => None
+      }
+      val finalAggregate = original match {
+        case agg: BaseAggregateExec
+            if (agg.isInstanceOf[HashAggregateExec] ||
+              agg.isInstanceOf[ObjectHashAggregateExec]) &&
+              agg.aggregateExpressions.map(_.mode).distinct == Seq(Final) =>
+          Some(agg)
+        case _ => None
+      }
+      val limitName = if (belowLimit) {
+        // Final merges buffers; it does not reevaluate the aggregate's original inputs.
+        val expressions = finalAggregate.map(_.resultExpressions).getOrElse(original.expressions)
+        expressions.iterator.flatMap(findEvaluationMaskName).take(1).toSeq.headOption
+      } else {
+        None
+      }
+      // AQE can remove an intervening sort after a native Partial has materialized. Choose
+      // compatible buffers before that happens, even if a current operator drains its input.
+      val aggregateBufferName = if (hasLimitAncestor && conf.adaptiveExecutionEnabled) {
+        finalAggregate
+          .filterNot(agg => QueryPlanSerde.allAggsSupportMixedExecution(agg.aggregateExpressions))
+          .flatMap(
+            _.resultExpressions.iterator.flatMap(findEvaluationMaskName).take(1).toSeq.headOption)
+      } else {
+        None
+      }
+      val ownReason = limitName
+        .map(name => s"$name requires Spark evaluation below LIMIT")
+        .orElse(aggregateBufferName.map(name =>
+          s"$name requires Spark aggregate buffers below LIMIT with AQE"))
+        .orElse(
+          condition
+            .flatMap(findEvaluationMaskName)
+            .map(name => s"$name requires Spark evaluation in first-match join conditions"))
+        .orElse(node.getTagValue(CometExecRule.UNSAFE_EXPRESSION_EVALUATION))
+      // Exchanges can restart native execution after consuming a Spark row pipeline.
+      val restartsNative = original.isInstanceOf[ShuffleExchangeLike] ||
+        original.isInstanceOf[BroadcastExchangeLike]
+      val reason = ownReason.orElse(if (restartsNative) None else childReason)
+      val children = protectedChildren.map(_._1).map { child =>
+        original match {
+          case agg: BaseAggregateExec
+              if reason.isDefined && agg.aggregateExpressions.map(_.mode).distinct == Seq(
+                Final) &&
+                !QueryPlanSerde.allAggsSupportMixedExecution(agg.aggregateExpressions) =>
+            restoreNativeAggregateBuffers(child).getOrElse(child)
+          case _ => child
+        }
+      }
+      val prepared = node match {
+        // Do not refill a batch between the row decoder and its short-circuiting consumer.
+        case _: RowToColumnarExec | _: CometSparkToColumnarExec if childReason.isDefined =>
+          children.head
+        case _: ColumnarToRowExec | _: CometColumnarToRowExec | _: CometNativeColumnarToRowExec
+            if childReason.isDefined && !children.head.supportsColumnar =>
+          children.head
+        case _ if (original ne node) && (reason.isDefined || children != node.children) =>
+          // AQE can reuse an existing native subtree. Rebuild affected ancestors as well so
+          // their serialized native plans do not retain the decoder that just fell back.
+          val restored = original.withNewChildren(children)
+          node.getTagValue(SparkPlan.LOGICAL_PLAN_TAG).foreach(restored.setLogicalLink)
+          restored
+        case _ => node.withNewChildren(children)
+      }
+      reason.foreach(prepared.setTagValue(CometExecRule.UNSAFE_EXPRESSION_EVALUATION, _))
+      (prepared, reason)
+    }
+
+    protect(plan, belowLimit = false, hasLimitAncestor = false)._1
   }
 
   /** Convert a Spark plan to a Comet plan using the specified serde handler */
@@ -1101,6 +1276,8 @@ case class CometExecRule(session: SparkSession)
   private def canAggregateBeConverted(
       agg: BaseAggregateExec,
       expectedMode: AggregateMode): Boolean = {
+    if (agg.getTagValue(CometExecRule.UNSAFE_EXPRESSION_EVALUATION).isDefined) return false
+
     val handler = allExecs.get(agg.getClass)
     if (handler.isEmpty) return false
     val serde = handler.get.asInstanceOf[CometOperatorSerde[SparkPlan]]

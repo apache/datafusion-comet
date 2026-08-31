@@ -392,6 +392,24 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       temporalExpressions ++ conversionExpressions ++ urlExpressions ++ jsonExpressions ++
       csvExpressions ++ xpathExpressions
 
+  // Cache enrollment, not the per-instance policy result. Include subclasses because a whole-tree
+  // JVM dispatcher can evaluate them without serializing each child through the exact-class map.
+  // Unmarked subclasses cannot opt out of an ancestor's protection. If several marked classes
+  // match, any Some result requires protection; class-name order only chooses the explanation.
+  private val evaluationMaskSerdes = exprSerdeMap.toSeq
+    .collect { case (exprClass, serde: RequiresSparkEvaluationMask[_]) =>
+      exprClass -> serde.asInstanceOf[RequiresSparkEvaluationMask[Expression]]
+    }
+    .sortBy(_._1.getName)
+
+  private[comet] def evaluationMaskName(expr: Expression): Option[String] =
+    evaluationMaskSerdes.iterator
+      .filter { case (exprClass, _) => exprClass.isInstance(expr) }
+      .flatMap { case (_, serde) => serde.evaluationMaskName(expr) }
+      .take(1)
+      .toSeq
+      .headOption
+
   /**
    * Mapping of Spark aggregate expression class to Comet expression handler.
    */
