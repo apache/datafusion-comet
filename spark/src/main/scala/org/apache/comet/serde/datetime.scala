@@ -27,7 +27,6 @@ import org.apache.spark.sql.types.{CalendarIntervalType, DataType, DateType, Dou
 import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
 import org.apache.comet.serde.CometGetDateField.CometGetDateField
 import org.apache.comet.serde.ExprOuterClass.Expr
@@ -324,12 +323,7 @@ object CometUnixTimestamp extends CometExpressionSerde[UnixTimestamp] {
       expr: UnixTimestamp,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    if (!isSupportedInputType(expr)) {
-      val inputType = expr.children.head.dataType
-      withFallbackReason(expr, s"unix_timestamp does not support input type: $inputType")
-      return None
-    }
-
+    // getSupportLevel reports an unsupported input type before reaching here, so no re-check.
     val childExpr = exprToProtoInternal(expr.children.head, inputs, binding)
 
     if (childExpr.isDefined) {
