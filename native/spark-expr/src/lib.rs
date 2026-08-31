@@ -33,7 +33,6 @@ pub use struct_funcs::{CreateNamedStruct, GetStructField};
 mod csv_funcs;
 mod json_funcs;
 pub mod test_common;
-pub mod timezone;
 mod unbound;
 pub use unbound::UnboundColumn;
 mod predicate_funcs;
@@ -85,11 +84,11 @@ pub use error::{decimal_overflow_error, SparkError, SparkErrorWithContext, Spark
 pub use hash_funcs::*;
 pub use json_funcs::{FromJson, ToJson};
 pub use math_funcs::{
-    checked_add, checked_div, checked_mul, checked_sub, create_modulo_expr, create_negate_expr,
-    spark_ceil, spark_decimal_div, spark_decimal_integral_div, spark_floor, spark_log,
-    spark_make_decimal, spark_pow, spark_round, spark_unhex, spark_unscaled_value, CheckOverflow,
-    DecimalRescaleCheckOverflow, NegativeExpr, NormalizeNaNAndZero, WideDecimalBinaryExpr,
-    WideDecimalOp,
+    abs, checked_add, checked_div, checked_mul, checked_sub, create_modulo_expr,
+    create_negate_expr, spark_ceil, spark_decimal_div, spark_decimal_integral_div, spark_floor,
+    spark_log, spark_make_decimal, spark_modulo, spark_pow, spark_round, spark_unhex,
+    spark_unscaled_value, CheckOverflow, DecimalRescaleCheckOverflow, NegativeExpr,
+    NormalizeNaNAndZero, WideDecimalBinaryExpr, WideDecimalOp,
 };
 pub use query_context::{create_query_context_map, QueryContext, QueryContextMap};
 pub use string_funcs::*;

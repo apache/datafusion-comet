@@ -37,6 +37,8 @@ mod csv_scan;
 pub mod projection;
 mod sample;
 pub use sample::SampleExec;
+mod rank_limit;
+pub use rank_limit::{PartitionedRankLimitExec, WindowFnKind};
 mod scan;
 mod shuffle_scan;
 pub use csv_scan::init_csv_datasource_exec;

@@ -531,6 +531,22 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     }
   }
 
+  /**
+   * Attach a fresh `expr_id` and, when the expression's origin carries one, its `QueryContext` to
+   * `protoExpr`. Native ANSI errors resolve their context by the `expr_id` of the `Expr` that
+   * throws (see `register_query_context` and `ListExtract` in the native planner), so the
+   * metadata has to sit on that `Expr`. The generic serde path applies this to the top-level
+   * `Expr` it returns; a serde that nests a throwing expression inside a wrapper (e.g.
+   * `CometElementAt`'s CASE-WHEN NULL guard) must also call it on the inner `Expr`, or that
+   * expression's error renders without Spark's `== SQL ... ==` query context.
+   */
+  private[serde] def attachExprIdAndContext(expr: Expression, protoExpr: Expr): Expr = {
+    val builder = protoExpr.toBuilder
+    builder.setExprId(nextExprId())
+    extractQueryContext(expr).foreach(builder.setQueryContext)
+    builder.build()
+  }
+
   def supportedDataType(dt: DataType, allowComplex: Boolean = false): Boolean = dt match {
     case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
         _: DoubleType | _: StringType | _: BinaryType | _: TimestampType | _: TimestampNTZType |
@@ -553,7 +569,19 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
    * doesn't mean it is supported by Comet native execution, i.e., `supportedDataType` may return
    * false for it.
    */
-  def serializeDataType(dt: org.apache.spark.sql.types.DataType): Option[Types.DataType] = {
+  def serializeDataType(dt: org.apache.spark.sql.types.DataType): Option[Types.DataType] =
+    serializeDataType(dt, None, Seq.empty, includeFieldIds = true)
+
+  /**
+   * Preserves collection field IDs stored on the nearest Catalyst StructField when serializing a
+   * Parquet write schema. Delta stores synthetic list and map IDs under paths relative to that
+   * field, and resets the path whenever a nested struct introduces a new StructField.
+   */
+  private[comet] def serializeDataType(
+      dt: org.apache.spark.sql.types.DataType,
+      parentField: Option[StructField],
+      fieldPath: Seq[String],
+      includeFieldIds: Boolean): Option[Types.DataType] = {
     val typeId = dt match {
       case _: BooleanType => 0
       case _: ByteType => 1
@@ -595,7 +623,9 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
         builder.setTypeInfo(info.build()).build()
 
       case a: ArrayType =>
-        val elementType = serializeDataType(a.elementType)
+        val elementPath = fieldPath :+ "element"
+        val elementType =
+          serializeDataType(a.elementType, parentField, elementPath, includeFieldIds)
 
         if (elementType.isEmpty) {
           return None
@@ -605,17 +635,21 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
         val list = ListInfo.newBuilder()
         list.setElementType(elementType.get)
         list.setContainsNull(a.containsNull)
+        nestedParquetFieldId(parentField, elementPath, includeFieldIds)
+          .foreach(list.setElementFieldId)
 
         info.setList(list)
         builder.setTypeInfo(info.build()).build()
 
       case m: MapType =>
-        val keyType = serializeDataType(m.keyType)
+        val keyPath = fieldPath :+ "key"
+        val keyType = serializeDataType(m.keyType, parentField, keyPath, includeFieldIds)
         if (keyType.isEmpty) {
           return None
         }
 
-        val valueType = serializeDataType(m.valueType)
+        val valuePath = fieldPath :+ "value"
+        val valueType = serializeDataType(m.valueType, parentField, valuePath, includeFieldIds)
         if (valueType.isEmpty) {
           return None
         }
@@ -625,6 +659,8 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
         map.setKeyType(keyType.get)
         map.setValueType(valueType.get)
         map.setValueContainsNull(m.valueContainsNull)
+        nestedParquetFieldId(parentField, keyPath, includeFieldIds).foreach(map.setKeyFieldId)
+        nestedParquetFieldId(parentField, valuePath, includeFieldIds).foreach(map.setValueFieldId)
 
         info.setMap(map)
         builder.setTypeInfo(info.build()).build()
@@ -634,7 +670,11 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
         val struct = StructInfo.newBuilder()
 
         val fieldNames = s.map(_.name).asJava
-        val fieldDatatypes = s.map(f => serializeDataType(f.dataType))
+        val fieldDatatypes = s.map { field =>
+          val nestedParentField = parentField.map(_ => field)
+          val nestedFieldPath = if (nestedParentField.isDefined) Seq(field.name) else Seq.empty
+          serializeDataType(field.dataType, nestedParentField, nestedFieldPath, includeFieldIds)
+        }
         val fieldNullable = s.map(f => Boolean.box(f.nullable)).asJava
 
         if (fieldDatatypes.exists(_.isEmpty)) {
@@ -646,7 +686,8 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
         struct.addAllFieldNullable(fieldNullable)
 
         val fieldIds = s.fields.map { f =>
-          if (ParquetUtils.hasFieldId(f)) Some(ParquetUtils.getFieldId(f)) else None
+          if (includeFieldIds && ParquetUtils.hasFieldId(f)) Some(ParquetUtils.getFieldId(f))
+          else None
         }
         if (fieldIds.exists(_.isDefined)) {
           // Emit one FieldMetadata entry per nested field, parallel to field_names. Entries
@@ -666,6 +707,30 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     }
 
     Some(dataType)
+  }
+
+  private def nestedParquetFieldId(
+      parentField: Option[StructField],
+      fieldPath: Seq[String],
+      includeFieldIds: Boolean): Option[Int] = {
+    val nestedIdsMetadataKey = "parquet.field.nested.ids"
+    if (!includeFieldIds) {
+      None
+    } else {
+      parentField.flatMap { field =>
+        if (field.metadata.contains(nestedIdsMetadataKey)) {
+          val nestedIds = field.metadata.getMetadata(nestedIdsMetadataKey)
+          val nestedPath = fieldPath.mkString(".")
+          if (nestedIds.contains(nestedPath)) {
+            Some(Math.toIntExact(nestedIds.getLong(nestedPath)))
+          } else {
+            None
+          }
+        } else {
+          None
+        }
+      }
+    }
   }
 
   def aggExprToProto(
@@ -955,12 +1020,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
           withNativeExpr(expr, CometExplainInfo.exprDisplayName(expr))
         }
         // Attach QueryContext and expr_id to the expression
-        val builder = protoExpr.toBuilder
-        builder.setExprId(nextExprId())
-        extractQueryContext(expr).foreach { ctx =>
-          builder.setQueryContext(ctx)
-        }
-        builder.build()
+        attachExprIdAndContext(expr, protoExpr)
       }
   }
 

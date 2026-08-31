@@ -29,11 +29,13 @@ import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.trees.TreeNodeTag
 import org.apache.spark.sql.catalyst.util.sideBySide
 import org.apache.spark.sql.comet._
+import org.apache.spark.sql.comet.execution.arrow.ArrowCachedBatchSerializer
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, BroadcastQueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec}
+import org.apache.spark.sql.execution.columnar.InMemoryTableScanExec
 import org.apache.spark.sql.execution.command.{DataWritingCommandExec, ExecutedCommandExec}
 import org.apache.spark.sql.execution.datasources.WriteFilesExec
 import org.apache.spark.sql.execution.datasources.csv.CSVFileFormat
@@ -55,7 +57,7 @@ import org.apache.comet.CometSparkSessionExtensions._
 import org.apache.comet.rules.CometExecRule.allExecs
 import org.apache.comet.serde._
 import org.apache.comet.serde.operator._
-import org.apache.comet.shims.{ShimCometStreaming, ShimSubqueryBroadcast}
+import org.apache.comet.shims.{ShimCometStreaming, ShimCometWindowGroupLimit, ShimSubqueryBroadcast}
 
 object CometExecRule {
 
@@ -71,7 +73,7 @@ object CometExecRule {
    * Fully native operators.
    */
   val nativeExecs: Map[Class[_ <: SparkPlan], CometOperatorSerde[_]] =
-    Map(
+    Map[Class[_ <: SparkPlan], CometOperatorSerde[_]](
       classOf[ProjectExec] -> CometProjectExec,
       classOf[FilterExec] -> CometFilterExec,
       classOf[LocalLimitExec] -> CometLocalLimitExec,
@@ -86,8 +88,11 @@ object CometExecRule {
       classOf[SortMergeJoinExec] -> CometSortMergeJoinExec,
       classOf[SortExec] -> CometSortExec,
       classOf[LocalTableScanExec] -> CometLocalTableScanExec,
+      classOf[InMemoryTableScanExec] -> CometInMemoryTableScanExec,
       classOf[SampleExec] -> CometSampleExec,
-      classOf[WindowExec] -> CometWindowExec)
+      classOf[WindowExec] -> CometWindowExec) ++
+      // WindowGroupLimitExec exists only on Spark 3.5+; the shim returns None on 3.4.
+      ShimCometWindowGroupLimit.windowGroupLimitClass.map(_ -> CometWindowGroupLimitExec)
 
   /**
    * Sinks that have a native plan of ScanExec.
@@ -266,6 +271,15 @@ case class CometExecRule(session: SparkSession)
   // spotless:on
   private def transform(plan: SparkPlan): SparkPlan = {
     def convertNode(op: SparkPlan): SparkPlan = op match {
+      // Scan marker produced by an optional, out-of-tree scan contrib (e.g. contrib/delta).
+      // Matched by trait (no compile-time dependency on the contrib) and present only when that
+      // contrib is on the classpath. The marker carries its own serde handler and typically wraps
+      // the original, link-bearing scan, so the produced exec's originalPlan keeps its logicalLink
+      // with no workaround. If conversion declines, the marker itself falls back to the vanilla
+      // Spark scan, so leaving it in the plan is safe.
+      case marker: CometContribScanMarker =>
+        convertToComet(marker, marker.scanHandler).getOrElse(marker)
+
       // Fully native scan for V1. CometScanExec must always convert to a native scan; the JVM
       // fallback path has been removed. If conversion fails, fall back to the original Spark scan.
       case scan: CometScanExec =>
@@ -284,6 +298,48 @@ case class CometExecRule(session: SparkSession)
       case op if isCometScan(op) =>
         convertToComet(op, CometScanWrapper).getOrElse(op)
 
+      case scan: InMemoryTableScanExec =>
+        val serializer = scan.relation.cacheBuilder.serializer
+        val usesCometCacheSerializer = serializer.isInstanceOf[ArrowCachedBatchSerializer]
+        // The serializer only stores Comet's Arrow format for schemas it supports and delegates
+        // everything else to Spark's default cache format, which the native scan cannot read.
+        val cometCacheFormat = usesCometCacheSerializer &&
+          ArrowCachedBatchSerializer.supportsSchema(scan.relation.output)
+        val nativeCacheEnabled = CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.get(conf)
+
+        if (nativeCacheEnabled && cometCacheFormat) {
+          convertToComet(scan, CometInMemoryTableScanExec).getOrElse(scan)
+        } else {
+          // The native cache scan is not available for this relation. Record why, then take the
+          // same SparkToColumnar fallback that any other unsupported operator would take, so
+          // that turning the feature on is never worse for a scan than leaving it off.
+          if (nativeCacheEnabled && !usesCometCacheSerializer) {
+            withFallbackReason(
+              scan,
+              s"Comet in-memory cache requires ${classOf[ArrowCachedBatchSerializer].getName} " +
+                s"but this relation was cached with ${serializer.getClass.getName}")
+          } else if (nativeCacheEnabled) {
+            val unsupported = scan.relation.output
+              .filterNot(a => ArrowCachedBatchSerializer.supportsType(a.dataType))
+              .map(a => s"${a.name}: ${a.dataType.simpleString}")
+            withFallbackReason(
+              scan,
+              "Comet in-memory cache does not support the type of these cached columns, so the " +
+                s"relation was cached in Spark's default format: ${unsupported.mkString(", ")}")
+          } else if (usesCometCacheSerializer) {
+            withFallbackReason(
+              scan,
+              "Native support for operator InMemoryTableScanExec is disabled. " +
+                s"Set ${CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key}=true to enable it.")
+          }
+
+          if (shouldApplySparkToColumnar(conf, scan)) {
+            convertToComet(scan, CometSparkToColumnarExec).getOrElse(scan)
+          } else {
+            scan
+          }
+        }
+
       case op if shouldApplySparkToColumnar(conf, op) =>
         convertToComet(op, CometSparkToColumnarExec).getOrElse(op)
 
@@ -297,6 +353,9 @@ case class CometExecRule(session: SparkSession)
 
       case op: DataWritingCommandExec =>
         convertToComet(op, CometDataWritingCommand).getOrElse(op)
+
+      case op: IcebergWriteExec if CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.get(op.conf) =>
+        convertToComet(op, CometIcebergNativeWrite).getOrElse(op)
 
       // For AQE broadcast stage on a Comet broadcast exchange
       case s @ BroadcastQueryStageExec(_, _: CometBroadcastExchangeExec, _) =>
