@@ -79,7 +79,7 @@ object CometNativeUDF {
     }
     validateLibrary(libraryPath, name)
     val meta = NativeUdfMetadata(libraryPath, inputTypes, returnType, deterministic)
-    CometNativeUdfRegistry.instance.register(name, meta)
+    CometNativeUdfRegistry.register(name, meta)
     // Last, because this is the step that makes the name resolvable to Spark's analyzer. A query
     // planned against a resolvable name that has no registry entry yet would route the call to the
     // JVM codegen dispatcher and hit the stub's "not evaluated" exception, so the registry entry

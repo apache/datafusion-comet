@@ -64,7 +64,7 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
     // registration would have to be identified some other way to fix that, since the closure Spark
     // holds for the catalog stub is one `functions.udf` wrapped rather than the one Comet passed
     // in. See https://github.com/apache/datafusion-comet/issues/5295.
-    expr.udfName.flatMap(CometNativeUdfRegistry.instance.get) match {
+    expr.udfName.flatMap(CometNativeUdfRegistry.get) match {
       case Some(meta) =>
         emitNativeScalarUdf(expr, meta.libraryPath, meta.returnType, inputs, binding)
       case None =>

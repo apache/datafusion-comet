@@ -65,5 +65,13 @@ object CometNativeUdfRegistry {
    * [[https://github.com/apache/datafusion-comet/issues/5294]] for the scoping and
    * [[https://github.com/apache/datafusion-comet/issues/5295]] for the name collision.
    */
-  lazy val instance: CometNativeUdfRegistry = new CometNativeUdfRegistry
+  private lazy val instance: CometNativeUdfRegistry = new CometNativeUdfRegistry
+
+  /** Register or replace metadata for a name on the process-wide registry. */
+  def register(name: String, meta: NativeUdfMetadata): Unit =
+    instance.register(name, meta)
+
+  /** Return metadata for a name from the process-wide registry, if registered. */
+  def get(name: String): Option[NativeUdfMetadata] =
+    instance.get(name)
 }
