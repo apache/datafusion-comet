@@ -15,21 +15,27 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Confirms Comet falls back to Spark when a parquet scan's schema contains a
--- VariantType column. VariantType is a Spark 4.0+ data type that Comet does
--- not currently support, so any scan exposing it must be executed by Spark.
+-- Confirms direct top-level VariantType projection through Comet's ordinary
+-- native Parquet scan. Expressions, operators, nested Variant, and Iceberg
+-- remain unsupported.
 
 -- MinSparkVersion: 4.0
+-- Config: spark.sql.variant.writeShredding.enabled=false
+-- Config: spark.sql.variant.pushVariantIntoScan=false
+-- Config: spark.sql.variant.allowReadingShredded=true
+-- Config: spark.sql.variant.forceShreddingSchemaForTest=k00 BIGINT
 
 statement
 CREATE TABLE test_variant(id INT, v VARIANT, tail STRING) USING parquet
 
 statement
 INSERT INTO test_variant VALUES
-  (1, parse_json('{"a": 1, "b": "hello"}'), 'first'),
-  (2, parse_json('{"a": 2, "b": "world"}'), NULL),
-  (3, parse_json('null'), 'variant-null'),
-  (4, NULL, 'sql-null')
+  (1, parse_json('{"b": "hello", "a": 1}'), 'object'),
+  (2, parse_json('[1, true, "x"]'), 'array'),
+  (3, parse_json('42'), 'scalar'),
+  (4, parse_json('null'), 'json-null'),
+  (5, CAST(NULL AS VARIANT), 'sql-null'),
+  (6, parse_json('{"":1,"nested":{"":2}}'), 'empty-key')
 
 -- A plain Parquet scan can remain native when its required schema prunes the
 -- Variant column completely, including both SQL NULL and Variant null values.
@@ -43,8 +49,31 @@ SELECT tail FROM test_variant ORDER BY id
 query
 SELECT id, tail FROM test_variant WHERE tail IS NOT NULL ORDER BY id
 
+-- Full-value projection is scan-only: no native expression or pass-through operator carries v.
+query
+SELECT v FROM test_variant
+
+query
+SELECT id, v, tail FROM test_variant
+
+-- Spark's pushed VariantStruct remains an explicit fallback in Phase A.
+statement
+SET spark.sql.variant.pushVariantIntoScan=true
+
+query expect_fallback(rewritten by spark.sql.variant.pushVariantIntoScan)
+SELECT v FROM test_variant
+
+statement
+SET spark.sql.variant.pushVariantIntoScan=false
+
 query expect_fallback(type VariantType)
-SELECT id, v FROM test_variant ORDER BY id
+SELECT v FROM test_variant ORDER BY id
+
+query expect_fallback(type VariantType)
+SELECT v FROM test_variant LIMIT 1
+
+query expect_fallback(type VariantType)
+SELECT /*+ REPARTITION(2, id) */ id, v FROM test_variant
 
 query expect_fallback(type VariantType)
 SELECT variant_get(v, '$.a', 'int') AS a FROM test_variant ORDER BY id
@@ -54,6 +83,92 @@ SELECT id FROM test_variant WHERE variant_get(v, '$.a', 'int') = 1
 
 query expect_fallback(type VariantType)
 SELECT COUNT(*) FROM test_variant WHERE v IS NOT NULL
+
+query expect_fallback(type VariantType)
+SELECT CAST(v AS STRING) FROM test_variant
+
+-- A Variant existence default is read from Spark's table schema and applied only when an old
+-- Parquet file does not contain the column. variant_get remains a Spark expression, while the
+-- ordinary Parquet scan and missing-column substitution stay native.
+statement
+CREATE TABLE test_variant_defaults_sql(id INT) USING parquet
+
+statement
+INSERT INTO test_variant_defaults_sql VALUES (1)
+
+statement
+ALTER TABLE test_variant_defaults_sql ADD COLUMNS(
+  v VARIANT DEFAULT parse_json('{"a":1}'), n INT DEFAULT 7)
+
+statement
+INSERT INTO test_variant_defaults_sql VALUES (2, parse_json('{"a":2}'), 8)
+
+statement
+SET spark.sql.parquet.enableVectorizedReader=false
+
+statement
+SET spark.comet.scan.allowDisabledParquetVectorizedReader=true
+
+query expect_fallback(type VariantType)
+SELECT id, variant_get(v, '$.a', 'int') AS a, n
+FROM test_variant_defaults_sql ORDER BY id
+
+statement
+SET spark.sql.parquet.enableVectorizedReader=true
+
+statement
+SET spark.comet.scan.allowDisabledParquetVectorizedReader=false
+
+-- Arrow and Spark order supplementary Unicode object keys differently. Force top-level and nested
+-- shredded fields so the native scan reconstructs their residual values before Spark's lookup.
+statement
+SET spark.sql.variant.forceShreddingSchemaForTest=k00 BIGINT, nested STRUCT<known: BIGINT>
+
+statement
+SET spark.sql.variant.writeShredding.enabled=true
+
+statement
+CREATE TABLE test_variant_unicode(v VARIANT) USING parquet
+
+statement
+INSERT INTO test_variant_unicode VALUES
+  (parse_json(
+    '{"k00":0,"k01":1,"k02":2,"k03":3,"k04":4,"k05":5,"k06":6,"k07":7,"k08":8,"k09":9,"k10":10,"k11":11,"k12":12,"k13":13,"k14":14,"k15":15,"k16":16,"k17":17,"k18":18,"k19":19,"k20":20,"k21":21,"k22":22,"k23":23,"k24":24,"k25":25,"k26":26,"k27":27,"k28":28,"k29":29,"\uE000":30,"😀":531}')),
+  (parse_json(
+    '{"":-2,"k00":0,"nested":{"known":99,"":-1,"k00":0,"k01":1,"k02":2,"k03":3,"k04":4,"k05":5,"k06":6,"k07":7,"k08":8,"k09":9,"k10":10,"k11":11,"k12":12,"k13":13,"k14":14,"k15":15,"k16":16,"k17":17,"k18":18,"k19":19,"k20":20,"k21":21,"k22":22,"k23":23,"k24":24,"k25":25,"k26":26,"k27":27,"k28":28,"k29":29,"\uE000":30,"😀":532}}'))
+
+statement
+SET spark.sql.variant.writeShredding.enabled=false
+
+statement
+SET spark.sql.variant.allowReadingShredded=true
+
+query
+SELECT v FROM test_variant_unicode
+
+query expect_fallback(type VariantType)
+SELECT variant_get(v, '$.😀', 'bigint'), variant_get(v, '$.nested.😀', 'bigint')
+FROM test_variant_unicode
+
+-- Spark rebuilds typed fields in physical shredding-schema order and chooses integer/decimal
+-- widths from the runtime value, independently of the Parquet physical width.
+statement
+SET spark.sql.variant.forceShreddingSchemaForTest=b BIGINT, a BIGINT, d DECIMAL(38,2)
+
+statement
+SET spark.sql.variant.writeShredding.enabled=true
+
+statement
+CREATE TABLE test_variant_typed_bytes(v VARIANT) USING parquet
+
+statement
+INSERT INTO test_variant_typed_bytes VALUES (parse_json('{"a":1,"b":2,"d":1.23}'))
+
+statement
+SET spark.sql.variant.writeShredding.enabled=false
+
+query
+SELECT v FROM test_variant_typed_bytes
 
 statement
 CREATE TABLE test_variant_struct(id INT, s STRUCT<safe: INT, v: VARIANT>, tail STRING)

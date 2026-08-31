@@ -24,6 +24,7 @@ import java.math.{BigDecimal, BigInteger}
 import java.time.{ZoneId, ZoneOffset}
 import java.util.{Base64, Collections}
 
+import scala.jdk.CollectionConverters._
 import scala.reflect.ClassTag
 import scala.reflect.runtime.universe.TypeTag
 
@@ -37,9 +38,10 @@ import org.apache.parquet.hadoop.example.ExampleParquetWriter
 import org.apache.parquet.io.api.Binary
 import org.apache.parquet.schema.MessageTypeParser
 import org.apache.spark.SparkException
-import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
+import org.apache.spark.sql.{AnalysisException, CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.util.DateTimeUtils
-import org.apache.spark.sql.comet.{CometNativeScanExec, CometScanExec}
+import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometNativeColumnarToRowExec, CometNativeScanExec, CometScanExec}
+import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
 import org.apache.spark.sql.internal.SQLConf
@@ -47,10 +49,21 @@ import org.apache.spark.sql.types._
 
 import com.google.common.primitives.UnsignedLong
 
-import org.apache.comet.CometConf
+import org.apache.comet.{CometConf, CometSparkSessionExtensions, ExtendedExplainInfo}
+import org.apache.comet.vector.CometStructVector
 
 abstract class ParquetReadSuite extends CometTestBase {
   import testImplicits._
+
+  private def normalizedVariantRows(df: DataFrame, variantOrdinal: Int): Seq[Seq[Any]] = {
+    df
+      .collect()
+      .map { row =>
+        row.toSeq.updated(variantOrdinal, Option(row.get(variantOrdinal)).map(_.toString).orNull)
+      }
+      .sortBy(_.map(value => Option(value).fold("0")(v => "1" + v.toString)).mkString("\u0000"))
+      .toSeq
+  }
 
   testStandardAndLegacyModes("decimals") {
     Seq(16, 1024).foreach { batchSize =>
@@ -82,6 +95,584 @@ abstract class ParquetReadSuite extends CometTestBase {
   test("simple count") {
     withParquetTable((0 until 10).map(i => (i, i.toString)), "tbl") {
       assert(sql("SELECT * FROM tbl WHERE _1 % 2 == 0").count() == 5)
+    }
+  }
+
+  test("native scan projects Variant through a Spark-compatible vector") {
+    assume(CometSparkSessionExtensions.isSpark40Plus, "VariantType requires Spark 4.0+")
+
+    Seq(false, true).foreach { shredded =>
+      withTable("variant_projection") {
+        withSQLConf(
+          CometConf.COMET_ENABLED.key -> "false",
+          "spark.sql.variant.writeShredding.enabled" -> shredded.toString,
+          "spark.sql.variant.forceShreddingSchemaForTest" -> "a BIGINT") {
+          sql("CREATE TABLE variant_projection(id INT, v VARIANT, tail STRING) USING parquet")
+          sql("""INSERT INTO variant_projection VALUES
+                |(1, parse_json('{"b": "hello", "a": 10}'), 'object'),
+                |(2, parse_json('[1, true, "x"]'), 'array'),
+                |(3, parse_json('42'), 'scalar'),
+                |(4, parse_json('null'), 'json-null'),
+                |(5, CAST(NULL AS VARIANT), 'sql-null')""".stripMargin)
+        }
+
+        val queries = Seq(
+          "SELECT v FROM variant_projection" -> 0,
+          "SELECT id, v, tail FROM variant_projection" -> 1)
+        var expected = Seq.empty[Seq[Seq[Any]]]
+        withSQLConf(
+          CometConf.COMET_ENABLED.key -> "false",
+          "spark.sql.variant.allowReadingShredded" -> "true") {
+          expected = queries.map { case (query, variantOrdinal) =>
+            normalizedVariantRows(sql(query), variantOrdinal)
+          }
+        }
+
+        // Phase A handles only whole values; Spark's pushed VariantStruct remains a fallback.
+        withSQLConf(
+          CometConf.COMET_NATIVE_COLUMNAR_TO_ROW_ENABLED.key -> "true",
+          "spark.sql.variant.allowReadingShredded" -> "true",
+          "spark.sql.variant.pushVariantIntoScan" -> "false") {
+          val plans = queries.zip(expected).map { case ((query, variantOrdinal), expectedRows) =>
+            val df = sql(query)
+            assert(normalizedVariantRows(df, variantOrdinal) == expectedRows)
+            df.queryExecution.executedPlan
+          }
+
+          if (!shredded) {
+            queries.foreach { case (query, _) => checkSparkAnswerAndOperator(sql(query)) }
+          }
+
+          plans.foreach { cometPlan =>
+            assert(collect(cometPlan) { case _: CometNativeScanExec => true }.size == 1)
+            assert(collect(cometPlan) { case _: CometNativeColumnarToRowExec => true }.isEmpty)
+            assert(collect(cometPlan) { case _: CometColumnarToRowExec => true }.nonEmpty)
+          }
+
+          val scan = collect(plans.head) { case scan: CometNativeScanExec => scan }.head
+
+          val summaries = scan
+            .executeColumnar()
+            .mapPartitions { batches =>
+              batches.map { batch =>
+                try {
+                  val vector = batch.column(0)
+                  val struct = vector.asInstanceOf[CometStructVector]
+                  val field = struct.getValueVector.getField
+                  val getVariant = struct.getClass.getMethod("getVariant", Integer.TYPE)
+                  val values = (0 until batch.numRows()).map { rowId =>
+                    if (struct.isNullAt(rowId)) {
+                      None
+                    } else {
+                      Some(getVariant.invoke(struct, Int.box(rowId)).toString)
+                    }
+                  }
+                  (
+                    Utils.isVariantType(struct.dataType()),
+                    field.getName,
+                    field.isNullable,
+                    field.getMetadata.get("ARROW:extension:name"),
+                    field.getChildren.asScala.map(_.getName).toSeq,
+                    Seq(struct.getChild(0).dataType(), struct.getChild(1).dataType()),
+                    values)
+                } finally {
+                  batch.close()
+                }
+              }
+            }
+            .collect()
+
+          assert(summaries.nonEmpty)
+          summaries.foreach {
+            case (isVariant, name, nullable, extension, children, childTypes, _) =>
+              assert(isVariant)
+              assert(name == "v")
+              assert(nullable)
+              assert(extension == "arrow.parquet.variant")
+              assert(children == Seq("value", "metadata"))
+              assert(childTypes == Seq(BinaryType, BinaryType))
+          }
+          val values = summaries.flatMap(_._7)
+          assert(values.count(_.isEmpty) == 1)
+          assert(
+            values.flatten.toSet ==
+              Set("{\"a\":10,\"b\":\"hello\"}", "[1,true,\"x\"]", "42", "null"))
+        }
+      }
+    }
+  }
+
+  test("native scan projects an entirely null Variant column") {
+    assume(CometSparkSessionExtensions.isSpark40Plus, "VariantType requires Spark 4.0+")
+
+    Seq(false, true).foreach { shredded =>
+      withTable("variant_all_null") {
+        withSQLConf(
+          CometConf.COMET_ENABLED.key -> "false",
+          "spark.sql.variant.writeShredding.enabled" -> shredded.toString,
+          "spark.sql.variant.forceShreddingSchemaForTest" -> "a BIGINT") {
+          sql("CREATE TABLE variant_all_null(id INT, v VARIANT, tail STRING) USING parquet")
+          sql("""INSERT INTO variant_all_null VALUES
+                |(1, CAST(NULL AS VARIANT), 'first'),
+                |(2, CAST(NULL AS VARIANT), NULL),
+                |(3, CAST(NULL AS VARIANT), 'third')""".stripMargin)
+        }
+
+        val queries = Seq(
+          "SELECT v FROM variant_all_null" -> 0,
+          "SELECT id, v, tail FROM variant_all_null" -> 1)
+        var expected = Seq.empty[Seq[Seq[Any]]]
+        withSQLConf(
+          CometConf.COMET_ENABLED.key -> "false",
+          "spark.sql.variant.allowReadingShredded" -> "true") {
+          expected = queries.map { case (query, variantOrdinal) =>
+            normalizedVariantRows(sql(query), variantOrdinal)
+          }
+        }
+
+        withSQLConf(
+          "spark.sql.variant.allowReadingShredded" -> "true",
+          "spark.sql.variant.pushVariantIntoScan" -> "false") {
+          queries.zip(expected).foreach { case ((query, variantOrdinal), expectedRows) =>
+            val df = sql(query)
+            val rows = normalizedVariantRows(df, variantOrdinal)
+            assert(rows == expectedRows)
+            assert(rows.forall(_(variantOrdinal) == null))
+            assert(collect(df.queryExecution.executedPlan) { case _: CometNativeScanExec =>
+              true
+            }.size == 1)
+          }
+        }
+      }
+    }
+  }
+
+  test("native scan honors Spark's shredded Variant reader configuration") {
+    assume(CometSparkSessionExtensions.isSpark40Plus, "VariantType requires Spark 4.0+")
+
+    withTable("variant_reader_mode") {
+      withSQLConf(
+        CometConf.COMET_ENABLED.key -> "false",
+        "spark.sql.variant.allowReadingShredded" -> "true",
+        "spark.sql.variant.writeShredding.enabled" -> "true",
+        "spark.sql.variant.forceShreddingSchemaForTest" -> "a BIGINT") {
+        sql("CREATE TABLE variant_reader_mode(v VARIANT) USING parquet")
+        sql("INSERT INTO variant_reader_mode VALUES (parse_json('{\"a\":1}'))")
+      }
+
+      val key = "spark.sql.variant.allowReadingShredded"
+      val conf = SQLConf.get
+      val original = conf.getAllConfs.get(key)
+      try {
+        Seq(None, Some(false), Some(true)).foreach { configured =>
+          configured match {
+            case Some(value) => conf.setConfString(key, value.toString)
+            case None => conf.unsetConf(key)
+          }
+          val allowShredded = conf.getConfString(key).toBoolean
+
+          withSQLConf(
+            "spark.sql.variant.pushVariantIntoScan" -> "false",
+            "spark.sql.variant.inferShreddingSchema" -> "false") {
+            val result = sql("SELECT v FROM variant_reader_mode")
+            val nativeScans = collect(result.queryExecution.executedPlan) {
+              case _: CometNativeScanExec => true
+            }
+
+            if (allowShredded) {
+              assert(normalizedVariantRows(result, 0) == Seq(Seq("{\"a\":1}")))
+              assert(nativeScans.size == 1)
+            } else {
+              assert(nativeScans.isEmpty)
+              val error = intercept[SparkException](result.collect()).getCause
+              assert(error.isInstanceOf[AnalysisException])
+              assert(
+                error.asInstanceOf[AnalysisException].getErrorClass ==
+                  "INVALID_VARIANT_FROM_PARQUET.WRONG_NUM_FIELDS")
+            }
+          }
+        }
+      } finally {
+        original match {
+          case Some(value) => conf.setConfString(key, value)
+          case None => conf.unsetConf(key)
+        }
+      }
+    }
+  }
+
+  test("nanosAsLong Variant children fall back to Spark") {
+    assume(CometSparkSessionExtensions.isSpark40Plus, "VariantType requires Spark 4.0+")
+
+    withTempDir { dir =>
+      val rawNanos = Seq(1704067200123000000L, 1704067200123456789L)
+      val variant = sql("SELECT parse_json('0')").head().get(0)
+      val metadata =
+        variant.getClass.getMethod("getMetadata").invoke(variant).asInstanceOf[Array[Byte]]
+
+      Seq(true, false).foreach { adjustedToUtc =>
+        val path = new Path(dir.toURI.toString, s"nanos-$adjustedToUtc.parquet")
+        val parquetSchema = MessageTypeParser.parseMessageType(s"""message root {
+            |  optional group v {
+            |    optional binary value;
+            |    required binary metadata;
+            |    optional int64 typed_value (TIMESTAMP(NANOS,$adjustedToUtc));
+            |  }
+            |}
+            |""".stripMargin)
+        val writer = ExampleParquetWriter
+          .builder(path)
+          .withType(parquetSchema)
+          .withConf(spark.sessionState.newHadoopConf())
+          .build()
+
+        try {
+          rawNanos.foreach { value =>
+            val row = new SimpleGroup(parquetSchema)
+            val group = row.addGroup(0)
+            group.add(1, Binary.fromConstantByteArray(metadata))
+            group.add(2, value)
+            writer.write(row)
+          }
+        } finally {
+          writer.close()
+        }
+      }
+
+      withTable("variant_nanos_as_long") {
+        sql(s"""CREATE TABLE variant_nanos_as_long(v VARIANT)
+               |USING parquet LOCATION '${dir.getCanonicalPath}'""".stripMargin)
+        withSQLConf(
+          SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> "true",
+          "spark.sql.legacy.parquet.nanosAsLong" -> "true",
+          "spark.sql.variant.allowReadingShredded" -> "true",
+          "spark.sql.variant.pushVariantIntoScan" -> "false",
+          "spark.sql.variant.inferShreddingSchema" -> "false") {
+          val result = sql("SELECT v FROM variant_nanos_as_long")
+          assert(
+            normalizedVariantRows(result, 0) ==
+              rawNanos.flatMap(value => Seq.fill(2)(Seq(value.toString))))
+
+          val plan = result.queryExecution.executedPlan
+          assert(collect(plan) { case _: CometNativeScanExec => true }.isEmpty)
+          val fallbackReasons = new ExtendedExplainInfo().getFallbackReasons(plan)
+          assert(
+            fallbackReasons.exists(_.contains("spark.sql.legacy.parquet.nanosAsLong")),
+            s"Expected nanosAsLong fallback, found: ${fallbackReasons.mkString(", ")}")
+        }
+      }
+    }
+  }
+
+  test("inferTimestampNTZ disabled Variant children fall back to Spark") {
+    assume(CometSparkSessionExtensions.isSpark40Plus, "VariantType requires Spark 4.0+")
+
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "timestamp-ntz-variant.parquet")
+      val parquetSchema = MessageTypeParser.parseMessageType("""message root {
+          |  optional group v {
+          |    required binary metadata;
+          |    required int64 typed_value (TIMESTAMP(MICROS,false));
+          |  }
+          |}
+          |""".stripMargin)
+      val variant = sql("SELECT parse_json('0')").head().get(0)
+      val metadata =
+        variant.getClass.getMethod("getMetadata").invoke(variant).asInstanceOf[Array[Byte]]
+      val writer = createParquetWriter(parquetSchema, path, dictionaryEnabled = false)
+      try {
+        val row = new SimpleGroup(parquetSchema)
+        val group = row.addGroup(0)
+        group.add(0, Binary.fromConstantByteArray(metadata))
+        group.add(1, 1704067200123456L)
+        writer.write(row)
+      } finally {
+        writer.close()
+      }
+
+      withTable("variant_timestamp_ntz") {
+        sql(s"""CREATE TABLE variant_timestamp_ntz(v VARIANT)
+               |USING parquet LOCATION '${dir.getCanonicalPath}'""".stripMargin)
+        val readerConfs = Seq(
+          SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> "true",
+          SQLConf.PARQUET_INFER_TIMESTAMP_NTZ_ENABLED.key -> "false",
+          SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Los_Angeles",
+          "spark.sql.variant.allowReadingShredded" -> "true",
+          "spark.sql.variant.pushVariantIntoScan" -> "false",
+          "spark.sql.variant.inferShreddingSchema" -> "false")
+        var expected = Seq.empty[Seq[Any]]
+        withSQLConf((readerConfs :+ (CometConf.COMET_ENABLED.key -> "false")): _*) {
+          expected = normalizedVariantRows(sql("SELECT v FROM variant_timestamp_ntz"), 0)
+        }
+        withSQLConf(readerConfs: _*) {
+          val result = sql("SELECT v FROM variant_timestamp_ntz")
+          assert(normalizedVariantRows(result, 0) == expected)
+          val plan = result.queryExecution.executedPlan
+          assert(collect(plan) { case _: CometNativeScanExec => true }.isEmpty)
+          val fallbackReasons = new ExtendedExplainInfo().getFallbackReasons(plan)
+          assert(
+            fallbackReasons.exists(_.contains(SQLConf.PARQUET_INFER_TIMESTAMP_NTZ_ENABLED.key)),
+            s"Expected inferTimestampNTZ fallback, found: ${fallbackReasons.mkString(", ")}")
+        }
+      }
+    }
+  }
+
+  test("native scan preserves Variant existence default pairing") {
+    assume(CometSparkSessionExtensions.isSpark40Plus, "VariantType requires Spark 4.0+")
+
+    withTable("variant_defaults") {
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        sql("CREATE TABLE variant_defaults(v VARIANT DEFAULT parse_json('1')) USING parquet")
+        sql("INSERT INTO variant_defaults VALUES (parse_json('42'))")
+        sql("ALTER TABLE variant_defaults ADD COLUMNS(n INT DEFAULT 7)")
+      }
+
+      withSQLConf(
+        "spark.sql.variant.allowReadingShredded" -> "true",
+        "spark.sql.variant.pushVariantIntoScan" -> "false") {
+        val df = sql("SELECT v, n FROM variant_defaults")
+        assert(normalizedVariantRows(df, 0) == Seq(Seq("42", 7)))
+        val cometPlan = df.queryExecution.executedPlan
+        assert(collect(cometPlan) { case _: CometNativeScanExec => true }.size == 1)
+      }
+    }
+  }
+
+  test("native scan fills a Variant existence default for an old Parquet file") {
+    assume(CometSparkSessionExtensions.isSpark40Plus, "VariantType requires Spark 4.0+")
+
+    withTable("variant_defaults") {
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        sql("CREATE TABLE variant_defaults(id INT) USING parquet")
+        sql("INSERT INTO variant_defaults VALUES (1)")
+        sql("""ALTER TABLE variant_defaults ADD COLUMNS(
+              |  v VARIANT DEFAULT parse_json('{"b":2,"a":1}'), n INT DEFAULT 7)""".stripMargin)
+        sql("""INSERT INTO variant_defaults VALUES
+              |(2, parse_json('42'), 8),
+              |(3, CAST(NULL AS VARIANT), 9),
+              |(4, parse_json('null'), 10)""".stripMargin)
+      }
+
+      val query = "SELECT id, v, n FROM variant_defaults ORDER BY id"
+      // Spark's vectorized Parquet reader cannot append a VariantVal when a column is missing.
+      // The row reader implements the intended existence-default semantics and is the reference.
+      var expected = Seq.empty[Seq[Any]]
+      withSQLConf(
+        CometConf.COMET_ENABLED.key -> "false",
+        SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> "false",
+        "spark.sql.variant.pushVariantIntoScan" -> "false") {
+        expected = normalizedVariantRows(sql(query), 1)
+      }
+      assert(
+        expected == Seq(
+          Seq(1, "{\"a\":1,\"b\":2}", 7),
+          Seq(2, "42", 8),
+          Seq(3, null, 9),
+          Seq(4, "null", 10)))
+
+      withSQLConf(
+        "spark.sql.variant.allowReadingShredded" -> "true",
+        "spark.sql.variant.pushVariantIntoScan" -> "false") {
+        val df = sql(query)
+        assert(normalizedVariantRows(df, 1) == expected)
+        val cometPlan = df.queryExecution.executedPlan
+        assert(collect(cometPlan) { case _: CometNativeScanExec => true }.size == 1)
+      }
+    }
+  }
+
+  test("native scan exports a NUL-containing Parquet field name") {
+    val fieldName = "v" + 0.toChar + "suffix"
+    withTempPath { path =>
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        spark.range(3).toDF(fieldName).write.parquet(path.getCanonicalPath)
+      }
+      withParquetTable(path.getCanonicalPath, "nul_field") {
+        val (_, cometPlan) =
+          checkSparkAnswerAndOperator(sql(s"SELECT `$fieldName` FROM nul_field"))
+        assert(collect(cometPlan) { case _: CometNativeScanExec => true }.size == 1)
+      }
+    }
+  }
+
+  test("native scan preserves unannotated fixed-length Variant binary") {
+    assume(CometSparkSessionExtensions.isSpark40Plus, "VariantType requires Spark 4.0+")
+
+    Seq(8, 16, 20).foreach { length =>
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "fixed-binary-variant.parquet")
+        val parquetSchema = MessageTypeParser.parseMessageType(s"""message root {
+            |  optional group v {
+            |    required binary metadata;
+            |    required fixed_len_byte_array($length) typed_value;
+            |  }
+            |}
+            |""".stripMargin)
+        val variant = sql("SELECT parse_json('0')").head().get(0)
+        val metadata =
+          variant.getClass.getMethod("getMetadata").invoke(variant).asInstanceOf[Array[Byte]]
+        val bytes = Array.tabulate(length)(_.toByte)
+        val writer = createParquetWriter(parquetSchema, path, dictionaryEnabled = false)
+        try {
+          val row = new SimpleGroup(parquetSchema)
+          val group = row.addGroup(0)
+          group.add(0, Binary.fromConstantByteArray(metadata))
+          group.add(1, Binary.fromConstantByteArray(bytes))
+          writer.write(row)
+        } finally {
+          writer.close()
+        }
+
+        withTable("fixed_binary_variant") {
+          sql(s"""CREATE TABLE fixed_binary_variant(v VARIANT)
+                 |USING parquet LOCATION '${dir.getCanonicalPath}'""".stripMargin)
+          withSQLConf(
+            "spark.sql.variant.allowReadingShredded" -> "true",
+            "spark.sql.variant.pushVariantIntoScan" -> "false") {
+            val df = sql("SELECT v FROM fixed_binary_variant")
+            val expected = "\"" + Base64.getEncoder.encodeToString(bytes) + "\""
+            assert(normalizedVariantRows(df, 0) == Seq(Seq(expected)))
+            assert(collect(df.queryExecution.executedPlan) { case _: CometNativeScanExec =>
+              true
+            }.size == 1)
+          }
+        }
+      }
+    }
+  }
+
+  test("native scan decodes dictionary-encoded Variant storage") {
+    assume(CometSparkSessionExtensions.isSpark40Plus, "VariantType requires Spark 4.0+")
+
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "dictionary-variant.parquet")
+      val parquetSchema = MessageTypeParser.parseMessageType("""message root {
+          |  optional group v {
+          |    optional binary value;
+          |    required binary metadata;
+          |    optional int64 typed_value;
+          |  }
+          |}
+          |""".stripMargin)
+      val valueField = new ArrowField(
+        "value",
+        new FieldType(
+          true,
+          ArrowType.Binary.INSTANCE,
+          new DictionaryEncoding(0L, false, new ArrowType.Int(32, true))),
+        Collections.emptyList[ArrowField]())
+      val metadataField = new ArrowField(
+        "metadata",
+        new FieldType(
+          false,
+          ArrowType.Binary.INSTANCE,
+          new DictionaryEncoding(1L, false, new ArrowType.Int(32, true))),
+        Collections.emptyList[ArrowField]())
+      val typedValueField = new ArrowField(
+        "typed_value",
+        new FieldType(
+          true,
+          new ArrowType.Int(64, true),
+          new DictionaryEncoding(2L, false, new ArrowType.Int(32, true))),
+        Collections.emptyList[ArrowField]())
+      val variantField = new ArrowField(
+        "v",
+        new FieldType(
+          true,
+          ArrowType.Struct.INSTANCE,
+          null,
+          Collections.singletonMap("ARROW:extension:name", "arrow.parquet.variant")),
+        Seq(valueField, metadataField, typedValueField).asJava)
+      val arrowSchema = new ArrowSchema(Collections.singletonList(variantField))
+      val footer = Collections.singletonMap(
+        "ARROW:schema",
+        Base64.getEncoder.encodeToString(arrowSchema.serializeAsMessage()))
+
+      val variant = sql("SELECT parse_json('42')").head().get(0)
+      val value = variant.getClass.getMethod("getValue").invoke(variant).asInstanceOf[Array[Byte]]
+      val metadata =
+        variant.getClass.getMethod("getMetadata").invoke(variant).asInstanceOf[Array[Byte]]
+      val writer = ExampleParquetWriter
+        .builder(path)
+        .withType(parquetSchema)
+        .withDictionaryEncoding(true)
+        .withExtraMetaData(footer)
+        .withConf(spark.sessionState.newHadoopConf())
+        .build()
+
+      try {
+        (0 until 4).foreach { index =>
+          val row = new SimpleGroup(parquetSchema)
+          val group = row.addGroup(0)
+          if (index % 2 == 0) {
+            group.add(0, Binary.fromConstantByteArray(value))
+          }
+          group.add(1, Binary.fromConstantByteArray(metadata))
+          if (index % 2 != 0) {
+            group.add(2, 42L)
+          }
+          writer.write(row)
+        }
+      } finally {
+        writer.close()
+      }
+
+      withTable("dictionary_variant") {
+        sql(s"""CREATE TABLE dictionary_variant(v VARIANT)
+               |USING parquet LOCATION '${dir.getCanonicalPath}'""".stripMargin)
+        withSQLConf(
+          "spark.sql.variant.allowReadingShredded" -> "true",
+          "spark.sql.variant.pushVariantIntoScan" -> "false") {
+          val df = sql("SELECT v FROM dictionary_variant")
+          assert(normalizedVariantRows(df, 0) == Seq.fill(4)(Seq("42")))
+          assert(collect(df.queryExecution.executedPlan) { case _: CometNativeScanExec =>
+            true
+          }.size == 1)
+        }
+      }
+    }
+  }
+
+  test("native scan widens shredded Variant UINT_64") {
+    assume(CometSparkSessionExtensions.isSpark40Plus, "VariantType requires Spark 4.0+")
+
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "uint64-variant.parquet")
+      val parquetSchema = MessageTypeParser.parseMessageType("""message root {
+          |  optional group v {
+          |    required binary metadata;
+          |    required int64 typed_value (UINT_64);
+          |  }
+          |}
+          |""".stripMargin)
+      val variant = sql("SELECT parse_json('0')").head().get(0)
+      val metadata =
+        variant.getClass.getMethod("getMetadata").invoke(variant).asInstanceOf[Array[Byte]]
+      val writer = createParquetWriter(parquetSchema, path, dictionaryEnabled = false)
+      try {
+        val row = new SimpleGroup(parquetSchema)
+        val group = row.addGroup(0)
+        group.add(0, Binary.fromConstantByteArray(metadata))
+        group.add(1, -1L)
+        writer.write(row)
+      } finally {
+        writer.close()
+      }
+
+      withTable("uint64_variant") {
+        sql(s"""CREATE TABLE uint64_variant(v VARIANT)
+               |USING parquet LOCATION '${dir.getCanonicalPath}'""".stripMargin)
+        withSQLConf(
+          "spark.sql.variant.allowReadingShredded" -> "true",
+          "spark.sql.variant.pushVariantIntoScan" -> "false") {
+          val df = sql("SELECT v FROM uint64_variant")
+          assert(normalizedVariantRows(df, 0) == Seq(Seq("18446744073709551615")))
+          assert(collect(df.queryExecution.executedPlan) { case _: CometNativeScanExec =>
+            true
+          }.size == 1)
+        }
+      }
     }
   }
 

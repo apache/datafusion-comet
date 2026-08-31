@@ -753,6 +753,7 @@ fn prepare_output(
     let schema_addrs = unsafe { schema_addrs.get_elements(env, ReleaseMode::NoCopyBack)? };
     let schema_addrs = &*schema_addrs;
 
+    let output_schema = output_batch.schema();
     let results = output_batch.columns();
     let num_rows = output_batch.num_rows();
 
@@ -779,6 +780,7 @@ fn prepare_output(
         let mut i = 0;
         while i < results.len() {
             let array_ref = results.get(i).ok_or(CometError::IndexOutOfBounds(i))?;
+            let field = output_schema.field(i);
 
             if array_ref.offset() != 0 {
                 // https://github.com/apache/datafusion-comet/issues/2051
@@ -795,11 +797,11 @@ fn prepare_output(
 
                 new_array
                     .to_data()
-                    .move_to_spark(array_addrs[i], schema_addrs[i])?;
+                    .move_to_spark(field, array_addrs[i], schema_addrs[i])?;
             } else {
                 array_ref
                     .to_data()
-                    .move_to_spark(array_addrs[i], schema_addrs[i])?;
+                    .move_to_spark(field, array_addrs[i], schema_addrs[i])?;
             }
             i += 1;
         }

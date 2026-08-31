@@ -14,6 +14,9 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+mod variant;
+
+use self::variant::normalize_variant_array;
 use arrow::{
     array::{
         make_array, Array, ArrayRef, LargeListArray, ListArray, MapArray, StructArray,
@@ -23,17 +26,20 @@ use arrow::{
     datatypes::{DataType, FieldRef, Schema, TimeUnit},
     record_batch::RecordBatch,
 };
-
-use crate::parquet::parquet_support::{spark_parquet_convert, SparkParquetOptions};
-use datafusion::common::format::DEFAULT_CAST_OPTIONS;
-use datafusion::common::Result as DataFusionResult;
-use datafusion::common::ScalarValue;
+use datafusion::common::{
+    format::DEFAULT_CAST_OPTIONS, DataFusionError, Result as DataFusionResult, ScalarValue,
+};
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::physical_expr::PhysicalExpr;
 use std::{
     fmt::{self, Display},
     hash::Hash,
     sync::Arc,
+};
+
+use crate::{
+    execution::serde::is_variant_field,
+    parquet::parquet_support::{spark_parquet_convert, SparkParquetOptions},
 };
 
 /// Returns true if two DataTypes are structurally equivalent (same data layout)
@@ -260,6 +266,18 @@ impl PhysicalExpr for CometCastColumnExpr {
     fn evaluate(&self, batch: &RecordBatch) -> DataFusionResult<ColumnarValue> {
         let value = self.expr.evaluate(batch)?;
 
+        if is_variant_field(&self.target_field) {
+            return match value {
+                ColumnarValue::Array(array) => Ok(ColumnarValue::Array(normalize_variant_array(
+                    &array,
+                    &self.target_field,
+                )?)),
+                ColumnarValue::Scalar(_) => Err(DataFusionError::Execution(
+                    "Variant Parquet projection requires an array".to_string(),
+                )),
+            };
+        }
+
         // Use == (PartialEq) instead of equals_datatype because equals_datatype
         // ignores field names in nested types (Struct, List, Map). We need to detect
         // when field names differ (e.g., Struct("a","b") vs Struct("c","d")) so that
@@ -349,9 +367,86 @@ impl PhysicalExpr for CometCastColumnExpr {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{Array, Int32Array, StringArray};
-    use arrow::datatypes::{Field, Fields};
+    use arrow::{
+        array::{
+            Array, AsArray, BinaryArray, DictionaryArray, Int32Array, Int64Array, StringArray,
+            TimestampMillisecondArray,
+        },
+        compute::cast,
+        datatypes::{Field, Fields, Int32Type},
+    };
     use datafusion::physical_expr::expressions::Column;
+    use parquet::variant::{Variant, VariantArray, VariantArrayBuilder, VariantType};
+
+    #[test]
+    fn test_normalize_shredded_variant_with_dictionary_metadata_for_spark() {
+        let mut builder = VariantArrayBuilder::new(3);
+        builder.append_variant(Variant::from(1_i64));
+        builder.append_null();
+        builder.append_variant(Variant::from(3_i64));
+        let base = builder.build();
+        let metadata = cast(base.metadata_field().as_ref(), &DataType::Binary).unwrap();
+        let metadata_bytes = metadata.as_binary::<i32>().value(0).to_vec();
+        let metadata_values: ArrayRef =
+            Arc::new(BinaryArray::from(vec![Some(metadata_bytes.as_slice())]));
+        let metadata: ArrayRef = Arc::new(
+            DictionaryArray::<Int32Type>::try_new(
+                Int32Array::from(vec![Some(0), Some(0), Some(0)]),
+                metadata_values,
+            )
+            .unwrap(),
+        );
+        let typed_value: ArrayRef = Arc::new(Int64Array::from(vec![Some(10), None, Some(30)]));
+        let physical_fields = Fields::from(vec![
+            Field::new("typed_value", DataType::Int64, true),
+            Field::new("metadata", metadata.data_type().clone(), false),
+        ]);
+        let physical = StructArray::try_new(
+            physical_fields,
+            vec![typed_value, metadata],
+            base.inner().nulls().cloned(),
+        )
+        .unwrap();
+
+        let input_field = Arc::new(Field::new("v", physical.data_type().clone(), true));
+        let target_fields = Fields::from(vec![
+            Field::new("value", DataType::Binary, false),
+            Field::new("metadata", DataType::Binary, false),
+        ]);
+        let target_field = Arc::new(
+            Field::new("v", DataType::Struct(target_fields), true).with_extension_type(VariantType),
+        );
+        let schema = Schema::new(vec![Arc::clone(&input_field)]);
+        let batch = RecordBatch::try_new(Arc::new(schema), vec![Arc::new(physical)]).unwrap();
+        let expr = CometCastColumnExpr::new(
+            Arc::new(Column::new("v", 0)),
+            input_field,
+            target_field,
+            None,
+        );
+
+        let ColumnarValue::Array(output) = expr.evaluate(&batch).unwrap() else {
+            panic!("expected array")
+        };
+        let output = output.as_struct();
+        assert_eq!(
+            output
+                .fields()
+                .iter()
+                .map(|field| field.name().as_str())
+                .collect::<Vec<_>>(),
+            vec!["value", "metadata"]
+        );
+        assert!(output
+            .columns()
+            .iter()
+            .all(|column| column.data_type() == &DataType::Binary));
+        assert!(output.is_null(1));
+
+        let variant = VariantArray::try_new(output).unwrap();
+        assert_eq!(variant.value(0), Variant::from(10_i8));
+        assert_eq!(variant.value(2), Variant::from(30_i8));
+    }
 
     #[test]
     fn test_cast_timestamp_micros_to_millis_array() {

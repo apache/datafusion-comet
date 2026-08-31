@@ -38,12 +38,41 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, LongType, MapType, Metadata, MetadataBuilder, StringType, StructField, StructType}
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.isSpark35Plus
+import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, SchemaGenOptions}
 
 class CometParquetWriterSuite extends CometTestBase {
 
   import testImplicits._
+
+  test("parquet write with Variant input falls back to Spark") {
+    assume(isSpark40Plus, "VariantType requires Spark 4.0+")
+
+    withTempPath { dir =>
+      val inputPath = new File(dir, "input.parquet").getAbsolutePath
+      val outputPath = new File(dir, "output.parquet").getAbsolutePath
+
+      withSQLConf(
+        CometConf.COMET_ENABLED.key -> "false",
+        "spark.sql.variant.writeShredding.enabled" -> "false") {
+        sql("SELECT parse_json('42') AS v").write.parquet(inputPath)
+      }
+
+      val input = spark.read.parquet(inputPath)
+      withSQLConf(
+        CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
+        CometConf.COMET_OPERATOR_DATA_WRITING_COMMAND_ALLOW_INCOMPAT.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        "spark.sql.variant.pushVariantIntoScan" -> "false") {
+        val plan = captureWritePlan(path => input.write.parquet(path), outputPath)
+        assertNoCometNativeWriteExec(plan)
+      }
+
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        assert(spark.read.parquet(outputPath).collect().map(_.get(0).toString).toSeq == Seq("42"))
+      }
+    }
+  }
 
   test("partitioned write with empty string partition value") {
     withTempPath { path =>

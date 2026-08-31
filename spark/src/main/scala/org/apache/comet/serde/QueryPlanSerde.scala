@@ -604,6 +604,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       case _: YearMonthIntervalType => 18
       case _: DayTimeIntervalType => 19
       case CalendarIntervalType => 20
+      case dt if isVariantType(dt) => 21
       case dt =>
         logWarning(s"Cannot serialize Spark data type: $dt")
         return None

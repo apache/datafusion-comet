@@ -295,8 +295,15 @@ case class CometScanRule(session: SparkSession)
     if (!CometNativeScan.isSupported(scanExec)) {
       return None
     }
-    if (encryptionEnabled(hadoopConf) && !isEncryptionConfigSupported(hadoopConf)) {
+    val encrypted = encryptionEnabled(hadoopConf)
+    if (encrypted && !isEncryptionConfigSupported(hadoopConf)) {
       withFallbackReason(scanExec, "Native Parquet scan does not support encryption")
+      return None
+    }
+    if (encrypted && scanExec.requiredSchema.exists(field => isVariantType(field.dataType))) {
+      withFallbackReason(
+        scanExec,
+        "Native Parquet scan does not support encrypted Variant columns")
       return None
     }
     // input_file_name, input_file_block_start, and input_file_block_length read from
@@ -963,8 +970,23 @@ case class CometScanRule(session: SparkSession)
   private def isSchemaSupported(scanExec: FileSourceScanExec, r: HadoopFsRelation): Boolean = {
     val fallbackReasons = new ListBuffer[String]()
     val typeChecker = CometScanTypeChecker()
-    val schemaSupported =
-      typeChecker.isSchemaSupported(scanExec.requiredSchema, fallbackReasons)
+    // The physical Parquet name is unavailable here, so keep a Variant-bearing scan with a
+    // non-ASCII required name on Spark until the native adapter implements Spark's Unicode
+    // case-insensitive comparison. Physical Unicode names resolved to ASCII here remain tracked by
+    // https://github.com/apache/datafusion-comet/issues/5495.
+    if (!session.sessionState.conf.caseSensitiveAnalysis &&
+      scanExec.requiredSchema.exists(field => isVariantType(field.dataType)) &&
+      scanExec.requiredSchema.exists(field => field.name.exists(_ > '\u007f'))) {
+      withFallbackReason(
+        scanExec,
+        "Native Parquet scan does not support case-insensitive Unicode column names in " +
+          "Variant scans")
+      return false
+    }
+    val schemaSupported = scanExec.requiredSchema.fields.forall { field =>
+      isVariantType(field.dataType) ||
+      typeChecker.isTypeSupported(field.dataType, field.name, fallbackReasons)
+    }
     if (!schemaSupported) {
       withFallbackReason(
         scanExec,
@@ -1002,11 +1024,14 @@ case class CometScanTypeChecker() extends DataTypeSupport with CometTypeShim {
         // is a convenient place to force the whole query to fall back to Spark for now
         false
       case s: StructType if isVariantStruct(s) =>
-        // Spark 4.0's PushVariantIntoScan rewrites a VariantType column into a struct of typed
-        // fields plus per-field VariantMetadata, expecting the scan to honor Parquet variant
-        // shredding semantics. Comet's native scan does not, so fall back to Spark.
+        // Spark's PushVariantIntoScan (enabled by default on Spark 4.1+) rewrites a VariantType
+        // column into a struct of typed fields plus per-field VariantMetadata, expecting the scan
+        // to honor Parquet variant shredding semantics. Comet's native scan does not, so fall
+        // back to Spark. Setting spark.sql.variant.pushVariantIntoScan=false keeps whole-value
+        // Variant projections on the native scan.
         fallbackReasons +=
-          s"Unsupported $name of type VariantType (shredded; not supported by native scan)"
+          s"Unsupported $name of type VariantType (rewritten by " +
+            "spark.sql.variant.pushVariantIntoScan; not supported by native scan)"
         false
       case s: StructType if s.fields.isEmpty =>
         false

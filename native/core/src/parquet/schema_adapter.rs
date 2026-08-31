@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::execution::serde::is_variant_field;
 use crate::parquet::cast_column::CometCastColumnExpr;
 use crate::parquet::parquet_support::{spark_parquet_convert, SparkParquetOptions};
 use arrow::array::new_empty_array;
@@ -165,6 +166,24 @@ fn remap_physical_schema(
     } else {
         std::collections::HashSet::new()
     };
+    // Names of logical fields that resolve by ID (their ID is present in the file). Spark
+    // never name-matches these (`matchIdField` runs first), so any other physical field
+    // carrying such a name must be hidden from the adapter's name lookup, otherwise a
+    // first-name match can select the wrong physical column ahead of the ID-matched one
+    // (e.g. physical `v BINARY` ID 2 shadowing `other VARIANT` ID 1 renamed to `v`).
+    let id_matched_logical_names: Vec<String> = if should_match_by_id {
+        logical_schema
+            .fields()
+            .iter()
+            .filter_map(|lf| {
+                parse_field_id(lf)
+                    .filter(|id| id_to_phys_names.contains_key(id))
+                    .map(|_| lf.name().clone())
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
     let mut fake_counter: usize = 0;
 
     let mut name_map: HashMap<String, String> = HashMap::new();
@@ -201,6 +220,27 @@ fn remap_physical_schema(
             {
                 fake_counter += 1;
                 let fake_name = format!("__comet_unmatched_field_id_{}", fake_counter);
+                return Arc::new(
+                    Field::new(fake_name, field.data_type().clone(), field.is_nullable())
+                        .with_metadata(field.metadata().clone()),
+                );
+            }
+
+            // A physical field that was not ID-matched must not keep a name that an
+            // ID-matched logical field resolves to; hide it like Spark's fake-name scheme
+            // so the ID-matched column stays the only name match. Exact names collide in
+            // case-sensitive mode; ASCII-case-insensitive names collide otherwise.
+            if should_match_by_id
+                && id_matched_logical_names.iter().any(|name| {
+                    if case_sensitive {
+                        name == field.name()
+                    } else {
+                        name.eq_ignore_ascii_case(field.name())
+                    }
+                })
+            {
+                fake_counter += 1;
+                let fake_name = format!("__comet_id_shadowed_field_{}", fake_counter);
                 return Arc::new(
                     Field::new(fake_name, field.data_type().clone(), field.is_nullable())
                         .with_metadata(field.metadata().clone()),
@@ -349,6 +389,52 @@ fn check_column_duplicate(col_name: &str, physical_schema: &SchemaRef) -> Option
     }
 }
 
+/// Outcome of Spark-parity Unicode fold analysis for one requested column name.
+enum UnicodeFoldIssue {
+    /// More than one physical name folds to the requested name; Spark rejects the read as
+    /// ambiguous, so the native scan must raise the same duplicate-field error. Carries the
+    /// bracketed matched-name list in Spark's message format.
+    Ambiguous(String),
+    /// Exactly one physical name folds to the requested name, but the ASCII-only matcher
+    /// cannot see it, so the column would be silently null-filled. Carries that name.
+    FoldOnlyMatch(String),
+}
+
+/// Compare Spark's case-insensitive resolution of `col_name` against the ASCII-only matcher.
+/// Spark groups physical names by Unicode lowercasing (`toLowerCase(Locale.ROOT)` in
+/// `ParquetReadSupport`), so a physical name such as `K` (U+212A KELVIN SIGN) resolves to a
+/// requested ASCII `k` there while staying unmatched here, and two physical names that both
+/// fold to the requested name are ambiguous there even when only one matches here. The
+/// scan-planning gate cannot see physical file names, so this runs per opened file.
+fn check_column_unicode_fold(
+    col_name: &str,
+    physical_schema: &SchemaRef,
+) -> Option<UnicodeFoldIssue> {
+    let folded = col_name.to_lowercase();
+    let matches: Vec<&str> = physical_schema
+        .fields()
+        .iter()
+        .filter(|pf| pf.name().to_lowercase() == folded)
+        .map(|pf| pf.name().as_str())
+        .collect();
+    match matches.as_slice() {
+        [] => None,
+        [single] => {
+            // An ASCII-case-insensitive match always folds equal, so a single fold match
+            // that the ASCII matcher also sees is the ordinary working case.
+            if single.eq_ignore_ascii_case(col_name) {
+                None
+            } else {
+                Some(UnicodeFoldIssue::FoldOnlyMatch(single.to_string()))
+            }
+        }
+        _ => Some(UnicodeFoldIssue::Ambiguous(format!(
+            "[{}]",
+            matches.join(", ")
+        ))),
+    }
+}
+
 impl PhysicalExprAdapterFactory for SparkPhysicalExprAdapterFactory {
     fn create(
         &self,
@@ -450,23 +536,81 @@ impl PhysicalExprAdapter for SparkPhysicalExprAdapter {
         // a field with multiple case-insensitive matches in the physical schema.
         // Only the columns actually referenced trigger the error (not the whole schema).
         if let Some(orig_physical) = &self.original_physical_schema {
+            // Until #5495 brings Spark-parity Unicode name matching, Variant-bearing scans
+            // fail closed for referenced columns whose resolution would differ under Unicode
+            // folding, rather than silently null-filling values Spark reads. Restricting the
+            // check to referenced columns keeps unused ordinary columns in the native data
+            // schema from aborting a scan that never reads them, and the per-field ID
+            // exemption mirrors the name-match eligibility in `remap_physical_schema`:
+            // ID-bearing logical fields resolve by ID, everything else falls through to the
+            // ASCII name matcher and needs the guard.
+            let variant_scan = self
+                .logical_file_schema
+                .fields()
+                .iter()
+                .any(|f| is_variant_field(f));
+            let should_match_by_id = self.parquet_options.use_field_id
+                && schema_has_field_ids(&self.logical_file_schema);
             // Walk the expression tree to find Column references
-            let mut duplicate_err: Option<DataFusionError> = None;
+            let mut column_err: Option<DataFusionError> = None;
             let _ = Arc::<dyn PhysicalExpr>::clone(&expr).transform(|e| {
                 if let Some(col) = e.downcast_ref::<Column>() {
-                    if let Some((req, matched)) = check_column_duplicate(col.name(), orig_physical)
-                    {
-                        duplicate_err = Some(DataFusionError::External(Box::new(
-                            SparkError::DuplicateFieldCaseInsensitive {
-                                required_field_name: req,
-                                matched_fields: matched,
-                            },
-                        )));
+                    // Spark resolves an ID-bearing requested field by unique field ID before
+                    // any name matching (`ParquetReadSupport.matchIdField`), so file name
+                    // collisions and Unicode folds never affect it; duplicate-ID validation
+                    // runs in `remap_physical_schema`. All other fields fall through to the
+                    // name matcher and get both checks.
+                    let id_matched = should_match_by_id
+                        && self
+                            .logical_file_schema
+                            .field_with_name(col.name())
+                            .ok()
+                            .and_then(parse_field_id)
+                            .is_some();
+                    if !id_matched {
+                        if let Some((req, matched)) =
+                            check_column_duplicate(col.name(), orig_physical)
+                        {
+                            column_err = Some(DataFusionError::External(Box::new(
+                                SparkError::DuplicateFieldCaseInsensitive {
+                                    required_field_name: req,
+                                    matched_fields: matched,
+                                },
+                            )));
+                        }
+                        if column_err.is_none() && variant_scan {
+                            match check_column_unicode_fold(col.name(), orig_physical) {
+                                Some(UnicodeFoldIssue::Ambiguous(matched)) => {
+                                    // Spark rejects the fold-ambiguous read, so raise its
+                                    // duplicate-field error rather than serving one match.
+                                    column_err = Some(DataFusionError::External(Box::new(
+                                        SparkError::DuplicateFieldCaseInsensitive {
+                                            required_field_name: col.name().to_string(),
+                                            matched_fields: matched,
+                                        },
+                                    )));
+                                }
+                                Some(UnicodeFoldIssue::FoldOnlyMatch(phys)) => {
+                                    column_err = Some(DataFusionError::Execution(format!(
+                                        "Case-insensitive scan of a Variant-bearing schema \
+                                         requires Unicode column matching: requested column \
+                                         '{name}' resolves to physical Parquet column '{phys}' \
+                                         only under Unicode case folding, which Comet's native \
+                                         scan does not support yet \
+                                         (https://github.com/apache/datafusion-comet/issues/5495). \
+                                         Retry with spark.comet.enabled=false, or align the \
+                                         column name case.",
+                                        name = col.name(),
+                                    )));
+                                }
+                                None => {}
+                            }
+                        }
                     }
                 }
                 Ok(Transformed::no(e))
             });
-            if let Some(err) = duplicate_err {
+            if let Some(err) = column_err {
                 return Err(err);
             }
         }
@@ -586,7 +730,9 @@ impl SparkPhysicalExprAdapter {
                         Arc::clone(&e)
                     };
 
-                    if logical_field.data_type() != physical_field.data_type() {
+                    if is_variant_field(logical_field)
+                        || logical_field.data_type() != physical_field.data_type()
+                    {
                         // Mirror the same string/binary -> non-string/binary rejection in
                         // `replace_with_spark_cast`; this branch is reached when the default
                         // adapter rejected the cast and we'd otherwise build a CometCastColumnExpr
@@ -644,6 +790,19 @@ impl SparkPhysicalExprAdapter {
                 Arc::new(Field::new(cast.target_field().name(), child_type, true))
             };
             let physical_type = input_field.data_type();
+
+            if is_variant_field(cast.target_field()) {
+                let comet_cast: Arc<dyn PhysicalExpr> = Arc::new(
+                    CometCastColumnExpr::new(
+                        child,
+                        input_field,
+                        Arc::clone(cast.target_field()),
+                        None,
+                    )
+                    .with_parquet_options(self.parquet_options.clone()),
+                );
+                return Ok(Transformed::yes(comet_cast));
+            }
 
             // Identity cast: DataFusion's default adapter inserts a CastExpr
             // whenever the logical and physical Arrow Fields differ in any
@@ -1103,13 +1262,13 @@ impl PhysicalExpr for RejectOnNonEmpty {
 mod test {
     use crate::parquet::parquet_support::SparkParquetOptions;
     use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
-    use arrow::array::UInt32Array;
     use arrow::array::{
-        BinaryArray, Date32Array, Decimal128Array, Float32Array, Float64Array, Int32Array,
-        Int64Array, StringArray, TimestampMicrosecondArray,
+        Array, ArrayRef, BinaryArray, Date32Array, Decimal128Array, FixedSizeListArray,
+        Float32Array, Float64Array, Int32Array, Int64Array, StringArray, StructArray,
+        TimestampMicrosecondArray, TimestampMillisecondArray, UInt16Array, UInt32Array, UInt8Array,
     };
-    use arrow::datatypes::SchemaRef;
-    use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::buffer::NullBuffer;
+    use arrow::datatypes::{DataType, Field, Fields, Schema, SchemaRef};
     use arrow::record_batch::RecordBatch;
     use datafusion::common::DataFusionError;
     use datafusion::datasource::listing::PartitionedFile;
@@ -1122,7 +1281,8 @@ mod test {
     use datafusion_comet_spark_expr::EvalMode;
     use datafusion_physical_expr_adapter::PhysicalExprAdapterFactory;
     use futures::StreamExt;
-    use parquet::arrow::ArrowWriter;
+    use parquet::arrow::{arrow_writer::ArrowWriterOptions, ArrowWriter};
+    use parquet::variant::{Variant, VariantArray, VariantBuilder, VariantType};
     use std::fs::File;
     use std::sync::Arc;
 
@@ -1679,16 +1839,218 @@ mod test {
         Ok(())
     }
 
+    fn required_variant_field(name: &str, nullable: bool) -> Field {
+        Field::new(
+            name,
+            DataType::Struct(Fields::from(vec![
+                Field::new("value", DataType::Binary, false),
+                Field::new("metadata", DataType::Binary, false),
+            ])),
+            nullable,
+        )
+        .with_extension_type(VariantType)
+    }
+
+    #[tokio::test]
+    async fn parquet_roundtrip_shredded_variant_unsigned_values() -> Result<(), DataFusionError> {
+        let (metadata_bytes, _) = VariantBuilder::new().finish();
+        let values = [
+            (
+                "u8",
+                Arc::new(UInt8Array::from(vec![u8::MAX])) as Arc<dyn arrow::array::Array>,
+            ),
+            ("u16", Arc::new(UInt16Array::from(vec![u16::MAX]))),
+            ("u32", Arc::new(UInt32Array::from(vec![u32::MAX]))),
+        ];
+        let mut file_fields = Vec::with_capacity(values.len());
+        let mut columns = Vec::with_capacity(values.len());
+        let mut required_fields = Vec::with_capacity(values.len());
+        for (name, value) in values {
+            let metadata = Arc::new(BinaryArray::from(vec![Some(metadata_bytes.as_slice())]));
+            let physical = StructArray::try_new(
+                Fields::from(vec![
+                    Field::new("metadata", DataType::Binary, false),
+                    Field::new("typed_value", value.data_type().clone(), false),
+                ]),
+                vec![metadata, value],
+                None,
+            )?;
+            file_fields.push(
+                Field::new(name, physical.data_type().clone(), false)
+                    .with_extension_type(VariantType),
+            );
+            columns.push(Arc::new(physical) as Arc<dyn arrow::array::Array>);
+            required_fields.push(required_variant_field(name, false));
+        }
+
+        let file_schema = Arc::new(Schema::new(file_fields));
+        let batch = RecordBatch::try_new(Arc::clone(&file_schema), columns)?;
+        let output = roundtrip(&batch, Arc::new(Schema::new(required_fields))).await?;
+
+        let expected = [
+            Variant::from(255_i16),
+            Variant::from(65_535_i32),
+            Variant::from(4_294_967_295_i64),
+        ];
+        for (column, expected) in output.columns().iter().zip(expected) {
+            let variant = VariantArray::try_new(column.as_ref())?;
+            assert_eq!(variant.value(0), expected);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn parquet_roundtrip_shredded_variant_millisecond_timestamps(
+    ) -> Result<(), DataFusionError> {
+        let millis = 1_704_067_200_123_i64;
+        let micros = 1_704_067_200_123_456_i64;
+        let shredded = |value: ArrayRef| -> ArrayRef {
+            Arc::new(
+                StructArray::try_new(
+                    Fields::from(vec![Field::new(
+                        "typed_value",
+                        value.data_type().clone(),
+                        false,
+                    )]),
+                    vec![value],
+                    None,
+                )
+                .unwrap(),
+            )
+        };
+        let ltz = shredded(Arc::new(
+            TimestampMillisecondArray::from(vec![millis]).with_timezone("UTC"),
+        ));
+        let ntz = shredded(Arc::new(TimestampMillisecondArray::from(vec![millis])));
+        let micros_control = shredded(Arc::new(
+            TimestampMicrosecondArray::from(vec![micros]).with_timezone("UTC"),
+        ));
+        let typed_value: ArrayRef = Arc::new(StructArray::try_new(
+            Fields::from(vec![
+                Field::new("ltz", ltz.data_type().clone(), false),
+                Field::new("ntz", ntz.data_type().clone(), false),
+                Field::new("micros", micros_control.data_type().clone(), false),
+            ]),
+            vec![ltz, ntz, micros_control],
+            None,
+        )?);
+        let (metadata_bytes, _) = VariantBuilder::new()
+            .with_field_names(["ltz", "ntz", "micros"])
+            .finish();
+        let metadata: ArrayRef = Arc::new(BinaryArray::from(vec![Some(metadata_bytes.as_slice())]));
+        let physical = StructArray::try_new(
+            Fields::from(vec![
+                Field::new("metadata", DataType::Binary, false),
+                Field::new("typed_value", typed_value.data_type().clone(), false),
+            ]),
+            vec![metadata, typed_value],
+            None,
+        )?;
+        let file_schema = Arc::new(Schema::new(vec![Field::new(
+            "v",
+            physical.data_type().clone(),
+            false,
+        )
+        .with_extension_type(VariantType)]));
+        let batch = RecordBatch::try_new(Arc::clone(&file_schema), vec![Arc::new(physical)])?;
+
+        let output = roundtrip_with_options(
+            &batch,
+            Arc::new(Schema::new(vec![required_variant_field("v", false)])),
+            ArrowWriterOptions::new().with_skip_arrow_metadata(true),
+        )
+        .await?;
+        let variant = VariantArray::try_new(output.column(0).as_ref())?;
+        let Variant::Object(object) = variant.value(0) else {
+            panic!("expected object")
+        };
+        let Some(Variant::TimestampMicros(ltz)) = object.get("ltz") else {
+            panic!("expected timestamp")
+        };
+        assert_eq!(ltz.timestamp_micros(), millis * 1_000);
+        let Some(Variant::TimestampNtzMicros(ntz)) = object.get("ntz") else {
+            panic!("expected timestamp_ntz")
+        };
+        assert_eq!(ntz.and_utc().timestamp_micros(), millis * 1_000);
+        let Some(Variant::TimestampMicros(control)) = object.get("micros") else {
+            panic!("expected timestamp")
+        };
+        assert_eq!(control.timestamp_micros(), micros);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn parquet_roundtrip_shredded_variant_fixed_size_list() -> Result<(), DataFusionError> {
+        let (metadata_bytes, _) = VariantBuilder::new().finish();
+        let metadata: ArrayRef = Arc::new(BinaryArray::from(vec![
+            Some(metadata_bytes.as_slice()),
+            Some(metadata_bytes.as_slice()),
+        ]));
+        let elements: ArrayRef = Arc::new(StructArray::try_new(
+            Fields::from(vec![Field::new("typed_value", DataType::Int64, false)]),
+            vec![Arc::new(Int64Array::from(vec![42, 43, 0, 0]))],
+            None,
+        )?);
+        let typed_value: ArrayRef = Arc::new(FixedSizeListArray::try_new(
+            Arc::new(Field::new("element", elements.data_type().clone(), false)),
+            2,
+            elements,
+            None,
+        )?);
+        let physical = StructArray::try_new(
+            Fields::from(vec![
+                Field::new("metadata", DataType::Binary, false),
+                Field::new("typed_value", typed_value.data_type().clone(), false),
+            ]),
+            vec![metadata, typed_value],
+            Some(NullBuffer::from(vec![true, false])),
+        )?;
+        let file_schema = Arc::new(Schema::new(vec![Field::new(
+            "v",
+            physical.data_type().clone(),
+            true,
+        )
+        .with_extension_type(VariantType)]));
+        let batch = RecordBatch::try_new(Arc::clone(&file_schema), vec![Arc::new(physical)])?;
+
+        let output = roundtrip(
+            &batch,
+            Arc::new(Schema::new(vec![required_variant_field("v", true)])),
+        )
+        .await?;
+        let variant = VariantArray::try_new(output.column(0).as_ref())?;
+        let Variant::List(list) = variant.value(0) else {
+            panic!("expected list")
+        };
+        assert_eq!(
+            list.iter()
+                .map(|value| value.as_int64())
+                .collect::<Vec<_>>(),
+            vec![Some(42), Some(43)]
+        );
+        assert!(variant.inner().is_null(1));
+        Ok(())
+    }
+
     /// Create a Parquet file containing a single batch and then read the batch back using
     /// the specified required_schema. This will cause the PhysicalExprAdapter code to be used.
     async fn roundtrip(
         batch: &RecordBatch,
         required_schema: SchemaRef,
     ) -> Result<RecordBatch, DataFusionError> {
+        roundtrip_with_options(batch, required_schema, ArrowWriterOptions::new()).await
+    }
+
+    async fn roundtrip_with_options(
+        batch: &RecordBatch,
+        required_schema: SchemaRef,
+        writer_options: ArrowWriterOptions,
+    ) -> Result<RecordBatch, DataFusionError> {
         let filename = get_temp_filename();
         let filename = filename.as_path().as_os_str().to_str().unwrap().to_string();
         let file = File::create(&filename)?;
-        let mut writer = ArrowWriter::try_new(file, Arc::clone(&batch.schema()), None)?;
+        let mut writer =
+            ArrowWriter::try_new_with_options(file, Arc::clone(&batch.schema()), writer_options)?;
         writer.write(batch)?;
         writer.close()?;
 
@@ -1774,5 +2136,219 @@ mod test {
             err_msg.contains("Found duplicate field"),
             "Expected duplicate field error, got: {err_msg}"
         );
+    }
+
+    #[test]
+    fn test_check_column_unicode_fold() {
+        use super::{check_column_unicode_fold, UnicodeFoldIssue};
+
+        // Physical `K` (U+212A KELVIN SIGN) folds to `k` in Spark's Unicode resolver but not
+        // in the ASCII matcher: the guard must report it.
+        let kelvin: SchemaRef = Arc::new(Schema::new(vec![Field::new(
+            "\u{212A}",
+            DataType::Int32,
+            true,
+        )]));
+        assert!(matches!(
+            check_column_unicode_fold("k", &kelvin),
+            Some(UnicodeFoldIssue::FoldOnlyMatch(name)) if name == "\u{212A}"
+        ));
+
+        // ASCII case differences are handled by the existing matcher.
+        let ascii: SchemaRef = Arc::new(Schema::new(vec![Field::new("K", DataType::Int32, true)]));
+        assert!(check_column_unicode_fold("k", &ascii).is_none());
+
+        // ASCII `K` and Kelvin `K` both fold to `k`: Spark rejects the read as ambiguous,
+        // so the guard must report the duplicate instead of letting the ASCII match win.
+        let ambiguous: SchemaRef = Arc::new(Schema::new(vec![
+            Field::new("K", DataType::Int32, true),
+            Field::new("\u{212A}", DataType::Int32, true),
+        ]));
+        assert!(matches!(
+            check_column_unicode_fold("k", &ambiguous),
+            Some(UnicodeFoldIssue::Ambiguous(matched)) if matched == "[K, \u{212A}]"
+        ));
+
+        // `ſ` (U+017F) does not lowercase to `s`, so Spark also treats the requested column
+        // as missing; both engines agree on the missing-column path.
+        let long_s: SchemaRef = Arc::new(Schema::new(vec![Field::new(
+            "\u{17F}",
+            DataType::Int32,
+            true,
+        )]));
+        assert!(check_column_unicode_fold("s", &long_s).is_none());
+
+        // A genuinely missing column reports nothing.
+        let other: SchemaRef = Arc::new(Schema::new(vec![Field::new(
+            "other",
+            DataType::Int32,
+            true,
+        )]));
+        assert!(check_column_unicode_fold("k", &other).is_none());
+    }
+
+    fn variant_field(name: &str, id: Option<i32>) -> Field {
+        let field = Field::new(
+            name,
+            DataType::Struct(Fields::from(vec![
+                Field::new("value", DataType::Binary, true),
+                Field::new("metadata", DataType::Binary, true),
+            ])),
+            true,
+        )
+        .with_extension_type(VariantType);
+        match id {
+            Some(id) => {
+                let mut metadata = field.metadata().clone();
+                metadata.insert("PARQUET:field_id".to_string(), id.to_string());
+                field.with_metadata(metadata)
+            }
+            None => field,
+        }
+    }
+
+    fn int_field(name: &str, id: Option<i32>) -> Field {
+        let field = Field::new(name, DataType::Int32, true);
+        match id {
+            Some(id) => {
+                let mut metadata = std::collections::HashMap::new();
+                metadata.insert("PARQUET:field_id".to_string(), id.to_string());
+                field.with_metadata(metadata)
+            }
+            None => field,
+        }
+    }
+
+    fn rewrite_column(
+        logical: SchemaRef,
+        physical: SchemaRef,
+        use_field_id: bool,
+        column: &str,
+    ) -> Result<(), DataFusionError> {
+        use datafusion::physical_expr::expressions::Column;
+        use datafusion::physical_expr::PhysicalExpr;
+
+        let mut options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        options.case_sensitive = false;
+        options.use_field_id = use_field_id;
+        let factory = SparkPhysicalExprAdapterFactory::new(options, None);
+        let adapter = factory.create(Arc::clone(&logical), physical)?;
+        let index = logical.index_of(column).unwrap();
+        let expr: Arc<dyn PhysicalExpr> = Arc::new(Column::new(column, index));
+        adapter.rewrite(expr).map(|_| ())
+    }
+
+    #[test]
+    fn test_case_insensitive_variant_scan_fails_closed_on_unicode_folded_name() {
+        // Referencing `k` whose physical name is Kelvin `K` must fail closed rather than
+        // null-fill values Spark reads (#5495).
+        let logical: SchemaRef = Arc::new(Schema::new(vec![variant_field("k", None)]));
+        let physical: SchemaRef = Arc::new(Schema::new(vec![variant_field("\u{212A}", None)]));
+        let err = rewrite_column(logical, physical, false, "k").unwrap_err();
+        assert!(err.to_string().contains("Unicode case folding"), "{err}");
+        assert!(err.to_string().contains("5495"), "{err}");
+    }
+
+    #[test]
+    fn test_unicode_guard_skips_unreferenced_columns() {
+        // An unused ordinary column with a Unicode-folded physical name stays in the native
+        // data schema; only referenced columns may abort the scan.
+        let logical: SchemaRef = Arc::new(Schema::new(vec![
+            variant_field("v", None),
+            int_field("k", None),
+        ]));
+        let physical: SchemaRef = Arc::new(Schema::new(vec![
+            variant_field("v", None),
+            int_field("\u{212A}", None),
+        ]));
+        rewrite_column(Arc::clone(&logical), Arc::clone(&physical), false, "v").unwrap();
+        let err = rewrite_column(logical, physical, false, "k").unwrap_err();
+        assert!(err.to_string().contains("Unicode case folding"), "{err}");
+    }
+
+    #[test]
+    fn test_unicode_guard_applies_to_id_less_fields_in_field_id_scans() {
+        // With field-ID reads enabled, ID-bearing fields resolve by ID and are exempt, but an
+        // ID-less Variant field still falls through to ASCII name matching and needs the
+        // guard.
+        let logical: SchemaRef = Arc::new(Schema::new(vec![
+            int_field("sibling", Some(1)),
+            variant_field("k", None),
+        ]));
+        let physical: SchemaRef = Arc::new(Schema::new(vec![
+            int_field("data", Some(1)),
+            variant_field("\u{212A}", None),
+        ]));
+        rewrite_column(Arc::clone(&logical), Arc::clone(&physical), true, "sibling").unwrap();
+        let err = rewrite_column(logical, physical, true, "k").unwrap_err();
+        assert!(err.to_string().contains("Unicode case folding"), "{err}");
+
+        // The same Variant field carrying an ID resolves by ID and stays exempt.
+        let logical: SchemaRef = Arc::new(Schema::new(vec![
+            int_field("sibling", Some(1)),
+            variant_field("k", Some(2)),
+        ]));
+        let physical: SchemaRef = Arc::new(Schema::new(vec![
+            int_field("data", Some(1)),
+            variant_field("\u{212A}", Some(2)),
+        ]));
+        rewrite_column(logical, physical, true, "k").unwrap();
+    }
+
+    #[test]
+    fn test_duplicate_name_validation_exempts_id_resolved_columns() {
+        // A case-sensitive Spark write can produce `v`/`V` siblings. With field-ID reads,
+        // Spark resolves the requested `v` by unique ID before any name matching
+        // (`ParquetReadSupport.matchIdField`), so the case-insensitive duplicate error must
+        // not fire for it.
+        let logical: SchemaRef = Arc::new(Schema::new(vec![variant_field("v", Some(1))]));
+        let physical: SchemaRef = Arc::new(Schema::new(vec![
+            variant_field("v", Some(1)),
+            int_field("V", Some(2)),
+        ]));
+        rewrite_column(logical, physical, true, "v").unwrap();
+
+        // Without field IDs the requested name falls through to name matching, which keeps
+        // Spark's ambiguity error.
+        let logical: SchemaRef = Arc::new(Schema::new(vec![variant_field("v", None)]));
+        let physical: SchemaRef = Arc::new(Schema::new(vec![
+            variant_field("v", None),
+            int_field("V", None),
+        ]));
+        let err = rewrite_column(logical, physical, false, "v").unwrap_err();
+        assert!(err.to_string().contains("Found duplicate field"), "{err}");
+    }
+
+    #[test]
+    fn test_unicode_fold_ambiguity_raises_duplicate_error() {
+        // ASCII `K` and Kelvin `K` both fold to the requested `k` in Spark's resolver, which
+        // rejects the read as ambiguous; serving the single ASCII match would diverge.
+        let logical: SchemaRef = Arc::new(Schema::new(vec![variant_field("k", None)]));
+        let physical: SchemaRef = Arc::new(Schema::new(vec![
+            variant_field("K", None),
+            variant_field("\u{212A}", None),
+        ]));
+        let err = rewrite_column(logical, physical, false, "k").unwrap_err();
+        assert!(err.to_string().contains("Found duplicate field"), "{err}");
+    }
+
+    #[test]
+    fn test_id_matched_name_shadowed_by_wrong_id_physical_field() {
+        // Physical `v BINARY` (ID 2) precedes `other VARIANT` (ID 1). Spark resolves the
+        // requested `v` (ID 1) by field ID to `other`; the remap renames `other` to `v` and
+        // must hide the wrong-ID physical `v` so the first-name lookup cannot select the
+        // Binary column ahead of the ID-matched one.
+        let logical: SchemaRef = Arc::new(Schema::new(vec![variant_field("v", Some(1))]));
+        let physical_v = {
+            let field = Field::new("v", DataType::Binary, true);
+            let mut metadata = std::collections::HashMap::new();
+            metadata.insert("PARQUET:field_id".to_string(), "2".to_string());
+            field.with_metadata(metadata)
+        };
+        let physical: SchemaRef = Arc::new(Schema::new(vec![
+            physical_v,
+            variant_field("other", Some(1)),
+        ]));
+        rewrite_column(logical, physical, true, "v").unwrap();
     }
 }

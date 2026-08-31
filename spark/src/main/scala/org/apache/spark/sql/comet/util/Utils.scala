@@ -49,6 +49,9 @@ import org.apache.comet.shims.CometTypeShim
 import org.apache.comet.vector.CometVector
 
 object Utils extends CometTypeShim with Logging {
+  private val ArrowExtensionNameKey = "ARROW:extension:name"
+  private val VariantExtensionName = "arrow.parquet.variant"
+
   def getConfPath(confFileName: String): String = {
     sys.env
       .get(COMET_CONF_DIR_ENV)
@@ -79,11 +82,17 @@ object Utils extends CometTypeShim with Logging {
         val elementType = fromArrowField(elementField)
         ArrayType(elementType, containsNull = elementField.isNullable)
       case ArrowType.Struct.INSTANCE =>
-        val fields = field.getChildren().asScala.map { child =>
-          val dt = fromArrowField(child)
-          StructField(child.getName, dt, child.isNullable)
-        }
-        StructType(fields.toSeq)
+        Option(field.getMetadata)
+          .flatMap(metadata => Option(metadata.get(ArrowExtensionNameKey)))
+          .filter(_ == VariantExtensionName)
+          .flatMap(_ => variantType)
+          .getOrElse {
+            val fields = field.getChildren().asScala.map { child =>
+              val dt = fromArrowField(child)
+              StructField(child.getName, dt, child.isNullable)
+            }
+            StructType(fields.toSeq)
+          }
       case arrowType => fromArrowType(arrowType)
     }
   }

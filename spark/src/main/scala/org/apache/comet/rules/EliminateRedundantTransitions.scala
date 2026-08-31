@@ -32,7 +32,7 @@ import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.serde.NativeOptIn
-import org.apache.comet.shims.ShimSQLConf
+import org.apache.comet.shims.{CometTypeShim, ShimSQLConf}
 
 // This rule is responsible for eliminating redundant transitions between row-based and
 // columnar-based operators for Comet. Currently, three potential redundant transitions are:
@@ -58,6 +58,7 @@ import org.apache.comet.shims.ShimSQLConf
 case class EliminateRedundantTransitions(session: SparkSession)
     extends Rule[SparkPlan]
     with ShimCometMapInBatch
+    with CometTypeShim
     with ShimSQLConf {
 
   private lazy val showTransformations = CometConf.COMET_EXPLAIN_TRANSFORMATIONS.get()
@@ -206,6 +207,8 @@ case class EliminateRedundantTransitions(session: SparkSession)
       } else {
         matchMapInArrow(plan)
           .orElse(matchMapInPandas(plan))
+          .filterNot(info =>
+            (info.output ++ info.child.output).exists(attr => containsVariantType(attr.dataType)))
           .flatMap(info => extractColumnarChild(info.child).map(child => (info, child)))
       }
     }
