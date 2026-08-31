@@ -566,6 +566,56 @@ mod test {
         repartitioner.insert_batch(batch.clone()).await.unwrap();
     }
 
+    /// The zstd context is reused within one encode burst but must not survive past it: a
+    /// spill event and the final shuffle write each end with the context released.
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
+    async fn local_writer_releases_zstd_context_at_burst_boundaries() {
+        let batch = create_batch(900);
+        let num_partitions = 2;
+        let runtime_env = create_runtime(512 * 1024);
+        let metrics_set = ExecutionPlanMetricsSet::new();
+        let dir = tempfile::tempdir().unwrap();
+        let shuffle_block_writer =
+            ShuffleBlockWriter::try_new(batch.schema().as_ref(), CompressionCodec::Zstd(1))
+                .unwrap();
+        let local_partition_writer = LocalPartitionWriter::try_new(
+            dir.path().join("data.out").to_str().unwrap().to_string(),
+            dir.path().join("index.out").to_str().unwrap().to_string(),
+            shuffle_block_writer,
+            num_partitions,
+            1024,
+            1024 * 1024,
+            Arc::clone(&runtime_env),
+        )
+        .unwrap();
+        let mut repartitioner = MultiPartitionShuffleRepartitioner::try_new(
+            0,
+            local_partition_writer,
+            CometPartitioning::Hash(vec![Arc::new(Column::new("a", 0))], num_partitions),
+            ShufflePartitionerMetrics::new(&metrics_set, 0),
+            runtime_env,
+            1024,
+            false,
+            None,
+        )
+        .unwrap();
+
+        repartitioner.insert_batch(batch.clone()).await.unwrap();
+        repartitioner.spill(0).unwrap();
+        assert!(
+            !repartitioner.partition_writer().holds_zstd_cctx(),
+            "a finished spill burst must not keep the zstd context cached"
+        );
+
+        repartitioner.insert_batch(batch.clone()).await.unwrap();
+        repartitioner.shuffle_write().unwrap();
+        assert!(
+            !repartitioner.partition_writer().holds_zstd_cctx(),
+            "finish_all must release the zstd context"
+        );
+    }
+
     #[tokio::test]
     async fn shuffle_partitioner_charges_shared_buffer_once() {
         // `insert_batch` slices a large batch into batch_size chunks that all share one backing

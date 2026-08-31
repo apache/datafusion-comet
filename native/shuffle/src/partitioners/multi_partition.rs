@@ -577,6 +577,7 @@ impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
                     )
                 })
             };
+            self.partition_writer.write_burst_complete();
 
             let memory_spilled_bytes = self
                 .reservation

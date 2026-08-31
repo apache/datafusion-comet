@@ -61,6 +61,19 @@ fn read_ipc_compressed_impl(
     bytes: &[u8],
     validate: bool,
 ) -> Result<RecordBatch> {
+    let result = decode_shuffle_frame(decode_context, bytes, validate);
+    // Decoding a frame with a large advertised window grows the context past 100 MiB, and
+    // contexts here are long-lived (thread-local per executor thread). Bound what survives
+    // the frame, whether it decoded or not.
+    decode_context.release_zstd_if_oversized();
+    result
+}
+
+fn decode_shuffle_frame(
+    decode_context: &mut ShuffleDecodeContext,
+    bytes: &[u8],
+    validate: bool,
+) -> Result<RecordBatch> {
     let codec = bytes.get(..4).ok_or_else(|| {
         DataFusionError::Execution("Failed to decode batch: truncated compression codec".to_owned())
     })?;
@@ -321,6 +334,61 @@ mod tests {
                 assert_eq!(reused_validated, fresh);
             }
         }
+    }
+
+    /// ZSTD shuffle frame whose header advertises the full level-22 window (streaming
+    /// encode with no pledged source size), so decoding it demands a >100 MiB workspace.
+    fn encode_zstd_wide_window(payload: &[u8]) -> Vec<u8> {
+        let mut bytes = b"ZSTD".to_vec();
+        let mut writer = zstd::Encoder::new(&mut bytes, 22).unwrap();
+        writer.write_all(payload).unwrap();
+        writer.finish().unwrap();
+        bytes
+    }
+
+    /// Small-window frames keep the context cached for reuse; a frame that inflates the
+    /// workspace far past its usual size must not leave it pinned in a long-lived context.
+    #[test]
+    #[cfg_attr(miri, ignore)] // Miri cannot call Zstd's C FFI.
+    fn decode_context_drops_oversized_zstd_workspace() {
+        let mut ctx = ShuffleDecodeContext::default();
+        let small = encode(b"ZSTD", &ipc_stream(1));
+        assert_eq!(
+            read_ipc_compressed_with(&mut ctx, &small)
+                .unwrap()
+                .num_rows(),
+            3
+        );
+        assert!(
+            ctx.holds_zstd_dctx(),
+            "a small-window frame must keep the context cached for reuse"
+        );
+
+        let wide = encode_zstd_wide_window(&ipc_stream(1));
+        assert_eq!(
+            read_ipc_compressed_with(&mut ctx, &wide)
+                .unwrap()
+                .num_rows(),
+            3
+        );
+        assert!(
+            !ctx.holds_zstd_dctx(),
+            "a wide-window frame must not leave its workspace cached"
+        );
+    }
+
+    /// The workspace bound must hold on the error path too: a failed decode of a
+    /// wide-window frame cannot leave the inflated context behind.
+    #[test]
+    #[cfg_attr(miri, ignore)] // Miri cannot call Zstd's C FFI.
+    fn decode_error_drops_oversized_zstd_workspace() {
+        let mut ctx = ShuffleDecodeContext::default();
+        let wide = encode_zstd_wide_window(&ipc_stream(1));
+        assert!(read_ipc_compressed_with(&mut ctx, &wide[..wide.len() - 7]).is_err());
+        assert!(
+            !ctx.holds_zstd_dctx(),
+            "a failed wide-window decode must not leave its workspace cached"
+        );
     }
 
     /// A truncated frame must not poison the context for the next valid one.

@@ -66,7 +66,8 @@ pub(crate) struct LocalPartitionWriter {
     output_index_file: String,
     data_output: DataOutput,
     /// Compression state shared by every block this task writes; the per-partition
-    /// `BufBatchWriter`s borrow it (see [`ShuffleCodecContext`]).
+    /// `BufBatchWriter`s borrow it (see [`ShuffleCodecContext`]). Retention is bounded:
+    /// released at spill/finish boundaries and whenever its workspace is oversized.
     codec_context: ShuffleCodecContext,
     /// Start offset of each partition in the data file, plus a trailing entry
     /// with the total length so partition sizes are simple offset differences.
@@ -132,6 +133,11 @@ impl LocalPartitionWriter {
             num_output_partitions,
             last_finish_pid: -1,
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn holds_zstd_cctx(&self) -> bool {
+        self.codec_context.holds_zstd_cctx()
     }
 
     #[cfg(test)]
@@ -319,6 +325,15 @@ impl PartitionWriter for LocalPartitionWriter {
         output_index.flush()?;
         write_timer.stop();
 
+        // The shuffle output is complete; nothing else encodes through this context.
+        self.codec_context.release_zstd();
+
         Ok(())
+    }
+
+    fn write_burst_complete(&mut self) {
+        // A spill burst just ended and the next encode may be a long time coming; the zstd
+        // workspace is native memory no reservation tracks, so don't sit on it.
+        self.codec_context.release_zstd();
     }
 }

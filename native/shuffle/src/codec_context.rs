@@ -19,14 +19,20 @@ use arrow::ipc::writer::CompressionContext;
 use std::io;
 use zstd::zstd_safe::{CCtx, CParameter, DCtx, ResetDirective};
 
+/// Largest zstd workspace worth caching between frames. Covers the commonly configured
+/// levels; higher levels (tens to hundreds of MiB of window) fall back to a fresh context
+/// per frame, which is what per-block encoding paid anyway.
+const MAX_RETAINED_ZSTD_CONTEXT_BYTES: usize = 8 * 1024 * 1024;
+
 /// Reusable compression state for encoding shuffle blocks.
 ///
 /// A zstd context costs about a megabyte and real setup time, so a task shares one across all
 /// the blocks it encodes instead of paying per block. Keep ownership task-scoped, never
-/// per-output-partition -- a shuffle can have thousands of partitions. Local shuffle holds the
-/// zstd context for the whole task; the remote (RSS) path frees it after each admitted encode
-/// via [`Self::release_zstd`], since its memory accounting only reserves the workspace per
-/// invocation.
+/// per-output-partition -- a shuffle can have thousands of partitions. Local shuffle reuses
+/// the zstd context between blocks but bounds what it retains
+/// ([`Self::release_zstd_if_oversized`]) and drops it at spill/finish boundaries; the remote
+/// (RSS) path frees it after each admitted encode via [`Self::release_zstd`], since its
+/// memory accounting only reserves the workspace per invocation.
 #[derive(Default)]
 pub struct ShuffleCodecContext {
     /// Arrow's per-message IPC compression scratch, reused across encodes.
@@ -66,6 +72,19 @@ impl ShuffleCodecContext {
         self.zstd = None;
     }
 
+    /// Drops the cached zstd context when its workspace outgrew
+    /// [`MAX_RETAINED_ZSTD_CONTEXT_BYTES`] (a session reset keeps the allocation); the next
+    /// encode re-creates it lazily.
+    pub(crate) fn release_zstd_if_oversized(&mut self) {
+        if self
+            .zstd
+            .as_ref()
+            .is_some_and(|cctx| cctx.sizeof() > MAX_RETAINED_ZSTD_CONTEXT_BYTES)
+        {
+            self.zstd = None;
+        }
+    }
+
     /// Test hook for the release-vs-retain contract of the two encode paths.
     #[cfg(test)]
     pub(crate) fn holds_zstd_cctx(&self) -> bool {
@@ -94,6 +113,25 @@ impl ShuffleDecodeContext {
         dctx.reset(ResetDirective::SessionOnly)
             .map_err(map_zstd_error)?;
         Ok(dctx)
+    }
+
+    /// Drops the cached zstd context when its workspace outgrew
+    /// [`MAX_RETAINED_ZSTD_CONTEXT_BYTES`]: one frame advertising a large window grows the
+    /// context past 100 MiB, and a session reset keeps that allocation.
+    pub(crate) fn release_zstd_if_oversized(&mut self) {
+        if self
+            .zstd
+            .as_ref()
+            .is_some_and(|dctx| dctx.sizeof() > MAX_RETAINED_ZSTD_CONTEXT_BYTES)
+        {
+            self.zstd = None;
+        }
+    }
+
+    /// Test hook for the retained-workspace bound on the decode path.
+    #[cfg(test)]
+    pub(crate) fn holds_zstd_dctx(&self) -> bool {
+        self.zstd.is_some()
     }
 }
 

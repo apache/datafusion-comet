@@ -279,8 +279,12 @@ impl ShuffleBlockWriter {
             // RSS charges the zstd workspace (rss_codec_workspace) to each admitted encode
             // and releases the charge when it ends, success or not. Free the workspace inside
             // that window -- kept alive it would be native memory the reservation system no
-            // longer tracks. Local shuffle keeps the context for the whole task.
+            // longer tracks.
             codec_context.release_zstd();
+        } else {
+            // Local shuffle reuses the context across blocks, but nothing reserves its
+            // memory: a high-level workspace (hundreds of MiB) must not outlive the block.
+            codec_context.release_zstd_if_oversized();
         }
         encode_result?;
 
@@ -450,6 +454,46 @@ mod tests {
         );
         assert_eq!(sizes[0], sizes[2], "same writer, same input, same level");
         assert_eq!(sizes[1], sizes[3], "same writer, same input, same level");
+    }
+
+    /// Common zstd levels stay cached between local blocks; a high level allocates a
+    /// workspace of hundreds of MiB that must be dropped as soon as its block is done.
+    #[test]
+    #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
+    fn local_write_drops_oversized_zstd_context() {
+        let batch = test_batch(3, 100);
+        let mut ctx = ShuffleCodecContext::default();
+
+        let fast = ShuffleBlockWriter::try_new(&test_schema(), CompressionCodec::Zstd(1)).unwrap();
+        let mut fast_out = vec![];
+        fast.write_batch(
+            &batch,
+            &mut Cursor::new(&mut fast_out),
+            &mut ctx,
+            &Time::default(),
+        )
+        .unwrap();
+        assert!(
+            ctx.holds_zstd_cctx(),
+            "a common-level workspace must stay cached for reuse"
+        );
+
+        let slow = ShuffleBlockWriter::try_new(&test_schema(), CompressionCodec::Zstd(22)).unwrap();
+        let mut slow_out = vec![];
+        slow.write_batch(
+            &batch,
+            &mut Cursor::new(&mut slow_out),
+            &mut ctx,
+            &Time::default(),
+        )
+        .unwrap();
+        assert!(
+            !ctx.holds_zstd_cctx(),
+            "a level-22 workspace must not stay cached past its block"
+        );
+
+        assert_eq!(read_ipc_compressed(&fast_out[16..]).unwrap(), batch);
+        assert_eq!(read_ipc_compressed(&slow_out[16..]).unwrap(), batch);
     }
 
     /// Accepts a fixed number of bytes, then fails every write.
