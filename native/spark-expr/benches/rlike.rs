@@ -36,7 +36,9 @@ fn criterion_benchmark(c: &mut Criterion) {
         for (null_ratio, tag) in NULL_RATIOS {
             let batch = RecordBatch::try_new(
                 Arc::clone(&schema),
-                vec![string_array(rows, null_ratio, |_| "datafusion-comet".to_string())],
+                vec![string_array(rows, null_ratio, |_| {
+                    "datafusion-comet".to_string()
+                })],
             )
             .unwrap();
             group.bench_with_input(
