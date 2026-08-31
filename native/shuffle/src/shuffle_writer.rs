@@ -1170,6 +1170,7 @@ mod test {
                 Cursor::new(&mut coalesced_output),
                 1024 * 1024,
                 8192,
+                Vec::new(),
             );
             for batch in &small_batches {
                 buf_writer.write(batch, &encode_time, &write_time).unwrap();
@@ -1186,6 +1187,7 @@ mod test {
                 Cursor::new(&mut uncoalesced_output),
                 1024 * 1024,
                 1,
+                Vec::new(),
             );
             for batch in &small_batches {
                 buf_writer.write(batch, &encode_time, &write_time).unwrap();
@@ -1290,6 +1292,7 @@ mod test {
                 Cursor::new(&mut output),
                 1024 * 1024,
                 batch_size as usize,
+                Vec::new(),
             );
             for batch in &inputs {
                 buf_writer.write(batch, &encode_time, &write_time).unwrap();

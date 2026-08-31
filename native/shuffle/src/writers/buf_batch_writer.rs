@@ -47,21 +47,32 @@ pub(crate) struct BufBatchWriter<S: Borrow<ShuffleBlockWriter>, W: Write> {
 }
 
 impl<S: Borrow<ShuffleBlockWriter>, W: Write> BufBatchWriter<S, W> {
+    /// `buffer` is the caller-owned byte buffer to serialize into. Passing a buffer recovered
+    /// from a previous writer's [`Self::into_buffer`] reuses its capacity instead of regrowing
+    /// a fresh allocation toward `buffer_max_size` for every writer.
     pub(crate) fn new(
         shuffle_block_writer: S,
         writer: W,
         buffer_max_size: usize,
         batch_size: usize,
+        mut buffer: Vec<u8>,
     ) -> Self {
+        buffer.clear();
         Self {
             shuffle_block_writer,
             writer,
-            buffer: vec![],
+            buffer,
             buffer_max_size,
             compression_context: CompressionContext::default(),
             coalescer: None,
             batch_size,
         }
+    }
+
+    /// Recover the byte buffer so its capacity can be recycled into the next writer.
+    /// The buffer is drained (empty) if the writer was flushed.
+    pub(crate) fn into_buffer(self) -> Vec<u8> {
+        self.buffer
     }
 
     pub(crate) fn write(
@@ -158,5 +169,66 @@ impl<S: Borrow<ShuffleBlockWriter>, W: Write> BufBatchWriter<S, W> {
 impl<S: Borrow<ShuffleBlockWriter>, W: Write + Seek> BufBatchWriter<S, W> {
     pub(crate) fn writer_stream_position(&mut self) -> datafusion::common::Result<u64> {
         self.writer.stream_position().map_err(Into::into)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{read_ipc_compressed, CompressionCodec};
+    use arrow::array::Int64Array;
+    use arrow::datatypes::{DataType, Field, Schema};
+    use std::sync::Arc;
+
+    fn test_batch(seed: i64) -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, false)]));
+        let values: Vec<i64> = (0..100).map(|i| seed * 1_000 + i).collect();
+        RecordBatch::try_new(schema, vec![Arc::new(Int64Array::from(values))]).unwrap()
+    }
+
+    fn write_one_partition(seed: i64, buffer: Vec<u8>) -> (Vec<u8>, Vec<u8>) {
+        let batch = test_batch(seed);
+        let block_writer =
+            ShuffleBlockWriter::try_new(batch.schema().as_ref(), CompressionCodec::Zstd(1))
+                .unwrap();
+        let mut output = Vec::new();
+        let time = Time::default();
+        let mut writer = BufBatchWriter::new(block_writer, &mut output, 1 << 20, 8192, buffer);
+        writer.write(&batch, &time, &time).unwrap();
+        writer.flush(&time, &time).unwrap();
+        let buffer = writer.into_buffer();
+        (output, buffer)
+    }
+
+    /// A buffer recycled across partitions must produce byte-identical output to fresh
+    /// per-partition buffers, come back empty, and keep its grown capacity.
+    #[test]
+    #[cfg_attr(miri, ignore)] // miri can't call zstd's C FFI
+    fn recycled_buffer_matches_fresh_buffers_and_keeps_capacity() {
+        let fresh: Vec<Vec<u8>> = (0..3)
+            .map(|p| write_one_partition(p, Vec::new()).0)
+            .collect();
+
+        let mut scratch = Vec::new();
+        let mut recycled = Vec::new();
+        for p in 0..3 {
+            let (output, returned) = write_one_partition(p, scratch);
+            assert!(
+                returned.is_empty(),
+                "recycled buffer must come back drained"
+            );
+            scratch = returned;
+            recycled.push(output);
+        }
+
+        assert_eq!(fresh, recycled);
+        assert!(
+            scratch.capacity() > 0,
+            "capacity grown in one partition must survive into the next"
+        );
+        for output in &recycled {
+            let decoded = read_ipc_compressed(&output[16..]).unwrap();
+            assert_eq!(decoded.num_rows(), 100);
+        }
     }
 }

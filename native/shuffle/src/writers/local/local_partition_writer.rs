@@ -53,6 +53,11 @@ enum DataOutput {
         spill_writers: Vec<SpillWriter>,
         /// Runtime used to allocate the temporary spill files.
         runtime: Arc<RuntimeEnv>,
+        /// Byte buffer recycled through the short-lived per-partition `BufBatchWriter`s.
+        /// Partitions are written strictly one at a time, so a single buffer keeps its
+        /// grown capacity across the whole task instead of every partition regrowing a
+        /// fresh allocation toward the write buffer size.
+        recycled_buffer: Vec<u8>,
     },
 }
 
@@ -99,6 +104,7 @@ impl LocalPartitionWriter {
                 output_file,
                 write_buffer_size,
                 batch_size,
+                Vec::new(),
             ))
         } else {
             let output_writer = BufWriter::with_capacity(write_buffer_size, output_file);
@@ -116,6 +122,7 @@ impl LocalPartitionWriter {
                 shuffle_block_writer,
                 spill_writers,
                 runtime,
+                recycled_buffer: Vec::new(),
             }
         };
         Ok(Self {
@@ -170,12 +177,13 @@ impl PartitionWriter for LocalPartitionWriter {
             DataOutput::Multi {
                 spill_writers,
                 runtime,
+                recycled_buffer,
                 ..
             } => {
                 // Multi-partition output buffers each partition's batches into its own
                 // spill file. `finish_partition` later merges the spill files (and any
                 // remaining in-memory batches) into the shuffle output in partition order.
-                spill_writers[pid].write(iter, runtime, metrics)?;
+                spill_writers[pid].write(iter, runtime, metrics, recycled_buffer)?;
             }
         }
 
@@ -216,6 +224,7 @@ impl PartitionWriter for LocalPartitionWriter {
                 output_writer,
                 shuffle_block_writer,
                 spill_writers,
+                recycled_buffer,
                 ..
             } => {
                 self.offsets[pid] = output_writer.stream_position()?;
@@ -234,18 +243,21 @@ impl PartitionWriter for LocalPartitionWriter {
                 }
 
                 // Write in memory batches to output data file. Each partition uses its
-                // own writer so coalescing does not cross partition boundaries.
+                // own writer so coalescing does not cross partition boundaries, but the
+                // byte buffer is recycled so its capacity carries over to the next one.
                 let mut buf_batch_writer = BufBatchWriter::new(
                     shuffle_block_writer,
                     output_writer,
                     write_buffer_size,
                     batch_size,
+                    std::mem::take(recycled_buffer),
                 );
                 for batch in iter.by_ref() {
                     let batch = batch?;
                     buf_batch_writer.write(&batch, &metrics.encode_time, &metrics.write_time)?;
                 }
                 buf_batch_writer.flush(&metrics.encode_time, &metrics.write_time)?;
+                *recycled_buffer = buf_batch_writer.into_buffer();
             }
         }
         Ok(())
