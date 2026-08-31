@@ -19,14 +19,21 @@
 
 package org.apache.comet.exec
 
+import java.util.concurrent.atomic.AtomicLong
+
 import scala.util.Random
 
 import org.apache.hadoop.fs.Path
-import org.apache.spark.SparkConf
+import org.apache.spark.{CometListenerBusUtils, SparkConf}
+import org.apache.spark.scheduler.{SparkListener, SparkListenerTaskEnd}
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.expressions.Cast
+import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial}
 import org.apache.spark.sql.catalyst.optimizer.EliminateSorts
+import org.apache.spark.sql.catalyst.plans.physical.RangePartitioning
 import org.apache.spark.sql.comet.CometHashAggregateExec
+import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
+import org.apache.spark.sql.execution.SQLExecution
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.{avg, col, count_distinct, sum}
 import org.apache.spark.sql.internal.SQLConf
@@ -47,6 +54,169 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   // ANSI-mode variants opt in to ANSI explicitly via withSQLConf.
   override protected def sparkConf: SparkConf =
     super.sparkConf.set(SQLConf.ANSI_ENABLED.key, "false")
+
+  test("grouped aggregate metrics are forwarded without fabricating global metrics") {
+    val aggregateMetricNames =
+      Set("spill_count", "spilled_bytes", "spilled_rows", "peak_mem_used")
+
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "2") {
+      withParquetTable((0 until 1024).map(i => (i % 64, i)), "tbl", false) {
+        val grouped = sql("SELECT _1, SUM(_2) FROM tbl GROUP BY _1")
+        assert(grouped.collect().length == 64)
+
+        val groupedAggregates = stripAQEPlan(grouped.queryExecution.executedPlan).collect {
+          case aggregate: CometHashAggregateExec => aggregate
+        }
+        assert(groupedAggregates.exists(_.modes.contains(Partial)))
+        assert(groupedAggregates.exists(_.modes.contains(Final)))
+        groupedAggregates.foreach { aggregate =>
+          assert(aggregateMetricNames.subsetOf(aggregate.metrics.keySet))
+          assert(aggregate.metrics("spill_count").metricType == "sum")
+          assert(aggregate.metrics("spilled_bytes").metricType == "size")
+          assert(aggregate.metrics("spilled_rows").metricType == "sum")
+          assert(aggregate.metrics("peak_mem_used").metricType == "size")
+          assert(
+            aggregate.metrics("peak_mem_used").value > 0L,
+            s"Expected peak aggregate memory for modes ${aggregate.modes}")
+        }
+
+        val global = sql("SELECT SUM(_2) FROM tbl")
+        assert(global.collect().length == 1)
+
+        val globalAggregates = stripAQEPlan(global.queryExecution.executedPlan).collect {
+          case aggregate: CometHashAggregateExec => aggregate
+        }
+        assert(globalAggregates.nonEmpty)
+        globalAggregates.foreach { aggregate =>
+          assert(aggregateMetricNames.intersect(aggregate.metrics.keySet).isEmpty)
+        }
+      }
+    }
+  }
+
+  test("range sampling does not report grouped aggregate metrics") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "2",
+      CometConf.COMET_SHUFFLE_MODE.key -> "native") {
+      withParquetTable((0 until 1024).map(i => (i % 64, i)), "tbl", false) {
+        val ranged =
+          sql("SELECT _1, SUM(_2) AS total FROM tbl GROUP BY _1").repartitionByRange(2, col("_1"))
+        val plan = stripAQEPlan(ranged.queryExecution.executedPlan)
+        val exchange = plan
+          .collectFirst {
+            case exchange: CometShuffleExchangeExec
+                if exchange.outputPartitioning.isInstanceOf[RangePartitioning] =>
+              exchange
+          }
+          .getOrElse(fail("Expected a native range shuffle"))
+        val aggregate = exchange.child
+          .collectFirst {
+            case aggregate: CometHashAggregateExec if aggregate.modes.contains(Final) => aggregate
+          }
+          .getOrElse(fail("Expected a final native aggregate under the range shuffle"))
+
+        val samplingInputBytes = new AtomicLong()
+        val samplingInputRecords = new AtomicLong()
+        val listener = new SparkListener {
+          override def onTaskEnd(taskEnd: SparkListenerTaskEnd): Unit = {
+            samplingInputBytes.addAndGet(taskEnd.taskMetrics.inputMetrics.bytesRead)
+            samplingInputRecords.addAndGet(taskEnd.taskMetrics.inputMetrics.recordsRead)
+          }
+        }
+
+        plan.resetMetrics()
+        CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
+        spark.sparkContext.addSparkListener(listener)
+        try {
+          SQLExecution.withNewExecutionId(ranged.queryExecution, Some("range sampling")) {
+            exchange.shuffleDependency
+          }
+          CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
+        } finally {
+          spark.sparkContext.removeSparkListener(listener)
+        }
+        assert(aggregate.metrics("peak_mem_used").value == 0L)
+        assert(samplingInputBytes.get() > 0L)
+        assert(samplingInputRecords.get() > 0L)
+
+        assert(ranged.collect().length == 64)
+        assert(aggregate.metrics("peak_mem_used").value > 0L)
+      }
+    }
+  }
+
+  test("collect_list over struct with non-nullable fields") {
+    // Building a struct from non-nullable columns yields non-nullable struct fields. Native
+    // collect_list derives its declared output element type from the argument's declared type,
+    // but emits arrays of whatever type the accumulator actually received, so the argument is
+    // normalized to its all-nullable variant first. Without that the two disagree on nested
+    // field nullability and the grouped native aggregate fails with "column types must match
+    // schema types".
+    import org.apache.spark.sql.functions.{collect_list, expr}
+    import org.apache.spark.sql.execution.LocalTableScanExec
+    // One row per (a, b) group keeps each collected list deterministic for the answer comparison.
+    // repartition inserts a Comet exchange so the aggregate runs natively over a Comet child; the
+    // in-memory source stays a (non-Comet) LocalTableScan, which we allow via excludedClasses.
+    val df = Seq(("1", "2", 1), ("2", "3", 3))
+      .toDF("a", "b", "c")
+      .repartition(col("a"))
+      .withColumn("d", expr("named_struct('a', a, 'b', b, 'c', c)"))
+    val include = Seq(classOf[CometHashAggregateExec])
+    // Single grouped collect_list of a struct with a non-nullable field.
+    checkSparkAnswerAndOperator(
+      df.groupBy("a", "b").agg(collect_list("d")),
+      include,
+      classOf[LocalTableScanExec])
+    // Multi-stage: the array<struct> result flows through a projection into a second collect_list
+    // (the SPARK-22223 plan shape), so the nested struct field nullability must round-trip.
+    checkSparkAnswerAndOperator(
+      df.groupBy("a", "b")
+        .agg(collect_list("d").as("e"))
+        .withColumn("f", expr("named_struct('b', b, 'e', e)"))
+        .groupBy("a")
+        .agg(collect_list("f")),
+      include,
+      classOf[LocalTableScanExec])
+  }
+
+  test("collect_list/collect_set combined with distinct aggregate falls back safely") {
+    // SPARK-17616: a distinct aggregate combined with collect_list/collect_set produces a
+    // multi-stage plan where the buffer-producing Partial may run in Spark (e.g. over a
+    // non-native LocalTableScan). Comet cannot read Spark's serialized Binary buffer, so the
+    // dependent PartialMerge/Final stages must also fall back rather than crash. See issue #4724
+    // for enabling the fully-native distinct path.
+    import org.apache.spark.sql.functions.{collect_list, collect_set, sort_array}
+    // Non-native source (LocalTableScan): the buffer-producing Partial runs in Spark, so the
+    // dependent PartialMerge/Final stages fall back via the buffer-source check in doConvert.
+    // tagUnsafePartialAggregates does not fire here because the Partial was never convertible.
+    def bufferSourceFallback(fn: String): String = s"Incompatible aggregate function(s): $fn"
+    val df = Seq((1, 3, "a"), (1, 2, "b"), (3, 4, "c"), (3, 4, "c"), (3, 5, "d"))
+      .toDF("x", "y", "z")
+    checkSparkAnswerAndFallbackReason(
+      df.groupBy(col("x")).agg(count_distinct(col("y")), sort_array(collect_list(col("z")))),
+      bufferSourceFallback("collect_list"))
+    checkSparkAnswerAndFallbackReason(
+      df.groupBy(col("x")).agg(count_distinct(col("y")), sort_array(collect_set(col("z")))),
+      bufferSourceFallback("collect_set"))
+
+    // Native source (Parquet): the Partial would otherwise convert, so tagUnsafePartialAggregates
+    // must disable it and force the whole multi-stage distinct chain back to Spark (issue #4724),
+    // rather than running a fully-native pipeline that crashes.
+    val multiStageFallback = "multi-stage CollectList/CollectSet aggregate whose intermediate " +
+      "buffer cannot round-trip in Comet"
+    withParquetTable(
+      Seq((1, 3, "a"), (1, 2, "b"), (3, 4, "c"), (3, 4, "c"), (3, 5, "d")),
+      "t17616") {
+      for (fn <- Seq("collect_list", "collect_set")) {
+        checkSparkAnswerAndFallbackReasons(
+          sql(s"SELECT _1, count(distinct _2), sort_array($fn(_3)) FROM t17616 GROUP BY _1"),
+          Set(multiStageFallback, bufferSourceFallback(fn)))
+      }
+    }
+  }
 
   test("min/max floating point with negative zero") {
     val r = new Random(42)
@@ -99,17 +269,40 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       withTable(tableName) {
         val table = spark.read.parquet(filename).coalesce(1)
         table.createOrReplaceTempView(tableName)
-        // we fall back to Spark for avg on decimal due to the following issue
-        // https://github.com/apache/datafusion-comet/issues/1371
-        // once this is fixed, we should change this test to
-        // checkSparkAnswerAndNumOfAggregates
-        checkSparkAnswer(s"SELECT c1, avg(c7) FROM $tableName GROUP BY c1 ORDER BY c1")
+        checkSparkAnswerAndNumOfAggregates(
+          s"SELECT c1, avg(c7) FROM $tableName GROUP BY c1 ORDER BY c1",
+          2)
+      }
+    }
+  }
+
+  // Regression test for the approx_percentile distinct-aggregate crash: an aggregate with an
+  // incompatible intermediate buffer (percentile_approx) combined with a distinct aggregate is
+  // rewritten by Spark into a multi-stage plan. If part of that chain runs in Comet and part in
+  // Spark, the incompatible buffer crosses the boundary and crashes. Here we force the split with
+  // the partial/final debug configs and assert results still match Spark (the whole chain must
+  // fall back to Spark). See https://github.com/apache/datafusion-comet/issues/4813.
+  test("approx_percentile with distinct aggregate does not split across Comet and Spark") {
+    val data = (0 until 500).map(i => (i % 10, i % 100, i % 37))
+    withParquetTable(data, "tbl", false) {
+      for (disablePartial <- Seq(false, true);
+        disableFinal <- Seq(false, true);
+        groupBy <- Seq("", " GROUP BY _1")) {
+        withSQLConf(
+          CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+          CometConf.COMET_SHUFFLE_MODE.key -> "native",
+          SQLConf.USE_OBJECT_HASH_AGG.key -> "true",
+          CometConf.COMET_ENABLE_PARTIAL_HASH_AGGREGATE.key -> (!disablePartial).toString,
+          CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.key -> (!disableFinal).toString) {
+          checkSparkAnswer(
+            s"SELECT percentile_approx(_2, 0.5), count(DISTINCT _3) FROM tbl$groupBy")
+        }
       }
     }
   }
 
   test("stddev_pop should return NaN for some cases") {
-    withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
+    withSQLConf(CometConf.COMET_SHUFFLE_ENABLED.key -> "true") {
       Seq(true, false).foreach { nullOnDivideByZero =>
         withSQLConf("spark.sql.legacy.statisticalAggregate" -> nullOnDivideByZero.toString) {
 
@@ -126,7 +319,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("count with aggregation filter") {
     withSQLConf(
       CometConf.COMET_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
       CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
       val df1 = sql("SELECT count(DISTINCT 2), count(DISTINCT 2,3)")
       checkSparkAnswer(df1)
@@ -139,7 +332,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("multiple column distinct count") {
     withSQLConf(
       CometConf.COMET_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
       CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
       val df1 = Seq(
         ("a", "b", "c"),
@@ -160,7 +353,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       lowerCaseData.createOrReplaceTempView("lowerCaseData")
       withSQLConf(
         CometConf.COMET_ENABLED.key -> "true",
-        CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+        CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
         CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
         val df = sql("SELECT LAST(n) FROM lowerCaseData")
         checkSparkAnswer(df)
@@ -175,7 +368,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       allNulls.createOrReplaceTempView("allNulls")
       withSQLConf(
         CometConf.COMET_ENABLED.key -> "true",
-        CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+        CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
         CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
         val df = sql("select sum(a), avg(a) from allNulls")
         checkSparkAnswer(df)
@@ -183,10 +376,63 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("mixed engine sum/avg: Comet partial + Spark final matches Spark") {
+    val data = (0 until 100).map(i => (i, i.toLong, i.toDouble, i % 7))
+    withParquetTable(data, "tbl") {
+      withSQLConf(
+        CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.key -> "false",
+        CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+        CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
+        checkSparkAnswer(
+          "SELECT _4, SUM(_1), SUM(_2), SUM(_3), AVG(_1), AVG(_2), AVG(_3) FROM tbl GROUP BY _4")
+      }
+    }
+  }
+
+  test("mixed engine sum/avg: Spark partial + Comet final matches Spark") {
+    val data = (0 until 100).map(i => (i, i.toLong, i.toDouble, i % 7))
+    withParquetTable(data, "tbl") {
+      withSQLConf(
+        CometConf.COMET_ENABLE_PARTIAL_HASH_AGGREGATE.key -> "false",
+        CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+        CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
+        checkSparkAnswer(
+          "SELECT _4, SUM(_1), SUM(_2), SUM(_3), AVG(_1), AVG(_2), AVG(_3) FROM tbl GROUP BY _4")
+      }
+    }
+  }
+
+  // collect_list has no Spark-compatible intermediate buffer: Spark declares BinaryType while the
+  // native accumulator produces a list. Disabling either half of the aggregate must therefore
+  // cascade so that neither half runs in Comet - a Spark final cannot read a Comet-produced list,
+  // and adjustOutputForNativeState would misinterpret Spark's Binary buffer as a list if a Comet
+  // final ran above a Spark partial. count(*) is included so the aggregate also carries a
+  // buffer-compatible function, which is the shape most likely to be split by mistake.
+  Seq(
+    ("Comet partial + Spark final", CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE),
+    ("Spark partial + Comet final", CometConf.COMET_ENABLE_PARTIAL_HASH_AGGREGATE)).foreach {
+    case (name, disabledHalf) =>
+      test(s"mixed engine collect_list: $name matches Spark") {
+        val data = (0 until 100).map(i => (if (i % 11 == 0) None else Some(i), i % 7))
+        withParquetTable(data, "tbl") {
+          withSQLConf(
+            disabledHalf.key -> "false",
+            CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+            CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
+            val df = sql("SELECT _2, sort_array(collect_list(_1)), count(*) FROM tbl GROUP BY _2")
+            checkSparkAnswer(df)
+            // Without the cascade the surviving half would still convert, so pinning this at zero
+            // is what keeps the test from passing on a regression.
+            assert(getNumCometHashAggregate(df) == 0)
+          }
+        }
+      }
+  }
+
   test("Aggregation without aggregate expressions should use correct result expressions") {
     withSQLConf(
       CometConf.COMET_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
       CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test")
@@ -202,7 +448,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("Final aggregation should not bind to the input of partial aggregation") {
     withSQLConf(
       CometConf.COMET_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
       CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
       Seq(true, false).foreach { dictionaryEnabled =>
         withTempDir { dir =>
@@ -221,7 +467,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     withTable("lineitem", "part") {
       withSQLConf(
         CometConf.COMET_ENABLED.key -> "true",
-        CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+        CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
         CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
 
         sql(
@@ -258,7 +504,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     withSQLConf(
       SQLConf.OPTIMIZER_EXCLUDED_RULES.key -> EliminateSorts.ruleName,
       CometConf.COMET_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
       CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
       Seq(true, false).foreach { dictionaryEnabled =>
         withTempDir { dir =>
@@ -277,7 +523,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     withSQLConf(
       SQLConf.OPTIMIZER_EXCLUDED_RULES.key -> EliminateSorts.ruleName,
       CometConf.COMET_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
       CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
       Seq(true, false).foreach { dictionaryEnabled =>
         withTempDir { dir =>
@@ -297,7 +543,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     withTable(table) {
       withSQLConf(
         CometConf.COMET_ENABLED.key -> "true",
-        CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "false",
+        CometConf.COMET_SHUFFLE_ENABLED.key -> "false",
         CometConf.COMET_SHUFFLE_MODE.key -> "native") {
         withTable(table) {
           sql(s"CREATE TABLE $table(col DECIMAL(5, 2)) USING PARQUET")
@@ -310,7 +556,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("fix: Decimal Average should not enable native final aggregation") {
-    withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
+    withSQLConf(CometConf.COMET_SHUFFLE_ENABLED.key -> "true") {
       Seq(true, false).foreach { dictionaryEnabled =>
         withTempDir { dir =>
           val path = new Path(dir.toURI.toString, "test")
@@ -397,7 +643,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     Seq(true, false).foreach { nativeShuffleEnabled =>
       Seq(true, false).foreach { dictionaryEnabled =>
         withSQLConf(
-          CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> nativeShuffleEnabled.toString,
+          CometConf.COMET_SHUFFLE_ENABLED.key -> nativeShuffleEnabled.toString,
           CometConf.COMET_SHUFFLE_MODE.key -> "native") {
           withParquetTable(
             (0 until 100).map(i => (i, (i % 10).toString)),
@@ -419,7 +665,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     assume(isSpark41Plus, "Spark 4.1+ supports grouping on map-containing types")
     withSQLConf(
       CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true") {
       val query =
         """SELECT col1.data['key']
           |FROM VALUES
@@ -538,7 +784,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         (-0.0.asInstanceOf[Float], 2),
         (0.0.asInstanceOf[Float], 3),
         (Float.NaN, 4))
-      withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "false") {
+      withSQLConf(CometConf.COMET_SHUFFLE_ENABLED.key -> "false") {
         withParquetTable(data, "tbl", dictionaryEnabled) {
           checkSparkAnswer("SELECT SUM(_2), MIN(_2), MAX(_2), _1 FROM tbl GROUP BY _1")
           checkSparkAnswer("SELECT MIN(_1), MAX(_1), MIN(_2), MAX(_2) FROM tbl")
@@ -607,7 +853,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     Seq(true, false).foreach { dictionaryEnabled =>
       Seq(true, false).foreach { nativeShuffleEnabled =>
         withSQLConf(
-          CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> nativeShuffleEnabled.toString,
+          CometConf.COMET_SHUFFLE_ENABLED.key -> nativeShuffleEnabled.toString,
           CometConf.COMET_SHUFFLE_MODE.key -> "native") {
           withTempDir { dir =>
             val path = new Path(dir.toURI.toString, "test")
@@ -744,7 +990,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       }
 
       withSQLConf(
-        CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+        CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
         "spark.comet.exec.shuffle.fallbackToColumnar" -> "false",
         "spark.comet.enabled" -> "true") {
         spark.read.parquet(dir.getAbsolutePath).createOrReplaceTempView("t2")
@@ -836,7 +1082,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     withTable("t") {
       sql("CREATE TABLE t(v VARCHAR(3), i INT) USING PARQUET")
       sql("INSERT INTO t VALUES ('c', 1)")
-      withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "false") {
+      withSQLConf(CometConf.COMET_SHUFFLE_ENABLED.key -> "false") {
         checkSparkAnswerAndNumOfAggregates("SELECT v, sum(i) FROM t GROUP BY v ORDER BY v", 1)
       }
     }
@@ -916,7 +1162,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             Seq(128, numValues + 100).foreach { batchSize =>
               withSQLConf(
                 CometConf.COMET_BATCH_SIZE.key -> batchSize.toString,
-                CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
+                CometConf.COMET_SHUFFLE_ENABLED.key -> "true") {
 
                 // Test all combinations of different aggregation & group-by types
                 (1 to 14).foreach { gCol =>
@@ -965,7 +1211,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             Seq(128, numValues + 100).foreach { batchSize =>
               withSQLConf(
                 CometConf.COMET_BATCH_SIZE.key -> batchSize.toString,
-                CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "false") {
+                CometConf.COMET_SHUFFLE_ENABLED.key -> "false") {
 
                 // Test all combinations of different aggregation & group-by types
                 (1 to 14).foreach { gCol =>
@@ -986,7 +1232,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("test final count") {
     withSQLConf(
-      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
       CometConf.COMET_SHUFFLE_MODE.key -> "native") {
       Seq(false, true).foreach { dictionaryEnabled =>
         withParquetTable((0 until 5).map(i => (i, i % 2)), "tbl", dictionaryEnabled) {
@@ -1003,7 +1249,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("test final min/max") {
     withSQLConf(
-      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
       CometConf.COMET_SHUFFLE_MODE.key -> "native") {
       Seq(true, false).foreach { dictionaryEnabled =>
         withParquetTable((0 until 5).map(i => (i, i % 2)), "tbl", dictionaryEnabled) {
@@ -1024,7 +1270,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("test final min/max/count with result expressions") {
     withSQLConf(
-      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
       CometConf.COMET_SHUFFLE_MODE.key -> "native") {
       Seq(true, false).foreach { dictionaryEnabled =>
         withParquetTable((0 until 5).map(i => (i, i % 2)), "tbl", dictionaryEnabled) {
@@ -1059,7 +1305,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("test final sum") {
     withSQLConf(
-      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
       CometConf.COMET_SHUFFLE_MODE.key -> "native") {
       Seq(false, true).foreach { dictionaryEnabled =>
         withParquetTable((0L until 5L).map(i => (i, i % 2)), "tbl", dictionaryEnabled) {
@@ -1093,9 +1339,33 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("avg decimal with nothing to average") {
+    // There is no sum to overflow when the input is empty or entirely null, so avg must
+    // return null rather than raising ARITHMETIC_OVERFLOW in ANSI mode.
+    // https://github.com/apache/datafusion-comet/issues/5148
+    Seq(true, false).foreach { ansiEnabled =>
+      withSQLConf(
+        SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString,
+        CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+        CometConf.COMET_SHUFFLE_MODE.key -> "native") {
+        val table = s"avg_decimal_empty_ansi_$ansiEnabled"
+        withTable(table) {
+          sql(s"create table $table(a decimal(38, 2), b INT) using parquet")
+          // no rows at all
+          checkSparkAnswer(s"select avg(a) from $table")
+          checkSparkAnswer(s"select b, avg(a) from $table group by b")
+          // rows, but every value to average is null
+          sql(s"insert into $table values(null, 1), (null, 2)")
+          checkSparkAnswer(s"select avg(a) from $table")
+          checkSparkAnswer(s"select b, avg(a) from $table group by b")
+        }
+      }
+    }
+  }
+
   test("test final avg") {
     withSQLConf(
-      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
       CometConf.COMET_SHUFFLE_MODE.key -> "native") {
       Seq(true, false).foreach { dictionaryEnabled =>
         withParquetTable(
@@ -1117,7 +1387,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("final decimal avg") {
     withSQLConf(
-      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
       CometConf.COMET_SHUFFLE_MODE.key -> "native") {
       Seq(true, false).foreach { dictionaryEnabled =>
         withSQLConf("parquet.enable.dictionary" -> dictionaryEnabled.toString) {
@@ -1155,7 +1425,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         (0 until 5).map(i => (i.toDouble, i.toDouble % 2)),
         "tbl",
         dictionaryEnabled) {
-        withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "false") {
+        withSQLConf(CometConf.COMET_SHUFFLE_ENABLED.key -> "false") {
           checkSparkAnswerAndNumOfAggregates("SELECT _2 , AVG(_1) FROM tbl GROUP BY _2", 1)
         }
       }
@@ -1164,7 +1434,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("avg null handling") {
     withSQLConf(
-      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
       CometConf.COMET_SHUFFLE_MODE.key -> "native") {
       val table = "avg_null_handling"
       withTable(table) {
@@ -1186,7 +1456,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     Seq(true, false).foreach { dictionaryEnabled =>
       Seq(true, false).foreach { nativeShuffleEnabled =>
         withSQLConf(
-          CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> nativeShuffleEnabled.toString,
+          CometConf.COMET_SHUFFLE_ENABLED.key -> nativeShuffleEnabled.toString,
           CometConf.COMET_SHUFFLE_MODE.key -> "native",
           CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true") {
           withTempDir { dir =>
@@ -1226,7 +1496,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("distinct") {
-    withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
+    withSQLConf(CometConf.COMET_SHUFFLE_ENABLED.key -> "true") {
       Seq("native", "jvm").foreach { cometShuffleMode =>
         withSQLConf(CometConf.COMET_SHUFFLE_MODE.key -> cometShuffleMode) {
           Seq(true, false).foreach { dictionary =>
@@ -1270,7 +1540,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("first/last") {
     withSQLConf(
       SQLConf.COALESCE_PARTITIONS_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
       CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
       Seq(true, false).foreach { dictionary =>
         withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
@@ -1306,7 +1576,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("test bool_and/bool_or") {
-    withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
+    withSQLConf(CometConf.COMET_SHUFFLE_ENABLED.key -> "true") {
       Seq("native", "jvm").foreach { cometShuffleMode =>
         withSQLConf(CometConf.COMET_SHUFFLE_MODE.key -> cometShuffleMode) {
           Seq(true, false).foreach { dictionary =>
@@ -1332,7 +1602,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("bitwise aggregate") {
     withSQLConf(
-      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
       CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
       Seq(true, false).foreach { dictionary =>
         withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
@@ -1408,7 +1678,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("covariance & correlation") {
-    withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
+    withSQLConf(CometConf.COMET_SHUFFLE_ENABLED.key -> "true") {
       Seq("jvm", "native").foreach { cometShuffleMode =>
         withSQLConf(CometConf.COMET_SHUFFLE_MODE.key -> cometShuffleMode) {
           Seq(true, false).foreach { dictionary =>
@@ -1505,7 +1775,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("var_pop and var_samp") {
-    withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
+    withSQLConf(CometConf.COMET_SHUFFLE_ENABLED.key -> "true") {
       Seq("native", "jvm").foreach { cometShuffleMode =>
         withSQLConf(CometConf.COMET_SHUFFLE_MODE.key -> cometShuffleMode) {
           Seq(true, false).foreach { dictionary =>
@@ -1544,7 +1814,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("stddev_pop and stddev_samp") {
-    withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
+    withSQLConf(CometConf.COMET_SHUFFLE_ENABLED.key -> "true") {
       Seq("native", "jvm").foreach { cometShuffleMode =>
         withSQLConf(CometConf.COMET_SHUFFLE_MODE.key -> cometShuffleMode) {
           Seq(true, false).foreach { dictionary =>

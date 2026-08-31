@@ -77,8 +77,8 @@ impl SparkBitArray {
     pub fn merge_be_words(&mut self, incoming: &[u8]) {
         debug_assert_eq!(self.data.len() * 8, incoming.len());
         let mut bit_count: usize = 0;
-        for (word, chunk) in self.data.iter_mut().zip(incoming.chunks_exact(8)) {
-            *word |= u64::from_be_bytes(chunk.try_into().unwrap());
+        for (word, chunk) in self.data.iter_mut().zip(incoming.as_chunks::<8>().0) {
+            *word |= u64::from_be_bytes(*chunk);
             bit_count += word.count_ones() as usize;
         }
         self.bit_count = bit_count;

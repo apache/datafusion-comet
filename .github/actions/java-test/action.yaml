@@ -50,6 +50,18 @@ runs:
         cd native
         cargo build --release
 
+    # Evaluate hashFiles now, on the clean checkout, and reuse the result in the
+    # cache key below. The cache step's inputs are re-evaluated when its post
+    # (cache-save) phase runs, and by then the test run has left trees under the
+    # workspace (e.g. the Hive-catalog warehouse from CometIcebergEncryptionSuite)
+    # that make a fresh '**/pom.xml' walk throw "Fail to hash files under
+    # directory". A precomputed string keeps the save phase from re-walking them.
+    - name: Compute Maven cache key
+      id: maven-cache-key
+      if: ${{ runner.os != 'macOS' }}
+      shell: bash
+      run: echo "hash=${{ hashFiles('**/pom.xml') }}" >> "$GITHUB_OUTPUT"
+
     - name: Cache Maven dependencies
       # TODO: remove next line after working again
       #  temporarily work around https://github.com/actions/runner-images/issues/13341
@@ -60,9 +72,49 @@ runs:
         path: |
           ~/.m2/repository
           /root/.m2/repository
-        key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}
+        key: ${{ runner.os }}-java-maven-${{ steps.maven-cache-key.outputs.hash }}
         restore-keys: |
           ${{ runner.os }}-java-maven-
+
+    # Maven itself is stored outside the dependency repository. Keep its cache
+    # independent of pom.xml changes and preserve the macOS cache workaround.
+    - name: Restore Maven distribution
+      id: maven-distribution
+      if: ${{ runner.os != 'macOS' }}
+      uses: actions/cache/restore@v5
+      with:
+        path: |
+          ~/.m2/wrapper/dists
+          /root/.m2/wrapper/dists
+        key: ${{ runner.os }}-${{ runner.arch }}-maven-wrapper-${{ hashFiles('.mvn/wrapper/maven-wrapper.properties') }}
+
+    # Retry only the wrapper download, never compilation or test execution.
+    # Delays use exponential backoff (10s, 20s, 40s) plus 0-4s of random jitter.
+    - name: Bootstrap Maven
+      shell: bash
+      run: |
+        for attempt in 1 2 3 4; do
+          if ./mvnw -B --version; then
+            break
+          fi
+          if [ "$attempt" -eq 4 ]; then
+            echo "::error::Maven bootstrap failed after $attempt attempts; tests were not started."
+            exit 1
+          fi
+          delay=$((10 * (1 << (attempt - 1)) + RANDOM % 5))
+          echo "::warning::Maven bootstrap attempt $attempt failed; retrying in ${delay}s."
+          sleep "$delay"
+        done
+
+    # Save a successful bootstrap even when the subsequent tests fail.
+    - name: Save Maven distribution
+      if: ${{ runner.os != 'macOS' && steps.maven-distribution.outputs.cache-hit != 'true' }}
+      uses: actions/cache/save@v5
+      with:
+        path: |
+          ~/.m2/wrapper/dists
+          /root/.m2/wrapper/dists
+        key: ${{ steps.maven-distribution.outputs.cache-primary-key }}
 
     - name: Run all tests
       shell: bash
@@ -88,13 +140,18 @@ runs:
       with:
         name: crash-logs-${{ inputs.artifact_name }}
         path: "**/hs_err_pid*.log"
+        if-no-files-found: ignore
     - name: Debug listing
       if: failure()
       shell: bash
-      run: |  
+      run: |
         echo "CWD: $(pwd)"
         ls -lah .
-        ls -lah target
+        if [ -d target ]; then
+          ls -lah target
+        else
+          echo "No root target directory; Maven may not have started."
+        fi
         find . -name 'unit-tests.log'
     - name: Upload unit-tests.log
       if: failure()
@@ -102,11 +159,13 @@ runs:
       with:
         name: unit-tests-${{ inputs.artifact_name }}
         path: "**/target/unit-tests.log"
+        if-no-files-found: ignore
     - name: Upload test results
-      if: ${{ inputs.upload-test-reports == 'true' }}
+      if: ${{ !cancelled() && inputs.upload-test-reports == 'true' }}
       uses: actions/upload-artifact@v6
       with:
          name: java-test-reports-${{ inputs.artifact_name }}
          path: "**/target/surefire-reports/*.txt"
+         if-no-files-found: ignore
          retention-days: 7 # 1 week for test reports
          overwrite: true

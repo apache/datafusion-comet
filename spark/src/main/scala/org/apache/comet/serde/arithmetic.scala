@@ -24,9 +24,8 @@ import scala.math.min
 import org.apache.spark.sql.catalyst.expressions.{Add, Attribute, Cast, Divide, EmptyRow, EqualTo, EvalMode, Expression, If, IntegralDivide, Literal, Multiply, Remainder, Round, Subtract, UnaryMinus}
 import org.apache.spark.sql.types.{ByteType, DataType, DecimalType, DoubleType, FloatType, IntegerType, LongType, ShortType}
 
-import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
-import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProtoInternal, optExprWithFallbackReason, scalarFunctionExprToProtoWithReturnType, serializeDataType}
+import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProtoInternal, flattenAssociative, scalarFunctionExprToProtoWithReturnType, serializeDataType}
 import org.apache.comet.shims.CometEvalModeUtil
 
 trait MathBase {
@@ -38,8 +37,8 @@ trait MathBase {
       binding: Boolean,
       dataType: DataType,
       evalMode: EvalMode.Value,
-      f: (ExprOuterClass.Expr.Builder, ExprOuterClass.MathExpr) => ExprOuterClass.Expr.Builder)
-      : Option[ExprOuterClass.Expr] = {
+      f: (ExprOuterClass.Expr.Builder, ExprOuterClass.MathExpr) => ExprOuterClass.Expr.Builder,
+      checkDivideOverflow: Boolean = false): Option[ExprOuterClass.Expr] = {
     val leftExpr = exprToProtoInternal(left, inputs, binding)
     val rightExpr = exprToProtoInternal(right, inputs, binding)
 
@@ -49,6 +48,7 @@ trait MathBase {
       builder.setLeft(leftExpr.get)
       builder.setRight(rightExpr.get)
       builder.setEvalMode(evalModeToProto(CometEvalModeUtil.fromSparkEvalMode(evalMode)))
+      builder.setCheckDivideOverflow(checkDivideOverflow)
       serializeDataType(dataType).foreach { t =>
         builder.setReturnType(t)
       }
@@ -61,7 +61,6 @@ trait MathBase {
             .newBuilder(),
           inner).build())
     } else {
-      withFallbackReason(expr, left, right)
       None
     }
   }
@@ -90,6 +89,64 @@ trait MathBase {
       Unsupported(Some(s"Unsupported datatype $dt"))
     }
 
+  /**
+   * True when an `Add` / `Multiply` chain of `dataType` in `evalMode` can be rebalanced without
+   * changing results. Only integral types in LEGACY (wrapping, modular) eval mode are exactly
+   * associative, so re-grouping the chain is a no-op on the value. Floating point is not
+   * associative (rounding differs by grouping -- Spark's own `ReorderAssociativeOperator`
+   * excludes it). ANSI / TRY make integer overflow observable (throw / null), and the grouping
+   * changes which intermediate overflows, so those are excluded too. Decimal is excluded because
+   * intermediate precision grows per operation.
+   */
+  def isAssociativeAndRebalanceable(dataType: DataType, evalMode: EvalMode.Value): Boolean =
+    evalMode == EvalMode.LEGACY && (dataType match {
+      case _: ByteType | _: ShortType | _: IntegerType | _: LongType => true
+      case _ => false
+    })
+
+  /**
+   * Like [[QueryPlanSerde.createBalancedBinaryExpr]] but for `MathExpr`-shaped associative
+   * operators (`Add`, `Multiply`): each combined inner node carries the chain's `evalMode` and
+   * `returnType`. Rebalances a flattened chain into an `O(log n)`-depth tree so deep `a + b +
+   * ...` chains serialize to a shallow proto instead of a left-deep one that overflows protobuf's
+   * recursion limit when the plan is re-parsed. Only safe for exactly-associative chains --
+   * callers gate via [[isAssociativeAndRebalanceable]]. The flattened leaves all share the
+   * chain's type (Spark coerces operands to it, with casts acting as flatten boundaries), so a
+   * single `returnType` / `evalMode` is correct for every inner node.
+   */
+  def createBalancedMathExpr(
+      expr: Expression,
+      operands: Seq[Expression],
+      inputs: Seq[Attribute],
+      binding: Boolean,
+      dataType: DataType,
+      evalMode: EvalMode.Value,
+      f: (ExprOuterClass.Expr.Builder, ExprOuterClass.MathExpr) => ExprOuterClass.Expr.Builder)
+      : Option[ExprOuterClass.Expr] = {
+    val protos = operands.map(exprToProtoInternal(_, inputs, binding))
+    if (protos.exists(_.isEmpty)) {
+      None
+    } else {
+      val returnType = serializeDataType(dataType)
+      val evalModeProto = evalModeToProto(CometEvalModeUtil.fromSparkEvalMode(evalMode))
+      val leaves = protos.map(_.get).toIndexedSeq
+      def build(slice: IndexedSeq[ExprOuterClass.Expr]): ExprOuterClass.Expr = {
+        if (slice.length == 1) slice.head
+        else {
+          val mid = slice.length / 2
+          val mathBuilder = ExprOuterClass.MathExpr
+            .newBuilder()
+            .setLeft(build(slice.slice(0, mid)))
+            .setRight(build(slice.slice(mid, slice.length)))
+            .setEvalMode(evalModeProto)
+          returnType.foreach(mathBuilder.setReturnType)
+          f(ExprOuterClass.Expr.newBuilder(), mathBuilder.build()).build()
+        }
+      }
+      Some(build(leaves))
+    }
+  }
+
 }
 
 object CometAdd extends CometExpressionSerde[Add] with MathBase {
@@ -101,15 +158,32 @@ object CometAdd extends CometExpressionSerde[Add] with MathBase {
       expr: Add,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    createMathExpression(
-      expr,
-      expr.left,
-      expr.right,
-      inputs,
-      binding,
-      expr.dataType,
-      expr.evalMode,
-      (builder, mathExpr) => builder.setAdd(mathExpr))
+    if (isAssociativeAndRebalanceable(expr.dataType, expr.evalMode)) {
+      // Rebalance deep `a + b + ...` chains (integral + LEGACY = exactly associative) so the
+      // proto stays shallow and doesn't overflow protobuf's recursion limit when re-parsed.
+      val operands = flattenAssociative(
+        expr,
+        { case _: Add => true; case _ => false },
+        { case a: Add => (a.left, a.right) })
+      createBalancedMathExpr(
+        expr,
+        operands,
+        inputs,
+        binding,
+        expr.dataType,
+        expr.evalMode,
+        (builder, mathExpr) => builder.setAdd(mathExpr))
+    } else {
+      createMathExpression(
+        expr,
+        expr.left,
+        expr.right,
+        inputs,
+        binding,
+        expr.dataType,
+        expr.evalMode,
+        (builder, mathExpr) => builder.setAdd(mathExpr))
+    }
   }
 }
 
@@ -143,22 +217,47 @@ object CometMultiply extends CometExpressionSerde[Multiply] with MathBase {
       expr: Multiply,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    createMathExpression(
-      expr,
-      expr.left,
-      expr.right,
-      inputs,
-      binding,
-      expr.dataType,
-      expr.evalMode,
-      (builder, mathExpr) => builder.setMultiply(mathExpr))
+    if (isAssociativeAndRebalanceable(expr.dataType, expr.evalMode)) {
+      // Rebalance deep `a * b * ...` chains (integral + LEGACY = exactly associative) so the
+      // proto stays shallow and doesn't overflow protobuf's recursion limit when re-parsed.
+      val operands = flattenAssociative(
+        expr,
+        { case _: Multiply => true; case _ => false },
+        { case m: Multiply => (m.left, m.right) })
+      createBalancedMathExpr(
+        expr,
+        operands,
+        inputs,
+        binding,
+        expr.dataType,
+        expr.evalMode,
+        (builder, mathExpr) => builder.setMultiply(mathExpr))
+    } else {
+      createMathExpression(
+        expr,
+        expr.left,
+        expr.right,
+        inputs,
+        binding,
+        expr.dataType,
+        expr.evalMode,
+        (builder, mathExpr) => builder.setMultiply(mathExpr))
+    }
   }
 }
 
 object CometDivide extends CometExpressionSerde[Divide] with MathBase {
 
-  override def getSupportLevel(expr: Divide): SupportLevel =
-    mathDataTypeSupportLevel(expr.left.dataType)
+  override def getSupportLevel(expr: Divide): SupportLevel = {
+    if (expr.dataType.isInstanceOf[DecimalType] &&
+      (!expr.left.dataType.isInstanceOf[DecimalType] ||
+        !expr.right.dataType.isInstanceOf[DecimalType])) {
+      // This is only a sanity check; Spark's type coercion should prevent this case.
+      Unsupported(Some("Decimal division with a decimal result requires decimal operands"))
+    } else {
+      mathDataTypeSupportLevel(expr.left.dataType)
+    }
+  }
 
   override def convert(
       expr: Divide,
@@ -169,7 +268,7 @@ object CometDivide extends CometExpressionSerde[Divide] with MathBase {
     // For now, use NullIf to swap zeros with nulls.
     val rightExpr =
       if (expr.evalMode != EvalMode.ANSI) nullIfWhenPrimitive(expr.right) else expr.right
-    val divideExpr = createMathExpression(
+    createMathExpression(
       expr,
       expr.left,
       rightExpr,
@@ -178,21 +277,6 @@ object CometDivide extends CometExpressionSerde[Divide] with MathBase {
       expr.dataType,
       expr.evalMode,
       (builder, mathExpr) => builder.setDivide(mathExpr))
-
-    // For decimal division Spark applies CheckOverflow after dividing: in ANSI mode overflow
-    // throws NUMERIC_VALUE_OUT_OF_RANGE; in legacy/try mode it returns null.  The Rust
-    // spark_decimal_div_internal uses i128::MAX as a sentinel for overflow, so without this
-    // wrapper an ANSI overflow would silently return a garbage value instead of throwing.
-    if (divideExpr.isDefined && expr.dataType.isInstanceOf[DecimalType] &&
-      serializeDataType(expr.dataType).isDefined) {
-      val builder = ExprOuterClass.CheckOverflow.newBuilder()
-      builder.setChild(divideExpr.get)
-      builder.setFailOnError(expr.evalMode == EvalMode.ANSI)
-      builder.setDatatype(serializeDataType(expr.dataType).get)
-      Some(ExprOuterClass.Expr.newBuilder().setCheckOverflow(builder).build())
-    } else {
-      divideExpr
-    }
   }
 }
 
@@ -233,7 +317,10 @@ object CometIntegralDivide extends CometExpressionSerde[IntegralDivide] with Mat
       binding,
       dataType,
       expr.evalMode,
-      (builder, mathExpr) => builder.setIntegralDivide(mathExpr))
+      (builder, mathExpr) => builder.setIntegralDivide(mathExpr),
+      // Spark only checks integral divide overflow (Long.MinValue div -1) for LONG
+      // operands; DECIMAL operands wrap around on the cast to LONG even in ANSI mode
+      checkDivideOverflow = expr.checkDivideOverflow)
 
     if (divideExpr.isDefined) {
       val childExpr = if (dataType.isInstanceOf[DecimalType]) {
@@ -329,7 +416,7 @@ object CometRound extends CometExpressionSerde[Round] {
             r.ansiEnabled,
             childExpr,
             scaleExpr)
-        optExprWithFallbackReason(optExpr, r, r.child)
+        optExpr
     }
 
   }
@@ -354,7 +441,6 @@ object CometUnaryMinus extends CometExpressionSerde[UnaryMinus] with MathBase {
           .setUnaryMinus(builder)
           .build())
     } else {
-      withFallbackReason(expr, expr.child)
       None
     }
   }

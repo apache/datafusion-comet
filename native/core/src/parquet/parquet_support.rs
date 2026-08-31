@@ -22,10 +22,10 @@ use arrow::compute::can_cast_types;
 use arrow::datatypes::{FieldRef, Fields};
 use arrow::{
     array::{
-        cast::AsArray, new_null_array, types::Int32Type, types::TimestampMicrosecondType, Array,
-        ArrayRef, DictionaryArray, StructArray,
+        cast::AsArray, new_null_array, types::TimestampMicrosecondType, Array, ArrayRef,
+        StructArray,
     },
-    compute::{cast_with_options, take, CastOptions},
+    compute::{cast_with_options, CastOptions},
     datatypes::{DataType, TimeUnit},
     util::display::FormatOptions,
 };
@@ -169,31 +169,6 @@ fn parquet_convert_array(
     parquet_options: &SparkParquetOptions,
 ) -> DataFusionResult<ArrayRef> {
     use DataType::*;
-    let from_type = array.data_type().clone();
-
-    let array = match &from_type {
-        Dictionary(key_type, value_type)
-            if key_type.as_ref() == &Int32
-                && (value_type.as_ref() == &Utf8 || value_type.as_ref() == &LargeUtf8) =>
-        {
-            let dict_array = array
-                .as_any()
-                .downcast_ref::<DictionaryArray<Int32Type>>()
-                .expect("Expected a dictionary array");
-
-            let casted_dictionary = DictionaryArray::<Int32Type>::new(
-                dict_array.keys().clone(),
-                parquet_convert_array(Arc::clone(dict_array.values()), to_type, parquet_options)?,
-            );
-
-            let casted_result = match to_type {
-                Dictionary(_, _) => Arc::new(casted_dictionary.clone()),
-                _ => take(casted_dictionary.values().as_ref(), dict_array.keys(), None)?,
-            };
-            return Ok(casted_result);
-        }
-        _ => array,
-    };
     let from_type = array.data_type();
 
     // Try Comet specific handlers first, then arrow-rs cast if supported,
@@ -434,22 +409,9 @@ pub fn is_hdfs_scheme(url: &Url, object_store_configs: &HashMap<String, String>)
     }
 }
 
-// Creates an HDFS object store from a URL using the native HDFS implementation
-#[cfg(all(feature = "hdfs", not(feature = "hdfs-opendal")))]
-fn create_hdfs_object_store(
-    url: &Url,
-) -> Result<(Box<dyn ObjectStore>, Path), object_store::Error> {
-    match datafusion_comet_objectstore_hdfs::object_store::hdfs::HadoopFileSystem::new(url.as_ref())
-    {
-        Some(object_store) => {
-            let path = object_store.get_path(url.as_str());
-            Ok((Box::new(object_store), path))
-        }
-        _ => Err(object_store::Error::Generic {
-            store: "HadoopFileSystem",
-            source: "Could not create hdfs object store".into(),
-        }),
-    }
+/// Check if the scheme is an Azure ABFS URL.
+fn is_azure_scheme(scheme: &str) -> bool {
+    matches!(scheme, "abfs" | "abfss")
 }
 
 // Creates an OpenDAL HDFS Operator from a URL with optional configuration
@@ -458,12 +420,10 @@ pub(crate) fn create_hdfs_operator(url: &Url) -> Result<opendal::Operator, objec
     let name_node = get_name_node_uri(url)?;
     let builder = opendal::services::Hdfs::default().name_node(&name_node);
 
-    opendal::Operator::new(builder)
-        .map_err(|error| object_store::Error::Generic {
-            store: "hdfs-opendal",
-            source: error.into(),
-        })
-        .map(|op| op.finish())
+    opendal::Operator::new(builder).map_err(|error| object_store::Error::Generic {
+        store: "hdfs-opendal",
+        source: error.into(),
+    })
 }
 
 // Creates an HDFS object store from a URL using OpenDAL
@@ -499,7 +459,7 @@ fn get_name_node_uri(url: &Url) -> Result<String, object_store::Error> {
 }
 
 // Stub implementation when HDFS support is not enabled
-#[cfg(all(not(feature = "hdfs"), not(feature = "hdfs-opendal")))]
+#[cfg(not(feature = "hdfs-opendal"))]
 fn create_hdfs_object_store(
     _url: &Url,
 ) -> Result<(Box<dyn ObjectStore>, Path), object_store::Error> {
@@ -606,6 +566,8 @@ pub(crate) fn prepare_object_store_with_configs(
                 create_hdfs_object_store(&url)
             } else if scheme == "s3" {
                 objectstore::s3::create_store(&url, object_store_configs, Duration::from_secs(300))
+            } else if is_azure_scheme(scheme) {
+                objectstore::azure::create_store(&url, object_store_configs)
             } else {
                 parse_url(&url)
             }
@@ -626,39 +588,24 @@ pub(crate) fn prepare_object_store_with_configs(
 
 #[cfg(test)]
 mod tests {
-    #[cfg(any(
-        all(not(feature = "hdfs"), not(feature = "hdfs-opendal")),
-        feature = "hdfs"
-    ))]
+    #[cfg(not(feature = "hdfs-opendal"))]
     use datafusion::execution::object_store::ObjectStoreUrl;
-    #[cfg(any(
-        all(not(feature = "hdfs"), not(feature = "hdfs-opendal")),
-        feature = "hdfs"
-    ))]
+    #[cfg(not(feature = "hdfs-opendal"))]
     use datafusion::execution::runtime_env::RuntimeEnv;
-    #[cfg(any(
-        all(not(feature = "hdfs"), not(feature = "hdfs-opendal")),
-        feature = "hdfs"
-    ))]
+    #[cfg(not(feature = "hdfs-opendal"))]
     use object_store::path::Path;
-    #[cfg(any(
-        all(not(feature = "hdfs"), not(feature = "hdfs-opendal")),
-        feature = "hdfs"
-    ))]
+    #[cfg(not(feature = "hdfs-opendal"))]
     use std::sync::Arc;
-    #[cfg(any(
-        all(not(feature = "hdfs"), not(feature = "hdfs-opendal")),
-        feature = "hdfs"
-    ))]
+    #[cfg(not(feature = "hdfs-opendal"))]
     use url::Url;
 
-    #[cfg(all(not(feature = "hdfs"), not(feature = "hdfs-opendal")))]
+    #[cfg(not(feature = "hdfs-opendal"))]
     use crate::execution::operators::ExecutionError;
-    #[cfg(all(not(feature = "hdfs"), not(feature = "hdfs-opendal")))]
+    #[cfg(not(feature = "hdfs-opendal"))]
     use std::collections::HashMap;
 
     /// Parses the url, registers the object store, and returns a tuple of the object store url and object store path
-    #[cfg(all(not(feature = "hdfs"), not(feature = "hdfs-opendal")))]
+    #[cfg(not(feature = "hdfs-opendal"))]
     pub(crate) fn prepare_object_store(
         runtime_env: Arc<RuntimeEnv>,
         url: String,
@@ -667,18 +614,7 @@ mod tests {
         prepare_object_store_with_configs(runtime_env, url, &HashMap::new())
     }
 
-    /// Parses the url, registers the object store, and returns a tuple of the object store url and object store path
-    #[cfg(feature = "hdfs")]
-    pub(crate) fn prepare_object_store(
-        runtime_env: Arc<RuntimeEnv>,
-        url: String,
-    ) -> Result<(ObjectStoreUrl, Path), crate::execution::operators::ExecutionError> {
-        use crate::parquet::parquet_support::prepare_object_store_with_configs;
-        use std::collections::HashMap;
-        prepare_object_store_with_configs(runtime_env, url, &HashMap::new())
-    }
-
-    #[cfg(all(not(feature = "hdfs"), not(feature = "hdfs-opendal")))]
+    #[cfg(not(feature = "hdfs-opendal"))]
     #[test]
     fn test_prepare_object_store() {
         use crate::execution::operators::ExecutionError;
@@ -719,24 +655,5 @@ mod tests {
                 }
             }
         }
-    }
-
-    #[test]
-    #[cfg(feature = "hdfs")]
-    fn test_prepare_object_store() {
-        // we use a local file system url instead of an hdfs url because the latter requires
-        // a running namenode
-        let hdfs_url = "file:///comet/spark-warehouse/part-00000.snappy.parquet";
-        let expected: (ObjectStoreUrl, Path) = (
-            ObjectStoreUrl::parse("file://").unwrap(),
-            Path::from("/comet/spark-warehouse/part-00000.snappy.parquet"),
-        );
-
-        let url = &Url::parse(hdfs_url).unwrap();
-        let res = prepare_object_store(Arc::new(RuntimeEnv::default()), url.to_string());
-
-        let res = res.unwrap();
-        assert_eq!(res.0, expected.0);
-        assert_eq!(res.1, expected.1);
     }
 }

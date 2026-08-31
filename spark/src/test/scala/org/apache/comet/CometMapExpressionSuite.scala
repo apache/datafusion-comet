@@ -23,6 +23,7 @@ import scala.util.Random
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.catalyst.expressions.ArrayContains
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.BinaryType
@@ -125,34 +126,47 @@ class CometMapExpressionSuite extends CometTestBase {
     }
   }
 
-  test("fallback for size with map input") {
+  test("size with map input") {
     withTempDir { dir =>
       withTempView("t1") {
         val path = new Path(dir.toURI.toString, "test.parquet")
         makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = true, 100)
         spark.read.parquet(path.toString).createOrReplaceTempView("t1")
 
-        // Use column references in maps to avoid constant folding
-        checkSparkAnswerAndFallbackReason(
-          sql("SELECT size(case when _2 < 0 then map(_8, _9) else map() end) from t1"),
-          "size does not support map inputs")
+        checkSparkAnswer(
+          sql("SELECT size(case when _2 < 0 then map(_8, _9) else map() end) from t1"))
       }
     }
   }
 
-  // fails with "map is not supported"
-  ignore("size with map input") {
-    withTempDir { dir =>
-      withTempView("t1") {
-        val path = new Path(dir.toURI.toString, "test.parquet")
-        makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = true, 100)
-        spark.read.parquet(path.toString).createOrReplaceTempView("t1")
+  test("size with map input - v2 reader") {
+    withTempPath { dir =>
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        val df = spark
+          .range(100)
+          .select(
+            col("id"),
+            when(col("id") > 1, map(col("id"), col("id"))).alias("map1"),
+            when(col("id") > 5, map(col("id"), col("id"))).alias("map2"))
+        df.write.parquet(dir.toString())
+      }
 
-        // Use column references in maps to avoid constant folding
-        checkSparkAnswerAndOperator(
-          sql("SELECT size(map(_8, _9, _10, _11)) from t1 where _8 is not null"))
-        checkSparkAnswerAndOperator(
-          sql("SELECT size(case when _2 < 0 then map(_8, _9) else map() end) from t1"))
+      Seq("", "parquet").foreach { v1List =>
+        withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> v1List) {
+          val df = spark.read.parquet(dir.toString())
+          df.createOrReplaceTempView("t1")
+          if (v1List.isEmpty) {
+            checkSparkAnswer(df.select(size(col("map1"))))
+            checkSparkAnswer(df.select(size(col("map2"))))
+            checkSparkAnswer(
+              sql("SELECT size(CASE WHEN id < 50 THEN map1 ELSE map2 END) FROM t1"))
+          } else {
+            checkSparkAnswerAndOperator(df.select(size(col("map1"))))
+            checkSparkAnswerAndOperator(df.select(size(col("map2"))))
+            checkSparkAnswerAndOperator(
+              sql("SELECT size(CASE WHEN id < 50 THEN map1 ELSE map2 END) FROM t1"))
+          }
+        }
       }
     }
   }
@@ -233,17 +247,216 @@ class CometMapExpressionSuite extends CometTestBase {
     }
   }
 
-  test("map_from_entries - binary type") {
+  test("map_from_entries - binary type routes through codegen dispatcher") {
     val table = "t2"
     withTable(table) {
       sql(
         s"create table $table using parquet as select cast(array() as array<binary>) as c1 from range(10)")
-      // The native path is Incompatible for binary keys/values, so Comet routes these through
-      // the codegen dispatcher and still executes natively.
       checkSparkAnswerAndOperator(
         sql(s"select map_from_entries(array(struct(c1, 0))) from $table"))
       checkSparkAnswerAndOperator(
         sql(s"select map_from_entries(array(struct(0, c1))) from $table"))
+    }
+  }
+
+  test("map_entries on non-null value map from local table scan (#4789)") {
+    // An in-memory Map encodes valueContainsNull=false; the local scan must widen the map value
+    // to nullable so map_entries' native ListArray/Struct build does not fail on the child type.
+    // ConvertToLocalRelation must be disabled or the expression folds at plan time.
+    withSQLConf(
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      "spark.sql.optimizer.excludedRules" ->
+        "org.apache.spark.sql.catalyst.optimizer.ConvertToLocalRelation") {
+      import testImplicits._
+      val df = Seq(Map(1 -> 100, 2 -> 200)).toDF("m")
+      checkSparkAnswerAndOperator(df.selectExpr("map_entries(m)"))
+    }
+  }
+
+  // ==============================================================================================
+  // Folded complex-literal tests. These live in this suite, not a `sql-tests` fixture, on purpose:
+  // they need `ConstantFolding` ON so `map(...)` / `array(...)` collapses to a `Literal` that
+  // `CometLiteral` then rebuilds -- the folded-literal expansion path under review. The SQL harness
+  // (`CometSqlFileTestSuite`) force-disables `ConstantFolding`, so an equivalent fixture would only
+  // exercise the constructor path. The `*.sql` files cover that constructor path where the same
+  // guard fires regardless of folding.
+  // ==============================================================================================
+
+  // A map that reaches `map_entries` through an expression rather than a scan keeps
+  // `valueContainsNull = false`, which every `map(...)` over non-null values produces. DataFusion's
+  // `map_entries` declares the entry `value` field nullable but reuses the input map's entries
+  // array, so the planner widens the argument before the call. Here the inner `map(1, map(1, 2))`
+  // folds to a literal that `CometLiteral` rebuilds, and the outer `element_at` yields a
+  // non-nullable-value map straight into native `map_entries`. This exercises the widening on the
+  // default folding-on path; `map_entries.sql` covers the constructor path, where the harness
+  // excludes `ConstantFolding`.
+  test("map_entries on a folded non-nullable-value map (multirow)") {
+    withParquetTable((1 until 4).map(i => (i, i.toLong)), "tbl") {
+      checkSparkAnswerAndOperator(
+        "SELECT _1 AS id, map_entries(element_at(map(1, map(1, 2)), _1)) AS e FROM tbl")
+    }
+  }
+
+  // Finding E: a map nested inside a map value is handed to the JVM dispatcher whole, so its double
+  // keys never revisit `CometLiteral`. The guard has to live on the lookup instead. The outer key
+  // type is INT, so inspecting only the outermost map would admit the query; the fallback comes
+  // from the inner `element_at`, whose child is `MapType(DoubleType, IntegerType)`. Constant folding
+  // is on here, which is the only configuration where the inner map becomes such a literal, so this
+  // regression cannot be expressed in a SQL fixture (the harness disables folding). The direct
+  // single-level double-key lookups live in `element_at_map.sql` / `get_map_value.sql`.
+  test("nested map lookup with floating-point keys falls back") {
+    withParquetTable((1 until 4).map(i => (i, i.toLong)), "tbl") {
+      val negZero = "CAST(concat('-', CAST(_1 - 1 AS STRING), '.0') AS DOUBLE)"
+      checkSparkAnswerAndFallbackReason(
+        "SELECT _1 AS id, element_at(element_at(map(1, map(CAST(0 AS DOUBLE), 7)), _1), " +
+          s"$negZero) AS v FROM tbl",
+        "Spark normalizes floating-point map keys")
+    }
+  }
+
+  // Finding E for a collated inner key. Same folding-on-only bypass as the double-key case above;
+  // the direct single-level collated lookup lives in `element_at_map_collation.sql`.
+  test("nested map lookup with collated string keys falls back") {
+    assume(isSpark40Plus)
+    withParquetTable(Seq(("a1", 0)), "tbl") {
+      checkSparkAnswerAndFallbackReason(
+        "SELECT element_at(element_at(map(1, map(CAST('A1' AS STRING COLLATE UTF8_LCASE), 7)), 1), " +
+          "CAST(_1 AS STRING COLLATE UTF8_LCASE)) AS v FROM tbl",
+        "cannot honour a non-default collation")
+    }
+  }
+
+  // A folded map with `CalendarIntervalType` keys reaches `CometLiteral`. `ArrayBasedMapBuilder`
+  // dedups such keys by hash equality, but the folded-literal duplicate-key check needs an
+  // interpreted ordering and `PhysicalCalendarIntervalType` has none ("does not support ordered
+  // operations"). Expansion must decline these keys and keep the projection on Spark rather than
+  // crash planning by asking for that ordering; such literals fell back before this rewrite too.
+  test("folded map literal with calendar-interval keys falls back (multirow)") {
+    withParquetTable((0 until 3).map(i => (i, i.toLong)), "tbl") {
+      checkSparkAnswerAndFallbackReason(
+        "SELECT _1 AS id, map(make_interval(1), 1, make_interval(2), 2) AS m FROM tbl",
+        "Unsupported data type MapType")
+    }
+  }
+
+  // `map_entries` widens its argument so the entry `value` field is nullable, but it must widen ONLY
+  // that outer field. The outer `map(1, IF(...))` has `valueContainsNull = true`, and its value is a
+  // folded `map(1, 2)` with `valueContainsNull = false`. Widening the nested map too would extract a
+  // `valueContainsNull = true` map that disagrees with the dynamic `map(2, coalesce(...))` sibling,
+  // and native `make_array` would panic; the shallow widen keeps the nested type intact.
+  test("map_entries widening keeps nested map value nullability (multirow)") {
+    withParquetTable((1 until 4).map(i => (i, i.toLong)), "tbl") {
+      checkSparkAnswerAndOperator(
+        "SELECT _1 AS id, array(" +
+          "map_entries(map(1, IF(_1 = 1, map(1, 2), NULL)))[0].value, " +
+          "map(2, coalesce(_1, 0))) AS a FROM tbl")
+    }
+  }
+
+  // `map_contains_key` lowers to `array_contains(map_keys(...), key)`. `CometArrayContains` reports
+  // Incompatible for floating-point element types, because native `array_contains` compares
+  // -0.0/+0.0 and NaN bitwise unlike Spark. So under the default config it codegen-dispatches to
+  // Spark and the query stays native with Spark-exact results and no fallback. Forcing the native
+  // kernel with `ArrayContains.allowIncompatible=true` makes it serialize its children instead, so
+  // the folded double-keyed map literal reaches the literal-expansion path. That map is nested
+  // inside the INT-keyed outer map, past the outer `element_at` key guard which only sees the INT
+  // key. The nested-key walk in the expansion (`mapKeyTypesExpandable`) is what has to decline the
+  // floating-point keys. Otherwise a rebuilt `CreateMap` would reach the native kernel whose key
+  // equality disagrees with Spark. Spark returns `7, NULL, NULL`.
+  test("map_contains_key over nested floating-point map keys falls back (multirow)") {
+    withParquetTable((1 until 4).map(i => (i, i.toLong)), "tbl") {
+      val negZero = "CAST(concat('-', CAST(_1 - 1 AS STRING), '.0') AS DOUBLE)"
+      // allowIncompatible flips array_contains from codegen dispatch to the native kernel, so the
+      // nested-map literal is actually serialized and the expansion guard runs.
+      withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[ArrayContains]) -> "true") {
+        checkSparkAnswerAndFallbackReason(
+          "SELECT _1 AS id, map_contains_key(" +
+            s"element_at(map(1, map(CAST(0 AS DOUBLE), 7)), _1), $negZero) AS present FROM tbl",
+          "Unsupported data type MapType")
+      }
+    }
+  }
+
+  // The collated counterpart of the double-key `map_contains_key` case above: a nested
+  // `UTF8_LCASE`-keyed map would reach `array_contains` with bytewise comparison. Expansion declines
+  // the folded literal so the case-insensitive lookup stays on Spark. The outer lookup key is the
+  // dynamic `_1` so the inner map survives as a literal (a constant key would let Spark fold
+  // `map_keys` into a collated-string array literal instead, which never reaches this guard).
+  test("map_contains_key over nested collated map keys falls back (multirow)") {
+    assume(isSpark40Plus)
+    withParquetTable((1 until 4).map(i => (i, i.toLong)), "tbl") {
+      checkSparkAnswerAndFallbackReason(
+        "SELECT _1 AS id, map_contains_key(" +
+          "element_at(map(1, map(CAST('A1' AS STRING COLLATE UTF8_LCASE), 7)), _1), " +
+          "CAST('a1' AS STRING COLLATE UTF8_LCASE)) AS present FROM tbl",
+        "Unsupported data type MapType")
+    }
+  }
+
+  // Direct single-level folded map with floating-point keys: `map(CAST(0 AS DOUBLE), 7)` folds to a
+  // literal and `element_at` with a dynamic `-0.0` lookup must match Spark's `+0.0`-normalized key.
+  // Native `map_extract` compares raw Arrow values, so `MapKeySupport` declines it at `element_at`.
+  // Spark returns 7, NULL, NULL. (`element_at_map.sql` covers the folding-off constructor form.)
+  test("folded map literal with floating-point keys in element_at falls back (multirow)") {
+    withParquetTable((1 until 4).map(i => (i, i.toLong)), "tbl") {
+      val lookup = "CAST(concat('-', CAST(_1 - 1 AS STRING), '.0') AS DOUBLE)"
+      checkSparkAnswerAndFallbackReason(
+        s"SELECT _1 AS id, element_at(map(CAST(0 AS DOUBLE), 7), $lookup) AS v FROM tbl",
+        "Spark normalizes floating-point map keys")
+    }
+  }
+
+  // Direct single-level folded map with collated string keys. Native lookup is bytewise, so a
+  // case-insensitive `a1` lookup against a stored `A1` cannot match; `MapKeySupport` declines it.
+  test("folded map literal with collated string keys in element_at falls back (multirow)") {
+    assume(isSpark40Plus)
+    withParquetTable(Seq(("a1", 0)), "tbl") {
+      checkSparkAnswerAndFallbackReason(
+        "SELECT element_at(map(CAST('A1' AS STRING COLLATE UTF8_LCASE), 7), " +
+          "CAST(_1 AS STRING COLLATE UTF8_LCASE)) AS v FROM tbl",
+        "cannot honour a non-default collation")
+    }
+  }
+
+  // Folded map with a complex (array) key. Spark permits a dynamic lookup array containing a NULL
+  // element; native `map_extract` casts the lookup to the key's exact Arrow type and cannot
+  // reproduce Spark's equality, so `MapKeySupport` declines every complex key type. Spark returns
+  // 7, NULL, NULL. (`element_at_map.sql` covers the constructor form with a non-null lookup.)
+  test("folded map literal with complex array key in element_at falls back (multirow)") {
+    withParquetTable((1 until 4).map(i => (i, i.toLong)), "tbl") {
+      checkSparkAnswerAndFallbackReason(
+        "SELECT _1 AS id, element_at(map(array(1), 7), " +
+          "array(IF(_1 = 2, CAST(NULL AS INT), _1))) AS v FROM tbl",
+        "casts the lookup key to the map's exact Arrow key type")
+    }
+  }
+
+  // A folded nested INT-keyed map is admitted natively (all key-type guards pass), so the outer
+  // `element_at` runs as native `map_extract`. With ANSI disabled, a remainder-by-zero lookup key
+  // evaluates to NULL instead of throwing, so `map_extract(NULL_map, NULL)` returns NULL and the
+  // result matches Spark's 7, NULL, NULL. Under ANSI, native scalar functions evaluate the key
+  // eagerly and throw where Spark short-circuits after the NULL inner map -- a pre-existing eager
+  // evaluation difference in native `ElementAt`, not specific to folded literals.
+  test("folded nested map lookup with per-row key evaluation (multirow, non-ansi)") {
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "false") {
+      withParquetTable((1 until 4).map(i => (i, i.toLong)), "tbl") {
+        checkSparkAnswerAndOperator(
+          "SELECT _1 AS id, element_at(element_at(map(1, map(0, 7)), _1), _1 % (_1 - 2)) AS v " +
+            "FROM tbl")
+      }
+    }
+  }
+
+  // A large folded map (`map_from_arrays(sequence(...), sequence(...))` collapses to a many-entry
+  // MapType literal) rebuilds as a big `CreateMap` whose generated code Spark's codegen splits into
+  // nested helper classes. Those helpers read `CometBatchKernel.references`, which must be public
+  // (not protected) or the split code raises `IllegalAccessError` at runtime. 100k entries is large
+  // enough to force the split.
+  test("large folded map literal in element_at runs natively (multirow)") {
+    withParquetTable((1 until 4).map(i => (i, i.toLong)), "tbl") {
+      checkSparkAnswerAndOperator(
+        "SELECT _1 AS id, element_at(" +
+          "map_from_arrays(sequence(1, 100000), sequence(1, 100000)), _1) AS v FROM tbl")
     }
   }
 

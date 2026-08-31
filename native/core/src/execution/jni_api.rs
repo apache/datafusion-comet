@@ -24,7 +24,7 @@ use crate::{
         metrics::utils::update_comet_metric, planner::PhysicalPlanner, serde::to_arrow_datatype,
         shuffle::spark_unsafe::row::process_sorted_row_partition, sort::RdxSort,
     },
-    jvm_bridge::JVMClasses,
+    jvm_bridge::{JVMClasses, JavaShufflePartitionPusher, ShufflePartitionPusher},
 };
 use std::collections::HashSet;
 
@@ -41,9 +41,10 @@ use datafusion::{
     physical_plan::{display::DisplayableExecutionPlan, SendableRecordBatchStream},
     prelude::{SessionConfig, SessionContext},
 };
-use datafusion_comet_proto::spark_operator::Operator;
+use datafusion_comet_proto::spark_operator::{Operator, ShuffleScan};
 use datafusion_comet_spark_expr::url_funcs::{CometParseUrl, CometTryParseUrl};
 use datafusion_spark::function::array::array_contains::SparkArrayContains;
+use datafusion_spark::function::array::repeat::SparkArrayRepeat;
 use datafusion_spark::function::bitwise::bit_count::SparkBitCount;
 use datafusion_spark::function::bitwise::bit_get::SparkBitGet;
 use datafusion_spark::function::bitwise::bit_shift::SparkBitShift;
@@ -69,6 +70,7 @@ use datafusion_spark::function::string::char::CharFunc;
 use datafusion_spark::function::string::concat::SparkConcat;
 use datafusion_spark::function::string::luhn_check::SparkLuhnCheck;
 use datafusion_spark::function::string::space::SparkSpace;
+use datafusion_spark::function::string::substring::SparkSubstring;
 use datafusion_spark::function::url::try_url_decode::TryUrlDecode as SparkTryUrlDecode;
 use datafusion_spark::function::url::url_decode::UrlDecode as SparkUrlDecode;
 use datafusion_spark::function::url::url_encode::UrlEncode as SparkUrlEncode;
@@ -87,18 +89,19 @@ use jni::{
     Env, EnvUnowned,
 };
 use parking_lot::Mutex;
+use prost::Message;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use std::{sync::Arc, task::Poll};
-use tokio::runtime::Runtime;
+use tokio::runtime::{Handle, Runtime};
 use tokio::sync::mpsc;
 
-use crate::execution::memory_pools::{
-    create_memory_pool, handle_task_shared_pool_release, parse_memory_pool_config, MemoryPoolConfig,
-};
+use crate::execution::memory_pools::{create_memory_pool, parse_memory_pool_config};
 use crate::execution::operators::{ScanExec, ShuffleScanExec};
-use crate::execution::shuffle::{read_ipc_compressed, CompressionCodec};
+use crate::execution::shuffle::{
+    read_ipc_compressed, read_ipc_compressed_validated, validate_remote_schema, CompressionCodec,
+};
 use crate::execution::spark_plan::SparkPlan;
 
 use crate::execution::tracing::{
@@ -118,7 +121,7 @@ use std::sync::OnceLock;
 #[cfg(feature = "jemalloc")]
 use tikv_jemalloc_ctl::{epoch, stats};
 
-static TOKIO_RUNTIME: OnceLock<Runtime> = OnceLock::new();
+static TOKIO_RUNTIME: Mutex<Option<Runtime>> = Mutex::new(None);
 
 #[cfg(feature = "jemalloc")]
 fn log_jemalloc_usage() {
@@ -144,6 +147,36 @@ fn register_memory_pool(thread_id: u64, context_id: i64, pool: Arc<dyn MemoryPoo
         .entry(thread_id)
         .or_default()
         .insert(context_id, pool);
+}
+
+struct ThreadMemoryPoolRegistration {
+    thread_id: u64,
+    context_id: i64,
+    registered: bool,
+}
+
+impl ThreadMemoryPoolRegistration {
+    fn new(thread_id: u64, context_id: i64, pool: Arc<dyn MemoryPool>) -> Self {
+        register_memory_pool(thread_id, context_id, pool);
+        Self {
+            thread_id,
+            context_id,
+            registered: true,
+        }
+    }
+
+    fn unregister_and_total(mut self) -> usize {
+        self.registered = false;
+        unregister_and_total(self.thread_id, self.context_id)
+    }
+}
+
+impl Drop for ThreadMemoryPoolRegistration {
+    fn drop(&mut self) {
+        if self.registered {
+            unregister_and_total(self.thread_id, self.context_id);
+        }
+    }
 }
 
 /// Unregister a context's pool and return the remaining total reserved for the thread.
@@ -212,15 +245,46 @@ fn build_runtime(default_worker_threads: Option<usize>) -> Runtime {
 /// Initialize the global Tokio runtime with the given default worker thread count.
 /// If the runtime is already initialized, this is a no-op.
 pub fn init_runtime(default_worker_threads: usize) {
-    TOKIO_RUNTIME.get_or_init(|| build_runtime(Some(default_worker_threads)));
+    let mut guard = TOKIO_RUNTIME.lock();
+    if guard.is_none() {
+        *guard = Some(build_runtime(Some(default_worker_threads)));
+    }
 }
 
-/// Function to get a handle to the global Tokio runtime
-pub fn get_runtime() -> &'static Runtime {
-    TOKIO_RUNTIME.get_or_init(|| build_runtime(None))
+/// Returns a handle to the global Tokio runtime, lazily initializing it if needed.
+///
+/// A [`Handle`] is returned (rather than a `&'static Runtime`) so that the runtime
+/// can be torn down via [`release_runtime`]. The handle is cheap to clone and can be
+/// used with `spawn` / `block_on` just like a `Runtime`.
+pub fn get_runtime() -> Handle {
+    let mut guard = TOKIO_RUNTIME.lock();
+    guard
+        .get_or_insert_with(|| build_runtime(None))
+        .handle()
+        .clone()
 }
 
-/// Returns a short name for an OpStruct variant.
+/// Tears down the global Tokio runtime, if it has been initialized.
+///
+/// The runtime is moved out of the global slot and shut down in the background so the
+/// calling (JNI) thread is not blocked waiting for worker threads to finish. Any handles
+/// previously returned by [`get_runtime`] will start failing their spawns once the runtime
+/// is gone, so this must only be called when no native execution is in flight.
+///
+/// Must not be called from within the runtime's own worker threads, otherwise the shutdown
+/// would deadlock/panic.
+pub fn release_runtime() {
+    let runtime = TOKIO_RUNTIME.lock().take();
+    if let Some(runtime) = runtime {
+        runtime.shutdown_timeout(Duration::from_secs(3));
+    }
+}
+
+/// Returns a short name for an OpStruct variant. Used for tracing event names;
+/// no contrib-specific logic. The `OpStruct::ContribScan` arm is the generic
+/// extension point for out-of-tree contrib scans (Delta, Lance, ...); it stays
+/// unconditional even in non-contrib builds because the proto enum is generated
+/// regardless of cargo feature flags and Rust requires an exhaustive match.
 fn op_name(op: &OpStruct) -> &'static str {
     match op {
         OpStruct::Scan(_) => "Scan",
@@ -241,6 +305,9 @@ fn op_name(op: &OpStruct) -> &'static str {
         OpStruct::CsvScan(_) => "CsvScan",
         OpStruct::ShuffleScan(_) => "ShuffleScan",
         OpStruct::BroadcastNestedLoopJoin(_) => "BroadcastNestedLoopJoin",
+        OpStruct::Sample(_) => "Sample",
+        OpStruct::ContribScan(_) => "ContribScan",
+        OpStruct::WindowGroupLimit(_) => "WindowGroupLimit",
     }
 }
 
@@ -271,8 +338,6 @@ fn collect_op_names<'a>(op: &'a Operator, names: &mut std::collections::BTreeSet
 struct ExecutionContext {
     /// The id of the execution context.
     pub id: i64,
-    /// Task attempt id
-    pub task_attempt_id: i64,
     /// The deserialized Spark plan
     pub spark_plan: Operator,
     /// The number of partitions
@@ -305,8 +370,6 @@ struct ExecutionContext {
     pub debug_native: bool,
     /// Whether to write native plans with metrics to stdout
     pub explain_native: bool,
-    /// Memory pool config
-    pub memory_pool_config: MemoryPoolConfig,
     /// Whether to log memory usage on each call to execute_plan
     pub tracing_enabled: bool,
     /// Rust thread ID, used for aggregating tracing metrics per thread
@@ -322,6 +385,16 @@ struct ExecutionContext {
     /// cheap to clone; the underlying `Global<JObject>` releases its JNI global ref on drop
     /// via `jni`'s `Drop` impl.
     pub task_context: Option<Arc<Global<JObject<'static>>>>,
+    /// Context `ClassLoader` of the driving Spark task thread, captured at `createPlan` time and
+    /// threaded into every JVM scalar UDF the planner builds; see `CometUdfBridge.evaluate` for why
+    /// it has to travel with the plan. `None` when no driving Spark task is present (unit tests,
+    /// direct native driver runs). Lifetime is as for `task_context` above.
+    pub class_loader: Option<Arc<Global<JObject<'static>>>>,
+    /// Task-owned remote shuffle callback, registered before native planning starts.
+    /// The callback owns a JNI global reference and can safely run on Tokio workers.
+    pub shuffle_partition_pusher: Option<Arc<dyn ShufflePartitionPusher>>,
+    /// Removes this context's tracing memory-pool entry on every exit path.
+    memory_pool_registration: Option<ThreadMemoryPoolRegistration>,
 }
 
 /// Accept serialized query plan and return the address of the native query plan.
@@ -349,6 +422,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
     task_cpus: jlong,
     key_unwrapper_obj: JObject,
     task_context_obj: JObject,
+    class_loader_obj: JObject,
 ) -> jlong {
     try_unwrap_or_throw(&e, |env| {
         // Deserialize Spark configs
@@ -404,6 +478,13 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
             let memory_pool =
                 create_memory_pool(&memory_pool_config, task_memory_manager, task_attempt_id);
 
+            // Register the shared base pool before wrapping it for per-plan debug logging. The
+            // guard removes the entry if any later plan setup step fails.
+            let rust_thread_id = get_thread_id();
+            let memory_pool_registration = tracing_enabled.then(|| {
+                ThreadMemoryPoolRegistration::new(rust_thread_id, id, Arc::clone(&memory_pool))
+            });
+
             let memory_pool = if logging_memory_pool {
                 Arc::new(LoggingMemoryPool::new(task_attempt_id as u64, memory_pool))
             } else {
@@ -453,35 +534,29 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
 
             let session = Arc::new(session);
 
-            // Register this context's memory pool so we can sum all pools
-            // on the same thread when emitting tracing metrics.
-            let rust_thread_id = get_thread_id();
-            if tracing_enabled {
-                register_memory_pool(
-                    rust_thread_id,
-                    id,
-                    Arc::clone(&session.runtime_env().memory_pool),
-                );
-            }
-
             let tracing_event_name = if tracing_enabled {
                 build_tracing_event_name(&spark_plan)
             } else {
                 String::new()
             };
 
-            // Capture the driving Spark task's TaskContext as a JNI global reference when
-            // non-null. The `Arc<Global<JObject>>` releases its global ref on drop, so cleanup
-            // is automatic when the ExecutionContext drops.
+            // Capture the driving Spark task's TaskContext and context ClassLoader as JNI global
+            // references when non-null. The `Arc<Global<JObject>>` releases its global ref on
+            // drop, so cleanup is automatic when the ExecutionContext drops.
             let task_context = if !task_context_obj.is_null() {
                 Some(Arc::new(jni_new_global_ref!(env, task_context_obj)?))
             } else {
                 None
             };
 
+            let class_loader = if !class_loader_obj.is_null() {
+                Some(Arc::new(jni_new_global_ref!(env, class_loader_obj)?))
+            } else {
+                None
+            };
+
             let exec_context = Box::new(ExecutionContext {
                 id,
-                task_attempt_id,
                 spark_plan,
                 partition_count: partition_count as usize,
                 root_op: None,
@@ -498,7 +573,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 session_ctx: session,
                 debug_native,
                 explain_native,
-                memory_pool_config,
                 tracing_enabled,
                 rust_thread_id,
                 tracing_memory_metric_name: format!(
@@ -506,10 +580,51 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 ),
                 tracing_event_name,
                 task_context,
+                class_loader,
+                shuffle_partition_pusher: None,
+                memory_pool_registration,
             });
 
             Ok(Box::into_raw(exec_context) as i64)
         })
+    })
+}
+
+/// Binds one task-owned shuffle callback before native execution is initialized.
+///
+/// Keeping callback registration separate preserves the existing `createPlan` JNI ABI for
+/// all local shuffle and non-shuffle callers.
+#[no_mangle]
+pub extern "system" fn Java_org_apache_comet_Native_setShufflePartitionPusher(
+    e: EnvUnowned,
+    _class: JClass,
+    exec_context: jlong,
+    callback: JObject,
+) {
+    try_unwrap_or_throw(&e, |env| {
+        if exec_context == 0 {
+            return Err(CometError::NullPointer(
+                "Remote shuffle callback requires a valid native execution plan".to_string(),
+            ));
+        }
+
+        let exec_context = get_execution_context(exec_context);
+        if exec_context.root_op.is_some() {
+            return Err(CometError::Internal(
+                "Remote shuffle callback cannot be registered after native execution starts"
+                    .to_string(),
+            ));
+        }
+
+        if exec_context.shuffle_partition_pusher.is_some() {
+            return Err(CometError::Internal(
+                "Remote shuffle callback has already been registered for this task".to_string(),
+            ));
+        }
+
+        let pusher = JavaShufflePartitionPusher::try_new(env, &callback)?;
+        exec_context.shuffle_partition_pusher = Some(Arc::new(pusher));
+        Ok(())
     })
 }
 
@@ -546,6 +661,20 @@ fn prepare_datafusion_session_context(
             &ScalarValue::Float64(Some(1.1)),
         );
 
+    // Translate the Comet-namespaced row-level pushdown flag into the equivalent
+    // DataFusion session options. `pushdown_filters` enables the parquet reader's
+    // RowFilter evaluation during decode (late materialization); `reorder_filters`
+    // is only meaningful when pushdown_filters is on, so they move together. Set
+    // before the `spark.comet.datafusion.*` testing escape hatch pass-through below,
+    // so an explicit override of either key wins instead of being silently forced
+    // back to `true`.
+    if spark_config.get_bool(COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED) {
+        session_config =
+            session_config.set_str("datafusion.execution.parquet.pushdown_filters", "true");
+        session_config =
+            session_config.set_str("datafusion.execution.parquet.reorder_filters", "true");
+    }
+
     // Pass through DataFusion configs from Spark.
     // e.g: spark-shell --conf spark.comet.datafusion.sql_parser.parse_float_as_decimal=true
     // becomes datafusion.sql_parser.parse_float_as_decimal=true
@@ -555,16 +684,6 @@ fn prepare_datafusion_session_context(
             let df_key = format!("datafusion.{df_key}");
             session_config = session_config.set_str(&df_key, value);
         }
-    }
-
-    // Translate the Comet-namespaced row-level pushdown flag into the equivalent
-    // DataFusion session options. `pushdown_filters` enables the parquet reader's
-    // RowFilter evaluation during decode (late materialization); `reorder_filters`
-    // is only meaningful when pushdown_filters is on, so they move together.
-    if spark_config.get_bool(COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED) {
-        session_config = session_config
-            .set_str("datafusion.execution.parquet.pushdown_filters", "true")
-            .set_str("datafusion.execution.parquet.reorder_filters", "true");
     }
 
     let runtime = rt_config.build()?;
@@ -581,11 +700,6 @@ fn prepare_datafusion_session_context(
 
 // register UDFs from datafusion-spark crate
 fn register_datafusion_spark_function(session_ctx: &SessionContext) {
-    // Don't register SparkArrayRepeat — it returns NULL when the element is NULL
-    // (e.g. array_repeat(null, 3) returns NULL instead of [null, null, null]).
-    // Comet's Scala serde wraps the call in a CaseWhen for null count handling,
-    // so DataFusion's built-in ArrayRepeat is sufficient.
-    // TODO: file upstream issue against datafusion-spark
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkExpm1::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSha2::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(CharFunc::default()));
@@ -606,6 +720,7 @@ fn register_datafusion_spark_function(session_ctx: &SessionContext) {
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSpace::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBitCount::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkArrayContains::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkArrayRepeat::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBin::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkStrToMap::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkUrlDecode::default()));
@@ -618,6 +733,8 @@ fn register_datafusion_spark_function(session_ctx: &SessionContext) {
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSec::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkRint::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBitShift::right_unsigned()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSoundex::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSubstring::default()));
 }
 
 /// Prepares arrow arrays for output.
@@ -749,7 +866,12 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                 let planner =
                     PhysicalPlanner::new(Arc::clone(&exec_context.session_ctx), partition)
                         .with_exec_id(exec_context_id)
-                        .with_task_context(exec_context.task_context.clone());
+                        .with_sql_text_pool(&exec_context.spark_plan)
+                        .with_task_context(exec_context.task_context.clone())
+                        .with_class_loader(exec_context.class_loader.clone())
+                        .with_shuffle_partition_pusher(
+                            exec_context.shuffle_partition_pusher.clone(),
+                        );
                 let (scans, shuffle_scans, root_op) = planner.create_plan(
                     &exec_context.spark_plan,
                     &mut exec_context.input_sources.clone(),
@@ -912,28 +1034,31 @@ pub extern "system" fn Java_org_apache_comet_Native_releasePlan(
     exec_context: jlong,
 ) {
     try_unwrap_or_throw(&e, |env| unsafe {
-        let execution_context = get_execution_context(exec_context);
-
-        // Update metrics
-        update_metrics(env, execution_context)?;
-
-        handle_task_shared_pool_release(
-            execution_context.memory_pool_config.pool_type,
-            execution_context.task_attempt_id,
+        // A null pointer from the JVM would be undefined behaviour in `Box::from_raw`; panic
+        // instead, which `try_unwrap_or_throw` converts into a Java exception (this is the check
+        // `get_execution_context` performs for the other JNI entry points).
+        assert_ne!(
+            exec_context, 0,
+            "Comet execution context shouldn't be null!"
         );
 
+        // Reclaim ownership of the context up front so that it is always freed, even if updating
+        // metrics below fails. Dropping it releases the memory pool and every JNI global ref the
+        // context holds.
+        let mut execution_context: Box<ExecutionContext> =
+            Box::from_raw(exec_context as *mut ExecutionContext);
+
         // Unregister this context's pool and emit the remaining total for the thread
-        if execution_context.tracing_enabled {
-            let remaining =
-                unregister_and_total(execution_context.rust_thread_id, execution_context.id);
+        if let Some(memory_pool_registration) = execution_context.memory_pool_registration.take() {
+            let remaining = memory_pool_registration.unregister_and_total();
             log_memory_usage(
                 &execution_context.tracing_memory_metric_name,
                 remaining as u64,
             );
         }
 
-        let _: Box<ExecutionContext> = Box::from_raw(execution_context);
-        Ok(())
+        // Flush metrics last, as it is the only fallible step here.
+        update_metrics(env, &mut execution_context)
     })
 }
 
@@ -1119,13 +1244,65 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_decodeShuffleBlock(
 ) -> jlong {
     try_unwrap_or_throw(&e, |env| {
         with_trace("decodeShuffleBlock", tracing_enabled != JNI_FALSE, || {
-            let raw_pointer = env.get_direct_buffer_address(&byte_buffer)?;
-            let length = length as usize;
-            let slice: &[u8] = unsafe { std::slice::from_raw_parts(raw_pointer, length) };
-            let batch = read_ipc_compressed(slice)?;
-            prepare_output(env, array_addrs, schema_addrs, batch, false)
+            decode_shuffle_block(env, byte_buffer, length, array_addrs, schema_addrs, None)
         })
     })
+}
+
+#[no_mangle]
+/// Decode a remote native shuffle block with Arrow array and logical type validation enabled.
+/// # Safety
+/// This function is inherently unsafe since it deals with raw pointers passed from JNI.
+pub unsafe extern "system" fn Java_org_apache_comet_Native_decodeShuffleBlockWithValidation(
+    e: EnvUnowned,
+    _class: JClass,
+    byte_buffer: JByteBuffer,
+    length: jint,
+    array_addrs: JLongArray,
+    schema_addrs: JLongArray,
+    tracing_enabled: jboolean,
+    expected_schema: JByteArray,
+) -> jlong {
+    try_unwrap_or_throw(&e, |env| {
+        with_trace("decodeShuffleBlock", tracing_enabled != JNI_FALSE, || {
+            let bytes = env.convert_byte_array(expected_schema)?;
+            let schema = ShuffleScan::decode(bytes.as_slice()).map_err(|error| {
+                CometError::Internal(format!("Invalid expected remote shuffle schema: {error}"))
+            })?;
+            let expected_types: Vec<_> = schema.fields.iter().map(to_arrow_datatype).collect();
+            decode_shuffle_block(
+                env,
+                byte_buffer,
+                length,
+                array_addrs,
+                schema_addrs,
+                Some(&expected_types),
+            )
+        })
+    })
+}
+
+fn decode_shuffle_block(
+    env: &mut Env,
+    byte_buffer: JByteBuffer,
+    length: jint,
+    array_addrs: JLongArray,
+    schema_addrs: JLongArray,
+    expected_types: Option<&[ArrowDataType]>,
+) -> CometResult<jlong> {
+    let raw_pointer = env.get_direct_buffer_address(&byte_buffer)?;
+    let length = length as usize;
+    let slice: &[u8] = unsafe { std::slice::from_raw_parts(raw_pointer, length) };
+    let batch = if let Some(expected_types) = expected_types {
+        let batch = read_ipc_compressed_validated(slice)?;
+        // Reject incompatible remote schemas before exporting arrays to the JVM. Casting or
+        // importing first can silently change values or bypass remote fetch-failure reporting.
+        validate_remote_schema(&batch, expected_types)?;
+        batch
+    } else {
+        read_ipc_compressed(slice)?
+    };
+    prepare_output(env, array_addrs, schema_addrs, batch, false)
 }
 
 #[no_mangle]
@@ -1191,6 +1368,7 @@ pub extern "system" fn Java_org_apache_comet_Native_getRustThreadId(
 use crate::execution::columnar_to_row::ColumnarToRowContext;
 use arrow::ffi::{from_ffi, FFI_ArrowArray, FFI_ArrowSchema};
 use datafusion_spark::function::math::bin::SparkBin;
+use datafusion_spark::function::string::soundex::SparkSoundex;
 
 /// Initialize a native columnar to row converter.
 ///
@@ -1321,4 +1499,70 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_columnarToRowClose(
         }
         Ok(())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use datafusion::execution::memory_pool::{MemoryConsumer, UnboundedMemoryPool};
+
+    fn entry_count(thread_id: u64) -> usize {
+        get_thread_memory_pools()
+            .lock()
+            .get(&thread_id)
+            .map(HashMap::len)
+            .unwrap_or(0)
+    }
+
+    #[test]
+    fn thread_memory_pool_registration_is_scoped_and_deduplicates_base_pool() {
+        const THREAD_ID: u64 = u64::MAX;
+        let pool: Arc<dyn MemoryPool> = Arc::new(UnboundedMemoryPool::default());
+        let reservation = MemoryConsumer::new("test").register(&pool);
+        reservation.grow(4096);
+        let weak = Arc::downgrade(&pool);
+
+        let first_wrapper: Arc<dyn MemoryPool> =
+            Arc::new(LoggingMemoryPool::new(1, Arc::clone(&pool)));
+        let second_wrapper: Arc<dyn MemoryPool> =
+            Arc::new(LoggingMemoryPool::new(1, Arc::clone(&pool)));
+        assert!(!Arc::ptr_eq(&first_wrapper, &second_wrapper));
+
+        let first = ThreadMemoryPoolRegistration::new(THREAD_ID, 1, Arc::clone(&pool));
+        let second = ThreadMemoryPoolRegistration::new(THREAD_ID, 2, Arc::clone(&pool));
+        assert_eq!(entry_count(THREAD_ID), 2);
+        assert_eq!(total_reserved_for_thread(THREAD_ID), pool.reserved());
+
+        let metrics_result: Result<(), ()> = {
+            let _registration = first;
+            Err(())
+        };
+        assert!(metrics_result.is_err());
+        assert_eq!(entry_count(THREAD_ID), 1);
+        drop(second);
+        assert_eq!(entry_count(THREAD_ID), 0);
+
+        for context_id in 0..100 {
+            let create_result: Result<(), ()> = {
+                let _registration =
+                    ThreadMemoryPoolRegistration::new(THREAD_ID, context_id, Arc::clone(&pool));
+                Err(())
+            };
+            assert!(create_result.is_err());
+
+            let metrics_result: Result<(), ()> = {
+                let _registration =
+                    ThreadMemoryPoolRegistration::new(THREAD_ID, context_id, Arc::clone(&pool));
+                Err(())
+            };
+            assert!(metrics_result.is_err());
+            assert_eq!(entry_count(THREAD_ID), 0);
+        }
+
+        drop(first_wrapper);
+        drop(second_wrapper);
+        drop(reservation);
+        drop(pool);
+        assert!(weak.upgrade().is_none());
+    }
 }
