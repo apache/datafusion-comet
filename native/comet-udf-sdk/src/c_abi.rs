@@ -135,9 +135,23 @@ fn catch_panic_infallible(context: &str, f: impl FnOnce()) {
 
 /// Factory for [`CometCScalarKernelImpl`] instances.
 ///
-/// Lives in a registry, may be cloned across an FFI boundary. Calls to
-/// `function_name` and `new_impl` must be thread-safe (the implementation
-/// is responsible for any internal synchronization).
+/// # Thread safety
+///
+/// `function_name` and `new_impl` **must be safe to call concurrently**
+/// from any number of threads on the same kernel. Both take
+/// `*const CometCScalarKernel`, so the ABI never hands a kernel out
+/// mutably; an implementation that needs interior mutability is
+/// responsible for its own synchronization.
+///
+/// The host relies on this. Comet loads a library once per executor
+/// process and shares one kernel across every Spark task, and it calls
+/// `new_impl` on the task thread for each batch without taking a lock.
+/// Serializing there instead would cap a UDF at roughly one core per
+/// process regardless of how many tasks were running.
+///
+/// Concurrency stops at the kernel: the [`CometCScalarKernelImpl`] a
+/// `new_impl` call produces is single-threaded and is used by only the
+/// thread that asked for it.
 ///
 /// `#[repr(C)]` layout, matched by the host loader. Adding new fields
 /// requires bumping `COMET_UDF_ABI_VERSION`.
@@ -153,7 +167,9 @@ pub struct CometCScalarKernel {
     pub function_name: Option<unsafe extern "C" fn(*const CometCScalarKernel) -> *const c_char>,
 
     /// Initialize a new [`CometCScalarKernelImpl`] into `out`. Called once
-    /// per execution, on the thread that will then drive `init`/`execute`.
+    /// per execution, on the thread that will then drive `init`/`execute`,
+    /// and possibly on many such threads at once. See the thread-safety
+    /// note on [`CometCScalarKernel`].
     pub new_impl:
         Option<unsafe extern "C" fn(*const CometCScalarKernel, out: *mut CometCScalarKernelImpl)>,
 
@@ -345,6 +361,16 @@ use arrow::datatypes::Field;
 /// change between releases. There is currently no way to declare such a
 /// kernel: `CometNativeUDF.register` rejects `deterministic = false` rather
 /// than registering a function whose volatility Comet would then ignore.
+///
+/// # Thread safety
+///
+/// The `Send + Sync` bound is what lets the SDK satisfy the ABI's
+/// requirement that a kernel be usable from many threads at once: one
+/// instance is shared by every concurrent call, so `name`, `return_field`
+/// and `invoke` all take `&self` and must tolerate being run
+/// concurrently. Anything that needs to mutate across calls has to carry
+/// its own synchronization, and per-batch scratch space belongs in
+/// `invoke` rather than in the struct.
 pub trait CometCScalarUdf: Send + Sync {
     /// Stable function name. Returned via `function_name` over the FFI.
     fn name(&self) -> &str;

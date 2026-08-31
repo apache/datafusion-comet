@@ -31,9 +31,13 @@
 //! Steps 1 and 2 repeat work `return_type` already did at planning time,
 //! since argument types do not change across batches. See
 //! <https://github.com/apache/datafusion-comet/issues/5296>.
+//!
+//! Nothing in that sequence is serialized against other callers: the
+//! whole point of building a fresh impl per call is that concurrent
+//! Spark tasks sharing one adapter never touch the same mutable state.
+//! See the `kernel` field docs for why the kernel itself needs no lock.
 
 use std::ffi::CStr;
-use std::sync::Mutex;
 
 use arrow::array::ArrayRef;
 use arrow::datatypes::{DataType, Field};
@@ -48,31 +52,31 @@ use datafusion::logical_expr::{
 /// [`ScalarUDFImpl`].
 pub struct ImportedCScalarUdf {
     name: String,
-    /// Boxed so the kernel's address is stable, and behind a `Mutex` so
-    /// that only one thread is inside the cdylib's callbacks at a time.
+    /// Boxed so the kernel's address is stable across moves of `self`;
+    /// the callbacks are handed `&*kernel` as a raw pointer.
     ///
-    /// The lock is load-bearing, not defensive. One `ImportedCScalarUdf`
-    /// is shared by every caller in the process: the planner builds each
-    /// task's `ScalarFunctionExpr` from the process-wide library cache
+    /// Shared, not locked. One `ImportedCScalarUdf` is shared by every
+    /// caller in the process: the planner builds each task's
+    /// `ScalarFunctionExpr` from the process-wide library cache
     /// (`ScalarUDF::new_from_shared_impl` over the cached `Arc`), and
     /// concurrent Spark tasks in an executor run as separate threads, so
-    /// concurrent `invoke_with_args` calls on this instance are the normal
-    /// case rather than an unusual one.
+    /// concurrent `invoke_with_args` calls on this instance are the
+    /// normal case rather than an unusual one.
     ///
-    /// Rust's aliasing rules alone would not require the lock: the
-    /// callbacks reached from here (`function_name`, `new_impl`) take
-    /// `*const CometCScalarKernel`, and per-batch mutable state lives in
-    /// the `CometCScalarKernelImpl` each call builds for itself. What the
-    /// lock stands in for is an ABI guarantee that does not exist yet:
-    /// ABI v1 does not require a kernel's `new_impl` to be callable
-    /// concurrently, and the kernel is arbitrary user code.
+    /// That is safe because the only kernel-level callbacks reached from
+    /// here, `function_name` and `new_impl`, take
+    /// `*const CometCScalarKernel` and the ABI requires both to be
+    /// callable concurrently (see the field docs in `comet-udf-sdk`).
+    /// Everything mutable is per-call: `new_impl` writes a fresh
+    /// `CometCScalarKernelImpl` that never leaves the stack frame that
+    /// built it, and `init` / `execute` / `get_last_error` are only ever
+    /// reached through that owned instance.
     ///
-    /// The cost is that all batches of a given UDF serialize through one
-    /// mutex per process. Removing it means requiring thread-safe
-    /// callbacks in the ABI, or holding a kernel per task instead of one
-    /// per process; see
-    /// <https://github.com/apache/datafusion-comet/issues/5252>.
-    kernel: Mutex<Box<CometCScalarKernel>>,
+    /// An earlier revision wrapped this in a `Mutex`, which made every
+    /// batch of a given UDF serialize through one lock per executor
+    /// process, so a UDF over a wide scan ran at roughly one core no
+    /// matter how many tasks were in flight.
+    kernel: Box<CometCScalarKernel>,
     signature: Signature,
 }
 
@@ -80,8 +84,7 @@ impl ImportedCScalarUdf {
     /// Construct from an owned C kernel.
     ///
     /// Reads the kernel's name via its `function_name` callback and
-    /// stores it for `name()` lookups; the kernel itself is held inside
-    /// a mutex.
+    /// stores it for `name()` lookups.
     pub fn try_new(kernel: Box<CometCScalarKernel>) -> Result<Self, String> {
         let function_name_cb = kernel
             .function_name
@@ -115,7 +118,7 @@ impl ImportedCScalarUdf {
 
         Ok(Self {
             name,
-            kernel: Mutex::new(kernel),
+            kernel,
             signature,
         })
     }
@@ -155,15 +158,15 @@ impl ScalarUDFImpl for ImportedCScalarUdf {
     fn return_type(&self, args: &[DataType]) -> datafusion::common::Result<DataType> {
         // Build a fresh impl, call init, drop. Done at planning time so
         // the planner can know the output type before execution.
-        let kernel = self.kernel.lock().unwrap();
         let mut impl_state = CometCScalarKernelImpl::default();
-        let new_impl_cb = kernel
+        let new_impl_cb = self
+            .kernel
             .new_impl
             .ok_or_else(|| DataFusionError::Internal("new_impl is null".into()))?;
         // SAFETY: new_impl_cb is the FFI-supplied factory; impl_state is a
         // caller-allocated default value the cdylib writes into.
         unsafe {
-            new_impl_cb(kernel.as_ref() as *const _, &mut impl_state);
+            new_impl_cb(self.kernel.as_ref() as *const _, &mut impl_state);
         }
 
         // Build input fields and FFI schemas.
@@ -206,16 +209,16 @@ impl ScalarUDFImpl for ImportedCScalarUdf {
         args: ScalarFunctionArgs,
     ) -> datafusion::common::Result<ColumnarValue> {
         let n_rows = args.number_rows;
-        let kernel = self.kernel.lock().unwrap();
 
         // Build a fresh impl_state; init then execute.
-        let new_impl_cb = kernel
+        let new_impl_cb = self
+            .kernel
             .new_impl
             .ok_or_else(|| DataFusionError::Internal("new_impl is null".into()))?;
         let mut impl_state = CometCScalarKernelImpl::default();
         // SAFETY: see return_type.
         unsafe {
-            new_impl_cb(kernel.as_ref() as *const _, &mut impl_state);
+            new_impl_cb(self.kernel.as_ref() as *const _, &mut impl_state);
         }
 
         // Resolve args to Arrays of length n_rows or 1.
@@ -332,4 +335,83 @@ fn read_last_error(impl_state: &mut CometCScalarKernelImpl) -> String {
     unsafe { CStr::from_ptr(ptr) }
         .to_string_lossy()
         .into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::execution::c_udf::loader::load;
+    use crate::execution::c_udf::test_support::{test_udfs_path, BUILD_HINT};
+    use arrow::array::{Array, Int64Array};
+    use arrow::datatypes::FieldRef;
+    use datafusion::logical_expr::ScalarUDFImpl;
+    use std::sync::Arc;
+
+    fn add_one_c() -> Arc<dyn ScalarUDFImpl> {
+        let lib = load(test_udfs_path()).expect(BUILD_HINT);
+        Arc::clone(
+            &lib.udfs
+                .iter()
+                .find(|u| u.name == "add_one_c")
+                .expect("add_one_c")
+                .udf_impl,
+        )
+    }
+
+    fn int64_args(values: &[i64], return_field: &FieldRef) -> ScalarFunctionArgs {
+        let array: Int64Array = values.iter().copied().map(Some).collect();
+        ScalarFunctionArgs {
+            args: vec![ColumnarValue::Array(Arc::new(array))],
+            arg_fields: vec![Arc::new(Field::new("a", DataType::Int64, true))],
+            number_rows: values.len(),
+            return_field: Arc::clone(return_field),
+            config_options: Arc::new(datafusion::config::ConfigOptions::default()),
+        }
+    }
+
+    /// One adapter is shared by every Spark task in an executor, so
+    /// `invoke_with_args` has to be callable concurrently. This is the
+    /// property that lets the adapter hold the kernel without a lock; if a
+    /// lock ever comes back this test still passes but the throughput
+    /// claim in the `kernel` field docs no longer holds.
+    #[test]
+    fn concurrent_invocations_share_one_adapter() {
+        let udf = add_one_c();
+        let return_field = Arc::new(Field::new("add_one_c", DataType::Int64, true));
+
+        let threads: Vec<_> = (0..8)
+            .map(|t| {
+                let udf = Arc::clone(&udf);
+                let return_field = Arc::clone(&return_field);
+                std::thread::spawn(move || {
+                    // Each thread drives its own batch of distinct values, so a
+                    // kernel that leaked state between concurrent calls would
+                    // produce another thread's answers rather than its own.
+                    let base = (t as i64) * 1000;
+                    let inputs: Vec<i64> = (base..base + 64).collect();
+                    for _ in 0..50 {
+                        let out = udf
+                            .invoke_with_args(int64_args(&inputs, &return_field))
+                            .expect("invoke");
+                        let array = match out {
+                            ColumnarValue::Array(a) => a,
+                            ColumnarValue::Scalar(_) => panic!("expected an array"),
+                        };
+                        let array = array
+                            .as_any()
+                            .downcast_ref::<Int64Array>()
+                            .expect("Int64Array");
+                        assert_eq!(array.len(), inputs.len());
+                        for (i, input) in inputs.iter().enumerate() {
+                            assert_eq!(array.value(i), input + 1);
+                        }
+                    }
+                })
+            })
+            .collect();
+
+        for t in threads {
+            t.join().expect("worker thread panicked");
+        }
+    }
 }

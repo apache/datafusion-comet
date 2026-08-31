@@ -99,6 +99,14 @@ comet_c_udf_export!(AddOne);
 Each type passed to `comet_c_udf_export!` must implement `CometCScalarUdf` and `Default`. One
 library may export any number of functions.
 
+Your UDF must be safe to call from several threads at once. Comet loads a library once per
+executor process and shares it across every Spark task running there, so `return_field` and
+`invoke` take `&self` and can run concurrently on the same value. In practice this costs nothing:
+a UDF that computes its output purely from its arguments, which is what `Volatility::Immutable`
+requires anyway, satisfies it already. Keep per-batch scratch space local to `invoke` rather than
+in the struct, and give anything that genuinely has to be shared and mutable its own
+synchronization.
+
 Build it:
 
 ```sh
