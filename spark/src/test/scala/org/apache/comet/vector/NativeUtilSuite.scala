@@ -21,12 +21,13 @@ package org.apache.comet.vector
 
 import java.io.IOException
 import java.nio.charset.StandardCharsets
+import java.util.{Arrays, Collections}
 
 import scala.util.Using
 
 import org.apache.arrow.c.{ArrowArray, ArrowSchema, Data}
 import org.apache.arrow.memory.RootAllocator
-import org.apache.arrow.vector.{IntVector, UInt4Vector, VarCharVector}
+import org.apache.arrow.vector.{BitVector, IntVector, TinyIntVector, UInt4Vector, VarCharVector}
 import org.apache.arrow.vector.complex.StructVector
 import org.apache.arrow.vector.dictionary.Dictionary
 import org.apache.arrow.vector.dictionary.DictionaryProvider.MapDictionaryProvider
@@ -363,6 +364,49 @@ class NativeUtilSuite extends CometTestBase {
         imported.close()
       }
       nativeUtil.close()
+    }
+  }
+
+  test("importVector preserves duplicate struct fields positionally") {
+    val allocator = new RootAllocator(Long.MaxValue)
+    val nativeUtil = new NativeUtil
+    val children = Arrays.asList(
+      new Field("a", FieldType.nullable(ArrowType.Bool.INSTANCE), Collections.emptyList[Field]()),
+      new Field(
+        "a",
+        FieldType.nullable(new ArrowType.Int(8, true)),
+        Collections.emptyList[Field]()))
+    val field = new Field("value", FieldType.nullable(ArrowType.Struct.INSTANCE), children)
+    val source = NativeUtil.createVector(field, allocator).asInstanceOf[StructVector]
+    var imported: CometVector = null
+
+    try {
+      source.allocateNew()
+      val bool = source.getChildByOrdinal(0).asInstanceOf[BitVector]
+      val byte = source.getChildByOrdinal(1).asInstanceOf[TinyIntVector]
+      bool.setSafe(0, 1)
+      byte.setSafe(0, 7)
+      bool.setValueCount(1)
+      byte.setValueCount(1)
+      source.setIndexDefined(0)
+      source.setValueCount(1)
+
+      val array = ArrowArray.allocateNew(allocator)
+      val schema = ArrowSchema.allocateNew(allocator)
+      Data.exportVector(allocator, source, null, array, schema)
+      source.close()
+
+      imported = nativeUtil.importVector(Array(array), Array(schema)).head
+      val row = imported.getStruct(0)
+      assert(row.getBoolean(0))
+      assert(row.getByte(1) === 7.toByte)
+      assert(imported.getValueVector.getField.getChildren.get(0).getName === "a")
+      assert(imported.getValueVector.getField.getChildren.get(1).getName === "a")
+    } finally {
+      source.close()
+      if (imported != null) imported.close()
+      nativeUtil.close()
+      allocator.close()
     }
   }
 }

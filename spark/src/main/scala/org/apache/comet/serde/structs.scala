@@ -31,7 +31,9 @@ import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.DataTypeSupport
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, serializeDataType}
 
-object CometCreateNamedStruct extends CometExpressionSerde[CreateNamedStruct] {
+object CometCreateNamedStruct
+    extends CometExpressionSerde[CreateNamedStruct]
+    with CodegenDispatchFallback {
 
   private val duplicateNamesReason =
     "`CreateNamedStruct` with duplicate field names is not supported"

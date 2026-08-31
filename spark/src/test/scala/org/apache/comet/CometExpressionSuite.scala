@@ -2480,15 +2480,10 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         val path = new Path(dir.toURI.toString, "test.parquet")
         makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
         withParquetTable(path.toString, "tbl") {
+          checkSparkAnswerAndOperator("SELECT named_struct('a', _1, 'a', _2) FROM tbl")
+          checkSparkAnswerAndOperator("SELECT named_struct('a', _1, 'a', 2) FROM tbl")
           checkSparkAnswerAndOperator(
-            "SELECT named_struct('a', _1, 'a', _2) FROM tbl",
-            classOf[ProjectExec])
-          checkSparkAnswerAndOperator(
-            "SELECT named_struct('a', _1, 'a', 2) FROM tbl",
-            classOf[ProjectExec])
-          checkSparkAnswerAndOperator(
-            "SELECT named_struct('a', named_struct('b', _1, 'b', _2)) FROM tbl",
-            classOf[ProjectExec])
+            "SELECT named_struct('a', named_struct('b', _1, 'b', _2)) FROM tbl")
         }
       }
     }

@@ -20,11 +20,15 @@
 package org.apache.comet.vector
 
 import scala.collection.mutable
+import scala.jdk.CollectionConverters._
 
 import org.apache.arrow.c.{ArrowArray, ArrowImporter, ArrowSchema, CDataDictionaryProvider, Data}
+import org.apache.arrow.memory.BufferAllocator
 import org.apache.arrow.util.AutoCloseables
-import org.apache.arrow.vector.VectorSchemaRoot
+import org.apache.arrow.vector.{FieldVector, VectorSchemaRoot}
+import org.apache.arrow.vector.complex.{AbstractStructVector, ListVector, MapVector, StructVector}
 import org.apache.arrow.vector.dictionary.DictionaryProvider
+import org.apache.arrow.vector.types.pojo.{ArrowType, Field}
 import org.apache.spark.SparkException
 import org.apache.spark.sql.comet.execution.arrow.ConstantColumnVectors
 import org.apache.spark.sql.comet.util.Utils
@@ -268,7 +272,11 @@ class NativeUtil extends AutoCloseable {
         // importField's finally consumes the schema. ArrayImporter takes the array normally, while
         // ArrowImporter's catch releases it if the import fails before that transfer.
         firstUnconsumed = i + 1
-        val arrowVector = importer.importVector(arrowArray, arrowSchema, dictionaryProvider)
+        val arrowVector = importer.importVector(
+          arrowArray,
+          arrowSchema,
+          dictionaryProvider,
+          field => NativeUtil.createVector(field, allocator))
         val cometVector =
           try CometVector.getVector(arrowVector, dictionaryProvider)
           catch {
@@ -322,6 +330,80 @@ class NativeUtil extends AutoCloseable {
 }
 
 object NativeUtil {
+
+  /**
+   * Create a vector whose physical struct children remain positional when the exported Arrow
+   * schema contains duplicate names. Arrow's default struct factory indexes children by name and
+   * collapses such fields.
+   */
+  private[comet] def createVector(field: Field, allocator: BufferAllocator): FieldVector = {
+    val runtimeField = fieldForAllocation(field)
+    field.getType match {
+      case _: ArrowType.List | _: ArrowType.LargeList | _: ArrowType.FixedSizeList =>
+        val vector = new RenamedListVector(runtimeField, field, allocator)
+        vector.initializeChildrenFromFields(runtimeField.getChildren)
+        vector
+      case _: ArrowType.Map =>
+        val vector = new RenamedMapVector(runtimeField, field, allocator)
+        vector.initializeChildrenFromFields(runtimeField.getChildren)
+        vector
+      case _: ArrowType.Struct =>
+        val vector = new RenamedStructVector(runtimeField, field, allocator)
+        vector.initializeChildrenFromFields(runtimeField.getChildren)
+        vector
+      case _ => field.createVector(allocator).asInstanceOf[FieldVector]
+    }
+  }
+
+  private def fieldForAllocation(field: Field): Field = {
+    val children = field.getChildren.asScala.map(fieldForAllocation).toIndexedSeq
+    val runtimeChildren = field.getType match {
+      case _: ArrowType.Struct if children.map(_.getName).distinct.size != children.size =>
+        children.zipWithIndex.map { case (child, ordinal) =>
+          new Field(s"__comet_runtime_field_$ordinal", child.getFieldType, child.getChildren)
+        }
+      case _ => children
+    }
+    new Field(field.getName, field.getFieldType, runtimeChildren.asJava)
+  }
+
+  /**
+   * Pin `getField()` to the imported Field so FFI keeps the original child labels. ListVector's
+   * runtime data-vector label is `"$data$"`; struct runtime names may be private and unique.
+   */
+  private final class RenamedListVector(
+      runtimeField: Field,
+      exportField: Field,
+      allocator: BufferAllocator)
+      extends ListVector(runtimeField, allocator, null) {
+    override def getField: Field = exportField
+  }
+
+  private final class RenamedMapVector(
+      runtimeField: Field,
+      exportField: Field,
+      allocator: BufferAllocator)
+      extends MapVector(runtimeField, allocator, null) {
+    override def getField: Field = exportField
+  }
+
+  private final class RenamedStructVector(
+      runtimeField: Field,
+      exportField: Field,
+      allocator: BufferAllocator)
+      extends StructVector(
+        runtimeField.getName,
+        allocator,
+        runtimeField.getFieldType,
+        null,
+        AbstractStructVector.ConflictPolicy.CONFLICT_ERROR,
+        true) {
+    private var constructed = false
+    constructed = true
+
+    override def getField: Field = if (constructed) exportField else super.getField
+  }
+
   def rootAsBatch(arrowRoot: VectorSchemaRoot): ColumnarBatch = {
     rootAsBatch(arrowRoot, null)
   }
