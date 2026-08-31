@@ -611,7 +611,6 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
     withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
       val df = spark.sql("SELECT id, map(id, null) AS m FROM VALUES (1), (2), (3) AS t(id)")
       val shuffled = df.repartition(2, $"id")
-      println(shuffled.queryExecution.executedPlan)
       checkShuffleAnswer(shuffled, 1)
     }
   }
