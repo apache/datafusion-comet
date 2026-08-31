@@ -803,6 +803,14 @@ under the License.
 <ul class="simple">
 <li><p>The <code class="docutils literal notranslate"><span class="pre">seed</span></code> argument must be a literal value</p></li>
 </ul>
+</section>
+<section id="round">
+<h2>Round<a class="headerlink" href="#round" title="Link to this heading">#</a></h2>
+<p>The following cases have no native implementation and always run in the JVM using Spark’s code-generated implementation (inside the Comet pipeline):</p>
+<ul class="simple">
+<li><p>Float and double inputs. Spark rounds them through a BigDecimal built from <code class="docutils literal notranslate"><span class="pre">java.lang.Double.toString()</span></code> rather than from the exact binary value, and that shortened decimal string can round differently than the value it came from</p></li>
+<li><p>Negative-scale decimal inputs, which are only creatable with spark.sql.legacy.allowNegativeScaleOfDecimal=true</p></li>
+</ul>
 <!--END:EXPR_COMPAT-->
 </section>
 </section>
@@ -857,6 +865,7 @@ under the License.
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#abs">Abs</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#rand">Rand</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#randn">Randn</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#round">Round</a></li>
 </ul>
   </nav></div>
 

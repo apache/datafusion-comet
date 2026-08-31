@@ -38,4 +38,11 @@ The following cases are not supported by Comet and always fall back to Spark, re
 The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
 
 - The `seed` argument must be a literal value
+
+## Round
+
+The following cases have no native implementation and always run in the JVM using Spark's code-generated implementation (inside the Comet pipeline):
+
+- Float and double inputs. Spark rounds them through a BigDecimal built from `java.lang.Double.toString()` rather than from the exact binary value, and that shortened decimal string can round differently than the value it came from
+- Negative-scale decimal inputs, which are only creatable with spark.sql.legacy.allowNegativeScaleOfDecimal=true
 <!--END:EXPR_COMPAT-->

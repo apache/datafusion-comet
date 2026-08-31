@@ -2514,8 +2514,8 @@ expressions. The following function families are <strong>not currently planned</
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">round</span></code></p></td>
 <td><p>✅</p></td>
-<td><p>Native</p></td>
-<td><p>Float/double inputs fall back</p></td>
+<td><p>Hybrid</p></td>
+<td><p>Float/double inputs route through the JVM codegen dispatcher; other types run natively</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">sec</span></code></p></td>
 <td><p>✅</p></td>
