@@ -21,6 +21,8 @@ package org.apache.comet
 
 import scala.util.Random
 
+import org.scalatest.exceptions.TestFailedException
+
 import org.apache.arrow.vector._
 import org.apache.spark.{SparkConf, SparkEnv, TaskContext}
 import org.apache.spark.sql.CometTestBase
@@ -206,6 +208,35 @@ class CometCodegenSuite
         assert(
           !explain.contains("JVM codegen dispatcher"),
           s"expected NO codegen-dispatch info with the flag off, got:\n$explain")
+      }
+    }
+  }
+
+  test("checkSparkAnswerAndImpl pins the mechanism and fails when the claim is wrong") {
+    // The assertion helper is only worth having if it fails. `abs` lowers to a native DataFusion
+    // expression and `hypot` is a `CometCodegenDispatch`, so this query exercises both buckets at
+    // once and each wrong claim below must be rejected.
+    withTable("t") {
+      sql("CREATE TABLE t (a DOUBLE, b DOUBLE) USING parquet")
+      sql("INSERT INTO t VALUES (3.0, 4.0)")
+      val query = "SELECT abs(a), hypot(a, b) FROM t"
+
+      checkSparkAnswerAndImpl(sql(query), native = Seq("abs"), dispatched = Seq("hypot"))
+
+      // Claiming the wrong mechanism fails, in both directions.
+      intercept[TestFailedException] {
+        checkSparkAnswerAndImpl(sql(query), native = Seq("hypot"))
+      }
+      intercept[TestFailedException] {
+        checkSparkAnswerAndImpl(sql(query), dispatched = Seq("abs"))
+      }
+      // So does naming an expression the query does not contain, which is what a typo in a
+      // fixture looks like.
+      intercept[TestFailedException] {
+        checkSparkAnswerAndImpl(sql(query), native = Seq("no_such_expression"))
+      }
+      intercept[TestFailedException] {
+        checkSparkAnswerAndImpl(sql(query), dispatched = Seq("no_such_expression"))
       }
     }
   }

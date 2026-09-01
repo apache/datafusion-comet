@@ -343,6 +343,84 @@ abstract class CometTestBase
   }
 
   /**
+   * Check for the correct results, that Comet replaced all possible operators, and that the named
+   * expressions ran through the mechanism the caller expects.
+   *
+   * Comet evaluates an expression one of three ways: natively (a DataFusion expression), through
+   * the JVM codegen dispatcher (Spark's own `doGenCode` compiled into an Arrow batch kernel), or
+   * not at all (the operator falls back to Spark). Only the third is visible to
+   * [[checkSparkAnswerAndOperator]]; the first two produce Spark-matching results by
+   * construction, so a serde that quietly widens from native to dispatch (losing the native
+   * kernel) or narrows from dispatch to native (losing Spark-exact semantics) passes every other
+   * assertion here. Use this to pin which one actually ran.
+   *
+   * Names are the expression's `prettyName` lowercased, as [[ExtendedExplainInfo]] reports them
+   * (`bit_length`, `octet_length`, `rlike`), not necessarily the SQL alias used to invoke it: a
+   * function registered with `setAlias` reports the invoked alias, everything else reports its
+   * own `prettyName`.
+   *
+   * For fallback assertions use [[checkSparkAnswerAndFallbackReason]] instead.
+   */
+  protected def checkSparkAnswerAndImpl(
+      df: => DataFrame,
+      native: Seq[String] = Seq.empty,
+      dispatched: Seq[String] = Seq.empty): (SparkPlan, SparkPlan) = {
+    val (sparkPlan, cometPlan) = checkSparkAnswerAndOperator(df)
+    assertExpressionImpl(cometPlan, native, dispatched)
+    (sparkPlan, cometPlan)
+  }
+
+  /** Check for the correct results and the expected per-expression implementation. */
+  protected def checkSparkAnswerAndImpl(
+      query: String,
+      native: Seq[String],
+      dispatched: Seq[String]): (SparkPlan, SparkPlan) = {
+    checkSparkAnswerAndImpl(sql(query), native, dispatched)
+  }
+
+  /**
+   * Assert how Comet evaluated the named expressions in an already-executed Comet plan. Split out
+   * from [[checkSparkAnswerAndImpl]] so callers holding a plan can reuse it, and so the assertion
+   * itself is testable.
+   *
+   * Each name must appear in its expected set and must be absent from the other, so naming an
+   * expression is a claim about which mechanism ran it rather than a claim that it ran somehow.
+   */
+  protected def assertExpressionImpl(
+      cometPlan: SparkPlan,
+      native: Seq[String],
+      dispatched: Seq[String]): Unit = {
+    val explainInfo = new ExtendedExplainInfo()
+    val actualNative = explainInfo.getNativeExpressions(cometPlan)
+    val actualDispatched = explainInfo.getCodegenDispatchExpressions(cometPlan)
+    def detail: String =
+      s"native=[${actualNative.mkString(", ")}] " +
+        s"codegen-dispatched=[${actualDispatched.mkString(", ")}]"
+    native.foreach { name =>
+      if (actualDispatched.contains(name)) {
+        fail(
+          s"Expected `$name` to run as a native expression but it ran through the JVM " +
+            s"codegen dispatcher. Actual: $detail")
+      }
+      if (!actualNative.contains(name)) {
+        fail(s"Expected `$name` to run as a native expression but it did not. Actual: $detail")
+      }
+    }
+    dispatched.foreach { name =>
+      if (actualNative.contains(name)) {
+        fail(
+          s"Expected `$name` to run through the JVM codegen dispatcher but it ran as a " +
+            s"native expression. Actual: $detail")
+      }
+      if (!actualDispatched.contains(name)) {
+        fail(
+          s"Expected `$name` to run through the JVM codegen dispatcher but it did not. " +
+            s"Actual: $detail")
+      }
+    }
+  }
+
+  /**
    * Try executing the query against Spark and Comet and return the results or the exception.
    *
    * This method does not check that Comet replaced any operators or that the results match in the
