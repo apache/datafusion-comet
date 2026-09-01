@@ -41,8 +41,6 @@ import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, SchemaGenOpt
  */
 class CometWriteRowViewSuite extends CometTestBase {
 
-  import testImplicits._
-
   test("row view is used for an unpartitioned parquet write") {
     withParquetSource { source =>
       withTempPath { out =>
@@ -193,7 +191,7 @@ class CometWriteRowViewSuite extends CometTestBase {
     }
   }
 
-  private def withRowView[T](f: => T): T =
+  private def withRowView(f: => Unit): Unit =
     withSQLConf(CometConf.COMET_WRITE_ROW_VIEW_ENABLED.key -> "true")(f)
 
   /**
