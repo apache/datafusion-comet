@@ -23,12 +23,16 @@ import java.lang.reflect.InvocationTargetException
 
 import org.scalatest.funsuite.AnyFunSuite
 
+import org.apache.iceberg.DeleteFile
+
+import org.apache.comet.iceberg.IcebergReflection
+
 /**
  * Locks in the fail-loud behavior of [[CometIcebergNativeScan.serializeDeleteFile]] required by
  * apache/datafusion-comet#5256: on supported Iceberg versions `content()`, `specId()`, and
- * `equalityFieldIds()` are always declared, so a reflective invocation failure must propagate
- * rather than fall back to a guessed value. A null `equalityFieldIds()` (a position-delete file)
- * stays a legitimate "no equality keys" result.
+ * `equalityFieldIds()` are always declared, so a reflective lookup or invocation failure must
+ * propagate rather than fall back to a guessed value. A null `equalityFieldIds()` (a
+ * position-delete file) stays a legitimate "no equality keys" result.
  */
 class CometIcebergDeleteFileSerdeSuite extends AnyFunSuite {
 
@@ -40,6 +44,14 @@ class CometIcebergDeleteFileSerdeSuite extends AnyFunSuite {
       file.getClass,
       file.getClass,
       keyMetadataMethod(file.getClass))
+
+  test("required Iceberg delete-file accessors are present") {
+    Seq("content", "specId", "equalityFieldIds").foreach { accessor =>
+      assert(
+        IcebergReflection.findMethod(classOf[DeleteFile], accessor).isDefined,
+        s"DeleteFile.$accessor must be available for native delete-file serde")
+    }
+  }
 
   test("position-delete file: null equalityFieldIds() serializes with no equality ids") {
     val proto = serialize(new PositionDeleteFile)
@@ -55,6 +67,18 @@ class CometIcebergDeleteFileSerdeSuite extends AnyFunSuite {
     assert(proto.getEqualityIdsCount == 2)
     assert(proto.getEqualityIds(0) == 3)
     assert(proto.getEqualityIds(1) == 5)
+  }
+
+  test("equality-delete file: null equalityFieldIds() is fatal") {
+    val ex = intercept[IllegalStateException](serialize(new EqualityDeleteFileWithNullIds))
+    assert(ex.getMessage ==
+      "Iceberg equality delete file 's3://bucket/eq-null-ids.parquet' has no equality field IDs")
+  }
+
+  test("equality-delete file: empty equalityFieldIds() is fatal") {
+    val ex = intercept[IllegalStateException](serialize(new EqualityDeleteFileWithEmptyIds))
+    assert(ex.getMessage ==
+      "Iceberg equality delete file 's3://bucket/eq-empty-ids.parquet' has no equality field IDs")
   }
 
   test("content() invocation failure propagates instead of defaulting to POSITION_DELETES") {
@@ -73,8 +97,16 @@ class CometIcebergDeleteFileSerdeSuite extends AnyFunSuite {
   }
 
   test("missing content() accessor is fatal, not a default") {
-    // getMethod throws NoSuchMethodException directly (not wrapped) when the accessor is absent.
     assertThrows[NoSuchMethodException](serialize(new NoContentAccessorDeleteFile))
+  }
+
+  test("missing equalityFieldIds() accessor is fatal, not an empty list") {
+    assertThrows[NoSuchMethodException](serialize(new NoEqualityIdsAccessorDeleteFile))
+  }
+
+  test("missing delete-file path accessor is fatal") {
+    val ex = intercept[RuntimeException](serialize(new NoPathAccessorDeleteFile))
+    assert(ex.getMessage.contains("Neither location() nor path() is declared"))
   }
 
   // -- Synthetic DeleteFile stubs. Each declares the full accessor set serializeDeleteFile
@@ -94,6 +126,22 @@ class CometIcebergDeleteFileSerdeSuite extends AnyFunSuite {
     def specId(): Int = 0
     def equalityFieldIds(): java.util.List[Integer] =
       java.util.List.of(Integer.valueOf(3), Integer.valueOf(5))
+    def keyMetadata(): java.nio.ByteBuffer = null
+  }
+
+  class EqualityDeleteFileWithNullIds {
+    def location(): String = "s3://bucket/eq-null-ids.parquet"
+    def content(): String = "EQUALITY_DELETES"
+    def specId(): Int = 0
+    def equalityFieldIds(): java.util.List[Integer] = null
+    def keyMetadata(): java.nio.ByteBuffer = null
+  }
+
+  class EqualityDeleteFileWithEmptyIds {
+    def location(): String = "s3://bucket/eq-empty-ids.parquet"
+    def content(): String = "EQUALITY_DELETES"
+    def specId(): Int = 0
+    def equalityFieldIds(): java.util.List[Integer] = java.util.List.of[Integer]()
     def keyMetadata(): java.nio.ByteBuffer = null
   }
 
@@ -123,6 +171,20 @@ class CometIcebergDeleteFileSerdeSuite extends AnyFunSuite {
 
   class NoContentAccessorDeleteFile {
     def location(): String = "s3://bucket/d.parquet"
+    def specId(): Int = 0
+    def equalityFieldIds(): java.util.List[Integer] = null
+    def keyMetadata(): java.nio.ByteBuffer = null
+  }
+
+  class NoEqualityIdsAccessorDeleteFile {
+    def location(): String = "s3://bucket/d.parquet"
+    def content(): String = "EQUALITY_DELETES"
+    def specId(): Int = 0
+    def keyMetadata(): java.nio.ByteBuffer = null
+  }
+
+  class NoPathAccessorDeleteFile {
+    def content(): String = "POSITION_DELETES"
     def specId(): Int = 0
     def equalityFieldIds(): java.util.List[Integer] = null
     def keyMetadata(): java.nio.ByteBuffer = null
