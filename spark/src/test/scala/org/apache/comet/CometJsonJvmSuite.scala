@@ -62,6 +62,12 @@ class CometJsonJvmSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("from_json preserves case-distinct fields via JVM engine") {
+    withJsonTable {
+      checkSparkAnswerAndOperator(sql("SELECT from_json(j, 'a INT, A INT') FROM t"))
+    }
+  }
+
   test("to_json round-trip via JVM engine") {
     withJsonTable {
       checkSparkAnswerAndOperator(sql("SELECT to_json(from_json(j, 'a INT, b STRING')) FROM t"))

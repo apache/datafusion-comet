@@ -374,17 +374,10 @@ object NativeUtil {
         vector
       case _: ArrowType.Struct =>
         val vector = new RenamedStructVector(runtimeField, exportField, allocator)
-        // The Field-based StructVector constructor creates the direct children. Initialize each
-        // child's descendants from the runtime schema without adding the direct children twice.
-        val runtimeChildren = runtimeField.getChildren
-        var ordinal = 0
-        while (ordinal < runtimeChildren.size()) {
-          vector
-            .getChildByOrdinal(ordinal)
-            .asInstanceOf[FieldVector]
-            .initializeChildrenFromFields(runtimeChildren.get(ordinal).getChildren)
-          ordinal += 1
-        }
+        // Arrow's Field-based StructVector constructor creates children through a writer whose
+        // cache lower-cases field names. Build the direct children positionally instead so case-
+        // distinct names such as `a` and `A` remain separate physical vectors.
+        vector.initializeChildrenFromFields(runtimeField.getChildren)
         vector
       case _ => exportField.createVector(allocator).asInstanceOf[FieldVector]
     }
@@ -463,15 +456,16 @@ object NativeUtil {
       exportField: Field,
       allocator: BufferAllocator)
       extends StructVector(
-        runtimeField,
+        runtimeField.getName,
         allocator,
+        runtimeField.getFieldType,
         null,
         AbstractStructVector.ConflictPolicy.CONFLICT_ERROR,
         true) {
     override def getField: Field = {
-      // StructVector's constructor calls getField before creating its children. Keep the unique
-      // runtime field visible for that call, then publish the original metadata once all children
-      // exist. The child count avoids a separate construction-state flag.
+      // StructVector's writer calls getField during construction. Keep the superclass's in-progress
+      // field visible until every positional child exists, then publish the original metadata. The
+      // child count avoids a separate construction-state flag.
       if (size() == exportField.getChildren.size()) exportField else super.getField
     }
   }
