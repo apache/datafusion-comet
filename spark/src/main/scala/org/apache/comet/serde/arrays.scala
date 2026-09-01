@@ -924,4 +924,38 @@ object CometArraySort extends CometCodegenDispatch[ArraySort]
 
 object CometZipWith extends CometCodegenDispatch[ZipWith]
 
-object CometSequence extends CometCodegenDispatch[Sequence]
+object CometSequence extends CometExpressionSerde[Sequence] with CodegenDispatchFallback {
+
+  private val temporalUnsupportedReason =
+    "date and timestamp element types run through the JVM codegen dispatcher"
+
+  override def getSupportLevel(expr: Sequence): SupportLevel = expr.start.dataType match {
+    case ByteType | ShortType | IntegerType | LongType => Compatible()
+    case DateType | TimestampType | TimestampNTZType =>
+      // Temporal sequences step through timezone/DST/legacy-calendar arithmetic
+      // (https://github.com/apache/datafusion-comet/issues/5349), so they stay on the JVM
+      // codegen dispatcher.
+      Unsupported(Some(temporalUnsupportedReason))
+    case other =>
+      Unsupported(Some(s"sequence with element type $other is not supported natively"))
+  }
+
+  override def getUnsupportedReasons(): Seq[String] = Seq(temporalUnsupportedReason)
+
+  override def convert(
+      expr: Sequence,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val startExprProto = exprToProto(expr.start, inputs, binding)
+    val stopExprProto = exprToProto(expr.stop, inputs, binding)
+    // With no step argument the native kernel computes Spark's per-row default,
+    // `start <= stop ? 1 : -1`, which cannot be expressed as a plan-time literal.
+    val argProtos = Seq(startExprProto, stopExprProto) ++
+      expr.stepOpt.map(exprToProto(_, inputs, binding))
+    scalarFunctionExprToProtoWithReturnType(
+      "spark_sequence",
+      expr.dataType,
+      failOnError = false,
+      argProtos: _*)
+  }
+}

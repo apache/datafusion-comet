@@ -175,6 +175,14 @@
 - Spark 4.0.1 (audited 2026-05-27): semantics unchanged; ANSI default flips to `true`.
 - Spark 4.1.1 (audited 2026-05-27): `inputTypes` tightened to `Seq(ArrayType, IntegralType)` (analysis-time only); runtime unchanged.
 
+## sequence
+
+- Spark 3.4.3 (audited 2026-08-29): `Sequence(start, stop, stepOpt, timeZoneId)`; `Sequence.impl` selects the implementation from `dataType.elementType`, so the integral/temporal split is knowable at plan time. Codegen for the integral path checks boundaries with a plain `IllegalArgumentException("Illegal sequence boundaries: ...")`, then calls the static `Sequence.sequenceLength`, which raises `SparkRuntimeException(_LEGACY_ERROR_TEMP_2161)` past `MAX_ROUNDED_ARRAY_LENGTH` and `internalError("Unreachable code reached.")` when `stop - start` overflows Long but the exact length is within the limit. Default step is per-row `start <= stop ? 1 : -1`.
+- Spark 3.5.8 (audited 2026-08-29): internal refactors only (`DataTypeUtils.sameType`, `PhysicalIntegralType.integral`); runtime semantics identical to 3.4.3.
+- Spark 4.0.1 (audited 2026-08-29): boundary error becomes `SparkIllegalArgumentException(_LEGACY_ERROR_TEMP_3243)` and the length error becomes `COLLECTION_SIZE_LIMIT_EXCEEDED.PARAMETER` (now carrying the function name); adds `throwable` optimizer hint. `sequenceLength` itself is unchanged.
+- Spark 4.1.1 (audited 2026-08-29): byte-identical `Sequence` class body to 4.0.1.
+- Comet routes integral element types (`ByteType`/`ShortType`/`IntegerType`/`LongType`) via `CometSequence` to the native `spark_sequence` kernel ([#5349](https://github.com/apache/datafusion-comet/issues/5349)): one pass over the generated elements, child buffer reserved once per batch, no per-row allocation. The two-argument form is evaluated with Spark's per-row default step inside the kernel. Both error conditions and the internal-error edge are reproduced through `SparkError` and mapped per Spark version by `ShimSparkErrorConverter`. Date/timestamp/timestamp_ntz sequences return `Unsupported` and run on the JVM codegen dispatcher (`CodegenDispatchFallback`), pending the timezone/DST/legacy-calendar work.
+
 ## shuffle
 
 - Spark 3.4.3 (audited 2026-07-02): `Shuffle(child, randomSeed: Option[Long])`; `inputTypes = Seq(ArrayType)`, `dataType = child.dataType`, non-deterministic and stateful. Seeds a Commons Math3 `MersenneTwister` with `randomSeed + partitionIndex` and applies the "inside-out" Fisher-Yates from `RandomIndicesGenerator`. Only the one-argument `shuffle(array)` form exists in SQL. NULL input returns NULL without advancing the RNG.

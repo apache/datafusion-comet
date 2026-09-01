@@ -158,10 +158,21 @@ trait ShimSparkErrorConverter {
         Some(QueryExecutionErrors.exceedMapSizeLimitError(params("size").toString.toInt))
 
       case "CollectionSizeLimitExceeded" =>
-        // createArrayWithElementsExceedLimitError takes (count: Any) in Spark 3.4
+        // createArrayWithElementsExceedLimitError takes (count: Any) in Spark 3.4; pass the
+        // decimal string through since the reported length can exceed Long range.
         Some(
           QueryExecutionErrors.createArrayWithElementsExceedLimitError(
-            params("numElements").toString.toLong))
+            params("numElements").toString))
+
+      case "SequenceIllegalBoundaries" =>
+        // Spark 3.x codegen throws a plain IllegalArgumentException for sequence boundaries.
+        Some(
+          new IllegalArgumentException(
+            s"Illegal sequence boundaries: ${params("start")} to ${params("stop")} " +
+              s"by ${params("step")}"))
+
+      case "Internal" =>
+        Some(SparkException.internalError(params("message").toString))
 
       case "NotNullAssertViolation" =>
         Some(

@@ -210,6 +210,39 @@ class CometCodegenSuite
     }
   }
 
+  test("sequence routes integral types natively and temporal types to the dispatcher") {
+    // Integral sequence runs on the native spark_sequence kernel; date and timestamp
+    // sequences stay on the JVM codegen dispatcher (issue #5349).
+    withTable("t") {
+      sql("CREATE TABLE t (a INT, b INT, d DATE) USING parquet")
+      sql("INSERT INTO t VALUES (1, 5, DATE'2024-01-01'), (9, 2, DATE'2024-03-01')")
+
+      withSQLConf(
+        CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true",
+        CometConf.COMET_EXPLAIN_CODEGEN_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_PROJECT_ENABLED.key -> "true",
+        CometConf.COMET_EXTENDED_EXPLAIN_FORMAT.key ->
+          CometConf.COMET_EXTENDED_EXPLAIN_FORMAT_VERBOSE) {
+        val intDf =
+          sql("SELECT sequence(a, b), sequence(a, b, CASE WHEN a <= b THEN 2 ELSE -2 END) FROM t")
+        checkSparkAnswerAndOperator(intDf)
+        val intExplain =
+          new ExtendedExplainInfo().generateExtendedInfo(intDf.queryExecution.executedPlan)
+        assert(
+          !intExplain.contains("JVM codegen dispatcher"),
+          s"expected integral sequence to run natively, got:\n$intExplain")
+
+        val dateDf = sql("SELECT sequence(d, DATE'2024-06-01', INTERVAL 1 MONTH) FROM t")
+        checkSparkAnswerAndOperator(dateDf)
+        val dateExplain =
+          new ExtendedExplainInfo().generateExtendedInfo(dateDf.queryExecution.executedPlan)
+        assert(
+          dateExplain.contains("JVM codegen dispatcher: sequence"),
+          s"expected date sequence to route through the dispatcher, got:\n$dateExplain")
+      }
+    }
+  }
+
   test("expression coverage stats split native from codegen-dispatch expressions") {
     // `abs` and `sqrt` lower to native DataFusion expressions; `hypot` and `nanvl` are
     // `CometCodegenDispatch` and so run Spark's own codegen inside the Comet pipeline. The

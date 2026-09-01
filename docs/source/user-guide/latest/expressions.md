@@ -168,7 +168,7 @@ The tables below list every Spark built-in expression with its current status.
 | `element_at` | ✅ | Native |  |
 | `flatten` | ✅ | Native | Binary/struct/map elements fall back |
 | `get` | ✅ | — |  |
-| `sequence` | ✅ | Codegen dispatch |  |
+| `sequence` | ✅ | Hybrid | Integral types run natively; date/timestamp sequences use codegen dispatch |
 | `shuffle` | ✅ | Native | Binary/struct/map elements fall back |
 | `slice` | ✅ | Native | Native ([#4149](https://github.com/apache/datafusion-comet/pull/4149)) |
 | `sort_array` | ✅ | Hybrid | Nested struct/null arrays fall back |

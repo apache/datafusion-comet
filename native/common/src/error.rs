@@ -135,10 +135,25 @@ pub enum SparkError {
     #[error("[EXCEED_LIMIT_LENGTH] Cannot create a map with {size} elements which exceeds the limit {max_size}.")]
     ExceedMapSizeLimit { size: i32, max_size: i32 },
 
-    #[error("[COLLECTION_SIZE_LIMIT_EXCEEDED] Cannot create array with {num_elements} elements which exceeds the limit {max_elements}.")]
+    /// `num_elements` is a decimal string because Spark reports the unclamped length, which can
+    /// exceed i64 (e.g. sequence(Long.MinValue, Long.MaxValue, 1)). The JVM shim maps this to the
+    /// version-appropriate `createArrayWithElementsExceedLimitError`, passing `function_name`
+    /// through on Spark 4.x (which includes it in the message) and ignoring it on 3.x.
+    #[error("[COLLECTION_SIZE_LIMIT_EXCEEDED] Can't create array with {num_elements} elements which exceeding the array size limit {max_elements}.")]
     CollectionSizeLimitExceeded {
-        num_elements: i64,
+        num_elements: String,
         max_elements: i64,
+        function_name: String,
+    },
+
+    /// Step direction does not match the start/stop bounds in `sequence`. The JVM shim maps this
+    /// to a plain IllegalArgumentException on Spark 3.x and SparkIllegalArgumentException
+    /// (_LEGACY_ERROR_TEMP_3243) on 4.x, matching what Spark's codegen throws.
+    #[error("[_LEGACY_ERROR_TEMP_3243] Illegal sequence boundaries: {start} to {stop} by {step}")]
+    SequenceIllegalBoundaries {
+        start: String,
+        stop: String,
+        step: String,
     },
 
     #[error("[NOT_NULL_ASSERT_VIOLATION] The field `{field_name}` cannot be null.")]
@@ -293,6 +308,7 @@ impl SparkError {
             SparkError::MapKeyValueDiffSizes => "MapKeyValueDiffSizes",
             SparkError::ExceedMapSizeLimit { .. } => "ExceedMapSizeLimit",
             SparkError::CollectionSizeLimitExceeded { .. } => "CollectionSizeLimitExceeded",
+            SparkError::SequenceIllegalBoundaries { .. } => "SequenceIllegalBoundaries",
             SparkError::NotNullAssertViolation { .. } => "NotNullAssertViolation",
             SparkError::ValueIsNull { .. } => "ValueIsNull",
             SparkError::CannotParseTimestamp { .. } => "CannotParseTimestamp",
@@ -437,10 +453,19 @@ impl SparkError {
             SparkError::CollectionSizeLimitExceeded {
                 num_elements,
                 max_elements,
+                function_name,
             } => {
                 serde_json::json!({
                     "numElements": num_elements,
                     "maxElements": max_elements,
+                    "functionName": function_name,
+                })
+            }
+            SparkError::SequenceIllegalBoundaries { start, stop, step } => {
+                serde_json::json!({
+                    "start": start,
+                    "stop": stop,
+                    "step": step,
                 })
             }
             SparkError::NotNullAssertViolation { field_name } => {
@@ -631,7 +656,8 @@ impl SparkError {
             // IllegalArgumentException
             SparkError::DatatypeCannotOrder { .. }
             | SparkError::InvalidUtf8String { .. }
-            | SparkError::IllegalDayOfWeek { .. } => {
+            | SparkError::IllegalDayOfWeek { .. }
+            | SparkError::SequenceIllegalBoundaries { .. } => {
                 "org/apache/spark/SparkIllegalArgumentException"
             }
 
@@ -709,6 +735,7 @@ impl SparkError {
             SparkError::CollectionSizeLimitExceeded { .. } => {
                 Some("COLLECTION_SIZE_LIMIT_EXCEEDED")
             }
+            SparkError::SequenceIllegalBoundaries { .. } => Some("_LEGACY_ERROR_TEMP_3243"),
 
             // Null validation errors
             SparkError::NotNullAssertViolation { .. } => Some("NOT_NULL_ASSERT_VIOLATION"),

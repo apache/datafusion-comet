@@ -178,10 +178,24 @@ trait ShimSparkErrorConverter {
         Some(QueryExecutionErrors.exceedMapSizeLimitError(params("size").toString.toInt))
 
       case "CollectionSizeLimitExceeded" =>
+        // Pass the count as its decimal string since the reported length can exceed Long range.
         Some(
           QueryExecutionErrors.createArrayWithElementsExceedLimitError(
-            "array",
-            params("numElements").toString.toLong))
+            params.getOrElse("functionName", "array").toString,
+            params("numElements").toString))
+
+      case "SequenceIllegalBoundaries" =>
+        // Matches what Spark 4.x codegen throws for sequence boundaries.
+        Some(
+          new SparkIllegalArgumentException(
+            errorClass = "_LEGACY_ERROR_TEMP_3243",
+            messageParameters = Map(
+              "start" -> params("start").toString,
+              "stop" -> params("stop").toString,
+              "step" -> params("step").toString)))
+
+      case "Internal" =>
+        Some(SparkException.internalError(params("message").toString))
 
       case "NotNullAssertViolation" =>
         Some(
