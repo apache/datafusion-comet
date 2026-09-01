@@ -97,6 +97,17 @@ public final class CometBoundedShuffleMemoryAllocator extends CometShuffleMemory
         CometSparkSessionExtensions$.MODULE$.getCometShuffleMemorySize(conf, SQLConf.get());
   }
 
+  /**
+   * Returns the current allocation total in bytes.
+   *
+   * <p>Allocations bypass Spark's memory manager and use this allocator's own counter. Since the
+   * allocator is shared across tasks, this reports the shared total rather than per-task usage.
+   */
+  @Override
+  public synchronized long getUsed() {
+    return allocatedMemory;
+  }
+
   private synchronized long _acquireMemory(long size) {
     if (allocatedMemory >= totalMemory) {
       throw new SparkOutOfMemoryError(

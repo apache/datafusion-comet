@@ -35,7 +35,7 @@ import org.apache.spark.sql.comet.CometHashAggregateExec
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution.SQLExecution
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
-import org.apache.spark.sql.functions.{avg, col, count_distinct, sum}
+import org.apache.spark.sql.functions.{avg, col, count_distinct, expr, sum}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
 
@@ -149,10 +149,12 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("collect_list over struct with non-nullable fields") {
-    // Building a struct from non-nullable columns yields non-nullable struct fields. The native
-    // collect_list accumulator emits a list whose element fields are all nullable, so the produced
-    // array must be reconciled with the declared aggregate output type, otherwise the grouped
-    // native aggregate fails with "column types must match schema types".
+    // Building a struct from non-nullable columns yields non-nullable struct fields. Native
+    // collect_list derives its declared output element type from the argument's declared type,
+    // but emits arrays of whatever type the accumulator actually received, so the argument is
+    // normalized to its all-nullable variant first. Without that the two disagree on nested
+    // field nullability and the grouped native aggregate fails with "column types must match
+    // schema types".
     import org.apache.spark.sql.functions.{collect_list, expr}
     import org.apache.spark.sql.execution.LocalTableScanExec
     // One row per (a, b) group keeps each collected list deterministic for the answer comparison.
@@ -295,6 +297,33 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           checkSparkAnswer(
             s"SELECT percentile_approx(_2, 0.5), count(DISTINCT _3) FROM tbl$groupBy")
         }
+      }
+    }
+  }
+
+  test("unsupported PartialMerge preserves percentile buffers with local Comet shuffle") {
+    for {
+      adaptive <- Seq(false, true)
+      percentile <- Seq("percentile", "percentile_approx")
+      mergeFunction <- Seq("first", "last")
+    } {
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+        SQLConf.SHUFFLE_PARTITIONS.key -> "4",
+        CometConf.COMET_SHUFFLE_MODE.key -> "native") {
+        val query = spark
+          .range(0, 18, 1, 4)
+          .selectExpr("id % 3 AS grouping_key", "id % 5 AS value")
+          .groupBy("grouping_key")
+          .agg(
+            expr("count(DISTINCT value)").as("distinct_values"),
+            expr(s"$percentile(value, 0.5)").as("percentile_value"),
+            // The grouping key is constant within each group, so FIRST/LAST are deterministic.
+            expr(s"$mergeFunction(grouping_key)").as("group_value"))
+        val (_, executedPlan) = checkSparkAnswer(query)
+        assert(collect(executedPlan) { case aggregate: CometHashAggregateExec =>
+          aggregate
+        }.isEmpty)
       }
     }
   }

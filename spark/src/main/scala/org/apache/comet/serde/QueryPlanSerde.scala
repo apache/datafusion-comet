@@ -531,6 +531,22 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     }
   }
 
+  /**
+   * Attach a fresh `expr_id` and, when the expression's origin carries one, its `QueryContext` to
+   * `protoExpr`. Native ANSI errors resolve their context by the `expr_id` of the `Expr` that
+   * throws (see `register_query_context` and `ListExtract` in the native planner), so the
+   * metadata has to sit on that `Expr`. The generic serde path applies this to the top-level
+   * `Expr` it returns; a serde that nests a throwing expression inside a wrapper (e.g.
+   * `CometElementAt`'s CASE-WHEN NULL guard) must also call it on the inner `Expr`, or that
+   * expression's error renders without Spark's `== SQL ... ==` query context.
+   */
+  private[serde] def attachExprIdAndContext(expr: Expression, protoExpr: Expr): Expr = {
+    val builder = protoExpr.toBuilder
+    builder.setExprId(nextExprId())
+    extractQueryContext(expr).foreach(builder.setQueryContext)
+    builder.build()
+  }
+
   def supportedDataType(dt: DataType, allowComplex: Boolean = false): Boolean = dt match {
     case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
         _: DoubleType | _: StringType | _: BinaryType | _: TimestampType | _: TimestampNTZType |
@@ -1004,12 +1020,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
           withNativeExpr(expr, CometExplainInfo.exprDisplayName(expr))
         }
         // Attach QueryContext and expr_id to the expression
-        val builder = protoExpr.toBuilder
-        builder.setExprId(nextExprId())
-        extractQueryContext(expr).foreach { ctx =>
-          builder.setQueryContext(ctx)
-        }
-        builder.build()
+        attachExprIdAndContext(expr, protoExpr)
       }
   }
 

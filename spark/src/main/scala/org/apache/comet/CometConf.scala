@@ -258,6 +258,26 @@ object CometConf extends ShimCometConf {
   val COMET_EXEC_SAMPLE_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("sample", defaultValue = true)
 
+  val COMET_EXEC_IN_MEMORY_CACHE_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.exec.inMemoryCache.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Whether to enable Comet native execution for in-memory cached tables. Its value at " +
+          "startup also decides whether CometDriverPlugin installs Comet's cache serializer, " +
+          "which stores cached data in Arrow format. Because spark.sql.cache.serializer is a " +
+          "static config, the cached format is fixed for the application, and disabling this " +
+          "at runtime only sends cached scans back to Spark's execution path. Relations whose " +
+          "schema Comet's Arrow writer does not support are always cached in Spark's default " +
+          "format. Each cached column is stored as its own compressed Arrow IPC stream, so a " +
+          "scan decodes only the columns it projected. Reads that feed Spark operators rather " +
+          "than Comet ones still pay a row conversion the default format avoids, and can be " +
+          "slower than Spark's cache. With spark.kryo.registrationRequired=true, also set " +
+          "spark.kryo.registrator=org.apache.comet.CometKryoRegistrator before creating the " +
+          "SparkContext, otherwise caching fails as soon as a block is serialized, including " +
+          "the disk half of the default MEMORY_AND_DISK storage level.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_NATIVE_COLUMNAR_TO_ROW_ENABLED: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.columnarToRow.native.enabled")
       .category(CATEGORY_EXEC)
@@ -308,9 +328,11 @@ object CometConf extends ShimCometConf {
       .withAlternative(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.enabled")
       .category(CATEGORY_SHUFFLE)
       .doc(
-        "Whether to enable Comet native shuffle. " +
+        "Whether to enable Comet shuffle. " +
           "Note that this requires setting `spark.shuffle.manager` to " +
-          "`org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager`. " +
+          "`org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager` or " +
+          "`org.apache.spark.sql.comet.execution.shuffle.CometCelebornShuffleManager`. " +
+          "Celeborn requires explicit native mode and compatible application settings. " +
           "`spark.shuffle.manager` must be set before starting the Spark application and " +
           "cannot be changed during the application.")
       .booleanConf
@@ -331,11 +353,10 @@ object CometConf extends ShimCometConf {
   val COMET_SHUFFLE_MODE: ConfigEntry[String] = conf("spark.comet.shuffle.mode")
     .withAlternative(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.mode")
     .category(CATEGORY_SHUFFLE)
-    .doc(
-      "This is test config to allow tests to force a particular shuffle implementation to be " +
-        "used. Valid values are `jvm` for Columnar Shuffle, `native` for Native Shuffle, " +
-        s"and `auto` to pick the best supported option (`native` has priority). $TUNING_GUIDE.")
-    .internal()
+    .doc("Select the Comet shuffle implementation: `jvm` for Columnar Shuffle, " +
+      "`native` for Native Shuffle, and `auto` to pick the best supported option " +
+      "(`native` has priority). With CometCelebornShuffleManager, only explicit `native` " +
+      s"mode enables Comet shuffle; `auto` and `jvm` retain Spark/Celeborn shuffle. $TUNING_GUIDE.")
     .stringConf
     .transform(_.toLowerCase(Locale.ROOT))
     .checkValues(Set("native", "jvm", "auto"))
@@ -618,6 +639,34 @@ object CometConf extends ShimCometConf {
       .bytesConf(ByteUnit.BYTE)
       .checkValue(v => v >= 0, "Must not be negative")
       .createWithDefault(0)
+
+  val COMET_SHUFFLE_RSS_MAX_FRAME_BYTES: ConfigEntry[Long] =
+    conf("spark.comet.shuffle.rss.maxFrameBytes")
+      .category(CATEGORY_SHUFFLE)
+      .doc("Maximum encoded size of one complete native shuffle frame sent to a remote " +
+        "shuffle service. Frames are never split across remote push requests.")
+      .bytesConf(ByteUnit.BYTE)
+      .checkValue(
+        value => value >= 20 && value <= Int.MaxValue - 16,
+        "Remote shuffle frame size must fit a complete Comet frame and a Celeborn request")
+      .createWithDefault(64L * 1024 * 1024)
+
+  val COMET_SHUFFLE_RSS_MAX_IN_FLIGHT_BYTES: ConfigEntry[Long] =
+    conf("spark.comet.shuffle.rss.maxInFlightBytes")
+      .category(CATEGORY_SHUFFLE)
+      .doc(
+        "Maximum shuffle bytes admitted concurrently by native Comet map attempts sharing " +
+          "an executor-side remote shuffle client. Admission includes native encoding " +
+          "scratch and overlapping native, JNI, and remote shuffle frame copies. " +
+          "A frame must fit its codec and Arrow workspace as well as its encoded bytes; " +
+          "too-small limits fail before encoding. Encrypted native RSS is not supported; " +
+          "use ordinary Spark shuffle when spark.io.encryption.enabled is true.")
+      .bytesConf(ByteUnit.BYTE)
+      .checkValue(
+        value => value >= 76 && value <= Int.MaxValue,
+        "Remote shuffle in-flight byte limit must fit three complete frame copies and a " +
+          "Celeborn request header")
+      .createWithDefault(256L * 1024 * 1024)
 
   val COMET_DEBUG_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.debug.enabled")
