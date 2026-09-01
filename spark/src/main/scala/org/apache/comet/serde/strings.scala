@@ -109,15 +109,37 @@ object CometOctetLength extends CometScalarFunction[OctetLength]("octet_length")
   }
 }
 
-object CometStringTranslate extends CometScalarFunction[StringTranslate]("translate") {
+object CometStringTranslate
+    extends CometScalarFunction[StringTranslate]("translate")
+    with NativeOptInAvailable {
   private val incompatReason =
     "DataFusion's translate iterates over Unicode graphemes (Spark uses code points) and" +
       " substitutes U+0000 instead of treating it as a deletion sentinel"
 
   override def getIncompatibleReasons(): Seq[String] = Seq(incompatReason)
 
-  override def getSupportLevel(expr: StringTranslate): SupportLevel = Incompatible(
-    Some(incompatReason))
+  override def getSupportLevel(expr: StringTranslate): SupportLevel =
+    if (!CometConf.isExprAllowIncompat(getExprConfigName(expr))) {
+      Compatible(nativeOptIn =
+        Some(NativeOptIn(CometConf.getExprAllowIncompatConfigKey(getExprConfigName(expr)))))
+    } else {
+      Compatible()
+    }
+
+  override def convert(
+      expr: StringTranslate,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] = {
+    if (CometConf.isExprAllowIncompat(getExprConfigName(expr))) {
+      // Native path: faster but iterates Unicode graphemes and substitutes U+0000 rather than
+      // treating it as a deletion sentinel, so it is only used when incompatibility is allowed.
+      super.convert(expr, inputs, binding)
+    } else {
+      // Default: run Spark's own generated code inside the Comet pipeline for exact
+      // compatibility. Falls back to Spark when the codegen dispatcher is disabled.
+      CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
+    }
+  }
 }
 
 object CometLevenshtein extends CometExpressionSerde[Levenshtein] {
