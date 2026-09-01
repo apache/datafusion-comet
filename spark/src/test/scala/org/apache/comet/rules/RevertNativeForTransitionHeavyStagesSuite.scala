@@ -20,9 +20,12 @@
 package org.apache.comet.rules
 
 import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial}
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution._
+import org.apache.spark.sql.execution.adaptive.QueryStageExec
+import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf
 
@@ -53,6 +56,18 @@ class RevertNativeForTransitionHeavyStagesSuite extends CometTestBase {
 
   private def countC2RNodes(plan: SparkPlan): Int = {
     plan.collect { case _: ColumnarToRowTransition => true }.size
+  }
+
+  private def collectCometAggregates(plan: SparkPlan): Seq[CometHashAggregateExec] = {
+    val current = plan match {
+      case aggregate: CometHashAggregateExec => Seq(aggregate)
+      case _ => Seq.empty
+    }
+    val descendants = plan match {
+      case stage: QueryStageExec => collectCometAggregates(stage.plan)
+      case _ => plan.children.flatMap(collectCometAggregates)
+    }
+    current ++ descendants
   }
 
   /**
@@ -170,7 +185,7 @@ class RevertNativeForTransitionHeavyStagesSuite extends CometTestBase {
   test("revert fires with unsupported UDF producing transitions") {
     withParquetTable((0 until 100).map(i => (i, i % 10, s"val_$i")), "tbl") {
       spark.udf.register("identity_udf", (x: Int) => x)
-      val query = "SELECT _2, identity_udf(_1), count(*) FROM tbl GROUP BY _2, identity_udf(_1)"
+      val query = "SELECT _2, identity_udf(_1), max(_1) FROM tbl GROUP BY _2, identity_udf(_1)"
 
       // Without revert, plan should have transitions due from UDF
       withSQLConf(CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "false") {
@@ -195,7 +210,7 @@ class RevertNativeForTransitionHeavyStagesSuite extends CometTestBase {
 
   test("revert fires and produces correct results when transitions exceed threshold") {
     withParquetTable((0 until 100).map(i => (i, i % 10, s"val_$i")), "tbl") {
-      val query = "SELECT _2, count(*), sum(_1) FROM tbl GROUP BY _2"
+      val query = "SELECT _2, min(_1), sum(_1) FROM tbl GROUP BY _2"
 
       // Without revert, plan should have CometExec nodes with transitions
       withSQLConf(
@@ -276,6 +291,102 @@ class RevertNativeForTransitionHeavyStagesSuite extends CometTestBase {
           invalid.isEmpty,
           "rule.apply produced invalid columnar/row boundaries " +
             s"(${invalid.map(_.nodeName).mkString(", ")}):\n${result.treeString}")
+      }
+    }
+  }
+
+  for (adaptive <- Seq(false, true)) {
+    test(s"transition reversion preserves incompatible aggregate buffers with AQE=$adaptive") {
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+        SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false",
+        CometConf.COMET_SHUFFLE_MODE.key -> "native",
+        CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_TRANSITION_REVERT_MAX_TRANSITIONS.key -> "0") {
+        withParquetTable((0 until 256).map(i => (i % 4, i.toDouble)), "tbl") {
+          val (_, plan) =
+            checkSparkAnswer("SELECT _1, percentile(_2, 0.5) FROM tbl GROUP BY _1 ORDER BY _1")
+          val executedPlan = stripAQEPlan(plan)
+          val aggregates = collectCometAggregates(executedPlan)
+          assert(aggregates.exists(_.modes == Seq(Partial)), s"$executedPlan")
+          assert(aggregates.exists(_.modes == Seq(Final)), s"$executedPlan")
+        }
+      }
+    }
+  }
+
+  test("transition reversion finds an incompatible aggregate below another aggregate") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false",
+      CometConf.COMET_SHUFFLE_MODE.key -> "native",
+      CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_TRANSITION_REVERT_MAX_TRANSITIONS.key -> "0") {
+      withParquetTable((0 until 256).map(i => (i % 4, i.toDouble)), "tbl") {
+        val query =
+          """SELECT grouping_key, percentile(inner_percentile, 0.5)
+            |FROM (
+            |  SELECT _1 AS grouping_key, percentile(_2, 0.5) AS inner_percentile
+            |  FROM tbl
+            |  GROUP BY _1
+            |) inner_aggregate
+            |GROUP BY grouping_key""".stripMargin
+        val (_, plan) = checkSparkAnswer(query)
+        val executedPlan = stripAQEPlan(plan)
+        val aggregates = collectCometAggregates(executedPlan)
+        assert(
+          executedPlan.collect { case _: CometShuffleExchangeExec => true }.size == 1,
+          s"test requires one exchange below the nested aggregates:\n$executedPlan")
+        assert(aggregates.count(_.modes == Seq(Partial)) == 2, s"$executedPlan")
+        assert(aggregates.count(_.modes == Seq(Final)) == 2, s"$executedPlan")
+      }
+    }
+  }
+
+  for (adaptive <- Seq(false, true)) {
+    test(s"transition reversion does not split native COUNT stages with AQE=$adaptive") {
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+        SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false",
+        CometConf.COMET_SHUFFLE_MODE.key -> "native",
+        CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_TRANSITION_REVERT_MAX_TRANSITIONS.key -> "0") {
+        withParquetTable((0 until 256).map(i => (i % 4, i)), "tbl") {
+          val (_, plan) = checkSparkAnswer("SELECT _1, count(*) FROM tbl GROUP BY _1 ORDER BY _1")
+          val executedPlan = stripAQEPlan(plan)
+          val aggregates = collectCometAggregates(executedPlan)
+          assert(aggregates.exists(_.modes == Seq(Partial)), s"$executedPlan")
+          assert(aggregates.exists(_.modes == Seq(Final)), s"$executedPlan")
+        }
+      }
+    }
+  }
+
+  test("transition reversion preserves an incompatible native partial producer") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      CometConf.COMET_SHUFFLE_MODE.key -> "native",
+      CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "false") {
+      withParquetTable((0 until 256).map(i => (i % 4, i.toDouble)), "tbl") {
+        val nativePlan =
+          sql("SELECT _1, percentile(_2, 0.5) FROM tbl GROUP BY _1").queryExecution.executedPlan
+        val partial = nativePlan
+          .collectFirst {
+            case aggregate: CometHashAggregateExec if aggregate.modes == Seq(Partial) => aggregate
+          }
+          .getOrElse(fail(s"expected a native partial aggregate:\n$nativePlan"))
+        val producerWithTransition = partial.withNewChildren(
+          Seq(CometSparkToColumnarExec(CometNativeColumnarToRowExec(partial.child))))
+        val reverter = RevertNativeForTransitionHeavyStages(spark)
+        assert(reverter.countTransitions(producerWithTransition) == 1)
+
+        var reverted: SparkPlan = null
+        withSQLConf(
+          CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "true",
+          CometConf.COMET_EXEC_TRANSITION_REVERT_MAX_TRANSITIONS.key -> "0") {
+          reverted = reverter(producerWithTransition)
+        }
+        assert(reverted eq producerWithTransition)
       }
     }
   }

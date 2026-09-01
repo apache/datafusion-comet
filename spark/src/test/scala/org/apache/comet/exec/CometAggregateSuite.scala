@@ -35,7 +35,7 @@ import org.apache.spark.sql.comet.CometHashAggregateExec
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution.SQLExecution
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
-import org.apache.spark.sql.functions.{avg, col, count_distinct, sum}
+import org.apache.spark.sql.functions.{avg, col, count_distinct, expr, sum}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
 
@@ -297,6 +297,33 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           checkSparkAnswer(
             s"SELECT percentile_approx(_2, 0.5), count(DISTINCT _3) FROM tbl$groupBy")
         }
+      }
+    }
+  }
+
+  test("unsupported PartialMerge preserves percentile buffers with local Comet shuffle") {
+    for {
+      adaptive <- Seq(false, true)
+      percentile <- Seq("percentile", "percentile_approx")
+      mergeFunction <- Seq("first", "last")
+    } {
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+        SQLConf.SHUFFLE_PARTITIONS.key -> "4",
+        CometConf.COMET_SHUFFLE_MODE.key -> "native") {
+        val query = spark
+          .range(0, 18, 1, 4)
+          .selectExpr("id % 3 AS grouping_key", "id % 5 AS value")
+          .groupBy("grouping_key")
+          .agg(
+            expr("count(DISTINCT value)").as("distinct_values"),
+            expr(s"$percentile(value, 0.5)").as("percentile_value"),
+            // The grouping key is constant within each group, so FIRST/LAST are deterministic.
+            expr(s"$mergeFunction(grouping_key)").as("group_value"))
+        val (_, executedPlan) = checkSparkAnswer(query)
+        assert(collect(executedPlan) { case aggregate: CometHashAggregateExec =>
+          aggregate
+        }.isEmpty)
       }
     }
   }

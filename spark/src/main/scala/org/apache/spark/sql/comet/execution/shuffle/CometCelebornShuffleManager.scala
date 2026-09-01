@@ -20,10 +20,12 @@
 package org.apache.spark.sql.comet.execution.shuffle
 
 import java.lang.reflect.InvocationTargetException
+import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 
 import scala.collection.mutable
 import scala.jdk.CollectionConverters._
+import scala.util.control.NonFatal
 
 import org.apache.spark.{ShuffleDependency, SparkConf, SparkEnv, TaskContext}
 import org.apache.spark.rpc.{RpcCallContext, RpcEndpointRef, RpcEnv, ThreadSafeRpcEndpoint}
@@ -40,14 +42,16 @@ import org.apache.comet.util.ClassLoaders
  * binding native Comet map output to Celeborn's application-owned client.
  *
  * Celeborn is an optional, application-provided dependency, so its shuffle manager is loaded
- * reflectively. Native map and reduce paths are available, but planner enablement is separate;
- * JVM Comet shuffle remains unsupported.
+ * reflectively. Explicit native mode enables supported native map and reduce paths; other
+ * exchanges retain ordinary Spark/Celeborn shuffle. JVM Comet shuffle remains unsupported.
  */
 class CometCelebornShuffleManager private[shuffle] (
     conf: SparkConf,
     isDriver: Boolean,
     backendFactory: (SparkConf, Boolean) => ShuffleManager,
-    readerApi: CelebornRawPartitionReader.Api = CelebornRawPartitionReader.reflectedApi)
+    readerApi: CelebornRawPartitionReader.Api = CelebornRawPartitionReader.reflectedApi,
+    planningSupportFactory: SparkConf => CelebornNativeShufflePlanningSupport = conf =>
+      CometCelebornShuffleManager.nativeShufflePlanningSupport(conf))
     extends ShuffleManager {
 
   /** Constructor used by Spark on both the driver and executors. */
@@ -61,6 +65,13 @@ class CometCelebornShuffleManager private[shuffle] (
   private val backend = Option(backendFactory(conf, isDriver)).getOrElse {
     throw new IllegalStateException("Celeborn Spark shuffle manager factory returned null")
   }
+  // Capture effective application settings once, alongside backend construction. Re-reading
+  // SQLConf or JVM properties during planning could disagree with the already-created backend.
+  private val nativePlanningSupport = planningSupportFactory(conf.clone())
+
+  def nativeShuffleFallbackReason(numPartitions: Int): Option[String] =
+    nativePlanningSupport.fallbackReason(numPartitions)
+
   private val nativeShuffleClients =
     new ConcurrentHashMap[Int, ConcurrentHashMap[Int, AnyRef]]()
   private val ownedNativeClients = new ConcurrentHashMap[AnyRef, java.lang.Boolean]()
@@ -397,12 +408,70 @@ class CometCelebornShuffleManager private[shuffle] (
   }
 }
 
+private[shuffle] case class CelebornNativeShufflePlanningSupport(
+    unavailableReason: Option[String] = None,
+    fallbackPolicy: String = "AUTO",
+    fallbackPartitionThreshold: Long = Int.MaxValue.toLong) {
+
+  def fallbackReason(numPartitions: Int): Option[String] =
+    unavailableReason.orElse {
+      if (fallbackPolicy == "ALWAYS") {
+        Some("Celeborn fallback policy ALWAYS requires ordinary Spark shuffle")
+      } else if (fallbackPolicy == "AUTO" && numPartitions.toLong >= fallbackPartitionThreshold) {
+        Some(
+          s"Celeborn falls back to local shuffle at $fallbackPartitionThreshold partitions " +
+            s"(requested $numPartitions); native Comet shuffle requires a remote handle")
+      } else {
+        None
+      }
+    }
+}
+
 private[shuffle] object CometCelebornShuffleManager {
 
   private[shuffle] val GENERATION_COORDINATOR_ENDPOINT =
     "CometCelebornShuffleGenerationCoordinator"
   private val CELEBORN_MANAGER_CLASS = "org.apache.spark.shuffle.celeborn.SparkShuffleManager"
   private val CELEBORN_HANDLE_CLASS = "org.apache.spark.shuffle.celeborn.CelebornShuffleHandle"
+
+  private def reflectedCelebornConf(conf: SparkConf): AnyRef =
+    ClassLoaders
+      .loadClass("org.apache.spark.shuffle.celeborn.SparkUtils")
+      .getMethod("fromSparkConf", classOf[SparkConf])
+      .invoke(null, conf)
+
+  private[shuffle] def nativeShufflePlanningSupport(
+      conf: SparkConf,
+      loadCelebornConf: SparkConf => AnyRef = reflectedCelebornConf)
+      : CelebornNativeShufflePlanningSupport = {
+    if (conf.getBoolean("spark.io.encryption.enabled", false)) {
+      return CelebornNativeShufflePlanningSupport(
+        Some("Native Celeborn shuffle does not support spark.io.encryption.enabled=true"))
+    }
+    try {
+      // Use Celeborn's effective settings to preserve its defaults, aliases, JVM properties and
+      // legacy force-fallback precedence without depending on a particular client version.
+      val settings = loadCelebornConf(conf)
+      def value(name: String): AnyRef = settings.getClass.getMethod(name).invoke(settings)
+      if (!value("clientStageRerunEnabled").asInstanceOf[Boolean]) {
+        return CelebornNativeShufflePlanningSupport(
+          Some("Native Celeborn shuffle requires Celeborn stage reruns to be enabled"))
+      }
+      val policy = value("sparkShuffleFallbackPolicy").toString.toUpperCase(Locale.ROOT)
+      if (!Set("AUTO", "ALWAYS", "NEVER").contains(policy)) {
+        return CelebornNativeShufflePlanningSupport(
+          Some("Celeborn returned an unsupported shuffle fallback policy"))
+      }
+      val threshold = value("shuffleFallbackPartitionThreshold")
+        .asInstanceOf[java.lang.Number]
+        .longValue()
+      CelebornNativeShufflePlanningSupport(None, policy, threshold)
+    } catch {
+      case _: LinkageError | NonFatal(_) =>
+        CelebornNativeShufflePlanningSupport(Some(
+          "Celeborn client does not expose the required native shuffle planning configuration API"))
+    }
+  }
 
   private[shuffle] def maxNativeFrameBytes(
       configuredMaxFrameBytes: Int,
