@@ -465,22 +465,14 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim with Come
 
   /**
    * True iff no node in the tree other than a `Literal` is foldable. One of the conditions on
-   * [[canShortCircuitNulls]], and what closes the single-ordinal hole in #5218 (see #5608).
+   * [[canShortCircuitNulls]], and what closes the single-ordinal hole left by #5218 (see #5608).
    *
-   * A single input ordinal does not by itself mean Spark has nothing to evaluate ahead of that
-   * ordinal's null check: a literal-only subtree between the root and the ordinal can still
-   * raise. `ConstantFolding` normally folds such a subtree away, but it deliberately leaves it in
-   * place when evaluating it throws and it sits inside a conditional branch (it tags the node
-   * `FAILED_TO_EVALUATE` and moves on), so the throwing expression survives into the physical
-   * plan. `IF(flag, upper(substring('abc', CAST(1L DIV 0L AS INT), n)), NULL)` is a witness:
-   * `TernaryExpression.nullSafeCodeGen` emits `Substring`'s `pos` code -- the division -- before
-   * it tests `len`'s null, so Spark raises `DIVIDE_BY_ZERO` on a row where `n` is null while the
-   * short-circuit would return null.
-   *
-   * By the time the dispatcher sees the tree `ConstantFolding` has already run, so a surviving
-   * foldable non-`Literal` node is precisely one that threw during folding -- exactly the
-   * dangerous case. `Literal`s are foldable by definition and must be exempt, or the fast path
-   * would be lost for the common shapes (`upper(substring(s, 1, 2))`, `conv(a, b, c)`, ...).
+   * `ConstantFolding` has already run by the time the dispatcher sees the tree, so a surviving
+   * foldable non-`Literal` node is precisely one that threw while folding: the rule tags such a
+   * node `FAILED_TO_EVALUATE` and leaves it in place rather than folding it. That is exactly the
+   * subtree Spark may evaluate -- and raise from -- ahead of an input's null check. `Literal`s
+   * are foldable by definition and must be exempt, or the fast path would be lost for the common
+   * shapes (`upper(substring(s, 1, 2))`, `conv(a, b, c)`, ...).
    */
   private def noSurvivingFoldableSubtree(expr: Expression): Boolean =
     !expr.exists {

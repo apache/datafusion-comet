@@ -210,12 +210,16 @@ class CometCodegenSourceSuite extends AnyFunSuite {
     val intCol = ArrowColumnSpec(
       CometBatchKernelCodegen.vectorClassBySimpleName("IntVector"),
       nullable = true)
+    // Bound out so the premise is asserted on the throwing node itself: it must be foldable, or
+    // `noSurvivingFoldableSubtree` has nothing to catch and the test would pass vacuously.
+    val throwingPos =
+      Cast(IntegralDivide(Literal(1L), Literal(0L)), IntegerType, ansiEnabled = true)
+    assert(throwingPos.foldable, "the subtree ConstantFolding leaves in place must be foldable")
     val expr = Upper(
       Substring(
         Literal(UTF8String.fromString("abc"), StringType),
-        Cast(IntegralDivide(Literal(1L), Literal(0L)), IntegerType, ansiEnabled = true),
+        throwingPos,
         BoundReference(0, IntegerType, nullable = true)))
-    assert(expr.children.head.children.head.foldable, "the throwing subtree must be foldable")
     val src = gen(expr, intCol)
     assert(
       !src.contains("if (this.col0.isNullAt(i))"),
