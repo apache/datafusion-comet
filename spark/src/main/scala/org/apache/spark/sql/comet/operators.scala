@@ -95,6 +95,56 @@ private[comet] trait PlanDataInjector {
  * Registry and utilities for injecting per-partition planning data into operator trees.
  */
 private[comet] object PlanDataInjector extends Logging {
+  import java.nio.ByteBuffer
+  import java.util.{LinkedHashMap, Map => JMap}
+
+  private[comet] final val maxCachedBasePlans = 16
+
+  // Every task of a stage deserializes its own byte-identical copy of the base plan, so
+  // without a cache an executor re-parses the same operator tree once per task. Parsed
+  // Operators are immutable, so one instance is safely shared across concurrent tasks.
+  // Keyed by content (ByteBuffer hashes/compares the bytes) since the arrays are distinct.
+  //
+  // Entries are whole parsed plan trees, so the entry count is what bounds executor memory:
+  // at most 16 recent stages' plans stay live, LRU-evicted as stages turn over. A stage
+  // rerun that misses after eviction simply re-parses.
+  private val basePlanCache = java.util.Collections.synchronizedMap(
+    new LinkedHashMap[ByteBuffer, Operator](4, 0.75f, true) {
+      override def removeEldestEntry(eldest: JMap.Entry[ByteBuffer, Operator]): Boolean = {
+        size() > maxCachedBasePlans
+      }
+    })
+
+  /**
+   * Look up `key`, computing and inserting the value on a miss. The computation runs outside any
+   * lock so unrelated misses never serialize behind each other; when two threads race the same
+   * cold key, the first insert wins and the loser adopts it, keeping the cached value
+   * reference-shared (which the sourceKey memo's identity fast path relies on).
+   */
+  private[comet] def cachedOrCompute[K, V](cache: JMap[K, V], key: K)(compute: => V): V = {
+    val cached = cache.get(key)
+    if (cached != null) {
+      cached
+    } else {
+      val computed = compute
+      cache.synchronized {
+        val winner = cache.get(key)
+        if (winner != null) {
+          winner
+        } else {
+          cache.put(key, computed)
+          computed
+        }
+      }
+    }
+  }
+
+  /**
+   * Parse a stage's base plan bytes, sharing the parsed tree across the executor's tasks. Falls
+   * back to a plain parse on eviction, so a stage rerun is always correct.
+   */
+  def parseBasePlan(bytes: Array[Byte]): Operator =
+    cachedOrCompute(basePlanCache, ByteBuffer.wrap(bytes))(Operator.parseFrom(bytes))
 
   // Registry of injectors for different operator types. The built-in injectors live in core.
   // Out-of-tree contribs (e.g. contrib-delta's `DeltaPlanDataInjector`) are discovered via the
@@ -328,6 +378,32 @@ private[comet] object IcebergPlanDataInjector extends PlanDataInjector {
  * Injector for NativeScan operators.
  */
 private[comet] object NativeScanPlanDataInjector extends PlanDataInjector {
+  import java.nio.ByteBuffer
+  import java.util.{LinkedHashMap, Map => JMap}
+
+  private final val maxCacheEntries = 16
+
+  // Same rationale as IcebergPlanDataInjector's commonCache: the common bytes are identical
+  // for every partition of a stage, and parsing them dominates inject() for wide schemas.
+  private val commonCache = java.util.Collections.synchronizedMap(
+    new LinkedHashMap[ByteBuffer, OperatorOuterClass.NativeScanCommon](4, 0.75f, true) {
+      override def removeEldestEntry(
+          eldest: JMap.Entry[ByteBuffer, OperatorOuterClass.NativeScanCommon]): Boolean = {
+        size() > maxCacheEntries
+      }
+    })
+
+  // sourceKey stringifies the scan's schema and filter lists, which is the most expensive
+  // step of the whole per-task injection for wide schemas. Once the parsed base plan is
+  // shared across tasks the same common instance recurs, so protobuf's memoized hashCode
+  // and reference-equality fast path make this lookup O(1) after the first task.
+  private val keyCache = java.util.Collections.synchronizedMap(
+    new LinkedHashMap[OperatorOuterClass.NativeScanCommon, String](4, 0.75f, true) {
+      override def removeEldestEntry(
+          eldest: JMap.Entry[OperatorOuterClass.NativeScanCommon, String]): Boolean = {
+        size() > maxCacheEntries
+      }
+    })
 
   override val opStructCase: Operator.OpStructCase = Operator.OpStructCase.NATIVE_SCAN
 
@@ -336,7 +412,10 @@ private[comet] object NativeScanPlanDataInjector extends PlanDataInjector {
       op.getNativeScan.hasCommon &&
       !op.getNativeScan.hasFilePartition
 
-  override def getKey(op: Operator): Option[String] = Some(sourceKey(op.getNativeScan.getCommon))
+  override def getKey(op: Operator): Option[String] = {
+    val common = op.getNativeScan.getCommon
+    Some(PlanDataInjector.cachedOrCompute(keyCache, common)(sourceKey(common)))
+  }
 
   /**
    * The key under which a native scan's planning data is stored and looked up. Called on the
@@ -365,7 +444,8 @@ private[comet] object NativeScanPlanDataInjector extends PlanDataInjector {
       commonBytes: Array[Byte],
       partitionBytes: Array[Byte]): Operator = {
 
-    val common = OperatorOuterClass.NativeScanCommon.parseFrom(commonBytes)
+    val common = PlanDataInjector.cachedOrCompute(commonCache, ByteBuffer.wrap(commonBytes))(
+      OperatorOuterClass.NativeScanCommon.parseFrom(commonBytes))
     val partitionOnly = OperatorOuterClass.NativeScan.parseFrom(partitionBytes)
 
     // Build complete NativeScan with common fields + this partition's file list

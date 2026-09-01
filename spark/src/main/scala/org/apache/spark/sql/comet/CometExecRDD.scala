@@ -29,7 +29,6 @@ import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.SerializableConfiguration
 
 import org.apache.comet.{CometExecIterator, CometRuntimeException, CometShuffleBlockIterator}
-import org.apache.comet.serde.OperatorOuterClass
 
 /**
  * Partition that carries per-partition planning data, avoiding closure capture of all partitions.
@@ -112,9 +111,11 @@ private[spark] class CometExecRDD(
         shuffleScanIndices,
         context)
 
-    // Only inject if we have per-partition planning data
+    // Only inject if we have per-partition planning data. The base plan bytes are identical
+    // for every partition of the stage, so the parsed tree is shared across this executor's
+    // tasks instead of being re-parsed per task.
     val actualPlan = if (commonByKey.nonEmpty) {
-      val basePlan = OperatorOuterClass.Operator.parseFrom(serializedPlan)
+      val basePlan = PlanDataInjector.parseBasePlan(serializedPlan)
       val injected =
         PlanDataInjector.injectPlanData(basePlan, commonByKey, partition.planDataByKey)
       PlanDataInjector.serializeOperator(injected)
