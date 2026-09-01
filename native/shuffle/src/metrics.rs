@@ -46,9 +46,8 @@ pub(crate) struct ShufflePartitionerMetrics {
     /// total spilled bytes during the execution of the operator
     pub(crate) spilled_bytes: Count,
 
-    /// Total buffer size of materialized spill batches before compression, plus the
-    /// partition-index allocations released by spills. Measured from spill output rather
-    /// than input batch boundaries; not a count of globally unique input allocations.
+    /// Cumulative input backing-buffer and partition-index capacity released by spills.
+    /// Shared input allocations are counted once per spill, not once per input batch.
     pub(crate) memory_spilled_bytes: Count,
 
     /// The original size of spilled data. Different to `spilled_bytes` because of compression.

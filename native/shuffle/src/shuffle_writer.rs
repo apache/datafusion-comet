@@ -564,7 +564,7 @@ mod test {
             assert!(!spill_writers[1].has_spill_file());
         }
 
-        repartitioner.spill().unwrap();
+        repartitioner.spill(0).unwrap();
 
         // after spill, there should be spill files
         {
@@ -657,7 +657,6 @@ mod test {
             vec![Arc::new(Int64Array::from_iter_values(0..num_rows as i64))],
         )
         .unwrap();
-        let value_bytes = num_rows * std::mem::size_of::<i64>();
 
         let runtime_env = create_runtime(memory_limit);
         let metrics_set = ExecutionPlanMetricsSet::new();
@@ -689,6 +688,7 @@ mod test {
         )
         .unwrap();
 
+        let mut expected_buffer_bytes = 0;
         for _ in 0..input_batches {
             for start in (0..num_rows).step_by(input_batch_rows) {
                 let end = (start + input_batch_rows).min(num_rows);
@@ -703,6 +703,9 @@ mod test {
                 } else {
                     backing.slice(start, end - start)
                 };
+                // Each internal chunk spills and releases its full pinned input allocation.
+                expected_buffer_bytes += input.column(0).to_data().buffers()[0].capacity()
+                    * input.num_rows().div_ceil(batch_size);
                 repartitioner.insert_batch(input).await.unwrap();
             }
         }
@@ -716,20 +719,16 @@ mod test {
         );
 
         let spilled = memory_spilled_bytes.value();
-        let minimum_data_bytes = input_batches * value_bytes;
-        assert!(
-            spilled > minimum_data_bytes,
-            "partition-index allocations must remain in memory spill accounting: \
-             {spilled} bytes reported for {minimum_data_bytes} value bytes"
-        );
         // Each row receives one (batch index, row index) entry. Allow twice the logical index
-        // size for Vec capacity rounding while still rejecting one full backing charge per slice.
-        let maximum_index_bytes = input_batches * num_rows * std::mem::size_of::<(u32, u32)>() * 2;
-        let maximum_spilled = minimum_data_bytes + maximum_index_bytes;
+        // size for Vec capacity rounding. Buffer capacity contributes again on every spill,
+        // regardless of whether the caller or insert_batch sliced the input.
+        let minimum_index_bytes = input_batches * num_rows * std::mem::size_of::<(u32, u32)>();
         assert!(
-            spilled <= maximum_spilled,
-            "spill size must reflect the rows and indices, not the full input backing per slice: \
-             {spilled} bytes reported, expected at most {maximum_spilled}"
+            (expected_buffer_bytes + minimum_index_bytes
+                ..=expected_buffer_bytes + minimum_index_bytes * 2)
+                .contains(&spilled),
+            "each spill must count its pinned input buffers and indices: \
+             {spilled} bytes reported for {expected_buffer_bytes} buffer bytes"
         );
 
         (spilled, std::fs::read(dir.path().join("data.out")).unwrap())
@@ -752,7 +751,7 @@ mod test {
 
     #[tokio::test]
     #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
-    async fn rejected_reservations_count_materialized_spill_batches() {
+    async fn rejected_reservations_count_pinned_input_buffers() {
         shared_buffer_memory_spilled_bytes(None, 1, 1, 16_384, false).await;
     }
 
@@ -776,12 +775,12 @@ mod test {
             assert_eq!(sliced_bytes, whole_bytes);
             assert_eq!(sliced_output, whole_output);
 
-            // Independently allocated chunks must have the same spill representation as
-            // the shared zero-copy slices, without relying on allocation identities.
+            // Independently allocated chunks pin less memory per spill, even though their
+            // serialized output is identical to the shared zero-copy slices.
             let (fresh_bytes, fresh_output) =
                 shared_buffer_memory_spilled_bytes(max_buffer_bytes, memory_limit, 1, 1024, true)
                     .await;
-            assert_eq!(fresh_bytes, whole_bytes);
+            assert!(fresh_bytes < whole_bytes);
             assert_eq!(fresh_output, whole_output);
 
             let (repeated_bytes, _) =
