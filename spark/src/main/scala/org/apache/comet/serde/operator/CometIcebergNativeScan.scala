@@ -263,6 +263,19 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     }
 
   /**
+   * Reads equality-delete field IDs for the native serde path. The accessor is required on every
+   * supported Iceberg DeleteFile API, so a missing method or invocation failure must propagate. A
+   * null return is distinct: Iceberg uses it for files without equality keys.
+   */
+  private def requiredEqualityFieldIds(
+      deleteFileClass: Class[_],
+      deleteFile: Any): java.util.List[Integer] = {
+    val method = IcebergReflection.getMethod(deleteFileClass, "equalityFieldIds")
+    val ids = method.invoke(deleteFile).asInstanceOf[java.util.List[Integer]]
+    if (ids == null) new java.util.ArrayList[Integer]() else ids
+  }
+
+  /**
    * Extracts delete files from an Iceberg FileScanTask as a list (for deduplication).
    *
    * Delete-file size is not serialized; the native scan stats each file for it (see
@@ -321,27 +334,20 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     deleteBuilder.setFilePath(deletePath)
 
     val contentMethod = IcebergReflection.getMethod(deleteFileClass, "content")
-    val contentType = contentMethod.invoke(deleteFile).toString match {
-      case IcebergReflection.ContentTypes.POSITION_DELETES =>
-        IcebergReflection.ContentTypes.POSITION_DELETES
-      case IcebergReflection.ContentTypes.EQUALITY_DELETES =>
-        IcebergReflection.ContentTypes.EQUALITY_DELETES
-      case other => other
-    }
+    val contentType = contentMethod.invoke(deleteFile).toString
     deleteBuilder.setContentType(contentType)
 
     val specIdMethod = IcebergReflection.getMethod(deleteFileClass, "specId")
     deleteBuilder.setPartitionSpecId(specIdMethod.invoke(deleteFile).asInstanceOf[Int])
 
-    val equalityIdsMethod = IcebergReflection.getMethod(deleteFileClass, "equalityFieldIds")
-    val equalityIds = equalityIdsMethod.invoke(deleteFile).asInstanceOf[java.util.List[Integer]]
-    // Iceberg's BaseFile stores equality field IDs in a nullable backing array, so
-    // equalityFieldIds() returns null for files without equality keys. A null return is a
-    // normal accessor result, unlike a reflective lookup or invocation failure, and does not
-    // make serialization fail.
-    if (equalityIds != null) {
-      equalityIds.forEach(id => deleteBuilder.addEqualityIds(id))
+    val equalityFieldIds = requiredEqualityFieldIds(deleteFileClass, deleteFile)
+    val isEqualityDelete =
+      contentType == IcebergReflection.ContentTypes.EQUALITY_DELETES
+    if (isEqualityDelete && equalityFieldIds.isEmpty) {
+      throw new IllegalStateException(
+        s"Iceberg equality delete file '$deletePath' has no equality field IDs")
     }
+    equalityFieldIds.forEach(id => deleteBuilder.addEqualityIds(id))
 
     // Encrypted delete files carry a plaintext StandardKeyMetadata blob; forward it verbatim.
     // Unencrypted delete files leave the field unset.
@@ -897,7 +903,6 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       scanExec: BatchScanExec,
       output: Seq[Attribute],
       metadata: CometIcebergNativeScanMetadata): (Array[Byte], Array[Array[Byte]]) = {
-
     val commonBuilder = OperatorOuterClass.IcebergScanCommon.newBuilder()
 
     // Deduplication structures - map unique values to pool indices
@@ -1047,7 +1052,6 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                 val fileSizeInBytes =
                   fileSizeInBytesMethod.invoke(dataFile).asInstanceOf[Long]
                 taskBuilder.setFileSizeInBytes(fileSizeInBytes)
-
                 // Encrypted data files carry a plaintext StandardKeyMetadata blob; forward it
                 // verbatim for iceberg-rust to decode. Unencrypted files leave the field unset.
                 keyMetadataBytes(keyMetadataMethod, dataFile).foreach(taskBuilder.setKeyMetadata)
@@ -1066,10 +1070,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                     // dropped ones from the table's schema history (mirrors Iceberg-Java's
                     // DeleteFilter.fileProjection).
                     val equalityFieldIds = deletes.asScala.flatMap { df =>
-                      IcebergReflection
-                        .getEqualityFieldIds(deleteFileClass, df)
-                        .asScala
-                        .map(_.asInstanceOf[java.lang.Integer].intValue())
+                      requiredEqualityFieldIds(deleteFileClass, df).asScala.map(_.intValue())
                     }.toSeq
                     if (equalityFieldIds.nonEmpty) {
                       IcebergReflection
