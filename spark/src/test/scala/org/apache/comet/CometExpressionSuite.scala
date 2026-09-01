@@ -2474,21 +2474,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("named_struct with duplicate field names") {
-    Seq(true, false).foreach { dictionaryEnabled =>
-      withTempDir { dir =>
-        val path = new Path(dir.toURI.toString, "test.parquet")
-        makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
-        withParquetTable(path.toString, "tbl") {
-          checkSparkAnswerAndOperator("SELECT named_struct('a', _1, 'a', _2) FROM tbl")
-          checkSparkAnswerAndOperator("SELECT named_struct('a', _1, 'a', 2) FROM tbl")
-          checkSparkAnswerAndOperator(
-            "SELECT named_struct('a', named_struct('b', _1, 'b', _2)) FROM tbl")
-        }
-      }
-    }
-  }
-
   test("to_json") {
     withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[StructsToJson]) -> "true") {
       Seq(true, false).foreach { dictionaryEnabled =>

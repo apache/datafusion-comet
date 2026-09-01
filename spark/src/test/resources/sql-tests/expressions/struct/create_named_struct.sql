@@ -33,3 +33,33 @@ SELECT named_struct('x', 1, 'y', 'hello', 'z', 3.14)
 
 query
 SELECT named_struct('x', a, 'y', 'fixed_val', 'z', c) FROM test_named_struct
+
+-- duplicate names dispatch through Spark codegen while preserving ordinal values
+query
+SELECT named_struct('x', a, 'x', b) FROM test_named_struct
+
+-- struct() lowers to CreateNamedStruct and derives duplicate names from repeated children
+query
+SELECT struct(a, a) FROM test_named_struct
+
+-- nested duplicate-name structs exercise list and map roots during Arrow import
+query
+SELECT array(named_struct('x', a, 'x', b)) FROM test_named_struct
+
+query
+SELECT map('row', named_struct('x', a, 'x', b)) FROM test_named_struct
+
+-- nested structs, three duplicates, and an all-null row
+query
+SELECT named_struct('outer', named_struct('x', a, 'x', b)) FROM test_named_struct
+
+query
+SELECT named_struct('x', a, 'x', b, 'x', c) FROM test_named_struct
+
+query
+SELECT named_struct('x', a, 'x', b, 'x', c) FROM test_named_struct WHERE a IS NULL
+
+-- construct the duplicate-name struct after a supported primitive-key shuffle boundary
+query
+SELECT named_struct('x', a, 'x', b)
+FROM (SELECT /*+ REPARTITION(2, a) */ a, b FROM test_named_struct) shuffled

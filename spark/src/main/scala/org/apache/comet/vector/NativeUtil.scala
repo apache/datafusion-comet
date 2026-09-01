@@ -19,8 +19,10 @@
 
 package org.apache.comet.vector
 
+import java.util.{ArrayList, HashSet}
+import java.util.function.Function
+
 import scala.collection.mutable
-import scala.jdk.CollectionConverters._
 
 import org.apache.arrow.c.{ArrowArray, ArrowImporter, ArrowSchema, CDataDictionaryProvider, Data}
 import org.apache.arrow.memory.BufferAllocator
@@ -56,6 +58,10 @@ class NativeUtil extends AutoCloseable {
 
   /** ArrowImporter does not hold any state and does not need to be closed */
   private val importer = new ArrowImporter(allocator)
+
+  /** Reuse one factory on the per-batch import hot path. */
+  private val importVectorFactory: Function[Field, FieldVector] =
+    field => NativeUtil.createVectorForImport(field, allocator)
 
   /**
    * Dictionary provider to use for the lifetime of this instance of NativeUtil. The dictionary
@@ -272,11 +278,8 @@ class NativeUtil extends AutoCloseable {
         // importField's finally consumes the schema. ArrayImporter takes the array normally, while
         // ArrowImporter's catch releases it if the import fails before that transfer.
         firstUnconsumed = i + 1
-        val arrowVector = importer.importVector(
-          arrowArray,
-          arrowSchema,
-          dictionaryProvider,
-          field => NativeUtil.createVector(field, allocator))
+        val arrowVector =
+          importer.importVector(arrowArray, arrowSchema, dictionaryProvider, importVectorFactory)
         val cometVector =
           try CometVector.getVector(arrowVector, dictionaryProvider)
           catch {
@@ -338,33 +341,101 @@ object NativeUtil {
    */
   private[comet] def createVector(field: Field, allocator: BufferAllocator): FieldVector = {
     val runtimeField = fieldForAllocation(field)
-    field.getType match {
+    createPinnedVector(runtimeField, field, allocator)
+  }
+
+  /**
+   * Preserve Arrow's default allocation path unless a duplicate-name struct needs positional
+   * runtime children. This is called for every imported column of every native batch.
+   */
+  private[comet] def createVectorForImport(
+      field: Field,
+      allocator: BufferAllocator): FieldVector = {
+    val runtimeField = fieldForAllocation(field)
+    if (runtimeField eq field) {
+      field.createVector(allocator).asInstanceOf[FieldVector]
+    } else {
+      createPinnedVector(runtimeField, field, allocator)
+    }
+  }
+
+  private def createPinnedVector(
+      runtimeField: Field,
+      exportField: Field,
+      allocator: BufferAllocator): FieldVector = {
+    exportField.getType match {
       case _: ArrowType.List | _: ArrowType.LargeList | _: ArrowType.FixedSizeList =>
-        val vector = new RenamedListVector(runtimeField, field, allocator)
+        val vector = new RenamedListVector(runtimeField, exportField, allocator)
         vector.initializeChildrenFromFields(runtimeField.getChildren)
         vector
       case _: ArrowType.Map =>
-        val vector = new RenamedMapVector(runtimeField, field, allocator)
+        val vector = new RenamedMapVector(runtimeField, exportField, allocator)
         vector.initializeChildrenFromFields(runtimeField.getChildren)
         vector
       case _: ArrowType.Struct =>
-        val vector = new RenamedStructVector(runtimeField, field, allocator)
-        vector.initializeChildrenFromFields(runtimeField.getChildren)
+        val vector = new RenamedStructVector(runtimeField, exportField, allocator)
+        // The Field-based StructVector constructor creates the direct children. Initialize each
+        // child's descendants from the runtime schema without adding the direct children twice.
+        val runtimeChildren = runtimeField.getChildren
+        var ordinal = 0
+        while (ordinal < runtimeChildren.size()) {
+          vector
+            .getChildByOrdinal(ordinal)
+            .asInstanceOf[FieldVector]
+            .initializeChildrenFromFields(runtimeChildren.get(ordinal).getChildren)
+          ordinal += 1
+        }
         vector
-      case _ => field.createVector(allocator).asInstanceOf[FieldVector]
+      case _ => exportField.createVector(allocator).asInstanceOf[FieldVector]
     }
   }
 
   private def fieldForAllocation(field: Field): Field = {
-    val children = field.getChildren.asScala.map(fieldForAllocation).toIndexedSeq
-    val runtimeChildren = field.getType match {
-      case _: ArrowType.Struct if children.map(_.getName).distinct.size != children.size =>
-        children.zipWithIndex.map { case (child, ordinal) =>
-          new Field(s"__comet_runtime_field_$ordinal", child.getFieldType, child.getChildren)
-        }
-      case _ => children
+    val children = field.getChildren
+    if (children.isEmpty) return field
+
+    val names = field.getType match {
+      case _: ArrowType.Struct if children.size() > 1 => new HashSet[String](children.size())
+      case _ => null
     }
-    new Field(field.getName, field.getFieldType, runtimeChildren.asJava)
+
+    var hasDuplicateNames = false
+    var runtimeChildren: ArrayList[Field] = null
+    var ordinal = 0
+    while (ordinal < children.size()) {
+      val child = children.get(ordinal)
+      val runtimeChild = fieldForAllocation(child)
+
+      if ((runtimeChild ne child) && runtimeChildren == null) {
+        runtimeChildren = new ArrayList[Field](children.size())
+        var priorOrdinal = 0
+        while (priorOrdinal < ordinal) {
+          runtimeChildren.add(children.get(priorOrdinal))
+          priorOrdinal += 1
+        }
+      }
+      if (runtimeChildren != null) runtimeChildren.add(runtimeChild)
+
+      if (names != null && !names.add(child.getName)) hasDuplicateNames = true
+      ordinal += 1
+    }
+
+    val childrenForAllocation = if (runtimeChildren == null) children else runtimeChildren
+    if (hasDuplicateNames) {
+      val renamedChildren = new ArrayList[Field](children.size())
+      ordinal = 0
+      while (ordinal < childrenForAllocation.size()) {
+        val child = childrenForAllocation.get(ordinal)
+        renamedChildren.add(
+          new Field(s"__comet_runtime_field_$ordinal", child.getFieldType, child.getChildren))
+        ordinal += 1
+      }
+      new Field(field.getName, field.getFieldType, renamedChildren)
+    } else if (runtimeChildren != null) {
+      new Field(field.getName, field.getFieldType, runtimeChildren)
+    } else {
+      field
+    }
   }
 
   /**
@@ -392,16 +463,17 @@ object NativeUtil {
       exportField: Field,
       allocator: BufferAllocator)
       extends StructVector(
-        runtimeField.getName,
+        runtimeField,
         allocator,
-        runtimeField.getFieldType,
         null,
         AbstractStructVector.ConflictPolicy.CONFLICT_ERROR,
         true) {
-    private var constructed = false
-    constructed = true
-
-    override def getField: Field = if (constructed) exportField else super.getField
+    override def getField: Field = {
+      // StructVector's constructor calls getField before creating its children. Keep the unique
+      // runtime field visible for that call, then publish the original metadata once all children
+      // exist. The child count avoids a separate construction-state flag.
+      if (size() == exportField.getChildren.size()) exportField else super.getField
+    }
   }
 
   def rootAsBatch(arrowRoot: VectorSchemaRoot): ColumnarBatch = {
