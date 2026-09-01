@@ -31,6 +31,8 @@ pub use expand::ExpandExec;
 mod explode;
 pub use explode::ExplodeExec;
 mod iceberg_scan;
+mod merge_rows;
+pub use merge_rows::{MergeInstructionExec, MergeRowsExec};
 mod parquet_writer;
 pub use parquet_writer::{ParquetCompression, ParquetWriterExec};
 mod csv_scan;

@@ -67,6 +67,7 @@ message Operator {
     BroadcastNestedLoopJoin broadcast_nested_loop_join = 117;
     Sample sample = 118;
     WindowGroupLimit window_group_limit = 119;
+    MergeRows merge_rows = 120;
     // Extension point for optional, out-of-tree contrib scans (Delta, Lance, ...). The concrete
     // scan message (e.g. `DeltaScan`) is packed into this envelope on the JVM side and dispatched
     // by `type_url` on the native side. Using a single permanent field -- rather than a new oneof
@@ -761,6 +762,39 @@ enum AggregateMode {
 message Expand {
   repeated spark.spark_expression.Expr project_list = 1;
   int32 num_expr_per_project = 3;
+}
+
+// Native counterpart of Spark's `MergeRowsExec` (row-level MERGE dispatch). Mirrors the real
+// Spark 4.x bytecode shape: `isSourceRowPresent` / `isTargetRowPresent` are predicates (not
+// column ordinals), and each instruction is uniformly `condition + outputs`, where the number
+// of output row projections (0/1/2) distinguishes Discard/Keep/Split -- there is no separate
+// instruction-kind enum on the Spark side, so we don't invent one here either.
+message MergeRows {
+  spark.spark_expression.Expr is_source_row_present = 1;
+  spark.spark_expression.Expr is_target_row_present = 2;
+
+  repeated MergeInstruction matched_instructions = 3;
+  repeated MergeInstruction not_matched_instructions = 4;
+  repeated MergeInstruction not_matched_by_source_instructions = 5;
+
+  // Ordinal (into the child row) of the target row-id column used for cardinality dedup.
+  // Mirrors `MergeRowsExec.checkCardinality`: present iff the check is on, in which case
+  // MERGE_CARDINALITY_VIOLATION is raised if a target row matches more than one source row.
+  optional int32 row_id_ordinal = 6;
+
+  // Schema of the emitted rows, matching `MergeRowsExec.output`.
+  repeated spark.spark_expression.DataType output_types = 7;
+}
+
+message MergeInstruction {
+  // Always present on the Spark side (Keep/Discard/Split.condition are non-optional).
+  spark.spark_expression.Expr condition = 1;
+  // 0 output rows = Discard, 1 = Keep, 2 = Split.
+  repeated MergeOutputRow outputs = 2;
+}
+
+message MergeOutputRow {
+  repeated spark.spark_expression.Expr exprs = 1;
 }
 
 message Explode {

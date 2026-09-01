@@ -55,6 +55,7 @@ import org.apache.comet.{CometConf, CometExplainInfo, ExtendedExplainInfo}
 import org.apache.comet.CometConf.{COMET_SPARK_TO_ARROW_ENABLED, COMET_SPARK_TO_ARROW_SUPPORTED_OPERATOR_LIST}
 import org.apache.comet.CometSparkSessionExtensions._
 import org.apache.comet.rules.CometExecRule.allExecs
+import org.apache.comet.rules.shims.ShimCometMergeRows
 import org.apache.comet.serde._
 import org.apache.comet.serde.operator._
 import org.apache.comet.shims.{ShimCometStreaming, ShimCometWindowGroupLimit, ShimSubqueryBroadcast}
@@ -92,7 +93,9 @@ object CometExecRule {
       classOf[SampleExec] -> CometSampleExec,
       classOf[WindowExec] -> CometWindowExec) ++
       // WindowGroupLimitExec exists only on Spark 3.5+; the shim returns None on 3.4.
-      ShimCometWindowGroupLimit.windowGroupLimitClass.map(_ -> CometWindowGroupLimitExec)
+      ShimCometWindowGroupLimit.windowGroupLimitClass.map(_ -> CometWindowGroupLimitExec) ++
+      // MergeRowsExec exists only on Spark 3.5+; the shim is empty on 3.4.
+      ShimCometMergeRows.nativeExecs
 
   /**
    * Sinks that have a native plan of ScanExec.
