@@ -22,12 +22,15 @@ package org.apache.comet.rules
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.util.sideBySide
-import org.apache.spark.sql.comet.{CometCollectLimitExec, CometColumnarToRowExec, CometMapInBatchExec, CometNativeColumnarToRowExec, CometNativeWriteExec, CometPlan, CometSparkToColumnarExec}
+import org.apache.spark.sql.comet.{CometCollectLimitExec, CometColumnarToRowExec, CometColumnarToRowViewExec, CometMapInBatchExec, CometNativeColumnarToRowExec, CometNativeWriteExec, CometPlan, CometSparkToColumnarExec}
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.comet.shims.{MapInBatchInfo, ShimCometMapInBatch}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, RowToColumnarExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.QueryStageExec
+import org.apache.spark.sql.execution.command.DataWritingCommandExec
+import org.apache.spark.sql.execution.datasources.{InsertIntoHadoopFsRelationCommand, WriteFilesExec}
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
+import org.apache.spark.sql.types.{ArrayType, DataType, MapType, StructType}
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withInfo
@@ -91,6 +94,29 @@ case class EliminateRedundantTransitions(session: SparkSession)
       // Write should be final operation in the plan
       case ColumnarToRowExec(nativeWrite: CometNativeWriteExec) =>
         nativeWrite
+
+      // Spark's file writers consume `InternalRow` and never need an `UnsafeRow`, so the
+      // materializing transition below a write can be swapped for a zero-copy row view over the
+      // Arrow batch. `transformUp` has already rewritten the child into one of the Comet
+      // transitions by the time these arms are visited.
+      //
+      // `plannedWrite` (the default since Spark 3.4) puts the transition under `WriteFilesExec`;
+      // with it disabled the write command executes its child directly. Both are handled, and both
+      // are gated on the write being unpartitioned and unbucketed (`rowViewSafeForWrite`) and on
+      // the schema containing a complex type (`rowView`).
+      case w: WriteFilesExec
+          if rowViewSafeForWrite(
+            w.partitionColumns.nonEmpty,
+            w.bucketSpec.isDefined,
+            w.fileFormat.getClass.getName) =>
+        rowView(w.child).map(c => w.withNewChildren(Seq(c))).getOrElse(w)
+      case d @ DataWritingCommandExec(cmd: InsertIntoHadoopFsRelationCommand, _)
+          if rowViewSafeForWrite(
+            cmd.partitionColumns.nonEmpty || cmd.staticPartitions.nonEmpty,
+            cmd.bucketSpec.isDefined,
+            cmd.fileFormat.getClass.getName) =>
+        rowView(d.child).map(c => d.withNewChildren(Seq(c))).getOrElse(d)
+
       case c @ ColumnarToRowExec(child) if hasCometNativeChild(child) =>
         val op = createColumnarToRowExec(child)
         if (c.logicalLink.isEmpty) {
@@ -167,6 +193,64 @@ case class EliminateRedundantTransitions(session: SparkSession)
       case c: ReusedExchangeExec => hasCometNativeChild(c.child)
       case _ => op.exists(_.isInstanceOf[CometPlan])
     }
+  }
+
+  /**
+   * Whether a write can consume the reused, mutable rows produced by
+   * [[CometColumnarToRowViewExec]] rather than materialized `UnsafeRow`s.
+   *
+   * The row view is only correct for a consumer that finishes with a row before pulling the next
+   * one. That holds for `SingleDirectoryDataWriter`, which is what `FileFormatWriter` picks when
+   * there are no partition and no bucket columns; it writes the row straight through to the
+   * `OutputWriter`, and `BasicWriteTaskStatsTracker.newRow` ignores the row entirely. The
+   * partitioned and bucketed writers do not qualify:
+   *
+   *   - `FileFormatWriter` requires an ordering on the partition/bucket columns, so a `SortExec`
+   *     sits between this transition and the writer, and `UnsafeExternalSorter` needs
+   *     `UnsafeRow`.
+   *   - `DynamicPartitionDataConcurrentWriter` spills through `UnsafeKVExternalSorter.insertKV`,
+   *     which is typed on `UnsafeRow`.
+   *
+   * The format check keeps this to Spark's own `FileFormat` implementations. Their
+   * `OutputWriter`s encode each row on the spot (Parquet through `ParquetWriteSupport`, ORC
+   * through `OrcSerializer` into a `VectorizedRowBatch`, the text formats directly), whereas a
+   * third-party format is free to buffer the `InternalRow` it is handed.
+   */
+  private def rowViewSafeForWrite(
+      partitioned: Boolean,
+      bucketed: Boolean,
+      fileFormat: String): Boolean =
+    CometConf.COMET_WRITE_ROW_VIEW_ENABLED.get() &&
+      !partitioned && !bucketed &&
+      fileFormat.startsWith("org.apache.spark.sql.execution.datasources.")
+
+  /**
+   * Rewrites a Comet columnar-to-row transition into the zero-copy row view. Returns `None` for
+   * anything else, which leaves the plan untouched - notably for the `WriteFilesExec` under a
+   * `DataWritingCommandExec`, and for a write whose input was never columnar to begin with.
+   *
+   * Also declines a schema of nothing but flat types. There the `UnsafeProjection` this replaces
+   * is a generated fixed-width copy that measures at 0-2% of a Parquet write, which does not pay
+   * for the reused-mutable-row hazard. The saving only becomes real once a struct, array or map
+   * is in play, because then the projection has to build nested `UnsafeRow` / `UnsafeArrayData`
+   * with offset-and-length bookkeeping that `ParquetWriteSupport` immediately walks back out. See
+   * `CometParquetWriteBenchmark` for the measurements behind this cut-off.
+   */
+  private def rowView(plan: SparkPlan): Option[SparkPlan] = plan match {
+    case CometColumnarToRowExec(child) if hasComplexType(child.schema) =>
+      Some(CometColumnarToRowViewExec(child))
+    case CometNativeColumnarToRowExec(child) if hasComplexType(child.schema) =>
+      Some(CometColumnarToRowViewExec(child))
+    case _ => None
+  }
+
+  /** Whether the schema has a struct, array or map anywhere in it. */
+  private def hasComplexType(schema: StructType): Boolean = {
+    def isComplex(dataType: DataType): Boolean = dataType match {
+      case _: StructType | _: ArrayType | _: MapType => true
+      case _ => false
+    }
+    schema.fields.exists(f => isComplex(f.dataType))
   }
 
   /**
