@@ -87,10 +87,10 @@ public final class CelebornShufflePartitionPusher implements ShufflePartitionPus
   private int activeClientPushes;
   private int activeEncoders;
   private ScheduledFuture<?> completionReconciliation;
+  private Thread activeClientThread;
   private Thread mapperEndThread;
-  private boolean cleanupStarted;
-  private boolean cleanupAfterActivePushes;
-  private boolean finalCleanupStarted;
+  private boolean cleanupRequested;
+  private boolean cleanupClaimed;
   private IOException asynchronousFailure;
 
   private enum State {
@@ -526,6 +526,7 @@ public final class CelebornShufflePartitionPusher implements ShufflePartitionPus
     try {
       beginClientPush();
       insideClient = true;
+      awaitPushStateFallbackSlot();
 
       if (computeBatchCRC != null) {
         computeBatchCRC.invoke(
@@ -549,6 +550,10 @@ public final class CelebornShufflePartitionPusher implements ShufflePartitionPus
           transportCallbacks == null ? null : transportCallbacks.beginPush()) {
         synchronized (lifecycleLock) {
           reservation.transportPush = transportPush;
+          if (state == State.ABORTED) {
+            throw new IOException(
+                "Celeborn shuffle map attempt was aborted before its client invocation");
+          }
         }
         accepted =
             (int)
@@ -730,6 +735,24 @@ public final class CelebornShufflePartitionPusher implements ShufflePartitionPus
         throw new IOException("Celeborn shuffle map attempt was aborted before its client push");
       }
       activeClientPushes++;
+      activeClientThread = Thread.currentThread();
+    }
+  }
+
+  private void awaitPushStateFallbackSlot() throws IOException {
+    synchronized (lifecycleLock) {
+      while (state != State.ABORTED && hasPendingPushStateFallback()) {
+        try {
+          lifecycleLock.wait();
+        } catch (InterruptedException failure) {
+          Thread.currentThread().interrupt();
+          throw new IOException(
+              "Interrupted while waiting for a prior Celeborn fallback push", failure);
+        }
+      }
+      if (state == State.ABORTED) {
+        throw new IOException("Celeborn shuffle map attempt was aborted before its client push");
+      }
     }
   }
 
@@ -755,7 +778,8 @@ public final class CelebornShufflePartitionPusher implements ShufflePartitionPus
   }
 
   private void markSubmitted(
-      PushReservation reservation, Object clientPushState, ObservedPushState pushState) {
+      PushReservation reservation, Object clientPushState, ObservedPushState pushState)
+      throws IOException {
     synchronized (lifecycleLock) {
       reservation.clientPushState = clientPushState;
       reservation.pushState = pushState;
@@ -796,9 +820,11 @@ public final class CelebornShufflePartitionPusher implements ShufflePartitionPus
   private void safelyReconcileAcceptedPushes() {
     try {
       reconcileAcceptedPushes();
-    } catch (RuntimeException | Error cause) {
+    } catch (IOException | RuntimeException | Error cause) {
       IOException failure =
-          new IOException("Celeborn push completion reconciliation failed", cause);
+          cause instanceof IOException
+              ? (IOException) cause
+              : new IOException("Celeborn push completion reconciliation failed", cause);
       synchronized (lifecycleLock) {
         if (asynchronousFailure == null) {
           asynchronousFailure = failure;
@@ -810,7 +836,7 @@ public final class CelebornShufflePartitionPusher implements ShufflePartitionPus
     }
   }
 
-  private void reconcileAcceptedPushes() {
+  private void reconcileAcceptedPushes() throws IOException {
     ArrayList<PushReservation> completed = new ArrayList<>();
     IOException detectedFailure = null;
     synchronized (lifecycleLock) {
@@ -865,6 +891,9 @@ public final class CelebornShufflePartitionPusher implements ShufflePartitionPus
       if (pendingPushes.isEmpty() && activeClientPushes == 0) {
         stopCompletionReconciliation();
       }
+      if (!completed.isEmpty()) {
+        lifecycleLock.notifyAll();
+      }
     }
     for (PushReservation reservation : completed) {
       completeTransport(reservation);
@@ -872,6 +901,7 @@ public final class CelebornShufflePartitionPusher implements ShufflePartitionPus
     if (detectedFailure != null) {
       abortAndSuppress(detectedFailure);
     }
+    performDeferredCleanupIfReady();
   }
 
   private static boolean isTerminalRawPushFailure(IOException failure) {
@@ -971,6 +1001,9 @@ public final class CelebornShufflePartitionPusher implements ShufflePartitionPus
 
   private void endClientPush() {
     synchronized (lifecycleLock) {
+      if (activeClientThread == Thread.currentThread()) {
+        activeClientThread = null;
+      }
       activeClientPushes--;
       if (pendingPushes.isEmpty() && activeClientPushes == 0) {
         stopCompletionReconciliation();
@@ -979,24 +1012,13 @@ public final class CelebornShufflePartitionPusher implements ShufflePartitionPus
   }
 
   private void endPush() throws IOException {
-    boolean performFinalCleanup;
     synchronized (lifecycleLock) {
       activePushes--;
       if (activePushes == 0) {
         lifecycleLock.notifyAll();
       }
-      performFinalCleanup =
-          activePushes == 0
-              && state == State.ABORTED
-              && cleanupAfterActivePushes
-              && !finalCleanupStarted;
-      if (performFinalCleanup) {
-        finalCleanupStarted = true;
-      }
     }
-    if (performFinalCleanup) {
-      cleanupAttempt();
-    }
+    performDeferredCleanupIfReady();
   }
 
   /** Drains asynchronous requests, commits this map, and returns Comet bytes per partition. */
@@ -1075,27 +1097,74 @@ public final class CelebornShufflePartitionPusher implements ShufflePartitionPus
 
   /** Cancels this map without releasing request bytes before actual transport completion. */
   public void abort() throws IOException {
-    boolean shouldCleanup;
     Thread completionThread;
     synchronized (lifecycleLock) {
       if (state == State.FINISHED) {
         return;
       }
       state = State.ABORTED;
-      shouldCleanup = !cleanupStarted;
-      if (shouldCleanup) {
-        cleanupAfterActivePushes = activeClientPushes > 0;
+      cleanupRequested = true;
+      if (activeClientThread != null && activeClientThread != Thread.currentThread()) {
+        // Interrupt while ownership is protected by lifecycleLock. Otherwise the raw call could
+        // return and this Thread could resume unrelated work before the interrupt is delivered.
+        activeClientThread.interrupt();
       }
-      cleanupStarted = true;
       completionThread = mapperEndThread;
       lifecycleLock.notifyAll();
     }
     if (completionThread != null && completionThread != Thread.currentThread()) {
       completionThread.interrupt();
     }
-    if (shouldCleanup) {
+    performDeferredCleanupIfReady();
+  }
+
+  private void performDeferredCleanupIfReady() throws IOException {
+    boolean performCleanup;
+    synchronized (lifecycleLock) {
+      // Stock Celeborn cleanup records "Cleaned Up" in PushState. A later failure callback then
+      // returns before retiring the stock request counter. Wait for raw calls to be classified and
+      // for counter-only callbacks to complete. Seal exact owners against a later global downgrade
+      // before cleanup prevents their callbacks and queued retries from invoking stock code.
+      performCleanup =
+          cleanupRequested
+              && !cleanupClaimed
+              && activePushes == 0
+              && sealPendingTransportOwnershipForCleanup();
+      if (performCleanup) {
+        cleanupClaimed = true;
+      }
+    }
+    if (performCleanup) {
       cleanupAttempt();
     }
+  }
+
+  private boolean hasPendingPushStateFallback() {
+    for (PushReservation reservation : pendingPushes) {
+      registerPushStateFallback(reservation);
+      if (reservation.pushStateFallback) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private boolean sealPendingTransportOwnershipForCleanup() {
+    ArrayList<CelebornTransportCallbackTracker.Push> exactPushes = new ArrayList<>();
+    for (PushReservation reservation : pendingPushes) {
+      registerPushStateFallback(reservation);
+      if (reservation.pushStateFallback || reservation.transportPush == null) {
+        return false;
+      }
+      exactPushes.add(reservation.transportPush);
+    }
+    if (CelebornTransportCallbackTracker.Push.trySealCohortForCancellation(exactPushes)) {
+      return true;
+    }
+    for (PushReservation reservation : pendingPushes) {
+      registerPushStateFallback(reservation);
+    }
+    return false;
   }
 
   private void cleanupAttempt() throws IOException {

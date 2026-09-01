@@ -261,8 +261,16 @@ final class CelebornTransportCallbackTracker {
     private final Push previous;
     private final AtomicInteger owners = new AtomicInteger(1);
     private final AtomicBoolean closed = new AtomicBoolean();
-    private final AtomicBoolean transportOwnershipAvailable = new AtomicBoolean(true);
     private final ConcurrentLinkedQueue<WriteOwnership> writes = new ConcurrentLinkedQueue<>();
+    private final Set<OwnedRetry> ownedRetries = ConcurrentHashMap.newKeySet();
+    private OwnershipMode ownershipMode = OwnershipMode.TRANSPORT_OWNED;
+    private int activeDelegates;
+
+    private enum OwnershipMode {
+      TRANSPORT_OWNED,
+      PUSH_STATE_FALLBACK,
+      CANCELLATION_SEALED
+    }
 
     private Push(FactoryHook hook) {
       this.hook = hook;
@@ -287,11 +295,74 @@ final class CelebornTransportCallbackTracker {
     }
 
     boolean usesTransportOwnership() {
-      return transportOwnershipAvailable.get();
+      synchronized (hook) {
+        return ownershipMode != OwnershipMode.PUSH_STATE_FALLBACK;
+      }
     }
 
     private void fallBackToPushState() {
-      transportOwnershipAvailable.set(false);
+      synchronized (hook) {
+        if (ownershipMode == OwnershipMode.TRANSPORT_OWNED) {
+          ownershipMode = OwnershipMode.PUSH_STATE_FALLBACK;
+        }
+      }
+    }
+
+    static boolean trySealCohortForCancellation(List<Push> pushes) {
+      if (pushes.isEmpty()) {
+        return true;
+      }
+      FactoryHook hook = pushes.get(0).hook;
+      ArrayList<OwnedRetry> retries;
+      synchronized (hook) {
+        for (Push push : pushes) {
+          if (push.hook != hook
+              || !push.closed.get()
+              || push.activeDelegates != 0
+              || push.ownershipMode == OwnershipMode.PUSH_STATE_FALLBACK) {
+            return false;
+          }
+        }
+        retries = new ArrayList<>();
+        for (Push push : pushes) {
+          push.ownershipMode = OwnershipMode.CANCELLATION_SEALED;
+          retries.addAll(push.ownedRetries);
+        }
+      }
+      for (OwnedRetry retry : retries) {
+        retry.discard();
+      }
+      return true;
+    }
+
+    private boolean beginDelegateUnlessCancelled() {
+      synchronized (hook) {
+        if (ownershipMode == OwnershipMode.CANCELLATION_SEALED) {
+          return false;
+        }
+        activeDelegates++;
+        return true;
+      }
+    }
+
+    private void endDelegate() {
+      synchronized (hook) {
+        activeDelegates--;
+      }
+    }
+
+    private void registerRetry(OwnedRetry retry) {
+      ownedRetries.add(retry);
+      synchronized (hook) {
+        if (ownershipMode != OwnershipMode.CANCELLATION_SEALED) {
+          return;
+        }
+      }
+      retry.discard();
+    }
+
+    private void unregisterRetry(OwnedRetry retry) {
+      ownedRetries.remove(retry);
     }
 
     private void releaseOwner() {
@@ -861,9 +932,18 @@ final class CelebornTransportCallbackTracker {
       if (!delivered.compareAndSet(false, true)) {
         return null;
       }
-      try (Activation ignored = push.activate()) {
-        return invokeCallback(method, args);
+      boolean invokeDelegate = push.beginDelegateUnlessCancelled();
+      try {
+        if (invokeDelegate) {
+          try (Activation ignored = push.activate()) {
+            return invokeCallback(method, args);
+          }
+        }
+        return null;
       } finally {
+        if (invokeDelegate) {
+          push.endDelegate();
+        }
         // Request-map removal is not completion. Retry submission during the original callback
         // has already retained its own lease before this transport owner's lease is released.
         // The handler may retain RequestInfo after invoking it. Clear its payload-owning delegate
@@ -925,13 +1005,22 @@ final class CelebornTransportCallbackTracker {
       if (!ownership.start()) {
         return;
       }
-      try (Activation ignored = ownership.push.activate()) {
-        invokeDelegate();
+      boolean invokeDelegate = ownership.push.beginDelegateUnlessCancelled();
+      try {
+        if (invokeDelegate) {
+          try (Activation ignored = ownership.push.activate()) {
+            invokeDelegate();
+          }
+        }
       } finally {
+        if (invokeDelegate) {
+          ownership.push.endDelegate();
+        }
         // An executor or shutdown caller can retain the completed wrapper. The delegate's own
         // invocation frame must have returned before dropping its payload reference and lease.
         delegate = null;
         ownership.finish();
+        ownership.push.unregisterRetry(this);
       }
     }
 
@@ -940,6 +1029,7 @@ final class CelebornTransportCallbackTracker {
       if (ownership.discard()) {
         delegate = null;
         ownership.finish();
+        ownership.push.unregisterRetry(this);
       }
     }
   }
@@ -962,10 +1052,21 @@ final class CelebornTransportCallbackTracker {
       if (!ownership.start()) {
         return;
       }
-      try (Activation ignored = ownership.push.activate()) {
-        super.run();
+      boolean invokeDelegate = ownership.push.beginDelegateUnlessCancelled();
+      try {
+        if (invokeDelegate) {
+          try (Activation ignored = ownership.push.activate()) {
+            super.run();
+          }
+        } else {
+          super.cancel(false);
+        }
       } finally {
+        if (invokeDelegate) {
+          ownership.push.endDelegate();
+        }
         ownership.finish();
+        ownership.push.unregisterRetry(this);
       }
     }
 
@@ -977,6 +1078,7 @@ final class CelebornTransportCallbackTracker {
         // may release here; a running task releases from run's finally block after it returns.
         if (ownership.discard()) {
           ownership.finish();
+          ownership.push.unregisterRetry(this);
         }
       }
       return cancelled;
@@ -1006,7 +1108,7 @@ final class CelebornTransportCallbackTracker {
       if (push == null) {
         delegate.execute(command);
       } else {
-        submitOwned(new TrackingRetryRunnable(command, push));
+        submitOwned(new TrackingRetryRunnable(command, push), push);
       }
     }
 
@@ -1022,7 +1124,7 @@ final class CelebornTransportCallbackTracker {
         return delegate.submit(task, result);
       }
       TrackingRetryFuture<T> future = new TrackingRetryFuture<>(task, result, push);
-      submitOwned(future);
+      submitOwned(future, push);
       return future;
     }
 
@@ -1033,11 +1135,12 @@ final class CelebornTransportCallbackTracker {
         return delegate.submit(task);
       }
       TrackingRetryFuture<T> future = new TrackingRetryFuture<>(task, push);
-      submitOwned(future);
+      submitOwned(future, push);
       return future;
     }
 
-    private <T extends Runnable & OwnedRetry> void submitOwned(T task) {
+    private <T extends Runnable & OwnedRetry> void submitOwned(T task, Push push) {
+      push.registerRetry(task);
       try {
         delegate.execute(task);
       } catch (RuntimeException | Error failure) {
