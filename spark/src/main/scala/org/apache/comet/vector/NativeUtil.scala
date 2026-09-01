@@ -30,7 +30,7 @@ import org.apache.arrow.util.AutoCloseables
 import org.apache.arrow.vector.{FieldVector, VectorSchemaRoot}
 import org.apache.arrow.vector.complex.{AbstractStructVector, ListVector, MapVector, StructVector}
 import org.apache.arrow.vector.dictionary.DictionaryProvider
-import org.apache.arrow.vector.types.pojo.{ArrowType, Field}
+import org.apache.arrow.vector.types.pojo.{ArrowType, Field, Schema}
 import org.apache.spark.SparkException
 import org.apache.spark.sql.comet.execution.arrow.ConstantColumnVectors
 import org.apache.spark.sql.comet.util.Utils
@@ -356,6 +356,26 @@ object NativeUtil {
       field.createVector(allocator).asInstanceOf[FieldVector]
     } else {
       createPinnedVector(runtimeField, field, allocator)
+    }
+  }
+
+  /** Build an IPC root with the same duplicate-safe allocation used by C Data imports. */
+  def createVectorSchemaRootForImport(
+      schema: Schema,
+      allocator: BufferAllocator): VectorSchemaRoot = {
+    val fields = schema.getFields
+    val vectors = new ArrayList[FieldVector](fields.size())
+    try {
+      var ordinal = 0
+      while (ordinal < fields.size()) {
+        vectors.add(createVectorForImport(fields.get(ordinal), allocator))
+        ordinal += 1
+      }
+      new VectorSchemaRoot(schema, vectors, 0)
+    } catch {
+      case failure: Throwable =>
+        AutoCloseables.close(failure, vectors)
+        throw failure
     }
   }
 

@@ -73,4 +73,18 @@ class CometJsonJvmSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       checkSparkAnswerAndOperator(sql("SELECT to_json(from_json(j, 'a INT, b STRING')) FROM t"))
     }
   }
+
+  test("to_json preserves a retained duplicate-name producer") {
+    withTable("t") {
+      sql("CREATE TABLE t (a INT, b INT) USING parquet")
+      sql("INSERT INTO t VALUES (1, 10), (2, 20), (3, 30)")
+      withSQLConf("spark.sql.optimizer.collapseProjectAlwaysInline" -> "false") {
+        checkSparkAnswerAndOperator(sql("""SELECT to_json(s), s
+              |FROM (
+              |  SELECT named_struct('x', a, 'x', b) AS s
+              |  FROM t
+              |) q""".stripMargin))
+      }
+    }
+  }
 }

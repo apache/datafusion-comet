@@ -30,7 +30,7 @@ import org.apache.arrow.vector._
 import org.apache.arrow.vector.complex.{ListVector, MapVector, StructVector}
 import org.apache.arrow.vector.dictionary.{Dictionary, DictionaryProvider}
 import org.apache.arrow.vector.dictionary.DictionaryProvider.MapDictionaryProvider
-import org.apache.arrow.vector.ipc.{ArrowStreamReader, ArrowStreamWriter}
+import org.apache.arrow.vector.ipc.ArrowStreamWriter
 import org.apache.arrow.vector.types._
 import org.apache.arrow.vector.types.pojo.{ArrowType, Field, FieldType, Schema}
 import org.apache.arrow.vector.util.VectorSchemaRootAppender
@@ -46,7 +46,7 @@ import org.apache.spark.util.io.{ChunkedByteBuffer, ChunkedByteBufferOutputStrea
 
 import org.apache.comet.Constants.COMET_CONF_DIR_ENV
 import org.apache.comet.shims.CometTypeShim
-import org.apache.comet.vector.CometVector
+import org.apache.comet.vector.{CometArrowStreamReader, CometVector, NativeUtil}
 
 object Utils extends CometTypeShim with Logging {
   def getConfPath(confFileName: String): String = {
@@ -377,7 +377,7 @@ object Utils extends CometTypeShim with Logging {
           val compressedInputStream =
             new DataInputStream(codec.compressedInputStream(bytes.toInputStream()))
           val reader =
-            new ArrowStreamReader(Channels.newChannel(compressedInputStream), allocator)
+            new CometArrowStreamReader(Channels.newChannel(compressedInputStream), allocator)
           try {
             // Comet decodes dictionaries during execution, so this shouldn't happen.
             // If it does, fall back to the original uncoalesced buffers because each
@@ -397,7 +397,8 @@ object Utils extends CometTypeShim with Logging {
             while (reader.loadNextBatch()) {
               val sourceRoot = reader.getVectorSchemaRoot
               if (targetRoot == null) {
-                targetRoot = VectorSchemaRoot.create(sourceRoot.getSchema, allocator)
+                targetRoot =
+                  NativeUtil.createVectorSchemaRootForImport(sourceRoot.getSchema, allocator)
                 targetRoot.allocateNew()
               }
               try {
