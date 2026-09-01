@@ -55,6 +55,13 @@ impl PartitionedBatchesProducer {
         partition_id: usize,
         interleave_time: &'a Time,
     ) -> PartitionedBatchIterator<'a> {
+        // Partition indices index into `buffered_batches`; a refs slice built from a
+        // different producer would silently interleave wrong rows.
+        debug_assert_eq!(
+            refs.len(),
+            self.buffered_batches.len(),
+            "refs slice must cover every buffered batch"
+        );
         PartitionedBatchIterator::new(
             &self.partition_indices[partition_id],
             refs,
@@ -208,5 +215,19 @@ mod tests {
             .collect::<datafusion::common::Result<_>>()
             .unwrap();
         assert!(empty.is_empty());
+    }
+
+    /// A refs slice that does not cover every buffered batch (e.g. built from a different
+    /// producer) must fail fast in debug builds instead of interleaving wrong rows.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "refs slice must cover every buffered batch")]
+    fn produce_rejects_mismatched_refs() {
+        let buffered = batches();
+        let producer = PartitionedBatchesProducer::new(buffered, vec![vec![(0, 0), (2, 1)]], 4);
+        let refs = producer.batch_refs();
+        let truncated = &refs[..refs.len() - 1];
+        let time = Time::default();
+        let _ = producer.produce(truncated, 0, &time);
     }
 }

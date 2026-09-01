@@ -51,8 +51,8 @@ impl SpillWriter {
     }
 
     /// `recycled_buffer` is a scratch byte buffer shared by the sequential per-partition
-    /// spill writes; it is drained and handed back on return so one buffer's capacity
-    /// serves every partition instead of each write regrowing its own.
+    /// spill writes; it is left drained on return so one buffer's capacity serves every
+    /// partition instead of each write regrowing its own.
     pub(crate) fn write<I: Iterator<Item = datafusion::common::Result<RecordBatch>>>(
         &mut self,
         iter: &mut I,
@@ -69,19 +69,31 @@ impl SpillWriter {
                     &mut self.spill_file.as_mut().unwrap().file,
                     self.write_buffer_size,
                     self.batch_size,
-                    std::mem::take(recycled_buffer),
                 );
                 let initial_position = buf_batch_writer.writer_stream_position()?;
-                buf_batch_writer.write(&batch?, &metrics.encode_time, &metrics.write_time)?;
+                buf_batch_writer.write(
+                    &batch?,
+                    recycled_buffer,
+                    &metrics.encode_time,
+                    &metrics.write_time,
+                )?;
                 for batch in iter.by_ref() {
                     let batch = batch?;
-                    buf_batch_writer.write(&batch, &metrics.encode_time, &metrics.write_time)?;
+                    buf_batch_writer.write(
+                        &batch,
+                        recycled_buffer,
+                        &metrics.encode_time,
+                        &metrics.write_time,
+                    )?;
                 }
-                buf_batch_writer.flush(&metrics.encode_time, &metrics.write_time)?;
+                buf_batch_writer.flush(
+                    recycled_buffer,
+                    &metrics.encode_time,
+                    &metrics.write_time,
+                )?;
                 let bytes_written = buf_batch_writer
                     .writer_stream_position()?
                     .saturating_sub(initial_position);
-                *recycled_buffer = buf_batch_writer.into_buffer();
                 usize::try_from(bytes_written).map_err(|_| {
                     DataFusionError::Execution(format!(
                         "Spill file byte count exceeds platform capacity: {bytes_written}"

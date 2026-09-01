@@ -1170,12 +1170,16 @@ mod test {
                 Cursor::new(&mut coalesced_output),
                 1024 * 1024,
                 8192,
-                Vec::new(),
             );
+            let mut scratch = Vec::new();
             for batch in &small_batches {
-                buf_writer.write(batch, &encode_time, &write_time).unwrap();
+                buf_writer
+                    .write(batch, &mut scratch, &encode_time, &write_time)
+                    .unwrap();
             }
-            buf_writer.flush(&encode_time, &write_time).unwrap();
+            buf_writer
+                .flush(&mut scratch, &encode_time, &write_time)
+                .unwrap();
         }
 
         // Write without coalescing (batch_size=1)
@@ -1187,12 +1191,16 @@ mod test {
                 Cursor::new(&mut uncoalesced_output),
                 1024 * 1024,
                 1,
-                Vec::new(),
             );
+            let mut scratch = Vec::new();
             for batch in &small_batches {
-                buf_writer.write(batch, &encode_time, &write_time).unwrap();
+                buf_writer
+                    .write(batch, &mut scratch, &encode_time, &write_time)
+                    .unwrap();
             }
-            buf_writer.flush(&encode_time, &write_time).unwrap();
+            buf_writer
+                .flush(&mut scratch, &encode_time, &write_time)
+                .unwrap();
         }
 
         // Coalesced output should be smaller due to fewer IPC schema blocks
@@ -1292,12 +1300,16 @@ mod test {
                 Cursor::new(&mut output),
                 1024 * 1024,
                 batch_size as usize,
-                Vec::new(),
             );
+            let mut scratch = Vec::new();
             for batch in &inputs {
-                buf_writer.write(batch, &encode_time, &write_time).unwrap();
+                buf_writer
+                    .write(batch, &mut scratch, &encode_time, &write_time)
+                    .unwrap();
             }
-            buf_writer.flush(&encode_time, &write_time).unwrap();
+            buf_writer
+                .flush(&mut scratch, &encode_time, &write_time)
+                .unwrap();
         }
 
         let blocks = read_all_ipc_batches(&output);
