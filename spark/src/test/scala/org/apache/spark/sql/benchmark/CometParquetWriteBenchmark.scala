@@ -278,7 +278,7 @@ object CometParquetWriteBenchmark extends CometBenchmarkBase {
   private def structOfDepth(depth: Int): Seq[String] = {
     def build(level: Int): String =
       if (level == depth) {
-        s"named_struct('v', cast(id as int), 'n', concat('x_', cast(id as string)))"
+        "named_struct('v', cast(id as int), 'n', concat('x_', cast(id as string)))"
       } else {
         s"named_struct('c', cast(id % 100 as int), 'inner', ${build(level + 1)})"
       }
