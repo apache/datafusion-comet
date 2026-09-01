@@ -263,18 +263,32 @@ final class CometBypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V>
       // Spark only calls stop(false) when write() throws an Exception; a fatal error such as
       // SparkOutOfMemoryError skips it, and the buffered pages are invisible to Spark's
       // task-memory cleanup (in on-heap mode they live in an executor-shared pool). Free them
-      // here so they cannot starve other tasks' allocations.
+      // and delete their temp files here so they cannot starve other tasks' allocations or leak
+      // disk space.
       if (partitionWriters != null) {
-        for (CometDiskBlockWriter writer : partitionWriters) {
-          if (writer == null) {
-            continue;
+        try {
+          for (CometDiskBlockWriter writer : partitionWriters) {
+            if (writer == null) {
+              continue;
+            }
+            try {
+              writer.freeMemory();
+            } catch (Exception e2) {
+              logger.error("Failed to free memory of partition writer", e2);
+              e.addSuppressed(e2);
+            }
+            try {
+              File file = writer.getFile();
+              if (file.exists() && !file.delete()) {
+                logger.error("Error while deleting file {}", file.getAbsolutePath());
+              }
+            } catch (Exception e2) {
+              logger.error("Failed to delete file of partition writer", e2);
+              e.addSuppressed(e2);
+            }
           }
-          try {
-            writer.freeMemory();
-          } catch (Exception e2) {
-            logger.error("Failed to free memory of partition writer", e2);
-            e.addSuppressed(e2);
-          }
+        } finally {
+          partitionWriters = null;
         }
       }
       try {

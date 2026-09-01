@@ -68,9 +68,6 @@ public final class CometBoundedShuffleMemoryAllocator extends CometShuffleMemory
   /** How often a thread blocked in {@link #allocateBlocking(long)} logs that it is waiting. */
   private static final long WAIT_LOG_INTERVAL_MS = 30_000L;
 
-  /** How long {@link #allocateBlocking(long)} waits in total before giving up. */
-  private final long memoryWaitTimeoutMs;
-
   /** The number of bits used to address the page table. */
   private static final int PAGE_NUMBER_BITS = 13;
 
@@ -98,8 +95,6 @@ public final class CometBoundedShuffleMemoryAllocator extends CometShuffleMemory
     this.pageSize = pageSize;
     this.totalMemory =
         CometSparkSessionExtensions$.MODULE$.getCometShuffleMemorySize(conf, SQLConf.get());
-    this.memoryWaitTimeoutMs =
-        (long) CometConf$.MODULE$.COMET_SHUFFLE_JVM_MEMORY_WAIT_TIMEOUT().get();
   }
 
   private synchronized long _acquireMemory(long size) {
@@ -151,6 +146,8 @@ public final class CometBoundedShuffleMemoryAllocator extends CometShuffleMemory
    */
   @Override
   public synchronized MemoryBlock allocateBlocking(long required) {
+    long memoryWaitTimeoutMs =
+        (long) CometConf$.MODULE$.COMET_SHUFFLE_JVM_MEMORY_WAIT_TIMEOUT().get();
     long size = Math.max(pageSize, required);
     Thread self = Thread.currentThread();
     long waitStart = 0;

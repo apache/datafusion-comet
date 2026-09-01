@@ -272,7 +272,7 @@ public class CometUnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
           }
         }
       }
-      if (tracingEnabled) {
+      if (tracingEnabled && this.allocator != null) {
         nativeLib.logMemoryUsage(offheapMemKey, this.allocator.getUsed());
       }
     }

@@ -376,6 +376,11 @@ public final class CometDiskBlockWriter {
     protected void spill(int required) throws IOException {
       // Cannot allocate enough memory, spill and try again
       synchronized (currentWriters) {
+        // initialCurrentPage() requires this writer to have released its current page, even when
+        // spilling a larger sibling would free enough memory for the allocation on its own.
+        long totalFreed = getActiveMemoryUsage();
+        CometDiskBlockWriter.this.doSpill();
+
         // Spill from the largest writer first to maximize the amount of memory we can
         // acquire
         Collections.sort(
@@ -389,17 +394,18 @@ public final class CometDiskBlockWriter {
               }
             });
 
-        long totalFreed = 0;
         for (CometDiskBlockWriter writer : currentWriters) {
+          if (totalFreed >= required) {
+            break;
+          }
+          if (writer == CometDiskBlockWriter.this) {
+            continue;
+          }
           long used = writer.getActiveMemoryUsage();
 
           writer.doSpill();
 
           totalFreed += used;
-
-          if (totalFreed >= required) {
-            break;
-          }
         }
       }
     }
