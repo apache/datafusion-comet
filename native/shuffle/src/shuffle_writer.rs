@@ -564,7 +564,7 @@ mod test {
             assert!(!spill_writers[1].has_spill_file());
         }
 
-        repartitioner.spill(0).unwrap();
+        repartitioner.spill().unwrap();
 
         // after spill, there should be spill files
         {
@@ -640,13 +640,14 @@ mod test {
         );
     }
 
-    /// Spill every slice of one shared Arrow allocation and verify that memory accounting
-    /// includes that backing allocation once per outer input batch, plus each slice's indices.
+    /// Spill the same rows with different input batching and allocation-sharing patterns.
     async fn shared_buffer_memory_spilled_bytes(
         max_buffer_bytes: Option<usize>,
         memory_limit: usize,
         input_batches: usize,
-    ) -> usize {
+        input_batch_rows: usize,
+        fresh_allocations: bool,
+    ) -> (usize, Vec<u8>) {
         let num_rows = 16_384usize;
         let batch_size = 1024usize;
         let num_partitions = 2;
@@ -656,7 +657,7 @@ mod test {
             vec![Arc::new(Int64Array::from_iter_values(0..num_rows as i64))],
         )
         .unwrap();
-        let buffer_bytes = backing.get_array_memory_size();
+        let value_bytes = num_rows * std::mem::size_of::<i64>();
 
         let runtime_env = create_runtime(memory_limit);
         let metrics_set = ExecutionPlanMetricsSet::new();
@@ -689,7 +690,21 @@ mod test {
         .unwrap();
 
         for _ in 0..input_batches {
-            repartitioner.insert_batch(backing.clone()).await.unwrap();
+            for start in (0..num_rows).step_by(input_batch_rows) {
+                let end = (start + input_batch_rows).min(num_rows);
+                let input = if fresh_allocations {
+                    RecordBatch::try_new(
+                        Arc::clone(&schema),
+                        vec![Arc::new(Int64Array::from_iter_values(
+                            start as i64..end as i64,
+                        ))],
+                    )
+                    .unwrap()
+                } else {
+                    backing.slice(start, end - start)
+                };
+                repartitioner.insert_batch(input).await.unwrap();
+            }
         }
         repartitioner.shuffle_write().unwrap();
 
@@ -701,30 +716,32 @@ mod test {
         );
 
         let spilled = memory_spilled_bytes.value();
-        let minimum_backing_bytes = input_batches * buffer_bytes;
+        let minimum_data_bytes = input_batches * value_bytes;
         assert!(
-            spilled > minimum_backing_bytes,
+            spilled > minimum_data_bytes,
             "partition-index allocations must remain in memory spill accounting: \
-             {spilled} bytes reported for {minimum_backing_bytes} backing bytes"
+             {spilled} bytes reported for {minimum_data_bytes} value bytes"
         );
         // Each row receives one (batch index, row index) entry. Allow twice the logical index
         // size for Vec capacity rounding while still rejecting one full backing charge per slice.
         let maximum_index_bytes = input_batches * num_rows * std::mem::size_of::<(u32, u32)>() * 2;
-        let maximum_spilled = minimum_backing_bytes + maximum_index_bytes;
+        let maximum_spilled = minimum_data_bytes + maximum_index_bytes;
         assert!(
             spilled <= maximum_spilled,
-            "shared backing buffers must be charged once per input batch: \
+            "spill size must reflect the rows and indices, not the full input backing per slice: \
              {spilled} bytes reported, expected at most {maximum_spilled}"
         );
 
-        spilled
+        (spilled, std::fs::read(dir.path().join("data.out")).unwrap())
     }
 
     #[tokio::test]
     #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
-    async fn max_buffer_spills_charge_shared_backing_once_per_input_batch() {
-        let one_batch = shared_buffer_memory_spilled_bytes(Some(8 * 1024), 512 * 1024, 1).await;
-        let two_batches = shared_buffer_memory_spilled_bytes(Some(8 * 1024), 512 * 1024, 2).await;
+    async fn max_buffer_spill_metrics_are_cumulative() {
+        let (one_batch, _) =
+            shared_buffer_memory_spilled_bytes(Some(8 * 1024), 512 * 1024, 1, 16_384, false).await;
+        let (two_batches, _) =
+            shared_buffer_memory_spilled_bytes(Some(8 * 1024), 512 * 1024, 2, 16_384, false).await;
         assert_eq!(
             two_batches,
             one_batch * 2,
@@ -735,8 +752,43 @@ mod test {
 
     #[tokio::test]
     #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
-    async fn rejected_reservations_charge_shared_backing_once_per_input_batch() {
-        shared_buffer_memory_spilled_bytes(None, 1, 1).await;
+    async fn rejected_reservations_count_materialized_spill_batches() {
+        shared_buffer_memory_spilled_bytes(None, 1, 1, 16_384, false).await;
+    }
+
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
+    async fn shared_buffer_spill_metrics_do_not_depend_on_input_batching() {
+        // Partial HashAggregate can emit the sixteen zero-copy slices separately. They must
+        // report the same memory spill size and write the same data as slicing one input here.
+        for (max_buffer_bytes, memory_limit) in [(Some(8 * 1024), 512 * 1024), (None, 1)] {
+            let (whole_bytes, whole_output) = shared_buffer_memory_spilled_bytes(
+                max_buffer_bytes,
+                memory_limit,
+                1,
+                16_384,
+                false,
+            )
+            .await;
+            let (sliced_bytes, sliced_output) =
+                shared_buffer_memory_spilled_bytes(max_buffer_bytes, memory_limit, 1, 1024, false)
+                    .await;
+            assert_eq!(sliced_bytes, whole_bytes);
+            assert_eq!(sliced_output, whole_output);
+
+            // Independently allocated chunks must have the same spill representation as
+            // the shared zero-copy slices, without relying on allocation identities.
+            let (fresh_bytes, fresh_output) =
+                shared_buffer_memory_spilled_bytes(max_buffer_bytes, memory_limit, 1, 1024, true)
+                    .await;
+            assert_eq!(fresh_bytes, whole_bytes);
+            assert_eq!(fresh_output, whole_output);
+
+            let (repeated_bytes, _) =
+                shared_buffer_memory_spilled_bytes(max_buffer_bytes, memory_limit, 2, 1024, false)
+                    .await;
+            assert_eq!(repeated_bytes, whole_bytes * 2);
+        }
     }
 
     /// Buffer `num_batches` batches through a `MultiPartitionShuffleRepartitioner` and return its
