@@ -309,13 +309,18 @@ object CometUnixTimestamp extends CometExpressionSerde[UnixTimestamp] {
   }
 
   override def getSupportLevel(expr: UnixTimestamp): SupportLevel = {
-    if (DatetimeCollation.hasNonDefaultCollation(expr)) {
-      Incompatible(Some(collationReason))
-    } else if (isSupportedInputType(expr)) {
-      Compatible()
-    } else {
+    // The input type is screened ahead of the collation check on purpose. A non-date/timestamp
+    // input has no native path at all, so it must report `Unsupported` rather than
+    // `Incompatible`: the latter is waved straight through to `convert` when
+    // `spark.comet.expression.UnixTimestamp.allowIncompatible=true`, and the native kernel then
+    // raises an execution error on the string child instead of falling back to Spark.
+    if (!isSupportedInputType(expr)) {
       val inputType = expr.children.head.dataType
       Unsupported(Some(s"unix_timestamp does not support input type: $inputType"))
+    } else if (DatetimeCollation.hasNonDefaultCollation(expr)) {
+      Incompatible(Some(collationReason))
+    } else {
+      Compatible()
     }
   }
 
