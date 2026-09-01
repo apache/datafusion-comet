@@ -437,10 +437,13 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim with Come
    *   - The root is `NullIntolerant`, so a null input really does mean a null result.
    *   - Every node in the tree is null-propagating ([[allNullIntolerant]]); a `Coalesce` / `If` /
    *     `CaseWhen` anywhere would break the chain.
+   *   - No node other than a `Literal` is foldable ([[noSurvivingFoldableSubtree]]); a foldable
+   *     subtree that `ConstantFolding` left in place is one that threw while folding, and Spark
+   *     may evaluate it -- and raise -- ahead of an input's null check.
    *   - Either the tree reads exactly one ordinal, or every direct child of the root is a leaf
    *     ([[rootChildrenAreLeaves]]). Both shapes make the short-circuit exact:
-   *     - One ordinal: there is nothing left for Spark to evaluate ahead of that ordinal's own
-   *       null check.
+   *     - One ordinal: with no surviving foldable subtree, there is nothing left for Spark to
+   *       evaluate ahead of that ordinal's own null check.
    *     - Leaf-only children: the tree is one level deep, so the only code Spark runs ahead of
    *       its null checks is `BoundReference` / `Literal` reads, which cannot raise. Any error
    *       comes from the root's own logic, which runs only once every input is known non-null --
@@ -457,7 +460,33 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim with Come
    */
   private def canShortCircuitNulls(expr: Expression, inputOrdinals: Seq[Int]): Boolean =
     inputOrdinals.nonEmpty && isNullIntolerant(expr) && allNullIntolerant(expr) &&
+      noSurvivingFoldableSubtree(expr) &&
       (inputOrdinals.size == 1 || rootChildrenAreLeaves(expr))
+
+  /**
+   * True iff no node in the tree other than a `Literal` is foldable. One of the conditions on
+   * [[canShortCircuitNulls]], and what closes the single-ordinal hole in #5218 (see #5608).
+   *
+   * A single input ordinal does not by itself mean Spark has nothing to evaluate ahead of that
+   * ordinal's null check: a literal-only subtree between the root and the ordinal can still
+   * raise. `ConstantFolding` normally folds such a subtree away, but it deliberately leaves it in
+   * place when evaluating it throws and it sits inside a conditional branch (it tags the node
+   * `FAILED_TO_EVALUATE` and moves on), so the throwing expression survives into the physical
+   * plan. `IF(flag, upper(substring('abc', CAST(1L DIV 0L AS INT), n)), NULL)` is a witness:
+   * `TernaryExpression.nullSafeCodeGen` emits `Substring`'s `pos` code -- the division -- before
+   * it tests `len`'s null, so Spark raises `DIVIDE_BY_ZERO` on a row where `n` is null while the
+   * short-circuit would return null.
+   *
+   * By the time the dispatcher sees the tree `ConstantFolding` has already run, so a surviving
+   * foldable non-`Literal` node is precisely one that threw during folding -- exactly the
+   * dangerous case. `Literal`s are foldable by definition and must be exempt, or the fast path
+   * would be lost for the common shapes (`upper(substring(s, 1, 2))`, `conv(a, b, c)`, ...).
+   */
+  private def noSurvivingFoldableSubtree(expr: Expression): Boolean =
+    !expr.exists {
+      case _: Literal => false
+      case other => other.foldable
+    }
 
   /**
    * True iff every direct child of the root is a leaf (`BoundReference` or `Literal`), i.e. the
