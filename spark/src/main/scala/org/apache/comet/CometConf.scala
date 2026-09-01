@@ -328,9 +328,11 @@ object CometConf extends ShimCometConf {
       .withAlternative(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.enabled")
       .category(CATEGORY_SHUFFLE)
       .doc(
-        "Whether to enable Comet native shuffle. " +
+        "Whether to enable Comet shuffle. " +
           "Note that this requires setting `spark.shuffle.manager` to " +
-          "`org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager`. " +
+          "`org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager` or " +
+          "`org.apache.spark.sql.comet.execution.shuffle.CometCelebornShuffleManager`. " +
+          "Celeborn requires explicit native mode and compatible application settings. " +
           "`spark.shuffle.manager` must be set before starting the Spark application and " +
           "cannot be changed during the application.")
       .booleanConf
@@ -351,11 +353,10 @@ object CometConf extends ShimCometConf {
   val COMET_SHUFFLE_MODE: ConfigEntry[String] = conf("spark.comet.shuffle.mode")
     .withAlternative(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.mode")
     .category(CATEGORY_SHUFFLE)
-    .doc(
-      "This is test config to allow tests to force a particular shuffle implementation to be " +
-        "used. Valid values are `jvm` for Columnar Shuffle, `native` for Native Shuffle, " +
-        s"and `auto` to pick the best supported option (`native` has priority). $TUNING_GUIDE.")
-    .internal()
+    .doc("Select the Comet shuffle implementation: `jvm` for Columnar Shuffle, " +
+      "`native` for Native Shuffle, and `auto` to pick the best supported option " +
+      "(`native` has priority). With CometCelebornShuffleManager, only explicit `native` " +
+      s"mode enables Comet shuffle; `auto` and `jvm` retain Spark/Celeborn shuffle. $TUNING_GUIDE.")
     .stringConf
     .transform(_.toLowerCase(Locale.ROOT))
     .checkValues(Set("native", "jvm", "auto"))

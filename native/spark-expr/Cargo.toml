@@ -112,6 +112,10 @@ name = "normalize_nan"
 harness = false
 
 [[bench]]
+name = "sort_float_keys"
+harness = false
+
+[[bench]]
 name = "to_csv"
 harness = false
 
