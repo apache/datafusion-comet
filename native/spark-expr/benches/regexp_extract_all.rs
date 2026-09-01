@@ -18,7 +18,7 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use datafusion::common::ScalarValue;
 use datafusion::physical_plan::ColumnarValue;
-use datafusion_comet_spark_expr::spark_regexp_extract_all;
+use datafusion_comet_spark_expr::{spark_regexp_extract_all, PatternCache};
 use std::hint::black_box;
 
 #[path = "common/mod.rs"]
@@ -41,7 +41,11 @@ fn criterion_benchmark(c: &mut Criterion) {
             group.bench_with_input(
                 BenchmarkId::from_parameter(format!("{rows}/{tag}")),
                 &args,
-                |b, args| b.iter(|| black_box(spark_regexp_extract_all(black_box(args)).unwrap())),
+                |b, args| {
+                    // One cache per benchmark input mirrors one cache per planned expression.
+                    let cache = PatternCache::new();
+                    b.iter(|| black_box(spark_regexp_extract_all(black_box(args), &cache).unwrap()))
+                },
             );
         }
     }

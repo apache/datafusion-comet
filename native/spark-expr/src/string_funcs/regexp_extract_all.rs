@@ -28,6 +28,7 @@ use datafusion::logical_expr::ColumnarValue;
 use regex::Regex;
 use std::sync::Arc;
 
+use super::pattern_cache::PatternCache;
 use super::regexp_extract_common::{parse_args, ParsedArgs};
 
 /// Spark-compatible `regexp_extract_all(subject, pattern, idx)`.
@@ -40,8 +41,11 @@ use super::regexp_extract_common::{parse_args, ParsedArgs};
 ///
 /// Note: this uses the Rust `regex` crate, whose syntax differs from Java's regex engine in
 /// some ways. The expression is therefore reported as Incompatible.
-pub fn spark_regexp_extract_all(args: &[ColumnarValue]) -> DataFusionResult<ColumnarValue> {
-    let (regex, group_idx, subject) = match parse_args("regexp_extract_all", args)? {
+pub fn spark_regexp_extract_all(
+    args: &[ColumnarValue],
+    regex_cache: &PatternCache,
+) -> DataFusionResult<ColumnarValue> {
+    let (regex, group_idx, subject) = match parse_args("regexp_extract_all", args, regex_cache)? {
         ParsedArgs::Parsed {
             regex,
             group_idx,
@@ -167,8 +171,12 @@ mod tests {
     use super::*;
     use arrow::array::{LargeStringArray, StringArray};
 
+    fn call_raw(args: &[ColumnarValue]) -> DataFusionResult<ColumnarValue> {
+        spark_regexp_extract_all(args, &PatternCache::new())
+    }
+
     fn run(args: Vec<ColumnarValue>) -> DataFusionResult<Vec<Option<Vec<String>>>> {
-        let result = spark_regexp_extract_all(&args)?;
+        let result = call_raw(&args)?;
         let list = match result {
             ColumnarValue::Array(arr) => arr,
             ColumnarValue::Scalar(ScalarValue::List(arr)) => arr as ArrayRef,
@@ -317,7 +325,7 @@ mod tests {
 
     #[test]
     fn group_index_out_of_range_errors() {
-        let err = spark_regexp_extract_all(&[array(vec![Some("abc")]), pattern(r"(a)(b)"), idx(3)])
+        let err = call_raw(&[array(vec![Some("abc")]), pattern(r"(a)(b)"), idx(3)])
             .err()
             .unwrap();
         let msg = err.to_string();
@@ -327,7 +335,7 @@ mod tests {
 
     #[test]
     fn negative_index_errors() {
-        let err = spark_regexp_extract_all(&[array(vec![Some("abc")]), pattern(r"(a)"), idx(-1)])
+        let err = call_raw(&[array(vec![Some("abc")]), pattern(r"(a)"), idx(-1)])
             .err()
             .unwrap();
         let msg = err.to_string();
@@ -337,11 +345,36 @@ mod tests {
 
     #[test]
     fn invalid_regex_errors() {
-        let err =
-            spark_regexp_extract_all(&[array(vec![Some("abc")]), pattern(r"(unclosed"), idx(0)])
-                .err()
-                .unwrap();
+        let err = call_raw(&[array(vec![Some("abc")]), pattern(r"(unclosed"), idx(0)])
+            .err()
+            .unwrap();
         assert!(err.to_string().contains("`regexp`"));
+    }
+
+    /// One expression evaluates many batches; the pattern must compile once and results
+    /// must stay correct on every batch.
+    #[test]
+    fn compiles_regex_once_across_batches() {
+        let cache = PatternCache::new();
+        for batch in 0..4 {
+            let subject = format!("{batch}1-{batch}2, {batch}3-{batch}4");
+            let result = spark_regexp_extract_all(
+                &[array(vec![Some(&subject)]), pattern(r"(\d+)-(\d+)"), idx(1)],
+                &cache,
+            )
+            .unwrap();
+            match result {
+                ColumnarValue::Array(arr) => {
+                    let list = arr.as_any().downcast_ref::<ListArray>().unwrap();
+                    let inner = list.value(0);
+                    let strs = inner.as_any().downcast_ref::<StringArray>().unwrap();
+                    assert_eq!(strs.value(0), format!("{batch}1"));
+                    assert_eq!(strs.value(1), format!("{batch}3"));
+                }
+                other => panic!("unexpected result: {other:?}"),
+            }
+        }
+        assert_eq!(cache.compile_count(), 1);
     }
 
     /// Regression: `LargeUtf8` subject must still produce a `ListArray` whose inner values
@@ -354,7 +387,7 @@ mod tests {
             None,
             Some("4 5"),
         ])));
-        let result = spark_regexp_extract_all(&[array, pattern(r"(\d)"), idx(1)]).unwrap();
+        let result = call_raw(&[array, pattern(r"(\d)"), idx(1)]).unwrap();
         let list = match result {
             ColumnarValue::Array(arr) => arr,
             other => panic!("unexpected result: {other:?}"),
