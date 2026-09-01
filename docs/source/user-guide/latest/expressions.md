@@ -414,7 +414,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | Function | Status | Implementation | Notes |
 | --- | --- | --- | --- |
 | `%` | ✅ | Native |  |
-| `*` | ✅ | Native | Interval multiplication falls back |
+| `*` | ✅ | Native | DayTime interval multiplication routes through the JVM codegen dispatcher; YearMonth and Calendar interval multiplication fall back |
 | `+` | ✅ | Native |  |
 | `-` | ✅ | Native |  |
 | `/` | ✅ | Native |  |
@@ -465,7 +465,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `random` | ✅ | Native | Alias for `rand` (Spark 4.0+); seed must be a literal |
 | `randstr` | ✅ | Native | Random string (Spark 4.0+); length and seed must be literals |
 | `rint` | ✅ | Native |  |
-| `round` | ✅ | Native | Float/double inputs fall back |
+| `round` | ✅ | Hybrid | Float/double inputs route through the JVM codegen dispatcher; other types run natively |
 | `sec` | ✅ | Native |  |
 | `shiftleft` | ✅ | Native |  |
 | `sign` | ✅ | Native |  |

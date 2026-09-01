@@ -112,6 +112,10 @@ name = "normalize_nan"
 harness = false
 
 [[bench]]
+name = "sort_float_keys"
+harness = false
+
+[[bench]]
 name = "to_csv"
 harness = false
 
@@ -225,4 +229,60 @@ harness = false
 
 [[bench]]
 name = "cast_int_to_decimal"
+harness = false
+
+[[bench]]
+name = "log"
+harness = false
+
+[[bench]]
+name = "pow"
+harness = false
+
+[[bench]]
+name = "abs"
+harness = false
+
+[[bench]]
+name = "isnan"
+harness = false
+
+[[bench]]
+name = "rlike"
+harness = false
+
+[[bench]]
+name = "create_named_struct"
+harness = false
+
+[[bench]]
+name = "get_struct_field"
+harness = false
+
+[[bench]]
+name = "from_json"
+harness = false
+
+[[bench]]
+name = "modulo"
+harness = false
+
+[[bench]]
+name = "levenshtein"
+harness = false
+
+[[bench]]
+name = "negative"
+harness = false
+
+[[bench]]
+name = "split"
+harness = false
+
+[[bench]]
+name = "regexp_extract_all"
+harness = false
+
+[[bench]]
+name = "contains"
 harness = false
