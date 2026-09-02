@@ -25,14 +25,15 @@ import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayExcept, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayRepeat}
 import org.apache.spark.sql.catalyst.expressions.{ArrayContains, ArrayRemove}
+import org.apache.spark.sql.catalyst.expressions.{AttributeReference, EqualTo, If, Literal, MonotonicallyIncreasingID, Remainder}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.ArrayType
+import org.apache.spark.sql.types.{ArrayType, StringType}
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
 import org.apache.comet.DataTypeSupport.isComplexType
-import org.apache.comet.serde.{CometArrayExcept, CometArrayRemove, CometArrayReverse, CometFlatten}
+import org.apache.comet.serde.{CometArrayExcept, CometArrayJoin, CometArrayRemove, CometArrayReverse, CometFlatten, Compatible, Incompatible}
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator, SchemaGenOptions}
 
 class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
@@ -518,26 +519,88 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     }
   }
 
+  // No allowIncompatible opt-in: array_join runs natively by default now.
   test("array_join") {
-    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[ArrayJoin]) -> "true") {
-      Seq(true, false).foreach { dictionaryEnabled =>
-        withTempDir { dir =>
-          withTempView("t1") {
-            val path = new Path(dir.toURI.toString, "test.parquet")
-            makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled, 10000)
-            spark.read.parquet(path.toString).createOrReplaceTempView("t1")
-            checkSparkAnswerAndOperator(sql(
-              "SELECT array_join(array(cast(_1 as string), cast(_2 as string), cast(_6 as string)), ' @ ') from t1"))
-            checkSparkAnswerAndOperator(sql(
-              "SELECT array_join(array(cast(_1 as string), cast(_2 as string), cast(_6 as string)), ' @ ', ' +++ ') from t1"))
-            checkSparkAnswerAndOperator(sql(
-              "SELECT array_join(array('hello', 'world', cast(_2 as string)), ' ') from t1 where _2 is not null"))
-            checkSparkAnswerAndOperator(sql(
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withTempDir { dir =>
+        withTempView("t1") {
+          val path = new Path(dir.toURI.toString, "test.parquet")
+          makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled, 10000)
+          spark.read.parquet(path.toString).createOrReplaceTempView("t1")
+          checkSparkAnswerAndOperator(sql(
+            "SELECT array_join(array(cast(_1 as string), cast(_2 as string), cast(_6 as string)), ' @ ') from t1"))
+          checkSparkAnswerAndOperator(sql(
+            "SELECT array_join(array(cast(_1 as string), cast(_2 as string), cast(_6 as string)), ' @ ', ' +++ ') from t1"))
+          checkSparkAnswerAndOperator(sql(
+            "SELECT array_join(array('hello', 'world', cast(_2 as string)), ' ') from t1 where _2 is not null"))
+          checkSparkAnswerAndOperator(
+            sql(
               "SELECT array_join(array('hello', '-', 'world', cast(_2 as string)), ' ') from t1"))
-          }
+          // nullable, non-foldable delimiter and null replacement: the guarded shape
+          checkSparkAnswerAndOperator(
+            sql("SELECT array_join(array('a', cast(_2 as string), 'b'), cast(_6 as string), " +
+              "cast(_1 as string)) from t1"))
         }
       }
     }
+  }
+
+  // Result assertions cannot tell the native path from the codegen dispatcher, since an
+  // Incompatible verdict runs Spark's own doGenCode and matches. Pin the verdict itself.
+  test("array_join support level pins the native path") {
+    val nullableArray = AttributeReference("arr", ArrayType(StringType), nullable = true)()
+    val nullableStr = AttributeReference("s", StringType, nullable = true)()
+
+    // literal delimiter, no replacement
+    assert(
+      CometArrayJoin
+        .getSupportLevel(ArrayJoin(nullableArray, Literal(","), None))
+        .isInstanceOf[Compatible])
+    // literal delimiter and literal replacement
+    assert(
+      CometArrayJoin
+        .getSupportLevel(ArrayJoin(nullableArray, Literal(","), Some(Literal("X"))))
+        .isInstanceOf[Compatible])
+    // nullable column replacement still takes the native path, behind the guard
+    assert(
+      CometArrayJoin
+        .getSupportLevel(ArrayJoin(nullableArray, Literal(","), Some(nullableStr)))
+        .isInstanceOf[Compatible])
+
+    // A guarded non-deterministic argument would be evaluated twice.
+    val nonDeterministicReplacement =
+      If(
+        EqualTo(Remainder(MonotonicallyIncreasingID(), Literal(2L)), Literal(0L)),
+        Literal.create(null, StringType),
+        Literal("X"))
+    assert(
+      CometArrayJoin
+        .getSupportLevel(
+          ArrayJoin(nullableArray, Literal(","), Some(nonDeterministicReplacement)))
+        .isInstanceOf[Incompatible])
+  }
+
+  test("array_join emits a null guard only where it is needed") {
+    val nullableArray = AttributeReference("arr", ArrayType(StringType), nullable = true)()
+    val nullableStr = AttributeReference("s", StringType, nullable = true)()
+    val inputs = Seq(nullableArray, nullableStr)
+
+    def convert(expr: ArrayJoin) = CometArrayJoin.convert(expr, inputs, binding = false)
+
+    // All-foldable trailing arguments: no guard, so the plan is unchanged.
+    val unguarded = convert(ArrayJoin(nullableArray, Literal(","), Some(Literal("X"))))
+    assert(unguarded.isDefined)
+    assert(!unguarded.get.hasIf, "no guard should be emitted for a non-nullable replacement")
+
+    // Nullable replacement: Spark nullifies the row.
+    val guarded = convert(ArrayJoin(nullableArray, Literal(","), Some(nullableStr)))
+    assert(guarded.isDefined)
+    assert(guarded.get.hasIf, "a nullable replacement must be guarded")
+
+    // Non-foldable delimiter: Spark never evaluates it when the array is null.
+    val arrayGuarded = convert(ArrayJoin(nullableArray, nullableStr, None))
+    assert(arrayGuarded.isDefined)
+    assert(arrayGuarded.get.hasIf, "a non-foldable delimiter must put the array behind a guard")
   }
 
   test("arrays_overlap") {

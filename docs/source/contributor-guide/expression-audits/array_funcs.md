@@ -87,7 +87,7 @@
 - Spark 3.5.8 (audited 2026-05-27): baseline. `ArrayJoin(array, delimiter, nullReplacement)`. Comet routes via `CometArrayJoin` to DataFusion's `array_to_string`.
 - Spark 4.0.1 (audited 2026-05-27): `inputTypes` widened to `AbstractArrayType(StringTypeWithCollation(supportsTrimCollation = true))`; non-binary collations not propagated ([#2190](https://github.com/apache/datafusion-comet/issues/2190)).
 - Spark 4.1.1 (audited 2026-05-27): adds `contextIndependentFoldable` override; runtime unchanged.
-- Current status: `CometArrayJoin` reports `Compatible` for non-collated input. Spark's `ArrayJoin` returns null whenever `nullReplacement` evaluates to null, regardless of the array's contents, while DataFusion's `array_to_string` reads a null `null_string` as "omit null elements"; `convert` therefore wraps the three-argument call in an `IsNull(nullReplacement)` guard ([#3178](https://github.com/apache/datafusion-comet/issues/3178)). Null elements are skipped without a replacement and substituted with one, matching Spark in both cases. Non-default string collations remain `Incompatible` and route through the codegen dispatcher ([#2190](https://github.com/apache/datafusion-comet/issues/2190)).
+- Current status: `CometArrayJoin` reports `Compatible` for non-collated input. `convert` nests the `array_to_string` call inside `IsNull` guards so that a null array, delimiter or `nullReplacement` short-circuits the way Spark's does ([#3178](https://github.com/apache/datafusion-comet/issues/3178)). A guarded argument is serialized twice, so non-deterministic ones are reported `Incompatible` and run through the codegen dispatcher, as do non-default string collations ([#2190](https://github.com/apache/datafusion-comet/issues/2190)).
 
 ## array_max
 

@@ -15,14 +15,9 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Regression coverage for #3178.
---
--- Spark's ArrayJoin short-circuits to null on three conditions: a null array, a null delimiter,
--- and a null nullReplacement. DataFusion's array_to_string only short-circuits on the first two;
--- a null null_string collapses to None, which it reads as "omit null elements" -- the same as
--- not passing a third argument at all. CometArrayJoin therefore wraps the three-argument call in
--- an explicit null guard. Note the third case below: a null replacement must nullify the result
--- even when the array contains no nulls for it to replace.
+-- Regression coverage for #3178. Spark returns null whenever nullReplacement is null, even for
+-- an array with no nulls to replace, while array_to_string reads a null null_string as "omit
+-- nulls".
 
 statement
 CREATE TABLE test_aj_nullrep(arr array<string>, delim string, nullrep string) USING parquet

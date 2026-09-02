@@ -339,7 +339,34 @@ object CometArrayJoin
     "array_join does not propagate non-UTF8_BINARY collations to the output string " +
       "(https://github.com/apache/datafusion-comet/issues/2190)"
 
-  override def getIncompatibleReasons(): Seq[String] = Seq(collationReason)
+  private val nonDeterministicReason =
+    "array_join would have to evaluate a non-deterministic argument twice to reproduce Spark's " +
+      "null short-circuiting (https://github.com/apache/datafusion-comet/issues/3178)"
+
+  /**
+   * Arguments needing an `IsNull` guard around the native call, in Spark's evaluation order.
+   *
+   * Spark short-circuits to null on the array, then the delimiter, then the null replacement, and
+   * never evaluates the later arguments; DataFusion evaluates all of them eagerly. `IfExpr` is a
+   * DataFusion `CaseExpr`, which evaluates branches against a filtered batch, so nesting restores
+   * that ordering. Only a non-foldable later argument needs protecting. The null replacement is
+   * guarded whenever it is nullable: `array_to_string` reads a null `null_string` as "omit nulls"
+   * rather than nullifying the row (#3178).
+   */
+  private def guardedArgs(expr: ArrayJoin): Seq[Expression] = {
+    val afterArray = expr.delimiter +: expr.nullReplacement.toSeq
+    val arrayGuard =
+      if (expr.array.nullable && afterArray.exists(!_.foldable)) Seq(expr.array) else Nil
+    val delimiterGuard =
+      if (expr.delimiter.nullable && expr.nullReplacement.exists(!_.foldable)) {
+        Seq(expr.delimiter)
+      } else Nil
+    val replacementGuard = expr.nullReplacement.filter(_.nullable).toSeq
+    arrayGuard ++ delimiterGuard ++ replacementGuard
+  }
+
+  override def getIncompatibleReasons(): Seq[String] =
+    Seq(collationReason, nonDeterministicReason)
 
   override def getSupportLevel(expr: ArrayJoin): SupportLevel = {
     // Spark 4.0 widens ArrayJoin's input to StringTypeWithCollation. Concatenation itself is
@@ -349,9 +376,11 @@ object CometArrayJoin
     // array_join native and matching Spark, consistent with CometReverse's #2190 handling.
     if (hasNonDefaultStringCollation(expr.array.dataType)) {
       Incompatible(Some(collationReason))
+    } else if (guardedArgs(expr).exists(!_.deterministic)) {
+      // A guarded argument is serialized twice and CaseExpr evaluates the false branch on a
+      // filtered batch, so a non-deterministic one would diverge between the two copies.
+      Incompatible(Some(nonDeterministicReason))
     } else {
-      // Null handling matched Spark once the nullReplacement guard in convert() landed (#3178);
-      // collation is the only remaining deviation.
       Compatible()
     }
   }
@@ -360,47 +389,35 @@ object CometArrayJoin
       expr: ArrayJoin,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val arrayExpr = expr.asInstanceOf[ArrayJoin]
-    val arrayExprProto = exprToProto(arrayExpr.array, inputs, binding)
-    val delimiterExprProto = exprToProto(arrayExpr.delimiter, inputs, binding)
+    val arrayExprProto = exprToProto(expr.array, inputs, binding)
+    val delimiterExprProto = exprToProto(expr.delimiter, inputs, binding)
 
-    arrayExpr.nullReplacement match {
+    val joined = expr.nullReplacement match {
       case Some(nullReplacementExpr) =>
-        val nullReplacementExprProto = exprToProto(nullReplacementExpr, inputs, binding)
-
-        val arrayJoinScalarExpr = scalarFunctionExprToProto(
+        scalarFunctionExprToProto(
           "array_to_string",
           arrayExprProto,
           delimiterExprProto,
-          nullReplacementExprProto)
-
-        // Spark's ArrayJoin returns null as soon as nullReplacement evaluates to null, whether
-        // or not the array actually contains any nulls. DataFusion's array_to_string instead
-        // reads a null null_string as "omit null elements", which is what the two-argument form
-        // means, so wrap the call in an explicit null guard (#3178). A non-nullable replacement
-        // -- the common literal case -- cannot trigger this and is left unwrapped.
-        if (!nullReplacementExpr.nullable) {
-          arrayJoinScalarExpr
-        } else {
-          for {
-            joined <- arrayJoinScalarExpr
-            replacementIsNull <- exprToProto(IsNull(nullReplacementExpr), inputs, binding)
-            nullLiteral <- exprToProto(Literal(null, expr.dataType), inputs, binding)
-          } yield ExprOuterClass.Expr
-            .newBuilder()
-            .setIf(
-              ExprOuterClass.IfExpr
-                .newBuilder()
-                .setIfExpr(replacementIsNull)
-                .setTrueExpr(nullLiteral)
-                .setFalseExpr(joined))
-            .build()
-        }
+          exprToProto(nullReplacementExpr, inputs, binding))
       case None =>
-        val arrayJoinScalarExpr =
-          scalarFunctionExprToProto("array_to_string", arrayExprProto, delimiterExprProto)
+        scalarFunctionExprToProto("array_to_string", arrayExprProto, delimiterExprProto)
+    }
 
-        arrayJoinScalarExpr
+    // The outermost guard is the one Spark evaluates first.
+    guardedArgs(expr).foldRight(joined) { (arg, inner) =>
+      for {
+        innerProto <- inner
+        argIsNull <- exprToProto(IsNull(arg), inputs, binding)
+        nullLiteral <- exprToProto(Literal(null, expr.dataType), inputs, binding)
+      } yield ExprOuterClass.Expr
+        .newBuilder()
+        .setIf(
+          ExprOuterClass.IfExpr
+            .newBuilder()
+            .setIfExpr(argIsNull)
+            .setTrueExpr(nullLiteral)
+            .setFalseExpr(innerProto))
+        .build()
     }
   }
 }
