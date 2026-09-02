@@ -27,7 +27,7 @@
 //! `date_part`, which would otherwise shift a `TimestampType` column by the session offset.
 
 use super::{apply_unary, unsupported_type};
-use arrow::array::{ArrayRef, AsArray, Date32Array, Int32Array};
+use arrow::array::{ArrayRef, AsArray, Int32Array};
 use arrow::datatypes::{DataType, Date32Type, Int32Type, TimeUnit, TimestampMicrosecondType};
 use chrono::Datelike;
 use datafusion::common::{utils::take_function_args, DataFusionError, Result};
@@ -42,7 +42,7 @@ const MICROS_PER_DAY: i64 = 86_400_000_000;
 const UNIX_EPOCH_YEAR: i32 = 1970;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum TemporalUnit {
+pub(crate) enum TemporalUnit {
     Years,
     Months,
     Days,
@@ -96,13 +96,17 @@ fn civil_date(days: i32) -> Result<chrono::NaiveDate> {
     })
 }
 
-/// Reduces both supported input types to days since the epoch.
-fn to_epoch_days(fn_name: &str, array: &ArrayRef) -> Result<Date32Array> {
+/// Applies a calendar function of the epoch day to a date or timestamp column in one pass.
+fn map_epoch_days(
+    fn_name: &str,
+    array: &ArrayRef,
+    f: impl Fn(i32) -> Result<i32>,
+) -> Result<Int32Array> {
     match array.data_type() {
-        DataType::Date32 => Ok(array.as_primitive::<Date32Type>().clone()),
-        DataType::Timestamp(TimeUnit::Microsecond, _) => Ok(array
+        DataType::Date32 => array.as_primitive::<Date32Type>().try_unary(f),
+        DataType::Timestamp(TimeUnit::Microsecond, _) => array
             .as_primitive::<TimestampMicrosecondType>()
-            .unary(micros_to_days)),
+            .try_unary(|micros| f(micros_to_days(micros))),
         other => Err(unsupported_type(fn_name, other)),
     }
 }
@@ -110,20 +114,23 @@ fn to_epoch_days(fn_name: &str, array: &ArrayRef) -> Result<Date32Array> {
 fn transform_array(unit: TemporalUnit, array: &ArrayRef) -> Result<ArrayRef> {
     let fn_name = unit.fn_name();
     let result: ArrayRef = match unit {
-        TemporalUnit::Years => {
-            Arc::new(to_epoch_days(fn_name, array)?.try_unary::<_, Int32Type, _>(days_to_years)?)
-        }
-        TemporalUnit::Months => {
-            Arc::new(to_epoch_days(fn_name, array)?.try_unary::<_, Int32Type, _>(days_to_months)?)
-        }
-        TemporalUnit::Days => Arc::new(to_epoch_days(fn_name, array)?),
-        TemporalUnit::Hours => match array.data_type() {
-            DataType::Timestamp(TimeUnit::Microsecond, _) => {
-                let hours: Int32Array = array
+        TemporalUnit::Years => Arc::new(map_epoch_days(fn_name, array, days_to_years)?),
+        TemporalUnit::Months => Arc::new(map_epoch_days(fn_name, array, days_to_months)?),
+        TemporalUnit::Days => match array.data_type() {
+            DataType::Date32 => Arc::clone(array),
+            DataType::Timestamp(TimeUnit::Microsecond, _) => Arc::new(
+                array
                     .as_primitive::<TimestampMicrosecondType>()
-                    .unary(micros_to_hours);
-                Arc::new(hours)
-            }
+                    .unary::<_, Date32Type>(micros_to_days),
+            ),
+            other => return Err(unsupported_type(fn_name, other)),
+        },
+        TemporalUnit::Hours => match array.data_type() {
+            DataType::Timestamp(TimeUnit::Microsecond, _) => Arc::new(
+                array
+                    .as_primitive::<TimestampMicrosecondType>()
+                    .unary::<_, Int32Type>(micros_to_hours),
+            ),
             other => return Err(unsupported_type(fn_name, other)),
         },
     };
@@ -139,7 +146,7 @@ pub struct SparkIcebergTemporalTransform {
 }
 
 impl SparkIcebergTemporalTransform {
-    pub fn new(unit: TemporalUnit) -> Self {
+    pub(crate) fn new(unit: TemporalUnit) -> Self {
         Self {
             unit,
             signature: Signature::variadic_any(Volatility::Immutable),
@@ -186,7 +193,7 @@ impl ScalarUDFImpl for SparkIcebergTemporalTransform {
 mod tests {
     use super::super::test_util::invoke;
     use super::*;
-    use arrow::array::{Array, TimestampMicrosecondArray};
+    use arrow::array::{Array, Date32Array, TimestampMicrosecondArray};
 
     fn transform(unit: TemporalUnit, value: ArrayRef) -> ArrayRef {
         invoke(

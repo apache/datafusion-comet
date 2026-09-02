@@ -32,33 +32,32 @@ object CometStaticInvoke extends CometExpressionSerde[StaticInvoke] {
   // With Spark 3.4, CharVarcharCodegenUtils.readSidePadding gets called to pad spaces for
   // char types.
   // See https://github.com/apache/spark/pull/38151
-  private val staticInvokeExpressions
-      : Map[(String, Class[_]), CometExpressionSerde[StaticInvoke]] =
-    Map(
-      ("readSidePadding", classOf[CharVarcharCodegenUtils]) -> CometScalarFunction(
+  /**
+   * Handlers keyed by `(functionName, staticObject class name)`. Class names rather than classes
+   * so that Iceberg's system functions, whose classes are not on Comet's compile classpath, can
+   * share the map; see [[CometIcebergSystemFunctions]].
+   */
+  private val staticInvokeExpressions: Map[(String, String), CometExpressionSerde[StaticInvoke]] =
+    Map[(String, String), CometExpressionSerde[StaticInvoke]](
+      ("readSidePadding", classOf[CharVarcharCodegenUtils].getName) -> CometScalarFunction(
         "read_side_padding"),
-      ("isLuhnNumber", classOf[ExpressionImplUtils]) -> CometScalarFunction("luhn_check"),
-      ("encode", UrlCodec.getClass) -> CometUrlEncodeStaticInvoke,
-      ("decode", UrlCodec.getClass) -> CometUrlDecodeStaticInvoke,
-      ("aesEncrypt", classOf[ExpressionImplUtils]) -> CometStaticInvokeCodegenDispatch,
-      ("aesDecrypt", classOf[ExpressionImplUtils]) -> CometStaticInvokeCodegenDispatch,
+      ("isLuhnNumber", classOf[ExpressionImplUtils].getName) -> CometScalarFunction("luhn_check"),
+      ("encode", UrlCodec.getClass.getName) -> CometUrlEncodeStaticInvoke,
+      ("decode", UrlCodec.getClass.getName) -> CometUrlDecodeStaticInvoke,
+      ("aesEncrypt", classOf[ExpressionImplUtils].getName) -> CometStaticInvokeCodegenDispatch,
+      ("aesDecrypt", classOf[ExpressionImplUtils].getName) -> CometStaticInvokeCodegenDispatch,
       // Spark 4.0 lowers `decode(bin, charset)` to `StaticInvoke(StringDecode.decode, ...)`
       // carrying the `legacyCharsets` / `legacyErrorAction` flags. Routing through the codegen
       // dispatcher runs Spark's own decoder so both flags are honored. See #4465.
-      ("decode", classOf[StringDecode]) -> CometStaticInvokeCodegenDispatch,
+      ("decode", classOf[StringDecode].getName) -> CometStaticInvokeCodegenDispatch,
       // Spark 3.5+ makes `Base64` RuntimeReplaceable, lowering `base64(bin)` to
       // `StaticInvoke(Base64.encode, Seq(child, chunkBase64), ...)`. On Spark 3.4 the `Base64`
       // node survives and is handled directly (see CometBase64).
-      ("encode", classOf[Base64]) -> CometBase64StaticInvoke)
+      ("encode", classOf[Base64].getName) -> CometBase64StaticInvoke) ++
+      CometIcebergSystemFunctions.staticInvokeHandlers
 
-  /**
-   * Iceberg's system functions (`bucket`, `truncate`, `years`, ...) are matched on class name
-   * because Iceberg is not on Comet's compile classpath; see [[CometIcebergSystemFunctions]].
-   */
   private def handlerFor(expr: StaticInvoke): Option[CometExpressionSerde[StaticInvoke]] =
-    staticInvokeExpressions
-      .get((expr.functionName, expr.staticObject))
-      .orElse(CometIcebergSystemFunctions.staticInvokeHandlers.get(expr.staticObject.getName))
+    staticInvokeExpressions.get((expr.functionName, expr.staticObject.getName))
 
   override def getSupportLevel(expr: StaticInvoke): SupportLevel =
     handlerFor(expr).map(_.getSupportLevel(expr)).getOrElse(Compatible())

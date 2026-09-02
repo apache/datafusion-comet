@@ -27,15 +27,14 @@ import scala.concurrent.{Await, Future}
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.duration.DurationInt
 
-import org.apache.spark.{CometListenerBusUtils, SparkConf}
+import org.apache.spark.SparkConf
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.Row
 import org.apache.spark.sql.comet.{CometIcebergWriteExec, IcebergCommitExec, IcebergWriteExec}
 import org.apache.spark.sql.connector.catalog.InMemoryTableCatalog
-import org.apache.spark.sql.execution.{QueryExecution, SparkPlan}
+import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.types.{DoubleType, IntegerType, StringType, StructField, StructType}
-import org.apache.spark.sql.util.QueryExecutionListener
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark41Plus}
 
@@ -520,7 +519,7 @@ class CometIcebergWriteActionSuite
       CometConf.COMET_EXEC_ENABLED.key -> "true") {
       spark.sql("CREATE TABLE testcat.tbl (id INT, region STRING, amount DOUBLE)")
       try {
-        val plans = capturePlans {
+        val plans = capturePlans(spark) {
           spark.sql("INSERT INTO testcat.tbl VALUES (1, 'us-east', 10.5)")
         }
         val (commits, writes) = collectIcebergWriteOps(plans)
@@ -1517,14 +1516,14 @@ class CometIcebergWriteActionSuite
         }
       }
 
-      val ctasPlans = capturePlans {
+      val ctasPlans = capturePlans(spark) {
         spark.sql(s"CREATE TABLE $catalog.$ns.ctas_tgt USING iceberg AS SELECT * FROM ctas_src")
       }
       assertSplitUsage(ctasPlans, "CTAS")
       assert(countSnapshots("ctas_tgt") == 1L, "CTAS must land exactly one snapshot")
       assertRows("ctas_tgt", expectedIds = Seq(1, 2, 3, 4, 5))
 
-      val rtasPlans = capturePlans {
+      val rtasPlans = capturePlans(spark) {
         (1 to 2)
           .map(i => (i, s"r$i", i.toDouble))
           .toDF("id", "region", "amount")
@@ -1578,28 +1577,9 @@ class CometIcebergWriteActionSuite
       .append()
   }
 
-  private def capturePlans(action: => Unit): Seq[SparkPlan] = {
-    val captured = mutable.Buffer.empty[SparkPlan]
-    val listener = new QueryExecutionListener {
-      override def onSuccess(funcName: String, qe: QueryExecution, durationNs: Long): Unit = {
-        captured += qe.executedPlan
-      }
-      override def onFailure(funcName: String, qe: QueryExecution, exception: Exception): Unit =
-        ()
-    }
-    spark.listenerManager.register(listener)
-    try {
-      action
-      CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
-    } finally {
-      spark.listenerManager.unregister(listener)
-    }
-    captured.toSeq
-  }
-
   private def captureWrite(tableName: String)(action: => Unit): WriteSnapshot = {
     val before = countSnapshots(tableName)
-    val plans = capturePlans(action)
+    val plans = capturePlans(spark)(action)
     WriteSnapshot(countSnapshots(tableName) - before, plans)
   }
 

@@ -20,7 +20,8 @@
 //! points of a string, and the first `W` bytes of a binary value.
 
 use super::{apply_unary, positive_int_param, unpacked_type, unsupported_type};
-use arrow::array::{ArrayRef, AsArray, Decimal128Array};
+use crate::utils::is_valid_decimal_precision;
+use arrow::array::{Array, ArrayRef, AsArray, Decimal128Array, OffsetSizeTrait};
 use arrow::compute::kernels::substring::{substring, substring_by_char};
 use arrow::datatypes::{DataType, Decimal128Type, Int16Type, Int32Type, Int64Type, Int8Type};
 use datafusion::common::{utils::take_function_args, Result};
@@ -51,6 +52,26 @@ fn truncate_i128(v: i128, w: i128) -> i128 {
     v - ((v % w) + w) % w
 }
 
+/// `UTF8String.substring(0, width)` counts code points, not bytes. A width that covers the whole
+/// values buffer cannot truncate anything, so the input is returned as is instead of being copied.
+fn truncate_string<O: OffsetSizeTrait>(array: &ArrayRef, width: i32) -> Result<ArrayRef> {
+    let strings = array.as_string::<O>();
+    if width as usize >= strings.value_data().len() {
+        return Ok(Arc::clone(array));
+    }
+    Ok(Arc::new(substring_by_char(strings, 0, Some(width as u64))?))
+}
+
+/// `BinaryUtil.truncateBinaryUnsafe` keeps the first `width` bytes. The whole-buffer shortcut
+/// matters here beyond avoiding a copy: Arrow's byte `substring` adds the length to each value's
+/// offset without checking for overflow, which panics for a width near `i32::MAX`.
+fn truncate_binary<O: OffsetSizeTrait>(array: &ArrayRef, width: i32) -> Result<ArrayRef> {
+    if width as usize >= array.as_binary::<O>().value_data().len() {
+        return Ok(Arc::clone(array));
+    }
+    Ok(substring(array.as_ref(), 0, Some(width as u64))?)
+}
+
 fn truncate_array(fn_name: &str, array: &ArrayRef, width: i32) -> Result<ArrayRef> {
     let result: ArrayRef = match array.data_type() {
         DataType::Int8 => Arc::new(
@@ -78,49 +99,17 @@ fn truncate_array(fn_name: &str, array: &ArrayRef, width: i32) -> Result<ArrayRe
             // last digit, so the result can need one more digit than the column allows. Spark's
             // `UnsafeRowWriter` writes such a `Decimal` as null (`changePrecision` fails), so
             // match that rather than emit a value the column's precision cannot hold.
-            let max_unscaled = 10_i128.pow(*precision as u32) - 1;
             let truncated: Decimal128Array =
                 array.as_primitive::<Decimal128Type>().unary_opt(|v| {
                     let truncated = truncate_i128(v, width as i128);
-                    (truncated.abs() <= max_unscaled).then_some(truncated)
+                    is_valid_decimal_precision(truncated, *precision).then_some(truncated)
                 });
             Arc::new(truncated.with_precision_and_scale(*precision, *scale)?)
         }
-        // `UTF8String.substring(0, width)` counts code points, not bytes. A width that covers
-        // the whole values buffer cannot truncate anything, so the input is returned as is; that
-        // also keeps a large width away from Arrow's substring kernels, which add it to the byte
-        // offsets and overflow on `i32::MAX`.
-        DataType::Utf8 => {
-            let strings = array.as_string::<i32>();
-            if width as usize >= strings.value_data().len() {
-                Arc::clone(array)
-            } else {
-                Arc::new(substring_by_char(strings, 0, Some(width as u64))?)
-            }
-        }
-        DataType::LargeUtf8 => {
-            let strings = array.as_string::<i64>();
-            if width as usize >= strings.value_data().len() {
-                Arc::clone(array)
-            } else {
-                Arc::new(substring_by_char(strings, 0, Some(width as u64))?)
-            }
-        }
-        // `BinaryUtil.truncateBinaryUnsafe` keeps the first `width` bytes.
-        DataType::Binary => {
-            if width as usize >= array.as_binary::<i32>().value_data().len() {
-                Arc::clone(array)
-            } else {
-                substring(array.as_ref(), 0, Some(width as u64))?
-            }
-        }
-        DataType::LargeBinary => {
-            if width as usize >= array.as_binary::<i64>().value_data().len() {
-                Arc::clone(array)
-            } else {
-                substring(array.as_ref(), 0, Some(width as u64))?
-            }
-        }
+        DataType::Utf8 => truncate_string::<i32>(array, width)?,
+        DataType::LargeUtf8 => truncate_string::<i64>(array, width)?,
+        DataType::Binary => truncate_binary::<i32>(array, width)?,
+        DataType::LargeBinary => truncate_binary::<i64>(array, width)?,
         other => return Err(unsupported_type(fn_name, other)),
     };
     Ok(result)
@@ -172,9 +161,7 @@ impl ScalarUDFImpl for SparkIcebergTruncate {
 mod tests {
     use super::super::test_util::invoke;
     use super::*;
-    use arrow::array::{
-        Array, BinaryArray, Int16Array, Int32Array, Int64Array, Int8Array, StringArray,
-    };
+    use arrow::array::{BinaryArray, Int16Array, Int32Array, Int64Array, Int8Array, StringArray};
     use datafusion::common::ScalarValue;
 
     fn truncate(width: i32, value: ArrayRef) -> ArrayRef {

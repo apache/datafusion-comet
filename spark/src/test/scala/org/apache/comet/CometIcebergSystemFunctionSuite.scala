@@ -19,29 +19,28 @@
 
 package org.apache.comet
 
+import java.io.File
 import java.math.{BigDecimal => JBigDecimal, BigInteger}
+import java.nio.file.Files
 import java.time.{Instant, LocalDate, LocalDateTime, ZoneOffset}
 
-import scala.collection.mutable
 import scala.util.Random
 
 import org.scalactic.source.Position
 import org.scalatest.Tag
 
-import org.apache.spark.{CometListenerBusUtils, SparkConf}
+import org.apache.spark.SparkConf
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
-import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Literal}
+import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Expression, Literal}
 import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
 import org.apache.spark.sql.comet.{CometIcebergWriteExec, CometSortExec}
 import org.apache.spark.sql.comet.execution.shuffle.{CometNativeShuffle, CometShuffleExchangeExec}
-import org.apache.spark.sql.execution.{QueryExecution, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.execution.exchange.ShuffleExchangeExec
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
-import org.apache.spark.sql.util.QueryExecutionListener
 
-import org.apache.comet.serde.{CometIcebergBucket, CometIcebergTruncate, CometStaticInvoke, Compatible, Unsupported}
+import org.apache.comet.serde.{CometExpressionSerde, CometIcebergBucket, CometIcebergTruncate, CometStaticInvoke, Compatible, SupportLevel, Unsupported}
 
 /**
  * Native support for Iceberg's system functions (`bucket`, `truncate`, `years`, `months`, `days`,
@@ -79,20 +78,37 @@ class CometIcebergSystemFunctionSuite
     Seq("i8", "i16", "i32", "i64", "dec18", "dec38", "str", "bin", "dt", "ts", "ts_ntz")
   private val truncateColumns = Seq("i8", "i16", "i32", "i64", "dec18", "dec38", "str", "bin")
 
+  // The source data is written once per suite; every test reads the same parquet directory.
+  private var sourceDir: File = _
+  private def sourcePath: String = new File(sourceDir, "data").getAbsolutePath
+
+  override def beforeAll(): Unit = {
+    super.beforeAll()
+    sourceDir = Files.createTempDirectory("comet-iceberg-system-functions").toFile
+    sourceData().write.parquet(sourcePath)
+  }
+
+  override def afterAll(): Unit = {
+    try deleteRecursively(sourceDir)
+    finally super.afterAll()
+  }
+
   test("bucket matches Iceberg for every supported type") {
     withSourceTable {
-      for (column <- bucketColumns; numBuckets <- Seq(1, 7, 16, Int.MaxValue)) {
-        checkSparkAnswerAndOperator(
-          s"SELECT $column, $catalog.system.bucket($numBuckets, $column) FROM $source")
+      bucketColumns.foreach { column =>
+        val buckets =
+          Seq(1, 7, 16, Int.MaxValue).map(n => s"$catalog.system.bucket($n, $column)")
+        checkSparkAnswerAndOperator(s"SELECT $column, ${buckets.mkString(", ")} FROM $source")
       }
     }
   }
 
   test("truncate matches Iceberg for every supported type") {
     withSourceTable {
-      for (column <- truncateColumns; width <- Seq(1, 3, 10, 1000, Int.MaxValue)) {
-        checkSparkAnswerAndOperator(
-          s"SELECT $column, $catalog.system.truncate($width, $column) FROM $source")
+      truncateColumns.foreach { column =>
+        val truncated =
+          Seq(1, 3, 10, 1000, Int.MaxValue).map(w => s"$catalog.system.truncate($w, $column)")
+        checkSparkAnswerAndOperator(s"SELECT $column, ${truncated.mkString(", ")} FROM $source")
       }
     }
   }
@@ -103,13 +119,12 @@ class CometIcebergSystemFunctionSuite
       // leak into the native result either.
       for (timezone <- Seq("UTC", "America/Los_Angeles", "Asia/Kathmandu")) {
         withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> timezone) {
-          for (column <- Seq("dt", "ts", "ts_ntz"); function <- Seq("years", "months", "days")) {
+          Seq("dt", "ts", "ts_ntz").foreach { column =>
+            val functions = Seq("years", "months", "days") ++ (if (column == "dt") Nil
+                                                               else Seq("hours"))
+            val transformed = functions.map(f => s"$catalog.system.$f($column)")
             checkSparkAnswerAndOperator(
-              s"SELECT $column, $catalog.system.$function($column) FROM $source")
-          }
-          for (column <- Seq("ts", "ts_ntz")) {
-            checkSparkAnswerAndOperator(
-              s"SELECT $column, $catalog.system.hours($column) FROM $source")
+              s"SELECT $column, ${transformed.mkString(", ")} FROM $source")
           }
         }
       }
@@ -134,11 +149,10 @@ class CometIcebergSystemFunctionSuite
         s"SELECT i32, str FROM $source " +
           s"ORDER BY $catalog.system.bucket(4, i32), $catalog.system.truncate(2, str), i32, str")
       checkSparkAnswerAndOperator(df)
-      assert(
-        collect(stripAQEPlan(df.queryExecution.executedPlan)) { case s: CometSortExec =>
-          s
-        }.nonEmpty,
-        "expected a native sort")
+      val sorts = collect(stripAQEPlan(df.queryExecution.executedPlan)) { case s: CometSortExec =>
+        s
+      }
+      assert(sorts.nonEmpty, "expected a native sort")
     }
   }
 
@@ -163,7 +177,7 @@ class CometIcebergSystemFunctionSuite
         USING iceberg
         PARTITIONED BY (bucket(4, i32), truncate(2, str), days(ts), months(dt))""")
       try {
-        val plans = capturePlans {
+        val plans = capturePlans(spark) {
           sql(s"INSERT INTO $table SELECT i32, str, ts, dt FROM $source")
         }
         val writePlans = plans.filter(plan =>
@@ -222,53 +236,31 @@ class CometIcebergSystemFunctionSuite
 
   test("support levels follow Iceberg's bind rules") {
     val value = AttributeReference("v", IntegerType)()
-    def invoke(cls: Class[_], args: Seq[org.apache.spark.sql.catalyst.expressions.Expression]) =
-      StaticInvoke(cls, IntegerType, "invoke", args, propagateNull = false)
+    val float = AttributeReference("f", FloatType)()
+    val date = AttributeReference("d", DateType)()
+    def level(
+        serde: CometExpressionSerde[StaticInvoke],
+        cls: Class[_],
+        args: Expression*): SupportLevel =
+      serde.getSupportLevel(StaticInvoke(cls, IntegerType, "invoke", args, propagateNull = false))
 
     val bucketInt = Class.forName("org.apache.iceberg.spark.functions.BucketFunction$BucketInt")
-    assert(
-      CometIcebergBucket.getSupportLevel(
-        invoke(bucketInt, Seq(Literal(4), value))) == Compatible())
-    assert(
-      CometIcebergBucket
-        .getSupportLevel(invoke(bucketInt, Seq(Literal(4.toShort), value))) == Compatible())
-    assert(
-      CometIcebergBucket
-        .getSupportLevel(invoke(bucketInt, Seq(Literal(0), value)))
-        .isInstanceOf[Unsupported])
-    assert(
-      CometIcebergBucket
-        .getSupportLevel(invoke(bucketInt, Seq(Literal(-4), value)))
-        .isInstanceOf[Unsupported])
-    assert(
-      CometIcebergBucket
-        .getSupportLevel(invoke(bucketInt, Seq(value, value)))
-        .isInstanceOf[Unsupported])
-    assert(
-      CometIcebergBucket
-        .getSupportLevel(invoke(bucketInt, Seq(Literal(4), AttributeReference("f", FloatType)())))
-        .isInstanceOf[Unsupported])
+    assert(level(CometIcebergBucket, bucketInt, Literal(4), value) == Compatible())
+    assert(level(CometIcebergBucket, bucketInt, Literal(4.toShort), value) == Compatible())
+    assert(level(CometIcebergBucket, bucketInt, Literal(0), value).isInstanceOf[Unsupported])
+    assert(level(CometIcebergBucket, bucketInt, Literal(-4), value).isInstanceOf[Unsupported])
+    assert(level(CometIcebergBucket, bucketInt, value, value).isInstanceOf[Unsupported])
+    assert(level(CometIcebergBucket, bucketInt, Literal(4), float).isInstanceOf[Unsupported])
 
     val truncateInt =
       Class.forName("org.apache.iceberg.spark.functions.TruncateFunction$TruncateInt")
-    assert(
-      CometIcebergTruncate
-        .getSupportLevel(invoke(truncateInt, Seq(Literal(10), value))) == Compatible())
-    assert(
-      CometIcebergTruncate
-        .getSupportLevel(
-          invoke(truncateInt, Seq(Literal(10), AttributeReference("d", DateType)())))
-        .isInstanceOf[Unsupported])
+    assert(level(CometIcebergTruncate, truncateInt, Literal(10), value) == Compatible())
+    assert(level(CometIcebergTruncate, truncateInt, Literal(10), date).isInstanceOf[Unsupported])
 
-    // The dispatch in CometStaticInvoke goes by class name, so the same expressions resolve to
-    // the Iceberg handlers there too.
-    assert(
-      CometStaticInvoke.getSupportLevel(
-        invoke(bucketInt, Seq(Literal(4), value))) == Compatible())
-    assert(
-      CometStaticInvoke
-        .getSupportLevel(invoke(bucketInt, Seq(Literal(0), value)))
-        .isInstanceOf[Unsupported])
+    // CometStaticInvoke dispatches on (functionName, class name), so the same expressions reach
+    // the Iceberg handlers from there too.
+    assert(level(CometStaticInvoke, bucketInt, Literal(4), value) == Compatible())
+    assert(level(CometStaticInvoke, bucketInt, Literal(0), value).isInstanceOf[Unsupported])
   }
 
   test("fallback reason for an unlisted static invoke names the declaring class") {
@@ -293,10 +285,7 @@ class CometIcebergSystemFunctionSuite
       s"spark.sql.catalog.$catalog" -> "org.apache.iceberg.spark.SparkCatalog",
       s"spark.sql.catalog.$catalog.type" -> "hadoop",
       s"spark.sql.catalog.$catalog.warehouse" -> warehouseDir.getAbsolutePath) {
-      withTempPath { dir =>
-        sourceData().write.parquet(dir.getAbsolutePath)
-        withParquetTable(dir.getAbsolutePath, source)(f)
-      }
+      withParquetTable(sourcePath, source)(f)
     }
   }
 
@@ -313,6 +302,12 @@ class CometIcebergSystemFunctionSuite
       StructField("dt", DateType),
       StructField("ts", TimestampType),
       StructField("ts_ntz", TimestampNTZType)))
+
+  private def instant(micros: Long): Instant =
+    Instant.ofEpochSecond(Math.floorDiv(micros, 1000000L), Math.floorMod(micros, 1000000L) * 1000)
+
+  private def localDateTime(micros: Long): LocalDateTime =
+    LocalDateTime.ofInstant(instant(micros), ZoneOffset.UTC)
 
   /**
    * Seeded random rows with nulls in every column, followed by the boundary values of each type
@@ -335,15 +330,6 @@ class CometIcebergSystemFunctionSuite
       new JBigDecimal(if (random.nextBoolean()) unscaled else unscaled.negate(), 10)
     }
     def randomMicros(): Long = random.nextLong() % 4000000000000000L
-    def instant(micros: Long): Instant =
-      Instant.ofEpochSecond(
-        Math.floorDiv(micros, 1000000L),
-        Math.floorMod(micros, 1000000L) * 1000)
-    def localDateTime(micros: Long): LocalDateTime =
-      LocalDateTime.ofEpochSecond(
-        Math.floorDiv(micros, 1000000L),
-        (Math.floorMod(micros, 1000000L) * 1000).toInt,
-        ZoneOffset.UTC)
 
     val randomRows = (0 until 400).map { _ =>
       Row(
@@ -359,78 +345,51 @@ class CometIcebergSystemFunctionSuite
         maybeNull(instant(randomMicros())),
         maybeNull(localDateTime(randomMicros())))
     }
+
+    // One list of boundary values per column, in schema order; transposed into rows below so
+    // each type's cases sit together (and a list of the wrong length fails loudly).
     val dec38Max = new JBigDecimal(BigInteger.TEN.pow(38).subtract(BigInteger.ONE), 10)
-    val boundaryRows = Seq(
-      Row(
-        Byte.MinValue,
-        Short.MinValue,
-        Int.MinValue,
-        Long.MinValue,
+    val boundaryColumns: Seq[Seq[Any]] = Seq(
+      Seq(Byte.MinValue, Byte.MaxValue, 0.toByte, (-1).toByte, null),
+      Seq(Short.MinValue, Short.MaxValue, 0.toShort, (-1).toShort, null),
+      Seq(Int.MinValue, Int.MaxValue, 0, -1, null),
+      Seq(Long.MinValue, Long.MaxValue, 0L, -1L, null),
+      Seq(
         new JBigDecimal("-99999999999999.9999"),
-        dec38Max.negate(),
-        "",
-        Array.empty[Byte],
-        LocalDate.ofEpochDay(0),
-        Instant.EPOCH,
-        LocalDateTime.of(1970, 1, 1, 0, 0)),
-      Row(
-        Byte.MaxValue,
-        Short.MaxValue,
-        Int.MaxValue,
-        Long.MaxValue,
         new JBigDecimal("99999999999999.9999"),
-        dec38Max,
-        "日本語😀",
-        Array[Byte](0, 1, 2, 3),
-        LocalDate.ofEpochDay(-1),
-        instant(-1L),
-        localDateTime(-1L)),
-      Row(
-        0.toByte,
-        0.toShort,
-        0,
-        0L,
         JBigDecimal.ZERO.setScale(4),
-        JBigDecimal.ZERO.setScale(10),
-        "a",
-        Array[Byte](0),
-        LocalDate.ofEpochDay(-365),
-        instant(-86400000000L),
-        localDateTime(-86400000000L - 1)),
-      Row(
-        (-1).toByte,
-        (-1).toShort,
-        -1,
-        -1L,
         new JBigDecimal("-0.0001"),
+        null),
+      Seq(
+        dec38Max.negate(),
+        dec38Max,
+        JBigDecimal.ZERO.setScale(10),
         new JBigDecimal("-0.0000000001"),
-        "iceberg",
-        Array[Byte](-1, -1, -1, -1, -1),
+        null),
+      Seq("", "日本語😀", "a", "iceberg", null),
+      Seq(
+        Array.empty[Byte],
+        Array[Byte](0, 1, 2, 3),
+        Array[Byte](0),
+        Array.fill[Byte](5)(-1),
+        null),
+      Seq(
+        LocalDate.ofEpochDay(0),
+        LocalDate.ofEpochDay(-1),
+        LocalDate.ofEpochDay(-365),
         LocalDate.ofEpochDay(-366),
-        instant(-3600000000L - 1),
-        localDateTime(-3600000000L)),
-      Row(null, null, null, null, null, null, null, null, null, null, null))
+        null),
+      Seq(Instant.EPOCH, instant(-1L), instant(-86400000000L), instant(-3600000000L - 1), null),
+      Seq(
+        LocalDateTime.of(1970, 1, 1, 0, 0),
+        localDateTime(-1L),
+        localDateTime(-86400000000L - 1),
+        localDateTime(-3600000000L),
+        null))
+    val boundaryRows = boundaryColumns.transpose.map(Row.fromSeq)
+
     spark.createDataFrame(
       spark.sparkContext.parallelize(randomRows ++ boundaryRows, 3),
       sourceSchema)
-  }
-
-  private def capturePlans(action: => Unit): Seq[SparkPlan] = {
-    val captured = mutable.Buffer.empty[SparkPlan]
-    val listener = new QueryExecutionListener {
-      override def onSuccess(funcName: String, qe: QueryExecution, durationNs: Long): Unit = {
-        captured += qe.executedPlan
-      }
-      override def onFailure(funcName: String, qe: QueryExecution, exception: Exception): Unit =
-        ()
-    }
-    spark.listenerManager.register(listener)
-    try {
-      action
-      CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
-    } finally {
-      spark.listenerManager.unregister(listener)
-    }
-    captured.toSeq
   }
 }

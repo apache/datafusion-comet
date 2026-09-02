@@ -37,24 +37,28 @@ import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, scalarFunctio
  * projections that users write against hidden partitioning, so routing them through
  * [[CometStaticInvoke]] covers shuffle, sort, filter, and projection at once.
  *
- * Iceberg is not on Comet's compile classpath, so the handlers are keyed on class name rather
- * than `Class[_]`. The list of classes is Iceberg's; `IcebergVersionFunction` is a zero-argument
- * constant and is deliberately left out.
+ * The list of classes is Iceberg's; `IcebergVersionFunction` is a zero-argument constant and is
+ * deliberately left out.
  */
 object CometIcebergSystemFunctions {
 
   private val FunctionsPackage = "org.apache.iceberg.spark.functions."
 
+  /** Every Iceberg system function exposes its static magic method under this name. */
+  private val MagicMethod = "invoke"
+
   private def implementations(
       outer: String,
       handler: CometExpressionSerde[StaticInvoke],
-      inner: String*): Seq[(String, CometExpressionSerde[StaticInvoke])] =
-    inner.map(name => s"$FunctionsPackage$outer$$$name" -> handler)
+      inner: String*): Seq[((String, String), CometExpressionSerde[StaticInvoke])] =
+    inner.map(name => (MagicMethod, s"$FunctionsPackage$outer$$$name") -> handler)
 
   /**
-   * Handlers keyed by the fully qualified name of the Iceberg class that `StaticInvoke` calls.
+   * Handlers keyed by `(functionName, class name)` of the Iceberg implementation class that
+   * `StaticInvoke` calls, the shape [[CometStaticInvoke]] dispatches on. Iceberg is not on
+   * Comet's compile classpath, which is why the key carries the class name rather than the class.
    */
-  val staticInvokeHandlers: Map[String, CometExpressionSerde[StaticInvoke]] = (
+  val staticInvokeHandlers: Map[(String, String), CometExpressionSerde[StaticInvoke]] = (
     implementations(
       "BucketFunction",
       CometIcebergBucket,
@@ -162,10 +166,9 @@ object CometIcebergBucket
       "iceberg_bucket",
       "numBuckets",
       {
-        case ByteType | ShortType | IntegerType | LongType | DateType |
-            TimestampType | TimestampNTZType | StringType | BinaryType =>
+        case ByteType | ShortType | IntegerType | LongType | DateType | TimestampType |
+            TimestampNTZType | StringType | BinaryType | _: DecimalType =>
           true
-        case _: DecimalType => true
         case _ => false
       })
 
@@ -175,8 +178,9 @@ object CometIcebergTruncate
       "iceberg_truncate",
       "width",
       {
-        case ByteType | ShortType | IntegerType | LongType | StringType | BinaryType => true
-        case _: DecimalType => true
+        case ByteType | ShortType | IntegerType | LongType | StringType |
+            BinaryType | _: DecimalType =>
+          true
         case _ => false
       })
 
@@ -206,25 +210,20 @@ abstract class CometIcebergTemporalTransform(
   }
 }
 
-private object IcebergTemporalTypes {
-  val dateOrTimestamp: DataType => Boolean = {
-    case DateType | TimestampType | TimestampNTZType => true
-    case _ => false
-  }
-  val timestampOnly: DataType => Boolean = {
-    case TimestampType | TimestampNTZType => true
-    case _ => false
-  }
-}
-
 object CometIcebergYears
-    extends CometIcebergTemporalTransform("iceberg_years", IcebergTemporalTypes.dateOrTimestamp)
+    extends CometIcebergTemporalTransform(
+      "iceberg_years",
+      Set(DateType, TimestampType, TimestampNTZType))
 
 object CometIcebergMonths
-    extends CometIcebergTemporalTransform("iceberg_months", IcebergTemporalTypes.dateOrTimestamp)
+    extends CometIcebergTemporalTransform(
+      "iceberg_months",
+      Set(DateType, TimestampType, TimestampNTZType))
 
 object CometIcebergDays
-    extends CometIcebergTemporalTransform("iceberg_days", IcebergTemporalTypes.dateOrTimestamp)
+    extends CometIcebergTemporalTransform(
+      "iceberg_days",
+      Set(DateType, TimestampType, TimestampNTZType))
 
 object CometIcebergHours
-    extends CometIcebergTemporalTransform("iceberg_hours", IcebergTemporalTypes.timestampOnly)
+    extends CometIcebergTemporalTransform("iceberg_hours", Set(TimestampType, TimestampNTZType))

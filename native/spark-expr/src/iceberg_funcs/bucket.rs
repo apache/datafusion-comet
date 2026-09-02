@@ -22,10 +22,10 @@
 //! the unscaled value for decimals).
 
 use super::{apply_unary, positive_int_param, unsupported_type};
-use arrow::array::{Array, ArrayRef, AsArray, Int32Array};
-use arrow::compute::cast;
+use arrow::array::{ArrayRef, AsArray, Int32Array};
 use arrow::datatypes::{
-    DataType, Date32Type, Decimal128Type, Int32Type, Int64Type, TimeUnit, TimestampMicrosecondType,
+    DataType, Date32Type, Decimal128Type, Int16Type, Int32Type, Int64Type, Int8Type, TimeUnit,
+    TimestampMicrosecondType,
 };
 use datafusion::common::{utils::take_function_args, Result};
 use datafusion::logical_expr::{
@@ -80,33 +80,39 @@ fn hash_long(value: i64) -> i32 {
 }
 
 /// `BucketUtil.hash(BigDecimal)`: hashes `unscaledValue().toByteArray()`, the shortest big-endian
-/// two's complement encoding of the unscaled value (at least one byte).
+/// two's complement encoding of the unscaled value. That keeps exactly one sign bit, so the byte
+/// count is one more than the bit length left after the run of leading sign bits.
 #[inline]
 fn hash_decimal(unscaled: i128) -> i32 {
-    let bytes = unscaled.to_be_bytes();
-    let mut start = 0;
-    while start < bytes.len() - 1 {
-        let redundant_sign_byte = match bytes[start] {
-            0x00 => bytes[start + 1] & 0x80 == 0,
-            0xFF => bytes[start + 1] & 0x80 != 0,
-            _ => false,
-        };
-        if !redundant_sign_byte {
-            break;
-        }
-        start += 1;
-    }
-    murmur3_32(&bytes[start..])
+    let sign_bits = if unscaled < 0 {
+        unscaled.leading_ones()
+    } else {
+        unscaled.leading_zeros()
+    };
+    let skip = ((sign_bits - 1) / 8) as usize;
+    murmur3_32(&unscaled.to_be_bytes()[skip..])
+}
+
+/// Buckets string or binary values by their raw bytes, keeping nulls.
+fn bucket_bytes<'a, B: AsRef<[u8]> + ?Sized + 'a>(
+    values: impl Iterator<Item = Option<&'a B>>,
+    bucket: impl Fn(i32) -> i32,
+) -> Int32Array {
+    values
+        .map(|v| v.map(|b| bucket(murmur3_32(b.as_ref()))))
+        .collect()
 }
 
 fn bucket_array(fn_name: &str, array: &ArrayRef, num_buckets: i32) -> Result<ArrayRef> {
     let bucket = |hash: i32| (hash & i32::MAX) % num_buckets;
     let result: Int32Array = match array.data_type() {
         // Iceberg binds tinyint and smallint inputs to `BucketInt`, hashing them as ints.
-        DataType::Int8 | DataType::Int16 => {
-            let widened = cast(array, &DataType::Int32)?;
-            return bucket_array(fn_name, &widened, num_buckets);
-        }
+        DataType::Int8 => array
+            .as_primitive::<Int8Type>()
+            .unary(|v| bucket(hash_long(v as i64))),
+        DataType::Int16 => array
+            .as_primitive::<Int16Type>()
+            .unary(|v| bucket(hash_long(v as i64))),
         DataType::Int32 => array
             .as_primitive::<Int32Type>()
             .unary(|v| bucket(hash_long(v as i64))),
@@ -122,31 +128,11 @@ fn bucket_array(fn_name: &str, array: &ArrayRef, num_buckets: i32) -> Result<Arr
         DataType::Decimal128(_, _) => array
             .as_primitive::<Decimal128Type>()
             .unary(|v| bucket(hash_decimal(v))),
-        DataType::Utf8 => array
-            .as_string::<i32>()
-            .iter()
-            .map(|v| v.map(|s| bucket(murmur3_32(s.as_bytes()))))
-            .collect(),
-        DataType::LargeUtf8 => array
-            .as_string::<i64>()
-            .iter()
-            .map(|v| v.map(|s| bucket(murmur3_32(s.as_bytes()))))
-            .collect(),
-        DataType::Binary => array
-            .as_binary::<i32>()
-            .iter()
-            .map(|v| v.map(|b| bucket(murmur3_32(b))))
-            .collect(),
-        DataType::LargeBinary => array
-            .as_binary::<i64>()
-            .iter()
-            .map(|v| v.map(|b| bucket(murmur3_32(b))))
-            .collect(),
-        DataType::FixedSizeBinary(_) => array
-            .as_fixed_size_binary()
-            .iter()
-            .map(|v| v.map(|b| bucket(murmur3_32(b))))
-            .collect(),
+        DataType::Utf8 => bucket_bytes(array.as_string::<i32>().iter(), bucket),
+        DataType::LargeUtf8 => bucket_bytes(array.as_string::<i64>().iter(), bucket),
+        DataType::Binary => bucket_bytes(array.as_binary::<i32>().iter(), bucket),
+        DataType::LargeBinary => bucket_bytes(array.as_binary::<i64>().iter(), bucket),
+        DataType::FixedSizeBinary(_) => bucket_bytes(array.as_fixed_size_binary().iter(), bucket),
         other => return Err(unsupported_type(fn_name, other)),
     };
     Ok(Arc::new(result))
@@ -197,10 +183,9 @@ mod tests {
     use super::super::test_util::invoke;
     use super::*;
     use arrow::array::{
-        BinaryArray, Date32Array, Decimal128Array, DictionaryArray, Int32Array, Int64Array,
-        Int8Array, StringArray, TimestampMicrosecondArray,
+        Array, BinaryArray, Date32Array, Decimal128Array, DictionaryArray, Int16Array, Int32Array,
+        Int64Array, Int8Array, StringArray, TimestampMicrosecondArray,
     };
-    use arrow::datatypes::Int8Type;
     use datafusion::common::ScalarValue;
 
     /// Hash values from Appendix B of the Iceberg table spec.
@@ -252,13 +237,25 @@ mod tests {
 
     #[test]
     fn buckets_every_supported_type_and_keeps_nulls() {
-        // bucket(100, 34) -> 79 is the example in Iceberg's function description.
-        let ints = bucket(100, Arc::new(Int32Array::from(vec![Some(34), None])));
-        assert_eq!(ints, Int32Array::from(vec![Some(79), None]));
-        let longs = bucket(100, Arc::new(Int64Array::from(vec![Some(34), None])));
-        assert_eq!(longs, Int32Array::from(vec![Some(79), None]));
-        let small = bucket(100, Arc::new(Int8Array::from(vec![Some(34), None])));
-        assert_eq!(small, Int32Array::from(vec![Some(79), None]));
+        // bucket(100, 34) -> 79 is the example in Iceberg's function description, and every
+        // integer width hashes the same 8 little-endian bytes.
+        let expected_34 = Int32Array::from(vec![Some(79), None]);
+        assert_eq!(
+            bucket(100, Arc::new(Int8Array::from(vec![Some(34), None]))),
+            expected_34
+        );
+        assert_eq!(
+            bucket(100, Arc::new(Int16Array::from(vec![Some(34), None]))),
+            expected_34
+        );
+        assert_eq!(
+            bucket(100, Arc::new(Int32Array::from(vec![Some(34), None]))),
+            expected_34
+        );
+        assert_eq!(
+            bucket(100, Arc::new(Int64Array::from(vec![Some(34), None]))),
+            expected_34
+        );
 
         let expected = |hash: i32| (hash & i32::MAX) % 16;
         let dates = bucket(16, Arc::new(Date32Array::from(vec![Some(17_486), None])));
