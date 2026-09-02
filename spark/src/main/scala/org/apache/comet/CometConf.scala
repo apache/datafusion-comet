@@ -276,7 +276,7 @@ object CometConf extends ShimCometConf {
         "SparkContext, otherwise caching fails as soon as a block is serialized, including " +
         "the disk half of the default MEMORY_AND_DISK storage level.")
       .booleanConf
-      .createWithDefault(false)
+      .createWithDefault(true)
 
   val COMET_EXEC_IN_MEMORY_CACHE_COMPRESSION_CODEC: ConfigEntry[String] =
     conf("spark.comet.exec.inMemoryCache.compression.codec")
