@@ -132,18 +132,24 @@ class CometWriteRowViewSuite extends CometTestBase {
     }
   }
 
-  testRowView(
-    "row view write is declined when a flat write is only complex in its partition column") {
+  testRowView("row view write is used for a flat partitioned write") {
     withParquetSource { source =>
+      // A partitioned write removes `BaseDynamicPartitionDataWriter.getOutputRow` as well as the
+      // transition, which is worth doing even when every data column is flat. Measured at 5% on
+      // this shape by `CometWriteRowViewBenchmark`, against a 1% noise floor.
+      val flat = source.selectExpr("id", "int_col", "str_col", "part")
       withTempPath { out =>
-        // `part` is the partition column, so it never reaches the OutputWriter and must not count
-        // towards the complex-type gate. Every remaining data column here is flat.
-        val flat = source.selectExpr("id", "int_col", "str_col", "part")
         val plan = captureWritePlan {
           withRowView(flat.write.mode("overwrite").partitionBy("part").parquet(out.toString))
         }
-        assert(countRowViewWrites(plan) == 0, s"partition columns must not count, got:\n$plan")
+        assert(
+          countRowViewWrites(plan) == 1,
+          s"a flat partitioned write still removes a projection, got:\n$plan")
       }
+      assertSameWrite(
+        flat,
+        (df, path) => df.write.mode("overwrite").partitionBy("part").parquet(path),
+        path => spark.read.schema(flat.schema).parquet(path).select(flat.columns.map(col): _*))
     }
   }
 

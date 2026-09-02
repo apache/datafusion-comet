@@ -207,13 +207,23 @@ case class EliminateRedundantTransitions(session: SparkSession)
    * The Comet columnar producer under a write's columnar-to-row transition, or `None` when there
    * is no transition to strip or the write would not gain from removing it.
    *
-   * Declines a write whose data columns are all flat. There the projection this removes is a
-   * generated fixed-width copy that measures inside the noise of a Parquet write, which does not
-   * pay for putting a reused mutable row in front of Spark's writer. The saving only becomes real
-   * once a struct, array or map is in play, because then the projection has to build nested
+   * How much there is to gain depends on how many projections the write performs per row.
+   *
+   * A partitioned or bucketed write performs two: the columnar-to-row transition, and
+   * `BaseDynamicPartitionDataWriter.writeRecord`'s `getOutputRow`, which exists only to strip the
+   * partition and bucket columns. Both are removed here, and that is worth doing whatever the
+   * schema: `CometWriteRowViewBenchmark` measures 5% on a flat 10-column schema and 15% once a
+   * struct, array or map is present, against a 1% noise floor.
+   *
+   * An unpartitioned write performs only the transition, so a flat schema is declined. There the
+   * projection is a generated fixed-width copy that measures inside the noise of a Parquet write,
+   * which does not pay for putting a reused mutable row in front of Spark's writer. The saving
+   * becomes real once a complex type is in play, because the projection then has to build nested
    * `UnsafeRow` / `UnsafeArrayData` with offset-and-length bookkeeping that the writer
-   * immediately walks back out. Partition and bucket columns do not count: they never reach the
-   * `OutputWriter`.
+   * immediately walks back out.
+   *
+   * Partition and bucket columns never count towards the complex-type test: they are stripped
+   * before the `OutputWriter` sees the row.
    */
   private def columnarChildForWrite(w: WriteFilesExec): Option[SparkPlan] = {
     val columnarChild = w.child match {
@@ -221,11 +231,14 @@ case class EliminateRedundantTransitions(session: SparkSession)
       case CometNativeColumnarToRowExec(child) => Some(child)
       case _ => None
     }
+    val removesWriterProjection = w.partitionColumns.nonEmpty || w.bucketSpec.isDefined
     columnarChild.filter { child =>
-      val partitionIds = w.partitionColumns.map(_.exprId).toSet
-      child.output
-        .filterNot(a => partitionIds.contains(a.exprId))
-        .exists(a => isComplex(a.dataType))
+      removesWriterProjection || {
+        val partitionIds = w.partitionColumns.map(_.exprId).toSet
+        child.output
+          .filterNot(a => partitionIds.contains(a.exprId))
+          .exists(a => isComplex(a.dataType))
+      }
     }
   }
 
