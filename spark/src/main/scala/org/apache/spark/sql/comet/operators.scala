@@ -1433,6 +1433,89 @@ case class CometExpandExec(
   override lazy val metrics: Map[String, SQLMetric] = Map.empty
 }
 
+/**
+ * Native wrapper for Spark's `MergeRowsExec`. Predicates and instruction groups are real
+ * case-class fields so Catalyst can discover their references and scalar subqueries.
+ */
+case class CometMergeRowsExec(
+    override val nativeOp: Operator,
+    override val originalPlan: SparkPlan,
+    override val output: Seq[Attribute],
+    isSourceRowPresent: Expression,
+    isTargetRowPresent: Expression,
+    matchedInstructions: Seq[Expression],
+    notMatchedInstructions: Seq[Expression],
+    notMatchedBySourceInstructions: Seq[Expression],
+    checkCardinality: Boolean,
+    rowIdOrdinal: Option[Int],
+    child: SparkPlan,
+    override val serializedPlanOpt: SerializedPlan)
+    extends CometUnaryExec {
+  // Match Spark's MergeRowsExec partitioning contract.
+  override def outputPartitioning: Partitioning = UnknownPartitioning(0)
+
+  // Only attributes not already supplied by the child are produced here.
+  override def producedAttributes: AttributeSet =
+    AttributeSet(output.filterNot(child.outputSet.contains))
+
+  // Cardinality checking also reads Spark's synthetic ROW_ID column.
+  @transient
+  override lazy val references: AttributeSet = {
+    val rowIdExprs = rowIdOrdinal.flatMap(child.output.lift).toSeq
+    val expressionReferences =
+      AttributeSet.fromAttributeSets((rowIdExprs ++ expressions).map(_.references))
+    expressionReferences -- producedAttributes
+  }
+
+  override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan =
+    this.copy(child = newChild)
+
+  override def stringArgs: Iterator[Any] =
+    Iterator(
+      output,
+      matchedInstructions,
+      notMatchedInstructions,
+      notMatchedBySourceInstructions,
+      checkCardinality,
+      child)
+
+  override def equals(obj: Any): Boolean = {
+    obj match {
+      case other: CometMergeRowsExec =>
+        this.output == other.output &&
+        this.isSourceRowPresent == other.isSourceRowPresent &&
+        this.isTargetRowPresent == other.isTargetRowPresent &&
+        this.matchedInstructions == other.matchedInstructions &&
+        this.notMatchedInstructions == other.notMatchedInstructions &&
+        this.notMatchedBySourceInstructions == other.notMatchedBySourceInstructions &&
+        this.checkCardinality == other.checkCardinality &&
+        this.rowIdOrdinal == other.rowIdOrdinal &&
+        this.child == other.child &&
+        this.serializedPlanOpt == other.serializedPlanOpt
+      case _ =>
+        false
+    }
+  }
+
+  override def hashCode(): Int =
+    Objects.hashCode(
+      output,
+      isSourceRowPresent,
+      isTargetRowPresent,
+      matchedInstructions,
+      notMatchedInstructions,
+      notMatchedBySourceInstructions,
+      Boolean.box(checkCardinality),
+      rowIdOrdinal,
+      child)
+
+  // Spark 4.x per-clause metrics require instruction context that Spark 3.5 lacks.
+  // Expose baseline metrics until that context is version-gated through native serde.
+  override lazy val metrics: Map[String, SQLMetric] =
+    CometMetricNode.baselineMetrics(sparkContext) ++ Map(
+      "output_batches" -> SQLMetrics.createMetric(sparkContext, "number of output batches"))
+}
+
 object CometExplodeExec extends CometOperatorSerde[GenerateExec] {
 
   override def enabledConfig: Option[ConfigEntry[Boolean]] = Some(

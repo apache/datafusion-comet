@@ -293,6 +293,9 @@ trait ShimSparkErrorConverter {
       case "ScalarSubqueryTooManyRows" =>
         Some(QueryExecutionErrors.multipleRowScalarSubqueryError(context.headOption.orNull))
 
+      case "MergeCardinalityViolation" =>
+        Some(QueryExecutionErrors.mergeCardinalityViolationError())
+
       case "IntervalArithmeticOverflowWithSuggestion" =>
         Some(
           QueryExecutionErrors.withSuggestionIntervalArithmeticOverflowError(

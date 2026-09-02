@@ -85,6 +85,31 @@ runs natively; it is controlled by `spark.comet.exec.windowGroupLimit.enabled` (
 - Signed-zero ordering (`-0.0` vs `+0.0`) diverges from Spark's `RankLimitIterator`; see
   [floating-point ordering](./floating-point.md#ordering-signed-zero-00-vs-00).
 
+## MERGE INTO (MergeRowsExec)
+
+Comet can run `MergeRowsExec` (Spark's row-level `MERGE INTO` dispatch operator, Spark 3.5+)
+natively, but it is disabled by default. Enable it with `spark.comet.exec.mergeRows.enabled=true`.
+
+**Missing per-clause row metrics:** Spark 4.x's `MergeRowsExec` exposes eight metrics --
+`numTargetRowsCopied`, `numTargetRowsInserted`, `numTargetRowsUpdated`, `numTargetRowsDeleted`,
+`numTargetRowsMatchedUpdated`, `numTargetRowsMatchedDeleted`, `numTargetRowsNotMatchedBySourceUpdated`,
+and `numTargetRowsNotMatchedBySourceDeleted` -- breaking down how many rows each `MERGE` clause
+touched. Comet's native operator does not expose these; it only reports the generic `output_rows`,
+`output_batches`, and `elapsed_compute` every native operator reports. EXPLAIN ANALYZE and the
+Spark UI will not show a rows-inserted/updated/deleted breakdown for a native `MERGE`. (Spark
+3.5.x's own `MergeRowsExec` does not have these metrics either -- they were added alongside a
+`Context` field Spark only attaches to `MERGE` clauses starting in 4.x.)
+
+**Cardinality-violation error may differ from Spark's on rare inputs:** Spark validates cardinality
+(rejecting an `ON` condition that matches one target row to multiple source rows,
+`MERGE_CARDINALITY_VIOLATION`) row-at-a-time, interleaved with applying each `MATCHED` clause, so
+whichever failure a given row hits first is the error Spark raises. Comet's native operator is
+vectorized: it validates cardinality for an entire input batch before evaluating any clause. If a
+single batch contains both a cardinality violation and an unrelated clause-evaluation error (for
+example an ANSI divide-by-zero) on different rows, Comet may raise a different error than Spark
+would for the same input, depending on which row each engine reaches first. The query fails either
+way; only the specific error differs.
+
 ## Round-Robin Partitioning
 
 Comet's native shuffle implementation of round-robin partitioning (`df.repartition(n)`) is not compatible with

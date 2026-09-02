@@ -306,6 +306,7 @@ fn op_name(op: &OpStruct) -> &'static str {
         OpStruct::ShuffleScan(_) => "ShuffleScan",
         OpStruct::BroadcastNestedLoopJoin(_) => "BroadcastNestedLoopJoin",
         OpStruct::Sample(_) => "Sample",
+        OpStruct::MergeRows(_) => "MergeRows",
         OpStruct::ContribScan(_) => "ContribScan",
         OpStruct::WindowGroupLimit(_) => "WindowGroupLimit",
     }
