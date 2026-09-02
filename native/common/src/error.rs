@@ -160,9 +160,11 @@ pub enum SparkError {
     /// ceiling (i32::MAX) or the allocator could not satisfy the reservation. Spark itself has
     /// no equivalent limit because it stores each row as its own `long[]`. Reported with a
     /// message that names `spark.comet.batchSize` as the actionable knob.
-    #[error("Comet's native `sequence` kernel cannot materialize a batch with {total_elements} \
+    #[error(
+        "Comet's native `sequence` kernel cannot materialize a batch with {total_elements} \
         total elements: it exceeds the per-batch limit or the allocator refused the reservation. \
-        Lower `spark.comet.batchSize` so fewer rows are grouped per batch.")]
+        Lower `spark.comet.batchSize` so fewer rows are grouped per batch."
+    )]
     SequenceBatchTooLarge { total_elements: String },
 
     #[error("[NOT_NULL_ASSERT_VIOLATION] The field `{field_name}` cannot be null.")]

@@ -152,11 +152,11 @@ where
     // the offset push cannot overflow. `try_reserve_exact` returns a query error on allocator
     // failure so an oversized reservation cannot abort the executor.
     let mut values: Vec<T::Native> = Vec::new();
-    values
-        .try_reserve_exact(total)
-        .map_err(|_| DataFusionError::External(Box::new(SparkError::SequenceBatchTooLarge {
+    values.try_reserve_exact(total).map_err(|_| {
+        DataFusionError::External(Box::new(SparkError::SequenceBatchTooLarge {
             total_elements: total.to_string(),
-        })))?;
+        }))
+    })?;
     let mut offsets: Vec<i32> = Vec::with_capacity(num_rows + 1);
     offsets.push(0);
     let mut nulls = NullBufferBuilder::new(num_rows);
