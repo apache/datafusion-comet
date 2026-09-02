@@ -102,13 +102,28 @@ fn extract_all_array<O: OffsetSizeTrait>(
     let mut null_buffer = BooleanBufferBuilder::new(array.len());
     offsets.push(0);
 
+    // Reuse one set of capture locations for the whole batch instead of iterating with
+    // `captures_iter`, which builds a fresh `Captures` per match. Each of those clones the
+    // compiled regex's shared group-info Arc, and when a sort evaluates the same expression
+    // from several threads at once that refcount becomes a contended cache line. `find_iter`
+    // yields plain spans with the exact same iteration semantics, so groups are resolved by
+    // rerunning the capture engine at each match start into the preallocated buffer.
+    let mut locations = regex.capture_locations();
     for i in 0..array.len() {
         if array.is_null(i) {
             offsets.push(values_builder.len() as i32);
             null_buffer.append(false);
         } else {
-            for caps in regex.captures_iter(array.value(i)) {
-                let s = caps.get(group_idx).map(|m| m.as_str()).unwrap_or("");
+            let value = array.value(i);
+            for m in regex.find_iter(value) {
+                let matched = regex.captures_read_at(&mut locations, value, m.start());
+                debug_assert_eq!(
+                    matched.map(|m| (m.start(), m.end())),
+                    Some((m.start(), m.end()))
+                );
+                let s = locations
+                    .get(group_idx)
+                    .map_or("", |(start, end)| &value[start..end]);
                 values_builder.append_value(s);
             }
             offsets.push(values_builder.len() as i32);
@@ -128,11 +143,18 @@ fn extract_all_array<O: OffsetSizeTrait>(
 }
 
 fn extract_one(input: &str, regex: &Regex, group_idx: usize) -> Vec<String> {
+    let mut locations = regex.capture_locations();
     regex
-        .captures_iter(input)
-        .map(|caps| {
-            caps.get(group_idx)
-                .map(|m| m.as_str().to_string())
+        .find_iter(input)
+        .map(|m| {
+            let matched = regex.captures_read_at(&mut locations, input, m.start());
+            debug_assert_eq!(
+                matched.map(|m| (m.start(), m.end())),
+                Some((m.start(), m.end()))
+            );
+            locations
+                .get(group_idx)
+                .map(|(start, end)| input[start..end].to_string())
                 .unwrap_or_default()
         })
         .collect()
@@ -310,6 +332,41 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(result, vec![None]);
+    }
+
+    #[test]
+    fn empty_matches_are_kept_and_iteration_terminates() {
+        // The regex crate yields empty matches but skips one that sits at the end of the
+        // previous match, so `a*` on "ba" is ["", "a"] with no trailing empty.
+        let result = run(vec![array(vec![Some("ba")]), pattern(r"a*"), idx(0)]).unwrap();
+        assert_eq!(result, vec![Some(vec![String::new(), "a".to_string()])]);
+    }
+
+    #[test]
+    fn empty_matches_advance_over_multibyte_chars() {
+        let result = run(vec![array(vec![Some("日x本")]), pattern(r"x*"), idx(0)]).unwrap();
+        assert_eq!(
+            result,
+            vec![Some(vec![String::new(), "x".to_string(), String::new()])]
+        );
+    }
+
+    #[test]
+    fn anchors_and_word_boundaries_see_full_context() {
+        let result = run(vec![
+            array(vec![Some("cat hat bat")]),
+            pattern(r"\b\w+\b"),
+            idx(0),
+        ])
+        .unwrap();
+        assert_eq!(
+            result,
+            vec![Some(vec![
+                "cat".to_string(),
+                "hat".to_string(),
+                "bat".to_string()
+            ])]
+        );
     }
 
     #[test]
