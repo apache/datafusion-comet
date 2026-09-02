@@ -22,7 +22,7 @@ package org.apache.comet.serde
 import scala.annotation.tailrec
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.sql.catalyst.expressions.{And, ArrayAggregate, ArrayAppend, ArrayContains, ArrayExcept, ArrayExists, ArrayFilter, ArrayForAll, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayPosition, ArrayRemove, ArraySort, ArraysOverlap, ArraysZip, ArrayTransform, ArrayUnion, Attribute, Cast, CreateArray, ElementAt, EmptyRow, Expression, Flatten, GetArrayItem, IsNotNull, LambdaFunction, Literal, NamedLambdaVariable, Reverse, Sequence, Size, Slice, SortArray, ZipWith}
+import org.apache.spark.sql.catalyst.expressions.{And, ArrayAggregate, ArrayAppend, ArrayContains, ArrayExcept, ArrayExists, ArrayFilter, ArrayForAll, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayPosition, ArrayRemove, ArraySort, ArraysOverlap, ArraysZip, ArrayTransform, ArrayUnion, Attribute, BoundReference, Cast, CreateArray, ElementAt, EmptyRow, Expression, Flatten, GetArrayItem, IsNotNull, LambdaFunction, Literal, NamedLambdaVariable, Reverse, Sequence, Size, Slice, SortArray, ZipWith}
 import org.apache.spark.sql.catalyst.util.GenericArrayData
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
@@ -929,21 +929,22 @@ object CometSequence extends CometExpressionSerde[Sequence] with CodegenDispatch
   private val temporalUnsupportedReason =
     "date and timestamp element types run through the JVM codegen dispatcher"
 
-  private val nonLeafArgUnsupportedReason =
-    "sequence with non-leaf argument expressions runs through the JVM codegen dispatcher " +
-      "to preserve Spark's per-row null short-circuit"
+  private val unsafeArgUnsupportedReason =
+    "sequence arguments must be literals or column references; other shapes run through the " +
+      "JVM codegen dispatcher to preserve Spark's per-row null short-circuit"
 
   override def getSupportLevel(expr: Sequence): SupportLevel = expr.start.dataType match {
     case ByteType | ShortType | IntegerType | LongType =>
       // Spark's codegen for `Sequence` short-circuits per row: any null argument returns null
       // without evaluating the rest. DataFusion evaluates each scalar-UDF argument over the
-      // whole batch before calling the outer kernel, so a nested throwing sub-expression (e.g.
-      // `sequence(s, size(sequence(1, 5, k)))` with `k = -1`) would fire even on rows the
-      // outer null check would have discarded. Only leaves (literals, column references) are
-      // safe to lower natively; anything else falls back to the codegen dispatcher, which
-      // keeps the whole tree inside Spark's guarded evaluation.
-      if (hasLeafArgsOnly(expr)) Compatible()
-      else Unsupported(Some(nonLeafArgUnsupportedReason))
+      // whole batch before calling the outer kernel, so a sub-expression with side effects
+      // (a nested call, a `CASE WHEN`, even a zero-arg UDF like `boom()`) could fire on rows
+      // Spark's null check would have discarded. A tree-shape "no children" test is not
+      // enough — a zero-arg UDF has empty children but still executes. Only literals and
+      // column references are safe to lower natively; anything else falls back to the
+      // codegen dispatcher, which keeps the whole tree inside Spark's guarded evaluation.
+      if (argsAreLiteralsOrRefs(expr)) Compatible()
+      else Unsupported(Some(unsafeArgUnsupportedReason))
     case DateType | TimestampType | TimestampNTZType =>
       // Temporal sequences step through timezone/DST/legacy-calendar arithmetic
       // (https://github.com/apache/datafusion-comet/issues/5349), so they stay on the JVM
@@ -953,13 +954,16 @@ object CometSequence extends CometExpressionSerde[Sequence] with CodegenDispatch
       Unsupported(Some(s"sequence with element type $other is not supported natively"))
   }
 
-  private def hasLeafArgsOnly(expr: Sequence): Boolean = {
+  private def argsAreLiteralsOrRefs(expr: Sequence): Boolean = {
     val args = Seq(expr.start, expr.stop) ++ expr.stepOpt
-    args.forall(_.children.isEmpty)
+    args.forall {
+      case _: Literal | _: Attribute | _: BoundReference => true
+      case _ => false
+    }
   }
 
   override def getUnsupportedReasons(): Seq[String] =
-    Seq(temporalUnsupportedReason, nonLeafArgUnsupportedReason)
+    Seq(temporalUnsupportedReason, unsafeArgUnsupportedReason)
 
   override def convert(
       expr: Sequence,

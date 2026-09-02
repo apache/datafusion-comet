@@ -212,8 +212,11 @@ class CometCodegenSuite
 
   private def withSequenceTable(f: => Unit): Unit = {
     withTable("t") {
-      sql("CREATE TABLE t (a INT, b INT, d DATE) USING parquet")
-      sql("INSERT INTO t VALUES (1, 5, DATE'2024-01-01'), (9, 2, DATE'2024-03-01')")
+      // `stp` carries a sign-correct step so `sequence(a, b, stp)` is legal on both rows:
+      // ascending (1, 5, 1) and descending (9, 2, -1). A single literal step would raise
+      // `Illegal sequence boundaries` on the mismatched row inside Spark's reference run.
+      sql("CREATE TABLE t (a INT, b INT, stp INT, d DATE) USING parquet")
+      sql("INSERT INTO t VALUES (1, 5, 1, DATE'2024-01-01'), (9, 2, -1, DATE'2024-03-01')")
       withSQLConf(
         CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true",
         CometConf.COMET_EXPLAIN_CODEGEN_ENABLED.key -> "true",
@@ -225,15 +228,33 @@ class CometCodegenSuite
 
   test("sequence with leaf integral args runs natively") {
     // Integral sequence with column-reference/literal args lowers to the native spark_sequence
-    // kernel; no codegen-dispatch marker should appear.
+    // kernel; no codegen-dispatch marker should appear. The three-argument form uses the `stp`
+    // column so both the ascending and descending rows have a sign-correct step (all args
+    // stay leaves, so the native path is exercised).
     withSequenceTable {
-      val df = sql("SELECT sequence(a, b), sequence(a, b, 2) FROM t")
+      val df = sql("SELECT sequence(a, b), sequence(a, b, stp) FROM t")
       checkSparkAnswerAndOperator(df)
       val explain =
         new ExtendedExplainInfo().generateExtendedInfo(df.queryExecution.executedPlan)
       assert(
         !explain.contains("JVM codegen dispatcher"),
         s"expected integral sequence with leaf args to run natively, got:\n$explain")
+    }
+  }
+
+  test("sequence with zero-arg UDF stop routes through the dispatcher") {
+    // A zero-argument Scala UDF has empty `children` but still fires on evaluation. The gate
+    // must reject it (rather than treating it as a safe leaf) so DataFusion does not call it
+    // over the whole batch on rows Spark's per-row null short-circuit would have skipped.
+    spark.udf.register("comet_seq_stopper", () => 10)
+    withSequenceTable {
+      val df = sql("SELECT sequence(a, comet_seq_stopper()) FROM t")
+      checkSparkAnswerAndOperator(df)
+      val explain =
+        new ExtendedExplainInfo().generateExtendedInfo(df.queryExecution.executedPlan)
+      assert(
+        explain.contains("JVM codegen dispatcher: sequence"),
+        s"expected zero-arg-UDF sequence to route through the dispatcher, got:\n$explain")
     }
   }
 
