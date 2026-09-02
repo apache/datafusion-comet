@@ -258,20 +258,25 @@ impl PartitionWriter for LocalPartitionWriter {
                     write_buffer_size,
                     batch_size,
                 );
-                for batch in iter.by_ref() {
-                    let batch = batch?;
-                    buf_batch_writer.write(
-                        &batch,
+                let result: datafusion::common::Result<()> = (|| {
+                    for batch in iter.by_ref() {
+                        let batch = batch?;
+                        buf_batch_writer.write(
+                            &batch,
+                            recycled_buffer,
+                            &metrics.encode_time,
+                            &metrics.write_time,
+                        )?;
+                    }
+                    buf_batch_writer.flush(
                         recycled_buffer,
                         &metrics.encode_time,
                         &metrics.write_time,
-                    )?;
-                }
-                buf_batch_writer.flush(
-                    recycled_buffer,
-                    &metrics.encode_time,
-                    &metrics.write_time,
-                )?;
+                    )
+                })();
+                // An errored partition must hand back a drained buffer, or its bytes
+                // leak into the next partition's block.
+                result.inspect_err(|_| recycled_buffer.clear())?;
             }
         }
         Ok(())
@@ -318,5 +323,59 @@ impl PartitionWriter for LocalPartitionWriter {
         write_timer.stop();
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::CompressionCodec;
+    use arrow::array::Int64Array;
+    use arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
+
+    /// A partition whose batch iterator fails after a batch was already encoded must hand
+    /// back a drained scratch; leftover bytes would land in the next partition's block.
+    #[test]
+    fn finish_partition_error_drains_recycled_buffer() {
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, false)]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(Int64Array::from_iter_values(0..100))],
+        )
+        .unwrap();
+        let block_writer =
+            ShuffleBlockWriter::try_new(schema.as_ref(), CompressionCodec::None).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let mut writer = LocalPartitionWriter::try_new(
+            dir.path().join("data.out").to_str().unwrap().to_string(),
+            dir.path().join("index.out").to_str().unwrap().to_string(),
+            block_writer,
+            2,
+            // batch_size below the row count so the write serializes into the scratch.
+            10,
+            1 << 20,
+            Arc::new(RuntimeEnv::default()),
+        )
+        .unwrap();
+
+        let metrics = ShufflePartitionerMetrics::new(&ExecutionPlanMetricsSet::new(), 0);
+        let mut iter = vec![
+            Ok(batch),
+            Err(DataFusionError::Execution("injected failure".to_string())),
+        ]
+        .into_iter();
+
+        assert!(writer.finish_partition(0, &mut iter, &metrics).is_err());
+        match &writer.data_output {
+            DataOutput::Multi {
+                recycled_buffer, ..
+            } => assert!(
+                recycled_buffer.is_empty(),
+                "errored partition left {} bytes in the recycled buffer",
+                recycled_buffer.len()
+            ),
+            DataOutput::Single { .. } => unreachable!("two partitions use the multi output"),
+        }
     }
 }

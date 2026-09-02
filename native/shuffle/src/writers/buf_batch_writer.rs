@@ -333,16 +333,27 @@ mod tests {
             buffer_max_size
         );
 
-        // With a roomy cap the grown capacity is retained (shrink_to never grows the
-        // target below the cap, so no over-shrinking).
+        // With a roomy cap the grown capacity is retained: `write` serializes into the
+        // scratch (batch_size below the row count again), and `flush` must leave the
+        // sub-cap capacity exactly unchanged rather than shrinking it.
         let large_cap = 1 << 20;
         let block_writer =
             ShuffleBlockWriter::try_new(batch.schema().as_ref(), CompressionCodec::None).unwrap();
         let mut output = Vec::new();
         let mut scratch = Vec::new();
-        let mut writer = BufBatchWriter::new(block_writer, &mut output, large_cap, 8192);
+        let mut writer = BufBatchWriter::new(block_writer, &mut output, large_cap, batch_size);
         writer.write(&batch, &mut scratch, &time, &time).unwrap();
+        let cap_after_write = scratch.capacity();
+        assert!(
+            cap_after_write > 0 && cap_after_write <= large_cap,
+            "write must have serialized the batch into the scratch"
+        );
         writer.flush(&mut scratch, &time, &time).unwrap();
-        assert!(scratch.capacity() > 0 && scratch.capacity() <= large_cap);
+        assert!(scratch.is_empty());
+        assert_eq!(
+            scratch.capacity(),
+            cap_after_write,
+            "flush must not shrink a scratch already under the cap"
+        );
     }
 }
