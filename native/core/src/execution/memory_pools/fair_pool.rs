@@ -29,7 +29,7 @@ use datafusion::{
     common::DataFusionError,
     execution::memory_pool::{MemoryPool, MemoryReservation},
 };
-use parking_lot::Mutex;
+use parking_lot::{Condvar, Mutex};
 
 /// The task memory backend the pool acquires from and releases to. The production implementation
 /// calls Spark's task memory manager over JNI, which can block while Spark spills other consumers;
@@ -67,11 +67,21 @@ pub struct CometFairMemoryPool {
     bridge: Box<dyn TaskMemoryBridge>,
     pool_size: usize,
     state: Mutex<CometFairPoolState>,
+    /// Signals that the held-back release finished; see `paying_deferred`.
+    deferred_done: Condvar,
 }
 
 struct CometFairPoolState {
     used: usize,
     num: usize,
+    /// Bytes the JVM side has granted us and not yet been handed back.
+    jvm_held: usize,
+    /// Number of bridge acquire calls currently in flight.
+    pending_acquires: usize,
+    /// Bytes held back from a release that would have zeroed the JVM-side balance.
+    deferred_release: usize,
+    /// True while the held-back bytes are on their way to the JVM; acquires wait it out.
+    paying_deferred: bool,
 }
 
 impl Debug for CometFairMemoryPool {
@@ -102,7 +112,15 @@ impl CometFairMemoryPool {
         Self {
             bridge,
             pool_size,
-            state: Mutex::new(CometFairPoolState { used: 0, num: 0 }),
+            state: Mutex::new(CometFairPoolState {
+                used: 0,
+                num: 0,
+                jvm_held: 0,
+                pending_acquires: 0,
+                deferred_release: 0,
+                paying_deferred: false,
+            }),
+            deferred_done: Condvar::new(),
         }
     }
 
@@ -114,13 +132,70 @@ impl CometFairMemoryPool {
         self.bridge.release(size)
     }
 
-    /// Returns bytes optimistically reserved by `try_grow` after the JVM failed to back them.
-    fn rollback(&self, additional: usize) {
-        let mut state = self.state.lock();
-        state.used = state
-            .used
-            .checked_sub(additional)
-            .expect("rolled back more bytes than the pool tracks");
+    /// Debits a release from the JVM-side balance and returns how much to hand back now. A
+    /// release that would zero the balance while acquires are in flight keeps one byte back,
+    /// because Spark drops the task's accounting entry at zero and a parked acquire then indexes
+    /// the missing entry. Blocking instead could deadlock: the waiter may need this very memory.
+    /// The n-1 bytes freed here still wake Spark's waiter; the single held byte only matters
+    /// in a pool small enough that one byte decides the fair-share threshold, and even there
+    /// the deferred payoff releases it as soon as in-flight acquires drain.
+    fn plan_release(state: &mut CometFairPoolState, bytes: usize) -> usize {
+        state.jvm_held = state
+            .jvm_held
+            .checked_sub(bytes)
+            .expect("released more bytes than the JVM side holds");
+        if bytes > 0 && state.jvm_held == 0 && state.pending_acquires > 0 {
+            state.jvm_held = 1;
+            state.deferred_release += 1;
+            bytes - 1
+        } else {
+            bytes
+        }
+    }
+
+    /// Settles a finished bridge acquire, whatever its outcome: rolls back unbacked bytes,
+    /// records what the JVM granted, and once no acquires remain in flight hands any held-back
+    /// bytes over while new acquires briefly wait, so no acquire can park on a dying balance.
+    fn finish_acquire(&self, granted: usize, unbacked: usize) {
+        let payment = {
+            let mut state = self.state.lock();
+            state.used = state
+                .used
+                .checked_sub(unbacked)
+                .expect("rolled back more bytes than the pool tracks");
+            state.jvm_held = state
+                .jvm_held
+                .checked_add(granted)
+                .expect("overflow in checked_add");
+            state.pending_acquires -= 1;
+            if state.pending_acquires == 0 && state.deferred_release > 0 {
+                let bytes = std::mem::take(&mut state.deferred_release);
+                state.jvm_held -= bytes;
+                state.paying_deferred = true;
+                bytes
+            } else {
+                0
+            }
+        };
+        self.pay_deferred(payment);
+    }
+
+    fn pay_deferred(&self, bytes: usize) {
+        if bytes == 0 {
+            return;
+        }
+        // The flag must clear even if the JVM call blows up, or every later acquire would
+        // wait on it forever.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.release(bytes)));
+        {
+            let mut state = self.state.lock();
+            state.paying_deferred = false;
+            self.deferred_done.notify_all();
+        }
+        match result {
+            Ok(result) => result.unwrap_or_else(|_| panic!("Failed to release {bytes} bytes")),
+            Err(panic) => std::panic::resume_unwind(panic),
+        }
     }
 }
 
@@ -162,7 +237,7 @@ impl MemoryPool for CometFairMemoryPool {
 
     fn shrink(&self, _reservation: &MemoryReservation, subtractive: usize) {
         if subtractive > 0 {
-            {
+            let to_release = {
                 let mut state = self.state.lock();
                 // We don't use reservation.size() here because DataFusion 53+ decrements
                 // the reservation's atomic size before calling pool.shrink(), so it would
@@ -174,13 +249,16 @@ impl MemoryPool for CometFairMemoryPool {
                     )
                 }
                 state.used -= subtractive;
-            }
+                Self::plan_release(&mut state, subtractive)
+            };
             // The JVM release runs without the lock so a blocked acquire on another thread can
             // never stall this release. A failed release here panics (the caller already gave the
             // bytes up, there is no one left to handle an error), while the partial-grant path in
             // try_grow returns Err after the same debit because its caller can still spill.
-            self.release(subtractive)
-                .unwrap_or_else(|_| panic!("Failed to release {subtractive} bytes"));
+            if to_release > 0 {
+                self.release(to_release)
+                    .unwrap_or_else(|_| panic!("Failed to release {to_release} bytes"));
+            }
         }
     }
 
@@ -195,6 +273,12 @@ impl MemoryPool for CometFairMemoryPool {
             // without any lock held, and the reservation rolls back if the JVM does not back it.
             {
                 let mut state = self.state.lock();
+                // A held-back release is on its way to the JVM; an acquire started now could
+                // park on a balance about to hit zero, so wait out the short payment. No cycle:
+                // the payer waits on nothing of ours and always clears the flag.
+                while state.paying_deferred {
+                    self.deferred_done.wait(&mut state);
+                }
                 let num = state.num;
                 let limit = self
                     .pool_size
@@ -212,6 +296,7 @@ impl MemoryPool for CometFairMemoryPool {
                 state.used = used
                     .checked_add(additional)
                     .expect("overflow in checked_add");
+                state.pending_acquires += 1;
             }
 
             // The bridge can panic inside its JNI frame; the optimistic reservation must not
@@ -222,11 +307,11 @@ impl MemoryPool for CometFairMemoryPool {
             })) {
                 Ok(Ok(acquired)) => acquired,
                 Ok(Err(e)) => {
-                    self.rollback(additional);
+                    self.finish_acquire(0, additional);
                     return Err(e.into());
                 }
                 Err(panic) => {
-                    self.rollback(additional);
+                    self.finish_acquire(0, additional);
                     std::panic::resume_unwind(panic);
                 }
             };
@@ -235,9 +320,17 @@ impl MemoryPool for CometFairMemoryPool {
             if acquired < additional as i64 {
                 // Return the headroom before handing the partial grant back to the JVM, so other
                 // threads can use it even if the release itself fails.
-                self.rollback(additional);
-                // Release the acquired bytes before throwing error
-                self.release(acquired as usize)?;
+                let granted = usize::try_from(acquired).unwrap_or(0);
+                self.finish_acquire(granted, additional);
+                // Hand the partial grant back through the guarded path so it cannot zero the
+                // JVM-side balance under someone else's parked acquire.
+                let to_release = {
+                    let mut state = self.state.lock();
+                    Self::plan_release(&mut state, granted)
+                };
+                if to_release > 0 {
+                    self.release(to_release)?;
+                }
 
                 return resources_err!(
                     "Failed to acquire {} bytes, only got {} bytes. Reserved: {} bytes",
@@ -246,6 +339,7 @@ impl MemoryPool for CometFairMemoryPool {
                     self.reserved()
                 );
             }
+            self.finish_acquire(additional, 0);
         }
         Ok(())
     }
@@ -259,17 +353,21 @@ impl MemoryPool for CometFairMemoryPool {
 mod tests {
     use super::*;
     use crate::errors::CometError;
-    use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering::SeqCst};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::SeqCst};
     use std::sync::mpsc::{channel, Receiver, Sender};
     use std::sync::Barrier;
     use std::thread;
     use std::time::Duration;
 
-    /// In-process stand-in for Spark's task memory manager. Tracks the bytes it has granted so
-    /// tests can assert the pool never releases more than it acquired.
+    /// In-process stand-in for Spark's task memory manager. Models the per-task entry that
+    /// ExecutionMemoryPool keeps in memoryForTask: created when an acquire arrives, removed
+    /// when a release drains it to zero, and indexed again by any acquire that parked.
     struct StubTaskMemory {
-        /// Bytes currently granted; a release must never drive this negative.
-        outstanding: AtomicI64,
+        /// The task's granted balance; None means Spark removed the entry.
+        entry: Mutex<Option<i64>>,
+        /// Wakes acquires parked in wait-for-release mode, like Spark's notifyAll.
+        released: Condvar,
+        releases: AtomicUsize,
         acquires: AtomicUsize,
         /// When non-zero, every n-th acquire is granted only half of the requested bytes.
         short_every: usize,
@@ -280,18 +378,26 @@ mod tests {
         /// When armed, acquire announces itself on `entered` and parks until `gate` fires or drops.
         park_armed: AtomicBool,
         park: Option<(Sender<()>, Mutex<Receiver<()>>)>,
+        /// When armed, acquire announces itself and parks until some release lands, like a
+        /// task below its minimum share waiting for memory to be freed.
+        wait_for_release_armed: AtomicBool,
+        wait_entered: Option<Sender<()>>,
     }
 
     impl StubTaskMemory {
         fn new() -> Self {
             Self {
-                outstanding: AtomicI64::new(0),
+                entry: Mutex::new(None),
+                released: Condvar::new(),
+                releases: AtomicUsize::new(0),
                 acquires: AtomicUsize::new(0),
                 short_every: 0,
                 fail_acquire: AtomicBool::new(false),
                 panic_acquire: AtomicBool::new(false),
                 park_armed: AtomicBool::new(false),
                 park: None,
+                wait_for_release_armed: AtomicBool::new(false),
+                wait_entered: None,
             }
         }
 
@@ -305,8 +411,13 @@ mod tests {
             self
         }
 
+        fn with_wait_for_release(mut self, entered: Sender<()>) -> Self {
+            self.wait_entered = Some(entered);
+            self
+        }
+
         fn outstanding(&self) -> i64 {
-            self.outstanding.load(SeqCst)
+            self.entry.lock().unwrap_or(0)
         }
     }
 
@@ -319,28 +430,63 @@ mod tests {
             if self.panic_acquire.load(SeqCst) {
                 panic!("injected acquire panic");
             }
+            // Spark creates the task's entry on the way into acquireMemory and holds the pool
+            // monitor for the whole call, giving it up only while parked in lock.wait().
+            let mut entry = self.entry.lock();
+            entry.get_or_insert(0);
             if let Some((entered, gate)) = &self.park {
                 if self.park_armed.load(SeqCst) {
                     let _ = entered.send(());
+                    drop(entry);
                     // A dropped gate also unparks, so a failing test can still unwind cleanly.
                     let _ = gate.lock().recv();
+                    entry = self.entry.lock();
                 }
             }
+            if self.wait_for_release_armed.load(SeqCst) {
+                let before = self.releases.load(SeqCst);
+                if let Some(entered) = &self.wait_entered {
+                    let _ = entered.send(());
+                }
+                while self.releases.load(SeqCst) == before {
+                    let timed_out = self
+                        .released
+                        .wait_for(&mut entry, Duration::from_secs(10))
+                        .timed_out();
+                    assert!(!timed_out, "parked acquire was never woken by a release");
+                }
+            }
+            // A woken waiter indexes memoryForTask unconditionally, so a removed entry means
+            // a NoSuchElementException in ExecutionMemoryPool.acquireMemory.
+            let Some(balance) = entry.as_mut() else {
+                panic!("key not found: task entry removed while acquire waited");
+            };
             let granted = if self.short_every != 0 && n.is_multiple_of(self.short_every) {
                 additional / 2
             } else {
                 additional
             };
-            self.outstanding.fetch_add(granted as i64, SeqCst);
+            *balance += granted as i64;
             Ok(granted as i64)
         }
 
         fn release(&self, size: usize) -> CometResult<()> {
-            let prev = self.outstanding.fetch_sub(size as i64, SeqCst);
+            let mut entry = self.entry.lock();
+            // Mirrors ExecutionMemoryPool.releaseMemory: debit the entry, remove it at zero,
+            // notify waiters. The pool must never hand back more than the task holds.
+            let Some(balance) = entry.as_mut() else {
+                panic!("released {size} bytes with no task entry");
+            };
             assert!(
-                prev >= size as i64,
-                "released {size} bytes with only {prev} outstanding"
+                *balance >= size as i64,
+                "released {size} bytes with only {balance} outstanding"
             );
+            *balance -= size as i64;
+            if *balance <= 0 {
+                *entry = None;
+            }
+            self.releases.fetch_add(1, SeqCst);
+            self.released.notify_all();
             Ok(())
         }
     }
@@ -511,6 +657,11 @@ mod tests {
                         if i % 3 == 0 && res.size() > 0 {
                             res.shrink(res.size() / 2 + 1);
                         }
+                        // Occasional full drains push the task's balance toward zero while
+                        // other threads still have acquires in flight.
+                        if (i + t) % 41 == 0 {
+                            res.free();
+                        }
                         assert!(
                             pool.reserved() <= POOL_SIZE / THREADS,
                             "pool exceeded its fair limit"
@@ -575,5 +726,86 @@ mod tests {
             released.is_ok(),
             "release was blocked behind an in-flight acquire"
         );
+    }
+
+    /// Two threads of one task: one parks inside the acquire while the other hands back the
+    /// task's entire balance. Spark drops the per-task entry once its balance hits zero, so
+    /// the release must keep the balance alive until the parked acquire has finished.
+    #[test]
+    fn full_release_does_not_strand_a_parked_acquire() {
+        let (entered_tx, entered_rx) = channel();
+        let (gate_tx, gate_rx) = channel::<()>();
+        let stub = Arc::new(StubTaskMemory::new().with_park(entered_tx, gate_rx));
+        let pool = pool_with(&stub, 1_000_000);
+
+        let holder = MemoryConsumer::new("holder").register(&pool);
+        let grower = MemoryConsumer::new("grower").register(&pool);
+        holder.try_grow(10).unwrap();
+
+        stub.park_armed.store(true, SeqCst);
+        let grower_thread = thread::spawn(move || {
+            grower.try_grow(10).unwrap();
+            grower.free();
+        });
+        entered_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("grower never reached the acquire call");
+
+        // The full release lands while the grower is still parked inside the acquire.
+        holder.free();
+
+        stub.park_armed.store(false, SeqCst);
+        let _ = gate_tx.send(());
+        grower_thread
+            .join()
+            .expect("parked acquire crashed after the full release");
+
+        assert_eq!(pool.reserved(), 0);
+        assert_eq!(stub.outstanding(), 0, "held-back bytes were never returned");
+    }
+
+    /// Here the parked acquire can only proceed after memory is freed, so a release that
+    /// waited for in-flight acquires to finish first would deadlock. The release must go
+    /// through immediately and be what wakes the waiter.
+    #[test]
+    fn full_release_wakes_an_acquire_waiting_for_memory() {
+        let (entered_tx, entered_rx) = channel();
+        let stub = Arc::new(StubTaskMemory::new().with_wait_for_release(entered_tx));
+        let pool = pool_with(&stub, 1_000_000);
+
+        let holder = MemoryConsumer::new("holder").register(&pool);
+        let grower = MemoryConsumer::new("grower").register(&pool);
+        holder.try_grow(10).unwrap();
+
+        stub.wait_for_release_armed.store(true, SeqCst);
+        let (grower_done_tx, grower_done_rx) = channel();
+        let grower_thread = thread::spawn(move || {
+            grower.try_grow(10).unwrap();
+            grower.free();
+            let _ = grower_done_tx.send(());
+        });
+        entered_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("grower never reached the acquire call");
+        stub.wait_for_release_armed.store(false, SeqCst);
+
+        let (holder_done_tx, holder_done_rx) = channel();
+        let holder_thread = thread::spawn(move || {
+            holder.free();
+            let _ = holder_done_tx.send(());
+        });
+
+        assert!(
+            holder_done_rx.recv_timeout(Duration::from_secs(20)).is_ok(),
+            "full release deadlocked behind the parked acquire"
+        );
+        assert!(
+            grower_done_rx.recv_timeout(Duration::from_secs(20)).is_ok(),
+            "parked acquire never completed after the release"
+        );
+        holder_thread.join().unwrap();
+        grower_thread.join().unwrap();
+        assert_eq!(pool.reserved(), 0);
+        assert_eq!(stub.outstanding(), 0, "held-back bytes were never returned");
     }
 }
