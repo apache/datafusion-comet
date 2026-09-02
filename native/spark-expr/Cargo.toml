@@ -286,3 +286,7 @@ harness = false
 [[bench]]
 name = "contains"
 harness = false
+
+[[bench]]
+name = "utf8_decode"
+harness = false
