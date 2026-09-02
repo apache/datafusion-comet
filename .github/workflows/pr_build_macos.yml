@@ -143,6 +143,7 @@ jobs:
               org.apache.comet.exec.CometShuffle4_0Suite
               org.apache.comet.exec.CometNativeColumnarToRowSuite
               org.apache.comet.exec.CometNativeShuffleSuite
+              org.apache.comet.exec.CometWriteRowViewSuite
               org.apache.comet.shuffle.CelebornShufflePartitionPusherSuite
               org.apache.spark.sql.comet.execution.shuffle.CometCelebornShuffleManagerSuite
               org.apache.spark.sql.comet.execution.shuffle.CometCelebornNativeShuffleWriterSuite

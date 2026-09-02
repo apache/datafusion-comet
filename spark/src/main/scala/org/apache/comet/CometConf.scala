@@ -289,6 +289,18 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_EXEC_WRITE_ROW_VIEW_ENABLED: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.write.rowView.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Experimental. Whether Comet takes over Spark's WriteFilesExec so that file writes " +
+          "consume Arrow batches directly instead of a materialized UnsafeRow per row. Spark's " +
+          "file writers only ever read the row they are handed, so the UnsafeProjection that " +
+          "the columnar-to-row transition performs, and the second one that the partitioned " +
+          "writer performs to strip partition columns, are both pure overhead. Off by default.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.sortMergeJoinWithJoinFilter.enabled")
       .category(CATEGORY_ENABLE_EXEC)
