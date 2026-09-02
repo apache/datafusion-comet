@@ -466,8 +466,11 @@ object NativeUtil {
       ordinal = 0
       while (ordinal < childrenForAllocation.size()) {
         val child = childrenForAllocation.get(ordinal)
+        var runtimeName = s"__comet_runtime_field_$ordinal"
+        while (names.contains(runtimeName)) runtimeName = s"_$runtimeName"
+        names.add(runtimeName)
         renamedChildren.add(
-          new Field(s"__comet_runtime_field_$ordinal", child.getFieldType, child.getChildren))
+          new Field(runtimeName, child.getFieldType, child.getChildren))
         ordinal += 1
       }
       new Field(field.getName, field.getFieldType, renamedChildren)

@@ -743,7 +743,10 @@ class CometJoinSuite extends CometTestBase {
             """SELECT /*+ BROADCAST(b) */ p._1, b.s
               |FROM probe p
               |JOIN (
-              |  SELECT _1 AS k, named_struct('x', _1, 'x', _2) AS s
+              |  SELECT _1 AS k,
+              |    named_struct(
+              |      '__comet_runtime_field_0', _1,
+              |      '__comet_runtime_field_0', _2) AS s
               |  FROM build
               |) b ON p._1 = b.k""".stripMargin
 
