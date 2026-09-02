@@ -379,6 +379,33 @@ object NativeUtil {
     }
   }
 
+  /**
+   * Build a C Stream root whose physical and advertised schemas use the same duplicate-safe field
+   * names. Arrow's C Data exporter reconstructs nested vectors from the advertised schema and
+   * otherwise collapses duplicate struct children before loading the record batch.
+   */
+  def createVectorSchemaRootForExport(
+      schema: Schema,
+      allocator: BufferAllocator): VectorSchemaRoot = {
+    val fields = schema.getFields
+    val runtimeFields = new ArrayList[Field](fields.size())
+    val vectors = new ArrayList[FieldVector](fields.size())
+    try {
+      var ordinal = 0
+      while (ordinal < fields.size()) {
+        val runtimeField = fieldForAllocation(fields.get(ordinal))
+        runtimeFields.add(runtimeField)
+        vectors.add(runtimeField.createVector(allocator).asInstanceOf[FieldVector])
+        ordinal += 1
+      }
+      new VectorSchemaRoot(new Schema(runtimeFields), vectors, 0)
+    } catch {
+      case failure: Throwable =>
+        AutoCloseables.close(failure, vectors)
+        throw failure
+    }
+  }
+
   private def createPinnedVector(
       runtimeField: Field,
       exportField: Field,
