@@ -51,17 +51,31 @@ object CometStaticInvoke extends CometExpressionSerde[StaticInvoke] {
       // node survives and is handled directly (see CometBase64).
       ("encode", classOf[Base64]) -> CometBase64StaticInvoke)
 
+  /**
+   * Iceberg's system functions (`bucket`, `truncate`, `years`, ...) are matched on class name
+   * because Iceberg is not on Comet's compile classpath; see [[CometIcebergSystemFunctions]].
+   */
+  private def handlerFor(expr: StaticInvoke): Option[CometExpressionSerde[StaticInvoke]] =
+    staticInvokeExpressions
+      .get((expr.functionName, expr.staticObject))
+      .orElse(CometIcebergSystemFunctions.staticInvokeHandlers.get(expr.staticObject.getName))
+
+  override def getSupportLevel(expr: StaticInvoke): SupportLevel =
+    handlerFor(expr).map(_.getSupportLevel(expr)).getOrElse(Compatible())
+
   override def convert(
       expr: StaticInvoke,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    staticInvokeExpressions.get((expr.functionName, expr.staticObject)) match {
+    handlerFor(expr) match {
       case Some(handler) =>
         handler.convert(expr, inputs, binding)
       case None =>
+        // Every Iceberg system function is named `invoke`, so name the declaring class too.
         withFallbackReason(
           expr,
-          s"Static invoke expression: ${expr.functionName} is not supported")
+          s"Static invoke expression: ${expr.functionName} is not supported " +
+            s"(declared on ${expr.staticObject.getName})")
         None
     }
   }

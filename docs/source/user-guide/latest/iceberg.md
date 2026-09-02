@@ -196,6 +196,32 @@ the project, exchange, and sort operators around them stay on the Comet path end
 Spark, which forces a columnar-to-row roundtrip and demotes the surrounding shuffle from
 `CometExchange` to `CometColumnarExchange`.
 
+### Iceberg system functions
+
+Iceberg's system functions `bucket`, `truncate`, `years`, `months`, `days`, and `hours` (the SQL
+form of its partition transforms, for example `SELECT system.bucket(16, id) FROM t`) run natively.
+Spark binds them as static invocations of Iceberg's per-type implementations under
+`org.apache.iceberg.spark.functions`, and Comet recognizes those classes wherever the expression
+appears: in a projection, a filter, a sort key, or the hash partitioning of a shuffle.
+
+The native kernels reproduce Iceberg's Java semantics exactly rather than approximately:
+
+- `bucket` hashes the spec's byte encoding of each value (8-byte little-endian for integers, dates,
+  and timestamps; UTF-8 for strings; raw bytes for binary; the minimal big-endian two's complement
+  of the unscaled value for decimals) with 32-bit Murmur3 and masks the sign bit before taking the
+  modulus.
+- `truncate` uses Java's wrapping integer arithmetic, keeps the decimal's precision and scale
+  (a negative decimal whose truncated value no longer fits the precision becomes null, as it
+  does in Spark), and counts code points (not bytes) for strings.
+- `years`, `months`, `days`, and `hours` are evaluated in UTC regardless of the session timezone
+  and go negative before the epoch; `days` returns a date, the other three an int.
+
+This matters most for writes. A partitioned table with the default `write.distribution-mode`
+(`hash`) is planned with a shuffle and a local sort keyed on the partition transforms, and with
+these functions native the whole sub-plan feeding the [native Iceberg writer](iceberg-writes.md)
+stays in Comet. A `numBuckets` or `width` argument that is not a positive integer literal makes
+the expression fall back to Spark.
+
 ### Task input metrics
 
 The native Iceberg reader populates Spark's task-level `inputMetrics.bytesRead` (visible in the Spark UI Stages tab) using the `bytes_read` counter from iceberg-rust's `ScanMetrics`. This counter includes bytes read from both data files and delete files.
