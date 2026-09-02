@@ -244,7 +244,8 @@ pub struct JVMClasses<'a> {
     pub comet_s3_credential_dispatcher: CometS3CredentialDispatcher<'a>,
     /// The CometSchemaUtils class. Used to fold Parquet field names via the JVM's
     /// `String.toLowerCase(Locale.ROOT)` for Spark-compatible case-insensitive resolution.
-    pub comet_schema_utils: CometSchemaUtils<'a>,
+    /// Holds a global class reference, so unlike the sibling fields it carries no `'a`.
+    pub comet_schema_utils: CometSchemaUtils,
 }
 
 unsafe impl Send for JVMClasses<'_> {}

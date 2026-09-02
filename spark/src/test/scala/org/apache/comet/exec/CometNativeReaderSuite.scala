@@ -117,8 +117,14 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
       }
       val readSchema = new StructType().add("Café", LongType, nullable = true)
       withSQLConf(SQLConf.CASE_SENSITIVE.key -> "false") {
+        val df = spark.read.schema(readSchema).parquet(path.toString)
+        // Confirm Comet's native scan raises this, not a Spark fallback that emits the same
+        // _LEGACY_ERROR_TEMP_2093 "duplicate field" substring for the same input.
+        assert(
+          find(df.queryExecution.executedPlan)(_.isInstanceOf[CometNativeScanExec]).isDefined,
+          "expected a CometNativeScanExec so the duplicate error is raised by Comet")
         val e = intercept[Exception] {
-          spark.read.schema(readSchema).parquet(path.toString).collect()
+          df.collect()
         }
         assert(
           e.getMessage.contains("duplicate field") ||
@@ -143,8 +149,14 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
       val readSchema =
         new StructType().add("s", new StructType().add("Café", LongType, nullable = true))
       withSQLConf(SQLConf.CASE_SENSITIVE.key -> "false") {
+        val df = spark.read.schema(readSchema).parquet(path.toString)
+        // Confirm Comet's native scan (its nested Struct convert) raises this, not a Spark
+        // fallback that emits the same "duplicate field" substring for the same input.
+        assert(
+          find(df.queryExecution.executedPlan)(_.isInstanceOf[CometNativeScanExec]).isDefined,
+          "expected a CometNativeScanExec so the duplicate error is raised by Comet")
         val e = intercept[Exception] {
-          spark.read.schema(readSchema).parquet(path.toString).collect()
+          df.collect()
         }
         assert(
           e.getMessage.contains("duplicate field") ||
@@ -209,6 +221,27 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
             df.collect().forall(_.isNullAt(0)),
             s"case-sensitive read of $readTop should not match $fileTop")
         }
+      }
+    }
+  }
+
+  test("native reader non-ASCII fold follows the JVM Unicode table") {
+    // `Ƛ` (U+A7DC) is a witness for the JNI fold: Rust's `to_lowercase` folds it to `ƛ`
+    // (U+019B) but JDK 11/17/21/22 leave it unchanged, so a case-insensitive read of `ƛ`
+    // against a file column `Ƛ` must resolve the way the JVM does (no match, all null) rather
+    // than the way a Rust in-process fold would (match, the id values). Asserting through
+    // `checkSparkAnswer` rather than a literal null keeps it honest on a future JDK that does
+    // fold `Ƛ`. Unlike the `U+A7C0`/`U+10570` families, no JDK we support folds `Ƛ`, so this
+    // stays stable.
+    withTempPath { path =>
+      spark.range(3).selectExpr("id as `Ƛ`").write.parquet(path.toString)
+      val readSchema = new StructType().add("ƛ", LongType, nullable = true)
+      withSQLConf(SQLConf.CASE_SENSITIVE.key -> "false") {
+        val df = spark.read.schema(readSchema).parquet(path.toString)
+        val (_, cometPlan) = checkSparkAnswerAndOperator(df)
+        assert(
+          cometPlan.collect { case n: CometNativeScanExec => n }.nonEmpty,
+          "Expected a CometNativeScanExec")
       }
     }
   }

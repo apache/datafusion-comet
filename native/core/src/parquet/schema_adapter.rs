@@ -15,8 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::jvm_bridge::{JVMClasses, StringWrapper};
 use crate::parquet::cast_column::CometCastColumnExpr;
+use crate::parquet::name_fold::{fold_name, fold_names, fold_schema_names};
 use crate::parquet::parquet_support::{spark_parquet_convert, SparkParquetOptions};
 use arrow::array::new_empty_array;
 use arrow::datatypes::{DataType, Field, FieldRef, Schema, SchemaRef};
@@ -33,12 +33,11 @@ use datafusion_physical_expr_adapter::{
     replace_columns_with_literals, DefaultPhysicalExprAdapterFactory, PhysicalExprAdapter,
     PhysicalExprAdapterFactory,
 };
-use jni::objects::JString;
 use parquet::arrow::PARQUET_FIELD_ID_META_KEY;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::{self, Display};
 use std::hash::{Hash, Hasher};
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::Arc;
 
 /// Factory for creating Spark-compatible physical expression adapters.
 ///
@@ -76,146 +75,6 @@ fn parse_field_id(field: &Field) -> Option<i32> {
 
 fn schema_has_field_ids(schema: &SchemaRef) -> bool {
     schema.fields().iter().any(|f| parse_field_id(f).is_some())
-}
-
-/// Fold field names for case-insensitive matching under Spark's Parquet rules. In case-sensitive
-/// mode names are returned unchanged. In case-insensitive mode this mirrors `ParquetReadSupport`,
-/// which resolves fields by `name.toLowerCase(Locale.ROOT)`; the fold is delegated to the JVM
-/// (`CometSchemaUtils.toLowerCaseRoot`) so Comet folds names exactly as Spark does, including
-/// non-ASCII characters. Outside a Comet task there is no attached JVM (e.g. Rust unit tests) or
-/// the JNI call fails, so fall back to ASCII folding.
-///
-/// Folding is a pure function of the name, and the same field names recur across every batch and
-/// file, so results are memoized process-wide (see [`fold_cache`]). That turns the per-file
-/// (schema-adapter) and per-batch (nested `Struct -> Struct` convert) folds into one JVM crossing
-/// per distinct name for the life of the process.
-pub(crate) fn fold_names(names: &[&str], case_sensitive: bool) -> Vec<String> {
-    if case_sensitive {
-        return names.iter().map(|n| n.to_string()).collect();
-    }
-
-    let cache = fold_cache();
-    let mut result: Vec<Option<String>> = vec![None; names.len()];
-    let mut miss_positions: Vec<usize> = Vec::new();
-    {
-        let read = cache.read().unwrap();
-        for (i, name) in names.iter().enumerate() {
-            match read.get(*name) {
-                Some(folded) => result[i] = Some(folded.clone()),
-                None => miss_positions.push(i),
-            }
-        }
-    }
-
-    if !miss_positions.is_empty() {
-        let miss_names: Vec<&str> = miss_positions.iter().map(|&i| names[i]).collect();
-        let (folded, cacheable) = fold_uncached(&miss_names);
-        if cacheable {
-            let mut write = cache.write().unwrap();
-            for (pos, &i) in miss_positions.iter().enumerate() {
-                // Bound the process-wide cache: an executor JVM is long-lived, so stop inserting
-                // once the distinct-name vocabulary grows large. Names beyond the cap still fold
-                // correctly on each call, just uncached.
-                if write.len() >= FOLD_CACHE_MAX_ENTRIES {
-                    break;
-                }
-                write.insert(names[i].to_string(), folded[pos].clone());
-            }
-        }
-        for (pos, &i) in miss_positions.iter().enumerate() {
-            result[i] = Some(folded[pos].clone());
-        }
-    }
-
-    result
-        .into_iter()
-        .map(|folded| folded.expect("every name folded"))
-        .collect()
-}
-
-/// Fold a single field name. Convenience wrapper over [`fold_names`] for the per-column-reference
-/// lookups; the schema side is always folded in bulk via [`fold_schema_names`].
-pub(crate) fn fold_name(name: &str, case_sensitive: bool) -> String {
-    let mut folded = fold_names(&[name], case_sensitive);
-    folded
-        .pop()
-        .expect("fold_names returns one entry per input name")
-}
-
-/// Fold every field name in `schema`. See [`fold_names`].
-pub(crate) fn fold_schema_names(schema: &SchemaRef, case_sensitive: bool) -> Vec<String> {
-    let names: Vec<&str> = schema.fields().iter().map(|f| f.name().as_str()).collect();
-    fold_names(&names, case_sensitive)
-}
-
-/// Upper bound on [`fold_cache`] entries, comfortably above any realistic distinct-field-name
-/// vocabulary. Caps memory for pathological workloads (an executor reading very many wide or
-/// high-cardinality schemas over its lifetime).
-const FOLD_CACHE_MAX_ENTRIES: usize = 100_000;
-
-/// Process-wide memo of `original_name -> folded_name`, shared across all tasks in the (long-lived)
-/// executor JVM. Insertion stops at [`FOLD_CACHE_MAX_ENTRIES`], so it cannot grow without bound;
-/// names beyond the cap still fold correctly, just uncached.
-fn fold_cache() -> &'static RwLock<HashMap<String, String>> {
-    static CACHE: OnceLock<RwLock<HashMap<String, String>>> = OnceLock::new();
-    CACHE.get_or_init(|| RwLock::new(HashMap::new()))
-}
-
-/// Fold names that missed the cache. Returns the folds and whether they may be cached: a transient
-/// JVM failure returns the ASCII fallback but is NOT cached, so it cannot poison later lookups once
-/// the JVM recovers.
-fn fold_uncached(names: &[&str]) -> (Vec<String>, bool) {
-    if crate::JAVA_VM.get().is_some() {
-        match jvm_fold_all(names) {
-            Ok(folded) => return (folded, true),
-            Err(e) => log::warn!(
-                "JVM case-fold failed; falling back to ASCII lowercasing, so non-ASCII field \
-                 names may not resolve the way Spark does: {e}"
-            ),
-        }
-        (
-            names.iter().map(|n| n.to_ascii_lowercase()).collect(),
-            false,
-        )
-    } else {
-        // No attached JVM (e.g. Rust unit tests): ASCII folding is the permanent mode, cacheable.
-        (names.iter().map(|n| n.to_ascii_lowercase()).collect(), true)
-    }
-}
-
-/// Lower-case a batch of names via the JVM's `String.toLowerCase(Locale.ROOT)`, matching Spark's
-/// `ParquetReadSupport` byte-for-byte. Folds in chunks so at most `CHUNK * 2` JNI local refs are
-/// live in a single frame, keeping wide schemas within `DEFAULT_LOCAL_FRAME_CAPACITY` (32).
-fn jvm_fold_all(names: &[&str]) -> DataFusionResult<Vec<String>> {
-    const CHUNK: usize = 16;
-    let mut folded = Vec::with_capacity(names.len());
-    for chunk in names.chunks(CHUNK) {
-        JVMClasses::with_env(|env| -> DataFusionResult<()> {
-            // SAFETY: the JNI static call and `JString::from_raw` are sound here: the class and
-            // method id are cached in `JVMClasses`, and `toLowerCaseRoot` returns a valid String
-            // local ref that lives for this frame.
-            unsafe {
-                for name in chunk {
-                    let jname = env
-                        .new_string(name)
-                        .map_err(|e| DataFusionError::Execution(format!("new_string: {e}")))?;
-                    let lowered = jni_static_call!(
-                        env,
-                        comet_schema_utils.to_lower_case_root(&jname) -> StringWrapper
-                    )?;
-                    folded.push(
-                        JString::from_raw(env, lowered.get().as_raw())
-                            .try_to_string(env)
-                            .map_err(|e| {
-                                DataFusionError::Execution(format!("try_to_string: {e}"))
-                            })?,
-                    );
-                }
-            }
-            Ok(())
-        })?;
-    }
-    Ok(folded)
 }
 
 /// Remap physical schema field names to match logical schema field names. Mirrors Spark's
@@ -297,7 +156,7 @@ fn remap_physical_schema(
     // `DefaultPhysicalExprAdapter` cannot name-match, otherwise the read would silently fall
     // through to a name match. Spark's `matchIdField` solves the same problem with
     // `generateFakeColumnName` (see `ParquetReadSupport.scala`).
-    let unmatched_id_logical_folded: std::collections::HashSet<String> = if should_match_by_id {
+    let unmatched_id_logical_folded: HashSet<String> = if should_match_by_id {
         logical_schema
             .fields()
             .iter()
@@ -313,7 +172,7 @@ fn remap_physical_schema(
             })
             .collect()
     } else {
-        std::collections::HashSet::new()
+        HashSet::new()
     };
     let mut fake_counter: usize = 0;
 
@@ -486,24 +345,29 @@ fn reject_on_non_empty_expr(
     })
 }
 
-/// Check if a specific column name has duplicate case-insensitive matches in the physical schema.
-/// `col_folded` and `physical_folded` are the pre-folded forms (see `fold_names`), so this compares
-/// folded strings instead of re-folding on every call. Returns the Spark-shaped error if there
-/// is more than one match.
+/// Whether `col_name` (with folded form `col_folded`) is case-insensitively ambiguous in the
+/// file. `folded_to_indices` maps each folded physical name to the indices of the original
+/// physical fields that fold to it (built once in `create`), so more than one index under the
+/// column's folded key is the same ambiguity Spark reports as `_LEGACY_ERROR_TEMP_2093`. The
+/// matched names are resolved from `physical_schema` only on that (rare) error path.
 fn check_column_duplicate(
     col_name: &str,
     col_folded: &str,
+    folded_to_indices: &HashMap<String, Vec<usize>>,
     physical_schema: &SchemaRef,
-    physical_folded: &[String],
 ) -> Option<SparkError> {
-    let matches: Vec<&str> = physical_schema
-        .fields()
-        .iter()
-        .enumerate()
-        .filter(|(i, _)| physical_folded[*i] == col_folded)
-        .map(|(_, pf)| pf.name().as_str())
-        .collect();
-    (matches.len() > 1).then(|| SparkError::duplicate_field_case_insensitive(col_name, &matches))
+    match folded_to_indices.get(col_folded) {
+        Some(indices) if indices.len() > 1 => {
+            let matched: Vec<&str> = indices
+                .iter()
+                .map(|&i| physical_schema.field(i).name().as_str())
+                .collect();
+            Some(SparkError::duplicate_field_case_insensitive(
+                col_name, &matched,
+            ))
+        }
+        _ => None,
+    }
 }
 
 impl PhysicalExprAdapterFactory for SparkPhysicalExprAdapterFactory {
@@ -523,44 +387,69 @@ impl PhysicalExprAdapterFactory for SparkPhysicalExprAdapterFactory {
         // to the original physical names. This is necessary because downstream code
         // (reassign_expr_columns) looks up columns by name in the actual stream schema,
         // which uses the original physical file column names.
-        let needs_remap = !self.parquet_options.case_sensitive
-            || (self.parquet_options.use_field_id && schema_has_field_ids(&logical_file_schema));
-        let (
-            adapted_physical_schema,
-            logical_to_physical_names,
-            original_physical_schema,
-            original_physical_folded,
-        ) = if needs_remap {
-            let (remapped, logical_to_physical) = remap_physical_schema(
-                &logical_file_schema,
-                &physical_file_schema,
-                self.parquet_options.case_sensitive,
-                self.parquet_options.use_field_id,
-                self.parquet_options.ignore_missing_field_id,
-            )?;
-            // Keep the original physical schema (and its folded names) for per-column duplicate
-            // detection. Only meaningful in case-insensitive mode (matches existing behavior).
-            let (original_physical_schema, original_physical_folded) =
-                if !self.parquet_options.case_sensitive {
-                    (
-                        Some(Arc::clone(&physical_file_schema)),
-                        Some(fold_schema_names(&physical_file_schema, false)),
-                    )
+        let case_sensitive = self.parquet_options.case_sensitive;
+        let should_match_by_id =
+            self.parquet_options.use_field_id && schema_has_field_ids(&logical_file_schema);
+        let needs_remap = !case_sensitive || should_match_by_id;
+        let (adapted_physical_schema, logical_to_physical_names, original_physical_dup_check) =
+            if needs_remap {
+                let (remapped, logical_to_physical) = remap_physical_schema(
+                    &logical_file_schema,
+                    &physical_file_schema,
+                    case_sensitive,
+                    self.parquet_options.use_field_id,
+                    self.parquet_options.ignore_missing_field_id,
+                )?;
+                // Build the folded-name -> original-physical-field-indices map once for per-column
+                // duplicate detection, paired with the original schema so the rare error path can
+                // resolve the colliding names. Only meaningful in case-insensitive mode; it mirrors
+                // the `folded_to_indices` map the nested convert builds in `parquet_support`, so
+                // both paths detect ambiguity the same way instead of drifting.
+                let original_physical_dup_check = if !case_sensitive {
+                    let folded = fold_schema_names(&physical_file_schema, false);
+                    let mut map: HashMap<String, Vec<usize>> = HashMap::new();
+                    for (i, folded_name) in folded.into_iter().enumerate() {
+                        map.entry(folded_name).or_default().push(i);
+                    }
+                    Some((Arc::clone(&physical_file_schema), map))
                 } else {
-                    (None, None)
-                };
-            (
-                remapped,
-                if logical_to_physical.is_empty() {
                     None
-                } else {
-                    Some(logical_to_physical)
-                },
-                original_physical_schema,
-                original_physical_folded,
+                };
+                (
+                    remapped,
+                    if logical_to_physical.is_empty() {
+                        None
+                    } else {
+                        Some(logical_to_physical)
+                    },
+                    original_physical_dup_check,
+                )
+            } else {
+                (Arc::clone(&physical_file_schema), None, None)
+            };
+
+        // Fold both schemas once here so the per-column rewrite paths reuse them instead of
+        // re-folding on every `rewrite` call. Case-sensitive mode folds to identity.
+        let logical_folded = fold_schema_names(&logical_file_schema, case_sensitive);
+        let physical_folded = fold_schema_names(&adapted_physical_schema, case_sensitive);
+
+        // Folded names of logical fields that resolve by Parquet field id. Spark's `matchIdField`
+        // selects these by id before comparing names, so the case-insensitive duplicate check must
+        // skip them: an explicit `ω` (id 2) can select the file's `ω` (id 2) even when the file
+        // also holds `Ω` (id 1). Derived from `logical_folded`, which is the case-insensitive fold
+        // here since this only runs when `!case_sensitive`.
+        let id_resolved_logical_folded = if should_match_by_id && !case_sensitive {
+            Some(
+                logical_file_schema
+                    .fields()
+                    .iter()
+                    .zip(&logical_folded)
+                    .filter(|(lf, _)| parse_field_id(lf).is_some())
+                    .map(|(_, folded)| folded.clone())
+                    .collect::<HashSet<String>>(),
             )
         } else {
-            (Arc::clone(&physical_file_schema), None, None, None)
+            None
         };
 
         let default_factory = DefaultPhysicalExprAdapterFactory;
@@ -569,12 +458,6 @@ impl PhysicalExprAdapterFactory for SparkPhysicalExprAdapterFactory {
             Arc::clone(&adapted_physical_schema),
         )?;
 
-        // Fold both stored schemas once here so the per-column rewrite paths reuse them instead
-        // of re-folding on every `rewrite` call. Case-sensitive mode folds to identity.
-        let case_sensitive = self.parquet_options.case_sensitive;
-        let logical_folded = fold_schema_names(&logical_file_schema, case_sensitive);
-        let physical_folded = fold_schema_names(&adapted_physical_schema, case_sensitive);
-
         Ok(Arc::new(SparkPhysicalExprAdapter {
             logical_file_schema,
             physical_file_schema: adapted_physical_schema,
@@ -582,8 +465,8 @@ impl PhysicalExprAdapterFactory for SparkPhysicalExprAdapterFactory {
             default_values: self.default_values.clone(),
             default_adapter,
             logical_to_physical_names,
-            original_physical_schema,
-            original_physical_folded,
+            original_physical_dup_check,
+            id_resolved_logical_folded,
             logical_folded,
             physical_folded,
         }))
@@ -615,13 +498,16 @@ struct SparkPhysicalExprAdapter {
     /// physical names so that downstream reassign_expr_columns can find
     /// columns in the actual stream schema.
     logical_to_physical_names: Option<HashMap<String, String>>,
-    /// The original (un-remapped) physical schema, kept for per-column duplicate
-    /// detection in case-insensitive mode. Only set when `!case_sensitive`.
-    original_physical_schema: Option<SchemaRef>,
-    /// Original physical field names pre-folded for case-insensitive matching, parallel to
-    /// `original_physical_schema.fields()`. Set together with `original_physical_schema` so the
-    /// per-column duplicate check folds only the queried name (not the whole schema) per call.
-    original_physical_folded: Option<Vec<String>>,
+    /// Case-insensitive duplicate detection, built once in `create`: the original (un-remapped)
+    /// physical schema paired with a `folded physical name -> field indices` map. A referenced
+    /// column whose folded name maps to more than one index is the `_LEGACY_ERROR_TEMP_2093`
+    /// ambiguity Spark raises; the schema resolves the colliding names on that error path. `None`
+    /// in case-sensitive mode (no folding, so nothing to detect).
+    original_physical_dup_check: Option<(SchemaRef, HashMap<String, Vec<usize>>)>,
+    /// Folded names of logical fields resolved by Parquet field id (see `create`). Spark selects
+    /// these by id before comparing names, so the duplicate check above must not fire for them.
+    /// `None` when not matching by id.
+    id_resolved_logical_folded: Option<HashSet<String>>,
     /// `logical_file_schema` field names pre-folded once (see `fold_names`), parallel to
     /// `logical_file_schema.fields()`. Lets the per-column rewrite fallbacks match by folded name
     /// without re-folding the schema on every `rewrite` call.
@@ -636,8 +522,7 @@ impl PhysicalExprAdapter for SparkPhysicalExprAdapter {
         // In case-insensitive mode, check if any Column in this expression references
         // a field with multiple case-insensitive matches in the physical schema.
         // Only the columns actually referenced trigger the error (not the whole schema).
-        if let Some(orig_physical) = &self.original_physical_schema {
-            let orig_folded = self.original_physical_folded.as_deref().unwrap_or(&[]);
+        if let Some((orig_physical, folded_to_indices)) = &self.original_physical_dup_check {
             // Collect referenced column names, then fold them in one JVM crossing rather than one
             // per Column node. Physical names were already folded once in `create()`.
             let mut col_names: Vec<String> = Vec::new();
@@ -650,7 +535,18 @@ impl PhysicalExprAdapter for SparkPhysicalExprAdapter {
             let col_refs: Vec<&str> = col_names.iter().map(|s| s.as_str()).collect();
             let col_folded = fold_names(&col_refs, false);
             for (name, folded) in col_names.iter().zip(&col_folded) {
-                if let Some(err) = check_column_duplicate(name, folded, orig_physical, orig_folded)
+                // Fields resolved by Parquet field id are selected by id before names are
+                // compared, so an id-resolved column must not trip the name-ambiguity check
+                // (mirrors Spark's `matchIdField`, which never raises the duplicate-field error).
+                if self
+                    .id_resolved_logical_folded
+                    .as_ref()
+                    .is_some_and(|ids| ids.contains(folded))
+                {
+                    continue;
+                }
+                if let Some(err) =
+                    check_column_duplicate(name, folded, folded_to_indices, orig_physical)
                 {
                     return Err(DataFusionError::External(Box::new(err)));
                 }
@@ -1287,8 +1183,15 @@ mod test {
     use datafusion_physical_expr_adapter::PhysicalExprAdapterFactory;
     use futures::StreamExt;
     use parquet::arrow::ArrowWriter;
+    use parquet::arrow::PARQUET_FIELD_ID_META_KEY;
+    use std::collections::HashMap;
     use std::fs::File;
     use std::sync::Arc;
+
+    /// Build field metadata carrying a Parquet field id, for the field-id remap tests.
+    fn id_meta(id: &str) -> HashMap<String, String> {
+        HashMap::from([(PARQUET_FIELD_ID_META_KEY.to_string(), id.to_string())])
+    }
 
     /// Reading a non-BINARY Parquet column as `StringType` must raise the same
     /// `_LEGACY_ERROR_TEMP_2063`-shaped error as Spark's vectorized reader
@@ -1959,13 +1862,6 @@ mod test {
     /// (Spark's `generateFakeColumnName`), using the folded name for the collision check.
     #[test]
     fn remap_field_id_missing_fake_renames_colliding_physical() {
-        use parquet::arrow::PARQUET_FIELD_ID_META_KEY;
-        let id_meta = |id: &str| {
-            std::collections::HashMap::from([(
-                PARQUET_FIELD_ID_META_KEY.to_string(),
-                id.to_string(),
-            )])
-        };
         // Logical `foo` carries field id 99; the file has no ids but a physical `FOO` whose folded
         // name collides with `foo`.
         let logical = Arc::new(Schema::new(vec![
@@ -1984,31 +1880,59 @@ mod test {
         );
     }
 
-    /// The process-wide fold cache populates on first fold and serves repeated lookups. Runs under
-    /// the ASCII fallback (no JVM in `cargo test`), which exercises the cacheable path.
+    /// Case-sensitive companion to `remap_field_id_missing_fake_renames_colliding_physical`: an
+    /// ID-bearing logical field whose id is absent from the file must NOT fake-rename a physical
+    /// field that merely shares its name in case-sensitive mode. Logical `[A(id=5), a(no id)]` read
+    /// against a file `[a(id=9)]`: `A`'s id is missing, but the collision check folds to identity
+    /// under case-sensitivity, so physical `a` is left alone for the non-id logical `a` to resolve.
+    /// Fails with `left: "__comet_unmatched_field_id_1"` if the check reverts to
+    /// `eq_ignore_ascii_case`.
     #[test]
-    fn fold_names_memoizes_case_insensitive() {
-        // Unique name so parallel tests don't share this cache entry.
-        let name = "FoldMemoUnique";
-        let first = super::fold_names(&[name], false);
-        assert_eq!(first, vec!["foldmemounique".to_string()]);
-        assert_eq!(
-            super::fold_cache()
-                .read()
-                .unwrap()
-                .get(name)
-                .map(String::as_str),
-            Some("foldmemounique")
-        );
-        // Second call is served from the cache with the same result.
-        assert_eq!(super::fold_names(&[name], false), first);
+    fn remap_field_id_missing_does_not_fake_rename_case_sensitive() {
+        let logical = Arc::new(Schema::new(vec![
+            Field::new("A", DataType::Int32, true).with_metadata(id_meta("5")),
+            Field::new("a", DataType::Int32, true),
+        ]));
+        let physical = Arc::new(Schema::new(vec![
+            Field::new("a", DataType::Int32, true).with_metadata(id_meta("9"))
+        ]));
+        let (remapped, _name_map) =
+            super::remap_physical_schema(&logical, &physical, true, true, false).unwrap();
+        assert_eq!(remapped.field(0).name(), "a");
     }
 
-    /// Case-sensitive folding is identity and must never populate the cache.
+    /// Field-id precedence in the case-insensitive duplicate check: an explicit `ω` (id 2)
+    /// reading a file that holds both `ω` (id 2) and `Ω` (id 1) must resolve by id (Spark's
+    /// `matchIdField` selects the id before ever comparing names) rather than raising a
+    /// duplicate-field error for the two names that fold together. Exercises the adapter's
+    /// `rewrite` so the duplicate check runs. Fails with a `DuplicateFieldCaseInsensitive` error
+    /// if id-resolved fields are not exempted from that check.
     #[test]
-    fn fold_names_case_sensitive_is_identity_and_uncached() {
-        let name = "FoldCaseSensitiveUnique";
-        assert_eq!(super::fold_names(&[name], true), vec![name.to_string()]);
-        assert!(super::fold_cache().read().unwrap().get(name).is_none());
+    fn duplicate_check_skipped_for_id_resolved_field() {
+        use datafusion::physical_expr::expressions::Column;
+        use datafusion::physical_expr::PhysicalExpr;
+        let logical = Arc::new(Schema::new(vec![
+            Field::new("ω", DataType::Int32, true).with_metadata(id_meta("2"))
+        ]));
+        // The file holds both `Ω` (id 1) and `ω` (id 2); their names fold together.
+        let physical = Arc::new(Schema::new(vec![
+            Field::new("Ω", DataType::Int32, true).with_metadata(id_meta("1")),
+            Field::new("ω", DataType::Int32, true).with_metadata(id_meta("2")),
+        ]));
+
+        let mut opts = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        opts.case_sensitive = false;
+        opts.use_field_id = true;
+        let adapter = SparkPhysicalExprAdapterFactory::new(opts, None)
+            .create(Arc::clone(&logical), Arc::clone(&physical))
+            .unwrap();
+
+        let expr: Arc<dyn PhysicalExpr> = Arc::new(Column::new("ω", 0));
+        let rewritten = adapter.rewrite(expr);
+        assert!(
+            rewritten.is_ok(),
+            "id-resolved read must not raise a duplicate-field error: {:?}",
+            rewritten.err()
+        );
     }
 }

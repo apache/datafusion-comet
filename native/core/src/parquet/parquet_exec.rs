@@ -18,8 +18,9 @@
 use crate::execution::operators::ExecutionError;
 use crate::parquet::eager_page_index_reader_factory::EagerPageIndexReaderFactory;
 use crate::parquet::encryption_support::{CometEncryptionConfig, ENCRYPTION_FACTORY_ID};
+use crate::parquet::name_fold::fold_schema_names;
 use crate::parquet::parquet_support::SparkParquetOptions;
-use crate::parquet::schema_adapter::{fold_schema_names, SparkPhysicalExprAdapterFactory};
+use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
 use arrow::datatypes::{Field, SchemaRef};
 use datafusion::config::{ParquetOptions, TableParquetOptions};
 use datafusion::datasource::listing::PartitionedFile;

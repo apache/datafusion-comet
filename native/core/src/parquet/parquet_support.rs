@@ -16,7 +16,7 @@
 // under the License.
 
 use crate::execution::operators::ExecutionError;
-use crate::parquet::schema_adapter::fold_names;
+use crate::parquet::name_fold::fold_names;
 use arrow::array::{FixedSizeBinaryArray, ListArray, MapArray, StringArray};
 use arrow::buffer::NullBuffer;
 use arrow::compute::can_cast_types;
@@ -304,8 +304,13 @@ fn parquet_convert_struct_to_struct(
                     (true, Some(id)) => from_id_to_index.get(&id).copied(),
                     _ => match folded_to_indices.get(to_folded[to_pos].as_str()) {
                         // Mirror Spark's `foundDuplicateFieldInCaseInsensitiveModeError`: a
-                        // requested field matching more than one file field is ambiguous.
-                        Some(indices) if indices.len() > 1 => {
+                        // requested field matching more than one file field is ambiguous. Gated on
+                        // case-insensitive mode to match the top-level check (which only runs when
+                        // `!case_sensitive`): when case-sensitive the fold is identity, so a
+                        // collision means byte-identical sibling names, and raising an error whose
+                        // message says "in case-insensitive mode" would be wrong. Fall through to
+                        // the first match in that case.
+                        Some(indices) if indices.len() > 1 && !parquet_options.case_sensitive => {
                             let matched: Vec<&str> = indices
                                 .iter()
                                 .map(|&i| from_fields[i].name().as_str())
