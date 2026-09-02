@@ -50,13 +50,11 @@ pub(crate) fn murmur3_32(data: &[u8]) -> i32 {
     }
 
     let mut h1: u32 = 0;
-    let mut chunks = data.chunks_exact(4);
-    for chunk in &mut chunks {
-        let k1 = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
-        h1 ^= mix_k1(k1);
+    let (chunks, tail) = data.as_chunks::<4>();
+    for chunk in chunks {
+        h1 ^= mix_k1(u32::from_le_bytes(*chunk));
         h1 = h1.rotate_left(13).wrapping_mul(5).wrapping_add(0xe654_6b64);
     }
-    let tail = chunks.remainder();
     if !tail.is_empty() {
         let mut k1: u32 = 0;
         for (i, byte) in tail.iter().enumerate() {
