@@ -16,18 +16,73 @@
 // under the License.
 
 use arrow::array::RecordBatch;
-use arrow::datatypes::DataType;
+use arrow::datatypes::{DataType, Schema};
 use datafusion::common::DataFusionError;
 use datafusion::error::Result;
+use datafusion_comet_common::cast_and_stamp_schema;
+use std::sync::Arc;
+
+/// Decode a remote shuffle batch and reconcile its encoding with Spark's declared logical types.
+/// Validate buffers and logical types before casting, so a corrupt frame cannot be made to look
+/// compatible by a value-changing cast. Dictionary keys are an encoding detail, including inside
+/// containers: decode them here before either native execution or the JVM Arrow importer sees them.
+pub fn decode_remote_shuffle_batch(
+    bytes: &[u8],
+    expected_types: &[DataType],
+) -> Result<RecordBatch> {
+    let batch = crate::read_ipc_compressed_validated(bytes)?;
+    validate_remote_schema(&batch, expected_types)?;
+    if batch
+        .columns()
+        .iter()
+        .zip(expected_types)
+        .all(|(column, expected)| column.data_type() == expected)
+    {
+        return Ok(batch);
+    }
+
+    let fields: Vec<_> = batch
+        .schema()
+        .fields()
+        .iter()
+        .zip(expected_types)
+        .map(|(field, expected)| {
+            // Non-null dictionary keys can reference null values. The declared types do not
+            // constrain top-level nullability; match ShuffleScanExec's nullable output fields.
+            field
+                .as_ref()
+                .clone()
+                .with_data_type(expected.clone())
+                .with_nullable(true)
+        })
+        .collect();
+    let schema = Arc::new(Schema::new_with_metadata(
+        fields,
+        batch.schema().metadata().clone(),
+    ));
+    // Match the local reader's unpack-then-normalize order. Taking the dictionary keys first
+    // removes unused values, which may contain nulls that cannot satisfy the expected nested
+    // nullability even though every referenced value does.
+    let columns = batch
+        .columns()
+        .iter()
+        .map(|column| match column.data_type() {
+            DataType::Dictionary(_, values) => {
+                arrow::compute::cast(column, values).map_err(DataFusionError::from)
+            }
+            _ => Ok(Arc::clone(column)),
+        })
+        .collect::<Result<Vec<_>>>()?;
+    cast_and_stamp_schema("Remote shuffle reader", &schema, columns, batch.num_rows())
+}
 
 /// Check a remotely fetched batch against the logical types declared by Spark before any cast
 /// or JVM Arrow import. Arrow buffer validation alone cannot detect a valid but incorrect IPC
 /// type, and a general cast can silently change values or turn them into nulls.
 ///
-/// Native shuffle writers align their input with Spark's types before partitioning; row writers
-/// build those types directly. Row writers may use top-level Int32-keyed string/binary
-/// dictionaries, but disable dictionaries inside containers. Do not accept other dictionary
-/// layouts just because Arrow can cast them: the JVM importer does not support all of them.
+/// Dictionary encoding does not change the logical value type, regardless of key width or nesting.
+/// Callers must decode accepted dictionaries before JVM import; use [`decode_remote_shuffle_batch`]
+/// to keep buffer validation, logical validation, and normalization in that order.
 ///
 /// Nested nullability and metadata are normalized separately. List element and map entries names
 /// are synthetic (for example, Rust uses `item` while the JVM uses `element`), but struct member
@@ -44,16 +99,7 @@ pub fn validate_remote_schema(batch: &RecordBatch, expected_types: &[DataType]) 
 
     for (index, (column, expected)) in batch.columns().iter().zip(expected_types).enumerate() {
         let actual = column.data_type();
-        let value_type = match actual {
-            DataType::Dictionary(keys, values)
-                if keys.as_ref() == &DataType::Int32
-                    && matches!(values.as_ref(), DataType::Utf8 | DataType::Binary) =>
-            {
-                values.as_ref()
-            }
-            _ => actual,
-        };
-        if !same_logical_type(value_type, expected) {
+        if !same_logical_type(actual, expected) {
             return Err(DataFusionError::Execution(format!(
                 "Shuffle block type mismatch at column {index}: got {actual} but expected {expected}"
             )));
@@ -64,6 +110,7 @@ pub fn validate_remote_schema(batch: &RecordBatch, expected_types: &[DataType]) 
 
 fn same_logical_type(actual: &DataType, expected: &DataType) -> bool {
     match (actual, expected) {
+        (DataType::Dictionary(_, values), _) => same_logical_type(values, expected),
         (DataType::List(a), DataType::List(e))
         | (DataType::LargeList(a), DataType::LargeList(e)) => {
             same_logical_type(a.data_type(), e.data_type())
@@ -100,7 +147,7 @@ mod tests {
         TimestampMicrosecondArray,
     };
     use arrow::buffer::OffsetBuffer;
-    use arrow::datatypes::{DataType, Field, Fields, Int32Type, IntervalUnit, Schema, TimeUnit};
+    use arrow::datatypes::{DataType, Field, Fields, Int32Type, Schema, TimeUnit};
     use arrow::ipc::writer::StreamWriter;
     use std::collections::HashMap;
     use std::sync::Arc;
@@ -263,22 +310,16 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_or_wrongly_typed_dictionaries_are_rejected() {
+    fn dictionaries_with_wrong_logical_types_are_rejected() {
         use DataType::*;
         for (actual, expected) in [
             (dictionary(Int32, UInt32), Int32),
             (dictionary(Int32, Utf8), Int32),
-            (dictionary(Int32, Int32), Int32),
-            (dictionary(Int32, Null), Null),
-            (
-                dictionary(Int32, Interval(IntervalUnit::MonthDayNano)),
-                Interval(IntervalUnit::MonthDayNano),
-            ),
-            (dictionary(Int8, Utf8), Utf8),
-            (dictionary(UInt32, Utf8), Utf8),
-            (dictionary(Int32, list(Utf8)), list(Utf8)),
-            (dictionary(Int32, dictionary(Int32, Utf8)), Utf8),
-            (list(dictionary(Int32, Utf8)), list(Utf8)),
+            (dictionary(Int8, Utf8), Binary),
+            (dictionary(UInt32, Int64), Int32),
+            (dictionary(Int32, list(Utf8)), list(Binary)),
+            (dictionary(Int32, dictionary(Int8, UInt32)), Int32),
+            (list(dictionary(Int32, Utf8)), list(Binary)),
         ] {
             let error = validate_remote_schema(&batch_of_type(actual), &[expected])
                 .unwrap_err()
