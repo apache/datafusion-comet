@@ -330,6 +330,166 @@ fn unused_dictionary_values_do_not_prevent_nested_nullability_narrowing() {
     assert_eq!(decoded.column(0).to_data(), expected.to_data());
 }
 
+fn struct_dictionary_values(encoded: bool, reference_null: bool) -> ArrayRef {
+    if encoded {
+        Arc::new(
+            DictionaryArray::<Int32Type>::try_new(
+                Int32Array::from(vec![0, i32::from(reference_null)]),
+                Arc::new(StructArray::new(
+                    Fields::from(vec![Field::new("value", DataType::Int32, true)]),
+                    vec![Arc::new(Int32Array::from(vec![Some(7), None]))],
+                    None,
+                )),
+            )
+            .unwrap(),
+        )
+    } else {
+        Arc::new(StructArray::new(
+            Fields::from(vec![Field::new("value", DataType::Int32, false)]),
+            vec![Arc::new(Int32Array::from(vec![7, 7]))],
+            None,
+        ))
+    }
+}
+
+fn nested_struct_dictionary_columns(encoded: bool, reference_null: bool) -> Vec<ArrayRef> {
+    let values = struct_dictionary_values(encoded, reference_null);
+    let item = Arc::new(Field::new("element", values.data_type().clone(), true));
+    let nulls = Some(NullBuffer::from(vec![false, true]));
+    let map_fields = Fields::from(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("value", values.data_type().clone(), true),
+    ]);
+    vec![
+        Arc::new(ListArray::new(
+            Arc::clone(&item),
+            OffsetBuffer::new(vec![0, 1, 2].into()),
+            Arc::clone(&values),
+            nulls.clone(),
+        )),
+        Arc::new(LargeListArray::new(
+            Arc::clone(&item),
+            OffsetBuffer::new(vec![0_i64, 1, 2].into()),
+            Arc::clone(&values),
+            nulls.clone(),
+        )),
+        Arc::new(FixedSizeListArray::new(
+            item,
+            1,
+            Arc::clone(&values),
+            nulls.clone(),
+        )),
+        Arc::new(StructArray::new(
+            Fields::from(vec![Field::new(
+                "payload",
+                values.data_type().clone(),
+                true,
+            )]),
+            vec![Arc::clone(&values)],
+            nulls.clone(),
+        )),
+        Arc::new(MapArray::new(
+            Arc::new(Field::new(
+                "entries",
+                DataType::Struct(map_fields.clone()),
+                false,
+            )),
+            OffsetBuffer::new(vec![0, 1, 2].into()),
+            StructArray::new(
+                map_fields,
+                vec![Arc::new(Int32Array::from(vec![1, 2])), values],
+                None,
+            ),
+            nulls,
+            false,
+        )),
+    ]
+}
+
+#[test]
+#[cfg_attr(miri, ignore)]
+fn nested_dictionary_values_are_selected_before_nullability_narrowing() {
+    let list = |values: ArrayRef| -> ArrayRef {
+        Arc::new(ListArray::new(
+            Arc::new(Field::new("element", values.data_type().clone(), true)),
+            OffsetBuffer::new(vec![0, 2].into()),
+            values,
+            None,
+        ))
+    };
+    // Regression: List<Dictionary<Int32, Struct<value: nullable Int32>>> must decode
+    // to List<Struct<value: non-null Int32>> when neither key references the null value.
+    assert_roundtrip(
+        vec![list(struct_dictionary_values(true, false))],
+        vec![list(struct_dictionary_values(false, false))],
+    );
+    for (actual, expected) in nested_struct_dictionary_columns(true, false)
+        .into_iter()
+        .zip(nested_struct_dictionary_columns(false, false))
+    {
+        // Keep a null parent and a non-null parent, then separately exercise a nonzero slice.
+        // The unreferenced dictionary value contains a null, but both keys reference {value: 7}.
+        assert_roundtrip(vec![actual.slice(1, 1)], vec![expected.slice(1, 1)]);
+        assert_roundtrip(vec![actual], vec![expected]);
+    }
+}
+
+#[test]
+fn referenced_null_dictionary_values_cannot_satisfy_non_null_nested_fields() {
+    for (actual, expected) in nested_struct_dictionary_columns(true, true)
+        .into_iter()
+        .zip(nested_struct_dictionary_columns(false, false))
+    {
+        for rss in [false, true] {
+            let bytes = encoded_batch(
+                &batch(vec![Arc::clone(&actual)]),
+                CompressionCodec::None,
+                rss,
+            );
+            let error = decode_remote_shuffle_batch(&bytes, &[expected.data_type().clone()])
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("null"), "{error}");
+        }
+    }
+}
+
+#[test]
+#[cfg_attr(miri, ignore)]
+fn dictionary_value_nulls_masked_by_parent_nulls_remain_valid() {
+    let dictionary: ArrayRef = Arc::new(
+        DictionaryArray::<Int32Type>::try_new(
+            Int32Array::from(vec![0, 1]),
+            Arc::new(Int32Array::from(vec![Some(7), None])),
+        )
+        .unwrap(),
+    );
+    let expected: ArrayRef = Arc::new(Int32Array::from(vec![Some(7), None]));
+    let nulls = Some(NullBuffer::from(vec![true, false]));
+    let structure = |values: ArrayRef| -> ArrayRef {
+        Arc::new(StructArray::new(
+            Fields::from(vec![Field::new("value", values.data_type().clone(), false)]),
+            vec![values],
+            nulls.clone(),
+        ))
+    };
+    let fixed_size_list = |values: ArrayRef| -> ArrayRef {
+        Arc::new(FixedSizeListArray::new(
+            Arc::new(Field::new("element", values.data_type().clone(), false)),
+            1,
+            values,
+            nulls.clone(),
+        ))
+    };
+    assert_roundtrip(
+        vec![
+            structure(Arc::clone(&dictionary)),
+            fixed_size_list(dictionary),
+        ],
+        vec![structure(Arc::clone(&expected)), fixed_size_list(expected)],
+    );
+}
+
 #[test]
 fn dictionary_decoding_does_not_allow_logical_type_or_container_shape_changes() {
     let numeric = numbers(true);

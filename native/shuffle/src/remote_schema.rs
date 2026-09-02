@@ -15,8 +15,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::array::RecordBatch;
-use arrow::datatypes::{DataType, Schema};
+use arrow::array::{
+    Array, ArrayRef, AsArray, FixedSizeListArray, GenericListArray, MapArray, OffsetSizeTrait,
+    RecordBatch, StructArray,
+};
+use arrow::datatypes::{DataType, FieldRef, Schema};
 use datafusion::common::DataFusionError;
 use datafusion::error::Result;
 use datafusion_comet_common::cast_and_stamp_schema;
@@ -60,20 +63,125 @@ pub fn decode_remote_shuffle_batch(
         fields,
         batch.schema().metadata().clone(),
     ));
-    // Match the local reader's unpack-then-normalize order. Taking the dictionary keys first
-    // removes unused values, which may contain nulls that cannot satisfy the expected nested
-    // nullability even though every referenced value does.
+    // Select dictionary values at every nesting level before narrowing nullability. Unused
+    // values may contain nulls even when every referenced value satisfies the expected schema.
     let columns = batch
         .columns()
         .iter()
-        .map(|column| match column.data_type() {
-            DataType::Dictionary(_, values) => {
-                arrow::compute::cast(column, values).map_err(DataFusionError::from)
-            }
-            _ => Ok(Arc::clone(column)),
-        })
+        .map(unpack_dictionaries)
         .collect::<Result<Vec<_>>>()?;
     cast_and_stamp_schema("Remote shuffle reader", &schema, columns, batch.num_rows())
+}
+
+/// Decode dictionary rows before visiting their children or reconciling field nullability.
+/// Casting to a dictionary's value type is not equivalent: Arrow can cast the entire values
+/// table before selecting keys, or reinterpret the outer keys as a nested dictionary's key type.
+fn unpack_dictionaries(array: &ArrayRef) -> Result<ArrayRef> {
+    if let Some(dictionary) = array.as_any_dictionary_opt() {
+        let values = arrow::compute::take(dictionary.values().as_ref(), dictionary.keys(), None)?;
+        return unpack_dictionaries(&values);
+    }
+
+    match array.data_type() {
+        DataType::List(field) => unpack_list_dictionaries::<i32>(array, field),
+        DataType::LargeList(field) => unpack_list_dictionaries::<i64>(array, field),
+        DataType::FixedSizeList(field, size) => {
+            let list = array.as_fixed_size_list();
+            let values = unpack_dictionaries(list.values())?;
+            if Arc::ptr_eq(&values, list.values()) {
+                return Ok(Arc::clone(array));
+            }
+            let field = Arc::new(
+                field
+                    .as_ref()
+                    .clone()
+                    .with_data_type(values.data_type().clone()),
+            );
+            Ok(Arc::new(FixedSizeListArray::try_new_with_length(
+                field,
+                *size,
+                values,
+                list.nulls().cloned(),
+                list.len(),
+            )?))
+        }
+        DataType::Struct(fields) => {
+            let structure = array.as_struct();
+            let columns = structure
+                .columns()
+                .iter()
+                .map(unpack_dictionaries)
+                .collect::<Result<Vec<_>>>()?;
+            if columns
+                .iter()
+                .zip(structure.columns())
+                .all(|(decoded, original)| Arc::ptr_eq(decoded, original))
+            {
+                return Ok(Arc::clone(array));
+            }
+            let fields = fields
+                .iter()
+                .zip(&columns)
+                .map(|(field, column)| {
+                    field
+                        .as_ref()
+                        .clone()
+                        .with_data_type(column.data_type().clone())
+                })
+                .collect();
+            Ok(Arc::new(StructArray::try_new_with_length(
+                fields,
+                columns,
+                structure.nulls().cloned(),
+                structure.len(),
+            )?))
+        }
+        DataType::Map(field, ordered) => {
+            let map = array.as_map();
+            let original_entries: ArrayRef = Arc::new(map.entries().clone());
+            let entries = unpack_dictionaries(&original_entries)?;
+            if Arc::ptr_eq(&entries, &original_entries) {
+                return Ok(Arc::clone(array));
+            }
+            let field = Arc::new(
+                field
+                    .as_ref()
+                    .clone()
+                    .with_data_type(entries.data_type().clone()),
+            );
+            Ok(Arc::new(MapArray::try_new(
+                field,
+                map.offsets().clone(),
+                entries.as_struct().clone(),
+                map.nulls().cloned(),
+                *ordered,
+            )?))
+        }
+        _ => Ok(Arc::clone(array)),
+    }
+}
+
+fn unpack_list_dictionaries<O: OffsetSizeTrait>(
+    array: &ArrayRef,
+    field: &FieldRef,
+) -> Result<ArrayRef> {
+    let list = array.as_list::<O>();
+    let values = unpack_dictionaries(list.values())?;
+    if Arc::ptr_eq(&values, list.values()) {
+        return Ok(Arc::clone(array));
+    }
+    let field = Arc::new(
+        field
+            .as_ref()
+            .clone()
+            .with_data_type(values.data_type().clone()),
+    );
+    Ok(Arc::new(GenericListArray::<O>::try_new(
+        field,
+        list.offsets().clone(),
+        values,
+        list.nulls().cloned(),
+    )?))
 }
 
 /// Check a remotely fetched batch against the logical types declared by Spark before any cast
@@ -139,7 +247,7 @@ fn same_logical_type(actual: &DataType, expected: &DataType) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::validate_remote_schema;
+    use super::{unpack_dictionaries, validate_remote_schema};
     use crate::read_ipc_compressed_validated;
     use arrow::array::{
         Array, ArrayRef, BinaryArray, BinaryDictionaryBuilder, Decimal128Array, Int32Array,
@@ -151,6 +259,37 @@ mod tests {
     use arrow::ipc::writer::StreamWriter;
     use std::collections::HashMap;
     use std::sync::Arc;
+
+    #[test]
+    fn unpacking_nested_dictionaries_preserves_each_key_type() {
+        use arrow::array::{DictionaryArray, Int8Array, UInt16Array};
+        use arrow::datatypes::{Int8Type, UInt16Type};
+
+        // IPC has only one dictionary encoding per field. Exercise the array-level helper
+        // directly to ensure it gathers outer keys rather than casting them to the inner type.
+        let mut inner_keys = vec![Some(0); 129];
+        inner_keys[1] = None;
+        inner_keys[128] = Some(1);
+        let inner = Arc::new(
+            DictionaryArray::<Int8Type>::try_new(
+                Int8Array::from(inner_keys),
+                Arc::new(Int32Array::from(vec![7, 42])),
+            )
+            .unwrap(),
+        );
+        let outer: ArrayRef = Arc::new(
+            DictionaryArray::<UInt16Type>::try_new(
+                UInt16Array::from(vec![Some(128), None, Some(1), Some(0)]),
+                inner,
+            )
+            .unwrap(),
+        );
+        let decoded = unpack_dictionaries(&outer).unwrap();
+        assert_eq!(
+            decoded.to_data(),
+            Int32Array::from(vec![Some(42), None, None, Some(7)]).to_data()
+        );
+    }
 
     fn batch_of_type(data_type: DataType) -> RecordBatch {
         RecordBatch::new_empty(Arc::new(Schema::new(vec![Field::new(
