@@ -48,6 +48,7 @@ import org.apache.spark.sql.types._
 import com.google.common.primitives.UnsignedLong
 
 import org.apache.comet.CometConf
+import org.apache.comet.vector.CometVector
 
 abstract class ParquetReadSuite extends CometTestBase {
   import testImplicits._
@@ -1664,7 +1665,28 @@ abstract class ParquetReadSuite extends CometTestBase {
           .mode("overwrite")
           .parquet(dir.getCanonicalPath)
         val df = spark.read.schema(readSchema).parquet(dir.getCanonicalPath)
-        checkSparkAnswerAndOperator(df)
+        val (_, cometPlan) = checkSparkAnswerAndOperator(df)
+        val scan = collect(cometPlan) { case scan: CometNativeScanExec => scan }.head
+        val fieldIds = scan
+          .executeColumnar()
+          .mapPartitions { batches =>
+            batches.map { batch =>
+              try {
+                batch
+                  .column(0)
+                  .asInstanceOf[CometVector]
+                  .getValueVector
+                  .getField
+                  .getMetadata
+                  .get(CometParquetUtils.PARQUET_FIELD_ID_META_KEY)
+              } finally {
+                batch.close()
+              }
+            }
+          }
+          .collect()
+          .toSet
+        assert(fieldIds == Set("0"))
       }
     }
   }

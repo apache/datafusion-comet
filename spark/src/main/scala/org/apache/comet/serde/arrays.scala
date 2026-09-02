@@ -29,6 +29,7 @@ import org.apache.spark.sql.types._
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
+import org.apache.comet.DataTypeSupport.{deepNullable, isComplexType}
 import org.apache.comet.serde.QueryPlanSerde._
 import org.apache.comet.shims.{CometExprShim, CometTypeShim}
 
@@ -100,7 +101,28 @@ object CometArrayAppend extends CometExpressionSerde[ArrayAppend] {
   }
 }
 
-object CometArrayContains extends CometExpressionSerde[ArrayContains] {
+object CometArrayContains
+    extends CometExpressionSerde[ArrayContains]
+    with CodegenDispatchFallback {
+
+  private val floatingPointReason: String =
+    "Spark compares array elements with ordering.equiv, so -0.0 matches +0.0 and all NaNs match " +
+      "each other; Comet's native array_contains compares the raw Arrow values bitwise"
+
+  override def getIncompatibleReasons(): Seq[String] = Seq(floatingPointReason)
+
+  override def getSupportLevel(expr: ArrayContains): SupportLevel = expr.left.dataType match {
+    // Native array_contains compares floating-point elements bitwise, disagreeing with Spark for
+    // -0.0/+0.0 and NaN. Report Incompatible (not Unsupported) for float/double element types (at
+    // any nesting level) so the expression routes through the JVM codegen dispatcher (Spark's own
+    // doGenCode) and stays native + Spark-exact under the default config, while non-float arrays
+    // keep the fast native kernel. Under allowIncompatible=true the native kernel is used
+    // as before.
+    case ArrayType(elementType, _)
+        if SupportLevel.containsType(elementType, classOf[FloatType], classOf[DoubleType]) =>
+      Incompatible(Some(floatingPointReason))
+    case _ => Compatible()
+  }
 
   override def convert(
       expr: ArrayContains,
@@ -422,7 +444,7 @@ object CometArrayJoin
   }
 }
 
-object CometArrayInsert extends CometExpressionSerde[ArrayInsert] {
+object CometArrayInsert extends CometExpressionSerde[ArrayInsert] with ArraysBase {
 
   override def getSupportLevel(expr: ArrayInsert): SupportLevel = Compatible()
 
@@ -430,9 +452,32 @@ object CometArrayInsert extends CometExpressionSerde[ArrayInsert] {
       expr: ArrayInsert,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val srcExprProto = exprToProtoInternal(expr.children.head, inputs, binding)
+    val srcArray = expr.children.head
+    val item = expr.children(2)
+    val srcElementType = srcArray.dataType.asInstanceOf[ArrayType].elementType
+
+    // Native ArrayInsert requires the item's Arrow type to equal the source array's element type
+    // exactly, including nested nullability. For complex element types the two sides can disagree:
+    // a `CreateArray` source is widened to a deeply-nullable element type (see CometCreateArray),
+    // while a standalone item (e.g. `map(2, coalesce(id, 0))`) keeps Spark's Catalyst nullability.
+    // Cast BOTH sides in lockstep to the same deeply-nullable element type so their Arrow types
+    // match; Spark's `ArrayInsert.dataType` is `first.dataType.asNullable`, so this also
+    // matches the declared output element type. Casting only widens metadata and never
+    // changes values. Primitive element types are byte-identical on both sides, so the gate
+    // leaves them untouched.
+    val (srcChild, itemChild) = if (isComplexType(srcElementType)) {
+      val elementType = deepNullable(srcElementType)
+      val arrayType = ArrayType(elementType, containsNull = true)
+      val widenedSrc = if (srcArray.dataType == arrayType) srcArray else Cast(srcArray, arrayType)
+      val widenedItem = if (item.dataType == elementType) item else Cast(item, elementType)
+      (widenedSrc, widenedItem)
+    } else {
+      (srcArray, item)
+    }
+
+    val srcExprProto = exprToProtoInternal(srcChild, inputs, binding)
     val posExprProto = exprToProtoInternal(expr.children(1), inputs, binding)
-    val itemExprProto = exprToProtoInternal(expr.children(2), inputs, binding)
+    val itemExprProto = exprToProtoInternal(itemChild, inputs, binding)
     val legacyNegativeIndex =
       SQLConf.get.getConfString("spark.sql.legacy.negativeIndexInArrayInsert").toBoolean
     if (srcExprProto.isDefined && posExprProto.isDefined && itemExprProto.isDefined) {
@@ -493,7 +538,7 @@ object CometArrayUnion extends CometExpressionSerde[ArrayUnion] {
   }
 }
 
-object CometCreateArray extends CometExpressionSerde[CreateArray] {
+object CometCreateArray extends CometExpressionSerde[CreateArray] with ArraysBase {
   override def convert(
       expr: CreateArray,
       inputs: Seq[Attribute],
@@ -510,26 +555,19 @@ object CometCreateArray extends CometExpressionSerde[CreateArray] {
 
     // DataFusion's `make_array` asserts strict element-type equality in
     // `MutableArrayData::with_capacities` and panics on a mismatch. Spark's CreateArray is more
-    // permissive: its type coercion compares element types with `sameType`, which ignores
-    // nullability, so children that share a surface type but differ only in nested field
-    // nullability get no unifying cast. DataFusion tolerates container nullability differences
-    // (an `ArrayType.containsNull` / `MapType.valueContainsNull` mismatch is coerced), but NOT a
-    // struct field's nullability -- `array(struct(a not null), struct(a nullable))` panics inside
-    // `make_array_inner`. Decline only those cases (i.e. children that still differ after
-    // normalizing container nullability) so Spark's evaluator handles them.
-    //
-    // TODO: remove this decline once apache/datafusion#22366 lands; the upstream fix widens the
-    // element type via nullability-OR-merge and casts each child before MutableArrayData.
-    val normalizedTypes = children.map(c => normalizeContainerNullability(c.dataType))
-    if (normalizedTypes.distinct.size > 1) {
-      withFallbackReason(
-        expr,
-        "CreateArray children have mismatched data types: " +
-          children.map(_.dataType).distinct.mkString(", "))
-      return None
+    // permissive: its coercion compares element types with `sameType` (nullability ignored), so
+    // children that share a surface type but differ in nullability reach here as distinct types.
+    // Comet's native runtime types are also frequently MORE nullable than Spark's Catalyst types
+    // (`map_entries` forces the entry `value` field nullable, list elements are nullable, ...), so
+    // casting to Spark's declared element type does not reliably unify them. Cast every child to a
+    // deeply-nullable element type instead (every array/map/struct field nullable at all nesting
+    // levels; the cast only widens metadata and never changes values), so `make_array` always sees
+    // identical Arrow types. A child whose cast is unsupported declines below.
+    val elementType = deepNullable(expr.dataType.asInstanceOf[ArrayType].elementType)
+    val childExprs = children.map { c =>
+      val unified = if (c.dataType == elementType) c else Cast(c, elementType)
+      exprToProtoInternal(unified, inputs, binding)
     }
-
-    val childExprs = children.map(exprToProtoInternal(_, inputs, binding))
 
     if (childExprs.forall(_.isDefined)) {
       scalarFunctionExprToProto("make_array", childExprs: _*)
@@ -537,26 +575,6 @@ object CometCreateArray extends CometExpressionSerde[CreateArray] {
       withFallbackReason(expr, "unsupported arguments for CreateArray")
       None
     }
-  }
-
-  /**
-   * Rewrites a type so that container nullability (`ArrayType.containsNull`,
-   * `MapType.valueContainsNull`) is forced to `true` everywhere, while struct field nullability
-   * is left intact. Two CreateArray children whose types differ ONLY in container nullability are
-   * tolerated by DataFusion's `make_array` (coerced), so they normalize equal here; a difference
-   * in a struct field's nullability survives normalization and triggers the decline above.
-   */
-  private def normalizeContainerNullability(dt: DataType): DataType = dt match {
-    case ArrayType(elementType, _) =>
-      ArrayType(normalizeContainerNullability(elementType), containsNull = true)
-    case MapType(keyType, valueType, _) =>
-      MapType(
-        normalizeContainerNullability(keyType),
-        normalizeContainerNullability(valueType),
-        valueContainsNull = true)
-    case StructType(fields) =>
-      StructType(fields.map(f => f.copy(dataType = normalizeContainerNullability(f.dataType))))
-    case other => other
   }
 }
 
@@ -631,7 +649,7 @@ object CometElementAt extends CometExpressionSerde[ElementAt] {
   override def getSupportLevel(expr: ElementAt): SupportLevel = {
     expr.left.dataType match {
       case _: ArrayType => Compatible()
-      case _: MapType => Compatible()
+      case MapType(keyType, _, _) => MapKeySupport.keySupport(keyType)
       case _ => Unsupported(Some("Input must be an array or map"))
     }
   }
@@ -643,10 +661,9 @@ object CometElementAt extends CometExpressionSerde[ElementAt] {
     val childExpr = exprToProtoInternal(expr.left, inputs, binding)
     val ordinalExpr = exprToProtoInternal(expr.right, inputs, binding)
 
-    expr.left.dataType match {
+    val baseExpr = expr.left.dataType match {
       case _: MapType =>
-        val mapExtractExpr = scalarFunctionExprToProto("map_extract", childExpr, ordinalExpr)
-        mapExtractExpr
+        scalarFunctionExprToProto("map_extract", childExpr, ordinalExpr)
       case _ =>
         val defaultExpr =
           expr.defaultValueOutOfBound.flatMap(exprToProtoInternal(_, inputs, binding))
@@ -671,6 +688,49 @@ object CometElementAt extends CometExpressionSerde[ElementAt] {
           withFallbackReason(expr, "unsupported arguments for ElementAt")
           None
         }
+    }
+
+    // Spark's ElementAt is a BinaryExpression: for a NULL map/array it returns NULL WITHOUT
+    // evaluating the key/index child. Native scalar functions evaluate the key eagerly over the
+    // whole batch, so under ANSI (failOnError) a throwing key (e.g. a divide-by-zero) fires even on
+    // rows whose map/array is NULL, where Spark short-circuits. When the left can actually be NULL,
+    // guard the lookup with CASE WHEN left IS NOT NULL THEN <lookup> ELSE null so the key is only
+    // evaluated on the selected rows (DataFusion's CaseExpr filters the batch before the THEN
+    // branch), reproducing the short-circuit. Mirrors the CASE-WHEN idiom in CometArrayAppend /
+    // CometSize; the ELSE null literal carries the result type, as in CometArraysZip.
+    if (expr.failOnError && expr.left.nullable) {
+      val isNotNullExpr = createUnaryExpr(
+        expr,
+        expr.left,
+        inputs,
+        binding,
+        (builder, unaryExpr) => builder.setIsNotNull(unaryExpr))
+      val nullLiteralProto = exprToProto(Literal(null, expr.dataType), Seq.empty)
+      for {
+        base <- baseExpr
+        notNull <- isNotNullExpr
+        nullLit <- nullLiteralProto
+      } yield {
+        // The generic serde path attaches this ElementAt's expr_id and QueryContext to the CASE we
+        // return here, but the lookup that actually throws under ANSI (ListExtract, for the array
+        // case) is nested inside the THEN branch. Attach them to that inner Expr too, so a native
+        // INVALID_ARRAY_INDEX_IN_ELEMENT_AT / INVALID_INDEX_OF_ZERO error still renders Spark's
+        // `== SQL ... ==` query context. (map_extract ignores expr_id, so the map case is
+        // unaffected and never throws an index error anyway.)
+        val guardedBase = QueryPlanSerde.attachExprIdAndContext(expr, base)
+        val caseWhenExpr = ExprOuterClass.CaseWhen
+          .newBuilder()
+          .addWhen(notNull)
+          .addThen(guardedBase)
+          .setElseExpr(nullLit)
+          .build()
+        ExprOuterClass.Expr
+          .newBuilder()
+          .setCaseWhen(caseWhenExpr)
+          .build()
+      }
+    } else {
+      baseExpr
     }
   }
 }

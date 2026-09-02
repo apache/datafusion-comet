@@ -97,9 +97,7 @@ use std::{sync::Arc, task::Poll};
 use tokio::runtime::{Handle, Runtime};
 use tokio::sync::mpsc;
 
-use crate::execution::memory_pools::{
-    create_memory_pool, handle_task_shared_pool_release, parse_memory_pool_config, MemoryPoolConfig,
-};
+use crate::execution::memory_pools::{create_memory_pool, parse_memory_pool_config};
 use crate::execution::operators::{ScanExec, ShuffleScanExec};
 use crate::execution::shuffle::{
     read_ipc_compressed, read_ipc_compressed_validated, validate_remote_schema, CompressionCodec,
@@ -340,8 +338,6 @@ fn collect_op_names<'a>(op: &'a Operator, names: &mut std::collections::BTreeSet
 struct ExecutionContext {
     /// The id of the execution context.
     pub id: i64,
-    /// Task attempt id
-    pub task_attempt_id: i64,
     /// The deserialized Spark plan
     pub spark_plan: Operator,
     /// The number of partitions
@@ -374,8 +370,6 @@ struct ExecutionContext {
     pub debug_native: bool,
     /// Whether to write native plans with metrics to stdout
     pub explain_native: bool,
-    /// Memory pool config
-    pub memory_pool_config: MemoryPoolConfig,
     /// Whether to log memory usage on each call to execute_plan
     pub tracing_enabled: bool,
     /// Rust thread ID, used for aggregating tracing metrics per thread
@@ -563,7 +557,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
 
             let exec_context = Box::new(ExecutionContext {
                 id,
-                task_attempt_id,
                 spark_plan,
                 partition_count: partition_count as usize,
                 root_op: None,
@@ -580,7 +573,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 session_ctx: session,
                 debug_native,
                 explain_native,
-                memory_pool_config,
                 tracing_enabled,
                 rust_thread_id,
                 tracing_memory_metric_name: format!(
@@ -761,6 +753,7 @@ fn prepare_output(
     let schema_addrs = unsafe { schema_addrs.get_elements(env, ReleaseMode::NoCopyBack)? };
     let schema_addrs = &*schema_addrs;
 
+    let output_schema = output_batch.schema();
     let results = output_batch.columns();
     let num_rows = output_batch.num_rows();
 
@@ -787,6 +780,7 @@ fn prepare_output(
         let mut i = 0;
         while i < results.len() {
             let array_ref = results.get(i).ok_or(CometError::IndexOutOfBounds(i))?;
+            let field = output_schema.field(i);
 
             if array_ref.offset() != 0 {
                 // https://github.com/apache/datafusion-comet/issues/2051
@@ -803,11 +797,11 @@ fn prepare_output(
 
                 new_array
                     .to_data()
-                    .move_to_spark(array_addrs[i], schema_addrs[i])?;
+                    .move_to_spark(field, array_addrs[i], schema_addrs[i])?;
             } else {
                 array_ref
                     .to_data()
-                    .move_to_spark(array_addrs[i], schema_addrs[i])?;
+                    .move_to_spark(field, array_addrs[i], schema_addrs[i])?;
             }
             i += 1;
         }
@@ -1042,22 +1036,22 @@ pub extern "system" fn Java_org_apache_comet_Native_releasePlan(
     exec_context: jlong,
 ) {
     try_unwrap_or_throw(&e, |env| unsafe {
-        let execution_context = get_execution_context(exec_context);
-
-        // Move the guard out before the fallible metrics update. On error it unregisters while
-        // leaving the raw execution context alive for the JVM's existing release retry.
-        let memory_pool_registration = execution_context.memory_pool_registration.take();
-
-        // Update metrics
-        update_metrics(env, execution_context)?;
-
-        handle_task_shared_pool_release(
-            execution_context.memory_pool_config.pool_type,
-            execution_context.task_attempt_id,
+        // A null pointer from the JVM would be undefined behaviour in `Box::from_raw`; panic
+        // instead, which `try_unwrap_or_throw` converts into a Java exception (this is the check
+        // `get_execution_context` performs for the other JNI entry points).
+        assert_ne!(
+            exec_context, 0,
+            "Comet execution context shouldn't be null!"
         );
 
+        // Reclaim ownership of the context up front so that it is always freed, even if updating
+        // metrics below fails. Dropping it releases the memory pool and every JNI global ref the
+        // context holds.
+        let mut execution_context: Box<ExecutionContext> =
+            Box::from_raw(exec_context as *mut ExecutionContext);
+
         // Unregister this context's pool and emit the remaining total for the thread
-        if let Some(memory_pool_registration) = memory_pool_registration {
+        if let Some(memory_pool_registration) = execution_context.memory_pool_registration.take() {
             let remaining = memory_pool_registration.unregister_and_total();
             log_memory_usage(
                 &execution_context.tracing_memory_metric_name,
@@ -1065,8 +1059,8 @@ pub extern "system" fn Java_org_apache_comet_Native_releasePlan(
             );
         }
 
-        let _: Box<ExecutionContext> = Box::from_raw(execution_context);
-        Ok(())
+        // Flush metrics last, as it is the only fallible step here.
+        update_metrics(env, &mut execution_context)
     })
 }
 
