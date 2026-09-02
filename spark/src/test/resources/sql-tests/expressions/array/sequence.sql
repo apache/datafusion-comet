@@ -132,6 +132,50 @@ query expect_error(Unreachable code reached)
 SELECT sequence(-9223372036854775808L, 9223372036854775807L, 9223372036854775807L)
 
 -- ============================================================================
+-- Full narrow-type range: writes at the byte/short boundary. Spark's kernel
+-- accumulates with the element type's `Numeric`, wrapping at 8 and 16 bits;
+-- ours accumulates in i64 and truncates on the way out. The two agree because
+-- every element is inside range, but this locks in the boundary values.
+-- ============================================================================
+
+query
+SELECT sequence(-128Y, 127Y), sequence(-32768S, 32767S)
+
+-- ============================================================================
+-- Int32 boundary product: index * step overflows int, exercising the Int32
+-- monomorphization at the extreme.
+-- ============================================================================
+
+query
+SELECT sequence(-2147483648, 2147483647, 1073741824)
+
+-- ============================================================================
+-- Null short-circuit under a nested sequence: Spark's codegen returns NULL
+-- without evaluating the inner argument, so the inner `sequence(1, 5, -1)`
+-- must not fire on the NULL row. Non-leaf argument shapes stay on the JVM
+-- codegen dispatcher for this reason
+-- (https://github.com/apache/datafusion-comet/pull/5614#discussion_r3910237757).
+-- ============================================================================
+
+statement
+CREATE TABLE t_seq_null_short_circuit(s INT, k INT) USING parquet
+
+statement
+INSERT INTO t_seq_null_short_circuit VALUES (NULL, -1), (1, 1)
+
+query
+SELECT sequence(s, size(sequence(1, 5, k))) FROM t_seq_null_short_circuit
+
+-- ============================================================================
+-- Throwing sub-expression guarded by CASE WHEN: DataFusion filters the batch
+-- per branch, so `sequence(1, 5, k)` is never evaluated on rows where the
+-- ELSE branch is taken. Locks in that we do not diverge from Spark here.
+-- ============================================================================
+
+query
+SELECT CASE WHEN k > 0 THEN sequence(1, 5, k) ELSE array(-1) END FROM t_seq_null_short_circuit
+
+-- ============================================================================
 -- Date and timestamp sequences keep running on the JVM codegen dispatcher
 -- ============================================================================
 

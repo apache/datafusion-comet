@@ -136,22 +136,27 @@ where
     }
     // Comet-specific ceiling: the sum of every row's length in one Arrow batch must fit in
     // the i32 offset buffer. Spark has no equivalent guard because it stores each row as its
-    // own `long[]`. Report it with the same size-limit error class Spark would raise for a
-    // single overlong row so the user sees a familiar message.
+    // own `long[]`, so the user may hit this on a query Spark itself would run. Report it via
+    // a dedicated error that names `spark.comet.batchSize` as the actionable knob rather than
+    // Spark's per-array size limit.
     if total > i32::MAX as usize {
         return Err(DataFusionError::External(Box::new(
-            SparkError::CollectionSizeLimitExceeded {
-                num_elements: total.to_string(),
-                max_elements: i32::MAX as i64,
-                function_name: "sequence".to_string(),
+            SparkError::SequenceBatchTooLarge {
+                total_elements: total.to_string(),
             },
         )));
     }
 
     // Second pass: write elements straight into the child buffer and push offsets. The
     // batch-total check above guarantees `values.len() <= i32::MAX` at every iteration, so
-    // the offset push cannot overflow.
-    let mut values: Vec<T::Native> = Vec::with_capacity(total);
+    // the offset push cannot overflow. `try_reserve_exact` returns a query error on allocator
+    // failure so an oversized reservation cannot abort the executor.
+    let mut values: Vec<T::Native> = Vec::new();
+    values
+        .try_reserve_exact(total)
+        .map_err(|_| DataFusionError::External(Box::new(SparkError::SequenceBatchTooLarge {
+            total_elements: total.to_string(),
+        })))?;
     let mut offsets: Vec<i32> = Vec::with_capacity(num_rows + 1);
     offsets.push(0);
     let mut nulls = NullBufferBuilder::new(num_rows);

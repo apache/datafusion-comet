@@ -194,6 +194,17 @@ trait ShimSparkErrorConverter {
               "stop" -> params("stop").toString,
               "step" -> params("step").toString)))
 
+      case "SequenceBatchTooLarge" =>
+        // Comet-specific per-batch limit for native `sequence`. Point the user at
+        // spark.comet.batchSize since Spark itself has no equivalent guard.
+        Some(
+          new SparkException(
+            s"Comet's native `sequence` kernel cannot materialize a batch with " +
+              s"${params("totalElements")} total elements: it exceeds the per-batch " +
+              "limit or the allocator refused the reservation. Lower " +
+              "`spark.comet.batchSize` so fewer rows are grouped per batch.",
+            null))
+
       case "Internal" =>
         Some(SparkException.internalError(params("message").toString))
 
