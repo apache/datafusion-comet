@@ -315,7 +315,8 @@ mod tests {
         assert_eq!(
             longs.as_primitive::<Int64Type>(),
             &Int64Array::from(vec![
-                i64::MIN.wrapping_sub(((i64::MIN % 1000) + 1000) % 1000),
+                // i64::MIN % 1000 == -808, so the wrapped remainder is 192.
+                i64::MIN.wrapping_sub(192),
                 9_223_372_036_854_775_000
             ])
         );
