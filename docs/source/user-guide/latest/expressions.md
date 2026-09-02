@@ -549,74 +549,74 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 
 ## string_funcs
 
-| Function | Status | Implementation | Notes |
-| --- | --- | --- | --- |
-| `ascii` | ✅ | Native |  |
-| `base64` | ✅ | Native |  |
-| `bit_length` | ✅ | Native |  |
-| `btrim` | ✅ | — |  |
-| `char` | ✅ | Native |  |
-| `char_length` | ✅ | Native |  |
-| `character_length` | ✅ | Native |  |
-| `chr` | ✅ | Native |  |
-| `collate` | 🔜 | — | Spark collation (umbrella [#2190](https://github.com/apache/datafusion-comet/issues/2190)) |
-| `collation` | ✅ | — | Constant-folded to a literal (Spark 4.0+) |
-| `concat_ws` | ✅ | Native |  |
-| `contains` | ✅ | — |  |
-| `decode` | ✅ | — |  |
-| `elt` | ✅ | Codegen dispatch |  |
-| `encode` | 🔜 | — | Lowers to `StaticInvoke(encode)` (not allowlisted); falls back |
-| `endswith` | ✅ | — |  |
-| `find_in_set` | ✅ | Codegen dispatch |  |
-| `format_number` | ✅ | Codegen dispatch |  |
-| `format_string` | ✅ | Codegen dispatch |  |
-| `initcap` | ✅ | Hybrid |  |
-| `instr` | ✅ | Native |  |
-| `lcase` | ✅ | Hybrid |  |
-| `left` | ✅ | Native |  |
-| `len` | ✅ | Native |  |
-| `length` | ✅ | Native |  |
-| `levenshtein` | ✅ | Native |  |
-| `locate` | ✅ | Codegen dispatch |  |
-| `lower` | ✅ | Hybrid |  |
-| `lpad` | ✅ | — |  |
-| `ltrim` | ✅ | Native |  |
-| `luhn_check` | ✅ | — | Native via `StaticInvoke` (tests: luhn_check.sql) |
-| `mask` | ✅ | — | Routed through the JVM codegen dispatcher |
-| `octet_length` | ✅ | Native |  |
-| `overlay` | ✅ | Codegen dispatch |  |
-| `position` | ✅ | Codegen dispatch |  |
-| `printf` | ✅ | Codegen dispatch |  |
-| `regexp_count` | ✅ | — | Runs natively (rewrites to `size(regexp_extract_all(...))`) |
-| `regexp_extract` | ✅ | Native |  |
-| `regexp_extract_all` | ✅ | Native |  |
-| `regexp_instr` | ✅ | Codegen dispatch | Routed through the JVM codegen dispatcher |
-| `regexp_replace` | ✅ | Hybrid |  |
-| `regexp_substr` | ✅ | — | Runs natively (rewrites to `nullif(regexp_extract(...), '')`) |
-| `repeat` | ✅ | Native |  |
-| `replace` | ✅ | Hybrid |  |
-| `right` | ✅ | Native |  |
-| `rpad` | ✅ | — |  |
-| `rtrim` | ✅ | Native |  |
-| `soundex` | ✅ | Native |  |
-| `space` | ✅ | Native |  |
-| `split` | ✅ | Hybrid |  |
-| `split_part` | ✅ | — | Spark 4.0+ |
-| `startswith` | ✅ | — |  |
-| `substr` | ✅ | Native |  |
-| `substring` | ✅ | Native |  |
-| `substring_index` | ✅ | Native |  |
-| `to_binary` | ✅ | — | Hex form accelerated; other formats fall back |
-| `to_char` | ✅ | Codegen dispatch |  |
-| `to_number` | ✅ | Codegen dispatch |  |
-| `to_varchar` | ✅ | Codegen dispatch |  |
-| `translate` | ✅ | Native | DataFusion's `translate` iterates over Unicode graphemes (Spark uses code points) and substitutes U+0000 instead of treating it as a deletion sentinel, so the native path is opt-in via allowIncompatible |
-| `trim` | ✅ | Native |  |
-| `try_to_binary` | ✅ | — | Runs natively (rewrites to `try_eval(to_binary(...))`) |
-| `try_to_number` | ✅ | Codegen dispatch | Routed through the JVM codegen dispatcher |
-| `ucase` | ✅ | Hybrid |  |
-| `unbase64` | ✅ | Codegen dispatch |  |
-| `upper` | ✅ | Hybrid |  |
+| Function | Status | Implementation   | Notes                                                                                                                                                                                                      |
+| --- | --- |------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `ascii` | ✅ | Native           |                                                                                                                                                                                                            |
+| `base64` | ✅ | Native           |                                                                                                                                                                                                            |
+| `bit_length` | ✅ | Native           |                                                                                                                                                                                                            |
+| `btrim` | ✅ | —                |                                                                                                                                                                                                            |
+| `char` | ✅ | Native           |                                                                                                                                                                                                            |
+| `char_length` | ✅ | Native           |                                                                                                                                                                                                            |
+| `character_length` | ✅ | Native           |                                                                                                                                                                                                            |
+| `chr` | ✅ | Native           |                                                                                                                                                                                                            |
+| `collate` | 🔜 | —                | Spark collation (umbrella [#2190](https://github.com/apache/datafusion-comet/issues/2190))                                                                                                                 |
+| `collation` | ✅ | —                | Constant-folded to a literal (Spark 4.0+)                                                                                                                                                                  |
+| `concat_ws` | ✅ | Native           |                                                                                                                                                                                                            |
+| `contains` | ✅ | —                |                                                                                                                                                                                                            |
+| `decode` | ✅ | —                |                                                                                                                                                                                                            |
+| `elt` | ✅ | Hybrid           | Codegen dispatch when spark.sql.ansi.enabled=true                                                                                                                                                          |
+| `encode` | 🔜 | —                | Lowers to `StaticInvoke(encode)` (not allowlisted); falls back                                                                                                                                             |
+| `endswith` | ✅ | —                |                                                                                                                                                                                                            |
+| `find_in_set` | ✅ | Codegen dispatch |                                                                                                                                                                                                            |
+| `format_number` | ✅ | Codegen dispatch |                                                                                                                                                                                                            |
+| `format_string` | ✅ | Codegen dispatch |                                                                                                                                                                                                            |
+| `initcap` | ✅ | Hybrid           |                                                                                                                                                                                                            |
+| `instr` | ✅ | Native           |                                                                                                                                                                                                            |
+| `lcase` | ✅ | Hybrid           |                                                                                                                                                                                                            |
+| `left` | ✅ | Native           |                                                                                                                                                                                                            |
+| `len` | ✅ | Native           |                                                                                                                                                                                                            |
+| `length` | ✅ | Native           |                                                                                                                                                                                                            |
+| `levenshtein` | ✅ | Native           |                                                                                                                                                                                                            |
+| `locate` | ✅ | Codegen dispatch |                                                                                                                                                                                                            |
+| `lower` | ✅ | Hybrid           |                                                                                                                                                                                                            |
+| `lpad` | ✅ | —                |                                                                                                                                                                                                            |
+| `ltrim` | ✅ | Native           |                                                                                                                                                                                                            |
+| `luhn_check` | ✅ | —                | Native via `StaticInvoke` (tests: luhn_check.sql)                                                                                                                                                          |
+| `mask` | ✅ | —                | Routed through the JVM codegen dispatcher                                                                                                                                                                  |
+| `octet_length` | ✅ | Native           |                                                                                                                                                                                                            |
+| `overlay` | ✅ | Codegen dispatch |                                                                                                                                                                                                            |
+| `position` | ✅ | Codegen dispatch |                                                                                                                                                                                                            |
+| `printf` | ✅ | Codegen dispatch |                                                                                                                                                                                                            |
+| `regexp_count` | ✅ | —                | Runs natively (rewrites to `size(regexp_extract_all(...))`)                                                                                                                                                |
+| `regexp_extract` | ✅ | Native           |                                                                                                                                                                                                            |
+| `regexp_extract_all` | ✅ | Native           |                                                                                                                                                                                                            |
+| `regexp_instr` | ✅ | Codegen dispatch | Routed through the JVM codegen dispatcher                                                                                                                                                                  |
+| `regexp_replace` | ✅ | Hybrid           |                                                                                                                                                                                                            |
+| `regexp_substr` | ✅ | —                | Runs natively (rewrites to `nullif(regexp_extract(...), '')`)                                                                                                                                              |
+| `repeat` | ✅ | Native           |                                                                                                                                                                                                            |
+| `replace` | ✅ | Hybrid           |                                                                                                                                                                                                            |
+| `right` | ✅ | Native           |                                                                                                                                                                                                            |
+| `rpad` | ✅ | —                |                                                                                                                                                                                                            |
+| `rtrim` | ✅ | Native           |                                                                                                                                                                                                            |
+| `soundex` | ✅ | Native           |                                                                                                                                                                                                            |
+| `space` | ✅ | Native           |                                                                                                                                                                                                            |
+| `split` | ✅ | Hybrid           |                                                                                                                                                                                                            |
+| `split_part` | ✅ | —                | Spark 4.0+                                                                                                                                                                                                 |
+| `startswith` | ✅ | —                |                                                                                                                                                                                                            |
+| `substr` | ✅ | Native           |                                                                                                                                                                                                            |
+| `substring` | ✅ | Native           |                                                                                                                                                                                                            |
+| `substring_index` | ✅ | Native           |                                                                                                                                                                                                            |
+| `to_binary` | ✅ | —                | Hex form accelerated; other formats fall back                                                                                                                                                              |
+| `to_char` | ✅ | Codegen dispatch |                                                                                                                                                                                                            |
+| `to_number` | ✅ | Codegen dispatch |                                                                                                                                                                                                            |
+| `to_varchar` | ✅ | Codegen dispatch |                                                                                                                                                                                                            |
+| `translate` | ✅ | Native           | DataFusion's `translate` iterates over Unicode graphemes (Spark uses code points) and substitutes U+0000 instead of treating it as a deletion sentinel, so the native path is opt-in via allowIncompatible |
+| `trim` | ✅ | Native           |                                                                                                                                                                                                            |
+| `try_to_binary` | ✅ | —                | Runs natively (rewrites to `try_eval(to_binary(...))`)                                                                                                                                                     |
+| `try_to_number` | ✅ | Codegen dispatch | Routed through the JVM codegen dispatcher                                                                                                                                                                  |
+| `ucase` | ✅ | Hybrid           |                                                                                                                                                                                                            |
+| `unbase64` | ✅ | Codegen dispatch |                                                                                                                                                                                                            |
+| `upper` | ✅ | Hybrid           |                                                                                                                                                                                                            |
 
 ---
 

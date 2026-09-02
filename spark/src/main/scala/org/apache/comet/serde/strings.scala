@@ -20,7 +20,7 @@
 package org.apache.comet.serde
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Base64, BitLength, Cast, Concat, ConcatWs, Contains, Elt, Empty2Null, EndsWith, Expression, FindInSet, FormatNumber, FormatString, GetJsonObject, InitCap, Left, Length, Levenshtein, Like, Literal, Lower, Mask, OctetLength, Overlay, RegExpExtract, RegExpExtractAll, RegExpInStr, RegExpReplace, Right, RLike, SoundEx, StartsWith, StringLocate, StringLPad, StringRepeat, StringReplace, StringRPad, StringSplit, StringTranslate, Substring, SubstringIndex, ToCharacter, ToNumber, TryToNumber, UnBase64, Upper}
-import org.apache.spark.sql.types.{BinaryType, DataTypes, IntegerType, LongType, StringType}
+import org.apache.spark.sql.types._
 
 import org.apache.comet.CometConf
 import org.apache.comet.serde.ExprOuterClass.Expr
@@ -679,9 +679,20 @@ object CometGetJsonObject extends CometCodegenDispatch[GetJsonObject] with Nativ
     }
 }
 
+object CometElt extends CometScalarFunction[Elt]("elt") with CodegenDispatchFallback {
+  override def getIncompatibleReasons(): Seq[String] = Seq(
+    "The elt function does not respect spark.sql.ansi.enabled=true")
+
+  override def getSupportLevel(expr: Elt): SupportLevel = {
+    if (expr.failOnError) {
+      return Incompatible(Some("The elt function does not respect spark.sql.ansi.enabled=true"))
+    }
+    Compatible()
+  }
+}
+
 // Expressions routed through the JVM codegen dispatcher: no native implementation, so Spark's own
 // doGenCode runs inside the Comet pipeline, matching Spark exactly.
-object CometElt extends CometCodegenDispatch[Elt]
 
 object CometFindInSet extends CometCodegenDispatch[FindInSet]
 
