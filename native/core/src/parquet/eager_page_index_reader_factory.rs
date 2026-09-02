@@ -46,6 +46,7 @@
 //! Filed upstream as apache/datafusion#23978. Revert this once the opener merges its deferred
 //! page-index load back into `FileMetadataCache` instead of bypassing it.
 
+use async_trait::async_trait;
 use bytes::Bytes;
 use datafusion::common::Result as DFResult;
 use datafusion::datasource::physical_plan::parquet::metadata::DFParquetMetadata;
@@ -53,29 +54,128 @@ use datafusion::datasource::physical_plan::parquet::{
     ParquetFileMetrics, ParquetFileReaderFactory,
 };
 use datafusion::execution::cache::cache_manager::FileMetadataCache;
-use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
+use datafusion::physical_plan::metrics::{
+    Count, ExecutionPlanMetricsSet, MetricBuilder, MetricCategory, MetricType,
+};
 use datafusion_datasource::PartitionedFile;
 use futures::future::BoxFuture;
-use futures::FutureExt;
-use object_store::ObjectStore;
+use futures::{FutureExt, StreamExt, TryStreamExt};
+use object_store::path::Path;
+use object_store::{
+    coalesce_ranges, CopyOptions, GetOptions, GetRange, GetResult, GetResultPayload, ListResult,
+    MultipartUpload, ObjectMeta, ObjectStore, ObjectStoreExt, PutMultipartOptions, PutOptions,
+    PutPayload, PutResult, RenameOptions, Result as ObjectStoreResult,
+    OBJECT_STORE_COALESCE_DEFAULT,
+};
 use parquet::arrow::arrow_reader::ArrowReaderOptions;
 use parquet::arrow::async_reader::{AsyncFileReader, ParquetObjectReader};
-use parquet::file::metadata::{PageIndexPolicy, ParquetMetaData};
-use std::fmt::Debug;
+use parquet::file::metadata::{
+    FooterTail, PageIndexPolicy, ParquetMetaData, ParquetMetaDataReader,
+};
+use std::fmt::{Debug, Display, Formatter};
 use std::ops::Range;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, OnceLock};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ScanIoSource {
+    ObjectStore,
+    Local,
+    OtherObjectStore,
+}
+
+#[derive(Debug)]
+struct ScanIoMetrics {
+    data_bytes: Count,
+    metadata_bytes: Count,
+    footer_reads: Count,
+    footer_bytes: Count,
+    object_store_get_calls: Count,
+    object_store_get_requested_bytes: Count,
+    object_store_response_bytes_read: Count,
+    metadata_cache_hits: Count,
+    metadata_cache_misses: Count,
+}
+
+impl ScanIoMetrics {
+    fn new(metrics: &ExecutionPlanMetricsSet) -> Self {
+        Self {
+            data_bytes: byte_counter(metrics, "scan_io_data_bytes"),
+            metadata_bytes: byte_counter(metrics, "scan_io_metadata_bytes"),
+            footer_reads: count_counter(metrics, "scan_io_footer_reads"),
+            footer_bytes: byte_counter(metrics, "scan_io_footer_bytes"),
+            object_store_get_calls: count_counter(metrics, "scan_io_object_store_get_calls"),
+            object_store_get_requested_bytes: byte_counter(
+                metrics,
+                "scan_io_object_store_get_requested_bytes",
+            ),
+            object_store_response_bytes_read: byte_counter(
+                metrics,
+                "scan_io_object_store_response_bytes_read",
+            ),
+            metadata_cache_hits: count_counter(metrics, "scan_io_metadata_cache_hits"),
+            metadata_cache_misses: count_counter(metrics, "scan_io_metadata_cache_misses"),
+        }
+    }
+
+    fn record_metadata_cache_result(&self, storage_reads: usize) {
+        if storage_reads == 0 {
+            self.metadata_cache_hits.add(1);
+        } else {
+            self.metadata_cache_misses.add(1);
+        }
+    }
+}
+
+fn byte_counter(metrics: &ExecutionPlanMetricsSet, name: &'static str) -> Count {
+    MetricBuilder::new(metrics)
+        .with_type(MetricType::Summary)
+        .with_category(MetricCategory::Bytes)
+        .global_counter(name)
+}
+
+fn count_counter(metrics: &ExecutionPlanMetricsSet, name: &'static str) -> Count {
+    MetricBuilder::new(metrics)
+        .with_type(MetricType::Summary)
+        .global_counter(name)
+}
+
+fn range_bytes(range: &Range<u64>) -> usize {
+    (range.end - range.start) as usize
+}
+
+fn ranges_bytes(ranges: &[Range<u64>]) -> usize {
+    ranges.iter().map(range_bytes).sum()
+}
 
 #[derive(Debug)]
 pub struct EagerPageIndexReaderFactory {
     store: Arc<dyn ObjectStore>,
     metadata_cache: Arc<dyn FileMetadataCache>,
+    scan_io_metrics: Arc<ScanIoMetrics>,
 }
 
 impl EagerPageIndexReaderFactory {
-    pub fn new(store: Arc<dyn ObjectStore>, metadata_cache: Arc<dyn FileMetadataCache>) -> Self {
+    pub(crate) fn new(
+        store: Arc<dyn ObjectStore>,
+        metadata_cache: Arc<dyn FileMetadataCache>,
+        source: ScanIoSource,
+        metrics: &ExecutionPlanMetricsSet,
+    ) -> Self {
+        let scan_io_metrics = Arc::new(ScanIoMetrics::new(metrics));
+        let store: Arc<dyn ObjectStore> = if source == ScanIoSource::ObjectStore {
+            Arc::new(ScanIoObjectStore {
+                inner: store,
+                scan_io_metrics: Arc::clone(&scan_io_metrics),
+                role: ScanIoStoreRole::ObjectStore,
+            })
+        } else {
+            store
+        };
         Self {
             store,
             metadata_cache,
+            scan_io_metrics,
         }
     }
 }
@@ -104,6 +204,7 @@ impl ParquetFileReaderFactory for EagerPageIndexReaderFactory {
 
         Ok(Box::new(EagerPageIndexReader {
             file_metrics,
+            scan_io_metrics: Arc::clone(&self.scan_io_metrics),
             store: Arc::clone(&self.store),
             inner,
             partitioned_file,
@@ -115,6 +216,7 @@ impl ParquetFileReaderFactory for EagerPageIndexReaderFactory {
 
 struct EagerPageIndexReader {
     file_metrics: ParquetFileMetrics,
+    scan_io_metrics: Arc<ScanIoMetrics>,
     store: Arc<dyn ObjectStore>,
     inner: ParquetObjectReader,
     partitioned_file: PartitionedFile,
@@ -123,10 +225,23 @@ struct EagerPageIndexReader {
 }
 
 impl AsyncFileReader for EagerPageIndexReader {
+    // Pinned parquet 58.4 uses this single-range entry point for Bloom filters, and the
+    // multi-range entry point below for data pages. Footer/page-index loading is instrumented
+    // separately in get_metadata. The scan tests pin this method contract; revisit it when
+    // upgrading parquet rather than assuming an offset alone identifies metadata.
     fn get_bytes(&mut self, range: Range<u64>) -> BoxFuture<'_, parquet::errors::Result<Bytes>> {
-        let bytes_scanned = range.end - range.start;
-        self.file_metrics.bytes_scanned.add(bytes_scanned as usize);
-        self.inner.get_bytes(range)
+        let requested = range_bytes(&range);
+        // Preserve the existing requested-range metric. Metadata fetched through get_metadata
+        // bypasses it, and object-store coalescing can fetch more bytes than these ranges.
+        self.file_metrics.bytes_scanned.add(requested);
+        let scan_io_metrics = Arc::clone(&self.scan_io_metrics);
+        let future = self.inner.get_bytes(range);
+        async move {
+            let bytes = future.await?;
+            scan_io_metrics.metadata_bytes.add(bytes.len());
+            Ok(bytes)
+        }
+        .boxed()
     }
 
     fn get_byte_ranges(
@@ -136,9 +251,18 @@ impl AsyncFileReader for EagerPageIndexReader {
     where
         Self: Send,
     {
-        let total: u64 = ranges.iter().map(|r| r.end - r.start).sum();
-        self.file_metrics.bytes_scanned.add(total as usize);
-        self.inner.get_byte_ranges(ranges)
+        let requested = ranges_bytes(&ranges);
+        self.file_metrics.bytes_scanned.add(requested);
+        let scan_io_metrics = Arc::clone(&self.scan_io_metrics);
+        let future = self.inner.get_byte_ranges(ranges);
+        async move {
+            let bytes = future.await?;
+            scan_io_metrics
+                .data_bytes
+                .add(bytes.iter().map(Bytes::len).sum());
+            Ok(bytes)
+        }
+        .boxed()
     }
 
     fn get_metadata<'a>(
@@ -151,17 +275,33 @@ impl AsyncFileReader for EagerPageIndexReader {
         let metadata_cache = Arc::clone(&self.metadata_cache);
         let store = Arc::clone(&self.store);
         let metadata_size_hint = self.metadata_size_hint;
+        let scan_io_metrics = Arc::clone(&self.scan_io_metrics);
         async move {
             let file_decryption_properties = options
                 .and_then(|o| o.file_decryption_properties())
                 .map(Arc::clone);
+            let cache_enabled = file_decryption_properties.is_none();
             let page_index_policy = if file_decryption_properties.is_none() {
                 Some(PageIndexPolicy::Optional)
             } else {
                 options.map(|o| o.column_index_policy())
             };
+            let metadata_storage_reads = Arc::new(AtomicUsize::new(0));
+            let footer_payload_bytes = Arc::new(AtomicUsize::new(0));
+            let metadata_store = ScanIoObjectStore {
+                inner: store,
+                scan_io_metrics: Arc::clone(&scan_io_metrics),
+                role: ScanIoStoreRole::Metadata {
+                    storage_reads: Arc::clone(&metadata_storage_reads),
+                    footer_payload_bytes: Arc::clone(&footer_payload_bytes),
+                    footer_payload: OnceLock::new(),
+                    footer_recorded: AtomicBool::new(false),
+                    file_size: object_meta.size,
+                    record_footer_immediately: !cache_enabled,
+                },
+            };
 
-            DFParquetMetadata::new(store.as_ref(), &object_meta)
+            let metadata = DFParquetMetadata::new(&metadata_store, &object_meta)
                 .with_decryption_properties(file_decryption_properties)
                 .with_file_metadata_cache(Some(metadata_cache))
                 .with_metadata_size_hint(metadata_size_hint)
@@ -173,9 +313,331 @@ impl AsyncFileReader for EagerPageIndexReader {
                         "Failed to fetch metadata for file {}: {e}",
                         object_meta.location,
                     ))
-                })
+                });
+
+            if metadata.is_ok() {
+                let footer_bytes = footer_payload_bytes.load(Ordering::Relaxed);
+                if footer_bytes > 0 && cache_enabled {
+                    metadata_store.record_footer(footer_bytes);
+                }
+                if cache_enabled {
+                    scan_io_metrics.record_metadata_cache_result(
+                        metadata_storage_reads.load(Ordering::Relaxed),
+                    );
+                }
+            } else if cache_enabled {
+                metadata_store.record_valid_footer();
+            }
+
+            metadata
         }
         .boxed()
+    }
+}
+
+#[derive(Debug)]
+enum ScanIoStoreRole {
+    ObjectStore,
+    Metadata {
+        storage_reads: Arc<AtomicUsize>,
+        footer_payload_bytes: Arc<AtomicUsize>,
+        footer_payload: OnceLock<Bytes>,
+        footer_recorded: AtomicBool,
+        file_size: u64,
+        record_footer_immediately: bool,
+    },
+}
+
+#[derive(Debug)]
+struct ScanIoObjectStore {
+    inner: Arc<dyn ObjectStore>,
+    scan_io_metrics: Arc<ScanIoMetrics>,
+    role: ScanIoStoreRole,
+}
+
+impl ScanIoObjectStore {
+    fn record_valid_footer(&self) {
+        if let ScanIoStoreRole::Metadata {
+            footer_payload_bytes,
+            footer_payload,
+            footer_recorded,
+            ..
+        } = &self.role
+        {
+            if !footer_recorded.load(Ordering::Relaxed)
+                && footer_payload
+                    .get()
+                    .is_some_and(|payload| ParquetMetaDataReader::decode_metadata(payload).is_ok())
+            {
+                self.record_footer(footer_payload_bytes.load(Ordering::Relaxed));
+            }
+        }
+    }
+
+    fn record_footer(&self, bytes: usize) {
+        if let ScanIoStoreRole::Metadata {
+            footer_recorded, ..
+        } = &self.role
+        {
+            if bytes > 0 && !footer_recorded.swap(true, Ordering::Relaxed) {
+                self.scan_io_metrics.footer_reads.add(1);
+                self.scan_io_metrics.footer_bytes.add(bytes);
+            }
+        }
+    }
+
+    fn record_request(&self, bytes: usize) {
+        if bytes == 0 {
+            return;
+        }
+        match &self.role {
+            ScanIoStoreRole::ObjectStore => {
+                self.scan_io_metrics.object_store_get_calls.add(1);
+                self.scan_io_metrics
+                    .object_store_get_requested_bytes
+                    .add(bytes);
+            }
+            ScanIoStoreRole::Metadata { storage_reads, .. } => {
+                storage_reads.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+
+    // Footer accounting follows the DataFusion 54.1/parquet 58.4 metadata push decoder: a tail
+    // read supplies the payload length, then one or more reads supply the complete payload.
+    // Plaintext payloads are retained here and counted only after metadata succeeds, or when
+    // get_ranges observes the subsequent page-index request wholly below the footer. Thus a
+    // later index failure does not erase a decoded footer. Encrypted payloads are counted as
+    // soon as complete, before key retrieval/decryption; their counter measures payload I/O,
+    // not successful authentication. Recheck this protocol when upgrading the decoder.
+    fn record_returned(&self, range: Option<&Range<u64>>, bytes: &Bytes) {
+        match &self.role {
+            ScanIoStoreRole::ObjectStore => self
+                .scan_io_metrics
+                .object_store_response_bytes_read
+                .add(bytes.len()),
+            ScanIoStoreRole::Metadata {
+                footer_payload_bytes,
+                footer_payload,
+                file_size,
+                record_footer_immediately,
+                ..
+            } => {
+                self.scan_io_metrics.metadata_bytes.add(bytes.len());
+                if range.is_some_and(|range| range.end == *file_size) && bytes.len() >= 8 {
+                    if let Ok(footer) = FooterTail::try_from(&bytes[bytes.len() - 8..]) {
+                        let _ = footer_payload_bytes.compare_exchange(
+                            0,
+                            footer.metadata_length(),
+                            Ordering::Relaxed,
+                            Ordering::Relaxed,
+                        );
+                    }
+                }
+
+                let footer_bytes = footer_payload_bytes.load(Ordering::Relaxed);
+                let footer_end = file_size.saturating_sub(8);
+                if footer_bytes > 0
+                    && footer_end
+                        .checked_sub(footer_bytes as u64)
+                        .is_some_and(|footer_start| {
+                            range.is_some_and(|range| {
+                                range.start <= footer_start
+                                    && range.start.saturating_add(bytes.len() as u64) >= footer_end
+                            })
+                        })
+                {
+                    if *record_footer_immediately {
+                        // Encrypted opens bypass the shared cache and retrieve the key only after
+                        // the complete encrypted payload is read. Count completed payload I/O,
+                        // even if key retrieval, authentication, or metadata decoding later fails.
+                        self.record_footer(footer_bytes);
+                    } else if let Some(range) = range {
+                        let payload_start =
+                            (footer_end - footer_bytes as u64 - range.start) as usize;
+                        let _ = footer_payload
+                            .set(bytes.slice(payload_start..payload_start + footer_bytes));
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl Display for ScanIoObjectStore {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "scan-io({})", self.inner)
+    }
+}
+
+#[async_trait]
+#[deny(clippy::missing_trait_methods)]
+impl ObjectStore for ScanIoObjectStore {
+    async fn put_opts(
+        &self,
+        location: &Path,
+        payload: PutPayload,
+        options: PutOptions,
+    ) -> ObjectStoreResult<PutResult> {
+        self.inner.put_opts(location, payload, options).await
+    }
+
+    async fn put_multipart_opts(
+        &self,
+        location: &Path,
+        options: PutMultipartOptions,
+    ) -> ObjectStoreResult<Box<dyn MultipartUpload>> {
+        self.inner.put_multipart_opts(location, options).await
+    }
+
+    async fn get_opts(&self, location: &Path, options: GetOptions) -> ObjectStoreResult<GetResult> {
+        if options.head {
+            return self.inner.get_opts(location, options).await;
+        }
+
+        let requested = match options.range.as_ref() {
+            Some(GetRange::Bounded(range)) => Some(range_bytes(range)),
+            Some(GetRange::Suffix(bytes)) => Some(*bytes as usize),
+            Some(GetRange::Offset(_)) | None => None,
+        };
+        if let Some(requested) = requested {
+            self.record_request(requested);
+        }
+
+        let result = self.inner.get_opts(location, options).await?;
+        if requested.is_none() {
+            self.record_request(range_bytes(&result.range));
+        }
+
+        let meta = result.meta.clone();
+        let range = result.range.clone();
+        let attributes = result.attributes.clone();
+        let payload = if matches!(&result.payload, GetResultPayload::File(..)) {
+            let bytes = result.bytes().await?;
+            self.record_returned(Some(&range), &bytes);
+            GetResultPayload::Stream(futures::stream::once(async move { Ok(bytes) }).boxed())
+        } else {
+            let scan_io_metrics = Arc::clone(&self.scan_io_metrics);
+            let metadata_read = matches!(self.role, ScanIoStoreRole::Metadata { .. });
+            GetResultPayload::Stream(
+                result
+                    .into_stream()
+                    .inspect_ok(move |bytes| {
+                        if metadata_read {
+                            scan_io_metrics.metadata_bytes.add(bytes.len());
+                        } else {
+                            scan_io_metrics
+                                .object_store_response_bytes_read
+                                .add(bytes.len());
+                        }
+                    })
+                    .boxed(),
+            )
+        };
+
+        Ok(GetResult {
+            payload,
+            meta,
+            range,
+            attributes,
+        })
+    }
+
+    async fn get_ranges(
+        &self,
+        location: &Path,
+        ranges: &[Range<u64>],
+    ) -> ObjectStoreResult<Vec<Bytes>> {
+        match &self.role {
+            ScanIoStoreRole::ObjectStore => {
+                // Supported native cloud stores use object_store's default coalescing. Apply it
+                // here so get_opts observes the coalesced requests, not just logical ranges.
+                // This deliberately bypasses an inner get_ranges override: a cache or custom
+                // backend must define that observation boundary before being composed here.
+                // Local/custom HDFS backends are not wrapped in this role and keep delegation.
+                coalesce_ranges(
+                    ranges,
+                    |range| self.get_range(location, range),
+                    OBJECT_STORE_COALESCE_DEFAULT,
+                )
+                .await
+            }
+            ScanIoStoreRole::Metadata {
+                footer_payload_bytes,
+                file_size,
+                record_footer_immediately,
+                ..
+            } => {
+                let footer_bytes = footer_payload_bytes.load(Ordering::Relaxed);
+                if !record_footer_immediately
+                    && footer_bytes > 0
+                    && !ranges.is_empty()
+                    && file_size
+                        .saturating_sub(8)
+                        .checked_sub(footer_bytes as u64)
+                        .is_some_and(|footer_start| {
+                            ranges.iter().all(|range| range.end <= footer_start)
+                        })
+                {
+                    // In parquet 58.4, plaintext page-index requests below the footer begin only
+                    // after its metadata payload has decoded successfully. Record that footer
+                    // before awaiting the indexes, so a later index-read failure does not erase
+                    // a successful footer read. Encrypted opens use the complete-payload path
+                    // above; cached plaintext opens are recorded only after metadata succeeds.
+                    self.record_footer(footer_bytes);
+                }
+                self.record_request(ranges_bytes(ranges));
+                let bytes = self.inner.get_ranges(location, ranges).await?;
+                for (range, bytes) in ranges.iter().zip(bytes.iter()) {
+                    self.record_returned(Some(range), bytes);
+                }
+                Ok(bytes)
+            }
+        }
+    }
+
+    fn delete_stream(
+        &self,
+        locations: futures::stream::BoxStream<'static, ObjectStoreResult<Path>>,
+    ) -> futures::stream::BoxStream<'static, ObjectStoreResult<Path>> {
+        self.inner.delete_stream(locations)
+    }
+
+    fn list(
+        &self,
+        prefix: Option<&Path>,
+    ) -> futures::stream::BoxStream<'static, ObjectStoreResult<ObjectMeta>> {
+        self.inner.list(prefix)
+    }
+
+    fn list_with_offset(
+        &self,
+        prefix: Option<&Path>,
+        offset: &Path,
+    ) -> futures::stream::BoxStream<'static, ObjectStoreResult<ObjectMeta>> {
+        self.inner.list_with_offset(prefix, offset)
+    }
+
+    async fn list_with_delimiter(&self, prefix: Option<&Path>) -> ObjectStoreResult<ListResult> {
+        self.inner.list_with_delimiter(prefix).await
+    }
+
+    async fn copy_opts(
+        &self,
+        from: &Path,
+        to: &Path,
+        options: CopyOptions,
+    ) -> ObjectStoreResult<()> {
+        self.inner.copy_opts(from, to, options).await
+    }
+
+    async fn rename_opts(
+        &self,
+        from: &Path,
+        to: &Path,
+        options: RenameOptions,
+    ) -> ObjectStoreResult<()> {
+        self.inner.rename_opts(from, to, options).await
     }
 }
 
@@ -189,5 +651,162 @@ impl Drop for EagerPageIndexReader {
         self.file_metrics
             .scan_efficiency_ratio
             .set_total(self.partitioned_file.object_meta.size as usize);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use object_store::memory::InMemory;
+
+    #[derive(Debug)]
+    struct RecordingRangeStore {
+        inner: InMemory,
+        range_calls: AtomicUsize,
+        get_calls: AtomicUsize,
+    }
+
+    impl Display for RecordingRangeStore {
+        fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+            write!(f, "recording-range-store")
+        }
+    }
+
+    #[async_trait]
+    impl ObjectStore for RecordingRangeStore {
+        async fn put_opts(
+            &self,
+            p: &Path,
+            v: PutPayload,
+            o: PutOptions,
+        ) -> ObjectStoreResult<PutResult> {
+            self.inner.put_opts(p, v, o).await
+        }
+
+        async fn put_multipart_opts(
+            &self,
+            p: &Path,
+            o: PutMultipartOptions,
+        ) -> ObjectStoreResult<Box<dyn MultipartUpload>> {
+            self.inner.put_multipart_opts(p, o).await
+        }
+
+        async fn get_opts(&self, p: &Path, o: GetOptions) -> ObjectStoreResult<GetResult> {
+            self.get_calls.fetch_add(1, Ordering::Relaxed);
+            self.inner.get_opts(p, o).await
+        }
+
+        async fn get_ranges(
+            &self,
+            p: &Path,
+            ranges: &[Range<u64>],
+        ) -> ObjectStoreResult<Vec<Bytes>> {
+            self.range_calls.fetch_add(1, Ordering::Relaxed);
+            self.inner.get_ranges(p, ranges).await
+        }
+
+        fn delete_stream(
+            &self,
+            paths: futures::stream::BoxStream<'static, ObjectStoreResult<Path>>,
+        ) -> futures::stream::BoxStream<'static, ObjectStoreResult<Path>> {
+            self.inner.delete_stream(paths)
+        }
+
+        fn list(
+            &self,
+            p: Option<&Path>,
+        ) -> futures::stream::BoxStream<'static, ObjectStoreResult<ObjectMeta>> {
+            self.inner.list(p)
+        }
+
+        async fn list_with_delimiter(&self, p: Option<&Path>) -> ObjectStoreResult<ListResult> {
+            self.inner.list_with_delimiter(p).await
+        }
+
+        async fn copy_opts(
+            &self,
+            from: &Path,
+            to: &Path,
+            options: CopyOptions,
+        ) -> ObjectStoreResult<()> {
+            self.inner.copy_opts(from, to, options).await
+        }
+
+        async fn rename_opts(
+            &self,
+            from: &Path,
+            to: &Path,
+            options: RenameOptions,
+        ) -> ObjectStoreResult<()> {
+            self.inner.rename_opts(from, to, options).await
+        }
+    }
+
+    #[tokio::test]
+    async fn preserves_custom_range_delegation_for_local_and_other_backends() {
+        assert_range_read_contract(ScanIoSource::Local).await;
+        // This is also the classification returned for custom libhdfs schemes, including s3.
+        assert_range_read_contract(ScanIoSource::OtherObjectStore).await;
+    }
+
+    #[tokio::test]
+    async fn remote_metrics_observe_default_coalescing_instead_of_inner_override() {
+        assert_range_read_contract(ScanIoSource::ObjectStore).await;
+    }
+
+    async fn assert_range_read_contract(source: ScanIoSource) {
+        let store = Arc::new(RecordingRangeStore {
+            inner: InMemory::new(),
+            range_calls: AtomicUsize::new(0),
+            get_calls: AtomicUsize::new(0),
+        });
+        let location = Path::from("ranges.parquet");
+        store
+            .put(&location, Bytes::from_static(b"0123456789").into())
+            .await
+            .unwrap();
+        let runtime = datafusion::execution::runtime_env::RuntimeEnv::default();
+        let metrics = ExecutionPlanMetricsSet::new();
+        let factory = EagerPageIndexReaderFactory::new(
+            Arc::clone(&store) as Arc<dyn ObjectStore>,
+            runtime.cache_manager.get_file_metadata_cache(),
+            source,
+            &metrics,
+        );
+        let mut reader = factory
+            .create_reader(
+                0,
+                PartitionedFile::new(location.to_string(), 10),
+                None,
+                &metrics,
+            )
+            .unwrap();
+        let result = reader.get_byte_ranges(vec![0..2, 4..6]).await.unwrap();
+        assert_eq!(
+            result,
+            vec![Bytes::from_static(b"01"), Bytes::from_static(b"45")]
+        );
+        let remote = source == ScanIoSource::ObjectStore;
+        assert_eq!(
+            store.range_calls.load(Ordering::Relaxed),
+            usize::from(!remote)
+        );
+        assert_eq!(store.get_calls.load(Ordering::Relaxed), usize::from(remote));
+        assert_eq!(
+            metrics
+                .clone_inner()
+                .sum_by_name("scan_io_data_bytes")
+                .unwrap()
+                .as_usize(),
+            4
+        );
+        assert_eq!(
+            metrics
+                .clone_inner()
+                .sum_by_name("scan_io_object_store_response_bytes_read")
+                .unwrap()
+                .as_usize(),
+            if remote { 6 } else { 0 }
+        );
     }
 }

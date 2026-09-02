@@ -2413,14 +2413,35 @@ class CometExecSuite extends CometTestBase {
             metrics.contains("time_elapsed_scanning_total"),
             s"Missing time_elapsed_scanning_total. Available: ${metrics.keys}")
           assert(metrics.contains("bytes_scanned"))
+          assert(metrics("bytes_scanned").name.contains("Number of bytes scanned"))
           assert(metrics.contains("output_rows"))
           assert(metrics.contains("time_elapsed_opening"))
           assert(metrics.contains("time_elapsed_processing"))
           assert(metrics.contains("time_elapsed_scanning_until_data"))
+          Seq(
+            "scan_io_data_bytes",
+            "scan_io_metadata_bytes",
+            "scan_io_footer_reads",
+            "scan_io_footer_bytes",
+            "scan_io_object_store_get_calls",
+            "scan_io_object_store_get_requested_bytes",
+            "scan_io_object_store_response_bytes_read",
+            "scan_io_metadata_cache_hits",
+            "scan_io_metadata_cache_misses").foreach { name =>
+            assert(metrics.contains(name), s"Missing $name. Available: ${metrics.keys}")
+          }
           assert(
             metrics("time_elapsed_scanning_total").value > 0,
             "time_elapsed_scanning_total should be > 0")
           assert(metrics("bytes_scanned").value > 0, "bytes_scanned should be > 0")
+          assert(metrics("scan_io_data_bytes").value > 0)
+          assert(metrics("scan_io_metadata_bytes").value > 0)
+          assert(metrics("scan_io_footer_reads").value > 0)
+          assert(metrics("scan_io_footer_bytes").value > 0)
+          assert(metrics("scan_io_object_store_get_calls").value == 0)
+          assert(metrics("scan_io_object_store_get_requested_bytes").value == 0)
+          assert(metrics("scan_io_object_store_response_bytes_read").value == 0)
+          assert(metrics("scan_io_metadata_cache_misses").value > 0)
           assert(metrics("output_rows").value > 0, "output_rows should be > 0")
           assert(metrics("time_elapsed_opening").value > 0, "time_elapsed_opening should be > 0")
           assert(

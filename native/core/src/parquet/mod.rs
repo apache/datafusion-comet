@@ -160,11 +160,12 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
         let path: String = file_path.try_to_string(env).unwrap();
 
         let object_store_config = get_object_store_options(env, object_store_options)?;
-        let (object_store_url, object_store_path) = prepare_object_store_with_configs(
-            session_ctx.runtime_env(),
-            path.clone(),
-            &object_store_config,
-        )?;
+        let (object_store_url, object_store_path, object_store_backend) =
+            prepare_object_store_with_configs(
+                session_ctx.runtime_env(),
+                path.clone(),
+                &object_store_config,
+            )?;
 
         let required_schema_buffer = env.convert_byte_array(&required_schema)?;
         let required_schema = Arc::new(deserialize_schema(&required_schema_buffer)?);
@@ -213,6 +214,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
             Some(data_schema),
             None,
             object_store_url,
+            object_store_backend,
             file_groups,
             None,
             data_filters,
