@@ -265,32 +265,7 @@ final class CometBypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V>
       // task-memory cleanup (in on-heap mode they live in an executor-shared pool). Free them
       // and delete their temp files here so they cannot starve other tasks' allocations or leak
       // disk space.
-      if (partitionWriters != null) {
-        try {
-          for (CometDiskBlockWriter writer : partitionWriters) {
-            if (writer == null) {
-              continue;
-            }
-            try {
-              writer.freeMemory();
-            } catch (Exception e2) {
-              logger.error("Failed to free memory of partition writer", e2);
-              e.addSuppressed(e2);
-            }
-            try {
-              File file = writer.getFile();
-              if (file.exists() && !file.delete()) {
-                logger.error("Error while deleting file {}", file.getAbsolutePath());
-              }
-            } catch (Exception e2) {
-              logger.error("Failed to delete file of partition writer", e2);
-              e.addSuppressed(e2);
-            }
-          }
-        } finally {
-          partitionWriters = null;
-        }
-      }
+      cleanupPartitionWriters(e);
       try {
         mapOutputWriter.abort(e);
       } catch (Exception e2) {
@@ -298,6 +273,40 @@ final class CometBypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V>
         e.addSuppressed(e2);
       }
       throw e;
+    }
+  }
+
+  private void cleanupPartitionWriters(@Nullable Throwable failure) {
+    if (partitionWriters == null) {
+      return;
+    }
+    try {
+      for (CometDiskBlockWriter writer : partitionWriters) {
+        if (writer == null) {
+          continue;
+        }
+        try {
+          writer.freeMemory();
+        } catch (Exception e) {
+          logger.error("Failed to free memory of partition writer", e);
+          if (failure != null) {
+            failure.addSuppressed(e);
+          }
+        }
+        try {
+          File file = writer.getFile();
+          if (file.exists() && !file.delete()) {
+            logger.error("Error while deleting file {}", file.getAbsolutePath());
+          }
+        } catch (Exception e) {
+          logger.error("Failed to delete file of partition writer", e);
+          if (failure != null) {
+            failure.addSuppressed(e);
+          }
+        }
+      }
+    } finally {
+      partitionWriters = null;
     }
   }
 
@@ -403,20 +412,7 @@ final class CometBypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V>
         return Option.apply(mapStatus);
       } else {
         // The map task failed, so delete our output data.
-        if (partitionWriters != null) {
-          try {
-            for (CometDiskBlockWriter writer : partitionWriters) {
-              writer.freeMemory();
-
-              File file = writer.getFile();
-              if (!file.delete()) {
-                logger.error("Error while deleting file {}", file.getAbsolutePath());
-              }
-            }
-          } finally {
-            partitionWriters = null;
-          }
-        }
+        cleanupPartitionWriters(null);
         return None$.empty();
       }
     }

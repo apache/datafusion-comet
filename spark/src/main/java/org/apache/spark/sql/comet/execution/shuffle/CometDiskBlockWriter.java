@@ -64,7 +64,8 @@ public final class CometDiskBlockWriter {
 
   /**
    * All writers of the same shuffle task. Spilling under memory pressure only ever touches this
-   * task's writers, never those of other tasks.
+   * task's writers, never those of other tasks. Access is normally confined to the task thread;
+   * synchronization below only guards against overlapping lifecycle calls.
    */
   private final LinkedList<CometDiskBlockWriter> currentWriters;
 
@@ -181,8 +182,6 @@ public final class CometDiskBlockWriter {
     // Set this into spilling state first, so it cannot recursively trigger another spill on itself.
     spilling = true;
 
-    // This spill could be triggered by other thread (i.e., other `CometDiskBlockWriter`),
-    // so we need to synchronize it.
     synchronized (CometDiskBlockWriter.this) {
       totalWritten += activeWriter.doSpilling(false);
       activeWriter.freeMemory();
@@ -214,8 +213,6 @@ public final class CometDiskBlockWriter {
     final int serializedRecordSize = serBuffer.size();
     assert (serializedRecordSize > 0);
 
-    // While proceeding with possible spilling and inserting the record, we need to synchronize
-    // it, because other threads may be spilling this writer at the same time.
     synchronized (CometDiskBlockWriter.this) {
       if (activeWriter.numRecords() >= numElementsForSpillThreshold
           || activeWriter.numRecords() >= columnarBatchSize) {
@@ -303,7 +300,6 @@ public final class CometDiskBlockWriter {
 
     /** Inserts a record into current allocated page. */
     void insertRecord(Object recordBase, long recordOffset, int length) {
-      // This `ArrowIPCWriter` could be spilled by other threads, so we need to synchronize it.
       final Object base = currentPage.getBaseObject();
 
       // Add row addresses
@@ -338,7 +334,6 @@ public final class CometDiskBlockWriter {
 
       final long written;
 
-      // All threads are writing to the same file, so we need to synchronize it.
       synchronized (file) {
         outputRecords += rowPartition.getNumRows();
         written =
@@ -354,7 +349,6 @@ public final class CometDiskBlockWriter {
       }
 
       // Update metrics
-      // Other threads may be updating the metrics at the same time, so we need to synchronize it.
       synchronized (writeMetrics) {
         if (!isLast) {
           writeMetrics.incRecordsWritten(
@@ -380,6 +374,9 @@ public final class CometDiskBlockWriter {
         // spilling a larger sibling would free enough memory for the allocation on its own.
         long totalFreed = getActiveMemoryUsage();
         CometDiskBlockWriter.this.doSpill();
+        if (totalFreed >= required) {
+          return;
+        }
 
         // Spill from the largest writer first to maximize the amount of memory we can
         // acquire

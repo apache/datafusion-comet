@@ -27,6 +27,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import org.apache.spark.SparkConf;
+import org.apache.spark.TaskContext;
 import org.apache.spark.memory.MemoryConsumer;
 import org.apache.spark.memory.MemoryMode;
 import org.apache.spark.memory.SparkOutOfMemoryError;
@@ -67,6 +68,9 @@ public final class CometBoundedShuffleMemoryAllocator extends CometShuffleMemory
 
   /** How often a thread blocked in {@link #allocateBlocking(long)} logs that it is waiting. */
   private static final long WAIT_LOG_INTERVAL_MS = 30_000L;
+
+  /** How often a blocked thread checks for cooperative task cancellation. */
+  private static final long TASK_KILL_POLL_INTERVAL_MS = 1_000L;
 
   /** The number of bits used to address the page table. */
   private static final int PAGE_NUMBER_BITS = 13;
@@ -146,14 +150,15 @@ public final class CometBoundedShuffleMemoryAllocator extends CometShuffleMemory
   /**
    * Like {@link #allocate(long)}, but waits for other tasks of this shared pool to free memory,
    * mirroring how Spark's unified memory manager blocks a task until memory becomes available.
-   * Callers must only use this after spilling their own buffered data. The wait fails fast when it
-   * can never succeed: when the request does not fit next to the memory this thread itself still
-   * retains (e.g. the sorter's pointer array), or when all allocated memory is retained by threads
-   * that are themselves blocked here and none of their requests fits in the free pool. Because the
-   * holders it depends on may in turn be blocked on resources outside this pool that only a task
-   * waiting here can release, the wait is also bounded by
-   * `spark.comet.shuffle.jvm.memoryWaitTimeout`, after which the managed allocation error is thrown
-   * and Spark's task retry can recover. Interrupting the task (e.g. task kill) aborts the wait.
+   * Callers must first spill buffered data they can cheaply release; memory this thread still
+   * retains (e.g. the sorter's pointer array or sibling writers' pages) is included in the liveness
+   * checks below. The wait fails fast when it can never succeed: when the request does not fit next
+   * to the requester's retained memory, or when all allocated memory is retained by blocked threads
+   * and none of their requests fits in the free pool. Because the holders it depends on may in turn
+   * be blocked on resources outside this pool that only a task waiting here can release, the wait
+   * is also bounded by `spark.comet.shuffle.jvm.memoryWaitTimeout`, after which the managed
+   * allocation error is thrown and Spark's task retry can recover. Task cancellation or Java
+   * interruption aborts the wait.
    */
   @Override
   public synchronized MemoryBlock allocateBlocking(long required) {
@@ -161,10 +166,14 @@ public final class CometBoundedShuffleMemoryAllocator extends CometShuffleMemory
         (long) CometConf$.MODULE$.COMET_SHUFFLE_JVM_MEMORY_WAIT_TIMEOUT().get();
     long size = Math.max(pageSize, required);
     Thread self = Thread.currentThread();
+    TaskContext taskContext = TaskContext.get();
     long waitStart = 0;
     long lastLog = 0;
     try {
       while (true) {
+        if (taskContext != null) {
+          taskContext.killTaskIfInterrupted();
+        }
         try {
           return allocateMemoryBlock(size);
         } catch (SparkOutOfMemoryError e) {
@@ -217,7 +226,8 @@ public final class CometBoundedShuffleMemoryAllocator extends CometShuffleMemory
           try {
             wait(
                 Math.max(
-                    1L, Math.min(WAIT_LOG_INTERVAL_MS, memoryWaitTimeoutMs - (now - waitStart))));
+                    1L,
+                    Math.min(TASK_KILL_POLL_INTERVAL_MS, memoryWaitTimeoutMs - (now - waitStart))));
           } catch (InterruptedException ie) {
             Thread.currentThread().interrupt();
             // Not an allocation failure: stay non-fatal so that an intentional task kill is
@@ -229,7 +239,9 @@ public final class CometBoundedShuffleMemoryAllocator extends CometShuffleMemory
         }
       }
     } finally {
-      waitingThreads.remove(self);
+      if (waitingThreads.remove(self) != null) {
+        notifyAll();
+      }
     }
   }
 

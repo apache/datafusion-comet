@@ -27,7 +27,7 @@ import org.scalatest.concurrent.{Signaler, ThreadSignaler, TimeLimits}
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.time.{Seconds, Span}
 
-import org.apache.spark.{Partitioner, SparkConf, SparkContext, SparkEnv, TaskContext, TaskContextImpl}
+import org.apache.spark.{Partitioner, SparkConf, SparkContext, SparkEnv, TaskContext, TaskContextImpl, TaskKilledException}
 import org.apache.spark.executor.{ShuffleWriteMetrics, TaskMetrics}
 import org.apache.spark.memory.{MemoryConsumer, MemoryMode, SparkOutOfMemoryError, TaskMemoryManager, TestMemoryManager, UnifiedMemoryManager}
 import org.apache.spark.shuffle.api.{ShuffleExecutorComponents, ShuffleMapOutputWriter, ShufflePartitionWriter}
@@ -74,9 +74,8 @@ class CometDiskBlockWriterSuite extends AnyFunSuite with TimeLimits {
       .set("spark.memory.offHeap.enabled", "true")
       .set("spark.memory.offHeap.size", "1g")
     val memoryManager = new TestMemoryManager(conf)
-    // Enough memory for task B to buffer 12 pages and task A to buffer 10 pages; task A's
-    // 11th page allocation must fail so that it goes through the spilling path.
-    memoryManager.limit(22 * pageSize)
+    // Task B holds two pages while task A's three writers fill the other four.
+    memoryManager.limit(6 * pageSize)
 
     val tmmA = new TaskMemoryManager(memoryManager, 0L)
     val tmmB = new TaskMemoryManager(memoryManager, 1L)
@@ -117,55 +116,66 @@ class CometDiskBlockWriterSuite extends AnyFunSuite with TimeLimits {
         writersB)
 
       val toUnsafe = UnsafeProjection.create(schema)
+      def insert(writer: CometDiskBlockWriter, size: Int): Unit = {
+        writer.insertRow(toUnsafe(InternalRow(new Array[Byte](size))), 0)
+      }
       def insertOne(writer: CometDiskBlockWriter): Unit = {
-        writer.insertRow(toUnsafe(InternalRow(new Array[Byte](1024))), 0)
+        insert(writer, 1024)
       }
 
-      // Task B buffers 12 pages worth of rows on its own thread and then idles, holding the
+      // Task B buffers two pages worth of rows on its own thread and then idles, holding the
       // buffered rows in memory (as a concurrently running task would).
       var rowsB = 0L
       val threadB = new Thread(() => {
-        while (allocatorB.getUsed < 12 * pageSize) {
+        while (allocatorB.getUsed < 2 * pageSize) {
           insertOne(writerB)
           rowsB += 1
         }
       })
       threadB.start()
       threadB.join()
-      assert(allocatorB.getUsed == 12 * pageSize)
+      assert(allocatorB.getUsed == 2 * pageSize)
 
-      // Task A fills nine pages in one partition and one page in another. When the smaller
-      // writer needs a second page, spilling its larger sibling alone would satisfy the request,
-      // but the requesting writer must also flush before initialCurrentPage() replaces its page.
+      // Task A fills two pages in one writer and one page in each sibling. When A0 needs another
+      // page, spilling larger A1 alone would satisfy the request, but A0 must flush itself before
+      // initialCurrentPage() replaces its page.
       var rowsA0 = 0L
       var rowsA1 = 0L
       var rowsA2 = 0L
-      while (allocatorA.getUsed < 9 * pageSize) {
+      while (allocatorA.getUsed < 2 * pageSize) {
         insertOne(writerA1)
         rowsA1 += 1
       }
-      while (allocatorA.getUsed < 10 * pageSize) {
+      while (allocatorA.getUsed < 3 * pageSize) {
         insertOne(writerA0)
         rowsA0 += 1
+      }
+      while (allocatorA.getUsed < 4 * pageSize) {
+        insertOne(writerA2)
+        rowsA2 += 1
       }
       while (writerA0.getOutputRecords == 0) {
         insertOne(writerA0)
         rowsA0 += 1
       }
       assert(writerA1.getOutputRecords == 0)
+      assert(writerA2.getOutputRecords == 0)
 
-      // A third, empty writer has nothing of its own to release, so it must spill a sibling from
-      // the shared task list to acquire its first page.
-      insertOne(writerA2)
-      rowsA2 += 1
+      // A 900 KiB row needs more than A0 plus either sibling can free, so the spill loop must
+      // continue through both A1 and A2.
+      val outputA0BeforeLargeRow = writerA0.getOutputRecords
+      insert(writerA0, 900 * 1024)
+      rowsA0 += 1
+      assert(writerA0.getOutputRecords > outputA0BeforeLargeRow)
       assert(writerA1.getOutputRecords > 0)
+      assert(writerA2.getOutputRecords > 0)
 
       // Task A resolved its memory pressure by spilling its own data...
       assert(taskContextA.taskMetrics.diskBytesSpilled > 0)
       assert(writerA0.getOutputRecords > 0)
       // ... and task B's buffered rows were not spilled, not written out, and not charged.
-      assert(allocatorB.getUsed == 12 * pageSize)
-      assert(writerB.getActiveMemoryUsage == 12 * pageSize)
+      assert(allocatorB.getUsed == 2 * pageSize)
+      assert(writerB.getActiveMemoryUsage == 2 * pageSize)
       assert(writerB.getOutputRecords == 0)
       assert(taskContextB.taskMetrics.diskBytesSpilled == 0)
       assert(fileB.length() == 0)
@@ -344,22 +354,28 @@ class CometDiskBlockWriterSuite extends AnyFunSuite with TimeLimits {
     }
   }
 
-  test("on-heap shared pool: interrupting a waiting task does not throw a fatal error") {
+  test("on-heap shared pool: interruption or cancellation aborts a waiting task") {
     val conf = new SparkConf().set("spark.comet.memoryOverhead", "1") // 1 MiB shared pool
     resetOnHeapAllocatorSingleton()
     val memoryManager = new TestMemoryManager(conf)
     val tmmHolder = new TaskMemoryManager(memoryManager, 0L)
     val tmmWaiter = new TaskMemoryManager(memoryManager, 1L)
+    val tmmCancelled = new TaskMemoryManager(memoryManager, 2L)
     val taskContextHolder = newTaskContext(tmmHolder, 0L)
     val taskContextWaiter = newTaskContext(tmmWaiter, 1L)
+    val taskContextCancelled = newTaskContext(tmmCancelled, 2L)
     val allocatorHolder = CometShuffleMemoryAllocator.getInstance(conf, tmmHolder, pageSize)
     val allocatorWaiter = CometShuffleMemoryAllocator.getInstance(conf, tmmWaiter, pageSize)
+    val allocatorCancelled =
+      CometShuffleMemoryAllocator.getInstance(conf, tmmCancelled, pageSize)
     val tempDir = Utils.createTempDir()
     try {
       val writerHolder =
         newWriter(new File(tempDir, "holder"), allocatorHolder, taskContextHolder, conf)
       val writerWaiter =
         newWriter(new File(tempDir, "waiter"), allocatorWaiter, taskContextWaiter, conf)
+      val writerCancelled =
+        newWriter(new File(tempDir, "cancelled"), allocatorCancelled, taskContextCancelled, conf)
       val toUnsafe = UnsafeProjection.create(schema)
       def insertOne(writer: CometDiskBlockWriter): Unit = {
         writer.insertRow(toUnsafe(InternalRow(new Array[Byte](1024))), 0)
@@ -380,11 +396,11 @@ class CometDiskBlockWriterSuite extends AnyFunSuite with TimeLimits {
         holderThread.start()
         poolFilled.await()
 
-        // The waiter blocks on its first insert, and is then killed via interrupt.
-        @volatile var thrown: Throwable = null
+        // A Java interrupt aborts the wait without surfacing a fatal allocation error.
+        @volatile var interruptedFailure: Throwable = null
         val waiterThread = new Thread(() => {
           try insertOne(writerWaiter)
-          catch { case t: Throwable => thrown = t }
+          catch { case t: Throwable => interruptedFailure = t }
         })
         waiterThread.start()
         while (!isBlockedInWait(waiterThread)) {
@@ -393,22 +409,43 @@ class CometDiskBlockWriterSuite extends AnyFunSuite with TimeLimits {
         waiterThread.interrupt()
         waiterThread.join()
 
-        // The interruption must not surface as a fatal error such as SparkOutOfMemoryError,
-        // otherwise an intentional task kill is reported as ExceptionFailure instead of
-        // TaskKilled.
-        assert(thrown != null)
-        assert(!thrown.isInstanceOf[OutOfMemoryError])
-        assert(thrown.isInstanceOf[RuntimeException])
-        assert(thrown.getCause.isInstanceOf[InterruptedException])
+        assert(interruptedFailure != null)
+        assert(!interruptedFailure.isInstanceOf[OutOfMemoryError])
+        assert(interruptedFailure.isInstanceOf[RuntimeException])
+        assert(interruptedFailure.getCause.isInstanceOf[InterruptedException])
+
+        // With interruptOnCancel=false Spark only marks TaskContext; it does not interrupt the
+        // Java thread. The allocator must poll that flag and throw TaskKilledException promptly.
+        @volatile var cancelledFailure: Throwable = null
+        val cancelledThread = new Thread(() => {
+          TaskContext.setTaskContext(taskContextCancelled)
+          try insertOne(writerCancelled)
+          catch { case t: Throwable => cancelledFailure = t }
+          finally TaskContext.unset()
+        })
+        cancelledThread.start()
+        while (!isBlockedInWait(cancelledThread)) {
+          Thread.sleep(10)
+        }
+        taskContextCancelled.markInterrupted("test cancellation")
+        cancelledThread.join(5000)
+        val exitedOnCancellation = !cancelledThread.isAlive
 
         release.countDown()
         holderThread.join()
+        cancelledThread.join()
         writerWaiter.freeMemory()
+        writerCancelled.freeMemory()
+
+        assert(exitedOnCancellation)
+        assert(!cancelledThread.isInterrupted)
+        assert(cancelledFailure.isInstanceOf[TaskKilledException])
       }
     } finally {
       Utils.deleteRecursively(tempDir)
       tmmHolder.cleanUpAllAllocatedMemory()
       tmmWaiter.cleanUpAllAllocatedMemory()
+      tmmCancelled.cleanUpAllAllocatedMemory()
       resetOnHeapAllocatorSingleton()
     }
   }
