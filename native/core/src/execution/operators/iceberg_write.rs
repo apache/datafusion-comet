@@ -25,7 +25,7 @@
 //! decodes the bytes with `ManifestFiles.read(...)` to recover the `DataFile`s for commit.
 
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use arrow::array::{ArrayRef, BinaryArray, RecordBatch, UInt32Array};
 use arrow::datatypes::{DataType, Field, Schema as ArrowSchema, SchemaRef};
@@ -46,13 +46,16 @@ use futures::TryStreamExt;
 use iceberg::arrow::{
     arrow_struct_to_literal, PartitionValueCalculator, RecordBatchPartitionSplitter,
 };
+use iceberg::io::FileIO;
 use iceberg::spec::{
     DataFile, DataFileFormat, Literal, ManifestWriterBuilder, PartitionKey, PartitionSpec,
     PartitionSpecRef, Schema as IcebergSchema, SchemaRef as IcebergSchemaRef,
     Struct as IcebergStruct, StructType,
 };
 use iceberg::writer::base_writer::data_file_writer::DataFileWriterBuilder;
-use iceberg::writer::file_writer::location_generator::DefaultFileNameGenerator;
+use iceberg::writer::file_writer::location_generator::{
+    DefaultFileNameGenerator, LocationGenerator,
+};
 use iceberg::writer::file_writer::rolling_writer::RollingFileWriterBuilder;
 use iceberg::writer::file_writer::ParquetWriterBuilder;
 use iceberg::writer::partitioning::clustered_writer::ClusteredWriter;
@@ -77,8 +80,139 @@ use crate::execution::operators::iceberg_partition_path::{
 };
 
 /// Builder chain instantiated once per task and handed to the partitioning wrapper.
-type IcebergDataFileWriterBuilder =
-    DataFileWriterBuilder<ParquetWriterBuilder, CometLocationGenerator, DefaultFileNameGenerator>;
+type IcebergDataFileWriterBuilder = DataFileWriterBuilder<
+    ParquetWriterBuilder,
+    TrackingLocationGenerator,
+    DefaultFileNameGenerator,
+>;
+
+/// [`CometLocationGenerator`] that records every location it hands to a file writer.
+///
+/// iceberg-rust's writers keep the `DataFile`s they have finalized private until `close`, and
+/// have no abort hook, so when a task fails partway through there is no other way to learn which
+/// files it created. The recorded locations let `delete_task_files` clean up after a failure the
+/// way iceberg-java's `DataWriter.abort()` does.
+#[derive(Clone, Debug)]
+struct TrackingLocationGenerator {
+    inner: CometLocationGenerator,
+    locations: Arc<Mutex<Vec<String>>>,
+}
+
+impl TrackingLocationGenerator {
+    fn new(inner: CometLocationGenerator) -> Self {
+        Self {
+            inner,
+            locations: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    fn locations(&self) -> Vec<String> {
+        self.locations
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+}
+
+impl LocationGenerator for TrackingLocationGenerator {
+    fn generate_location(&self, partition_key: Option<&PartitionKey>, file_name: &str) -> String {
+        let location = self.inner.generate_location(partition_key, file_name);
+        self.locations
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(location.clone());
+        location
+    }
+}
+
+/// Deletes the tracked files if the write task is dropped before it finished.
+///
+/// A task can end without its future ever observing an error: when the JVM-side input iterator
+/// throws, `executePlan` returns that error straight from the JNI batch pull and the JVM then
+/// releases the plan, dropping this future mid-flight. The guard turns that drop into the same
+/// cleanup the explicit error path performs. It stays armed until the task's output batch has
+/// been handed to the JVM, which is the point where the JVM takes over cleanup ownership.
+struct AbortOnDrop {
+    file_io: FileIO,
+    generator: TrackingLocationGenerator,
+    armed: bool,
+}
+
+impl AbortOnDrop {
+    /// Every location the task's writers were handed, in the order they were generated.
+    fn locations(&self) -> Vec<String> {
+        self.generator.locations()
+    }
+
+    /// Give up ownership without deleting: the files are now someone else's responsibility.
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+
+    /// Delete the tracked files, awaiting completion, and give up ownership. Preferred over the
+    /// `Drop` path wherever the failure is observed inside the task's own future, so the deletes
+    /// finish before the task reports its error rather than racing the runtime's shutdown.
+    async fn abort(&mut self) {
+        self.armed = false;
+        delete_task_files(&self.file_io, self.generator.locations()).await;
+    }
+}
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let locations = self.generator.locations();
+        if locations.is_empty() {
+            return;
+        }
+        let file_io = self.file_io.clone();
+        match tokio::runtime::Handle::try_current() {
+            // Dropped from inside a runtime (the stream was dropped while being polled): the
+            // delete cannot block here, so hand it to the runtime.
+            Ok(handle) => {
+                handle.spawn(async move { delete_task_files(&file_io, locations).await });
+            }
+            // Dropped from a plain JVM thread (`releasePlan`): run the delete to completion so the
+            // files are gone before the task reports its failure.
+            Err(_) => match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(runtime) => runtime.block_on(delete_task_files(&file_io, locations)),
+                Err(e) => log::warn!(
+                    "Could not build a runtime to delete {} data file(s) left by a failed \
+                     Iceberg write task: {e}",
+                    locations.len()
+                ),
+            },
+        }
+    }
+}
+
+/// Best-effort deletion of every file a failed task attempt created, the native counterpart of
+/// iceberg-java's `SparkCleanupUtil.deleteTaskFiles`. Failures are logged rather than returned:
+/// the original task failure must stay the one Spark reports, and anything left behind is still
+/// invisible to readers and reclaimed by `remove_orphan_files`.
+async fn delete_task_files(file_io: &FileIO, locations: Vec<String>) {
+    if locations.is_empty() {
+        return;
+    }
+    let mut deleted = 0usize;
+    for location in &locations {
+        match file_io.delete(location).await {
+            Ok(()) => deleted += 1,
+            Err(e) => log::warn!(
+                "Failed to delete data file {location} left by a failed Iceberg write task: {e}"
+            ),
+        }
+    }
+    log::info!(
+        "Deleted {deleted} of {} data file(s) left by a failed Iceberg write task",
+        locations.len()
+    );
+}
 
 /// Native Iceberg write operator. Owns the parsed Iceberg schema/spec and the parquet writer
 /// properties; at task execution it builds the iceberg-rust writer stack, drains the upstream
@@ -218,7 +352,7 @@ impl ExecutionPlan for IcebergWriteExec {
         let output_schema = Arc::clone(&self.output_schema);
 
         let task = async move {
-            let data_files = run_write_task(
+            let (data_files, mut abort_guard) = run_write_task(
                 input_stream,
                 Arc::clone(&common),
                 Arc::clone(&iceberg_schema),
@@ -230,17 +364,35 @@ impl ExecutionPlan for IcebergWriteExec {
                 write_time,
             )
             .await?;
-            let manifest_bytes = encode_data_files_as_manifest(
-                data_files,
-                iceberg_schema,
-                partition_spec,
-                partition_id,
-                task_attempt_id,
-                &common.operation_id,
-            )
-            .await?;
-            let batch = build_output_batch(manifest_bytes, &output_schema)?;
-            Ok::<_, DataFusionError>(futures::stream::iter(vec![Ok(batch)]))
+            // The guard is still armed: until the output batch reaches the JVM nothing else knows
+            // which files this attempt created, so a failure while packaging it has to delete
+            // them here.
+            let locations = abort_guard.locations();
+            let packaged = async {
+                let manifest_bytes = encode_data_files_as_manifest(
+                    data_files,
+                    iceberg_schema,
+                    partition_spec,
+                    partition_id,
+                    task_attempt_id,
+                    &common.operation_id,
+                )
+                .await?;
+                build_output_batch(manifest_bytes, &locations, &output_schema)
+            }
+            .await;
+            match packaged {
+                // The batch carries the locations, and the JVM takes cleanup ownership of them
+                // before it decodes the manifest, so the guard's job is done.
+                Ok(batch) => {
+                    abort_guard.disarm();
+                    Ok::<_, DataFusionError>(futures::stream::iter(vec![Ok(batch)]))
+                }
+                Err(e) => {
+                    abort_guard.abort().await;
+                    Err(e)
+                }
+            }
         };
 
         Ok(Box::pin(RecordBatchStreamAdapter::new(
@@ -281,6 +433,9 @@ impl DisplayAs for IcebergWriteExec {
 /// batch with `PARQUET_FIELD_ID_META_KEY` metadata so iceberg-rust can match Arrow columns to
 /// Iceberg field IDs, and routes through `UnpartitionedWriter`/`FanoutWriter`/`ClusteredWriter`
 /// depending on `writer_mode`.
+///
+/// On success the still-armed [`AbortOnDrop`] is returned along with the data files: the caller
+/// owns cleanup until the output batch has been handed to the JVM.
 #[allow(clippy::too_many_arguments)]
 async fn run_write_task(
     mut input: SendableRecordBatchStream,
@@ -292,7 +447,7 @@ async fn run_write_task(
     partition_id: Option<i32>,
     task_attempt_id: Option<i64>,
     write_time: Time,
-) -> DFResult<Vec<DataFile>> {
+) -> DFResult<(Vec<DataFile>, AbortOnDrop)> {
     // The JVM exec wrapper stamps both ids per task; a missing id means the plan template was
     // executed directly, and defaulting would make every task collide on the same file names.
     let partition_id = partition_id.ok_or_else(|| {
@@ -316,12 +471,14 @@ async fn run_write_task(
     // Resolves the write's partition type once per task, before any data is written, so a spec the
     // location generator could not render fails the task cleanly rather than panicking inside the
     // infallible `LocationGenerator::generate_location`.
-    let location_generator = CometLocationGenerator::try_new(
-        common.data_location.clone(),
-        &partition_spec,
-        &iceberg_schema,
-    )
-    .map_err(iceberg_err)?;
+    let location_generator = TrackingLocationGenerator::new(
+        CometLocationGenerator::try_new(
+            common.data_location.clone(),
+            &partition_spec,
+            &iceberg_schema,
+        )
+        .map_err(iceberg_err)?,
+    );
     let file_name_generator = DefaultFileNameGenerator::new(
         file_name_prefix(partition_id, task_attempt_id, &common.operation_id),
         None,
@@ -331,11 +488,16 @@ async fn run_write_task(
     let rolling_builder = RollingFileWriterBuilder::new(
         parquet_builder,
         common.target_file_size_bytes as usize,
-        file_io,
-        location_generator,
+        file_io.clone(),
+        location_generator.clone(),
         file_name_generator,
     );
     let data_file_builder = DataFileWriterBuilder::new(rolling_builder);
+    let mut abort_guard = AbortOnDrop {
+        file_io,
+        generator: location_generator,
+        armed: true,
+    };
 
     let unpartitioned = partition_spec.is_unpartitioned();
     let mut writer = match (unpartitioned, writer_mode) {
@@ -377,19 +539,35 @@ async fn run_write_task(
     // Build the field-id-decorated target schema once per task; every batch is cast against it.
     let target_schema =
         Arc::new(iceberg::arrow::schema_to_arrow_schema(&iceberg_schema).map_err(iceberg_err)?);
-    while let Some(batch) = input.try_next().await? {
-        let decorated = decorate_batch_with_field_ids(batch, &target_schema)?;
+    let outcome = async move {
+        while let Some(batch) = input.try_next().await? {
+            let decorated = decorate_batch_with_field_ids(batch, &target_schema)?;
+            let _timer = write_time.timer();
+            writer
+                .write(
+                    decorated,
+                    fanout_splitter.as_ref(),
+                    clustered_splitter.as_ref(),
+                )
+                .await?;
+        }
         let _timer = write_time.timer();
-        writer
-            .write(
-                decorated,
-                fanout_splitter.as_ref(),
-                clustered_splitter.as_ref(),
-            )
-            .await?;
+        writer.close().await
     }
-    let _timer = write_time.timer();
-    writer.close().await
+    .await;
+    match outcome {
+        // Hand the still-armed guard to the caller: manifest encoding and output-batch
+        // construction can still fail, and until the batch reaches the JVM nothing else knows
+        // which files this attempt created.
+        Ok(data_files) => Ok((data_files, abort_guard)),
+        // Whether the input stream, a write, or the close failed, every file this attempt created
+        // is orphaned from here on: nothing will commit it, and the retry uses attempt-unique
+        // names.
+        Err(e) => {
+            abort_guard.abort().await;
+            Err(e)
+        }
+    }
 }
 
 /// Enum-based dispatch over the three iceberg-rust partitioning writers. Each variant takes the
@@ -537,12 +715,19 @@ fn format_partition_spec(spec: &PartitionSpec) -> String {
     }
 }
 
+/// The per-task output: the V2 data manifest the JVM decodes into `DataFile`s, plus the plain
+/// list of locations the task's writers were handed.
+///
+/// The locations are redundant with the manifest, and deliberately so: they let the JVM take
+/// cleanup ownership of the written files with a `ByteBuffer` walk, before it runs the far more
+/// allocation-hungry Avro decode that recovers the `DataFile`s. A failure in that decode would
+/// otherwise leave files that only the failed decode could have named. See `decodeLocations` and
+/// `WrittenFileCleanup` on the JVM side (`CometIcebergWriteExec`).
 fn build_output_schema() -> SchemaRef {
-    Arc::new(ArrowSchema::new(vec![Field::new(
-        "iceberg_manifest",
-        DataType::Binary,
-        false,
-    )]))
+    Arc::new(ArrowSchema::new(vec![
+        Field::new("iceberg_manifest", DataType::Binary, false),
+        Field::new("written_file_locations", DataType::Binary, false),
+    ]))
 }
 
 /// Align an input batch with the field-id-decorated target schema by casting each column. The
@@ -758,9 +943,31 @@ fn manifest_partition_spec(partition_spec: &PartitionSpecRef) -> PartitionSpec {
     }
 }
 
-fn build_output_batch(manifest_bytes: Vec<u8>, output_schema: &SchemaRef) -> DFResult<RecordBatch> {
-    let array: ArrayRef = Arc::new(BinaryArray::from(vec![manifest_bytes.as_slice()]));
-    RecordBatch::try_new(Arc::clone(output_schema), vec![array]).map_err(DataFusionError::from)
+/// Frame the written-file locations for the `written_file_locations` column: a big-endian `i32`
+/// count, then a big-endian `i32` byte length and the UTF-8 bytes for each location. Explicit
+/// lengths rather than a separator so a path is never re-interpreted, whatever it contains.
+fn encode_locations(locations: &[String]) -> Vec<u8> {
+    let mut encoded = Vec::with_capacity(
+        4 + locations.len() * 4 + locations.iter().map(|l| l.len()).sum::<usize>(),
+    );
+    encoded.extend_from_slice(&(locations.len() as i32).to_be_bytes());
+    for location in locations {
+        encoded.extend_from_slice(&(location.len() as i32).to_be_bytes());
+        encoded.extend_from_slice(location.as_bytes());
+    }
+    encoded
+}
+
+fn build_output_batch(
+    manifest_bytes: Vec<u8>,
+    locations: &[String],
+    output_schema: &SchemaRef,
+) -> DFResult<RecordBatch> {
+    let manifest: ArrayRef = Arc::new(BinaryArray::from(vec![manifest_bytes.as_slice()]));
+    let encoded_locations = encode_locations(locations);
+    let locations: ArrayRef = Arc::new(BinaryArray::from(vec![encoded_locations.as_slice()]));
+    RecordBatch::try_new(Arc::clone(output_schema), vec![manifest, locations])
+        .map_err(DataFusionError::from)
 }
 
 /// Translate `IcebergParquetWriteSettings` into parquet-rs `WriterProperties`.
@@ -834,6 +1041,109 @@ fn compression_from_proto(codec: i32, level: Option<i32>) -> DFResult<Compressio
 #[cfg(test)]
 mod tests {
     use super::*;
+    use iceberg::io::FileIOBuilder;
+    use iceberg::spec::{NestedField, PrimitiveType, Type};
+    use iceberg_storage_opendal::OpenDalStorageFactory;
+
+    /// Tracking generator over an unpartitioned spec, the layout every tracking test writes to.
+    fn tracking_generator(data_location: &str) -> TrackingLocationGenerator {
+        let schema = Arc::new(
+            IcebergSchema::builder()
+                .with_schema_id(1)
+                .with_fields(vec![NestedField::required(
+                    1,
+                    "id",
+                    Type::Primitive(PrimitiveType::Int),
+                )
+                .into()])
+                .build()
+                .unwrap(),
+        );
+        let spec = PartitionSpec::builder(Arc::clone(&schema)).build().unwrap();
+        TrackingLocationGenerator::new(
+            CometLocationGenerator::try_new(data_location.to_string(), &spec, &schema).unwrap(),
+        )
+    }
+
+    #[tokio::test]
+    async fn failed_task_deletes_every_tracked_location() {
+        let file_io = FileIOBuilder::new(Arc::new(OpenDalStorageFactory::Memory)).build();
+        let generator = tracking_generator("memory:/warehouse/data");
+        // Two files the writer "created", plus one location that was handed out but never
+        // written (the file open at the time of the failure): deleting it must not fail.
+        let first = generator.generate_location(None, "00000-00001-op-00001.parquet");
+        let second = generator.generate_location(None, "00000-00001-op-00002.parquet");
+        let never_written = generator.generate_location(None, "00000-00001-op-00003.parquet");
+        for location in [&first, &second] {
+            file_io
+                .new_output(location)
+                .unwrap()
+                .write(bytes::Bytes::from_static(b"parquet"))
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            generator.locations(),
+            vec![first.clone(), second.clone(), never_written.clone()]
+        );
+        assert!(file_io.exists(&first).await.unwrap());
+
+        delete_task_files(&file_io, generator.locations()).await;
+
+        assert!(!file_io.exists(&first).await.unwrap());
+        assert!(!file_io.exists(&second).await.unwrap());
+        assert!(!file_io.exists(&never_written).await.unwrap());
+    }
+
+    #[test]
+    fn dropping_an_armed_guard_outside_a_runtime_deletes_the_files() {
+        let file_io = FileIOBuilder::new(Arc::new(OpenDalStorageFactory::Memory)).build();
+        let generator = tracking_generator("memory:/warehouse/data");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let armed = generator.generate_location(None, "armed.parquet");
+        let disarmed = generator.generate_location(None, "disarmed.parquet");
+        runtime.block_on(async {
+            for location in [&armed, &disarmed] {
+                file_io
+                    .new_output(location)
+                    .unwrap()
+                    .write(bytes::Bytes::from_static(b"parquet"))
+                    .await
+                    .unwrap();
+            }
+        });
+
+        // Disarmed: the task completed, nothing may be deleted.
+        let mut guard = AbortOnDrop {
+            file_io: file_io.clone(),
+            generator: generator.clone(),
+            armed: true,
+        };
+        guard.disarm();
+        drop(guard);
+        assert!(runtime.block_on(file_io.exists(&armed)).unwrap());
+
+        // Armed and dropped from a thread without a runtime, as `releasePlan` does: the delete
+        // runs to completion before `drop` returns.
+        drop(AbortOnDrop {
+            file_io: file_io.clone(),
+            generator,
+            armed: true,
+        });
+        assert!(!runtime.block_on(file_io.exists(&armed)).unwrap());
+        assert!(!runtime.block_on(file_io.exists(&disarmed)).unwrap());
+    }
+
+    #[test]
+    fn tracked_locations_follow_the_default_layout() {
+        let generator = tracking_generator("s3://bucket/table/data");
+        let location = generator.generate_location(None, "f.parquet");
+        assert_eq!(location, "s3://bucket/table/data/f.parquet");
+        assert_eq!(generator.locations(), vec![location]);
+    }
     use datafusion_comet_proto::spark_operator::CompressionCodec as ProtoCodec;
 
     fn base_settings() -> IcebergParquetWriteSettings {
@@ -942,11 +1252,40 @@ mod tests {
     }
 
     #[test]
-    fn build_output_schema_has_single_binary_column() {
+    fn build_output_schema_carries_the_manifest_and_the_written_locations() {
         let schema = build_output_schema();
-        assert_eq!(schema.fields().len(), 1);
+        assert_eq!(schema.fields().len(), 2);
         assert_eq!(schema.field(0).name(), "iceberg_manifest");
         assert_eq!(schema.field(0).data_type(), &DataType::Binary);
+        assert_eq!(schema.field(1).name(), "written_file_locations");
+        assert_eq!(schema.field(1).data_type(), &DataType::Binary);
+    }
+
+    #[test]
+    fn encoded_locations_round_trip_through_the_jvm_framing() {
+        // Mirrors `CometIcebergWriteExec.decodeLocations`; a path containing a newline is decoded
+        // as one location rather than two.
+        fn decode(encoded: &[u8]) -> Vec<String> {
+            let mut out = Vec::new();
+            let count = i32::from_be_bytes(encoded[0..4].try_into().unwrap());
+            let mut at = 4usize;
+            for _ in 0..count {
+                let len = i32::from_be_bytes(encoded[at..at + 4].try_into().unwrap()) as usize;
+                at += 4;
+                out.push(String::from_utf8(encoded[at..at + len].to_vec()).unwrap());
+                at += len;
+            }
+            assert_eq!(at, encoded.len());
+            out
+        }
+        let locations = vec![
+            "s3://bucket/table/data/00000-00001-op-00001.parquet".to_string(),
+            "file:/tmp/t/data/region=a%2Fb/00000-00001-op-00002.parquet".to_string(),
+            "file:/tmp/t/data/odd\nname.parquet".to_string(),
+            "file:/tmp/t/data/日本.parquet".to_string(),
+        ];
+        assert_eq!(decode(&encode_locations(&locations)), locations);
+        assert_eq!(decode(&encode_locations(&[])), Vec::<String>::new());
     }
 
     #[test]
@@ -972,6 +1311,7 @@ mod tests {
         };
         use parquet::file::properties::WriterProperties;
         use std::collections::HashMap;
+        use std::path::PathBuf;
         use std::sync::Arc;
         use tempfile::TempDir;
 
@@ -1055,7 +1395,7 @@ mod tests {
             writer_mode: ProtoIcebergWriterMode,
             batches: Vec<RecordBatch>,
         ) -> DFResult<Vec<DataFile>> {
-            run_write_task(
+            let (data_files, mut abort_guard) = run_write_task(
                 input_stream(batches),
                 common,
                 Arc::new(schema),
@@ -1066,7 +1406,11 @@ mod tests {
                 Some(0),
                 Time::default(),
             )
-            .await
+            .await?;
+            // These tests assert on the written files, so they stand in for the JVM taking
+            // ownership of them.
+            abort_guard.disarm();
+            Ok(data_files)
         }
 
         #[tokio::test]
@@ -1100,6 +1444,56 @@ mod tests {
                 .file_path()
                 .contains(temp_dir.path().to_str().unwrap()));
             assert!(data_files[0].file_path().ends_with(".parquet"));
+        }
+
+        // Manifest encoding and output-batch construction run after the writer has closed and can
+        // still fail. `run_write_task` therefore hands its caller a guard that is still armed, so
+        // the files a successful writer produced are deleted if packaging them fails.
+        #[tokio::test]
+        async fn a_successful_write_returns_an_armed_guard_that_can_still_delete_its_files() {
+            let temp_dir = TempDir::new().unwrap();
+            let data_location = format!("file://{}", temp_dir.path().display());
+            let schema = iceberg_user_schema();
+            let spec = PartitionSpec::builder(Arc::new(schema.clone()))
+                .build()
+                .unwrap();
+            let common = common(
+                data_location,
+                serde_json::to_string(&spec).unwrap(),
+                serde_json::to_string(&schema).unwrap(),
+                ProtoIcebergWriterMode::IcebergWriterUnpartitioned,
+            );
+
+            let (data_files, mut abort_guard) = run_write_task(
+                input_stream(vec![batch(&[1, 2, 3], &["us", "eu", "us"])]),
+                common,
+                Arc::new(schema),
+                Arc::new(spec),
+                ProtoIcebergWriterMode::IcebergWriterUnpartitioned,
+                WriterProperties::builder().build(),
+                Some(0),
+                Some(0),
+                Time::default(),
+            )
+            .await
+            .unwrap();
+
+            assert!(
+                abort_guard.armed,
+                "the caller owns cleanup until the JVM does"
+            );
+            let written: Vec<PathBuf> = data_files
+                .iter()
+                .map(|f| PathBuf::from(f.file_path().trim_start_matches("file:")))
+                .collect();
+            assert!(written.iter().all(|p| p.exists()), "{written:?}");
+            assert_eq!(abort_guard.locations().len(), written.len());
+
+            // What the outer task does when `encode_data_files_as_manifest` or
+            // `build_output_batch` fails.
+            abort_guard.abort().await;
+            assert!(written.iter().all(|p| !p.exists()), "{written:?}");
+            assert!(!abort_guard.armed, "aborting also gives up ownership");
         }
 
         #[tokio::test]
@@ -1422,7 +1816,7 @@ mod tests {
 
             let schema_arc = Arc::new(schema);
             let spec_arc = Arc::new(spec);
-            let data_files = run_write_task(
+            let (data_files, mut abort_guard) = run_write_task(
                 input_stream(vec![batch(&[10, 20], &["x", "y"])]),
                 Arc::clone(&common),
                 Arc::clone(&schema_arc),
@@ -1435,6 +1829,8 @@ mod tests {
             )
             .await
             .unwrap();
+            let locations = abort_guard.locations();
+            abort_guard.disarm();
 
             let manifest_bytes = encode_data_files_as_manifest(
                 data_files.clone(),
@@ -1447,8 +1843,18 @@ mod tests {
             .await
             .unwrap();
             let output_schema = build_output_schema();
-            let batch = build_output_batch(manifest_bytes.clone(), &output_schema).unwrap();
+            let batch =
+                build_output_batch(manifest_bytes.clone(), &locations, &output_schema).unwrap();
             assert_eq!(batch.num_rows(), 1);
+            // The locations column names every file the manifest does, so the JVM can clean up
+            // without decoding the manifest.
+            assert_eq!(
+                locations,
+                data_files
+                    .iter()
+                    .map(|f| f.file_path().to_string())
+                    .collect::<Vec<_>>()
+            );
 
             let manifest = Manifest::parse_avro(&manifest_bytes).unwrap();
             let entries = manifest.entries();
@@ -1538,7 +1944,7 @@ mod tests {
 
             let schema_arc = Arc::new(schema);
             let spec_arc = Arc::new(spec);
-            let data_files = run_write_task(
+            let (data_files, mut abort_guard) = run_write_task(
                 input_stream(vec![batch(&[1, 2], &["us", "eu"])]),
                 Arc::clone(&common),
                 Arc::clone(&schema_arc),
@@ -1551,6 +1957,8 @@ mod tests {
             )
             .await
             .unwrap();
+            // The write succeeded, so the guard must not delete what it produced.
+            abort_guard.disarm();
             assert_eq!(data_files.len(), 1);
             // No partition directory, matching iceberg-java's `UnpartitionedDataWriter`: the file
             // sits directly under the data location.
@@ -1603,7 +2011,7 @@ mod tests {
 
             let schema_arc = Arc::new(schema);
             let spec_arc = Arc::new(spec);
-            let data_files = run_write_task(
+            let (data_files, mut abort_guard) = run_write_task(
                 input_stream(vec![batch(&[1], &["us"])]),
                 Arc::clone(&common),
                 Arc::clone(&schema_arc),
@@ -1616,6 +2024,8 @@ mod tests {
             )
             .await
             .unwrap();
+            // The write succeeded, so the guard must not delete what it produced.
+            abort_guard.disarm();
             let manifest_bytes = encode_data_files_as_manifest(
                 data_files,
                 schema_arc,
@@ -1690,7 +2100,7 @@ mod tests {
             )
             .unwrap();
 
-            let data_files = run_write_task(
+            let (data_files, mut abort_guard) = run_write_task(
                 Box::pin(RecordBatchStreamAdapter::new(
                     arrow_schema,
                     futures::stream::iter(vec![Ok::<_, DataFusionError>(batch)]),
@@ -1706,6 +2116,8 @@ mod tests {
             )
             .await
             .unwrap();
+            // The write succeeded, so the guard must not delete what it produced.
+            abort_guard.disarm();
 
             assert_eq!(data_files.len(), 1);
             assert!(
