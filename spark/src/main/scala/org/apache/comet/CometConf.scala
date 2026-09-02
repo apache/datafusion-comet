@@ -404,6 +404,22 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(true)
 
+  val COMET_SHUFFLE_NATIVE_HASH_PARTITIONING_NESTED_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.shuffle.native.partitioning.hash.nested.enabled")
+      .category(CATEGORY_SHUFFLE)
+      .doc(
+        "Whether to allow nested types (struct, array, map) as hash partitioning keys in " +
+          "Comet native shuffle. Comet's native Murmur3 kernel hashes nested types " +
+          "recursively and shares that kernel, and Spark's seed, with the `hash` expression, " +
+          "so partition assignment matches Spark. A map key additionally requires the " +
+          "`mapsort` normalization that Spark 4.0 and later insert, so maps are rejected on " +
+          "earlier versions. Disabled by default until the performance of the nested hashing " +
+          "paths has been measured: shapes whose leaves are not primitives, such as " +
+          "`array<struct<...>>`, fall back to a per-element code path in the native hasher " +
+          "rather than a vectorized one.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_SHUFFLE_NATIVE_RANGE_PARTITIONING_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.shuffle.native.partitioning.range.enabled")
       .withAlternative("spark.comet.native.shuffle.partitioning.range.enabled")
