@@ -44,7 +44,7 @@ use crate::execution::{
     },
     planner::expression_registry::ExpressionRegistry,
     planner::operator_registry::OperatorRegistry,
-    serde::to_arrow_datatype,
+    serde::{to_arrow_datatype, to_arrow_field},
     shuffle::{SchemaAlignExec, ShuffleWriterDestination, ShuffleWriterExec},
 };
 use crate::jvm_bridge::{jni_call, JVMClasses, ShufflePartitionPusher};
@@ -3981,15 +3981,17 @@ pub(crate) fn convert_spark_types_to_arrow_schema(
     let arrow_fields = spark_types
         .iter()
         .map(|spark_type| {
-            let field = Field::new(
+            let field = to_arrow_field(
                 String::clone(&spark_type.name),
-                to_arrow_datatype(spark_type.data_type.as_ref().unwrap()),
+                spark_type.data_type.as_ref().unwrap(),
                 spark_type.nullable,
             );
             if spark_type.metadata.is_empty() {
                 field
             } else {
-                field.with_metadata(spark_type.metadata.clone())
+                let mut metadata = spark_type.metadata.clone();
+                metadata.extend(field.metadata().clone());
+                field.with_metadata(metadata)
             }
         })
         .collect_vec();
@@ -4933,6 +4935,7 @@ mod tests {
     use datafusion::{assert_batches_eq, physical_plan::common::collect, prelude::SessionContext};
     use datafusion_physical_expr_adapter::PhysicalExprAdapterFactory;
     use datafusion_spark::function::aggregate::collect::{SparkCollectList, SparkCollectSet};
+    use parquet::variant::VariantType;
     use tempfile::TempDir;
     use tokio::sync::mpsc;
 
@@ -4942,8 +4945,10 @@ mod tests {
     use crate::jvm_bridge::{JavaShufflePartitionPusher, ShufflePartitionPusher};
 
     use crate::execution::operators::{ExecutionError, PartitionedRankLimitExec, WindowFnKind};
-    use crate::execution::planner::literal_to_array_ref;
-    use crate::execution::planner::parse_file_scan_tasks_from_common;
+    use crate::execution::planner::{
+        convert_spark_types_to_arrow_schema, literal_to_array_ref,
+        parse_file_scan_tasks_from_common,
+    };
     use crate::execution::shuffle::CometPartitioning;
     use crate::parquet::parquet_support::SparkParquetOptions;
     use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
@@ -4979,6 +4984,26 @@ mod tests {
 
     struct BoundedShufflePartitionPusher {
         max_frame_size: usize,
+    }
+
+    #[test]
+    fn spark_variant_schema_preserves_field_metadata() {
+        let schema = convert_spark_types_to_arrow_schema(&[spark_operator::SparkStructField {
+            name: "v".to_string(),
+            data_type: Some(spark_expression::DataType {
+                type_id: spark_expression::data_type::DataTypeId::Variant as i32,
+                type_info: None,
+            }),
+            nullable: true,
+            metadata: std::collections::HashMap::from([(
+                "source".to_string(),
+                "spark".to_string(),
+            )]),
+        }]);
+
+        let field = schema.field(0);
+        assert!(field.has_valid_extension_type::<VariantType>());
+        assert_eq!(field.metadata().get("source"), Some(&"spark".to_string()));
     }
 
     impl ShufflePartitionPusher for BoundedShufflePartitionPusher {
