@@ -271,6 +271,23 @@ private[comet] object PlanDataInjector extends Logging {
     injectPlanData(op, commonByKey, partitionByKey, prepared)
   }
 
+  // A shuffle's prepared data dies with the shuffle, and shuffle ids restart at zero for every
+  // SparkContext in the JVM, so a recreated context would otherwise keep stacking new scan keys
+  // under ids the last context already used. The shuffle managers call these from
+  // unregisterShuffle and stop.
+  private[comet] def releasePreparedShuffle(shuffleId: Int): Unit =
+    shufflePreparedCommons.remove(Integer.valueOf(shuffleId))
+
+  private[comet] def releaseAllPreparedShuffles(): Unit = shufflePreparedCommons.clear()
+
+  /** Test-only view: each cached shuffle id with the scan keys prepared under it. */
+  private[comet] def preparedShuffleSnapshot: Map[Int, Set[String]] =
+    shufflePreparedCommons.synchronized {
+      shufflePreparedCommons.asScala.map { case (id, prepared) =>
+        id.intValue() -> prepared.keySet().asScala.toSet
+      }.toMap
+    }
+
   private def injectPlanData(
       op: Operator,
       commonByKey: Map[String, Array[Byte]],

@@ -26,6 +26,9 @@ import org.scalatest.funsuite.AnyFunSuite
 import org.apache.spark.{ExecutorLostFailure, ShuffleDependency, SparkConf, TaskContext, TaskEndReason, UnknownReason}
 import org.apache.spark.scheduler.OutputCommitCoordinator
 import org.apache.spark.shuffle.{BaseShuffleHandle, ShuffleBlockResolver, ShuffleHandle, ShuffleManager, ShuffleReader, ShuffleReadMetricsReporter, ShuffleWriteMetricsReporter, ShuffleWriter}
+import org.apache.spark.sql.comet.{NativeScanPlanDataInjector, PlanDataInjector}
+
+import org.apache.comet.serde.OperatorOuterClass
 
 class CometCelebornShuffleManagerSuite extends AnyFunSuite {
 
@@ -571,6 +574,54 @@ class CometCelebornShuffleManagerSuite extends AnyFunSuite {
     composite.stop()
 
     assert(backend.stopped)
+  }
+
+  /** Caches one prepared scan under `shuffleId` as a native map task would. */
+  private def prepareShuffleScan(shuffleId: Int, source: String): String = {
+    val common = OperatorOuterClass.NativeScanCommon.newBuilder().setSource(source).build()
+    val key = NativeScanPlanDataInjector.sourceKey(common)
+    val scanOp = OperatorOuterClass.Operator
+      .newBuilder()
+      .setNativeScan(
+        OperatorOuterClass.NativeScan.newBuilder().setCommon(common).setSourceKey(key))
+      .build()
+    val partition = OperatorOuterClass.NativeScan
+      .newBuilder()
+      .setFilePartition(OperatorOuterClass.SparkFilePartition.newBuilder())
+      .build()
+      .toByteArray
+    PlanDataInjector.injectPlanDataForShuffle(
+      shuffleId,
+      scanOp,
+      Map(key -> common.toByteArray),
+      Map(key -> partition))
+    key
+  }
+
+  test("unregisterShuffle releases that shuffle's prepared scan data") {
+    PlanDataInjector.releaseAllPreparedShuffles()
+    val composite = manager(new RecordingShuffleManager)
+    val gone = prepareShuffleScan(3, "s3://celeborn/unregister-gone")
+    val kept = prepareShuffleScan(4, "s3://celeborn/unregister-kept")
+    assert(PlanDataInjector.preparedShuffleSnapshot == Map(3 -> Set(gone), 4 -> Set(kept)))
+
+    composite.unregisterShuffle(3)
+
+    assert(PlanDataInjector.preparedShuffleSnapshot == Map(4 -> Set(kept)))
+  }
+
+  test("stop releases every shuffle's prepared scan data") {
+    // A recreated SparkContext restarts shuffle ids at zero, so whatever the stopped context
+    // cached under those ids must not survive the manager that owned it.
+    PlanDataInjector.releaseAllPreparedShuffles()
+    val composite = manager(new RecordingShuffleManager)
+    prepareShuffleScan(0, "s3://celeborn/stop-a")
+    prepareShuffleScan(1, "s3://celeborn/stop-b")
+    assert(PlanDataInjector.preparedShuffleSnapshot.keySet == Set(0, 1))
+
+    composite.stop()
+
+    assert(PlanDataInjector.preparedShuffleSnapshot.isEmpty)
   }
 
   test("registration failures retain their original exception without local fallback") {

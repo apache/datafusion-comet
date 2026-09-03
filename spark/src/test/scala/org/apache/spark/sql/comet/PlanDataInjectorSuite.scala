@@ -21,6 +21,9 @@ package org.apache.spark.sql.comet
 
 import org.scalatest.funsuite.AnyFunSuite
 
+import org.apache.spark.SparkConf
+import org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager
+
 import org.apache.comet.serde.OperatorOuterClass
 import org.apache.comet.serde.OperatorOuterClass.Operator
 
@@ -394,6 +397,52 @@ class PlanDataInjectorSuite extends AnyFunSuite {
       task1.getNativeScan.getCommon eq task2.getNativeScan.getCommon,
       "one shuffle's map tasks must share the prepared common, not re-parse it")
     assert(task1.getNativeScan.getCommon == common)
+  }
+
+  /** Injects one scan under `shuffleId` the way a map task would, returning its scan key. */
+  private def injectShuffleScan(shuffleId: Int, source: String): String = {
+    val scanOp = nativeScanOp(source, Seq("id"))
+    val key = NativeScanPlanDataInjector.getKey(scanOp).get
+    PlanDataInjector.injectPlanDataForShuffle(
+      shuffleId,
+      scanOp,
+      Map(key -> scanOp.getNativeScan.getCommon.toByteArray),
+      Map(key -> nativeScanPartitionBytes("map-0.parquet")))
+    key
+  }
+
+  test("recreated context does not accumulate prepared commons under reused shuffle ids") {
+    // Shuffle ids restart at zero for every SparkContext in a JVM, so a local or embedded caller
+    // that stops and recreates its context reuses ids the previous context already cached under.
+    // The manager's stop() is the boundary where the old context's prepared data must go.
+    PlanDataInjector.releaseAllPreparedShuffles()
+    val firstContext = new CometShuffleManager(new SparkConf(false))
+    val a = injectShuffleScan(0, "file:///recreated-ctx-a")
+    val b = injectShuffleScan(0, "file:///recreated-ctx-b")
+    assert(PlanDataInjector.preparedShuffleSnapshot(0) == Set(a, b))
+
+    firstContext.stop()
+
+    new CometShuffleManager(new SparkConf(false))
+    val c = injectShuffleScan(0, "file:///recreated-ctx-c")
+    val d = injectShuffleScan(0, "file:///recreated-ctx-d")
+    assert(
+      PlanDataInjector.preparedShuffleSnapshot(0) == Set(c, d),
+      "shuffle 0 must hold only the new context's scans, not the stopped context's as well")
+  }
+
+  test("unregisterShuffle releases only that shuffle's prepared commons") {
+    PlanDataInjector.releaseAllPreparedShuffles()
+    val manager = new CometShuffleManager(new SparkConf(false))
+    val gone = injectShuffleScan(7, "file:///unregister-gone")
+    val kept = injectShuffleScan(8, "file:///unregister-kept")
+    assert(PlanDataInjector.preparedShuffleSnapshot == Map(7 -> Set(gone), 8 -> Set(kept)))
+
+    manager.unregisterShuffle(7)
+
+    assert(
+      PlanDataInjector.preparedShuffleSnapshot == Map(8 -> Set(kept)),
+      "unregistering shuffle 7 must drop exactly its entry")
   }
 
   test("a changed finalized common under the same key is replaced, not served stale") {

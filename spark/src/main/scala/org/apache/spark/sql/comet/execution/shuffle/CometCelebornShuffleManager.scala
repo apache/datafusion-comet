@@ -31,6 +31,7 @@ import org.apache.spark.{ShuffleDependency, SparkConf, SparkEnv, TaskContext}
 import org.apache.spark.rpc.{RpcCallContext, RpcEndpointRef, RpcEnv, ThreadSafeRpcEndpoint}
 import org.apache.spark.scheduler.OutputCommitCoordinator
 import org.apache.spark.shuffle.{BaseShuffleHandle, ShuffleBlockResolver, ShuffleHandle, ShuffleManager, ShuffleReader, ShuffleReadMetricsReporter, ShuffleWriteMetricsReporter, ShuffleWriter}
+import org.apache.spark.sql.comet.PlanDataInjector
 import org.apache.spark.util.RpcUtils
 
 import org.apache.comet.CometConf
@@ -246,6 +247,7 @@ class CometCelebornShuffleManager private[shuffle] (
     if (isDriver) {
       Option(nativeGenerationCoordinator).foreach(_.unregisterShuffle(shuffleId))
     }
+    PlanDataInjector.releasePreparedShuffle(shuffleId)
     backend.unregisterShuffle(shuffleId)
   }
 
@@ -262,6 +264,7 @@ class CometCelebornShuffleManager private[shuffle] (
         ownedNativeClients.keySet().asScala.foreach(CelebornShufflePusherFactory.releaseClient)
         ownedNativeClients.clear()
         nativeShuffleClients.clear()
+        PlanDataInjector.releaseAllPreparedShuffles()
       }
     }
   }
