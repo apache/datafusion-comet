@@ -105,7 +105,8 @@ SELECT abs(v) FROM ansi_test_abs_byte
 query expect_error(overflow)
 SELECT abs(cast(-128 as tinyint))
 
--- overflow: abs on Long.MinValue microseconds throws; the dispatched codegen path must
--- propagate Spark's exception
 query expect_error(overflow)
-SELECT abs(make_dt_interval(-2147483648))
+SELECT abs(make_dt_interval(-106751991, -4, 0, -54.775808))
+
+query expect_error(overflow)
+SELECT abs(make_ym_interval(0, -2147483648))

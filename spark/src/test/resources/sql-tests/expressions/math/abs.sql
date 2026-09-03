@@ -43,3 +43,9 @@ SELECT abs(make_dt_interval(1, 2, 3, 4.5)) AS dt_pos,
 query
 SELECT named_struct('v', abs(make_ym_interval(1, 6))) AS ym_pos,
        named_struct('v', abs(make_ym_interval(-1, -6))) AS ym_neg
+
+query
+SELECT abs(make_dt_interval(-106751991, -4, 0, -54.775808))
+
+query
+SELECT abs(make_ym_interval(0, -2147483648))
