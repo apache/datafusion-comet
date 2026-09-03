@@ -117,9 +117,21 @@ pub use backend::{
     Backend as AllocatorBackend, BACKEND as BACKEND_ALLOCATOR, NAME as ALLOCATOR_BACKEND,
 };
 
+#[cfg(not(feature = "oom-guard"))]
 #[global_allocator]
 static GLOBAL: alloc_accounting::AccountingAllocator<backend::Backend> =
     alloc_accounting::AccountingAllocator::new(backend::BACKEND);
+
+// With `oom-guard`, the guard wraps the accounting allocator rather than replacing it, so the
+// memory usage log keeps its balance. It sits outside because it can unwind, and the accounting
+// wrapper's safety argument assumes nothing beneath it does.
+#[cfg(feature = "oom-guard")]
+#[global_allocator]
+static GLOBAL: crate::execution::memory_pools::oom_guard::AccountingAllocator<
+    alloc_accounting::AccountingAllocator<backend::Backend>,
+> = crate::execution::memory_pools::oom_guard::AccountingAllocator::new(
+    alloc_accounting::AccountingAllocator::new(backend::BACKEND),
+);
 
 #[no_mangle]
 pub extern "system" fn Java_org_apache_comet_NativeBase_init(
