@@ -85,7 +85,27 @@ class CometIcebergSystemFunctionSuite
   override def beforeAll(): Unit = {
     super.beforeAll()
     sourceDir = Files.createTempDirectory("comet-iceberg-system-functions").toFile
-    sourceData().write.parquet(sourcePath)
+    // Three Spark 3.x defaults differ from Spark 4's in ways that block writing this corpus. All
+    // are set to Spark 4's value so one corpus works on every profile, and none affects how a
+    // result is compared, since every test reads the data back from parquet.
+    //
+    //   - `datetimeJava8ApiEnabled`: `sourceData` supplies java.time values for the date and
+    //     timestamp columns. Spark 4 resolves those external types; on Spark 3.x the row encoder
+    //     expects java.sql.Date / java.sql.Timestamp instead. The encoder is built here on the
+    //     driver, so setting the flag around the write is enough.
+    //   - `datetimeRebaseModeInWrite`: the timestamp corpus reaches back to 1843, and the corpus
+    //     is deliberately pre-epoch in places, since the temporal transforms go negative before
+    //     1970. Spark 3.x throws on writing a timestamp before 1900; Spark 4 defaults to
+    //     CORRECTED, which writes the value as-is.
+    //   - `outputTimestampType`: Spark 3.x defaults to INT96, which has its own separate ancient
+    //     timestamp check. Spark 4 defaults to TIMESTAMP_MICROS, which is also what Iceberg
+    //     itself writes.
+    withSQLConf(
+      SQLConf.DATETIME_JAVA8API_ENABLED.key -> "true",
+      SQLConf.PARQUET_REBASE_MODE_IN_WRITE.key -> "CORRECTED",
+      SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> "TIMESTAMP_MICROS") {
+      sourceData().write.parquet(sourcePath)
+    }
   }
 
   override def afterAll(): Unit = {
