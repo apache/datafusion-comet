@@ -44,8 +44,8 @@ query
 SELECT named_struct('v', abs(make_ym_interval(1, 6))) AS ym_pos,
        named_struct('v', abs(make_ym_interval(-1, -6))) AS ym_neg
 
-query
+query expect_error(overflow)
 SELECT abs(make_dt_interval(-106751991, -4, 0, -54.775808))
 
-query
+query expect_error(overflow)
 SELECT abs(make_ym_interval(0, -2147483648))
