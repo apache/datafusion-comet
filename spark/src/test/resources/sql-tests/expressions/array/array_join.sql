@@ -17,8 +17,7 @@
 
 -- Spark skips null elements without a nullReplacement and substitutes them with one; a null
 -- array or delimiter yields null and an empty array the empty string. Null placement matters:
--- a leading or trailing null must not leave a dangling delimiter. Collated input is covered by
--- array_join_collation.sql.
+-- a leading or trailing null must not leave a dangling delimiter.
 
 statement
 CREATE TABLE test_array_join(arr array<string>, delim string, nullrep string) USING parquet
@@ -71,7 +70,7 @@ SELECT array_join(array(NULL, 'b'), ','), array_join(array('a', NULL), ','), arr
 query
 SELECT array_join(array(NULL, 'b'), ',', 'X'), array_join(array('a', NULL), ',', 'X'), array_join(cast(array(NULL) as array<string>), ',', 'X'), array_join(cast(array(NULL, NULL) as array<string>), ',', 'X')
 
--- empty string elements are not nulls and must survive both paths
+-- empty string elements are not nulls
 query
 SELECT array_join(array('', 'b'), ','), array_join(array('', NULL, 'b'), ','), array_join(array('', NULL, 'b'), ',', 'X')
 

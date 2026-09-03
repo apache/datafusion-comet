@@ -22,7 +22,7 @@ package org.apache.comet.serde
 import scala.annotation.tailrec
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.sql.catalyst.expressions.{And, ArrayAggregate, ArrayAppend, ArrayContains, ArrayExcept, ArrayExists, ArrayFilter, ArrayForAll, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayPosition, ArrayRemove, ArraySort, ArraysOverlap, ArraysZip, ArrayTransform, ArrayUnion, Attribute, Cast, CreateArray, ElementAt, EmptyRow, Expression, Flatten, GetArrayItem, IsNotNull, IsNull, LambdaFunction, Literal, NamedLambdaVariable, Reverse, Sequence, Size, Slice, SortArray, ZipWith}
+import org.apache.spark.sql.catalyst.expressions.{And, ArrayAggregate, ArrayAppend, ArrayContains, ArrayExcept, ArrayExists, ArrayFilter, ArrayForAll, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayPosition, ArrayRemove, ArraySort, ArraysOverlap, ArraysZip, ArrayTransform, ArrayUnion, Attribute, BoundReference, Cast, CreateArray, ElementAt, EmptyRow, Expression, Flatten, GetArrayItem, IsNotNull, IsNull, LambdaFunction, Literal, NamedLambdaVariable, Reverse, Sequence, Size, Slice, SortArray, ZipWith}
 import org.apache.spark.sql.catalyst.util.GenericArrayData
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
@@ -361,34 +361,25 @@ object CometArrayJoin
     "array_join does not propagate non-UTF8_BINARY collations to the output string " +
       "(https://github.com/apache/datafusion-comet/issues/2190)"
 
-  private val nonDeterministicReason =
-    "array_join would have to evaluate a non-deterministic argument twice to reproduce Spark's " +
-      "null short-circuiting (https://github.com/apache/datafusion-comet/issues/3178)"
+  private val eagerEvalReason =
+    "array_join evaluates its delimiter and null replacement eagerly, while Spark short-circuits " +
+      "past them (https://github.com/apache/datafusion-comet/issues/3178)"
 
   /**
-   * Arguments needing an `IsNull` guard around the native call, in Spark's evaluation order.
+   * Whether evaluating `expr` earlier than Spark would is unobservable.
    *
-   * Spark short-circuits to null on the array, then the delimiter, then the null replacement, and
-   * never evaluates the later arguments; DataFusion evaluates all of them eagerly. `IfExpr` is a
-   * DataFusion `CaseExpr`, which evaluates branches against a filtered batch, so nesting restores
-   * that ordering. Only a non-foldable later argument needs protecting. The null replacement is
-   * guarded whenever it is nullable: `array_to_string` reads a null `null_string` as "omit nulls"
-   * rather than nullifying the row (#3178).
+   * Spark skips ArrayJoin's later arguments once an earlier one is null, and `eval` and
+   * `doGenCode` disagree on that order, while DataFusion evaluates every argument up front. A
+   * literal or column read cannot throw, carry state or have a side effect, so ordering cannot be
+   * observed for it; anything else goes to the codegen dispatcher. `foldable` is not usable here:
+   * ConstantFolding leaves a throwing foldable expression unfolded in a conditional branch.
    */
-  private def guardedArgs(expr: ArrayJoin): Seq[Expression] = {
-    val afterArray = expr.delimiter +: expr.nullReplacement.toSeq
-    val arrayGuard =
-      if (expr.array.nullable && afterArray.exists(!_.foldable)) Seq(expr.array) else Nil
-    val delimiterGuard =
-      if (expr.delimiter.nullable && expr.nullReplacement.exists(!_.foldable)) {
-        Seq(expr.delimiter)
-      } else Nil
-    val replacementGuard = expr.nullReplacement.filter(_.nullable).toSeq
-    arrayGuard ++ delimiterGuard ++ replacementGuard
+  private def orderInsensitive(expr: Expression): Boolean = expr match {
+    case _: Literal | _: Attribute | _: BoundReference => true
+    case _ => false
   }
 
-  override def getIncompatibleReasons(): Seq[String] =
-    Seq(collationReason, nonDeterministicReason)
+  override def getIncompatibleReasons(): Seq[String] = Seq(collationReason, eagerEvalReason)
 
   override def getSupportLevel(expr: ArrayJoin): SupportLevel = {
     // Spark 4.0 widens ArrayJoin's input to StringTypeWithCollation. Concatenation itself is
@@ -398,10 +389,8 @@ object CometArrayJoin
     // array_join native and matching Spark, consistent with CometReverse's #2190 handling.
     if (hasNonDefaultStringCollation(expr.array.dataType)) {
       Incompatible(Some(collationReason))
-    } else if (guardedArgs(expr).exists(!_.deterministic)) {
-      // A guarded argument is serialized twice and CaseExpr evaluates the false branch on a
-      // filtered batch, so a non-deterministic one would diverge between the two copies.
-      Incompatible(Some(nonDeterministicReason))
+    } else if (!(expr.delimiter +: expr.nullReplacement.toSeq).forall(orderInsensitive)) {
+      Incompatible(Some(eagerEvalReason))
     } else {
       Compatible()
     }
@@ -425,21 +414,24 @@ object CometArrayJoin
         scalarFunctionExprToProto("array_to_string", arrayExprProto, delimiterExprProto)
     }
 
-    // The outermost guard is the one Spark evaluates first.
-    guardedArgs(expr).foldRight(joined) { (arg, inner) =>
-      for {
-        innerProto <- inner
-        argIsNull <- exprToProto(IsNull(arg), inputs, binding)
-        nullLiteral <- exprToProto(Literal(null, expr.dataType), inputs, binding)
-      } yield ExprOuterClass.Expr
-        .newBuilder()
-        .setIf(
-          ExprOuterClass.IfExpr
-            .newBuilder()
-            .setIfExpr(argIsNull)
-            .setTrueExpr(nullLiteral)
-            .setFalseExpr(innerProto))
-        .build()
+    // Spark returns null as soon as nullReplacement is null, whatever the array holds, while
+    // array_to_string reads a null null_string as "omit nulls" (#3178).
+    expr.nullReplacement.filter(_.nullable) match {
+      case Some(nullReplacementExpr) =>
+        for {
+          innerProto <- joined
+          replacementIsNull <- exprToProto(IsNull(nullReplacementExpr), inputs, binding)
+          nullLiteral <- exprToProto(Literal(null, expr.dataType), inputs, binding)
+        } yield ExprOuterClass.Expr
+          .newBuilder()
+          .setIf(
+            ExprOuterClass.IfExpr
+              .newBuilder()
+              .setIfExpr(replacementIsNull)
+              .setTrueExpr(nullLiteral)
+              .setFalseExpr(innerProto))
+          .build()
+      case None => joined
     }
   }
 }

@@ -15,9 +15,9 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Regression coverage for #3178. Spark returns null whenever nullReplacement is null, even for
+-- Regression coverage for #3178: Spark returns null whenever nullReplacement is null, even for
 -- an array with no nulls to replace, while array_to_string reads a null null_string as "omit
--- nulls".
+-- nulls". The replacement is a column so these take the guarded native path.
 
 statement
 CREATE TABLE test_aj_nullrep(arr array<string>, delim string, nullrep string) USING parquet
@@ -28,20 +28,15 @@ INSERT INTO test_aj_nullrep VALUES
   (array('a', 'b', 'c'), ',', NULL),
   (array(NULL, NULL), ',', NULL),
   (NULL, ',', NULL),
-  (array('a', NULL, 'c'), ',', 'X')
+  (array('a', NULL, 'c'), ',', 'X'),
+  (array('a', NULL, 'c'), ',', '')
 
--- null replacement as a column, mixed with a non-null replacement row
 query
 SELECT array_join(arr, delim, nullrep) FROM test_aj_nullrep
 
--- null replacement as a literal, array containing nulls
 query
-SELECT array_join(array('a', NULL, 'b'), ',', cast(NULL as string))
+SELECT array_join(arr, ',', nullrep) FROM test_aj_nullrep
 
--- null replacement as a literal, array containing no nulls at all
-query
-SELECT array_join(array('a', 'b'), ',', cast(NULL as string))
-
--- a non-nullable literal replacement takes the unwrapped path
+-- a non-nullable literal replacement takes the unguarded path
 query
 SELECT array_join(array('a', NULL, 'b'), ',', 'X')
