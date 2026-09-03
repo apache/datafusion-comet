@@ -401,7 +401,7 @@ fn list_view_visibility<O: OffsetSizeTrait>(
 }
 
 /// Read the Parquet field id stored under arrow-rs's `PARQUET_FIELD_ID_META_KEY`.
-fn field_id(field: &arrow::datatypes::Field) -> Option<i32> {
+pub(crate) fn field_id(field: &arrow::datatypes::Field) -> Option<i32> {
     field
         .metadata()
         .get(PARQUET_FIELD_ID_META_KEY)
