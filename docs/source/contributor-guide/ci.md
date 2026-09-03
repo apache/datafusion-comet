@@ -69,6 +69,7 @@ Each queue-only suite has a label that runs it on a pull request:
 | `run-spark-3.4-tests` | Spark SQL tests against Spark 3.4                    |
 | `run-spark-3.5-tests` | Spark SQL tests against Spark 3.5                    |
 | `run-spark-4.0-tests` | Spark SQL tests against Spark 4.0                    |
+| `run-delta-tests`     | Delta contrib tests against Spark 3.5                |
 | `run-iceberg-tests`   | Iceberg Spark SQL tests against Iceberg 1.8/1.9/1.10 |
 
 Apply a label from the pull request sidebar, or from the command line:

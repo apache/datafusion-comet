@@ -106,7 +106,9 @@ package object operator {
 
   // In `CometScanRule`, we have already checked that all partition and metadata column values
   // are supported. So, we can safely use `get` here.
-  private def literalToProto(literal: Literal, description: String): ExprOuterClass.Expr = {
+  private[comet] def literalToProto(
+      literal: Literal,
+      description: String): ExprOuterClass.Expr = {
     val valueProto = exprToProto(literal, Seq.empty)
     assert(valueProto.isDefined, s"Unsupported $description")
     valueProto.get
