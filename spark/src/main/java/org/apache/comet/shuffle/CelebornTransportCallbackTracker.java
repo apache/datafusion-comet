@@ -47,10 +47,18 @@ import java.util.function.BiConsumer;
 import java.util.function.BiFunction;
 import java.util.function.Function;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 /** Tracks payload ownership across stock Celeborn transport callbacks and retry tasks. */
 final class CelebornTransportCallbackTracker {
+  private static final Logger LOG = LoggerFactory.getLogger(CelebornTransportCallbackTracker.class);
+
   private final Object shuffleClient;
   private final Method getDataClientFactory;
+  private FactoryHook factoryHook;
+  private boolean initialized;
+  private boolean closed;
 
   private CelebornTransportCallbackTracker(Object shuffleClient, Method getDataClientFactory) {
     this.shuffleClient = shuffleClient;
@@ -67,7 +75,28 @@ final class CelebornTransportCallbackTracker {
     }
   }
 
-  Push beginPush() throws IOException {
+  synchronized Push beginPush() throws IOException {
+    if (closed) {
+      return null;
+    }
+    if (!initialized) {
+      initialized = true;
+      factoryHook = installFactoryHook();
+    }
+    return factoryHook == null ? null : factoryHook.beginPush();
+  }
+
+  synchronized void close() {
+    if (closed) {
+      return;
+    }
+    closed = true;
+    if (factoryHook != null) {
+      factoryHook.releaseRegistration();
+    }
+  }
+
+  private FactoryHook installFactoryHook() {
     try {
       Object factory = getDataClientFactory.invoke(shuffleClient);
       if (factory == null) {
@@ -81,26 +110,61 @@ final class CelebornTransportCallbackTracker {
         }
         List<?> bootstraps = (List<?>) bootstrapValue;
         FactoryHook hook = findHook(bootstraps);
+        boolean addBootstrap = false;
         if (hook == null) {
-          hook = new FactoryHook();
+          hook = findRetryHook(shuffleClient, factory);
+          addBootstrap = true;
+        }
+        if (hook == null) {
           Class<?> bootstrapInterface = bootstrapInterface(bootstrapsField, factory);
-          ArrayList<Object> augmentedBootstraps = new ArrayList<>(bootstraps);
-          augmentedBootstraps.add(
+          hook = new FactoryHook(factory, bootstrapsField);
+          hook.bootstrap =
               Proxy.newProxyInstance(
-                  bootstrapInterface.getClassLoader(), new Class<?>[] {bootstrapInterface}, hook));
-          // A client may already be iterating the old list. Do not mutate that iterator; the pool
-          // locks below wait for that client's construction before instrumenting its handler.
-          bootstrapsField.set(factory, augmentedBootstraps);
+                  bootstrapInterface.getClassLoader(), new Class<?>[] {bootstrapInterface}, hook);
         }
-        if (!hook.installed) {
-          hook.installExistingClients(factory);
-          hook.installed = true;
+        hook.retainRegistration();
+        try {
+          if (addBootstrap) {
+            ArrayList<Object> augmentedBootstraps = new ArrayList<>(bootstraps);
+            augmentedBootstraps.add(hook.bootstrap);
+            // A client may already be iterating the old list. Do not mutate that iterator; the
+            // pool locks below wait for that client's construction before instrumenting it.
+            bootstrapsField.set(factory, augmentedBootstraps);
+          }
+          try {
+            if (hook.acceptsTransportOwnership() && !hook.installed) {
+              hook.installExistingClients(factory);
+              hook.installed = true;
+            }
+            if (hook.acceptsTransportOwnership()) {
+              hook.installRetryPool(shuffleClient);
+            }
+          } catch (ReflectiveOperationException | IOException | RuntimeException failure) {
+            Error invocationError = invocationError(failure);
+            if (invocationError != null) {
+              throw invocationError;
+            }
+            hook.disableTransportOwnership(failure);
+          }
+          return hook;
+        } catch (ReflectiveOperationException | RuntimeException failure) {
+          hook.releaseRegistration();
+          throw failure;
+        } catch (Error failure) {
+          rollbackFatalInitialization(hook, failure);
+          throw failure;
         }
-        hook.installRetryPool(shuffleClient);
-        return new Push(hook);
       }
-    } catch (ReflectiveOperationException | RuntimeException failure) {
-      throw new IOException("Cannot observe Celeborn shuffle payload ownership", failure);
+    } catch (ReflectiveOperationException | IOException | RuntimeException failure) {
+      Error invocationError = invocationError(failure);
+      if (invocationError != null) {
+        throw invocationError;
+      }
+      LOG.warn(
+          "Cannot install Celeborn transport ownership tracking; falling back to push-state "
+              + "completion",
+          failure);
+      return null;
     }
   }
 
@@ -114,6 +178,53 @@ final class CelebornTransportCallbackTracker {
       }
     }
     return null;
+  }
+
+  private static Error invocationError(Throwable failure) {
+    if (failure instanceof InvocationTargetException
+        && ((InvocationTargetException) failure).getCause() instanceof Error) {
+      return (Error) ((InvocationTargetException) failure).getCause();
+    }
+    return failure instanceof Error ? (Error) failure : null;
+  }
+
+  private static void rollbackFatalInitialization(FactoryHook hook, Error failure) {
+    try {
+      hook.disableTransportOwnership(failure);
+    } catch (Throwable cleanupFailure) {
+      if (cleanupFailure != failure) {
+        failure.addSuppressed(cleanupFailure);
+      }
+    }
+    try {
+      hook.releaseRegistration();
+    } catch (Throwable cleanupFailure) {
+      if (cleanupFailure != failure) {
+        failure.addSuppressed(cleanupFailure);
+      }
+    }
+  }
+
+  private static void disableAfterFatalBootstrap(FactoryHook hook, Error failure) {
+    try {
+      hook.disableTransportOwnership(failure);
+    } catch (Throwable cleanupFailure) {
+      if (cleanupFailure != failure) {
+        failure.addSuppressed(cleanupFailure);
+      }
+    }
+  }
+
+  private static FactoryHook findRetryHook(Object shuffleClient, Object factory)
+      throws ReflectiveOperationException {
+    synchronized (shuffleClient) {
+      Object retryPool = field(shuffleClient.getClass(), "pushDataRetryPool").get(shuffleClient);
+      if (retryPool instanceof TrackingRetryExecutor) {
+        FactoryHook hook = ((TrackingRetryExecutor) retryPool).hook;
+        return hook.factory == factory ? hook : null;
+      }
+      return null;
+    }
   }
 
   private static Class<?> bootstrapInterface(Field bootstrapsField, Object factory)
@@ -151,6 +262,15 @@ final class CelebornTransportCallbackTracker {
     private final AtomicInteger owners = new AtomicInteger(1);
     private final AtomicBoolean closed = new AtomicBoolean();
     private final ConcurrentLinkedQueue<WriteOwnership> writes = new ConcurrentLinkedQueue<>();
+    private final Set<OwnedRetry> ownedRetries = ConcurrentHashMap.newKeySet();
+    private OwnershipMode ownershipMode = OwnershipMode.TRANSPORT_OWNED;
+    private int activeDelegates;
+
+    private enum OwnershipMode {
+      TRANSPORT_OWNED,
+      PUSH_STATE_FALLBACK,
+      CANCELLATION_SEALED
+    }
 
     private Push(FactoryHook hook) {
       this.hook = hook;
@@ -159,12 +279,96 @@ final class CelebornTransportCallbackTracker {
     }
 
     boolean isComplete() {
+      if (!usesTransportOwnership()) {
+        return false;
+      }
+      return retainedTransportOwnershipComplete() && usesTransportOwnership();
+    }
+
+    boolean retainedTransportOwnershipComplete() {
       // A shutting-down event loop can reject listener notification after completing a promise.
       // Reconciliation can still observe that write's completion without depending on notification.
       for (WriteOwnership write : writes) {
         write.completeIfDone();
       }
       return owners.get() == 0;
+    }
+
+    boolean usesTransportOwnership() {
+      synchronized (hook) {
+        return ownershipMode != OwnershipMode.PUSH_STATE_FALLBACK;
+      }
+    }
+
+    private void fallBackToPushState() {
+      synchronized (hook) {
+        if (ownershipMode == OwnershipMode.TRANSPORT_OWNED) {
+          ownershipMode = OwnershipMode.PUSH_STATE_FALLBACK;
+        }
+      }
+    }
+
+    static boolean trySealCohortForCancellation(List<Push> pushes) {
+      if (pushes.isEmpty()) {
+        return true;
+      }
+      FactoryHook hook = pushes.get(0).hook;
+      ArrayList<OwnedRetry> retries;
+      synchronized (hook) {
+        for (Push push : pushes) {
+          if (push.hook != hook
+              || !push.closed.get()
+              || push.activeDelegates != 0
+              || push.ownershipMode == OwnershipMode.PUSH_STATE_FALLBACK) {
+            return false;
+          }
+        }
+        retries = new ArrayList<>();
+        for (Push push : pushes) {
+          push.ownershipMode = OwnershipMode.CANCELLATION_SEALED;
+          retries.addAll(push.ownedRetries);
+        }
+      }
+      for (OwnedRetry retry : retries) {
+        retry.discard();
+      }
+      return true;
+    }
+
+    private boolean beginDelegateUnlessCancelled() {
+      synchronized (hook) {
+        if (ownershipMode == OwnershipMode.CANCELLATION_SEALED) {
+          return false;
+        }
+        activeDelegates++;
+        return true;
+      }
+    }
+
+    private void endDelegate() {
+      synchronized (hook) {
+        activeDelegates--;
+      }
+    }
+
+    private void registerRetry(OwnedRetry retry) {
+      ownedRetries.add(retry);
+      synchronized (hook) {
+        if (ownershipMode != OwnershipMode.CANCELLATION_SEALED) {
+          return;
+        }
+      }
+      retry.discard();
+    }
+
+    private void unregisterRetry(OwnedRetry retry) {
+      ownedRetries.remove(retry);
+    }
+
+    private void releaseOwner() {
+      if (owners.decrementAndGet() == 0) {
+        hook.activePushes.remove(this);
+      }
     }
 
     private Lease retain() {
@@ -190,7 +394,7 @@ final class CelebornTransportCallbackTracker {
               "Celeborn raw push scopes must close in invocation order");
         }
         hook.restore(previous);
-        owners.decrementAndGet();
+        releaseOwner();
       }
     }
   }
@@ -206,7 +410,7 @@ final class CelebornTransportCallbackTracker {
     @Override
     public void close() {
       if (closed.compareAndSet(false, true)) {
-        push.owners.decrementAndGet();
+        push.releaseOwner();
       }
     }
   }
@@ -233,8 +437,101 @@ final class CelebornTransportCallbackTracker {
     // retry can run on any thread; its wrapper restores this scope only while invoking its
     // delegate.
     private final ThreadLocal<Push> current = new ThreadLocal<>();
+    private final Set<Push> activePushes = ConcurrentHashMap.newKeySet();
+    private final Object factory;
+    private final Field bootstrapsField;
+    private final AtomicBoolean acceptingTransportOwnership = new AtomicBoolean(true);
+    private volatile boolean active;
+    private Object bootstrap;
+    // Read and written only while holding the owning transport factory's monitor.
+    private int registrations;
     // Read and written only while holding the owning transport factory's monitor.
     private boolean installed;
+
+    private FactoryHook(Object factory, Field bootstrapsField) {
+      this.factory = factory;
+      this.bootstrapsField = bootstrapsField;
+    }
+
+    private synchronized Push beginPush() {
+      if (!active || !acceptingTransportOwnership.get()) {
+        return null;
+      }
+      Push push = new Push(this);
+      activePushes.add(push);
+      return push;
+    }
+
+    private boolean acceptsTransportOwnership() {
+      return active && acceptingTransportOwnership.get();
+    }
+
+    private Push currentPush() {
+      Push push = currentObservedPush();
+      return push != null && push.usesTransportOwnership() ? push : null;
+    }
+
+    private Push currentObservedPush() {
+      Push push = current.get();
+      return active ? push : null;
+    }
+
+    private synchronized void disableTransportOwnership(Throwable failure) {
+      for (Push push : activePushes) {
+        push.fallBackToPushState();
+      }
+      if (!acceptingTransportOwnership.compareAndSet(true, false)) {
+        return;
+      }
+      LOG.warn(
+          "Cannot instrument a Celeborn transport client; falling back to push-state completion",
+          failure);
+    }
+
+    private synchronized void retainRegistration() {
+      registrations++;
+      active = true;
+    }
+
+    private void releaseRegistration() {
+      synchronized (factory) {
+        if (registrations == 0) {
+          return;
+        }
+        registrations--;
+        if (registrations != 0) {
+          return;
+        }
+        installed = false;
+        synchronized (this) {
+          active = false;
+          for (Push push : activePushes) {
+            push.fallBackToPushState();
+          }
+        }
+        try {
+          Object value = bootstrapsField.get(factory);
+          if (!(value instanceof List<?>)) {
+            LOG.warn("Cannot remove the released Celeborn transport ownership hook");
+            return;
+          }
+          ArrayList<Object> retained = new ArrayList<>();
+          boolean removed = false;
+          for (Object candidate : (List<?>) value) {
+            if (candidate == bootstrap) {
+              removed = true;
+            } else {
+              retained.add(candidate);
+            }
+          }
+          if (removed) {
+            bootstrapsField.set(factory, retained);
+          }
+        } catch (ReflectiveOperationException | RuntimeException failure) {
+          LOG.warn("Cannot remove the released Celeborn transport ownership hook", failure);
+        }
+      }
+    }
 
     private void restore(Push previous) {
       if (previous == null) {
@@ -339,7 +636,7 @@ final class CelebornTransportCallbackTracker {
     }
 
     private PreparedRequest prepareRequest(Object requestInfo) {
-      Push push = current.get();
+      Push push = currentPush();
       if (push == null) {
         return null;
       }
@@ -381,8 +678,35 @@ final class CelebornTransportCallbackTracker {
         return objectMethod(proxy, method, args);
       }
       if ("doBootstrap".equals(method.getName()) && args != null && args.length == 1) {
-        installClient(args[0]);
-        return null;
+        synchronized (this) {
+          // Serialize the active check with the zero-registration transition. Once the last
+          // owner has returned from releaseRegistration, no stale copy-on-write bootstrap
+          // snapshot may instrument or reject a later ordinary client.
+          if (!active) {
+            return null;
+          }
+          if (!acceptingTransportOwnership.get()) {
+            Push push = current.get();
+            if (push != null) {
+              push.fallBackToPushState();
+            }
+            return null;
+          }
+          try {
+            installClient(args[0]);
+          } catch (ReflectiveOperationException | IOException | RuntimeException failure) {
+            Error invocationError = invocationError(failure);
+            if (invocationError != null) {
+              disableAfterFatalBootstrap(this, invocationError);
+              throw invocationError;
+            }
+            disableTransportOwnership(failure);
+          } catch (Error failure) {
+            disableAfterFatalBootstrap(this, failure);
+            throw failure;
+          }
+          return null;
+        }
       }
       throw new UnsupportedOperationException(
           "Unsupported Celeborn transport bootstrap: " + method);
@@ -472,7 +796,7 @@ final class CelebornTransportCallbackTracker {
       if (method.getDeclaringClass() == Object.class) {
         return objectMethod(proxy, method, args);
       }
-      Push push = hook.current.get();
+      Push push = hook.currentObservedPush();
       if (push == null || !"writeAndFlush".equals(method.getName())) {
         try {
           Object result = method.invoke(channel, args);
@@ -608,9 +932,18 @@ final class CelebornTransportCallbackTracker {
       if (!delivered.compareAndSet(false, true)) {
         return null;
       }
-      try (Activation ignored = push.activate()) {
-        return invokeCallback(method, args);
+      boolean invokeDelegate = push.beginDelegateUnlessCancelled();
+      try {
+        if (invokeDelegate) {
+          try (Activation ignored = push.activate()) {
+            return invokeCallback(method, args);
+          }
+        }
+        return null;
       } finally {
+        if (invokeDelegate) {
+          push.endDelegate();
+        }
         // Request-map removal is not completion. Retry submission during the original callback
         // has already retained its own lease before this transport owner's lease is released.
         // The handler may retain RequestInfo after invoking it. Clear its payload-owning delegate
@@ -672,13 +1005,22 @@ final class CelebornTransportCallbackTracker {
       if (!ownership.start()) {
         return;
       }
-      try (Activation ignored = ownership.push.activate()) {
-        invokeDelegate();
+      boolean invokeDelegate = ownership.push.beginDelegateUnlessCancelled();
+      try {
+        if (invokeDelegate) {
+          try (Activation ignored = ownership.push.activate()) {
+            invokeDelegate();
+          }
+        }
       } finally {
+        if (invokeDelegate) {
+          ownership.push.endDelegate();
+        }
         // An executor or shutdown caller can retain the completed wrapper. The delegate's own
         // invocation frame must have returned before dropping its payload reference and lease.
         delegate = null;
         ownership.finish();
+        ownership.push.unregisterRetry(this);
       }
     }
 
@@ -687,6 +1029,7 @@ final class CelebornTransportCallbackTracker {
       if (ownership.discard()) {
         delegate = null;
         ownership.finish();
+        ownership.push.unregisterRetry(this);
       }
     }
   }
@@ -709,10 +1052,21 @@ final class CelebornTransportCallbackTracker {
       if (!ownership.start()) {
         return;
       }
-      try (Activation ignored = ownership.push.activate()) {
-        super.run();
+      boolean invokeDelegate = ownership.push.beginDelegateUnlessCancelled();
+      try {
+        if (invokeDelegate) {
+          try (Activation ignored = ownership.push.activate()) {
+            super.run();
+          }
+        } else {
+          super.cancel(false);
+        }
       } finally {
+        if (invokeDelegate) {
+          ownership.push.endDelegate();
+        }
         ownership.finish();
+        ownership.push.unregisterRetry(this);
       }
     }
 
@@ -724,6 +1078,7 @@ final class CelebornTransportCallbackTracker {
         // may release here; a running task releases from run's finally block after it returns.
         if (ownership.discard()) {
           ownership.finish();
+          ownership.push.unregisterRetry(this);
         }
       }
       return cancelled;
@@ -749,11 +1104,11 @@ final class CelebornTransportCallbackTracker {
       if (command == null) {
         throw new NullPointerException("command");
       }
-      Push push = hook.current.get();
+      Push push = hook.currentPush();
       if (push == null) {
         delegate.execute(command);
       } else {
-        submitOwned(new TrackingRetryRunnable(command, push));
+        submitOwned(new TrackingRetryRunnable(command, push), push);
       }
     }
 
@@ -764,27 +1119,28 @@ final class CelebornTransportCallbackTracker {
 
     @Override
     public <T> Future<T> submit(Runnable task, T result) {
-      Push push = hook.current.get();
+      Push push = hook.currentPush();
       if (push == null) {
         return delegate.submit(task, result);
       }
       TrackingRetryFuture<T> future = new TrackingRetryFuture<>(task, result, push);
-      submitOwned(future);
+      submitOwned(future, push);
       return future;
     }
 
     @Override
     public <T> Future<T> submit(Callable<T> task) {
-      Push push = hook.current.get();
+      Push push = hook.currentPush();
       if (push == null) {
         return delegate.submit(task);
       }
       TrackingRetryFuture<T> future = new TrackingRetryFuture<>(task, push);
-      submitOwned(future);
+      submitOwned(future, push);
       return future;
     }
 
-    private <T extends Runnable & OwnedRetry> void submitOwned(T task) {
+    private <T extends Runnable & OwnedRetry> void submitOwned(T task, Push push) {
+      push.registerRetry(task);
       try {
         delegate.execute(task);
       } catch (RuntimeException | Error failure) {
