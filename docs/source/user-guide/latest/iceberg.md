@@ -221,9 +221,10 @@ result can need one more digit than the column's precision allows: `truncate(10,
 `decimal(18,4)` value of `-99999999999999.9999` is `-100000000000000.0000`, which has 19 digits.
 Iceberg's Java `TruncateDecimal` hands that oversized value back unchanged, and Spark turns it into
 null only when the row is materialized. Comet nulls it in the kernel instead. The two therefore
-agree wherever the value is written into a row -- a projection, a sort key, a shuffle key, a
-partition value -- and differ only where the truncated decimal feeds another expression without
-being materialized, as in `WHERE truncate(10, v) IS NULL`.
+agree wherever Spark writes the value into a row -- the output of a projection, and the key a sort
+builds -- and differ where the truncated decimal feeds another expression directly, as in
+`WHERE truncate(10, v) IS NULL` or the hash behind `DISTRIBUTE BY truncate(10, v)`. Note that the
+Iceberg partition value itself is not affected: the writer computes it from the untruncated column.
 
 This matters most for writes. A partitioned table with the default `write.distribution-mode`
 (`hash`) is planned with a shuffle and a local sort keyed on the partition transforms, and with

@@ -99,12 +99,11 @@ fn truncate_array(fn_name: &str, array: &ArrayRef, width: i32) -> Result<ArrayRe
             // last digit, so the result can need one more digit than the column allows. Iceberg's
             // `TruncateDecimal.invoke` hands that oversized `Decimal` back to Spark unchanged and
             // Spark nulls it only when a row is materialized (`UnsafeRowWriter` calls
-            // `changePrecision`, which fails). Nulling it here is the same answer for every path
-            // that writes the value into a row -- a projection, a sort key, a shuffle key, an
-            // Iceberg partition value -- and it is the only answer available to a kernel that has
-            // to return a `Decimal128(precision, scale)` array. The two differ where the result
-            // feeds another expression without being materialized, e.g. `truncate(w, v) IS NULL`;
-            // see the Iceberg user guide.
+            // `changePrecision`, which fails). Nulling it here is the same answer everywhere Spark
+            // materializes the value -- the output of a projection, and the key `SortExec` builds
+            // -- and it is the only answer available to a kernel that has to return a
+            // `Decimal128(precision, scale)` array. The two differ where the result feeds another
+            // expression directly, e.g. `truncate(w, v) IS NULL`; see the Iceberg user guide.
             let truncated: Decimal128Array =
                 array.as_primitive::<Decimal128Type>().unary_opt(|v| {
                     let truncated = truncate_i128(v, width as i128);
