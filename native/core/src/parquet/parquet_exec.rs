@@ -21,7 +21,7 @@ use crate::parquet::encryption_support::{CometEncryptionConfig, ENCRYPTION_FACTO
 use crate::parquet::name_fold::fold_schema_names;
 use crate::parquet::parquet_support::SparkParquetOptions;
 use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
-use arrow::datatypes::{Field, SchemaRef};
+use arrow::datatypes::{Field, Schema, SchemaRef};
 use datafusion::config::{ParquetOptions, TableParquetOptions};
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::datasource::physical_plan::{
@@ -38,6 +38,11 @@ use datafusion_comet_spark_expr::EvalMode;
 use datafusion_datasource::TableSchema;
 use std::collections::HashMap;
 use std::sync::Arc;
+
+/// Footer/page-index prefetch size for metadata reads, same as DataFusion's default. Shared
+/// with the Delta DV path so its cache-populating footer fetch issues the identical read the
+/// scan would.
+pub(crate) const METADATA_SIZE_HINT: usize = 512 * 1024;
 
 /// Initializes a DataSourceExec plan with a ParquetSource for Comet's native Parquet scan.
 ///
@@ -77,6 +82,9 @@ pub(crate) fn init_datasource_exec(
     encryption_enabled: bool,
     use_field_id: bool,
     ignore_missing_field_id: bool,
+    rebase_from_file_metadata: bool,
+    datetime_rebase_mode_in_read: &str,
+    int96_rebase_mode_in_read: &str,
 ) -> Result<Arc<DataSourceExec>, ExecutionError> {
     // Computed once and reused below for `try_pushdown_filters`. `copied_config()` clones only
     // `SessionConfig` (an `Arc<ConfigOptions>` plus a small extensions map); `SessionContext::
@@ -101,6 +109,9 @@ pub(crate) fn init_datasource_exec(
     // existing safe cast for filtered scans and use checked conversion only when every value is
     // necessarily read.
     spark_parquet_options.checked_timestamp_overflow = data_filters.is_none();
+    spark_parquet_options.rebase_from_file_metadata = rebase_from_file_metadata;
+    spark_parquet_options.datetime_rebase_mode_in_read = datetime_rebase_mode_in_read.to_string();
+    spark_parquet_options.int96_rebase_mode_in_read = int96_rebase_mode_in_read.to_string();
 
     // Determine the schema and projection to use for ParquetSource.
     // When data_schema is provided, use it as the base schema so DataFusion knows the full
@@ -132,6 +143,36 @@ pub(crate) fn init_datasource_exec(
         }
         _ => (Arc::clone(&required_schema), None),
     };
+
+    // DataFusion's parquet opener skips the physical-expr adapter entirely when no predicate
+    // is pushed down AND the logical and physical file schemas compare equal (the
+    // `needs_rewrite` fast path in `opener/mod.rs`). A parquet file with no footer key-value
+    // metadata -- exactly the non-Spark files whose rebase policy falls back to the session
+    // read modes -- can produce a physical schema identical to the logical one, silently
+    // bypassing the per-file rebase handling (which must refuse, or rebase, ancient values).
+    // Stamp a marker into the logical file schema's metadata so that equality can never hold
+    // for a rebase-enabled scan: parquet footers do not produce this key (Spark-written files
+    // carry `org.apache.spark.*` pairs that already break equality, and a crafted file
+    // embedding the marker via `ARROW:schema` merely degrades to the skip behavior). The
+    // marker propagates into `DataSourceExec::schema()`'s schema-level metadata (TableSchema
+    // copies it); that stays native-side only -- the JVM FFI export in `prepare_output` reads
+    // per-FIELD metadata, never the schema-level map -- but a future consumer comparing this
+    // scan's full `Schema` (metadata included) against an independently built one must expect
+    // the key.
+    let base_schema = if rebase_from_file_metadata {
+        let mut metadata = base_schema.metadata().clone();
+        metadata.insert(
+            "comet.rebase_from_file_metadata".to_string(),
+            "true".to_string(),
+        );
+        Arc::new(Schema::new_with_metadata(
+            base_schema.fields().clone(),
+            metadata,
+        ))
+    } else {
+        base_schema
+    };
+
     let partition_fields: Vec<_> = partition_schema
         .iter()
         .flat_map(|s| s.fields().iter())
@@ -142,7 +183,7 @@ pub(crate) fn init_datasource_exec(
 
     let mut parquet_source = ParquetSource::new(table_schema)
         .with_table_parquet_options(table_parquet_options)
-        .with_metadata_size_hint(512 * 1024); // Same as DataFusion's default
+        .with_metadata_size_hint(METADATA_SIZE_HINT);
 
     if encryption_enabled {
         parquet_source = parquet_source.with_encryption_factory(
@@ -168,8 +209,13 @@ pub(crate) fn init_datasource_exec(
     let runtime_env = session_ctx.runtime_env();
     let store = runtime_env.object_store(&object_store_url)?;
     let metadata_cache = runtime_env.cache_manager.get_file_metadata_cache();
+    //
+    // A rebase-enabled scan also has the factory stamp each file's INT96 leaf ordinals into
+    // its footer metadata (see `datetime_rebase.rs`), which is how the expression adapter
+    // attributes timestamp columns to Spark's INT64 vs INT96 rebase specs.
     parquet_source = parquet_source.with_parquet_file_reader_factory(Arc::new(
-        EagerPageIndexReaderFactory::new(store, metadata_cache),
+        EagerPageIndexReaderFactory::new(store, metadata_cache)
+            .with_int96_leaf_stamp(rebase_from_file_metadata),
     ));
 
     // Route data filters through `try_pushdown_filters` rather than calling
@@ -295,7 +341,7 @@ fn get_options(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::Int32Array;
+    use arrow::array::{Date32Array, Int32Array};
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow::record_batch::RecordBatch;
     use datafusion::datasource::physical_plan::parquet::metadata::CachedParquetMetaData;
@@ -303,8 +349,327 @@ mod tests {
     use datafusion_comet_spark_expr::test_common::file_util::get_temp_filename;
     use futures::StreamExt;
     use parquet::arrow::ArrowWriter;
+    use parquet::file::metadata::KeyValue;
     use parquet::file::properties::{EnabledStatistics, WriterProperties};
     use std::fs::File;
+
+    /// End-to-end pin for the per-file datetime rebase (see `datetime_rebase.rs`): the parquet
+    /// footer's Spark writer metadata must survive DataFusion's opener into the expr adapter,
+    /// and the resulting scan must return rebased dates -- but ONLY when the arm opted in.
+    /// The hybrid day count a legacy writer stores for Julian `1500-01-01` is numerically the
+    /// proleptic day of `1500-01-10` (-171655); rebasing restores proleptic `1500-01-01`
+    /// (-171664), the exact 9-day shift of the silent-corruption repro.
+    async fn scan_legacy_date_file(rebase_from_file_metadata: bool) -> Vec<i32> {
+        let schema = Arc::new(Schema::new(vec![Field::new("d", DataType::Date32, false)]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(Date32Array::from(vec![-171655, 0]))],
+        )
+        .unwrap();
+
+        let filename = get_temp_filename()
+            .as_path()
+            .as_os_str()
+            .to_str()
+            .unwrap()
+            .to_string();
+        let props = WriterProperties::builder()
+            .set_key_value_metadata(Some(vec![
+                KeyValue::new("org.apache.spark.version".to_string(), "3.5.9".to_string()),
+                KeyValue::new(
+                    "org.apache.spark.legacyDateTime".to_string(),
+                    "".to_string(),
+                ),
+                KeyValue::new("org.apache.spark.timeZone".to_string(), "UTC".to_string()),
+            ]))
+            .build();
+        let file = File::create(&filename).unwrap();
+        let mut writer = ArrowWriter::try_new(file, Arc::clone(&schema), Some(props)).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+
+        let partitioned_file = PartitionedFile::from_path(filename).unwrap();
+        let session_ctx = Arc::new(SessionContext::new());
+        let scan = init_datasource_exec(
+            Arc::clone(&schema),
+            None,
+            None,
+            ObjectStoreUrl::local_filesystem(),
+            vec![vec![partitioned_file]],
+            None,
+            None,
+            None,
+            "UTC",
+            true,
+            false,
+            false,
+            false,
+            &session_ctx,
+            false,
+            false,
+            false,
+            rebase_from_file_metadata,
+            "",
+            "",
+        )
+        .unwrap();
+
+        let mut values = Vec::new();
+        let mut stream = scan.execute(0, session_ctx.task_ctx()).unwrap();
+        while let Some(batch) = stream.next().await {
+            let batch = batch.unwrap();
+            let dates = batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<Date32Array>()
+                .unwrap();
+            values.extend(dates.iter().map(|v| v.unwrap()));
+        }
+        values
+    }
+
+    #[tokio::test]
+    async fn rebases_legacy_dates_from_file_metadata_when_opted_in() {
+        assert_eq!(scan_legacy_date_file(true).await, vec![-171664, 0]);
+    }
+
+    #[tokio::test]
+    async fn keeps_no_rebase_behavior_when_not_opted_in() {
+        // NativeScan's documented behavior (#5010): the legacy flag is ignored and the raw
+        // day count comes back unchanged.
+        assert_eq!(scan_legacy_date_file(false).await, vec![-171655, 0]);
+    }
+
+    /// End-to-end pin for the session-read-mode fallback: a file with NO Spark writer metadata
+    /// (a non-Spark writer) resolves its rebase policy from the forwarded read modes --
+    /// `DataSourceUtils.getRebaseSpec`'s `modeByConfig` fallback -- which must survive
+    /// `init_datasource_exec` into the expr adapter.
+    async fn scan_no_metadata_date_file(datetime_rebase_mode: &str) -> Result<Vec<i32>, String> {
+        let schema = Arc::new(Schema::new(vec![Field::new("d", DataType::Date32, false)]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(Date32Array::from(vec![-171655, 0]))],
+        )
+        .unwrap();
+
+        let filename = get_temp_filename()
+            .as_path()
+            .as_os_str()
+            .to_str()
+            .unwrap()
+            .to_string();
+        let file = File::create(&filename).unwrap();
+        let mut writer = ArrowWriter::try_new(file, Arc::clone(&schema), None).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+
+        let partitioned_file = PartitionedFile::from_path(filename).unwrap();
+        let session_ctx = Arc::new(SessionContext::new());
+        let scan = init_datasource_exec(
+            Arc::clone(&schema),
+            None,
+            None,
+            ObjectStoreUrl::local_filesystem(),
+            vec![vec![partitioned_file]],
+            None,
+            None,
+            None,
+            "UTC",
+            true,
+            false,
+            false,
+            false,
+            &session_ctx,
+            false,
+            false,
+            false,
+            true,
+            datetime_rebase_mode,
+            datetime_rebase_mode,
+        )
+        .unwrap();
+
+        let mut values = Vec::new();
+        let mut stream = scan.execute(0, session_ctx.task_ctx()).unwrap();
+        while let Some(batch) = stream.next().await {
+            let batch = batch.map_err(|e| e.to_string())?;
+            let dates = batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<Date32Array>()
+                .unwrap();
+            values.extend(dates.iter().map(|v| v.unwrap()));
+        }
+        Ok(values)
+    }
+
+    #[tokio::test]
+    async fn non_spark_file_reads_ancient_dates_verbatim_under_corrected_read_mode() {
+        // Spark 4.0's default read mode: values pass through untouched, ancient included.
+        assert_eq!(
+            scan_no_metadata_date_file("CORRECTED").await.unwrap(),
+            vec![-171655, 0]
+        );
+    }
+
+    #[tokio::test]
+    async fn non_spark_file_rebases_ancient_dates_under_legacy_read_mode() {
+        // LEGACY read mode: the stored hybrid-calendar day count rebases to proleptic
+        // Gregorian (dates are zone-free, so the full rebase applies).
+        assert_eq!(
+            scan_no_metadata_date_file("LEGACY").await.unwrap(),
+            vec![-171664, 0]
+        );
+    }
+
+    #[tokio::test]
+    async fn non_spark_file_refuses_ancient_dates_under_default_read_mode() {
+        // An empty mode (older proto producer) keeps the conservative EXCEPTION posture.
+        let err = scan_no_metadata_date_file("").await.unwrap_err();
+        assert!(err.contains("rebase"), "unexpected error: {err}");
+    }
+
+    /// Writes a metadata-free parquet file with one INT64 `TIMESTAMP_MICROS` column (`ts`) and
+    /// one INT96 column (`ts96`) through the low-level writer (arrow's writer cannot emit
+    /// INT96), then scans it with the given session read modes. `int96_days` is the day count
+    /// since the epoch the INT96 value nominally encodes (its Julian Day Number is
+    /// `2440588 + int96_days`). Returns the two values of the single row.
+    async fn scan_int96_and_int64_file(
+        int64_micros: i64,
+        int96_days: i32,
+        datetime_rebase_mode: &str,
+        int96_rebase_mode: &str,
+    ) -> Result<(i64, i64), String> {
+        use parquet::data_type::{Int64Type, Int96, Int96Type};
+        use parquet::file::writer::SerializedFileWriter;
+        use parquet::schema::parser::parse_message_type;
+
+        let filename = get_temp_filename()
+            .as_path()
+            .as_os_str()
+            .to_str()
+            .unwrap()
+            .to_string();
+        let parquet_schema = Arc::new(
+            parse_message_type(
+                "message m { required int64 ts (TIMESTAMP(MICROS,true)); required int96 ts96; }",
+            )
+            .unwrap(),
+        );
+        let file = File::create(&filename).unwrap();
+        let mut writer =
+            SerializedFileWriter::new(file, parquet_schema, Arc::new(WriterProperties::default()))
+                .unwrap();
+        let mut row_group = writer.next_row_group().unwrap();
+        let mut col = row_group.next_column().unwrap().unwrap();
+        col.typed::<Int64Type>()
+            .write_batch(&[int64_micros], None, None)
+            .unwrap();
+        col.close().unwrap();
+        let mut col = row_group.next_column().unwrap().unwrap();
+        let mut int96 = Int96::new();
+        int96.set_data(0, 0, (2_440_588 + int96_days as i64) as u32);
+        col.typed::<Int96Type>()
+            .write_batch(&[int96], None, None)
+            .unwrap();
+        col.close().unwrap();
+        row_group.close().unwrap();
+        writer.close().unwrap();
+
+        let ts_type =
+            DataType::Timestamp(arrow::datatypes::TimeUnit::Microsecond, Some("UTC".into()));
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("ts", ts_type.clone(), false),
+            Field::new("ts96", ts_type, false),
+        ]));
+        let partitioned_file = PartitionedFile::from_path(filename).unwrap();
+        let session_ctx = Arc::new(SessionContext::new());
+        let scan = init_datasource_exec(
+            Arc::clone(&schema),
+            None,
+            None,
+            ObjectStoreUrl::local_filesystem(),
+            vec![vec![partitioned_file]],
+            None,
+            None,
+            None,
+            "UTC",
+            true,
+            false,
+            false,
+            false,
+            &session_ctx,
+            false,
+            false,
+            false,
+            true,
+            datetime_rebase_mode,
+            int96_rebase_mode,
+        )
+        .unwrap();
+
+        let mut stream = scan.execute(0, session_ctx.task_ctx()).unwrap();
+        let mut values = Vec::new();
+        while let Some(batch) = stream.next().await {
+            let batch = batch.map_err(|e| e.to_string())?;
+            let ts = batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<arrow::array::TimestampMicrosecondArray>()
+                .unwrap();
+            let ts96 = batch
+                .column(1)
+                .as_any()
+                .downcast_ref::<arrow::array::TimestampMicrosecondArray>()
+                .unwrap();
+            values.extend(
+                ts.values()
+                    .iter()
+                    .zip(ts96.values().iter())
+                    .map(|(a, b)| (*a, *b)),
+            );
+        }
+        assert_eq!(values.len(), 1);
+        Ok(values[0])
+    }
+
+    /// Proleptic `1500-01-01T00:00:00Z` in days / micros since the epoch.
+    const ANCIENT_DAYS: i32 = -171_664;
+    const ANCIENT_MICROS: i64 = ANCIENT_DAYS as i64 * 86_400_000_000;
+
+    #[tokio::test]
+    async fn int64_timestamps_follow_the_datetime_spec_when_the_int96_spec_differs() {
+        // Spark selects `datetimeRebaseSpec` for INT64 MICROS/MILLIS columns and `int96RebaseSpec`
+        // only for INT96 columns: under datetime CORRECTED + int96 EXCEPTION, an ancient INT64
+        // timestamp reads verbatim even though the INT96 spec would refuse an ancient INT96
+        // value. The INT96 column here holds a modern value, so the whole row must read.
+        assert_eq!(
+            scan_int96_and_int64_file(ANCIENT_MICROS, 0, "CORRECTED", "EXCEPTION")
+                .await
+                .unwrap(),
+            (ANCIENT_MICROS, 0)
+        );
+    }
+
+    #[tokio::test]
+    async fn int96_timestamps_follow_the_int96_spec() {
+        // Same modes, ancient INT96 value: the INT96 spec (EXCEPTION) refuses it, naming the
+        // INT96 column -- not the INT64 one, which is fine under CORRECTED.
+        let err = scan_int96_and_int64_file(0, ANCIENT_DAYS, "CORRECTED", "EXCEPTION")
+            .await
+            .unwrap_err();
+        assert!(err.contains("rebase"), "unexpected error: {err}");
+        assert!(err.contains("'ts96'"), "unexpected error: {err}");
+
+        // Mirror image: datetime EXCEPTION + int96 CORRECTED reads an ancient INT96 value
+        // verbatim while a modern INT64 value passes the check.
+        assert_eq!(
+            scan_int96_and_int64_file(0, ANCIENT_DAYS, "EXCEPTION", "CORRECTED")
+                .await
+                .unwrap(),
+            (0, ANCIENT_MICROS)
+        );
+    }
 
     // Regression test for #4990: a fresh `TableParquetOptions::new()` ignored session-level
     // `datafusion.execution.parquet.*` settings entirely, so `spark.comet.datafusion.
@@ -407,6 +772,9 @@ mod tests {
             false,
             false,
             false,
+            false,
+            "",
+            "",
         )
         .unwrap();
 
