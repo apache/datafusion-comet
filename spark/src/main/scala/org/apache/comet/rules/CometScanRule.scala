@@ -258,17 +258,21 @@ case class CometScanRule(session: SparkSession)
     // Spark even though native can read it -- a silent regression for HDFS users in the default
     // configuration. So default to `Set("hdfs")` to stay in lockstep with the native default.
     val libhdfsSchemes: Set[String] = COMET_LIBHDFS_SCHEMES.get() match {
-      case Some(s) =>
-        s.split(",").map(_.trim.toLowerCase(Locale.ROOT)).filter(_.nonEmpty).toSet
+      case Some(s) => NativeConfig.parseSchemeSet(s)
       case None => Set("hdfs")
     }
-    val unsupportedFsSchemes = r.location.rootPaths
-      .map(_.toUri)
+    // Opt-in S3-compliant alias schemes (e.g. `blob`) from `fs.comet.s3Compliant.schemes`. The
+    // native object_store gate no longer claims aliases, so admit them here where the Hadoop
+    // config is available. Resolved once, not per root path.
+    val s3CompliantSchemes = NativeConfig.resolveS3CompliantSchemes(hadoopConf)
+    val rootUris = r.location.rootPaths.map(_.toUri)
+    val unsupportedFsSchemes = rootUris
       .filter { uri =>
         val sch = uri.getScheme
         sch != null && {
           val sl = sch.toLowerCase(Locale.ROOT)
-          !libhdfsSchemes.contains(sl) && !CometScanRule.isNativelyReadableScheme(uri)
+          !libhdfsSchemes.contains(sl) &&
+          !CometScanRule.isNativelyReadableScheme(uri, s3CompliantSchemes)
         }
       }
       .map(_.getScheme.toLowerCase(Locale.ROOT))
@@ -277,6 +281,40 @@ case class CometScanRule(session: SparkSession)
       withFallbackReason(
         scanExec,
         s"Unsupported filesystem schemes: ${unsupportedFsSchemes.mkString(", ")}")
+      return None
+    }
+    // Native planning registers ONE object store per FilePartition (keyed on the first file's
+    // bucket) and strips the authority from every file's object key, so a partition whose files
+    // span multiple buckets silently reads every key from the first file's bucket. Spark's
+    // FilePartition bin-packing can co-locate files from different root paths (hence buckets) in
+    // one partition, so decline when this scan's opt-in alias paths span more than one bucket. The
+    // same single-store limitation pre-exists for plain s3:// and is out of scope here; this guards
+    // only the alias reads CometScanRule newly admits.
+    val mixedAliasBuckets = CometScanRule.mixedAliasScanBuckets(rootUris, s3CompliantSchemes)
+    if (mixedAliasBuckets.nonEmpty) {
+      withFallbackReason(
+        scanExec,
+        "Native Parquet scan reads S3-compliant alias paths across multiple buckets " +
+          s"(${mixedAliasBuckets.toSeq.sorted.mkString(", ")}); Comet registers one object store " +
+          "per file partition and would read every file from the first file's bucket")
+      return None
+    }
+    // A scheme object_store recognizes can still carry a path it rejects (e.g. a directory whose
+    // name contains a newline -> `%0A` in the URI). `isNativelyReadableScheme`'s cache stays
+    // path-independent; here we probe the real path so native execution can't hard-fail with
+    // `Generic URL error` on a location Spark reads fine. Only object_store-native schemes are
+    // probed: aliases (normalized to s3:// natively) and libhdfs schemes route elsewhere.
+    val objectStoreRejectedPath = rootUris.find { uri =>
+      Option(uri.getScheme).map(_.toLowerCase(Locale.ROOT)).exists { sl =>
+        !libhdfsSchemes.contains(sl) && !s3CompliantSchemes.contains(sl) &&
+        !CometScanRule.objectStoreAcceptsPath(uri)
+      }
+    }
+    if (objectStoreRejectedPath.nonEmpty) {
+      withFallbackReason(
+        scanExec,
+        s"Native Parquet scan cannot open path '${objectStoreRejectedPath.get}': object_store " +
+          "rejects it (e.g. an unsupported character in the path)")
       return None
     }
     // Disabling the vectorized reader opts into parquet-mr's permissive behavior
@@ -444,6 +482,46 @@ case class CometScanRule(session: SparkSession)
             s"${scanExec.scan.getClass.getSimpleName}: Schema not supported"
         }
 
+        // Build the Hadoop conf once for this scan and reuse it below (metadata extraction, the
+        // file-scheme gate) rather than rebuilding a Configuration per read. Also resolve the
+        // opt-in S3-compliant alias schemes (e.g. `blob`) from `fs.comet.s3Compliant.schemes` once,
+        // shared by per-bucket resolution and the file-scheme gate and its fallback message.
+        val hadoopConf = session.sessionState.newHadoopConf()
+        val s3CompliantSchemes = NativeConfig.resolveS3CompliantSchemes(hadoopConf)
+
+        // Validate the FileScanTasks up front: the data/delete file buckets it resolves decide
+        // which bucket's per-bucket S3 settings the single native FileIO consumes (see
+        // catalogProperties below), so this must run before we build them. Sourcing tasks directly
+        // mirrors what `extract` does internally (both call the same cached `tasks()` accessor).
+        val taskValidation =
+          try {
+            IcebergReflection.getTasks(scanExec.scan) match {
+              case Some(tasks) =>
+                CometScanRule.validateIcebergFileScanTasks(tasks, s3CompliantSchemes)
+              case None =>
+                fallbackReasons += "Iceberg reflection failure: Could not extract FileScanTasks"
+                return withFallbackReasons(scanExec, fallbackReasons.toSet)
+            }
+          } catch {
+            case e: Exception =>
+              fallbackReasons += "Iceberg reflection failure: Could not validate " +
+                s"FileScanTasks: ${e.getMessage}"
+              return withFallbackReasons(scanExec, fallbackReasons.toSet)
+          }
+
+        // The native FileIO reads DATA and DELETE files; the metadata JSON was already read
+        // JVM-side during planning. Its single global S3 config therefore targets the data bucket,
+        // NOT the metadata bucket. When data/delete files span multiple S3 buckets, one FileIO
+        // cannot carry each bucket's per-bucket endpoint/credentials, so fall back.
+        if (taskValidation.dataFileBuckets.size > 1) {
+          fallbackReasons += "Iceberg scan reads data/delete files across multiple S3 buckets " +
+            s"(${taskValidation.dataFileBuckets.toSeq.sorted.mkString(", ")}); Comet's native " +
+            "reader uses a single object-store configuration per scan and cannot apply " +
+            "per-bucket S3 settings to each"
+          return withFallbackReasons(scanExec, fallbackReasons.toSet)
+        }
+        val icebergDataBucket: Option[String] = taskValidation.dataFileBuckets.headOption
+
         // Extract all Iceberg metadata once using reflection.
         // If any required reflection fails, this returns None, and we fall back to Spark.
         // First get metadataLocation and catalogProperties which are needed by the factory.
@@ -455,9 +533,6 @@ case class CometScanRule(session: SparkSession)
 
         val metadataOpt = metadataLocationOpt.flatMap { metadataLocation =>
           try {
-            val session = org.apache.spark.sql.SparkSession.active
-            val hadoopConf = session.sessionState.newHadoopConf()
-
             // For REST catalogs, the metadata file may not exist on disk since metadata
             // is fetched via HTTP. Check if file exists; if not, use table location instead.
             val metadataUri = new java.net.URI(metadataLocation)
@@ -489,8 +564,16 @@ case class CometScanRule(session: SparkSession)
 
             val hadoopS3Options = NativeConfig.extractObjectStoreOptions(hadoopConf, effectiveUri)
 
+            // Promote the DATA bucket's per-bucket `fs.s3a.bucket.<b>.*` settings to global (what
+            // the native FileIO reads), NOT the metadata bucket's: the FileIO opens data/delete
+            // files, and Iceberg allows a data location (`write.data.path`) in a different bucket
+            // than the metadata. `icebergDataBucket` is the single bucket those files resolve to
+            // (multi-bucket already fell back above); None for a local/GCS/OSS table needs no
+            // promotion.
             val hadoopDerivedProperties =
-              CometIcebergNativeScan.hadoopToIcebergS3Properties(hadoopS3Options)
+              CometIcebergNativeScan.hadoopToIcebergS3Properties(
+                hadoopS3Options,
+                icebergDataBucket)
 
             // Forward the full FileIO property bag (including credentials.uri, OAuth tokens,
             // tenant-id, etc.) so a CometS3CredentialProvider can see everything LoadTableResponse
@@ -501,7 +584,16 @@ case class CometScanRule(session: SparkSession)
               .flatMap(IcebergReflection.getFileIOProperties)
               .getOrElse(Map.empty)
 
-            val catalogProperties = hadoopDerivedProperties ++ fileIOProperties
+            // Iceberg reads the alias opt-in from catalog_properties (IcebergScanCommon has no
+            // object_store_options), and hadoopToIcebergS3Properties drops non-fs.s3a keys, so
+            // re-add it. load_file_io narrows catalog_properties to storage-prefix keys before
+            // iceberg-rust's FileIO, so the alias key never reaches FileIO -- but it is still
+            // handed, unfiltered, to CometS3CredentialBridge, so a custom credential provider sees
+            // it. That is intended: the provider gets the full property bag.
+            val catalogProperties = hadoopDerivedProperties ++ fileIOProperties ++
+              hadoopS3Options
+                .get(COMET_S3_COMPLIANT_SCHEMES_KEY)
+                .map(COMET_S3_COMPLIANT_SCHEMES_KEY -> _)
 
             val result = CometIcebergNativeScanMetadata
               .extract(scanExec.scan, effectiveLocation, catalogProperties)
@@ -523,6 +615,24 @@ case class CometScanRule(session: SparkSession)
             fallbackReasons += "Failed to extract Iceberg metadata via reflection"
             return withFallbackReasons(scanExec, fallbackReasons.toSet)
         }
+
+        // Gate the metadata location's scheme. It is the string storage_factory_for /
+        // load_file_io dispatch on, yet unlike the data- and delete-file paths (gated in
+        // validateIcebergFileScanTasks) it otherwise reaches native unchecked: an unsupported
+        // scheme would be claimed by the planner, then die at execution with `Unsupported
+        // storage scheme`. metadata.metadataLocation is the effectiveLocation extract() was
+        // handed, already parsed above. Schemeless local-catalog paths pass.
+        val metadataUri = new java.net.URI(metadata.metadataLocation)
+        val metadataSchemeSupported =
+          if (CometScanRule.isIcebergReadableScheme(metadataUri, s3CompliantSchemes)) {
+            true
+          } else {
+            fallbackReasons += "Iceberg metadata location uses filesystem scheme " +
+              s"'${metadataUri.getScheme}', which Comet's native Iceberg reader cannot open " +
+              "(object_store may recognize it but iceberg-rust's storage factory cannot build " +
+              s"it). ${CometScanRule.icebergSupportedSchemesMessage(s3CompliantSchemes)}"
+            false
+          }
 
         // Now perform all validation using the pre-extracted metadata
         // Check if table uses a FileIO implementation compatible with iceberg-rust.
@@ -654,25 +764,34 @@ case class CometScanRule(session: SparkSession)
               false
           }
 
-        // Single-pass validation of all FileScanTasks
-        val taskValidation =
-          try {
-            CometScanRule.validateIcebergFileScanTasks(metadata.tasks)
-          } catch {
-            case e: Exception =>
-              fallbackReasons += "Iceberg reflection failure: Could not validate " +
-                s"FileScanTasks: ${e.getMessage}"
-              return withFallbackReasons(scanExec, fallbackReasons.toSet)
-          }
-
-        // Check if all files are Parquet format and use supported filesystem schemes
+        // Check if all files are Parquet format and use supported filesystem schemes. The Iceberg
+        // gate is a narrower allowlist than the Parquet native gate: object_store recognizes
+        // schemes iceberg-rust cannot build, so those are rejected here and we tell the user which
+        // schemes ARE supported. (FileScanTask validation ran once, up front; see taskValidation.)
         val allSupportedFilesystems = if (taskValidation.unsupportedSchemes.isEmpty) {
           true
         } else {
-          fallbackReasons += "Iceberg scan contains files with unsupported filesystem " +
-            s"schemes: ${taskValidation.unsupportedSchemes.mkString(", ")}. " +
-            "Comet only supports: file, s3, s3a, gs, gcs, oss, abfss, abfs, wasbs, wasb"
+          fallbackReasons += "Iceberg scan contains files with filesystem schemes not supported " +
+            "by Comet's native Iceberg reader (object_store recognizes them but iceberg-rust's " +
+            "storage factory cannot build them): " +
+            s"${taskValidation.unsupportedSchemes.toSeq.sorted.mkString(", ")}. " +
+            CometScanRule.icebergSupportedSchemesMessage(s3CompliantSchemes)
           false
+        }
+
+        // iceberg-rust opens data/delete files by their raw recorded location. Its S3/GCS/OSS
+        // backends derive the bucket from the URL host and do NOT promote it from the key, so a
+        // hostless non-alias location fails at execution with a missing-bucket error. Opt-in
+        // S3-compliant aliases are exempt: the native reader promotes the bucket from the first
+        // path segment at the open boundary, so a hostless `blob:///bucket/key.parquet` is openable
+        // (see isIcebergOpenableLocation). Decline only the still-unopenable scans here.
+        val allLocationsOpenable = taskValidation.hostlessLocation match {
+          case Some(loc) =>
+            fallbackReasons += "Iceberg scan references a data/delete file location without a " +
+              s"URL host ('$loc'); Comet's native Iceberg reader opens files by their raw " +
+              "location and cannot promote a bucket from the path"
+            false
+          case None => true
         }
 
         if (!taskValidation.allParquet) {
@@ -916,8 +1035,8 @@ case class CometScanRule(session: SparkSession)
 
         if (schemaSupported && fileIOCompatible && formatVersionSupported &&
           defaultValuesSupported && schemaTypesSupported && encryptionKeyLengthSupported &&
-          taskValidation.allParquet && allSupportedFilesystems && partitionTypesSupported &&
-          unifiedPartitionTypeSupported &&
+          taskValidation.allParquet && allSupportedFilesystems && allLocationsOpenable &&
+          metadataSchemeSupported && partitionTypesSupported && unifiedPartitionTypeSupported &&
           complexTypePredicatesSupported && transformFunctionsSupported &&
           deleteFileTypesSupported && dppSubqueriesSupported) {
           CometBatchScanExec(
@@ -1018,31 +1137,82 @@ case class CometScanTypeChecker() extends DataTypeSupport with CometTypeShim {
 
 object CometScanRule extends Logging {
 
-  // Per-scheme memo of `NativeBase.isObjectStoreSchemeSupported`. The answer depends only on the
-  // URL scheme, so we cache by scheme and never re-cross the JNI boundary for a repeated scheme.
+  // Memo of `NativeBase.isObjectStoreSchemeSupported`, keyed by (scheme, has-authority) because
+  // object_store's parser keys on that pair (host-based stores need a host, file/memory need
+  // none). Caching by scheme alone lets an authorityless URL poison the whole scheme's answer.
   private val schemeSupportCache =
-    new ConcurrentHashMap[String, JBoolean]()
+    new ConcurrentHashMap[(String, Boolean), JBoolean]()
 
   /**
-   * True when Comet's native object_store layer recognizes this URI's scheme (so the scan is
-   * natively readable). Delegates to the native layer -- the source of truth -- instead of a
-   * hardcoded scheme list. On any failure to consult native (e.g. the library isn't loaded on
-   * this JVM, or predates this method) we assume the scheme IS supported: the scheme gate is an
-   * early-fallback optimization, and a build without a working native library can't run Comet's
-   * native scan anyway, so declining here would only over-restrict.
+   * True when Comet's native Parquet scan can read this URI's scheme: object_store recognizes it
+   * (asked of the native layer, the source of truth) OR it is an opt-in S3-compliant alias. If
+   * native can't be consulted (library not loaded), assume supported -- the gate is only an
+   * early-fallback optimization and such a build can't run the native scan anyway.
    */
-  private[rules] def isNativelyReadableScheme(uri: URI): Boolean = {
+  private[rules] def isNativelyReadableScheme(
+      uri: URI,
+      s3CompliantSchemes: Set[String]): Boolean = {
     val scheme = uri.getScheme
     if (scheme == null) return true
+    val lower = scheme.toLowerCase(Locale.ROOT)
+    if (s3CompliantSchemes.contains(lower)) return true
+    val hasAuthority = uri.getRawAuthority != null
     schemeSupportCache
       .computeIfAbsent(
-        scheme.toLowerCase(Locale.ROOT),
-        _ =>
-          try JBoolean.valueOf(NativeBase.isObjectStoreSchemeSupported(uri.toString))
-          catch {
-            case _: Throwable => JBoolean.TRUE
-          })
+        (lower, hasAuthority),
+        _ => {
+          // Probe a scheme(+fixed dummy host) URL, never the caller's authority/path: object_store
+          // keys on (scheme, host-presence) so we cache/probe by that pair. A fixed host stops an
+          // authorityless URL poisoning the authority-bearing form; dropping the real path avoids a
+          // spurious `false` from chars object_store rejects in a `Path` (e.g. Iceberg's `p=%0A`).
+          val probe = if (hasAuthority) s"$lower://comet-probe-host/" else s"$lower:///"
+          JBoolean.valueOf(probeObjectStore(probe))
+        })
       .booleanValue()
+  }
+
+  /**
+   * Ask the native object_store parser whether it can build `url` (scheme +
+   * `Path::from_url_path`). On any native error (e.g. the library isn't loaded), assume yes: the
+   * scheme/path gates are only early-fallback optimizations, and such a build can't run the
+   * native scan anyway. Single source of truth for that assume-supported-on-failure policy,
+   * shared by the cached scheme probe in [[isNativelyReadableScheme]] and the uncached real-path
+   * probe in [[objectStoreAcceptsPath]].
+   */
+  private def probeObjectStore(url: String): Boolean =
+    try NativeBase.isObjectStoreSchemeSupported(url)
+    catch { case _: Throwable => true }
+
+  /**
+   * True when object_store can actually open THIS exact path, not just recognize its scheme.
+   * `ObjectStoreScheme::parse` ends in `Path::from_url_path`, which rejects characters
+   * object_store forbids in a key (e.g. a directory name containing a newline, `%0A` in the URI).
+   * The scheme cache in [[isNativelyReadableScheme]] stays path-independent; this uncached,
+   * per-path probe catches a valid-scheme path native execution would otherwise hard-fail on,
+   * letting the scan fall back cleanly. Meaningful only for object_store-native schemes (callers
+   * skip aliases, which native normalizes to `s3://`, and libhdfs schemes).
+   */
+  private[rules] def objectStoreAcceptsPath(uri: URI): Boolean =
+    probeObjectStore(uri.toString)
+
+  /**
+   * The distinct buckets a mixed-bucket S3-compliant-alias scan would (wrongly) read from a
+   * single object store, or empty when the scan is safe. Non-empty means the Parquet gate must
+   * fall back: native planning registers one object store per FilePartition (keyed on the first
+   * file's bucket) and strips the authority from every file's object key, so files in a second
+   * bucket are read from the first. Scoped to scans that actually use an opt-in alias -- the same
+   * single-store limitation pre-exists for plain `s3://` and is intentionally left untouched
+   * here.
+   */
+  private[rules] def mixedAliasScanBuckets(
+      uris: Seq[URI],
+      s3CompliantSchemes: Set[String]): Set[String] = {
+    val hasAliasPath = uris.exists { uri =>
+      Option(uri.getScheme).map(_.toLowerCase(Locale.ROOT)).exists(s3CompliantSchemes.contains)
+    }
+    if (!hasAliasPath) return Set.empty
+    val buckets = NativeConfig.s3FamilyBuckets(uris, s3CompliantSchemes)
+    if (buckets.size > 1) buckets else Set.empty
   }
 
   /**
@@ -1055,12 +1225,80 @@ object CometScanRule extends Logging {
     org.apache.spark.sql.catalyst.trees.TreeNodeTag[Unit]("comet.skipCometScan")
 
   /**
+   * Schemes Comet's native Iceberg scan can actually open, mirroring the match arms in
+   * `native/core/src/execution/operators/iceberg_scan.rs::storage_factory_for`. Deliberately NOT
+   * delegated to `isNativelyReadableScheme`: object_store recognizes schemes (http/https, azure,
+   * memory) that iceberg-rust's OpenDAL storage factory cannot build, and admitting them here
+   * turns a clean JVM fallback into a native runtime "Unsupported storage scheme" error. Add here
+   * what you add to `storage_factory_for` (currently Aliyun `oss` and GCS `gs`). S3-compliant
+   * aliases like `blob` are opt-in via `fs.comet.s3Compliant.schemes` (see
+   * `isIcebergReadableScheme`), not hardcoded, since the native planner opens them via S3.
+   */
+  private val icebergReadableSchemes: Set[String] =
+    Set("file", "s3", "s3a", "gs", "oss")
+
+  /**
+   * "Supported schemes: ..." suffix shared by the Iceberg scheme-fallback messages. Lists the
+   * built-in Iceberg-readable allowlist plus the opt-in S3-compliant aliases.
+   */
+  private[rules] def icebergSupportedSchemesMessage(s3CompliantSchemes: Set[String]): String = {
+    val schemes = (icebergReadableSchemes ++ s3CompliantSchemes).toSeq.sorted.mkString(", ")
+    s"Supported schemes: $schemes"
+  }
+
+  /**
+   * Scheme gate for the Iceberg scan path: admit schemes iceberg-rust's storage factory can build
+   * (`icebergReadableSchemes`) or opt-in S3-compliant aliases (`fs.comet.s3Compliant.schemes`),
+   * plus schemeless local paths (which route to its LocalFs backend).
+   */
+  private[rules] def isIcebergReadableScheme(
+      uri: URI,
+      s3CompliantSchemes: Set[String]): Boolean = {
+    val scheme = uri.getScheme
+    if (scheme == null) return true
+    val lower = scheme.toLowerCase(Locale.ROOT)
+    icebergReadableSchemes.contains(lower) || s3CompliantSchemes.contains(lower)
+  }
+
+  /**
+   * True when iceberg-rust can actually open this exact data/delete file location, not just
+   * recognize its scheme. iceberg-rust opens files by their raw recorded location, and every
+   * backend except LocalFs derives the bucket from the URL host and does NOT promote it from the
+   * key. So a hostless `s3`/`s3a`/`gs`/`oss` location fails with a missing-bucket error and is
+   * not openable. `file` and schemeless paths route to LocalFs and need no host.
+   *
+   * The one exception is an opt-in S3-compliant alias (`fs.comet.s3Compliant.schemes`, e.g.
+   * `blob`): Comet's native reader wraps the S3 backend with `BlobHostPromotingS3Storage` (see
+   * `native/core/.../s3_blob_fs_support.rs`), which promotes the first path segment into the host
+   * at the open boundary. So a hostless alias location like `blob:///bucket/key.parquet` IS
+   * openable, as long as it carries a promotable bucket segment. The promotion is open-only and
+   * never touches the raw string iceberg-rust matches deletes against, so it is delete-safe.
+   */
+  private[rules] def isIcebergOpenableLocation(
+      uri: URI,
+      s3CompliantSchemes: Set[String]): Boolean = {
+    if (!isIcebergReadableScheme(uri, s3CompliantSchemes)) return false
+    Option(uri.getScheme).map(_.toLowerCase(Locale.ROOT)) match {
+      case None | Some("file") => true
+      case Some(_) if uri.getRawAuthority != null => true
+      // Hostless: only an opt-in S3-compliant alias can be opened, by promoting the bucket from the
+      // first path segment natively. Other schemes still need a host.
+      case Some(scheme) if s3CompliantSchemes.contains(scheme) =>
+        NativeConfig.bucketForUri(uri, s3CompliantSchemes).isDefined
+      case Some(_) => false
+    }
+  }
+
+  /**
    * Single-pass validation of Iceberg FileScanTasks.
    *
-   * Consolidates file format, filesystem scheme, residual transform, and delete file checks into
-   * one iteration for better performance with large tables.
+   * Consolidates file format, filesystem scheme, per-location openability (host presence),
+   * data-bucket collection, residual transform, and delete file checks into one iteration for
+   * better performance with large tables.
    */
-  def validateIcebergFileScanTasks(tasks: java.util.List[_]): IcebergTaskValidationResult = {
+  def validateIcebergFileScanTasks(
+      tasks: java.util.List[_],
+      s3CompliantSchemes: Set[String]): IcebergTaskValidationResult = {
     val contentScanTaskClass =
       IcebergReflection.loadClass(IcebergReflection.ClassNames.CONTENT_SCAN_TASK)
     val contentFileClass =
@@ -1078,13 +1316,37 @@ object CometScanRule extends Logging {
     val deletesMethod = IcebergReflection.getMethod(fileScanTaskClass, "deletes")
     val termMethod = IcebergReflection.getMethod(unboundPredicateClass, "term")
 
-    val supportedSchemes =
-      Set("file", "s3", "s3a", "gs", "gcs", "oss", "abfss", "abfs", "wasbs", "wasb")
-
     var allParquet = true
     val unsupportedSchemes = mutable.Set[String]()
     var nonIdentityTransform: Option[String] = None
     val deleteFiles = new java.util.ArrayList[Any]()
+    // Buckets the native FileIO must read (data + delete files), for the single-config check in
+    // CometScanRule; only S3-family locations contribute (see NativeConfig.s3FamilyBuckets).
+    val dataFileBuckets = mutable.Set[String]()
+    // First data/delete location with a readable scheme but no URL host (see
+    // isIcebergOpenableLocation); non-empty => decline. One example suffices for the message.
+    var hostlessLocation: Option[String] = None
+
+    // Classify one data/delete file location. Uses `isIcebergReadableScheme`, a separate allowlist
+    // intentionally narrower than the Parquet native gate: object_store recognizes schemes
+    // iceberg-rust's OpenDAL storage factory cannot build (http/https/abfs/abfss/wasb/wasbs/
+    // memory), so admitting them here would turn a clean JVM fallback into a native runtime error.
+    def inspectLocation(rawPath: String): Unit = {
+      val uri =
+        try new URI(rawPath)
+        catch { case _: java.net.URISyntaxException => return }
+      Option(uri.getScheme).map(_.toLowerCase(Locale.ROOT)) match {
+        case None => // schemeless local path -> iceberg-rust LocalFs, no host needed
+        case Some(scheme) if !isIcebergReadableScheme(uri, s3CompliantSchemes) =>
+          unsupportedSchemes += scheme
+        case Some(_) if !isIcebergOpenableLocation(uri, s3CompliantSchemes) =>
+          if (hostlessLocation.isEmpty) hostlessLocation = Some(rawPath)
+        case Some(scheme) =>
+          if (NativeConfig.isS3FamilyScheme(scheme, s3CompliantSchemes)) {
+            NativeConfig.bucketForUri(uri, s3CompliantSchemes).foreach(dataFileBuckets += _)
+          }
+      }
+    }
 
     tasks.asScala.foreach { task =>
       val dataFile = fileMethod.invoke(task)
@@ -1095,17 +1357,7 @@ object CometScanRule extends Logging {
         allParquet = false
       }
 
-      // Filesystem scheme check for data file
-      try {
-        val filePath = pathMethod.invoke(dataFile).toString
-        val uri = new URI(filePath)
-        val scheme = uri.getScheme
-        if (scheme != null && !supportedSchemes.contains(scheme)) {
-          unsupportedSchemes += scheme
-        }
-      } catch {
-        case _: java.net.URISyntaxException => // ignore
-      }
+      inspectLocation(pathMethod.invoke(dataFile).toString)
 
       // Residual transform check (short-circuit if already found unsupported)
       if (nonIdentityTransform.isEmpty && fileScanTaskClass.isInstance(task)) {
@@ -1134,16 +1386,7 @@ object CometScanRule extends Logging {
 
           deletes.asScala.foreach { deleteFile =>
             IcebergReflection.extractFileLocation(contentFileClass, deleteFile).foreach {
-              deletePath =>
-                try {
-                  val deleteUri = new URI(deletePath)
-                  val deleteScheme = deleteUri.getScheme
-                  if (deleteScheme != null && !supportedSchemes.contains(deleteScheme)) {
-                    unsupportedSchemes += deleteScheme
-                  }
-                } catch {
-                  case _: java.net.URISyntaxException => // ignore
-                }
+              deletePath => inspectLocation(deletePath)
             }
           }
         } catch {
@@ -1156,7 +1399,9 @@ object CometScanRule extends Logging {
       allParquet,
       unsupportedSchemes.toSet,
       nonIdentityTransform,
-      deleteFiles)
+      deleteFiles,
+      dataFileBuckets.toSet,
+      hostlessLocation)
   }
 }
 
@@ -1167,4 +1412,6 @@ case class IcebergTaskValidationResult(
     allParquet: Boolean,
     unsupportedSchemes: Set[String],
     nonIdentityTransform: Option[String],
-    deleteFiles: java.util.List[_])
+    deleteFiles: java.util.List[_],
+    dataFileBuckets: Set[String],
+    hostlessLocation: Option[String])

@@ -20,10 +20,12 @@
 package org.apache.comet.rules
 
 import java.io.File
+import java.net.URI
 import java.nio.file.Files
 import java.util.UUID
 
 import org.apache.commons.io.FileUtils
+import org.apache.hadoop.conf.Configuration
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.{CometTestBase, SaveMode}
 import org.apache.spark.sql.comet.CometScanExec
@@ -31,17 +33,17 @@ import org.apache.spark.sql.execution.{FileSourceScanExec, SparkPlan}
 
 import org.apache.comet.CometConf
 import org.apache.comet.hadoop.fs.{FakeHDFSFileSystem, FakeHdfsSchemeFileSystem}
+import org.apache.comet.objectstore.NativeConfig
 
 /**
- * Comet's native readers go through object_store, which only understands a fixed set of URL
- * schemes. A custom Hadoop FileSystem scheme that object_store can't parse (here `fake://`) must
- * NOT be claimed by the native scan -- it would fail at execution with "Unable to recognise URL".
- * `CometScanRule` must decline it so Spark's Hadoop-FS-aware reader handles the scan.
- *
- * Unlike `ParquetReadFromFakeHadoopFsSuite`, this suite does NOT route the `fake` scheme through
- * libhdfs (`spark.hadoop.fs.comet.libhdfs.schemes`), so it exercises the decline path. The test
- * applies the rule directly to the physical plan and asserts fallback -- no query execution, so
- * it doesn't depend on the native reader actually attempting (and failing on) the scheme.
+ * Comet's native readers go through object_store, which understands a fixed set of URL schemes. A
+ * custom Hadoop FileSystem scheme object_store can't parse (`fake://`) must NOT be claimed -- it
+ * would fail at execution with "Unable to recognise URL". This suite applies `CometScanRule` to
+ * the physical plan and asserts fallback (no execution), and unit-tests the two scheme gates
+ * directly: `isNativelyReadableScheme` (Parquet) and `isIcebergReadableScheme` (Iceberg).
+ * S3-compliant alias schemes like `blob` are opt-in via `fs.comet.s3Compliant.schemes`, and the
+ * native probe is cached by (scheme, has-authority) so an authorityless URL can't poison the
+ * authority-bearing form.
  */
 class CometScanSchemeFallbackSuite extends CometTestBase {
 
@@ -73,10 +75,8 @@ class CometScanSchemeFallbackSuite extends CometTestBase {
     val path = s"${FakeHDFSFileSystem.PREFIX}${fakeRootDir.getAbsolutePath}/data"
     spark.range(0, 10).toDF("id").write.format("parquet").mode(SaveMode.Overwrite).save(path)
 
-    // Obtain a clean Spark physical plan (Comet disabled) with the FileSourceScanExec, then apply
-    // CometScanRule directly. No execution -- we only check whether the rule claims the scan.
-    // Capture via a var inside the block: `SQLTestUtils.withSQLConf` returns Unit on Spark 3.5
-    // but a value on Spark 4.x, so we can't return the plan out of it cross-version.
+    // Clean Spark plan (Comet disabled), then apply CometScanRule directly -- no execution, we
+    // only check whether the rule claims the scan. (var capture: withSQLConf returns Unit on 3.5.)
     var sparkPlan: SparkPlan = null
     withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
       sparkPlan = spark.read.parquet(path).queryExecution.executedPlan
@@ -100,12 +100,149 @@ class CometScanSchemeFallbackSuite extends CometTestBase {
     }
   }
 
+  test("both gates: a configured s3-compliant scheme (minio) is admitted") {
+    // Neither object_store-native nor in the Iceberg allowlist: declined absent config, admitted
+    // on both paths once opted in. A `blob` alias behaves identically on the parquet gate (opt-in,
+    // not object_store-native); its Iceberg-gate coverage is below and its end-to-end parquet
+    // coverage is in ParquetReadFromS3Suite.
+    val uri = new URI("minio://bucket/key.parquet")
+    assert(!CometScanRule.isNativelyReadableScheme(uri, Set.empty))
+    assert(!CometScanRule.isIcebergReadableScheme(uri, Set.empty))
+    assert(CometScanRule.isNativelyReadableScheme(uri, Set("minio")))
+    assert(CometScanRule.isIcebergReadableScheme(uri, Set("minio")))
+  }
+
+  test("parquet gate: authorityless URI first does not poison the authority-bearing form") {
+    // ObjectStoreScheme::parse keys on (scheme, host-presence): `gs:///` (no host) is unrecognized,
+    // `gs://bucket/` is. The cache uses the same pair, so probing the authorityless form first must
+    // NOT poison the whole scheme (the old single-scheme key did).
+    CometScanRule.isNativelyReadableScheme(new URI("gs:///key.parquet"), Set.empty)
+    assert(
+      CometScanRule.isNativelyReadableScheme(new URI("gs://bucket/key.parquet"), Set.empty),
+      "gs://bucket/... must be admitted even after an authorityless gs:// URI was probed first")
+  }
+
+  test("iceberg gate: builtin allowlist admitted, unbuildable schemes rejected, blob opt-in") {
+    // The Iceberg gate is an explicit allowlist mirroring `storage_factory_for`'s arms (keep in
+    // lockstep). Narrower than the Parquet gate: object_store recognizes http/abfs/wasb but
+    // iceberg-rust can't build them, so reject up-front rather than fail during native setup.
+    Seq(
+      "file:///tmp/key.parquet",
+      "s3://bucket/key.parquet",
+      "s3a://bucket/key.parquet",
+      "gs://bucket/key.parquet",
+      "oss://bucket/key.parquet").foreach { u =>
+      assert(
+        CometScanRule.isIcebergReadableScheme(new URI(u), Set.empty),
+        s"$u must be iceberg-readable; icebergReadableSchemes has regressed")
+    }
+    Seq(
+      "http://bucket.example.com/key.parquet",
+      "https://bucket.example.com/key.parquet",
+      "abfs://container@acct/key.parquet",
+      "abfss://container@acct/key.parquet",
+      "wasb://container@acct/key.parquet",
+      "wasbs://container@acct/key.parquet").foreach { u =>
+      assert(
+        !CometScanRule.isIcebergReadableScheme(new URI(u), Set.empty),
+        s"$u must not be iceberg-readable; storage_factory_for has no matching arm")
+    }
+    // `blob` was removed from the hardcoded allowlist; it is opt-in via config on this path too.
+    val blob = new URI("blob://bucket/key.parquet")
+    assert(
+      !CometScanRule.isIcebergReadableScheme(blob, Set.empty),
+      "blob:// must NOT be iceberg-readable without opt-in config")
+    assert(
+      CometScanRule.isIcebergReadableScheme(blob, Set("blob")),
+      "blob:// must be iceberg-readable once configured as an s3-compliant scheme")
+  }
+
+  test("parquet gate: mixed-bucket alias scan is declined (single object store per partition)") {
+    // Native planning registers one object store per FilePartition and strips the authority from
+    // every file's object key, so files in a second bucket would be read from the first. A scan
+    // whose opt-in alias paths span multiple buckets must fall back. [P1 / sunchao 2026-09-02]
+    val schemes = Set("blob")
+    val twoBuckets =
+      Seq(new URI("blob://bucket-a/k.parquet"), new URI("blob://bucket-b/k.parquet"))
+    assert(
+      CometScanRule.mixedAliasScanBuckets(twoBuckets, schemes) == Set("bucket-a", "bucket-b"),
+      "two alias buckets must be reported so the Parquet gate falls back")
+    // An alias bucket mixed with a plain-s3 bucket is still two object stores -> declined.
+    val aliasPlusS3 =
+      Seq(new URI("blob://bucket-a/k.parquet"), new URI("s3://bucket-b/k.parquet"))
+    assert(
+      CometScanRule.mixedAliasScanBuckets(aliasPlusS3, schemes) == Set("bucket-a", "bucket-b"))
+    // Safe scans report nothing: one alias bucket, or the same bucket via two paths.
+    val oneBucket = Seq(new URI("blob://bucket-a/x.parquet"))
+    assert(CometScanRule.mixedAliasScanBuckets(oneBucket, schemes).isEmpty)
+    val sameBucket =
+      Seq(new URI("blob://bucket-a/x.parquet"), new URI("blob://bucket-a/y.parquet"))
+    assert(CometScanRule.mixedAliasScanBuckets(sameBucket, schemes).isEmpty)
+    // No alias path present: plain multi-bucket s3:// is a pre-existing limitation, out of scope.
+    val plainS3 = Seq(new URI("s3://bucket-a/k.parquet"), new URI("s3://bucket-b/k.parquet"))
+    assert(CometScanRule.mixedAliasScanBuckets(plainS3, schemes).isEmpty)
+  }
+
+  test("parquet gate: object_store rejects an actual path with an illegal character") {
+    // The scheme cache is path-independent, but a valid `file` scheme can carry a path object_store
+    // rejects: a directory name with a newline surfaces as `%0A` and `Path::from_url_path` fails.
+    // Native execution would hard-error, so the real path is probed separately. [P2 / 2026-09-02]
+    assert(
+      CometScanRule.objectStoreAcceptsPath(new URI("file:///tmp/warehouse/data")),
+      "an ordinary local path must be accepted by object_store")
+    assert(
+      !CometScanRule.objectStoreAcceptsPath(new URI("file:///tmp/dir%0A/data")),
+      "a directory name containing a newline (%0A) must be rejected so the scan falls back")
+  }
+
+  test("iceberg gate: hostless alias promotes bucket from path; other hostless schemes decline") {
+    // iceberg-rust opens files by their raw location. Host-bearing locations always work. Hostless
+    // ones work ONLY for opt-in S3-compliant aliases, which the native reader opens by promoting
+    // the bucket from the first path segment (BlobHostPromotingS3Storage). [bucket promotion]
+    val schemes = Set("blob")
+    // Host-bearing: openable regardless of scheme family; `file`/schemeless need no host.
+    assert(CometScanRule.isIcebergOpenableLocation(new URI("s3://bucket/k.parquet"), schemes))
+    assert(CometScanRule.isIcebergOpenableLocation(new URI("blob://bucket/k.parquet"), schemes))
+    assert(CometScanRule.isIcebergOpenableLocation(new URI("file:///tmp/k.parquet"), schemes))
+    assert(CometScanRule.isIcebergOpenableLocation(new URI("/tmp/k.parquet"), schemes))
+    // Hostless alias: NOW openable -- the bucket is promoted from the first path segment.
+    assert(
+      CometScanRule.isIcebergOpenableLocation(new URI("blob:///bucket/k.parquet"), schemes),
+      "hostless blob:/// must be openable: native promotes the first path segment to the bucket")
+    assert(
+      CometScanRule.isIcebergOpenableLocation(new URI("blob:/bucket/k.parquet"), schemes),
+      "the opaque single-slash blob:/ form promotes the same way")
+    // Hostless alias with no promotable bucket segment: declined (nothing to promote).
+    assert(
+      !CometScanRule.isIcebergOpenableLocation(new URI("blob:///"), schemes),
+      "a hostless alias URL with no bucket segment cannot be promoted")
+    // Hostless non-alias: still declined; s3/s3a/gs/oss have no bucket-from-path promotion.
+    assert(
+      !CometScanRule.isIcebergOpenableLocation(new URI("s3:///bucket/k.parquet"), schemes),
+      "authorityless s3:/// has no host and no alias promotion")
+    // blob not opted in: not a readable scheme at all, so not openable.
+    assert(
+      !CometScanRule.isIcebergOpenableLocation(new URI("blob:///bucket/k.parquet"), Set.empty),
+      "without opt-in, blob is not iceberg-readable, so not openable")
+    // An unreadable scheme is never openable regardless of authority.
+    assert(!CometScanRule.isIcebergOpenableLocation(new URI("http://h/k.parquet"), schemes))
+  }
+
+  test("resolveS3CompliantSchemes: comma list is trimmed and lowercased, empty means none") {
+    val conf = new Configuration(false)
+    assert(
+      NativeConfig.resolveS3CompliantSchemes(conf).isEmpty,
+      "missing config must yield no aliases (opt-in default)")
+    conf.set(CometConf.COMET_S3_COMPLIANT_SCHEMES_KEY, " Blob , MINIO ,, r2 ")
+    assert(
+      NativeConfig.resolveS3CompliantSchemes(conf) == Set("blob", "minio", "r2"),
+      "schemes must be split on commas, trimmed, lowercased, with blanks dropped")
+  }
+
   test("native scan claims hdfs:// when libhdfs.schemes is unset (native-default lockstep)") {
-    // Native's `is_hdfs_scheme` treats `hdfs` as readable when `fs.comet.libhdfs.schemes` is unset,
-    // and `create_hdfs_object_store` is in the default build. The JVM gate must agree: with the
-    // config unset, an `hdfs://` scan must be CLAIMED by Comet, not declined to Spark. Guards the
-    // `case None => Set("hdfs")` default in CometScanRule against the silent-fallback regression
-    // Andy flagged in #4525.
+    // Native `is_hdfs_scheme` treats `hdfs` as readable when `fs.comet.libhdfs.schemes` is unset,
+    // so the JVM gate must agree and CLAIM `hdfs://`. Guards the `case None => Set("hdfs")` default
+    // against the silent-fallback regression from #4525.
     val path = s"${FakeHdfsSchemeFileSystem.PREFIX}${fakeRootDir.getAbsolutePath}/hdfs-data"
     spark.range(0, 10).toDF("id").write.format("parquet").mode(SaveMode.Overwrite).save(path)
 

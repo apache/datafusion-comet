@@ -25,6 +25,9 @@ use iceberg::io::{FileIO, FileIOBuilder, StorageFactory};
 use iceberg_storage_opendal::{CustomAwsCredentialLoader, OpenDalStorageFactory};
 
 use crate::cloud::s3::credential_bridge::{AccessMode, CometS3CredentialBridge};
+use crate::parquet::objectstore::s3_blob_fs_support::{
+    is_s3_compliant_alias_scheme, BlobHostPromotingS3StorageFactory,
+};
 
 /// Activation key for the `CometS3CredentialProvider` SPI, read from a catalog's `s3.*` property
 /// bag.
@@ -46,21 +49,29 @@ pub(crate) fn storage_factory_for(
     catalog_name: &str,
     access_mode: AccessMode,
 ) -> Result<Arc<dyn StorageFactory>, DataFusionError> {
-    let scheme = if path.contains("://") {
-        path.split("://").next().unwrap_or("file")
-    } else {
-        "file"
-    };
+    let scheme = scheme_of(path);
+    // s3, s3a, and any opted-in s3-compliant alias (e.g. blob) all route to the S3 backend.
+    // Host-bearing paths reach iceberg-storage-opendal's scheme-agnostic S3 operator RAW (it
+    // takes the bucket from `Url::host_str`), so `blob://bucket/key` opens directly. Aliases
+    // additionally get a wrapper (BlobHostPromotingS3Storage) that promotes a HOSTLESS
+    // `blob:///bucket/key` into the host only at the open boundary. Both leave the recorded
+    // string iceberg-rust matches deletes against untouched -- see s3_blob_fs_support for that
+    // delete-safety rationale.
+    if is_s3_family_scheme(scheme, catalog_properties) {
+        let customized_credential_load =
+            build_s3_credential_loader(path, catalog_properties, catalog_name, access_mode)?;
+        if is_s3_compliant_alias_scheme(scheme, catalog_properties) {
+            return Ok(Arc::new(BlobHostPromotingS3StorageFactory::new(
+                customized_credential_load,
+            )));
+        }
+        return Ok(Arc::new(OpenDalStorageFactory::S3 {
+            customized_credential_load,
+        }));
+    }
     match scheme {
         "file" => Ok(Arc::new(OpenDalStorageFactory::Fs)),
         "memory" => Ok(Arc::new(OpenDalStorageFactory::Memory)),
-        "s3" | "s3a" => {
-            let customized_credential_load =
-                build_s3_credential_loader(path, catalog_properties, catalog_name, access_mode)?;
-            Ok(Arc::new(OpenDalStorageFactory::S3 {
-                customized_credential_load,
-            }))
-        }
         "gs" => Ok(Arc::new(OpenDalStorageFactory::Gcs)),
         // Reads keep the OSS backend they have always had (CometScanRule admits `oss` scan
         // locations through HadoopFileIO). Writes fail closed: Comet does not forward `oss.*`
@@ -107,6 +118,25 @@ pub(crate) fn load_file_io(
         if STORAGE_PROPERTY_PREFIXES.iter().any(|p| key.starts_with(p)) {
             file_io_builder = file_io_builder.with_prop(key, value);
         }
+    }
+
+    // Object-store's AmazonS3Builder defaults the SigV4 region to `us-east-1` when unset;
+    // iceberg-storage-opendal's S3 factory instead errors with `region is missing. Please
+    // find it by S3::detect_region() or set them in env.` Non-AWS S3-compliant storage
+    // services accept any region in the credential, so default to `us-east-1` -- but ONLY when
+    // neither the catalog NOR the AWS environment supplies a region. opendal/reqsign reads
+    // `AWS_REGION` / `AWS_DEFAULT_REGION`, so forcing `us-east-1` unconditionally would
+    // override an `AWS_REGION=us-west-2` and break auth for AWS buckets outside us-east-1.
+    // Both catalog key spellings iceberg-rust reads (`client.region` wins over `s3.region`).
+    let region_forwarded = catalog_properties.contains_key("s3.region")
+        || catalog_properties.contains_key("client.region")
+        || env_region_present();
+    // s3, s3a, and any opted-in s3-compliant alias (e.g. blob) hit the S3 backend and need the
+    // region default. reference_path reaches here raw (see storage_factory_for), so match the
+    // alias schemes too.
+    let scheme = scheme_of(reference_path);
+    if !region_forwarded && is_s3_family_scheme(scheme, catalog_properties) {
+        file_io_builder = file_io_builder.with_prop("s3.region", "us-east-1");
     }
 
     Ok(file_io_builder.build())
@@ -170,6 +200,43 @@ fn build_s3_credential_loader(
     }
 }
 
+/// True if the AWS environment supplies a region (`AWS_REGION` / `AWS_DEFAULT_REGION`).
+///
+/// opendal's S3 service reads these via reqsign, so Comet must not clobber them with a forced
+/// `us-east-1` default when the catalog omits a region (see the region defaulting in
+/// `load_file_io`).
+fn env_region_present() -> bool {
+    ["AWS_REGION", "AWS_DEFAULT_REGION"]
+        .iter()
+        .any(|k| std::env::var(k).is_ok_and(|v| !v.is_empty()))
+}
+
+/// Extracts the URI scheme, defaulting to `file` for schemeless local paths (e.g. `/tmp/x`). Both
+/// `storage_factory_for` (backend routing) and `load_file_io` (region defaulting) classify by
+/// scheme, so they share this to admit exactly the same set.
+///
+/// Splits on the first `:` (RFC 3986), NOT `://`: hostless vendor forms like `blob:/bucket/key`
+/// (opaque, empty authority) carry no `://`, and treating them as `file` would route an
+/// S3-compliant scan to the local filesystem. A `/` before the `:` means there is no scheme (the
+/// `:` sits inside a path segment, e.g. `/tmp/a:b`), so those and truly schemeless paths default
+/// to `file`.
+fn scheme_of(path: &str) -> &str {
+    match path.split_once(':') {
+        Some((scheme, _)) if !scheme.is_empty() && !scheme.contains('/') => scheme,
+        _ => "file",
+    }
+}
+
+/// True if `scheme` routes to the S3 backend: `s3`/`s3a`, or any opted-in s3-compliant alias
+/// (`fs.comet.s3Compliant.schemes`). Both the storage-factory selection and the region default use
+/// this, so they admit the same schemes. The Scala `NativeConfig.isS3FamilyScheme` additionally
+/// treats `s3n` as S3-family for bucket resolution; `s3n` is intentionally omitted here because
+/// iceberg-rust's storage factory has no `s3n` backend and the Scala Iceberg scheme gate
+/// (`isIcebergReadableScheme`) rejects `s3n` before a path ever reaches this operator.
+fn is_s3_family_scheme(scheme: &str, catalog_properties: &HashMap<String, String>) -> bool {
+    matches!(scheme, "s3" | "s3a") || is_s3_compliant_alias_scheme(scheme, catalog_properties)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -209,5 +276,19 @@ mod tests {
             err.contains("Unsupported storage scheme"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn scheme_of_extracts_scheme_from_all_uri_forms() {
+        // Host-bearing and hostless/opaque vendor forms must resolve to the same scheme, so an
+        // S3-compliant scan is not misrouted to the local FS. `blob:/bucket/key` (single slash, the
+        // hostless vendor form) regressed here: splitting on `://` returned `file`.
+        assert_eq!(scheme_of("blob://bucket/key"), "blob");
+        assert_eq!(scheme_of("blob:/bucket/key"), "blob");
+        assert_eq!(scheme_of("s3://bucket/key"), "s3");
+        assert_eq!(scheme_of("file:///tmp/x"), "file");
+        // Schemeless and colon-in-path locals default to the local FS.
+        assert_eq!(scheme_of("/tmp/no-scheme"), "file");
+        assert_eq!(scheme_of("/tmp/a:b"), "file");
     }
 }

@@ -37,6 +37,16 @@ class IcebergReadFromS3Suite extends CometS3TestBase with RESTCatalogHelper {
     conf.set("spark.sql.catalog.s3_catalog.warehouse", s"s3a://$testBucketName/warehouse")
     applyS3CatalogProps(conf, "s3_catalog")
 
+    // blob:// variant: opt into the `blob` alias (shared setup in CometS3TestBase). Exercises the
+    // delete-matching invariant: the Iceberg path rewrites nothing, so metadata, delete, and data
+    // file paths all stay raw blob:// and iceberg-rust's exact-string delete match lines up.
+    applyBlobSchemeProps(conf, testBucketName)
+
+    conf.set("spark.sql.catalog.blob_catalog", "org.apache.iceberg.spark.SparkCatalog")
+    conf.set("spark.sql.catalog.blob_catalog.type", "hadoop")
+    conf.set("spark.sql.catalog.blob_catalog.warehouse", s"blob://$testBucketName/warehouse-blob")
+    applyS3CatalogProps(conf, "blob_catalog")
+
     conf.set(CometConf.COMET_ENABLED.key, "true")
     conf.set(CometConf.COMET_EXEC_ENABLED.key, "true")
     conf.set(CometConf.COMET_ICEBERG_NATIVE_ENABLED.key, "true")
@@ -220,6 +230,38 @@ class IcebergReadFromS3Suite extends CometS3TestBase with RESTCatalogHelper {
     checkIcebergNativeScan("SELECT * FROM s3_catalog.db.mor_delete_test ORDER BY id")
 
     spark.sql("DROP TABLE s3_catalog.db.mor_delete_test")
+  }
+
+  test("blob:// MOR table with deletes applies positional deletes over blob paths") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    // Same shape as the s3a MOR test under a blob:// warehouse. Data files and the delete file's
+    // stored `file_path` both carry blob://, and the Iceberg path rewrites neither, so the raw
+    // data_file_path and the delete file's raw recorded location match by exact string compare. A
+    // scheme rewrite on either side would desync the two and silently leak deleted rows.
+    spark.sql("""
+      CREATE TABLE blob_catalog.db.mor_delete_blob (
+        id INT,
+        name STRING,
+        value DOUBLE
+      ) USING iceberg
+      TBLPROPERTIES (
+        'write.delete.mode' = 'merge-on-read',
+        'write.merge.mode' = 'merge-on-read'
+      )
+    """)
+
+    spark.sql("""
+      INSERT INTO blob_catalog.db.mor_delete_blob VALUES
+      (1, 'Alice', 10.5), (2, 'Bob', 20.3), (3, 'Charlie', 30.7),
+      (4, 'Diana', 15.2), (5, 'Eve', 25.8)
+    """)
+
+    spark.sql("DELETE FROM blob_catalog.db.mor_delete_blob WHERE id IN (2, 4)")
+
+    checkIcebergNativeScan("SELECT * FROM blob_catalog.db.mor_delete_blob ORDER BY id")
+
+    spark.sql("DROP TABLE blob_catalog.db.mor_delete_blob")
   }
 
   test("REST catalog credential vending rejects wrong credentials") {

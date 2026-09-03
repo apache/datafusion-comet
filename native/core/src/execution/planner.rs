@@ -98,6 +98,7 @@ use iceberg::expr::Bind;
 use crate::execution::operators::ExecutionError::GeneralError;
 use crate::execution::shuffle::{CometPartitioning, CompressionCodec};
 use crate::execution::spark_plan::SparkPlan;
+use crate::parquet::objectstore::s3_blob_fs_support::normalize_object_store_url;
 use crate::parquet::parquet_support::prepare_object_store_with_configs;
 use datafusion::common::scalar::ScalarStructBuilder;
 use datafusion::common::{
@@ -158,7 +159,6 @@ use num::{BigInt, ToPrimitive};
 use object_store::path::Path;
 use std::cmp::max;
 use std::{collections::HashMap, sync::Arc};
-use url::Url;
 
 // For clippy error on type_complexity.
 type PhyAggResult = Result<Vec<AggregateFunctionExpr>, ExecutionError>;
@@ -450,6 +450,7 @@ impl PhysicalPlanner {
     fn get_partitioned_files(
         &self,
         partition: &SparkFilePartition,
+        object_store_options: &HashMap<String, String>,
     ) -> Result<Vec<PartitionedFile>, ExecutionError> {
         let mut files = Vec::with_capacity(partition.partitioned_file.len());
         partition.partitioned_file.iter().try_for_each(|file| {
@@ -462,10 +463,11 @@ impl PhysicalPlanner {
                 file.start + file.length,
             );
 
-            // Spark sends the path over as URL-encoded, parse that first.
-            let url =
-                Url::parse(file.file_path.as_ref()).map_err(|e| GeneralError(e.to_string()))?;
-            // Convert that to a Path object to use in the PartitionedFile.
+            // Apply the same alias/s3a scheme rewrite the object store construction uses, so the
+            // object-store key we hand DataFusion is stripped of the bucket prefix. Skipping this
+            // would leave `bucket/key` as the object key, and path-style S3 GETs would double the
+            // bucket (`<endpoint>/bucket/bucket/key`).
+            let url = normalize_object_store_url(&file.file_path, object_store_options)?;
             let path = Path::from_url_path(url.path()).map_err(|e| GeneralError(e.to_string()))?;
             partitioned_file.object_meta.location = path;
 
@@ -1714,7 +1716,7 @@ impl PhysicalPlanner {
                 )?;
 
                 // Get files for this partition
-                let files = self.get_partitioned_files(partition_files)?;
+                let files = self.get_partitioned_files(partition_files, &object_store_options)?;
                 let file_groups: Vec<Vec<PartitionedFile>> = vec![files];
 
                 let scan = init_datasource_exec(
@@ -1768,8 +1770,10 @@ impl PhysicalPlanner {
                     one_file,
                     &object_store_options,
                 )?;
-                let files =
-                    self.get_partitioned_files(&scan.file_partitions[self.partition as usize])?;
+                let files = self.get_partitioned_files(
+                    &scan.file_partitions[self.partition as usize],
+                    &object_store_options,
+                )?;
                 let file_groups: Vec<Vec<PartitionedFile>> = vec![files];
                 let scan = init_csv_datasource_exec(
                     object_store_url,
@@ -1841,6 +1845,11 @@ impl PhysicalPlanner {
                     .iter()
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect();
+                // Passed RAW to the native scan. `storage_factory_for` routes an opted-in alias
+                // (e.g. blob://, carried in catalog_properties) to the S3 backend by scheme, and
+                // iceberg-storage-opendal's S3 operator is scheme-agnostic, so no URL rewrite is
+                // needed here. Not rewriting keeps data-file and delete-file paths byte-identical,
+                // which iceberg-rust requires to match deletes.
                 let metadata_location = common.metadata_location.clone();
                 let catalog_name = common.catalog_name.clone();
                 let tasks = parse_file_scan_tasks_from_common(common, &scan.file_scan_tasks)?;
@@ -4309,6 +4318,8 @@ fn parse_file_scan_tasks_from_common(
             };
 
             Ok(iceberg::scan::FileScanTaskDeleteFile {
+                // Passed RAW, like `data_file_path` below (same exact-string delete-matching
+                // constraint -- see there).
                 file_path: del.file_path.clone(),
                 file_type,
                 // Not serialized; filled in by IcebergScanExec::fill_delete_file_sizes.
@@ -4530,6 +4541,11 @@ fn parse_file_scan_tasks_from_common(
 
             Ok(iceberg::scan::FileScanTask {
                 file_size_in_bytes: proto_task.file_size_in_bytes,
+                // RAW data-file path -- do NOT rewrite the alias to s3://. iceberg-rust matches
+                // positional deletes by comparing this against the path recorded inside the delete
+                // file, so changing the scheme drops deletes. The S3 backend opens a raw alias path
+                // fine (bucket from host, key sliced verbatim), and `metadata_location` above
+                // already selected the storage factory.
                 data_file_path: proto_task.data_file_path.clone(),
                 start: proto_task.start,
                 length: proto_task.length,

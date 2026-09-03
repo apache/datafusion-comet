@@ -636,10 +636,16 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
     // (`CometScanRule`): extract the object-store options for the data location from the
     // session Hadoop configuration, translate them to the s3.* keys iceberg-rust consumes, and
     // let FileIO/vended properties win on conflict.
+    val writeHadoopConf = op.session.sessionState.newHadoopConf()
+    val dataUri = new java.net.URI(dataLocation)
+    // Promote the data bucket's per-bucket `fs.s3a.bucket.<b>.*` settings to global, mirroring the
+    // scan path: iceberg-rust's pinned S3 parser reads only global `s3.*`. Only an S3-family data
+    // location yields a bucket (None for a local/GCS/OSS write, which needs no promotion).
+    val s3CompliantSchemes = NativeConfig.resolveS3CompliantSchemes(writeHadoopConf)
+    val dataBucket = NativeConfig.s3FamilyBuckets(Seq(dataUri), s3CompliantSchemes).headOption
     val hadoopDerivedProperties = CometIcebergNativeScan.hadoopToIcebergS3Properties(
-      NativeConfig.extractObjectStoreOptions(
-        op.session.sessionState.newHadoopConf(),
-        new java.net.URI(dataLocation)))
+      NativeConfig.extractObjectStoreOptions(writeHadoopConf, dataUri),
+      dataBucket)
     val catalogProperties = hadoopDerivedProperties ++ fileIOProperties
 
     val common = IcebergWriteProtoTranslation.buildCommon(
