@@ -118,3 +118,7 @@ crate-type = ["cdylib", "rlib"]
 [[bench]]
 name = "array_element_append"
 harness = false
+
+[[bench]]
+name = "explode"
+harness = false
