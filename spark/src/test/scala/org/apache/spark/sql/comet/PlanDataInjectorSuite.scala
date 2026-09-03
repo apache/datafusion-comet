@@ -70,7 +70,10 @@ class PlanDataInjectorSuite extends AnyFunSuite {
     val child = Operator.newBuilder().setPlanId(2).build()
     val root = Operator.newBuilder().setPlanId(1).addChildren(child).build()
 
-    val result = PlanDataInjector.injectPlanData(root, Map.empty, Map.empty)
+    val result = PlanDataInjector.injectPlanData(
+      root,
+      Map.empty[String, Array[Byte]],
+      Map.empty[String, Array[Byte]])
 
     assert(
       result eq root,
@@ -143,12 +146,19 @@ class PlanDataInjectorSuite extends AnyFunSuite {
     assert(IcebergPlanDataInjector.getKey(opA) == IcebergPlanDataInjector.getKey(opB))
   }
 
-  /** Builds an un-injected NativeScan operator: hasCommon, no file_partition. */
+  /**
+   * Builds an un-injected NativeScan operator the way the driver ships it: hasCommon, no
+   * file_partition, source_key embedded (see CometNativeScanExec.apply).
+   */
   private def nativeScanOp(source: String, columnNames: Seq[String]): Operator = {
     val common = nativeScanCommon(source, columnNames)
     Operator
       .newBuilder()
-      .setNativeScan(OperatorOuterClass.NativeScan.newBuilder().setCommon(common))
+      .setNativeScan(
+        OperatorOuterClass.NativeScan
+          .newBuilder()
+          .setCommon(common)
+          .setSourceKey(NativeScanPlanDataInjector.sourceKey(common)))
       .build()
   }
 
@@ -191,7 +201,7 @@ class PlanDataInjectorSuite extends AnyFunSuite {
     val parsed2 = PlanDataInjector.parseBasePlan(bytes2)
 
     assert(parsed1 eq parsed2, "equal plan bytes should hit the cache, not re-parse")
-    assert(parsed1 == Operator.parseFrom(bytes1))
+    assert(parsed1.plan == Operator.parseFrom(bytes1))
   }
 
   test("parseBasePlan keeps distinct plans separate") {
@@ -209,9 +219,9 @@ class PlanDataInjectorSuite extends AnyFunSuite {
     val parsedA = PlanDataInjector.parseBasePlan(opA.toByteArray)
     val parsedB = PlanDataInjector.parseBasePlan(opB.toByteArray)
 
-    assert(parsedA == opA)
-    assert(parsedB == opB)
-    assert(parsedA != parsedB)
+    assert(parsedA.plan == opA)
+    assert(parsedB.plan == opB)
+    assert(parsedA.plan != parsedB.plan)
   }
 
   test("parseBasePlan re-parses correctly after eviction") {
@@ -235,7 +245,7 @@ class PlanDataInjectorSuite extends AnyFunSuite {
 
     val reParsed = PlanDataInjector.parseBasePlan(firstBytes)
     assert(!(reParsed eq firstParsed), "the first plan should have been evicted")
-    assert(reParsed == first, "a rerun after eviction must still parse correctly")
+    assert(reParsed.plan == first, "a rerun after eviction must still parse correctly")
   }
 
   test("parseBasePlan returns each thread the plan matching its bytes under concurrency") {
@@ -255,7 +265,7 @@ class PlanDataInjectorSuite extends AnyFunSuite {
     try {
       val checks = Future.sequence((0 until 64).map { i =>
         val plan = plans(i % plans.size)
-        Future(PlanDataInjector.parseBasePlan(plan.toByteArray) == plan)
+        Future(PlanDataInjector.parseBasePlan(plan.toByteArray).plan == plan)
       })
       assert(Await.result(checks, 30.seconds).forall(identity))
     } finally {
@@ -299,28 +309,119 @@ class PlanDataInjectorSuite extends AnyFunSuite {
     val scanOp = nativeScanOp("file:///shared-common-tbl", Seq("id", "v"))
     val commonProto = nativeScanCommon("file:///shared-common-tbl", Seq("id", "v"))
     val key = NativeScanPlanDataInjector.getKey(scanOp).get
-    // Distinct arrays with equal content, as two tasks of the same stage would hold them.
-    val commonBytes1 = commonProto.toByteArray
-    val commonBytes2 = commonProto.toByteArray
+    // Two tasks of the same stage: each deserializes its own copy of the plan and common bytes,
+    // and both resolve to the same cached base plan entry.
+    val task1 = PlanDataInjector.parseBasePlan(scanOp.toByteArray)
+    val task2 = PlanDataInjector.parseBasePlan(scanOp.toByteArray)
 
     val injected1 = PlanDataInjector.injectPlanData(
-      scanOp,
-      Map(key -> commonBytes1),
+      task1,
+      Map(key -> commonProto.toByteArray),
       Map(key -> nativeScanPartitionBytes("part-0.parquet")))
     val injected2 = PlanDataInjector.injectPlanData(
-      scanOp,
-      Map(key -> commonBytes2),
+      task2,
+      Map(key -> commonProto.toByteArray),
       Map(key -> nativeScanPartitionBytes("part-1.parquet")))
 
     assert(
       injected1.getNativeScan.getCommon eq injected2.getNativeScan.getCommon,
-      "equal common bytes should be parsed once and shared")
+      "equal common bytes should be prepared once per plan entry and shared")
     assert(injected1.getNativeScan.getCommon == commonProto)
     // Each partition still gets its own file list.
     val file1 = injected1.getNativeScan.getFilePartition.getPartitionedFile(0).getFilePath
     val file2 = injected2.getNativeScan.getFilePartition.getPartitionedFile(0).getFilePath
     assert(file1 == "part-0.parquet")
     assert(file2 == "part-1.parquet")
+  }
+
+  test("prepared scan data shares the base plan's eviction unit, not a per-scan budget") {
+    // A single plan with more scans than the base plan cache holds plans (17 > 16). All of the
+    // plan's prepared commons must be reused across tasks together; nothing may churn because
+    // the ownership unit is the plan entry, not a scan-count LRU.
+    val n = PlanDataInjector.maxCachedBasePlans + 1
+    val scans = (0 until n).map(i => nativeScanOp(s"file:///wide-plan-tbl-$i", Seq("a")))
+    val root = {
+      val builder = Operator.newBuilder().setPlanId(60)
+      scans.foreach(builder.addChildren)
+      builder.build()
+    }
+    val commonByKey = scans.map { s =>
+      NativeScanPlanDataInjector.getKey(s).get -> s.getNativeScan.getCommon.toByteArray
+    }.toMap
+    val partByKey = scans.zipWithIndex.map { case (s, i) =>
+      NativeScanPlanDataInjector.getKey(s).get -> nativeScanPartitionBytes(s"part-$i.parquet")
+    }.toMap
+    assert(commonByKey.size == n)
+
+    val first =
+      PlanDataInjector.injectPlanData(
+        PlanDataInjector.parseBasePlan(root.toByteArray),
+        commonByKey,
+        partByKey)
+    val second =
+      PlanDataInjector.injectPlanData(
+        PlanDataInjector.parseBasePlan(root.toByteArray),
+        commonByKey,
+        partByKey)
+
+    (0 until n).foreach { i =>
+      assert(
+        first.getChildren(i).getNativeScan.getCommon eq
+          second.getChildren(i).getNativeScan.getCommon,
+        s"scan $i must reuse the prepared common held by the plan's cache entry")
+    }
+  }
+
+  test("shuffle-path injection shares prepared commons across a shuffle's map tasks") {
+    // The native shuffle writer's unified plan differs per task, so it cannot share a base plan
+    // cache entry; prepared commons are scoped to the shuffleId instead.
+    val scanOp = nativeScanOp("file:///shuffle-share-tbl", Seq("id", "v"))
+    val key = NativeScanPlanDataInjector.getKey(scanOp).get
+    val common = scanOp.getNativeScan.getCommon
+
+    val task1 = PlanDataInjector.injectPlanDataForShuffle(
+      1234567,
+      scanOp,
+      Map(key -> common.toByteArray),
+      Map(key -> nativeScanPartitionBytes("map-0.parquet")))
+    val task2 = PlanDataInjector.injectPlanDataForShuffle(
+      1234567,
+      scanOp,
+      Map(key -> common.toByteArray),
+      Map(key -> nativeScanPartitionBytes("map-1.parquet")))
+
+    assert(
+      task1.getNativeScan.getCommon eq task2.getNativeScan.getCommon,
+      "one shuffle's map tasks must share the prepared common, not re-parse it")
+    assert(task1.getNativeScan.getCommon == common)
+  }
+
+  test("a changed finalized common under the same key is replaced, not served stale") {
+    // Scalar-subquery data filters are appended to the finalized common after planning
+    // (CometNativeScanExec.serializedPartitionData), so a byte-identical base plan can ship
+    // different finalized commons under the same transported key across executions.
+    val scanOp = nativeScanOp("file:///stale-common-tbl", Seq("id"))
+    val key = NativeScanPlanDataInjector.getKey(scanOp).get
+    val baseCommon = scanOp.getNativeScan.getCommon
+    val finalizedCommon = baseCommon.toBuilder
+      .addDataFilters(org.apache.comet.serde.ExprOuterClass.Expr.newBuilder())
+      .build()
+    assert(baseCommon != finalizedCommon)
+
+    val cached = PlanDataInjector.parseBasePlan(scanOp.toByteArray)
+    val firstRun = PlanDataInjector.injectPlanData(
+      cached,
+      Map(key -> baseCommon.toByteArray),
+      Map(key -> nativeScanPartitionBytes("run-1.parquet")))
+    val secondRun = PlanDataInjector.injectPlanData(
+      cached,
+      Map(key -> finalizedCommon.toByteArray),
+      Map(key -> nativeScanPartitionBytes("run-2.parquet")))
+
+    assert(firstRun.getNativeScan.getCommon == baseCommon)
+    assert(
+      secondRun.getNativeScan.getCommon == finalizedCommon,
+      "changed common bytes under the same key must be re-prepared, never served stale")
   }
 
   test("NativeScan inject keeps different commons separate") {
@@ -344,16 +445,54 @@ class PlanDataInjectorSuite extends AnyFunSuite {
     assert(injectedB.getNativeScan.getCommon == commonB)
   }
 
-  test("NativeScan getKey memo agrees with fresh derivation") {
-    val scanOp = nativeScanOp("file:///memo-tbl", Seq("id", "v", "w"))
-    // Same node twice (the shared-base-plan case), then an equal but distinct node.
-    val memoized = NativeScanPlanDataInjector.getKey(scanOp)
-    val again = NativeScanPlanDataInjector.getKey(scanOp)
-    val fresh =
-      NativeScanPlanDataInjector.getKey(nativeScanOp("file:///memo-tbl", Seq("id", "v", "w")))
+  test("NativeScan getKey reads the driver-computed source key from the plan") {
+    val common = nativeScanCommon("file:///transported-tbl", Seq("id", "v"))
+    val op = Operator
+      .newBuilder()
+      .setNativeScan(
+        OperatorOuterClass.NativeScan
+          .newBuilder()
+          .setCommon(common)
+          .setSourceKey("driver-key"))
+      .build()
 
-    assert(memoized == again)
-    assert(memoized == fresh)
+    assert(NativeScanPlanDataInjector.getKey(op).contains("driver-key"))
+  }
+
+  test("NativeScan getKey derives the key only when the plan carries none") {
+    val common = nativeScanCommon("file:///fallback-tbl", Seq("id", "v", "w"))
+    val op = Operator
+      .newBuilder()
+      .setNativeScan(OperatorOuterClass.NativeScan.newBuilder().setCommon(common))
+      .build()
+
+    val derived = NativeScanPlanDataInjector.sourceKey(common)
+    assert(NativeScanPlanDataInjector.getKey(op).contains(derived))
+  }
+
+  test("direct injection without a cached base plan looks up by the transported key") {
+    // CometNativeShuffleWriter injects into a per-task plan built around spec.childNativeOp
+    // without going through parseBasePlan, so the lookup must ride the transported key alone.
+    val common = nativeScanCommon("file:///shuffle-tbl", Seq("id"))
+    val op = Operator
+      .newBuilder()
+      .setNativeScan(
+        OperatorOuterClass.NativeScan
+          .newBuilder()
+          .setCommon(common)
+          .setSourceKey("shuffle-key"))
+      .build()
+
+    val injected = PlanDataInjector.injectPlanData(
+      op,
+      Map("shuffle-key" -> common.toByteArray),
+      Map("shuffle-key" -> nativeScanPartitionBytes("shuffled.parquet")))
+
+    assert(injected.getNativeScan.getCommon == common)
+    assert(
+      injected.getNativeScan.getFilePartition
+        .getPartitionedFile(0)
+        .getFilePath == "shuffled.parquet")
   }
 
   test(

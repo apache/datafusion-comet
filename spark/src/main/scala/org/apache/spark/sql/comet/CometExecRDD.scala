@@ -112,8 +112,8 @@ private[spark] class CometExecRDD(
         context)
 
     // Only inject if we have per-partition planning data. The base plan bytes are identical
-    // for every partition of the stage, so the parsed tree is shared across this executor's
-    // tasks instead of being re-parsed per task.
+    // for every partition of the stage, so the parsed tree and its prepared per-scan data are
+    // shared across this executor's tasks instead of being recomputed per task.
     val actualPlan = if (commonByKey.nonEmpty) {
       val basePlan = PlanDataInjector.parseBasePlan(serializedPlan)
       val injected =
