@@ -539,6 +539,11 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
           // column delimiter and nullable column replacement: the guarded native shape
           checkSparkAnswerAndOperator(
             sql("SELECT array_join(array('a', cast(_2 as string), 'b'), _8, _8) from t1"))
+          // a literal NULL replacement folds to Literal(null, StringType), which is
+          // order-insensitive, so this takes the native path rather than the dispatcher. The
+          // sql-tests fixtures cannot reach this shape because they disable ConstantFolding.
+          checkSparkAnswerAndOperator(
+            sql("SELECT array_join(array('a', cast(_2 as string), 'b'), ',', NULL) from t1"))
         }
       }
     }
@@ -556,6 +561,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
       ArrayJoin(nullableArray, Literal(","), None),
       ArrayJoin(nullableArray, Literal(","), Some(Literal("X"))),
       ArrayJoin(nullableArray, nullableStr, Some(nullableStr)),
+      ArrayJoin(nullableArray, Literal(","), Some(Literal.create(null, StringType))),
       // the array is unrestricted: it is evaluated on every path
       ArrayJoin(ElementAt(delims, Literal(1)), Literal(","), None)).foreach { expr =>
       assert(
@@ -596,6 +602,9 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     // A nullable replacement nullifies the row in Spark.
     val guarded = convert(ArrayJoin(nullableArray, Literal(","), Some(nullableStr)))
     assert(guarded.isDefined && guarded.get.hasIf)
+    val literalNull =
+      convert(ArrayJoin(nullableArray, Literal(","), Some(Literal.create(null, StringType))))
+    assert(literalNull.isDefined && literalNull.get.hasIf)
 
     // A nullable delimiter needs none: array_to_string already returns null for it.
     val nullableDelimiter = convert(ArrayJoin(nullableArray, nullableStr, None))
