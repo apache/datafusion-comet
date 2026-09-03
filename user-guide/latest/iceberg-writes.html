@@ -938,7 +938,7 @@ iceberg-java resolves per-write options and <code class="docutils literal notran
 <td><p><code class="docutils literal notranslate"><span class="pre">file</span></code>, <code class="docutils literal notranslate"><span class="pre">memory</span></code>, <code class="docutils literal notranslate"><span class="pre">s3</span></code>, <code class="docutils literal notranslate"><span class="pre">s3a</span></code>, <code class="docutils literal notranslate"><span class="pre">gs</span></code></p></td>
 </tr>
 <tr class="row-odd"><td><p>partition spec</p></td>
-<td><p>any (but see partition paths under accepted divergences)</p></td>
+<td><p>any</p></td>
 </tr>
 <tr class="row-even"><td><p>column types</p></td>
 <td><p>any except <code class="docutils literal notranslate"><span class="pre">uuid</span></code> (Spark plans it as a string; no Arrow cast reaches <code class="docutils literal notranslate"><span class="pre">fixed(16)</span></code>)</p></td>
@@ -1061,17 +1061,6 @@ parquet footer), while iceberg-java’s writer-tracked counts do not. Both count
 the same amount, so the derived null ratios and <code class="docutils literal notranslate"><span class="pre">IS</span> <span class="pre">NULL</span></code> / <code class="docutils literal notranslate"><span class="pre">IS</span> <span class="pre">NOT</span> <span class="pre">NULL</span></code> pruning decisions
 are unaffected.</p></li>
 </ul>
-</section>
-<section id="operational-caveat">
-<h3>Operational caveat<a class="headerlink" href="#operational-caveat" title="Link to this heading">#</a></h3>
-<ul class="simple">
-<li><p>Partition paths are not URL-escaped: iceberg-java percent-encodes partition directory names
-and values (<code class="docutils literal notranslate"><span class="pre">region=a%2Fb</span></code>), iceberg-rust writes them raw (<code class="docutils literal notranslate"><span class="pre">region=a/b</span></code>). Readers resolve
-files through manifest metadata, not paths, so query results are unaffected — but the
-directory layout differs from iceberg-java’s, and partition values containing characters
-that are invalid in a URI (<code class="docutils literal notranslate"><span class="pre">:</span></code>, <code class="docutils literal notranslate"><span class="pre">#</span></code>, newline) may produce paths that <code class="docutils literal notranslate"><span class="pre">HadoopFileIO</span></code>-based
-readers cannot open.</p></li>
-</ul>
 <p>All content not listed above — the logical data, encodings for non-FLBA columns, statistics
 values, and manifest metadata — must match iceberg-java exactly, or the write falls back.</p>
 </section>
@@ -1135,7 +1124,6 @@ values, and manifest metadata — must match iceberg-java exactly, or the write 
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#accepted-divergences-behind-the-toggle">Accepted divergences behind the toggle</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#physical-file-layout-only-cosmetic">Physical file layout only (cosmetic)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#manifest-metadata-visible-to-later-readers">Manifest metadata visible to later readers</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#operational-caveat">Operational caveat</a></li>
 </ul>
 </li>
 </ul>
