@@ -305,11 +305,14 @@ fn parquet_convert_struct_to_struct(
             let should_match_by_id =
                 parquet_options.use_field_id && to_fields.iter().any(|f| field_id(f).is_some());
 
-            let from_id_to_index: HashMap<i32, usize> = if should_match_by_id {
-                let mut map = HashMap::new();
+            // Keep EVERY index sharing an ID: Spark's `matchIdField` raises
+            // `foundDuplicateFieldInFieldIdLookupModeError` when a requested ID resolves to
+            // more than one file field, and only when that ID is actually requested.
+            let from_id_to_indices: HashMap<i32, Vec<usize>> = if should_match_by_id {
+                let mut map: HashMap<i32, Vec<usize>> = HashMap::new();
                 for (i, field) in from_fields.iter().enumerate() {
                     if let Some(id) = field_id(field) {
-                        map.entry(id).or_insert(i);
+                        map.entry(id).or_default().push(i);
                     }
                 }
                 map
@@ -342,7 +345,26 @@ fn parquet_convert_struct_to_struct(
                 let from_index = match (should_match_by_id, field_id(to_field)) {
                     // Spark treats a missing ID match as a missing column rather than
                     // falling back to name match.
-                    (true, Some(id)) => from_id_to_index.get(&id).copied(),
+                    (true, Some(id)) => match from_id_to_indices.get(&id) {
+                        None => None,
+                        Some(indices) if indices.len() == 1 => Some(indices[0]),
+                        // Mirror Spark's `foundDuplicateFieldInFieldIdLookupModeError`
+                        // (`_LEGACY_ERROR_TEMP_2094`): a requested ID resolving to more
+                        // than one file field is ambiguous.
+                        Some(indices) => {
+                            let matched = indices
+                                .iter()
+                                .map(|&i| from_fields[i].name().as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ");
+                            return Err(DataFusionError::External(Box::new(
+                                SparkError::DuplicateFieldByFieldId {
+                                    required_id: id,
+                                    matched_fields: matched,
+                                },
+                            )));
+                        }
+                    },
                     _ => match folded_to_indices.get(to_folded[to_pos].as_str()) {
                         // Mirror Spark's `foundDuplicateFieldInCaseInsensitiveModeError`: a
                         // requested field matching more than one file field is ambiguous. Gated on
@@ -350,7 +372,8 @@ fn parquet_convert_struct_to_struct(
                         // `!case_sensitive`): when case-sensitive the fold is identity, so a
                         // collision means byte-identical sibling names, and raising an error whose
                         // message says "in case-insensitive mode" would be wrong. Fall through to
-                        // the first match in that case.
+                        // the LAST match in that case, matching Spark's
+                        // `caseSensitiveParquetFieldMap` built with `.toMap` (later entry wins).
                         Some(indices) if indices.len() > 1 && !parquet_options.case_sensitive => {
                             let matched: Vec<&str> = indices
                                 .iter()
@@ -363,7 +386,7 @@ fn parquet_convert_struct_to_struct(
                                 ),
                             )));
                         }
-                        Some(indices) => Some(indices[0]),
+                        Some(indices) => indices.last().copied(),
                         None => None,
                     },
                 };
@@ -845,6 +868,110 @@ mod tests {
                 ObjectStoreUrl::parse(expected_bucket).unwrap()
             );
             assert_eq!(path, Path::from(expected_path));
+        }
+    }
+
+    mod struct_field_matching {
+        use crate::parquet::parquet_support::{parquet_convert_array, SparkParquetOptions};
+        use arrow::array::{Array, ArrayRef, Int32Array, StructArray};
+        use arrow::datatypes::{DataType, Field, Fields};
+        use datafusion_comet_spark_expr::EvalMode;
+        use parquet::arrow::PARQUET_FIELD_ID_META_KEY;
+        use std::collections::HashMap;
+        use std::sync::Arc;
+
+        fn field_with_id(name: &str, id: i32) -> Field {
+            Field::new(name, DataType::Int32, true).with_metadata(HashMap::from([(
+                PARQUET_FIELD_ID_META_KEY.to_string(),
+                id.to_string(),
+            )]))
+        }
+
+        fn struct_of(fields: Vec<Field>, values: Vec<i32>) -> ArrayRef {
+            let arrays: Vec<ArrayRef> = values
+                .into_iter()
+                .map(|v| Arc::new(Int32Array::from(vec![Some(v)])) as ArrayRef)
+                .collect();
+            Arc::new(StructArray::new(Fields::from(fields), arrays, None))
+        }
+
+        /// Two physical struct fields share field ID 1 and the logical struct requests that
+        /// ID: Spark's `matchIdField` raises `foundDuplicateFieldInFieldIdLookupModeError`
+        /// (`_LEGACY_ERROR_TEMP_2094`) rather than silently reading the first match.
+        #[test]
+        fn requested_duplicate_field_id_errors() {
+            let from = struct_of(
+                vec![field_with_id("x", 1), field_with_id("y", 1)],
+                vec![42, 43],
+            );
+            let to_type = DataType::Struct(Fields::from(vec![field_with_id("f", 1)]));
+
+            let mut opts = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+            opts.use_field_id = true;
+
+            let err = parquet_convert_array(from, &to_type, &opts).unwrap_err();
+            let msg = err.to_string();
+            assert!(
+                msg.contains("_LEGACY_ERROR_TEMP_2094") && msg.contains("id=1"),
+                "unexpected error: {msg}"
+            );
+        }
+
+        /// Companion to `requested_duplicate_field_id_errors`: a duplicated file ID that no
+        /// requested field looks up must stay harmless (Spark only raises inside
+        /// `matchIdField`, i.e. for requested IDs).
+        #[test]
+        fn unrequested_duplicate_field_id_reads_fine() {
+            let from = struct_of(
+                vec![
+                    field_with_id("x", 1),
+                    field_with_id("y", 1),
+                    field_with_id("z", 2),
+                ],
+                vec![42, 43, 44],
+            );
+            let to_type = DataType::Struct(Fields::from(vec![field_with_id("f", 2)]));
+
+            let mut opts = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+            opts.use_field_id = true;
+
+            let result = parquet_convert_array(from, &to_type, &opts).unwrap();
+            let result_struct = result.as_any().downcast_ref::<StructArray>().unwrap();
+            let col = result_struct
+                .column(0)
+                .as_any()
+                .downcast_ref::<Int32Array>()
+                .unwrap();
+            assert_eq!(col.value(0), 44);
+        }
+
+        /// Two physical struct fields carry the IDENTICAL name in case-sensitive mode.
+        /// Spark's `caseSensitiveParquetFieldMap` is built with `.toMap`, where the later
+        /// entry wins silently; the exact-name lookup here must do the same rather than
+        /// return the first field.
+        #[test]
+        fn duplicate_exact_names_resolve_to_the_last_field() {
+            let from = struct_of(
+                vec![
+                    Field::new("d", DataType::Int32, true),
+                    Field::new("d", DataType::Int32, true),
+                ],
+                vec![1, 2],
+            );
+            let to_type =
+                DataType::Struct(Fields::from(vec![Field::new("d", DataType::Int32, true)]));
+
+            let mut opts = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+            opts.case_sensitive = true;
+
+            let result = parquet_convert_array(from, &to_type, &opts).unwrap();
+            let result_struct = result.as_any().downcast_ref::<StructArray>().unwrap();
+            let col = result_struct
+                .column(0)
+                .as_any()
+                .downcast_ref::<Int32Array>()
+                .unwrap();
+            assert_eq!(col.value(0), 2);
         }
     }
 }
