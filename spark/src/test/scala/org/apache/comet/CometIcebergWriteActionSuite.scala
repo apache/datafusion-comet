@@ -26,6 +26,7 @@ import scala.collection.mutable
 import scala.concurrent.{Await, Future}
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.duration.DurationInt
+import scala.jdk.CollectionConverters._
 
 import org.apache.spark.{CometListenerBusUtils, SparkConf}
 import org.apache.spark.sql.CometTestBase
@@ -38,6 +39,7 @@ import org.apache.spark.sql.types.{DoubleType, IntegerType, StringType, StructFi
 import org.apache.spark.sql.util.QueryExecutionListener
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark41Plus}
+import org.apache.comet.iceberg.IcebergReflection
 
 private case class WriteSnapshot(snapshotDelta: Long, plans: Seq[SparkPlan])
 
@@ -1172,6 +1174,99 @@ class CometIcebergWriteActionSuite
     }
   }
 
+  // A one-byte target file size makes the rolling writer finalize a file per batch, and a two-row
+  // Comet batch size means the task has handed several batches to the writer before the UDF
+  // throws on id 7. iceberg-java's writer abort deletes such files; the native path must too.
+  test("native acceleration: a failed task deletes the data files it already finalized") {
+    assumeNativeAcceleration()
+    withIcebergCatalog { warehouseDir =>
+      val session = spark
+      import session.implicits._
+      (1 to 10)
+        .map(i => (i, s"r$i", i.toDouble))
+        .toDF("id", "region", "amount")
+        .coalesce(1)
+        .createOrReplaceTempView("cleanup_src")
+      spark.udf.register(
+        "boom_on_seven_cleanup",
+        (id: Int) => {
+          if (id == 7) throw new RuntimeException("boom")
+          id
+        })
+      val rollingProps = Some("'write.target-file-size-bytes'='1'")
+
+      withNativeEnabled(withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "2") {
+        // Control: the same source and settings without the failure roll into several files, so
+        // the failing run below really does have finalized files to clean up.
+        createTable(
+          warehouseDir,
+          "cleanup_control",
+          partitionSpec = "",
+          properties = rollingProps)
+        val controlPlans = capturePlans {
+          spark.sql(
+            s"INSERT INTO $catalog.$ns.cleanup_control SELECT id, region, amount FROM cleanup_src")
+        }
+        assert(
+          controlPlans.exists(p =>
+            collectWithSubqueries(p) { case w: CometIcebergWriteExec => w }.nonEmpty),
+          "control write did not run natively")
+        val controlFiles = parquetFiles(dataDir("cleanup_control"))
+        assert(controlFiles.size >= 3, s"expected the writer to roll files, got $controlFiles")
+
+        createTable(warehouseDir, "cleanup_target", partitionSpec = "", properties = rollingProps)
+        coalesceInsert("cleanup_target", Seq((0, "seed", 0.0)))
+        val committed = parquetFiles(dataDir("cleanup_target"))
+        assert(committed.size == 1)
+        val before = countSnapshots("cleanup_target")
+
+        val (failedPlans, error) = captureFailedPlans {
+          spark.sql(s"INSERT INTO $catalog.$ns.cleanup_target " +
+            "SELECT boom_on_seven_cleanup(id), region, amount FROM cleanup_src")
+        }
+        assert(
+          exceptionChain(error).exists(t => Option(t.getMessage).exists(_.contains("boom"))),
+          s"expected the injected task failure to surface, got $error")
+        assert(
+          failedPlans.exists(p =>
+            collectWithSubqueries(p) { case w: CometIcebergWriteExec => w }.nonEmpty),
+          s"failed write did not run natively:\n${failedPlans.mkString("\n--\n")}")
+        assert(countSnapshots("cleanup_target") == before, "failed write must not commit")
+        val remaining = parquetFiles(dataDir("cleanup_target"))
+        assert(
+          remaining == committed,
+          s"the failed task left data files behind: ${remaining -- committed}")
+        assertRows("cleanup_target", expectedIds = Seq(0))
+      })
+    }
+  }
+
+  test("deleteFilesQuietly removes data files through the table FileIO and never throws") {
+    assumeNativeAcceleration()
+    withIcebergCatalog { warehouseDir =>
+      createTable(warehouseDir, "delete_quietly", partitionSpec = "PARTITIONED BY (region)")
+      spark.sql(s"INSERT INTO $catalog.$ns.delete_quietly VALUES (1, 'us', 1.0), (2, 'eu', 2.0)")
+      val locations = spark
+        .sql(s"SELECT file_path FROM $catalog.$ns.delete_quietly.files")
+        .collect()
+        .map(_.getString(0))
+        .toSeq
+      assert(locations.size == 2)
+      val io = IcebergReflection
+        .getTableIO(loadIcebergTable(spark, catalog, ns, "delete_quietly"))
+        .getOrElse(fail("table.io() unavailable"))
+
+      val deleted = IcebergReflection.deleteFilesQuietly(
+        io,
+        locations :+ s"${locations.head}.missing",
+        "test")
+      assert(deleted == locations.size + 1, s"deleted=$deleted")
+      assert(parquetFiles(dataDir("delete_quietly")).isEmpty)
+      // Deleting the same paths again is a no-op rather than an error.
+      IcebergReflection.deleteFilesQuietly(io, locations, "test")
+    }
+  }
+
   test("native acceleration: wide primitive types keep JVM-parity values and manifest metrics") {
     assumeNativeAcceleration()
     withIcebergCatalog { _ =>
@@ -1601,6 +1696,52 @@ class CometIcebergWriteActionSuite
     val before = countSnapshots(tableName)
     val plans = capturePlans(action)
     WriteSnapshot(countSnapshots(tableName) - before, plans)
+  }
+
+  /**
+   * The table's `data` directory, resolved from `Table.location()` rather than from the warehouse
+   * conf: Spark caches the catalog instance per session, so a later test's warehouse setting does
+   * not necessarily govern where its tables are created.
+   */
+  private def dataDir(tableName: String): File = {
+    val table = loadIcebergTable(spark, catalog, ns, tableName)
+    val location = table.getClass.getMethod("location").invoke(table).toString
+    val uri = new java.net.URI(location)
+    val root = if (uri.getScheme == null) new File(location) else new File(uri)
+    new File(root, "data")
+  }
+
+  /** Relative paths of every parquet file under `dir`, or empty when it does not exist yet. */
+  private def parquetFiles(dir: File): Set[String] = {
+    if (!dir.exists()) return Set.empty
+    val root = dir.toPath
+    val stream = java.nio.file.Files.walk(root)
+    try {
+      stream
+        .iterator()
+        .asScala
+        .filter(p => p.toString.endsWith(".parquet"))
+        .map(p => root.relativize(p).toString)
+        .toSet
+    } finally stream.close()
+  }
+
+  /** Runs `action`, expecting it to fail; returns the failed query plans and the failure. */
+  private def captureFailedPlans(action: => Unit): (Seq[SparkPlan], Throwable) = {
+    val captured = mutable.Buffer.empty[SparkPlan]
+    val listener = new QueryExecutionListener {
+      override def onSuccess(funcName: String, qe: QueryExecution, durationNs: Long): Unit = ()
+      override def onFailure(funcName: String, qe: QueryExecution, exception: Exception): Unit =
+        captured += qe.executedPlan
+    }
+    spark.listenerManager.register(listener)
+    try {
+      val error = intercept[Exception](action)
+      CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
+      (captured.toSeq, error)
+    } finally {
+      spark.listenerManager.unregister(listener)
+    }
   }
 
   private def countSnapshots(tableName: String): Long =
