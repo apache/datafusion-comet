@@ -1187,10 +1187,10 @@ class CometIcebergWriteActionSuite
         .map { case (region, i) => s"($i, '$region', $i.5)" }
         .mkString(", ")
 
-      spark.sql(s"INSERT INTO $catalog.$ns.escaped_native VALUES $values")
-      withSQLConf(CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.key -> "false") {
-        spark.sql(s"INSERT INTO $catalog.$ns.escaped_jvm VALUES $values")
+      assertNativeWriteEngages("escaped_native", regions.indices) {
+        spark.sql(s"INSERT INTO $catalog.$ns.escaped_native VALUES $values")
       }
+      spark.sql(s"INSERT INTO $catalog.$ns.escaped_jvm VALUES $values")
 
       // Every partition directory the native writer produced exists in the JVM writer's layout
       // and vice versa, so the two tables are byte-for-byte compatible in their data locations.
