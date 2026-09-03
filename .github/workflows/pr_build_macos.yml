@@ -151,6 +151,7 @@ jobs:
               org.apache.spark.sql.comet.execution.shuffle.CometCelebornShuffleReaderSuite
               org.apache.spark.sql.comet.execution.shuffle.CometCelebornShufflePlanningSuite
               org.apache.spark.sql.comet.execution.shuffle.CometNativeShuffleInputRDDSuite
+              org.apache.spark.sql.comet.execution.shuffle.CometDiskBlockWriterSuite
               org.apache.comet.exec.CometShuffleEncryptionSuite
               org.apache.comet.exec.CometShuffleManagerSuite
               org.apache.comet.exec.CometAsyncShuffleSuite

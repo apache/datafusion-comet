@@ -1171,6 +1171,59 @@ class CometIcebergWriteActionSuite
     }
   }
 
+  // iceberg-java's `PartitionSpec.partitionToPath` runs every partition name and value through
+  // `URLEncoder.encode`, and iceberg-rust's `partition_to_path` uses the same
+  // application/x-www-form-urlencoded table (apache/iceberg-rust#2875). Readers resolve files
+  // through manifest metadata rather than paths, but the committed location still has to be one
+  // every FileIO can open: an unescaped `#` in an S3 key is a fragment delimiter to `S3FileIO`.
+  test("native acceleration: partition paths are URL-escaped like iceberg-java") {
+    assumeNativeAcceleration()
+    withIcebergCatalog { warehouseDir =>
+      createTable(warehouseDir, "escaped_native", partitionSpec = "PARTITIONED BY (region)")
+      createTable(warehouseDir, "escaped_jvm", partitionSpec = "PARTITIONED BY (region)")
+      val regions = Seq("a/b", "c#d", "e?f", "g h", "i=j", "k%l", "m+n", "*-._", "日本", "")
+      val values = regions.zipWithIndex
+        .map { case (region, i) => s"($i, '$region', $i.5)" }
+        .mkString(", ")
+
+      assertNativeWriteEngages("escaped_native", regions.indices) {
+        spark.sql(s"INSERT INTO $catalog.$ns.escaped_native VALUES $values")
+      }
+      spark.sql(s"INSERT INTO $catalog.$ns.escaped_jvm VALUES $values")
+
+      // Every partition directory the native writer produced exists in the JVM writer's layout
+      // and vice versa, so the two tables are byte-for-byte compatible in their data locations.
+      def partitionDirs(table: String): Set[String] = {
+        val location = warehouseDir.toURI.toString.stripSuffix("/")
+        spark
+          .sql(s"SELECT file_path FROM $catalog.$ns.$table.files")
+          .collect()
+          .map(_.getString(0))
+          .map { path =>
+            val relative = path.stripPrefix(location).split("/data/", 2)(1)
+            relative.substring(0, relative.lastIndexOf('/'))
+          }
+          .toSet
+      }
+      val nativeDirs = partitionDirs("escaped_native")
+      assert(nativeDirs == partitionDirs("escaped_jvm"), s"native layout: $nativeDirs")
+      assert(nativeDirs.contains("region=a%2Fb") && nativeDirs.contains("region=c%23d"))
+      assert(nativeDirs.contains("region=g+h") && nativeDirs.contains("region=*-._"))
+
+      // Both Comet's native scan and iceberg-java's reader open the escaped locations.
+      val expected = regions.zipWithIndex.map { case (region, i) => Row(i, region, i + 0.5) }
+      Seq("true", "false").foreach { cometEnabled =>
+        withSQLConf(CometConf.COMET_ENABLED.key -> cometEnabled) {
+          val rows = spark
+            .sql(s"SELECT id, region, amount FROM $catalog.$ns.escaped_native ORDER BY id")
+            .collect()
+            .toSeq
+          assert(rows == expected, s"comet=$cometEnabled: $rows")
+        }
+      }
+    }
+  }
+
   test("native acceleration: wide primitive types keep JVM-parity values and manifest metrics") {
     assumeNativeAcceleration()
     withIcebergCatalog { _ =>
