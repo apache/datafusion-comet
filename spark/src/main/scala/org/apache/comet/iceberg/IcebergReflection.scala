@@ -1699,6 +1699,21 @@ object IcebergReflection extends Logging {
     deleted
   }
 
+  /**
+   * The locations of the data files carried by a `SparkWrite$TaskCommit` message (its
+   * package-private `files()`), or empty when `message` is not one. Used to clean up after a
+   * write job that failed before any commit was attempted.
+   */
+  def taskCommitFileLocations(message: AnyRef): Seq[String] =
+    findMethodInHierarchy(message.getClass, "files") match {
+      case Some(files) =>
+        files.invoke(message) match {
+          case array: Array[_] => array.toSeq.flatMap(f => extractFileLocation(f))
+          case _ => Seq.empty
+        }
+      case None => Seq.empty
+    }
+
   /** The table's `FileIO` (`table.io()`). Iceberg requires `FileIO` to be `Serializable`. */
   def getTableIO(table: Any): Option[AnyRef] =
     findMethodInHierarchy(table.getClass, "io").map(_.invoke(table))

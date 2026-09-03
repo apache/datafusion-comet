@@ -215,10 +215,15 @@ decoded manifest. Both deletions are best-effort and never mask the original fai
 they miss is invisible to every reader, since readers resolve files through committed manifests
 only, and is reclaimed by Iceberg's normal `remove_orphan_files` maintenance.
 
-A failure during the driver-side commit itself behaves exactly as on the stock path: the
-commit messages carry genuine `SparkWrite$TaskCommit` objects, so Iceberg's own
-`SparkWrite.abort` cleanup (which deletes the files listed in the commit messages for
-cleanable failures) applies unchanged.
+When one task fails, the tasks that had already completed leave committed-nothing data files
+too. The committer collects each task's commit message as that task finishes, so on a job
+failure it aborts with the completed messages and deletes their data files through the table
+`FileIO`. (Iceberg's own `SparkWrite.abort` skips cleanup unless a commit failed with a
+cleanable error, so on the stock path those files are left for `remove_orphan_files`.) A
+failure during the driver-side commit itself behaves exactly as on the stock path: the commit
+messages carry genuine `SparkWrite$TaskCommit` objects, so Iceberg's own `SparkWrite.abort`
+cleanup (which deletes the files listed in the commit messages for cleanable failures) applies
+unchanged.
 
 ## Accepted divergences behind the toggle
 

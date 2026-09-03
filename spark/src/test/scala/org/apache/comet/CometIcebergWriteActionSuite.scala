@@ -28,7 +28,8 @@ import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.duration.DurationInt
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.{CometListenerBusUtils, SparkConf}
+import org.apache.spark.{CometListenerBusUtils, SparkConf, Success}
+import org.apache.spark.scheduler.{SparkListener, SparkListenerTaskEnd}
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.Row
 import org.apache.spark.sql.comet.{CometIcebergWriteExec, IcebergCommitExec, IcebergWriteExec}
@@ -1241,6 +1242,79 @@ class CometIcebergWriteActionSuite
     }
   }
 
+  // A three-task write where one task fails only after the other two have finished: their
+  // commit messages reached the driver, so it is the committer's job abort, not task cleanup,
+  // that has to remove their data files.
+  Seq(true, false).foreach { native =>
+    test(s"a failed write job deletes the data files of tasks that completed (native=$native)") {
+      assume(icebergAvailable, "Iceberg not available in classpath")
+      withIcebergCatalog { warehouseDir =>
+        val table = s"job_abort_$native"
+        createTable(warehouseDir, table, partitionSpec = "")
+        coalesceInsert(table, Seq((0, "seed", 0.0)))
+        val committed = parquetFiles(dataDir(table))
+        val before = countSnapshots(table)
+        val session = spark
+        import session.implicits._
+        withTempPath { dir =>
+          (1 to 30)
+            .map(i => (i, s"r$i", i.toDouble))
+            .toDF("id", "region", "amount")
+            .repartition(3)
+            .write
+            .parquet(dir.getAbsolutePath)
+          spark.read.parquet(dir.getAbsolutePath).createOrReplaceTempView("job_abort_src")
+          JobAbortGate.reset(othersToFinish = 2)
+          spark.udf.register(
+            "boom_after_others",
+            (id: Int) => {
+              if (id == 25) {
+                JobAbortGate.awaitOthers()
+                throw new RuntimeException("boom")
+              }
+              id
+            })
+          val listener = new SparkListener {
+            override def onTaskEnd(taskEnd: SparkListenerTaskEnd): Unit =
+              if (taskEnd.reason == Success) JobAbortGate.taskFinished()
+          }
+          spark.sparkContext.addSparkListener(listener)
+          try {
+            // One task per source file: openCostInBytes equal to maxPartitionBytes stops the
+            // planner from packing two of these tiny files into one task.
+            val run = () =>
+              withSQLConf(
+                "spark.sql.files.maxPartitionBytes" -> "1048576",
+                "spark.sql.files.openCostInBytes" -> "1048576") {
+                spark.sql(s"INSERT INTO $catalog.$ns.$table " +
+                  "SELECT boom_after_others(id), region, amount FROM job_abort_src")
+              }
+            val (failedPlans, error) = captureFailedPlans {
+              if (native) withNativeEnabled(run()) else run()
+            }
+            assert(
+              exceptionChain(error).exists(t => Option(t.getMessage).exists(_.contains("boom"))),
+              s"expected the injected task failure to surface, got $error")
+            val nativeWrites = failedPlans.flatMap(p =>
+              collectWithSubqueries(p) { case w: CometIcebergWriteExec => w })
+            assert(
+              nativeWrites.nonEmpty == native,
+              s"native=$native but the failed plans were:\n${failedPlans.mkString("\n--\n")}")
+          } finally {
+            spark.sparkContext.removeSparkListener(listener)
+          }
+          assert(JobAbortGate.finished >= 2, "the gate must have seen two completed tasks")
+          assert(countSnapshots(table) == before, "failed write must not commit")
+          val remaining = parquetFiles(dataDir(table))
+          assert(
+            remaining == committed,
+            s"completed tasks left data files behind: ${remaining -- committed}")
+          assertRows(table, expectedIds = Seq(0))
+        }
+      }
+    }
+  }
+
   test("deleteFilesQuietly removes data files through the table FileIO and never throws") {
     assumeNativeAcceleration()
     withIcebergCatalog { warehouseDir =>
@@ -1878,6 +1952,34 @@ class CometIcebergWriteActionSuite
  * Blocks the DELETE's write job between its scan-snapshot pin and its commit so the test can
  * inject a conflicting commit. Top-level so the UDF closure doesn't capture the suite.
  */
+/**
+ * Lets the failing task of a multi-task write wait until the other tasks have finished, so the
+ * driver has their commit messages when the job fails. Top-level so the UDF closure doesn't
+ * capture the suite.
+ */
+private object JobAbortGate {
+  @volatile private var others = new CountDownLatch(0)
+  @volatile private var count = 0
+
+  def reset(othersToFinish: Int): Unit = {
+    others = new CountDownLatch(othersToFinish)
+    count = 0
+  }
+
+  def taskFinished(): Unit = synchronized {
+    count += 1
+    others.countDown()
+  }
+
+  def finished: Int = count
+
+  def awaitOthers(): Unit = {
+    if (!others.await(2, TimeUnit.MINUTES)) {
+      throw new IllegalStateException("JobAbortGate: the other tasks never finished")
+    }
+  }
+}
+
 private object ConflictGate {
   @volatile private var scanStarted = new CountDownLatch(1)
   @volatile private var writeReleased = new CountDownLatch(1)
