@@ -62,6 +62,14 @@ object CometStaticInvoke extends CometExpressionSerde[StaticInvoke] {
   override def getSupportLevel(expr: StaticInvoke): SupportLevel =
     handlerFor(expr).map(_.getSupportLevel(expr)).getOrElse(Compatible())
 
+  /**
+   * `GenerateDocs` only asks the serde registered for the expression class, which is this object,
+   * so the per-function handlers' notes have to be collected here or they never reach the
+   * compatibility guide.
+   */
+  override def getUnsupportedReasons(): Seq[String] =
+    staticInvokeExpressions.values.toSeq.distinct.flatMap(_.getUnsupportedReasons()).distinct
+
   override def convert(
       expr: StaticInvoke,
       inputs: Seq[Attribute],

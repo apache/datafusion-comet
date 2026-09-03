@@ -172,17 +172,51 @@ object CometIcebergBucket
         case _ => false
       })
 
-/** `truncate(width, value)` over the types `TruncateFunction.bind` accepts. */
+/**
+ * `truncate(width, value)` over the types `TruncateFunction.bind` accepts, minus decimals.
+ *
+ * Decimals are declined for a semantic reason rather than a missing kernel; see
+ * [[CometIcebergTruncate.DecimalNote]].
+ */
 object CometIcebergTruncate
     extends CometIcebergParameterizedTransform(
       "iceberg_truncate",
       "width",
       {
-        case ByteType | ShortType | IntegerType | LongType | StringType |
-            BinaryType | _: DecimalType =>
-          true
+        case ByteType | ShortType | IntegerType | LongType | StringType | BinaryType => true
         case _ => false
-      })
+      }) {
+
+  /**
+   * Why decimal `truncate` stays with Spark. Truncating a negative decimal grows its magnitude,
+   * so the result can need one more digit than the column's precision allows. Iceberg's
+   * `TruncateDecimal.invoke` hands that oversized `Decimal` back unchanged and Spark turns it
+   * into null only when the row is materialized, whereas an Arrow `Decimal128(precision, scale)`
+   * array has no encoding for it -- a native kernel would have to null it during evaluation,
+   * changing what an enclosing predicate or hash sees.
+   */
+  val DecimalNote: String =
+    "Iceberg's TruncateDecimal returns a Decimal that can exceed the column's declared " +
+      "precision, and Spark only turns that into null when the row is materialized. An Arrow " +
+      "Decimal128(precision, scale) array cannot carry that intermediate, so a native kernel " +
+      "would null it during evaluation and change what an enclosing predicate or hash sees."
+
+  // Ordered after the parameter check so that `truncate(0, decimal_col)` still reports the width
+  // problem, which is the one that changes whether Iceberg's own ArithmeticException is raised.
+  override def getSupportLevel(expr: StaticInvoke): SupportLevel = expr.arguments match {
+    case Seq(parameter, value)
+        if value.dataType.isInstanceOf[DecimalType] &&
+          CometIcebergSystemFunctions.positiveIntLiteral(parameter).isDefined =>
+      Unsupported(Some(DecimalNote))
+    case _ => super.getSupportLevel(expr)
+  }
+
+  override def getUnsupportedReasons(): Seq[String] = Seq(
+    "Iceberg's `truncate(width, value)` system function on a `decimal` column. " + DecimalNote +
+      " Truncating `-99999999999999.9999` in a `decimal(18,4)` column by a width of 10 is one " +
+      "such value: the result has 19 digits. The other `truncate` input types, and `bucket` on " +
+      "decimals, are unaffected.")
+}
 
 /** Shared shape of the single-argument `years`, `months`, `days`, and `hours` transforms. */
 abstract class CometIcebergTemporalTransform(

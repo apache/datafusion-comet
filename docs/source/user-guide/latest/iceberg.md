@@ -210,21 +210,20 @@ The native kernels reproduce Iceberg's Java semantics exactly rather than approx
   and timestamps; UTF-8 for strings; raw bytes for binary; the minimal big-endian two's complement
   of the unscaled value for decimals) with 32-bit Murmur3 and masks the sign bit before taking the
   modulus.
-- `truncate` uses Java's wrapping integer arithmetic, keeps the decimal's precision and scale, and
-  counts code points (not bytes) for strings.
+- `truncate` uses Java's wrapping integer arithmetic and counts code points (not bytes) for
+  strings. Decimal inputs are the one case that stays with Spark, see below.
 - `years`, `months`, `days`, and `hours` are evaluated in UTC regardless of the session timezone
   and go negative before the epoch; `days` returns a date, the other three an int. They cover the
   whole `DATE` and `TIMESTAMP` domain, as Iceberg's `DateTimeUtil` does.
 
-One difference is worth calling out. Truncating a negative decimal grows its magnitude, so the
-result can need one more digit than the column's precision allows: `truncate(10, v)` on a
-`decimal(18,4)` value of `-99999999999999.9999` is `-100000000000000.0000`, which has 19 digits.
-Iceberg's Java `TruncateDecimal` hands that oversized value back unchanged, and Spark turns it into
-null only when the row is materialized. Comet nulls it in the kernel instead. The two therefore
-agree wherever Spark writes the value into a row -- the output of a projection, and the key a sort
-builds -- and differ where the truncated decimal feeds another expression directly, as in
-`WHERE truncate(10, v) IS NULL` or the hash behind `DISTRIBUTE BY truncate(10, v)`. Note that the
-Iceberg partition value itself is not affected: the writer computes it from the untruncated column.
+`truncate` on a `decimal` column falls back to Spark. Truncating a negative decimal grows its
+magnitude, so the result can need one more digit than the column's precision allows:
+`truncate(10, v)` on a `decimal(18,4)` value of `-99999999999999.9999` is
+`-100000000000000.0000`, which has 19 digits. Iceberg's `TruncateDecimal` hands that oversized
+value back unchanged and Spark turns it into null only when the row is materialized. An Arrow
+`Decimal128(precision, scale)` array has no encoding for that intermediate, so a native kernel
+would have to null it during evaluation, which changes what an enclosing predicate or hash sees.
+Every other `truncate` input type, and `bucket` on decimals, runs natively.
 
 This matters most for writes. A partitioned table with the default `write.distribution-mode`
 (`hash`) is planned with a shuffle and a local sort keyed on the partition transforms, and with

@@ -76,7 +76,8 @@ class CometIcebergSystemFunctionSuite
   private val source = "system_function_source"
   private val bucketColumns =
     Seq("i8", "i16", "i32", "i64", "dec18", "dec38", "str", "bin", "dt", "ts", "ts_ntz")
-  private val truncateColumns = Seq("i8", "i16", "i32", "i64", "dec18", "dec38", "str", "bin")
+  private val truncateColumns = Seq("i8", "i16", "i32", "i64", "str", "bin")
+  private val decimalColumns = Seq("dec18", "dec38")
 
   // The source data is written once per suite; every test reads the same parquet directory.
   private var sourceDir: File = _
@@ -129,6 +130,20 @@ class CometIcebergSystemFunctionSuite
         val truncated =
           Seq(1, 3, 10, 1000, Int.MaxValue).map(w => s"$catalog.system.truncate($w, $column)")
         checkSparkAnswerAndOperator(s"SELECT $column, ${truncated.mkString(", ")} FROM $source")
+      }
+    }
+  }
+
+  test("truncate on a decimal falls back to Spark") {
+    withSourceTable {
+      // Iceberg's `TruncateDecimal` can return a value wider than the column's precision, which
+      // Spark nulls only on materialization and a `Decimal128(p, s)` array cannot represent at
+      // all; the expression stays with Spark rather than null early. `bucket` on the same columns
+      // is unaffected and is covered by the bucket test above.
+      decimalColumns.foreach { column =>
+        checkSparkAnswerAndFallbackReason(
+          s"SELECT $catalog.system.truncate(10, $column) FROM $source",
+          "Decimal128(precision, scale) array cannot carry that intermediate")
       }
     }
   }
@@ -285,10 +300,38 @@ class CometIcebergSystemFunctionSuite
     assert(level(CometIcebergTruncate, truncateInt, Literal(10), value) == Compatible())
     assert(level(CometIcebergTruncate, truncateInt, Literal(10), date).isInstanceOf[Unsupported])
 
+    // A decimal value reports its own reason, but only once the width is valid: a zero width has
+    // to keep reporting the width, since that is what decides whether Iceberg's own
+    // ArithmeticException is raised.
+    val decimal = AttributeReference("dec", DecimalType(18, 4))()
+    val decimalLevel = level(CometIcebergTruncate, truncateInt, Literal(10), decimal)
+    assert(
+      decimalLevel == Unsupported(Some(CometIcebergTruncate.DecimalNote)),
+      s"unexpected support level: $decimalLevel")
+    val zeroWidth = level(CometIcebergTruncate, truncateInt, Literal(0), decimal)
+    assert(
+      zeroWidth.asInstanceOf[Unsupported].notes.exists(_.contains("width must be a positive")),
+      s"unexpected support level: $zeroWidth")
+    // `bucket` on a decimal stays native; only `truncate` has the precision problem.
+    val bucketDecimal =
+      Class.forName("org.apache.iceberg.spark.functions.BucketFunction$BucketDecimal")
+    assert(level(CometIcebergBucket, bucketDecimal, Literal(4), decimal) == Compatible())
+
+    // The reason also has to reach the generated compatibility guide, which only asks the serde
+    // registered for `StaticInvoke`.
+    assert(
+      CometStaticInvoke
+        .getUnsupportedReasons()
+        .exists(_.contains(CometIcebergTruncate.DecimalNote)),
+      "the decimal truncate note is missing from CometStaticInvoke.getUnsupportedReasons")
+
     // CometStaticInvoke dispatches on (functionName, class name), so the same expressions reach
     // the Iceberg handlers from there too.
     assert(level(CometStaticInvoke, bucketInt, Literal(4), value) == Compatible())
     assert(level(CometStaticInvoke, bucketInt, Literal(0), value).isInstanceOf[Unsupported])
+    assert(
+      level(CometStaticInvoke, truncateInt, Literal(10), decimal) ==
+        Unsupported(Some(CometIcebergTruncate.DecimalNote)))
   }
 
   test("fallback reason for an unlisted static invoke names the declaring class") {

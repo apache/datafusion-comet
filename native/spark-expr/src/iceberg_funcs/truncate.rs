@@ -95,15 +95,16 @@ fn truncate_array(fn_name: &str, array: &ArrayRef, width: i32) -> Result<ArrayRe
                 .unary::<_, Int64Type>(|v| truncate_i64(v, width as i64)),
         ),
         DataType::Decimal128(precision, scale) => {
+            // Not reachable from a Spark plan: `CometIcebergTruncate` reports decimal inputs as
+            // `Unsupported` so they stay with Spark. The reason is this arm's only honest answer.
             // Truncating a negative value grows its magnitude by up to `width - 1` units of the
             // last digit, so the result can need one more digit than the column allows. Iceberg's
-            // `TruncateDecimal.invoke` hands that oversized `Decimal` back to Spark unchanged and
-            // Spark nulls it only when a row is materialized (`UnsafeRowWriter` calls
-            // `changePrecision`, which fails). Nulling it here is the same answer everywhere Spark
-            // materializes the value -- the output of a projection, and the key `SortExec` builds
-            // -- and it is the only answer available to a kernel that has to return a
-            // `Decimal128(precision, scale)` array. The two differ where the result feeds another
-            // expression directly, e.g. `truncate(w, v) IS NULL`; see the Iceberg user guide.
+            // `TruncateDecimal.invoke` hands that oversized `Decimal` back unchanged and Spark
+            // nulls it only when a row is materialized, but a `Decimal128(precision, scale)` array
+            // has nowhere to put it, and nulling during evaluation changes what an enclosing
+            // predicate or hash sees. The arm is kept because it is what iceberg-rust's `Truncate`
+            // is compared against in the writer's parity tests, and because the choice of gate is
+            // serde policy that may be revisited.
             let truncated: Decimal128Array =
                 array.as_primitive::<Decimal128Type>().unary_opt(|v| {
                     let truncated = truncate_i128(v, width as i128);
