@@ -192,8 +192,11 @@ class CometIcebergSystemFunctionSuite
       val table = s"$catalog.db.hidden_partitioning"
       // No `write.distribution-mode`: Iceberg picks hash distribution for a partitioned table,
       // which plans a shuffle and a local sort on the partition transforms. The string column is
-      // deliberately not a partition source: its multi-byte values would land in partition
-      // directory names, which iceberg-java reads back through the JVM's platform charset.
+      // deliberately not a partition source: with it in the spec this test failed on the Linux
+      // CI runners with a missing data file, which does not reproduce locally, so the multi-byte
+      // values it would put in partition directory names stay out of the spec until that is
+      // understood. `bucket` and `truncate` over strings are covered by the comparison, filter,
+      // sort, and shuffle tests above.
       sql(s"""
         CREATE TABLE $table (i32 INT, i64 BIGINT, ts TIMESTAMP, dt DATE)
         USING iceberg
