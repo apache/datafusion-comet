@@ -174,7 +174,7 @@ trait ShimSparkErrorConverter {
         // spark.comet.batchSize since Spark itself has no equivalent guard.
         Some(
           new SparkException(
-            s"Comet's native `sequence` kernel cannot materialize a batch with " +
+            "Comet's native `sequence` kernel cannot materialize a batch with " +
               s"${params("totalElements")} total elements: it exceeds the per-batch " +
               "limit or the allocator refused the reservation. Lower " +
               "`spark.comet.batchSize` so fewer rows are grouped per batch.",
