@@ -22,6 +22,9 @@ package org.apache.comet
 import java.io.File
 import java.nio.file.Files
 
+import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.connector.catalog.{Identifier, TableCatalog}
+
 import org.apache.comet.CometSparkSessionExtensions.isSpark42Plus
 import org.apache.comet.iceberg.IcebergReflection
 
@@ -65,6 +68,58 @@ trait CometIcebergTestBase {
     } catch {
       case _: Exception => false
     }
+
+  /**
+   * Loads the Iceberg `Table` behind a Spark catalog table (via `SparkTable.table()`), going
+   * through the session's own catalog instance so it works regardless of where the catalog's
+   * warehouse actually resolved.
+   */
+  protected def loadIcebergTable(
+      spark: SparkSession,
+      catalogName: String,
+      namespace: String,
+      tableName: String): AnyRef = {
+    val sparkTable = spark.sessionState.catalogManager
+      .catalog(catalogName)
+      .asInstanceOf[TableCatalog]
+      .loadTable(Identifier.of(Array(namespace), tableName))
+    sparkTable.getClass.getMethod("table").invoke(sparkTable)
+  }
+
+  /**
+   * Adds a column of an Iceberg type Spark DDL cannot declare (e.g. `uuid`, `fixed(N)`) by
+   * committing an `UpdateSchema` against the Iceberg table directly. Callers must `REFRESH TABLE`
+   * afterwards so Spark's catalog cache picks up the new schema.
+   */
+  protected def addIcebergColumn(
+      icebergTable: AnyRef,
+      columnName: String,
+      icebergType: AnyRef): Unit = {
+    val update = IcebergReflection
+      .loadClass("org.apache.iceberg.Table")
+      .getMethod("updateSchema")
+      .invoke(icebergTable)
+    val updateSchemaClass = IcebergReflection.loadClass("org.apache.iceberg.UpdateSchema")
+    updateSchemaClass
+      .getMethod(
+        "addColumn",
+        classOf[String],
+        IcebergReflection.loadClass("org.apache.iceberg.types.Type"))
+      .invoke(update, columnName, icebergType)
+    updateSchemaClass.getMethod("commit").invoke(update)
+  }
+
+  protected def icebergUuidType(): AnyRef =
+    IcebergReflection
+      .loadClass("org.apache.iceberg.types.Types$UUIDType")
+      .getMethod("get")
+      .invoke(null)
+
+  protected def icebergFixedType(length: Int): AnyRef =
+    IcebergReflection
+      .loadClass("org.apache.iceberg.types.Types$FixedType")
+      .getMethod("ofLength", classOf[Int])
+      .invoke(null, Integer.valueOf(length))
 
   protected def withTempIcebergDir(f: File => Unit): Unit = {
     val dir = Files.createTempDirectory("comet-iceberg-test").toFile
