@@ -309,7 +309,7 @@ mod tests {
     }
 
     #[test]
-    fn dictionary_input_is_unpacked() {
+    fn dictionary_input_is_hashed_once_per_value() {
         let dict: DictionaryArray<Int8Type> = vec![Some("iceberg"), None, Some("iceberg")]
             .into_iter()
             .collect();

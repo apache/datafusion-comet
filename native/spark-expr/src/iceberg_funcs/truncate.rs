@@ -96,9 +96,15 @@ fn truncate_array(fn_name: &str, array: &ArrayRef, width: i32) -> Result<ArrayRe
         ),
         DataType::Decimal128(precision, scale) => {
             // Truncating a negative value grows its magnitude by up to `width - 1` units of the
-            // last digit, so the result can need one more digit than the column allows. Spark's
-            // `UnsafeRowWriter` writes such a `Decimal` as null (`changePrecision` fails), so
-            // match that rather than emit a value the column's precision cannot hold.
+            // last digit, so the result can need one more digit than the column allows. Iceberg's
+            // `TruncateDecimal.invoke` hands that oversized `Decimal` back to Spark unchanged and
+            // Spark nulls it only when a row is materialized (`UnsafeRowWriter` calls
+            // `changePrecision`, which fails). Nulling it here is the same answer for every path
+            // that writes the value into a row -- a projection, a sort key, a shuffle key, an
+            // Iceberg partition value -- and it is the only answer available to a kernel that has
+            // to return a `Decimal128(precision, scale)` array. The two differ where the result
+            // feeds another expression without being materialized, e.g. `truncate(w, v) IS NULL`;
+            // see the Iceberg user guide.
             let truncated: Decimal128Array =
                 array.as_primitive::<Decimal128Type>().unary_opt(|v| {
                     let truncated = truncate_i128(v, width as i128);
@@ -161,7 +167,10 @@ impl ScalarUDFImpl for SparkIcebergTruncate {
 mod tests {
     use super::super::test_util::invoke;
     use super::*;
-    use arrow::array::{BinaryArray, Int16Array, Int32Array, Int64Array, Int8Array, StringArray};
+    use arrow::array::{
+        BinaryArray, DictionaryArray, Int16Array, Int32Array, Int64Array, Int8Array, StringArray,
+    };
+    use arrow::datatypes::Int8Type;
     use datafusion::common::ScalarValue;
 
     fn truncate(width: i32, value: ArrayRef) -> ArrayRef {
@@ -344,6 +353,32 @@ mod tests {
             long.as_string::<i32>(),
             &StringArray::from(vec![Some("ab"), Some("abcde"), None])
         );
+    }
+
+    /// A dictionary is truncated once per distinct value and expanded through the keys, so the
+    /// result is a plain array of the value type, as [`SparkIcebergTruncate::return_type`] says.
+    #[test]
+    fn dictionary_input_is_truncated_once_per_value() {
+        let dict: DictionaryArray<Int8Type> =
+            vec![Some("iceberg"), None, Some("ic"), Some("iceberg")]
+                .into_iter()
+                .collect();
+        let result = truncate(3, Arc::new(dict));
+        assert_eq!(result.data_type(), &DataType::Utf8);
+        assert_eq!(
+            result.as_string::<i32>(),
+            &StringArray::from(vec![Some("ice"), None, Some("ic"), Some("ice")])
+        );
+        // The whole-buffer shortcut has to survive the round trip through the keys too.
+        let unchanged = truncate(i32::MAX, Arc::new(dict_of(&[Some("ab"), None, Some("ab")])));
+        assert_eq!(
+            unchanged.as_string::<i32>(),
+            &StringArray::from(vec![Some("ab"), None, Some("ab")])
+        );
+    }
+
+    fn dict_of(values: &[Option<&str>]) -> DictionaryArray<Int8Type> {
+        values.iter().copied().collect()
     }
 
     #[test]

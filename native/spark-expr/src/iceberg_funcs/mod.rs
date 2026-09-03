@@ -34,21 +34,11 @@ pub use bucket::SparkIcebergBucket;
 pub use temporal::SparkIcebergTemporalTransform;
 pub use truncate::SparkIcebergTruncate;
 
-use arrow::array::{Array, ArrayRef};
-use arrow::compute::cast;
+use arrow::array::{Array, ArrayRef, AsArray};
+use arrow::compute::take;
 use arrow::datatypes::DataType;
 use datafusion::common::{DataFusionError, Result, ScalarValue};
 use datafusion::logical_expr::ColumnarValue;
-use std::sync::Arc;
-
-/// Unpacks a dictionary-encoded array to its value type so that the kernels only ever see plain
-/// arrays. Any other array is returned unchanged.
-fn unpack_dictionary(array: ArrayRef) -> Result<ArrayRef> {
-    match array.data_type() {
-        DataType::Dictionary(_, value_type) => Ok(cast(&array, value_type)?),
-        _ => Ok(array),
-    }
-}
 
 /// The type a kernel sees for an input of type `data_type`, after dictionary unpacking.
 fn unpacked_type(data_type: &DataType) -> DataType {
@@ -64,17 +54,31 @@ fn apply_unary(
     kernel: impl Fn(&ArrayRef) -> Result<ArrayRef>,
 ) -> Result<ColumnarValue> {
     match value {
-        ColumnarValue::Array(array) => {
-            let array = unpack_dictionary(Arc::clone(array))?;
-            Ok(ColumnarValue::Array(kernel(&array)?))
-        }
+        ColumnarValue::Array(array) => Ok(ColumnarValue::Array(apply_to_array(array, kernel)?)),
         ColumnarValue::Scalar(scalar) => {
-            let array = unpack_dictionary(scalar.to_array()?)?;
-            let result = kernel(&array)?;
+            let result = apply_to_array(&scalar.to_array()?, kernel)?;
             Ok(ColumnarValue::Scalar(ScalarValue::try_from_array(
                 &result, 0,
             )?))
         }
+    }
+}
+
+/// Runs `kernel` over `array`, transforming a dictionary one distinct value at a time and then
+/// expanding the result through the keys. A Parquet scan hands string partition columns over
+/// dictionary-encoded, and unpacking first would hash or truncate every row rather than every
+/// distinct value (plus copy the values buffer to do it).
+fn apply_to_array(
+    array: &ArrayRef,
+    kernel: impl Fn(&ArrayRef) -> Result<ArrayRef>,
+) -> Result<ArrayRef> {
+    match array.data_type() {
+        DataType::Dictionary(_, _) => {
+            let dictionary = array.as_any_dictionary();
+            let values = kernel(dictionary.values())?;
+            Ok(take(values.as_ref(), dictionary.keys(), None)?)
+        }
+        _ => kernel(array),
     }
 }
 
