@@ -357,6 +357,7 @@ mod tests {
 
         assert_eq!(field.name(), "v");
         assert!(field.is_nullable());
+        assert_eq!(field.extension_type_name(), Some("arrow.parquet.variant"));
         assert!(field.has_valid_extension_type::<VariantType>());
         let ArrowDataType::Struct(fields) = field.data_type() else {
             panic!("expected Variant to use Struct storage");

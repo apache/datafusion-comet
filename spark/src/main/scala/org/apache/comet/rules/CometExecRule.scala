@@ -835,12 +835,12 @@ case class CometExecRule(session: SparkSession)
       handler: CometOperatorSerde[_]): Option[SparkPlan] = {
     val serde = handler.asInstanceOf[CometOperatorSerde[SparkPlan]]
     if (isOperatorEnabled(serde, op)) {
+      // Get the actual data-producing children (unwrap WriteFilesExec).
       val dataProducingChildren = op.children.flatMap {
         case writeFiles: WriteFilesExec => Seq(writeFiles.child)
         case other => Seq(other)
       }
-      if (!op.isInstanceOf[CometScanExec] &&
-        (op.output ++ dataProducingChildren.flatMap(_.output)).exists(attr =>
+      if ((op.output ++ dataProducingChildren.flatMap(_.output)).exists(attr =>
           containsVariantType(attr.dataType))) {
         withFallbackReason(
           op,

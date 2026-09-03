@@ -49,7 +49,6 @@ import org.apache.comet.shims.CometTypeShim
 import org.apache.comet.vector.CometVector
 
 object Utils extends CometTypeShim with Logging {
-  private val ArrowExtensionNameKey = "ARROW:extension:name"
   private val VariantExtensionName = "arrow.parquet.variant"
 
   def getConfPath(confFileName: String): String = {
@@ -83,7 +82,8 @@ object Utils extends CometTypeShim with Logging {
         ArrayType(elementType, containsNull = elementField.isNullable)
       case ArrowType.Struct.INSTANCE =>
         Option(field.getMetadata)
-          .flatMap(metadata => Option(metadata.get(ArrowExtensionNameKey)))
+          .flatMap(metadata =>
+            Option(metadata.get(ArrowType.ExtensionType.EXTENSION_METADATA_KEY_NAME)))
           .filter(_ == VariantExtensionName)
           .flatMap(_ => variantType)
           .getOrElse {
