@@ -53,6 +53,12 @@ The following cases are not supported by Comet and always fall back to Spark, re
 
 - Not all input data types are supported; falls back to Spark for unsupported types
 
+## Shuffle
+
+The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
+
+- shuffle requires a resolved random seed
+
 ## SortArray
 
 By default, `SortArray` is evaluated in the JVM using Spark's own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set `spark.comet.expression.SortArray.allowIncompatible=true` to opt into Comet's native implementation instead, which has the following differences from Spark:

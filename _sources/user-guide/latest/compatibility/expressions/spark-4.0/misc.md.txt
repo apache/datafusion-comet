@@ -39,6 +39,12 @@ The following cases are not supported by Comet and always fall back to Spark, re
 
 - Only `LongType` input is supported
 
+## ScalarSubquery
+
+The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
+
+- Not all data types are supported for scalar subquery results
+
 ## SortOrder
 
 The following incompatibilities cause `SortOrder` to fall back to Spark by default. Set `spark.comet.expression.SortOrder.allowIncompatible=true` to enable Comet acceleration despite these differences.
@@ -50,4 +56,10 @@ The following incompatibilities cause `SortOrder` to fall back to Spark by defau
 The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
 
 - Falls back to Spark when the input type cannot be cast to string.
+
+## Uuid
+
+The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
+
+- uuid requires a resolved random seed
 <!--END:EXPR_COMPAT-->
