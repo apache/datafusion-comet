@@ -206,17 +206,24 @@ attempt id is embedded in its data file names.
 
 Partial results are never committed. The commit set is exactly the commit messages returned by
 successful tasks — a failed task contributes none — and if the job fails, the driver-side
-commit operator aborts without committing anything. Data files already finalized by a failed
-task attempt are not deleted by that task (iceberg-java's writer abort deletes them; the
-native path has no abort hook yet — tracked in
-[#5618](https://github.com/apache/datafusion-comet/issues/5618)): they are invisible to every
-reader, since readers resolve files through committed manifests only, and are reclaimed by
-Iceberg's normal `remove_orphan_files` maintenance.
+commit operator aborts without committing anything. A failed task attempt also deletes the
+data files it created, as iceberg-java's writer abort does: the native writer records every
+location it hands to a file writer and deletes them when the write fails or when the task is
+torn down before the write completed (for example because the operator feeding it threw), and
+once the native writer has returned, a task failure listener deletes the files named in the
+decoded manifest. Both deletions are best-effort and never mask the original failure; anything
+they miss is invisible to every reader, since readers resolve files through committed manifests
+only, and is reclaimed by Iceberg's normal `remove_orphan_files` maintenance.
 
-A failure during the driver-side commit itself behaves exactly as on the stock path: the
-commit messages carry genuine `SparkWrite$TaskCommit` objects, so Iceberg's own
-`SparkWrite.abort` cleanup (which deletes the files listed in the commit messages for
-cleanable failures) applies unchanged.
+When one task fails, the tasks that had already completed leave committed-nothing data files
+too. The committer collects each task's commit message as that task finishes, so on a job
+failure it aborts with the completed messages and deletes their data files through the table
+`FileIO`. (Iceberg's own `SparkWrite.abort` skips cleanup unless a commit failed with a
+cleanable error, so on the stock path those files are left for `remove_orphan_files`.) A
+failure during the driver-side commit itself behaves exactly as on the stock path: the commit
+messages carry genuine `SparkWrite$TaskCommit` objects, so Iceberg's own `SparkWrite.abort`
+cleanup (which deletes the files listed in the commit messages for cleanable failures) applies
+unchanged.
 
 ## Accepted divergences behind the toggle
 

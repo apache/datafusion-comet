@@ -19,6 +19,8 @@
 
 package org.apache.spark.sql.comet
 
+import scala.jdk.CollectionConverters._
+
 import org.apache.spark.TaskContext
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
@@ -31,6 +33,7 @@ import org.apache.spark.sql.execution.{ColumnarToRowTransition, SparkPlan, Unary
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.types.BinaryType
 import org.apache.spark.sql.vectorized.ColumnarBatch
+import org.apache.spark.util.TaskFailureListener
 
 import com.google.protobuf.CodedOutputStream
 
@@ -183,6 +186,23 @@ case class CometIcebergWriteExec(
       val decoded =
         if (manifestBytes.isEmpty) new java.util.ArrayList[AnyRef]()
         else IcebergReflection.decodeManifestToDataFiles(manifestBytes, specId)
+      // From here on the JVM knows which files iceberg-rust wrote. If this task fails before its
+      // commit message reaches the committer (metrics rebuild, `TaskCommit` construction,
+      // serialization), delete them the way iceberg-java's `DataWriter.abort()` would; failures
+      // inside the native writer itself are cleaned up on the native side.
+      Option(TaskContext.get()).foreach { tc =>
+        tc.addTaskFailureListener(new TaskFailureListener {
+          override def onTaskFailure(context: TaskContext, error: Throwable): Unit = {
+            val locations =
+              decoded.asScala.flatMap(f => IcebergReflection.extractFileLocation(f)).toSeq
+            IcebergReflection.deleteFilesQuietly(
+              tableIO,
+              locations,
+              s"failed Iceberg write task ${context.partitionId()} " +
+                s"(attempt ${context.attemptNumber()})")
+          }
+        })
+      }
       val dataFiles = IcebergReflection.rebuildDataFilesWithJavaMetrics(
         decoded,
         tableIO,

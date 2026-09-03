@@ -1654,6 +1654,66 @@ object IcebergReflection extends Logging {
     }
   }
 
+  /**
+   * Best-effort deletion of `locations` through the table's `FileIO`, for a task that failed
+   * after iceberg-rust had already written them (the JVM-side counterpart of iceberg-java's
+   * `SparkCleanupUtil.deleteTaskFiles`). Uses `SupportsBulkOperations.deleteFiles` when the
+   * `FileIO` offers it and `FileIO.deleteFile(String)` per path otherwise. Never throws: the
+   * original task failure must stay the one Spark reports. Returns the number of locations
+   * deleted, or handed to the bulk delete. `context` identifies the task in the log lines.
+   */
+  def deleteFilesQuietly(io: AnyRef, locations: Seq[String], context: String): Int = {
+    import scala.jdk.CollectionConverters._
+    if (locations.isEmpty) return 0
+    val deleted = findMethod(io.getClass, "deleteFiles", classOf[java.lang.Iterable[_]]) match {
+      case Some(bulkDelete) =>
+        try {
+          bulkDelete.invoke(io, locations.asJava)
+          locations.size
+        } catch {
+          case NonFatal(e) =>
+            logWarning(s"Bulk delete of ${locations.size} data file(s) failed ($context)", e)
+            0
+        }
+      case None =>
+        findMethod(io.getClass, "deleteFile", classOf[String]) match {
+          case None =>
+            logWarning(
+              s"FileIO ${io.getClass.getName} has no deleteFile(String); leaving " +
+                s"${locations.size} data file(s) for remove_orphan_files ($context)")
+            0
+          case Some(deleteFile) =>
+            locations.count { location =>
+              try {
+                deleteFile.invoke(io, location)
+                true
+              } catch {
+                case NonFatal(e) =>
+                  logWarning(s"Failed to delete data file $location ($context)", e)
+                  false
+              }
+            }
+        }
+    }
+    logInfo(s"Deleted $deleted of ${locations.size} data file(s) ($context)")
+    deleted
+  }
+
+  /**
+   * The locations of the data files carried by a `SparkWrite$TaskCommit` message (its
+   * package-private `files()`), or empty when `message` is not one. Used to clean up after a
+   * write job that failed before any commit was attempted.
+   */
+  def taskCommitFileLocations(message: AnyRef): Seq[String] =
+    findMethodInHierarchy(message.getClass, "files") match {
+      case Some(files) =>
+        files.invoke(message) match {
+          case array: Array[_] => array.toSeq.flatMap(f => extractFileLocation(f))
+          case _ => Seq.empty
+        }
+      case None => Seq.empty
+    }
+
   /** The table's `FileIO` (`table.io()`). Iceberg requires `FileIO` to be `Serializable`. */
   def getTableIO(table: Any): Option[AnyRef] =
     findMethodInHierarchy(table.getClass, "io").map(_.invoke(table))
