@@ -285,6 +285,19 @@ impl SparkError {
         }
     }
 
+    /// Construct a [`SparkError::DuplicateFieldCaseInsensitive`], formatting `matched` as the
+    /// bracketed, comma-joined list the JVM `ShimSparkErrorConverter` consumes (fed verbatim into
+    /// the `matchedOrcFields` param). Centralizes that format so every producer stays consistent.
+    pub fn duplicate_field_case_insensitive(
+        required_field_name: &str,
+        matched: &[&str],
+    ) -> SparkError {
+        SparkError::DuplicateFieldCaseInsensitive {
+            required_field_name: required_field_name.to_string(),
+            matched_fields: format!("[{}]", matched.join(", ")),
+        }
+    }
+
     /// Get the error type name for JSON serialization
     pub(crate) fn error_type_name(&self) -> &'static str {
         match self {

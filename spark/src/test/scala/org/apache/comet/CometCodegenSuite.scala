@@ -1563,6 +1563,39 @@ class CometCodegenSuite
     }
   }
 
+  test(
+    "single-input short-circuit does not swallow an ANSI error from a foldable subtree (#5608)") {
+    // The residual hole left by #5218: `canShortCircuitNulls` assumed a single input ordinal
+    // leaves Spark nothing to evaluate ahead of that ordinal's null check. Not true when a
+    // foldable subtree sits between the root and the ordinal. `ConstantFolding` refuses to fold
+    // `1L DIV 0L` because evaluating it throws and it sits under an `If` branch, so the throwing
+    // expression survives into the physical plan. `TernaryExpression.nullSafeCodeGen` then emits
+    // `Substring`'s `pos` code -- the division -- before it tests `len`'s null, so Spark raises
+    // DIVIDE_BY_ZERO on the (true, NULL) row while the short-circuit returned NULL.
+    withTable("t") {
+      sql("CREATE TABLE t (flag BOOLEAN, n INT) USING parquet")
+      sql("INSERT INTO t VALUES (true, NULL), (false, NULL)")
+      withSQLConf("spark.sql.ansi.enabled" -> "true") {
+        CometScalaUDFCodegen.resetStats()
+        val (sparkErr, cometErr) = checkSparkAnswerMaybeThrows(
+          sql("SELECT IF(flag, upper(substring('abc', CAST(1L DIV 0L AS INT), n)), NULL) FROM t"))
+        val stats = CometScalaUDFCodegen.stats()
+        assert(
+          stats.compileCount + stats.cacheHitCount >= 1,
+          s"expected the codegen dispatcher to run for this query, got $stats")
+        assert(
+          sparkErr.isDefined,
+          "expected Spark to raise DIVIDE_BY_ZERO; the test row is no longer a witness")
+        assert(
+          cometErr.isDefined,
+          "Comet returned a value where Spark raised: the null short-circuit swallowed the error")
+        assert(
+          cometErr.get.getMessage.contains("DIVIDE_BY_ZERO"),
+          s"expected the same DIVIDE_BY_ZERO error Spark raises, got: ${cometErr.get}")
+      }
+    }
+  }
+
   test("multi-input leaf-only NullIntolerant tree short-circuits nulls correctly (#5218)") {
     // The leaf-only-children shape keeps the union-of-ordinals short-circuit, because the only
     // code Spark runs ahead of its own null checks is `BoundReference` reads. Exercises every

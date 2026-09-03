@@ -290,3 +290,19 @@ harness = false
 [[bench]]
 name = "sequence"
 harness = false
+
+[[bench]]
+name = "timestamp_trunc"
+harness = false
+
+[[bench]]
+name = "unix_timestamp"
+harness = false
+
+[[bench]]
+name = "from_utc_timestamp"
+harness = false
+
+[[bench]]
+name = "to_utc_timestamp"
+harness = false
