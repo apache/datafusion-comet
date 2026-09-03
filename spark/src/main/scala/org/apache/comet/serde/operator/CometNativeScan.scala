@@ -23,6 +23,7 @@ import scala.collection.mutable.ListBuffer
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.internal.Logging
+import org.apache.spark.sql.catalyst.analysis.Resolver
 import org.apache.spark.sql.catalyst.expressions.{Expression, Literal}
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
 import org.apache.spark.sql.comet.{CometNativeExec, CometNativeScanExec, CometScanExec}
@@ -59,6 +60,30 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
       containsVariantType(keyType) || containsVariantType(valueType)
     case _ => false
   }
+
+  /**
+   * The data schema the native scan actually serializes.
+   *
+   * Spark's required schema can prune a Variant column, including a Variant nested under an
+   * unrequested struct. The complete relation schema still contains that unsupported type, and
+   * serializing it would throw even though the native reader never needs those bytes. Keep
+   * ordinary fields unchanged and replace a requested Variant-bearing root with its pruned
+   * required field, dropping the root entirely when nothing under it is requested.
+   *
+   * A requested actual Variant never reaches either caller: `CometScanRule.isSchemaSupported`
+   * validates the projected schema first and keeps those scans on Spark.
+   */
+  private def nativeDataSchema(
+      dataSchema: StructType,
+      requiredSchema: StructType,
+      resolver: Resolver): StructType =
+    StructType(dataSchema.fields.flatMap { field =>
+      if (containsVariantType(field.dataType)) {
+        requiredSchema.fields.find(requiredField => resolver(requiredField.name, field.name))
+      } else {
+        Some(field)
+      }
+    })
 
   /** Determine whether the scan is supported and tag the Spark plan with any fallback reasons */
   def isSupported(scanExec: FileSourceScanExec): Boolean = {
@@ -100,6 +125,25 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
         .contains("true")) {
 
       withFallbackReason(scanExec, "Full native scan disabled because ignoreMissingFiles enabled")
+    }
+
+    // The native scan serializes whole schemas rather than just the required columns, so every
+    // field it serializes must have a proto representation. Types that have none (e.g. GEOMETRY /
+    // GEOGRAPHY) would otherwise crash schema serialization; fall back instead. Validate the same
+    // pruned data schema `convert` serializes, so a Variant root that pruning removes does not
+    // force a fallback here, and the full partition schema, which is never pruned.
+    val serializedFields =
+      nativeDataSchema(
+        scanExec.relation.dataSchema,
+        scanExec.requiredSchema,
+        scanExec.conf.resolver).fields ++ scanExec.relation.partitionSchema.fields
+    serializedFields.foreach { field =>
+      if (serializeDataType(field.dataType).isEmpty) {
+        withFallbackReason(
+          scanExec,
+          s"Native scan does not support data type ${field.dataType.simpleString} " +
+            s"in column ${field.name}")
+      }
     }
 
     // the scan is supported if no fallback reasons were added to the node
@@ -194,27 +238,16 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
       val partitionSchema = schema2Proto(partitionSchemaFields)
       val requiredSchema = schema2Proto(scan.requiredSchema)
 
-      // Spark's required schema can prune a Variant column, including a Variant nested under an
-      // unrequested struct. The complete relation schema still contains that unsupported type,
-      // and serializing it would throw even though the native reader never needs those bytes.
-      // Keep ordinary fields unchanged and replace a requested Variant-bearing root with its
-      // already-validated, pruned required field. A requested actual Variant never reaches this
-      // point because CometScanRule keeps those scans on Spark.
-      val nativeDataSchema = StructType(scan.relation.dataSchema.fields.flatMap { field =>
-        if (containsVariantType(field.dataType)) {
-          scan.requiredSchema.fields.find(requiredField =>
-            scan.conf.resolver(requiredField.name, field.name))
-        } else {
-          Some(field)
-        }
-      })
-      val dataSchema = schema2Proto(nativeDataSchema)
+      // Serialize the same pruned schema `isSupported` validated; see `nativeDataSchema`.
+      val prunedDataSchema =
+        nativeDataSchema(scan.relation.dataSchema, scan.requiredSchema, scan.conf.resolver)
+      val dataSchema = schema2Proto(prunedDataSchema)
 
       val dataSchemaIndexes = scan.requiredSchema.map(field => {
-        nativeDataSchema.fieldIndex(field.name)
+        prunedDataSchema.fieldIndex(field.name)
       })
-      val partitionSchemaIndexes = nativeDataSchema.fields.length until
-        (nativeDataSchema.length + partitionSchemaFields.length)
+      val partitionSchemaIndexes = prunedDataSchema.fields.length until
+        (prunedDataSchema.length + partitionSchemaFields.length)
 
       val projectionVector = (dataSchemaIndexes ++ partitionSchemaIndexes).map(idx =>
         idx.toLong.asInstanceOf[java.lang.Long])
