@@ -98,9 +98,16 @@ datafusion-functions-nested = { version = "54.1.0" }
 
 [features]
 backtrace = ["datafusion/backtrace"]
-default = ["hdfs-opendal"]
+default = ["hdfs-opendal", "oom-guard"]
 hdfs-opendal = ["opendal", "object_store_opendal", "hdfs-sys"]
 jemalloc = ["tikv-jemallocator", "tikv-jemalloc-ctl"]
+
+# Allocator-level OOM circuit breaker. Wraps the global allocator to track real
+# allocated bytes and gate/abort over-budget query-worker threads. Enabled by default
+# so `spark.comet.exec.memoryGuard.*` and the `real_usage` memory pool work without a
+# special build; an idle guard is near-free (tracking stays off until a task arms it).
+# Drop it from `default` for a bare allocator.
+oom-guard = []
 # Delta Lake integration. When enabled, links the `comet-contrib-delta` crate
 # into `libcomet` and activates the `OpStruct::DeltaScan` dispatcher arm.
 # Default builds carry zero Delta surface.

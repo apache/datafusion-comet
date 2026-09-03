@@ -109,14 +109,20 @@ use crate::execution::tracing::{
 };
 
 use crate::execution::memory_pools::logging_pool::LoggingMemoryPool;
+#[cfg(feature = "oom-guard")]
+use crate::execution::memory_pools::{oom_guard, MemoryPoolType, RealUsagePool};
 use crate::execution::spark_config::{
     SparkConfig, COMET_DEBUG_ENABLED, COMET_DEBUG_MEMORY, COMET_EXPLAIN_NATIVE_ENABLED,
     COMET_MAX_TEMP_DIRECTORY_SIZE, COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED,
     COMET_TRACING_ENABLED, SPARK_EXECUTOR_CORES,
 };
+#[cfg(feature = "oom-guard")]
+use crate::execution::spark_config::{COMET_MEMORY_GUARD_ENABLED, COMET_MEMORY_GUARD_SIZE};
 use crate::parquet::encryption_support::{CometEncryptionFactory, ENCRYPTION_FACTORY_ID};
 use datafusion_comet_proto::spark_operator::operator::OpStruct;
 use log::info;
+#[cfg(feature = "oom-guard")]
+use log::warn;
 use std::sync::OnceLock;
 #[cfg(feature = "jemalloc")]
 use tikv_jemalloc_ctl::{epoch, stats};
@@ -224,6 +230,8 @@ fn parse_usize_env_var(name: &str) -> Option<usize> {
 
 fn build_runtime(default_worker_threads: Option<usize>) -> Runtime {
     let mut builder = tokio::runtime::Builder::new_multi_thread();
+    #[cfg(feature = "oom-guard")]
+    builder.on_thread_start(oom_guard::stamp_current_thread);
     if let Some(n) = parse_usize_env_var("COMET_WORKER_THREADS") {
         info!("Comet tokio runtime: using COMET_WORKER_THREADS={n}");
         builder.worker_threads(n);
@@ -475,6 +483,31 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 memory_limit,
                 memory_limit_per_task,
             )?;
+
+            // Arm the hard breaker when the guard is enabled or the `real_usage` pool is
+            // selected (it carries the guard itself). It trips on *actual* over-budget
+            // usage; the cooperative gate below trips on *projected* usage and spills
+            // first. `spark.comet.exec.memoryGuard.size` gives the breaker headroom above
+            // the off-heap budget (e.g. up to the container RSS limit).
+            #[cfg(feature = "oom-guard")]
+            let (guard_enabled, is_real_usage) = (
+                spark_config.get_bool(COMET_MEMORY_GUARD_ENABLED),
+                memory_pool_config.pool_type == MemoryPoolType::RealUsage,
+            );
+            #[cfg(feature = "oom-guard")]
+            if guard_enabled || is_real_usage {
+                let default_limit = memory_limit.max(0) as u64;
+                let limit = spark_config.get_u64(COMET_MEMORY_GUARD_SIZE, default_limit);
+                if limit == 0 {
+                    warn!(
+                        "Comet memory guard is active but the effective limit is 0 \
+                         (memory_limit={memory_limit}); the guard will not trip. Set \
+                         spark.comet.exec.memoryGuard.size explicitly."
+                    );
+                }
+                oom_guard::arm(limit as usize);
+            }
+
             let memory_pool =
                 create_memory_pool(&memory_pool_config, task_memory_manager, task_attempt_id);
 
@@ -484,6 +517,26 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
             let memory_pool_registration = tracing_enabled.then(|| {
                 ThreadMemoryPoolRegistration::new(rust_thread_id, id, Arc::clone(&memory_pool))
             });
+
+            // Cooperative real-usage gate: reject growth (triggering a spill) once real
+            // allocator usage plus the request would exceed the off-heap budget. This is the
+            // first line of defense and fires before the hard breaker armed above, so
+            // over-budget work spills and retries rather than failing the task. The dedicated
+            // `real_usage` pool already gates internally, so it is not wrapped again.
+            #[cfg(feature = "oom-guard")]
+            let memory_pool = if guard_enabled && !is_real_usage {
+                let ceiling = memory_limit.max(0) as usize;
+                // Enable the fair-share guard for pools whose `reserved()` is per-task;
+                // `executor_cores` is the fallback divisor when no task count is known.
+                let fair_share = memory_pool_config
+                    .pool_type
+                    .has_per_task_budget()
+                    .then_some(executor_cores);
+                Arc::new(RealUsagePool::new(memory_pool, ceiling, fair_share))
+                    as Arc<dyn datafusion::execution::memory_pool::MemoryPool>
+            } else {
+                memory_pool
+            };
 
             let memory_pool = if logging_memory_pool {
                 Arc::new(LoggingMemoryPool::new(task_attempt_id as u64, memory_pool))
@@ -841,6 +894,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
     schema_addrs: JLongArray,
 ) -> jlong {
     try_unwrap_or_throw(&e, |env| {
+        #[cfg(feature = "oom-guard")]
+        oom_guard::stamp_current_thread();
         // Retrieve the query
         let exec_context = get_execution_context(exec_context);
 
@@ -917,6 +972,13 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                         .await;
 
                         if let Err(panic) = result {
+                            #[cfg(feature = "oom-guard")]
+                            if let Some(e) = oom_guard::map_panic_to_error(panic.as_ref()) {
+                                // Runs on the tokio worker thread that panicked, so this clears
+                                // that worker's UNWINDING flag (not the blocked JNI caller thread's).
+                                let _ = tx.send(Err(e)).await;
+                                return;
+                            }
                             let msg = match panic.downcast_ref::<&str>() {
                                 Some(s) => s.to_string(),
                                 None => match panic.downcast_ref::<String>() {
@@ -941,76 +1003,116 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                 pull_input_batches(exec_context)?;
             }
 
-            if let Some(rx) = &mut exec_context.batch_receiver {
-                match rx.blocking_recv() {
-                    Some(Ok(batch)) => {
-                        update_metrics(env, exec_context)?;
-                        return prepare_output(
-                            env,
-                            array_addrs,
-                            schema_addrs,
-                            batch,
-                            exec_context.debug_native,
-                        );
-                    }
-                    Some(Err(e)) => {
-                        return Err(e.into());
-                    }
-                    None => {
-                        log_plan_metrics(exec_context, stage_id, partition);
-                        return Ok(-1);
+            if exec_context.batch_receiver.is_some() {
+                let recv_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                    || -> CometResult<jlong> {
+                        // Scope the rx borrow to just the blocking_recv call so that
+                        // exec_context is free for update_metrics / prepare_output below.
+                        let recv = exec_context
+                            .batch_receiver
+                            .as_mut()
+                            .unwrap()
+                            .blocking_recv();
+                        match recv {
+                            Some(Ok(batch)) => {
+                                update_metrics(env, exec_context)?;
+                                prepare_output(
+                                    env,
+                                    array_addrs,
+                                    schema_addrs,
+                                    batch,
+                                    exec_context.debug_native,
+                                )
+                            }
+                            Some(Err(e)) => Err(e.into()),
+                            None => {
+                                log_plan_metrics(exec_context, stage_id, partition);
+                                Ok(-1)
+                            }
+                        }
+                    },
+                ));
+
+                match recv_result {
+                    Ok(r) => return r,
+                    Err(_panic) => {
+                        // On a guard panic, drop the receiver so any re-entry re-initializes.
+                        #[cfg(feature = "oom-guard")]
+                        return Err(oom_guard::oom_error_or_resume(_panic, || {
+                            exec_context.batch_receiver = None;
+                        })
+                        .into());
+                        #[cfg(not(feature = "oom-guard"))]
+                        std::panic::resume_unwind(_panic);
                     }
                 }
             }
 
             // ScanExec path: busy-poll to interleave JVM batch pulls with stream polling
-            get_runtime().block_on(async {
-                loop {
-                    let next_item = exec_context.stream.as_mut().unwrap().next();
-                    let poll_output = poll!(next_item);
+            let poll_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                get_runtime().block_on(async {
+                    loop {
+                        let next_item = exec_context.stream.as_mut().unwrap().next();
+                        let poll_output = poll!(next_item);
 
-                    // Only check time/tracing every 100 polls to reduce overhead
-                    exec_context.poll_count_since_metrics_check += 1;
-                    if exec_context.poll_count_since_metrics_check >= 100 {
-                        exec_context.poll_count_since_metrics_check = 0;
-                        if let Some(interval) = exec_context.metrics_update_interval {
-                            let now = Instant::now();
-                            if now - exec_context.metrics_last_update_time >= interval {
-                                update_metrics(env, exec_context)?;
-                                exec_context.metrics_last_update_time = now;
+                        // Only check time/tracing every 100 polls to reduce overhead
+                        exec_context.poll_count_since_metrics_check += 1;
+                        if exec_context.poll_count_since_metrics_check >= 100 {
+                            exec_context.poll_count_since_metrics_check = 0;
+                            if let Some(interval) = exec_context.metrics_update_interval {
+                                let now = Instant::now();
+                                if now - exec_context.metrics_last_update_time >= interval {
+                                    update_metrics(env, exec_context)?;
+                                    exec_context.metrics_last_update_time = now;
+                                }
+                            }
+                            if exec_context.tracing_enabled {
+                                log_memory_usage(
+                                    &exec_context.tracing_memory_metric_name,
+                                    total_reserved_for_thread(exec_context.rust_thread_id) as u64,
+                                );
                             }
                         }
-                        if exec_context.tracing_enabled {
-                            log_memory_usage(
-                                &exec_context.tracing_memory_metric_name,
-                                total_reserved_for_thread(exec_context.rust_thread_id) as u64,
-                            );
-                        }
-                    }
 
-                    match poll_output {
-                        Poll::Ready(Some(output)) => {
-                            return prepare_output(
-                                env,
-                                array_addrs,
-                                schema_addrs,
-                                output?,
-                                exec_context.debug_native,
-                            );
-                        }
-                        Poll::Ready(None) => {
-                            log_plan_metrics(exec_context, stage_id, partition);
-                            return Ok(-1);
-                        }
-                        Poll::Pending => {
-                            // JNI call to pull batches from JVM into ScanExec operators.
-                            // block_in_place lets tokio move other tasks off this worker
-                            // while we wait for JVM data.
-                            tokio::task::block_in_place(|| pull_input_batches(exec_context))?;
+                        match poll_output {
+                            Poll::Ready(Some(output)) => {
+                                return prepare_output(
+                                    env,
+                                    array_addrs,
+                                    schema_addrs,
+                                    output?,
+                                    exec_context.debug_native,
+                                );
+                            }
+                            Poll::Ready(None) => {
+                                log_plan_metrics(exec_context, stage_id, partition);
+                                return Ok(-1);
+                            }
+                            Poll::Pending => {
+                                // JNI call to pull batches from JVM into ScanExec operators.
+                                // block_in_place lets tokio move other tasks off this worker
+                                // while we wait for JVM data.
+                                tokio::task::block_in_place(|| pull_input_batches(exec_context))?;
+                            }
                         }
                     }
+                })
+            }));
+
+            match poll_result {
+                Ok(r) => r,
+                Err(_panic) => {
+                    // The block_on future was dropped mid-poll; on a guard panic null the
+                    // stream so any re-entry re-initializes rather than polling a half-consumed one.
+                    #[cfg(feature = "oom-guard")]
+                    return Err(oom_guard::oom_error_or_resume(_panic, || {
+                        exec_context.stream = None;
+                    })
+                    .into());
+                    #[cfg(not(feature = "oom-guard"))]
+                    std::panic::resume_unwind(_panic);
                 }
-            })
+            }
         });
 
         if exec_context.tracing_enabled {
