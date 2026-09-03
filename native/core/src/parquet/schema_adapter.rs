@@ -254,30 +254,43 @@ fn remap_physical_schema(
     let logical_folded = fold_schema_names(logical_schema, case_sensitive);
     let physical_folded = fold_schema_names(physical_schema, case_sensitive);
 
-    // Folded names of ID-bearing logical fields whose ID is not present in the file. Any physical
-    // field that shares one of these names must be renamed to something the
-    // `DefaultPhysicalExprAdapter` cannot name-match, otherwise the read would silently fall
-    // through to a name match. Spark's `matchIdField` solves the same problem with
-    // `generateFakeColumnName` (see `ParquetReadSupport.scala`).
-    let unmatched_id_logical_folded: HashSet<String> = if should_match_by_id {
+    // Folded names of ID-bearing logical fields. Spark's `matchIdField` resolves these
+    // strictly by ID and never falls back to a name match, so a physical field that carries
+    // such a name WITHOUT being the ID match (its ID is absent, different, or the logical ID
+    // matched a different physical field) must be renamed to something the
+    // `DefaultPhysicalExprAdapter` cannot name-match; otherwise the read would silently
+    // resolve the wrong column instead of null-filling. Spark's `matchIdField` solves the
+    // same problem with `generateFakeColumnName` (see `ParquetReadSupport.scala`).
+    let id_logical_folded: HashSet<String> = if should_match_by_id {
         logical_schema
             .fields()
             .iter()
             .enumerate()
-            .filter_map(|(j, lf)| {
-                parse_field_id(lf).and_then(|id| {
-                    if id_to_phys_names.contains_key(&id) {
-                        None
-                    } else {
-                        Some(logical_folded[j].clone())
-                    }
-                })
-            })
+            .filter(|(_, lf)| parse_field_id(lf).is_some())
+            .map(|(j, _)| logical_folded[j].clone())
             .collect()
     } else {
         HashSet::new()
     };
+
+    // Fake names must never collide with a real column from either schema: a physical column
+    // legitimately named like the fake pattern could otherwise steal an exact-name match.
+    // Spark gets the same guarantee from the random UUID in `generateFakeColumnName`; here
+    // the counter is bumped past any reserved name so the result stays deterministic.
+    let reserved_names: HashSet<&str> = logical_schema
+        .fields()
+        .iter()
+        .chain(physical_schema.fields().iter())
+        .map(|f| f.name().as_str())
+        .collect();
     let mut fake_counter: usize = 0;
+    let mut next_fake_name = move || loop {
+        fake_counter += 1;
+        let candidate = format!("__comet_unmatched_field_id_{}", fake_counter);
+        if !reserved_names.contains(candidate.as_str()) {
+            return candidate;
+        }
+    };
 
     let mut name_map: HashMap<String, String> = HashMap::new();
     let remapped_fields: Vec<FieldRef> = physical_schema
@@ -305,21 +318,13 @@ fn remap_physical_schema(
                 }
             }
 
-            // Block accidental name match for ID-bearing logical fields whose ID is missing
-            // from the file. Mirrors Spark's `generateFakeColumnName` in `matchIdField`.
-            if should_match_by_id
-                && unmatched_id_logical_folded.contains(&physical_folded[phys_idx])
-            {
-                fake_counter += 1;
-                let fake_name = format!("__comet_unmatched_field_id_{}", fake_counter);
-                return Arc::new(
-                    Field::new(fake_name, field.data_type().clone(), field.is_nullable())
-                        .with_metadata(field.metadata().clone()),
-                );
-            }
-
-            // Name match. Spark's `matchIdField` does not fall through to a name match for
-            // ID-bearing logical fields, so skip those when the schema is ID-bearing.
+            // Name match. Spark resolves every non-ID-bearing logical field by name
+            // (`matchCaseSensitiveField` / `matchCaseInsensitiveField` in
+            // `clipParquetGroupFields`) even when field-ID matching is on; only ID-bearing
+            // logical fields skip the name fallback. Case-sensitive mode needs no rename
+            // here (the downstream adapter's exact-name lookup already hits); the
+            // case-insensitive lookup rewrites the physical name, and a successful match
+            // claims the field before the shield below can hide it.
             if !case_sensitive {
                 let logical_field = logical_schema
                     .fields()
@@ -342,7 +347,26 @@ fn remap_physical_schema(
                             .with_metadata(field.metadata().clone()),
                         );
                     }
+                    return Arc::clone(field);
                 }
+            }
+
+            // Shield: any remaining physical field whose name would hit an ID-bearing
+            // logical field downstream gets a fake name (Spark's `generateFakeColumnName`
+            // equivalent). ID-bearing logical fields resolve strictly by ID, so a name hit
+            // on one would read the wrong column instead of null-filling it or leaving it
+            // to its real ID match. The folded comparison mirrors the matcher that would
+            // otherwise hit: identity fold in case-sensitive mode, the JVM lowercase fold
+            // otherwise.
+            if should_match_by_id && id_logical_folded.contains(&physical_folded[phys_idx]) {
+                return Arc::new(
+                    Field::new(
+                        next_fake_name(),
+                        field.data_type().clone(),
+                        field.is_nullable(),
+                    )
+                    .with_metadata(field.metadata().clone()),
+                );
             }
 
             Arc::clone(field)
@@ -1303,7 +1327,7 @@ mod test {
     };
     use arrow::array::UInt32Array;
     use arrow::array::{
-        BinaryArray, Date32Array, Decimal128Array, Float32Array, Float64Array, Int32Array,
+        Array, BinaryArray, Date32Array, Decimal128Array, Float32Array, Float64Array, Int32Array,
         Int64Array, StringArray, TimestampMicrosecondArray,
     };
     use arrow::datatypes::SchemaRef;
@@ -2038,6 +2062,155 @@ mod test {
         let (remapped, _name_map) =
             super::remap_physical_schema(&logical, &physical, true, true, false).unwrap();
         assert_eq!(remapped.field(0).name(), "a");
+    }
+
+    /// Build a nullable Int64 field carrying a Parquet field ID.
+    fn field_with_id(name: &str, id: i32) -> Field {
+        Field::new(name, DataType::Int64, true).with_metadata(id_meta(&id.to_string()))
+    }
+
+    /// Write a Parquet file from `file_schema`/`columns`, then scan it with
+    /// `required_schema` through the Spark expression adapter and return the first batch.
+    async fn scan_with_adapter(
+        file_schema: SchemaRef,
+        columns: Vec<Arc<dyn arrow::array::Array>>,
+        required_schema: SchemaRef,
+        spark_parquet_options: SparkParquetOptions,
+    ) -> Result<RecordBatch, DataFusionError> {
+        let batch = RecordBatch::try_new(Arc::clone(&file_schema), columns).unwrap();
+
+        let filename = get_temp_filename();
+        let filename = filename.as_path().as_os_str().to_str().unwrap().to_string();
+        let file = File::create(&filename).unwrap();
+        let mut writer = ArrowWriter::try_new(file, file_schema, None).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+
+        let expr_adapter_factory: Arc<dyn PhysicalExprAdapterFactory> = Arc::new(
+            SparkPhysicalExprAdapterFactory::new(spark_parquet_options, None),
+        );
+
+        let object_store_url = ObjectStoreUrl::local_filesystem();
+        let parquet_source = ParquetSource::new(required_schema);
+        let files = FileGroup::new(vec![PartitionedFile::from_path(filename).unwrap()]);
+        let file_scan_config =
+            FileScanConfigBuilder::new(object_store_url, Arc::new(parquet_source))
+                .with_file_groups(vec![files])
+                .with_expr_adapter(Some(expr_adapter_factory))
+                .build();
+
+        let parquet_exec = DataSourceExec::new(Arc::new(file_scan_config));
+        let mut stream = parquet_exec
+            .execute(0, Arc::new(TaskContext::default()))
+            .unwrap();
+        stream.next().await.unwrap()
+    }
+
+    /// File: one column `κ` (U+03BA) with field ID 2 holding 7. Required: `Κ` (U+039A,
+    /// field ID 1) and ID-less `κ`; case-sensitive, field-ID reading on. Spark routes `Κ`
+    /// through `matchIdField` (no ID 1 in the file -> null-filled behind a faked REQUESTED
+    /// name) and resolves `κ` by exact name through `matchCaseSensitiveField`, reading the
+    /// real column: the result is (NULL, 7), never (NULL, NULL).
+    #[tokio::test]
+    async fn parquet_field_id_miss_null_fills_but_exact_name_sibling_still_reads() {
+        let file_schema = Arc::new(Schema::new(vec![field_with_id("\u{3BA}", 2)]));
+        let col = Arc::new(Int64Array::from(vec![7])) as Arc<dyn arrow::array::Array>;
+        let required_schema = Arc::new(Schema::new(vec![
+            field_with_id("\u{39A}", 1),
+            Field::new("\u{3BA}", DataType::Int64, true),
+        ]));
+
+        let mut opts = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        opts.case_sensitive = true;
+        opts.use_field_id = true;
+
+        let batch = scan_with_adapter(file_schema, vec![col], required_schema, opts)
+            .await
+            .unwrap();
+        assert_eq!(batch.num_rows(), 1);
+        let capital = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        assert!(capital.is_null(0));
+        let small = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        assert!(!small.is_null(0));
+        assert_eq!(small.value(0), 7);
+    }
+
+    /// Case-insensitive variant of the Kappa scenario. Spark's `matchCaseInsensitiveField`
+    /// resolves the ID-less requested `κ` through the `toLowerCase(Locale.ROOT)`-keyed map
+    /// of the file's fields, which holds the physical `κ`; the unmatched-ID requested `Κ`
+    /// is null-filled and never blocks that lookup. Same (NULL, 7) result as the
+    /// case-sensitive read.
+    #[tokio::test]
+    async fn parquet_field_id_miss_case_insensitive_sibling_still_reads() {
+        let file_schema = Arc::new(Schema::new(vec![field_with_id("\u{3BA}", 2)]));
+        let col = Arc::new(Int64Array::from(vec![7])) as Arc<dyn arrow::array::Array>;
+        let required_schema = Arc::new(Schema::new(vec![
+            field_with_id("\u{39A}", 1),
+            Field::new("\u{3BA}", DataType::Int64, true),
+        ]));
+
+        let mut opts = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        opts.case_sensitive = false;
+        opts.use_field_id = true;
+
+        let batch = scan_with_adapter(file_schema, vec![col], required_schema, opts)
+            .await
+            .unwrap();
+        assert_eq!(batch.num_rows(), 1);
+        let capital = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        assert!(capital.is_null(0));
+        let small = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        assert!(!small.is_null(0));
+        assert_eq!(small.value(0), 7);
+    }
+
+    /// File: a stray ID-less column literally named `A` = [10, 20] FIRST, then `a` with
+    /// field ID 1 = [1, 2]. Required: `A` with field ID 1, case-insensitive, field-ID
+    /// reading on. Spark's `matchIdField` resolves requested `A` to physical `a` by ID; the
+    /// stray `A` is never requested, and no case-insensitive duplicate error fires because
+    /// ID-routed requested fields never enter the name lookup. Expect [1, 2] -- neither the
+    /// stray column's data nor a spurious duplicate-field error.
+    #[tokio::test]
+    async fn parquet_field_id_match_beats_stray_column_with_requested_name() {
+        let file_schema = Arc::new(Schema::new(vec![
+            Field::new("A", DataType::Int64, true),
+            field_with_id("a", 1),
+        ]));
+        let stray = Arc::new(Int64Array::from(vec![10, 20])) as Arc<dyn arrow::array::Array>;
+        let matched = Arc::new(Int64Array::from(vec![1, 2])) as Arc<dyn arrow::array::Array>;
+        let required_schema = Arc::new(Schema::new(vec![field_with_id("A", 1)]));
+
+        let mut opts = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        opts.case_sensitive = false;
+        opts.use_field_id = true;
+
+        let batch = scan_with_adapter(file_schema, vec![stray, matched], required_schema, opts)
+            .await
+            .unwrap();
+        assert_eq!(batch.num_rows(), 2);
+        let values = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        assert_eq!(values.value(0), 1);
+        assert_eq!(values.value(1), 2);
     }
 
     /// Field-id precedence in the case-insensitive duplicate check: an explicit `ω` (id 2)
