@@ -30,6 +30,15 @@ use std::sync::{Arc, Weak};
 static TASK_SHARED_MEMORY_POOLS: Lazy<Mutex<HashMap<i64, Weak<TaskSharedMemoryPool>>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
+/// Number of distinct task-attempt ids with a live task-shared memory pool, derived from
+/// the registry so there is no separate counter to keep in sync. The real-usage fair-share
+/// guard uses this as the divisor for each task's share of the budget; it returns 0 when no
+/// task-shared pool is active, in which case the guard falls back to a fixed divisor.
+#[cfg_attr(not(feature = "oom-guard"), allow(dead_code))]
+pub(crate) fn active_task_count() -> usize {
+    TASK_SHARED_MEMORY_POOLS.lock().len()
+}
+
 /// A transparent `MemoryPool` wrapper whose lifetime also controls its registry entry.
 #[derive(Debug)]
 struct TaskSharedMemoryPool {
