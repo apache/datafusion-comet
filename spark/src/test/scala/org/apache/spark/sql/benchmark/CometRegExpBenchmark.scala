@@ -34,11 +34,12 @@ import org.apache.comet.CometConf
 case class RegExpPattern(name: String, pattern: String)
 
 /**
- * Benchmark `rlike` across all execution modes:
- *   - Spark
- *   - Comet (Scan only)
- *   - Comet (Scan + Exec, native Rust regex)
- *   - Comet (Scan + Exec, JVM-side java.util.regex)
+ * Benchmark `rlike` across execution modes.
+ *
+ * In-subset patterns (proved Java-equivalent by [[org.apache.comet.expressions.CometRegex]]) take
+ * the native path by default, so they are measured as Spark / Scan / Native. Out-of-subset
+ * patterns that Rust can still compile (`\d+`) keep a four-way comparison: default is the JVM
+ * dispatcher, and `allowIncompatible` selects native.
  *
  * To run:
  * {{{
@@ -50,28 +51,44 @@ case class RegExpPattern(name: String, pattern: String)
  */
 object CometRegExpBenchmark extends CometBenchmarkBase {
 
-  // Patterns chosen to span common rlike shapes. Avoid Java-only constructs
-  // that the native (Rust) path cannot accept, since those would be skipped
-  // rather than benchmarked in the native case.
-  private val patterns = List(
+  // Analyzer-admitted patterns. Default Comet exec is already native, so do not add a
+  // "JVM regex" case: it would silently measure the native path.
+  private val inSubsetPatterns = List(
     RegExpPattern("character_class", "[0-9]+"),
-    RegExpPattern("anchored", "^[0-9]"),
     RegExpPattern("alternation", "abc|def|ghi"),
     RegExpPattern("multi_class", "[a-zA-Z][0-9]+"),
     RegExpPattern("repetition", "(ab){2,}"))
 
+  // Analyzer-rejected, Rust-accepted. Default exec is the JVM dispatcher; opt-in is native.
+  // Input data is ASCII (REPEAT of numeric strings) so `\d` vs `[0-9]` does not change hits.
+  private val outOfSubsetPatterns = List(RegExpPattern("digit_class_shorthand", "\\d+"))
+
+  // Spark's SQL parser consumes one backslash layer and treats `'` as the
+  // string delimiter. Escape so the regex engine sees the intended pattern.
+  private def sqlRegexLiteral(pattern: String): String =
+    pattern.replace("\\", "\\\\").replace("'", "''")
+
+  private def rlikeQuery(pattern: String): String =
+    s"select c1 rlike '${sqlRegexLiteral(pattern)}' from parquetV1Table"
+
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
-    runBenchmarkWithTable("rlike modes", 1024) { v =>
+    runBenchmarkWithTable("rlike modes", 1024 * 1024) { v =>
       withTempPath { dir =>
         withTempTable("parquetV1Table") {
           prepareTable(
             dir,
             spark.sql(s"SELECT REPEAT(CAST(value AS STRING), 10) AS c1 FROM $tbl"))
 
-          patterns.foreach { p =>
-            val query = s"select c1 rlike '${p.pattern}' from parquetV1Table"
+          inSubsetPatterns.foreach { p =>
+            val query = rlikeQuery(p.pattern)
             runBenchmark(p.name) {
-              runRLikeModes(p.name, v, query)
+              runInSubsetModes(p.name, v, query)
+            }
+          }
+          outOfSubsetPatterns.foreach { p =>
+            val query = rlikeQuery(p.pattern)
+            runBenchmark(p.name) {
+              runOutOfSubsetModes(p.name, v, query)
             }
           }
         }
@@ -79,16 +96,18 @@ object CometRegExpBenchmark extends CometBenchmarkBase {
     }
   }
 
-  /** Runs all four modes for a single rlike query. */
-  private def runRLikeModes(name: String, cardinality: Long, query: String): Unit = {
-    val benchmark = new Benchmark(name, cardinality, output = output)
+  private val baseExec: Map[String, String] = Map(
+    CometConf.COMET_ENABLED.key -> "true",
+    CometConf.COMET_EXEC_ENABLED.key -> "true",
+    "spark.sql.optimizer.excludedRules" ->
+      "org.apache.spark.sql.catalyst.optimizer.ConstantFolding")
 
+  private def addSparkAndScan(benchmark: Benchmark, query: String): Unit = {
     benchmark.addCase("Spark") { _ =>
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
         spark.sql(query).noop()
       }
     }
-
     benchmark.addCase("Comet (Scan)") { _ =>
       withSQLConf(
         CometConf.COMET_ENABLED.key -> "true",
@@ -96,27 +115,35 @@ object CometRegExpBenchmark extends CometBenchmarkBase {
         spark.sql(query).noop()
       }
     }
+  }
 
-    val baseExec = Map(
-      CometConf.COMET_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_ENABLED.key -> "true",
-      "spark.sql.optimizer.excludedRules" ->
-        "org.apache.spark.sql.catalyst.optimizer.ConstantFolding")
+  /** Spark / Scan / Native (the new default for in-subset patterns). */
+  private def runInSubsetModes(name: String, cardinality: Long, query: String): Unit = {
+    val benchmark = new Benchmark(name, cardinality, output = output)
+    addSparkAndScan(benchmark, query)
+    benchmark.addCase("Comet (Exec, native Rust regex)") { _ =>
+      withSQLConf(baseExec.toSeq: _*) {
+        spark.sql(query).noop()
+      }
+    }
+    benchmark.run()
+  }
 
+  /** Spark / Scan / Native-on-opt-in / JVM-dispatcher-by-default. */
+  private def runOutOfSubsetModes(name: String, cardinality: Long, query: String): Unit = {
+    val benchmark = new Benchmark(name, cardinality, output = output)
+    addSparkAndScan(benchmark, query)
     benchmark.addCase("Comet (Exec, native Rust regex)") { _ =>
       val configs = baseExec ++ Map(CometConf.getExprAllowIncompatConfigKey("RLike") -> "true")
       withSQLConf(configs.toSeq: _*) {
         spark.sql(query).noop()
       }
     }
-
     benchmark.addCase("Comet (Exec, JVM regex)") { _ =>
-      // The codegen dispatcher is enabled by default, so no extra config is needed.
       withSQLConf(baseExec.toSeq: _*) {
         spark.sql(query).noop()
       }
     }
-
     benchmark.run()
   }
 }

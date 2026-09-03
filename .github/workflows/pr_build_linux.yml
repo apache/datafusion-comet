@@ -455,6 +455,8 @@ jobs:
               org.apache.comet.expressions.conditional.CometCoalesceSuite
               org.apache.comet.expressions.conditional.CometCaseWhenSuite
               org.apache.comet.CometRegExpJvmSuite
+              org.apache.comet.CometRegexParitySuite
+              org.apache.comet.expressions.CometRegexSuite
               org.apache.comet.CometCodegenSuite
               org.apache.comet.CometCoverageStatsSuite
               org.apache.comet.CometCodegenSourceSuite
