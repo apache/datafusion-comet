@@ -1360,9 +1360,10 @@ mod iceberg_rust_transform_parity {
 
     /// `i32::MIN`, `i64::MIN`, and widths above 2^30 are left out: Java's `TruncateUtil` wraps
     /// there and iceberg-rust does not (`truncate_i32` uses `rem_euclid`, `truncate_i64` and the
-    /// decimal kernel subtract without wrapping and overflow in a debug build). That gap is an
+    /// decimal kernel subtract without wrapping and overflow in a debug build). That is an
     /// iceberg-rust bug affecting the writer's own partition values, independent of these
-    /// kernels; the wrapping cases are pinned against the JVM in the kernel's own unit tests.
+    /// kernels -- apache/iceberg-rust#3141. The wrapping cases are pinned against the JVM in the
+    /// kernel's own unit tests; add them here once that issue is fixed.
     #[test]
     fn truncate_agrees_with_iceberg_rust() {
         let inputs: Vec<(&str, ArrayRef)> = vec![
@@ -1467,7 +1468,7 @@ mod iceberg_rust_transform_parity {
 
     /// `years` and `months` agree over the dates iceberg-rust can represent -- it splits the
     /// calendar with `chrono`, so anything past year 262143 errors there while Comet and the JVM
-    /// keep going (see the kernel's own unit tests for those).
+    /// keep going (apache/iceberg-rust#3142; see the kernel's own unit tests for those).
     #[test]
     fn years_and_months_agree_with_iceberg_rust_within_its_range() {
         let years_udf = SparkIcebergTemporalTransform::years();
@@ -1511,8 +1512,8 @@ mod iceberg_rust_transform_parity {
     /// and `hours` could be: its kernels go through Arrow's `date_part`, which honours the
     /// array's timezone tag, while Iceberg's Java `DateTimeUtil` is always UTC. Comet only ever
     /// produces `UTC` and untagged timestamps today, so the parity above holds; this pins the
-    /// reason the local kernel exists. If this ever fails, iceberg-rust dropped the tag
-    /// dependency and delegating becomes safe.
+    /// reason the local kernel exists. Reported as apache/iceberg-rust#3142; if this ever fails,
+    /// iceberg-rust dropped the tag dependency and delegating becomes safe.
     #[test]
     fn iceberg_rust_years_follow_the_timezone_tag() {
         // 1969-12-31T23:59:59.999999Z, which is 1970-01-01T05:44:59.999999 in Kathmandu.

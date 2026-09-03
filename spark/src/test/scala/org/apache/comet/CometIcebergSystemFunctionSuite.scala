@@ -201,9 +201,9 @@ class CometIcebergSystemFunctionSuite
         CREATE TABLE $table (i32 INT, i64 BIGINT, ts TIMESTAMP, dt DATE)
         USING iceberg
         PARTITIONED BY (bucket(4, i32), truncate(1000, i64), days(ts), months(dt))""")
-      // iceberg-rust's own truncate transform, which the writer uses for partition values, does
-      // `v - ((v % w) + w) % w` without wrapping and overflows on Long.MinValue in debug builds
-      // (Java wraps), so the boundary row stays out of the written set.
+      // iceberg-rust's own truncate transform, which the writer uses for partition values,
+      // overflows on Long.MinValue in a debug build where Java wraps
+      // (apache/iceberg-rust#3141), so the boundary row stays out of the written set.
       val rows =
         s"SELECT i32, i64, ts, dt FROM $source WHERE i64 IS NULL OR i64 <> ${Long.MinValue}"
       try {
