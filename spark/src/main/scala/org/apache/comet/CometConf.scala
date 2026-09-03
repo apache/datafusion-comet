@@ -128,10 +128,10 @@ object CometConf extends ShimCometConf {
         "already-sorted files. When enabled and Iceberg reports an ordering (requires Iceberg's " +
         "spark.sql.iceberg.planning.preserve-data-ordering), each Spark partition reads its " +
         "files as separate sorted streams merged into one sorted output. When disabled, the scan " +
-        "native and the ordering is still reported and honoured, but via a single unordered read " +
-        "wrapped in a spillable sort instead of the k-way merge (equivalent to setting " +
-        "maxFilesPerPartition to 0). Either way the ordering is surfaced to Spark so redundant " +
-        "sorts are eliminated.")
+        "stays native and the ordering is still reported and honoured, but via a single " +
+        "unordered read wrapped in a spillable sort instead of the k-way merge (equivalent to " +
+        "setting maxFilesPerPartition to 0). Either way the ordering is surfaced to Spark so " +
+        "redundant sorts are eliminated.")
       .booleanConf
       .createWithDefault(true)
 
@@ -145,6 +145,10 @@ object CometConf extends ShimCometConf {
           "with a spillable sort, bounding concurrently-open readers. Both paths produce sorted " +
           "output; this only trades merge for a full sort on partitions with many files.")
       .intConf
+      .checkValue(
+        v => v >= 0,
+        "Max files per partition must be non-negative (0 means never merge; the reported " +
+          "ordering is honoured with a spillable sort instead)")
       .createWithDefault(64)
 
   val COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED: ConfigEntry[Boolean] =
