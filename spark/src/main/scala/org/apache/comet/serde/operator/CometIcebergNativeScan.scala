@@ -43,6 +43,7 @@ import com.google.protobuf.ByteString
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.iceberg.{CometIcebergNativeScanMetadata, IcebergReflection}
 import org.apache.comet.serde.{CometOperatorSerde, OperatorOuterClass}
+import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.OperatorOuterClass.{Operator, SparkStructField}
 import org.apache.comet.serde.QueryPlanSerde.{exprToProto, serializeDataType}
 
@@ -920,6 +921,24 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     }
 
   /**
+   * Binds the reported ordering to proto once, at planning time, against the same `output` the
+   * gate used. Returns None if any SortOrder fails to serialize, so CometScanRule can fall back
+   * to Spark cleanly instead of converting and then failing at task start. reportableOrdering
+   * already checks each order serializes against this output, so None here means the binding
+   * drifted -- treat the ordering as unreportable rather than raising at execution time.
+   */
+  def serializeReportedOrdering(
+      reportedOrdering: Seq[SortOrder],
+      output: Seq[Attribute]): Option[Seq[Expr]] = {
+    if (reportedOrdering.isEmpty) {
+      Some(Nil)
+    } else {
+      val protoOrders = reportedOrdering.map(exprToProto(_, output))
+      if (protoOrders.forall(_.isDefined)) Some(protoOrders.map(_.get)) else None
+    }
+  }
+
+  /**
    * Serializes partitions from inputRDD at execution time.
    *
    * Called after doPrepare() has resolved DPP subqueries. Builds pools and per-partition data in
@@ -1019,19 +1038,11 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       commonBuilder.addRequiredSchema(field.build())
     }
 
-    // Serialize the ordering the gate already decided to report (metadata.reportedOrdering), so
-    // the gate is evaluated exactly once (in CometScanRule). Reporting an order to Spark but not
-    // merging natively would drop a Sort and return wrong results, so if any reported order fails
-    // to serialize we throw rather than silently write a partial/empty list. Bind against `output`
-    // so each SortOrder child becomes a BoundReference into required_schema.
-    val reportedOrdering = metadata.reportedOrdering
-    if (reportedOrdering.nonEmpty) {
-      val protoOrders = reportedOrdering.map(exprToProto(_, output))
-      require(
-        protoOrders.forall(_.isDefined),
-        s"reported ordering $reportedOrdering could not be serialized to proto; refusing to " +
-          "report an ordering the native scan will not honour")
-      commonBuilder.addAllTableSortOrders(protoOrders.map(_.get).asJava)
+    // The reported ordering was bound to proto at planning time (metadata.reportedOrderingProto)
+    // against this same output, so a binding failure already fell the scan back to Spark in
+    // CometScanRule -- here we just write the pre-bound protos, no re-binding or exec-time throw.
+    if (metadata.reportedOrderingProto.nonEmpty) {
+      commonBuilder.addAllTableSortOrders(metadata.reportedOrderingProto.asJava)
     }
 
     // Load Iceberg classes once (avoid repeated class loading in loop)

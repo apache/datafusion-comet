@@ -28,6 +28,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.SortOrder
 
+import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.util.ClassLoaders
 
 /**
@@ -1990,7 +1991,12 @@ case class CometIcebergNativeScanMetadata(
     // of re-running the gate. Empty means "report no ordering". Defaulted so the extract() path,
     // which runs before output/ordering are known, can build the metadata and CometScanRule fills
     // it in via copy().
-    reportedOrdering: Seq[SortOrder] = Nil)
+    reportedOrdering: Seq[SortOrder] = Nil,
+    // The same ordering already bound to proto at planning time (against the scan's output), so the
+    // executor-side serde writes it directly without re-binding. Bound once in CometScanRule; if
+    // the binding fails there the scan falls back to Spark rather than converting and failing at
+    // task start. Index-aligned with reportedOrdering.
+    reportedOrderingProto: Seq[Expr] = Nil)
 
 object CometIcebergNativeScanMetadata extends Logging {
 
