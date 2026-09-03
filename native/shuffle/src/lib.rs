@@ -22,6 +22,8 @@ pub(crate) mod metrics;
 pub(crate) mod partitioners;
 mod remote_schema;
 #[cfg(test)]
+mod remote_schema_tests;
+#[cfg(test)]
 mod rss_execution_tests;
 mod schema_align;
 mod shuffle_writer;
@@ -35,7 +37,9 @@ pub use ipc::{
     read_ipc_compressed, read_ipc_compressed_validated, read_ipc_compressed_validated_with,
     read_ipc_compressed_with,
 };
-pub use remote_schema::validate_remote_schema;
+pub use remote_schema::{
+    decode_remote_shuffle_batch, decode_remote_shuffle_batch_with, validate_remote_schema,
+};
 pub use schema_align::SchemaAlignExec;
 pub use shuffle_writer::{ShuffleWriterDestination, ShuffleWriterExec};
 pub use writers::{CompressionCodec, ShuffleBlockWriter};
