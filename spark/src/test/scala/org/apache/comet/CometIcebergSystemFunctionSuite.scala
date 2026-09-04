@@ -207,20 +207,15 @@ class CometIcebergSystemFunctionSuite
       val table = s"$catalog.db.hidden_partitioning"
       // No `write.distribution-mode`: Iceberg picks hash distribution for a partitioned table,
       // which plans a shuffle and a local sort on the partition transforms. The string column is
-      // deliberately not a partition source: with it in the spec this test failed on the Linux
-      // CI runners with a missing data file, which does not reproduce locally, so the multi-byte
-      // values it would put in partition directory names stay out of the spec until that is
-      // understood. `bucket` and `truncate` over strings are covered by the comparison, filter,
-      // sort, and shuffle tests above.
+      // a partition source on purpose: its values include multi-byte characters and a surrogate
+      // pair, which end up in partition directory names. Those names were written raw until
+      // apache/iceberg-rust#2875, which #5651 picked up, so this also covers the URL escaping
+      // iceberg-java's `PartitionSpec.partitionToPath` applies.
       sql(s"""
-        CREATE TABLE $table (i32 INT, i64 BIGINT, ts TIMESTAMP, dt DATE)
+        CREATE TABLE $table (i32 INT, str STRING, ts TIMESTAMP, dt DATE)
         USING iceberg
-        PARTITIONED BY (bucket(4, i32), truncate(1000, i64), days(ts), months(dt))""")
-      // iceberg-rust's own truncate transform, which the writer uses for partition values,
-      // overflows on Long.MinValue in a debug build where Java wraps
-      // (apache/iceberg-rust#3141), so the boundary row stays out of the written set.
-      val rows =
-        s"SELECT i32, i64, ts, dt FROM $source WHERE i64 IS NULL OR i64 <> ${Long.MinValue}"
+        PARTITIONED BY (bucket(4, i32), truncate(2, str), days(ts), months(dt))""")
+      val rows = s"SELECT i32, str, ts, dt FROM $source"
       try {
         val plans = capturePlans(spark) {
           sql(s"INSERT INTO $table $rows")
@@ -241,14 +236,14 @@ class CometIcebergSystemFunctionSuite
             s"the distribution shuffle stayed on Spark:\n$plan")
         }
 
-        checkAnswer(sql(s"SELECT i32, i64, ts, dt FROM $table"), sql(rows).collect())
+        checkAnswer(sql(s"SELECT i32, str, ts, dt FROM $table"), sql(rows).collect())
 
         // Iceberg's own view of the partitions must match what the JVM transforms compute over
         // the written rows: one partition per distinct transform tuple.
         withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
           val expected = sql(s"""
             SELECT COUNT(*) FROM (
-              SELECT DISTINCT $catalog.system.bucket(4, i32), $catalog.system.truncate(1000, i64),
+              SELECT DISTINCT $catalog.system.bucket(4, i32), $catalog.system.truncate(2, str),
                 $catalog.system.days(ts), $catalog.system.months(dt)
               FROM $table)""").collect().head.getLong(0)
           val actual = sql(s"SELECT COUNT(*) FROM $table.partitions").collect().head.getLong(0)
