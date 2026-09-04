@@ -503,10 +503,11 @@ type ObjectStoreCache = RwLock<HashMap<(String, u64), Arc<dyn ObjectStore>>>;
 ///
 /// ## Why static / process lifetime?
 ///
-/// Comet's JNI architecture calls `initRecordBatchReader` once per Parquet file, and each
-/// call constructs a fresh `RuntimeEnv`.  There is therefore no executor-scoped Rust object
-/// with a lifetime longer than a single file read that could own this cache.  The executor
-/// process itself is the natural scope for HTTP connection-pool reuse, so process lifetime
+/// Comet's JNI architecture builds a fresh `SessionContext`/`RuntimeEnv` per native plan
+/// (`Java_org_apache_comet_Native_createPlan`, once per Spark task).  There is therefore no
+/// executor-scoped Rust object with a lifetime longer than a single task's plan that could
+/// own this cache.  The executor process itself is the natural scope for HTTP
+/// connection-pool reuse, so process lifetime
 /// (i.e. `static`) is the appropriate choice here.  In the standard Spark-on-Kubernetes
 /// deployment model each executor process is dedicated to a single Spark application, so
 /// process lifetime and application lifetime are equivalent; the cache is reclaimed when
