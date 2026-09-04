@@ -416,7 +416,7 @@ object CometExplodeBenchmark extends CometBenchmarkBase {
     val events = nonEmptyRows(nestedRows) * eventsLen
     val entries = events * entriesLen
     val outer =
-      s"SELECT k, region, ev.platform AS platform, ev.entries AS entries " +
+      "SELECT k, region, ev.platform AS platform, ev.entries AS entries " +
         s"FROM (SELECT k, region, explode($deepEvents) AS ev FROM nested)"
     val chained =
       s"SELECT ${Seq("k", "region", "platform", "entry").map(aggregate).mkString(", ")} " +
