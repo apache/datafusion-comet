@@ -565,7 +565,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `contains` | ✅ | — |  |
 | `decode` | ✅ | — |  |
 | `elt` | ✅ | Codegen dispatch |  |
-| `encode` | 🔜 | — | Lowers to `StaticInvoke(encode)` (not allowlisted); falls back |
+| `encode` | ✅ | — | Spark 4.0+ lowers to `StaticInvoke(Encode.encode)`, which runs via codegen dispatch; on Spark 3.x it falls back |
 | `endswith` | ✅ | — |  |
 | `find_in_set` | ✅ | Codegen dispatch |  |
 | `format_number` | ✅ | Codegen dispatch |  |
@@ -606,7 +606,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `substr` | ✅ | Native |  |
 | `substring` | ✅ | Native |  |
 | `substring_index` | ✅ | Native |  |
-| `to_binary` | ✅ | — | Hex form accelerated; other formats fall back |
+| `to_binary` | ✅ | — | Hex and base64 forms accelerated natively; the `utf-8` form rewrites to `encode` and runs via codegen dispatch on Spark 4.0+ |
 | `to_char` | ✅ | Codegen dispatch |  |
 | `to_number` | ✅ | Codegen dispatch |  |
 | `to_varchar` | ✅ | Codegen dispatch |  |

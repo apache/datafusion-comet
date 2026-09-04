@@ -28,7 +28,7 @@ import scala.jdk.CollectionConverters._
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.aggregate._
-import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
+import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
 import org.apache.spark.sql.catalyst.expressions.xml.{XPathBoolean, XPathDouble, XPathFloat, XPathInt, XPathList, XPathLong, XPathShort, XPathString}
 import org.apache.spark.sql.comet.DecimalPrecision
 import org.apache.spark.sql.execution.{ScalarSubquery, SparkPlan}
@@ -365,6 +365,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[BloomFilterMightContain] -> CometBloomFilterMightContain,
       classOf[CheckOverflow] -> CometCheckOverflow,
       classOf[Coalesce] -> CometCoalesce,
+      classOf[Invoke] -> CometInvoke,
       classOf[KnownFloatingPointNormalized] -> CometKnownFloatingPointNormalized,
       classOf[KnownNotNull] -> CometKnownNotNull,
       classOf[KnownNullable] -> CometKnownNullable,
