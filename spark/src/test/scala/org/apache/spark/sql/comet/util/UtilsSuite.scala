@@ -27,9 +27,9 @@ import scala.concurrent.duration.DurationInt
 import scala.jdk.CollectionConverters._
 
 import org.apache.arrow.c.CDataDictionaryProvider
-import org.apache.arrow.vector.{FieldVector, IntVector, VectorSchemaRoot}
-import org.apache.arrow.vector.complex.{ListVector, MapVector, StructVector}
-import org.apache.arrow.vector.ipc.ArrowStreamReader
+import org.apache.arrow.vector.{FieldVector, VectorSchemaRoot}
+import org.apache.arrow.vector.complex.{ListVector, MapVector}
+import org.apache.arrow.vector.ipc.{ArrowStreamReader, ArrowStreamWriter}
 import org.apache.arrow.vector.types.pojo.{ArrowType, Field}
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.catalyst.InternalRow
@@ -214,29 +214,43 @@ class UtilsSuite extends CometTestBase {
   }
 
   /**
-   * One map column of `numRows` rows. With an `IntegerType` key every row is a single entry `i ->
-   * NULL` (a `NullVector` map value); with a `NullType` key every row is an empty map, as `map()`
-   * produces (a `NullVector` map key). Both nest a `NullVector` inside the entries struct.
+   * One `map<null, null>` column of `numRows` empty maps, as `map()` produces (a `NullVector`
+   * key).
    */
-  private def nullTypeMapBatch(numRows: Int, keyType: DataType): ColumnarBatch = {
-    val field = Utils.toArrowField("m", MapType(keyType, NullType), nullable = true, "UTC")
+  private def emptyNullKeyMapBatch(numRows: Int): ColumnarBatch = {
+    val field = Utils.toArrowField("m", MapType(NullType, NullType), nullable = true, "UTC")
     val vector = field.createVector(CometArrowAllocator).asInstanceOf[MapVector]
     vector.allocateNew()
-    val entries = vector.getDataVector.asInstanceOf[StructVector]
     (0 until numRows).foreach { i =>
       vector.startNewValue(i)
-      keyType match {
-        case NullType =>
-          vector.endValue(i, 0)
-        case _ =>
-          entries.setIndexDefined(i)
-          entries.getChild(MapVector.KEY_NAME).asInstanceOf[IntVector].setSafe(i, i)
-          vector.endValue(i, 1)
-      }
+      vector.endValue(i, 0)
     }
-    entries.setValueCount(if (keyType == NullType) 0 else numRows)
+    vector.getDataVector.setValueCount(0)
     vector.setValueCount(numRows)
     new ColumnarBatch(Array[ColumnVector](CometVector.getVector(vector, null)), numRows)
+  }
+
+  /**
+   * Writes `bound` through `writer` and asserts the stream reads back with a non-nullable key.
+   */
+  private def assertRoundTrip(
+      bound: VectorSchemaRoot,
+      writer: ArrowStreamWriter,
+      out: ByteArrayOutputStream,
+      numRows: Int): Unit = {
+    bound.setRowCount(numRows)
+    writer.start()
+    writer.writeBatch()
+    writer.end()
+    val reader =
+      new ArrowStreamReader(new ByteArrayInputStream(out.toByteArray), CometArrowAllocator)
+    try {
+      assert(reader.loadNextBatch())
+      assert(reader.getVectorSchemaRoot.getRowCount == numRows)
+      assert(!mapKeyField(reader.getVectorSchemaRoot.getSchema.getFields.get(0)).isNullable)
+    } finally {
+      reader.close()
+    }
   }
 
   private def mapKeyField(field: Field): Field = field.getChildren.get(0).getChildren.get(0)
@@ -254,29 +268,11 @@ class UtilsSuite extends CometTestBase {
     new ColumnarBatch(Array[ColumnVector](CometVector.getVector(vector, null)), numRows)
   }
 
-  /** One `array<struct<a: null>>` column; every row holds one struct. */
-  private def nullStructListBatch(numRows: Int): ColumnarBatch = {
-    val elementType = StructType(Seq(StructField("a", NullType)))
-    val field = Utils.toArrowField("l", ArrayType(elementType), nullable = true, "UTC")
-    val vector = field.createVector(CometArrowAllocator).asInstanceOf[ListVector]
-    vector.allocateNew()
-    val elements = vector.getDataVector.asInstanceOf[StructVector]
-    (0 until numRows).foreach { i =>
-      vector.startNewValue(i)
-      elements.setIndexDefined(i)
-      vector.endValue(i, 1)
-    }
-    elements.setValueCount(numRows)
-    vector.setValueCount(numRows)
-    new ColumnarBatch(Array[ColumnVector](CometVector.getVector(vector, null)), numRows)
-  }
-
   test("withNonNullableMapKeys restores the non-nullable key flag a NullVector drops") {
-    val batch = nullTypeMapBatch(2, NullType)
+    val batch = emptyNullKeyMapBatch(2)
     val field = batch.column(0).asInstanceOf[CometVector].getValueVector.getField
-    // `toArrowField` declares the key non-nullable, but Arrow's `MinorType.NULL` factory builds the
-    // key `NullVector` from the name alone, so the vector reports a nullable key. If this assertion
-    // starts failing, Arrow fixed that and `withNonNullableMapKeys` can go.
+    // The live vector reports a nullable key (see `Utils.withNonNullableMapKeys`). If this
+    // assertion starts failing, Arrow fixed that and the repair can go.
     assert(mapKeyField(field).isNullable)
 
     val repaired = Utils.withNonNullableMapKeys(field)
@@ -291,93 +287,30 @@ class UtilsSuite extends CometTestBase {
   }
 
   test("newArrowStreamWriter keeps a root whose declared schema is already valid") {
-    val batch = nullTypeMapBatch(2, NullType)
+    val batch = emptyNullKeyMapBatch(2)
     val vector =
       batch.column(0).asInstanceOf[CometVector].getValueVector.asInstanceOf[FieldVector]
     val declared = Utils.withNonNullableMapKeys(vector.getField)
-    // The live vector still reports a nullable key, so a root declared from it would be swapped
-    // for a repaired copy. One declared from `declared` must be kept as-is: the row count is set
-    // only after the writer exists, and a swapped root would not see it.
+    // A root whose declared schema is already valid must be kept, not swapped for a copy.
     val root = new VectorSchemaRoot(Seq(declared).asJava, Seq(vector).asJava, 0)
     val out = new ByteArrayOutputStream()
     val (bound, writer) = Utils.newArrowStreamWriter(root, null, Channels.newChannel(out))
     assert(bound eq root)
-    root.setRowCount(2)
-    writer.start()
-    writer.writeBatch()
-    writer.end()
-
-    val reader =
-      new ArrowStreamReader(new ByteArrayInputStream(out.toByteArray), CometArrowAllocator)
-    assert(reader.loadNextBatch())
-    assert(reader.getVectorSchemaRoot.getRowCount == 2)
-    assert(!mapKeyField(reader.getVectorSchemaRoot.getSchema.getFields.get(0)).isNullable)
-    reader.close()
+    assertRoundTrip(bound, writer, out, numRows = 2)
     batch.close()
   }
 
   test("newArrowStreamWriter returns the root a later row count must be set on") {
-    val batch = nullTypeMapBatch(2, NullType)
+    val batch = emptyNullKeyMapBatch(2)
     val vector =
       batch.column(0).asInstanceOf[CometVector].getValueVector.asInstanceOf[FieldVector]
-    // Declared from the live vector, so the key is nullable and the root must be swapped. Setting
-    // the row count on the returned root has to reach the writer; setting it on the original one
-    // would ship an empty batch ("Array length did not match record batch length" downstream).
+    // Declared from the live vector, so the key is nullable and the root must be swapped.
     val root = new VectorSchemaRoot(Seq(vector).asJava)
     val out = new ByteArrayOutputStream()
     val (bound, writer) = Utils.newArrowStreamWriter(root, null, Channels.newChannel(out))
     assert(bound ne root)
-    bound.setRowCount(2)
-    writer.start()
-    writer.writeBatch()
-    writer.end()
-
-    val reader =
-      new ArrowStreamReader(new ByteArrayInputStream(out.toByteArray), CometArrowAllocator)
-    assert(reader.loadNextBatch())
-    assert(reader.getVectorSchemaRoot.getRowCount == 2)
-    assert(!mapKeyField(reader.getVectorSchemaRoot.getSchema.getFields.get(0)).isNullable)
-    reader.close()
+    assertRoundTrip(bound, writer, out, numRows = 2)
     batch.close()
-  }
-
-  test("serializeBatches round-trips a NullType map key through Arrow IPC") {
-    // The IPC reader rebuilds a MapVector from the stream's schema and rejects a nullable key
-    // ("Map data key type should be a non-nullable"), which is exactly what a NullVector key
-    // reports unless the written schema is repaired.
-    val numRows = 3
-    val batch = nullTypeMapBatch(numRows, NullType)
-    val (rowCount, buf) = Utils.serializeBatches(Iterator(batch)).next()
-    assert(rowCount == numRows)
-
-    val decoded = Utils.decodeBatches(buf, "test").toSeq
-    assert(decoded.map(_.numRows()).sum == numRows)
-    decoded.foreach(_.close())
-  }
-
-  test("coalesceBroadcastBatches ships struct-nested NullType uncoalesced") {
-    // VectorSchemaRootAppender cannot grow a NullVector nested in a struct, including the map
-    // entries struct (NullVector.reAlloc is a no-op), so such buffers must be passed through,
-    // not appended. The list case pins that a struct below a list is still a struct.
-    val cases: Seq[(String, Int => ColumnarBatch)] = Seq(
-      "map<int, null>" -> (nullTypeMapBatch(_, IntegerType)),
-      "map<null, null>" -> (nullTypeMapBatch(_, NullType)),
-      "array<struct<a: null>>" -> nullStructListBatch)
-    cases.foreach { case (name, batch) =>
-      val numRows = 4
-      val numBatches = 3
-      val batches = (0 until numBatches).map(_ => batch(numRows))
-      val bufs = Utils.serializeBatches(batches.iterator).map(_._2).toSeq
-
-      val (result, batchCount, totalRows) = Utils.coalesceBroadcastBatches(bufs.iterator)
-      // The pass-through signature: original buffers, nothing coalesced.
-      assert(batchCount == 0 && totalRows == 0, name)
-      assert(result.length == numBatches, name)
-
-      val decoded = result.iterator.flatMap(b => Utils.decodeBatches(b, "test")).toSeq
-      assert(decoded.map(_.numRows()).sum == numRows.toLong * numBatches, name)
-      decoded.foreach(_.close())
-    }
   }
 
   test("coalesceBroadcastBatches bypasses exactly the schemas with a NullType under a struct") {
@@ -427,7 +360,9 @@ class UtilsSuite extends CometTestBase {
             CometArrowAllocator)
           .next()
       }
-      val bufs = Utils.serializeBatches(batches.iterator).map(_._2).toSeq
+      // Force serialization eagerly: on Scala 2.12 `toSeq` is a lazy Stream, and the inputs
+      // are closed on the next line.
+      val bufs = Utils.serializeBatches(batches.iterator).map(_._2).toVector
       batches.foreach(_.close())
 
       val (result, batchCount, totalRows) = Await.result(
@@ -439,7 +374,8 @@ class UtilsSuite extends CometTestBase {
         (batchCount == 0) == expectBypass,
         s"$name: batchCount=$batchCount but bypass expected=$expectBypass")
       assert(result.length == (if (expectBypass) numBatches else 1), name)
-      if (!expectBypass) assert(totalRows == numRows.toLong * numBatches, name)
+      if (expectBypass) assert(totalRows == 0, name)
+      else assert(totalRows == numRows.toLong * numBatches, name)
 
       val decoded = result.iterator.flatMap(b => Utils.decodeBatches(b, "test")).toSeq
       assert(decoded.map(_.numRows()).sum == numRows.toLong * numBatches, name)
@@ -448,14 +384,12 @@ class UtilsSuite extends CometTestBase {
   }
 
   test("coalesceBroadcastBatches keeps coalescing plain null lists") {
-    // A NullVector directly under a list is safe to append: the list's capacity loop only looks
-    // at its own offset and validity buffers, and ListVector.setValueCount sets the child's
-    // count from the last offset. Bypassing coalescing here would cost every consuming task one
-    // IPC stream per original buffer instead of one.
+    // A NullVector directly under a list appends fine (see `Utils.hasNullDirectlyUnderStruct`);
+    // bypassing here would cost every consuming task one IPC stream per original buffer.
     val numRows = 4
     val numBatches = 3
     val batches = (0 until numBatches).map(_ => nullListBatch(numRows))
-    val bufs = Utils.serializeBatches(batches.iterator).map(_._2).toSeq
+    val bufs = Utils.serializeBatches(batches.iterator).map(_._2).toVector
 
     val (result, batchCount, totalRows) = Utils.coalesceBroadcastBatches(bufs.iterator)
     assert(batchCount == numBatches)

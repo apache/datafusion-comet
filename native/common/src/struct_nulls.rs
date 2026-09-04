@@ -28,8 +28,9 @@
 //! whatever sits in the child slot
 //! (<https://github.com/apache/datafusion-comet/issues/5753>).
 
-use arrow::array::{make_array, Array, ArrayRef, StructArray};
+use arrow::array::{make_array, Array, ArrayRef, NullArray, StructArray};
 use arrow::buffer::NullBuffer;
+use arrow::datatypes::DataType;
 use arrow::error::ArrowError;
 use std::sync::Arc;
 
@@ -48,6 +49,14 @@ pub fn child_with_parent_nulls(
     ordinal: usize,
 ) -> Result<ArrayRef, ArrowError> {
     let child = struct_array.column(ordinal);
+    // A Null-typed child is all-null whatever the parent's mask says, and a `NullArray` may not
+    // carry a validity bitmap ("Arrays of type Null cannot contain a null bitmask"). Rebuild it
+    // rather than reuse the child: a kernel that grew the struct through `MutableArrayData`
+    // (`element_at` on an out-of-range index) can hand over a child that already carries such a
+    // bitmap, which only fails validation once it is projected out.
+    if child.data_type() == &DataType::Null {
+        return Ok(Arc::new(NullArray::new(child.len())));
+    }
     match struct_array.nulls() {
         Some(parent) if parent.null_count() > 0 => {
             let combined = NullBuffer::union(Some(parent), child.nulls());
@@ -83,6 +92,22 @@ mod tests {
     fn struct_with(child: ArrayRef, nulls: Option<NullBuffer>) -> StructArray {
         let fields: Fields = vec![Arc::new(Field::new("a", DataType::Int32, true))].into();
         StructArray::new(fields, vec![child], nulls)
+    }
+
+    /// A Null-typed child cannot carry a validity bitmap, so it is rebuilt all-null instead of
+    /// receiving the parent's mask; a `MutableArrayData`-grown struct can even hand over a child
+    /// that already carries one, which only fails validation once projected out.
+    #[test]
+    fn null_typed_child_is_rebuilt_without_a_bitmap() {
+        let fields: Fields = vec![Arc::new(Field::new("n", DataType::Null, true))].into();
+        let parent = NullBuffer::from(vec![true, false, true]);
+        let struct_array =
+            StructArray::new(fields, vec![Arc::new(NullArray::new(3))], Some(parent));
+        let out = child_with_parent_nulls(&struct_array, 0).unwrap();
+        assert_eq!(out.data_type(), &DataType::Null);
+        assert_eq!(out.len(), 3);
+        assert!(out.nulls().is_none(), "a NullArray must not carry a validity bitmap");
+        out.to_data().validate_full().unwrap();
     }
 
     /// The case both bugs came from: the parent is null where the child still holds a value.

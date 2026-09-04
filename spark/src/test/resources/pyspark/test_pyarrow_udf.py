@@ -1094,10 +1094,8 @@ def test_map_in_arrow_map_type(spark, tmp_path, accelerated):
 def test_map_in_arrow_null_typed_map_children(spark, tmp_path, accelerated):
     """
     `transform_values(map(), ...)` yields MapType(NullType, LongType) and `map(id, NULL)`
-    yields MapType(LongType, NullType). Arrow's MinorType.NULL factory rebuilds a NullType map
-    key as *nullable*, which MapVector.initializeChildrenFromFields rejects ("Map data key type
-    should be a non-nullable"), so the accelerated runner has to repair the key field before it
-    builds its destination struct from the live Comet vectors.
+    yields MapType(LongType, NullType); the accelerated runner repairs the NullType map key
+    (see CometArrowPythonRunnerBase) before building its destination struct.
 
     pyarrow refuses to *declare* a non-nullable null-typed field (`A null type field may not
     be non-nullable`), so the NullType-key map can only ever be a UDF input, never part of the

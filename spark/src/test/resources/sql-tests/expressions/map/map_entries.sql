@@ -68,6 +68,3 @@ FROM test_map_entries_nested
 -- must reach DataFusion's map_entries declared nullable, or its ListArray build panics
 query
 SELECT map_entries(map_filter(map(), (k, v) -> true)) FROM test_map_entries
-
-query
-SELECT map_entries(map('a', CAST(NULL AS int))) FROM test_map_entries

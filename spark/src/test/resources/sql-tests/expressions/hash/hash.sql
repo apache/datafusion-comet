@@ -30,3 +30,7 @@ SELECT md5(col), md5(cast(a as string)), md5(cast(b as string)), hash(col), hash
 -- native engine as scalar values rather than being folded away by Spark's optimizer.
 query
 SELECT md5('Spark SQL'), sha1('test'), sha2('test', 0), sha2('test', 256), sha2('test', 224), sha2('test', 384), sha2('test', 512), sha2('test', 128), sha2('test', -1), sha2(cast(null as string), 256), hash('test'), xxhash64('test')
+
+-- The native hasher has no arm for NullType, which a non-foldable struct or array can carry.
+query expect_fallback(`NullType` is not supported)
+SELECT hash(named_struct('a', a, 'b', NULL)), xxhash64(transform(array(a), x -> NULL)) FROM test
