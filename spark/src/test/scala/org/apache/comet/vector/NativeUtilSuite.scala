@@ -19,13 +19,296 @@
 
 package org.apache.comet.vector
 
-import org.apache.arrow.c.{ArrowArray, ArrowSchema}
+import java.io.IOException
+import java.nio.charset.StandardCharsets
+
+import scala.util.Using
+
+import org.apache.arrow.c.{ArrowArray, ArrowSchema, Data}
+import org.apache.arrow.memory.RootAllocator
+import org.apache.arrow.vector.{IntVector, UInt4Vector, VarCharVector}
+import org.apache.arrow.vector.complex.StructVector
+import org.apache.arrow.vector.dictionary.Dictionary
+import org.apache.arrow.vector.dictionary.DictionaryProvider.MapDictionaryProvider
+import org.apache.arrow.vector.types.pojo.{ArrowType, DictionaryEncoding, Field, FieldType}
 import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.comet.CometExec
+import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.vectorized.ConstantColumnVector
 import org.apache.spark.sql.types.{IntegerType, StringType, StructField, StructType}
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 
+import org.apache.comet.CometConf
+import org.apache.comet.serde.{OperatorOuterClass, QueryPlanSerde}
+
 class NativeUtilSuite extends CometTestBase {
+
+  private def withIsolatedStructAllocator(
+      check: (NativeUtil, RootAllocator, () => Array[ArrowArray]) => Unit): Unit = {
+    val allocator = new RootAllocator(Long.MaxValue)
+    var allocatedArrays = Array.empty[ArrowArray]
+    val nativeUtil = new NativeUtil {
+      override def allocateArrowStructs(numCols: Int): (Array[ArrowArray], Array[ArrowSchema]) = {
+        allocatedArrays = Array.fill(numCols)(ArrowArray.allocateNew(allocator))
+        val schemas = Array.fill(numCols)(ArrowSchema.allocateNew(allocator))
+        (allocatedArrays, schemas)
+      }
+    }
+    try check(nativeUtil, allocator, () => allocatedArrays)
+    finally {
+      nativeUtil.close()
+      allocator.close()
+    }
+  }
+
+  test("getNextBatch releases unconsumed Arrow structs on native failure and EOF") {
+    Seq(false, true).foreach { eof =>
+      withIsolatedStructAllocator { (nativeUtil, allocator, _) =>
+        val expected = new IOException("native decode failed")
+        val read = () =>
+          nativeUtil.getNextBatch(
+            2,
+            (_, _) => {
+              if (eof) -1L else throw expected
+            })
+        if (eof) assert(read().isEmpty)
+        else assert(intercept[IOException](read()) eq expected)
+        assert(allocator.getAllocatedMemory == 0)
+      }
+    }
+  }
+
+  test("getNextBatch invokes C release callbacks for partially exported native results") {
+    Seq(false, true).foreach { eof =>
+      withIsolatedStructAllocator { (nativeUtil, allocator, _) =>
+        val vector = new IntVector("value", allocator)
+        vector.allocateNew(4)
+        vector.setSafe(0, 42)
+        vector.setValueCount(1)
+        val expected = new IOException("native decode failed after exporting one column")
+        val read = () =>
+          nativeUtil.getNextBatch(
+            2,
+            (arrays, schemas) => {
+              Data.exportVector(
+                allocator,
+                vector,
+                null,
+                ArrowArray.wrap(arrays(0)),
+                ArrowSchema.wrap(schemas(0)))
+              // Only the exported C data now retains the vector's buffers.
+              vector.close()
+              if (eof) -1L else throw expected
+            })
+        try {
+          if (eof) assert(read().isEmpty)
+          else assert(intercept[IOException](read()) eq expected)
+          assert(allocator.getAllocatedMemory == 0)
+        } finally {
+          vector.close()
+        }
+      }
+    }
+  }
+
+  test("getNextBatch releases imported vectors and Arrow structs when vector import fails") {
+    withIsolatedStructAllocator { (nativeUtil, allocator, _) =>
+      Using.resource(new IntVector("value", allocator)) { vector =>
+        vector.allocateNew(4)
+        vector.setSafe(0, 42)
+        vector.setValueCount(1)
+        val failure = intercept[IllegalStateException] {
+          nativeUtil.getNextBatch(
+            2,
+            (arrays, schemas) => {
+              Data.exportVector(
+                allocator,
+                vector,
+                null,
+                ArrowArray.wrap(arrays(0)),
+                ArrowSchema.wrap(schemas(0)))
+              vector.close()
+              1L
+            })
+        }
+        assert(failure.getMessage == "Cannot import released ArrowSchema")
+        assert(failure.getSuppressed.isEmpty)
+        assert(allocator.getAllocatedMemory == 0)
+      }
+    }
+  }
+
+  test("getNextBatch releases an imported vector when its Comet wrapper rejects the type") {
+    withIsolatedStructAllocator { (nativeUtil, allocator, _) =>
+      Using.resource(new UInt4Vector("value", allocator)) { vector =>
+        vector.allocateNew(1)
+        vector.setSafe(0, 42)
+        vector.setValueCount(1)
+        val failure = intercept[UnsupportedOperationException] {
+          nativeUtil.getNextBatch(
+            2,
+            (arrays, schemas) => {
+              Data.exportVector(
+                allocator,
+                vector,
+                null,
+                ArrowArray.wrap(arrays(0)),
+                ArrowSchema.wrap(schemas(0)))
+              vector.close()
+              1L
+            })
+        }
+        assert(failure.getSuppressed.isEmpty)
+        assert(allocator.getAllocatedMemory == 0)
+      }
+    }
+  }
+
+  test("importVector releases partially imported vectors when Arrow array import fails") {
+    withIsolatedStructAllocator { (nativeUtil, allocator, _) =>
+      val intType = FieldType.nullable(new ArrowType.Int(32, true))
+      val stringType = FieldType.nullable(new ArrowType.Utf8())
+      val (arrays, schemas) = nativeUtil.allocateArrowStructs(2)
+
+      Using.resources(
+        StructVector.empty("int_struct", allocator),
+        StructVector.empty("string_struct", allocator)) { (intStruct, stringStruct) =>
+        val firstInt = intStruct.addOrGet("first", intType, classOf[IntVector])
+        val secondInt = intStruct.addOrGet("second", intType, classOf[IntVector])
+        intStruct.allocateNew()
+        intStruct.setIndexDefined(0)
+        firstInt.setSafe(0, 1)
+        secondInt.setSafe(0, 2)
+        intStruct.setValueCount(1)
+
+        stringStruct.addOrGet("first", intType, classOf[IntVector])
+        stringStruct.addOrGet("second", stringType, classOf[VarCharVector])
+        stringStruct.allocateNew()
+        stringStruct.setValueCount(1)
+
+        Data.exportVector(allocator, intStruct, null, arrays(0), schemas(0))
+        Data.exportVector(allocator, stringStruct, null, arrays(1), schemas(1))
+      }
+
+      // Both structs are closed now, so only the exported C data retains their buffers.
+      try {
+        val failure = intercept[IllegalArgumentException] {
+          nativeUtil.importVector(Array(arrays(0)), Array(schemas(1)))
+        }
+        assert(failure.getSuppressed.isEmpty)
+      } finally {
+        arrays(1).release()
+        arrays(1).close()
+        schemas(0).release()
+        schemas(0).close()
+      }
+      assert(allocator.getAllocatedMemory == 0)
+    }
+  }
+
+  test("importVector releases dictionary values when a later column of the array fails") {
+    withIsolatedStructAllocator { (nativeUtil, allocator, _) =>
+      val indexType = new ArrowType.Int(32, true)
+      val encoding = new DictionaryEncoding(0L, false, indexType)
+      val encodedType = new FieldType(true, indexType, encoding)
+      val intType = FieldType.nullable(indexType)
+      val stringType = FieldType.nullable(new ArrowType.Utf8())
+      val (arrays, schemas) = nativeUtil.allocateArrowStructs(2)
+
+      Using.resources(
+        new VarCharVector("dictionary", allocator),
+        StructVector.empty("int_struct", allocator),
+        StructVector.empty("string_struct", allocator)) { (values, intStruct, stringStruct) =>
+        values.allocateNew(1)
+        values.setSafe(0, "a".getBytes(StandardCharsets.UTF_8))
+        values.setValueCount(1)
+        val provider = new MapDictionaryProvider(new Dictionary(values, encoding))
+
+        val encoded = intStruct.addOrGet("encoded", encodedType, classOf[IntVector])
+        val secondInt = intStruct.addOrGet("second", intType, classOf[IntVector])
+        intStruct.allocateNew()
+        intStruct.setIndexDefined(0)
+        encoded.setSafe(0, 0)
+        secondInt.setSafe(0, 2)
+        intStruct.setValueCount(1)
+
+        stringStruct.addOrGet("encoded", encodedType, classOf[IntVector])
+        stringStruct.addOrGet("second", stringType, classOf[VarCharVector])
+        stringStruct.allocateNew()
+        stringStruct.setValueCount(1)
+
+        Data.exportVector(allocator, intStruct, provider, arrays(0), schemas(0))
+        Data.exportVector(allocator, stringStruct, provider, arrays(1), schemas(1))
+      }
+
+      // The second column is an int in the array and a string in the schema, so the import gets
+      // as far as loading the first column's dictionary values into the provider and then fails.
+      // Once the struct vector is closed, those values hold the only remaining references on the
+      // imported C array.
+      try {
+        val failure = intercept[IllegalArgumentException] {
+          nativeUtil.importVector(Array(arrays(0)), Array(schemas(1)))
+        }
+        assert(failure.getSuppressed.isEmpty)
+      } finally {
+        arrays(1).release()
+        arrays(1).close()
+        schemas(0).release()
+        schemas(0).close()
+      }
+      assert(allocator.getAllocatedMemory == 0)
+    }
+  }
+
+  test("importVector releases dictionary values when its Comet wrapper rejects the value type") {
+    withIsolatedStructAllocator { (nativeUtil, allocator, _) =>
+      val indexType = new ArrowType.Int(32, true)
+      val encoding = new DictionaryEncoding(0L, false, indexType)
+      val indexField = new Field("encoded", new FieldType(true, indexType, encoding), null)
+      val (arrays, schemas) = nativeUtil.allocateArrowStructs(1)
+
+      Using.resources(
+        new UInt4Vector("dictionary", allocator),
+        new IntVector(indexField, allocator)) { (values, indices) =>
+        values.allocateNew(1)
+        values.setSafe(0, 42)
+        values.setValueCount(1)
+        indices.allocateNew(1)
+        indices.setSafe(0, 0)
+        indices.setValueCount(1)
+        val provider = new MapDictionaryProvider(new Dictionary(values, encoding))
+        Data.exportVector(allocator, indices, provider, arrays(0), schemas(0))
+      }
+
+      // UInt4 has no Spark equivalent, so the column imports cleanly and only its Comet wrapper
+      // fails, by which point the dictionary values are already in the provider.
+      val failure = intercept[UnsupportedOperationException] {
+        nativeUtil.importVector(Array(arrays(0)), Array(schemas(0)))
+      }
+      assert(failure.getSuppressed.isEmpty)
+      assert(allocator.getAllocatedMemory == 0)
+    }
+  }
+
+  test("getNextBatch preserves a native failure and attempts all remaining struct cleanup") {
+    withIsolatedStructAllocator { (nativeUtil, allocator, arrays) =>
+      val expected = new IOException("native decode failed")
+      val actual = intercept[IOException] {
+        nativeUtil.getNextBatch(
+          2,
+          (_, _) => {
+            // Simulate another owner retiring one struct before cleanup. Its release() fails,
+            // but that must not hide the decode failure or leave any other struct allocated.
+            arrays()(0).close()
+            throw expected
+          })
+      }
+      assert(actual eq expected)
+      assert(actual.getSuppressed.length == 1)
+      assert(actual.getSuppressed.head.isInstanceOf[NullPointerException])
+      assert(allocator.getAllocatedMemory == 0)
+    }
+  }
 
   test("exportBatch round-trips a ConstantColumnVector through Arrow FFI") {
     // Smoke test for the ConstantColumnVector arm of NativeUtil.exportBatch: a batch carrying
@@ -85,6 +368,78 @@ class NativeUtilSuite extends CometTestBase {
         imported.close()
       }
       nativeUtil.close()
+    }
+  }
+
+  test("Variant schema identity round-trips through native Arrow FFI") {
+    val variantType = Utils.variantType.getOrElse {
+      cancel("VariantType requires Spark 4.0+")
+    }
+
+    withTempPath { dir =>
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        sql("SELECT named_struct('value', X'00', 'metadata', X'010000') AS v")
+          .coalesce(1)
+          .write
+          .parquet(dir.getCanonicalPath)
+      }
+      val parquetFile = dir
+        .listFiles()
+        .find(_.getName.endsWith(".parquet"))
+        .getOrElse(fail("No parquet file was written"))
+      val fileSize = parquetFile.length()
+
+      val variantProto = QueryPlanSerde.serializeDataType(variantType).get
+      val variantField = OperatorOuterClass.SparkStructField
+        .newBuilder()
+        .setName("v")
+        .setDataType(variantProto)
+        .setNullable(false)
+        .build()
+      val common = OperatorOuterClass.NativeScanCommon
+        .newBuilder()
+        .addRequiredSchema(variantField)
+        .addDataSchema(variantField)
+        .addProjectionVector(0L)
+        .setSessionTimezone("UTC")
+        .setCaseSensitive(true)
+        .setSource("variant-schema-ffi-roundtrip")
+        .build()
+      val file = OperatorOuterClass.SparkPartitionedFile
+        .newBuilder()
+        .setFilePath(parquetFile.toURI.toString)
+        .setStart(0L)
+        .setLength(fileSize)
+        .setFileSize(fileSize)
+        .build()
+      val partition = OperatorOuterClass.SparkFilePartition
+        .newBuilder()
+        .addPartitionedFile(file)
+        .build()
+      val plan = OperatorOuterClass.Operator
+        .newBuilder()
+        .setNativeScan(
+          OperatorOuterClass.NativeScan
+            .newBuilder()
+            .setCommon(common)
+            .setFilePartition(partition))
+        .build()
+        .toByteArray
+
+      val actual = spark.sparkContext
+        .parallelize(Seq(0), 1)
+        .mapPartitions { _ =>
+          val iterator = CometExec.getCometIterator(Array.empty[Object], 1, plan, 1, 0)
+          try {
+            assert(iterator.hasNext)
+            Iterator.single(iterator.next().column(0).dataType())
+          } finally {
+            iterator.close()
+          }
+        }
+        .collect()
+
+      assert(actual.sameElements(Array(variantType)))
     }
   }
 }
