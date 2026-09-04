@@ -514,12 +514,12 @@ public final class CelebornTransportOwnershipTestHelper {
   }
 
   public static final class ResponseHandler {
-    private final ConcurrentHashMap<Long, Request> outstandingPushes = new ConcurrentHashMap<>();
+    private volatile ConcurrentHashMap<Long, Request> outstandingPushes = new ConcurrentHashMap<>();
   }
 
   public static final class Client {
     private final HoldingChannel underlying = new HoldingChannel();
-    private final Channel channel;
+    private volatile Channel channel;
     private final ResponseHandler handler = new ResponseHandler();
     private Error handlerFailure;
     private CountDownLatch handlerEntered;
@@ -562,7 +562,7 @@ public final class CelebornTransportOwnershipTestHelper {
   }
 
   public static final class Factory {
-    private final List<Bootstrap> clientBootstraps = new ArrayList<>();
+    private volatile List<Bootstrap> clientBootstraps = new ArrayList<>();
     private final ConcurrentHashMap<String, Pool> connectionPool = new ConcurrentHashMap<>();
 
     private Client createClient() {
@@ -584,7 +584,7 @@ public final class CelebornTransportOwnershipTestHelper {
 
   public static final class ShuffleClient {
     private final Factory factory;
-    private final ExecutorService pushDataRetryPool;
+    private volatile ExecutorService pushDataRetryPool;
 
     private ShuffleClient() {
       this(new Factory(), Executors.newSingleThreadExecutor());
