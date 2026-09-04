@@ -1222,10 +1222,15 @@ mod test {
                 1024 * 1024,
                 8192,
             );
+            let mut scratch = Vec::new();
             for batch in &small_batches {
-                buf_writer.write(batch, &encode_time, &write_time).unwrap();
+                buf_writer
+                    .write(batch, &mut scratch, &encode_time, &write_time)
+                    .unwrap();
             }
-            buf_writer.flush(&encode_time, &write_time).unwrap();
+            buf_writer
+                .flush(&mut scratch, &encode_time, &write_time)
+                .unwrap();
         }
 
         // Write without coalescing (batch_size=1)
@@ -1238,10 +1243,15 @@ mod test {
                 1024 * 1024,
                 1,
             );
+            let mut scratch = Vec::new();
             for batch in &small_batches {
-                buf_writer.write(batch, &encode_time, &write_time).unwrap();
+                buf_writer
+                    .write(batch, &mut scratch, &encode_time, &write_time)
+                    .unwrap();
             }
-            buf_writer.flush(&encode_time, &write_time).unwrap();
+            buf_writer
+                .flush(&mut scratch, &encode_time, &write_time)
+                .unwrap();
         }
 
         // Coalesced output should be smaller due to fewer IPC schema blocks
@@ -1342,10 +1352,15 @@ mod test {
                 1024 * 1024,
                 batch_size as usize,
             );
+            let mut scratch = Vec::new();
             for batch in &inputs {
-                buf_writer.write(batch, &encode_time, &write_time).unwrap();
+                buf_writer
+                    .write(batch, &mut scratch, &encode_time, &write_time)
+                    .unwrap();
             }
-            buf_writer.flush(&encode_time, &write_time).unwrap();
+            buf_writer
+                .flush(&mut scratch, &encode_time, &write_time)
+                .unwrap();
         }
 
         let blocks = read_all_ipc_batches(&output);

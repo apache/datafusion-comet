@@ -27,8 +27,9 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
 
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
+import org.apache.comet.udf.codegen.CometScalaUDFCodegen
 
-class CometStringExpressionSuite extends CometTestBase {
+class CometStringExpressionSuite extends CometTestBase with CometCodegenAssertions {
   // scalastyle:off
   private val edgeCases = Seq(
     "é", // unicode 'e\\u{301}'
@@ -42,6 +43,27 @@ class CometStringExpressionSuite extends CometTestBase {
 
   test("rpad string") {
     testStringPadding("rpad")
+  }
+
+  test("lpad/rpad with NULL length") {
+    // FuzzDataGenerator never generates NULL integers (#5389), so build the rows explicitly.
+    // Spark's StringLPad/StringRPad are null-intolerant: a NULL length yields a NULL row.
+    val data: Seq[(String, Option[Int])] = Seq(
+      ("abc", Some(5)),
+      ("abc", None),
+      (null, None),
+      (null, Some(5)),
+      ("abcdef", Some(2)),
+      ("abc", Some(-1)),
+      ("abc", Some(0))) ++ edgeCases.flatMap(s => Seq((s, None), (s, Some(4))))
+    withParquetTable(data, "tbl") {
+      for (expr <- Seq("lpad", "rpad")) {
+        // 2 args (default pad of ' ')
+        checkSparkAnswerAndOperator(s"SELECT _1, _2, $expr(_1, _2) FROM tbl")
+        // 3 args with a literal pad
+        checkSparkAnswerAndOperator(s"SELECT _1, _2, $expr(_1, _2, 'xy') FROM tbl")
+      }
+    }
   }
 
   test("lpad binary") {
@@ -710,6 +732,50 @@ class CometStringExpressionSuite extends CometTestBase {
       }
     }
     // scalastyle:on
+  }
+
+  test("concat_ws with array<string> arguments") {
+    // https://github.com/apache/datafusion-comet/issues/5675
+    // Spark flattens array<string> arguments into the strings to join (skipping null elements).
+    // DataFusion's concat_ws rejects list arguments, so these calls run through the JVM codegen
+    // dispatcher (Spark's own doGenCode inside the Comet pipeline) instead of the native path.
+    val data: Seq[(Seq[String], String)] = Seq(
+      (Seq("a", "b"), "c d"),
+      (Seq("x", null, "y"), "z"),
+      (Seq("only"), ""),
+      (Seq.empty[String], "w"),
+      (null, "v"),
+      (Seq("p", "q"), null))
+    withParquetTable(data, "tbl") {
+      val arrayArgQueries = Seq(
+        "SELECT concat_ws(',', _1, _2) FROM tbl",
+        "SELECT concat_ws(',', _2, _1) FROM tbl",
+        "SELECT concat_ws(',', _1) FROM tbl",
+        "SELECT concat_ws('-', _1, _2, _1) FROM tbl",
+        "SELECT concat_ws(',', split(_2, ' ')) FROM tbl",
+        "SELECT concat_ws(',', split(_2, ' '), _1) FROM tbl")
+      for (query <- arrayArgQueries) {
+        // Spark's answer, the whole plan stays in Comet, and the codegen dispatcher actually ran.
+        assertCodegenRan {
+          checkSparkAnswerAndOperator(query)
+        }
+      }
+      // With the dispatcher disabled there is no in-pipeline path, so the projection falls back
+      // to Spark with the serde's reason instead of failing at native execution.
+      withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
+        for (query <- arrayArgQueries) {
+          checkSparkAnswerAndFallbackReason(query, "`concat_ws` with `array<string>` arguments")
+        }
+      }
+      // A NULL separator produces NULL regardless of the argument types and stays native.
+      checkSparkAnswerAndOperator("SELECT concat_ws(NULL, _1, _2) FROM tbl")
+      // Plain string arguments keep using the native concat_ws path, not the dispatcher.
+      CometScalaUDFCodegen.resetStats()
+      checkSparkAnswerAndOperator("SELECT concat_ws(',', _2, 'lit', _2) FROM tbl")
+      assert(
+        CometScalaUDFCodegen.stats().totalLookups == 0,
+        "expected the native concat_ws path for string arguments, not codegen dispatch")
+    }
   }
 
 }
