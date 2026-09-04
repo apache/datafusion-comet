@@ -24,6 +24,7 @@ import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.channels.FileChannel;
+import java.util.LinkedList;
 import java.util.Optional;
 import javax.annotation.Nullable;
 
@@ -176,6 +177,10 @@ final class CometBypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V>
                   CometShuffleExternalSorter.MAXIMUM_PAGE_SIZE_BYTES,
                   memoryManager.pageSizeBytes()));
 
+      // This task's disk writers. Under memory pressure a writer spills its sibling writers in
+      // this list, never those of other tasks.
+      final LinkedList<CometDiskBlockWriter> taskWriters = new LinkedList<>();
+
       // Allocate the disk writers, and open the files that we'll be writing to
       for (int i = 0; i < numPartitions; i++) {
         final Tuple2<TempShuffleBlockId, File> tempShuffleBlockIdPlusFile =
@@ -190,7 +195,8 @@ final class CometBypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V>
                 schema,
                 writeMetrics,
                 conf,
-                tracingEnabled);
+                tracingEnabled,
+                taskWriters);
         if (partitionChecksums.length > 0) {
           writer.setChecksum(partitionChecksums[i]);
           writer.setChecksumAlgo(checksumAlgorithm);
@@ -253,7 +259,13 @@ final class CometBypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V>
       // TODO: We probably can move checksum generation here when concatenating partition files
       partitionLengths = writePartitionedData(mapOutputWriter);
       mapStatus = MapStatusHelper.apply(blockManager.shuffleServerId(), partitionLengths, mapId);
-    } catch (Exception e) {
+    } catch (Throwable e) {
+      // Spark only calls stop(false) when write() throws an Exception; a fatal error such as
+      // SparkOutOfMemoryError skips it, and the buffered pages are invisible to Spark's
+      // task-memory cleanup (in on-heap mode they live in an executor-shared pool). Free them
+      // and delete their temp files here so they cannot starve other tasks' allocations or leak
+      // disk space.
+      cleanupPartitionWriters(e);
       try {
         mapOutputWriter.abort(e);
       } catch (Exception e2) {
@@ -261,6 +273,40 @@ final class CometBypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V>
         e.addSuppressed(e2);
       }
       throw e;
+    }
+  }
+
+  private void cleanupPartitionWriters(@Nullable Throwable failure) {
+    if (partitionWriters == null) {
+      return;
+    }
+    try {
+      for (CometDiskBlockWriter writer : partitionWriters) {
+        if (writer == null) {
+          continue;
+        }
+        try {
+          writer.freeMemory();
+        } catch (Exception e) {
+          logger.error("Failed to free memory of partition writer", e);
+          if (failure != null) {
+            failure.addSuppressed(e);
+          }
+        }
+        try {
+          File file = writer.getFile();
+          if (file.exists() && !file.delete()) {
+            logger.error("Error while deleting file {}", file.getAbsolutePath());
+          }
+        } catch (Exception e) {
+          logger.error("Failed to delete file of partition writer", e);
+          if (failure != null) {
+            failure.addSuppressed(e);
+          }
+        }
+      }
+    } finally {
+      partitionWriters = null;
     }
   }
 
@@ -366,20 +412,7 @@ final class CometBypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V>
         return Option.apply(mapStatus);
       } else {
         // The map task failed, so delete our output data.
-        if (partitionWriters != null) {
-          try {
-            for (CometDiskBlockWriter writer : partitionWriters) {
-              writer.freeMemory();
-
-              File file = writer.getFile();
-              if (!file.delete()) {
-                logger.error("Error while deleting file {}", file.getAbsolutePath());
-              }
-            }
-          } finally {
-            partitionWriters = null;
-          }
-        }
+        cleanupPartitionWriters(null);
         return None$.empty();
       }
     }

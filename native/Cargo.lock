@@ -3507,7 +3507,7 @@ dependencies = [
 [[package]]
 name = "iceberg"
 version = "0.10.0"
-source = "git+https://github.com/apache/iceberg-rust?rev=3d84c81353b1b23b6e4ae8eea8f8a021cc6927a7#3d84c81353b1b23b6e4ae8eea8f8a021cc6927a7"
+source = "git+https://github.com/apache/iceberg-rust?rev=8adaa872f31549dd5ad8255848715758228038bc#8adaa872f31549dd5ad8255848715758228038bc"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -3533,6 +3533,7 @@ dependencies = [
  "fastnum",
  "flate2",
  "fnv",
+ "form_urlencoded",
  "futures",
  "itertools 0.13.0",
  "moka",
@@ -3563,7 +3564,7 @@ dependencies = [
 [[package]]
 name = "iceberg-storage-opendal"
 version = "0.10.0"
-source = "git+https://github.com/apache/iceberg-rust?rev=3d84c81353b1b23b6e4ae8eea8f8a021cc6927a7#3d84c81353b1b23b6e4ae8eea8f8a021cc6927a7"
+source = "git+https://github.com/apache/iceberg-rust?rev=8adaa872f31549dd5ad8255848715758228038bc#8adaa872f31549dd5ad8255848715758228038bc"
 dependencies = [
  "anyhow",
  "async-trait",
