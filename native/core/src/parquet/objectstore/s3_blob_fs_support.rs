@@ -22,9 +22,8 @@
 //! `ObjectStoreScheme::parse` does not recognize them.
 //!
 //! On the Parquet scan path, [`normalize_object_store_url`] rewrites those aliases (and `s3a`) to
-//! `s3://bucket/key` so `prepare_object_store_with_configs`'s `scheme == "s3"` dispatch fires. Its
-//! callers consume only `url.scheme()`/`url.path()`, so re-serialization through `url::Url` is
-//! harmless.
+//! `s3://bucket/key`. Its callers consume only `url.scheme()`/`url.path()`, so re-serialization
+//! through `url::Url` is harmless.
 //!
 //! The Iceberg path never rewrites the recorded location string that iceberg-rust holds, because
 //! deletes are matched against it by exact string compare (see `planner.rs`'s `data_file_path`).
@@ -35,12 +34,11 @@
 //! Some vendor blob filesystems record HOSTLESS locations (`blob:///bucket/key`, bucket as first
 //! path segment) that operator cannot open. For alias scans, [`BlobHostPromotingS3Storage`] wraps
 //! the S3 backend and promotes the bucket from the first path segment (via
-//! [`promote_hostless_alias_url`]) ONLY at the open boundary, so the string iceberg-rust matches
-//! deletes against is still the raw recorded location.
+//! [`promote_hostless_alias_url`]) at the open boundary.
 
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -87,8 +85,6 @@ pub(crate) fn is_s3_compliant_alias_scheme(
     object_store_configs: &HashMap<String, String>,
 ) -> bool {
     const COMET_S3_COMPLIANT_SCHEMES_KEY: &str = "fs.comet.s3Compliant.schemes";
-    // Nothing is an alias until the user opts in, so settle that first: the default (key absent)
-    // case returns without scanning the special-scheme list below.
     let configured = match object_store_configs.get(COMET_S3_COMPLIANT_SCHEMES_KEY) {
         Some(schemes) => schemes,
         None => return false,
@@ -128,9 +124,8 @@ fn rewrite_alias_to_s3(mut url: Url) -> Result<Url, ExecutionError> {
             ))
         });
     }
-    // Host-bearing (`blob://bucket/key`): swap only the scheme. s3 and the aliases are all
-    // non-special, so `set_scheme` succeeds and the host/path are preserved verbatim. On failure
-    // `url` is untouched, so it still reports the original scheme.
+    // s3 and the aliases are all non-special, so `set_scheme` succeeds and the host/path are
+    // preserved verbatim. On failure `url` is untouched, so it still reports the original scheme.
     if url.set_scheme("s3").is_err() {
         return Err(ExecutionError::GeneralError(format!(
             "Could not convert scheme from {} to s3",
@@ -146,10 +141,9 @@ fn rewrite_alias_to_s3(mut url: Url) -> Result<Url, ExecutionError> {
 /// `blob:/<bucket>/<key>` (opaque) -- keeping the bucket as the first path segment, which the
 /// operator fails to open with a missing-bucket error.
 ///
-/// Host-bearing locations (`blob://<bucket>/<key>`, `s3://...`) are returned unchanged. This runs
-/// ONLY at the storage open boundary inside [`BlobHostPromotingS3Storage`], never on the raw
-/// recorded string iceberg-rust matches positional/equality deletes against, so promotion cannot
-/// desync the two and silently drop deletes.
+/// This runs ONLY at the storage open boundary inside [`BlobHostPromotingS3Storage`], never on the
+/// raw recorded string iceberg-rust matches positional/equality deletes against, so promotion
+/// cannot desync the two and silently drop deletes.
 pub(crate) fn promote_hostless_alias_url(path: &str) -> Result<Cow<'_, str>, ExecutionError> {
     let url = Url::parse(path)
         .map_err(|e| ExecutionError::GeneralError(format!("Error parsing URL {path}: {e}")))?;
@@ -160,11 +154,9 @@ pub(crate) fn promote_hostless_alias_url(path: &str) -> Result<Cow<'_, str>, Exe
 }
 
 /// [`StorageFactory`] for hostless-capable s3-compliant-alias Iceberg scans
-/// (`fs.comet.s3Compliant.schemes`, e.g. `blob`). It builds the crate's scheme-agnostic opendal S3
-/// storage and wraps it in [`BlobHostPromotingS3Storage`] so a hostless alias location is opened by
-/// promoting the bucket from the first path segment. Only alias schemes route here; plain
-/// `s3`/`s3a` keep the unwrapped [`OpenDalStorageFactory::S3`] (see
-/// `iceberg_common::storage_factory_for`).
+/// (`fs.comet.s3Compliant.schemes`, e.g. `blob`). Wraps [`OpenDalStorageFactory::S3`] in
+/// [`BlobHostPromotingS3Storage`]. Only alias schemes route here; plain `s3`/`s3a` keep the
+/// unwrapped factory (see `iceberg_common::storage_factory_for`).
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct BlobHostPromotingS3StorageFactory {
     #[serde(skip)]
@@ -182,45 +174,24 @@ impl BlobHostPromotingS3StorageFactory {
 #[typetag::serde(name = "CometBlobHostPromotingS3StorageFactory")]
 impl StorageFactory for BlobHostPromotingS3StorageFactory {
     fn build(&self, config: &StorageConfig) -> IcebergResult<Arc<dyn Storage>> {
-        Ok(Arc::new(BlobHostPromotingS3Storage {
-            props: config.props().clone(),
-            inner: OnceLock::new(),
+        let inner = OpenDalStorageFactory::S3 {
             customized_credential_load: self.customized_credential_load.clone(),
-        }))
+        }
+        .build(config)?;
+        Ok(Arc::new(BlobHostPromotingS3Storage { inner }))
     }
 }
 
 /// [`Storage`] that promotes hostless s3-compliant-alias locations (see
-/// [`promote_hostless_alias_url`]) at the open boundary, then delegates to the crate's opendal S3
-/// storage, which it builds lazily and caches. `props`/`customized_credential_load` mirror
-/// [`OpenDalStorageFactory::S3`]'s inputs so the wrapped storage is exactly the one it would build.
-/// Serde mirrors the crate's `OpenDalResolvingStorage` (props carried, operator cache and
-/// credential loader skipped) only to satisfy the `Storage` typetag supertraits; Comet never
-/// serializes storage during a scan.
+/// [`promote_hostless_alias_url`]) at the open boundary, then delegates to the opendal S3 storage
+/// [`OpenDalStorageFactory::S3`] built from the same [`StorageConfig`]. Serde exists only to
+/// satisfy the `Storage` typetag supertraits; Comet never serializes storage during a scan.
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct BlobHostPromotingS3Storage {
-    props: HashMap<String, String>,
-    #[serde(skip, default)]
-    inner: OnceLock<Arc<dyn Storage>>,
-    #[serde(skip)]
-    customized_credential_load: Option<CustomAwsCredentialLoader>,
+    inner: Arc<dyn Storage>,
 }
 
 impl BlobHostPromotingS3Storage {
-    /// Lazily build and cache the wrapped opendal S3 storage from the same inputs
-    /// [`OpenDalStorageFactory::S3`] uses. A first-call race builds twice and discards the loser;
-    /// `get_or_init`'s closure cannot fail, so the fallible build must happen outside it.
-    fn inner(&self) -> IcebergResult<&Arc<dyn Storage>> {
-        if let Some(inner) = self.inner.get() {
-            return Ok(inner);
-        }
-        let built = OpenDalStorageFactory::S3 {
-            customized_credential_load: self.customized_credential_load.clone(),
-        }
-        .build(&StorageConfig::from_props(self.props.clone()))?;
-        Ok(self.inner.get_or_init(|| built))
-    }
-
     /// Promote a hostless path, surfacing failures as an iceberg [`Error`].
     fn promote<'a>(&self, path: &'a str) -> IcebergResult<Cow<'a, str>> {
         promote_hostless_alias_url(path)
@@ -232,37 +203,35 @@ impl BlobHostPromotingS3Storage {
 #[typetag::serde(name = "CometBlobHostPromotingS3Storage")]
 impl Storage for BlobHostPromotingS3Storage {
     async fn exists(&self, path: &str) -> IcebergResult<bool> {
-        self.inner()?.exists(self.promote(path)?.as_ref()).await
+        self.inner.exists(self.promote(path)?.as_ref()).await
     }
 
     async fn metadata(&self, path: &str) -> IcebergResult<FileMetadata> {
-        self.inner()?.metadata(self.promote(path)?.as_ref()).await
+        self.inner.metadata(self.promote(path)?.as_ref()).await
     }
 
     async fn read(&self, path: &str) -> IcebergResult<Bytes> {
-        self.inner()?.read(self.promote(path)?.as_ref()).await
+        self.inner.read(self.promote(path)?.as_ref()).await
     }
 
     async fn reader(&self, path: &str) -> IcebergResult<Box<dyn FileRead>> {
-        self.inner()?.reader(self.promote(path)?.as_ref()).await
+        self.inner.reader(self.promote(path)?.as_ref()).await
     }
 
     async fn write(&self, path: &str, bs: Bytes) -> IcebergResult<()> {
-        self.inner()?.write(self.promote(path)?.as_ref(), bs).await
+        self.inner.write(self.promote(path)?.as_ref(), bs).await
     }
 
     async fn writer(&self, path: &str) -> IcebergResult<Box<dyn FileWrite>> {
-        self.inner()?.writer(self.promote(path)?.as_ref()).await
+        self.inner.writer(self.promote(path)?.as_ref()).await
     }
 
     async fn delete(&self, path: &str) -> IcebergResult<()> {
-        self.inner()?.delete(self.promote(path)?.as_ref()).await
+        self.inner.delete(self.promote(path)?.as_ref()).await
     }
 
     async fn delete_prefix(&self, path: &str) -> IcebergResult<()> {
-        self.inner()?
-            .delete_prefix(self.promote(path)?.as_ref())
-            .await
+        self.inner.delete_prefix(self.promote(path)?.as_ref()).await
     }
 
     async fn delete_stream(&self, paths: BoxStream<'static, String>) -> IcebergResult<()> {
@@ -273,26 +242,21 @@ impl Storage for BlobHostPromotingS3Storage {
             let rewritten = promote_hostless_alias_url(&p).map(Cow::into_owned);
             rewritten.unwrap_or(p)
         });
-        self.inner()?.delete_stream(promoted.boxed()).await
+        self.inner.delete_stream(promoted.boxed()).await
     }
 
     fn new_input(&self, path: &str) -> IcebergResult<InputFile> {
-        self.inner()?.new_input(self.promote(path)?.as_ref())
+        self.inner.new_input(self.promote(path)?.as_ref())
     }
 
     fn new_output(&self, path: &str) -> IcebergResult<OutputFile> {
-        self.inner()?.new_output(self.promote(path)?.as_ref())
+        self.inner.new_output(self.promote(path)?.as_ref())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Config opting `blob` in as an s3-compliant alias (`fs.comet.s3Compliant.schemes=blob`).
-    fn blob_alias_configs() -> HashMap<String, String> {
-        configs_with("blob")
-    }
 
     fn normalized(url: &str, configs: &HashMap<String, String>) -> String {
         normalize_object_store_url(url, configs)
@@ -301,6 +265,7 @@ mod tests {
             .to_string()
     }
 
+    /// Config opting the given comma-separated schemes in as s3-compliant aliases.
     fn configs_with(schemes: &str) -> HashMap<String, String> {
         let mut configs = HashMap::new();
         configs.insert(
@@ -312,7 +277,7 @@ mod tests {
 
     #[test]
     fn test_normalize_object_store_url() {
-        let blob = blob_alias_configs();
+        let blob = configs_with("blob");
         let empty = HashMap::new();
         for (input, configs, expected) in [
             // Opt-in: blob is left alone until the user lists it, and the list is comma-separated,
@@ -356,71 +321,61 @@ mod tests {
     }
 
     #[test]
-    fn test_is_s3_compliant_alias_scheme_opt_in() {
-        let empty = HashMap::new();
-        assert!(!is_s3_compliant_alias_scheme("blob", &empty));
-
-        let configs = blob_alias_configs();
-        assert!(is_s3_compliant_alias_scheme("blob", &configs));
-        // Case-insensitive; s3a is intentionally NOT reported here (callers special-case it).
-        assert!(is_s3_compliant_alias_scheme("BLOB", &configs));
-        assert!(!is_s3_compliant_alias_scheme("s3a", &configs));
-    }
-
-    #[test]
-    fn test_is_s3_compliant_alias_scheme_excludes_url_special_schemes() {
-        // A URL-spec special scheme is never an alias even if the user lists it: it cannot be
-        // rewritten to `s3` (`Url::set_scheme` refuses it), so admitting it would turn a clean
-        // fallback into a hard error. Guards against a stray `file`/`https` in the list.
-        let configs = configs_with("file,http,https,ftp,ws,wss,blob");
-        for special in ["file", "http", "https", "ftp", "ws", "wss"] {
-            assert!(
-                !is_s3_compliant_alias_scheme(special, &configs),
-                "{special} must not be treated as an s3-compliant alias"
+    fn test_is_s3_compliant_alias_scheme() {
+        // Opt-in and case-insensitive; `s3a` is intentionally NOT reported (callers special-case
+        // it). A URL-spec special scheme is never an alias even when the user lists it: it cannot
+        // be rewritten to `s3` (`Url::set_scheme` refuses it), so admitting one would turn a clean
+        // fallback into a hard error.
+        let special = "file,http,https,ftp,ws,wss,blob";
+        for (scheme, configured, expected) in [
+            ("blob", "", false),
+            ("blob", "blob", true),
+            ("BLOB", "blob", true),
+            ("s3a", "blob", false),
+            ("file", special, false),
+            ("http", special, false),
+            ("https", special, false),
+            ("ftp", special, false),
+            ("ws", special, false),
+            ("wss", special, false),
+            // A non-special scheme in the same list is still honored.
+            ("blob", special, true),
+        ] {
+            let configs = if configured.is_empty() {
+                HashMap::new()
+            } else {
+                configs_with(configured)
+            };
+            assert_eq!(
+                is_s3_compliant_alias_scheme(scheme, &configs),
+                expected,
+                "scheme {scheme} with list {configured:?}"
             );
         }
-        // A non-special scheme in the same list is still honored.
-        assert!(is_s3_compliant_alias_scheme("blob", &configs));
-    }
-
-    fn promoted(path: &str) -> String {
-        promote_hostless_alias_url(path).unwrap().into_owned()
     }
 
     #[test]
-    fn test_promote_hostless_alias_url_promotes_hostless_forms() {
-        // Both hostless spellings (host=None) promote the first path segment into the host so the
+    fn test_promote_hostless_alias_url() {
+        // Hostless spellings (host=None) promote the first path segment into the host so the
         // opendal S3 operator finds the bucket: the empty-authority `blob:///bucket/key` form (the
         // vendor default store) and the opaque single-slash `blob:/bucket/key` form java.net.URI
-        // re-renders it to.
-        assert_eq!(
-            promoted("blob:///sparkinsightdev/tmp/warehouse/x.parquet"),
-            "s3://sparkinsightdev/tmp/warehouse/x.parquet"
-        );
-        assert_eq!(
-            promoted("blob:/bucket/a/b/c.parquet"),
-            "s3://bucket/a/b/c.parquet"
-        );
-    }
-
-    #[test]
-    fn test_promote_hostless_alias_url_passthrough_when_host_present() {
-        // Host-bearing locations are opened as-is: promotion runs only when the URL is hostless.
-        for p in [
-            "blob://bucket/key.parquet",
-            "s3://bucket/key.parquet",
-            "s3a://bucket/key.parquet",
+        // re-renders it to. Host-bearing locations are opened as-is.
+        for (input, expected) in [
+            (
+                "blob:///sparkinsightdev/tmp/warehouse/x.parquet",
+                "s3://sparkinsightdev/tmp/warehouse/x.parquet",
+            ),
+            ("blob:/bucket/a/b/c.parquet", "s3://bucket/a/b/c.parquet"),
+            ("blob://bucket/key.parquet", "blob://bucket/key.parquet"),
+            ("s3://bucket/key.parquet", "s3://bucket/key.parquet"),
+            ("s3a://bucket/key.parquet", "s3a://bucket/key.parquet"),
         ] {
             assert_eq!(
-                promoted(p),
-                p,
-                "host-bearing {p} must pass through unchanged"
+                promote_hostless_alias_url(input).unwrap(),
+                expected,
+                "input: {input}"
             );
         }
-    }
-
-    #[test]
-    fn test_promote_hostless_alias_url_requires_a_bucket_segment() {
         // A hostless URL with no promotable first segment errors, so the scan fails loudly rather
         // than opening a bucketless URL. (The JVM gate already declines these; defense in depth.)
         assert!(promote_hostless_alias_url("blob:///").is_err());

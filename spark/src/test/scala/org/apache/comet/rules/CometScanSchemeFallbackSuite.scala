@@ -22,7 +22,7 @@ package org.apache.comet.rules
 import java.io.File
 import java.net.URI
 import java.nio.file.Files
-import java.util.{Locale, UUID}
+import java.util.UUID
 
 import org.apache.commons.io.FileUtils
 import org.apache.spark.SparkConf
@@ -120,7 +120,7 @@ class CometScanSchemeFallbackSuite extends CometTestBase {
       "gs://bucket/... must be admitted even after an authorityless gs:// URI was probed first")
   }
 
-  test("iceberg gate: builtin allowlist admitted, unbuildable schemes rejected, blob opt-in") {
+  test("iceberg gate: builtin allowlist admitted, unbuildable schemes rejected") {
     // The Iceberg gate is an explicit allowlist mirroring `storage_factory_for`'s arms (keep in
     // lockstep). Narrower than the Parquet gate: object_store recognizes http/abfs/wasb but
     // iceberg-rust can't build them, so reject up-front rather than fail during native setup.
@@ -145,46 +145,37 @@ class CometScanSchemeFallbackSuite extends CometTestBase {
         !CometScanRule.isIcebergReadableScheme(new URI(u), Set.empty),
         s"$u must not be iceberg-readable; storage_factory_for has no matching arm")
     }
-    // `blob` was removed from the hardcoded allowlist; it is opt-in via config on this path too.
-    val blob = new URI("blob://bucket/key.parquet")
-    assert(
-      !CometScanRule.isIcebergReadableScheme(blob, Set.empty),
-      "blob:// must NOT be iceberg-readable without opt-in config")
-    assert(
-      CometScanRule.isIcebergReadableScheme(blob, Set("blob")),
-      "blob:// must be iceberg-readable once configured as an s3-compliant scheme")
   }
 
   test("parquet gate: mixed-bucket alias scan is declined (single object store per partition)") {
     // Native planning registers one object store per FilePartition and strips the authority from
     // every file's object key, so files in a second bucket would be read from the first. A scan
-    // whose opt-in alias paths span multiple buckets must fall back. [P1 / sunchao 2026-09-02]
+    // whose opt-in alias paths span multiple buckets must fall back.
     val schemes = Set("blob")
-    val twoBuckets =
-      Seq(new URI("blob://bucket-a/k.parquet"), new URI("blob://bucket-b/k.parquet"))
+    def buckets(locations: String*): Set[String] =
+      CometScanRule.aliasScanBuckets(
+        CometScanRule.classifyRootPaths(locations.map(new URI(_)), Set.empty, schemes))
+
     assert(
-      CometScanRule.mixedAliasScanBuckets(twoBuckets, schemes) == Set("bucket-a", "bucket-b"),
+      buckets("blob://bucket-a/k.parquet", "blob://bucket-b/k.parquet") ==
+        Set("bucket-a", "bucket-b"),
       "two alias buckets must be reported so the Parquet gate falls back")
     // An alias bucket mixed with a plain-s3 bucket is still two object stores -> declined.
-    val aliasPlusS3 =
-      Seq(new URI("blob://bucket-a/k.parquet"), new URI("s3://bucket-b/k.parquet"))
     assert(
-      CometScanRule.mixedAliasScanBuckets(aliasPlusS3, schemes) == Set("bucket-a", "bucket-b"))
-    // Safe scans report nothing: one alias bucket, or the same bucket via two paths.
-    val oneBucket = Seq(new URI("blob://bucket-a/x.parquet"))
-    assert(CometScanRule.mixedAliasScanBuckets(oneBucket, schemes).isEmpty)
-    val sameBucket =
-      Seq(new URI("blob://bucket-a/x.parquet"), new URI("blob://bucket-a/y.parquet"))
-    assert(CometScanRule.mixedAliasScanBuckets(sameBucket, schemes).isEmpty)
+      buckets("blob://bucket-a/k.parquet", "s3://bucket-b/k.parquet") ==
+        Set("bucket-a", "bucket-b"))
+    // Safe scans report at most one bucket: one alias path, or the same bucket via two paths.
+    assert(buckets("blob://bucket-a/x.parquet") == Set("bucket-a"))
+    assert(
+      buckets("blob://bucket-a/x.parquet", "blob://bucket-a/y.parquet") == Set("bucket-a"))
     // No alias path present: plain multi-bucket s3:// is a pre-existing limitation, out of scope.
-    val plainS3 = Seq(new URI("s3://bucket-a/k.parquet"), new URI("s3://bucket-b/k.parquet"))
-    assert(CometScanRule.mixedAliasScanBuckets(plainS3, schemes).isEmpty)
+    assert(buckets("s3://bucket-a/k.parquet", "s3://bucket-b/k.parquet").isEmpty)
   }
 
   test("parquet gate: object_store rejects an actual path with an illegal character") {
     // The scheme cache is path-independent, but a valid `file` scheme can carry a path object_store
     // rejects: a directory name with a newline surfaces as `%0A` and `Path::from_url_path` fails.
-    // Native execution would hard-error, so the real path is probed separately. [P2 / 2026-09-02]
+    // Native execution would hard-error, so the real path is probed separately.
     assert(
       CometScanRule.objectStoreAcceptsPath(new URI("file:///tmp/warehouse/data")),
       "an ordinary local path must be accepted by object_store")
@@ -196,15 +187,12 @@ class CometScanSchemeFallbackSuite extends CometTestBase {
   test("iceberg gate: hostless alias promotes bucket from path; other hostless schemes decline") {
     // iceberg-rust opens files by their raw location. Host-bearing locations always work. Hostless
     // ones work ONLY for opt-in S3-compliant aliases, which the native reader opens by promoting
-    // the bucket from the first path segment (BlobHostPromotingS3Storage). [bucket promotion]
+    // the bucket from the first path segment (BlobHostPromotingS3Storage).
     // `hasOpenableAuthority` is the predicate `validateIcebergFileScanTasks` applies per data and
     // delete file, once its scheme has cleared `isIcebergReadableScheme` (covered above).
     val schemes = Set("blob")
-    def openable(location: String, s3Compliant: Set[String] = schemes): Boolean = {
-      val uri = new URI(location)
-      val scheme = Option(uri.getScheme).map(_.toLowerCase(Locale.ROOT)).orNull
-      CometScanRule.hasOpenableAuthority(uri, scheme, s3Compliant)
-    }
+    def openable(location: String, s3Compliant: Set[String] = schemes): Boolean =
+      CometScanRule.hasOpenableAuthority(new URI(location), s3Compliant)
     // Host-bearing: openable regardless of scheme family; `file`/schemeless need no host.
     assert(openable("s3://bucket/k.parquet"))
     assert(openable("blob://bucket/k.parquet"))

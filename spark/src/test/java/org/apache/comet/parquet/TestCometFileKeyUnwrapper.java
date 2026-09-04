@@ -69,10 +69,16 @@ public class TestCometFileKeyUnwrapper {
   }
 
   @Test
-  public void unconfiguredAliasPassesThrough() {
-    // An alias not opted in is left untouched. Here blob is configured but minio is not.
-    String minio = "minio://bucket/foo/part-0.parquet";
-    assertEquals(minio, norm(minio, BLOB));
+  public void unlistedSchemesPassThrough() {
+    // A scheme not in the opted-in set is left untouched, whether it is a plausible alias (minio,
+    // blob) or a non-S3 filesystem. Here blob is configured but minio is not.
+    for (String p :
+        asList(
+            "minio://bucket/foo/part-0.parquet",
+            "hdfs://nn/warehouse/part-0.parquet",
+            "file:///tmp/part-0.parquet")) {
+      assertEquals(p, norm(p, BLOB));
+    }
     // With no schemes configured at all, even blob passes through.
     String blob = "blob://bucket/foo/part-0.parquet";
     assertEquals(blob, norm(blob, NONE));
@@ -88,13 +94,5 @@ public class TestCometFileKeyUnwrapper {
     String canonical = "s3a://bucket/foo/part-0.parquet";
     assertEquals(canonical, norm("blob:/bucket/foo/part-0.parquet", BLOB));
     assertEquals(canonical, norm("blob:///bucket/foo/part-0.parquet", BLOB));
-  }
-
-  @Test
-  public void nonS3SchemesPassThrough() {
-    String hdfs = "hdfs://nn/warehouse/part-0.parquet";
-    assertEquals(hdfs, norm(hdfs, BLOB));
-    String file = "file:///tmp/part-0.parquet";
-    assertEquals(file, norm(file, BLOB));
   }
 }

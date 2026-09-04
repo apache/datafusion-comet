@@ -21,7 +21,7 @@ package org.apache.comet.cloud.s3
 
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.SaveMode
-import org.apache.spark.sql.comet.{CometIcebergNativeScanExec, CometNativeScanExec, CometScanExec}
+import org.apache.spark.sql.comet.CometIcebergNativeScanExec
 import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.{col, sum}
@@ -61,13 +61,10 @@ class CometS3CredentialBridgeSuite
     MinioCometS3CredentialProvider.installCredentials(userName, password)
   }
 
-  private def assertHasCometParquetScan(plan: SparkPlan): Unit = {
-    val scans = collect(plan) {
-      case p: CometScanExec => p
-      case p: CometNativeScanExec => p
-    }
-    assert(scans.nonEmpty, s"Expected at least one Comet Parquet scan in plan:\n$plan")
-  }
+  private def assertHasCometParquetScan(plan: SparkPlan): Unit =
+    assert(
+      cometScans(plan).nonEmpty,
+      s"Expected at least one Comet Parquet scan in plan:\n$plan")
 
   private def assertHasCometIcebergScan(plan: SparkPlan): Unit = {
     val scans = collect(plan) { case p: CometIcebergNativeScanExec => p }

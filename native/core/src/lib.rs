@@ -160,16 +160,22 @@ pub extern "system" fn Java_org_apache_comet_NativeBase_isFeatureEnabled(
     })
 }
 
-/// JNI: does object_store recognize this URL's scheme?
+/// JNI: can object_store build a store AND an object key for this URL?
 ///
 /// Source of truth for the JVM planner's "can the native reader handle this filesystem?" check.
 /// `prepare_object_store_with_configs` dispatches non-hdfs/non-s3 schemes to object_store's
 /// `parse_url` (driven by `ObjectStoreScheme::parse`), so answering from the same parser lets the
 /// planner decline early without hardcoding the supported set. (hdfs/libhdfs are handled JVM-side.)
 ///
+/// `ObjectStoreScheme::parse` validates the PATH as well as the scheme -- it ends in
+/// `Path::from_url_path` -- so a recognized scheme carrying a key object_store forbids (e.g. a
+/// directory name with a newline) answers false. `CometScanRule` relies on both halves: it probes
+/// a synthetic scheme-only URL for the cached scheme gate and the real URL for the path gate.
+///
 /// Alias schemes (e.g. `blob`) are NOT answered here: this gate has no config. Their opt-in lives
-/// in the JVM `CometScanRule` via `fs.comet.s3Compliant.schemes`, and opted-in schemes are
-/// rewritten to `s3://` before reaching `prepare_object_store_with_configs`.
+/// in the JVM `CometScanRule` via `fs.comet.s3Compliant.schemes`; natively they are rewritten to
+/// `s3://` by `normalize_object_store_url`, the first step of
+/// `prepare_object_store_with_configs`.
 #[no_mangle]
 pub extern "system" fn Java_org_apache_comet_NativeBase_isObjectStoreSchemeSupported(
     env: EnvUnowned,

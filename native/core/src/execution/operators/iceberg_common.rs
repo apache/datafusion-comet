@@ -43,6 +43,11 @@ const STORAGE_PROPERTY_PREFIXES: &[&str] = &["s3.", "gcs.", "adls.", "client."];
 /// stay entirely in-process. For S3, the Comet credential bridge is wired in when a provider
 /// class is configured; `access_mode` is forwarded to the JVM SPI so the read and write paths can
 /// be granted different (e.g. read-only vs read-write) credentials.
+///
+/// The JVM planner mirrors the schemes admitted here by hand, so that it can decline a scan
+/// cleanly instead of failing at execution. Changing the arms below means updating
+/// `CometScanRule.icebergReadableSchemes` (reads) and
+/// `CometIcebergNativeWrite.SupportedStorageSchemes` (writes).
 pub(crate) fn storage_factory_for(
     path: &str,
     catalog_properties: &HashMap<String, String>,
@@ -51,25 +56,6 @@ pub(crate) fn storage_factory_for(
 ) -> Result<Arc<dyn StorageFactory>, DataFusionError> {
     let scheme = scheme_of(path);
     match scheme {
-        // s3, s3a, and any opted-in s3-compliant alias (e.g. blob) all route to the S3 backend.
-        // Host-bearing paths reach iceberg-storage-opendal's scheme-agnostic S3 operator RAW (it
-        // takes the bucket from `Url::host_str`), so `blob://bucket/key` opens directly. An alias
-        // additionally gets a wrapper that promotes a HOSTLESS `blob:///bucket/key` into the host
-        // at the open boundary. Both leave the recorded string iceberg-rust matches deletes
-        // against untouched -- see s3_blob_fs_support for that delete-safety rationale.
-        s if is_s3_family_scheme(s, catalog_properties) => {
-            let customized_credential_load =
-                build_s3_credential_loader(path, catalog_properties, catalog_name, access_mode)?;
-            if is_s3_compliant_alias_scheme(s, catalog_properties) {
-                Ok(Arc::new(BlobHostPromotingS3StorageFactory::new(
-                    customized_credential_load,
-                )))
-            } else {
-                Ok(Arc::new(OpenDalStorageFactory::S3 {
-                    customized_credential_load,
-                }))
-            }
-        }
         "file" => Ok(Arc::new(OpenDalStorageFactory::Fs)),
         "memory" => Ok(Arc::new(OpenDalStorageFactory::Memory)),
         "gs" => Ok(Arc::new(OpenDalStorageFactory::Gcs)),
@@ -86,6 +72,24 @@ pub(crate) fn storage_factory_for(
                     .to_string(),
             )),
         },
+        // s3, s3a, and any opted-in s3-compliant alias (e.g. blob) route to the S3 backend. Listed
+        // last so the built-in backends above stay authoritative even if one of their schemes is
+        // also named in `fs.comet.s3Compliant.schemes`. An alias additionally gets a wrapper that
+        // promotes a HOSTLESS `blob:///bucket/key` into the host at the open boundary -- see
+        // s3_blob_fs_support for why that never touches the recorded delete-matching string.
+        s if is_s3_family_scheme(s, catalog_properties) => {
+            let customized_credential_load =
+                build_s3_credential_loader(path, catalog_properties, catalog_name, access_mode)?;
+            if is_s3_compliant_alias_scheme(s, catalog_properties) {
+                Ok(Arc::new(BlobHostPromotingS3StorageFactory::new(
+                    customized_credential_load,
+                )))
+            } else {
+                Ok(Arc::new(OpenDalStorageFactory::S3 {
+                    customized_credential_load,
+                }))
+            }
+        }
         _ => Err(DataFusionError::Execution(format!(
             "Unsupported storage scheme: {scheme}"
         ))),
@@ -128,12 +132,15 @@ pub(crate) fn load_file_io(
     // `AWS_REGION` / `AWS_DEFAULT_REGION`, so forcing `us-east-1` unconditionally would
     // override an `AWS_REGION=us-west-2` and break auth for AWS buckets outside us-east-1.
     // Both catalog key spellings iceberg-rust reads (`client.region` wins over `s3.region`).
-    let region_forwarded = catalog_properties.contains_key("s3.region")
-        || catalog_properties.contains_key("client.region")
-        || env_region_present();
+    //
     // reference_path reaches here raw (see storage_factory_for), so alias schemes must match too.
+    // Scheme is tested first so a file://, gs:// or oss:// FileIO does not pay the env lookups.
     let scheme = scheme_of(reference_path);
-    if !region_forwarded && is_s3_family_scheme(scheme, catalog_properties) {
+    if is_s3_family_scheme(scheme, catalog_properties)
+        && !catalog_properties.contains_key("s3.region")
+        && !catalog_properties.contains_key("client.region")
+        && !env_region_present()
+    {
         file_io_builder = file_io_builder.with_prop("s3.region", "us-east-1");
     }
 
@@ -205,9 +212,7 @@ fn env_region_present() -> bool {
         .any(|k| std::env::var(k).is_ok_and(|v| !v.is_empty()))
 }
 
-/// Extracts the URI scheme, defaulting to `file` for schemeless local paths (e.g. `/tmp/x`). Both
-/// `storage_factory_for` (backend routing) and `load_file_io` (region defaulting) classify by
-/// scheme, so they share this to admit exactly the same set.
+/// Extracts the URI scheme, defaulting to `file` for schemeless local paths (e.g. `/tmp/x`).
 ///
 /// Splits on the first `:` (RFC 3986), NOT `://`: hostless vendor forms like `blob:/bucket/key`
 /// (opaque, empty authority) carry no `://`, and treating them as `file` would route an
@@ -222,9 +227,8 @@ fn scheme_of(path: &str) -> &str {
 }
 
 /// True if `scheme` routes to the S3 backend: `s3`/`s3a`, or any opted-in s3-compliant alias
-/// (`fs.comet.s3Compliant.schemes`). Both the storage-factory selection and the region default use
-/// this, so they admit the same schemes. The Scala `NativeConfig.isS3FamilyScheme` additionally
-/// treats `s3n` as S3-family for bucket resolution; `s3n` is intentionally omitted here because
+/// (`fs.comet.s3Compliant.schemes`). The Scala `NativeConfig.isS3FamilyScheme` additionally treats
+/// `s3n` as S3-family for bucket resolution; `s3n` is intentionally omitted here because
 /// iceberg-rust's storage factory has no `s3n` backend and the Scala Iceberg scheme gate
 /// (`isIcebergReadableScheme`) rejects `s3n` before a path ever reaches this operator.
 fn is_s3_family_scheme(scheme: &str, catalog_properties: &HashMap<String, String>) -> bool {

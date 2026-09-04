@@ -641,8 +641,13 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
     // Promote the data bucket's per-bucket `fs.s3a.bucket.<b>.*` settings to global, mirroring the
     // scan path: iceberg-rust's pinned S3 parser reads only global `s3.*`. Only an S3-family data
     // location yields a bucket (None for a local/GCS/OSS write, which needs no promotion).
-    val s3CompliantSchemes = NativeConfig.resolveS3CompliantSchemes(writeHadoopConf)
-    val dataBucket = NativeConfig.bucketForUri(dataUri, s3CompliantSchemes)
+    //
+    // No opt-in S3-compliant aliases here: `requireSupportedStorageScheme` already declined any
+    // data location outside `SupportedStorageSchemes`, so an alias scheme never reaches this
+    // point. Alias support is scan-only. Enabling it would also mean forwarding
+    // `fs.comet.s3Compliant.schemes` into `catalogProperties`, as the scan does, since
+    // `storage_factory_for` reads the opt-in from there.
+    val dataBucket = NativeConfig.bucketForUri(dataUri, Set.empty)
     val hadoopDerivedProperties = CometIcebergNativeScan.hadoopToIcebergS3Properties(
       NativeConfig.extractObjectStoreOptions(writeHadoopConf, dataUri),
       dataBucket)

@@ -204,64 +204,39 @@ class IcebergReadFromS3Suite extends CometS3TestBase with RESTCatalogHelper {
     }
   }
 
-  test("MOR table with deletes in S3") {
-    assume(icebergAvailable, "Iceberg not available in classpath")
+  // The blob:// case additionally exercises the delete-matching invariant: data files and the
+  // delete file's stored `file_path` both carry blob://, and the Iceberg path rewrites neither, so
+  // the raw data_file_path and the delete file's raw recorded location match by exact string
+  // compare. A scheme rewrite on either side would desync the two and silently leak deleted rows.
+  Seq("s3_catalog" -> "mor_delete_test", "blob_catalog" -> "mor_delete_blob").foreach {
+    case (catalog, table) =>
+      test(s"MOR table with deletes in $catalog") {
+        assume(icebergAvailable, "Iceberg not available in classpath")
 
-    spark.sql("""
-      CREATE TABLE s3_catalog.db.mor_delete_test (
-        id INT,
-        name STRING,
-        value DOUBLE
-      ) USING iceberg
-      TBLPROPERTIES (
-        'write.delete.mode' = 'merge-on-read',
-        'write.merge.mode' = 'merge-on-read'
-      )
-    """)
+        spark.sql(s"""
+          CREATE TABLE $catalog.db.$table (
+            id INT,
+            name STRING,
+            value DOUBLE
+          ) USING iceberg
+          TBLPROPERTIES (
+            'write.delete.mode' = 'merge-on-read',
+            'write.merge.mode' = 'merge-on-read'
+          )
+        """)
 
-    spark.sql("""
-      INSERT INTO s3_catalog.db.mor_delete_test VALUES
-      (1, 'Alice', 10.5), (2, 'Bob', 20.3), (3, 'Charlie', 30.7),
-      (4, 'Diana', 15.2), (5, 'Eve', 25.8)
-    """)
+        spark.sql(s"""
+          INSERT INTO $catalog.db.$table VALUES
+          (1, 'Alice', 10.5), (2, 'Bob', 20.3), (3, 'Charlie', 30.7),
+          (4, 'Diana', 15.2), (5, 'Eve', 25.8)
+        """)
 
-    spark.sql("DELETE FROM s3_catalog.db.mor_delete_test WHERE id IN (2, 4)")
+        spark.sql(s"DELETE FROM $catalog.db.$table WHERE id IN (2, 4)")
 
-    checkIcebergNativeScan("SELECT * FROM s3_catalog.db.mor_delete_test ORDER BY id")
+        checkIcebergNativeScan(s"SELECT * FROM $catalog.db.$table ORDER BY id")
 
-    spark.sql("DROP TABLE s3_catalog.db.mor_delete_test")
-  }
-
-  test("blob:// MOR table with deletes applies positional deletes over blob paths") {
-    assume(icebergAvailable, "Iceberg not available in classpath")
-
-    // Same shape as the s3a MOR test under a blob:// warehouse. Data files and the delete file's
-    // stored `file_path` both carry blob://, and the Iceberg path rewrites neither, so the raw
-    // data_file_path and the delete file's raw recorded location match by exact string compare. A
-    // scheme rewrite on either side would desync the two and silently leak deleted rows.
-    spark.sql("""
-      CREATE TABLE blob_catalog.db.mor_delete_blob (
-        id INT,
-        name STRING,
-        value DOUBLE
-      ) USING iceberg
-      TBLPROPERTIES (
-        'write.delete.mode' = 'merge-on-read',
-        'write.merge.mode' = 'merge-on-read'
-      )
-    """)
-
-    spark.sql("""
-      INSERT INTO blob_catalog.db.mor_delete_blob VALUES
-      (1, 'Alice', 10.5), (2, 'Bob', 20.3), (3, 'Charlie', 30.7),
-      (4, 'Diana', 15.2), (5, 'Eve', 25.8)
-    """)
-
-    spark.sql("DELETE FROM blob_catalog.db.mor_delete_blob WHERE id IN (2, 4)")
-
-    checkIcebergNativeScan("SELECT * FROM blob_catalog.db.mor_delete_blob ORDER BY id")
-
-    spark.sql("DROP TABLE blob_catalog.db.mor_delete_blob")
+        spark.sql(s"DROP TABLE $catalog.db.$table")
+      }
   }
 
   test("REST catalog credential vending rejects wrong credentials") {

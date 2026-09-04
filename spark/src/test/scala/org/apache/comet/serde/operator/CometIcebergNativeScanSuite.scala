@@ -35,19 +35,19 @@ class CometIcebergNativeScanSuite extends AnyFunSuite with Matchers {
       targetBucket: Option[String]): Map[String, String] =
     CometIcebergNativeScan.hadoopToIcebergS3Properties(props, targetBucket)
 
-  test("full fs.s3a.* suffix mapping to global s3.* keys") {
-    // Every suffix handled by hadoopS3aSuffixToIcebergGlobalKey, verified end to end. Mappings are
-    // per-key independent (no cross-key interaction), so this table-driven case also covers the
-    // "several global fs.s3a.* keys at once" scenario.
-    val cases = Seq(
-      "access.key" -> "s3.access-key-id",
-      "secret.key" -> "s3.secret-access-key",
-      "session.token" -> "s3.session-token",
-      "endpoint" -> "s3.endpoint",
-      "path.style.access" -> "s3.path-style-access",
-      "endpoint.region" -> "s3.region")
+  /** Every `fs.s3a.*` suffix the translator maps, paired with its global iceberg `s3.*` key. */
+  private val suffixToIcebergKey = Seq(
+    "access.key" -> "s3.access-key-id",
+    "secret.key" -> "s3.secret-access-key",
+    "session.token" -> "s3.session-token",
+    "endpoint" -> "s3.endpoint",
+    "path.style.access" -> "s3.path-style-access",
+    "endpoint.region" -> "s3.region")
 
-    cases.foreach { case (hadoopSuffix, icebergKey) =>
+  test("full fs.s3a.* suffix mapping to global s3.* keys") {
+    // Mappings are per-key independent (no cross-key interaction), so this table-driven case also
+    // covers the "several global fs.s3a.* keys at once" scenario.
+    suffixToIcebergKey.foreach { case (hadoopSuffix, icebergKey) =>
       val out = translate(Map(s"fs.s3a.$hadoopSuffix" -> "v"), None)
       out should contain(icebergKey -> "v")
       // The Hadoop key itself is never passed through untranslated.
@@ -56,23 +56,15 @@ class CometIcebergNativeScanSuite extends AnyFunSuite with Matchers {
   }
 
   test("target bucket per-bucket keys are promoted to global s3.*") {
-    val props = Map(
-      "fs.s3a.bucket.target.access.key" -> "AKIA-target",
-      "fs.s3a.bucket.target.secret.key" -> "secret-target",
-      "fs.s3a.bucket.target.session.token" -> "token-target",
-      "fs.s3a.bucket.target.endpoint" -> "https://target.example.com",
-      "fs.s3a.bucket.target.path.style.access" -> "true",
-      "fs.s3a.bucket.target.endpoint.region" -> "eu-central-1")
+    val props = suffixToIcebergKey.map { case (suffix, _) =>
+      s"fs.s3a.bucket.target.$suffix" -> s"value-$suffix"
+    }.toMap
 
     val out = translate(props, Some("target"))
 
-    out("s3.access-key-id") shouldBe "AKIA-target"
-    out("s3.secret-access-key") shouldBe "secret-target"
-    out("s3.session-token") shouldBe "token-target"
-    out("s3.endpoint") shouldBe "https://target.example.com"
-    out("s3.path-style-access") shouldBe "true"
-    out("s3.region") shouldBe "eu-central-1"
-
+    suffixToIcebergKey.foreach { case (suffix, icebergKey) =>
+      out(icebergKey) shouldBe s"value-$suffix"
+    }
     // Per-bucket keys are never emitted in s3.bucket.* form (the pinned parser ignores those).
     out.keys.foreach(k => k should not startWith "s3.bucket.")
   }
@@ -121,24 +113,17 @@ class CometIcebergNativeScanSuite extends AnyFunSuite with Matchers {
     out("s3.secret-access-key") shouldBe "secret-dotted"
   }
 
-  test("keys already in iceberg s3.* form pass through unchanged") {
+  test("keys already in iceberg s3.* form pass through; unrelated keys are ignored") {
     val props = Map(
       "s3.endpoint" -> "https://passthrough.example.com",
-      "s3.access-key-id" -> "AKIA-passthrough")
-
-    val out = translate(props, None)
-
-    out("s3.endpoint") shouldBe "https://passthrough.example.com"
-    out("s3.access-key-id") shouldBe "AKIA-passthrough"
-  }
-
-  test("unrelated keys are ignored") {
-    val props = Map(
+      "s3.access-key-id" -> "AKIA-passthrough",
       "fs.gs.project.id" -> "gcp-project",
       "fs.azure.account.key.acct.blob.core.windows.net" -> "azure-key",
       "spark.sql.shuffle.partitions" -> "200")
 
-    translate(props, Some("target")) shouldBe empty
+    translate(props, Some("target")) shouldBe Map(
+      "s3.endpoint" -> "https://passthrough.example.com",
+      "s3.access-key-id" -> "AKIA-passthrough")
   }
 
   test("no target bucket means no per-bucket promotion") {

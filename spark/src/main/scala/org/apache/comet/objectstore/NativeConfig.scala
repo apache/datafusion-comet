@@ -50,15 +50,33 @@ object NativeConfig {
   // `fs.s3a.*`, because native `get_config` checks per-bucket before global.
   private val vendorDefaultAuthority = "default"
 
-  // Recognized vendor properties -> `fs.s3a` suffix. Mirrors CometIcebergNativeScan's target set.
-  // Unknown properties are dropped.
-  private val vendorPropertyToS3aSuffix = Map(
-    "awsAccessKeyId" -> "access.key",
-    "awsSecretAccessKey" -> "secret.key",
-    "awsSessionToken" -> "session.token",
-    "endpoint" -> "endpoint",
-    "region" -> "endpoint.region",
-    "pathStyleAccess" -> "path.style.access")
+  /**
+   * The S3 settings Comet plumbs, in the three spellings it has to speak: the vendor-style
+   * camelCase property (`fs.<alias>.<authority>.<vendorName>`), the Hadoop S3A suffix
+   * (`fs.s3a.<s3aSuffix>`), and the iceberg-rust catalog key. The camelCase spellings are the
+   * ones vendor-branded S3A forks expose; they are not a Hadoop or AWS standard. Single source of
+   * truth so adding a setting is one edit rather than one per direction; the user-facing table in
+   * `docs/source/user-guide/latest/datasources.md` mirrors the first two columns.
+   */
+  private val s3Properties: Seq[(String, String, String)] = Seq(
+    ("awsAccessKeyId", "access.key", "s3.access-key-id"),
+    ("awsSecretAccessKey", "secret.key", "s3.secret-access-key"),
+    ("awsSessionToken", "session.token", "s3.session-token"),
+    ("endpoint", "endpoint", "s3.endpoint"),
+    ("region", "endpoint.region", "s3.region"),
+    ("pathStyleAccess", "path.style.access", "s3.path-style-access"))
+
+  // Vendor property -> `fs.s3a` suffix. Unknown properties are dropped.
+  private val vendorPropertyToS3aSuffix: Map[String, String] =
+    s3Properties.map { case (vendor, s3aSuffix, _) => vendor -> s3aSuffix }.toMap
+
+  /** Maps a Hadoop `fs.s3a.*` property suffix to its GLOBAL iceberg-rust `s3.*` key. */
+  private[comet] val s3aSuffixToIcebergGlobalKey: Map[String, String] =
+    s3Properties.map { case (_, s3aSuffix, icebergKey) => s3aSuffix -> icebergKey }.toMap
+
+  /** A URI's scheme, lowercased; None when it has none. */
+  private[comet] def lowerScheme(uri: URI): Option[String] =
+    Option(uri.getScheme).map(_.toLowerCase(Locale.ROOT))
 
   // Comma-separated scheme list -> trimmed, lowercased set (case-insensitive). Shared with
   // CometScanRule's scheme gate so the JVM admit-decision and native rewrite parse identically.
@@ -75,6 +93,16 @@ object NativeConfig {
     parseSchemeSet(hadoopConf.get(COMET_S3_COMPLIANT_SCHEMES_KEY))
 
   /**
+   * Java-callable view of [[resolveS3CompliantSchemes]], so `CometFileKeyUnwrapper` folds exactly
+   * the schemes this object admits instead of parsing the config a second time. Public (not
+   * `private[comet]`) so Scala emits the static forwarder the Java caller uses.
+   */
+  def resolveS3CompliantSchemesAsJava(hadoopConf: Configuration): java.util.Set[String] = {
+    import scala.jdk.CollectionConverters._
+    resolveS3CompliantSchemes(hadoopConf).asJava
+  }
+
+  /**
    * The S3 bucket a URI addresses: its authority, or the first path segment for the authorityless
    * `blob:///bucket/key` form (matching the native rewrite that promotes it into the host).
    * Returns None for a non-S3-family scheme, so a local Hadoop-catalog
@@ -83,8 +111,7 @@ object NativeConfig {
    * per-bucket surface. Callers therefore need no scheme check of their own.
    */
   private[comet] def bucketForUri(uri: URI, s3CompliantSchemes: Set[String]): Option[String] = {
-    val scheme = Option(uri.getScheme).map(_.toLowerCase(Locale.ROOT)).getOrElse("")
-    if (!isS3FamilyScheme(scheme, s3CompliantSchemes)) {
+    if (!lowerScheme(uri).exists(isS3FamilyScheme(_, s3CompliantSchemes))) {
       None
     } else {
       Option(uri.getAuthority)
@@ -176,7 +203,7 @@ object NativeConfig {
     val options = scala.collection.mutable.Map[String, String]()
 
     // Scheme lists consumed on the native side ride along in the options map (both empty by
-    // default). Copy through when set.
+    // default).
     val libhdfsSchemes = hadoopConf.get(COMET_LIBHDFS_SCHEMES_KEY)
     if (StringUtils.isNotBlank(libhdfsSchemes)) {
       options(COMET_LIBHDFS_SCHEMES_KEY) = libhdfsSchemes
@@ -199,14 +226,16 @@ object NativeConfig {
     // AFTER the whole fs.s3a.* pass (so real vendor values win a conflict). Collect them during
     // the single walk of the config below rather than making a second pass: `iterator()` rebuilds
     // a full copy of the property map on every call.
-    val vendorPrefix = if (s3CompliantSchemes.contains(scheme)) s"fs.$scheme." else null
+    // Empty when the scheme is not an opted-in alias, so the guard below costs one `nonEmpty`
+    // rather than an Option allocation per Hadoop property.
+    val vendorPrefix = if (s3CompliantSchemes.contains(scheme)) s"fs.$scheme." else ""
     val vendorEntries = scala.collection.mutable.ArrayBuffer[(String, String)]()
 
     hadoopConf.iterator().asScala.foreach { entry =>
       val key = entry.getKey
       if (prefixes.get.exists(prefix => key.startsWith(prefix))) {
         options(key) = substitutedValue(hadoopConf, key, entry.getValue)
-      } else if (vendorPrefix != null && key.startsWith(vendorPrefix)) {
+      } else if (vendorPrefix.nonEmpty && key.startsWith(vendorPrefix)) {
         vendorEntries +=
           key.substring(vendorPrefix.length) -> substitutedValue(hadoopConf, key, entry.getValue)
       }

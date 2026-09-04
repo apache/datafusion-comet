@@ -137,31 +137,36 @@ class NativeConfigSuite extends AnyFunSuite with Matchers {
     assert(options("fs.s3a.secret.key") == "${fs.s3a.access.key}")
   }
 
-  test("extractObjectStoreOptions - blob:// forwards vendor fs.blob.<authority>.* keys as s3a") {
-    // blob:// connectors use per-authority keys (just an endpoint, no region). object_store's
-    // AmazonS3Builder reads fs.s3a.bucket.<b>.<suffix>, so Comet must translate fs.blob.<b>.* or
-    // the read fails ("Failed to resolve region: Bucket not found").
-    val hadoopConf = new Configuration()
-    hadoopConf.set(COMET_S3_COMPLIANT_SCHEMES_KEY, "blob")
-    hadoopConf.set("fs.blob.mybucket.endpoint", "https://s3-compat.example.internal")
-    hadoopConf.set("fs.blob.mybucket.awsAccessKeyId", "AKIA-blob")
-    hadoopConf.set("fs.blob.mybucket.awsSecretAccessKey", "secret-blob")
-    // A different authority to make sure translation is per-authority.
-    hadoopConf.set("fs.blob.other.endpoint", "https://other.example.internal")
+  test("extractObjectStoreOptions - alias forwards vendor fs.<scheme>.<authority>.* keys as s3a") {
+    // Alias connectors use per-authority keys (just an endpoint, no region). object_store's
+    // AmazonS3Builder reads fs.s3a.bucket.<b>.<suffix>, so Comet must translate fs.<scheme>.<b>.*
+    // or the read fails ("Failed to resolve region: Bucket not found"). The scheme is not
+    // hardcoded, and the configured list is case-insensitive.
+    for ((schemeList, scheme) <- Seq("blob" -> "blob", "MinIO, r2" -> "minio")) {
+      val hadoopConf = new Configuration()
+      hadoopConf.set(COMET_S3_COMPLIANT_SCHEMES_KEY, schemeList)
+      hadoopConf.set(s"fs.$scheme.mybucket.endpoint", "https://s3-compat.example.internal")
+      hadoopConf.set(s"fs.$scheme.mybucket.awsAccessKeyId", "AKIA-alias")
+      hadoopConf.set(s"fs.$scheme.mybucket.awsSecretAccessKey", "secret-alias")
+      // A different authority to make sure translation is per-authority.
+      hadoopConf.set(s"fs.$scheme.other.endpoint", "https://other.example.internal")
 
-    val opts = NativeConfig.extractObjectStoreOptions(
-      hadoopConf,
-      new URI("blob://mybucket/dataset/part-0.parquet"))
+      val opts = NativeConfig.extractObjectStoreOptions(
+        hadoopConf,
+        new URI(s"$scheme://mybucket/dataset/part-0.parquet"))
 
-    assert(opts("fs.s3a.bucket.mybucket.endpoint") == "https://s3-compat.example.internal")
-    assert(opts("fs.s3a.bucket.mybucket.access.key") == "AKIA-blob")
-    assert(opts("fs.s3a.bucket.mybucket.secret.key") == "secret-blob")
-    // Path-style is required by most S3-compatible services (signing targets the path form).
-    assert(opts("fs.s3a.bucket.mybucket.path.style.access") == "true")
-    // Per-authority translation must also apply to the second bucket seen in the same config.
-    assert(opts("fs.s3a.bucket.other.endpoint") == "https://other.example.internal")
-    // No region set by the vendor; Comet must not synthesize one (object_store defaults it).
-    assert(!opts.contains("fs.s3a.bucket.mybucket.endpoint.region"))
+      withClue(s"scheme=$scheme list=$schemeList: ") {
+        assert(opts("fs.s3a.bucket.mybucket.endpoint") == "https://s3-compat.example.internal")
+        assert(opts("fs.s3a.bucket.mybucket.access.key") == "AKIA-alias")
+        assert(opts("fs.s3a.bucket.mybucket.secret.key") == "secret-alias")
+        // Path-style is required by most S3-compatible services (signing targets the path form).
+        assert(opts("fs.s3a.bucket.mybucket.path.style.access") == "true")
+        // Per-authority translation must also apply to the second bucket in the same config.
+        assert(opts("fs.s3a.bucket.other.endpoint") == "https://other.example.internal")
+        // No region set by the vendor; Comet must not synthesize one (object_store defaults it).
+        assert(!opts.contains("fs.s3a.bucket.mybucket.endpoint.region"))
+      }
+    }
   }
 
   test(
@@ -264,51 +269,28 @@ class NativeConfigSuite extends AnyFunSuite with Matchers {
     assert(opts(COMET_S3_COMPLIANT_SCHEMES_KEY) == "blob")
   }
 
-  test("extractObjectStoreOptions - non-blob configured scheme translates fs.<scheme>.* keys") {
-    // A configured alias uses its own vendor namespace (fs.minio.<auth>.*), case-insensitive list.
-    val hadoopConf = new Configuration()
-    hadoopConf.set(COMET_S3_COMPLIANT_SCHEMES_KEY, "MinIO, r2")
-    hadoopConf.set("fs.minio.mybucket.endpoint", "https://minio.example.internal")
-    hadoopConf.set("fs.minio.mybucket.awsAccessKeyId", "AKIA-minio")
-    hadoopConf.set("fs.minio.mybucket.awsSecretAccessKey", "secret-minio")
-
-    val opts = NativeConfig.extractObjectStoreOptions(
-      hadoopConf,
-      new URI("minio://mybucket/dataset/part-0.parquet"))
-    assert(opts("fs.s3a.bucket.mybucket.endpoint") == "https://minio.example.internal")
-    assert(opts("fs.s3a.bucket.mybucket.access.key") == "AKIA-minio")
-    assert(opts("fs.s3a.bucket.mybucket.secret.key") == "secret-minio")
-    assert(opts("fs.s3a.bucket.mybucket.path.style.access") == "true")
-  }
-
-  test("extractObjectStoreOptions - explicit per-bucket path.style.access=false is preserved") {
-    // The synthesized path-style is a soft default: an explicit per-bucket false wins (the hatch).
+  test("extractObjectStoreOptions - endpoint path-style synth: only per-bucket suppresses it") {
+    // The synthesized path-style is a soft default: an explicit PER-BUCKET setting wins (the
+    // escape hatch), but a GLOBAL one must not suppress it -- the global may be ambient or for
+    // other s3a workloads, and per-bucket wins natively anyway.
     val hadoopConf = new Configuration()
     hadoopConf.set(COMET_S3_COMPLIANT_SCHEMES_KEY, "blob")
-    hadoopConf.set("fs.blob.mybucket.endpoint", "https://s3-compat.example.internal")
-    hadoopConf.set("fs.s3a.bucket.mybucket.path.style.access", "false")
-
-    val opts = NativeConfig.extractObjectStoreOptions(
-      hadoopConf,
-      new URI("blob://mybucket/dataset/part-0.parquet"))
-    assert(opts("fs.s3a.bucket.mybucket.endpoint") == "https://s3-compat.example.internal")
-    assert(opts("fs.s3a.bucket.mybucket.path.style.access") == "false")
-  }
-
-  test(
-    "extractObjectStoreOptions - global path.style.access does not suppress per-bucket synth") {
-    // A global fs.s3a.path.style.access must NOT suppress the per-bucket synth: it may be ambient
-    // or for other workloads, and per-bucket wins natively. Only a per-bucket setting is the hatch.
-    val hadoopConf = new Configuration()
-    hadoopConf.set(COMET_S3_COMPLIANT_SCHEMES_KEY, "blob")
-    hadoopConf.set("fs.blob.mybucket.endpoint", "https://s3-compat.example.internal")
+    hadoopConf.set("fs.blob.pinned.endpoint", "https://pinned.example.internal")
+    hadoopConf.set("fs.s3a.bucket.pinned.path.style.access", "false")
+    hadoopConf.set("fs.blob.synth.endpoint", "https://synth.example.internal")
     hadoopConf.set("fs.s3a.path.style.access", "false")
 
-    val opts = NativeConfig.extractObjectStoreOptions(
+    val pinned = NativeConfig.extractObjectStoreOptions(
       hadoopConf,
-      new URI("blob://mybucket/dataset/part-0.parquet"))
-    assert(opts("fs.s3a.bucket.mybucket.path.style.access") == "true")
-    assert(opts("fs.s3a.path.style.access") == "false")
+      new URI("blob://pinned/dataset/part-0.parquet"))
+    assert(pinned("fs.s3a.bucket.pinned.endpoint") == "https://pinned.example.internal")
+    assert(pinned("fs.s3a.bucket.pinned.path.style.access") == "false")
+
+    val synth = NativeConfig.extractObjectStoreOptions(
+      hadoopConf,
+      new URI("blob://synth/dataset/part-0.parquet"))
+    assert(synth("fs.s3a.bucket.synth.path.style.access") == "true")
+    assert(synth("fs.s3a.path.style.access") == "false")
   }
 
   test("extractObjectStoreOptions - vendor session token, region, path-style translate") {
@@ -328,30 +310,27 @@ class NativeConfigSuite extends AnyFunSuite with Matchers {
     assert(opts("fs.s3a.bucket.mybucket.path.style.access") == "false")
   }
 
-  test("bucketForUri - authority is the bucket for s3/s3a and configured aliases") {
-    NativeConfig.bucketForUri(new URI("s3://mybucket/key"), Set.empty) shouldBe Some("mybucket")
-    NativeConfig.bucketForUri(new URI("s3a://mybucket/key"), Set.empty) shouldBe Some("mybucket")
-    // blob is only S3-family when opted in; its authority is still the bucket.
-    NativeConfig.bucketForUri(new URI("blob://mybucket/key"), Set("blob")) shouldBe Some(
-      "mybucket")
-  }
+  test("bucketForUri - authority, alias path promotion, and non-S3 schemes") {
+    // `blob:///mybucket/...` reports authority "default"; the real bucket is the first path
+    // segment (matching the native rewrite), but path promotion applies ONLY to S3-family
+    // schemes. Non-S3 schemes must yield None rather than a surprising first-segment bucket --
+    // a local Hadoop-catalog metadata path must not resolve to bucket `tmp`.
+    val cases = Seq(
+      ("s3://mybucket/key", Set.empty[String], Some("mybucket")),
+      ("s3a://mybucket/key", Set.empty[String], Some("mybucket")),
+      // blob is only S3-family when opted in; its authority is still the bucket.
+      ("blob://mybucket/key", Set("blob"), Some("mybucket")),
+      ("blob:///mybucket/key", Set("blob"), Some("mybucket")),
+      // Not opted in -> not S3-family -> no path promotion.
+      ("blob:///mybucket/key", Set.empty[String], None),
+      ("file:///tmp/warehouse/db/t/metadata/v1.metadata.json", Set("blob"), None),
+      ("gs:///tmp/object", Set("blob"), None))
 
-  test("bucketForUri - authorityless alias promotes the first path segment") {
-    // `blob:///mybucket/...` reports authority "default"; the real bucket is the first path segment
-    // (matching the native rewrite), but only when the scheme is an opted-in S3-compliant alias.
-    NativeConfig.bucketForUri(new URI("blob:///mybucket/key"), Set("blob")) shouldBe
-      Some("mybucket")
-    // Not opted in -> not S3-family -> no path promotion.
-    NativeConfig.bucketForUri(new URI("blob:///mybucket/key"), Set.empty) shouldBe None
-  }
-
-  test(
-    "bucketForUri - non-S3 scheme with no authority returns None, not the first path segment") {
-    // Regression guard: a local Hadoop-catalog metadata path must NOT resolve to bucket `tmp`.
-    NativeConfig.bucketForUri(
-      new URI("file:///tmp/warehouse/db/t/metadata/v1.metadata.json"),
-      Set("blob")) shouldBe None
-    NativeConfig.bucketForUri(new URI("gs:///tmp/object"), Set("blob")) shouldBe None
+    for ((uri, schemes, expected) <- cases) {
+      withClue(s"$uri with aliases $schemes: ") {
+        NativeConfig.bucketForUri(new URI(uri), schemes) shouldBe expected
+      }
+    }
   }
 
   test("resolveS3CompliantSchemes - comma list is trimmed and lowercased, empty means none") {

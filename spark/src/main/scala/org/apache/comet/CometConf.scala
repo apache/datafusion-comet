@@ -941,6 +941,10 @@ object CometConf extends ShimCometConf {
 
   val COMET_S3_COMPLIANT_SCHEMES_KEY = "fs.comet.s3Compliant.schemes"
 
+  // Declared so the value appears in the generated config reference and can be set via
+  // `spark.hadoop.*`, but never read through this entry: `NativeConfig.resolveS3CompliantSchemes`
+  // reads the Hadoop key below instead, so `core-site.xml` is honored too. Same shape as
+  // COMET_LIBHDFS_SCHEMES.
   val COMET_S3_COMPLIANT_SCHEMES: OptionalConfigEntry[String] =
     conf(s"spark.hadoop.$COMET_S3_COMPLIANT_SCHEMES_KEY")
       .category(CATEGORY_SCAN)

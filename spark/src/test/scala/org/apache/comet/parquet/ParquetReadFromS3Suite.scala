@@ -27,7 +27,6 @@ import org.apache.parquet.crypto.keytools.{KeyToolkit, PropertiesDrivenCryptoFac
 import org.apache.parquet.crypto.keytools.mocks.InMemoryKMS
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.{DataFrame, SaveMode}
-import org.apache.spark.sql.comet.{CometNativeScanExec, CometScanExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.{col, expr, max, sum}
 
@@ -67,21 +66,54 @@ class ParquetReadFromS3Suite extends CometS3TestBase with AdaptiveSparkPlanHelpe
     df.write.format("parquet").partitionBy("val").mode(SaveMode.Overwrite).save(filePath)
   }
 
-  private def assertCometScan(df: DataFrame): Unit = {
-    val scans = collect(df.queryExecution.executedPlan) {
-      case p: CometScanExec => p
-      case p: CometNativeScanExec => p
+  private def assertCometScan(df: DataFrame): Unit =
+    assert(cometScans(df.queryExecution.executedPlan).size == 1)
+
+  // Both schemes address the same MinIO. `blob` is the opt-in S3-compliant alias: the native scan
+  // reads it through object_store after rewriting blob:// -> s3://, with path-style defaulted on by
+  // the blob endpoint (MinIO requires it). assertCometScan confirms the alias is claimed natively.
+  private val readSchemes = Seq("s3a", "blob")
+
+  readSchemes.foreach { scheme =>
+    test(s"read parquet file from MinIO over $scheme://") {
+      val testFilePath = s"$scheme://$testBucketName/data/$scheme-test-file.parquet"
+      writeTestParquetFile(testFilePath)
+
+      val df = spark.read.format("parquet").load(testFilePath).agg(sum(col("id")))
+      assertCometScan(df)
+      assert(df.first().getLong(0) == 499500)
     }
-    assert(scans.size == 1)
-  }
 
-  test("read parquet file from MinIO") {
-    val testFilePath = s"s3a://$testBucketName/data/test-file.parquet"
-    writeTestParquetFile(testFilePath)
+    test(s"write and read encrypted parquet from S3 over $scheme://") {
+      import testImplicits._
 
-    val df = spark.read.format("parquet").load(testFilePath).agg(sum(col("id")))
-    assertCometScan(df)
-    assert(df.first().getLong(0) == 499500)
+      // Encryption cache-key agreement end to end. The put side caches the key retriever under the
+      // user-facing URI; the native side calls back with the rewritten s3:// URI. Both must
+      // canonicalize to the same key (CometFileKeyUnwrapper.normalizeS3Scheme) or the read fails.
+      withSQLConf(
+        DecryptionPropertiesFactory.CRYPTO_FACTORY_CLASS_PROPERTY_NAME -> cryptoFactoryClass,
+        KeyToolkit.KMS_CLIENT_CLASS_PROPERTY_NAME ->
+          "org.apache.parquet.crypto.keytools.mocks.InMemoryKMS",
+        InMemoryKMS.KEY_LIST_PROPERTY_NAME ->
+          s"footerKey: ${footerKey}, key1: ${key1}, key2: ${key2}") {
+
+        val inputDF = spark
+          .range(0, 1000)
+          .map(i => (i, i.toString, i.toFloat))
+          .repartition(5)
+          .toDF("a", "b", "c")
+
+        val testFilePath = s"$scheme://$testBucketName/data/encrypted-$scheme-test.parquet"
+        inputDF.write
+          .option(PropertiesDrivenCryptoFactory.COLUMN_KEYS_PROPERTY_NAME, "key1: a, b; key2: c")
+          .option(PropertiesDrivenCryptoFactory.FOOTER_KEY_PROPERTY_NAME, "footerKey")
+          .parquet(testFilePath)
+
+        val df = spark.read.parquet(testFilePath).agg(sum(col("a")))
+        assertCometScan(df)
+        assert(df.first().getLong(0) == 499500)
+      }
+    }
   }
 
   test("read partitioned parquet file from MinIO") {
@@ -104,83 +136,12 @@ class ParquetReadFromS3Suite extends CometS3TestBase with AdaptiveSparkPlanHelpe
     assert(df.first().getLong(0) == 499500)
   }
 
-  test("write and read encrypted parquet from S3") {
-    import testImplicits._
-
-    withSQLConf(
-      DecryptionPropertiesFactory.CRYPTO_FACTORY_CLASS_PROPERTY_NAME -> cryptoFactoryClass,
-      KeyToolkit.KMS_CLIENT_CLASS_PROPERTY_NAME ->
-        "org.apache.parquet.crypto.keytools.mocks.InMemoryKMS",
-      InMemoryKMS.KEY_LIST_PROPERTY_NAME ->
-        s"footerKey: ${footerKey}, key1: ${key1}, key2: ${key2}") {
-
-      val inputDF = spark
-        .range(0, 1000)
-        .map(i => (i, i.toString, i.toFloat))
-        .repartition(5)
-        .toDF("a", "b", "c")
-
-      val testFilePath = s"s3a://$testBucketName/data/encrypted-test.parquet"
-      inputDF.write
-        .option(PropertiesDrivenCryptoFactory.COLUMN_KEYS_PROPERTY_NAME, "key1: a, b; key2: c")
-        .option(PropertiesDrivenCryptoFactory.FOOTER_KEY_PROPERTY_NAME, "footerKey")
-        .parquet(testFilePath)
-
-      val df = spark.read.parquet(testFilePath).agg(sum(col("a")))
-      assertCometScan(df)
-      assert(df.first().getLong(0) == 499500)
-    }
-  }
-
-  test("read parquet file from MinIO over blob://") {
-    // Plain read over the opt-in blob:// alias: the native scan reads through object_store after
-    // rewriting blob:// -> s3://. path-style (defaulted on by the blob endpoint) is required for
-    // MinIO. assertCometScan confirms the alias was claimed natively.
-    val testFilePath = s"blob://$testBucketName/data/blob-test-file.parquet"
-    writeTestParquetFile(testFilePath)
-
-    val df = spark.read.format("parquet").load(testFilePath).agg(sum(col("id")))
-    assertCometScan(df)
-    assert(df.first().getLong(0) == 499500)
-  }
-
-  test("write and read encrypted parquet from S3 over blob://") {
-    import testImplicits._
-
-    // Encryption cache-key agreement over blob paths, end to end. The put side caches the key
-    // retriever under the blob:// URI. The native side calls back with the rewritten s3:// URI.
-    // Both must canonicalize to the same key (CometFileKeyUnwrapper.normalizeS3Scheme) or it fails.
-    withSQLConf(
-      DecryptionPropertiesFactory.CRYPTO_FACTORY_CLASS_PROPERTY_NAME -> cryptoFactoryClass,
-      KeyToolkit.KMS_CLIENT_CLASS_PROPERTY_NAME ->
-        "org.apache.parquet.crypto.keytools.mocks.InMemoryKMS",
-      InMemoryKMS.KEY_LIST_PROPERTY_NAME ->
-        s"footerKey: ${footerKey}, key1: ${key1}, key2: ${key2}") {
-
-      val inputDF = spark
-        .range(0, 1000)
-        .map(i => (i, i.toString, i.toFloat))
-        .repartition(5)
-        .toDF("a", "b", "c")
-
-      val testFilePath = s"blob://$testBucketName/data/encrypted-blob-test.parquet"
-      inputDF.write
-        .option(PropertiesDrivenCryptoFactory.COLUMN_KEYS_PROPERTY_NAME, "key1: a, b; key2: c")
-        .option(PropertiesDrivenCryptoFactory.FOOTER_KEY_PROPERTY_NAME, "footerKey")
-        .parquet(testFilePath)
-
-      val df = spark.read.parquet(testFilePath).agg(sum(col("a")))
-      assertCometScan(df)
-      assert(df.first().getLong(0) == 499500)
-    }
-  }
-
   test("mixed-bucket blob:// scan falls back and returns correct results") {
     // Native planning registers ONE object store per FilePartition (keyed on the first file's
     // bucket) and strips the authority from every file's object key, so a scan spanning two blob
     // buckets would read every file from the first bucket -- returning [111, 111] instead of
-    // [111, 222]. CometScanRule must decline it so Spark reads both buckets correctly. Regression
-    // for the P1 in sunchao's 2026-09-02 review. Same key in each bucket makes the misread visible.
+    // [111, 222]. CometScanRule must decline it so Spark reads both buckets correctly. Same key in
+    // each bucket makes the misread visible.
     createBucketIfNotExists(secondBucketName)
     val key = "multibucket/same-key.parquet"
     val firstPath = s"blob://$testBucketName/$key"
@@ -189,12 +150,8 @@ class ParquetReadFromS3Suite extends CometS3TestBase with AdaptiveSparkPlanHelpe
     spark.range(222, 223).toDF("id").write.mode(SaveMode.Overwrite).parquet(secondPath)
 
     val df = spark.read.parquet(firstPath, secondPath)
-    val nativeScans = collect(df.queryExecution.executedPlan) {
-      case p: CometNativeScanExec => p
-      case p: CometScanExec => p
-    }
     assert(
-      nativeScans.isEmpty,
+      cometScans(df.queryExecution.executedPlan).isEmpty,
       "mixed-bucket alias scan must fall back to Spark, but Comet claimed it:\n" +
         df.queryExecution.executedPlan)
     assert(
