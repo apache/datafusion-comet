@@ -29,7 +29,7 @@ import org.apache.spark.sql.comet.{CometNativeExec, CometNativeScanExec, CometSc
 import org.apache.spark.sql.execution.{FileSourceScanExec, InSubqueryExec, SubqueryAdaptiveBroadcastExec}
 import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ArrayType, DataType, MapType, StructField, StructType}
+import org.apache.spark.sql.types.{StructField, StructType}
 
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometConf.COMET_EXEC_ENABLED
@@ -71,15 +71,6 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
       reserved += name
       StructField(name, attr.dataType, attr.nullable)
     }
-  }
-
-  private def containsVariantType(dataType: DataType): Boolean = dataType match {
-    case dt if isVariantType(dt) => true
-    case StructType(fields) => fields.exists(field => containsVariantType(field.dataType))
-    case ArrayType(elementType, _) => containsVariantType(elementType)
-    case MapType(keyType, valueType, _) =>
-      containsVariantType(keyType) || containsVariantType(valueType)
-    case _ => false
   }
 
   /** Determine whether the scan is supported and tag the Spark plan with any fallback reasons */
@@ -218,12 +209,11 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
       val partitionSchema = schema2Proto(partitionSchemaFields)
       val requiredSchema = schema2Proto(scan.requiredSchema)
 
-      // Spark's required schema can prune a Variant column, including a Variant nested under an
-      // unrequested struct. The complete relation schema still contains that unsupported type,
-      // and serializing it would throw even though the native reader never needs those bytes.
-      // Keep ordinary fields unchanged and replace a requested Variant-bearing root with its
-      // already-validated, pruned required field. A requested actual Variant never reaches this
-      // point because CometScanRule keeps those scans on Spark.
+      // Spark's required schema can prune a Variant column, including one nested under an
+      // unrequested struct, while the complete relation schema still contains that unsupported
+      // type. Exclude unread roots and replace requested roots with their already-validated,
+      // pruned required fields so Variant never enters the native reader data schema. A requested
+      // Variant is rejected by CometScanRule and CometExecRule before reaching this point.
       val nativeDataSchema = StructType(scan.relation.dataSchema.fields.flatMap { field =>
         if (containsVariantType(field.dataType)) {
           scan.requiredSchema.fields.find(requiredField =>
