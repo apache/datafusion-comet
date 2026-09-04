@@ -144,6 +144,12 @@ select arrays_zip(a, b) FROM test_arrays_zip
 query
 SELECT arrays_zip(a, b)['a'] FROM (SELECT array(1, 2, 3) as a, array(3, 4, 5) as b)
 
+-- The serde guards every argument with CASE WHEN arg IS NOT NULL, and the zip inside the THEN
+-- branch only runs on the rows the guards selected. A stateful argument then advances its
+-- counter on those rows only, even when it is not the nullable one, so the pair stays in Spark.
+query expect_fallback(non-deterministic child under a null guard is evaluated on different rows than Spark's)
+SELECT arrays_zip(transform(a, x -> named_struct('i', monotonically_increasing_id(), 'n', NULL)), IF(size(b) > 1, b, CAST(NULL AS array<int>))) FROM test_arrays_zip
+
 query
 SELECT arrays_zip(a, b)['b'] FROM (SELECT array(1, 2, 3) as a, array(3, 4, 5) as b)
 

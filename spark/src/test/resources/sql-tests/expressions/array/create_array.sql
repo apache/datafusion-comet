@@ -140,3 +140,8 @@ SELECT array(named_struct('a', 1), named_struct('a', a)) FROM test_create_array
 -- Empty array cast to a nested array type: the element type has to survive with no children.
 query
 SELECT CAST(array() AS ARRAY<ARRAY<INT>>)
+
+-- A non-foldable all-NullType argument (built by the JVM codegen dispatcher) would make native
+-- make_array collapse the whole batch into a single list row, so it stays in Spark.
+query expect_fallback(native make_array builds a single row from a NullType batch)
+SELECT array(aggregate(arr, NULL, (acc, x) -> NULL)) FROM test_create_array_complex

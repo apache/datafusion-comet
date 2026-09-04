@@ -413,8 +413,9 @@ private[codegen] object CometBatchKernelCodegenOutput extends CometTypeShim {
    */
   private def emitSpecializedGetterExpr(target: String, idx: String, elemType: DataType): String =
     elemType match {
-      // Placeholder: [[emitWrite]]'s NullType branch only emits `setNull` and ignores its
-      // source, so this never reaches the generated Java. It just keeps the match total.
+      // Computed eagerly for every child, then dropped by [[emitWrite]]'s NullType branch, which
+      // emits `setNull` instead. Dead in the generated Java but not here: without this case an
+      // `array<null>` / `struct<.., null>` output throws instead of dispatching.
       case NullType => "null"
       case BooleanType => s"$target.getBoolean($idx)"
       case ByteType => s"$target.getByte($idx)"

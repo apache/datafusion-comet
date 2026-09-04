@@ -468,3 +468,9 @@ INSERT INTO cl_src_map VALUES
 
 query spark_answer_only
 SELECT size(collect_list(m)) FROM cl_src_map
+
+-- Native collect accumulates the input's own child array, so a NullType-bearing element keeps
+-- its producer's nested nullability while the declared output widens it; the gate keeps such
+-- inputs in Spark rather than failing the batch at runtime.
+query expect_fallback(native collect_list/collect_set rebuilds a NullType-bearing element)
+SELECT grp, sort_array(collect_list(named_struct('i', i, 'n', NULL))) FROM cl_src_int GROUP BY grp
