@@ -20,18 +20,22 @@
 package org.apache.comet.udf;
 
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Function;
 
 import org.apache.arrow.c.ArrowArray;
+import org.apache.arrow.c.ArrowImporter;
 import org.apache.arrow.c.ArrowSchema;
 import org.apache.arrow.c.Data;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.vector.FieldVector;
 import org.apache.arrow.vector.ValueVector;
+import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.spark.TaskContext;
 import org.apache.spark.comet.CometTaskContextShim;
 import org.apache.spark.util.TaskCompletionListener;
 
 import org.apache.comet.util.ClassLoaders;
+import org.apache.comet.vector.NativeUtil$;
 
 /**
  * JNI entry point for native execution to invoke a {@link CometUDF}. Matches the static-method
@@ -210,6 +214,9 @@ public class CometUdfBridge {
     assert udf != null : "reflective instantiation returned null for " + udfClassName;
 
     BufferAllocator allocator = org.apache.comet.package$.MODULE$.CometArrowAllocator();
+    ArrowImporter importer = new ArrowImporter(allocator);
+    Function<Field, FieldVector> vectorFactory =
+        field -> NativeUtil$.MODULE$.createVectorForImport(field, allocator);
 
     ValueVector[] inputs = new ValueVector[inputArrayPtrs.length];
     ValueVector result = null;
@@ -217,7 +224,7 @@ public class CometUdfBridge {
       for (int i = 0; i < inputArrayPtrs.length; i++) {
         ArrowArray inArr = ArrowArray.wrap(inputArrayPtrs[i]);
         ArrowSchema inSch = ArrowSchema.wrap(inputSchemaPtrs[i]);
-        inputs[i] = Data.importVector(allocator, inArr, inSch, null);
+        inputs[i] = importer.importVector(inArr, inSch, null, vectorFactory);
       }
 
       result = udf.evaluate(inputs, numRows);

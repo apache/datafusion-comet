@@ -624,8 +624,8 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 
 | Function | Status | Implementation | Notes |
 | --- | --- | --- | --- |
-| `named_struct` | ✅ | Native | Duplicate field names fall back |
-| `struct` | ✅ | Native |  |
+| `named_struct` | ✅ | Hybrid | Duplicate field names route through the JVM codegen dispatcher |
+| `struct` | ✅ | Hybrid | Duplicate field names route through the JVM codegen dispatcher |
 
 ---
 

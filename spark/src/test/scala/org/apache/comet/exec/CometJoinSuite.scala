@@ -732,6 +732,32 @@ class CometJoinSuite extends CometTestBase {
     }
   }
 
+  test("Broadcast hash join preserves duplicate struct fields") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.PREFER_SORTMERGEJOIN.key -> "false",
+      CometConf.COMET_EXEC_BROADCAST_FORCE_ENABLED.key -> "true") {
+      withParquetTable(Seq((1, 10), (2, 20)), "build") {
+        withParquetTable(Seq(1, 2, 3).map(Tuple1(_)), "probe") {
+          val query =
+            """SELECT /*+ BROADCAST(b) */ p._1, b.s
+              |FROM probe p
+              |JOIN (
+              |  SELECT _1 AS k,
+              |    named_struct(
+              |      '__comet_runtime_field_0', _1,
+              |      '__comet_runtime_field_0', _2) AS s
+              |  FROM build
+              |) b ON p._1 = b.k""".stripMargin
+
+          checkSparkAnswerAndOperator(
+            sql(query),
+            Seq(classOf[CometBroadcastExchangeExec], classOf[CometBroadcastHashJoinExec]))
+        }
+      }
+    }
+  }
+
   // Reproducer for SPARK-43113: full outer SMJ with a join filter that references
   // a nullable column should not match when the filter evaluates to NULL.
   test("SPARK-43113: Full outer SMJ with NULL in join filter") {

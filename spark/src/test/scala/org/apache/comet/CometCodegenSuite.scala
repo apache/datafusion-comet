@@ -111,6 +111,28 @@ class CometCodegenSuite
     }
   }
 
+  test("codegen kernel preserves duplicate struct field names positionally") {
+    val expr =
+      CreateNamedStruct(Seq(Literal("a"), Literal(true), Literal("a"), Literal(7.toByte)))
+
+    val field = CometBatchKernelCodegen.toFfiArrowField("out", expr.dataType, nullable = true)
+    val output = CometBatchKernelCodegen.allocateOutput(field, 1, 0)
+    try {
+      assert(output.getChildrenFromFields.get(0).isInstanceOf[BitVector])
+      assert(output.getChildrenFromFields.get(1).isInstanceOf[TinyIntVector])
+      assert(output.getField.getChildren.get(0).getName === "a")
+      assert(output.getField.getChildren.get(1).getName === "a")
+    } finally {
+      output.close()
+    }
+
+    val actual = runKernel(expr, 1) { vector =>
+      val row = vector.getStruct(0)
+      row.getBoolean(0) -> row.getByte(1)
+    }
+    assert(actual === (true -> 7.toByte))
+  }
+
   test("ScalaUDF over concat(c1, c2) suppresses the null short-circuit") {
     // Concat is not NullIntolerant. The dispatcher's short-circuit guard inspects every node in
     // the bound tree and must skip the whole-tree null short-circuit because one child is

@@ -19,18 +19,20 @@
 
 package org.apache.spark.sql.comet.execution.arrow
 
+import java.util
 import java.util.{ArrayList => JArrayList}
 
 import scala.collection.mutable.ListBuffer
 
 import org.apache.arrow.memory.BufferAllocator
-import org.apache.arrow.vector.{FieldVector, VectorSchemaRoot, VectorUnloader}
-import org.apache.arrow.vector.dictionary.DictionaryEncoder
+import org.apache.arrow.vector.{FieldVector, VectorLoader, VectorSchemaRoot, VectorUnloader}
+import org.apache.arrow.vector.dictionary.{Dictionary, DictionaryEncoder}
 import org.apache.arrow.vector.ipc.ArrowReader
+import org.apache.arrow.vector.ipc.message.ArrowRecordBatch
 import org.apache.arrow.vector.types.pojo.Schema
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
-import org.apache.comet.vector.{CometDictionaryVector, CometVector}
+import org.apache.comet.vector.{CometDictionaryVector, CometVector, NativeUtil}
 
 /**
  * `ArrowReader` over an iterator of Arrow-backed `ColumnarBatch`es. The unload/load step
@@ -44,11 +46,67 @@ private[comet] class ColumnarBatchArrowReader(
     source: Iterator[ColumnarBatch])
     extends ArrowReader(allocator) {
 
+  private var cometInitialized = false
+  private var cometClosed = false
+  private var cometRoot: VectorSchemaRoot = _
+  private var cometLoader: VectorLoader = _
+
   override protected def readSchema(): Schema = arrowSchema
+
+  override protected def initialize(): Unit = {
+    cometRoot = NativeUtil.createVectorSchemaRootForExport(readSchema(), allocator)
+    cometLoader = new VectorLoader(cometRoot)
+    cometInitialized = true
+  }
+
+  override protected def ensureInitialized(): Unit = {
+    if (!cometInitialized) initialize()
+  }
+
+  override def getVectorSchemaRoot: VectorSchemaRoot = {
+    ensureInitialized()
+    cometRoot
+  }
+
+  override def getDictionaryVectors: util.Map[java.lang.Long, Dictionary] = {
+    ensureInitialized()
+    util.Collections.emptyMap()
+  }
+
+  override def lookup(id: Long): Dictionary = {
+    if (!cometInitialized) {
+      throw new IllegalStateException("Unable to lookup until reader has been initialized")
+    }
+    null
+  }
+
+  override def getDictionaryIds: util.Set[java.lang.Long] = {
+    ensureInitialized()
+    util.Collections.emptySet()
+  }
+
+  override protected def prepareLoadNextBatch(): Unit = {
+    ensureInitialized()
+    cometRoot.setRowCount(0)
+  }
+
+  override protected def loadRecordBatch(batch: ArrowRecordBatch): Unit = {
+    try cometLoader.load(batch)
+    finally batch.close()
+  }
 
   override def bytesRead(): Long = 0L
 
   override protected def closeReadSource(): Unit = ()
+
+  override def close(): Unit = close(closeReadSource = true)
+
+  override def close(closeReadSource: Boolean): Unit = {
+    if (!cometClosed) {
+      cometClosed = true
+      if (cometRoot != null) cometRoot.close()
+    }
+  }
 
   override def loadNextBatch(): Boolean = {
     prepareLoadNextBatch()

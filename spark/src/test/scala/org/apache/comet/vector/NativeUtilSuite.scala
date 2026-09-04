@@ -21,13 +21,14 @@ package org.apache.comet.vector
 
 import java.io.IOException
 import java.nio.charset.StandardCharsets
+import java.util.{Arrays, Collections}
 
 import scala.util.Using
 
 import org.apache.arrow.c.{ArrowArray, ArrowSchema, Data}
 import org.apache.arrow.memory.RootAllocator
-import org.apache.arrow.vector.{IntVector, UInt4Vector, VarCharVector}
-import org.apache.arrow.vector.complex.StructVector
+import org.apache.arrow.vector.{BitVector, IntVector, TinyIntVector, UInt4Vector, VarCharVector}
+import org.apache.arrow.vector.complex.{ListVector, StructVector}
 import org.apache.arrow.vector.dictionary.Dictionary
 import org.apache.arrow.vector.dictionary.DictionaryProvider.MapDictionaryProvider
 import org.apache.arrow.vector.types.pojo.{ArrowType, DictionaryEncoding, Field, FieldType}
@@ -363,6 +364,79 @@ class NativeUtilSuite extends CometTestBase {
         imported.close()
       }
       nativeUtil.close()
+    }
+  }
+
+  test("importVector preserves duplicate struct fields positionally") {
+    Using.Manager { use =>
+      val allocator = use(new RootAllocator(Long.MaxValue))
+      val nativeUtil = use(new NativeUtil)
+      val children = Arrays.asList(
+        new Field(
+          "a",
+          FieldType.nullable(ArrowType.Bool.INSTANCE),
+          Collections.emptyList[Field]()),
+        new Field(
+          "a",
+          FieldType.nullable(new ArrowType.Int(8, true)),
+          Collections.emptyList[Field]()))
+      val field = new Field("value", FieldType.nullable(ArrowType.Struct.INSTANCE), children)
+      val source = use(NativeUtil.createVector(field, allocator).asInstanceOf[StructVector])
+
+      source.allocateNew()
+      val bool = source.getChildByOrdinal(0).asInstanceOf[BitVector]
+      val byte = source.getChildByOrdinal(1).asInstanceOf[TinyIntVector]
+      bool.setSafe(0, 1)
+      byte.setSafe(0, 7)
+      bool.setValueCount(1)
+      byte.setValueCount(1)
+      source.setIndexDefined(0)
+      source.setValueCount(1)
+
+      val array = ArrowArray.allocateNew(allocator)
+      val schema = ArrowSchema.allocateNew(allocator)
+      var handedToImport = false
+      try {
+        Data.exportVector(allocator, source, null, array, schema)
+
+        // importVector owns both structs once called, including on its failure path.
+        handedToImport = true
+        val imported = use(nativeUtil.importVector(Array(array), Array(schema)).head)
+        val row = imported.getStruct(0)
+        assert(row.getBoolean(0))
+        assert(row.getByte(1) === 7.toByte)
+        assert(imported.getValueVector.getField.getChildren.get(0).getName === "a")
+        assert(imported.getValueVector.getField.getChildren.get(1).getName === "a")
+      } finally {
+        if (!handedToImport) {
+          try array.release()
+          finally {
+            try array.close()
+            finally {
+              try schema.release()
+              finally schema.close()
+            }
+          }
+        }
+      }
+    }.get
+  }
+
+  test("import vector factory retains Arrow's default path without duplicate struct names") {
+    Using.resource(new RootAllocator(Long.MaxValue)) { allocator =>
+      val child = new Field(
+        "item",
+        FieldType.nullable(new ArrowType.Int(32, true)),
+        Collections.emptyList[Field]())
+      val field = new Field(
+        "values",
+        FieldType.nullable(ArrowType.List.INSTANCE),
+        Collections.singletonList(child))
+
+      Using.resource(NativeUtil.createVectorForImport(field, allocator)) { vector =>
+        assert(vector.isInstanceOf[ListVector])
+        assert(vector.getField.getChildren.get(0).getName === "$data$")
+      }
     }
   }
 }
