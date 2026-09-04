@@ -28,23 +28,29 @@ on:
     paths: &feature-paths
       - "pom.xml"
       - "common/pom.xml"
-      - "common/src/main/scala/org/apache/comet/CometConf.scala"
+      - "native/shuffle/src/spark_unsafe/row.rs"
       - "spark/pom.xml"
+      - "spark/src/main/java/org/apache/comet/vector/**"
+      - "spark/src/main/java/org/apache/spark/sql/comet/execution/shuffle/SpillWriter.java"
+      - "spark/src/main/scala/org/apache/comet/CometConf.scala"
       - "spark/src/main/scala/org/apache/comet/rules/EliminateRedundantTransitions.scala"
+      - "spark/src/main/scala/org/apache/comet/vector/NativeUtil.scala"
+      - "spark/src/main/scala/org/apache/comet/vector/StreamReader.scala"
       - "spark/src/main/scala/org/apache/spark/sql/comet/CometMapInBatchExec.scala"
       - "spark/src/main/scala/org/apache/spark/sql/comet/shims/MapInBatchInfo.scala"
       - "spark/src/main/spark-3.4/org/apache/spark/sql/comet/shims/ShimCometMapInBatch.scala"
       - "spark/src/main/spark-3.5/org/apache/spark/sql/comet/shims/ShimCometMapInBatch.scala"
       - "spark/src/main/spark-4.0/org/apache/spark/sql/comet/shims/ShimCometMapInBatch.scala"
-      - "spark/src/main/spark-4.1/org/apache/spark/sql/comet/shims/ShimCometMapInBatch.scala"
-      - "spark/src/main/spark-4.2/org/apache/spark/sql/comet/shims/ShimCometMapInBatch.scala"
       - "spark/src/main/spark-4.0/org/apache/spark/sql/execution/python/CometArrowPythonRunner.scala"
+      - "spark/src/main/spark-4.1/org/apache/spark/sql/comet/shims/ShimCometMapInBatch.scala"
       - "spark/src/main/spark-4.1/org/apache/spark/sql/execution/python/CometArrowPythonRunner.scala"
+      - "spark/src/main/spark-4.2/org/apache/spark/sql/comet/shims/ShimCometMapInBatch.scala"
       - "spark/src/main/spark-4.2/org/apache/spark/sql/execution/python/CometArrowPythonRunner.scala"
       - "spark/src/main/spark-4.x/org/apache/spark/sql/comet/shims/Spark4xMapInBatchSupport.scala"
       - "spark/src/main/spark-4.x/org/apache/spark/sql/execution/python/CometArrowPythonRunnerBase.scala"
       - "spark/src/test/resources/pyspark/conftest.py"
       - "spark/src/test/resources/pyspark/test_pyarrow_udf.py"
+      - "spark/src/test/resources/pyspark/test_pyarrow_udf_dictionary_shuffle.py"
       - "spark/src/test/spark-3.5/org/apache/spark/sql/comet/CometMapInBatchSuite.scala"
       - "spark/src/test/spark-4.x/org/apache/spark/sql/comet/CometMapInBatchSuite.scala"
       - "spark/src/test/spark-4.x/org/apache/spark/sql/execution/python/CometArrowPythonRunnerSuite.scala"
@@ -130,3 +136,5 @@ jobs:
         run: |
           /tmp/venv/bin/python -m pytest -v \
             spark/src/test/resources/pyspark/test_pyarrow_udf.py
+          /tmp/venv/bin/python -m pytest -v \
+            spark/src/test/resources/pyspark/test_pyarrow_udf_dictionary_shuffle.py

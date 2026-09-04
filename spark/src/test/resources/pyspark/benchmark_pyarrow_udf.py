@@ -32,7 +32,7 @@ optimization actually changes for users:
               (per-row InternalRow.getXXX() loop inside ArrowWriter.write)
   * optimized: CometScan -> CometMapInBatchExec -> CometArrowPythonRunner
               (Arrow IPC serialization directly from Comet's source vectors;
-              no row materialization or intermediate vector-buffer copy)
+              no row materialization; dictionary inputs use temporary decoded vectors)
 
 Results are wall-clock seconds, so they include Python interpreter,
 Arrow IPC, and downstream count() costs. That's intentional: the
@@ -58,6 +58,8 @@ Override defaults via environment variables:
     BENCHMARK_ROWS=2000000                rows per run
     BENCHMARK_WARMUP=2                    warmup iterations per case
     BENCHMARK_ITERS=5                     measured iterations per case
+    BENCHMARK_WORKLOAD='dictionary JVM shuffle'
+                                          run only the named workload
 """
 
 import contextlib
@@ -88,6 +90,11 @@ def _build_spark() -> SparkSession:
             "spark.shuffle.manager",
             "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager",
         )
+        # Force the JVM shuffle and a low dictionary threshold so the dictionary workload
+        # exercises CometDictionaryVector rather than the native shuffle's plain vectors.
+        .config("spark.comet.shuffle.mode", "jvm")
+        .config("spark.comet.shuffle.jvm.preferDictionary.ratio", "1.01")
+        .config("spark.sql.shuffle.partitions", "2")
         .config("spark.memory.offHeap.enabled", "true")
         .config("spark.memory.offHeap.size", "4g")
         .config("spark.driver.memory", "4g")
@@ -127,18 +134,28 @@ def _mixed_with_strings(spark: SparkSession, n: int):
     )
 
 
+def _low_cardinality_strings(spark: SparkSession, n: int):
+    return spark.range(n).selectExpr(
+        "id as id_long",
+        """case
+             when id % 23 = 0 then cast(null as string)
+             when id % 17 = 0 then ''
+             else concat('value_', cast(id % 8 as string))
+           end as repeated_str""",
+    )
+
+
 def _wide_rows(spark: SparkSession, n: int):
     types = ["int", "long", "double"]
-    cols = [
-        f"cast(id + {i} as {types[i % len(types)]}) as col_{i}" for i in range(50)
-    ]
+    cols = [f"cast(id + {i} as {types[i % len(types)]}) as col_{i}" for i in range(50)]
     return spark.range(n).selectExpr(*cols)
 
 
 WORKLOADS = [
-    ("narrow primitives", _narrow_primitives),
-    ("mixed with strings", _mixed_with_strings),
-    ("wide rows (50 cols)", _wide_rows),
+    ("narrow primitives", _narrow_primitives, False),
+    ("mixed with strings", _mixed_with_strings, False),
+    ("wide rows (50 cols)", _wide_rows, False),
+    ("dictionary JVM shuffle", _low_cardinality_strings, True),
 ]
 
 
@@ -150,12 +167,20 @@ def _temp_parquet(spark: SparkSession, build_df, n: int):
         yield path
 
 
-def _time_run(spark: SparkSession, parquet_path: str, accelerate: bool, api: str) -> float:
+def _time_run(
+    spark: SparkSession,
+    parquet_path: str,
+    accelerate: bool,
+    api: str,
+    shuffle_input: bool,
+) -> float:
     spark.conf.set(
         "spark.comet.exec.pyarrowUDF.enabled",
         "true" if accelerate else "false",
     )
     df = spark.read.parquet(parquet_path)
+    if shuffle_input:
+        df = df.repartition(2, "id_long")
     schema = df.schema
     if api == "mapInArrow":
         df = df.mapInArrow(_passthrough_arrow, schema)
@@ -165,6 +190,8 @@ def _time_run(spark: SparkSession, parquet_path: str, accelerate: bool, api: str
     if ("CometMapInBatch" in plan) != accelerate:
         expected = "CometMapInBatch" if accelerate else "vanilla Python execution"
         raise RuntimeError(f"Expected {expected} for {api}, but found:\n{plan}")
+    if shuffle_input and "CometColumnarExchange" not in plan:
+        raise RuntimeError(f"Expected Comet JVM shuffle for {api}, but found:\n{plan}")
     t0 = time.perf_counter()
     df.count()
     return time.perf_counter() - t0
@@ -174,6 +201,15 @@ def main() -> None:
     rows = int(os.environ.get("BENCHMARK_ROWS", 1024 * 1024))
     warmup = int(os.environ.get("BENCHMARK_WARMUP", 2))
     iters = int(os.environ.get("BENCHMARK_ITERS", 5))
+    workload_name = os.environ.get("BENCHMARK_WORKLOAD")
+    workloads = WORKLOADS
+    if workload_name:
+        workloads = [workload for workload in WORKLOADS if workload[0] == workload_name]
+        if not workloads:
+            names = ", ".join(name for name, _, _ in WORKLOADS)
+            raise ValueError(
+                f"Unknown BENCHMARK_WORKLOAD {workload_name!r}; choose from: {names}"
+            )
 
     spark = _build_spark()
     spark.sparkContext.setLogLevel("WARN")
@@ -188,16 +224,16 @@ def main() -> None:
     print(header)
     print("  " + "-" * (len(header) - 2))
 
-    for name, build_df in WORKLOADS:
+    for name, build_df, shuffle_input in workloads:
         print(f"\n=== {name} ===")
         with _temp_parquet(spark, build_df, rows) as parquet_path:
             for api in ("mapInArrow", "mapInPandas"):
                 samples_by_mode = {}
                 for mode, accelerate in (("vanilla", False), ("optimized", True)):
                     for _ in range(warmup):
-                        _time_run(spark, parquet_path, accelerate, api)
+                        _time_run(spark, parquet_path, accelerate, api, shuffle_input)
                     samples = [
-                        _time_run(spark, parquet_path, accelerate, api)
+                        _time_run(spark, parquet_path, accelerate, api, shuffle_input)
                         for _ in range(iters)
                     ]
                     samples_by_mode[mode] = samples
