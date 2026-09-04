@@ -2002,6 +2002,39 @@ abstract class ParquetReadSuite extends CometTestBase {
     }
   }
 
+  // Spark's `clipParquetSchema` runs `matchIdField` at every nesting level while clipping the
+  // file schema, so a struct child id duplicated in the file is rejected even when the read
+  // schema is identical to the file schema and no column needs any conversion.
+  test("duplicate field id inside a struct is rejected without a cast") {
+    withSQLConf(SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "true") {
+      withTempPath { dir =>
+        val schema =
+          new StructType()
+            .add(
+              "s",
+              new StructType()
+                .add("x", LongType, true, withId(1))
+                .add("y", LongType, true, withId(1)),
+              true,
+              withId(2))
+
+        val writeData = Seq(Row(Row(42L, 43L)))
+        spark
+          .createDataFrame(spark.sparkContext.parallelize(writeData), schema)
+          .write
+          .mode("overwrite")
+          .parquet(dir.getCanonicalPath)
+
+        val cause = intercept[SparkException] {
+          spark.read.schema(schema).parquet(dir.getCanonicalPath).collect()
+        }.getCause
+        assert(
+          cause.isInstanceOf[RuntimeException] &&
+            cause.getMessage.contains("Found duplicate field(s)"))
+      }
+    }
+  }
+
   // Verbatim port of Spark `ParquetFieldIdIOSuite.test("read parquet file without ids")`,
   // for the same reason as the duplicate-id test above.
   test("read parquet file without ids") {

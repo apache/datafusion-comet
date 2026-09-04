@@ -17,7 +17,7 @@
 
 use crate::execution::operators::ExecutionError;
 use crate::parquet::name_fold::fold_names;
-use arrow::array::{FixedSizeBinaryArray, ListArray, MapArray, StringArray};
+use arrow::array::{FixedSizeBinaryArray, LargeListArray, ListArray, MapArray, StringArray};
 use arrow::buffer::NullBuffer;
 use arrow::compute::can_cast_types;
 use arrow::datatypes::{FieldRef, Fields};
@@ -148,17 +148,32 @@ impl SparkParquetOptions {
 
 /// Spark-compatible cast implementation. Defers to DataFusion's cast where that is known
 /// to be compatible, and returns an error when a not supported and not DF-compatible cast
-/// is requested.
+/// is requested. Resolves the nested field mapping for this one value; a per-file caller
+/// resolves once and uses [`spark_parquet_convert_with_mapping`] for every batch.
 pub fn spark_parquet_convert(
     arg: ColumnarValue,
     data_type: &DataType,
     parquet_options: &SparkParquetOptions,
 ) -> DataFusionResult<ColumnarValue> {
+    let mapping =
+        resolve_field_mapping(&arg.data_type(), data_type, parquet_options).map_err(spark_error)?;
+    spark_parquet_convert_with_mapping(arg, data_type, &mapping, parquet_options)
+}
+
+/// [`spark_parquet_convert`] with a mapping already resolved for the value's type.
+pub(crate) fn spark_parquet_convert_with_mapping(
+    arg: ColumnarValue,
+    data_type: &DataType,
+    mapping: &FieldMapping,
+    parquet_options: &SparkParquetOptions,
+) -> DataFusionResult<ColumnarValue> {
     match arg {
-        ColumnarValue::Array(array) => Ok(ColumnarValue::Array(parquet_convert_array(
+        ColumnarValue::Array(array) => Ok(ColumnarValue::Array(convert_array(
             array,
             data_type,
+            mapping,
             parquet_options,
+            true,
         )?)),
         ColumnarValue::Scalar(scalar) => {
             // Note that normally CAST(scalar) should be fold in Spark JVM side. However, for
@@ -166,7 +181,7 @@ pub fn spark_parquet_convert(
             // here.
             let array = scalar.to_array()?;
             let scalar = ScalarValue::try_from_array(
-                &parquet_convert_array(array, data_type, parquet_options)?,
+                &convert_array(array, data_type, mapping, parquet_options, true)?,
                 0,
             )?;
             Ok(ColumnarValue::Scalar(scalar))
@@ -174,17 +189,230 @@ pub fn spark_parquet_convert(
     }
 }
 
-fn parquet_convert_array(
-    array: ArrayRef,
-    to_type: &DataType,
-    parquet_options: &SparkParquetOptions,
-) -> DataFusionResult<ArrayRef> {
-    parquet_convert_array_impl(array, to_type, parquet_options, true)
+/// Wrap a [`SparkError`] the way every native operator surfaces it to the JVM.
+pub(crate) fn spark_error(error: SparkError) -> DataFusionError {
+    DataFusionError::External(Box::new(error))
 }
 
-fn parquet_convert_array_impl(
+/// Outcome of matching one requested id or name against a struct's file fields: the last
+/// file field that matched and whether more than one did. A plain `Copy` value, so resolving
+/// a wide struct allocates nothing per id or per name; the matched names are only gathered
+/// when an ambiguity is reported.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FieldMatch {
+    pub(crate) index: usize,
+    pub(crate) ambiguous: bool,
+}
+
+impl FieldMatch {
+    pub(crate) fn new(index: usize, ambiguous: bool) -> Self {
+        Self { index, ambiguous }
+    }
+
+    /// The first file field carrying this id or name.
+    pub(crate) fn first(index: usize) -> Self {
+        Self::new(index, false)
+    }
+
+    /// A further file field carrying the same id or name: the later index wins, as Spark's
+    /// `toMap` does for exact names, and the entry turns ambiguous.
+    pub(crate) fn also(self, index: usize) -> Self {
+        Self::new(index, true)
+    }
+}
+
+/// Record file field `index` under `key`, keeping the entry `Copy`-sized however many fields
+/// share the key.
+pub(crate) fn record_field_match<K: Hash + Eq>(
+    matches: &mut HashMap<K, FieldMatch>,
+    key: K,
+    index: usize,
+) {
+    matches
+        .entry(key)
+        .and_modify(|m| *m = m.also(index))
+        .or_insert_with(|| FieldMatch::first(index));
+}
+
+/// Comma-joined names of the fields carrying `id`, for the duplicate-id error message.
+pub(crate) fn field_names_with_id(fields: &Fields, id: i32) -> String {
+    fields
+        .iter()
+        .filter(|f| field_id(f) == Some(id))
+        .map(|f| f.name().as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Which file field supplies each requested field, resolved once per file and reused for
+/// every batch. Follows the requested type as Spark's `clipParquetSchema` does: a struct
+/// lists one source per requested field, a list (large or not) or map carries the mapping
+/// of its element or key and value types, and anything else is a leaf converted by type.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) enum FieldMapping {
+    Struct(Vec<StructFieldSource>),
+    List(Box<FieldMapping>),
+    Map(Box<FieldMapping>, Box<FieldMapping>),
+    Leaf,
+}
+
+/// The file field behind one requested struct field.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct StructFieldSource {
+    /// Index of the file field supplying the requested field; `None` null-fills it.
+    pub(crate) from_index: Option<usize>,
+    /// Mapping of the requested field's own type.
+    pub(crate) nested: FieldMapping,
+}
+
+impl FieldMapping {
+    /// True when every requested field reads the file field at its own position, so a
+    /// metadata-only relabel of the file array already yields the requested layout.
+    pub(crate) fn is_positional(&self) -> bool {
+        match self {
+            FieldMapping::Struct(sources) => sources
+                .iter()
+                .enumerate()
+                .all(|(i, s)| s.from_index == Some(i) && s.nested.is_positional()),
+            FieldMapping::List(inner) => inner.is_positional(),
+            FieldMapping::Map(key, value) => key.is_positional() && value.is_positional(),
+            FieldMapping::Leaf => true,
+        }
+    }
+}
+
+/// Resolve how `to_type` reads from `from_type`, recursing through struct, list, and map
+/// types. Raises the ambiguity Spark reports from `clipParquetGroupFields` when a requested
+/// id or case-insensitive name matches more than one file field at any level.
+pub(crate) fn resolve_field_mapping(
+    from_type: &DataType,
+    to_type: &DataType,
+    parquet_options: &SparkParquetOptions,
+) -> Result<FieldMapping, SparkError> {
+    use DataType::*;
+    match (from_type, to_type) {
+        (Struct(from_fields), Struct(to_fields)) => {
+            resolve_struct_mapping(from_fields, to_fields, parquet_options)
+        }
+        (List(from_item), List(to_item)) | (LargeList(from_item), LargeList(to_item)) => {
+            Ok(FieldMapping::List(Box::new(resolve_field_mapping(
+                from_item.data_type(),
+                to_item.data_type(),
+                parquet_options,
+            )?)))
+        }
+        (Map(from_entries, from_ordered), Map(to_entries, to_ordered))
+            if from_ordered == to_ordered =>
+        {
+            match (from_entries.data_type(), to_entries.data_type()) {
+                (Struct(from_kv), Struct(to_kv)) if from_kv.len() == 2 && to_kv.len() == 2 => {
+                    let key = resolve_field_mapping(
+                        from_kv[0].data_type(),
+                        to_kv[0].data_type(),
+                        parquet_options,
+                    )?;
+                    let value = resolve_field_mapping(
+                        from_kv[1].data_type(),
+                        to_kv[1].data_type(),
+                        parquet_options,
+                    )?;
+                    Ok(FieldMapping::Map(Box::new(key), Box::new(value)))
+                }
+                _ => Ok(FieldMapping::Leaf),
+            }
+        }
+        _ => Ok(FieldMapping::Leaf),
+    }
+}
+
+/// Match `to` (requested) struct fields to `from` (file) fields. Mirrors Spark's
+/// `clipParquetGroupFields`: when the requested struct carries Parquet field ids anywhere,
+/// id-bearing requested fields match only by id and the rest by name; otherwise every field
+/// matches by name.
+fn resolve_struct_mapping(
+    from_fields: &Fields,
+    to_fields: &Fields,
+    parquet_options: &SparkParquetOptions,
+) -> Result<FieldMapping, SparkError> {
+    let should_match_by_id =
+        parquet_options.use_field_id && to_fields.iter().any(|f| field_id(f).is_some());
+
+    let mut id_matches: HashMap<i32, FieldMatch> = HashMap::new();
+    if should_match_by_id {
+        for (i, field) in from_fields.iter().enumerate() {
+            if let Some(id) = field_id(field) {
+                record_field_match(&mut id_matches, id, i);
+            }
+        }
+    }
+
+    // Fold the file and requested names once via the same `toLowerCase(Locale.ROOT)` the
+    // top-level schema adapter uses, so nested case-insensitive matching agrees with it.
+    let mut all_names: Vec<&str> = Vec::with_capacity(from_fields.len() + to_fields.len());
+    all_names.extend(from_fields.iter().map(|f| f.name().as_str()));
+    all_names.extend(to_fields.iter().map(|f| f.name().as_str()));
+    let all_folded = fold_names(&all_names, parquet_options.case_sensitive);
+    let (from_folded, to_folded) = all_folded.split_at(from_fields.len());
+
+    let mut name_matches: HashMap<&str, FieldMatch> = HashMap::new();
+    for (i, folded) in from_folded.iter().enumerate() {
+        record_field_match(&mut name_matches, folded.as_str(), i);
+    }
+
+    let mut sources = Vec::with_capacity(to_fields.len());
+    for (to_pos, to_field) in to_fields.iter().enumerate() {
+        let from_index = match (should_match_by_id, field_id(to_field)) {
+            // A missing id match is a missing column, never a name match.
+            (true, Some(id)) => match id_matches.get(&id) {
+                Some(m) if m.ambiguous => {
+                    return Err(SparkError::DuplicateFieldByFieldId {
+                        required_id: id,
+                        matched_fields: field_names_with_id(from_fields, id),
+                    });
+                }
+                Some(m) => Some(m.index),
+                None => None,
+            },
+            _ => match name_matches.get(to_folded[to_pos].as_str()) {
+                // Spark's `caseInsensitiveParquetFieldMap` rejects a requested name that folds
+                // onto more than one file field. In case-sensitive mode the fold is identity, so
+                // a collision means byte-identical siblings and the later one wins silently,
+                // as with Spark's `caseSensitiveParquetFieldMap` built by `toMap`.
+                Some(m) if m.ambiguous && !parquet_options.case_sensitive => {
+                    let matched: Vec<&str> = from_folded
+                        .iter()
+                        .zip(from_fields.iter())
+                        .filter(|(folded, _)| *folded == &to_folded[to_pos])
+                        .map(|(_, f)| f.name().as_str())
+                        .collect();
+                    return Err(SparkError::duplicate_field_case_insensitive(
+                        to_field.name(),
+                        &matched,
+                    ));
+                }
+                Some(m) => Some(m.index),
+                None => None,
+            },
+        };
+        let nested = match from_index {
+            Some(i) => resolve_field_mapping(
+                from_fields[i].data_type(),
+                to_field.data_type(),
+                parquet_options,
+            )?,
+            None => FieldMapping::Leaf,
+        };
+        sources.push(StructFieldSource { from_index, nested });
+    }
+    Ok(FieldMapping::Struct(sources))
+}
+
+/// Convert `array` to `to_type` through its resolved `mapping`. `top_level` is true only for
+/// the column itself, never for a struct field, list element, or map entry beneath it.
+fn convert_array(
     array: ArrayRef,
     to_type: &DataType,
+    mapping: &FieldMapping,
     parquet_options: &SparkParquetOptions,
     top_level: bool,
 ) -> DataFusionResult<ArrayRef> {
@@ -193,18 +421,16 @@ fn parquet_convert_array_impl(
 
     // Try Comet specific handlers first, then arrow-rs cast if supported,
     // return uncasted data otherwise
-    match (from_type, to_type) {
-        (Struct(_), Struct(_)) => Ok(parquet_convert_struct_to_struct(
-            array.as_struct(),
-            from_type,
-            to_type,
-            parquet_options,
-        )?),
-        (List(_), List(to_inner_type)) => {
+    match (from_type, to_type, mapping) {
+        (Struct(_), Struct(to_fields), FieldMapping::Struct(sources)) => {
+            convert_struct(array.as_struct(), to_fields, sources, parquet_options)
+        }
+        (List(_), List(to_inner_type), FieldMapping::List(inner)) => {
             let list_arr: &ListArray = array.as_list();
-            let cast_field = parquet_convert_array_impl(
+            let cast_field = convert_array(
                 Arc::clone(list_arr.values()),
                 to_inner_type.data_type(),
+                inner,
                 parquet_options,
                 false,
             )?;
@@ -216,10 +442,26 @@ fn parquet_convert_array_impl(
                 list_arr.nulls().cloned(),
             )))
         }
-        (
-            Timestamp(TimeUnit::Millisecond, _),
-            Timestamp(TimeUnit::Microsecond, target_tz),
-        ) if top_level && parquet_options.checked_timestamp_overflow => {
+        (LargeList(_), LargeList(to_inner_type), FieldMapping::List(inner)) => {
+            let list_arr: &LargeListArray = array.as_list();
+            let cast_field = convert_array(
+                Arc::clone(list_arr.values()),
+                to_inner_type.data_type(),
+                inner,
+                parquet_options,
+                false,
+            )?;
+
+            Ok(Arc::new(LargeListArray::new(
+                Arc::clone(to_inner_type),
+                list_arr.offsets().clone(),
+                cast_field,
+                list_arr.nulls().cloned(),
+            )))
+        }
+        (Timestamp(TimeUnit::Millisecond, _), Timestamp(TimeUnit::Microsecond, target_tz), _)
+            if top_level && parquet_options.checked_timestamp_overflow =>
+        {
             // Spark's Parquet reader calls the checked `millisToMicros` conversion for both
             // direct and dictionary values, independent of CAST evaluation mode:
             // https://github.com/apache/spark/blob/v4.2.0/sql/core/src/main/java/org/apache/spark/sql/execution/datasources/parquet/ParquetVectorUpdaterFactory.java#L817-L833
@@ -238,7 +480,7 @@ fn parquet_convert_array_impl(
                 .with_timezone_opt(target_tz.clone());
             Ok(Arc::new(micros))
         }
-        (Timestamp(TimeUnit::Microsecond, None), Timestamp(TimeUnit::Microsecond, Some(tz))) => {
+        (Timestamp(TimeUnit::Microsecond, None), Timestamp(TimeUnit::Microsecond, Some(tz)), _) => {
             Ok(Arc::new(
                 array
                     .as_primitive::<TimestampMicrosecondType>()
@@ -246,12 +488,21 @@ fn parquet_convert_array_impl(
                     .with_timezone(Arc::clone(tz)),
             ))
         }
-        (Map(_, ordered_from), Map(_, ordered_to)) if ordered_from == ordered_to =>
-            parquet_convert_map_to_map(array.as_map(), to_type, parquet_options, *ordered_to)
-            ,
+        (Map(_, ordered_from), Map(_, ordered_to), FieldMapping::Map(key, value))
+            if ordered_from == ordered_to =>
+        {
+            parquet_convert_map_to_map(
+                array.as_map(),
+                to_type,
+                key,
+                value,
+                parquet_options,
+                *ordered_to,
+            )
+        }
         // Iceberg stores UUIDs as 16-byte fixed binary but Spark expects string representation.
         // Arrow doesn't support casting FixedSizeBinary to Utf8, so we handle it manually.
-        (FixedSizeBinary(16), Utf8) => {
+        (FixedSizeBinary(16), Utf8, _) => {
             let binary_array = array
                 .as_any()
                 .downcast_ref::<FixedSizeBinaryArray>()
@@ -261,9 +512,8 @@ fn parquet_convert_array_impl(
                 .iter()
                 .map(|opt_bytes| {
                     opt_bytes.map(|bytes| {
-                        let uuid = uuid::Uuid::from_bytes(
-                            bytes.try_into().expect("Expected 16 bytes")
-                        );
+                        let uuid =
+                            uuid::Uuid::from_bytes(bytes.try_into().expect("Expected 16 bytes"));
                         uuid.to_string()
                     })
                 })
@@ -287,151 +537,67 @@ pub(crate) fn field_id(field: &arrow::datatypes::Field) -> Option<i32> {
         .and_then(|v| v.parse::<i32>().ok())
 }
 
-/// Cast between struct types based on logic in
+/// Build the requested struct from the file struct, reading each requested field from the
+/// file field at its resolved source index. Based on
 /// `org.apache.spark.sql.catalyst.expressions.Cast#castStruct`.
-fn parquet_convert_struct_to_struct(
+fn convert_struct(
     array: &StructArray,
-    from_type: &DataType,
-    to_type: &DataType,
+    to_fields: &Fields,
+    sources: &[StructFieldSource],
     parquet_options: &SparkParquetOptions,
 ) -> DataFusionResult<ArrayRef> {
-    match (from_type, to_type) {
-        (DataType::Struct(from_fields), DataType::Struct(to_fields)) => {
-            // Match `from` (file) fields to `to` (logical) fields. Mirrors Spark's
-            // `clipParquetGroupFields`: when the logical struct carries Parquet field IDs
-            // anywhere, ID-bearing logical fields match ONLY by ID; non-ID-bearing fields
-            // fall back to name match. When no logical field carries an ID, fall back to
-            // name match across the board.
-            let should_match_by_id =
-                parquet_options.use_field_id && to_fields.iter().any(|f| field_id(f).is_some());
-
-            // Keep EVERY index sharing an ID: Spark's `matchIdField` raises
-            // `foundDuplicateFieldInFieldIdLookupModeError` when a requested ID resolves to
-            // more than one file field, and only when that ID is actually requested.
-            let from_id_to_indices: HashMap<i32, Vec<usize>> = if should_match_by_id {
-                let mut map: HashMap<i32, Vec<usize>> = HashMap::new();
-                for (i, field) in from_fields.iter().enumerate() {
-                    if let Some(id) = field_id(field) {
-                        map.entry(id).or_default().push(i);
-                    }
-                }
-                map
-            } else {
-                HashMap::new()
-            };
-
-            // Fold the file (`from`) and requested (`to`) field names once via the JVM's
-            // `toLowerCase(Locale.ROOT)` (the same fold the top-level schema adapter uses), so
-            // nested case-insensitive matching is byte-for-byte consistent with the top level.
-            let mut all_names: Vec<&str> = Vec::with_capacity(from_fields.len() + to_fields.len());
-            all_names.extend(from_fields.iter().map(|f| f.name().as_str()));
-            all_names.extend(to_fields.iter().map(|f| f.name().as_str()));
-            let all_folded = fold_names(&all_names, parquet_options.case_sensitive);
-            let (from_folded, to_folded) = all_folded.split_at(from_fields.len());
-
-            // Group file field indices by folded name so a case-insensitive collision is detected
-            // (Spark's `caseInsensitiveParquetFieldMap`) rather than silently overwritten.
-            let mut folded_to_indices: HashMap<&str, Vec<usize>> = HashMap::new();
-            for (i, folded) in from_folded.iter().enumerate() {
-                folded_to_indices
-                    .entry(folded.as_str())
-                    .or_default()
-                    .push(i);
-            }
-
-            let mut field_overlap = false;
-            let mut cast_fields: Vec<ArrayRef> = Vec::with_capacity(to_fields.len());
-            for (to_pos, to_field) in to_fields.iter().enumerate() {
-                let from_index = match (should_match_by_id, field_id(to_field)) {
-                    // Spark treats a missing ID match as a missing column rather than
-                    // falling back to name match.
-                    (true, Some(id)) => match from_id_to_indices.get(&id) {
-                        None => None,
-                        Some(indices) if indices.len() == 1 => Some(indices[0]),
-                        // Mirror Spark's `foundDuplicateFieldInFieldIdLookupModeError`
-                        // (`_LEGACY_ERROR_TEMP_2094`): a requested ID resolving to more
-                        // than one file field is ambiguous.
-                        Some(indices) => {
-                            let matched = indices
-                                .iter()
-                                .map(|&i| from_fields[i].name().as_str())
-                                .collect::<Vec<_>>()
-                                .join(", ");
-                            return Err(DataFusionError::External(Box::new(
-                                SparkError::DuplicateFieldByFieldId {
-                                    required_id: id,
-                                    matched_fields: matched,
-                                },
-                            )));
-                        }
-                    },
-                    _ => match folded_to_indices.get(to_folded[to_pos].as_str()) {
-                        // Mirror Spark's `foundDuplicateFieldInCaseInsensitiveModeError`: a
-                        // requested field matching more than one file field is ambiguous. Gated on
-                        // case-insensitive mode to match the top-level check (which only runs when
-                        // `!case_sensitive`): when case-sensitive the fold is identity, so a
-                        // collision means byte-identical sibling names, and raising an error whose
-                        // message says "in case-insensitive mode" would be wrong. Fall through to
-                        // the LAST match in that case, matching Spark's
-                        // `caseSensitiveParquetFieldMap` built with `.toMap` (later entry wins).
-                        Some(indices) if indices.len() > 1 && !parquet_options.case_sensitive => {
-                            let matched: Vec<&str> = indices
-                                .iter()
-                                .map(|&i| from_fields[i].name().as_str())
-                                .collect();
-                            return Err(DataFusionError::External(Box::new(
-                                SparkError::duplicate_field_case_insensitive(
-                                    to_field.name(),
-                                    &matched,
-                                ),
-                            )));
-                        }
-                        Some(indices) => indices.last().copied(),
-                        None => None,
-                    },
-                };
-
-                if let Some(from_index) = from_index {
-                    cast_fields.push(parquet_convert_array_impl(
-                        Arc::clone(array.column(from_index)),
-                        to_field.data_type(),
-                        parquet_options,
-                        false,
-                    )?);
-                    field_overlap = true;
-                } else {
-                    cast_fields.push(new_null_array(to_field.data_type(), array.len()));
-                }
-            }
-
-            // When the file's struct contains none of the requested fields, the
-            // returned validity buffer depends on Spark's
-            // `spark.sql.legacy.parquet.returnNullStructIfAllFieldsMissing` (SPARK-53535,
-            // Spark 4.1+). Legacy mode marks the whole column null; the new default
-            // preserves the file's parent-row nullness so non-null parents materialize
-            // as a struct of all-null fields.
-            let nulls =
-                if !field_overlap && parquet_options.return_null_struct_if_all_fields_missing {
-                    Some(NullBuffer::new_null(array.len()))
-                } else {
-                    array.nulls().cloned()
-                };
-
-            Ok(Arc::new(StructArray::new(
-                to_fields.clone(),
-                cast_fields,
-                nulls,
-            )))
-        }
-        _ => unreachable!(),
+    if sources.len() != to_fields.len() {
+        return Err(DataFusionError::Internal(format!(
+            "struct field mapping has {} sources for {} requested fields",
+            sources.len(),
+            to_fields.len()
+        )));
     }
+
+    let mut field_overlap = false;
+    let mut cast_fields: Vec<ArrayRef> = Vec::with_capacity(to_fields.len());
+    for (to_field, source) in to_fields.iter().zip(sources) {
+        match source.from_index {
+            Some(from_index) => {
+                cast_fields.push(convert_array(
+                    Arc::clone(array.column(from_index)),
+                    to_field.data_type(),
+                    &source.nested,
+                    parquet_options,
+                    false,
+                )?);
+                field_overlap = true;
+            }
+            None => cast_fields.push(new_null_array(to_field.data_type(), array.len())),
+        }
+    }
+
+    // When the file's struct contains none of the requested fields, the
+    // returned validity buffer depends on Spark's
+    // `spark.sql.legacy.parquet.returnNullStructIfAllFieldsMissing` (SPARK-53535,
+    // Spark 4.1+). Legacy mode marks the whole column null; the new default
+    // preserves the file's parent-row nullness so non-null parents materialize
+    // as a struct of all-null fields.
+    let nulls = if !field_overlap && parquet_options.return_null_struct_if_all_fields_missing {
+        Some(NullBuffer::new_null(array.len()))
+    } else {
+        array.nulls().cloned()
+    };
+
+    Ok(Arc::new(StructArray::new(
+        to_fields.clone(),
+        cast_fields,
+        nulls,
+    )))
 }
 
 /// Cast a map type to another map type. The same as arrow-cast except we recursively call our own
-/// parquet_convert_array
+/// convert_array with the resolved key and value mappings.
 fn parquet_convert_map_to_map(
     from: &MapArray,
     to_data_type: &DataType,
+    key_mapping: &FieldMapping,
+    value_mapping: &FieldMapping,
     parquet_options: &SparkParquetOptions,
     to_ordered: bool,
 ) -> Result<ArrayRef, DataFusionError> {
@@ -444,15 +610,17 @@ fn parquet_convert_map_to_map(
                 "map is missing value field".to_string(),
             ))?;
 
-            let key_array = parquet_convert_array_impl(
+            let key_array = convert_array(
                 Arc::clone(from.keys()),
                 key_field.data_type(),
+                key_mapping,
                 parquet_options,
                 false,
             )?;
-            let value_array = parquet_convert_array_impl(
+            let value_array = convert_array(
                 Arc::clone(from.values()),
                 value_field.data_type(),
+                value_mapping,
                 parquet_options,
                 false,
             )?;
@@ -753,9 +921,23 @@ mod tests {
         }
     }
 
+    /// Convert one array through the public entry point, resolving its mapping.
+    fn parquet_convert_array(
+        array: arrow::array::ArrayRef,
+        to_type: &arrow::datatypes::DataType,
+        parquet_options: &crate::parquet::parquet_support::SparkParquetOptions,
+    ) -> datafusion::common::Result<arrow::array::ArrayRef> {
+        use crate::parquet::parquet_support::spark_parquet_convert;
+        use datafusion::physical_plan::ColumnarValue;
+        match spark_parquet_convert(ColumnarValue::Array(array), to_type, parquet_options)? {
+            ColumnarValue::Array(array) => Ok(array),
+            ColumnarValue::Scalar(_) => unreachable!("array input yields an array"),
+        }
+    }
+
     #[test]
     fn test_millis_to_micros_overflow_checked_only_at_top_level() {
-        use crate::parquet::parquet_support::{parquet_convert_array, SparkParquetOptions};
+        use crate::parquet::parquet_support::SparkParquetOptions;
         use arrow::array::{Array, ArrayRef, StructArray, TimestampMillisecondArray};
         use arrow::datatypes::{DataType, Field, Fields, TimeUnit};
         use datafusion_comet_spark_expr::EvalMode;
@@ -872,10 +1054,153 @@ mod tests {
     }
 
     mod struct_field_matching {
-        use crate::parquet::parquet_support::{parquet_convert_array, SparkParquetOptions};
-        use arrow::array::{Array, ArrayRef, Int32Array, StructArray};
+        use super::parquet_convert_array;
+        use crate::parquet::parquet_support::{
+            resolve_field_mapping, FieldMapping, FieldMatch, SparkParquetOptions,
+        };
+        use arrow::array::{Array, ArrayRef, Int32Array, LargeListArray, StructArray};
         use arrow::datatypes::{DataType, Field, Fields};
         use datafusion_comet_spark_expr::EvalMode;
+
+        /// The per-id lookup entry is a plain `Copy` value: the second field sharing an id
+        /// only flips the ambiguity flag, so resolving a wide struct allocates no vector
+        /// per id.
+        #[test]
+        fn field_match_records_ambiguity_without_allocating() {
+            fn assert_copy<T: Copy>() {}
+            assert_copy::<FieldMatch>();
+
+            let first = FieldMatch::first(3);
+            assert_eq!(first, FieldMatch::new(3, false));
+            let again = first.also(5);
+            assert_eq!(again, FieldMatch::new(5, true));
+            assert!(again.ambiguous);
+        }
+
+        /// Every requested id resolves to exactly one file field: the resolved mapping is
+        /// positional and carries one source per requested field.
+        #[test]
+        fn resolve_mapping_by_id_is_positional_for_unique_ids() {
+            let fields: Vec<Field> = (0..256)
+                .map(|i| field_with_id(&format!("c{i}"), i))
+                .collect();
+            let from_type = DataType::Struct(Fields::from(fields.clone()));
+            let to_type = DataType::Struct(Fields::from(fields));
+
+            let mut opts = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+            opts.use_field_id = true;
+
+            let mapping = resolve_field_mapping(&from_type, &to_type, &opts).unwrap();
+            assert!(mapping.is_positional());
+            let FieldMapping::Struct(sources) = &mapping else {
+                panic!("expected a struct mapping");
+            };
+            assert_eq!(sources.len(), 256);
+            assert!(sources
+                .iter()
+                .enumerate()
+                .all(|(i, s)| s.from_index == Some(i)));
+        }
+
+        /// Requested ids in a different order than the file resolve by id, so the mapping
+        /// is not positional and a metadata-only relabel would read the wrong columns.
+        #[test]
+        fn resolve_mapping_by_id_reorders_swapped_ids() {
+            let from_type = DataType::Struct(Fields::from(vec![
+                field_with_id("x", 1),
+                field_with_id("y", 2),
+            ]));
+            let to_type = DataType::Struct(Fields::from(vec![
+                field_with_id("x", 2),
+                field_with_id("y", 1),
+            ]));
+
+            let mut opts = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+            opts.use_field_id = true;
+
+            let mapping = resolve_field_mapping(&from_type, &to_type, &opts).unwrap();
+            assert!(!mapping.is_positional());
+            let FieldMapping::Struct(sources) = &mapping else {
+                panic!("expected a struct mapping");
+            };
+            assert_eq!(sources[0].from_index, Some(1));
+            assert_eq!(sources[1].from_index, Some(0));
+        }
+
+        /// A large list element resolves like a list element: swapped ids inside it make the
+        /// mapping non-positional and the conversion reads each field by id.
+        #[test]
+        fn resolve_mapping_recurses_into_large_list_element() {
+            let from_elem = Fields::from(vec![field_with_id("x", 1), field_with_id("y", 2)]);
+            let to_elem = Fields::from(vec![field_with_id("x", 2), field_with_id("y", 1)]);
+            let from_field = Arc::new(Field::new("item", DataType::Struct(from_elem), true));
+            let to_field = Arc::new(Field::new("item", DataType::Struct(to_elem), true));
+            let from_type = DataType::LargeList(Arc::clone(&from_field));
+            let to_type = DataType::LargeList(to_field);
+
+            let mut opts = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+            opts.use_field_id = true;
+
+            let mapping = resolve_field_mapping(&from_type, &to_type, &opts).unwrap();
+            assert!(!mapping.is_positional());
+
+            let element = struct_of(
+                vec![field_with_id("x", 1), field_with_id("y", 2)],
+                vec![42, 43],
+            );
+            let list = LargeListArray::new(
+                from_field,
+                arrow::buffer::OffsetBuffer::new(vec![0i64, 1].into()),
+                element,
+                None,
+            );
+            let result = parquet_convert_array(Arc::new(list), &to_type, &opts).unwrap();
+            assert_eq!(result.data_type(), &to_type);
+            let values = result
+                .as_any()
+                .downcast_ref::<LargeListArray>()
+                .unwrap()
+                .values()
+                .as_any()
+                .downcast_ref::<StructArray>()
+                .unwrap()
+                .clone();
+            let x = values
+                .column(0)
+                .as_any()
+                .downcast_ref::<Int32Array>()
+                .unwrap();
+            let y = values
+                .column(1)
+                .as_any()
+                .downcast_ref::<Int32Array>()
+                .unwrap();
+            assert_eq!(x.value(0), 43);
+            assert_eq!(y.value(0), 42);
+        }
+
+        /// A duplicated requested id nested under a list element is rejected at resolution
+        /// time, mirroring Spark's `clipParquetListType` recursing into `matchIdField`.
+        #[test]
+        fn resolve_mapping_rejects_duplicate_id_inside_list_element() {
+            let from_elem = DataType::Struct(Fields::from(vec![
+                field_with_id("x", 1),
+                field_with_id("y", 1),
+            ]));
+            let to_elem = DataType::Struct(Fields::from(vec![field_with_id("x", 1)]));
+            let from_type = DataType::List(Arc::new(Field::new("item", from_elem, true)));
+            let to_type = DataType::List(Arc::new(Field::new("element", to_elem, true)));
+
+            let mut opts = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+            opts.use_field_id = true;
+
+            let err = resolve_field_mapping(&from_type, &to_type, &opts).unwrap_err();
+            let msg = err.to_string();
+            assert!(
+                msg.contains("_LEGACY_ERROR_TEMP_2094") && msg.contains("[x, y]"),
+                "unexpected error: {msg}"
+            );
+        }
         use parquet::arrow::PARQUET_FIELD_ID_META_KEY;
         use std::collections::HashMap;
         use std::sync::Arc;
