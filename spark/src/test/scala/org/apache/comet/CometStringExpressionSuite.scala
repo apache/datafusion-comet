@@ -44,6 +44,27 @@ class CometStringExpressionSuite extends CometTestBase {
     testStringPadding("rpad")
   }
 
+  test("lpad/rpad with NULL length") {
+    // FuzzDataGenerator never generates NULL integers (#5389), so build the rows explicitly.
+    // Spark's StringLPad/StringRPad are null-intolerant: a NULL length yields a NULL row.
+    val data: Seq[(String, Option[Int])] = Seq(
+      ("abc", Some(5)),
+      ("abc", None),
+      (null, None),
+      (null, Some(5)),
+      ("abcdef", Some(2)),
+      ("abc", Some(-1)),
+      ("abc", Some(0))) ++ edgeCases.flatMap(s => Seq((s, None), (s, Some(4))))
+    withParquetTable(data, "tbl") {
+      for (expr <- Seq("lpad", "rpad")) {
+        // 2 args (default pad of ' ')
+        checkSparkAnswerAndOperator(s"SELECT _1, _2, $expr(_1, _2) FROM tbl")
+        // 3 args with a literal pad
+        checkSparkAnswerAndOperator(s"SELECT _1, _2, $expr(_1, _2, 'xy') FROM tbl")
+      }
+    }
+  }
+
   test("lpad binary") {
     testBinaryPadding("lpad")
   }
