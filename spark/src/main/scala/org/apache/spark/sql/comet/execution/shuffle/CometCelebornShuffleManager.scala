@@ -24,6 +24,7 @@ import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 
 import scala.collection.mutable
+import scala.concurrent.ExecutionContext
 import scala.jdk.CollectionConverters._
 import scala.util.control.NonFatal
 
@@ -73,6 +74,9 @@ class CometCelebornShuffleManager private[shuffle] (
 
   def nativeShuffleFallbackReason(numPartitions: Int): Option[String] =
     nativePlanningSupport.fallbackReason(numPartitions)
+
+  protected[shuffle] def materializationExecutionContext: ExecutionContext =
+    ExecutionContext.global
 
   private val nativeShuffleClients =
     new ConcurrentHashMap[Int, ConcurrentHashMap[Int, AnyRef]]()

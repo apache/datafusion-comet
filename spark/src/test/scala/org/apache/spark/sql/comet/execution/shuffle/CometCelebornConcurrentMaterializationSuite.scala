@@ -31,6 +31,7 @@ import org.apache.spark.shuffle.{ShuffleHandle, ShuffleWriteMetricsReporter, Shu
 import org.apache.spark.shuffle.celeborn.CelebornShuffleHandle
 import org.apache.spark.sql.{CometTestBase, DataFrame, SparkSession}
 import org.apache.spark.sql.comet.shims.ShimCometShuffleMaterialization
+import org.apache.spark.util.ThreadUtils
 
 import org.apache.comet.CometConf
 
@@ -174,6 +175,73 @@ class CometCelebornConcurrentMaterializationSuite extends CometTestBase {
     }
   }
 
+  test("shared upstream materialization does not exhaust a bounded execution context") {
+    val workers = ThreadUtils.newDaemonFixedThreadPool(2, "comet-materialization-test")
+    val executionContext = ExecutionContext.fromExecutorService(workers)
+    val gate = new ConcurrentRemoteMapStarts
+    val remoteBefore = manager.remoteAttempts.size()
+    val localBefore = manager.localAttempts.size()
+    val branchCount = 6
+    val shared = branch(0, oversized = true)
+    val query = (1 to branchCount)
+      .map { index =>
+        shared.selectExpr(s"id + $index AS id", "payload").repartition(3, $"id")
+      }
+      .reduce(_.union(_))
+    val exchanges = collect(query.queryExecution.executedPlan) {
+      case exchange: CometShuffleExchangeExec => exchange
+    }
+    val materializations =
+      mutable.ArrayBuffer.empty[CometCelebornShuffleMaterialization[_, _, _]]
+    val completedJobs = new CompletedMaterializationJobs
+    spark.sparkContext.addSparkListener(completedJobs)
+    manager.testMaterializationExecutionContext = Some(executionContext)
+    manager.remoteMapStarts = Some(gate)
+    try {
+      // Exchange reuse gives every sibling the same unfinished upstream destination. There are
+      // more dependents than workers, so blocking even a small bounded pool would starve the
+      // upstream completion callback as well as unrelated work scheduled on that pool.
+      assert(exchanges.size == branchCount + 1)
+      exchanges.foreach { exchange =>
+        exchange.executeColumnar()
+        materializations += exchange.shuffleDependency
+          .asInstanceOf[CometShuffleDependency[_, _, _]]
+          .materialization
+          .get
+      }
+      assert(gate.firstStarted.await(20, TimeUnit.SECONDS))
+      assert(gate.shuffleCount == 1)
+      assert(materializations.forall(!_.isCompleted))
+      Await.result(Future(())(executionContext), 5.seconds)
+
+      gate.release.countDown()
+      materializations.foreach { materialization =>
+        Await.result(materialization, 30.seconds)
+        assert(materialization.completedDependency.exists(_.useLocalShuffle))
+        assert(materialization.jobIds.size == 2)
+      }
+      val actual = query.collect().map(row => (row.getLong(0), row.getString(1))).toSeq
+      val expected = (1 to branchCount).map(index => (index.toLong, "0" + "x" * 1048576))
+      assert(actual.sortBy(_._1) == expected)
+    } finally {
+      gate.release.countDown()
+      materializations.foreach(_.cancel())
+      completedJobs.awaitCompletion(materializations.flatMap(_.jobIds).toSeq)
+      Await.result(Future(())(executionContext), 20.seconds)
+      spark.sparkContext.removeSparkListener(completedJobs)
+      manager.remoteMapStarts = None
+      manager.testMaterializationExecutionContext = None
+      executionContext.shutdown()
+      assert(executionContext.awaitTermination(20, TimeUnit.SECONDS))
+      manager.remoteAttempts.asScala.drop(remoteBefore).foreach { case (attempt, _) =>
+        manager.unregisterShuffle(attempt.shuffleId)
+      }
+      manager.localAttempts.asScala.drop(localBefore).foreach { attempt =>
+        manager.unregisterShuffle(attempt.shuffleId)
+      }
+    }
+  }
+
   for (nested <- Seq(false, true)) {
     test(s"non-AQE fallback preserves concurrent branches and downstream reads: nested=$nested") {
       val gate = new ConcurrentRemoteMapStarts
@@ -251,6 +319,11 @@ class CometCelebornConcurrentMaterializationTestManager(conf: SparkConf, isDrive
     extends CometCelebornFallbackTestShuffleManager(conf, isDriver) {
 
   @volatile private[shuffle] var remoteMapStarts: Option[ConcurrentRemoteMapStarts] = None
+  @volatile private[shuffle] var testMaterializationExecutionContext: Option[ExecutionContext] =
+    None
+
+  override protected[shuffle] def materializationExecutionContext: ExecutionContext =
+    testMaterializationExecutionContext.getOrElse(super.materializationExecutionContext)
 
   override def getWriter[K, V](
       handle: ShuffleHandle,

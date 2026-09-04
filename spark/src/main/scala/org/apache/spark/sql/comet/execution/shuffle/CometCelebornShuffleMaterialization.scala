@@ -23,7 +23,7 @@ import java.util.Properties
 
 import scala.collection.mutable
 import scala.collection.mutable.ArrayBuffer
-import scala.concurrent.{blocking, CanAwait, ExecutionContext, Future, Promise}
+import scala.concurrent.{CanAwait, ExecutionContext, Future, Promise}
 import scala.concurrent.duration.Duration
 import scala.util.{Failure, Success, Try}
 import scala.util.control.NonFatal
@@ -50,6 +50,7 @@ private[shuffle] final class CometCelebornShuffleMaterialization[K, V, C](
   import CometCelebornShuffleMaterialization._
 
   private val sparkContext = remoteDependency.rdd.context
+  private val executionContext = manager.materializationExecutionContext
   private val localProperties = sparkContext.getLocalProperties.clone().asInstanceOf[Properties]
   private val contextClassLoader = Thread.currentThread().getContextClassLoader
   private val completion = Promise[MapOutputStatistics]()
@@ -89,22 +90,27 @@ private[shuffle] final class CometCelebornShuffleMaterialization[K, V, C](
   }
 
   private def submit(dependency: CometShuffleDependency[K, V, C], expected: State): Unit = {
-    Future {
-      blocking {
-        try {
+    implicit val executor: ExecutionContext = executionContext
+    val ready = Future {
+      withCapturedProperties(inputMaterializations(dependency.rdd))
+    }.flatMap(upstream => Future.sequence(upstream))
+    ready.onComplete {
+      case Failure(failure) =>
+        fail(expected, failure)
+        cancelActions(failure)
+      case Success(_) =>
+        try
           withCapturedProperties {
-            // submitMapStage eagerly resolves the input graph before queueing a job. An upstream
-            // Comet shuffle can still be choosing its destination, so resolve that graph on this
-            // worker, outside our lock. Independent branches can then be constructed and started,
-            // and cancellation can complete while we wait for an upstream materialization.
+            // Upstream storage decisions have completed without occupying preparation workers.
+            // Cache the graph before taking our lock: submitMapStage also traverses it eagerly.
             prepareInput(dependency.rdd)
             val action = synchronized {
               if (state != expected) {
                 None
               } else {
                 if (expected == RunningLocal) remoteFailure.foreach(failure => throw failure)
-                // Dependencies and partitions are now cached. Keep job admission and action
-                // assignment atomic with cancellation and size-limit reports.
+                // Keep job admission and action assignment atomic with cancellation and size
+                // reports.
                 val submitted = sparkContext.submitMapStage(dependency)
                 activeAction = Some(submitted)
                 if (expected == RunningRemote) remoteAction = Some(submitted)
@@ -112,17 +118,36 @@ private[shuffle] final class CometCelebornShuffleMaterialization[K, V, C](
                 Some(submitted)
               }
             }
-            action.foreach(
-              _.onComplete(result => finish(dependency, expected, result))(
-                ExecutionContext.global))
+            action.foreach(_.onComplete(result => finish(dependency, expected, result)))
           }
-        } catch {
+        catch {
           case NonFatal(failure) =>
             fail(expected, failure)
             cancelActions(failure)
         }
+    }
+  }
+
+  private def inputMaterializations(input: RDD[_]): Seq[Future[MapOutputStatistics]] = {
+    val visited = mutable.Set.empty[Int]
+    val upstream = mutable.Set.empty[Future[MapOutputStatistics]]
+    val pending = mutable.Stack[RDD[_]](input)
+    while (pending.nonEmpty && synchronized { state != Finished && state != Cancelled }) {
+      val next = pending.pop()
+      if (visited.add(next.id)) {
+        next match {
+          // Calling this RDD's dependencies would wait under Spark's RDD lock. Compose its
+          // completion instead; its materialization already owns preparation of its ancestors.
+          case shuffled: CometShuffledBatchRDD if !shuffled.isCheckpointed =>
+            forDependency(shuffled.dependency) match {
+              case Some(materialization) => upstream += materialization
+              case None => pending.push(shuffled.dependency.rdd)
+            }
+          case other => other.dependencies.foreach(dependency => pending.push(dependency.rdd))
+        }
       }
-    }(ExecutionContext.global)
+    }
+    upstream.toSeq
   }
 
   private def prepareInput(input: RDD[_]): Unit = {
