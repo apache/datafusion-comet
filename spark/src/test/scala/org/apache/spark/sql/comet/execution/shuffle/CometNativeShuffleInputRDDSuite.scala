@@ -20,7 +20,7 @@
 package org.apache.spark.sql.comet.execution.shuffle
 
 import org.apache.spark.{HashPartitioner, Partition, TaskContext}
-import org.apache.spark.rdd.RDD
+import org.apache.spark.rdd.{DeterministicLevel, RDD}
 import org.apache.spark.serializer.JavaSerializer
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.comet.{CometMetricNode, NativeExecContext}
@@ -44,6 +44,27 @@ import org.apache.comet.serde.OperatorOuterClass.Operator
  * [[CometNativeShuffleInputRDD]] and the `private[comet]` [[NativeExecContext]] directly.
  */
 class CometNativeShuffleInputRDDSuite extends CometTestBase {
+
+  test("native shuffle input preserves its parents' determinism") {
+    Seq(
+      DeterministicLevel.DETERMINATE,
+      DeterministicLevel.UNORDERED,
+      DeterministicLevel.INDETERMINATE).foreach { level =>
+      val parent = new RDD[AnyRef](spark.sparkContext, Nil) {
+        override protected def getOutputDeterministicLevel: DeterministicLevel.Value = level
+        override protected def getPartitions: Array[Partition] = Array.empty
+        override def compute(split: Partition, context: TaskContext): Iterator[AnyRef] =
+          Iterator.empty
+      }
+      val input = new CometNativeShuffleInputRDD(
+        spark.sparkContext,
+        Seq(parent),
+        0,
+        Set.empty,
+        CometMetricNode(Map.empty))
+      assert(input.outputDeterministicLevel == level)
+    }
+  }
 
   test("spill reporting is registered before native shuffle input producers") {
     Seq(None, Some(new IllegalStateException("failed native shuffle"))).foreach { failure =>

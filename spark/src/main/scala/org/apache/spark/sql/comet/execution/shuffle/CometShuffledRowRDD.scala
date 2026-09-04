@@ -51,6 +51,11 @@ class CometShuffledBatchRDD(
     SortShuffleManager.FETCH_SHUFFLE_BLOCKS_IN_BATCH_ENABLED_KEY,
     SQLConf.get.fetchShuffleBlocksInBatch.toString)
 
+  // Materialize native Celeborn output before exposing a dependency to downstream stages. A
+  // size-limit fallback gets its own shuffle and stage IDs, so an obsolete remote completion
+  // cannot replace local output or tell Spark to skip a replacement map partition.
+  dependency = CometCelebornShuffleMaterialization.selectForRead(dependency)
+
   override def getDependencies: Seq[Dependency[_]] = List(dependency)
 
   override val partitioner: Option[Partitioner] =

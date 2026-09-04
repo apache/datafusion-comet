@@ -257,10 +257,6 @@ even when both its parent and child are non-Comet operators.
 Applications using Apache Celeborn can use Comet's composite shuffle manager to retain ordinary
 Spark/Celeborn shuffle while accelerating other operators with Comet.
 
-Native shuffle requires Spark 3.5.1 or newer, whose scheduler discards late map results from an
-obsolete stage attempt during recovery. Earlier Spark versions retain ordinary Spark/Celeborn
-shuffle, including when native mode is requested.
-
 Native shuffle also requires reliable completion tracking for in-flight payloads. Released Celeborn
 0.6.0 and 0.7.0 clients do not provide the required guarantee, so these versions retain ordinary
 Spark/Celeborn shuffle even when `spark.comet.shuffle.mode=native`. Native shuffle support for
@@ -313,11 +309,14 @@ and codec overhead. Compression reduces the transmitted bytes but still needs un
 encoding workspace.
 
 Comet splits large batches between rows. If a single row, its schema, or its encoding workspace
-cannot fit the remote limits, Comet invalidates that shuffle's remote output and retries the
-whole map stage using its local shuffle writer. All subsequent reads and retries for that
-shuffle use local files and Spark's block transfer service. Native operators and Comet's Arrow
-shuffle format are preserved, and remote admission limits remain enforced. This fallback uses
-executor disk. When `spark.dynamicAllocation.enabled=true`, native Celeborn shuffle requires
+cannot fit the remote limits, Comet abandons the remote shuffle and materializes a replacement
+using its local shuffle writer before downstream tasks can consume the exchange. The replacement
+has a separate shuffle identity, so late remote map results cannot overwrite or skip local map
+output. All reads and retries for the replacement use local files and Spark's block transfer
+service, including normal recovery after later fetch failures. Native operators and Comet's
+Arrow shuffle format are preserved, and remote admission limits remain enforced. Once remote
+output has been published, subsequent failures use the existing Spark/Celeborn recovery path;
+Comet does not change that shuffle's destination. Local fallback uses executor disk. When `spark.dynamicAllocation.enabled=true`, native Celeborn shuffle requires
 `spark.shuffle.service.enabled=true` or `spark.dynamicAllocation.shuffleTracking.enabled=true`
 (the Spark default) so those files remain available. Applications using dynamic allocation with
 both settings disabled retain ordinary Spark/Celeborn shuffle, even if remote reliable storage or

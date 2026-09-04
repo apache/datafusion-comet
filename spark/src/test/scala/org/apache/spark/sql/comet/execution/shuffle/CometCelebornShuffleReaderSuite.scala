@@ -87,7 +87,9 @@ class CometCelebornShuffleReaderSuite extends CometTestBase {
     override def registerShuffle[K, V, C](
         shuffleId: Int,
         dependency: ShuffleDependency[K, V, C]): ShuffleHandle =
-      throw new UnsupportedOperationException("This fixture only reads existing native shuffles")
+      new CometNativeShuffleHandle[K, V](
+        shuffleId,
+        dependency.asInstanceOf[ShuffleDependency[K, V, V]])
 
     override def getWriter[K, V](
         handle: ShuffleHandle,
@@ -172,13 +174,17 @@ class CometCelebornShuffleReaderSuite extends CometTestBase {
       context.taskMetrics().createTempShuffleReadMetrics(),
       retries)
 
-  private def simpleDependency(partitions: Int = 3, attributes: Seq[Attribute] = Seq.empty)
+  private def simpleDependency(
+      partitions: Int = 3,
+      attributes: Seq[Attribute] = Seq.empty,
+      useLocalShuffle: Boolean = false)
       : CometShuffleDependency[Int, ColumnarBatch, ColumnarBatch] =
     new CometShuffleDependency[Int, ColumnarBatch, ColumnarBatch](
       spark.sparkContext.emptyRDD[(Int, ColumnarBatch)],
       new HashPartitioner(partitions),
       decodeTime = SQLMetrics.createMetric(spark.sparkContext, "Celeborn decode time"),
-      outputAttributes = attributes)
+      outputAttributes = attributes,
+      useLocalShuffle = useLocalShuffle)
 
   private def ownedClients(manager: CometCelebornShuffleManager)
       : java.util.concurrent.ConcurrentHashMap[AnyRef, java.lang.Boolean] = {
@@ -282,9 +288,7 @@ class CometCelebornShuffleReaderSuite extends CometTestBase {
     val api = new RecordingReaderApi
     val handle = new org.apache.spark.shuffle.celeborn.CelebornShuffleHandle(17, dependency)
     val manager =
-      new CometCelebornShuffleManager(new SparkConf(false), false, (_, _) => backend, api) {
-        override protected[shuffle] def usesLocalShuffle(shuffleId: Int): Boolean = false
-      }
+      new CometCelebornShuffleManager(new SparkConf(false), false, (_, _) => backend, api)
 
     val remote = manager
       .getReader[Int, ColumnarBatch](
@@ -306,8 +310,7 @@ class CometCelebornShuffleReaderSuite extends CometTestBase {
   test("local fallback shutdown preserves files until explicit shuffle unregister") {
     Seq(false, true).foreach { unregister =>
       val context = TaskContext.empty()
-      val dependency = simpleDependency()
-      val handle = new org.apache.spark.shuffle.celeborn.CelebornShuffleHandle(17, dependency)
+      val dependency = simpleDependency(useLocalShuffle = true)
       val backend = new RecordingReaderBackend(new RecordingCelebornRawClient)
       val local = new RecordingReaderBackend(new RecordingCelebornRawClient)
       val file = Files.createTempFile("comet-local-fallback", ".data")
@@ -316,9 +319,9 @@ class CometCelebornShuffleReaderSuite extends CometTestBase {
         new SparkConf(false).set("spark.shuffle.service.enabled", "true"),
         false,
         (_, _) => backend,
-        localManagerFactory = _ => local) {
-        override protected[shuffle] def usesLocalShuffle(shuffleId: Int): Boolean = true
-      }
+        localManagerFactory = _ => local)
+      val handle = manager.registerShuffle(17, dependency)
+      assert(handle.isInstanceOf[CometNativeShuffleHandle[_, _]])
       try {
         manager.getReader[Int, ColumnarBatch](
           handle,
@@ -331,7 +334,7 @@ class CometCelebornShuffleReaderSuite extends CometTestBase {
         if (unregister) {
           assert(manager.unregisterShuffle(17))
           assert(local.unregistered.contains(17))
-          assert(backend.unregistered.contains(17))
+          assert(backend.unregistered.isEmpty)
         }
         manager.stop()
         assert(local.stopped)
@@ -355,9 +358,7 @@ class CometCelebornShuffleReaderSuite extends CometTestBase {
     val api = new RecordingReaderApi
     val handle = new org.apache.spark.shuffle.celeborn.CelebornShuffleHandle(17, dependency)
     val manager =
-      new CometCelebornShuffleManager(new SparkConf(false), false, (_, _) => backend, api) {
-        override protected[shuffle] def usesLocalShuffle(shuffleId: Int): Boolean = false
-      }
+      new CometCelebornShuffleManager(new SparkConf(false), false, (_, _) => backend, api)
 
     val remote = manager
       .getReader[Int, ColumnarBatch](
@@ -401,9 +402,7 @@ class CometCelebornShuffleReaderSuite extends CometTestBase {
         dependency,
         stageRerunEnabled = unavailableApi)
       val manager =
-        new CometCelebornShuffleManager(new SparkConf(false), false, (_, _) => backend, api) {
-          override protected[shuffle] def usesLocalShuffle(shuffleId: Int): Boolean = false
-        }
+        new CometCelebornShuffleManager(new SparkConf(false), false, (_, _) => backend, api)
 
       val failure = intercept[IllegalStateException] {
         manager.getReader[Int, ColumnarBatch](
@@ -438,9 +437,7 @@ class CometCelebornShuffleReaderSuite extends CometTestBase {
     api.retryLimitFailure = expected
     val handle = new org.apache.spark.shuffle.celeborn.CelebornShuffleHandle(17, dependency)
     val manager =
-      new CometCelebornShuffleManager(new SparkConf(false), false, (_, _) => backend, api) {
-        override protected[shuffle] def usesLocalShuffle(shuffleId: Int): Boolean = false
-      }
+      new CometCelebornShuffleManager(new SparkConf(false), false, (_, _) => backend, api)
 
     val failure = intercept[IllegalStateException] {
       manager.getReader[Int, ColumnarBatch](
@@ -470,9 +467,7 @@ class CometCelebornShuffleReaderSuite extends CometTestBase {
     api.generationFailure = expected
     val handle = new org.apache.spark.shuffle.celeborn.CelebornShuffleHandle(17, dependency)
     val manager =
-      new CometCelebornShuffleManager(new SparkConf(false), false, (_, _) => backend, api) {
-        override protected[shuffle] def usesLocalShuffle(shuffleId: Int): Boolean = false
-      }
+      new CometCelebornShuffleManager(new SparkConf(false), false, (_, _) => backend, api)
 
     val failure = intercept[FetchFailedException] {
       manager.getReader[Int, ColumnarBatch](
@@ -500,9 +495,7 @@ class CometCelebornShuffleReaderSuite extends CometTestBase {
     api.generationFailure = expected
     val handle = new org.apache.spark.shuffle.celeborn.CelebornShuffleHandle(17, dependency)
     val manager =
-      new CometCelebornShuffleManager(new SparkConf(false), false, (_, _) => backend, api) {
-        override protected[shuffle] def usesLocalShuffle(shuffleId: Int): Boolean = false
-      }
+      new CometCelebornShuffleManager(new SparkConf(false), false, (_, _) => backend, api)
 
     val failure = intercept[ClassCastException] {
       manager.getReader[Int, ColumnarBatch](

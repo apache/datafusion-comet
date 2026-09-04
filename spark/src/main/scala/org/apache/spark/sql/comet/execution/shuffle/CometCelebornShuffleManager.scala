@@ -27,12 +27,12 @@ import scala.collection.mutable
 import scala.jdk.CollectionConverters._
 import scala.util.control.NonFatal
 
-import org.apache.spark.{MapOutputTrackerMaster, ShuffleDependency, SparkConf, SparkEnv, TaskContext}
+import org.apache.spark.{ShuffleDependency, SparkConf, SparkEnv, TaskContext}
 import org.apache.spark.internal.config.{DYN_ALLOCATION_ENABLED, DYN_ALLOCATION_SHUFFLE_TRACKING_ENABLED, SHUFFLE_SERVICE_ENABLED}
 import org.apache.spark.rpc.{RpcCallContext, RpcEndpointRef, RpcEnv, ThreadSafeRpcEndpoint}
-import org.apache.spark.scheduler.{MapStatus, OutputCommitCoordinator}
-import org.apache.spark.shuffle.{BaseShuffleHandle, FetchFailedException, ShuffleBlockResolver, ShuffleHandle, ShuffleManager, ShuffleReader, ShuffleReadMetricsReporter, ShuffleWriteMetricsReporter, ShuffleWriter}
-import org.apache.spark.util.{RpcUtils, VersionUtils}
+import org.apache.spark.scheduler.OutputCommitCoordinator
+import org.apache.spark.shuffle.{BaseShuffleHandle, ShuffleBlockResolver, ShuffleHandle, ShuffleManager, ShuffleReader, ShuffleReadMetricsReporter, ShuffleWriteMetricsReporter, ShuffleWriter}
+import org.apache.spark.util.RpcUtils
 
 import org.apache.comet.CometConf
 import org.apache.comet.shuffle.{CelebornShufflePartitionPusher, CelebornShufflePusherFactory, ResolvedCelebornShufflePusher}
@@ -76,6 +76,8 @@ class CometCelebornShuffleManager private[shuffle] (
 
   private val nativeShuffleClients =
     new ConcurrentHashMap[Int, ConcurrentHashMap[Int, AnyRef]]()
+  private val sizeLimitFallbacks = new ConcurrentHashMap[Int, () => Boolean]()
+  private val localShuffleIds = ConcurrentHashMap.newKeySet[Integer]()
   private val ownedNativeClients = new ConcurrentHashMap[AnyRef, java.lang.Boolean]()
   @volatile private var nativeGenerationCoordinator: CelebornShuffleGenerationCoordinator = _
   @volatile private var nativeGenerationEndpoint: RpcEndpointRef = _
@@ -94,6 +96,10 @@ class CometCelebornShuffleManager private[shuffle] (
       shuffleId: Int,
       dependency: ShuffleDependency[K, V, C]): ShuffleHandle = {
     dependency match {
+      case native: CometShuffleDependency[_, _, _]
+          if native.shuffleType == CometNativeShuffle && native.useLocalShuffle =>
+        localShuffleIds.add(shuffleId)
+        localShuffleManager.registerShuffle(shuffleId, dependency)
       case native: CometShuffleDependency[_, _, _] if native.shuffleType == CometNativeShuffle =>
         val handle = backend.registerShuffle(shuffleId, dependency)
         if (!CometCelebornShuffleManager.isCelebornHandle(handle)) {
@@ -119,18 +125,13 @@ class CometCelebornShuffleManager private[shuffle] (
       mapId: Long,
       context: TaskContext,
       metrics: ShuffleWriteMetricsReporter): ShuffleWriter[K, V] = {
+    if (isLocalNativeHandle(handle)) {
+      localShuffleIds.add(handle.shuffleId)
+      return localShuffleManager.getWriter(handle, mapId, context, metrics)
+    }
     nativeDependency(handle) match {
       case Some(dependency) =>
         val earlyClaim = claimNativeShuffleAttempt(handle.shuffleId, context)
-        if (earlyClaim.useLocalShuffle) {
-          if (earlyClaim.requiresStageRetry) {
-            throw localShuffleRetry(handle.shuffleId)
-          }
-          if (!earlyClaim.authorized) {
-            throw CelebornShufflePusherFactory.commitDenied(context)
-          }
-          return localWriter(handle.shuffleId, dependency, mapId, context, metrics, earlyClaim)
-        }
         if (!earlyClaim.authorized && context.attemptNumber() > 0 &&
           !earlyClaim.requiresGenerationResolution) {
           throw CelebornShufflePusherFactory.commitDenied(context)
@@ -215,18 +216,19 @@ class CometCelebornShuffleManager private[shuffle] (
       endPartition: Int,
       context: TaskContext,
       metrics: ShuffleReadMetricsReporter): ShuffleReader[K, C] = {
+    if (isLocalNativeHandle(handle)) {
+      localShuffleIds.add(handle.shuffleId)
+      return localShuffleManager.getReader(
+        handle,
+        startMapIndex,
+        endMapIndex,
+        startPartition,
+        endPartition,
+        context,
+        metrics)
+    }
     nativeDependency(handle) match {
       case Some(dependency) =>
-        if (usesLocalShuffle(handle.shuffleId)) {
-          return localShuffleManager.getReader(
-            localHandle[K, C](handle.shuffleId, dependency),
-            startMapIndex,
-            endMapIndex,
-            startPartition,
-            endPartition,
-            context,
-            metrics)
-        }
         if (startMapIndex > endMapIndex) {
           throw new UnsupportedOperationException(
             "Celeborn physical-skew chunk reads are not supported by native Comet shuffle")
@@ -275,6 +277,10 @@ class CometCelebornShuffleManager private[shuffle] (
   override def shuffleBlockResolver: ShuffleBlockResolver = backend.shuffleBlockResolver
 
   override def unregisterShuffle(shuffleId: Int): Boolean = {
+    sizeLimitFallbacks.remove(shuffleId)
+    if (localShuffleIds.remove(shuffleId)) {
+      return localShuffleManager.unregisterShuffle(shuffleId)
+    }
     val generations = Option(nativeShuffleClients.remove(shuffleId)).toSeq
       .flatMap(_.asScala.toSeq)
     var removed = false
@@ -299,6 +305,7 @@ class CometCelebornShuffleManager private[shuffle] (
     val localCleanup = Option(localShuffleManagerInstance).toSeq.map { local => () =>
       local.stop()
     }
+    sizeLimitFallbacks.clear()
     cleanupAll(
       localCleanup ++ Seq[() => Unit](
         () => backend.stop(),
@@ -334,10 +341,7 @@ class CometCelebornShuffleManager private[shuffle] (
       val coordinator = new CelebornShuffleGenerationCoordinator(
         env.outputCommitCoordinator,
         shouldReportShuffleFetchFailure,
-        shuffleId =>
-          env.mapOutputTracker
-            .asInstanceOf[MapOutputTrackerMaster]
-            .unregisterAllMapAndMergeOutput(shuffleId))
+        shuffleId => Option(sizeLimitFallbacks.get(shuffleId)).exists(callback => callback()))
       val endpoint = env.rpcEnv.setupEndpoint(
         CometCelebornShuffleManager.GENERATION_COORDINATOR_ENDPOINT,
         new CelebornShuffleGenerationEndpoint(env.rpcEnv, coordinator))
@@ -392,63 +396,28 @@ class CometCelebornShuffleManager private[shuffle] (
   protected[shuffle] def shouldReportShuffleFetchFailure(taskAttemptId: Long): Boolean =
     CelebornShufflePusherFactory.shouldReportShuffleFetchFailure(taskAttemptId)
 
-  protected[shuffle] def usesLocalShuffle(shuffleId: Int): Boolean =
-    generationEndpoint.askSync[Boolean](UsesLocalCometShuffle(shuffleId))
-
-  private def localHandle[K, V](
+  /** Registers the driver-owned materialization that can replace an unpublished shuffle. */
+  private[shuffle] def registerSizeLimitFallback(
       shuffleId: Int,
-      dependency: CometShuffleDependency[_, _, _]): CometNativeShuffleHandle[K, V] =
-    new CometNativeShuffleHandle(shuffleId, dependency.asInstanceOf[ShuffleDependency[K, V, V]])
-
-  private def localWriter[K, V](
-      shuffleId: Int,
-      dependency: CometShuffleDependency[_, _, _],
-      mapId: Long,
-      context: TaskContext,
-      metrics: ShuffleWriteMetricsReporter,
-      claim: CelebornMapAttemptClaim): ShuffleWriter[K, V] = {
-    val writer = localShuffleManager.getWriter[K, V](
-      localHandle[K, V](shuffleId, dependency),
-      mapId,
-      context,
-      metrics)
-    new ShuffleWriter[K, V] {
-      override def write(records: Iterator[Product2[K, V]]): Unit = writer.write(records)
-
-      override def getPartitionLengths(): Array[Long] = writer.getPartitionLengths()
-
-      override def stop(success: Boolean): Option[MapStatus] = {
-        if (success && !generationEndpoint.askSync[Boolean](
-            ValidateLocalCometMapAttempt(
-              ClaimCelebornMapAttempt(
-                shuffleId,
-                context.stageId(),
-                context.stageAttemptNumber(),
-                context.partitionId(),
-                context.attemptNumber()),
-              claim.epoch))) {
-          val failure = CelebornShufflePusherFactory.commitDenied(context)
-          try writer.stop(false)
-          catch {
-            case cleanupFailure: Throwable => failure.addSuppressed(cleanupFailure)
-          }
-          throw failure
-        }
-        writer.stop(success)
-      }
-    }
+      callback: () => Boolean): Unit = {
+    require(isDriver, "Shuffle fallback belongs to the driver")
+    require(
+      sizeLimitFallbacks.putIfAbsent(shuffleId, callback) == null,
+      s"Shuffle $shuffleId already has a materialization")
   }
 
-  private def localShuffleRetry(shuffleId: Int, cause: Throwable = null): FetchFailedException =
-    new FetchFailedException(
-      null,
-      shuffleId,
-      -1L,
-      -1,
-      -1,
-      s"Native Celeborn shuffle $shuffleId exceeded its size limits; " +
-        "retrying the complete map stage with local Comet shuffle",
-      cause)
+  private[shuffle] def removeSizeLimitFallback(shuffleId: Int): Unit = {
+    sizeLimitFallbacks.remove(shuffleId)
+  }
+
+  private def isLocalNativeHandle(handle: ShuffleHandle): Boolean = handle match {
+    case native: CometNativeShuffleHandle[_, _] =>
+      native.dependency match {
+        case dependency: CometShuffleDependency[_, _, _] => dependency.useLocalShuffle
+        case _ => false
+      }
+    case _ => false
+  }
 
   private def requestLocalShuffle(
       shuffleId: Int,
@@ -469,11 +438,13 @@ class CometCelebornShuffleManager private[shuffle] (
           claim.epoch),
         context.taskAttemptId()))
     if (!accepted) {
-      throw CelebornShufflePusherFactory.commitDenied(context)
+      // The remote dependency may already have been published to readers. Preserve the typed
+      // failure instead of silently changing the identity of a shuffle they are consuming.
+      throw failure
     }
 
-    // The driver already cleared every map output before publishing the local decision. A lost
-    // executor or failed Celeborn RPC cannot leave a usable partial remote generation behind.
+    // The driver is materializing a fresh local dependency. Cleanup is best effort: neither a
+    // lost executor nor a delayed remote success can affect that dependency's map outputs.
     try {
       client.getClass
         .getMethod(
@@ -489,7 +460,7 @@ class CometCelebornShuffleManager private[shuffle] (
     } catch {
       case NonFatal(cleanupFailure) => failure.addSuppressed(cleanupFailure)
     }
-    throw localShuffleRetry(shuffleId, failure)
+    throw failure
   }
 
   private def prepareNativeShuffleGeneration(
@@ -622,26 +593,14 @@ private[shuffle] object CometCelebornShuffleManager {
       .getMethod("fromSparkConf", classOf[SparkConf])
       .invoke(null, conf)
 
-  private[shuffle] def supportsNativeShuffleStageRecovery(sparkVersion: String): Boolean =
-    VersionUtils.majorMinorPatchVersion(sparkVersion).exists { version =>
-      implicitly[Ordering[(Int, Int, Int)]].gteq(version, (3, 5, 1))
-    }
-
   private[shuffle] def nativeShufflePlanningSupport(
       conf: SparkConf,
       loadCelebornConf: SparkConf => AnyRef = reflectedCelebornConf,
       pushCompletionUnavailableReason: () => Option[String] = () =>
         Option(
           CelebornShufflePartitionPusher.nativePushCompletionUnavailableReason(
-            ClassLoaders.loadClass("org.apache.celeborn.client.ShuffleClientImpl"))),
-      sparkVersion: String = org.apache.spark.SPARK_VERSION)
+            ClassLoaders.loadClass("org.apache.celeborn.client.ShuffleClientImpl"))))
       : CelebornNativeShufflePlanningSupport = {
-    if (!supportsNativeShuffleStageRecovery(sparkVersion)) {
-      // Earlier schedulers accept late map successes from an obsolete indeterminate stage.
-      // Such a remote MapStatus could replace local output after the destination has changed.
-      return CelebornNativeShufflePlanningSupport(
-        Some("Native Celeborn shuffle requires Spark 3.5.1 or newer for safe stage recovery"))
-    }
     if (conf.getBoolean("spark.io.encryption.enabled", false)) {
       return CelebornNativeShufflePlanningSupport(
         Some("Native Celeborn shuffle does not support spark.io.encryption.enabled=true"))
@@ -749,9 +708,7 @@ private[shuffle] final case class ClaimCelebornMapAttempt(
 private[shuffle] final case class CelebornMapAttemptClaim(
     authorized: Boolean,
     epoch: Long,
-    requiresGenerationResolution: Boolean = false,
-    useLocalShuffle: Boolean = false,
-    requiresStageRetry: Boolean = false)
+    requiresGenerationResolution: Boolean = false)
     extends Serializable
 
 private[shuffle] final case class ValidateCelebornMapAttempt(
@@ -788,20 +745,13 @@ private[shuffle] final case class RequestLocalCometShuffle(
     taskAttemptId: Long)
     extends Serializable
 
-private[shuffle] final case class UsesLocalCometShuffle(shuffleId: Int) extends Serializable
-
-private[shuffle] final case class ValidateLocalCometMapAttempt(
-    claim: ClaimCelebornMapAttempt,
-    claimEpoch: Long)
-    extends Serializable
-
 /**
  * Keeps Comet map admission aligned with Spark task failures and Celeborn shuffle generations.
  */
 private[shuffle] final class CelebornShuffleGenerationCoordinator(
     outputCommitCoordinator: OutputCommitCoordinator,
     shouldReportShuffleFetchFailure: Long => Boolean = _ => true,
-    unregisterMapOutputs: Int => Unit = _ => ()) {
+    requestFallback: Int => Boolean = _ => false) {
 
   private val generations = mutable.HashMap.empty[Int, PrepareCelebornShuffleGeneration]
   private val invalidatedGenerations = mutable.HashSet.empty[Int]
@@ -809,11 +759,9 @@ private[shuffle] final class CelebornShuffleGenerationCoordinator(
   private val claimOwners = mutable.HashMap.empty[(Int, Int, Int, Int), (Int, Long)]
   private val deniedAttempts =
     mutable.HashMap.empty[(Int, Int, Int, Int), mutable.HashSet[Int]]
-  // A destination decision belongs to the Spark shuffle, not a task or Celeborn generation.
-  // Remember the failed stage until unregister so a retry cannot select the same size-limited
-  // writer again. The latest local stage also fences obsolete local commit claims.
-  private case class LocalShuffleFallback(failedStage: (Int, Int), latestStage: (Int, Int))
-  private val localShuffles = mutable.HashMap.empty[Int, LocalShuffleFallback]
+  // An abandoned remote shuffle never becomes local. Its replacement owns a new shuffle ID,
+  // so even a success already queued in Spark cannot overwrite or skip a replacement map.
+  private val abandonedShuffles = mutable.HashSet.empty[Int]
 
   private def currentEpoch(shuffleId: Int): Long = generationEpochs.getOrElse(shuffleId, 0L)
 
@@ -888,35 +836,8 @@ private[shuffle] final class CelebornShuffleGenerationCoordinator(
     }
 
   def claimMapAttempt(claim: ClaimCelebornMapAttempt): CelebornMapAttemptClaim = synchronized {
-    localShuffles.get(claim.shuffleId).foreach { local =>
-      val stage = (claim.stageId, claim.stageAttempt)
-      val ordering = implicitly[Ordering[(Int, Int)]]
-      if (ordering.lt(stage, local.latestStage) ||
-        !attemptCanRun(claim.stageId, claim.stageAttempt, claim.mapId, claim.taskAttempt)) {
-        return CelebornMapAttemptClaim(
-          false,
-          currentEpoch(claim.shuffleId),
-          useLocalShuffle = true)
-      }
-      if (ordering.lteq(stage, local.failedStage)) {
-        // The original reporter may die after the driver accepts fallback. A replacement task
-        // in that same stage must still trigger stage recovery, not write mixed map outputs.
-        return CelebornMapAttemptClaim(
-          false,
-          currentEpoch(claim.shuffleId),
-          useLocalShuffle = true,
-          requiresStageRetry = true)
-      }
-      if (ordering.gt(stage, local.latestStage)) {
-        invalidateOwners(claim.shuffleId)
-        localShuffles.update(claim.shuffleId, local.copy(latestStage = stage))
-      }
-      return authorize(
-        claim.shuffleId,
-        claim.stageId,
-        claim.stageAttempt,
-        claim.mapId,
-        claim.taskAttempt).copy(useLocalShuffle = true)
+    if (abandonedShuffles.contains(claim.shuffleId)) {
+      return CelebornMapAttemptClaim(false, currentEpoch(claim.shuffleId))
     }
     val previousGeneration = generations.get(claim.shuffleId)
     val stale = previousGeneration.exists { generation =>
@@ -978,7 +899,7 @@ private[shuffle] final class CelebornShuffleGenerationCoordinator(
 
   def prepareGeneration(generation: PrepareCelebornShuffleGeneration): Boolean = synchronized {
     require(generation.numMappers > 0, "Celeborn shuffle mapper count must be positive")
-    if (localShuffles.contains(generation.shuffleId)) {
+    if (abandonedShuffles.contains(generation.shuffleId)) {
       return false
     }
 
@@ -1126,42 +1047,21 @@ private[shuffle] final class CelebornShuffleGenerationCoordinator(
 
   def requestLocalShuffle(request: RequestLocalCometShuffle): Boolean = synchronized {
     val validation = request.validation
-    if (localShuffles.contains(validation.shuffleId) ||
+    if (abandonedShuffles.contains(validation.shuffleId) ||
       !validateMapAttempt(validation) ||
-      !shouldReportShuffleFetchFailure(request.taskAttemptId)) {
+      !shouldReportShuffleFetchFailure(request.taskAttemptId) ||
+      !requestFallback(validation.shuffleId)) {
       return false
     }
 
-    // Clear Spark's complete output set before exposing the destination change. The native
-    // input RDD is indeterminate, so Spark also rejects late success from the abandoned stage
-    // and starts every map again when it processes the accompanying FetchFailedException.
-    unregisterMapOutputs(validation.shuffleId)
-    val stage = (validation.stageId, validation.stageAttempt)
-    localShuffles.update(validation.shuffleId, LocalShuffleFallback(stage, stage))
+    abandonedShuffles.add(validation.shuffleId)
     invalidatedGenerations.add(validation.shuffleId)
     invalidateOwners(validation.shuffleId)
     true
   }
 
-  def usesLocalShuffle(shuffleId: Int): Boolean = synchronized {
-    localShuffles.contains(shuffleId)
-  }
-
-  def validateLocalMapAttempt(validation: ValidateLocalCometMapAttempt): Boolean = synchronized {
-    val claim = validation.claim
-    localShuffles.get(claim.shuffleId).exists { local =>
-      local.latestStage == ((claim.stageId, claim.stageAttempt)) &&
-      local.latestStage != local.failedStage &&
-      currentEpoch(claim.shuffleId) == validation.claimEpoch &&
-      attemptCanRun(claim.stageId, claim.stageAttempt, claim.mapId, claim.taskAttempt) &&
-      claimOwners
-        .get(ownerKey(claim.shuffleId, claim.stageId, claim.stageAttempt, claim.mapId))
-        .contains((claim.taskAttempt, validation.claimEpoch))
-    }
-  }
-
   def unregisterShuffle(shuffleId: Int): Unit = synchronized {
-    localShuffles.remove(shuffleId)
+    abandonedShuffles.remove(shuffleId)
     generations.remove(shuffleId)
     invalidatedGenerations.remove(shuffleId)
     generationEpochs.remove(shuffleId)
@@ -1190,9 +1090,5 @@ private[shuffle] final class CelebornShuffleGenerationEndpoint(
       context.reply(coordinator.abandonMapAttempt(abandoned))
     case request: RequestLocalCometShuffle =>
       context.reply(coordinator.requestLocalShuffle(request))
-    case UsesLocalCometShuffle(shuffleId) =>
-      context.reply(coordinator.usesLocalShuffle(shuffleId))
-    case validation: ValidateLocalCometMapAttempt =>
-      context.reply(coordinator.validateLocalMapAttempt(validation))
   }
 }

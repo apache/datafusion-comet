@@ -127,8 +127,7 @@ case class CometShuffleExchangeExec(
           ctx.numPartitions,
           ctx.shuffleScanIndices,
           CometMetricNode(metrics, Seq(nativeChildMetricNode)),
-          ctx.perPartitionByKey,
-          requiresStageRetry = isCometCelebornShuffleManagerEnabled(conf))
+          ctx.perPartitionByKey)
       case None =>
         // Non-native child (e.g. CometSparkToColumnarExec): no subtree to inline. The dep gets
         // built via the convenience overload below; we just need a real RDD of batches.
@@ -149,7 +148,10 @@ case class CometShuffleExchangeExec(
     if (inputRDD.getNumPartitions == 0) {
       Future.successful(null)
     } else {
-      sparkContext.submitMapStage(shuffleDependency)
+      CometCelebornShuffleMaterialization.forDependency(shuffleDependency) match {
+        case Some(materialization) => materialization
+        case None => sparkContext.submitMapStage(shuffleDependency)
+      }
     }
   }
 
@@ -168,7 +170,13 @@ case class CometShuffleExchangeExec(
   }
 
   // TODO: add `override` keyword after dropping Spark-3.x supports
-  def shuffleId: Int = getShuffleId(shuffleDependency)
+  def shuffleId: Int = {
+    val current = shuffleDependency match {
+      case comet: CometShuffleDependency[Int @unchecked, _, _] => comet.currentShuffleDependency
+      case other => other
+    }
+    getShuffleId(current)
+  }
 
   /**
    * A [[ShuffleDependency]] that will partition rows of its child based on the partitioning
@@ -749,8 +757,7 @@ object CometShuffleExchangeExec
       Seq(streamRDD),
       rdd.getNumPartitions,
       shuffleScanIndices = Set.empty,
-      spillMetricNode = CometMetricNode(metrics, Seq(childMetricNode)),
-      requiresStageRetry = isCometCelebornShuffleManagerEnabled(conf))
+      spillMetricNode = CometMetricNode(metrics, Seq(childMetricNode)))
 
     val ctx = NativeExecContext(
       inputs = Seq(streamRDD),

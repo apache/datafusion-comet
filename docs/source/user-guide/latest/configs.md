@@ -54,9 +54,10 @@ reservation budget accommodates ordinary frames up to the default 64 MiB frame l
 Compressed frames still need workspace for their uncompressed data. Increase the reservation
 budget when larger rows or schemas need more workspace.
 
-Native Celeborn shuffle requires Spark 3.5.1 or newer for safe whole-stage recovery. Earlier
-Spark versions retain ordinary Spark/Celeborn shuffle. If a row cannot fit the remote limits
-on a supported Spark version, Comet retries that shuffle using its local writer and reader.
+If a row cannot fit the remote limits, Comet materializes a replacement shuffle using its
+local writer before publishing the exchange to downstream tasks. The replacement has a separate
+shuffle identity, so late remote map results cannot replace local output. Subsequent fetch
+failures retain Spark's normal recovery behavior.
 With dynamic allocation enabled, native Celeborn shuffle also requires either
 `spark.shuffle.service.enabled=true` or `spark.dynamicAllocation.shuffleTracking.enabled=true`
 (the Spark default) to preserve fallback files. Otherwise exchanges retain ordinary Spark/Celeborn

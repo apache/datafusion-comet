@@ -68,7 +68,8 @@ class CometShuffleDependency[K: ClassTag, V: ClassTag, C: ClassTag](
     val shuffleWriteMetrics: Map[String, SQLMetric] = Map.empty,
     val numParts: Int = 0,
     val rangePartitionBounds: Option[Seq[InternalRow]] = None,
-    val nativeShuffleSpec: Option[NativeShuffleSpec] = None)
+    val nativeShuffleSpec: Option[NativeShuffleSpec] = None,
+    val useLocalShuffle: Boolean = false)
     extends ShuffleDependency[K, V, C](
       _rdd,
       partitioner,
@@ -76,7 +77,51 @@ class CometShuffleDependency[K: ClassTag, V: ClassTag, C: ClassTag](
       keyOrdering,
       aggregator,
       mapSideCombine,
-      shuffleWriterProcessor) {}
+      shuffleWriterProcessor) {
+
+  @transient @volatile private var materializationInstance
+      : CometCelebornShuffleMaterialization[K, V, C] = _
+
+  // One driver-owned materialization selects storage before any reader depends on this shuffle.
+  // Local Comet shuffle and ordinary Spark shuffle retain their existing lazy scheduling.
+  @transient private[shuffle] lazy val materialization
+      : Option[CometCelebornShuffleMaterialization[K, V, C]] = {
+    if (shuffleType == CometNativeShuffle && !useLocalShuffle && rdd.getNumPartitions > 0) {
+      rdd.context.env.shuffleManager match {
+        case manager: CometCelebornShuffleManager =>
+          val instance = new CometCelebornShuffleMaterialization(this, manager)
+          materializationInstance = instance
+          Some(instance)
+        case _ => None
+      }
+    } else {
+      None
+    }
+  }
+
+  private[shuffle] def currentShuffleDependency: CometShuffleDependency[K, V, C] =
+    Option(materializationInstance).flatMap(_.completedDependency).getOrElse(this)
+
+  private[shuffle] def createLocalShuffleDependency(): CometShuffleDependency[K, V, C] =
+    new CometShuffleDependency[K, V, C](
+      rdd,
+      partitioner,
+      serializer,
+      keyOrdering,
+      aggregator,
+      mapSideCombine,
+      shuffleWriterProcessor,
+      shuffleType,
+      schema,
+      decodeTime,
+      outputPartitioning,
+      outputAttributes,
+      shuffleWriteMetrics,
+      numParts,
+      rangePartitionBounds,
+      nativeShuffleSpec,
+      useLocalShuffle = true)
+}
 
 /** Indicates shuffle type */
 sealed trait ShuffleType
