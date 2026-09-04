@@ -445,13 +445,21 @@ private[shuffle] object CometCelebornShuffleManager {
 
   private[shuffle] def nativeShufflePlanningSupport(
       conf: SparkConf,
-      loadCelebornConf: SparkConf => AnyRef = reflectedCelebornConf)
+      loadCelebornConf: SparkConf => AnyRef = reflectedCelebornConf,
+      pushCompletionUnavailableReason: () => Option[String] = () =>
+        Option(
+          CelebornShufflePartitionPusher.nativePushCompletionUnavailableReason(
+            ClassLoaders.loadClass("org.apache.celeborn.client.ShuffleClientImpl"))))
       : CelebornNativeShufflePlanningSupport = {
     if (conf.getBoolean("spark.io.encryption.enabled", false)) {
       return CelebornNativeShufflePlanningSupport(
         Some("Native Celeborn shuffle does not support spark.io.encryption.enabled=true"))
     }
     try {
+      val completionUnavailable = pushCompletionUnavailableReason()
+      if (completionUnavailable.nonEmpty) {
+        return CelebornNativeShufflePlanningSupport(completionUnavailable)
+      }
       // Use Celeborn's effective settings to preserve its defaults, aliases, JVM properties and
       // legacy force-fallback precedence without depending on a particular client version.
       val settings = loadCelebornConf(conf)

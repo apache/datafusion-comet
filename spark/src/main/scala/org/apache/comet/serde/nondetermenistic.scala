@@ -21,8 +21,6 @@ package org.apache.comet.serde
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, Literal, MonotonicallyIncreasingID, Rand, Randn, SparkPartitionID, Uuid}
 
-import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
-
 object CometSparkPartitionId extends CometExpressionSerde[SparkPartitionID] {
   override def convert(
       expr: SparkPartitionID,
@@ -72,6 +70,15 @@ sealed abstract class CometRandCommonSerde[T <: Expression] extends CometExpress
 
 object CometUuid extends CometExpressionSerde[Uuid] {
 
+  private val unresolvedSeedReason = "uuid requires a resolved random seed"
+
+  override def getUnsupportedReasons(): Seq[String] = Seq(unresolvedSeedReason)
+
+  // In a resolved plan `randomSeed` is always defined (resolution requires it). Guard anyway,
+  // here rather than in `convert`, so the decline goes through the normal support-level path.
+  override def getSupportLevel(expr: Uuid): SupportLevel =
+    if (expr.randomSeed.isEmpty) Unsupported(Some(unresolvedSeedReason)) else Compatible()
+
   // Comet reproduces Spark's UUIDs exactly: the resolved seed is combined with the partition index
   // and seeds the same Commons Math3 MersenneTwister that drives
   // org.apache.spark.sql.catalyst.util.RandomUUIDGenerator, so results match Spark bit for bit.
@@ -79,18 +86,12 @@ object CometUuid extends CometExpressionSerde[Uuid] {
       expr: Uuid,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    // In a resolved plan `randomSeed` is always defined (resolution requires it). Guard anyway.
-    expr.randomSeed match {
-      case Some(seed) =>
-        Some(
-          ExprOuterClass.Expr
-            .newBuilder()
-            .setUuid(ExprOuterClass.Uuid.newBuilder().setSeed(seed))
-            .build())
-      case None =>
-        withFallbackReason(expr, "uuid requires a resolved random seed")
-        None
-    }
+    // getSupportLevel has already verified the seed is resolved.
+    Some(
+      ExprOuterClass.Expr
+        .newBuilder()
+        .setUuid(ExprOuterClass.Uuid.newBuilder().setSeed(expr.randomSeed.get))
+        .build())
   }
 }
 

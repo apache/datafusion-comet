@@ -363,6 +363,46 @@ class CelebornShufflePartitionPusherSuite extends AnyFunSuite {
     assert(wrongReturnType.getMessage.contains("returning an int"))
   }
 
+  test("final transport fields are rejected before client setup or raw submission") {
+    val client = new FinalFieldsRecordingCelebornPushClient
+    val originalBootstraps = client.factory.clientBootstraps
+    val originalRetryPool = client.pushDataRetryPool
+    val readerStarted = new CountDownLatch(1)
+    val checkReferences = new CountDownLatch(1)
+    val readerFailure = new AtomicReference[Throwable]()
+    val reader = new Thread(() => {
+      try {
+        // A Celeborn thread may keep these references indefinitely after final-field reads.
+        val bootstraps = client.factory.clientBootstraps
+        val retryPool = client.pushDataRetryPool
+        readerStarted.countDown()
+        assert(checkReferences.await(5, TimeUnit.SECONDS))
+        assert(client.factory.clientBootstraps eq bootstraps)
+        assert(client.pushDataRetryPool eq retryPool)
+        assert(bootstraps.isEmpty)
+      } catch {
+        case failure: Throwable => readerFailure.set(failure)
+      }
+    })
+    reader.start()
+    try {
+      assert(readerStarted.await(5, TimeUnit.SECONDS))
+      val failure = intercept[UnsupportedOperationException](pusher(client))
+      assert(failure.getMessage.contains("completion"))
+      assert(failure.getMessage.contains("volatile"))
+      intercept[UnsupportedOperationException](CelebornTransportCallbackTracker.tryCreate(client))
+      assert(client.factoryCalls.get() == 0)
+      assert(client.pushCount == 0)
+      assert(client.factory.clientBootstraps eq originalBootstraps)
+      assert(client.pushDataRetryPool eq originalRetryPool)
+    } finally {
+      checkReferences.countDown()
+      reader.join(5000)
+    }
+    assert(!reader.isAlive)
+    assert(readerFailure.get() == null)
+  }
+
   test("adapter rejects invalid shuffle, map-attempt, mapper, and partition metadata") {
     val client = new RecordingCelebornPushClient
     val invalidMetadata = Seq(
@@ -1717,12 +1757,29 @@ class AsyncRecordingCelebornPushClient extends RecordingCelebornPushClient {
   }
 }
 
-/** Reproduces stock Celeborn's client-factory, handler, and callback completion boundaries. */
+/** Models the final references in released clients without starting Celeborn network services. */
+final class FinalFieldsRecordingCelebornPushClient extends RecordingCelebornPushClient {
+  val factory = new FinalFieldsRecordingCelebornFactory
+  val pushDataRetryPool: ExecutorService = new RecordingCelebornRetryExecutor
+  val factoryCalls = new AtomicInteger()
+
+  def getDataClientFactory: FinalFieldsRecordingCelebornFactory = {
+    factoryCalls.incrementAndGet()
+    factory
+  }
+}
+
+final class FinalFieldsRecordingCelebornFactory {
+  val clientBootstraps: JList[RecordingCelebornTransportClientBootstrap] =
+    new JArrayList[RecordingCelebornTransportClientBootstrap]()
+}
+
+/** Models completion boundaries with safely published hooks, unlike stock Celeborn 0.6/0.7. */
 final class TransportRecordingCelebornPushClient extends AsyncRecordingCelebornPushClient {
   val dataClientFactory: RecordingCelebornTransportClientFactory =
     new RecordingCelebornTransportClientFactory
   val retryExecutor = new RecordingCelebornRetryExecutor
-  val pushDataRetryPool: ExecutorService = retryExecutor
+  @volatile var pushDataRetryPool: ExecutorService = retryExecutor
 
   def getDataClientFactory: RecordingCelebornTransportClientFactory = dataClientFactory
 
@@ -1833,7 +1890,7 @@ final class RecordingCelebornRetryExecutor extends AbstractExecutorService {
 final class RecordingCelebornTransportClientFactory {
   var handler: RecordingCelebornTransportResponseHandler =
     new RecordingCelebornTransportResponseHandler
-  val clientBootstraps: JList[RecordingCelebornTransportClientBootstrap] =
+  @volatile var clientBootstraps: JList[RecordingCelebornTransportClientBootstrap] =
     new JArrayList[RecordingCelebornTransportClientBootstrap]()
   val connectionPool: ConcurrentHashMap[String, RecordingCelebornTransportClientPool] =
     new ConcurrentHashMap[String, RecordingCelebornTransportClientPool]()
@@ -1872,14 +1929,15 @@ final class RecordingCelebornTransportClientPool(
 
 final class RecordingCelebornTransportClient(
     handler: RecordingCelebornTransportResponseHandler,
-    val channel: io.netty.channel.Channel) {
+    @volatile var channel: io.netty.channel.Channel) {
   def getChannel: io.netty.channel.Channel = channel
   def getHandler: RecordingCelebornTransportResponseHandler = handler
 }
 
 final class RecordingCelebornTransportResponseHandler {
   private val nextRequestId = new AtomicLong()
-  val outstandingPushes: ConcurrentHashMap[java.lang.Long, RecordingCelebornTransportRequest] =
+  @volatile var outstandingPushes
+      : ConcurrentHashMap[java.lang.Long, RecordingCelebornTransportRequest] =
     new ConcurrentHashMap[java.lang.Long, RecordingCelebornTransportRequest]()
 
   def add(pushState: RecordingCelebornPushState): Unit =

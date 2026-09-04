@@ -398,7 +398,10 @@ class CometCelebornShuffleManagerSuite extends AnyFunSuite {
         loads += 1
         assert(!(actualConf eq conf))
         assert(actualConf.get("spark.app.name") == "native-celeborn-planning")
-        CometCelebornShuffleManager.nativeShufflePlanningSupport(actualConf, _ => effectiveConf)
+        CometCelebornShuffleManager.nativeShufflePlanningSupport(
+          actualConf,
+          _ => effectiveConf,
+          () => None)
       })
 
     // Mutating settings after manager construction cannot change its native capabilities.
@@ -422,7 +425,8 @@ class CometCelebornShuffleManagerSuite extends AnyFunSuite {
       _ => {
         loads += 1
         new ReflectedPlanningConf
-      })
+      },
+      () => fail("Encrypted applications must not probe push completion"))
 
     assert(support.fallbackReason(1).exists(_.contains("encryption")))
     assert(loads == 0)
@@ -436,17 +440,57 @@ class CometCelebornShuffleManagerSuite extends AnyFunSuite {
       .set("spark.celeborn.client.spark.fetch.throwsFetchFailure", "true")
     val support = CometCelebornShuffleManager.nativeShufflePlanningSupport(
       conf,
-      _ => new ReflectedPlanningConf(stageReruns = false))
+      _ => new ReflectedPlanningConf(stageReruns = false),
+      () => None)
 
     assert(support.fallbackReason(1).nonEmpty)
     assert(support.fallbackReason(100).nonEmpty)
+  }
+
+  test("unavailable push completion preserves ordinary delegated shuffle") {
+    val backend = new RecordingShuffleManager
+    val reason = "Celeborn client cannot safely observe native push completion"
+    var completionProbes = 0
+    var configurationLoads = 0
+    val composite = new CometCelebornShuffleManager(
+      new SparkConf(false),
+      false,
+      (_, _) => backend,
+      planningSupportFactory = conf =>
+        CometCelebornShuffleManager.nativeShufflePlanningSupport(
+          conf,
+          _ => {
+            configurationLoads += 1
+            new ReflectedPlanningConf(policy = "NEVER")
+          },
+          () => {
+            completionProbes += 1
+            Some(reason)
+          }))
+    try {
+      assert(composite.nativeShuffleFallbackReason(1).contains(reason))
+      assert(composite.nativeShuffleFallbackReason(Int.MaxValue).contains(reason))
+      assert(completionProbes == 1)
+      assert(configurationLoads == 0)
+
+      val handle = composite.registerShuffle[Any, Any, Any](31, null)
+      assert(handle eq backend.returnedHandle)
+      assert(composite.getWriter[Any, Any](handle, 12L, null, null) == null)
+      assert(composite.getReader[Any, Any](handle, 0, 2, null, null) == null)
+      assert(backend.writerCall.contains((handle, 12L)))
+      assert(backend.rangedReaderCall.contains((handle, 0, Int.MaxValue, 0, 2)))
+    } finally {
+      composite.stop()
+    }
+    assert(backend.stopped)
   }
 
   test("native planning honors the effective fallback policy and partition threshold") {
     Seq("AUTO", "auto").foreach { policy =>
       val support = CometCelebornShuffleManager.nativeShufflePlanningSupport(
         new SparkConf(false),
-        _ => new ReflectedPlanningConf(policy = policy, partitionThreshold = 4L))
+        _ => new ReflectedPlanningConf(policy = policy, partitionThreshold = 4L),
+        () => None)
       assert(support.fallbackReason(1).isEmpty)
       assert(support.fallbackReason(3).isEmpty)
       assert(support.fallbackReason(4).nonEmpty)
@@ -455,14 +499,16 @@ class CometCelebornShuffleManagerSuite extends AnyFunSuite {
 
     val always = CometCelebornShuffleManager.nativeShufflePlanningSupport(
       new SparkConf(false),
-      _ => new ReflectedPlanningConf(policy = "ALWAYS", partitionThreshold = Long.MaxValue))
+      _ => new ReflectedPlanningConf(policy = "ALWAYS", partitionThreshold = Long.MaxValue),
+      () => None)
     assert(always.fallbackReason(1).nonEmpty)
 
     // Celeborn's explicit NEVER policy takes precedence over the deprecated force-fallback flag.
     val never = CometCelebornShuffleManager.nativeShufflePlanningSupport(
       new SparkConf(false)
         .set("spark.celeborn.client.spark.shuffle.forceFallback.enabled", "true"),
-      _ => new ReflectedPlanningConf(policy = "NEVER", partitionThreshold = 1L))
+      _ => new ReflectedPlanningConf(policy = "NEVER", partitionThreshold = 1L),
+      () => None)
     assert(never.fallbackReason(1).isEmpty)
     assert(never.fallbackReason(4).isEmpty)
   }
@@ -470,13 +516,15 @@ class CometCelebornShuffleManagerSuite extends AnyFunSuite {
   test("native planning retains the Celeborn partition threshold's full Long range") {
     val largeThreshold = CometCelebornShuffleManager.nativeShufflePlanningSupport(
       new SparkConf(false),
-      _ => new ReflectedPlanningConf(partitionThreshold = Int.MaxValue.toLong + 1L))
+      _ => new ReflectedPlanningConf(partitionThreshold = Int.MaxValue.toLong + 1L),
+      () => None)
     assert(largeThreshold.fallbackReason(Int.MaxValue).isEmpty)
 
     Seq(0L, -1L).foreach { threshold =>
       val support = CometCelebornShuffleManager.nativeShufflePlanningSupport(
         new SparkConf(false),
-        _ => new ReflectedPlanningConf(partitionThreshold = threshold))
+        _ => new ReflectedPlanningConf(partitionThreshold = threshold),
+        () => None)
       assert(support.fallbackReason(1).nonEmpty)
     }
   }
@@ -496,7 +544,10 @@ class CometCelebornShuffleManagerSuite extends AnyFunSuite {
 
     loaders.foreach { loader =>
       val support =
-        CometCelebornShuffleManager.nativeShufflePlanningSupport(new SparkConf(false), loader)
+        CometCelebornShuffleManager.nativeShufflePlanningSupport(
+          new SparkConf(false),
+          loader,
+          () => None)
       assert(support.fallbackReason(1).nonEmpty)
     }
   }
@@ -510,7 +561,8 @@ class CometCelebornShuffleManagerSuite extends AnyFunSuite {
       planningSupportFactory = conf =>
         CometCelebornShuffleManager.nativeShufflePlanningSupport(
           conf,
-          _ => throw new ClassNotFoundException("native planning API is unavailable")))
+          _ => throw new ClassNotFoundException("native planning API is unavailable"),
+          () => None))
     val handle = composite.registerShuffle[Any, Any, Any](31, null)
 
     assert(composite.nativeShuffleFallbackReason(1).nonEmpty)

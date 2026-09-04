@@ -234,6 +234,13 @@ public final class CelebornShufflePartitionPusher implements ShufflePartitionPus
           "Celeborn in-flight byte limit must fit all copies of one Comet frame");
     }
 
+    String unavailable = nativePushCompletionUnavailableReason(shuffleClient.getClass());
+    if (unavailable != null) {
+      // Do not silently use PushState counters: callbacks, retries and timed-out writes can
+      // still retain payloads after those counters report completion.
+      throw new UnsupportedOperationException(unavailable);
+    }
+
     final Method pushMethod;
     try {
       pushMethod =
@@ -345,8 +352,8 @@ public final class CelebornShufflePartitionPusher implements ShufflePartitionPus
         // Wrappers need not provide the optional side-effect-free state lookup.
       }
     } catch (NoSuchMethodException missing) {
-      // Compatibility-only clients can still push synchronously. Stock Celeborn 0.6 and 0.7
-      // expose getPushState and use completion-backed admission.
+      // Compatibility-only clients can still push synchronously. Asynchronous clients must
+      // expose getPushState in addition to safely published transport hooks.
       pushStateMethod = null;
       pushStatesField = null;
       trackerField = null;
@@ -382,6 +389,11 @@ public final class CelebornShufflePartitionPusher implements ShufflePartitionPus
     this.maxFrameBytes =
         Math.min(Math.min(configuredMaxFrameBytes, MAX_JVM_ARRAY_BYTES), maxReservationBytes / 3);
     this.partitionLengths = new AtomicLongArray(numPartitions);
+  }
+
+  /** Returns the reason an optional client cannot safely track native push completion, or null. */
+  public static String nativePushCompletionUnavailableReason(Class<?> shuffleClientClass) {
+    return CelebornTransportCallbackTracker.unavailableReason(shuffleClientClass);
   }
 
   private static Method optionalLifecycleMethod(
