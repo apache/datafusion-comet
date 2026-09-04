@@ -320,7 +320,7 @@ mod tests {
     }
 
     /// One context across many frames, codecs changing between them, must decode exactly
-    /// like fresh per-frame decoders.
+    /// like a context created for each frame.
     #[test]
     #[cfg_attr(miri, ignore)] // Miri cannot call Zstd's C FFI.
     fn decode_context_reused_across_frames_and_codecs() {
@@ -328,7 +328,8 @@ mod tests {
         for _ in 0..3 {
             for codec in [b"ZSTD", b"NONE", b"SNAP", b"ZSTD", b"LZ4_", b"ZSTD"] {
                 let frame = encode(codec, &ipc_stream(1));
-                let fresh = read_ipc_compressed(&frame).unwrap();
+                let fresh =
+                    read_ipc_compressed_with(&mut ShuffleDecodeContext::default(), &frame).unwrap();
                 let reused = read_ipc_compressed_with(&mut ctx, &frame).unwrap();
                 let reused_validated =
                     read_ipc_compressed_validated_with(&mut ctx, &frame).unwrap();
@@ -336,6 +337,11 @@ mod tests {
                 assert_eq!(reused_validated, fresh);
             }
         }
+        assert_eq!(
+            ctx.creation_count(),
+            1,
+            "every zstd frame must share one context"
+        );
     }
 
     /// ZSTD shuffle frame written by a streaming encode with no pledged source size, so its

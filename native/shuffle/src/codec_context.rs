@@ -179,9 +179,9 @@ impl ShuffleDecodeContext {
         }
     }
 
-    /// Test hook for the retained-workspace bound on the decode path.
-    #[cfg(test)]
-    pub(crate) fn holds_zstd_dctx(&self) -> bool {
+    /// Whether a zstd workspace is currently cached, so owners can check their retention
+    /// contract.
+    pub fn holds_zstd_dctx(&self) -> bool {
         self.zstd.is_some()
     }
 
