@@ -45,6 +45,23 @@ These settings can be used to determine which parts of the plan are accelerated 
 
 ## Shuffle Configuration Settings
 
+For native remote shuffle, `spark.comet.shuffle.rss.maxFrameBytes` limits one complete
+encoded frame, while `spark.comet.shuffle.rss.maxInFlightBytes` limits the memory reserved
+by map attempts sharing an executor's remote shuffle client. The reservation includes
+encoding workspace and overlapping frame copies. An ordinary uncompressed frame needs
+approximately seven times its size plus schema and transport overhead. The default 512 MiB
+reservation budget accommodates ordinary frames up to the default 64 MiB frame limit.
+Compressed frames still need workspace for their uncompressed data. Increase the reservation
+budget when larger rows or schemas need more workspace.
+
+Native Celeborn shuffle requires Spark 3.5.1 or newer for safe whole-stage recovery. Earlier
+Spark versions retain ordinary Spark/Celeborn shuffle. If a row cannot fit the remote limits
+on a supported Spark version, Comet retries that shuffle using its local writer and reader.
+With dynamic allocation enabled, native Celeborn shuffle also requires either
+`spark.shuffle.service.enabled=true` or `spark.dynamicAllocation.shuffleTracking.enabled=true`
+(the Spark default) to preserve fallback files. Otherwise exchanges retain ordinary Spark/Celeborn
+shuffle, including applications that rely only on remote reliable storage or decommissioning.
+
 <!--BEGIN:CONFIG_TABLE[shuffle]-->
 <!--END:CONFIG_TABLE-->
 

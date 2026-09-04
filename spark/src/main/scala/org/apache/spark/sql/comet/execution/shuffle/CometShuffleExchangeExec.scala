@@ -127,7 +127,8 @@ case class CometShuffleExchangeExec(
           ctx.numPartitions,
           ctx.shuffleScanIndices,
           CometMetricNode(metrics, Seq(nativeChildMetricNode)),
-          ctx.perPartitionByKey)
+          ctx.perPartitionByKey,
+          requiresStageRetry = isCometCelebornShuffleManagerEnabled(conf))
       case None =>
         // Non-native child (e.g. CometSparkToColumnarExec): no subtree to inline. The dep gets
         // built via the convenience overload below; we just need a real RDD of batches.
@@ -748,7 +749,8 @@ object CometShuffleExchangeExec
       Seq(streamRDD),
       rdd.getNumPartitions,
       shuffleScanIndices = Set.empty,
-      spillMetricNode = CometMetricNode(metrics, Seq(childMetricNode)))
+      spillMetricNode = CometMetricNode(metrics, Seq(childMetricNode)),
+      requiresStageRetry = isCometCelebornShuffleManagerEnabled(conf))
 
     val ctx = NativeExecContext(
       inputs = Seq(streamRDD),

@@ -659,14 +659,17 @@ object CometConf extends ShimCometConf {
           "an executor-side remote shuffle client. Admission includes native encoding " +
           "scratch and overlapping native, JNI, and remote shuffle frame copies. " +
           "A frame must fit its codec and Arrow workspace as well as its encoded bytes; " +
-          "too-small limits fail before encoding. Encrypted native RSS is not supported; " +
+          "ordinary uncompressed frames need approximately seven times their size plus " +
+          "schema and transport overhead. Compressed frames also reserve workspace for " +
+          "their uncompressed data. Admission is acquired before encoding. " +
+          "Encrypted native RSS is not supported; " +
           "use ordinary Spark shuffle when spark.io.encryption.enabled is true.")
       .bytesConf(ByteUnit.BYTE)
       .checkValue(
         value => value >= 76 && value <= Int.MaxValue,
         "Remote shuffle in-flight byte limit must fit three complete frame copies and a " +
           "Celeborn request header")
-      .createWithDefault(256L * 1024 * 1024)
+      .createWithDefault(512L * 1024 * 1024)
 
   val COMET_DEBUG_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.debug.enabled")

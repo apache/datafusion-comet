@@ -20,7 +20,7 @@
 package org.apache.spark.sql.comet.execution.shuffle
 
 import org.apache.spark._
-import org.apache.spark.rdd.RDD
+import org.apache.spark.rdd.{DeterministicLevel, RDD}
 import org.apache.spark.sql.comet.{CometExecRDD, CometMetricNode}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
@@ -40,10 +40,22 @@ private[shuffle] class CometNativeShuffleInputRDD(
     numPartitionsParam: Int,
     shuffleScanIndices: Set[Int],
     spillMetricNode: CometMetricNode,
-    @transient perPartitionByKey: Map[String, Array[Array[Byte]]] = Map.empty)
+    @transient perPartitionByKey: Map[String, Array[Array[Byte]]] = Map.empty,
+    private[shuffle] val requiresStageRetry: Boolean = false)
     extends RDD[Product2[Int, ColumnarBatch]](
       sc,
       inputRDDs.map(rdd => new OneToOneDependency(rdd))) {
+
+  override protected def getOutputDeterministicLevel: DeterministicLevel.Value = {
+    if (requiresStageRetry) {
+      // A Celeborn generation can be replaced by local shuffle after a size-limit failure.
+      // Spark must recompute every map and ignore late successes from the previous stage
+      // attempt; otherwise remote MapStatus entries could be published as local file output.
+      DeterministicLevel.INDETERMINATE
+    } else {
+      super.getOutputDeterministicLevel
+    }
+  }
 
   override protected def getPartitions: Array[Partition] =
     (0 until numPartitionsParam).map { i =>
