@@ -422,7 +422,7 @@ mod tests {
             .write_batch(
                 batch,
                 &mut output,
-                &mut CompressionContext::default(),
+                &mut IpcWriteContext::default(),
                 &Time::new(),
             )
             .unwrap();

@@ -29,9 +29,10 @@ use std::sync::Arc;
 
 use arrow::array::{ArrayRef, BinaryArray, RecordBatch, UInt32Array};
 use arrow::datatypes::{DataType, Field, Schema as ArrowSchema, SchemaRef};
+use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::error::{DataFusionError, Result as DFResult};
 use datafusion::execution::TaskContext;
-use datafusion::physical_expr::EquivalenceProperties;
+use datafusion::physical_expr::{EquivalenceProperties, PhysicalExpr};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::metrics::{
     ExecutionPlanMetricsSet, MetricBuilder, MetricsSet, Time,
@@ -160,6 +161,15 @@ impl ExecutionPlan for IcebergWriteExec {
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         vec![&self.input]
+    }
+
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> DFResult<TreeNodeRecursion>,
+    ) -> DFResult<TreeNodeRecursion> {
+        // IcebergWriteExec holds no physical expressions; the write is driven by the input
+        // stream and the table's partition spec, so there is nothing to visit here.
+        Ok(TreeNodeRecursion::Continue)
     }
 
     fn with_new_children(
