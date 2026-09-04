@@ -22,7 +22,7 @@ package org.apache.comet.rules
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.util.sideBySide
-import org.apache.spark.sql.comet.{CometCollectLimitExec, CometColumnarToRowExec, CometMapInBatchExec, CometNativeColumnarToRowExec, CometNativeWriteExec, CometPlan, CometSparkToColumnarExec}
+import org.apache.spark.sql.comet.{CometCollectLimitExec, CometColumnarToRowExec, CometIcebergWriteExec, CometMapInBatchExec, CometNativeColumnarToRowExec, CometNativeWriteExec, CometPlan, CometSparkToColumnarExec}
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.comet.shims.{MapInBatchInfo, ShimCometMapInBatch}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, RowToColumnarExec, SparkPlan}
@@ -91,6 +91,18 @@ case class EliminateRedundantTransitions(session: SparkSession)
       // Write should be final operation in the plan
       case ColumnarToRowExec(nativeWrite: CometNativeWriteExec) =>
         nativeWrite
+      // `CometIcebergWriteExec` is row-based (it emits the serialised Iceberg commit message) but
+      // consumes Arrow batches from its child over FFI, so Spark inserts a columnar-to-row
+      // transition *underneath* it. Strip it so `doExecuteColumnar` sees the columnar child
+      // directly; `CometIcebergNativeWrite.requiresNativeChildren` already guarantees that child
+      // was Comet-native when the write was converted.
+      //
+      // The write deliberately does not tag itself as a `ColumnarToRowTransition` to suppress the
+      // insertion: Spark leaves such a node untouched, so the whole subtree below the write is
+      // never visited and the transitions the rest of that subtree needs are never inserted
+      // (https://github.com/apache/datafusion-comet/issues/5689).
+      case w: CometIcebergWriteExec =>
+        stripColumnarToRow(w.child).map(child => w.withNewChildren(Seq(child))).getOrElse(w)
       case c @ ColumnarToRowExec(child) if hasCometNativeChild(child) =>
         val op = createColumnarToRowExec(child)
         if (c.logicalLink.isEmpty) {
@@ -167,6 +179,19 @@ case class EliminateRedundantTransitions(session: SparkSession)
       case c: ReusedExchangeExec => hasCometNativeChild(c.child)
       case _ => op.exists(_.isInstanceOf[CometPlan])
     }
+  }
+
+  /**
+   * Unwraps a columnar-to-row transition, returning the columnar child underneath it, or `None`
+   * when `plan` is not such a transition. `transformUp` visits children first, so a plain
+   * `ColumnarToRowExec` over a Comet source has usually already been rewritten to one of the
+   * Comet variants by the time a parent arm looks at it; all three are handled.
+   */
+  private def stripColumnarToRow(plan: SparkPlan): Option[SparkPlan] = plan match {
+    case CometNativeColumnarToRowExec(child) => Some(child)
+    case CometColumnarToRowExec(child) => Some(child)
+    case ColumnarToRowExec(child) => Some(child)
+    case _ => None
   }
 
   /**
