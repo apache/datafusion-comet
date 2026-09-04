@@ -561,7 +561,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `chr` | ✅ | Native |  |
 | `collate` | 🔜 | — | Spark collation (umbrella [#2190](https://github.com/apache/datafusion-comet/issues/2190)) |
 | `collation` | ✅ | — | Constant-folded to a literal (Spark 4.0+) |
-| `concat_ws` | ✅ | Native |  |
+| `concat_ws` | ✅ | Hybrid | Array arguments route through the JVM codegen dispatcher; string arguments run natively ([details](compatibility/expressions/string.md)) |
 | `contains` | ✅ | — |  |
 | `decode` | ✅ | — |  |
 | `elt` | ✅ | Codegen dispatch |  |
