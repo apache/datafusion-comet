@@ -1360,6 +1360,84 @@ abstract class ParquetReadSuite extends CometTestBase {
     }
   }
 
+  test("native scan rejects nested Parquet conversions Spark rejects") {
+    // Regression guard for #5671. Spark's vectorized reader runs
+    // `ParquetVectorUpdaterFactory.getUpdater` on every leaf column, nested or not, so the
+    // conversions the top-level rejection tests above cover must also be rejected inside
+    // structs, arrays and maps instead of being silently cast (NULLs, parsed strings) or
+    // crashing the native reader.
+    withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> "parquet") {
+      val cases = Seq(
+        // (written expression, read schema)
+        ("named_struct('x', cast(5000000000 as bigint))", "s struct<x:int>"),
+        ("named_struct('x', 1)", "s struct<x:string>"),
+        ("named_struct('d', cast('123456.78' as decimal(10,2)))", "s struct<d:decimal(5,2)>"),
+        ("named_struct('x', '12')", "s struct<x:int>"),
+        ("named_struct('x', 1)", "s struct<x:array<int>>"),
+        ("named_struct('x', array(1))", "s struct<x:int>"),
+        ("array(cast(5000000000 as bigint))", "s array<int>"),
+        ("map('k', cast(5000000000 as bigint))", "s map<string,int>"),
+        ("array(named_struct('x', cast(5000000000 as bigint)))", "s array<struct<x:int>>"))
+      cases.foreach { case (writeExpr, readSchema) =>
+        withTempPath { dir =>
+          val path = dir.getCanonicalPath
+          spark.sql(s"select $writeExpr as s").write.parquet(path)
+          val (sparkErr, cometErr) =
+            checkSparkAnswerMaybeThrows(spark.read.schema(readSchema).parquet(path))
+          withClue(s"$writeExpr read as $readSchema: ") {
+            assert(sparkErr.isDefined, "Spark accepted the conversion")
+            assert(cometErr.isDefined, "Comet accepted the conversion")
+            val chain = causeChain(cometErr.get)
+            assert(
+              chain.exists(
+                _.isInstanceOf[org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException]),
+              "expected SchemaColumnConvertNotSupportedException; chain was:\n" +
+                chain.map(t => s"  ${t.getClass.getName}: ${t.getMessage}").mkString("\n"))
+          }
+        }
+      }
+    }
+  }
+
+  test("nested schema evolution follows Spark's per-version widening rules") {
+    // Companion to "schema evolution": `INT32 -> bigint` inside a struct is gated by the same
+    // per-Spark-version constant as the top level (see ShimCometConf), and accepted nested
+    // conversions keep working now that nested leaves are validated (#5671).
+    withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> "parquet") {
+      withTempPath { dir =>
+        val path = dir.getCanonicalPath
+        spark
+          .sql("select named_struct('x', 1) as s union all select named_struct('x', 2)")
+          .write
+          .parquet(path)
+        val df = spark.read.schema("s struct<x:bigint, y:string>").parquet(path)
+        if (CometConf.COMET_SCHEMA_EVOLUTION_ENABLED) {
+          checkSparkAnswerAndOperator(df)
+        } else {
+          assertThrows[SparkException](df.collect())
+        }
+      }
+    }
+  }
+
+  test("nested TIMESTAMP_MILLIS columns read as timestamp") {
+    // Accepted nested conversion (TIMESTAMP_MILLIS -> TIMESTAMP_MICROS inside an array and a
+    // struct) must keep working now that nested leaves are validated (#5671).
+    withSQLConf(
+      SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+      SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> "TIMESTAMP_MILLIS") {
+      withTempPath { dir =>
+        val path = dir.getCanonicalPath
+        spark
+          .sql("select array(timestamp'2020-01-01 00:00:00.123') as a, " +
+            "named_struct('t', timestamp'2020-01-02 00:00:00.456') as s")
+          .write
+          .parquet(path)
+        checkSparkAnswerAndOperator(spark.read.parquet(path))
+      }
+    }
+  }
+
   test("type widening: byte → short/int/long, short → int/long, int → long") {
     // Widening of INT32 -> LONG is only allowed when Comet's type-promotion
     // default permits it (Spark 4.x). See ShimCometConf.
