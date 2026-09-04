@@ -348,23 +348,50 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("native shuffle read reports SQL and task metrics") {
     val expectedRecords = 10000L
     withParquetTable((0 until expectedRecords.toInt).map(i => (i, (i + 1).toLong)), "tbl") {
-      // Keep a native operator below the exchange so AQE uses ShuffleScan direct read.
-      val shuffled =
-        sql("SELECT * FROM tbl").repartition(1, $"_1").sortWithinPartitions($"_1".desc)
+      def collectShuffleReadMetrics(cometEnabled: Boolean): (Long, Long, SparkPlan) = {
+        val store = spark.sparkContext.statusStore
+        spark.sparkContext.listenerBus.waitUntilEmpty()
+        val stagesBefore = store.stageList(null).map(_.stageId).toSet
 
-      val exchange = collectFirst(shuffled.queryExecution.executedPlan) {
+        var plan: SparkPlan = null
+        withSQLConf(CometConf.COMET_ENABLED.key -> cometEnabled.toString) {
+          // Keep a native operator below the exchange so AQE uses ShuffleScan direct read.
+          val shuffled =
+            sql("SELECT * FROM tbl").repartition(1, $"_1").sortWithinPartitions($"_1".desc)
+          assert(shuffled.collect().length == expectedRecords)
+          plan = shuffled.queryExecution.executedPlan
+        }
+
+        spark.sparkContext.listenerBus.waitUntilEmpty()
+        val newStages =
+          store.stageList(null).filterNot(stage => stagesBefore.contains(stage.stageId))
+        val shuffleWriteStages = newStages.filter(_.shuffleWriteBytes > 0L)
+        assert(shuffleWriteStages.nonEmpty, "No shuffle write stage was recorded")
+        assert(shuffleWriteStages.map(_.shuffleWriteRecords).sum == expectedRecords)
+
+        val shuffleReadStages = newStages.filter(_.shuffleReadBytes > 0L)
+        assert(shuffleReadStages.nonEmpty, "No shuffle read stage was recorded")
+        (
+          shuffleReadStages.map(_.shuffleReadBytes).sum,
+          shuffleReadStages.map(_.shuffleReadRecords).sum,
+          plan)
+      }
+
+      val (sparkBytes, sparkRecords, sparkPlan) =
+        collectShuffleReadMetrics(cometEnabled = false)
+      val (cometBytes, cometRecords, cometPlan) =
+        collectShuffleReadMetrics(cometEnabled = true)
+
+      assert(
+        find(sparkPlan)(_.isInstanceOf[CometShuffleExchangeExec]).isEmpty,
+        s"Expected a Spark shuffle exchange in the baseline plan:\n${sparkPlan.treeString}")
+
+      val exchange = collectFirst(cometPlan) {
         case native: CometShuffleExchangeExec if native.shuffleType == CometNativeShuffle =>
           native
       }.getOrElse(fail("Expected a native shuffle exchange"))
 
-      val store = spark.sparkContext.statusStore
-      spark.sparkContext.listenerBus.waitUntilEmpty()
-      val stagesBefore = store.stageList(null).map(_.stageId).toSet
-
-      // Run the action to trigger the shuffle
-      assert(shuffled.collect().length == expectedRecords)
-
-      val shuffleScan = find(shuffled.queryExecution.executedPlan) {
+      val shuffleScan = find(cometPlan) {
         case native: CometNativeExec =>
           native.serializedPlanOpt.plan.exists { bytes =>
             OperatorOuterClass.Operator.parseFrom(bytes).toString.contains("shuffle_scan")
@@ -373,22 +400,25 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       }
       assert(shuffleScan.isDefined, "native ShuffleScan direct read not found in the final plan")
 
-      spark.sparkContext.listenerBus.waitUntilEmpty()
-
       assert(exchange.metrics("recordsRead").value == expectedRecords)
       assert(
         exchange.metrics("localBytesRead").value + exchange.metrics("remoteBytesRead").value > 0L)
 
-      val newStages =
-        store.stageList(null).filterNot(stage => stagesBefore.contains(stage.stageId))
-      val shuffleWriteStages = newStages.filter(_.shuffleWriteBytes > 0L)
-      assert(shuffleWriteStages.nonEmpty, "No native shuffle write stage was recorded")
-      assert(shuffleWriteStages.map(_.shuffleWriteRecords).sum == expectedRecords)
+      assert(
+        sparkRecords == expectedRecords,
+        s"Spark recordsRead mismatch: metrics=$sparkRecords, expected=$expectedRecords")
+      assert(
+        cometRecords == sparkRecords,
+        s"recordsRead mismatch: comet=$cometRecords, spark=$sparkRecords")
+      assert(sparkBytes > 0L, s"Spark bytesRead should be > 0, got $sparkBytes")
+      assert(cometBytes > 0L, s"Comet bytesRead should be > 0, got $cometBytes")
 
-      val shuffleReadStages = newStages.filter(_.shuffleReadBytes > 0L)
-      assert(shuffleReadStages.nonEmpty, "No native shuffle read stage was recorded")
-      assert(shuffleReadStages.map(_.shuffleReadRecords).sum == expectedRecords)
-      assert(shuffleReadStages.map(_.shuffleReadBytes).sum > 0L)
+      // Spark and Comet use different shuffle encodings, so compare physical bytes by magnitude.
+      val bytesRatio = cometBytes.toDouble / sparkBytes.toDouble
+      assert(
+        bytesRatio >= 0.5 && bytesRatio <= 2.0,
+        s"shuffle bytesRead ratio out of range: comet=$cometBytes, " +
+          s"spark=$sparkBytes, ratio=$bytesRatio")
     }
   }
 
