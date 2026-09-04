@@ -302,3 +302,7 @@ harness = false
 [[bench]]
 name = "to_utc_timestamp"
 harness = false
+
+[[bench]]
+name = "iceberg_transforms"
+harness = false
