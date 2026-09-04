@@ -19,10 +19,14 @@
 
 package org.apache.spark.sql.comet.util
 
+import org.apache.arrow.c.CDataDictionaryProvider
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.vectorized.ConstantColumnVector
 import org.apache.spark.sql.types.{CalendarIntervalType, IntegerType, StringType, StructField, StructType, TimestampType}
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
+
+import org.apache.comet.CometArrowAllocator
+import org.apache.comet.vector.CometVector
 
 class UtilsSuite extends CometTestBase {
 
@@ -165,5 +169,39 @@ class UtilsSuite extends CometTestBase {
     assert(ids.forall(_ == 7), s"expected all id 7, got $ids")
     assert(nameNulls.forall(identity), s"expected all name null, got $nameNulls")
     assert(structNulls.forall(identity), s"expected all struct null, got $structNulls")
+  }
+
+  test("isArrowBacked rejects large-offset Arrow vectors") {
+    // A CometPlainVector can wrap a LargeVarCharVector or LargeVarBinaryVector -- an accelerated
+    // mapInArrow returning pa.large_string() produces one -- but getFieldVector rejects both. If
+    // isArrowBacked accepted them, a caller would take the direct write path and then fail, so it
+    // must report false and let the caller convert the batch instead.
+    val numRows = 2
+    Seq[org.apache.arrow.vector.FieldVector](
+      {
+        val v = new org.apache.arrow.vector.LargeVarCharVector("s", CometArrowAllocator)
+        v.allocateNew(numRows)
+        v.setSafe(0, "hello".getBytes("UTF-8"))
+        v.setSafe(1, "world".getBytes("UTF-8"))
+        v.setValueCount(numRows)
+        v
+      }, {
+        val v = new org.apache.arrow.vector.LargeVarBinaryVector("b", CometArrowAllocator)
+        v.allocateNew(numRows)
+        v.setSafe(0, "hello".getBytes("UTF-8"))
+        v.setSafe(1, "world".getBytes("UTF-8"))
+        v.setValueCount(numRows)
+        v
+      }).foreach { vector =>
+      try {
+        val col = CometVector.getVector(vector, new CDataDictionaryProvider)
+        val batch = new ColumnarBatch(Array[ColumnVector](col), numRows)
+        assert(
+          !Utils.isArrowBacked(batch),
+          s"${vector.getClass.getSimpleName} must not be reported as directly writable")
+      } finally {
+        vector.close()
+      }
+    }
   }
 }

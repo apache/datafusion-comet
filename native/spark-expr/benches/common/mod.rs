@@ -20,7 +20,10 @@
 //! auto-discovery, which only looks at `benches/*.rs`, does not treat it as a bench target.
 #![allow(dead_code)]
 
-use arrow::array::{builder::StringBuilder, ArrayRef, Float64Array, Int64Array, RecordBatch};
+use arrow::array::{
+    builder::StringBuilder, ArrayRef, Float64Array, Int64Array, RecordBatch, StringArray,
+    TimestampMicrosecondArray,
+};
 use arrow::datatypes::{DataType, Field, Schema};
 use std::sync::Arc;
 
@@ -63,6 +66,43 @@ pub fn i64_array(rows: usize, null_ratio: f64, value: impl Fn(usize) -> i64) -> 
         })
         .collect();
     Arc::new(arr)
+}
+
+pub fn string_array(rows: usize, null_ratio: f64, value: impl Fn(usize) -> String) -> ArrayRef {
+    let arr: StringArray = (0..rows)
+        .map(|i| {
+            if is_null(i, null_ratio) {
+                None
+            } else {
+                Some(value(i))
+            }
+        })
+        .collect();
+    Arc::new(arr)
+}
+
+/// A `Timestamp(Microsecond, tz)` array of `rows` rows. Pass `tz = None` to build a
+/// TimestampNTZ array (no timezone) and `Some(name)` for a timezone-stamped array — the two
+/// take different code paths in the datetime kernels (NTZ skips timezone resolution).
+pub fn timestamp_micros_array(
+    rows: usize,
+    null_ratio: f64,
+    tz: Option<&str>,
+    value: impl Fn(usize) -> i64,
+) -> ArrayRef {
+    let arr: TimestampMicrosecondArray = (0..rows)
+        .map(|i| {
+            if is_null(i, null_ratio) {
+                None
+            } else {
+                Some(value(i))
+            }
+        })
+        .collect();
+    match tz {
+        Some(tz) => Arc::new(arr.with_timezone(tz)),
+        None => Arc::new(arr),
+    }
 }
 
 /// A single-column `Utf8` batch of `rows` rows, where row `i` holds `value(i)` unless

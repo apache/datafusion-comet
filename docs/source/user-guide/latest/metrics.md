@@ -50,6 +50,14 @@ enabled and uncompressed when `spark.shuffle.compress=false`. Memory spill bytes
 partition-index data rather than their on-disk size. These values also appear in Spark's task
 metrics and Spark UI as `diskBytesSpilled` and `memoryBytesSpilled`, respectively.
 
+Memory spill bytes are cumulative across spills, not a peak-memory measurement or a count of
+allocations unique across the whole task. Each spill counts the full capacity of its buffered
+input allocations, deduplicating buffers shared by columns or batches in that spill, plus its
+partition-index allocations. If a later spill buffers the same backing allocation again, it
+contributes again. Whether input slices arrive in one batch or separate batches does not change
+the accounting for identical spill boundaries. Other operators may still own the same buffers,
+so this measures memory released from shuffle buffering, not necessarily a drop in process memory.
+
 ## Native Metrics
 
 Setting `spark.comet.explain.native.enabled=true` will cause native plans to be logged in each executor. Metrics are
