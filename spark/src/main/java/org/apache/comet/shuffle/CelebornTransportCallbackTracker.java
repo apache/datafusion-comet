@@ -25,6 +25,7 @@ import java.lang.reflect.Field;
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.Proxy;
 import java.lang.reflect.Type;
@@ -50,7 +51,7 @@ import java.util.function.Function;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/** Tracks payload ownership across stock Celeborn transport callbacks and retry tasks. */
+/** Tracks payload ownership only for clients that safely publish replaceable transport fields. */
 final class CelebornTransportCallbackTracker {
   private static final Logger LOG = LoggerFactory.getLogger(CelebornTransportCallbackTracker.class);
 
@@ -66,12 +67,49 @@ final class CelebornTransportCallbackTracker {
   }
 
   static CelebornTransportCallbackTracker tryCreate(Object shuffleClient) {
+    String unavailable = unavailableReason(shuffleClient.getClass());
+    if (unavailable != null) {
+      throw new UnsupportedOperationException(unavailable);
+    }
     try {
       return new CelebornTransportCallbackTracker(
           shuffleClient, shuffleClient.getClass().getMethod("getDataClientFactory"));
     } catch (NoSuchMethodException ignored) {
       // Compatibility clients without a transport factory retain their own completion tracking.
       return null;
+    }
+  }
+
+  static String unavailableReason(Class<?> clientClass) {
+    final Method factoryMethod;
+    try {
+      factoryMethod = clientClass.getMethod("getDataClientFactory");
+    } catch (NoSuchMethodException absent) {
+      // Synchronous compatibility clients do not install transport hooks.
+      return null;
+    }
+    try {
+      Class<?> factoryClass = factoryMethod.getReturnType();
+      Field bootstraps = replaceableField(factoryClass, "clientBootstraps");
+      replaceableField(clientClass, "pushDataRetryPool");
+      Class<?> bootstrapClass = bootstrapInterface(bootstraps, factoryClass);
+      Method bootstrapMethod = null;
+      for (Method method : bootstrapClass.getMethods()) {
+        if (method.getName().equals("doBootstrap") && method.getParameterCount() == 1) {
+          bootstrapMethod = method;
+          break;
+        }
+      }
+      if (bootstrapMethod == null) {
+        throw new NoSuchMethodException("Celeborn transport bootstrap has no client parameter");
+      }
+      Class<?> transportClass = bootstrapMethod.getParameterTypes()[0];
+      replaceableField(transportClass, "channel");
+      replaceableField(transportClass.getMethod("getHandler").getReturnType(), "outstandingPushes");
+      return null;
+    } catch (ReflectiveOperationException | RuntimeException failure) {
+      return "Native Celeborn shuffle requires safely published transport completion tracking: "
+          + failure.getMessage();
     }
   }
 
@@ -103,7 +141,7 @@ final class CelebornTransportCallbackTracker {
         throw new IOException("Celeborn returned a null data transport factory");
       }
       synchronized (factory) {
-        Field bootstrapsField = field(factory.getClass(), "clientBootstraps");
+        Field bootstrapsField = replaceableField(factory.getClass(), "clientBootstraps");
         Object bootstrapValue = bootstrapsField.get(factory);
         if (!(bootstrapValue instanceof List<?>)) {
           throw new IOException("Celeborn transport factory has no bootstrap list");
@@ -116,7 +154,7 @@ final class CelebornTransportCallbackTracker {
           addBootstrap = true;
         }
         if (hook == null) {
-          Class<?> bootstrapInterface = bootstrapInterface(bootstrapsField, factory);
+          Class<?> bootstrapInterface = bootstrapInterface(bootstrapsField, factory.getClass());
           hook = new FactoryHook(factory, bootstrapsField);
           hook.bootstrap =
               Proxy.newProxyInstance(
@@ -227,7 +265,7 @@ final class CelebornTransportCallbackTracker {
     }
   }
 
-  private static Class<?> bootstrapInterface(Field bootstrapsField, Object factory)
+  private static Class<?> bootstrapInterface(Field bootstrapsField, Class<?> factoryClass)
       throws ReflectiveOperationException {
     Type genericType = bootstrapsField.getGenericType();
     if (genericType instanceof ParameterizedType) {
@@ -239,7 +277,22 @@ final class CelebornTransportCallbackTracker {
     return Class.forName(
         "org.apache.celeborn.common.network.client.TransportClientBootstrap",
         false,
-        factory.getClass().getClassLoader());
+        factoryClass.getClassLoader());
+  }
+
+  private static Field replaceableField(Class<?> type, String name) throws NoSuchFieldException {
+    Field result = field(type, name);
+    int modifiers = result.getModifiers();
+    // A monitor used only by Comet cannot publish replacements to Celeborn's readers. In
+    // particular, reflective writes to a final field may never be observed by those readers.
+    // A plain mutable field also lacks the required happens-before edge.
+    if (Modifier.isStatic(modifiers)
+        || Modifier.isFinal(modifiers)
+        || !Modifier.isVolatile(modifiers)) {
+      throw new IllegalArgumentException(
+          type.getName() + "." + name + " must be a volatile instance field");
+    }
+    return result;
   }
 
   private static Field field(Class<?> type, String name) throws NoSuchFieldException {
@@ -544,7 +597,7 @@ final class CelebornTransportCallbackTracker {
     private void installRetryPool(Object shuffleClient)
         throws ReflectiveOperationException, IOException {
       synchronized (shuffleClient) {
-        Field poolField = field(shuffleClient.getClass(), "pushDataRetryPool");
+        Field poolField = replaceableField(shuffleClient.getClass(), "pushDataRetryPool");
         Object pool = poolField.get(shuffleClient);
         if (pool instanceof TrackingRetryExecutor) {
           if (((TrackingRetryExecutor) pool).hook != this) {
@@ -596,7 +649,7 @@ final class CelebornTransportCallbackTracker {
       }
       synchronized (handler) {
         installChannel(client);
-        Field requestsField = field(handler.getClass(), "outstandingPushes");
+        Field requestsField = replaceableField(handler.getClass(), "outstandingPushes");
         Object requests = requestsField.get(handler);
         if (requests instanceof CallbackTrackingRequests) {
           if (((CallbackTrackingRequests) requests).hook != this) {
@@ -615,7 +668,7 @@ final class CelebornTransportCallbackTracker {
     }
 
     private void installChannel(Object client) throws ReflectiveOperationException, IOException {
-      Field channelField = field(client.getClass(), "channel");
+      Field channelField = replaceableField(client.getClass(), "channel");
       Object channel = channelField.get(client);
       if (channel == null || !channelField.getType().isInterface()) {
         throw new IOException("Celeborn transport client has no compatible channel interface");

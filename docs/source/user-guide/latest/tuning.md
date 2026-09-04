@@ -254,8 +254,14 @@ even when both its parent and child are non-Comet operators.
 
 ### Remote Shuffle with Celeborn
 
-Applications using Apache Celeborn can opt into Comet's native shuffle writer and reader with
-the composite shuffle manager:
+Applications using Apache Celeborn can use Comet's composite shuffle manager to retain ordinary
+Spark/Celeborn shuffle while accelerating other operators with Comet.
+
+Native shuffle requires reliable completion tracking for in-flight payloads. Released Celeborn
+0.6.0 and 0.7.0 clients do not provide the required guarantee, so these versions retain ordinary
+Spark/Celeborn shuffle even when `spark.comet.shuffle.mode=native`. Native shuffle support for
+these clients requires a safe Celeborn push-completion API. The following settings request
+native shuffle when the client passes Comet's compatibility checks:
 
 ```properties
 spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometCelebornShuffleManager
