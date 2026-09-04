@@ -36,5 +36,9 @@ CREATE TABLE test_second_ntz(ts timestamp_ntz) USING parquet
 statement
 INSERT INTO test_second_ntz VALUES (cast('2024-01-15 00:00:00' as timestamp_ntz)), (cast('2024-01-15 12:30:45' as timestamp_ntz)), (cast('2024-01-15 23:59:59' as timestamp_ntz)), (NULL)
 
+-- Fully read NTZ Parquet input before testing native kernels.
+statement
+CACHE TABLE test_second_ntz
+
 query
 SELECT second(ts) FROM test_second_ntz

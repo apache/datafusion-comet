@@ -24,7 +24,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import scala.concurrent.duration._
 import scala.reflect.ClassTag
 import scala.reflect.runtime.universe.TypeTag
-import scala.util.{Success, Try}
+import scala.util.{Random, Success, Try}
 
 import org.scalatest.BeforeAndAfterEach
 
@@ -45,10 +45,11 @@ import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.internal._
 import org.apache.spark.sql.test._
-import org.apache.spark.sql.types.{DecimalType, StructType}
+import org.apache.spark.sql.types.{DecimalType, StructType, TimestampNTZType}
 
 import org.apache.comet._
 import org.apache.comet.shims.ShimCometSparkSessionExtensions
+import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, SchemaGenOptions}
 
 /**
  * Base class for testing. This exists in `org.apache.spark.sql` since [[SQLTestUtils]] is
@@ -701,6 +702,61 @@ abstract class CometTestBase
   protected def getValue(i: Long, div: Long): Long = {
     val value = if (i % 2 == 0) i else -i
     value % div
+  }
+
+  private val nativeTimestampNtzValue = "__comet_ntz_value"
+
+  /**
+   * Native operator fixtures can store NTZ values inside a struct, then project them back out.
+   * Only top-level NTZ reader adaptation requires Spark; the nested reader path is unchanged.
+   * Keep all other physical columns, logical values, and native operator assertions intact.
+   */
+  protected def writeNativeParquetInput(data: DataFrame, path: String): Unit = {
+    val columns = data.schema.fields.map { field =>
+      if (field.dataType == TimestampNTZType) {
+        functions.struct(data(field.name).as(nativeTimestampNtzValue)).as(field.name)
+      } else {
+        data(field.name)
+      }
+    }
+    withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+      data.select(columns: _*).write.mode(SaveMode.Overwrite).parquet(path)
+    }
+  }
+
+  protected def readNativeParquetInput(path: String): DataFrame = {
+    val data = spark.read.parquet(path)
+    val columns = data.schema.fields.map { field =>
+      field.dataType match {
+        case nested: StructType
+            if nested.fields.length == 1 &&
+              nested.fields.head.name == nativeTimestampNtzValue &&
+              nested.fields.head.dataType == TimestampNTZType =>
+          data(field.name).getField(nativeTimestampNtzValue).as(field.name)
+        case _ => data(field.name)
+      }
+    }
+    data.select(columns: _*)
+  }
+
+  protected def makeNativeParquetFile(
+      random: Random,
+      filename: String,
+      numRows: Int,
+      schemaOptions: SchemaGenOptions,
+      dataOptions: DataGenOptions): Unit = {
+    val schema = FuzzDataGenerator.generateSchema(schemaOptions)
+    makeNativeParquetFile(random, filename, schema, numRows, dataOptions)
+  }
+
+  protected def makeNativeParquetFile(
+      random: Random,
+      filename: String,
+      schema: StructType,
+      numRows: Int,
+      options: DataGenOptions): Unit = {
+    val data = FuzzDataGenerator.generateDataFrame(random, spark, schema, numRows, options)
+    writeNativeParquetInput(data, filename)
   }
 
   def makeParquetFileAllPrimitiveTypes(path: Path, dictionaryEnabled: Boolean, n: Int): Unit = {

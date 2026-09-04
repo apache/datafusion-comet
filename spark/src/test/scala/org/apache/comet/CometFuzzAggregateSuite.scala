@@ -24,7 +24,7 @@ import org.apache.comet.DataTypeSupport.isComplexType
 class CometFuzzAggregateSuite extends CometFuzzTestBase {
 
   test("count distinct - simple columns") {
-    val df = spark.read.parquet(filename)
+    val df = readNativeParquetInput(filename)
     df.createOrReplaceTempView("t1")
     for (col <- df.schema.fields.filterNot(f => isComplexType(f.dataType)).map(_.name)) {
       val sql = s"SELECT count(distinct $col) FROM t1"
@@ -38,7 +38,7 @@ class CometFuzzAggregateSuite extends CometFuzzTestBase {
   // Aggregate by complex columns not yet supported
   // https://github.com/apache/datafusion-comet/issues/2382
   test("count distinct - complex columns") {
-    val df = spark.read.parquet(filename)
+    val df = readNativeParquetInput(filename)
     df.createOrReplaceTempView("t1")
     for (col <- df.schema.fields.filter(f => isComplexType(f.dataType)).map(_.name)) {
       val sql = s"SELECT count(distinct $col) FROM t1"
@@ -48,7 +48,7 @@ class CometFuzzAggregateSuite extends CometFuzzTestBase {
   }
 
   test("count distinct group by multiple column - simple columns ") {
-    val df = spark.read.parquet(filename)
+    val df = readNativeParquetInput(filename)
     df.createOrReplaceTempView("t1")
     for (col <- df.schema.fields.filterNot(f => isComplexType(f.dataType)).map(_.name)) {
       val sql = s"SELECT c1, c2, c3, count(distinct $col) FROM t1 group by c1, c2, c3"
@@ -62,7 +62,7 @@ class CometFuzzAggregateSuite extends CometFuzzTestBase {
   // Aggregate by complex columns not yet supported
   // https://github.com/apache/datafusion-comet/issues/2382
   test("count distinct group by multiple column - complex columns ") {
-    val df = spark.read.parquet(filename)
+    val df = readNativeParquetInput(filename)
     df.createOrReplaceTempView("t1")
     for (col <- df.schema.fields.filter(f => isComplexType(f.dataType)).map(_.name)) {
       val sql = s"SELECT c1, c2, c3, count(distinct $col) FROM t1 group by c1, c2, c3"
@@ -74,7 +74,7 @@ class CometFuzzAggregateSuite extends CometFuzzTestBase {
   // COUNT(distinct x, y, z, ...) not yet supported
   // https://github.com/apache/datafusion-comet/issues/2292
   test("count distinct multiple values and group by multiple column") {
-    val df = spark.read.parquet(filename)
+    val df = readNativeParquetInput(filename)
     df.createOrReplaceTempView("t1")
     for (col <- df.columns) {
       val sql = s"SELECT c1, c2, c3, count(distinct $col, c4, c5) FROM t1 group by c1, c2, c3"
@@ -84,7 +84,7 @@ class CometFuzzAggregateSuite extends CometFuzzTestBase {
   }
 
   test("count(*) group by single column") {
-    val df = spark.read.parquet(filename)
+    val df = readNativeParquetInput(filename)
     df.createOrReplaceTempView("t1")
     for (col <- df.columns) {
       val sql = s"SELECT $col, count(*) FROM t1 GROUP BY $col ORDER BY $col"
@@ -94,7 +94,7 @@ class CometFuzzAggregateSuite extends CometFuzzTestBase {
   }
 
   test("count(col) group by single column") {
-    val df = spark.read.parquet(filename)
+    val df = readNativeParquetInput(filename)
     df.createOrReplaceTempView("t1")
     val groupCol = df.columns.head
     for (col <- df.columns.drop(1)) {
@@ -105,7 +105,7 @@ class CometFuzzAggregateSuite extends CometFuzzTestBase {
   }
 
   test("count(col1, col2, ..) group by single column") {
-    val df = spark.read.parquet(filename)
+    val df = readNativeParquetInput(filename)
     df.createOrReplaceTempView("t1")
     val groupCol = df.columns.head
     val otherCol = df.columns.drop(1)
@@ -116,7 +116,7 @@ class CometFuzzAggregateSuite extends CometFuzzTestBase {
   }
 
   test("min/max aggregate") {
-    val df = spark.read.parquet(filename)
+    val df = readNativeParquetInput(filename)
     df.createOrReplaceTempView("t1")
     for (col <- df.columns) {
       // cannot run fully native due to HashAggregate

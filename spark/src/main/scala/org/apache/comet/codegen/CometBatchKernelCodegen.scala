@@ -28,6 +28,7 @@ import org.apache.spark.sql.catalyst.expressions.codegen._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
+import org.apache.comet.expressions.CometCast
 import org.apache.comet.shims.{CometExprTraitShim, CometTypeShim}
 
 /**
@@ -117,6 +118,14 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim with Come
    * nested-field count on `spark.sql.codegen.maxFields`.
    */
   def canHandle(boundExpr: Expression): Option[String] = {
+    // Unsupported casts can arrive inside an otherwise dispatchable wrapper. Check the whole
+    // tree: a batch kernel still evaluates rows that Spark's enclosing operator may skip.
+    if (boundExpr.exists(CometCast.requiresSparkDateTimestampNtzCast)) {
+      return Some(CometCast.dateToTimestampNtzOverflowReason)
+    }
+    if (boundExpr.exists(CometCast.requiresSparkDateTimestampTryCast)) {
+      return Some("TRY_CAST date-to-timestamp nullability requires Spark row execution")
+    }
     if (!isSupportedDataType(boundExpr.dataType)) {
       return Some(s"codegen dispatch: unsupported output type ${boundExpr.dataType}")
     }

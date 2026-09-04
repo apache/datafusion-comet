@@ -83,11 +83,10 @@ Supported input formats match Spark exactly:
 
 ## Date to Timestamp
 
-Comet's native `CAST(date AS TIMESTAMP)` is compatible with Spark. The cast interprets each
-date as midnight in the session timezone and converts to a UTC epoch value. DST transitions
-are handled correctly, including spring-forward gaps (where midnight may not exist) and
-fall-back ambiguity (where Comet picks the earlier/DST occurrence, matching Spark's
-`LocalDate.atStartOfDay(zoneId)` behavior).
+Comet's native `CAST(date AS TIMESTAMP)` is compatible with Spark for session timezones that
+resolve to a fixed whole-minute offset, including UTC and fixed-offset aliases. The cast
+interprets each date as midnight in that timezone and converts to a UTC epoch value. Other
+timezones use Spark execution, preserving Spark's historical-offset and DST behavior.
 
 ## Date to TimestampNTZ
 
@@ -95,6 +94,11 @@ Comet's native `CAST(date AS TIMESTAMP_NTZ)` is compatible with Spark. The cast 
 timezone-independent: each date is converted to midnight as pure arithmetic
 (`days * 86,400,000,000` microseconds) with no session timezone offset applied. The result
 is the same regardless of the session timezone setting.
+
+Legacy and ANSI casts use Spark row execution unless the input is a safe date literal/null or
+`date_from_unix_date` of a byte/short. This also excludes JVM batch dispatch. `TRY_CAST` remains
+eligible for native execution only for nullable scalar output; non-nullable or nested casts
+use Spark row execution.
 
 ## Date to Numeric Types
 
@@ -124,14 +128,14 @@ The result is always a wall-clock timestamp with no timezone conversion or DST a
 
 Comet supports the following `TIMESTAMP_NTZ` casts natively:
 
-| Cast                               | Compatible | Notes                                                             |
-| ---------------------------------- | ---------- | ----------------------------------------------------------------- |
-| `CAST(timestamp_ntz AS STRING)`    | Yes        | Formats local time as-is, timezone-independent                    |
-| `CAST(timestamp_ntz AS DATE)`      | Yes        | Extracts the date component, timezone-independent                 |
-| `CAST(timestamp_ntz AS TIMESTAMP)` | Yes        | Interprets NTZ as local time in session TZ, converts to UTC epoch |
-| `CAST(date AS TIMESTAMP_NTZ)`      | Yes        | Pure arithmetic, timezone-independent                             |
-| `CAST(timestamp AS TIMESTAMP_NTZ)` | Yes        | Shifts UTC epoch to local time in session TZ                      |
-| `CAST(string AS TIMESTAMP_NTZ)`    | Yes        | See [String to TimestampNTZ](#string-to-timestampntz) above       |
+| Cast                               | Compatible | Notes                                                              |
+| ---------------------------------- | ---------- | ------------------------------------------------------------------ |
+| `CAST(timestamp_ntz AS STRING)`    | Yes        | Formats local time as-is, timezone-independent                     |
+| `CAST(timestamp_ntz AS DATE)`      | Yes        | Extracts the date component, timezone-independent                  |
+| `CAST(timestamp_ntz AS TIMESTAMP)` | Yes        | Interprets NTZ as local time in session TZ, converts to UTC epoch  |
+| `CAST(date AS TIMESTAMP_NTZ)`      | Yes        | See [Date to TimestampNTZ](#date-to-timestampntz) for restrictions |
+| `CAST(timestamp AS TIMESTAMP_NTZ)` | Yes        | Shifts UTC epoch to local time in session TZ                       |
+| `CAST(string AS TIMESTAMP_NTZ)`    | Yes        | See [String to TimestampNTZ](#string-to-timestampntz) above        |
 
 The NTZ-to-Timestamp and Timestamp-to-NTZ casts are session-timezone-dependent (the session
 timezone determines the UTC offset). All other NTZ casts are timezone-independent and produce

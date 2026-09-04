@@ -32,6 +32,10 @@ INSERT INTO test_timestampdiff VALUES
   (NULL, timestamp'2024-01-01 00:00:00', NULL, timestamp_ntz'2024-01-01 00:00:00'),
   (timestamp'2024-01-01 00:00:00', NULL, timestamp_ntz'2024-01-01 00:00:00', NULL)
 
+-- Fully read NTZ Parquet input before testing native kernels.
+statement
+CACHE TABLE test_timestampdiff
+
 -- whole-unit differences are truncated toward zero, matching Spark
 query
 SELECT

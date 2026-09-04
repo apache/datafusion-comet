@@ -21,6 +21,7 @@ package org.apache.comet
 
 import java.io.File
 import java.nio.charset.StandardCharsets
+import java.time.{LocalDateTime, ZoneOffset}
 
 import scala.collection.mutable.ListBuffer
 import scala.jdk.CollectionConverters._
@@ -29,16 +30,21 @@ import scala.util.Random
 import org.apache.hadoop.fs.Path
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row, SaveMode}
-import org.apache.spark.sql.catalyst.expressions.Cast
+import org.apache.spark.sql.catalyst.expressions.{AttributeReference, BoundReference, Cast, CreateArray, DateFromUnixDate, Literal}
 import org.apache.spark.sql.catalyst.parser.ParseException
+import org.apache.spark.sql.comet.{CometBatchScanExec, CometNativeExec, CometNativeScanExec, CometProjectExec, CometScanExec}
+import org.apache.spark.sql.execution.{FilterExec, ProjectExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+import org.apache.spark.sql.execution.joins.BroadcastNestedLoopJoinExec
 import org.apache.spark.sql.functions.{col, monotonically_increasing_id}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DataTypes, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, StructField, StructType, TimestampType}
+import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DataTypes, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, StructField, StructType, TimestampNTZType, TimestampType}
 
+import org.apache.comet.codegen.CometBatchKernelCodegen
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
 import org.apache.comet.rules.CometScanTypeChecker
 import org.apache.comet.serde.{Compatible, Incompatible, Unsupported}
+import org.apache.comet.udf.codegen.CometScalaUDFCodegen
 
 /**
  * Spark-parity coverage for Comet's **native** `Cast` implementation, and for the
@@ -46,22 +52,27 @@ import org.apache.comet.serde.{Compatible, Incompatible, Unsupported}
  *
  * Scope: for every `(from, to)` type pair that `CometCast` reports as `Compatible` or
  * `Incompatible`, run the cast against Spark as the oracle and assert both that the results match
- * and — via `checkSparkAnswerAndOperator` — that the native kernel actually executed. Support
- * decisions themselves (`Compatible` / `Incompatible` / `Unsupported`, and the reason strings)
+ * and — via `checkSparkAnswerAndOperator` — that the native kernel actually executed when the
+ * expression-level guards admit it. Otherwise assert the required Spark operator and reason.
+ * Type-level decisions (`Compatible` / `Incompatible` / `Unsupported`, and the reason strings)
  * are asserted directly against `CometCast.isSupported`.
  *
- * Out of scope: the JVM codegen dispatch path. `CometCast` mixes in `CodegenDispatchFallback`, so
- * a cast that `isSupported` rejects still runs inside the Comet operator by way of the
- * Arrow-direct codegen dispatcher, evaluating Spark's own `Cast` against Arrow vectors. That path
- * is covered by `CometCodegenSuite` and friends. Where this suite touches it at all, it does so
- * only to pin that an `Unsupported` cast keeps the enclosing operator native rather than falling
- * back to Spark; it does not attempt to cover dispatch semantics.
+ * `CometCast` mixes in `CodegenDispatchFallback`, so a cast that `isSupported` rejects still runs
+ * inside the Comet operator by way of the Arrow-direct codegen dispatcher, evaluating Spark's own
+ * `Cast` against Arrow vectors. That path is primarily covered by `CometCodegenSuite` and
+ * friends. Targeted routing regressions here also pin that an `Unsupported` cast uses the
+ * dispatcher, retaining Spark parity and keeping the enclosing operator native. Casts requiring
+ * Spark row evaluation or incompatible Arrow nullability instead retain the Spark operator.
  *
  * Because of that split, a cast marked `Unsupported` here is not untested overall — it is tested
- * through the dispatcher instead. Adding a native cast implementation therefore means moving a
- * pair out of the `Unsupported` assertions and into the parity matrix below.
+ * through the dispatcher or Spark row fallback instead. Adding a native cast implementation
+ * therefore means moving a pair out of the `Unsupported` assertions and into the parity matrix
+ * below, subject to the expression-level execution and nullability guards.
  */
-class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
+class CometNativeCastSuite
+    extends CometTestBase
+    with AdaptiveSparkPlanHelper
+    with CometCodegenAssertions {
 
   import testImplicits._
 
@@ -1501,7 +1512,443 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("cast DateType to TimestampNTZType") {
     representativeTimezones.foreach { tz =>
       withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz) {
-        castTimestampTest(generateDates(), DataTypes.TimestampNTZType, assertNative = true)
+        // A stored DATE column has no proven bound. Its non-TRY cast must retain Spark's row
+        // evaluation even when these particular input values happen to fit in microseconds.
+        castTimestampTest(generateDates(), DataTypes.TimestampNTZType, assertSparkRows = true)
+      }
+    }
+  }
+
+  test("date to timestamp_ntz admission rejects unbounded and nested casts in both batch paths") {
+    val pairs = Seq(
+      DateType -> TimestampNTZType,
+      ArrayType(DateType) -> ArrayType(TimestampNTZType),
+      StructType(Seq(StructField("d", DateType))) ->
+        StructType(Seq(StructField("d", TimestampNTZType))),
+      MapType(IntegerType, DateType) -> MapType(IntegerType, TimestampNTZType),
+      MapType(DateType, IntegerType) -> MapType(TimestampNTZType, IntegerType))
+    forEachDateToTimestampNtzMode {
+      pairs.foreach { case (from, to) =>
+        val cast = Cast(BoundReference(0, from, nullable = true), to, Some("UTC"))
+        assert(
+          CometCast.getSupportLevel(cast) ==
+            Unsupported(Some(CometCast.dateToTimestampNtzOverflowReason)))
+        assert(
+          CometBatchKernelCodegen
+            .canHandle(cast)
+            .contains(CometCast.dateToTimestampNtzOverflowReason))
+        val wrapper = Cast(CreateArray(Seq(cast)), StringType, Some("UTC"))
+        assert(
+          CometCast.getSupportLevel(wrapper) ==
+            Unsupported(Some(CometCast.dateToTimestampNtzOverflowReason)))
+        assert(
+          CometBatchKernelCodegen
+            .canHandle(wrapper)
+            .contains(CometCast.dateToTimestampNtzOverflowReason))
+      }
+      Seq(-106751992, -106751991, 0, 106751991, 106751992).foreach { day =>
+        val cast = Cast(Literal.create(day, DateType), TimestampNTZType, Some("UTC"))
+        val safe = day >= -106751991 && day <= 106751991
+        assert(CometCast.requiresSparkDateTimestampNtzCast(cast) == !safe)
+        assert(CometBatchKernelCodegen.canHandle(cast).isEmpty == safe)
+      }
+      Seq(ByteType, ShortType).foreach { inputType =>
+        val date =
+          DateFromUnixDate(Cast(BoundReference(0, inputType, nullable = true), IntegerType))
+        val cast = Cast(date, TimestampNTZType, Some("UTC"))
+        assert(
+          CometCast.getSupportLevel(cast) == Compatible(
+            Some(CometCast.dateToTimestampNtzSupportNote)))
+        assert(CometBatchKernelCodegen.canHandle(cast).isEmpty)
+      }
+      val unbounded = DateFromUnixDate(BoundReference(0, IntegerType, nullable = true))
+      assert(CometCast.requiresSparkDateTimestampNtzCast(Cast(unbounded, TimestampNTZType)))
+      Seq(
+        Cast(Literal.create(null, DateType), TimestampNTZType),
+        Cast(BoundReference(0, DateType, nullable = true), TimestampType, Some("UTC")),
+        Cast(BoundReference(0, ShortType, nullable = true), LongType)).foreach { cast =>
+        assert(CometCast.getSupportLevel(cast).isInstanceOf[Compatible])
+        assert(CometBatchKernelCodegen.canHandle(cast).isEmpty)
+      }
+    }
+  }
+
+  test("date to timestamp_ntz preserves LIMIT and semi/anti join short circuiting") {
+    withDateCastEvaluationInputs {
+      val queries = Seq(
+        ("SELECT CAST(d AS TIMESTAMP_NTZ) FROM date_rows LIMIT 1", classOf[ProjectExec]),
+        (
+          "SELECT id FROM date_rows " +
+            "WHERE CAST(CAST(d AS TIMESTAMP_NTZ) AS STRING) >= '1970' LIMIT 1",
+          classOf[FilterExec]),
+        (dateCastJoinQuery("LEFT SEMI", ">="), classOf[BroadcastNestedLoopJoinExec]),
+        (dateCastJoinQuery("LEFT ANTI", ">="), classOf[BroadcastNestedLoopJoinExec]))
+      forEachDateToTimestampNtzMode {
+        queries.foreach { case (query, operator) =>
+          assertNoCodegenRan {
+            assertSparkRowDateCast(sql(query), operator)
+            checkSparkAnswer(query)
+          }
+        }
+      }
+    }
+  }
+
+  test("date to timestamp_ntz keeps checked errors for consumed rows and join candidates") {
+    withDateCastEvaluationInputs {
+      val queries = Seq(
+        "SELECT CAST(d AS TIMESTAMP_NTZ) FROM date_rows",
+        "SELECT id FROM date_rows WHERE CAST(CAST(d AS TIMESTAMP_NTZ) AS STRING) >= '1970'",
+        // The first candidate does not match, so both engines must evaluate the overflowing one.
+        dateCastJoinQuery("LEFT SEMI", "<"),
+        dateCastJoinQuery("LEFT ANTI", "<"))
+      forEachDateToTimestampNtzMode {
+        queries.foreach { query =>
+          assertNoCodegenRan {
+            val (sparkError, cometError) = checkSparkAnswerMaybeThrows(sql(query))
+            Seq(sparkError, cometError).foreach { error =>
+              assert(error.isDefined, s"Expected consumed overflow for $query")
+              assert(
+                Iterator.iterate(error.get)(_.getCause).takeWhile(_ != null).exists { cause =>
+                  cause.isInstanceOf[ArithmeticException] && cause.getMessage == "long overflow"
+                },
+                s"Expected ArithmeticException: long overflow for $query, got $error")
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("date to timestamp_ntz rejects nested casts and enclosing dispatcher wrappers") {
+    withDateCastEvaluationInputs {
+      forEachDateToTimestampNtzMode {
+        withSQLConf("spark.sql.legacy.castComplexTypesToString.enabled" -> "true") {
+          val expressions = Seq(
+            "CAST(array(d) AS ARRAY<TIMESTAMP_NTZ>)",
+            "CAST(named_struct('d', d) AS STRUCT<d: TIMESTAMP_NTZ>)",
+            "CAST(map(1, d) AS MAP<INT, TIMESTAMP_NTZ>)",
+            // This outer cast is unsupported natively under the legacy formatting flag. Its
+            // JVM kernel must not conceal the throwing inner cast from the admission guard.
+            "CAST(array(CAST(d AS TIMESTAMP_NTZ)) AS STRING)") ++
+            (if (SQLConf.get.ansiEnabled) {
+               Seq("CAST(map(d, 1) AS MAP<TIMESTAMP_NTZ, INT>)")
+             } else Seq.empty)
+          expressions.foreach { expr =>
+            val query = s"SELECT $expr FROM date_rows LIMIT 1"
+            assertNoCodegenRan {
+              assertSparkRowDateCast(sql(query), classOf[ProjectExec])
+              checkSparkAnswer(query)
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("date to timestamp_ntz preserves IF and nullable TRY_CAST controls") {
+    withDateCastEvaluationInputs {
+      forEachDateToTimestampNtzMode {
+        assertNoCodegenRan {
+          val conditional = "SELECT id, IF(id = 0, CAST(d AS TIMESTAMP_NTZ), " +
+            "TIMESTAMP_NTZ '1970-01-01 00:00:00') FROM date_rows"
+          assertSparkRowDateCast(sql(conditional), classOf[ProjectExec])
+          checkSparkAnswer(conditional)
+          val query = "SELECT id, TRY_CAST(d AS TIMESTAMP_NTZ) FROM date_rows ORDER BY id"
+          checkSparkAnswerAndOperator(sql(query), Seq(classOf[CometProjectExec]))
+          assert(
+            sql(query).collect().toSeq ==
+              Seq(Row(0L, LocalDateTime.of(1970, 1, 1, 0, 0)), Row(1L, null)))
+          // Fixed-zone DATE to TIMESTAMP and ordinary widening casts are not part of this guard.
+          checkSparkAnswerAndOperator(
+            "SELECT CAST(d AS TIMESTAMP), CAST(id AS DOUBLE) FROM date_rows WHERE id = 0")
+        }
+      }
+    }
+  }
+
+  test("date to timestamp_ntz keeps proven narrow day ranges native") {
+    val input: Seq[(Option[Byte], Option[Short])] = Seq(
+      (Some(Byte.MinValue), Some(Short.MinValue)),
+      (Some((-1).toByte), Some((-1).toShort)),
+      (Some(0.toByte), Some(0.toShort)),
+      (Some(Byte.MaxValue), Some(Short.MaxValue)),
+      (None, None))
+    withParquetTable(input, "narrow_dates") {
+      forEachDateToTimestampNtzMode {
+        assertNoCodegenRan {
+          checkSparkAnswerAndOperator(
+            sql(
+              "SELECT CAST(date_from_unix_date(_1) AS TIMESTAMP_NTZ), " +
+                "CAST(date_from_unix_date(_2) AS TIMESTAMP_NTZ), " +
+                "CAST(DATE '2024-11-03' AS TIMESTAMP_NTZ), CAST(_2 AS BIGINT) FROM narrow_dates"),
+            Seq(classOf[CometProjectExec]))
+        }
+      }
+    }
+  }
+
+  test("cast DateType to TimestampType canonicalizes fixed timezone aliases") {
+    val date = AttributeReference("d", DateType, nullable = true)()
+    val aliases = Seq(
+      "GMT" -> "UTC",
+      "Etc/UTC" -> "UTC",
+      "Z" -> "UTC",
+      "UTC+00:00" -> "UTC",
+      "+00:00" -> "UTC",
+      "-00:00" -> "UTC",
+      "Etc/GMT+8" -> "-08:00",
+      "GMT+05:30" -> "+05:30")
+    val minuteOffsets = (-18 * 60 to 18 * 60).map { minutes =>
+      val offset = ZoneOffset.ofTotalSeconds(minutes * 60).getId
+      offset -> (if (minutes == 0) "UTC" else offset)
+    }
+    (aliases ++ minuteOffsets).foreach { case (timezone, expected) =>
+      val cast = Cast(date, TimestampType, Some(timezone))
+      assert(
+        CometCast.getSupportLevel(cast) == Compatible(Some(CometCast.dateToTimestampSupportNote)),
+        timezone)
+      val serialized = CometCast.convert(cast, Seq(date), binding = true).get.getCast
+      assert(serialized.getTimezone == expected, timezone)
+    }
+    Seq("America/Los_Angeles", "Asia/Kolkata", "+05:30:15", "UTC-00:00:01").foreach { timezone =>
+      assert(CometCast.nativeDateTimestampTimezone(timezone).isEmpty, timezone)
+      assert(
+        CometCast
+          .getSupportLevel(Cast(date, TimestampType, Some(timezone)))
+          .isInstanceOf[Unsupported],
+        timezone)
+    }
+  }
+
+  test("cast DateType to timestamps preserves wide make_date results") {
+    // Store the components, not dates: this both avoids Parquet rebasing and prevents Spark
+    // from constant-folding make_date before it reaches the native cast.
+    val input: Seq[(Option[Int], Int, Int)] = Seq(
+      (Some(262143), 1, 1),
+      (Some(-262144), 1, 1),
+      (Some(1970), 1, 1),
+      (Some(2024), 11, 3),
+      // Inside chrono's calendar, but chrono-tz 0.10.4 uses the wrong Los Angeles DST offset.
+      (Some(2101), 7, 4),
+      (None, 1, 1))
+    withParquetTable(input, "wide_dates") {
+      for {
+        (target, tz) <- Seq(
+          ("TIMESTAMP_NTZ", "America/Los_Angeles"),
+          ("TIMESTAMP", "UTC"),
+          ("TIMESTAMP", "GMT"),
+          ("TIMESTAMP", "Etc/UTC"),
+          ("TIMESTAMP", "Z"),
+          ("TIMESTAMP", "UTC+00:00"),
+          ("TIMESTAMP", "GMT+05:30"),
+          ("TIMESTAMP", "Etc/GMT+8"),
+          ("TIMESTAMP", "+05:30"),
+          ("TIMESTAMP", "-08:00"))
+        ansi <- Seq("false", "true")
+      } {
+        withSQLConf(
+          SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz,
+          SQLConf.ANSI_ENABLED.key -> ansi,
+          CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true") {
+          assertNoCodegenRan {
+            // Direct Array<Date> to Array<Timestamp> has a separate support restriction;
+            // Array<Struct> exercises recursive serialization on the native LTZ path, while
+            // the unbounded NTZ conversion stays in Spark.
+            val query = s"SELECT CAST(make_date(_1, _2, _3) AS $target), " +
+              "CAST(array(named_struct('d', make_date(_1, _2, _3))) " +
+              s"AS ARRAY<STRUCT<d: $target>>) FROM wide_dates"
+            if (target == "TIMESTAMP_NTZ") {
+              checkSparkAnswerAndOperator(query, classOf[ProjectExec])
+              assert(
+                !stripAQEPlan(sql(query).queryExecution.executedPlan)
+                  .exists(_.isInstanceOf[CometProjectExec]))
+            } else {
+              checkSparkAnswerAndOperator(query)
+            }
+          }
+        }
+      }
+
+      // Named regions and offsets with seconds must use Spark's timezone rules instead of
+      // constructing chrono dates. Neither the wide positive nor negative year fits chrono.
+      Seq("America/Los_Angeles", "+05:30:15", "UTC-00:00:01").foreach { tz =>
+        withSQLConf(
+          SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz,
+          CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true") {
+          assertCodegenRan {
+            checkSparkAnswerAndOperator(
+              "SELECT CAST(make_date(_1, _2, _3) AS TIMESTAMP) FROM wide_dates")
+          }
+        }
+      }
+      withSQLConf(
+        SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Los_Angeles",
+        CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false",
+        CometConf.COMET_STRICT_TESTING.key -> "true") {
+        checkSparkAnswer("SELECT CAST(make_date(_1, _2, _3) AS TIMESTAMP) FROM wide_dates")
+      }
+    }
+  }
+
+  test("cast DateType to timestamps checks microsecond overflow") {
+    // +/-106751991 are the last whole days representable in microseconds at UTC. The next
+    // days overflow; a fixed offset can also push an otherwise valid boundary day out of range.
+    val input = withNulls(Seq(-106751992, -106751991, 0, 106751991, 106751992))
+      .map(Tuple1(_))
+    val wideDate =
+      "make_date(CASE WHEN _1 = 0 THEN 300000 WHEN _1 > 0 THEN 2024 END, 6, 15)"
+    withParquetTable(input, "date_boundaries") {
+      for {
+        (target, tz, overflowDays) <- Seq(
+          ("TIMESTAMP_NTZ", "America/Los_Angeles", Seq(-106751992, 106751992)),
+          ("TIMESTAMP", "UTC", Seq(-106751992, 106751992)),
+          ("TIMESTAMP", "Etc/UTC", Seq(-106751992, 106751992)),
+          ("TIMESTAMP", "+18:00", Seq(-106751991)),
+          ("TIMESTAMP", "GMT+18:00", Seq(-106751991)),
+          ("TIMESTAMP", "UTC-18:00", Seq(106751991)),
+          ("TIMESTAMP", "-18:00", Seq(106751991)))
+        ansi <- Seq("false", "true")
+      } {
+        withSQLConf(
+          SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz,
+          SQLConf.ANSI_ENABLED.key -> ansi,
+          CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true") {
+          val overflowQueries = overflowDays.map { day =>
+            s"SELECT CAST(date_from_unix_date(_1) AS $target) " +
+              s"FROM date_boundaries WHERE _1 = $day"
+          } ++ (if (target == "TIMESTAMP_NTZ") {
+                  Seq(s"SELECT CAST($wideDate AS $target) FROM date_boundaries")
+                } else Seq.empty)
+          overflowQueries.foreach { query =>
+            assertNoCodegenRan {
+              val df = sql(query)
+              val plan = stripAQEPlan(df.queryExecution.executedPlan)
+              if (target == "TIMESTAMP_NTZ") {
+                checkCometOperators(plan, classOf[ProjectExec])
+                assert(plan.exists(_.isInstanceOf[ProjectExec]))
+              } else {
+                checkCometOperators(plan)
+              }
+              val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
+              assert(sparkError.isDefined, s"Spark should overflow for $query in $tz")
+              assert(cometError.isDefined, s"Comet should overflow for $query in $tz")
+              Seq(sparkError.get, cometError.get).foreach { error =>
+                assert(
+                  causeChain(error).exists { cause =>
+                    cause.getClass == classOf[ArithmeticException] &&
+                    cause.getMessage == "long overflow"
+                  },
+                  s"Expected ArithmeticException: long overflow, got $error")
+              }
+            }
+          }
+          // A mixed batch must retain valid values and return NULL only for overflowing rows
+          // and input NULLs. TRY_CAST does this regardless of the session ANSI setting.
+          // Compare LTZ as epoch seconds (these date casts are second-aligned): Spark's
+          // java.sql.Timestamp row conversion overflows when rebasing the extreme boundaries.
+          val casts = Seq(
+            s"TRY_CAST(date_from_unix_date(_1) AS $target)",
+            s"TRY_CAST($wideDate AS $target)").map { expr =>
+            if (target == "TIMESTAMP") s"CAST($expr AS BIGINT)" else expr
+          }
+          assertNoCodegenRan {
+            checkSparkAnswerAndOperator(
+              s"SELECT _1, ${casts.mkString(", ")} " +
+                "FROM date_boundaries ORDER BY _1")
+          }
+        }
+      }
+    }
+  }
+
+  test("cast DateType to timestamps ignores values in null containers") {
+    withTempPath { path =>
+      // Materialize the containers to prevent constant folding. The native IF can null a parent
+      // while retaining its children; keep hidden overflow and visible valid dates in one batch.
+      withSQLConf(
+        CometConf.COMET_ENABLED.key -> "false",
+        "spark.sql.parquet.datetimeRebaseModeInWrite" -> "CORRECTED") {
+        val date = "make_date(year, 6, 15)"
+        Seq((false, 300000), (true, 2024), (false, -300000), (true, 1970))
+          .toDF("flag", "year")
+          .selectExpr(
+            "flag",
+            s"named_struct('d', $date) AS s",
+            s"map(1, $date) AS m",
+            s"map($date, 1) AS k",
+            s"array(named_struct('d', $date)) AS a")
+          .coalesce(1)
+          .write
+          .parquet(path.toString)
+      }
+      withParquetTable(path.toString, "masked_dates") {
+        for {
+          target <- Seq("TIMESTAMP", "TIMESTAMP_NTZ")
+          ansi <- Seq("false", "true")
+        } {
+          withSQLConf(
+            SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC",
+            SQLConf.ANSI_ENABLED.key -> ansi,
+            CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
+            val casts = Seq(
+              ("s", s"STRUCT<d: $target>"),
+              ("m", s"MAP<INT, $target>"),
+              ("a", s"ARRAY<STRUCT<d: $target>>")) ++
+              // Spark rejects DATE -> TIMESTAMP_NTZ map keys in legacy mode.
+              (if (target == "TIMESTAMP") Seq(("k", s"MAP<$target, INT>")) else Seq.empty)
+            casts.foreach { case (column, targetType) =>
+              // Referencing the alias twice keeps Spark from pushing CAST inside IF. CASE uses
+              // a different native path that already masks the children before casting them.
+              val query = s"SELECT masked, CAST(masked AS $targetType) FROM " +
+                s"(SELECT IF(flag, $column, NULL) AS masked FROM masked_dates)"
+              assertNoCodegenRan {
+                if (target == "TIMESTAMP_NTZ") {
+                  checkSparkAnswerAndOperator(
+                    sql(query),
+                    Seq(classOf[ProjectExec], classOf[CometProjectExec]),
+                    classOf[ProjectExec])
+                } else {
+                  checkSparkAnswerAndOperator(sql(query), Seq(classOf[CometProjectExec]))
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("cast DateType to timestamps falls back for unsafe TRY_CAST nullability") {
+    withParquetTable(Seq(Tuple1(300000), Tuple1(2024)), "try_wide_dates") {
+      val date = "make_date(_1, 6, 15)"
+      for {
+        target <- Seq("TIMESTAMP", "TIMESTAMP_NTZ")
+        codegen <- Seq("true", "false")
+      } {
+        withSQLConf(
+          SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC",
+          SQLConf.ANSI_ENABLED.key -> "true",
+          "spark.sql.legacy.castComplexTypesToString.enabled" -> "true",
+          CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> codegen,
+          CometConf.COMET_STRICT_TESTING.key -> "true") {
+          val expressions = Seq(
+            s"TRY_CAST(make_date(coalesce(_1, 300000), 6, 15) AS $target)",
+            s"TRY_CAST(map(1, $date) AS MAP<INT, $target>)",
+            s"TRY_CAST(named_struct('d', $date) AS STRUCT<d: $target>)",
+            // The outer cast would otherwise dispatch. Its entire tree must be checked.
+            s"CAST(array(TRY_CAST(make_date(coalesce(_1, 300000), 6, 15) AS $target)) AS STRING)") ++
+            (if (target == "TIMESTAMP") Seq(s"TRY_CAST(map($date, 1) AS MAP<$target, INT>)")
+             else Seq.empty)
+          expressions.foreach { expr =>
+            assertNoCodegenRan {
+              val query = s"SELECT $expr FROM try_wide_dates"
+              val plan = stripAQEPlan(sql(query).queryExecution.executedPlan)
+              assert(!plan.exists(_.isInstanceOf[CometProjectExec]))
+              checkSparkAnswer(query)
+            }
+          }
+        }
       }
     }
   }
@@ -2358,6 +2805,105 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     values.map(v => Some(v)) ++ Seq(None)
   }
 
+  private def forEachDateToTimestampNtzMode(f: => Unit): Unit = {
+    for {
+      ansi <- Seq("false", "true")
+      codegen <- Seq("false", "true")
+    } {
+      withClue(s"ANSI=$ansi, codegen dispatch=$codegen: ") {
+        withSQLConf(
+          SQLConf.ANSI_ENABLED.key -> ansi,
+          CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> codegen,
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+          SQLConf.SHUFFLE_PARTITIONS.key -> "1",
+          SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC",
+          "spark.sql.parquet.datetimeRebaseModeInRead" -> "CORRECTED",
+          "spark.sql.parquet.filterPushdown" -> "false",
+          CometConf.COMET_BATCH_SIZE.key -> "8192",
+          CometConf.COMET_EXEC_BROADCAST_EXCHANGE_ENABLED.key -> "true",
+          CometConf.COMET_EXEC_BROADCAST_NESTED_LOOP_JOIN_ENABLED.key -> "true",
+          CometConf.COMET_STRICT_TESTING.key -> "true") {
+          f
+        }
+      }
+    }
+  }
+
+  private def withDateCastEvaluationInputs(f: => Unit): Unit = {
+    withTempDir { dir =>
+      val dates = new File(dir, "dates").toString
+      val left = new File(dir, "left").toString
+      withSQLConf(
+        CometConf.COMET_ENABLED.key -> "false",
+        "spark.sql.parquet.datetimeRebaseModeInWrite" -> "CORRECTED") {
+        // One file and one batch: a safe first row followed by an overflowing date. The old
+        // unchecked NTZ arithmetic wrapped this particular second value to an ordinary 1970
+        // timestamp; this fixture specifically exposes the newly eager checked exception.
+        sql(
+          "SELECT id, date_add(DATE '1970-01-01', IF(id = 0, 0, 213503983)) AS d " +
+            "FROM range(0, 2, 1, 1)").write.parquet(dates)
+        // Keep the NTZ comparison input native so these tests reach the cast admission guard.
+        writeNativeParquetInput(
+          sql("SELECT id, TIMESTAMP_NTZ '1970-01-01 00:00:00' AS t FROM range(0, 1, 1, 1)"),
+          left)
+      }
+      withTempView("date_rows", "date_left") {
+        spark.read.parquet(dates).createOrReplaceTempView("date_rows")
+        readNativeParquetInput(left).createOrReplaceTempView("date_left")
+        Seq("false", "true").foreach { enabled =>
+          withSQLConf(CometConf.COMET_ENABLED.key -> enabled) {
+            assert(
+              sql("SELECT id, unix_date(d) FROM date_rows").collect().toSeq ==
+                Seq(Row(0L, 0), Row(1L, 213503983)),
+              "The first consumed row/candidate must be the safe date in both engines")
+          }
+        }
+        f
+      }
+    }
+  }
+
+  private def dateCastJoinQuery(joinType: String, comparison: String): String =
+    s"SELECT /*+ BROADCAST(r) */ l.id FROM date_left l $joinType JOIN date_rows r " +
+      s"ON CAST(r.d AS TIMESTAMP_NTZ) $comparison l.t"
+
+  private def assertSparkRowDateCast(df: DataFrame, operator: Class[_]): Unit = {
+    val plan = stripAQEPlan(df.queryExecution.executedPlan)
+    assert(
+      plan.exists { p =>
+        operator.isInstance(p) &&
+        p.expressions.exists(_.exists(CometCast.requiresSparkDateTimestampNtzCast))
+      },
+      s"Expected the cast in Spark's ${operator.getSimpleName}: $plan")
+    assert(
+      plan.exists {
+        case _: CometScanExec | _: CometBatchScanExec | _: CometNativeScanExec => true
+        case _ => false
+      },
+      s"The input scan should remain in Comet: $plan")
+    assert(!plan.exists {
+      // Native scan dataFilters also retain Spark predicates that were not serialized for
+      // pushdown. Their presence in scan metadata does not mean the scan evaluates them.
+      case _: CometNativeScanExec => false
+      case p: CometNativeExec =>
+        p.expressions.exists(_.exists(CometCast.requiresSparkDateTimestampNtzCast))
+      case _ => false
+    })
+    assert(
+      new ExtendedExplainInfo()
+        .generateExtendedInfo(plan)
+        .contains(CometCast.dateToTimestampNtzOverflowReason))
+  }
+
+  private def assertNoCodegenRan(f: => Unit): Unit = {
+    CometScalaUDFCodegen.resetStats()
+    f
+    val stats = CometScalaUDFCodegen.stats()
+    assert(
+      stats.compileCount + stats.cacheHitCount == 0,
+      s"Unexpected JVM codegen dispatcher activity: $stats")
+  }
+
   private def castFallbackTest(
       input: DataFrame,
       toType: DataType,
@@ -2376,17 +2922,41 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  private def withParquetCastInput(input: DataFrame)(f: DataFrame => Unit): Unit = {
+    withTempPath { dir =>
+      val data = roundtripParquet(input, dir).coalesce(1)
+      if (data.schema.fields.exists(_.dataType == TimestampNTZType)) {
+        // Finish the Spark Parquet read before testing native cast kernels. Caching keeps
+        // these fixtures independent of the NTZ reader's conversion error timing.
+        try {
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            data.cache()
+            data.count()
+          }
+          f(data)
+        } finally {
+          data.unpersist()
+        }
+      } else {
+        f(data)
+      }
+    }
+  }
+
   private def castTimestampTest(
       input: DataFrame,
       toType: DataType,
-      assertNative: Boolean = false) = {
-    withTempPath { dir =>
-      val data = roundtripParquet(input, dir).coalesce(1)
+      assertNative: Boolean = false,
+      assertSparkRows: Boolean = false) = {
+    withParquetCastInput(input) { data =>
       data.createOrReplaceTempView("t")
 
       withSQLConf((SQLConf.ANSI_ENABLED.key, "false")) {
         // cast() should return null for invalid inputs when ansi mode is disabled
         val df = data.withColumn("converted", col("a").cast(toType))
+        if (assertSparkRows) {
+          assertSparkRowDateCast(df, classOf[ProjectExec])
+        }
         if (assertNative) {
           checkSparkAnswerAndOperator(df)
         } else {
@@ -2395,12 +2965,19 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
         // try_cast() should always return null for invalid inputs
         val df2 = spark.sql(s"select try_cast(a as ${toType.sql}) from t")
-        checkSparkAnswer(df2)
+        if (assertSparkRows) {
+          checkSparkAnswerAndOperator(df2)
+        } else {
+          checkSparkAnswer(df2)
+        }
       }
 
       // with ANSI enabled, we should produce the same exception as Spark
       withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
         val df = data.withColumn("converted", col("a").cast(toType))
+        if (assertSparkRows) {
+          assertSparkRowDateCast(df, classOf[ProjectExec])
+        }
         checkSparkAnswerMaybeThrows(df) match {
           case (None, None) =>
           // both succeeded, results already compared
@@ -2427,7 +3004,11 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         }
         // try_cast()
         val dfTryCast = spark.sql(s"select try_cast(a as ${toType.sql}) from t")
-        checkSparkAnswer(dfTryCast)
+        if (assertSparkRows) {
+          checkSparkAnswerAndOperator(dfTryCast)
+        } else {
+          checkSparkAnswer(dfTryCast)
+        }
       }
     }
   }
@@ -2441,8 +3022,7 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       expectAnsiFailure: Boolean = false,
       useDataFrameDiff: Boolean = false): Unit = {
 
-    withTempPath { dir =>
-      val data = roundtripParquet(input, dir).coalesce(1)
+    withParquetCastInput(input) { data =>
       val dataWithRowId = data.withColumn("__row_id", monotonically_increasing_id())
 
       withSQLConf((SQLConf.ANSI_ENABLED.key, "false")) {

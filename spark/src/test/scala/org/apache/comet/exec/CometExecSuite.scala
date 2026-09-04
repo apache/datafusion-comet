@@ -3018,13 +3018,16 @@ class CometExecSuite extends CometTestBase {
         val path = new Path(dir.toURI.toString, "part-r-0.parquet")
         makeRawTimeParquetFile(path, dictionaryEnabled = true, n = 1000, rowGroupSize = 10)
         readParquetFile(path.toString) { df =>
+          // Keep native Parquet dictionary input for this sort test. Top-level NTZ columns
+          // use Spark's reader and would no longer exercise the native Parquet scan.
+          val nativeInput = df.drop("_3", "_5")
           Seq(
             $"_6".desc_nulls_first,
             $"_6".desc_nulls_last,
             $"_6".asc_nulls_first,
             $"_6".asc_nulls_last).foreach { colOrder =>
             // TODO: We should be able to sort on dictionary timestamp column
-            val query = df.sortWithinPartitions(colOrder)
+            val query = nativeInput.sortWithinPartitions(colOrder)
             checkSparkAnswerAndOperator(query)
           }
         }

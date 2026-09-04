@@ -181,8 +181,27 @@ class CometCodegenFuzzSuite
       val udfName = s"id_${field.name}"
       registerIdentityUdfFor(field.dataType, udfName) match {
         case Some(_) =>
-          assertCodegenRan {
-            checkSparkAnswerAndOperator(s"SELECT $udfName(${field.name}) FROM t1")
+          def checkIdentity(view: String): Unit = assertCodegenRan {
+            checkSparkAnswerAndOperator(s"SELECT $udfName(${field.name}) FROM $view")
+          }
+          if (field.dataType == TimestampNTZType) {
+            // Complete the NTZ reader before testing native dispatch on this primitive input.
+            // Other columns retain their native Parquet and nested dictionary coverage.
+            withTempView("ntz_primitive_input") {
+              val data = spark.table("t1").select(field.name)
+              try {
+                withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+                  data.cache()
+                  data.count()
+                }
+                data.createOrReplaceTempView("ntz_primitive_input")
+                checkIdentity("ntz_primitive_input")
+              } finally {
+                data.unpersist()
+              }
+            }
+          } else {
+            checkIdentity("t1")
           }
         case None =>
           fail(

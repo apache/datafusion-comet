@@ -264,6 +264,10 @@ INSERT INTO cl_src_ts VALUES
   (TIMESTAMP '1970-01-01 00:00:00', TIMESTAMP_NTZ '1970-01-01 00:00:00', 'b'),
   (NULL, NULL, 'b')
 
+-- Fully read NTZ Parquet input before testing native kernels.
+statement
+CACHE TABLE cl_src_ts
+
 query
 SELECT grp, sort_array(collect_list(v)) FROM cl_src_ts GROUP BY grp ORDER BY grp
 

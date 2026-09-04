@@ -238,6 +238,12 @@ case class CometScanRule(session: SparkSession)
         s"Native Parquet scan requires ${COMET_EXEC_ENABLED.key} to be enabled")
       return None
     }
+    CometNativeScan.timestampNtzReadFallbackReason(scanExec) match {
+      case Some(reason) =>
+        withFallbackReason(scanExec, reason)
+        return None
+      case None =>
+    }
     // Comet's native readers go through object_store, which only understands a fixed set of URL
     // schemes. A custom Hadoop FileSystem (e.g. registered via spark.hadoop.fs.<scheme>.impl) would
     // surface at execution time as `Generic URL error: Unable to recognise URL "..."`. Decline here

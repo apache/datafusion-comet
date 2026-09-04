@@ -23,6 +23,14 @@ import org.scalatest.funsuite.AnyFunSuite
 
 class SparkErrorConverterSuite extends AnyFunSuite {
 
+  test("LongOverflow converts to a plain ArithmeticException") {
+    val json = """{"errorType":"LongOverflow","errorClass":"","params":{}}"""
+    val ex = SparkErrorConverter.convertToSparkException(
+      new org.apache.comet.exceptions.CometQueryExecutionException(json))
+    assert(ex.getClass == classOf[ArithmeticException])
+    assert(ex.getMessage == "long overflow")
+  }
+
   test("CannotReadFile converts to a FAILED_READ_FILE SparkException naming the file") {
     val ex = SparkErrorConverter
       .convertErrorType(

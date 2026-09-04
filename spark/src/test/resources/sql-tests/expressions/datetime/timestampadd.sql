@@ -33,6 +33,10 @@ INSERT INTO test_timestampadd VALUES
   (NULL, NULL, 1),
   (timestamp'2024-06-15 00:00:00', timestamp_ntz'2024-06-15 00:00:00', NULL)
 
+-- Fully read NTZ Parquet input before testing native kernels.
+statement
+CACHE TABLE test_timestampadd
+
 -- column quantity across a range of units, including month-end and leap-day rollover
 query
 SELECT timestampadd(HOUR, q, ts) FROM test_timestampadd
