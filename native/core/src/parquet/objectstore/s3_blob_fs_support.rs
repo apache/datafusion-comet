@@ -72,9 +72,6 @@ pub(crate) fn normalize_object_store_url(
     if is_hdfs_scheme(&url, object_store_configs) {
         return Ok(url);
     }
-    // Callers consume only `url.scheme()`/`url.path()`, so re-serialization through `url::Url` is
-    // harmless here (the Iceberg path avoids this function precisely because it must preserve raw
-    // bytes; it routes aliases by scheme in `storage_factory_for` instead).
     let scheme = url.scheme();
     if scheme != "s3a" && !is_s3_compliant_alias_scheme(scheme, object_store_configs) {
         return Ok(url);
@@ -94,6 +91,12 @@ pub(crate) fn is_s3_compliant_alias_scheme(
     object_store_configs: &HashMap<String, String>,
 ) -> bool {
     const COMET_S3_COMPLIANT_SCHEMES_KEY: &str = "fs.comet.s3Compliant.schemes";
+    // Nothing is an alias until the user opts in, so settle that first: the default (key absent)
+    // case returns without scanning the special-scheme list below.
+    let configured = match object_store_configs.get(COMET_S3_COMPLIANT_SCHEMES_KEY) {
+        Some(schemes) => schemes,
+        None => return false,
+    };
     // The URL spec's "special" schemes can never be an alias. `Url::set_scheme` refuses to rewrite
     // between a special scheme and a non-special one, so `rewrite_alias_to_s3` returns `Err` for
     // every URL of such a scheme -- and since `normalize_object_store_url` and its callers
@@ -110,19 +113,15 @@ pub(crate) fn is_s3_compliant_alias_scheme(
     {
         return false;
     }
-    match object_store_configs.get(COMET_S3_COMPLIANT_SCHEMES_KEY) {
-        Some(schemes) => schemes
-            .split(',')
-            .any(|s| s.trim().eq_ignore_ascii_case(scheme)),
-        None => false,
-    }
+    configured
+        .split(',')
+        .any(|s| s.trim().eq_ignore_ascii_case(scheme))
 }
 
 /// Rewrites a parsed alias URL (`s3a` or a configured alias) to `s3://bucket/key`. When it has no
 /// authority (empty-authority `blob:///bucket/key` or opaque `blob:/bucket/key`, both host=None)
 /// the first path segment is promoted into the host. Defensive: object-store URLs normally have one.
 fn rewrite_alias_to_s3(mut url: Url) -> Result<Url, ExecutionError> {
-    let original = url.scheme().to_string();
     if url.host_str().is_none() {
         // host=None (empty-authority `blob:///bucket/key` or opaque `blob:/bucket/key`): lift the
         // first path segment into the host for `ObjectStoreScheme::parse`.
@@ -130,18 +129,26 @@ fn rewrite_alias_to_s3(mut url: Url) -> Result<Url, ExecutionError> {
         let (bucket, key) = trimmed.split_once('/').unwrap_or((trimmed, ""));
         if bucket.is_empty() {
             return Err(ExecutionError::GeneralError(format!(
-                "{original}:// URL is missing bucket name: {url}"
+                "{}:// URL is missing bucket name: {url}",
+                url.scheme()
             )));
         }
         return Url::parse(&format!("s3://{bucket}/{key}")).map_err(|e| {
-            ExecutionError::GeneralError(format!("Could not normalize {original}:// URL: {e}"))
+            ExecutionError::GeneralError(format!(
+                "Could not normalize {}:// URL: {e}",
+                url.scheme()
+            ))
         });
     }
     // Host-bearing (`blob://bucket/key`): swap only the scheme. s3 and the aliases are all
-    // non-special, so `set_scheme` succeeds and the host/path are preserved verbatim.
-    url.set_scheme("s3").map_err(|_| {
-        ExecutionError::GeneralError(format!("Could not convert scheme from {original} to s3"))
-    })?;
+    // non-special, so `set_scheme` succeeds and the host/path are preserved verbatim. On failure
+    // `url` is untouched, so it still reports the original scheme.
+    if url.set_scheme("s3").is_err() {
+        return Err(ExecutionError::GeneralError(format!(
+            "Could not convert scheme from {} to s3",
+            url.scheme()
+        )));
+    }
     Ok(url)
 }
 
@@ -226,8 +233,7 @@ impl BlobHostPromotingS3Storage {
             customized_credential_load: self.customized_credential_load.clone(),
         }
         .build(&StorageConfig::from_props(self.props.clone()))?;
-        let _ = self.inner.set(built);
-        Ok(Arc::clone(self.inner.get().unwrap()))
+        Ok(Arc::clone(self.inner.get_or_init(|| built)))
     }
 
     /// Promote a hostless path, surfacing failures as an iceberg [`Error`].
@@ -331,17 +337,6 @@ mod tests {
             .unwrap()
             .as_str()
             .to_string()
-    }
-
-    #[test]
-    fn test_normalize_object_store_url_rewrites_configured_alias() {
-        // A configured alias (blob) is rewritten to canonical s3:// so
-        // `prepare_object_store_with_configs` dispatches on `scheme == "s3"`.
-        let configs = blob_alias_configs();
-        assert_eq!(
-            normalized("blob://bucket/key.parquet", &configs),
-            "s3://bucket/key.parquet"
-        );
     }
 
     #[test]

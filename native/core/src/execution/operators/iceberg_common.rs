@@ -131,9 +131,7 @@ pub(crate) fn load_file_io(
     let region_forwarded = catalog_properties.contains_key("s3.region")
         || catalog_properties.contains_key("client.region")
         || env_region_present();
-    // s3, s3a, and any opted-in s3-compliant alias (e.g. blob) hit the S3 backend and need the
-    // region default. reference_path reaches here raw (see storage_factory_for), so match the
-    // alias schemes too.
+    // reference_path reaches here raw (see storage_factory_for), so alias schemes must match too.
     let scheme = scheme_of(reference_path);
     if !region_forwarded && is_s3_family_scheme(scheme, catalog_properties) {
         file_io_builder = file_io_builder.with_prop("s3.region", "us-east-1");
@@ -200,11 +198,7 @@ fn build_s3_credential_loader(
     }
 }
 
-/// True if the AWS environment supplies a region (`AWS_REGION` / `AWS_DEFAULT_REGION`).
-///
-/// opendal's S3 service reads these via reqsign, so Comet must not clobber them with a forced
-/// `us-east-1` default when the catalog omits a region (see the region defaulting in
-/// `load_file_io`).
+/// True if the AWS environment supplies a region (see the region defaulting in `load_file_io`).
 fn env_region_present() -> bool {
     ["AWS_REGION", "AWS_DEFAULT_REGION"]
         .iter()

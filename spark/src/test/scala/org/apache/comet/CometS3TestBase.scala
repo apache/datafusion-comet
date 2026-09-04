@@ -100,7 +100,7 @@ trait CometS3TestBase extends CometTestBase {
    * native read by NativeConfig.translateVendorKeys, and an endpoint also defaults path-style on.
    */
   protected def applyBlobSchemeProps(conf: SparkConf, bucket: String): Unit = {
-    conf.set("spark.hadoop.fs.comet.s3Compliant.schemes", "blob")
+    conf.set(CometConf.COMET_S3_COMPLIANT_SCHEMES.key, "blob")
     conf.set("spark.hadoop.fs.blob.impl", "org.apache.comet.hadoop.fs.BlobSchemeFileSystem")
     conf.set(s"spark.hadoop.fs.blob.$bucket.endpoint", minioContainer.getS3URL)
     conf.set(s"spark.hadoop.fs.blob.$bucket.awsAccessKeyId", userName)

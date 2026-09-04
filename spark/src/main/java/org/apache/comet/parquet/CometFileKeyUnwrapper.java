@@ -34,6 +34,8 @@ import org.apache.parquet.crypto.DecryptionPropertiesFactory;
 import org.apache.parquet.crypto.FileDecryptionProperties;
 import org.apache.parquet.crypto.ParquetCryptoRuntimeException;
 
+import org.apache.comet.CometConf;
+
 // spotless:off
 /*
  * Architecture Overview:
@@ -99,10 +101,9 @@ import org.apache.parquet.crypto.ParquetCryptoRuntimeException;
 public class CometFileKeyUnwrapper {
 
   // Hadoop config key listing the user-opted-in S3-compliant alias schemes (e.g. blob, minio),
-  // comma-separated and case-insensitive. Same key NativeConfig and CometScanRule read. Resolved
-  // from the Hadoop conf on the put side, so it must be set at session-creation time (see
-  // CometConf.COMET_S3_COMPLIANT_SCHEMES).
-  private static final String S3_COMPLIANT_SCHEMES_KEY = "fs.comet.s3Compliant.schemes";
+  // comma-separated and case-insensitive. Resolved from the Hadoop conf on the put side, so it must
+  // be set at session-creation time.
+  private static final String S3_COMPLIANT_SCHEMES_KEY = CometConf.COMET_S3_COMPLIANT_SCHEMES_KEY();
 
   // Schemes object_store always treats as aliases of s3://, independent of config. The native side
   // rewrites every alias (these plus the configured ones below) to s3:// before it JNIs getKey

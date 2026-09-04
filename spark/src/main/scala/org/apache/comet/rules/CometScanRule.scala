@@ -1226,12 +1226,12 @@ object CometScanRule extends Logging {
 
   /**
    * Schemes Comet's native Iceberg scan can actually open, mirroring the match arms in
-   * `native/core/src/execution/operators/iceberg_scan.rs::storage_factory_for`. Deliberately NOT
-   * delegated to `isNativelyReadableScheme`: object_store recognizes schemes (http/https, azure,
-   * memory) that iceberg-rust's OpenDAL storage factory cannot build, and admitting them here
-   * turns a clean JVM fallback into a native runtime "Unsupported storage scheme" error. Add here
-   * what you add to `storage_factory_for` (currently Aliyun `oss` and GCS `gs`). S3-compliant
-   * aliases like `blob` are opt-in via `fs.comet.s3Compliant.schemes` (see
+   * `native/core/src/execution/operators/iceberg_common.rs::storage_factory_for`. Deliberately
+   * NOT delegated to `isNativelyReadableScheme`: object_store recognizes schemes (http/https,
+   * azure, memory) that iceberg-rust's OpenDAL storage factory cannot build, and admitting them
+   * here turns a clean JVM fallback into a native runtime "Unsupported storage scheme" error. Add
+   * here what you add to `storage_factory_for` (currently Aliyun `oss` and GCS `gs`).
+   * S3-compliant aliases like `blob` are opt-in via `fs.comet.s3Compliant.schemes` (see
    * `isIcebergReadableScheme`), not hardcoded, since the native planner opens them via S3.
    */
   private val icebergReadableSchemes: Set[String] =
@@ -1276,8 +1276,17 @@ object CometScanRule extends Logging {
    */
   private[rules] def isIcebergOpenableLocation(
       uri: URI,
-      s3CompliantSchemes: Set[String]): Boolean = {
-    if (!isIcebergReadableScheme(uri, s3CompliantSchemes)) return false
+      s3CompliantSchemes: Set[String]): Boolean =
+    isIcebergReadableScheme(uri, s3CompliantSchemes) && hasOpenableAuthority(
+      uri,
+      s3CompliantSchemes)
+
+  /**
+   * The authority half of [[isIcebergOpenableLocation]], split out for callers that have already
+   * established the scheme is Iceberg-readable (`inspectLocation`, which runs per data and delete
+   * file) so they do not re-derive the scheme and re-check the allowlist.
+   */
+  private def hasOpenableAuthority(uri: URI, s3CompliantSchemes: Set[String]): Boolean =
     Option(uri.getScheme).map(_.toLowerCase(Locale.ROOT)) match {
       case None | Some("file") => true
       case Some(_) if uri.getRawAuthority != null => true
@@ -1287,7 +1296,6 @@ object CometScanRule extends Logging {
         NativeConfig.bucketForUri(uri, s3CompliantSchemes).isDefined
       case Some(_) => false
     }
-  }
 
   /**
    * Single-pass validation of Iceberg FileScanTasks.
@@ -1339,12 +1347,11 @@ object CometScanRule extends Logging {
         case None => // schemeless local path -> iceberg-rust LocalFs, no host needed
         case Some(scheme) if !isIcebergReadableScheme(uri, s3CompliantSchemes) =>
           unsupportedSchemes += scheme
-        case Some(_) if !isIcebergOpenableLocation(uri, s3CompliantSchemes) =>
+        case Some(_) if !hasOpenableAuthority(uri, s3CompliantSchemes) =>
           if (hostlessLocation.isEmpty) hostlessLocation = Some(rawPath)
-        case Some(scheme) =>
-          if (NativeConfig.isS3FamilyScheme(scheme, s3CompliantSchemes)) {
-            NativeConfig.bucketForUri(uri, s3CompliantSchemes).foreach(dataFileBuckets += _)
-          }
+        case Some(_) =>
+          // bucketForUri ignores non-S3-family URIs, so no scheme re-check is needed here.
+          NativeConfig.bucketForUri(uri, s3CompliantSchemes).foreach(dataFileBuckets += _)
       }
     }
 

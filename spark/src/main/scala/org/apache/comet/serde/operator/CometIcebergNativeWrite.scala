@@ -642,7 +642,7 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
     // scan path: iceberg-rust's pinned S3 parser reads only global `s3.*`. Only an S3-family data
     // location yields a bucket (None for a local/GCS/OSS write, which needs no promotion).
     val s3CompliantSchemes = NativeConfig.resolveS3CompliantSchemes(writeHadoopConf)
-    val dataBucket = NativeConfig.s3FamilyBuckets(Seq(dataUri), s3CompliantSchemes).headOption
+    val dataBucket = NativeConfig.bucketForUri(dataUri, s3CompliantSchemes)
     val hadoopDerivedProperties = CometIcebergNativeScan.hadoopToIcebergS3Properties(
       NativeConfig.extractObjectStoreOptions(writeHadoopConf, dataUri),
       dataBucket)

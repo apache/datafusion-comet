@@ -69,8 +69,8 @@ object NativeConfig {
 
   // Opt-in S3-compliant alias schemes from the Hadoop config `fs.comet.s3Compliant.schemes`
   // (comma-separated, trimmed, lowercased, empty/missing => none). The native gate no longer
-  // claims them, so the opt-in is resolved wherever the Hadoop config is available. Shared by the
-  // scan (CometScanRule) and write (CometIcebergNativeWrite) paths so both admit the same set.
+  // claims them, so the opt-in is resolved wherever the Hadoop config is available: the scan gate
+  // (CometScanRule) and the Iceberg write path's data-bucket resolution.
   private[comet] def resolveS3CompliantSchemes(hadoopConf: Configuration): Set[String] =
     parseSchemeSet(hadoopConf.get(COMET_S3_COMPLIANT_SCHEMES_KEY))
 
@@ -83,46 +83,44 @@ object NativeConfig {
 
   /**
    * The S3 bucket a URI addresses: its authority, or the first path segment for the authorityless
-   * `blob:///bucket/key` form (matching the native rewrite that promotes it into the host). The
-   * path-segment fallback fires only for S3-family schemes (`s3`, `s3a`, `s3n`, and the opted-in
-   * `s3CompliantSchemes`). For any other scheme an absent authority means no bucket, so a local
-   * Hadoop-catalog `file:///tmp/warehouse/...` returns None rather than the surprising `tmp`.
-   * Returns None when neither source applies.
+   * `blob:///bucket/key` form (matching the native rewrite that promotes it into the host).
+   * Returns None for a non-S3-family scheme, so a local Hadoop-catalog
+   * `file:///tmp/warehouse/...` or a `gs://` location yields no bucket rather than a surprising
+   * `tmp`: only `s3`/`s3a`/`s3n` and the opted-in `s3CompliantSchemes` share the `fs.s3a.*`
+   * per-bucket surface. Callers therefore need no scheme check of their own.
    */
-  def bucketForUri(uri: URI, s3CompliantSchemes: Set[String]): Option[String] = {
-    Option(uri.getAuthority)
-      .map(_.trim)
-      .filter(_.nonEmpty)
-      .orElse {
-        val scheme = Option(uri.getScheme).map(_.toLowerCase(Locale.ROOT)).getOrElse("")
-        if (isS3FamilyScheme(scheme, s3CompliantSchemes)) {
+  private[comet] def bucketForUri(uri: URI, s3CompliantSchemes: Set[String]): Option[String] = {
+    val scheme = Option(uri.getScheme).map(_.toLowerCase(Locale.ROOT)).getOrElse("")
+    if (!isS3FamilyScheme(scheme, s3CompliantSchemes)) {
+      None
+    } else {
+      Option(uri.getAuthority)
+        .map(_.trim)
+        .filter(_.nonEmpty)
+        .orElse(
           Option(uri.getPath)
             .map(_.stripPrefix("/"))
             .map(_.takeWhile(_ != '/'))
-            .filter(_.nonEmpty)
-        } else {
-          None
-        }
-      }
+            .filter(_.nonEmpty))
+    }
   }
 
   // s3/s3a/s3n and any opted-in alias share the authorityless path-promotion semantics above.
-  private[comet] def isS3FamilyScheme(scheme: String, s3CompliantSchemes: Set[String]): Boolean =
+  private def isS3FamilyScheme(scheme: String, s3CompliantSchemes: Set[String]): Boolean =
     scheme == "s3" || scheme == "s3a" || scheme == "s3n" || s3CompliantSchemes.contains(scheme)
 
   /**
    * The distinct S3 buckets addressed by the S3-family URIs in `uris` -- `s3`/`s3a`/`s3n` and any
-   * opted-in `s3CompliantSchemes` alias -- resolved via [[bucketForUri]]. Non-S3-family URIs
-   * (`file`, `hdfs`, `gs`, `oss`, ...) are ignored: their authority is not an S3 bucket and they
-   * do not share the `fs.s3a.*` per-bucket surface. Used to detect a scan whose files span
-   * multiple buckets that a single native object store, keyed on one bucket, cannot serve.
+   * opted-in `s3CompliantSchemes` alias -- resolved via [[bucketForUri]], which drops
+   * non-S3-family URIs (`file`, `hdfs`, `gs`, `oss`, ...) since their authority is not an S3
+   * bucket and they do not share the `fs.s3a.*` per-bucket surface. Used to detect a scan whose
+   * files span multiple buckets that a single native object store, keyed on one bucket, cannot
+   * serve.
    */
-  def s3FamilyBuckets(uris: Seq[URI], s3CompliantSchemes: Set[String]): Set[String] =
-    uris.iterator.flatMap { uri =>
-      val scheme = Option(uri.getScheme).map(_.toLowerCase(Locale.ROOT)).getOrElse("")
-      if (isS3FamilyScheme(scheme, s3CompliantSchemes)) bucketForUri(uri, s3CompliantSchemes)
-      else None
-    }.toSet
+  private[comet] def s3FamilyBuckets(
+      uris: Seq[URI],
+      s3CompliantSchemes: Set[String]): Set[String] =
+    uris.iterator.flatMap(bucketForUri(_, s3CompliantSchemes)).toSet
 
   /**
    * Translate vendor-style `fs.<scheme>.<authority>.<property>` keys into the `fs.s3a.*` shape
