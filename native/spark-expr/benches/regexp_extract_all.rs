@@ -29,6 +29,17 @@ const INPUT: &str =
     "datafusion has datafusion-python, datafusion-comet, datafusion-java as sub projects";
 const PATTERN: &str = r"(\w+)-(\w+)";
 
+/// Short rows with several matches each, so the per-match cost dominates.
+const DIGITS_INPUT: &str = "123-456-789-123";
+const DIGITS_PATTERN: &str = r"(\d+)";
+const DIGITS_ROWS: usize = 8_192;
+
+/// 8 KB rows made of short runs of `a` separated by a single `b`, so a single row carries
+/// thousands of matches and the cost of walking a long haystack dominates.
+const LONG_ROW_BYTES: usize = 8_192;
+const LONG_PATTERN: &str = r"(a+)";
+const LONG_ROWS: usize = 512;
+
 fn criterion_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("spark_regexp_extract_all");
     for rows in ROW_COUNTS {
@@ -49,6 +60,37 @@ fn criterion_benchmark(c: &mut Criterion) {
             );
         }
     }
+
+    let digits_args = vec![
+        ColumnarValue::Array(string_array(DIGITS_ROWS, 0.0, |_| DIGITS_INPUT.to_string())),
+        ColumnarValue::Scalar(ScalarValue::Utf8(Some(DIGITS_PATTERN.to_string()))),
+        ColumnarValue::Scalar(ScalarValue::Int32(Some(1))),
+    ];
+    group.bench_with_input(
+        BenchmarkId::from_parameter(format!("digits/{DIGITS_ROWS}")),
+        &digits_args,
+        |b, args| {
+            // One cache per benchmark input mirrors one cache per planned expression.
+            let cache = PatternCache::new();
+            b.iter(|| black_box(spark_regexp_extract_all(black_box(args), &cache).unwrap()))
+        },
+    );
+
+    let long_row = "aaab".repeat(LONG_ROW_BYTES / 4);
+    let long_args = vec![
+        ColumnarValue::Array(string_array(LONG_ROWS, 0.0, |_| long_row.clone())),
+        ColumnarValue::Scalar(ScalarValue::Utf8(Some(LONG_PATTERN.to_string()))),
+        ColumnarValue::Scalar(ScalarValue::Int32(Some(1))),
+    ];
+    group.bench_with_input(
+        BenchmarkId::from_parameter(format!("long_8kb/{LONG_ROWS}")),
+        &long_args,
+        |b, args| {
+            // One cache per benchmark input mirrors one cache per planned expression.
+            let cache = PatternCache::new();
+            b.iter(|| black_box(spark_regexp_extract_all(black_box(args), &cache).unwrap()))
+        },
+    );
     group.finish();
 }
 

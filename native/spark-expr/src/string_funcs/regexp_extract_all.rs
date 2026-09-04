@@ -25,7 +25,7 @@ use datafusion::common::{
     cast::as_generic_string_array, exec_err, Result as DataFusionResult, ScalarValue,
 };
 use datafusion::logical_expr::ColumnarValue;
-use regex::Regex;
+use regex::{CaptureLocations, Regex};
 use std::sync::Arc;
 
 use super::pattern_cache::PatternCache;
@@ -102,30 +102,17 @@ fn extract_all_array<O: OffsetSizeTrait>(
     let mut null_buffer = BooleanBufferBuilder::new(array.len());
     offsets.push(0);
 
-    // Reuse one set of capture locations for the whole batch instead of iterating with
-    // `captures_iter`, which builds a fresh `Captures` per match. Each of those clones the
-    // compiled regex's shared group-info Arc, and when a sort evaluates the same expression
-    // from several threads at once that refcount becomes a contended cache line. `find_iter`
-    // yields plain spans with the exact same iteration semantics, so groups are resolved by
-    // rerunning the capture engine at each match start into the preallocated buffer.
+    // One set of capture locations serves the whole batch, so no per-match allocation
+    // touches the compiled regex's shared group-info Arc from several threads at once.
     let mut locations = regex.capture_locations();
     for i in 0..array.len() {
         if array.is_null(i) {
             offsets.push(values_builder.len() as i32);
             null_buffer.append(false);
         } else {
-            let value = array.value(i);
-            for m in regex.find_iter(value) {
-                let matched = regex.captures_read_at(&mut locations, value, m.start());
-                debug_assert_eq!(
-                    matched.map(|m| (m.start(), m.end())),
-                    Some((m.start(), m.end()))
-                );
-                let s = locations
-                    .get(group_idx)
-                    .map_or("", |(start, end)| &value[start..end]);
-                values_builder.append_value(s);
-            }
+            for_each_group_match(regex, &mut locations, array.value(i), group_idx, |s| {
+                values_builder.append_value(s)
+            });
             offsets.push(values_builder.len() as i32);
             null_buffer.append(true);
         }
@@ -144,20 +131,47 @@ fn extract_all_array<O: OffsetSizeTrait>(
 
 fn extract_one(input: &str, regex: &Regex, group_idx: usize) -> Vec<String> {
     let mut locations = regex.capture_locations();
-    regex
-        .find_iter(input)
-        .map(|m| {
-            let matched = regex.captures_read_at(&mut locations, input, m.start());
-            debug_assert_eq!(
-                matched.map(|m| (m.start(), m.end())),
-                Some((m.start(), m.end()))
-            );
-            locations
-                .get(group_idx)
-                .map(|(start, end)| input[start..end].to_string())
-                .unwrap_or_default()
-        })
-        .collect()
+    let mut matches = Vec::new();
+    for_each_group_match(regex, &mut locations, input, group_idx, |s| {
+        matches.push(s.to_string())
+    });
+    matches
+}
+
+/// Calls `f` with the text of group `group_idx` for every non-overlapping match of `regex`
+/// in `haystack`, in the order `captures_iter` yields them, or with the empty string when
+/// the group does not participate. Each match costs a single capture search into
+/// `locations` and no allocation.
+fn for_each_group_match(
+    regex: &Regex,
+    locations: &mut CaptureLocations,
+    haystack: &str,
+    group_idx: usize,
+    mut f: impl FnMut(&str),
+) {
+    let mut start = 0;
+    let mut last_end = None;
+    while start <= haystack.len() {
+        let Some(m) = regex.captures_read_at(locations, haystack, start) else {
+            break;
+        };
+        // The regex crate's iterators drop an empty match that sits at the end of the
+        // previous match and search again one byte further on. Such a match can only be
+        // found from that end, so the retry never skips twice in a row.
+        if m.is_empty() && Some(m.end()) == last_end {
+            debug_assert_eq!(Some(start), last_end);
+            start += 1;
+            continue;
+        }
+        start = m.end();
+        last_end = Some(m.end());
+        let group = locations
+            .get(group_idx)
+            .map_or("", |(group_start, group_end)| {
+                &haystack[group_start..group_end]
+            });
+        f(group);
+    }
 }
 
 fn null_result(len: Option<usize>) -> ColumnarValue {
@@ -432,6 +446,60 @@ mod tests {
             }
         }
         assert_eq!(cache.compile_count(), 1);
+    }
+
+    /// The match walk must visit exactly the matches `captures_iter` yields, including the
+    /// empty-match and multibyte cases where the crate's iterator skips or nudges forward.
+    #[test]
+    fn matches_agree_with_captures_iter() {
+        let patterns = [
+            r"a*",
+            r"(a*)",
+            r"\b",
+            r"(\d*)",
+            r"(?:)",
+            r"(\d+)",
+            r"(a+)",
+            r"zzz",
+            r"(foo)(bar)?",
+            r"x*",
+            r"\b\w+\b",
+            r"(.)(.)?",
+        ];
+        let haystacks = [
+            "",
+            "a",
+            "ba",
+            "aaa",
+            "123-456-789-123",
+            "日x本",
+            "café résumé",
+            "こんにちは世界",
+            "a😀b😀",
+            "foo foo bar",
+            "cat hat bat",
+            "a b\tc",
+        ];
+        for pattern in patterns {
+            let regex = Regex::new(pattern).unwrap();
+            let mut locations = regex.capture_locations();
+            for haystack in haystacks {
+                for group_idx in [0usize, 1, 2, 7] {
+                    let expected: Vec<String> = regex
+                        .captures_iter(haystack)
+                        .map(|caps| caps.get(group_idx).map_or("", |m| m.as_str()).to_string())
+                        .collect();
+                    let mut actual = Vec::new();
+                    for_each_group_match(&regex, &mut locations, haystack, group_idx, |s| {
+                        actual.push(s.to_string())
+                    });
+                    assert_eq!(
+                        actual, expected,
+                        "pattern {pattern:?} on {haystack:?} group {group_idx}"
+                    );
+                }
+            }
+        }
     }
 
     /// Regression: `LargeUtf8` subject must still produce a `ListArray` whose inner values
