@@ -183,9 +183,15 @@ case class EliminateRedundantTransitions(session: SparkSession)
 
   /**
    * Unwraps a columnar-to-row transition, returning the columnar child underneath it, or `None`
-   * when `plan` is not such a transition. `transformUp` visits children first, so a plain
-   * `ColumnarToRowExec` over a Comet source has usually already been rewritten to one of the
-   * Comet variants by the time a parent arm looks at it; all three are handled.
+   * when `plan` is not such a transition.
+   *
+   * All three forms have to be handled. `transformUp` visits children first, so the
+   * `hasCometNativeChild` arm above has usually already rewritten a `ColumnarToRowExec` over a
+   * Comet source into one of the Comet variants by the time a parent arm looks at it. It has not
+   * when the source is an `AQEShuffleReadExec` over a `ShuffleQueryStageExec`: `QueryStageExec`
+   * is a `LeafExecNode`, so the `op.exists(...)` walk cannot see the Comet exchange inside it and
+   * the arm misses. That is the shape the Iceberg write gets under AQE, so the plain node reaches
+   * here.
    */
   private def stripColumnarToRow(plan: SparkPlan): Option[SparkPlan] = plan match {
     case CometNativeColumnarToRowExec(child) => Some(child)
