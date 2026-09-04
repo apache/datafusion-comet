@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::datatypes::{DataType, TimeUnit, DECIMAL128_MAX_PRECISION};
+use arrow::datatypes::{DataType, TimeUnit};
 use arrow::{
     array::{
         cast::as_primitive_array,
@@ -30,7 +30,6 @@ use std::sync::Arc;
 use arrow::array::timezone::Tz;
 use arrow::array::types::TimestampMillisecondType;
 use arrow::array::TimestampMicrosecondArray;
-use arrow::datatypes::{MAX_DECIMAL128_FOR_EACH_PRECISION, MIN_DECIMAL128_FOR_EACH_PRECISION};
 use arrow::error::ArrowError;
 use arrow::{
     array::{as_dictionary_array, Array, ArrayRef, PrimitiveArray},
@@ -321,18 +320,6 @@ fn pre_timestamp_cast(array: ArrayRef, timezone: String) -> Result<ArrayRef, Arr
         }
         _ => Ok(array),
     }
-}
-
-/// Adapted from arrow-rs `validate_decimal_precision` but returns bool
-/// instead of Err to avoid the cost of formatting the error strings and is
-/// optimized to remove a memcpy that exists in the original function
-/// we can remove this code once we upgrade to a version of arrow-rs that
-/// includes https://github.com/apache/arrow-rs/pull/6419
-#[inline]
-pub fn is_valid_decimal_precision(value: i128, precision: u8) -> bool {
-    precision <= DECIMAL128_MAX_PRECISION
-        && value >= MIN_DECIMAL128_FOR_EACH_PRECISION[precision as usize]
-        && value <= MAX_DECIMAL128_FOR_EACH_PRECISION[precision as usize]
 }
 
 /// Build a boolean buffer from the state and reset the state, based on the emit_to
