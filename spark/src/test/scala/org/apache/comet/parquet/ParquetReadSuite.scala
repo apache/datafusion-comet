@@ -430,16 +430,19 @@ abstract class ParquetReadSuite extends CometTestBase {
       writer.write(epoch)
       writer.close()
 
-      withSQLConf(
-        SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
-          Seq(ConvertToLocalRelation.ruleName, OptimizeIn.ruleName).mkString(","),
-        "spark.sql.legacy.nullInEmptyListBehavior" -> "false") {
-        readParquetFile(path.toString) { df =>
-          val filtered = df.filter(!df("ts").isin())
-          assert(collect(filtered.queryExecution.executedPlan) { case _: CometNativeScanExec =>
-            true
-          }.nonEmpty)
-          checkSparkAnswer(filtered)
+      Seq(false, true).foreach { rowFilterPushdown =>
+        withSQLConf(
+          SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+            Seq(ConvertToLocalRelation.ruleName, OptimizeIn.ruleName).mkString(","),
+          "spark.sql.legacy.nullInEmptyListBehavior" -> "false",
+          CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED.key -> rowFilterPushdown.toString) {
+          readParquetFile(path.toString) { df =>
+            val filtered = df.filter(!df("ts").isin())
+            assert(collect(filtered.queryExecution.executedPlan) { case _: CometNativeScanExec =>
+              true
+            }.nonEmpty)
+            checkSparkAnswer(filtered)
+          }
         }
       }
     }
