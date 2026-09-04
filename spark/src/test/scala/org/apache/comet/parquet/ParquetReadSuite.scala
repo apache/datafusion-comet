@@ -49,6 +49,7 @@ import org.apache.spark.sql.types._
 import com.google.common.primitives.UnsignedLong
 
 import org.apache.comet.CometConf
+import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.vector.CometVector
 
 abstract class ParquetReadSuite extends CometTestBase {
@@ -421,6 +422,23 @@ abstract class ParquetReadSuite extends CometTestBase {
               true
             }.nonEmpty)
             checkSparkAnswer(filtered)
+          }
+        }
+
+        if (isSpark40Plus && dictionaryEnabled) {
+          withTempView("timestamp_millis_lookup") {
+            Seq(2).toDF("k").createOrReplaceTempView("timestamp_millis_lookup")
+            withSQLConf("spark.comet.expression.EqualNullSafe.enabled" -> "false") {
+              readParquetFile(path.toString) { df =>
+                val filtered = df
+                  .where("id <=> (SELECT max(k) FROM timestamp_millis_lookup)")
+                  .select("ts")
+                assert(collect(filtered.queryExecution.executedPlan) {
+                  case _: CometNativeScanExec => true
+                }.nonEmpty)
+                checkSparkAnswer(filtered)
+              }
+            }
           }
         }
       }
