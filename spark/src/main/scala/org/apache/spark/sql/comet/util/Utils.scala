@@ -50,6 +50,7 @@ import org.apache.comet.vector.CometVector
 
 object Utils extends CometTypeShim with Logging {
   private val calendarIntervalStructKey = "SPARK::calendarInterval::struct"
+  private val VariantExtensionName = "arrow.parquet.variant"
 
   def getConfPath(confFileName: String): String = {
     sys.env
@@ -83,11 +84,18 @@ object Utils extends CometTypeShim with Logging {
       case ArrowType.Struct.INSTANCE if isCalendarIntervalStructField(field) =>
         CalendarIntervalType
       case ArrowType.Struct.INSTANCE =>
-        val fields = field.getChildren().asScala.map { child =>
-          val dt = fromArrowField(child)
-          StructField(child.getName, dt, child.isNullable)
-        }
-        StructType(fields.toSeq)
+        Option(field.getMetadata)
+          .flatMap(metadata =>
+            Option(metadata.get(ArrowType.ExtensionType.EXTENSION_METADATA_KEY_NAME)))
+          .filter(_ == VariantExtensionName)
+          .flatMap(_ => variantType)
+          .getOrElse {
+            val fields = field.getChildren().asScala.map { child =>
+              val dt = fromArrowField(child)
+              StructField(child.getName, dt, child.isNullable)
+            }
+            StructType(fields.toSeq)
+          }
       case arrowType => fromArrowType(arrowType)
     }
   }

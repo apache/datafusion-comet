@@ -570,9 +570,9 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
   }
 
   /**
-   * Serializes Spark datatype to protobuf. Note that, a datatype can be serialized by this method
-   * doesn't mean it is supported by Comet native execution, i.e., `supportedDataType` may return
-   * false for it.
+   * Serializes a Spark datatype to protobuf. Successful serialization preserves schema identity;
+   * it does not imply native execution support. Callers must still apply the support gate for
+   * their path, such as `supportedDataType` or `containsVariantType` for native operators.
    */
   def serializeDataType(dt: org.apache.spark.sql.types.DataType): Option[Types.DataType] =
     serializeDataType(dt, None, Seq.empty, includeFieldIds = true)
@@ -609,6 +609,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       case _: YearMonthIntervalType => 18
       case _: DayTimeIntervalType => 19
       case CalendarIntervalType => 20
+      case dt if isVariantType(dt) => 21
       case dt =>
         logWarning(s"Cannot serialize Spark data type: $dt")
         return None
