@@ -19,7 +19,6 @@
 
 package org.apache.comet.parquet;
 
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.Locale;
@@ -107,10 +106,8 @@ public class CometFileKeyUnwrapper {
 
   // Schemes object_store always treats as aliases of s3://, independent of config. The native side
   // rewrites every alias (these plus the configured ones below) to s3:// before it JNIs getKey
-  // back, so the get side always sees one of these; the configured aliases matter on the put side,
-  // called with the user-facing scheme (e.g. blob://). All fold to one canonical cache key.
-  private static final Set<String> BASE_S3_ALIAS_SCHEMES =
-      Collections.unmodifiableSet(new HashSet<>(Arrays.asList("s3", "s3n", "s3a")));
+  // back, so the get side always sees one of these.
+  private static final Set<String> BASE_S3_ALIAS_SCHEMES = Set.of("s3", "s3n", "s3a");
 
   // User-opted-in S3-compliant alias schemes from S3_COMPLIANT_SCHEMES_KEY, resolved from the
   // Hadoop conf on the put side and cached so the get side folds the same aliases to one cache key.
@@ -164,7 +161,7 @@ public class CometFileKeyUnwrapper {
       return filePath;
     }
     final String scheme = filePath.substring(0, schemeEnd).toLowerCase(Locale.ROOT);
-    if (!isS3AliasScheme(scheme, s3CompliantSchemes)) {
+    if (!BASE_S3_ALIAS_SCHEMES.contains(scheme) && !s3CompliantSchemes.contains(scheme)) {
       return filePath;
     }
     // Strip the scheme and every leading slash, re-join under s3a:// to promote the first path
@@ -173,29 +170,17 @@ public class CometFileKeyUnwrapper {
     return "s3a://" + StringUtils.stripStart(filePath.substring(schemeEnd + 1), "/");
   }
 
-  private static boolean isS3AliasScheme(
-      final String scheme, final Set<String> s3CompliantSchemes) {
-    return BASE_S3_ALIAS_SCHEMES.contains(scheme) || s3CompliantSchemes.contains(scheme);
-  }
-
   /**
-   * Parses a comma-separated, case-insensitive scheme list (the value of {@code
-   * fs.comet.s3Compliant.schemes}) into a trimmed, lowercased set. Mirrors {@code
-   * NativeConfig.parseSchemeSet} so the JVM and native sides agree on which schemes are aliases. A
-   * null or blank value yields an empty set.
+   * Reads the opted-in alias schemes from {@code fs.comet.s3Compliant.schemes} as a lowercased set.
+   * Hadoop's own comma-splitting is reused so the value parses exactly as {@code
+   * NativeConfig.parseSchemeSet} does on the Scala side.
    */
-  private static Set<String> parseSchemeSet(final String raw) {
-    if (raw == null) {
-      return Collections.emptySet();
+  private static Set<String> readS3CompliantSchemes(final Configuration hadoopConf) {
+    final Set<String> schemes = new HashSet<>();
+    for (String s : hadoopConf.getTrimmedStringCollection(S3_COMPLIANT_SCHEMES_KEY)) {
+      schemes.add(s.toLowerCase(Locale.ROOT));
     }
-    final Set<String> out = new HashSet<>();
-    for (String s : raw.split(",")) {
-      final String trimmed = s.trim().toLowerCase(Locale.ROOT);
-      if (!trimmed.isEmpty()) {
-        out.add(trimmed);
-      }
-    }
-    return out;
+    return schemes;
   }
 
   /**
@@ -212,7 +197,7 @@ public class CometFileKeyUnwrapper {
       conf = hadoopConf;
       // Resolve the opted-in alias schemes once, before the first normalizeS3Scheme below, so both
       // the put side here and the later getKey side fold the same aliases to one cache key.
-      s3CompliantSchemes = parseSchemeSet(hadoopConf.get(S3_COMPLIANT_SCHEMES_KEY));
+      s3CompliantSchemes = readS3CompliantSchemes(hadoopConf);
     } else {
       // Check the assumption that all files have the same hadoopConf and thus same Factory
       assert (conf == hadoopConf);

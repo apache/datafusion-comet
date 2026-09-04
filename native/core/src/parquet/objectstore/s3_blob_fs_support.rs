@@ -26,19 +26,17 @@
 //! callers consume only `url.scheme()`/`url.path()`, so re-serialization through `url::Url` is
 //! harmless.
 //!
-//! The Iceberg path never rewrites the recorded location string that iceberg-rust holds.
-//! iceberg-rust matches positional/equality deletes by an exact string comparison of a delete
-//! file's recorded `file_path` against the `data_file_path` Comet supplies, so rewriting that
-//! string would desync the two and silently drop deletes. `iceberg_common::storage_factory_for`
-//! routes an alias scheme to its S3 backend (via [`is_s3_compliant_alias_scheme`]), and
-//! iceberg-storage-opendal's scheme-agnostic S3 operator opens a host-bearing `blob://bucket/key`
-//! as-is (bucket from `Url::host_str`, key prefix from the path's own scheme).
+//! The Iceberg path never rewrites the recorded location string that iceberg-rust holds, because
+//! deletes are matched against it by exact string compare (see `planner.rs`'s `data_file_path`).
+//! `iceberg_common::storage_factory_for` routes an alias scheme to its S3 backend (via
+//! [`is_s3_compliant_alias_scheme`]), and iceberg-storage-opendal's scheme-agnostic S3 operator
+//! opens a host-bearing `blob://bucket/key` as-is (bucket from `Url::host_str`).
 //!
 //! Some vendor blob filesystems record HOSTLESS locations (`blob:///bucket/key`, bucket as first
 //! path segment) that operator cannot open. For alias scans, [`BlobHostPromotingS3Storage`] wraps
 //! the S3 backend and promotes the bucket from the first path segment (via
-//! [`promote_hostless_alias_url`]) ONLY at the open boundary. The string iceberg-rust matches
-//! deletes against is still the raw recorded location, so deletes stay correct.
+//! [`promote_hostless_alias_url`]) ONLY at the open boundary, so the string iceberg-rust matches
+//! deletes against is still the raw recorded location.
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -58,7 +56,7 @@ use serde::{Deserialize, Serialize};
 use url::Url;
 
 use crate::execution::operators::ExecutionError;
-use crate::parquet::parquet_support::is_hdfs_scheme;
+use crate::parquet::parquet_support::{is_hdfs_scheme, scheme_in_list};
 
 /// Rewrites `s3a` and the configured s3-compliant aliases to `s3://bucket/key`, promoting a missing
 /// authority into the host. Non-alias schemes are returned unchanged. `s3a` routed through libhdfs
@@ -79,13 +77,11 @@ pub(crate) fn normalize_object_store_url(
     rewrite_alias_to_s3(url)
 }
 
-/// True if `scheme` is a configured s3-compliant alias (`fs.comet.s3Compliant.schemes`,
-/// comma-separated, case-insensitive; empty/unset means none). These route to `AmazonS3` but are
-/// not recognized by `ObjectStoreScheme::parse`. `s3a` is excluded -- object_store knows it and
-/// callers special-case it. The URL-spec special schemes (`file`, `http`, `https`, `ftp`, `ws`,
-/// `wss`) are excluded too: they cannot be rewritten to `s3` (see the body). Shared by the Parquet
-/// normalizer above and the Iceberg storage-factory gate (`iceberg_common::storage_factory_for`)
-/// so both admit the same schemes.
+/// True if `scheme` is a configured s3-compliant alias (`fs.comet.s3Compliant.schemes`; empty or
+/// unset means none). These route to `AmazonS3` but are not recognized by
+/// `ObjectStoreScheme::parse`. `s3a` is excluded -- object_store knows it and callers special-case
+/// it. Shared by the Parquet normalizer above and the Iceberg storage-factory gate
+/// (`iceberg_common::storage_factory_for`) so both admit the same schemes.
 pub(crate) fn is_s3_compliant_alias_scheme(
     scheme: &str,
     object_store_configs: &HashMap<String, String>,
@@ -97,15 +93,11 @@ pub(crate) fn is_s3_compliant_alias_scheme(
         Some(schemes) => schemes,
         None => return false,
     };
-    // The URL spec's "special" schemes can never be an alias. `Url::set_scheme` refuses to rewrite
-    // between a special scheme and a non-special one, so `rewrite_alias_to_s3` returns `Err` for
-    // every URL of such a scheme -- and since `normalize_object_store_url` and its callers
-    // propagate that error, a stray `file`/`https`/... in the user-typed list would turn every
-    // matching scan into a hard failure instead of a clean fallback (a `file` entry would take down
-    // every local Parquet scan). It is load-bearing for the Iceberg caller too, which never
-    // rewrites: without it a listed `file` would be admitted by `is_s3_family_scheme` and routed to
-    // S3 in `storage_factory_for`, misdirecting local reads. Excluded for the same reason `s3a` is.
-    // These six are the spec-fixed WHATWG special set (mirrors `url`'s internal `SchemeType::from`).
+    // The WHATWG "special" schemes can never be an alias: `Url::set_scheme` refuses to rewrite
+    // between a special and a non-special scheme, so admitting a stray `file`/`https` from the
+    // user-typed list would turn every matching scan into a hard error instead of a clean
+    // fallback. Load-bearing for the Iceberg caller too, which never rewrites: a listed `file`
+    // would otherwise be routed to S3 and misdirect local reads.
     const URL_SPEC_SPECIAL_SCHEMES: [&str; 6] = ["file", "http", "https", "ftp", "ws", "wss"];
     if URL_SPEC_SPECIAL_SCHEMES
         .iter()
@@ -113,9 +105,7 @@ pub(crate) fn is_s3_compliant_alias_scheme(
     {
         return false;
     }
-    configured
-        .split(',')
-        .any(|s| s.trim().eq_ignore_ascii_case(scheme))
+    scheme_in_list(configured, scheme)
 }
 
 /// Rewrites a parsed alias URL (`s3a` or a configured alias) to `s3://bucket/key`. When it has no
@@ -123,8 +113,6 @@ pub(crate) fn is_s3_compliant_alias_scheme(
 /// the first path segment is promoted into the host. Defensive: object-store URLs normally have one.
 fn rewrite_alias_to_s3(mut url: Url) -> Result<Url, ExecutionError> {
     if url.host_str().is_none() {
-        // host=None (empty-authority `blob:///bucket/key` or opaque `blob:/bucket/key`): lift the
-        // first path segment into the host for `ObjectStoreScheme::parse`.
         let trimmed = url.path().trim_start_matches('/');
         let (bucket, key) = trimmed.split_once('/').unwrap_or((trimmed, ""));
         if bucket.is_empty() {
@@ -153,23 +141,19 @@ fn rewrite_alias_to_s3(mut url: Url) -> Result<Url, ExecutionError> {
 }
 
 /// Promote a HOSTLESS s3-compliant-alias location so the scheme-agnostic opendal S3 operator can
-/// derive the bucket from the URL host. Some vendor blob filesystems (e.g. the Spark McQueen
-/// connector) record data/delete file locations WITHOUT a URL host -- `blob:///<bucket>/<key>`
-/// (empty authority) or `blob:/<bucket>/<key>` (opaque) -- keeping the bucket as the first path
-/// segment. `iceberg-storage-opendal`'s S3 operator reads the bucket from `Url::host_str`, so such
-/// a location fails with a missing-bucket error. This lifts the first path segment into the host
-/// (yielding `s3://<bucket>/<key>`), reusing [`rewrite_alias_to_s3`].
+/// derive the bucket from the URL host. Some vendor blob filesystems record data/delete file
+/// locations WITHOUT a URL host -- `blob:///<bucket>/<key>` (empty authority) or
+/// `blob:/<bucket>/<key>` (opaque) -- keeping the bucket as the first path segment, which the
+/// operator fails to open with a missing-bucket error.
 ///
 /// Host-bearing locations (`blob://<bucket>/<key>`, `s3://...`) are returned unchanged. This runs
 /// ONLY at the storage open boundary inside [`BlobHostPromotingS3Storage`], never on the raw
-/// recorded string iceberg-rust matches positional/equality deletes against (the FileScanTask
-/// `data_file_path` and the delete file's stored `file_path` column), so promotion cannot desync
-/// the two and silently drop deletes.
+/// recorded string iceberg-rust matches positional/equality deletes against, so promotion cannot
+/// desync the two and silently drop deletes.
 pub(crate) fn promote_hostless_alias_url(path: &str) -> Result<Cow<'_, str>, ExecutionError> {
     let url = Url::parse(path)
         .map_err(|e| ExecutionError::GeneralError(format!("Error parsing URL {path}: {e}")))?;
     if url.host_str().is_some() {
-        // Already addressable by host (e.g. blob://bucket/key): open as-is.
         return Ok(Cow::Borrowed(path));
     }
     Ok(Cow::Owned(rewrite_alias_to_s3(url)?.to_string()))
@@ -224,16 +208,17 @@ pub(crate) struct BlobHostPromotingS3Storage {
 
 impl BlobHostPromotingS3Storage {
     /// Lazily build and cache the wrapped opendal S3 storage from the same inputs
-    /// [`OpenDalStorageFactory::S3`] uses.
-    fn inner(&self) -> IcebergResult<Arc<dyn Storage>> {
+    /// [`OpenDalStorageFactory::S3`] uses. A first-call race builds twice and discards the loser;
+    /// `get_or_init`'s closure cannot fail, so the fallible build must happen outside it.
+    fn inner(&self) -> IcebergResult<&Arc<dyn Storage>> {
         if let Some(inner) = self.inner.get() {
-            return Ok(Arc::clone(inner));
+            return Ok(inner);
         }
         let built = OpenDalStorageFactory::S3 {
             customized_credential_load: self.customized_credential_load.clone(),
         }
         .build(&StorageConfig::from_props(self.props.clone()))?;
-        Ok(Arc::clone(self.inner.get_or_init(|| built)))
+        Ok(self.inner.get_or_init(|| built))
     }
 
     /// Promote a hostless path, surfacing failures as an iceberg [`Error`].
@@ -247,51 +232,37 @@ impl BlobHostPromotingS3Storage {
 #[typetag::serde(name = "CometBlobHostPromotingS3Storage")]
 impl Storage for BlobHostPromotingS3Storage {
     async fn exists(&self, path: &str) -> IcebergResult<bool> {
-        let inner = self.inner()?;
-        let promoted = self.promote(path)?;
-        inner.exists(promoted.as_ref()).await
+        self.inner()?.exists(self.promote(path)?.as_ref()).await
     }
 
     async fn metadata(&self, path: &str) -> IcebergResult<FileMetadata> {
-        let inner = self.inner()?;
-        let promoted = self.promote(path)?;
-        inner.metadata(promoted.as_ref()).await
+        self.inner()?.metadata(self.promote(path)?.as_ref()).await
     }
 
     async fn read(&self, path: &str) -> IcebergResult<Bytes> {
-        let inner = self.inner()?;
-        let promoted = self.promote(path)?;
-        inner.read(promoted.as_ref()).await
+        self.inner()?.read(self.promote(path)?.as_ref()).await
     }
 
     async fn reader(&self, path: &str) -> IcebergResult<Box<dyn FileRead>> {
-        let inner = self.inner()?;
-        let promoted = self.promote(path)?;
-        inner.reader(promoted.as_ref()).await
+        self.inner()?.reader(self.promote(path)?.as_ref()).await
     }
 
     async fn write(&self, path: &str, bs: Bytes) -> IcebergResult<()> {
-        let inner = self.inner()?;
-        let promoted = self.promote(path)?;
-        inner.write(promoted.as_ref(), bs).await
+        self.inner()?.write(self.promote(path)?.as_ref(), bs).await
     }
 
     async fn writer(&self, path: &str) -> IcebergResult<Box<dyn FileWrite>> {
-        let inner = self.inner()?;
-        let promoted = self.promote(path)?;
-        inner.writer(promoted.as_ref()).await
+        self.inner()?.writer(self.promote(path)?.as_ref()).await
     }
 
     async fn delete(&self, path: &str) -> IcebergResult<()> {
-        let inner = self.inner()?;
-        let promoted = self.promote(path)?;
-        inner.delete(promoted.as_ref()).await
+        self.inner()?.delete(self.promote(path)?.as_ref()).await
     }
 
     async fn delete_prefix(&self, path: &str) -> IcebergResult<()> {
-        let inner = self.inner()?;
-        let promoted = self.promote(path)?;
-        inner.delete_prefix(promoted.as_ref()).await
+        self.inner()?
+            .delete_prefix(self.promote(path)?.as_ref())
+            .await
     }
 
     async fn delete_stream(&self, paths: BoxStream<'static, String>) -> IcebergResult<()> {
@@ -306,15 +277,11 @@ impl Storage for BlobHostPromotingS3Storage {
     }
 
     fn new_input(&self, path: &str) -> IcebergResult<InputFile> {
-        let inner = self.inner()?;
-        let promoted = self.promote(path)?;
-        inner.new_input(promoted.as_ref())
+        self.inner()?.new_input(self.promote(path)?.as_ref())
     }
 
     fn new_output(&self, path: &str) -> IcebergResult<OutputFile> {
-        let inner = self.inner()?;
-        let promoted = self.promote(path)?;
-        inner.new_output(promoted.as_ref())
+        self.inner()?.new_output(self.promote(path)?.as_ref())
     }
 }
 
@@ -324,12 +291,7 @@ mod tests {
 
     /// Config opting `blob` in as an s3-compliant alias (`fs.comet.s3Compliant.schemes=blob`).
     fn blob_alias_configs() -> HashMap<String, String> {
-        let mut configs = HashMap::new();
-        configs.insert(
-            "fs.comet.s3Compliant.schemes".to_string(),
-            "blob".to_string(),
-        );
-        configs
+        configs_with("blob")
     }
 
     fn normalized(url: &str, configs: &HashMap<String, String>) -> String {
@@ -339,56 +301,58 @@ mod tests {
             .to_string()
     }
 
-    #[test]
-    fn test_normalize_object_store_url_alias_is_opt_in() {
-        // Empty config => blob is NOT an alias and is returned unchanged.
-        let empty = HashMap::new();
-        assert_eq!(
-            normalized("blob://bucket/key.parquet", &empty),
-            "blob://bucket/key.parquet"
-        );
-
-        // The list is comma-separated, whitespace-trimmed, and case-insensitive.
+    fn configs_with(schemes: &str) -> HashMap<String, String> {
         let mut configs = HashMap::new();
         configs.insert(
             "fs.comet.s3Compliant.schemes".to_string(),
-            " cos , BLOB ".to_string(),
+            schemes.to_string(),
         );
-        assert_eq!(
-            normalized("blob://bucket/key.parquet", &configs),
-            "s3://bucket/key.parquet"
-        );
+        configs
     }
 
     #[test]
-    fn test_normalize_object_store_url_rewrites_s3a_always() {
-        // s3a is rewritten to s3 regardless of the alias config (object_store dispatches on s3).
+    fn test_normalize_object_store_url() {
+        let blob = blob_alias_configs();
         let empty = HashMap::new();
-        assert_eq!(
-            normalized("s3a://bucket/key.parquet", &empty),
-            "s3://bucket/key.parquet"
-        );
-    }
-
-    #[test]
-    fn test_normalize_object_store_url_passes_through_non_alias_schemes() {
-        // s3:// and file:// are not aliases and round-trip unchanged.
-        let configs = blob_alias_configs();
-        let s3 = "s3://bucket/key.parquet";
-        assert_eq!(normalized(s3, &configs), s3);
-        let file = "file:///tmp/warehouse/db/t";
-        assert_eq!(normalized(file, &configs), file);
-    }
-
-    #[test]
-    fn test_normalize_object_store_url_promotes_authorityless_alias() {
-        // The opaque single-slash `blob:/bucket/key` form (host=None) lifts the first path segment
-        // into the host so `ObjectStoreScheme::parse` accepts the result.
-        let configs = blob_alias_configs();
-        assert_eq!(
-            normalized("blob:/bucket/key.parquet", &configs),
-            "s3://bucket/key.parquet"
-        );
+        for (input, configs, expected) in [
+            // Opt-in: blob is left alone until the user lists it, and the list is comma-separated,
+            // whitespace-trimmed, and case-insensitive.
+            (
+                "blob://bucket/key.parquet",
+                &empty,
+                "blob://bucket/key.parquet",
+            ),
+            (
+                "blob://bucket/key.parquet",
+                &configs_with(" cos , BLOB "),
+                "s3://bucket/key.parquet",
+            ),
+            // s3a is rewritten regardless of the alias config (object_store dispatches on s3).
+            (
+                "s3a://bucket/key.parquet",
+                &empty,
+                "s3://bucket/key.parquet",
+            ),
+            // Non-alias schemes round-trip unchanged.
+            ("s3://bucket/key.parquet", &blob, "s3://bucket/key.parquet"),
+            (
+                "file:///tmp/warehouse/db/t",
+                &blob,
+                "file:///tmp/warehouse/db/t",
+            ),
+            // Listing a URL-spec special scheme must not hard-error local scans: the URL comes back
+            // unchanged so the caller falls back, rather than failing in `set_scheme`.
+            (
+                "file:///tmp/warehouse/db/t",
+                &configs_with("file"),
+                "file:///tmp/warehouse/db/t",
+            ),
+            // Hostless alias: the first path segment is lifted into the host so
+            // `ObjectStoreScheme::parse` accepts the result.
+            ("blob:/bucket/key.parquet", &blob, "s3://bucket/key.parquet"),
+        ] {
+            assert_eq!(normalized(input, configs), expected, "input: {input}");
+        }
     }
 
     #[test]
@@ -408,11 +372,7 @@ mod tests {
         // A URL-spec special scheme is never an alias even if the user lists it: it cannot be
         // rewritten to `s3` (`Url::set_scheme` refuses it), so admitting it would turn a clean
         // fallback into a hard error. Guards against a stray `file`/`https` in the list.
-        let mut configs = HashMap::new();
-        configs.insert(
-            "fs.comet.s3Compliant.schemes".to_string(),
-            "file,http,https,ftp,ws,wss,blob".to_string(),
-        );
+        let configs = configs_with("file,http,https,ftp,ws,wss,blob");
         for special in ["file", "http", "https", "ftp", "ws", "wss"] {
             assert!(
                 !is_s3_compliant_alias_scheme(special, &configs),
@@ -423,21 +383,6 @@ mod tests {
         assert!(is_s3_compliant_alias_scheme("blob", &configs));
     }
 
-    #[test]
-    fn test_normalize_object_store_url_special_scheme_alias_falls_back() {
-        // Listing `file` must not hard-error local scans: normalize returns the URL unchanged so the
-        // caller falls back, rather than failing in `set_scheme`.
-        let mut configs = HashMap::new();
-        configs.insert(
-            "fs.comet.s3Compliant.schemes".to_string(),
-            "file".to_string(),
-        );
-        assert_eq!(
-            normalized("file:///tmp/warehouse/db/t", &configs),
-            "file:///tmp/warehouse/db/t"
-        );
-    }
-
     fn promoted(path: &str) -> String {
         promote_hostless_alias_url(path).unwrap().into_owned()
     }
@@ -446,7 +391,7 @@ mod tests {
     fn test_promote_hostless_alias_url_promotes_hostless_forms() {
         // Both hostless spellings (host=None) promote the first path segment into the host so the
         // opendal S3 operator finds the bucket: the empty-authority `blob:///bucket/key` form (the
-        // McQueen default store) and the opaque single-slash `blob:/bucket/key` form java.net.URI
+        // vendor default store) and the opaque single-slash `blob:/bucket/key` form java.net.URI
         // re-renders it to.
         assert_eq!(
             promoted("blob:///sparkinsightdev/tmp/warehouse/x.parquet"),
@@ -479,15 +424,5 @@ mod tests {
         // A hostless URL with no promotable first segment errors, so the scan fails loudly rather
         // than opening a bucketless URL. (The JVM gate already declines these; defense in depth.)
         assert!(promote_hostless_alias_url("blob:///").is_err());
-    }
-
-    #[test]
-    fn test_blob_host_promoting_factory_builds_storage() {
-        // The factory constructs a storage without eagerly building the inner operator (lazy), so
-        // this smoke test does not require any live backend.
-        let factory = BlobHostPromotingS3StorageFactory::new(None);
-        assert!(factory
-            .build(&StorageConfig::from_props(HashMap::new()))
-            .is_ok());
     }
 }

@@ -22,10 +22,9 @@ package org.apache.comet.rules
 import java.io.File
 import java.net.URI
 import java.nio.file.Files
-import java.util.UUID
+import java.util.{Locale, UUID}
 
 import org.apache.commons.io.FileUtils
-import org.apache.hadoop.conf.Configuration
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.{CometTestBase, SaveMode}
 import org.apache.spark.sql.comet.CometScanExec
@@ -33,7 +32,6 @@ import org.apache.spark.sql.execution.{FileSourceScanExec, SparkPlan}
 
 import org.apache.comet.CometConf
 import org.apache.comet.hadoop.fs.{FakeHDFSFileSystem, FakeHdfsSchemeFileSystem}
-import org.apache.comet.objectstore.NativeConfig
 
 /**
  * Comet's native readers go through object_store, which understands a fixed set of URL schemes. A
@@ -42,8 +40,8 @@ import org.apache.comet.objectstore.NativeConfig
  * the physical plan and asserts fallback (no execution), and unit-tests the two scheme gates
  * directly: `isNativelyReadableScheme` (Parquet) and `isIcebergReadableScheme` (Iceberg).
  * S3-compliant alias schemes like `blob` are opt-in via `fs.comet.s3Compliant.schemes`, and the
- * native probe is cached by (scheme, has-authority) so an authorityless URL can't poison the
- * authority-bearing form.
+ * native probe is cached per probe URL so an authorityless URL can't poison the authority-bearing
+ * form of the same scheme.
  */
 class CometScanSchemeFallbackSuite extends CometTestBase {
 
@@ -114,8 +112,8 @@ class CometScanSchemeFallbackSuite extends CometTestBase {
 
   test("parquet gate: authorityless URI first does not poison the authority-bearing form") {
     // ObjectStoreScheme::parse keys on (scheme, host-presence): `gs:///` (no host) is unrecognized,
-    // `gs://bucket/` is. The cache uses the same pair, so probing the authorityless form first must
-    // NOT poison the whole scheme (the old single-scheme key did).
+    // `gs://bucket/` is. The cache is keyed on the probe URL, so probing the authorityless form
+    // first must NOT poison the whole scheme (the old single-scheme key did).
     CometScanRule.isNativelyReadableScheme(new URI("gs:///key.parquet"), Set.empty)
     assert(
       CometScanRule.isNativelyReadableScheme(new URI("gs://bucket/key.parquet"), Set.empty),
@@ -199,44 +197,38 @@ class CometScanSchemeFallbackSuite extends CometTestBase {
     // iceberg-rust opens files by their raw location. Host-bearing locations always work. Hostless
     // ones work ONLY for opt-in S3-compliant aliases, which the native reader opens by promoting
     // the bucket from the first path segment (BlobHostPromotingS3Storage). [bucket promotion]
+    // `hasOpenableAuthority` is the predicate `validateIcebergFileScanTasks` applies per data and
+    // delete file, once its scheme has cleared `isIcebergReadableScheme` (covered above).
     val schemes = Set("blob")
+    def openable(location: String, s3Compliant: Set[String] = schemes): Boolean = {
+      val uri = new URI(location)
+      val scheme = Option(uri.getScheme).map(_.toLowerCase(Locale.ROOT)).orNull
+      CometScanRule.hasOpenableAuthority(uri, scheme, s3Compliant)
+    }
     // Host-bearing: openable regardless of scheme family; `file`/schemeless need no host.
-    assert(CometScanRule.isIcebergOpenableLocation(new URI("s3://bucket/k.parquet"), schemes))
-    assert(CometScanRule.isIcebergOpenableLocation(new URI("blob://bucket/k.parquet"), schemes))
-    assert(CometScanRule.isIcebergOpenableLocation(new URI("file:///tmp/k.parquet"), schemes))
-    assert(CometScanRule.isIcebergOpenableLocation(new URI("/tmp/k.parquet"), schemes))
-    // Hostless alias: NOW openable -- the bucket is promoted from the first path segment.
+    assert(openable("s3://bucket/k.parquet"))
+    assert(openable("blob://bucket/k.parquet"))
+    assert(openable("file:///tmp/k.parquet"))
+    assert(openable("/tmp/k.parquet"))
+    // Hostless alias: openable -- the bucket is promoted from the first path segment.
     assert(
-      CometScanRule.isIcebergOpenableLocation(new URI("blob:///bucket/k.parquet"), schemes),
+      openable("blob:///bucket/k.parquet"),
       "hostless blob:/// must be openable: native promotes the first path segment to the bucket")
     assert(
-      CometScanRule.isIcebergOpenableLocation(new URI("blob:/bucket/k.parquet"), schemes),
+      openable("blob:/bucket/k.parquet"),
       "the opaque single-slash blob:/ form promotes the same way")
     // Hostless alias with no promotable bucket segment: declined (nothing to promote).
     assert(
-      !CometScanRule.isIcebergOpenableLocation(new URI("blob:///"), schemes),
+      !openable("blob:///"),
       "a hostless alias URL with no bucket segment cannot be promoted")
     // Hostless non-alias: still declined; s3/s3a/gs/oss have no bucket-from-path promotion.
     assert(
-      !CometScanRule.isIcebergOpenableLocation(new URI("s3:///bucket/k.parquet"), schemes),
+      !openable("s3:///bucket/k.parquet"),
       "authorityless s3:/// has no host and no alias promotion")
-    // blob not opted in: not a readable scheme at all, so not openable.
+    // blob not opted in: no promotion, so the hostless form is not openable either.
     assert(
-      !CometScanRule.isIcebergOpenableLocation(new URI("blob:///bucket/k.parquet"), Set.empty),
-      "without opt-in, blob is not iceberg-readable, so not openable")
-    // An unreadable scheme is never openable regardless of authority.
-    assert(!CometScanRule.isIcebergOpenableLocation(new URI("http://h/k.parquet"), schemes))
-  }
-
-  test("resolveS3CompliantSchemes: comma list is trimmed and lowercased, empty means none") {
-    val conf = new Configuration(false)
-    assert(
-      NativeConfig.resolveS3CompliantSchemes(conf).isEmpty,
-      "missing config must yield no aliases (opt-in default)")
-    conf.set(CometConf.COMET_S3_COMPLIANT_SCHEMES_KEY, " Blob , MINIO ,, r2 ")
-    assert(
-      NativeConfig.resolveS3CompliantSchemes(conf) == Set("blob", "minio", "r2"),
-      "schemes must be split on commas, trimmed, lowercased, with blanks dropped")
+      !openable("blob:///bucket/k.parquet", Set.empty),
+      "without opt-in, blob gets no bucket promotion, so a hostless blob location is unopenable")
   }
 
   test("native scan claims hdfs:// when libhdfs.schemes is unset (native-default lockstep)") {

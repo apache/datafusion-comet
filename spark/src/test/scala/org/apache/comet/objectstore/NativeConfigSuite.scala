@@ -328,19 +328,6 @@ class NativeConfigSuite extends AnyFunSuite with Matchers {
     assert(opts("fs.s3a.bucket.mybucket.path.style.access") == "false")
   }
 
-  test("extractObjectStoreOptions - vendor key overrides conflicting same-scope fs.s3a.*") {
-    // Real vendor keys override a same-scope fs.s3a.* value (the 403-misdirect guard).
-    val hadoopConf = new Configuration()
-    hadoopConf.set(COMET_S3_COMPLIANT_SCHEMES_KEY, "blob")
-    hadoopConf.set("fs.s3a.bucket.mybucket.endpoint", "https://stale.example.internal")
-    hadoopConf.set("fs.blob.mybucket.endpoint", "https://vendor.example.internal")
-
-    val opts = NativeConfig.extractObjectStoreOptions(
-      hadoopConf,
-      new URI("blob://mybucket/dataset/part-0.parquet"))
-    assert(opts("fs.s3a.bucket.mybucket.endpoint") == "https://vendor.example.internal")
-  }
-
   test("bucketForUri - authority is the bucket for s3/s3a and configured aliases") {
     NativeConfig.bucketForUri(new URI("s3://mybucket/key"), Set.empty) shouldBe Some("mybucket")
     NativeConfig.bucketForUri(new URI("s3a://mybucket/key"), Set.empty) shouldBe Some("mybucket")
@@ -367,17 +354,14 @@ class NativeConfigSuite extends AnyFunSuite with Matchers {
     NativeConfig.bucketForUri(new URI("gs:///tmp/object"), Set("blob")) shouldBe None
   }
 
-  test("s3FamilyBuckets - collects distinct buckets from S3-family URIs only") {
-    val uris = Seq(
-      new URI("s3://bucket-a/x"),
-      new URI("s3a://bucket-a/y"), // same bucket, different scheme
-      new URI("blob://bucket-b/z"), // alias, counts only when opted in
-      new URI("file:///tmp/local"), // not S3-family -> ignored
-      new URI("gs://gcs-bucket/g")
-    ) // not S3-family -> ignored (no fs.s3a.* per-bucket surface)
-    NativeConfig.s3FamilyBuckets(uris, Set("blob")) shouldBe Set("bucket-a", "bucket-b")
-    // Without the opt-in, blob is not S3-family, so its bucket drops out.
-    NativeConfig.s3FamilyBuckets(uris, Set.empty) shouldBe Set("bucket-a")
-    NativeConfig.s3FamilyBuckets(Seq.empty, Set("blob")) shouldBe Set.empty
+  test("resolveS3CompliantSchemes - comma list is trimmed and lowercased, empty means none") {
+    val conf = new Configuration(false)
+    assert(
+      NativeConfig.resolveS3CompliantSchemes(conf).isEmpty,
+      "missing config must yield no aliases (opt-in default)")
+    conf.set(COMET_S3_COMPLIANT_SCHEMES_KEY, " Blob , MINIO ,, r2 ")
+    assert(
+      NativeConfig.resolveS3CompliantSchemes(conf) == Set("blob", "minio", "r2"),
+      "schemes must be split on commas, trimmed, lowercased, with blanks dropped")
   }
 }

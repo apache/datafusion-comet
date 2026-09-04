@@ -49,6 +49,7 @@ use std::{fmt::Debug, hash::Hash, sync::Arc};
 use url::Url;
 
 use super::objectstore;
+use super::objectstore::s3_blob_fs_support::normalize_object_store_url;
 
 // This file originates from cast.rs. While developing native scan support and implementing
 // SparkSchemaAdapter we observed that Spark's type conversion logic on Parquet reads does not
@@ -469,14 +470,21 @@ fn value_field(entries_field: &FieldRef) -> Option<FieldRef> {
     }
 }
 
+/// True if `scheme` appears in a Comet comma-separated scheme-list config, compared trimmed and
+/// case-insensitively. Shared by every such config (`fs.comet.libhdfs.schemes`,
+/// `fs.comet.s3Compliant.schemes`) so native parses them exactly like the JVM's
+/// `NativeConfig.parseSchemeSet`, which feeds the planner's fallback gate.
+pub(crate) fn scheme_in_list(list: &str, scheme: &str) -> bool {
+    list.split(',')
+        .any(|s| s.trim().eq_ignore_ascii_case(scheme))
+}
+
 pub fn is_hdfs_scheme(url: &Url, object_store_configs: &HashMap<String, String>) -> bool {
     const COMET_LIBHDFS_SCHEMES_KEY: &str = "fs.comet.libhdfs.schemes";
     let scheme = url.scheme();
-    if let Some(libhdfs_schemes) = object_store_configs.get(COMET_LIBHDFS_SCHEMES_KEY) {
-        use itertools::Itertools;
-        libhdfs_schemes.split(",").contains(scheme)
-    } else {
-        scheme == "hdfs"
+    match object_store_configs.get(COMET_LIBHDFS_SCHEMES_KEY) {
+        Some(libhdfs_schemes) => scheme_in_list(libhdfs_schemes, scheme),
+        None => scheme == "hdfs",
     }
 }
 
@@ -598,10 +606,7 @@ pub(crate) fn prepare_object_store_with_configs(
     url: String,
     object_store_configs: &HashMap<String, String>,
 ) -> Result<(ObjectStoreUrl, Path), ExecutionError> {
-    let url = super::objectstore::s3_blob_fs_support::normalize_object_store_url(
-        url.as_str(),
-        object_store_configs,
-    )?;
+    let url = normalize_object_store_url(url.as_str(), object_store_configs)?;
     let is_hdfs_scheme = is_hdfs_scheme(&url, object_store_configs);
     let scheme = url.scheme();
     let url_key = format!(

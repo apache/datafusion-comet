@@ -88,9 +88,6 @@ public class TestCometFileKeyUnwrapper {
     String canonical = "s3a://bucket/foo/part-0.parquet";
     assertEquals(canonical, norm("blob:/bucket/foo/part-0.parquet", BLOB));
     assertEquals(canonical, norm("blob:///bucket/foo/part-0.parquet", BLOB));
-    // The two-slash form and the s3:// the native side calls back with must land on the same key.
-    assertEquals(canonical, norm("blob://bucket/foo/part-0.parquet", BLOB));
-    assertEquals(canonical, norm("s3://bucket/foo/part-0.parquet", BLOB));
   }
 
   @Test

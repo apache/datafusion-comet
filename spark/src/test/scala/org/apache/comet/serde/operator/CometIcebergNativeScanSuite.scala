@@ -77,18 +77,6 @@ class CometIcebergNativeScanSuite extends AnyFunSuite with Matchers {
     out.keys.foreach(k => k should not startWith "s3.bucket.")
   }
 
-  test("non-target bucket per-bucket keys are dropped entirely") {
-    val props = Map(
-      "fs.s3a.bucket.other.access.key" -> "AKIA-other",
-      "fs.s3a.bucket.other.endpoint" -> "https://other.example.com",
-      "fs.s3a.bucket.other.path.style.access" -> "true")
-
-    val out = translate(props, Some("target"))
-
-    // A non-target bucket contributes nothing (not promoted, not emitted as s3.bucket.*).
-    out shouldBe empty
-  }
-
   test("target bucket keys coexist with a different non-target bucket") {
     val props = Map(
       "fs.s3a.bucket.target.endpoint" -> "https://target.example.com",
@@ -100,9 +88,10 @@ class CometIcebergNativeScanSuite extends AnyFunSuite with Matchers {
 
     out("s3.endpoint") shouldBe "https://target.example.com"
     out("s3.access-key-id") shouldBe "AKIA-target"
-    // The non-target bucket's values must not leak into the global keys.
+    // The non-target bucket contributes nothing: not promoted, not leaked into the global keys.
     out.values.toSet should not contain "https://other.example.com"
     out.values.toSet should not contain "AKIA-other"
+    out.keys.size shouldBe 2
   }
 
   test("target bucket per-bucket value overrides a conflicting global value") {

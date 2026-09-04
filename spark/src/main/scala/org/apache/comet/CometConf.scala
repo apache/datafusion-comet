@@ -948,10 +948,8 @@ object CometConf extends ShimCometConf {
         "Defines filesystem schemes (e.g., blob, minio, r2) that Comet treats as S3-compliant, " +
           "separated by commas. Such schemes reuse the `fs.s3a.*` credential surface and accept " +
           "vendor-style `fs.<scheme>.<authority>.*` keys. Empty by default, so no alias scheme " +
-          "is claimed unless opted in. Read from the Hadoop configuration, so it must be set at " +
-          "session-creation time via `--conf spark.hadoop.fs.comet.s3Compliant.schemes=...`, " +
-          "SparkConf, or core-site.xml. Setting it with `spark.conf.set` after the session has " +
-          "started has no effect.")
+          "is claimed unless opted in. Read from the Hadoop configuration, so it must be set " +
+          "before the SparkSession is created.")
       .stringConf
       .createOptional
 

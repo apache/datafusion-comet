@@ -1845,11 +1845,9 @@ impl PhysicalPlanner {
                     .iter()
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect();
-                // Passed RAW to the native scan. `storage_factory_for` routes an opted-in alias
-                // (e.g. blob://, carried in catalog_properties) to the S3 backend by scheme, and
-                // iceberg-storage-opendal's S3 operator is scheme-agnostic, so no URL rewrite is
-                // needed here. Not rewriting keeps data-file and delete-file paths byte-identical,
-                // which iceberg-rust requires to match deletes.
+                // Passed RAW, like every other Iceberg location (see `data_file_path` in
+                // `parse_file_scan_tasks_from_common`). `storage_factory_for` routes an opted-in
+                // alias to the S3 backend by scheme, so no URL rewrite is needed here.
                 let metadata_location = common.metadata_location.clone();
                 let catalog_name = common.catalog_name.clone();
                 let tasks = parse_file_scan_tasks_from_common(common, &scan.file_scan_tasks)?;

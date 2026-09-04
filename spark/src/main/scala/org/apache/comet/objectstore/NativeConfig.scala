@@ -21,10 +21,10 @@ package org.apache.comet.objectstore
 
 import java.net.URI
 import java.util.Locale
-import java.util.regex.Pattern
 
 import org.apache.commons.lang3.StringUtils
 import org.apache.hadoop.conf.Configuration
+import org.apache.spark.sql.comet.util.Utils
 
 import org.apache.comet.CometConf.{COMET_LIBHDFS_SCHEMES_KEY, COMET_S3_COMPLIANT_SCHEMES_KEY}
 
@@ -64,7 +64,7 @@ object NativeConfig {
   // CometScanRule's scheme gate so the JVM admit-decision and native rewrite parse identically.
   private[comet] def parseSchemeSet(raw: String): Set[String] =
     Option(raw)
-      .map(_.split(",").iterator.map(_.trim.toLowerCase(Locale.ROOT)).filter(_.nonEmpty).toSet)
+      .map(Utils.stringToSeq(_).map(_.toLowerCase(Locale.ROOT)).toSet)
       .getOrElse(Set.empty)
 
   // Opt-in S3-compliant alias schemes from the Hadoop config `fs.comet.s3Compliant.schemes`
@@ -73,13 +73,6 @@ object NativeConfig {
   // (CometScanRule) and the Iceberg write path's data-bucket resolution.
   private[comet] def resolveS3CompliantSchemes(hadoopConf: Configuration): Set[String] =
     parseSchemeSet(hadoopConf.get(COMET_S3_COMPLIANT_SCHEMES_KEY))
-
-  // True when the user pinned path-style at this bucket scope. Suppresses the synthesized soft
-  // default so an explicit per-bucket setting (including `false`, the escape hatch) survives. A
-  // global `fs.s3a.path.style.access` is intentionally ignored: it may target other s3a workloads
-  // or be an ambient cluster default. Per-bucket synth wins over global in native anyway.
-  private def userSetPathStyle(hadoopConf: Configuration, bucket: Option[String]): Boolean =
-    bucket.exists(b => hadoopConf.get(s"fs.s3a.bucket.$b.path.style.access") != null)
 
   /**
    * The S3 bucket a URI addresses: its authority, or the first path segment for the authorityless
@@ -110,58 +103,44 @@ object NativeConfig {
     scheme == "s3" || scheme == "s3a" || scheme == "s3n" || s3CompliantSchemes.contains(scheme)
 
   /**
-   * The distinct S3 buckets addressed by the S3-family URIs in `uris` -- `s3`/`s3a`/`s3n` and any
-   * opted-in `s3CompliantSchemes` alias -- resolved via [[bucketForUri]], which drops
-   * non-S3-family URIs (`file`, `hdfs`, `gs`, `oss`, ...) since their authority is not an S3
-   * bucket and they do not share the `fs.s3a.*` per-bucket surface. Used to detect a scan whose
-   * files span multiple buckets that a single native object store, keyed on one bucket, cannot
-   * serve.
-   */
-  private[comet] def s3FamilyBuckets(
-      uris: Seq[URI],
-      s3CompliantSchemes: Set[String]): Set[String] =
-    uris.iterator.flatMap(bucketForUri(_, s3CompliantSchemes)).toSet
-
-  /**
-   * Translate vendor-style `fs.<scheme>.<authority>.<property>` keys into the `fs.s3a.*` shape
-   * object_store's AmazonS3Builder reads, for a configured S3-compliant `scheme`. Recognized
-   * properties are `vendorPropertyToS3aSuffix`; unknown ones are dropped.
+   * Translate the vendor-style `fs.<scheme>.<authority>.<property>` keys collected by
+   * `extractObjectStoreOptions` into the `fs.s3a.*` shape object_store's AmazonS3Builder reads.
+   * Recognized properties are `vendorPropertyToS3aSuffix`; unknown ones are dropped.
    *
    * Keys land at the per-bucket `fs.s3a.bucket.<bucket>.*` scope (for the `default` authority the
    * bucket is `defaultBucket`, promoted from the URL path) -- the scope native `get_config`
-   * checks first. The authority is matched greedily so dotted bucket names survive.
+   * checks first. The authority is taken greedily (split at the LAST dot) so dotted bucket names
+   * survive.
    *
    * An `endpoint` also synthesizes `path.style.access=true` as a soft default, suppressed by an
-   * explicit per-bucket setting or vendor `pathStyleAccess`. Applied AFTER the plain `fs.s3a.*`
-   * pass so real vendor keys override conflicting `fs.s3a.*` (the 403-misdirect note below).
+   * explicit vendor `pathStyleAccess` or by a per-bucket `fs.s3a.*` setting the caller already
+   * copied into `s3aOptions` (including `false`, the escape hatch). A GLOBAL
+   * `fs.s3a.path.style.access` is deliberately not consulted: it may target other s3a workloads,
+   * and per-bucket wins over global natively anyway.
    *
-   * `confEntries` is the caller's one-time snapshot of the Hadoop config (see
-   * `extractObjectStoreOptions`); `hadoopConf` is still used for `${...}` substitution and
-   * targeted per-bucket lookups.
+   * `vendorEntries` are `(authority.property, substituted value)` pairs, i.e. the key with its
+   * `fs.<scheme>.` prefix already stripped.
    */
   private def translateVendorKeys(
-      confEntries: Seq[(String, String)],
-      hadoopConf: Configuration,
-      scheme: String,
+      vendorEntries: Seq[(String, String)],
+      s3aOptions: collection.Map[String, String],
       defaultBucket: Option[String]): Map[String, String] = {
-    // `fs.<scheme>.<authority>.<property>`; scheme is regex-quoted (may contain `.`/`+`/`-`).
-    val vendorKeyPattern = ("^fs\\." + Pattern.quote(scheme) + "\\.(.+)\\.([^.]+)$").r
     val out = scala.collection.mutable.Map[String, String]()
 
+    val matched = vendorEntries.flatMap { case (authorityAndProperty, value) =>
+      val dot = authorityAndProperty.lastIndexOf('.')
+      if (dot <= 0) None
+      else {
+        vendorPropertyToS3aSuffix
+          .get(authorityAndProperty.substring(dot + 1))
+          .map(suffix => (authorityAndProperty.substring(0, dot), suffix, value))
+      }
+    }
     // Apply `default`-authority keys BEFORE explicit ones. A `default` key (promoted to the
     // URL-path bucket) and an explicit `fs.<scheme>.<bucket>.*` can resolve to the same
     // `fs.s3a.bucket.<bucket>.*` scope, and the explicit spelling must win -- which it does only
     // when written last. Otherwise the winner is whichever config entry is yielded last (hash
     // order), so the same config could pick either endpoint from one run to the next.
-    val matched = confEntries.flatMap { case (key, value) =>
-      key match {
-        case vendorKeyPattern(authority, property) =>
-          vendorPropertyToS3aSuffix
-            .get(property)
-            .map(suffix => (authority, suffix, substitutedValue(hadoopConf, key, value)))
-        case _ => None
-      }
-    }
     val (defaults, explicit) = matched.partition(_._1 == vendorDefaultAuthority)
 
     (defaults ++ explicit).foreach { case (authority, suffix, value) =>
@@ -169,7 +148,9 @@ object NativeConfig {
         if (authority == vendorDefaultAuthority) defaultBucket else Some(authority)
       val scope = bucket.map(b => s"fs.s3a.bucket.$b").getOrElse("fs.s3a")
       out(s"$scope.$suffix") = value
-      if (suffix == "endpoint" && !userSetPathStyle(hadoopConf, bucket)) {
+      val userPinnedPathStyle =
+        bucket.exists(b => s3aOptions.contains(s"fs.s3a.bucket.$b.path.style.access"))
+      if (suffix == "endpoint" && !userPinnedPathStyle) {
         out.getOrElseUpdate(s"$scope.path.style.access", "true")
       }
     }
@@ -214,22 +195,26 @@ object NativeConfig {
       return options.toMap
     }
 
-    // Materialize the Hadoop config once: `iterator()` rebuilds a full copy of the property map on
-    // every call, so we reuse this snapshot for the prefix pass and the vendor translation below.
-    val entries = hadoopConf.iterator().asScala.map(e => e.getKey -> e.getValue).toVector
+    // A configured S3-compliant alias also contributes vendor keys, but those must be applied
+    // AFTER the whole fs.s3a.* pass (so real vendor values win a conflict). Collect them during
+    // the single walk of the config below rather than making a second pass: `iterator()` rebuilds
+    // a full copy of the property map on every call.
+    val vendorPrefix = if (s3CompliantSchemes.contains(scheme)) s"fs.$scheme." else null
+    val vendorEntries = scala.collection.mutable.ArrayBuffer[(String, String)]()
 
-    // Extract all configurations that match the object store prefixes
-    entries.foreach { case (key, value) =>
+    hadoopConf.iterator().asScala.foreach { entry =>
+      val key = entry.getKey
       if (prefixes.get.exists(prefix => key.startsWith(prefix))) {
-        options(key) = substitutedValue(hadoopConf, key, value)
+        options(key) = substitutedValue(hadoopConf, key, entry.getValue)
+      } else if (vendorPrefix != null && key.startsWith(vendorPrefix)) {
+        vendorEntries +=
+          key.substring(vendorPrefix.length) -> substitutedValue(hadoopConf, key, entry.getValue)
       }
     }
 
-    // Configured S3-compliant scheme: translate vendor keys AFTER the fs.s3a.* pass so real vendor
-    // values override conflicting fs.s3a.*. Pass the resolved bucket so `fs.<scheme>.default.*`
-    // lands at that bucket's scope.
-    if (s3CompliantSchemes.contains(scheme)) {
-      translateVendorKeys(entries, hadoopConf, scheme, bucketForUri(uri, s3CompliantSchemes))
+    // Pass the resolved bucket so `fs.<scheme>.default.*` lands at that bucket's scope.
+    if (vendorEntries.nonEmpty) {
+      translateVendorKeys(vendorEntries.toSeq, options, bucketForUri(uri, s3CompliantSchemes))
         .foreach { case (k, v) => options(k) = v }
     }
 

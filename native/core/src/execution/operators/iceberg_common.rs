@@ -50,26 +50,26 @@ pub(crate) fn storage_factory_for(
     access_mode: AccessMode,
 ) -> Result<Arc<dyn StorageFactory>, DataFusionError> {
     let scheme = scheme_of(path);
-    // s3, s3a, and any opted-in s3-compliant alias (e.g. blob) all route to the S3 backend.
-    // Host-bearing paths reach iceberg-storage-opendal's scheme-agnostic S3 operator RAW (it
-    // takes the bucket from `Url::host_str`), so `blob://bucket/key` opens directly. Aliases
-    // additionally get a wrapper (BlobHostPromotingS3Storage) that promotes a HOSTLESS
-    // `blob:///bucket/key` into the host only at the open boundary. Both leave the recorded
-    // string iceberg-rust matches deletes against untouched -- see s3_blob_fs_support for that
-    // delete-safety rationale.
-    if is_s3_family_scheme(scheme, catalog_properties) {
-        let customized_credential_load =
-            build_s3_credential_loader(path, catalog_properties, catalog_name, access_mode)?;
-        if is_s3_compliant_alias_scheme(scheme, catalog_properties) {
-            return Ok(Arc::new(BlobHostPromotingS3StorageFactory::new(
-                customized_credential_load,
-            )));
-        }
-        return Ok(Arc::new(OpenDalStorageFactory::S3 {
-            customized_credential_load,
-        }));
-    }
     match scheme {
+        // s3, s3a, and any opted-in s3-compliant alias (e.g. blob) all route to the S3 backend.
+        // Host-bearing paths reach iceberg-storage-opendal's scheme-agnostic S3 operator RAW (it
+        // takes the bucket from `Url::host_str`), so `blob://bucket/key` opens directly. An alias
+        // additionally gets a wrapper that promotes a HOSTLESS `blob:///bucket/key` into the host
+        // at the open boundary. Both leave the recorded string iceberg-rust matches deletes
+        // against untouched -- see s3_blob_fs_support for that delete-safety rationale.
+        s if is_s3_family_scheme(s, catalog_properties) => {
+            let customized_credential_load =
+                build_s3_credential_loader(path, catalog_properties, catalog_name, access_mode)?;
+            if is_s3_compliant_alias_scheme(s, catalog_properties) {
+                Ok(Arc::new(BlobHostPromotingS3StorageFactory::new(
+                    customized_credential_load,
+                )))
+            } else {
+                Ok(Arc::new(OpenDalStorageFactory::S3 {
+                    customized_credential_load,
+                }))
+            }
+        }
         "file" => Ok(Arc::new(OpenDalStorageFactory::Fs)),
         "memory" => Ok(Arc::new(OpenDalStorageFactory::Memory)),
         "gs" => Ok(Arc::new(OpenDalStorageFactory::Gcs)),
