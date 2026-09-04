@@ -630,8 +630,8 @@ object IcebergReflection extends Logging {
       baseSchema
     } else {
       logDebug(
-        s"Iceberg equality delete references field id(s) ${missingIds.mkString(",")} absent from " +
-          "the task schema; resolving from table schema history to build the native scan schema")
+        s"Native Iceberg scan schema is missing field id(s) ${missingIds.mkString(",")}; " +
+          "resolving them from table schema history")
       val history = getAllSchemas(table)
       val resolvedFields = missingIds.map { id =>
         history.iterator
@@ -639,7 +639,7 @@ object IcebergReflection extends Logging {
           .toSeq
           .headOption
           .getOrElse(throw new IllegalStateException(
-            s"Cannot resolve equality-delete field id $id in table schema history"))
+            s"Cannot resolve field id $id in table schema history"))
       }
       val existing =
         getMethod(baseSchema.getClass, "columns")
@@ -651,6 +651,38 @@ object IcebergReflection extends Logging {
         .getConstructor(classOf[java.util.List[_]])
         .newInstance(newColumns)
         .asInstanceOf[AnyRef]
+    }
+  }
+
+  /**
+   * The source column field ids referenced by a task's partition spec.
+   *
+   * iceberg-rust validates a `FileScanTask` by resolving its partition spec against the task
+   * schema (`partition_type(schema)`), so a task carrying a partition spec needs those source
+   * columns present in the schema even when the query projects them out (for example selecting
+   * only `_spec_id` or `_partition`). These ids are unioned into the native task schema via
+   * [[schemaWithRequiredFields]]. project_field_ids still drives the read, so the columns are not
+   * materialized into the scan output. All ids resolve from the table's schema history, including
+   * a source column later dropped by partition evolution.
+   *
+   * Returns an empty sequence when the task has no partition spec.
+   */
+  def partitionSourceFieldIds(task: Any, fileScanTaskClass: Class[_]): Seq[Int] = {
+    import scala.jdk.CollectionConverters._
+
+    val spec =
+      try {
+        getMethod(fileScanTaskClass, "spec").invoke(task)
+      } catch {
+        case _: Exception => null
+      }
+    if (spec == null) {
+      Seq.empty
+    } else {
+      val fields =
+        getMethod(spec.getClass, "fields").invoke(spec).asInstanceOf[java.util.List[_]]
+      val sourceIdMethod = getMethod(loadClass(ClassNames.PARTITION_FIELD), "sourceId")
+      fields.asScala.map(field => sourceIdMethod.invoke(field).asInstanceOf[Int]).toSeq
     }
   }
 

@@ -6934,15 +6934,16 @@ mod tests {
         (declared, acc.state().unwrap()[0].data_type())
     }
 
-    /// The plan declares nullable leaves while the batch that actually arrives carries
-    /// non-nullable ones. `collect_list` / `collect_set` derive their state type from the
-    /// declared type but emit the runtime type, so without the coercion the drift reaches
-    /// `AggregateExec` and it fails validating its own output batch.
+    /// `collect_list` / `collect_set` derive their accumulator state type from the declared
+    /// argument type but can emit the runtime type, so a plan that declares nullable leaves while
+    /// the arriving batch carries non-nullable ones drifts, and the drift reaches `AggregateExec`
+    /// and fails its output-batch validation. `coerce_collect_child_nullability` normalizes the
+    /// argument to the declared type before it reaches the accumulator.
     ///
-    /// The first assertion deliberately pins the upstream behaviour this coercion defends
-    /// against. If `ScalarValue::new_list` is ever fixed to honour its `data_type` for non-empty
-    /// input, the drift disappears and that assertion starts failing — that is the signal to drop
-    /// `coerce_collect_child_nullability` entirely, not a regression.
+    /// DataFusion 55's `ScalarValue::new_list` fix removed the drift for `collect_set`, which
+    /// rebuilds its state list honouring `data_type`. `collect_list` still rebuilds from the
+    /// runtime array and drifts, so the coercion remains necessary. This test pins that
+    /// `collect_list` still drifts without the coercion, and that the coercion normalizes both.
     #[test]
     fn test_collect_agg_absorbs_nested_nullability_drift() {
         let plan_schema = collect_agg_schema(collect_agg_struct_type(true));
@@ -6956,17 +6957,21 @@ mod tests {
             AggregateUDF::new_from_impl(SparkCollectSet::new()),
             AggregateUDF::new_from_impl(SparkCollectList::new()),
         ] {
-            // Without the coercion, declared and produced disagree on nested nullability.
+            // Without the coercion, collect_list still drifts (declared nullable leaves vs
+            // produced non-null ones). collect_set no longer drifts after DataFusion 55's new_list
+            // fix, so only assert the drift for the func that still exhibits it.
             let (declared, produced) =
                 collect_agg_declared_vs_produced(&raw, &plan_schema, &batch_schema, func.clone());
-            assert!(
-                !declared.equals_datatype(&produced),
-                "expected drift for {}: declared {declared}, produced {produced}",
-                func.name()
-            );
+            if func.name() == "collect_list" {
+                assert!(
+                    !declared.equals_datatype(&produced),
+                    "expected drift for {}: declared {declared}, produced {produced}",
+                    func.name()
+                );
+            }
 
-            // With it, the argument is normalized to the declared type before it reaches
-            // the accumulator.
+            // With the coercion, the argument is normalized to the declared type before it
+            // reaches the accumulator, so both funcs emit a state matching the declared type.
             let (declared, produced) =
                 collect_agg_declared_vs_produced(&coerced, &plan_schema, &batch_schema, func);
             assert!(
@@ -7090,11 +7095,15 @@ mod tests {
             ..Default::default()
         };
 
+        // No partition_spec_idx/partition_data_idx: this test exercises unified-type merging,
+        // which is driven by the type/spec pools rather than the task's own spec. `FileScanTask`
+        // validation rejects a partitioned spec without matching partition data, and the JVM
+        // serializer always sends spec and data together, so a spec-without-data task never
+        // occurs in practice.
         let proto_task = spark_operator::IcebergFileScanTask {
             data_file_path: "file:///tmp/data.parquet".to_string(),
             file_size_in_bytes: 100,
             schema_idx: 0,
-            partition_spec_idx: Some(0),
             project_field_ids_idx: 0,
             ..Default::default()
         };
