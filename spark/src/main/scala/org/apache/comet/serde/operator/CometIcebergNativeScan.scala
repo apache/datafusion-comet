@@ -1055,7 +1055,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                   IcebergReflection.getDeleteFilesFromTask(task, fileScanTaskClass)
                 val hasDeletes = !deletes.isEmpty
 
-                val schema: AnyRef =
+                val baseSchema: AnyRef =
                   if (hasDeletes) {
                     // An equality delete may be keyed on a column dropped from the current schema
                     // (schema evolution). iceberg-rust must read that column to apply the delete,
@@ -1082,6 +1082,19 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                       metadata.tableSchema.asInstanceOf[AnyRef]
                     }
                   }
+
+                // iceberg-rust validates a FileScanTask by resolving its partition spec against
+                // the task schema, so a task carrying a partition spec needs that spec's source
+                // columns present even when the query projects them out (e.g. selecting only
+                // _spec_id / _partition). Union them in. project_field_ids still drives the read,
+                // so these columns are not materialized into the output.
+                val schema: AnyRef =
+                  IcebergReflection
+                    .schemaWithRequiredFields(
+                      baseSchema,
+                      metadata.table,
+                      IcebergReflection.partitionSourceFieldIds(task, fileScanTaskClass))
+                    .asInstanceOf[AnyRef]
 
                 val schemaIdx = schemaToPoolIndex.getOrElseUpdate(
                   schema, {
