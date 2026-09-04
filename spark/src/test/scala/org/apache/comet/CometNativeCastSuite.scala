@@ -1418,6 +1418,11 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     "002020-01-01 00:00:00")
 
   private val sparkSegmentRuleMalformedTimestamps = Seq(
+    // Spark's scanner only accepts ASCII digits in timestamp segments
+    "2020-٢",
+    "2020-01-٢",
+    "2020-01-01T1:٢",
+    "2020-01-01T1:2:٣",
     // zone suffix before the seconds segment
     "2020Z",
     "2020-10-01Z",

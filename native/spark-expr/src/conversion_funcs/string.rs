@@ -1648,18 +1648,20 @@ type TimestampParsePattern<T> = (&'static Regex, fn(&str, &T) -> SparkResult<Opt
 // digits each, and the fraction takes any number of digits including none ("12:34:56." is
 // valid), of which only the first six are kept.
 static RE_YEAR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^-?\d{4,6}$").unwrap());
-static RE_MONTH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^-?\d{4,6}-\d{1,2}$").unwrap());
+static RE_MONTH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^-?\d{4,6}-[0-9]{1,2}$").unwrap());
 static RE_DAY: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^-?\d{4,6}-\d{1,2}-\d{1,2}$").unwrap());
+    LazyLock::new(|| Regex::new(r"^-?\d{4,6}-[0-9]{1,2}-[0-9]{1,2}$").unwrap());
 static RE_HOUR: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^-?\d{4,6}-\d{1,2}-\d{1,2}[T ]\d{1,2}$").unwrap());
-static RE_MINUTE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^-?\d{4,6}-\d{1,2}-\d{1,2}[T ]\d{1,2}:\d{1,2}$").unwrap());
+    LazyLock::new(|| Regex::new(r"^-?\d{4,6}-[0-9]{1,2}-[0-9]{1,2}[T ]\d{1,2}$").unwrap());
+static RE_MINUTE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^-?\d{4,6}-[0-9]{1,2}-[0-9]{1,2}[T ][0-9]{1,2}:[0-9]{1,2}$").unwrap()
+});
 static RE_SECOND: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^-?\d{4,6}-\d{1,2}-\d{1,2}[T ]\d{1,2}:\d{1,2}:\d{1,2}$").unwrap()
+    Regex::new(r"^-?\d{4,6}-[0-9]{1,2}-[0-9]{1,2}[T ][0-9]{1,2}:[0-9]{1,2}:[0-9]{1,2}$").unwrap()
 });
 static RE_MICROSECOND: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^-?\d{4,6}-\d{1,2}-\d{1,2}[T ]\d{1,2}:\d{1,2}:\d{1,2}\.\d*$").unwrap()
+    Regex::new(r"^-?\d{4,6}-[0-9]{1,2}-[0-9]{1,2}[T ][0-9]{1,2}:[0-9]{1,2}:[0-9]{1,2}\.\d*$")
+        .unwrap()
 });
 static RE_TIME_ONLY_H: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^T\d{1,2}$").unwrap());
 static RE_TIME_ONLY_HM: LazyLock<Regex> =
@@ -2986,9 +2988,13 @@ mod tests {
         ("002020-01-01 00:00:00", JAN1_2020),
     ];
 
-    /// Inputs Spark rejects: a zone suffix anywhere but after the seconds segment, more than
-    /// six year digits, and more than two digits in any other segment.
+    /// Inputs Spark rejects: non-ASCII segment digits, a zone suffix anywhere but after the
+    /// seconds segment, more than six year digits, and more than two digits in any other segment.
     const SPARK_SEGMENT_RULE_INVALID: &[&str] = &[
+        "2020-٢",
+        "2020-01-٢",
+        "2020-01-01T1:٢",
+        "2020-01-01T1:2:٣",
         "2020Z",
         "2020-10-01Z",
         "2020-01-01+05:30",
