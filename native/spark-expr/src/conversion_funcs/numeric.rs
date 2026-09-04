@@ -890,12 +890,15 @@ const F32_EXACT_INT_LIMIT: u128 = 1 << 24;
 /// magnitude `>= 0.01`) the two roundings can land one ulp away from the correctly rounded
 /// result, e.g. `12345.6789` becomes `12345.678899999999`.
 pub(crate) fn decimal128_to_f64(unscaled: i128, scale: i8) -> f64 {
+    if scale == 0 {
+        return unscaled as f64;
+    }
+
     // Fast path (also Java's): when the unscaled value and the power of ten are both exact
     // doubles, a single IEEE division or multiplication is correctly rounded.
     if unscaled.unsigned_abs() <= F64_EXACT_INT_LIMIT {
         let m = unscaled as f64;
         match scale {
-            0 => return m,
             1..=22 => return m / F64_EXACT_POW10[scale as usize],
             -22..=-1 => return m * F64_EXACT_POW10[scale.unsigned_abs() as usize],
             _ => {}
@@ -911,10 +914,13 @@ pub(crate) fn decimal128_to_f64(unscaled: i128, scale: i8) -> f64 {
 /// rounding twice is observable: `16777217.0000000001` is `16777218` as a float, but narrowing
 /// the nearest `f64` (`16777217.0`, a tie) gives `16777216`.
 pub(crate) fn decimal128_to_f32(unscaled: i128, scale: i8) -> f32 {
+    if scale == 0 {
+        return unscaled as f32;
+    }
+
     if unscaled.unsigned_abs() <= F32_EXACT_INT_LIMIT {
         let m = unscaled as f32;
         match scale {
-            0 => return m,
             1..=10 => return m / F32_EXACT_POW10[scale as usize],
             -10..=-1 => return m * F32_EXACT_POW10[scale.unsigned_abs() as usize],
             _ => {}
