@@ -128,8 +128,17 @@ impl ExecutionPlan for DynamicFilterExec {
         partition: usize,
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
+        let children = self.predicate.children();
+        let [key] = children.as_slice() else {
+            return internal_err!("CometDynamicFilterExec requires one join-key column");
+        };
+        let Some(key) = key.downcast_ref::<Column>() else {
+            return internal_err!("CometDynamicFilterExec requires a direct join-key column");
+        };
+        let key_index = key.index();
+        let predicate = Arc::clone(&self.predicate)
+            .with_new_children(vec![Arc::new(Column::new(key.name(), 0))])?;
         let input = self.input.execute(partition, context)?;
-        let predicate = Arc::clone(&self.predicate);
         let evaluated =
             MetricBuilder::new(&self.metrics).counter("dynamic_filter_rows_evaluated", partition);
         let pruned =
@@ -143,7 +152,11 @@ impl ExecutionPlan for DynamicFilterExec {
         let stream = input.map(move |batch| {
             let batch = batch?;
             let _timer = eval_time.timer();
-            match predicate.evaluate(&batch)? {
+            // AND may prefilter its input before evaluating hash membership. A
+            // zero-copy key projection keeps payload columns out of that temporary
+            // batch. The remapped expression still observes live producer updates.
+            let key_batch = batch.project(&[key_index])?;
+            match predicate.evaluate(&key_batch)? {
                 // DataFusion leaves this placeholder unchanged until the complete
                 // build is available, or if it declines to populate the filter.
                 ColumnarValue::Scalar(ScalarValue::Boolean(Some(true))) => {
@@ -528,8 +541,11 @@ fn ineligible_reason(join: &HashJoinExec, config: &ConfigOptions) -> Result<Opti
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fmt::Display;
+    use std::hash::{Hash, Hasher};
+
     use crate::parquet::parquet_exec::init_datasource_exec;
-    use arrow::array::{ArrayRef, Int32Array, Int64Array, Int8Array, RecordBatch};
+    use arrow::array::{ArrayRef, BooleanArray, Int32Array, Int64Array, Int8Array, RecordBatch};
     use arrow::compute::cast;
     use arrow::datatypes::{Field, Schema};
     use datafusion::common::test_util::batches_to_sort_string;
@@ -627,6 +643,167 @@ mod tests {
         batches.iter().map(RecordBatch::num_rows).sum()
     }
 
+    /// Inspect the batch given to the real completed predicate, without changing its result.
+    #[derive(Debug, Eq)]
+    struct AssertKeyOnlyBatch {
+        child: Arc<dyn PhysicalExpr>,
+        key_values_ptr: usize,
+    }
+
+    impl PartialEq for AssertKeyOnlyBatch {
+        fn eq(&self, other: &Self) -> bool {
+            self.child.eq(&other.child) && self.key_values_ptr == other.key_values_ptr
+        }
+    }
+
+    impl Hash for AssertKeyOnlyBatch {
+        fn hash<H: Hasher>(&self, state: &mut H) {
+            self.child.hash(state);
+            self.key_values_ptr.hash(state);
+        }
+    }
+
+    impl Display for AssertKeyOnlyBatch {
+        fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+            write!(f, "AssertKeyOnlyBatch({})", self.child)
+        }
+    }
+
+    impl PhysicalExpr for AssertKeyOnlyBatch {
+        fn data_type(&self, input_schema: &Schema) -> Result<DataType> {
+            self.child.data_type(input_schema)
+        }
+
+        fn nullable(&self, input_schema: &Schema) -> Result<bool> {
+            self.child.nullable(input_schema)
+        }
+
+        fn evaluate(&self, batch: &RecordBatch) -> Result<ColumnarValue> {
+            assert_eq!(
+                batch.num_columns(),
+                1,
+                "predicate must not receive payload columns"
+            );
+            let keys = batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<Int32Array>()
+                .unwrap();
+            assert_eq!(
+                keys.values().as_ptr() as usize,
+                self.key_values_ptr,
+                "projecting the join key must not copy its values"
+            );
+            self.child.evaluate(batch)
+        }
+
+        fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
+            vec![&self.child]
+        }
+
+        fn with_new_children(
+            self: Arc<Self>,
+            mut children: Vec<Arc<dyn PhysicalExpr>>,
+        ) -> Result<Arc<dyn PhysicalExpr>> {
+            assert_eq!(children.len(), 1);
+            Ok(Arc::new(Self {
+                child: children.remove(0),
+                key_values_ptr: self.key_values_ptr,
+            }))
+        }
+
+        fn fmt_sql(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+            Display::fmt(self, f)
+        }
+    }
+
+    #[tokio::test]
+    async fn completed_filter_evaluates_only_the_shared_probe_key() {
+        // With no nulls and only 1/8 of rows inside the build bounds, DataFusion's AND
+        // evaluation preselects those rows before evaluating hash_lookup. A permutation
+        // spreads the selected rows throughout the batch, forcing payload copies if the
+        // full probe batch reaches the predicate.
+        let keys = Arc::new(Int32Array::from_iter_values(
+            (0..8192).map(|row| (row * 641) % 8192),
+        ));
+        let mut fields = (0..32)
+            .map(|column| Field::new(format!("payload_{column}"), DataType::Int64, false))
+            .collect::<Vec<_>>();
+        let mut columns = (0..32)
+            .map(|column| {
+                Arc::new(Int64Array::from_iter_values(
+                    (0..8192).map(move |row| i64::from(row) * 32 + i64::from(column)),
+                )) as ArrayRef
+            })
+            .collect::<Vec<_>>();
+        let key_index = 17;
+        fields.insert(key_index, Field::new("key", DataType::Int32, false));
+        columns.insert(key_index, Arc::clone(&keys) as ArrayRef);
+        let batch = RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap();
+        let probe = memory_exec(vec![batch.clone()]);
+        let join = HashJoinExec::try_new(
+            input((0..1024).map(Some).collect(), &DataType::Int32, 0),
+            Arc::clone(&probe),
+            vec![(
+                Arc::new(Column::new("key", 0)),
+                Arc::new(Column::new("key", key_index)),
+            )],
+            None,
+            &JoinType::Inner,
+            None,
+            PartitionMode::Partitioned,
+            NullEquality::NullEqualsNothing,
+            false,
+        )
+        .unwrap();
+        let session = SessionContext::new();
+        let expected = collect(
+            Arc::new(join.builder().build().unwrap()),
+            session.task_ctx(),
+        )
+        .await
+        .unwrap();
+        let wrapper =
+            DynamicFilterJoinExec::new(&join, session.copied_config().options().as_ref().clone())
+                .unwrap();
+        let runtime = wrapper.build_runtime_join().unwrap();
+        let predicate = Arc::clone(runtime.join.dynamic_filter_expr().unwrap());
+        let actual = datafusion::physical_plan::common::collect(
+            wrapper
+                .execute_runtime_join(runtime.join, 0, session.task_ctx())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            batches_to_sort_string(&actual),
+            batches_to_sort_string(&expected)
+        );
+
+        // Inspect the actual build-generated bounds AND hash-membership expression. Its key
+        // remains at index 17 here, so the consumer must also remap every nested reference.
+        let completed = predicate.current().unwrap();
+        assert!(completed.to_string().contains("hash_lookup"));
+        assert!(completed.to_string().contains("AND"));
+        predicate
+            .update(Arc::new(AssertKeyOnlyBatch {
+                child: completed,
+                key_values_ptr: keys.values().as_ptr() as usize,
+            }))
+            .unwrap();
+        let consumer: Arc<dyn ExecutionPlan> = Arc::new(DynamicFilterExec::new(probe, predicate));
+        let filtered = collect(consumer, session.task_ctx()).await.unwrap();
+        let selected = BooleanArray::from(
+            keys.values()
+                .iter()
+                .map(|key| *key < 1024)
+                .collect::<Vec<_>>(),
+        );
+        let expected = filter_record_batch(&batch, &selected).unwrap();
+        assert_eq!(expected.num_rows(), 1024);
+        assert_eq!(filtered, vec![expected]);
+    }
+
     #[tokio::test]
     async fn completed_build_filters_both_sides_and_session_inlist_settings() {
         for key_type in [
@@ -693,9 +870,9 @@ mod tests {
 
     #[tokio::test]
     async fn placeholder_updates_and_errors_are_not_hidden() {
-        let source = input((0..10).map(Some).collect(), &DataType::Int32, 0);
+        let source = input((0..10).map(Some).collect(), &DataType::Int32, 1);
         let predicate = Arc::new(DynamicFilterPhysicalExpr::new(
-            vec![Arc::new(Column::new("key", 0))],
+            vec![Arc::new(Column::new("key", 1))],
             lit(true),
         ));
         let wrapper: Arc<dyn ExecutionPlan> =
@@ -704,6 +881,14 @@ mod tests {
         let mut stream = wrapper.execute(0, Arc::clone(&task)).unwrap();
         let first = stream.next().await.unwrap().unwrap();
         assert_eq!(first.num_rows(), 2);
+        predicate
+            .update(Arc::new(BinaryExpr::new(
+                Arc::new(Column::new("key", 1)),
+                Operator::Lt,
+                lit(2i32),
+            )))
+            .unwrap();
+        assert_eq!(stream.next().await.unwrap().unwrap().num_rows(), 0);
         predicate.update(lit(false)).unwrap();
         while let Some(batch) = stream.next().await {
             assert_eq!(batch.unwrap().num_rows(), 0);
