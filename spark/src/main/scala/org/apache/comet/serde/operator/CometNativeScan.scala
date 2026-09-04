@@ -23,7 +23,7 @@ import scala.collection.mutable.ListBuffer
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.internal.Logging
-import org.apache.spark.sql.catalyst.expressions.{Expression, Literal}
+import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Expression, Literal}
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
 import org.apache.spark.sql.comet.{CometNativeExec, CometNativeScanExec, CometScanExec}
 import org.apache.spark.sql.execution.{FileSourceScanExec, InSubqueryExec, SubqueryAdaptiveBroadcastExec}
@@ -49,7 +49,29 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
 
   // DataFusion's table_partition_cols literal substitution matches by name, so a bare name
   // like "file_size" could collide with a real column of the same name. Prefix to avoid it.
-  private val constantMetadataFieldPrefix = "_comet_metadata_"
+  private[comet] val constantMetadataFieldPrefix = "_comet_metadata_"
+
+  /**
+   * Build synthetic constant-metadata field names, uniquified against `reservedNames` (physical
+   * data and partition schema names): DataFusion substitutes partition constants BY NAME, so a
+   * colliding user/partition column would otherwise silently receive the constant metadata value
+   * instead of its own. Binding is purely positional (`partition2Proto` keys off the ORIGINAL
+   * attribute name), so renaming here is always safe.
+   */
+  private[comet] def uniqueConstantMetadataFields(
+      fileConstantMetadataColumns: Seq[AttributeReference],
+      reservedNames: Set[String]): Seq[StructField] = {
+    val reserved = scala.collection.mutable.LinkedHashSet[String]()
+    reserved ++= reservedNames
+    fileConstantMetadataColumns.map { attr =>
+      var name = s"$constantMetadataFieldPrefix${attr.name}"
+      while (reserved.contains(name)) {
+        name = name + "_"
+      }
+      reserved += name
+      StructField(name, attr.dataType, attr.nullable)
+    }
+  }
 
   private def containsVariantType(dataType: DataType): Boolean = dataType match {
     case dt if isVariantType(dt) => true
@@ -187,8 +209,10 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
       // (FileSourceStrategy.scala: readDataColumns ++ generatedMetadataColumns ++
       // partitionColumns ++ constantMetadataColumns), so appending them after the real
       // partition schema here keeps the two in lockstep.
-      val constantMetadataFields = scan.wrapped.fileConstantMetadataColumns.map(attr =>
-        StructField(s"$constantMetadataFieldPrefix${attr.name}", attr.dataType, attr.nullable))
+      val constantMetadataFields = uniqueConstantMetadataFields(
+        scan.wrapped.fileConstantMetadataColumns,
+        scan.relation.dataSchema.fields.map(_.name).toSet ++
+          scan.relation.partitionSchema.fields.map(_.name).toSet)
       val partitionSchemaFields = scan.relation.partitionSchema.fields.toSeq ++
         constantMetadataFields
       val partitionSchema = schema2Proto(partitionSchemaFields)
