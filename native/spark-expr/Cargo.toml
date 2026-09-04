@@ -50,6 +50,7 @@ uuid = "1.23.3"
 [dev-dependencies]
 arrow = {workspace = true}
 criterion = { version = "0.7", features = ["async", "async_tokio", "async_std"] }
+datafusion-spark = { workspace = true }
 rand = { workspace = true}
 tokio = { version = "1", features = ["rt-multi-thread"] }
 datafusion = { workspace = true, features = ["sql"] }
