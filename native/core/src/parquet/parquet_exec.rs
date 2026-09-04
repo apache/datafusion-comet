@@ -55,8 +55,9 @@ use std::sync::Arc;
 ///
 ///   `projection_vector`: A vector of the indexes in the schema of the fields to be projected
 ///
-///   `data_filters`: Any predicate that must be applied to the data returned by the scan. If
-/// specified, then `data_schema` must also be specified.
+///   `data_filters`: Any predicate that must be applied to the data returned by the scan. An empty
+/// `Vec` means Spark supplied filters that Comet could not serialize. If specified, then
+/// `data_schema` must also be specified.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn init_datasource_exec(
     required_schema: SchemaRef,
@@ -99,9 +100,7 @@ pub(crate) fn init_datasource_exec(
     // checked conversion in a filtered scan can fail on values Spark never reads. Preserve the
     // existing safe cast for filtered scans and use checked conversion only when every value is
     // necessarily read.
-    spark_parquet_options.checked_timestamp_overflow = !data_filters
-        .as_ref()
-        .is_some_and(|filters| !filters.is_empty());
+    spark_parquet_options.checked_timestamp_overflow = data_filters.is_none();
 
     // Determine the schema and projection to use for ParquetSource.
     // When data_schema is provided, use it as the base schema so DataFusion knows the full

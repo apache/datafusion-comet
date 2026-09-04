@@ -411,6 +411,18 @@ abstract class ParquetReadSuite extends CometTestBase {
             }
           }
         }
+
+        withSQLConf(
+          SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED.key -> "true",
+          "spark.comet.expression.IsNull.enabled" -> "false") {
+          readParquetFile(path.toString) { df =>
+            val filtered = df.where("id IS NULL").select("ts")
+            assert(collect(filtered.queryExecution.executedPlan) { case _: CometNativeScanExec =>
+              true
+            }.nonEmpty)
+            checkSparkAnswer(filtered)
+          }
+        }
       }
     }
   }

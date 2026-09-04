@@ -142,8 +142,10 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
       builder.clearChildren()
 
       if (scan.conf.getConf(SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED)) {
+        val supportedDataFilters = scan.supportedDataFilters
+        commonBuilder.setHasDataFilters(supportedDataFilters.nonEmpty)
         val dataFilters = new ListBuffer[Expr]()
-        for (filter <- scan.supportedDataFilters) {
+        for (filter <- supportedDataFilters) {
           exprToProto(filter, scan.output) match {
             case Some(proto) => dataFilters += proto
             case _ =>

@@ -1723,7 +1723,11 @@ impl PhysicalPlanner {
                     object_store_url,
                     file_groups,
                     Some(projection_vector),
-                    Some(data_filters?),
+                    if common.has_data_filters || !common.data_filters.is_empty() {
+                        Some(data_filters?)
+                    } else {
+                        None
+                    },
                     default_values,
                     common.session_timezone.as_str(),
                     common.case_sensitive,
