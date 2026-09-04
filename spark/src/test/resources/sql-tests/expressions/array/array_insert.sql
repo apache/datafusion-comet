@@ -280,3 +280,20 @@ SELECT array_insert(array(CAST(1 AS TINYINT), CAST(2 AS TINYINT)), 2, CAST(3 AS 
 
 query
 SELECT array_insert(array(CAST(1.1 AS FLOAT), CAST(2.2 AS FLOAT)), 2, CAST(3.3 AS FLOAT))
+
+-- ============================================================
+-- Array of maps (complex element type)
+-- The source array's map value is widened to nullable by CometCreateArray, while the standalone
+-- item map keeps value non-null because coalesce(id, 0) is non-null. Native ArrayInsert requires
+-- the item Arrow type to equal the source element type exactly, so the serde casts both sides to a
+-- common deeply-nullable element type. id includes a NULL row (coalesce yields 0).
+-- ============================================================
+
+statement
+CREATE TABLE test_array_insert_map(id int) USING parquet
+
+statement
+INSERT INTO test_array_insert_map VALUES (1), (2), (NULL)
+
+query
+SELECT array_insert(array(map(1, coalesce(id, 0))), 2, map(2, coalesce(id, 0))) FROM test_array_insert_map

@@ -3213,6 +3213,23 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("round on negative-scale decimal") {
+    // Negative-scale decimals only exist with spark.sql.legacy.allowNegativeScaleOfDecimal=true
+    // and cannot be spelled in the SQL type syntax, so build the column with an explicit cast in
+    // the DataFrame API. There is no native round for them; CometRound reports the case as
+    // Unsupported and CodegenDispatchFallback routes it through the JVM codegen dispatcher, so it
+    // stays in the Comet pipeline and matches Spark exactly.
+    withSQLConf("spark.sql.legacy.allowNegativeScaleOfDecimal" -> "true") {
+      val data = Seq(12345.6789, -12345.6789, 0.0, 55555.0, -0.0).map(Tuple1.apply)
+      withParquetTable(data, "tbl") {
+        val df = spark.table("tbl").select(col("_1").cast(DecimalType(10, -2)).as("d"))
+        Seq(-3, -2, -1, 0, 2).foreach { scale =>
+          checkSparkAnswerAndOperator(df.select(round(col("d"), scale)))
+        }
+      }
+    }
+  }
+
   test("test integral divide overflow for decimal") {
     // All inserted values produce a quotient > Decimal(38,0).max (~1e38), so they overflow
     // the intermediate decimal result type.  In legacy/try mode both Spark and Comet return
