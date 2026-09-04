@@ -66,6 +66,8 @@ message Operator {
     ShuffleScan shuffle_scan = 116;
     BroadcastNestedLoopJoin broadcast_nested_loop_join = 117;
     Sample sample = 118;
+    WindowGroupLimit window_group_limit = 119;
+    IcebergWrite iceberg_write = 120;
     // Extension point for optional, out-of-tree contrib scans (Delta, Lance, ...). The concrete
     // scan message (e.g. `DeltaScan`) is packed into this envelope on the JVM side and dispatched
     // by `type_url` on the native side. Using a single permanent field -- rather than a new oneof
@@ -630,6 +632,111 @@ message DeltaScanTaskList {
   bytes logical_schema = 7;
 }
 
+// === Iceberg writes =========================================================
+//
+// Mirrors the read-side split: `IcebergWriteCommon` is the per-write payload broadcast once to
+// every task; `IcebergWrite` wraps the common payload and adds per-task fields filled in at
+// execution time (partitionId/taskAttemptId). The rust side translates `IcebergWriteCommon` and
+// `IcebergParquetWriteSettings` into the iceberg-rust writer stack
+// (`ParquetWriterBuilder` -> `RollingFileWriterBuilder` -> `DataFileWriterBuilder` -> partitioner)
+// and returns the task's `DataFile`s packed as a single in-memory Iceberg V2 data manifest
+// (one Binary row per task), which the JVM decodes via `ManifestFiles.read`.
+
+// Picks which iceberg-rust writer the rust side instantiates. Resolved once on the JVM driver
+// (via `spec.isUnpartitioned()` and `SparkWriteConf.useFanoutWriter`) so the rust side never
+// re-derives the choice.
+enum IcebergWriterMode {
+  ICEBERG_WRITER_UNPARTITIONED = 0;
+  ICEBERG_WRITER_FANOUT = 1;
+  ICEBERG_WRITER_CLUSTERED = 2;
+}
+
+// Parquet-rs `WriterProperties` knobs derived from Iceberg table properties on the JVM driver.
+// All fields use Iceberg defaults when absent in the table properties; the rust side does not
+// re-apply defaults.
+//
+// Iceberg's metrics modes (`write.metadata.metrics.*`) are deliberately NOT translated: the
+// native writer always emits full, untruncated footer statistics (matching parquet-mr, which
+// never truncates), and the JVM re-derives every manifest `DataFile`'s metrics from the footer
+// with Iceberg's own `MetricsConfig` logic before commit. See `CometIcebergWriteExec`.
+message IcebergParquetWriteSettings {
+  CompressionCodec compression = 1;
+  // Codec-dependent: zstd 1-22, gzip 0-9, brotli 0-11. JVM side substitutes parquet-mr's
+  // per-codec default when the property is unset and parquet-rs's default would diverge
+  // (zstd: 3 instead of parquet-rs's 1). Absent => use parquet-rs's natural default.
+  optional int32 compression_level = 2;
+  // Iceberg `write.parquet.row-group-size-bytes` (default 128 MiB).
+  uint64 row_group_size_bytes = 3;
+  // Iceberg `write.parquet.page-size-bytes` (default 1 MiB).
+  uint64 page_size_bytes = 4;
+  // Iceberg `write.parquet.dict-size-bytes` (default 2 MiB).
+  uint64 dict_size_bytes = 5;
+  // Iceberg `write.parquet.page-row-limit` (default 20_000).
+  uint32 page_row_limit = 6;
+  // String written into parquet file metadata. JVM-side default is
+  // `"Apache Iceberg <ver> (Comet)"`.
+  string created_by = 7;
+}
+
+// Broadcast payload -- one of these per write, identical for every task.
+message IcebergWriteCommon {
+  // Catalog properties for FileIO (same shape as `IcebergScanCommon.catalog_properties`).
+  map<string, string> catalog_properties = 1;
+
+  // Iceberg table metadata file path. Kept on the wire for plan-debug visibility (shows up in
+  // `IcebergWriteExec`'s `DisplayAs`); `FileIO` itself is initialised from `data_location`
+  // since both paths resolve to the same storage scheme.
+  string metadata_location = 2;
+
+  // Iceberg `SchemaParser.toJson(table.schema())`. Carries the schema id inside the JSON; the
+  // rust side parses it via `serde_json::from_str::<Schema>`.
+  string iceberg_schema_json = 3;
+
+  // Iceberg `PartitionSpecParser.toJson(table.spec())`. Same wire format as one entry in
+  // `IcebergScanCommon.partition_spec_pool`. Carries the spec id inside the JSON.
+  string partition_spec_json = 4;
+
+  // Iceberg `SparkWriteConf.outputSortOrderId(...)`. The rust side ignores it (iceberg-rust's
+  // writer does not expose the field); the JVM stamps it onto each decoded `DataFile` before
+  // commit. It rides in the common payload so the exec wrapper can read it back from the plan.
+  int32 sort_order_id = 5;
+
+  // Directory under which data files are written; resolved on the JVM via the table's
+  // `LocationProvider` plus any `write.data.path` override.
+  string data_location = 6;
+
+  // Iceberg `OutputFileFactory` operation UUID -- embedded in filenames so files from the same
+  // logical write are correlated across tasks.
+  string operation_id = 7;
+
+  // Target file size in bytes; the rust rolling writer rolls files at this threshold.
+  uint64 target_file_size_bytes = 8;
+
+  IcebergWriterMode writer_mode = 9;
+
+  IcebergParquetWriteSettings parquet_settings = 10;
+
+  // Spark V2 catalog name that loaded this table. Forwarded as the dispatchKey to
+  // CometS3CredentialDispatcher.ensureInitialized (and the access intent to the credential
+  // provider) so two catalogs sharing one provider class get isolated provider instances. Empty
+  // string when the table has no catalog identity (e.g. HadoopTables loaded by raw path). Mirrors
+  // `IcebergScanCommon.catalog_name`.
+  string catalog_name = 11;
+}
+
+// Single Iceberg write operator. Per-task fields are populated by the JVM exec wrapper at task
+// launch (matching how `ParquetWriter.task_attempt_id` is filled in `CometNativeWriteExec`).
+message IcebergWrite {
+  IcebergWriteCommon common = 1;
+
+  // Spark `TaskContext.get().partitionId()` -- 0-padded into the filename prefix
+  // `{partition_id:05d}-{task_attempt_id}-{operation_id}`.
+  optional int32 partition_id = 2;
+
+  // Spark `TaskContext.get().taskAttemptId()`.
+  optional int64 task_attempt_id = 3;
+}
+
 message Projection {
   repeated spark.spark_expression.Expr project_list = 1;
 }
@@ -683,10 +790,33 @@ enum CompressionCodec {
   Snappy = 3;
   // Parquet write only. The shuffle writer rejects this codec.
   Gzip = 4;
+  // Iceberg write only; Iceberg inherits Parquet's full codec set. The shuffle
+  // and ParquetWriter paths reject this codec.
+  Brotli = 5;
 }
+
+// Selects where encoded shuffle partitions are written.
+message PartitionWriter {
+  oneof writer {
+    LocalPartitionWriter local = 1;
+    RssPartitionWriter rss = 2;
+  }
+}
+
+// Local shuffle output consists of a data file and its partition-offset index.
+message LocalPartitionWriter {
+  string output_data_file = 1;
+  string output_index_file = 2;
+}
+
+// Marker for remote shuffle output. The task-owned callback is bound outside
+// the serialized plan and is never transmitted through protobuf.
+message RssPartitionWriter {}
 
 message ShuffleWriter {
   spark.spark_partitioning.Partitioning partitioning = 1;
+  // Retained for compatibility with native binaries that predate partition_writer.
+  // Local plans also carry these paths in partition_writer.local.
   string output_data_file = 3;
   string output_index_file = 4;
   CompressionCodec codec = 5;
@@ -704,6 +834,8 @@ message ShuffleWriter {
   // Maximum number of bytes that the writer buffers in memory before spilling to disk.
   // Zero means no limit, in which case spilling is driven only by memory pool pressure.
   uint64 max_buffer_bytes = 10;
+  // Explicit output destination. When absent, use the legacy output file fields.
+  PartitionWriter partition_writer = 11;
 }
 
 message ParquetWriter {
@@ -859,4 +991,20 @@ message Window {
   repeated spark.spark_expression.Expr order_by_list = 2;
   repeated spark.spark_expression.Expr partition_by_list = 3;
   Operator child = 4;
+}
+
+// Top-K rows per partition group. Corresponds to Spark's WindowGroupLimitExec
+// (Spark 3.5+). Rank-like function drives the semantics; the operator only
+// accepts ROW_NUMBER, RANK, and DENSE_RANK.
+message WindowGroupLimit {
+  repeated spark.spark_expression.Expr partition_by_list = 1;
+  repeated spark.spark_expression.Expr order_by_list = 2;
+  int32 limit = 3;
+  RankLikeFunction rank_like_function = 4;
+}
+
+enum RankLikeFunction {
+  RowNumber = 0;
+  Rank = 1;
+  DenseRank = 2;
 }

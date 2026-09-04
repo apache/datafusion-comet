@@ -46,6 +46,7 @@ pub enum OperatorType {
     Scan,
     NativeScan,
     IcebergScan,
+    IcebergWrite,
     Projection,
     Filter,
     HashAgg,
@@ -142,6 +143,7 @@ fn get_operator_type(spark_operator: &Operator) -> Option<OperatorType> {
         OpStruct::Scan(_) => Some(OperatorType::Scan),
         OpStruct::NativeScan(_) => Some(OperatorType::NativeScan),
         OpStruct::IcebergScan(_) => Some(OperatorType::IcebergScan),
+        OpStruct::IcebergWrite(_) => Some(OperatorType::IcebergWrite),
         OpStruct::ShuffleWriter(_) => Some(OperatorType::ShuffleWriter),
         OpStruct::ParquetWriter(_) => Some(OperatorType::ParquetWriter),
         OpStruct::Expand(_) => Some(OperatorType::Expand),
@@ -159,5 +161,6 @@ fn get_operator_type(spark_operator: &Operator) -> Option<OperatorType> {
         // match. No contrib-specific logic lives here -- we just signal "no OperatorType mapping"
         // so the supports-mixed-codegen check skips it.
         OpStruct::ContribScan(_) => None,
+        OpStruct::WindowGroupLimit(_) => None, // Not yet in OperatorType enum
     }
 }

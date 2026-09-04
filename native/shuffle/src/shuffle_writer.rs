@@ -22,10 +22,10 @@ use crate::partitioners::{
     EmptySchemaShufflePartitioner, MultiPartitionShuffleRepartitioner, ShufflePartitioner,
     SinglePartitionShufflePartitioner,
 };
-use crate::writers::LocalPartitionWriter;
+use crate::writers::{LocalPartitionWriter, PartitionWriter, RssPartitionWriter};
 use crate::{CometPartitioning, CompressionCodec, ShuffleBlockWriter};
 use async_trait::async_trait;
-use datafusion::common::exec_datafusion_err;
+use datafusion::common::{exec_datafusion_err, DataFusionError};
 use datafusion::physical_expr::{EquivalenceProperties, Partitioning};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::EmptyRecordBatchStream;
@@ -39,12 +39,51 @@ use datafusion::{
         DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, SendableRecordBatchStream,
     },
 };
+use datafusion_comet_jni_bridge::ShufflePartitionPusher;
 use futures::{StreamExt, TryStreamExt};
 use std::{
     fmt,
     fmt::{Debug, Formatter},
     sync::Arc,
 };
+
+/// Storage destination for a native shuffle writer.
+#[derive(Clone)]
+pub enum ShuffleWriterDestination {
+    /// Writes partition data and offsets to local shuffle files.
+    Local {
+        /// Path of the local shuffle data file.
+        output_data_file: String,
+        /// Path of the local shuffle index file.
+        output_index_file: String,
+    },
+    /// Pushes complete encoded partition blocks to a task-owned callback.
+    Rss {
+        /// Callback that owns the remote shuffle transport for this task.
+        pusher: Arc<dyn ShufflePartitionPusher>,
+        /// Largest complete encoded shuffle block accepted by the callback.
+        max_frame_size: usize,
+    },
+}
+
+impl Debug for ShuffleWriterDestination {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Local {
+                output_data_file,
+                output_index_file,
+            } => f
+                .debug_struct("Local")
+                .field("output_data_file", output_data_file)
+                .field("output_index_file", output_index_file)
+                .finish(),
+            Self::Rss { max_frame_size, .. } => f
+                .debug_struct("Rss")
+                .field("max_frame_size", max_frame_size)
+                .finish(),
+        }
+    }
+}
 
 /// The shuffle writer operator maps each input partition to M output partitions based on a
 /// partitioning scheme. No guarantees are made about the order of the resulting partitions.
@@ -54,10 +93,8 @@ pub struct ShuffleWriterExec {
     input: Arc<dyn ExecutionPlan>,
     /// Partitioning scheme to use
     partitioning: CometPartitioning,
-    /// Output data file path
-    output_data_file: String,
-    /// Output index file path
-    output_index_file: String,
+    /// Task-owned output destination for encoded partition data.
+    destination: ShuffleWriterDestination,
     /// Metrics
     metrics: ExecutionPlanMetricsSet,
     /// Cache for expensive-to-compute plan properties
@@ -72,7 +109,7 @@ pub struct ShuffleWriterExec {
 }
 
 impl ShuffleWriterExec {
-    /// Create a new ShuffleWriterExec
+    /// Creates a shuffle writer that writes to local data and index files.
     #[allow(clippy::too_many_arguments)]
     pub fn try_new(
         input: Arc<dyn ExecutionPlan>,
@@ -80,6 +117,30 @@ impl ShuffleWriterExec {
         codec: CompressionCodec,
         output_data_file: String,
         output_index_file: String,
+        tracing_enabled: bool,
+        write_buffer_size: usize,
+        max_buffer_bytes: Option<usize>,
+    ) -> Result<Self> {
+        Self::try_new_with_destination(
+            input,
+            partitioning,
+            codec,
+            ShuffleWriterDestination::Local {
+                output_data_file,
+                output_index_file,
+            },
+            tracing_enabled,
+            write_buffer_size,
+            max_buffer_bytes,
+        )
+    }
+
+    /// Creates a shuffle writer for a local or task-owned remote destination.
+    pub fn try_new_with_destination(
+        input: Arc<dyn ExecutionPlan>,
+        partitioning: CometPartitioning,
+        codec: CompressionCodec,
+        destination: ShuffleWriterDestination,
         tracing_enabled: bool,
         write_buffer_size: usize,
         max_buffer_bytes: Option<usize>,
@@ -95,8 +156,7 @@ impl ShuffleWriterExec {
             input,
             partitioning,
             metrics: ExecutionPlanMetricsSet::new(),
-            output_data_file,
-            output_index_file,
+            destination,
             cache,
             codec,
             tracing_enabled,
@@ -149,12 +209,11 @@ impl ExecutionPlan for ShuffleWriterExec {
         children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         match children.len() {
-            1 => Ok(Arc::new(ShuffleWriterExec::try_new(
+            1 => Ok(Arc::new(ShuffleWriterExec::try_new_with_destination(
                 Arc::clone(&children[0]),
                 self.partitioning.clone(),
                 self.codec.clone(),
-                self.output_data_file.clone(),
-                self.output_index_file.clone(),
+                self.destination.clone(),
                 self.tracing_enabled,
                 self.write_buffer_size,
                 self.max_buffer_bytes,
@@ -179,8 +238,7 @@ impl ExecutionPlan for ShuffleWriterExec {
             futures::stream::once(external_shuffle(
                 input,
                 partition,
-                self.output_data_file.clone(),
-                self.output_index_file.clone(),
+                self.destination.clone(),
                 self.partitioning.clone(),
                 metrics,
                 context,
@@ -198,8 +256,7 @@ impl ExecutionPlan for ShuffleWriterExec {
 async fn external_shuffle(
     mut input: SendableRecordBatchStream,
     partition: usize,
-    output_data_file: String,
-    output_index_file: String,
+    destination: ShuffleWriterDestination,
     partitioning: CometPartitioning,
     metrics: ShufflePartitionerMetrics,
     context: Arc<TaskContext>,
@@ -210,41 +267,57 @@ async fn external_shuffle(
 ) -> Result<SendableRecordBatchStream> {
     let schema = input.schema();
 
-    let shuffle_block_writer = ShuffleBlockWriter::try_new(schema.as_ref(), codec.clone())?;
-    let local_partition_writer = LocalPartitionWriter::try_new(
-        output_data_file,
-        output_index_file,
-        shuffle_block_writer,
-        partitioning.partition_count(),
-        context.session_config().batch_size(),
-        write_buffer_size,
-        context.runtime_env(),
-    )?;
-
-    let mut repartitioner: Box<dyn ShufflePartitioner> = match &partitioning {
-        _ if schema.fields().is_empty() => {
-            log::debug!("found empty schema, overriding {partitioning:?} partitioning with EmptySchemaShufflePartitioner");
-            Box::new(EmptySchemaShufflePartitioner::try_new(
-                local_partition_writer,
-                Arc::clone(&schema),
+    let mut repartitioner = match destination {
+        ShuffleWriterDestination::Local {
+            output_data_file,
+            output_index_file,
+        } => {
+            let shuffle_block_writer = ShuffleBlockWriter::try_new(schema.as_ref(), codec.clone())?;
+            let writer = LocalPartitionWriter::try_new(
+                output_data_file,
+                output_index_file,
+                shuffle_block_writer,
                 partitioning.partition_count(),
+                context.session_config().batch_size(),
+                write_buffer_size,
+                context.runtime_env(),
+            )?;
+
+            create_repartitioner(
+                writer,
+                partition,
+                Arc::clone(&schema),
+                partitioning,
                 metrics,
-            )?)
+                context.as_ref(),
+                tracing_enabled,
+                max_buffer_bytes,
+            )?
         }
-        any if any.partition_count() == 1 => Box::new(SinglePartitionShufflePartitioner::new(
-            local_partition_writer,
-            metrics,
-        )),
-        _ => Box::new(MultiPartitionShuffleRepartitioner::try_new(
-            partition,
-            local_partition_writer,
-            partitioning,
-            metrics,
-            context.runtime_env(),
-            context.session_config().batch_size(),
-            tracing_enabled,
-            max_buffer_bytes,
-        )?),
+        ShuffleWriterDestination::Rss {
+            pusher,
+            max_frame_size,
+        } => {
+            let shuffle_block_writer =
+                ShuffleBlockWriter::try_new_rss(Arc::clone(&schema), codec.clone())?;
+            let writer = RssPartitionWriter::try_new(
+                shuffle_block_writer,
+                pusher,
+                partitioning.partition_count(),
+                max_frame_size,
+            )?;
+
+            create_repartitioner(
+                writer,
+                partition,
+                Arc::clone(&schema),
+                partitioning,
+                metrics,
+                context.as_ref(),
+                tracing_enabled,
+                max_buffer_bytes,
+            )?
+        }
     };
 
     while let Some(batch) = input.next().await {
@@ -255,15 +328,65 @@ async fn external_shuffle(
         repartitioner
             .insert_batch(batch?)
             .await
-            .map_err(|err| exec_datafusion_err!("Error inserting batch: {err}"))?;
+            .map_err(|error| contextualize_shuffle_error(error, "inserting batch"))?;
     }
 
     repartitioner
         .shuffle_write()
-        .map_err(|err| exec_datafusion_err!("Error in shuffle write: {err}"))?;
+        .map_err(|error| contextualize_shuffle_error(error, "in shuffle write"))?;
 
     // shuffle writer always has empty output
     Ok(Box::pin(EmptyRecordBatchStream::new(Arc::clone(&schema))) as SendableRecordBatchStream)
+}
+
+/// Constructs the existing schema-appropriate partitioner for either writer backend.
+#[allow(clippy::too_many_arguments)]
+fn create_repartitioner<T: PartitionWriter + 'static>(
+    writer: T,
+    partition: usize,
+    schema: SchemaRef,
+    partitioning: CometPartitioning,
+    metrics: ShufflePartitionerMetrics,
+    context: &TaskContext,
+    tracing_enabled: bool,
+    max_buffer_bytes: Option<usize>,
+) -> Result<Box<dyn ShufflePartitioner>> {
+    let partition_count = partitioning.partition_count();
+
+    if schema.fields().is_empty() {
+        log::debug!(
+            "found empty schema, overriding {partitioning:?} partitioning with EmptySchemaShufflePartitioner"
+        );
+        Ok(Box::new(EmptySchemaShufflePartitioner::try_new(
+            writer,
+            schema,
+            partition_count,
+            metrics,
+        )?))
+    } else if partition_count == 1 {
+        Ok(Box::new(SinglePartitionShufflePartitioner::new(
+            writer, metrics,
+        )))
+    } else {
+        Ok(Box::new(MultiPartitionShuffleRepartitioner::try_new(
+            partition,
+            writer,
+            partitioning,
+            metrics,
+            context.runtime_env(),
+            context.session_config().batch_size(),
+            tracing_enabled,
+            max_buffer_bytes,
+        )?))
+    }
+}
+
+/// Preserves Java throwables while retaining existing context for ordinary shuffle failures.
+fn contextualize_shuffle_error(error: DataFusionError, phase: &str) -> DataFusionError {
+    match error {
+        external @ DataFusionError::External(_) => external,
+        other => exec_datafusion_err!("Error {phase}: {other}"),
+    }
 }
 
 #[cfg(test)]
@@ -517,13 +640,14 @@ mod test {
         );
     }
 
-    /// Spill every slice of one shared Arrow allocation and verify that memory accounting
-    /// includes that backing allocation once per outer input batch, plus each slice's indices.
+    /// Spill the same rows with different input batching and allocation-sharing patterns.
     async fn shared_buffer_memory_spilled_bytes(
         max_buffer_bytes: Option<usize>,
         memory_limit: usize,
         input_batches: usize,
-    ) -> usize {
+        input_batch_rows: usize,
+        fresh_allocations: bool,
+    ) -> (usize, Vec<u8>) {
         let num_rows = 16_384usize;
         let batch_size = 1024usize;
         let num_partitions = 2;
@@ -533,7 +657,6 @@ mod test {
             vec![Arc::new(Int64Array::from_iter_values(0..num_rows as i64))],
         )
         .unwrap();
-        let buffer_bytes = backing.get_array_memory_size();
 
         let runtime_env = create_runtime(memory_limit);
         let metrics_set = ExecutionPlanMetricsSet::new();
@@ -565,8 +688,26 @@ mod test {
         )
         .unwrap();
 
+        let mut expected_buffer_bytes = 0;
         for _ in 0..input_batches {
-            repartitioner.insert_batch(backing.clone()).await.unwrap();
+            for start in (0..num_rows).step_by(input_batch_rows) {
+                let end = (start + input_batch_rows).min(num_rows);
+                let input = if fresh_allocations {
+                    RecordBatch::try_new(
+                        Arc::clone(&schema),
+                        vec![Arc::new(Int64Array::from_iter_values(
+                            start as i64..end as i64,
+                        ))],
+                    )
+                    .unwrap()
+                } else {
+                    backing.slice(start, end - start)
+                };
+                // Each internal chunk spills and releases its full pinned input allocation.
+                expected_buffer_bytes += input.column(0).to_data().buffers()[0].capacity()
+                    * input.num_rows().div_ceil(batch_size);
+                repartitioner.insert_batch(input).await.unwrap();
+            }
         }
         repartitioner.shuffle_write().unwrap();
 
@@ -578,30 +719,28 @@ mod test {
         );
 
         let spilled = memory_spilled_bytes.value();
-        let minimum_backing_bytes = input_batches * buffer_bytes;
-        assert!(
-            spilled > minimum_backing_bytes,
-            "partition-index allocations must remain in memory spill accounting: \
-             {spilled} bytes reported for {minimum_backing_bytes} backing bytes"
-        );
         // Each row receives one (batch index, row index) entry. Allow twice the logical index
-        // size for Vec capacity rounding while still rejecting one full backing charge per slice.
-        let maximum_index_bytes = input_batches * num_rows * std::mem::size_of::<(u32, u32)>() * 2;
-        let maximum_spilled = minimum_backing_bytes + maximum_index_bytes;
+        // size for Vec capacity rounding. Buffer capacity contributes again on every spill,
+        // regardless of whether the caller or insert_batch sliced the input.
+        let minimum_index_bytes = input_batches * num_rows * std::mem::size_of::<(u32, u32)>();
         assert!(
-            spilled <= maximum_spilled,
-            "shared backing buffers must be charged once per input batch: \
-             {spilled} bytes reported, expected at most {maximum_spilled}"
+            (expected_buffer_bytes + minimum_index_bytes
+                ..=expected_buffer_bytes + minimum_index_bytes * 2)
+                .contains(&spilled),
+            "each spill must count its pinned input buffers and indices: \
+             {spilled} bytes reported for {expected_buffer_bytes} buffer bytes"
         );
 
-        spilled
+        (spilled, std::fs::read(dir.path().join("data.out")).unwrap())
     }
 
     #[tokio::test]
     #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
-    async fn max_buffer_spills_charge_shared_backing_once_per_input_batch() {
-        let one_batch = shared_buffer_memory_spilled_bytes(Some(8 * 1024), 512 * 1024, 1).await;
-        let two_batches = shared_buffer_memory_spilled_bytes(Some(8 * 1024), 512 * 1024, 2).await;
+    async fn max_buffer_spill_metrics_are_cumulative() {
+        let (one_batch, _) =
+            shared_buffer_memory_spilled_bytes(Some(8 * 1024), 512 * 1024, 1, 16_384, false).await;
+        let (two_batches, _) =
+            shared_buffer_memory_spilled_bytes(Some(8 * 1024), 512 * 1024, 2, 16_384, false).await;
         assert_eq!(
             two_batches,
             one_batch * 2,
@@ -612,8 +751,43 @@ mod test {
 
     #[tokio::test]
     #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
-    async fn rejected_reservations_charge_shared_backing_once_per_input_batch() {
-        shared_buffer_memory_spilled_bytes(None, 1, 1).await;
+    async fn rejected_reservations_count_pinned_input_buffers() {
+        shared_buffer_memory_spilled_bytes(None, 1, 1, 16_384, false).await;
+    }
+
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
+    async fn shared_buffer_spill_metrics_do_not_depend_on_input_batching() {
+        // Partial HashAggregate can emit the sixteen zero-copy slices separately. They must
+        // report the same memory spill size and write the same data as slicing one input here.
+        for (max_buffer_bytes, memory_limit) in [(Some(8 * 1024), 512 * 1024), (None, 1)] {
+            let (whole_bytes, whole_output) = shared_buffer_memory_spilled_bytes(
+                max_buffer_bytes,
+                memory_limit,
+                1,
+                16_384,
+                false,
+            )
+            .await;
+            let (sliced_bytes, sliced_output) =
+                shared_buffer_memory_spilled_bytes(max_buffer_bytes, memory_limit, 1, 1024, false)
+                    .await;
+            assert_eq!(sliced_bytes, whole_bytes);
+            assert_eq!(sliced_output, whole_output);
+
+            // Independently allocated chunks pin less memory per spill, even though their
+            // serialized output is identical to the shared zero-copy slices.
+            let (fresh_bytes, fresh_output) =
+                shared_buffer_memory_spilled_bytes(max_buffer_bytes, memory_limit, 1, 1024, true)
+                    .await;
+            assert!(fresh_bytes < whole_bytes);
+            assert_eq!(fresh_output, whole_output);
+
+            let (repeated_bytes, _) =
+                shared_buffer_memory_spilled_bytes(max_buffer_bytes, memory_limit, 2, 1024, false)
+                    .await;
+            assert_eq!(repeated_bytes, whole_bytes * 2);
+        }
     }
 
     /// Buffer `num_batches` batches through a `MultiPartitionShuffleRepartitioner` and return its

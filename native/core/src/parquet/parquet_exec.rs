@@ -18,6 +18,7 @@
 use crate::execution::operators::ExecutionError;
 use crate::parquet::eager_page_index_reader_factory::EagerPageIndexReaderFactory;
 use crate::parquet::encryption_support::{CometEncryptionConfig, ENCRYPTION_FACTORY_ID};
+use crate::parquet::name_fold::fold_schema_names;
 use crate::parquet::parquet_support::SparkParquetOptions;
 use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
 use arrow::datatypes::{Field, SchemaRef};
@@ -103,18 +104,14 @@ pub(crate) fn init_datasource_exec(
             // Compute projection: map required_schema field names to data_schema indices.
             // This is needed for schema pruning when the data_schema has more columns than
             // the required_schema.
-            let projection: Vec<usize> = required_schema
-                .fields()
+            // Fold the data and required field names once (the same JVM `toLowerCase(Locale.ROOT)`
+            // fold the schema adapter uses), then match on the folded names so this plan-time
+            // projection stays consistent with the adapter's case-insensitive remap.
+            let data_folded = fold_schema_names(schema, case_sensitive);
+            let required_folded = fold_schema_names(&required_schema, case_sensitive);
+            let projection: Vec<usize> = required_folded
                 .iter()
-                .filter_map(|req_field| {
-                    schema.fields().iter().position(|data_field| {
-                        if case_sensitive {
-                            data_field.name() == req_field.name()
-                        } else {
-                            data_field.name().to_lowercase() == req_field.name().to_lowercase()
-                        }
-                    })
-                })
+                .filter_map(|req| data_folded.iter().position(|d| d == req))
                 .collect();
             // Only use data_schema + projection when all required fields were found by name.
             // When some fields can't be matched (e.g., Parquet field ID mapping where names
