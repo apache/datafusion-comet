@@ -29,6 +29,7 @@ import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.catalyst.plans.physical.Partitioning
 import org.apache.spark.sql.comet.{CometMetricNode, NativeExecContext}
+import org.apache.spark.sql.execution.exchange.ShuffleExchangeExec
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.types.StructType
 
@@ -69,7 +70,8 @@ class CometShuffleDependency[K: ClassTag, V: ClassTag, C: ClassTag](
     val numParts: Int = 0,
     val rangePartitionBounds: Option[Seq[InternalRow]] = None,
     val nativeShuffleSpec: Option[NativeShuffleSpec] = None,
-    val useLocalShuffle: Boolean = false)
+    val useLocalShuffle: Boolean = false,
+    private[shuffle] val outputMetrics: Option[CometShuffleOutputMetrics] = None)
     extends ShuffleDependency[K, V, C](
       _rdd,
       partitioner,
@@ -102,25 +104,40 @@ class CometShuffleDependency[K: ClassTag, V: ClassTag, C: ClassTag](
   private[shuffle] def currentShuffleDependency: CometShuffleDependency[K, V, C] =
     Option(materializationInstance).flatMap(_.completedDependency).getOrElse(this)
 
-  private[shuffle] def createLocalShuffleDependency(): CometShuffleDependency[K, V, C] =
+  private[shuffle] def createLocalShuffleDependency(): CometShuffleDependency[K, V, C] = {
+    // Spark aborts dependent jobs by input RDD identity, not just shuffle or stage identity.
+    // Use a sibling scheduling RDD so a failure in the abandoned remote stage cannot abort
+    // the replacement. The upstream inputs remain shared.
+    val localRDD = rdd
+      .asInstanceOf[CometNativeShuffleInputRDD]
+      .copyForLocalShuffle()
+      .asInstanceOf[RDD[_ <: Product2[K, V]]]
+    val localOutputMetrics = outputMetrics.map(_.newDestination(rdd.context))
+    val localWriteMetrics = shuffleWriteMetrics ++ localOutputMetrics.toSeq.flatMap(_.metrics)
     new CometShuffleDependency[K, V, C](
-      rdd,
+      localRDD,
       partitioner,
       serializer,
       keyOrdering,
       aggregator,
       mapSideCombine,
-      shuffleWriterProcessor,
+      if (localOutputMetrics.nonEmpty) {
+        ShuffleExchangeExec.createShuffleWriteProcessor(localWriteMetrics)
+      } else {
+        shuffleWriterProcessor
+      },
       shuffleType,
       schema,
       decodeTime,
       outputPartitioning,
       outputAttributes,
-      shuffleWriteMetrics,
+      localWriteMetrics,
       numParts,
       rangePartitionBounds,
       nativeShuffleSpec,
-      useLocalShuffle = true)
+      useLocalShuffle = true,
+      outputMetrics = localOutputMetrics)
+  }
 }
 
 /** Indicates shuffle type */

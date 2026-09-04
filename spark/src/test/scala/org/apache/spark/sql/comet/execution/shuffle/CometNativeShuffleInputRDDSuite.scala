@@ -63,6 +63,52 @@ class CometNativeShuffleInputRDDSuite extends CometTestBase {
         Set.empty,
         CometMetricNode(Map.empty))
       assert(input.outputDeterministicLevel == level)
+      assert(input.copyForLocalShuffle().outputDeterministicLevel == level)
+    }
+  }
+
+  test("local shuffle input is an independent sibling with the same partition inputs") {
+    val upstream = new RDD[AnyRef](spark.sparkContext, Nil) {
+      override protected def getPartitions: Array[Partition] = Array.tabulate(2) { i =>
+        new Partition {
+          override def index: Int = i
+        }
+      }
+
+      override def compute(split: Partition, context: TaskContext): Iterator[AnyRef] =
+        Iterator.single(null)
+
+      override def getPreferredLocations(split: Partition): Seq[String] =
+        Seq(s"host-${split.index}")
+    }
+    val planData = Map("scan-0" -> Array(Array[Byte](1), Array[Byte](2)))
+    val remote = new CometNativeShuffleInputRDD(
+      spark.sparkContext,
+      Seq(upstream),
+      2,
+      Set.empty,
+      CometMetricNode(Map.empty),
+      planData)
+    val local = remote.copyForLocalShuffle()
+
+    assert(local.id != remote.id)
+    assert(local.dependencies.map(_.rdd) == Seq(upstream))
+    assert(local.getNumPartitions == remote.getNumPartitions)
+    local.partitions.foreach { part =>
+      val input = part.asInstanceOf[CometNativeShuffleInputPartition]
+      assert(input.inputPartitions.toSeq == Seq(upstream.partitions(part.index)))
+      assert(input.planDataByKey("scan-0").sameElements(planData("scan-0")(part.index)))
+      assert(local.preferredLocations(part) == Seq(s"host-${part.index}"))
+
+      val context = TaskContext.empty()
+      try {
+        val iterator = local.iterator(part, context).asInstanceOf[CometNativeShuffleInputIterator]
+        assert(iterator.partitionIndex == part.index)
+        assert(iterator.inputObjects.toSeq == Seq(null))
+        assert(iterator.planDataByKey("scan-0").sameElements(planData("scan-0")(part.index)))
+      } finally {
+        context.markTaskCompleted(None)
+      }
     }
   }
 

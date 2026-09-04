@@ -311,8 +311,11 @@ encoding workspace.
 Comet splits large batches between rows. If a single row, its schema, or its encoding workspace
 cannot fit the remote limits, Comet abandons the remote shuffle and materializes a replacement
 using its local shuffle writer before downstream tasks can consume the exchange. The replacement
-has a separate shuffle identity, so late remote map results cannot overwrite or skip local map
-output. All reads and retries for the replacement use local files and Spark's block transfer
+has a separate shuffle and scheduling identity, so late remote results cannot overwrite or skip
+local map output, and remote stage failures cannot abort the replacement. Independent exchanges
+can materialize concurrently; readers wait for their storage decisions before execution. Runtime
+output statistics count only the selected destination. All reads and retries for the replacement
+use local files and Spark's block transfer
 service, including normal recovery after later fetch failures. Native operators and Comet's
 Arrow shuffle format are preserved, and remote admission limits remain enforced. Once remote
 output has been published, subsequent failures use the existing Spark/Celeborn recovery path;

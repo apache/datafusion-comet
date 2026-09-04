@@ -891,19 +891,31 @@ object CometShuffleExchangeExec
           None)
     }
 
+    // The remote stage can finish some maps before an oversized row requires a complete local
+    // replacement. Keep output statistics separate from the public counters so neither those
+    // completed maps nor late remote updates inflate the selected shuffle's AQE statistics.
+    val outputMetrics = thinRDD.context.env.shuffleManager match {
+      case _: CometCelebornShuffleManager if numParts > 0 =>
+        Some(CometShuffleOutputMetrics(thinRDD.context, metrics))
+      case _ => None
+    }
+    val destinationMetrics = metrics ++ outputMetrics.toSeq.flatMap(_.metrics)
+
     new CometShuffleDependency[Int, ColumnarBatch, ColumnarBatch](
       thinRDD,
       serializer = serializer,
-      shuffleWriterProcessor = ShuffleExchangeExec.createShuffleWriteProcessor(metrics),
+      shuffleWriterProcessor =
+        ShuffleExchangeExec.createShuffleWriteProcessor(destinationMetrics),
       shuffleType = CometNativeShuffle,
       partitioner = partitioner,
       decodeTime = metrics("decode_time"),
       outputPartitioning = Some(outputPartitioning),
       outputAttributes = outputAttributes,
-      shuffleWriteMetrics = metrics,
+      shuffleWriteMetrics = destinationMetrics,
       numParts = numParts,
       rangePartitionBounds = rangePartitionBounds,
-      nativeShuffleSpec = Some(augmentedSpec))
+      nativeShuffleSpec = Some(augmentedSpec),
+      outputMetrics = outputMetrics)
   }
 
   /**

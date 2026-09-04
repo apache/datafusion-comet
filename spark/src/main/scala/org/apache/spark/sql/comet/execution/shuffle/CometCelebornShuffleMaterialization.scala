@@ -21,26 +21,31 @@ package org.apache.spark.sql.comet.execution.shuffle
 
 import java.util.Properties
 
+import scala.collection.mutable
 import scala.collection.mutable.ArrayBuffer
-import scala.concurrent.{CanAwait, ExecutionContext, Future, Promise}
+import scala.concurrent.{blocking, CanAwait, ExecutionContext, Future, Promise}
 import scala.concurrent.duration.Duration
 import scala.util.{Failure, Success, Try}
 import scala.util.control.NonFatal
 
 import org.apache.spark.{FutureAction, MapOutputStatistics, ShuffleDependency, SparkException}
+import org.apache.spark.rdd.RDD
 import org.apache.spark.scheduler.{SparkListener, SparkListenerJobStart}
+import org.apache.spark.sql.comet.shims.ShimCometShuffleMaterialization
 import org.apache.spark.util.ThreadUtils
 
 /**
  * Driver-owned materialization of one native Celeborn shuffle. Storage is chosen before any
  * downstream RDD can depend on its output. A size-limit failure cancels the remote map-stage job
- * and materializes a fresh local dependency; its shuffle and stage IDs isolate all late remote
- * task completions from the replacement. Once output is published, its destination is fixed.
+ * and materializes a fresh local dependency with an independent scheduling RDD. Their separate
+ * RDD, shuffle and stage identities isolate remote failures and late task completions from the
+ * replacement. Once output is published, its destination is fixed.
  */
 private[shuffle] final class CometCelebornShuffleMaterialization[K, V, C](
     remoteDependency: CometShuffleDependency[K, V, C],
     manager: CometCelebornShuffleManager)
-    extends FutureAction[MapOutputStatistics] {
+    extends FutureAction[MapOutputStatistics]
+    with ShimCometShuffleMaterialization {
 
   import CometCelebornShuffleMaterialization._
 
@@ -70,7 +75,7 @@ private[shuffle] final class CometCelebornShuffleMaterialization[K, V, C](
       throw failure
   }
 
-  private def withCapturedProperties[T](body: => T): T = {
+  private def withCapturedProperties[T](body: => T): T = withCapturedSession {
     val thread = Thread.currentThread()
     val previousProperties = sparkContext.getLocalProperties
     val previousClassLoader = thread.getContextClassLoader
@@ -83,25 +88,52 @@ private[shuffle] final class CometCelebornShuffleMaterialization[K, V, C](
     }
   }
 
-  private def submit(dependency: CometShuffleDependency[K, V, C], expected: State): Boolean = {
-    try {
-      val action = synchronized {
-        if (state != expected) return false
-        // Keep submission and activeAction assignment atomic with cancellation and a size report.
-        // submitMapStage queues the job without waiting for executor tasks to finish.
-        val submitted = withCapturedProperties(sparkContext.submitMapStage(dependency))
-        activeAction = Some(submitted)
-        if (expected == RunningRemote) remoteAction = Some(submitted)
-        actions += submitted
-        submitted
+  private def submit(dependency: CometShuffleDependency[K, V, C], expected: State): Unit = {
+    Future {
+      blocking {
+        try {
+          withCapturedProperties {
+            // submitMapStage eagerly resolves the input graph before queueing a job. An upstream
+            // Comet shuffle can still be choosing its destination, so resolve that graph on this
+            // worker, outside our lock. Independent branches can then be constructed and started,
+            // and cancellation can complete while we wait for an upstream materialization.
+            prepareInput(dependency.rdd)
+            val action = synchronized {
+              if (state != expected) {
+                None
+              } else {
+                if (expected == RunningLocal) remoteFailure.foreach(failure => throw failure)
+                // Dependencies and partitions are now cached. Keep job admission and action
+                // assignment atomic with cancellation and size-limit reports.
+                val submitted = sparkContext.submitMapStage(dependency)
+                activeAction = Some(submitted)
+                if (expected == RunningRemote) remoteAction = Some(submitted)
+                actions += submitted
+                Some(submitted)
+              }
+            }
+            action.foreach(
+              _.onComplete(result => finish(dependency, expected, result))(
+                ExecutionContext.global))
+          }
+        } catch {
+          case NonFatal(failure) =>
+            fail(expected, failure)
+            cancelActions(failure)
+        }
       }
-      action.onComplete(result => finish(dependency, expected, result))(ExecutionContext.global)
-      true
-    } catch {
-      case NonFatal(failure) =>
-        fail(expected, failure)
-        cancelActions(failure)
-        false
+    }(ExecutionContext.global)
+  }
+
+  private def prepareInput(input: RDD[_]): Unit = {
+    val visited = mutable.Set.empty[Int]
+    val pending = mutable.Stack[RDD[_]](input)
+    while (pending.nonEmpty && synchronized { state != Finished && state != Cancelled }) {
+      val next = pending.pop()
+      if (visited.add(next.id)) {
+        next.partitions
+        next.dependencies.foreach(dependency => pending.push(dependency.rdd))
+      }
     }
   }
 
@@ -128,13 +160,17 @@ private[shuffle] final class CometCelebornShuffleMaterialization[K, V, C](
         } else {
           result
         }
-        outcome match {
+        val published = outcome.map { statistics =>
+          dependency.outputMetrics.foreach(_.publish(sparkContext))
+          statistics
+        }
+        published match {
           case Success(_) => selected = Some(dependency)
           case _ =>
         }
         state = Finished
-        completion.tryComplete(outcome)
-        outcome.failed.toOption.foreach(cancelActions)
+        completion.tryComplete(published)
+        published.failed.toOption.foreach(cancelActions)
         true
       }
     }
@@ -194,8 +230,8 @@ private[shuffle] final class CometCelebornShuffleMaterialization[K, V, C](
     } else {
       state = RunningLocal
       try {
-        // Register the replacement before cancelling the old job. Its input partitions were
-        // already computed for the remote submission, and submitMapStage only queues execution.
+        // Register the replacement before cancelling the old job. Its upstream inputs were
+        // already materialized for the remote submission.
         // The JobStart listener retires the remote job only after Spark has made the replacement
         // active. Until then, any external cancellation of the remote job also cancels fallback.
         val localDependency =

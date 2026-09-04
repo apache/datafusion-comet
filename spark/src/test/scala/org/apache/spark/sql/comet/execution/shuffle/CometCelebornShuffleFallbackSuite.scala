@@ -217,6 +217,73 @@ class CometCelebornShuffleFallbackSuite extends CometTestBase {
     }
   }
 
+  test("a remote stage failure cannot abort an active local replacement") {
+    withSQLConf("spark.sql.adaptive.enabled" -> "false") {
+      val sc = spark.sparkContext
+      val previousProperties = sc.getLocalProperties.clone().asInstanceOf[Properties]
+      val groupId = "comet-remote-failure-isolation"
+      val remoteBefore = manager.remoteAttempts.size()
+      val localBefore = manager.localAttempts.size()
+      val paused = new PausedShuffleMapCompletion(local = true)
+      val jobStart = new PausedReplacementJobStart(groupId)
+      val completedJobs = new CompletedMaterializationJobs
+      manager.pausedMapCompletion = Some(paused)
+      manager.remoteFailureAfterLocalMap = Some(paused)
+      // Delay the materialization's JobStart listener, so the remote size failure reaches
+      // Spark before Comet can cancel that job. Observe job failures on an independent queue.
+      sc.addSparkListener(jobStart)
+      sc.listenerBus.addToQueue(completedJobs, groupId)
+      var active: Option[FutureAction[MapOutputStatistics]] = None
+      try {
+        sc.setJobGroup(groupId, "Isolate the local replacement from remote failure", true)
+        val query = spark
+          .range(0, 1, 1, 1)
+          .selectExpr("CAST(id AS INT) AS key", "repeat('x', 1048576) AS payload")
+          .repartition(2, $"key")
+        val exchange = collect(query.queryExecution.executedPlan) {
+          case value: CometShuffleExchangeExec => value
+        }.head
+        val original = exchange.shuffleDependency.asInstanceOf[CometShuffleDependency[_, _, _]]
+        val action = exchange.mapOutputStatisticsFuture
+          .asInstanceOf[FutureAction[MapOutputStatistics]]
+        active = Some(action)
+        assert(jobStart.entered.await(20, TimeUnit.SECONDS))
+        assert(paused.stopped.await(20, TimeUnit.SECONDS))
+        assert(action.jobIds.size == 2)
+        val remoteJobId = action.jobIds.head
+        completedJobs.awaitCompletion(Seq(remoteJobId))
+        assert(completedJobs.hasFailed(remoteJobId))
+
+        jobStart.release.countDown()
+        paused.release.countDown()
+        val statistics = Await.result(action, 20.seconds)
+
+        val selected = original.currentShuffleDependency
+        assert(selected.useLocalShuffle)
+        assert(selected.rdd ne original.rdd)
+        assert(statistics.shuffleId == selected.shuffleId)
+        completedJobs.awaitCompletion(action.jobIds)
+        assert(!completedJobs.hasFailed(action.jobIds.last))
+        assert(query.collect().length == 1)
+      } finally {
+        jobStart.release.countDown()
+        paused.release.countDown()
+        active.foreach(_.cancel())
+        sc.setLocalProperties(previousProperties)
+        manager.pausedMapCompletion = None
+        manager.remoteFailureAfterLocalMap = None
+        sc.removeSparkListener(jobStart)
+        sc.removeSparkListener(completedJobs)
+        manager.remoteAttempts.asScala.drop(remoteBefore).foreach { case (attempt, _) =>
+          manager.unregisterShuffle(attempt.shuffleId)
+        }
+        manager.localAttempts.asScala.drop(localBefore).foreach { attempt =>
+          manager.unregisterShuffle(attempt.shuffleId)
+        }
+      }
+    }
+  }
+
   test("job-group cancellation while registering fallback does not submit a replacement job") {
     withSQLConf("spark.sql.adaptive.enabled" -> "false") {
       val sc = spark.sparkContext
@@ -411,6 +478,23 @@ private[shuffle] class PausedShuffleMapCompletion(val local: Boolean) {
   }
 }
 
+/** Holds listener delivery while Spark processes the old remote stage's failure. */
+private[shuffle] class PausedReplacementJobStart(groupId: String) extends SparkListener {
+  val entered = new CountDownLatch(1)
+  val release = new CountDownLatch(1)
+  private var startedJobs = 0
+
+  override def onJobStart(event: SparkListenerJobStart): Unit = {
+    if (Option(event.properties).exists(_.getProperty("spark.jobGroup.id") == groupId)) {
+      startedJobs += 1
+      if (startedJobs == 2) {
+        entered.countDown()
+        require(release.await(20, TimeUnit.SECONDS), "The test must release local JobStart")
+      }
+    }
+  }
+}
+
 /** Holds fallback registration before the materialization can submit its local map stage. */
 private[shuffle] class PausedLocalShuffleRegistration {
   val shuffleId = new AtomicInteger(-1)
@@ -474,6 +558,8 @@ class CometCelebornFallbackTestShuffleManager(conf: SparkConf, isDriver: Boolean
   @volatile private[shuffle] var delayedRemoteCompletion: Option[DelayedRemoteMapCompletion] =
     None
   @volatile private[shuffle] var pausedMapCompletion: Option[PausedShuffleMapCompletion] = None
+  @volatile private[shuffle] var remoteFailureAfterLocalMap: Option[PausedShuffleMapCompletion] =
+    None
   @volatile private[shuffle] var pausedLocalRegistration: Option[PausedLocalShuffleRegistration] =
     None
 
@@ -549,7 +635,30 @@ class CometCelebornFallbackTestShuffleManager(conf: SparkConf, isDriver: Boolean
     if (handle.isInstanceOf[CelebornShuffleHandle[_, _, _]] && context.partitionId() == 1) {
       delayed.foreach(_.awaitRemoteCommit())
     }
-    val writer = super.getWriter[K, V](handle, mapId, context, metrics)
+    val underlying = super.getWriter[K, V](handle, mapId, context, metrics)
+    val failureGate = remoteFailureAfterLocalMap.filter { _ =>
+      handle.isInstanceOf[CelebornShuffleHandle[_, _, _]]
+    }
+    val writer = if (failureGate.nonEmpty) {
+      new ShuffleWriter[K, V] {
+        override def write(records: Iterator[Product2[K, V]]): Unit = {
+          try underlying.write(records)
+          catch {
+            case failure if CometNativeShuffleWriter.isSizeLimitFailure(failure) =>
+              // The replacement must be active when Spark processes the abandoned stage's
+              // exception; otherwise the shared-RDD bug depends on scheduler timing.
+              require(failureGate.get.stopped.await(20, TimeUnit.SECONDS))
+              throw failure
+          }
+        }
+
+        override def getPartitionLengths(): Array[Long] = underlying.getPartitionLengths()
+
+        override def stop(success: Boolean): Option[MapStatus] = underlying.stop(success)
+      }
+    } else {
+      underlying
+    }
     if (handle.isInstanceOf[CometNativeShuffleHandle[_, _]]) {
       localAttempts.add(recordAttempt(handle, context))
       delayed.foreach(_.localStageStarted.countDown())

@@ -56,8 +56,9 @@ budget when larger rows or schemas need more workspace.
 
 If a row cannot fit the remote limits, Comet materializes a replacement shuffle using its
 local writer before publishing the exchange to downstream tasks. The replacement has a separate
-shuffle identity, so late remote map results cannot replace local output. Subsequent fetch
-failures retain Spark's normal recovery behavior.
+shuffle and scheduling identity, so late remote results or failures cannot affect local output.
+Independent exchanges can materialize concurrently, and runtime output statistics describe only
+the selected destination. Subsequent fetch failures retain Spark's normal recovery behavior.
 With dynamic allocation enabled, native Celeborn shuffle also requires either
 `spark.shuffle.service.enabled=true` or `spark.dynamicAllocation.shuffleTracking.enabled=true`
 (the Spark default) to preserve fallback files. Otherwise exchanges retain ordinary Spark/Celeborn
