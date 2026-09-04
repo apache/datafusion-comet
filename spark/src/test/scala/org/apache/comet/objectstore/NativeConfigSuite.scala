@@ -137,7 +137,8 @@ class NativeConfigSuite extends AnyFunSuite with Matchers {
     assert(options("fs.s3a.secret.key") == "${fs.s3a.access.key}")
   }
 
-  test("extractObjectStoreOptions - alias forwards vendor fs.<scheme>.<authority>.* keys as s3a") {
+  test(
+    "extractObjectStoreOptions - alias forwards vendor fs.<scheme>.<authority>.* keys as s3a") {
     // Alias connectors use per-authority keys (just an endpoint, no region). object_store's
     // AmazonS3Builder reads fs.s3a.bucket.<b>.<suffix>, so Comet must translate fs.<scheme>.<b>.*
     // or the read fails ("Failed to resolve region: Bucket not found"). The scheme is not

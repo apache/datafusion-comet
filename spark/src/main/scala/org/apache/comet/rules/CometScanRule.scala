@@ -1223,8 +1223,8 @@ object CometScanRule extends Logging {
    * S3-compliant aliases like `blob` are opt-in via `fs.comet.s3Compliant.schemes` (see
    * `isIcebergReadableScheme`), not hardcoded, since the native planner opens them via S3. The
    * write path keeps its own list (`CometIcebergNativeWrite.SupportedStorageSchemes`), which
-   * differs deliberately: it excludes `oss` (fails closed, see `storage_factory_for`) and includes
-   * `memory`.
+   * differs deliberately: it excludes `oss` (fails closed, see `storage_factory_for`) and
+   * includes `memory`.
    */
   private val icebergReadableSchemes: Set[String] =
     Set("file", "s3", "s3a", "gs", "oss")

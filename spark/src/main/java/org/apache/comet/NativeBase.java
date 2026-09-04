@@ -319,9 +319,9 @@ public abstract class NativeBase {
 
   /**
    * Check whether Comet's native object_store layer can open the given URL (i.e. the scan would be
-   * natively readable rather than failing at execution with "Unable to recognise URL"). This is
-   * the authoritative answer from object_store's own parser, so the JVM planner never has to
-   * hardcode (and drift from) the set of supported schemes.
+   * natively readable rather than failing at execution with "Unable to recognise URL"). This is the
+   * authoritative answer from object_store's own parser, so the JVM planner never has to hardcode
+   * (and drift from) the set of supported schemes.
    *
    * <p>The parser validates the path as well as the scheme, so a recognized scheme carrying a key
    * object_store forbids (e.g. a directory name containing a newline) also returns false. Callers

@@ -166,8 +166,7 @@ class CometScanSchemeFallbackSuite extends CometTestBase {
         Set("bucket-a", "bucket-b"))
     // Safe scans report at most one bucket: one alias path, or the same bucket via two paths.
     assert(buckets("blob://bucket-a/x.parquet") == Set("bucket-a"))
-    assert(
-      buckets("blob://bucket-a/x.parquet", "blob://bucket-a/y.parquet") == Set("bucket-a"))
+    assert(buckets("blob://bucket-a/x.parquet", "blob://bucket-a/y.parquet") == Set("bucket-a"))
     // No alias path present: plain multi-bucket s3:// is a pre-existing limitation, out of scope.
     assert(buckets("s3://bucket-a/k.parquet", "s3://bucket-b/k.parquet").isEmpty)
   }

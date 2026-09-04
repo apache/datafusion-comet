@@ -62,9 +62,7 @@ class CometS3CredentialBridgeSuite
   }
 
   private def assertHasCometParquetScan(plan: SparkPlan): Unit =
-    assert(
-      cometScans(plan).nonEmpty,
-      s"Expected at least one Comet Parquet scan in plan:\n$plan")
+    assert(cometScans(plan).nonEmpty, s"Expected at least one Comet Parquet scan in plan:\n$plan")
 
   private def assertHasCometIcebergScan(plan: SparkPlan): Unit = {
     val scans = collect(plan) { case p: CometIcebergNativeScanExec => p }

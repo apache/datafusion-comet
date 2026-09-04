@@ -573,11 +573,11 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
    *
    * @param targetBucket
    *   the bucket whose Hadoop per-bucket `fs.s3a.bucket.<b>.*` settings are promoted to global
-   *   `s3.*`. Required with no default: the pinned iceberg-rust S3 parser reads ONLY global `s3.*`
-   *   (never `s3.bucket.*`), so the caller must decide, and a `= None` default would silently
-   *   restore the old lossy behavior for a future caller that forgets to pass it. Both call sites
-   *   pass the DATA bucket, which Iceberg allows to differ from the metadata bucket. TODO: drop
-   *   the promotion once iceberg-rust is unpinned to a release whose S3 parser reads
+   *   `s3.*`. Required with no default: the pinned iceberg-rust S3 parser reads ONLY global
+   *   `s3.*` (never `s3.bucket.*`), so the caller must decide, and a `= None` default would
+   *   silently restore the old lossy behavior for a future caller that forgets to pass it. Both
+   *   call sites pass the DATA bucket, which Iceberg allows to differ from the metadata bucket.
+   *   TODO: drop the promotion once iceberg-rust is unpinned to a release whose S3 parser reads
    *   `s3.bucket.*`.
    */
   def hadoopToIcebergS3Properties(
