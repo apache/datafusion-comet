@@ -769,12 +769,11 @@ fn try_convert_duplicate_field_error(error_msg: &str) -> Option<SparkError> {
         if !matched.iter().any(|f| f == requested_field) {
             matched.push(requested_field.to_string());
         }
-        let required_field_name = requested_field.to_string();
-        let matched_fields = format!("[{}]", matched.join(", "));
-        Some(SparkError::DuplicateFieldCaseInsensitive {
-            required_field_name,
-            matched_fields,
-        })
+        let matched_refs: Vec<&str> = matched.iter().map(String::as_str).collect();
+        Some(SparkError::duplicate_field_case_insensitive(
+            requested_field,
+            &matched_refs,
+        ))
     } else {
         None
     }

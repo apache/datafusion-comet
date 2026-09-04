@@ -24,7 +24,7 @@ import org.scalatest.funsuite.AnyFunSuite
 import org.apache.spark.SparkConf
 import org.apache.spark.serializer.JavaSerializer
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Add, AddMonths, BoundReference, Cast, Coalesce, Concat, CreateArray, CreateMap, DateFormatClass, ElementAt, Expression, GetStructField, LeafExpression, Length, Literal, MakeTimestamp, MicrosToTimestamp, MillisToTimestamp, MonthsBetween, Nondeterministic, Rand, Size, ToUnixTimestamp, Unevaluable, UnixMicros, UnixMillis, UnixSeconds, Upper}
+import org.apache.spark.sql.catalyst.expressions.{Add, AddMonths, BoundReference, Cast, Coalesce, Concat, CreateArray, CreateMap, DateFormatClass, ElementAt, Expression, GetStructField, IntegralDivide, LeafExpression, Length, Literal, MakeTimestamp, MicrosToTimestamp, MillisToTimestamp, MonthsBetween, Nondeterministic, Rand, Size, Substring, ToUnixTimestamp, Unevaluable, UnixMicros, UnixMillis, UnixSeconds, Upper}
 import org.apache.spark.sql.catalyst.expressions.codegen.{CodeFormatter, CodegenContext, CodegenFallback, ExprCode}
 import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
@@ -195,6 +195,47 @@ class CometCodegenSourceSuite extends AnyFunSuite {
     assert(
       !src.contains("if (this.col0.isNull(i))") && !src.contains("if (this.col1.isNullAt(i))"),
       s"expected no pre-eval input-null short-circuit at all for this shape; got:\n$src")
+  }
+
+  test("NullIntolerant short-circuit skipped when a foldable subtree can raise (#5608)") {
+    // The residual hole left by #5218: the single-ordinal branch was unguarded, on the reasoning
+    // that one input ordinal leaves Spark nothing to evaluate ahead of that ordinal's null check.
+    // A foldable subtree between the root and the ordinal breaks that. `ConstantFolding` normally
+    // folds such a subtree away, but it deliberately leaves it in place when evaluating it throws
+    // and it sits inside a conditional branch, so the throwing expression survives into the
+    // physical plan. Here `TernaryExpression.nullSafeCodeGen` emits `Substring`'s `pos` code --
+    // the division -- before it tests `len`'s null, so Spark raises DIVIDE_BY_ZERO on a row where
+    // col0 is null while the short-circuit would return NULL. See CometCodegenSuite for the
+    // end-to-end witness.
+    val intCol = ArrowColumnSpec(
+      CometBatchKernelCodegen.vectorClassBySimpleName("IntVector"),
+      nullable = true)
+    // Bound out so the premise is asserted on the throwing node itself: it must be foldable, or
+    // `noSurvivingFoldableSubtree` has nothing to catch and the test would pass vacuously.
+    val throwingPos =
+      Cast(IntegralDivide(Literal(1L), Literal(0L)), IntegerType, ansiEnabled = true)
+    assert(throwingPos.foldable, "the subtree ConstantFolding leaves in place must be foldable")
+    val expr = Upper(
+      Substring(
+        Literal(UTF8String.fromString("abc"), StringType),
+        throwingPos,
+        BoundReference(0, IntegerType, nullable = true)))
+    val src = gen(expr, intCol)
+    assert(
+      !src.contains("if (this.col0.isNullAt(i))"),
+      s"expected no short-circuit when a foldable subtree under the root can raise; got:\n$src")
+  }
+
+  test("NullIntolerant short-circuit kept when the only foldable nodes are Literals (#5608)") {
+    // Counterpart to the test above, guarding against over-correcting #5608. `Literal` arguments
+    // are foldable by definition and must not disqualify the short-circuit, or the fast path
+    // would be lost for the common `upper(substring(s, 1, 2))` shape.
+    val expr =
+      Upper(Substring(BoundReference(0, StringType, nullable = true), Literal(1), Literal(2)))
+    val src = gen(expr, nullableString)
+    assert(
+      src.contains("if (this.col0.isNull(i))"),
+      s"expected the single-ordinal short-circuit to survive a Literal-only argument list; got:\n$src")
   }
 
   test("NullIntolerant short-circuit kept for a multi-input leaf-only tree (#5218)") {
