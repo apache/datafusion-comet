@@ -19,12 +19,13 @@ use crate::conversion_funcs::boolean::{
     cast_boolean_to_timestamp, is_df_cast_from_bool_spark_compatible,
 };
 use crate::conversion_funcs::numeric::{
-    cast_decimal128_to_utf8, cast_decimal_to_timestamp, cast_float32_to_decimal128,
-    cast_float64_to_decimal128, cast_float_to_timestamp, cast_int_to_decimal128,
-    cast_int_to_timestamp, is_df_cast_from_decimal_spark_compatible,
-    is_df_cast_from_float_spark_compatible, is_df_cast_from_int_spark_compatible,
-    spark_cast_decimal_to_boolean, spark_cast_float32_to_utf8, spark_cast_float64_to_utf8,
-    spark_cast_int_to_int, spark_cast_nonintegral_numeric_to_integral,
+    cast_decimal128_to_float32, cast_decimal128_to_float64, cast_decimal128_to_utf8,
+    cast_decimal_to_timestamp, cast_float32_to_decimal128, cast_float64_to_decimal128,
+    cast_float_to_timestamp, cast_int_to_decimal128, cast_int_to_timestamp,
+    is_df_cast_from_decimal_spark_compatible, is_df_cast_from_float_spark_compatible,
+    is_df_cast_from_int_spark_compatible, spark_cast_decimal_to_boolean,
+    spark_cast_float32_to_utf8, spark_cast_float64_to_utf8, spark_cast_int_to_int,
+    spark_cast_nonintegral_numeric_to_integral,
 };
 use crate::conversion_funcs::string::{
     cast_string_to_date, cast_string_to_decimal, cast_string_to_float, cast_string_to_int,
@@ -327,6 +328,11 @@ pub(crate) fn cast_array(
             spark_cast_nonintegral_numeric_to_integral(&array, eval_mode, &from_type, to_type)
         }
         (Decimal128(_p, _s), Boolean) => spark_cast_decimal_to_boolean(&array),
+        // Spark rounds the exact decimal value once (BigDecimal.doubleValue / floatValue);
+        // DataFusion's `(unscaled as f64) / 10^scale` rounds twice and can be off by one ulp.
+        // The conversion cannot fail, so it is the same in every eval mode.
+        (Decimal128(_, scale), Float64) => cast_decimal128_to_float64(&array, *scale),
+        (Decimal128(_, scale), Float32) => cast_decimal128_to_float32(&array, *scale),
         // Spark LEGACY cast uses Java BigDecimal.toString() which produces scientific notation
         // when adjusted_exponent < -6 (e.g. "0E-18" for zero with scale=18).
         // TRY and ANSI use plain notation ("0.000000000000000000") so DataFusion handles those.
