@@ -72,3 +72,13 @@ SELECT element_at(arr, -10) FROM ansi_element_at_oob
 -- literal with negative out of bounds
 query ignore(https://github.com/apache/datafusion-comet/issues/3375)
 SELECT element_at(array(1, 2, 3), -5)
+
+-- ============================================================================
+-- non-deterministic collection under the ANSI null guard
+-- The serde duplicates the collection into a CASE WHEN null guard, and the two
+-- copies of a non-deterministic collection advance their state independently,
+-- so it stays in Spark.
+-- ============================================================================
+
+query expect_fallback(non-deterministic child under a null guard is evaluated on different rows than Spark's)
+SELECT element_at(transform(IF(monotonically_increasing_id() % 2 = 0, arr, CAST(NULL AS array<int>)), x -> x + 1), 1) FROM ansi_element_at_oob

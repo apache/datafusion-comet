@@ -74,3 +74,11 @@ INSERT INTO test_except_float VALUES
 
 query
 SELECT a, b, array_except(a, b) FROM test_except_float
+
+-- The set-op kernel asserts identical element types, nested nullability included, and the two
+-- sides can arrive with different nested nullability (a literal element is non-nullable, a lambda
+-- variable over a list is not). Both sides are cast to a deeply-nullable element type first.
+-- A nested list rather than a struct, because `isTypeSupported` declines struct elements before
+-- `convert` runs.
+query
+SELECT array_except(transform(a, x -> array(1)), transform(b, x -> array(x))) FROM test_array_except

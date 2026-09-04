@@ -23,12 +23,14 @@ import scala.jdk.CollectionConverters._
 import scala.util.Random
 
 import org.apache.hadoop.fs.Path
-import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.{CometTestBase, Row}
 import org.apache.spark.sql.catalyst.expressions.StructsToCsv
+import org.apache.spark.sql.comet.CometProjectExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.types.StringType
 
+import org.apache.comet.CometSparkSessionExtensions.isSpark35Plus
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator, SchemaGenOptions}
 
 class CometCsvExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
@@ -64,6 +66,28 @@ class CometCsvExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper
                 col("c9"),
                 col("c12"))))
         checkSparkAnswerAndOperator(df)
+      }
+    }
+  }
+
+  test("to_csv - a row that renders empty is NULL") {
+    // Spark hands the row to univocity's `writeRowToString` with `skipEmptyLines`, which turns an
+    // empty rendering (a lone null field under the default empty `nullValue`) into NULL rather
+    // than "". Spark 3.5+ crashes on that NULL in its own generated code
+    // (`nullSafeCodeGen` never marks the result null), so Spark's answer is only comparable on
+    // 3.4; the native answer is pinned on every version.
+    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[StructsToCsv]) -> "true") {
+      val df = spark
+        .range(0, 4, 1, 1)
+        .select(
+          to_csv(struct(when(col("id") > 1, col("id")).as("c"))).as("lone"),
+          to_csv(struct(when(col("id") > 1, col("id")).as("c"), lit(null).as("n"))).as("pair"))
+      if (!isSpark35Plus) {
+        checkSparkAnswerAndOperator(df)
+      } else {
+        checkAnswer(df, Seq(Row(null, ","), Row(null, ","), Row("2", "2,"), Row("3", "3,")))
+        assert(collect(df.queryExecution.executedPlan) { case p: CometProjectExec => p }.nonEmpty)
+        checkSparkAnswerAndOperator(df.select(col("pair")))
       }
     }
   }

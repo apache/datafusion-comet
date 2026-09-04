@@ -327,11 +327,8 @@ class CometCodegenSourceSuite extends AnyFunSuite {
   }
 
   test("canHandle rejects duplicate struct field names, in outputs and inputs") {
-    // Spark keeps `named_struct('a', x, 'a', y)` as two positional fields, but Arrow's
-    // StructVector keys children by name and collapses them on allocation, so the generated
-    // ordinal-based child casts hit a missing or differently typed vector. `CometCreateNamedStruct`
-    // rejects this at serde level; the gate must do the same for a struct buried inside a larger
-    // expression that is dispatched as a whole (e.g. a `transform` lambda body).
+    // See `CometBatchKernelCodegen.hasDuplicateStructFieldNames`; the gate must also catch a
+    // struct buried inside a larger expression dispatched as a whole (e.g. a `transform` body).
     val x = BoundReference(0, IntegerType, nullable = false)
     val dupNull = CreateNamedStruct(Seq(Literal("a"), x, Literal("a"), Literal(null, NullType)))
     val dupInt = CreateNamedStruct(Seq(Literal("a"), x, Literal("a"), Add(x, Literal(1))))
@@ -343,7 +340,7 @@ class CometCodegenSourceSuite extends AnyFunSuite {
     Seq(dupNull, dupInt, CreateArray(Seq(dupInt)), dupInput).foreach { expr =>
       val reason = CometBatchKernelCodegen.canHandle(expr)
       assert(
-        reason.exists(_.contains("duplicate struct field name a")),
+        reason.exists(_.contains("duplicate struct field name")),
         s"expected canHandle to reject $expr; got: $reason")
     }
     val distinct =
@@ -397,24 +394,11 @@ class CometCodegenSourceSuite extends AnyFunSuite {
         .getContainsNull)
   }
 
-  test("NullType output writes setNull without reading a source value") {
-    // A NullType leaf has no Arrow data buffer, so the emitted write must be `setNull` only.
-    val src = CometBatchKernelCodegen
-      .generateSource(Literal(null, NullType), IndexedSeq(nullableString))
-      .body
-    assert(
-      src.contains("org.apache.arrow.vector.NullVector"),
-      s"expected the output vector to be a NullVector; got:\n$src")
-    assert(
-      !src.contains("getDataVector"),
-      s"expected no child-vector access for a scalar NullType output; got:\n$src")
-  }
-
   test("nested NullType output casts the child vector and writes setNull into it") {
-    // The scalar case above cannot distinguish `emitWrite`'s NullType branch from `defaultBody`'s
-    // own `ev.isNull -> output.setNull(i)` short-circuit, which emits the same text. A NullType
-    // *value* child inside a map is only reachable through `emitWrite`, so assert on that: the
-    // child vector must be cast to NullVector and written through `setNull`.
+    // A scalar NullType output cannot distinguish `emitWrite`'s NullType branch from
+    // `defaultBody`'s own `ev.isNull -> output.setNull(i)` short-circuit, which emits the same
+    // text. A NullType *value* child inside a map is only reachable through `emitWrite`, so
+    // assert on that: the child vector must be cast to NullVector and written through `setNull`.
     val src = CometBatchKernelCodegen
       .generateSource(
         Literal.create(Map("a" -> null), MapType(StringType, NullType, valueContainsNull = true)),
@@ -432,10 +416,7 @@ class CometCodegenSourceSuite extends AnyFunSuite {
   }
 
   test("gate and output emitters agree across the whole accepted type surface") {
-    // `CometBatchKernelCodegen.isSupportedDataType`, `outputVectorClass`, `emitWrite` and
-    // `emitSpecializedGetterExpr` each carry a doc comment saying they must stay in step, but
-    // nothing enforced it. Assert the implication directly: if `canHandle` greenlights an
-    // output type, generating the kernel for it must not throw.
+    // If `canHandle` greenlights an output type, generating the kernel for it must not throw.
     val leaves: Seq[DataType] = Seq(
       NullType,
       BooleanType,

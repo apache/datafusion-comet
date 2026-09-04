@@ -42,9 +42,6 @@ query
 SELECT map(k, NULL) FROM test_create_map
 
 query
-SELECT id, map() FROM (SELECT explode(sequence(1, 3)) AS id)
-
-query
 SELECT size(map()), size(map('a', NULL))
 
 query

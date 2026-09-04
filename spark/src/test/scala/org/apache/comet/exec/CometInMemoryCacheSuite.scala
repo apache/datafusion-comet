@@ -724,6 +724,39 @@ class CometInMemoryCacheSuite extends CometTestBase {
     }
   }
 
+  test("Comet in-memory cache round-trips NullType columns and children") {
+    withNativeCache {
+      // Non-foldable NullType shapes (each references `id`), so the cached batches hold Arrow
+      // NullVectors at the top level and under a list, a map value and a struct field rather
+      // than literals folded away at plan time. The nullable IF shape puts a NULL row around a
+      // NullType-bearing struct.
+      val query =
+        """
+          SELECT
+            id AS l,
+            aggregate(array(id), NULL, (acc, x) -> NULL) AS n,
+            transform(array(id), x -> NULL) AS an,
+            map(id, NULL) AS mn,
+            named_struct('a', id, 'b', NULL) AS sn,
+            IF(id % 2 = 0, named_struct('a', id, 'b', NULL), NULL) AS sno
+          FROM range(100)
+        """
+      val expected = spark.sql(query).orderBy("l").collect()
+
+      spark.sql(query).createOrReplaceTempView("null_types_cache")
+      spark.catalog.cacheTable("null_types_cache")
+      spark.table("null_types_cache").count()
+
+      assert(
+        cachedBatchTypes("null_types_cache").sameElements(
+          Array("org.apache.spark.sql.comet.execution.arrow.CometCachedBatch")))
+
+      val df = spark.sql("SELECT * FROM null_types_cache").orderBy("l")
+      assert(df.collect() === expected)
+      assert(df.queryExecution.executedPlan.toString().contains("CometInMemoryTableScan"))
+    }
+  }
+
   test("Comet in-memory cache prunes only on columns that have bounds") {
     assume(isSpark40Plus, "collated string types require Spark 4.0+")
     withNativeCache {

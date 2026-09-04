@@ -174,14 +174,12 @@ object Utils extends CometTypeShim with Logging {
 
   /**
    * Nullability to declare for a nested child (array element, struct field, map value) of type
-   * `dataType`. A `NullType` child is always declared nullable, whatever Spark's `containsNull` /
-   * `valueContainsNull` / `StructField.nullable` says: every value is null, so a non-nullable
-   * flag is a contradiction, and native kernels that rebuild a list around the input's actual
-   * child (DataFusion's `map_entries` and `array_repeat`, Comet's `spark_array_slice`, ...)
-   * compare that child's nullability with the one they assume and fail on the mismatch
-   * (`map_entries(map_filter(map(), ...))`, `slice(filter(array(), ...), 1, 1)`). Applied here
-   * and in `QueryPlanSerde.serializeDataType` so the JVM-exported field and the type declared to
-   * native agree. Map keys are not children in this sense: Arrow requires them non-nullable.
+   * `dataType`. A `NullType` child is always declared nullable, whatever Spark's flag says: every
+   * value is null, so a non-nullable flag is a contradiction, and native kernels that rebuild a
+   * list around the input's actual child compare that child's nullability with the one they
+   * assume and fail on the mismatch. Applied here and in `QueryPlanSerde.serializeDataType` so
+   * the JVM-exported field and the type declared to native agree. Map keys are not children in
+   * this sense: Arrow requires them non-nullable.
    */
   def declaredChildNullability(dataType: DataType, nullable: Boolean): Boolean =
     nullable || dataType == NullType
@@ -318,15 +316,8 @@ object Utils extends CometTypeShim with Logging {
 
   /**
    * The only supported way to build an `ArrowStreamWriter` in Comet; enforced by the scalastyle
-   * `arrowstreamwriter` rule.
-   *
-   * Arrow requires map keys to be non-nullable and rejects a stream whose schema violates that
-   * ("Map data key type should be a non-nullable"). Comet always declares keys non-nullable in
-   * `toArrowField`, but Arrow's `MinorType.NULL` factory discards the field it is handed and
-   * rebuilds a nullable one (`Types.java` returns `new NullVector(field.getName())` even though
-   * `NullVector(Field)` exists), so any `NullType` map key silently turns nullable once a vector
-   * exists for it. Repairing here, rather than at each call site, means a new IPC writer cannot
-   * reintroduce the bug by forgetting to ask.
+   * `arrowstreamwriter` rule. Repairs the declared schema with [[withNonNullableMapKeys]], so a
+   * new IPC writer cannot reintroduce the nullable `NullType` map key by forgetting to ask.
    *
    * Returns the writer together with the root it is bound to, which is `root` itself unless the
    * declared schema needed repairing. Callers must use the returned root: a writer serializes the
@@ -527,9 +518,8 @@ object Utils extends CometTypeShim with Logging {
             // - Comet decodes dictionaries during execution, so a dictionary-encoded column
             //   shouldn't happen. If it does, each partition can have a different dictionary,
             //   and appending index vectors would silently mix incompatible dictionaries.
-            // - `VectorSchemaRootAppender` loops forever on a `NullVector` that is a direct
-            //   child of a struct or of a map entry, e.g. `map(k, NULL)` or `map()`; see
-            //   `hasNullDirectlyUnderStruct` for the Arrow mechanics.
+            // - `VectorSchemaRootAppender` cannot grow a `NullVector` directly under a struct
+            //   (see `hasNullDirectlyUnderStruct`).
             val skipReason =
               if (!reader.getDictionaryVectors.isEmpty) {
                 Some("unexpected dictionary-encoded column")
