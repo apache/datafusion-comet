@@ -197,9 +197,8 @@ This file is divided into 3 sections:
     <parameters><parameter name="regex">new ArrowStreamWriter</parameter></parameters>
     <customMessage><![CDATA[
       Are you sure that you want to use new ArrowStreamWriter? In most cases, you should use
-      Utils.newArrowStreamWriter instead. Arrow's MinorType.NULL factory discards the field it is
-      given and rebuilds a nullable one, so a NullType map key reaches the IPC reader nullable and
-      is rejected with "Map data key type should be a non-nullable".
+      Utils.newArrowStreamWriter instead, which repairs the NullType map keys Arrow reports as
+      nullable (see its scaladoc).
       If you must use new ArrowStreamWriter, wrap the code block with
       // scalastyle:off arrowstreamwriter
       new ArrowStreamWriter(...)

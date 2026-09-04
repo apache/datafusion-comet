@@ -113,3 +113,11 @@ SELECT id,
        element_at(IF(monotonically_increasing_id() % 2 = 0, CAST(NULL AS ARRAY<INT>), array(1)), 1) AS v1,
        element_at(IF(rand(7L) < 2, CAST(NULL AS ARRAY<INT>), array(1)), 1 + (id % (id - 2))) AS v2
 FROM ansi_element_at_null
+
+-- non-deterministic collection under the ANSI null guard, built by a lambda
+-- The same restriction as above reached through the JVM codegen dispatcher: the guard's two
+-- copies of the dispatched `transform` share one kernel and its state, so it stays in Spark.
+-- ============================================================================
+
+query expect_fallback(nullable nondeterministic array or map operand)
+SELECT element_at(transform(IF(monotonically_increasing_id() % 2 = 0, arr, CAST(NULL AS array<int>)), x -> x + 1), 1) FROM ansi_element_at_oob

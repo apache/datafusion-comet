@@ -22,10 +22,30 @@ package org.apache.comet.serde
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, CaseWhen, Coalesce, Expression, If, IsNotNull}
+import org.apache.spark.sql.types.NullType
 
 import org.apache.comet.serde.QueryPlanSerde.exprToProtoInternal
 
+/**
+ * Native CASE merges the rows each branch produced with Arrow's `merge_n`, which builds the
+ * result through a `MutableArrayData` that carries a validity bitmap; a `NullArray` cannot hold
+ * one ("Arrays of type Null cannot contain a null bitmask"), so a CASE whose result type is
+ * `NullType` fails whenever more than one branch contributes rows. Spark normally folds such an
+ * expression away (`IF(c, NULL, NULL)`), but a `NullType`-typed non-foldable branch keeps it.
+ */
+private[serde] object NullTypeBranches {
+  def supportLevel(expr: Expression): SupportLevel =
+    if (expr.dataType == NullType) {
+      Unsupported(Some("native CASE cannot merge NullType branches"))
+    } else {
+      Compatible()
+    }
+}
+
 object CometIf extends CometExpressionSerde[If] {
+
+  override def getSupportLevel(expr: If): SupportLevel = NullTypeBranches.supportLevel(expr)
+
   override def convert(
       expr: If,
       inputs: Seq[Attribute],
@@ -50,6 +70,10 @@ object CometIf extends CometExpressionSerde[If] {
 }
 
 object CometCaseWhen extends CometExpressionSerde[CaseWhen] {
+
+  override def getSupportLevel(expr: CaseWhen): SupportLevel =
+    NullTypeBranches.supportLevel(expr)
+
   override def convert(
       expr: CaseWhen,
       inputs: Seq[Attribute],
@@ -89,6 +113,15 @@ object CometCaseWhen extends CometExpressionSerde[CaseWhen] {
 }
 
 object CometCoalesce extends CometExpressionSerde[Coalesce] {
+
+  // Every child but the last is a guard; the last one is the ELSE, evaluated on the rows the
+  // guards left over. The result is a native CASE, so it shares that serde's NullType rule.
+  override def getSupportLevel(expr: Coalesce): SupportLevel =
+    NullTypeBranches.supportLevel(expr) match {
+      case _: Compatible => NullGuard.supportLevel(expr.children: _*)
+      case unsupported => unsupported
+    }
+
   override def convert(
       expr: Coalesce,
       inputs: Seq[Attribute],

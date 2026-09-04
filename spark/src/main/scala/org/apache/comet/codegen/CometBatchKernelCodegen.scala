@@ -82,11 +82,8 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim with Come
    * Type surface the kernel covers on both input and output sides. Recursive: complex types are
    * supported when their children are.
    *
-   * Duplicate struct field names are excluded, an output-side rule: Arrow addresses a
-   * `StructVector`'s children by name, so `named_struct('x', 10, 'x', 20)` collapses into a
-   * single child and the generated writer NPEs on the missing ordinal-1 vector.
-   * `CometCreateNamedStruct` declines them on the native path for the same reason, but a struct
-   * nested inside a dispatcher-built value (a `CreateMap` value) never reaches that check.
+   * Duplicate struct field names are a separate rule, [[hasDuplicateStructFieldNames]], so that
+   * [[canHandle]] can name them in its reason.
    *
    * `NullType` is output-only: [[CometBatchKernelCodegenOutput]] can write an all-null Arrow
    * `NullVector`, but `CometScalaUDFCodegen.specFor` cannot build an [[ArrowColumnSpec]] for one,
@@ -104,11 +101,7 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim with Come
     case dt if isTimeType(dt) => true
     case _: YearMonthIntervalType | _: DayTimeIntervalType | CalendarIntervalType => true
     case ArrayType(inner, _) => isSupportedDataType(inner, allowNullType)
-    case st: StructType =>
-      // `fieldNames` rebuilds an array on each call, so read it once.
-      val names = st.fieldNames
-      names.distinct.length == names.length &&
-      st.fields.forall(f => isSupportedDataType(f.dataType, allowNullType))
+    case st: StructType => st.fields.forall(f => isSupportedDataType(f.dataType, allowNullType))
     case mt: MapType =>
       isSupportedDataType(mt.keyType, allowNullType) &&
       isSupportedDataType(mt.valueType, allowNullType)
@@ -116,24 +109,33 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim with Come
   }
 
   /**
-   * Names that repeat within one struct, searched recursively through `dataType`. Spark keeps
-   * duplicate struct field names as distinct positional fields, but Arrow's `StructVector` keys
-   * its children by name (`ConflictPolicy.CONFLICT_REPLACE` by default), so
-   * `initializeChildrenFromFields` collapses the duplicates and the generated ordinal-based child
-   * casts hit a missing or differently typed vector. `CometCreateNamedStruct` refuses the same
-   * shape at the serde level, but whole-expression dispatch never consults that rule for a
-   * `named_struct` nested inside e.g. a `transform` lambda, so [[canHandle]] re-checks here.
+   * Spark keeps duplicate struct field names as distinct positional fields, but Arrow's
+   * `StructVector` keys its children by name (`ConflictPolicy.CONFLICT_REPLACE`), so
+   * `named_struct('x', 10, 'x', 20)` collapses into a single child and the generated
+   * ordinal-based child casts hit a missing or differently typed vector. `CometCreateNamedStruct`
+   * refuses the same shape on the native path, but whole-expression dispatch never consults that
+   * rule for a `named_struct` nested inside e.g. a `transform` lambda or a `CreateMap` value.
    */
-  private def duplicateStructFieldNames(dataType: DataType): Seq[String] = dataType match {
+  private def hasDuplicateStructFieldNames(dt: DataType): Boolean = dt match {
     case st: StructType =>
-      val names = st.fieldNames.toSeq
-      val dups = names.diff(names.distinct).distinct
-      if (dups.nonEmpty) dups else st.fields.flatMap(f => duplicateStructFieldNames(f.dataType))
-    case ArrayType(inner, _) => duplicateStructFieldNames(inner)
-    case MapType(keyType, valueType, _) =>
-      duplicateStructFieldNames(keyType) ++ duplicateStructFieldNames(valueType)
-    case _ => Nil
+      // `fieldNames` rebuilds an array on each call, so read it once.
+      val names = st.fieldNames
+      names.distinct.length != names.length ||
+      st.fields.exists(f => hasDuplicateStructFieldNames(f.dataType))
+    case ArrayType(inner, _) => hasDuplicateStructFieldNames(inner)
+    case MapType(k, v, _) => hasDuplicateStructFieldNames(k) || hasDuplicateStructFieldNames(v)
+    case _ => false
   }
+
+  /** Why `dt` cannot cross the kernel boundary as `side` ("output" or "input"), if it cannot. */
+  private def typeRejection(dt: DataType, allowNullType: Boolean, side: String): Option[String] =
+    if (!isSupportedDataType(dt, allowNullType)) {
+      Some(s"codegen dispatch: unsupported $side type $dt")
+    } else if (hasDuplicateStructFieldNames(dt)) {
+      Some(s"codegen dispatch: unsupported $side type $dt (duplicate struct field name)")
+    } else {
+      None
+    }
 
   /**
    * Mirrors `WholeStageCodegenExec.numOfNestedFields` so [[canHandle]] can reuse
@@ -152,18 +154,13 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim with Come
    * back cleanly rather than crashing the Janino compile at execute time.
    *
    * Checks every `BoundReference`'s data type and the root `expr.dataType` against
-   * [[isSupportedDataType]] and [[duplicateStructFieldNames]], rejects aggregates / generators /
-   * `Unevaluable`, and gates total nested-field count on `spark.sql.codegen.maxFields`.
+   * [[isSupportedDataType]] and [[hasDuplicateStructFieldNames]], rejects aggregates, generators
+   * and `Unevaluable`, and gates total nested-field count on `spark.sql.codegen.maxFields`.
    */
   def canHandle(boundExpr: Expression): Option[String] = {
-    if (!isSupportedDataType(boundExpr.dataType, allowNullType = true)) {
-      return Some(s"codegen dispatch: unsupported output type ${boundExpr.dataType}")
-    }
-    val outputDups = duplicateStructFieldNames(boundExpr.dataType)
-    if (outputDups.nonEmpty) {
-      return Some(
-        s"codegen dispatch: duplicate struct field name ${outputDups.mkString(", ")} " +
-          s"in output type ${boundExpr.dataType}")
+    typeRejection(boundExpr.dataType, allowNullType = true, "output") match {
+      case Some(reason) => return Some(reason)
+      case None =>
     }
     // Mirror WSCG's `spark.sql.codegen.maxFields` gate. Wide schemas blow the generated class's
     // typed input field count, the typed-getter switch, and the constant pool. Refuse here so the
@@ -218,17 +215,9 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim with Come
 
   /** Why `expr` cannot be read as a codegen input, if it cannot. */
   private def inputRejection(expr: Expression): Option[String] = expr match {
-    case b: BoundReference if !isSupportedDataType(b.dataType) =>
-      Some(s"codegen dispatch: unsupported input type ${b.dataType} at ordinal ${b.ordinal}")
     case b: BoundReference =>
-      val dups = duplicateStructFieldNames(b.dataType)
-      if (dups.isEmpty) {
-        None
-      } else {
-        Some(
-          s"codegen dispatch: duplicate struct field name ${dups.mkString(", ")} " +
-            s"in input type ${b.dataType} at ordinal ${b.ordinal}")
-      }
+      typeRejection(b.dataType, allowNullType = false, "input")
+        .map(reason => s"$reason at ordinal ${b.ordinal}")
     case _ => None
   }
 
