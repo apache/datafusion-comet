@@ -112,6 +112,10 @@ name = "normalize_nan"
 harness = false
 
 [[bench]]
+name = "sort_float_keys"
+harness = false
+
+[[bench]]
 name = "to_csv"
 harness = false
 
@@ -240,6 +244,26 @@ name = "abs"
 harness = false
 
 [[bench]]
+name = "isnan"
+harness = false
+
+[[bench]]
+name = "rlike"
+harness = false
+
+[[bench]]
+name = "create_named_struct"
+harness = false
+
+[[bench]]
+name = "get_struct_field"
+harness = false
+
+[[bench]]
+name = "from_json"
+harness = false
+
+[[bench]]
 name = "modulo"
 harness = false
 
@@ -261,4 +285,20 @@ harness = false
 
 [[bench]]
 name = "contains"
+harness = false
+
+[[bench]]
+name = "timestamp_trunc"
+harness = false
+
+[[bench]]
+name = "unix_timestamp"
+harness = false
+
+[[bench]]
+name = "from_utc_timestamp"
+harness = false
+
+[[bench]]
+name = "to_utc_timestamp"
 harness = false

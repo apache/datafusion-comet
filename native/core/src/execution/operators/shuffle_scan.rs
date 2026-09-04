@@ -20,7 +20,7 @@ use crate::{
     execution::{
         operators::ExecutionError,
         planner::TEST_EXEC_CONTEXT_ID,
-        shuffle::{read_ipc_compressed, read_ipc_compressed_validated, validate_remote_schema},
+        shuffle::{decode_remote_shuffle_batch, read_ipc_compressed},
     },
     jvm_bridge::{jni_call, JVMClasses},
 };
@@ -234,11 +234,9 @@ fn decode_shuffle_batch(
     requires_validation: bool,
 ) -> DataFusionResult<RecordBatch> {
     if requires_validation {
-        let batch = read_ipc_compressed_validated(bytes)?;
-        // Validate before unpack_dictionary or cast_and_stamp_schema can hide an incompatible
-        // wire type by changing values. Keep failures inside get_next's recovery callback.
-        validate_remote_schema(&batch, expected_types)?;
-        Ok(batch)
+        // Validate logical types before decoding dictionaries or normalizing nested fields.
+        // Keep both validation and normalization failures inside get_next's recovery callback.
+        decode_remote_shuffle_batch(bytes, expected_types)
     } else {
         check_column_count(read_ipc_compressed(bytes)?, expected_types.len())
     }
@@ -456,7 +454,7 @@ mod tests {
         };
         payload[signed_flag] = 0;
 
-        let decoded = super::read_ipc_compressed_validated(&payload).unwrap();
+        let decoded = crate::execution::shuffle::read_ipc_compressed_validated(&payload).unwrap();
         assert_eq!(decoded.num_columns(), 1);
         assert_eq!(decoded.column(0).data_type(), &DataType::UInt32);
         assert_eq!(
@@ -572,13 +570,13 @@ mod tests {
     fn test_dictionary_encoded_shuffle_block_is_unpacked() {
         use super::*;
         use arrow::array::StringDictionaryBuilder;
-        use arrow::datatypes::Int32Type;
+        use arrow::datatypes::Int8Type;
         use datafusion::physical_plan::ExecutionPlan;
         use futures::StreamExt;
 
         // Build a batch with a dictionary-encoded string column (simulating what
         // the native shuffle writer produces for string columns).
-        let mut dict_builder = StringDictionaryBuilder::<Int32Type>::new();
+        let mut dict_builder = StringDictionaryBuilder::<Int8Type>::new();
         dict_builder.append_value("hello");
         dict_builder.append_value("world");
         dict_builder.append_value("hello"); // repeated value, good for dictionary
@@ -589,7 +587,7 @@ mod tests {
             Field::new("id", DataType::Int32, false),
             Field::new(
                 "name",
-                DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8)),
+                DataType::Dictionary(Box::new(DataType::Int8), Box::new(DataType::Utf8)),
                 true,
             ),
         ]));
@@ -618,14 +616,17 @@ mod tests {
         let bytes = buf.into_inner();
         let body = &bytes[16..];
 
-        // Remote schema validation must preserve the writer's dictionary representation.
+        // Local decoding preserves the wire encoding for get_next to unpack. Remote decoding
+        // validates and unpacks first, so the same result can also be safely imported by the JVM.
+        let local =
+            super::decode_shuffle_batch(body, &[DataType::Int32, DataType::Utf8], false).unwrap();
+        assert!(matches!(
+            local.column(1).data_type(),
+            DataType::Dictionary(_, _)
+        ));
         let decoded =
             super::decode_shuffle_batch(body, &[DataType::Int32, DataType::Utf8], true).unwrap();
-        assert!(
-            matches!(decoded.column(1).data_type(), DataType::Dictionary(_, _)),
-            "Expected dictionary-encoded column from IPC, got {:?}",
-            decoded.column(1).data_type()
-        );
+        assert_eq!(decoded.column(1).data_type(), &DataType::Utf8);
 
         // Create ShuffleScanExec with value types (Utf8, not Dictionary) — this is
         // what the protobuf schema provides.

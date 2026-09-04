@@ -328,9 +328,11 @@ object CometConf extends ShimCometConf {
       .withAlternative(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.enabled")
       .category(CATEGORY_SHUFFLE)
       .doc(
-        "Whether to enable Comet native shuffle. " +
+        "Whether to enable Comet shuffle. " +
           "Note that this requires setting `spark.shuffle.manager` to " +
-          "`org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager`. " +
+          "`org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager` or " +
+          "`org.apache.spark.sql.comet.execution.shuffle.CometCelebornShuffleManager`. " +
+          "Celeborn requires explicit native mode and compatible application settings. " +
           "`spark.shuffle.manager` must be set before starting the Spark application and " +
           "cannot be changed during the application.")
       .booleanConf
@@ -351,11 +353,10 @@ object CometConf extends ShimCometConf {
   val COMET_SHUFFLE_MODE: ConfigEntry[String] = conf("spark.comet.shuffle.mode")
     .withAlternative(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.mode")
     .category(CATEGORY_SHUFFLE)
-    .doc(
-      "This is test config to allow tests to force a particular shuffle implementation to be " +
-        "used. Valid values are `jvm` for Columnar Shuffle, `native` for Native Shuffle, " +
-        s"and `auto` to pick the best supported option (`native` has priority). $TUNING_GUIDE.")
-    .internal()
+    .doc("Select the Comet shuffle implementation: `jvm` for Columnar Shuffle, " +
+      "`native` for Native Shuffle, and `auto` to pick the best supported option " +
+      "(`native` has priority). With CometCelebornShuffleManager, only explicit `native` " +
+      s"mode enables Comet shuffle; `auto` and `jvm` retain Spark/Celeborn shuffle. $TUNING_GUIDE.")
     .stringConf
     .transform(_.toLowerCase(Locale.ROOT))
     .checkValues(Set("native", "jvm", "auto"))
@@ -545,6 +546,18 @@ object CometConf extends ShimCometConf {
       .internal()
       .intConf
       .createWithDefault(Int.MaxValue)
+
+  val COMET_SHUFFLE_JVM_MEMORY_WAIT_TIMEOUT: ConfigEntry[Long] =
+    conf("spark.comet.shuffle.jvm.memoryWaitTimeout")
+      .category(CATEGORY_SHUFFLE)
+      .doc(
+        "How long a Comet JVM (columnar) shuffle task running in on-heap mode waits for other " +
+          "tasks to free shared shuffle pool memory before failing with an out-of-memory error " +
+          "(Spark may then retry the task). The wait ends earlier when it provably cannot " +
+          "succeed. This is an internal config for testing purpose or advanced tuning.")
+      .internal()
+      .timeConf(TimeUnit.MILLISECONDS)
+      .createWithDefault(TimeUnit.MINUTES.toMillis(5))
 
   val COMET_SHUFFLE_JVM_MEMORY_FACTOR: ConfigEntry[Double] =
     conf("spark.comet.shuffle.jvm.memoryFactor")
