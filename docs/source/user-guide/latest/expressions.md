@@ -155,7 +155,7 @@ The tables below list every Spark built-in expression with its current status.
 | `array_except` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default; the incompatible native path is opt-in via allowIncompatible ([details](compatibility/expressions/array.md)) |
 | `array_insert` | ✅ | Native |  |
 | `array_intersect` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default; the incompatible native path is opt-in via allowIncompatible ([details](compatibility/expressions/array.md)) |
-| `array_join` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default; the incompatible native path is opt-in via allowIncompatible ([details](compatibility/expressions/array.md)) |
+| `array_join` | ✅ | Hybrid | Native for literal or column delimiter and null replacement; other cases and non-UTF8_BINARY collations use the JVM codegen dispatcher ([details](compatibility/expressions/array.md)) |
 | `array_max` | ✅ | Native | NaN ordering may differ ([details](compatibility/floating-point.md)) |
 | `array_min` | ✅ | Native | NaN ordering may differ ([details](compatibility/floating-point.md)) |
 | `array_position` | ✅ | Native | Binary/struct/map/null elements fall back |
@@ -465,7 +465,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `random` | ✅ | Native | Alias for `rand` (Spark 4.0+); seed must be a literal |
 | `randstr` | ✅ | Native | Random string (Spark 4.0+); length and seed must be literals |
 | `rint` | ✅ | Native |  |
-| `round` | ✅ | Native | Float/double inputs fall back |
+| `round` | ✅ | Hybrid | Float/double inputs route through the JVM codegen dispatcher; other types run natively |
 | `sec` | ✅ | Native |  |
 | `shiftleft` | ✅ | Native |  |
 | `sign` | ✅ | Native |  |

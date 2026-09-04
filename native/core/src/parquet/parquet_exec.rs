@@ -18,6 +18,7 @@
 use crate::execution::operators::ExecutionError;
 use crate::parquet::eager_page_index_reader_factory::EagerPageIndexReaderFactory;
 use crate::parquet::encryption_support::{CometEncryptionConfig, ENCRYPTION_FACTORY_ID};
+use crate::parquet::name_fold::fold_schema_names;
 use crate::parquet::parquet_support::SparkParquetOptions;
 use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
 use arrow::datatypes::{Field, SchemaRef};
@@ -33,17 +34,10 @@ use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr_adapter::PhysicalExprAdapterFactory;
 use datafusion::prelude::SessionContext;
 use datafusion::scalar::ScalarValue;
-use datafusion_comet_spark_expr::{EvalMode, GetStructField};
+use datafusion_comet_spark_expr::EvalMode;
 use datafusion_datasource::TableSchema;
 use std::collections::HashMap;
 use std::sync::Arc;
-
-/// True when the expression reads a struct field (directly or in any child), i.e. the
-/// predicate references a nested column.
-fn references_nested_field(expr: &Arc<dyn PhysicalExpr>) -> bool {
-    expr.downcast_ref::<GetStructField>().is_some()
-        || expr.children().iter().any(|c| references_nested_field(c))
-}
 
 /// Initializes a DataSourceExec plan with a ParquetSource for Comet's native Parquet scan.
 ///
@@ -100,16 +94,14 @@ pub(crate) fn init_datasource_exec(
     );
     spark_parquet_options.use_field_id = use_field_id;
     spark_parquet_options.ignore_missing_field_id = ignore_missing_field_id;
-    // Spark only avoids the TIMESTAMP_MILLIS overflow error for filtered-out values through
-    // row-group statistics pruning. DataFusion can neither prune nested-field predicates
-    // (`PruningPredicate` has no nested-field support) nor evaluate them as Parquet row
-    // filters (struct columns are classified non-pushable), so a scan carrying such a
-    // predicate would decode row groups Spark prunes and fail on the checked conversion of
-    // any overflowing top-level column. Fall back to the safe cast (overflow -> NULL) for
-    // these scans; the filter above the scan then discards the rows like Spark's pruning.
+    // Spark can discard filtered-out values before timestamp conversion using statistics,
+    // dictionary, and row-level filters. Comet cannot mirror every pruning path, so applying
+    // checked conversion in a filtered scan can fail on values Spark never reads. Preserve the
+    // existing safe cast for filtered scans and use checked conversion only when every value is
+    // necessarily read.
     spark_parquet_options.checked_timestamp_overflow = !data_filters
         .as_ref()
-        .is_some_and(|filters| filters.iter().any(references_nested_field));
+        .is_some_and(|filters| !filters.is_empty());
 
     // Determine the schema and projection to use for ParquetSource.
     // When data_schema is provided, use it as the base schema so DataFusion knows the full
@@ -120,18 +112,14 @@ pub(crate) fn init_datasource_exec(
             // Compute projection: map required_schema field names to data_schema indices.
             // This is needed for schema pruning when the data_schema has more columns than
             // the required_schema.
-            let projection: Vec<usize> = required_schema
-                .fields()
+            // Fold the data and required field names once (the same JVM `toLowerCase(Locale.ROOT)`
+            // fold the schema adapter uses), then match on the folded names so this plan-time
+            // projection stays consistent with the adapter's case-insensitive remap.
+            let data_folded = fold_schema_names(schema, case_sensitive);
+            let required_folded = fold_schema_names(&required_schema, case_sensitive);
+            let projection: Vec<usize> = required_folded
                 .iter()
-                .filter_map(|req_field| {
-                    schema.fields().iter().position(|data_field| {
-                        if case_sensitive {
-                            data_field.name() == req_field.name()
-                        } else {
-                            data_field.name().to_lowercase() == req_field.name().to_lowercase()
-                        }
-                    })
-                })
+                .filter_map(|req| data_folded.iter().position(|d| d == req))
                 .collect();
             // Only use data_schema + projection when all required fields were found by name.
             // When some fields can't be matched (e.g., Parquet field ID mapping where names

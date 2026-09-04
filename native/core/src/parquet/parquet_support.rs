@@ -16,6 +16,7 @@
 // under the License.
 
 use crate::execution::operators::ExecutionError;
+use crate::parquet::name_fold::fold_names;
 use arrow::array::{FixedSizeBinaryArray, ListArray, MapArray, StringArray};
 use arrow::buffer::NullBuffer;
 use arrow::compute::can_cast_types;
@@ -34,6 +35,7 @@ use datafusion::error::DataFusionError;
 use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::physical_plan::ColumnarValue;
+use datafusion_comet_common::SparkError;
 use datafusion_comet_spark_expr::EvalMode;
 use log::debug;
 use object_store::path::Path;
@@ -101,13 +103,9 @@ pub struct SparkParquetOptions {
     pub allow_timestamp_ltz_to_ntz: bool,
     /// When true (the default), a top-level TIMESTAMP_MILLIS column that overflows during
     /// the millis->micros upscale raises an error, matching Spark's checked
-    /// `millisToMicros`. Scans whose data filters reference nested struct fields set this
-    /// to false and fall back to the safe cast (overflow -> NULL): Spark only avoids the
-    /// overflow error for filtered-out values through row-group statistics pruning, and
-    /// DataFusion can neither prune (`PruningPredicate` has no nested-field support) nor
-    /// row-filter (struct columns are classified non-pushable in
-    /// `can_expr_be_pushed_down_with_schemas`) such predicates, so a checked conversion
-    /// would fail queries Spark answers with zero rows.
+    /// `millisToMicros`. Filtered scans set this to false and retain the safe cast
+    /// (overflow -> NULL), because Spark may discard values through pruning paths that
+    /// DataFusion cannot fully mirror before conversion.
     pub checked_timestamp_overflow: bool,
 }
 
@@ -318,29 +316,55 @@ fn parquet_convert_struct_to_struct(
                 HashMap::new()
             };
 
-            let normalize_name = |name: &str| -> String {
-                if parquet_options.case_sensitive {
-                    name.to_string()
-                } else {
-                    name.to_lowercase()
-                }
-            };
-            let mut field_name_to_index_map = HashMap::new();
-            for (i, field) in from_fields.iter().enumerate() {
-                field_name_to_index_map.insert(normalize_name(field.name()), i);
+            // Fold the file (`from`) and requested (`to`) field names once via the JVM's
+            // `toLowerCase(Locale.ROOT)` (the same fold the top-level schema adapter uses), so
+            // nested case-insensitive matching is byte-for-byte consistent with the top level.
+            let mut all_names: Vec<&str> = Vec::with_capacity(from_fields.len() + to_fields.len());
+            all_names.extend(from_fields.iter().map(|f| f.name().as_str()));
+            all_names.extend(to_fields.iter().map(|f| f.name().as_str()));
+            let all_folded = fold_names(&all_names, parquet_options.case_sensitive);
+            let (from_folded, to_folded) = all_folded.split_at(from_fields.len());
+
+            // Group file field indices by folded name so a case-insensitive collision is detected
+            // (Spark's `caseInsensitiveParquetFieldMap`) rather than silently overwritten.
+            let mut folded_to_indices: HashMap<&str, Vec<usize>> = HashMap::new();
+            for (i, folded) in from_folded.iter().enumerate() {
+                folded_to_indices
+                    .entry(folded.as_str())
+                    .or_default()
+                    .push(i);
             }
-            assert_eq!(field_name_to_index_map.len(), from_fields.len());
 
             let mut field_overlap = false;
             let mut cast_fields: Vec<ArrayRef> = Vec::with_capacity(to_fields.len());
-            for to_field in to_fields.iter() {
+            for (to_pos, to_field) in to_fields.iter().enumerate() {
                 let from_index = match (should_match_by_id, field_id(to_field)) {
                     // Spark treats a missing ID match as a missing column rather than
                     // falling back to name match.
                     (true, Some(id)) => from_id_to_index.get(&id).copied(),
-                    _ => field_name_to_index_map
-                        .get(&normalize_name(to_field.name()))
-                        .copied(),
+                    _ => match folded_to_indices.get(to_folded[to_pos].as_str()) {
+                        // Mirror Spark's `foundDuplicateFieldInCaseInsensitiveModeError`: a
+                        // requested field matching more than one file field is ambiguous. Gated on
+                        // case-insensitive mode to match the top-level check (which only runs when
+                        // `!case_sensitive`): when case-sensitive the fold is identity, so a
+                        // collision means byte-identical sibling names, and raising an error whose
+                        // message says "in case-insensitive mode" would be wrong. Fall through to
+                        // the first match in that case.
+                        Some(indices) if indices.len() > 1 && !parquet_options.case_sensitive => {
+                            let matched: Vec<&str> = indices
+                                .iter()
+                                .map(|&i| from_fields[i].name().as_str())
+                                .collect();
+                            return Err(DataFusionError::External(Box::new(
+                                SparkError::duplicate_field_case_insensitive(
+                                    to_field.name(),
+                                    &matched,
+                                ),
+                            )));
+                        }
+                        Some(indices) => Some(indices[0]),
+                        None => None,
+                    },
                 };
 
                 if let Some(from_index) = from_index {
@@ -728,9 +752,8 @@ mod tests {
             "unexpected error: {err}"
         );
 
-        // Scans whose data filters reference nested fields disable the checked
-        // conversion (DataFusion cannot prune or row-filter those predicates the way
-        // Spark's statistics pruning protects them), falling back to overflow -> NULL.
+        // Filtered scans disable checked conversion because Spark may prune values before
+        // conversion through paths DataFusion cannot fully mirror.
         let mut unchecked_options = options.clone();
         unchecked_options.checked_timestamp_overflow = false;
         let converted =
