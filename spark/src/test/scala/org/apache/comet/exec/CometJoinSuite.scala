@@ -22,10 +22,16 @@ package org.apache.comet.exec
 import org.scalactic.source.Position
 import org.scalatest.Tag
 
-import org.apache.spark.sql.CometTestBase
+import org.apache.hadoop.fs.Path
+import org.apache.parquet.hadoop.ParquetFileReader
+import org.apache.parquet.hadoop.util.HadoopInputFile
+import org.apache.spark.sql.{CometTestBase, Row}
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.analysis.UnresolvedRelation
-import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometBroadcastNestedLoopJoinExec, CometSortMergeJoinExec, CometUnionExec}
+import org.apache.spark.sql.catalyst.expressions.{And, AttributeReference, IsNotNull}
+import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight}
+import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometBroadcastNestedLoopJoinExec, CometFilterExec, CometHashJoinExec, CometNativeScanExec, CometSortMergeJoinExec, CometUnionExec}
+import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.adaptive.AQEShuffleReadExec
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, IntegerType, MetadataBuilder, StructField, StructType}
@@ -208,6 +214,361 @@ class CometJoinSuite extends CometTestBase {
           checkSparkAnswerAndOperator(
             sql("SELECT * FROM t1 JOIN t2 ON t1.time = t2.time"),
             Seq(classOf[CometSortMergeJoinExec]))
+        }
+      }
+    }
+  }
+
+  private def nativeHashJoins(plan: SparkPlan): Seq[SparkPlan] = {
+    collect(plan) {
+      case join: CometBroadcastHashJoinExec => join
+      case join: CometHashJoinExec => join
+    }
+  }
+
+  for {
+    strategy <- Seq("BROADCAST", "SHUFFLE_HASH")
+    buildLeft <- Seq(false, true)
+    adaptive <- Seq(false, true)
+  } {
+    test(
+      s"join dynamic filter prunes probe rows: $strategy, buildLeft=$buildLeft, AQE=$adaptive") {
+      withSQLConf(
+        CometConf.COMET_BATCH_SIZE.key -> "16",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+        SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+        SQLConf.SHUFFLE_PARTITIONS.key -> "2") {
+        withParquetTable((0 until 1000).map(i => (i, i + 10000L)), "dynamic_probe") {
+          // Sparse keys inside the bounds exercise membership, not just min/max.
+          // Repeated key 20 must still produce both distinct payloads.
+          withParquetTable(
+            Seq((10, 101L), (20, 201L), (20, 202L), (900, 901L)),
+            "dynamic_build") {
+            val from = if (buildLeft) {
+              "dynamic_build b JOIN dynamic_probe p ON b._1 = p._1"
+            } else {
+              "dynamic_probe p JOIN dynamic_build b ON p._1 = b._1"
+            }
+            val query = s"SELECT /*+ $strategy(b) */ p._2, b._2, p._1 FROM $from"
+            var unfilteredProbeRows = 0L
+            for (enabled <- Seq(false, true)) {
+              withSQLConf(
+                CometConf.COMET_EXEC_JOIN_DYNAMIC_FILTER_ENABLED.key -> enabled.toString) {
+                val (_, plan) = checkSparkAnswerAndOperator(sql(query))
+                val joins = nativeHashJoins(plan)
+                assert(joins.size == 1, s"Expected one executed native hash join:\n$plan")
+                val join = joins.head
+                val expectedSide = if (buildLeft) BuildLeft else BuildRight
+                join match {
+                  case hash: CometBroadcastHashJoinExec =>
+                    assert(strategy == "BROADCAST")
+                    assert(hash.buildSide == expectedSide)
+                    assert(hash.nativeOp.getHashJoin.getDynamicFilterEnabled == enabled)
+                  case hash: CometHashJoinExec =>
+                    assert(strategy == "SHUFFLE_HASH")
+                    assert(hash.buildSide == expectedSide)
+                    assert(hash.nativeOp.getHashJoin.getDynamicFilterEnabled == enabled)
+                  case other => fail(s"Unexpected hash join: $other")
+                }
+                assert(join.metrics("output_rows").value == 4L)
+                val probeRows = join.metrics("input_rows").value
+                if (enabled) {
+                  val evaluated = join.metrics("dynamic_filter_rows_evaluated").value
+                  val pruned = join.metrics("dynamic_filter_rows_pruned").value
+                  val bypassed = join.metrics("dynamic_filter_rows_bypassed").value
+                  assert(evaluated > 0L && pruned > 0L)
+                  assert(probeRows + pruned == evaluated + bypassed)
+                  assert(probeRows < unfilteredProbeRows)
+                  assert(evaluated + bypassed <= unfilteredProbeRows)
+                  assert(join.metrics("dynamic_filter_eval_time").value > 0L)
+                } else {
+                  assert(!join.metrics.contains("dynamic_filter_rows_pruned"))
+                  unfilteredProbeRows = probeRows
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("join dynamic filter prunes a projected Parquet reader through null-check conjunctions") {
+    withTempPath { probePath =>
+      withSQLConf(
+        CometConf.COMET_BATCH_SIZE.key -> "1",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+        SQLConf.LEAF_NODE_DEFAULT_PARALLELISM.key -> "1") {
+        // Keep an unused physical column so reader attachment must remap the join key.
+        // A matching key with a null payload must still fail the retained probe filter.
+        spark
+          .range(0, 10000, 1, 1)
+          .selectExpr(
+            "id AS unused",
+            "CASE WHEN id = 2500 THEN CAST(NULL AS BIGINT) ELSE id END AS payload",
+            "CAST(id AS INT) AS probe_key")
+          .write
+          .option("parquet.block.size", "1024")
+          .parquet(probePath.getCanonicalPath)
+
+        withParquetTable(probePath.getCanonicalPath, "dynamic_reader_probe") {
+          // Keep both keys in the completed reader domain. Only key 2600 survives the
+          // payload null check, which must not disappear when the reader filter attaches.
+          withParquetTable(Seq(Tuple1(2500), Tuple1(2600)), "dynamic_reader_build") {
+            val queries = Seq(
+              (
+                BuildRight,
+                "SELECT /*+ BROADCAST(b) */ p.probe_key, p.payload " +
+                  "FROM dynamic_reader_probe p JOIN dynamic_reader_build b " +
+                  "ON p.probe_key = b._1 WHERE p.payload IS NOT NULL"),
+              (
+                BuildLeft,
+                "SELECT /*+ BROADCAST(b) */ p.probe_key, p.payload " +
+                  "FROM dynamic_reader_build b JOIN dynamic_reader_probe p " +
+                  "ON p.probe_key = b._1 WHERE p.payload IS NOT NULL"))
+            for ((buildSide, query) <- queries) {
+              var unfilteredBytes = 0L
+              for (enabled <- Seq(false, true)) {
+                withSQLConf(
+                  CometConf.COMET_EXEC_JOIN_DYNAMIC_FILTER_ENABLED.key -> enabled.toString) {
+                  val (_, plan) = checkSparkAnswerAndOperator(
+                    sql(query),
+                    Seq(classOf[CometBroadcastHashJoinExec], classOf[CometNativeScanExec]))
+                  val joins = collect(plan) { case join: CometBroadcastHashJoinExec => join }
+                  assert(joins.size == 1, s"Expected one native broadcast hash join:\n$plan")
+                  assert(joins.head.buildSide == buildSide)
+                  val probeScans = collect(plan) {
+                    case scan: CometNativeScanExec if scan.output.exists(_.name == "probe_key") =>
+                      scan
+                  }
+                  assert(probeScans.size == 1, s"Expected one native probe scan:\n$plan")
+                  val probeFilters = collect(plan) {
+                    case filter: CometFilterExec if filter.output.exists(_.name == "probe_key") =>
+                      filter
+                  }
+                  assert(probeFilters.size == 1, s"Expected one native probe filter:\n$plan")
+                  // Verify Spark really built the two-check shape. Keep payload in the
+                  // output so a separate probe projection does not block reader attachment.
+                  val nullCheckedColumns = probeFilters.head.condition match {
+                    case And(
+                          IsNotNull(left: AttributeReference),
+                          IsNotNull(right: AttributeReference)) =>
+                      Set(left.name, right.name)
+                    case condition =>
+                      fail(s"Expected two direct-column null checks, found $condition")
+                  }
+                  assert(nullCheckedColumns == Set("probe_key", "payload"))
+                  val scanMetrics = probeScans.head.metrics
+                  val bytes = scanMetrics("bytes_scanned").value
+                  assert(joins.head.metrics("output_rows").value == 1L)
+                  if (enabled) {
+                    assert(
+                      joins.head.metrics("dynamic_filter_reader_filters_attached").value > 0L)
+                    assert(
+                      joins.head.metrics("dynamic_filter_reader_filters_skipped").value == 0L)
+                    assert(
+                      probeFilters.head.metrics("output_rows").value > 0L,
+                      "Execution-local reader attachment must preserve probe filter metrics")
+                    assert(scanMetrics("row_groups_pruned_statistics").value > 0L)
+                    assert(
+                      bytes < unfilteredBytes,
+                      s"Reader filter should reduce scanned bytes: enabled=$bytes, " +
+                        s"disabled=$unfilteredBytes")
+                  } else {
+                    unfilteredBytes = bytes
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("join dynamic filter preserves seeded rand probe order") {
+    withTempPath { probePath =>
+      withSQLConf(
+        CometConf.COMET_BATCH_SIZE.key -> "16",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+        SQLConf.LEAF_NODE_DEFAULT_PARALLELISM.key -> "1") {
+        // Reader pruning must not change which seeded random value is assigned to a row.
+        // Force four ordered, one-row groups: pruning groups 0-2 would make key 3 receive
+        // rand(42)'s first draw instead of its fourth draw.
+        spark
+          .range(0, 4, 1, 1)
+          .selectExpr("CAST(id AS INT) AS key")
+          .coalesce(1)
+          .write
+          .option("parquet.block.size", "1")
+          .option("parquet.page.size.row.check.min", "1")
+          .option("parquet.page.size.row.check.max", "1")
+          .parquet(probePath.getCanonicalPath)
+
+        val partFiles = probePath.listFiles().filter(_.getName.endsWith(".parquet"))
+        assert(partFiles.length == 1, s"Expected one Parquet file, found ${partFiles.toSeq}")
+        val reader = ParquetFileReader.open(
+          HadoopInputFile.fromPath(
+            new Path(partFiles.head.getAbsolutePath),
+            spark.sparkContext.hadoopConfiguration))
+        try {
+          val rowGroups = reader.getFooter.getBlocks
+          assert(rowGroups.size() == 4)
+          assert((0 until rowGroups.size()).forall(i => rowGroups.get(i).getRowCount == 1L))
+        } finally {
+          reader.close()
+        }
+
+        withParquetTable(probePath.getCanonicalPath, "dynamic_reader_rand_probe") {
+          withParquetTable(Seq(Tuple1(3)), "dynamic_reader_rand_build") {
+            // Keep the Long suffix so Rand serializes into the native filter for this regression.
+            val query =
+              "SELECT /*+ BROADCAST(b) */ p.key " +
+                "FROM (SELECT key FROM dynamic_reader_rand_probe " +
+                "WHERE key IS NOT NULL AND rand(42L) < 0.5) p " +
+                "JOIN dynamic_reader_rand_build b ON p.key = b._1"
+
+            for (enabled <- Seq(false, true)) {
+              withSQLConf(
+                CometConf.COMET_EXEC_JOIN_DYNAMIC_FILTER_ENABLED.key -> enabled.toString) {
+                val (_, plan) = checkSparkAnswerAndOperator(
+                  sql(query),
+                  Seq(
+                    classOf[CometBroadcastHashJoinExec],
+                    classOf[CometFilterExec],
+                    classOf[CometNativeScanExec]))
+                checkAnswer(sql(query), Seq(Row(3)))
+
+                val joins = collect(plan) { case join: CometBroadcastHashJoinExec => join }
+                assert(joins.size == 1, s"Expected one native broadcast hash join:\n$plan")
+                assert(joins.head.metrics("output_rows").value == 1L)
+                val probeScans = collect(plan) {
+                  case scan: CometNativeScanExec if scan.output.exists(_.name == "key") => scan
+                }
+                assert(probeScans.size == 1, s"Expected one native probe scan:\n$plan")
+                assert(probeScans.head.metrics("output_rows").value == 4L)
+                assert(probeScans.head.metrics("row_groups_pruned_statistics").value == 0L)
+
+                if (enabled) {
+                  assert(joins.head.metrics("dynamic_filter_reader_filters_attached").value == 0L)
+                  assert(joins.head.metrics("dynamic_filter_reader_filters_skipped").value == 1L)
+                  assert(joins.head.metrics("dynamic_filter_rows_evaluated").value == 1L)
+                  assert(joins.head.metrics("dynamic_filter_rows_pruned").value == 0L)
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("join dynamic filter preserves nulls, empty builds and non-selective joins") {
+    withSQLConf(
+      CometConf.COMET_EXEC_JOIN_DYNAMIC_FILTER_ENABLED.key -> "true",
+      CometConf.COMET_BATCH_SIZE.key -> "2",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+      withParquetTable(
+        (0 until 100).map(i => (Some(i), i.toLong)) :+ (None, -1L),
+        "dynamic_probe") {
+        for (build <- Seq(
+            Seq((Some(10), 1L), (None, 2L), (Some(10), 3L), (Some(90), 4L)),
+            Seq.empty[(Option[Int], Long)],
+            Seq((None, 1L), (None, 2L)),
+            (0 until 100).map(i => (Some(i), i.toLong)))) {
+          withParquetTable(build, "dynamic_build") {
+            val query = "SELECT /*+ BROADCAST(b) */ p._1, p._2, b._2 " +
+              "FROM dynamic_probe p JOIN dynamic_build b ON p._1 = b._1"
+            val (_, plan) = checkSparkAnswerAndOperator(sql(query))
+            val joins = nativeHashJoins(plan)
+            assert(joins.size == 1, s"Expected native hash join:\n$plan")
+            if (build.size == 100) {
+              assert(joins.head.metrics("dynamic_filter_rows_evaluated").value > 0L)
+              assert(joins.head.metrics("dynamic_filter_rows_pruned").value == 0L)
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("join dynamic filter leaves unsupported joins on their existing native path") {
+    withSQLConf(
+      CometConf.COMET_EXEC_JOIN_DYNAMIC_FILTER_ENABLED.key -> "true",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "2") {
+      withParquetTable(Seq((Some(10), 1L), (Some(20), 2L), (None, 3L)), "dynamic_probe") {
+        withParquetTable(Seq((Some(10), 4L), (None, 5L)), "dynamic_build") {
+          val from = "FROM dynamic_probe p "
+          val joins = Seq(
+            "LEFT JOIN dynamic_build b ON p._1 = b._1",
+            "RIGHT JOIN dynamic_build b ON p._1 = b._1",
+            "FULL JOIN dynamic_build b ON p._1 = b._1",
+            "LEFT SEMI JOIN dynamic_build b ON p._1 = b._1",
+            "LEFT ANTI JOIN dynamic_build b ON p._1 = b._1",
+            "JOIN dynamic_build b ON p._1 <=> b._1",
+            "JOIN dynamic_build b ON p._1 + 1 = b._1",
+            "JOIN dynamic_build b ON CAST(p._1 AS STRING) = CAST(b._1 AS STRING)")
+          for (joinClause <- joins) {
+            val query = s"SELECT /*+ SHUFFLE_HASH(b) */ p.* $from $joinClause"
+            val (_, plan) = checkSparkAnswerAndOperator(sql(query))
+            val native = nativeHashJoins(plan)
+            assert(native.size == 1, s"Expected native hash join:\n$plan")
+            assert(native.head.metrics("dynamic_filter_rows_evaluated").value == 0L)
+            assert(native.head.metrics("dynamic_filter_rows_pruned").value == 0L)
+          }
+          // NOT IN must still observe build-side NULLs; never attach a filter here.
+          withSQLConf(
+            SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "10485760",
+            "spark.sql.optimizeNullAwareAntiJoin" -> "true") {
+            val query = "SELECT * FROM dynamic_probe WHERE _1 NOT IN " +
+              "(SELECT _1 FROM dynamic_build)"
+            val (_, plan) = checkSparkAnswerAndOperator(sql(query))
+            val native = collect(plan) { case join: CometBroadcastHashJoinExec => join }
+            assert(native.size == 1, s"Expected native null-aware anti join:\n$plan")
+            assert(native.head.nativeOp.getHashJoin.getNullAwareAntiJoin)
+            assert(native.head.metrics("dynamic_filter_rows_evaluated").value == 0L)
+          }
+        }
+      }
+    }
+  }
+
+  test("join dynamic filter preserves a duplicate-heavy stored byte build") {
+    withSQLConf(
+      CometConf.COMET_EXEC_JOIN_DYNAMIC_FILTER_ENABLED.key -> "true",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+      // Keep the key in Parquet so Spark cannot replace it with a folded literal.
+      // Hint the larger duplicate-heavy relation as the physical build side.
+      withParquetTable((0 until 65536).map(i => (1.toByte, i)), "dynamic_byte_build") {
+        withParquetTable(Seq(Tuple1(1.toByte), Tuple1(2.toByte)), "dynamic_byte_probe") {
+          val query = "SELECT /*+ BROADCAST(b) */ b._2, p._1 " +
+            "FROM dynamic_byte_probe p JOIN dynamic_byte_build b ON p._1 = b._1"
+          val (_, plan) = checkSparkAnswerAndOperator(sql(query))
+          val joins = collect(plan) { case join: CometBroadcastHashJoinExec => join }
+          assert(joins.size == 1, s"Expected native broadcast hash join:\n$plan")
+          val join = joins.head
+          assert(join.buildSide == BuildRight)
+          assert(join.nativeOp.getHashJoin.getDynamicFilterEnabled)
+          assert(join.metrics("output_rows").value == 65536L)
+          assert(join.metrics("dynamic_filter_rows_evaluated").value > 0L)
+          assert(join.metrics("dynamic_filter_reader_filters_attached").value > 0L)
+          val probeScans = collect(plan) {
+            case scan: CometNativeScanExec if scan.output.size == 1 => scan
+          }
+          assert(probeScans.size == 1, s"Expected one native byte probe scan:\n$plan")
+          val probeRows = probeScans.head.metrics("output_rows").value
+          val residualPruned = join.metrics("dynamic_filter_rows_pruned").value
+          assert(
+            probeRows < 2L || residualPruned > 0L,
+            "Expected the reader or residual filter to prune probe key 2, " +
+              s"scan output=$probeRows residual pruned=$residualPruned")
         }
       }
     }

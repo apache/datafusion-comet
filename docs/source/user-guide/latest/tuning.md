@@ -192,6 +192,26 @@ to test with both for your specific workloads.
 
 To configure Comet to convert `SortMergeJoin` to `ShuffledHashJoin`, set `spark.comet.exec.forceShuffledHashJoin=true`.
 
+### Join Runtime Filters
+
+Set `spark.comet.exec.join.dynamicFilter.enabled=true` to try experimental native hash join runtime
+filtering. It is disabled by default. Eligible joins are inner joins with one direct signed integer
+key (`TINYINT`, `SMALLINT`, `INT`, or `BIGINT`) and one native partition per input within each task.
+Both broadcast and shuffled hash joins support either Spark build side. Unsupported joins keep
+their existing execution path.
+
+Once the build completes, its key domain filters probe batches before the hash probe. Eligible
+native Parquet readers also use the domain to prune row groups. Reader attachment can pass through
+direct-column `IS NOT NULL` checks, including conjunctions, and remaps columns when the scan itself
+projects the file schema. The original null checks and residual runtime filter remain in place.
+The original join still verifies matches, including any hash collisions admitted by the filter.
+Standalone projections, other filter expressions, and limits prevent reader attachment.
+
+Filters stay within the task's native plan and do not propagate across Spark exchanges or JVM/Arrow
+boundaries. A shuffled hash join can still filter probe batches after shuffle, but it cannot send
+its filter back to an earlier scan stage. Compare the [runtime-filter and scan metrics](metrics.md#hash-joins)
+with the setting disabled to distinguish reduced hash-probe work from reader I/O savings.
+
 ## Shuffle
 
 Comet provides accelerated shuffle implementations that can be used to improve the performance of your queries.

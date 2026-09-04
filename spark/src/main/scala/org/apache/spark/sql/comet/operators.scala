@@ -2195,6 +2195,7 @@ trait CometHashJoin {
         .setBuildSide(if (join.buildSide == BuildLeft) OperatorOuterClass.BuildSide.BuildLeft
         else OperatorOuterClass.BuildSide.BuildRight)
         .setNullAwareAntiJoin(isNullAwareAntiJoin)
+        .setDynamicFilterEnabled(CometConf.COMET_EXEC_JOIN_DYNAMIC_FILTER_ENABLED.get(join.conf))
       condition.foreach(joinBuilder.setCondition)
       Some(builder.setHashJoin(joinBuilder).build())
     } else {
@@ -2464,8 +2465,14 @@ case class CometHashJoinExec(
   override def hashCode(): Int =
     Objects.hashCode(output, leftKeys, rightKeys, condition, buildSide, left, right)
 
-  override lazy val metrics: Map[String, SQLMetric] =
-    CometMetricNode.joinMetrics(sparkContext)
+  override lazy val metrics: Map[String, SQLMetric] = {
+    val joinMetrics = CometMetricNode.joinMetrics(sparkContext)
+    if (nativeOp.getHashJoin.getDynamicFilterEnabled) {
+      joinMetrics ++ CometMetricNode.joinDynamicFilterMetrics(sparkContext)
+    } else {
+      joinMetrics
+    }
+  }
 }
 
 case class CometBroadcastHashJoinExec(
@@ -2605,8 +2612,14 @@ case class CometBroadcastHashJoinExec(
   override def hashCode(): Int =
     Objects.hashCode(output, leftKeys, rightKeys, condition, buildSide, left, right)
 
-  override lazy val metrics: Map[String, SQLMetric] =
-    CometMetricNode.joinMetrics(sparkContext)
+  override lazy val metrics: Map[String, SQLMetric] = {
+    val joinMetrics = CometMetricNode.joinMetrics(sparkContext)
+    if (nativeOp.getHashJoin.getDynamicFilterEnabled) {
+      joinMetrics ++ CometMetricNode.joinDynamicFilterMetrics(sparkContext)
+    } else {
+      joinMetrics
+    }
+  }
 }
 
 object CometSortMergeJoinExec extends CometOperatorSerde[SortMergeJoinExec] {
