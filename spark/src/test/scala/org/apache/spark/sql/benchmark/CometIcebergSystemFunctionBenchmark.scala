@@ -36,6 +36,11 @@ import org.apache.comet.iceberg.IcebergReflection
  * output is compared between the two engines over the same corpus that is then timed, so a timing
  * cannot come from an engine that computed something else.
  *
+ * The two cases differ in more than the transform: enabling Comet also replaces the Parquet scan
+ * and the projection with native operators. Each ratio here is therefore a query-level
+ * scan-plus-projection result and does not isolate the cost of the transform.
+ * `native/spark-expr/benches/iceberg_transforms.rs` is the kernel-level measurement.
+ *
  * To run this benchmark:
  * {{{
  *   SPARK_GENERATE_BENCHMARK_FILES=1 make benchmark-org.apache.spark.sql.benchmark.CometIcebergSystemFunctionBenchmark
@@ -91,13 +96,19 @@ object CometIcebergSystemFunctionBenchmark extends CometBenchmarkBase {
    * order is the same. The confs match the ones the benchmark times.
    */
   private def verifyOutputsMatch(name: String, query: String): Unit = {
-    def collect(cometEnabled: Boolean): Array[Row] =
+    // The rows are assigned to a local rather than returned from the `withSQLConf` block, because
+    // Spark 3.4 and 3.5 declare `SQLHelper.withSQLConf` as returning `Unit`; only Spark 4 has the
+    // generic result-returning form.
+    def collect(cometEnabled: Boolean): Array[Row] = {
+      var rows: Array[Row] = Array.empty
       withSQLConf(
         SQLConf.OPTIMIZER_EXCLUDED_RULES.key -> excludedRulesWith(ConstantFolding.ruleName),
         CometConf.COMET_ENABLED.key -> cometEnabled.toString,
         CometConf.COMET_EXEC_ENABLED.key -> cometEnabled.toString) {
-        spark.sql(query).collect()
+        rows = spark.sql(query).collect()
       }
+      rows
+    }
 
     // `Row.equals` compares binary columns by reference, so normalize before comparing.
     def comparable(row: Row): String =
@@ -128,8 +139,8 @@ object CometIcebergSystemFunctionBenchmark extends CometBenchmarkBase {
       return
     }
     // The Iceberg system functions are resolved through a v2 catalog, so one has to be
-    // registered. No Iceberg table is read: the data stays in Parquet so both cases scan
-    // identically and the only difference is who evaluates the transform.
+    // registered. No Iceberg table is read: the data stays in Parquet, which keeps the Iceberg
+    // reader out of the Spark case and lets both cases read the same files.
     withTempPath { warehouse =>
       spark.conf.set(s"spark.sql.catalog.$catalog", "org.apache.iceberg.spark.SparkCatalog")
       spark.conf.set(s"spark.sql.catalog.$catalog.type", "hadoop")
