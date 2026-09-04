@@ -1066,34 +1066,34 @@ expressions. The following function families are <strong>not currently planned</
 <td><p>Native: Spark rewrites to <code class="docutils literal notranslate"><span class="pre">Count</span></code> (tests in <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/4551">#4551</a>)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">regr_intercept</span></code></p></td>
-<td><p>🔜</p></td>
-<td><p>—</p></td>
-<td><p>Falls back; can reuse <code class="docutils literal notranslate"><span class="pre">covar_pop</span></code>/<code class="docutils literal notranslate"><span class="pre">var_pop</span></code> accumulators (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4552">#4552</a>)</p></td>
+<td><p>✅</p></td>
+<td><p>Native</p></td>
+<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">regr_r2</span></code></p></td>
-<td><p>🔜</p></td>
-<td><p>—</p></td>
-<td><p>Falls back; can reuse the <code class="docutils literal notranslate"><span class="pre">corr</span></code> accumulator (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4552">#4552</a>)</p></td>
+<td><p>✅</p></td>
+<td><p>Native</p></td>
+<td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">regr_slope</span></code></p></td>
-<td><p>🔜</p></td>
-<td><p>—</p></td>
-<td><p>Falls back; can reuse <code class="docutils literal notranslate"><span class="pre">covar_pop</span></code>/<code class="docutils literal notranslate"><span class="pre">var_pop</span></code> accumulators (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4552">#4552</a>)</p></td>
+<td><p>✅</p></td>
+<td><p>Native</p></td>
+<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">regr_sxx</span></code></p></td>
-<td><p>🔜</p></td>
+<td><p>✅</p></td>
 <td><p>—</p></td>
-<td><p>Falls back; can reuse <code class="docutils literal notranslate"><span class="pre">var_pop</span></code> accumulator (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4552">#4552</a>)</p></td>
+<td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">regr_sxy</span></code></p></td>
-<td><p>🔜</p></td>
-<td><p>—</p></td>
-<td><p>Falls back; can reuse <code class="docutils literal notranslate"><span class="pre">covar_pop</span></code> accumulator (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4552">#4552</a>)</p></td>
+<td><p>✅</p></td>
+<td><p>Native</p></td>
+<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">regr_syy</span></code></p></td>
-<td><p>🔜</p></td>
+<td><p>✅</p></td>
 <td><p>—</p></td>
-<td><p>Falls back; can reuse <code class="docutils literal notranslate"><span class="pre">var_pop</span></code> accumulator (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4552">#4552</a>)</p></td>
+<td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">skewness</span></code></p></td>
 <td><p>🔜</p></td>

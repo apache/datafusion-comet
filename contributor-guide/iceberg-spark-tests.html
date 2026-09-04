@@ -557,6 +557,10 @@ added upstream in <a class="reference external" href="https://github.com/apache/
 uses a native Iceberg scan, these classes fail to compile and must be removed.</p></li>
 <li><p>Configure test base classes (<code class="docutils literal notranslate"><span class="pre">TestBase</span></code>, <code class="docutils literal notranslate"><span class="pre">ExtensionsTestBase</span></code>, <code class="docutils literal notranslate"><span class="pre">ScanTestBase</span></code>, etc.) to load the Comet Spark
 plugin and shuffle manager</p></li>
+<li><p>Enable the Iceberg write split-operator plan (<code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.splitOperator.enabled</span></code>) alongside the
+native scan in every Comet-configured session. The flag is off by default for users, so Iceberg’s own suites
+are the only place the split plan (<code class="docutils literal notranslate"><span class="pre">IcebergCommit</span> <span class="pre">-&gt;</span> <span class="pre">IcebergWrite</span></code>) is exercised against Iceberg’s write,
+commit, and row-level-operation tests. See <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5259">#5259</a></p></li>
 </ul>
 <section id="install-comet">
 <h2>1. Install Comet<a class="headerlink" href="#install-comet" title="Link to this heading">#</a></h2>

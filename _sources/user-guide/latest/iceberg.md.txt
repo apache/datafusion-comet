@@ -196,6 +196,41 @@ the project, exchange, and sort operators around them stay on the Comet path end
 Spark, which forces a columnar-to-row roundtrip and demotes the surrounding shuffle from
 `CometExchange` to `CometColumnarExchange`.
 
+### Iceberg system functions
+
+Iceberg's system functions `bucket`, `truncate`, `years`, `months`, `days`, and `hours` (the SQL
+form of its partition transforms, for example `SELECT system.bucket(16, id) FROM t`) run natively.
+Spark binds them as static invocations of Iceberg's per-type implementations under
+`org.apache.iceberg.spark.functions`, and Comet recognizes those classes wherever the expression
+appears: in a projection, a filter, a sort key, or the hash partitioning of a shuffle.
+
+The native kernels reproduce Iceberg's Java semantics exactly rather than approximately:
+
+- `bucket` hashes the spec's byte encoding of each value (8-byte little-endian for integers, dates,
+  and timestamps; UTF-8 for strings; raw bytes for binary; the minimal big-endian two's complement
+  of the unscaled value for decimals) with 32-bit Murmur3 and masks the sign bit before taking the
+  modulus.
+- `truncate` uses Java's wrapping integer arithmetic and counts code points (not bytes) for
+  strings. Decimal inputs are the one case that stays with Spark, see below.
+- `years`, `months`, `days`, and `hours` are evaluated in UTC regardless of the session timezone
+  and go negative before the epoch; `days` returns a date, the other three an int. They cover the
+  whole `DATE` and `TIMESTAMP` domain, as Iceberg's `DateTimeUtil` does.
+
+`truncate` on a `decimal` column falls back to Spark. Truncating a negative decimal grows its
+magnitude, so the result can need one more digit than the column's precision allows:
+`truncate(10, v)` on a `decimal(18,4)` value of `-99999999999999.9999` is
+`-100000000000000.0000`, which has 19 digits. Iceberg's `TruncateDecimal` hands that oversized
+value back unchanged and Spark turns it into null only when the row is materialized. An Arrow
+`Decimal128(precision, scale)` array has no encoding for that intermediate, so a native kernel
+would have to null it during evaluation, which changes what an enclosing predicate or hash sees.
+Every other `truncate` input type, and `bucket` on decimals, runs natively.
+
+This matters most for writes. A partitioned table with the default `write.distribution-mode`
+(`hash`) is planned with a shuffle and a local sort keyed on the partition transforms, and with
+these functions native the whole sub-plan feeding the [native Iceberg writer](iceberg-writes.md)
+stays in Comet. A `numBuckets` or `width` argument that is not a positive integer literal makes
+the expression fall back to Spark.
+
 ### Task input metrics
 
 The native Iceberg reader populates Spark's task-level `inputMetrics.bytesRead` (visible in the Spark UI Stages tab) using the `bytes_read` counter from iceberg-rust's `ScanMetrics`. This counter includes bytes read from both data files and delete files.

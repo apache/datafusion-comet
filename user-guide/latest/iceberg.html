@@ -943,6 +943,39 @@ the project, exchange, and sort operators around them stay on the Comet path end
 Spark, which forces a columnar-to-row roundtrip and demotes the surrounding shuffle from
 <code class="docutils literal notranslate"><span class="pre">CometExchange</span></code> to <code class="docutils literal notranslate"><span class="pre">CometColumnarExchange</span></code>.</p>
 </section>
+<section id="iceberg-system-functions">
+<h3>Iceberg system functions<a class="headerlink" href="#iceberg-system-functions" title="Link to this heading">#</a></h3>
+<p>Iceberg’s system functions <code class="docutils literal notranslate"><span class="pre">bucket</span></code>, <code class="docutils literal notranslate"><span class="pre">truncate</span></code>, <code class="docutils literal notranslate"><span class="pre">years</span></code>, <code class="docutils literal notranslate"><span class="pre">months</span></code>, <code class="docutils literal notranslate"><span class="pre">days</span></code>, and <code class="docutils literal notranslate"><span class="pre">hours</span></code> (the SQL
+form of its partition transforms, for example <code class="docutils literal notranslate"><span class="pre">SELECT</span> <span class="pre">system.bucket(16,</span> <span class="pre">id)</span> <span class="pre">FROM</span> <span class="pre">t</span></code>) run natively.
+Spark binds them as static invocations of Iceberg’s per-type implementations under
+<code class="docutils literal notranslate"><span class="pre">org.apache.iceberg.spark.functions</span></code>, and Comet recognizes those classes wherever the expression
+appears: in a projection, a filter, a sort key, or the hash partitioning of a shuffle.</p>
+<p>The native kernels reproduce Iceberg’s Java semantics exactly rather than approximately:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">bucket</span></code> hashes the spec’s byte encoding of each value (8-byte little-endian for integers, dates,
+and timestamps; UTF-8 for strings; raw bytes for binary; the minimal big-endian two’s complement
+of the unscaled value for decimals) with 32-bit Murmur3 and masks the sign bit before taking the
+modulus.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">truncate</span></code> uses Java’s wrapping integer arithmetic and counts code points (not bytes) for
+strings. Decimal inputs are the one case that stays with Spark, see below.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">years</span></code>, <code class="docutils literal notranslate"><span class="pre">months</span></code>, <code class="docutils literal notranslate"><span class="pre">days</span></code>, and <code class="docutils literal notranslate"><span class="pre">hours</span></code> are evaluated in UTC regardless of the session timezone
+and go negative before the epoch; <code class="docutils literal notranslate"><span class="pre">days</span></code> returns a date, the other three an int. They cover the
+whole <code class="docutils literal notranslate"><span class="pre">DATE</span></code> and <code class="docutils literal notranslate"><span class="pre">TIMESTAMP</span></code> domain, as Iceberg’s <code class="docutils literal notranslate"><span class="pre">DateTimeUtil</span></code> does.</p></li>
+</ul>
+<p><code class="docutils literal notranslate"><span class="pre">truncate</span></code> on a <code class="docutils literal notranslate"><span class="pre">decimal</span></code> column falls back to Spark. Truncating a negative decimal grows its
+magnitude, so the result can need one more digit than the column’s precision allows:
+<code class="docutils literal notranslate"><span class="pre">truncate(10,</span> <span class="pre">v)</span></code> on a <code class="docutils literal notranslate"><span class="pre">decimal(18,4)</span></code> value of <code class="docutils literal notranslate"><span class="pre">-99999999999999.9999</span></code> is
+<code class="docutils literal notranslate"><span class="pre">-100000000000000.0000</span></code>, which has 19 digits. Iceberg’s <code class="docutils literal notranslate"><span class="pre">TruncateDecimal</span></code> hands that oversized
+value back unchanged and Spark turns it into null only when the row is materialized. An Arrow
+<code class="docutils literal notranslate"><span class="pre">Decimal128(precision,</span> <span class="pre">scale)</span></code> array has no encoding for that intermediate, so a native kernel
+would have to null it during evaluation, which changes what an enclosing predicate or hash sees.
+Every other <code class="docutils literal notranslate"><span class="pre">truncate</span></code> input type, and <code class="docutils literal notranslate"><span class="pre">bucket</span></code> on decimals, runs natively.</p>
+<p>This matters most for writes. A partitioned table with the default <code class="docutils literal notranslate"><span class="pre">write.distribution-mode</span></code>
+(<code class="docutils literal notranslate"><span class="pre">hash</span></code>) is planned with a shuffle and a local sort keyed on the partition transforms, and with
+these functions native the whole sub-plan feeding the <a class="reference internal" href="iceberg-writes.html"><span class="std std-doc">native Iceberg writer</span></a>
+stays in Comet. A <code class="docutils literal notranslate"><span class="pre">numBuckets</span></code> or <code class="docutils literal notranslate"><span class="pre">width</span></code> argument that is not a positive integer literal makes
+the expression fall back to Spark.</p>
+</section>
 <section id="task-input-metrics">
 <h3>Task input metrics<a class="headerlink" href="#task-input-metrics" title="Link to this heading">#</a></h3>
 <p>The native Iceberg reader populates Spark’s task-level <code class="docutils literal notranslate"><span class="pre">inputMetrics.bytesRead</span></code> (visible in the Spark UI Stages tab) using the <code class="docutils literal notranslate"><span class="pre">bytes_read</span></code> counter from iceberg-rust’s <code class="docutils literal notranslate"><span class="pre">ScanMetrics</span></code>. This counter includes bytes read from both data files and delete files.</p>
@@ -1005,6 +1038,7 @@ Spark, which forces a columnar-to-row roundtrip and demotes the surrounding shuf
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#object-store-configuration-s3">Object store configuration (S3)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#current-limitations">Current limitations</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#iceberg-udfs">Iceberg UDFs</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#iceberg-system-functions">Iceberg system functions</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#task-input-metrics">Task input metrics</a></li>
 </ul>
 </li>

@@ -818,6 +818,13 @@ under the License.
 <li><p>When <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.strictFloatingPoint=true</span></code>, sorting on floating-point types is not 100% compatible with Spark</p></li>
 </ul>
 </section>
+<section id="staticinvoke">
+<h2>StaticInvoke<a class="headerlink" href="#staticinvoke" title="Link to this heading">#</a></h2>
+<p>The following cases are not supported by Comet and always fall back to Spark, regardless of any <code class="docutils literal notranslate"><span class="pre">allowIncompatible</span></code> setting:</p>
+<ul class="simple">
+<li><p>Iceberg’s <code class="docutils literal notranslate"><span class="pre">truncate(width,</span> <span class="pre">value)</span></code> system function on a <code class="docutils literal notranslate"><span class="pre">decimal</span></code> column. Iceberg’s TruncateDecimal returns a Decimal that can exceed the column’s declared precision, and Spark only turns that into null when the row is materialized. An Arrow Decimal128(precision, scale) array cannot carry that intermediate, so a native kernel would null it during evaluation and change what an enclosing predicate or hash sees. Truncating <code class="docutils literal notranslate"><span class="pre">-99999999999999.9999</span></code> in a <code class="docutils literal notranslate"><span class="pre">decimal(18,4)</span></code> column by a width of 10 is one such value: the result has 19 digits. The other <code class="docutils literal notranslate"><span class="pre">truncate</span></code> input types, and <code class="docutils literal notranslate"><span class="pre">bucket</span></code> on decimals, are unaffected.</p></li>
+</ul>
+</section>
 <section id="toprettystring">
 <h2>ToPrettyString<a class="headerlink" href="#toprettystring" title="Link to this heading">#</a></h2>
 <p>The following cases are not supported by Comet and always fall back to Spark, regardless of any <code class="docutils literal notranslate"><span class="pre">allowIncompatible</span></code> setting:</p>
@@ -887,6 +894,7 @@ under the License.
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#makedecimal">MakeDecimal</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#scalarsubquery">ScalarSubquery</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#sortorder">SortOrder</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#staticinvoke">StaticInvoke</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#toprettystring">ToPrettyString</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#uuid">Uuid</a></li>
 </ul>

@@ -51,6 +51,12 @@ The following incompatibilities cause `SortOrder` to fall back to Spark by defau
 
 - When `spark.comet.exec.strictFloatingPoint=true`, sorting on floating-point types is not 100% compatible with Spark
 
+## StaticInvoke
+
+The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
+
+- Iceberg's `truncate(width, value)` system function on a `decimal` column. Iceberg's TruncateDecimal returns a Decimal that can exceed the column's declared precision, and Spark only turns that into null when the row is materialized. An Arrow Decimal128(precision, scale) array cannot carry that intermediate, so a native kernel would null it during evaluation and change what an enclosing predicate or hash sees. Truncating `-99999999999999.9999` in a `decimal(18,4)` column by a width of 10 is one such value: the result has 19 digits. The other `truncate` input types, and `bucket` on decimals, are unaffected.
+
 ## Uuid
 
 The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
