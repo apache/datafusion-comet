@@ -980,8 +980,13 @@ even when both its parent and child are non-Comet operators.</p>
 </section>
 <section id="remote-shuffle-with-celeborn">
 <h3>Remote Shuffle with Celeborn<a class="headerlink" href="#remote-shuffle-with-celeborn" title="Link to this heading">#</a></h3>
-<p>Applications using Apache Celeborn can opt into Comet’s native shuffle writer and reader with
-the composite shuffle manager:</p>
+<p>Applications using Apache Celeborn can use Comet’s composite shuffle manager to retain ordinary
+Spark/Celeborn shuffle while accelerating other operators with Comet.</p>
+<p>Native shuffle requires reliable completion tracking for in-flight payloads. Released Celeborn
+0.6.0 and 0.7.0 clients do not provide the required guarantee, so these versions retain ordinary
+Spark/Celeborn shuffle even when <code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.mode=native</span></code>. Native shuffle support for
+these clients requires a safe Celeborn push-completion API. The following settings request
+native shuffle when the client passes Comet’s compatibility checks:</p>
 <div class="highlight-properties notranslate"><div class="highlight"><pre><span></span><span class="na">spark.shuffle.manager</span><span class="o">=</span><span class="s">org.apache.spark.sql.comet.execution.shuffle.CometCelebornShuffleManager</span>
 <span class="na">spark.comet.exec.enabled</span><span class="o">=</span><span class="s">true</span>
 <span class="na">spark.comet.shuffle.enabled</span><span class="o">=</span><span class="s">true</span>

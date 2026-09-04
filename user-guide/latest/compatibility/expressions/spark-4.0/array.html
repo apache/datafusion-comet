@@ -809,8 +809,8 @@ under the License.
 <h2>ArrayJoin<a class="headerlink" href="#arrayjoin" title="Link to this heading">#</a></h2>
 <p>By default, <code class="docutils literal notranslate"><span class="pre">ArrayJoin</span></code> is evaluated in the JVM using Spark’s own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.ArrayJoin.allowIncompatible=true</span></code> to opt into Comet’s native implementation instead, which has the following differences from Spark:</p>
 <ul class="simple">
-<li><p>Null handling may differ from Spark</p></li>
 <li><p>array_join does not propagate non-UTF8_BINARY collations to the output string (https://github.com/apache/datafusion-comet/issues/2190)</p></li>
+<li><p>array_join evaluates its delimiter and null replacement eagerly, while Spark short-circuits past them (https://github.com/apache/datafusion-comet/issues/3178)</p></li>
 </ul>
 </section>
 <section id="arrayszip">

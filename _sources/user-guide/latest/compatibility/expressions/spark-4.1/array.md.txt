@@ -44,8 +44,8 @@ By default, `ArrayIntersect` is evaluated in the JVM using Spark's own code-gene
 
 By default, `ArrayJoin` is evaluated in the JVM using Spark's own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set `spark.comet.expression.ArrayJoin.allowIncompatible=true` to opt into Comet's native implementation instead, which has the following differences from Spark:
 
-- Null handling may differ from Spark
 - array_join does not propagate non-UTF8_BINARY collations to the output string (https://github.com/apache/datafusion-comet/issues/2190)
+- array_join evaluates its delimiter and null replacement eagerly, while Spark short-circuits past them (https://github.com/apache/datafusion-comet/issues/3178)
 
 ## ArraysZip
 
