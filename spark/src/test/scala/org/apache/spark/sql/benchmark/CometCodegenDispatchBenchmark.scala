@@ -213,7 +213,7 @@ object CometCodegenDispatchBenchmark extends CometBenchmarkBase {
         .collect { case (name, false) => name }
     if (skipped.nonEmpty) {
       emit(
-        s"Not lowered to StaticInvoke/Invoke on this Spark version, skipped: " +
+        "Not lowered to StaticInvoke/Invoke on this Spark version, skipped: " +
           skipped.mkString(", "))
     }
     emit(s"Cases: ${selected.map(_.name).mkString(", ")}")
@@ -336,7 +336,7 @@ object CometCodegenDispatchBenchmark extends CometBenchmarkBase {
     dispatchNonComet.foreach(op =>
       warn(
         benchmark,
-        s"WARNING: the codegen-dispatch plan is not fully Comet native (first " +
+        "WARNING: the codegen-dispatch plan is not fully Comet native (first " +
           s"non-Comet operator: $op), so that case is partly measuring Spark."))
     if (!dispatcherRan) {
       warn(
