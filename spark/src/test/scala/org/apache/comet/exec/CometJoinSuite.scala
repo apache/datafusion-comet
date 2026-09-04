@@ -505,17 +505,18 @@ class CometJoinSuite extends CometTestBase {
       withParquetTable(Seq((Some(10), 1L), (Some(20), 2L), (None, 3L)), "dynamic_probe") {
         withParquetTable(Seq((Some(10), 4L), (None, 5L)), "dynamic_build") {
           val from = "FROM dynamic_probe p "
+          // Spark 3.4 requires building the left side for a right outer shuffled hash join.
           val joins = Seq(
-            "LEFT JOIN dynamic_build b ON p._1 = b._1",
-            "RIGHT JOIN dynamic_build b ON p._1 = b._1",
-            "FULL JOIN dynamic_build b ON p._1 = b._1",
-            "LEFT SEMI JOIN dynamic_build b ON p._1 = b._1",
-            "LEFT ANTI JOIN dynamic_build b ON p._1 = b._1",
-            "JOIN dynamic_build b ON p._1 <=> b._1",
-            "JOIN dynamic_build b ON p._1 + 1 = b._1",
-            "JOIN dynamic_build b ON CAST(p._1 AS STRING) = CAST(b._1 AS STRING)")
-          for (joinClause <- joins) {
-            val query = s"SELECT /*+ SHUFFLE_HASH(b) */ p.* $from $joinClause"
+            "LEFT JOIN dynamic_build b ON p._1 = b._1" -> "b",
+            "RIGHT JOIN dynamic_build b ON p._1 = b._1" -> "p",
+            "FULL JOIN dynamic_build b ON p._1 = b._1" -> "b",
+            "LEFT SEMI JOIN dynamic_build b ON p._1 = b._1" -> "b",
+            "LEFT ANTI JOIN dynamic_build b ON p._1 = b._1" -> "b",
+            "JOIN dynamic_build b ON p._1 <=> b._1" -> "b",
+            "JOIN dynamic_build b ON p._1 + 1 = b._1" -> "b",
+            "JOIN dynamic_build b ON CAST(p._1 AS STRING) = CAST(b._1 AS STRING)" -> "b")
+          for ((joinClause, buildAlias) <- joins) {
+            val query = s"SELECT /*+ SHUFFLE_HASH($buildAlias) */ p.* $from $joinClause"
             val (_, plan) = checkSparkAnswerAndOperator(sql(query))
             val native = nativeHashJoins(plan)
             assert(native.size == 1, s"Expected native hash join:\n$plan")
