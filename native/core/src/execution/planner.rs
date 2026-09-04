@@ -4324,6 +4324,11 @@ fn parse_file_scan_tasks_from_common(
                 // constraint -- see there).
                 file_path: del.file_path.clone(),
                 file_type,
+                // Comet forwards Parquet position/equality delete files and carries no
+                // deletion-vector (Puffin) metadata, so the format is always Parquet. This keeps
+                // iceberg-rust on the regular delete-file read path rather than the DV path,
+                // consistent with the unset content_offset/content_size_in_bytes below.
+                file_format: iceberg::spec::DataFileFormat::Parquet,
                 // Not serialized; filled in by IcebergScanExec::fill_delete_file_sizes.
                 file_size_in_bytes: 0,
                 partition_spec_id: del.partition_spec_id,
@@ -4547,33 +4552,39 @@ fn parse_file_scan_tasks_from_common(
                 None
             };
 
-            Ok(iceberg::scan::FileScanTask {
-                file_size_in_bytes: proto_task.file_size_in_bytes,
+            // `FileScanTask`'s fields are private as of iceberg-rust 665c64e, so the task is
+            // constructed through its builder. `build()` runs the task's validation (partition
+            // vs. partition-spec consistency), surfaced here as a GeneralError.
+            iceberg::scan::FileScanTask::builder()
+                .with_file_size_in_bytes(proto_task.file_size_in_bytes)
+                .with_start(proto_task.start)
+                .with_length(proto_task.length)
+                .with_record_count(proto_task.record_count)
+                .with_first_row_id(None)
+                .with_data_sequence_number(None)
                 // RAW data-file path -- do NOT rewrite the alias to s3://. iceberg-rust matches
                 // positional deletes by comparing this against the path recorded inside the delete
                 // file, so changing the scheme drops deletes. The S3 backend opens a raw alias path
                 // fine (bucket from host, key sliced verbatim), and `metadata_location` above
                 // already selected the storage factory.
-                data_file_path: proto_task.data_file_path.clone(),
-                start: proto_task.start,
-                length: proto_task.length,
-                record_count: proto_task.record_count,
-                first_row_id: None,
-                data_sequence_number: None,
-                data_file_format,
-                schema: schema_ref,
-                project_field_ids,
-                predicate: bound_predicate,
-                deletes,
-                partition,
-                partition_spec,
-                name_mapping,
-                unified_partition_type: unified_partition_type_for_task,
-                case_sensitive: false,
+                .with_data_file_path(proto_task.data_file_path.clone())
+                .with_data_file_format(data_file_format)
+                .with_schema(schema_ref)
+                .with_project_field_ids(project_field_ids)
+                .with_predicate(bound_predicate)
+                .with_deletes(deletes)
+                .with_partition(partition)
+                .with_partition_spec(partition_spec)
+                .with_name_mapping(name_mapping)
+                .with_unified_partition_type(unified_partition_type_for_task)
+                .with_case_sensitive(false)
                 // Plaintext StandardKeyMetadata forwarded verbatim from the JVM; decoded by
                 // iceberg-rust with no KMS unwrap. None for unencrypted data files.
-                key_metadata: proto_task.key_metadata.clone().map(Vec::into_boxed_slice),
-            })
+                .with_key_metadata(proto_task.key_metadata.clone().map(Vec::into_boxed_slice))
+                .build()
+                .map_err(|e| {
+                    ExecutionError::GeneralError(format!("Invalid Iceberg scan task: {e}"))
+                })
         })
         .collect();
 
@@ -7160,8 +7171,7 @@ mod tests {
         assert_eq!(tasks.len(), 1);
 
         let unified = tasks[0]
-            .unified_partition_type
-            .as_ref()
+            .unified_partition_type()
             .expect("unified_partition_type must be set when _partition is projected");
 
         let fields = unified.fields();
@@ -7229,8 +7239,7 @@ mod tests {
         assert_eq!(tasks.len(), 1);
         assert!(
             tasks[0]
-                .unified_partition_type
-                .as_ref()
+                .unified_partition_type()
                 .map(|t| t.fields().is_empty())
                 .unwrap_or(true),
             "unified partition type should have no fields for an all-unknown-transform spec"

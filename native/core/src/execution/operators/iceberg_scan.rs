@@ -51,7 +51,7 @@ use crate::parquet::parquet_support::SparkParquetOptions;
 use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
 use datafusion_comet_spark_expr::EvalMode;
 use datafusion_physical_expr_adapter::{PhysicalExprAdapter, PhysicalExprAdapterFactory};
-use iceberg::scan::FileScanTask;
+use iceberg::scan::{FileScanTask, FileScanTaskDeleteFile};
 
 /// A valid Parquet file ends with at least an 8-byte footer (4-byte metadata length + "PAR1").
 /// A delete file that stats below this cannot be read, so we reject it in the fill step. opendal
@@ -267,7 +267,7 @@ impl IcebergScanExec {
         // `tasks` into the mutable write-back below.
         let mut needed: HashSet<String> = HashSet::new();
         for task in tasks.iter() {
-            for delete in &task.deletes {
+            for delete in task.deletes() {
                 // Delete-file sizes are never serialized, so they always arrive as 0. If we ever
                 // trust manifest sizes (pending the unreleased apache/iceberg#12554 fix), skip
                 // already-sized files here instead of asserting.
@@ -319,14 +319,58 @@ impl IcebergScanExec {
         .await?;
 
         let size_map: HashMap<String, u64> = sizes.into_iter().collect();
+        // iceberg-rust 665c64e made `FileScanTask::deletes` a private field exposed only through
+        // a read-only accessor, so a task's delete files can no longer be sized in place. Rebuild
+        // each task that carries deletes with sized copies; tasks without deletes are untouched.
         for task in tasks.iter_mut() {
-            for delete in task.deletes.iter_mut() {
-                if let Some(&size) = size_map.get(&delete.file_path) {
-                    delete.file_size_in_bytes = size;
-                }
+            if task.deletes().is_empty() {
+                continue;
             }
+            let deletes = task
+                .deletes()
+                .iter()
+                .map(|delete| {
+                    let mut delete = delete.clone();
+                    if let Some(&size) = size_map.get(&delete.file_path) {
+                        delete.file_size_in_bytes = size;
+                    }
+                    delete
+                })
+                .collect::<Vec<_>>();
+            *task = Self::rebuild_task_with_deletes(task, deletes)?;
         }
         Ok(())
+    }
+
+    /// Rebuilds a [`FileScanTask`] carrying a new set of delete files.
+    ///
+    /// `FileScanTask::deletes` is private with no mutator, so the only way to change a task's
+    /// delete files is to construct a fresh task via the builder, forwarding every other field
+    /// through its public accessors. The builder runs `FileScanTask`'s validation on `build()`.
+    fn rebuild_task_with_deletes(
+        task: &FileScanTask,
+        deletes: Vec<FileScanTaskDeleteFile>,
+    ) -> Result<FileScanTask, Error> {
+        FileScanTask::builder()
+            .with_file_size_in_bytes(task.file_size_in_bytes())
+            .with_start(task.start())
+            .with_length(task.length())
+            .with_record_count(task.record_count())
+            .with_first_row_id(task.first_row_id())
+            .with_data_sequence_number(task.data_sequence_number())
+            .with_data_file_path(task.data_file_path().to_string())
+            .with_data_file_format(task.data_file_format())
+            .with_schema(task.schema_ref())
+            .with_project_field_ids(task.project_field_ids().to_vec())
+            .with_predicate(task.predicate().cloned())
+            .with_deletes(deletes)
+            .with_partition(task.partition().cloned())
+            .with_partition_spec(task.partition_spec().cloned())
+            .with_name_mapping(task.name_mapping().cloned())
+            .with_unified_partition_type(task.unified_partition_type().cloned())
+            .with_case_sensitive(task.case_sensitive())
+            .with_key_metadata(task.key_metadata().map(Box::from))
+            .build()
     }
 }
 
@@ -562,32 +606,25 @@ mod tests {
     }
 
     fn task_with_deletes(deletes: Vec<FileScanTaskDeleteFile>) -> FileScanTask {
-        FileScanTask {
-            file_size_in_bytes: 0,
-            start: 0,
-            length: 0,
-            record_count: None,
-            first_row_id: None,
-            data_sequence_number: None,
-            data_file_path: "data.parquet".to_string(),
-            data_file_format: DataFileFormat::Parquet,
-            schema: Arc::new(Schema::builder().build().unwrap()),
-            project_field_ids: vec![],
-            predicate: None,
-            deletes,
-            partition: None,
-            partition_spec: None,
-            name_mapping: None,
-            unified_partition_type: None,
-            case_sensitive: false,
-            key_metadata: None,
-        }
+        FileScanTask::builder()
+            .with_file_size_in_bytes(0)
+            .with_start(0)
+            .with_length(0)
+            .with_data_file_path("data.parquet".to_string())
+            .with_data_file_format(DataFileFormat::Parquet)
+            .with_schema(Arc::new(Schema::builder().build().unwrap()))
+            .with_project_field_ids(vec![])
+            .with_deletes(deletes)
+            .with_case_sensitive(false)
+            .build()
+            .unwrap()
     }
 
     fn delete_file(path: &str) -> FileScanTaskDeleteFile {
         FileScanTaskDeleteFile {
             file_path: path.to_string(),
             file_type: DataContentType::PositionDeletes,
+            file_format: DataFileFormat::Parquet,
             file_size_in_bytes: 0,
             partition_spec_id: 0,
             equality_ids: None,
@@ -614,7 +651,7 @@ mod tests {
             result.is_err(),
             "expected an error when a delete file cannot be statted"
         );
-        assert_eq!(tasks[0].deletes[0].file_size_in_bytes, 0);
+        assert_eq!(tasks[0].deletes()[0].file_size_in_bytes, 0);
     }
 
     // The real on-disk size is filled in from the FileIO, replacing the 0 placeholder.
@@ -632,7 +669,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(tasks[0].deletes[0].file_size_in_bytes, bytes.len() as u64);
+        assert_eq!(tasks[0].deletes()[0].file_size_in_bytes, bytes.len() as u64);
     }
 
     // A present-but-undersized delete file (0-byte object, truncated write, or a HEAD with no
@@ -651,7 +688,7 @@ mod tests {
             result.is_err(),
             "expected an error when a delete file is below the Parquet footer minimum"
         );
-        assert_eq!(tasks[0].deletes[0].file_size_in_bytes, 0);
+        assert_eq!(tasks[0].deletes()[0].file_size_in_bytes, 0);
     }
 
     // No deletes means no stats and no error.
