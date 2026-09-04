@@ -80,8 +80,10 @@ impl PhysicalExpr for ToCsv {
         Ok(DataType::Utf8)
     }
 
-    fn nullable(&self, input_schema: &Schema) -> Result<bool> {
-        self.expr.nullable(input_schema)
+    fn nullable(&self, _: &Schema) -> Result<bool> {
+        // Spark's `StructsToCsv.nullable` is unconditionally true: a row that renders to an empty
+        // string (a lone null field) yields NULL, whatever the input struct's nullability.
+        Ok(true)
     }
 
     fn evaluate(&self, batch: &RecordBatch) -> Result<ColumnarValue> {
@@ -201,7 +203,15 @@ pub fn to_csv_inner(
                     }
                 }
             }
-            builder.append_value(&csv_string);
+            // Spark renders a row through univocity's `writeRowToString`, whose `skipEmptyLines`
+            // setting (always on for Spark's CSV writer) turns an empty rendered row into `null`:
+            // a struct with a single null field (with the default empty `nullValue`) is NULL,
+            // not "". A row with two null fields renders as the delimiter and is kept.
+            if csv_string.is_empty() {
+                builder.append_null();
+            } else {
+                builder.append_value(&csv_string);
+            }
         }
     }
     Ok(Arc::new(builder.finish()))
@@ -214,5 +224,76 @@ fn escape_value(value: &str, quote_char: char, escape_char: char, output: &mut S
             output.push(escape_char);
         }
         output.push(ch);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow::array::Int64Array;
+    use arrow::datatypes::{Field, Fields};
+
+    fn default_write_options() -> CsvWriteOptions {
+        CsvWriteOptions::new(
+            ",".to_string(),
+            "\"".to_string(),
+            "\\".to_string(),
+            "".to_string(),
+            false,
+            true,
+            true,
+        )
+    }
+
+    fn to_csv_strings(array: &StructArray, write_options: &CsvWriteOptions) -> Vec<Option<String>> {
+        let mut cast_options = SparkCastOptions::new(EvalMode::Legacy, "UTC", false);
+        cast_options.null_string = write_options.null_value.clone();
+        let out = to_csv_inner(array, &cast_options, write_options).unwrap();
+        as_string_array(&out)
+            .iter()
+            .map(|v| v.map(str::to_string))
+            .collect()
+    }
+
+    // Spark's `to_csv` hands the row to univocity's `writeRowToString` with `skipEmptyLines`, so a
+    // row whose rendering is empty comes back NULL rather than "". Only a lone null field (or a
+    // lone empty `nullValue`) renders empty; two null fields render as the delimiter.
+    #[test]
+    fn empty_rendered_row_is_null() {
+        let one_field: Fields = Fields::from(vec![Field::new("a", DataType::Int64, true)]);
+        let single = StructArray::new(
+            one_field,
+            vec![Arc::new(Int64Array::from(vec![Some(7_i64), None]))],
+            None,
+        );
+        assert_eq!(
+            to_csv_strings(&single, &default_write_options()),
+            vec![Some("7".to_string()), None]
+        );
+
+        let two_fields: Fields = Fields::from(vec![
+            Field::new("a", DataType::Int64, true),
+            Field::new("n", DataType::Null, true),
+        ]);
+        let pair = StructArray::new(
+            two_fields,
+            vec![
+                Arc::new(Int64Array::from(vec![Some(7_i64), None])),
+                Arc::new(arrow::array::NullArray::new(2)),
+            ],
+            None,
+        );
+        assert_eq!(
+            to_csv_strings(&pair, &default_write_options()),
+            vec![Some("7,".to_string()), Some(",".to_string())]
+        );
+
+        // A non-empty `nullValue` renders, so the row is kept.
+        let mut named_null = default_write_options();
+        named_null.null_value = "N".to_string();
+        assert_eq!(
+            to_csv_strings(&single, &named_null),
+            vec![Some("7".to_string()), Some("N".to_string())]
+        );
     }
 }

@@ -323,6 +323,7 @@ jobs:
               org.apache.comet.serde.CometLiteralSuite
               org.apache.comet.serde.QueryPlanSerdeSuite
               org.apache.comet.CometFallbackInvarianceSuite
+              org.apache.comet.CometNullTypeCompositionSuite
 
       fail-fast: false
     name: ${{ matrix.os }}/${{ matrix.profile.name }} [${{ matrix.suite.name }}]

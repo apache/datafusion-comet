@@ -53,3 +53,7 @@ SELECT hash(array(-d)), xxhash64(array(-d)), hash(named_struct('a', -d, 'b', -f)
 -- so the null row is filtered out.
 query
 SELECT hash(map(-d, -f)), xxhash64(map(-d, -f)) FROM test_nan WHERE d IS NOT NULL
+
+-- The native hasher has no arm for NullType, which a non-foldable struct or array can carry.
+query expect_fallback(`NullType` is not supported)
+SELECT hash(named_struct('a', a, 'b', NULL)), xxhash64(transform(array(a), x -> NULL)) FROM test
