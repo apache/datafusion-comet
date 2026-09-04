@@ -205,7 +205,7 @@ trait CometBenchmarkBase
    * Returns the value of `spark.sql.optimizer.excludedRules` with `rule` appended, so that
    * benchmark-specific exclusions do not clobber exclusions already configured by the caller.
    */
-  private def excludedRulesWith(rule: String): String =
+  protected def excludedRulesWith(rule: String): String =
     (Utils.stringToSeq(spark.conf.get(SQLConf.OPTIMIZER_EXCLUDED_RULES.key, "")) :+ rule).distinct
       .mkString(",")
 
