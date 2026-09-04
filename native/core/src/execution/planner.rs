@@ -45,7 +45,7 @@ use crate::execution::{
     },
     planner::expression_registry::ExpressionRegistry,
     planner::operator_registry::OperatorRegistry,
-    serde::to_arrow_datatype,
+    serde::{to_arrow_datatype, to_arrow_field},
     shuffle::{SchemaAlignExec, ShuffleWriterDestination, ShuffleWriterExec},
 };
 use crate::jvm_bridge::{jni_call, JVMClasses, ShufflePartitionPusher};
@@ -148,8 +148,9 @@ use datafusion_comet_proto::{
 use datafusion_comet_spark_expr::{
     jvm_udf::JvmScalarUdfExpr, ApproxPercentile, ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow,
     Correlation, Covariance, CreateNamedStruct, DecimalRescaleCheckOverflow, GetArrayStructFields,
-    GetStructField, HllPlusPlus, IfExpr, ListExtract, NormalizeNaNAndZero, SparkCastOptions,
-    Stddev, SumDecimal, ToJson, UnboundColumn, Variance, WideDecimalBinaryExpr, WideDecimalOp,
+    GetStructField, HllPlusPlus, IfExpr, ListExtract, NormalizeNaNAndZero, Regr, RegrType,
+    SparkCastOptions, Stddev, SumDecimal, ToJson, UnboundColumn, Variance, WideDecimalBinaryExpr,
+    WideDecimalOp,
 };
 use itertools::Itertools;
 use jni::objects::{Global, JObject};
@@ -1763,7 +1764,11 @@ impl PhysicalPlanner {
                     object_store_url,
                     file_groups,
                     Some(projection_vector),
-                    Some(data_filters?),
+                    if common.has_data_filters || !common.data_filters.is_empty() {
+                        Some(data_filters?)
+                    } else {
+                        None
+                    },
                     default_values,
                     common.session_timezone.as_str(),
                     common.case_sensitive,
@@ -3069,6 +3074,29 @@ impl PhysicalPlanner {
                 ));
                 Self::create_aggr_func_expr("correlation", schema, vec![child1, child2], func)
             }
+            AggExprStruct::Regr(expr) => {
+                let child1 =
+                    self.create_expr(expr.child1.as_ref().unwrap(), Arc::clone(&schema))?;
+                let child2 =
+                    self.create_expr(expr.child2.as_ref().unwrap(), Arc::clone(&schema))?;
+                let (regr_type, name) = match expr.regr_type() {
+                    spark_expression::regr::RegrType::Slope => (RegrType::Slope, "regr_slope"),
+                    spark_expression::regr::RegrType::Intercept => {
+                        (RegrType::Intercept, "regr_intercept")
+                    }
+                    spark_expression::regr::RegrType::R2 => (RegrType::R2, "regr_r2"),
+                    spark_expression::regr::RegrType::Sxx => (RegrType::SXX, "regr_sxx"),
+                    spark_expression::regr::RegrType::Syy => (RegrType::SYY, "regr_syy"),
+                    spark_expression::regr::RegrType::Sxy => (RegrType::SXY, "regr_sxy"),
+                };
+                let func = AggregateUDF::new_from_impl(Regr::new(
+                    regr_type,
+                    name,
+                    expr.filter_var_by_pair_nulls,
+                    expr.r2_constant_dependent_is_perfect_fit,
+                ));
+                Self::create_aggr_func_expr(name, schema, vec![child1, child2], func)
+            }
             AggExprStruct::Percentile(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
                 let percentile =
@@ -4050,15 +4078,17 @@ pub(crate) fn convert_spark_types_to_arrow_schema(
     let arrow_fields = spark_types
         .iter()
         .map(|spark_type| {
-            let field = Field::new(
+            let field = to_arrow_field(
                 String::clone(&spark_type.name),
-                to_arrow_datatype(spark_type.data_type.as_ref().unwrap()),
+                spark_type.data_type.as_ref().unwrap(),
                 spark_type.nullable,
             );
             if spark_type.metadata.is_empty() {
                 field
             } else {
-                field.with_metadata(spark_type.metadata.clone())
+                let mut metadata = spark_type.metadata.clone();
+                metadata.extend(field.metadata().clone());
+                field.with_metadata(metadata)
             }
         })
         .collect_vec();
@@ -5002,6 +5032,7 @@ mod tests {
     use datafusion::{assert_batches_eq, physical_plan::common::collect, prelude::SessionContext};
     use datafusion_physical_expr_adapter::PhysicalExprAdapterFactory;
     use datafusion_spark::function::aggregate::collect::{SparkCollectList, SparkCollectSet};
+    use parquet::variant::VariantType;
     use tempfile::TempDir;
     use tokio::sync::mpsc;
 
@@ -5011,8 +5042,10 @@ mod tests {
     use crate::jvm_bridge::{JavaShufflePartitionPusher, ShufflePartitionPusher};
 
     use crate::execution::operators::{ExecutionError, PartitionedRankLimitExec, WindowFnKind};
-    use crate::execution::planner::literal_to_array_ref;
-    use crate::execution::planner::parse_file_scan_tasks_from_common;
+    use crate::execution::planner::{
+        convert_spark_types_to_arrow_schema, literal_to_array_ref,
+        parse_file_scan_tasks_from_common,
+    };
     use crate::execution::shuffle::CometPartitioning;
     use crate::parquet::parquet_support::SparkParquetOptions;
     use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
@@ -5048,6 +5081,26 @@ mod tests {
 
     struct BoundedShufflePartitionPusher {
         max_frame_size: usize,
+    }
+
+    #[test]
+    fn spark_variant_schema_preserves_field_metadata() {
+        let schema = convert_spark_types_to_arrow_schema(&[spark_operator::SparkStructField {
+            name: "v".to_string(),
+            data_type: Some(spark_expression::DataType {
+                type_id: spark_expression::data_type::DataTypeId::Variant as i32,
+                type_info: None,
+            }),
+            nullable: true,
+            metadata: std::collections::HashMap::from([(
+                "source".to_string(),
+                "spark".to_string(),
+            )]),
+        }]);
+
+        let field = schema.field(0);
+        assert!(field.has_valid_extension_type::<VariantType>());
+        assert_eq!(field.metadata().get("source"), Some(&"spark".to_string()));
     }
 
     impl ShufflePartitionPusher for BoundedShufflePartitionPusher {

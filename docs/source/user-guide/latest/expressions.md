@@ -121,12 +121,12 @@ The tables below list every Spark built-in expression with its current status.
 | `regr_avgx` | ✅ | — | Native: Spark rewrites to `Average` (tests in [#4551](https://github.com/apache/datafusion-comet/pull/4551)) |
 | `regr_avgy` | ✅ | — | Native: Spark rewrites to `Average` (tests in [#4551](https://github.com/apache/datafusion-comet/pull/4551)) |
 | `regr_count` | ✅ | — | Native: Spark rewrites to `Count` (tests in [#4551](https://github.com/apache/datafusion-comet/pull/4551)) |
-| `regr_intercept` | 🔜 | — | Falls back; can reuse `covar_pop`/`var_pop` accumulators ([#4552](https://github.com/apache/datafusion-comet/issues/4552)) |
-| `regr_r2` | 🔜 | — | Falls back; can reuse the `corr` accumulator ([#4552](https://github.com/apache/datafusion-comet/issues/4552)) |
-| `regr_slope` | 🔜 | — | Falls back; can reuse `covar_pop`/`var_pop` accumulators ([#4552](https://github.com/apache/datafusion-comet/issues/4552)) |
-| `regr_sxx` | 🔜 | — | Falls back; can reuse `var_pop` accumulator ([#4552](https://github.com/apache/datafusion-comet/issues/4552)) |
-| `regr_sxy` | 🔜 | — | Falls back; can reuse `covar_pop` accumulator ([#4552](https://github.com/apache/datafusion-comet/issues/4552)) |
-| `regr_syy` | 🔜 | — | Falls back; can reuse `var_pop` accumulator ([#4552](https://github.com/apache/datafusion-comet/issues/4552)) |
+| `regr_intercept` | ✅ | Native |  |
+| `regr_r2` | ✅ | Native |  |
+| `regr_slope` | ✅ | Native |  |
+| `regr_sxx` | ✅ | Native |  |
+| `regr_sxy` | ✅ | Native |  |
+| `regr_syy` | ✅ | Native |  |
 | `skewness` | 🔜 | — | Not yet implemented natively |
 | `some` | ✅ | — |  |
 | `std` | ✅ | Native |  |
@@ -561,7 +561,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `chr` | ✅ | Native |  |
 | `collate` | 🔜 | — | Spark collation (umbrella [#2190](https://github.com/apache/datafusion-comet/issues/2190)) |
 | `collation` | ✅ | — | Constant-folded to a literal (Spark 4.0+) |
-| `concat_ws` | ✅ | Native |  |
+| `concat_ws` | ✅ | Hybrid | Array arguments route through the JVM codegen dispatcher; string arguments run natively ([details](compatibility/expressions/string.md)) |
 | `contains` | ✅ | — |  |
 | `decode` | ✅ | — |  |
 | `elt` | ✅ | Codegen dispatch |  |

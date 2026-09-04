@@ -537,6 +537,93 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateFloats(), DataTypes.LongType)
   }
 
+  // Boundary values of the ANSI casts from floating point to integral types
+  // (https://github.com/apache/datafusion-comet/issues/5673). Spark accepts a value when
+  // `floor(x) <= MaxValue && ceil(x) >= MinValue` holds in double precision and then truncates it
+  // towards zero with saturation, so the exactly representable bounds are valid inputs and, since
+  // Long.MaxValue.toDouble == 2^63, so is ±2^63 for BIGINT. Casts to TINYINT and SMALLINT first
+  // apply the INT range check and then require the truncated INT to fit the narrower type.
+  //
+  // Values that must overflow are cast one at a time so that each of them is checked in both
+  // engines. Comet renders the offending value in the error message with Rust's `{:e}` format,
+  // which only agrees with Java's Double.toString/Float.toString for large values with several
+  // significant digits, so the overflowing values are chosen from that range; the exact bounds of
+  // the narrower targets (such as 128.0 for TINYINT or 2^31 as a FLOAT for INT) are covered by the
+  // native unit tests in numeric.rs.
+
+  test("cast FloatType to IntegerType - ANSI boundary values") {
+    // 2147483520.0f is the largest float below 2^31 (Int.MaxValue.toFloat rounds up to 2^31)
+    castTest(
+      withNulls(Seq(2147483520.0f, Int.MinValue.toFloat, -2147483520.0f)).toDF("a"),
+      DataTypes.IntegerType,
+      useDataFrameDiff = true)
+    Seq(2.5e9f, -2.5e9f, Float.NaN).foreach { v =>
+      castTest(
+        Seq(v).toDF("a"),
+        DataTypes.IntegerType,
+        expectAnsiFailure = true,
+        useDataFrameDiff = true)
+    }
+  }
+
+  test("cast FloatType to LongType - ANSI boundary values") {
+    castTest(
+      withNulls(Seq(Math.nextDown(Long.MaxValue.toFloat), Long.MinValue.toFloat)).toDF("a"),
+      DataTypes.LongType,
+      useDataFrameDiff = true)
+    // Long.MaxValue.toFloat == 2^63 is accepted by Spark and saturates to Long.MaxValue.
+    // TODO: try_cast is not compared for this value because the native TRY path goes through
+    // Arrow's cast, which returns NULL for 2^63 where Spark returns Long.MaxValue
+    castTest(
+      withNulls(Seq(Long.MaxValue.toFloat)).toDF("a"),
+      DataTypes.LongType,
+      testTry = false,
+      useDataFrameDiff = true)
+    Seq(
+      Math.nextUp(Long.MaxValue.toFloat),
+      Math.nextDown(Long.MinValue.toFloat),
+      1.5e19f,
+      -1.5e19f,
+      Float.NaN).foreach { v =>
+      castTest(
+        Seq(v).toDF("a"),
+        DataTypes.LongType,
+        expectAnsiFailure = true,
+        useDataFrameDiff = true)
+    }
+  }
+
+  test("cast FloatType to ShortType - ANSI boundary values") {
+    castTest(
+      withNulls(Seq(Short.MaxValue.toFloat, Short.MinValue.toFloat, 32767.9f, -32768.9f))
+        .toDF("a"),
+      DataTypes.ShortType,
+      useDataFrameDiff = true)
+    // 1.5e7 passes the INT range check but does not fit a SMALLINT; 2.5e9 fails the INT check
+    Seq(1.5e7f, -1.5e7f, 2.5e9f, -2.5e9f, Float.NaN).foreach { v =>
+      castTest(
+        Seq(v).toDF("a"),
+        DataTypes.ShortType,
+        expectAnsiFailure = true,
+        useDataFrameDiff = true)
+    }
+  }
+
+  test("cast FloatType to ByteType - ANSI boundary values") {
+    castTest(
+      withNulls(Seq(Byte.MaxValue.toFloat, Byte.MinValue.toFloat, 127.9f, -128.9f)).toDF("a"),
+      DataTypes.ByteType,
+      useDataFrameDiff = true)
+    // 1.5e7 passes the INT range check but does not fit a TINYINT; 2.5e9 fails the INT check
+    Seq(1.5e7f, -1.5e7f, 2.5e9f, -2.5e9f, Float.NaN).foreach { v =>
+      castTest(
+        Seq(v).toDF("a"),
+        DataTypes.ByteType,
+        expectAnsiFailure = true,
+        useDataFrameDiff = true)
+    }
+  }
+
   test("cast FloatType to DoubleType") {
     castTest(generateFloats(), DataTypes.DoubleType)
   }
@@ -612,6 +699,80 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("cast DoubleType to LongType") {
     castTest(generateDoubles(), DataTypes.LongType)
+  }
+
+  test("cast DoubleType to IntegerType - ANSI boundary values") {
+    castTest(
+      withNulls(Seq(Int.MaxValue.toDouble, Int.MinValue.toDouble, 2147483647.5d, -2147483648.5d))
+        .toDF("a"),
+      DataTypes.IntegerType,
+      useDataFrameDiff = true)
+    Seq(2147483648.0d, -2147483649.0d, 2147483648.5d, -2147483649.5d).foreach { v =>
+      castTest(
+        Seq(v).toDF("a"),
+        DataTypes.IntegerType,
+        expectAnsiFailure = true,
+        useDataFrameDiff = true)
+    }
+  }
+
+  test("cast DoubleType to LongType - ANSI boundary values") {
+    castTest(
+      withNulls(Seq(Math.nextDown(Long.MaxValue.toDouble), Long.MinValue.toDouble)).toDF("a"),
+      DataTypes.LongType,
+      useDataFrameDiff = true)
+    // Long.MaxValue.toDouble == 2^63 is accepted by Spark and saturates to Long.MaxValue.
+    // TODO: try_cast is not compared for this value because the native TRY path goes through
+    // Arrow's cast, which returns NULL for 2^63 where Spark returns Long.MaxValue
+    castTest(
+      withNulls(Seq(Long.MaxValue.toDouble)).toDF("a"),
+      DataTypes.LongType,
+      testTry = false,
+      useDataFrameDiff = true)
+    Seq(
+      Math.nextUp(Long.MaxValue.toDouble),
+      Math.nextDown(Long.MinValue.toDouble),
+      1.5e19d,
+      -1.5e19d).foreach { v =>
+      castTest(
+        Seq(v).toDF("a"),
+        DataTypes.LongType,
+        expectAnsiFailure = true,
+        useDataFrameDiff = true)
+    }
+  }
+
+  test("cast DoubleType to ShortType - ANSI boundary values") {
+    castTest(
+      withNulls(Seq(Short.MaxValue.toDouble, Short.MinValue.toDouble, 32767.9d, -32768.9d))
+        .toDF("a"),
+      DataTypes.ShortType,
+      useDataFrameDiff = true)
+    // 2147483647.5 passes the INT range check but the truncated INT does not fit a SMALLINT;
+    // 2147483648.0 fails the INT range check itself
+    Seq(2147483647.5d, -2147483648.5d, 2147483648.0d, -2147483649.0d).foreach { v =>
+      castTest(
+        Seq(v).toDF("a"),
+        DataTypes.ShortType,
+        expectAnsiFailure = true,
+        useDataFrameDiff = true)
+    }
+  }
+
+  test("cast DoubleType to ByteType - ANSI boundary values") {
+    castTest(
+      withNulls(Seq(Byte.MaxValue.toDouble, Byte.MinValue.toDouble, 127.9d, -128.9d)).toDF("a"),
+      DataTypes.ByteType,
+      useDataFrameDiff = true)
+    // 2147483647.5 passes the INT range check but the truncated INT does not fit a TINYINT;
+    // 2147483648.0 fails the INT range check itself
+    Seq(2147483647.5d, -2147483648.5d, 2147483648.0d, -2147483649.0d).foreach { v =>
+      castTest(
+        Seq(v).toDF("a"),
+        DataTypes.ByteType,
+        expectAnsiFailure = true,
+        useDataFrameDiff = true)
+    }
   }
 
   test("cast DoubleType to FloatType") {
