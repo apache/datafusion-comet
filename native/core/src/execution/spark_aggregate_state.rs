@@ -420,11 +420,7 @@ impl SparkCollectStateDecoder {
         Ok(layout)
     }
 
-    fn variable_value<'a>(
-        bytes: &'a [u8],
-        slot_offset: usize,
-        fixed_end: usize,
-    ) -> Result<&'a [u8]> {
+    fn variable_value(bytes: &[u8], slot_offset: usize, fixed_end: usize) -> Result<&[u8]> {
         let offset_and_size = Self::read_i64(bytes, slot_offset, "offset/size slot")?;
         let offset = (offset_and_size >> 32) as i32;
         let size = offset_and_size as i32;
