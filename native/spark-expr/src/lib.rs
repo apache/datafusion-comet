@@ -47,7 +47,9 @@ pub mod hash_funcs;
 mod string_funcs;
 
 mod datetime_funcs;
+mod iceberg_funcs;
 pub use agg_funcs::*;
+pub use iceberg_funcs::{SparkIcebergBucket, SparkIcebergTemporalTransform, SparkIcebergTruncate};
 
 pub use cast::{spark_cast, Cast, SparkCastOptions};
 
