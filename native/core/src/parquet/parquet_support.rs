@@ -32,7 +32,9 @@ use arrow::{
 };
 use datafusion::common::{Result as DataFusionResult, ScalarValue};
 use datafusion::error::DataFusionError;
-use datafusion::execution::object_store::ObjectStoreUrl;
+use datafusion::execution::object_store::{
+    DefaultObjectStoreRegistry, ObjectStoreRegistry, ObjectStoreUrl,
+};
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::physical_plan::ColumnarValue;
 use datafusion_comet_common::SparkError;
@@ -44,7 +46,11 @@ use parquet::arrow::PARQUET_FIELD_ID_META_KEY;
 use std::collections::HashMap;
 use std::sync::OnceLock;
 use std::time::Duration;
-use std::{collections::hash_map::DefaultHasher, hash::Hasher, sync::RwLock};
+use std::{
+    collections::hash_map::DefaultHasher,
+    hash::Hasher,
+    sync::{PoisonError, RwLock},
+};
 use std::{fmt::Debug, hash::Hash, sync::Arc};
 use url::Url;
 
@@ -442,6 +448,78 @@ fn is_azure_scheme(scheme: &str) -> bool {
     matches!(scheme, "abfs" | "abfss")
 }
 
+fn object_store_url_key(url: &Url) -> String {
+    let authority_start = if is_azure_scheme(url.scheme()) {
+        // ABFS URLs encode the container in the userinfo
+        url::Position::BeforeUsername
+    } else {
+        url::Position::BeforeHost
+    };
+    format!(
+        "{}://{}",
+        url.scheme(),
+        &url[authority_start..url::Position::AfterPort],
+    )
+}
+
+/// An [`ObjectStoreRegistry`] that keys ABFS stores by the full authority
+/// (`scheme://container@host:port`) instead of DataFusion's `scheme://host:port`.
+///
+/// This is a workaround for `DefaultObjectStoreRegistry`, whose key drops the userinfo
+/// component, collapsing every container in an Azure storage account onto a single store.
+/// Fixed upstream in <https://github.com/apache/datafusion/pull/23935>; this registry can be
+/// removed once Comet is on a DataFusion release containing that fix.
+#[derive(Debug, Default)]
+pub(crate) struct CometObjectStoreRegistry {
+    default: DefaultObjectStoreRegistry,
+    azure_stores: RwLock<HashMap<String, Arc<dyn ObjectStore>>>,
+}
+
+impl ObjectStoreRegistry for CometObjectStoreRegistry {
+    fn register_store(
+        &self,
+        url: &Url,
+        store: Arc<dyn ObjectStore>,
+    ) -> Option<Arc<dyn ObjectStore>> {
+        if is_azure_scheme(url.scheme()) {
+            self.azure_stores
+                .write()
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert(object_store_url_key(url), store)
+        } else {
+            self.default.register_store(url, store)
+        }
+    }
+
+    fn deregister_store(&self, url: &Url) -> DataFusionResult<Arc<dyn ObjectStore>> {
+        if is_azure_scheme(url.scheme()) {
+            self.azure_stores
+                .write()
+                .unwrap_or_else(PoisonError::into_inner)
+                .remove(&object_store_url_key(url))
+                .ok_or_else(|| {
+                    DataFusionError::Internal(format!("No suitable object store found for {url}"))
+                })
+        } else {
+            self.default.deregister_store(url)
+        }
+    }
+
+    fn get_store(&self, url: &Url) -> DataFusionResult<Arc<dyn ObjectStore>> {
+        if is_azure_scheme(url.scheme()) {
+            if let Some(store) = self
+                .azure_stores
+                .read()
+                .unwrap_or_else(PoisonError::into_inner)
+                .get(&object_store_url_key(url))
+            {
+                return Ok(Arc::clone(store));
+            }
+        }
+        self.default.get_store(url)
+    }
+}
+
 // Creates an OpenDAL HDFS Operator from a URL with optional configuration
 #[cfg(feature = "hdfs-opendal")]
 pub(crate) fn create_hdfs_operator(url: &Url) -> Result<opendal::Operator, object_store::Error> {
@@ -499,7 +577,8 @@ fn create_hdfs_object_store(
 
 type ObjectStoreCache = RwLock<HashMap<(String, u64), Arc<dyn ObjectStore>>>;
 
-/// Process-wide cache of object stores, keyed by `(scheme://host:port, config_hash)`.
+/// Process-wide cache of object stores, keyed by
+/// `(scheme://[container@]host:port, config_hash)`.
 ///
 /// ## Why static / process lifetime?
 ///
@@ -511,12 +590,15 @@ type ObjectStoreCache = RwLock<HashMap<(String, u64), Arc<dyn ObjectStore>>>;
 /// deployment model each executor process is dedicated to a single Spark application, so
 /// process lifetime and application lifetime are equivalent; the cache is reclaimed when
 /// the executor pod terminates.
+/// Per-container isolation in shared native DataFusion runtimes also depends on
+/// `CometObjectStoreRegistry` using the same ABFS-aware key.
 ///
 /// ## Unbounded size
 ///
-/// Cache entries are indexed by `(scheme://host:port, hash-of-configs)`.  A typical Spark
-/// job accesses a small, fixed set of buckets with a stable configuration, so the number of
-/// distinct keys is O(buckets × credential-configs) and remains small throughout the job.
+/// Cache entries are indexed by `(scheme://[container@]host:port, hash-of-configs)`.  A typical
+/// Spark job accesses a small, fixed set of buckets or containers with a stable configuration,
+/// so the number of distinct keys is O(buckets/containers × credential-configs) and remains small
+/// throughout the job.
 /// Entries are cheap relative to the cost of creating a new object store (new HTTP
 /// connection pool + DNS resolution), and there is no meaningful benefit from eviction, so
 /// no eviction policy is applied.
@@ -564,11 +646,7 @@ pub(crate) fn prepare_object_store_with_configs(
             ExecutionError::GeneralError("Could not convert scheme from s3a to s3".to_string())
         })?;
     }
-    let url_key = format!(
-        "{}://{}",
-        scheme,
-        &url[url::Position::BeforeHost..url::Position::AfterPort],
-    );
+    let url_key = object_store_url_key(&url);
 
     let config_hash = hash_object_store_configs(object_store_configs);
     let cache_key = (url_key.clone(), config_hash);
@@ -618,18 +696,15 @@ pub(crate) fn prepare_object_store_with_configs(
 mod tests {
     #[cfg(not(feature = "hdfs-opendal"))]
     use datafusion::execution::object_store::ObjectStoreUrl;
-    #[cfg(not(feature = "hdfs-opendal"))]
     use datafusion::execution::runtime_env::RuntimeEnv;
     #[cfg(not(feature = "hdfs-opendal"))]
     use object_store::path::Path;
-    #[cfg(not(feature = "hdfs-opendal"))]
     use std::sync::Arc;
     #[cfg(not(feature = "hdfs-opendal"))]
     use url::Url;
 
     #[cfg(not(feature = "hdfs-opendal"))]
     use crate::execution::operators::ExecutionError;
-    #[cfg(not(feature = "hdfs-opendal"))]
     use std::collections::HashMap;
 
     /// Parses the url, registers the object store, and returns a tuple of the object store url and object store path
@@ -683,5 +758,79 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn test_azure_containers_use_distinct_stores() {
+        let configs = HashMap::from([("fs.azure.account.key".into(), "c2VjcmV0".into())]);
+        let object_store = |container| {
+            let runtime_env = Arc::new(RuntimeEnv::default());
+            let (object_store_url, _) = super::prepare_object_store_with_configs(
+                Arc::clone(&runtime_env),
+                format!("abfss://{container}@myacct.dfs.core.windows.net/path/file.parquet"),
+                &configs,
+            )
+            .unwrap();
+            runtime_env.object_store(&object_store_url).unwrap()
+        };
+
+        let container_a = object_store("container-a");
+        assert!(Arc::ptr_eq(&container_a, &object_store("container-a")));
+        assert!(!Arc::ptr_eq(&container_a, &object_store("container-b")));
+    }
+
+    #[test]
+    fn test_shared_runtime_env_uses_distinct_azure_container_stores() {
+        use datafusion::execution::runtime_env::RuntimeEnvBuilder;
+
+        let configs = HashMap::from([("fs.azure.account.key".into(), "c2VjcmV0".into())]);
+        let runtime_env = Arc::new(
+            RuntimeEnvBuilder::new()
+                .with_object_store_registry(Arc::new(super::CometObjectStoreRegistry::default()))
+                .build()
+                .unwrap(),
+        );
+        let register = |container| {
+            let (url, _) = super::prepare_object_store_with_configs(
+                Arc::clone(&runtime_env),
+                format!("abfss://{container}@myacct.dfs.core.windows.net/path/file.parquet"),
+                &configs,
+            )
+            .unwrap();
+            runtime_env.object_store(&url).unwrap()
+        };
+
+        let container_a = register("container-a");
+        let container_b = register("container-b");
+        assert!(!Arc::ptr_eq(&container_a, &container_b));
+    }
+
+    #[test]
+    fn test_non_azure_schemes_ignore_userinfo() {
+        // The URL shape here is synthetic: real S3 URLs carry the bucket in the host
+        // position, not in userinfo. Placing distinct userinfo in front of a shared host
+        // pins down that only Azure schemes include userinfo in the cache key.
+        let configs = HashMap::from([
+            (
+                "fs.s3a.aws.credentials.provider".into(),
+                "org.apache.hadoop.fs.s3a.AnonymousAWSCredentialsProvider".into(),
+            ),
+            ("fs.s3a.endpoint.region".into(), "us-east-1".into()),
+        ]);
+        let object_store = |userinfo| {
+            let runtime_env = Arc::new(RuntimeEnv::default());
+            let (object_store_url, _) = super::prepare_object_store_with_configs(
+                Arc::clone(&runtime_env),
+                format!("s3://{userinfo}@shared-host/path/file.parquet"),
+                &configs,
+            )
+            .unwrap();
+            runtime_env.object_store(&object_store_url).unwrap()
+        };
+
+        assert!(Arc::ptr_eq(
+            &object_store("userinfo-a"),
+            &object_store("userinfo-b")
+        ));
     }
 }
