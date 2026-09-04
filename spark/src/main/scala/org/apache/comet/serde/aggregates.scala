@@ -25,7 +25,7 @@ import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Expression, L
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, ApproximatePercentile, Average, BitAndAgg, BitOrAgg, BitXorAgg, BloomFilterAggregate, CentralMomentAgg, CollectList, CollectSet, Corr, Count, Covariance, CovPopulation, CovSample, First, HyperLogLogPlusPlus, Last, Max, Min, Percentile, RegrIntercept, RegrR2, RegrReplacement, RegrSlope, RegrSXY, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
 import org.apache.spark.sql.catalyst.util.ArrayData
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{BinaryType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, NumericType, ShortType, StringType, TimestampNTZType, TimestampType}
+import org.apache.spark.sql.types.{BinaryType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, NullType, NumericType, ShortType, StringType, TimestampNTZType, TimestampType}
 
 import org.apache.comet.CometConf.COMET_EXEC_STRICT_FLOATING_POINT
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark41Plus, withFallbackReason}
@@ -970,13 +970,15 @@ object CometCollectSet extends CometAggregateExpressionSerde[CollectSet] {
     if (!CometCollectShim.ignoreNulls(expr)) {
       Unsupported(Some("collect_set with RESPECT NULLS (ignoreNulls = false) is not supported"))
     } else {
-      SupportLevel
-        .strictFloatingPointReason(
-          expr.children.head.dataType,
-          "collect_set on floating-point types " +
-            "(Comet deduplicates NaN values while Spark treats each NaN as distinct)")
-        .map(reason => Incompatible(Some(reason)))
-        .getOrElse(Compatible())
+      CometCollectAggregate.nestedNullLevel(expr.children.head.dataType).getOrElse {
+        SupportLevel
+          .strictFloatingPointReason(
+            expr.children.head.dataType,
+            "collect_set on floating-point types " +
+              "(Comet deduplicates NaN values while Spark treats each NaN as distinct)")
+          .map(reason => Incompatible(Some(reason)))
+          .getOrElse(Compatible())
+      }
     }
   }
 
@@ -1009,6 +1011,29 @@ object CometCollectSet extends CometAggregateExpressionSerde[CollectSet] {
   }
 }
 
+/**
+ * Shared gate for collect_list / collect_set. Native collect accumulates the input's own child
+ * array, so every nested element keeps the non-nullability its producer gave it (`map_entries`
+ * yields a non-null entry struct with a non-null key), while the declared output type is built
+ * from Spark's `dataType` widened by `Utils.declaredChildNullability`. Where the two disagree
+ * DataFusion rejects the batch at runtime ("column types must match schema types"). Gated on any
+ * NullType-bearing input rather than the exact failing shapes; the same mismatch exists for
+ * non-Null nesting (`collect_list(array(array(id)))` fails on main) and is a native-aggregate
+ * bug.
+ */
+object CometCollectAggregate {
+
+  def nestedNullLevel(dt: DataType): Option[SupportLevel] =
+    if (SupportLevel.containsType(dt, classOf[NullType])) {
+      Some(
+        Unsupported(
+          Some("native collect_list/collect_set rebuilds a NullType-bearing element with a " +
+            "nullability that does not match the declared output type")))
+    } else {
+      None
+    }
+}
+
 object CometCollectList extends CometAggregateExpressionSerde[CollectList] {
 
   override def getSupportLevel(expr: CollectList): SupportLevel = {
@@ -1021,7 +1046,7 @@ object CometCollectList extends CometAggregateExpressionSerde[CollectList] {
     if (!CometCollectShim.ignoreNulls(expr)) {
       Unsupported(Some("collect_list with RESPECT NULLS (ignoreNulls = false) is not supported"))
     } else {
-      Compatible()
+      CometCollectAggregate.nestedNullLevel(expr.children.head.dataType).getOrElse(Compatible())
     }
   }
 

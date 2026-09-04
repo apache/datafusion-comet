@@ -1025,8 +1025,7 @@ class CometJoinSuite extends CometTestBase {
     // map(k, NULL) and transform_values(map(), ...) leave NullType children in the map type
     // (a bare map() would be constant-folded into a literal the optimizer hoists above the
     // join). The build side goes through CometBroadcastExchangeExec's batch coalescing and an
-    // Arrow IPC round trip on the JVM, where a nested NullVector used to hang the appender and
-    // the IPC reader rejected the NullType map key (see #5525).
+    // Arrow IPC round trip on the JVM (see #5525).
     Seq(true, false).foreach { aqe =>
       withSQLConf(
         CometConf.COMET_BATCH_SIZE.key -> "100",

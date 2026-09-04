@@ -73,7 +73,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     classOf[ArrayMin] -> CometArrayMin,
     classOf[ArrayPosition] -> CometArrayPosition,
     classOf[ArrayRemove] -> CometArrayRemove,
-    classOf[ArrayRepeat] -> CometScalarFunction("array_repeat"),
+    classOf[ArrayRepeat] -> CometArrayRepeat,
     classOf[Slice] -> CometSlice,
     classOf[SortArray] -> CometSortArray,
     classOf[ArraysOverlap] -> CometArraysOverlap,
@@ -642,7 +642,6 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
         val info = DataTypeInfo.newBuilder()
         val list = ListInfo.newBuilder()
         list.setElementType(elementType.get)
-        // NullType children are always nullable; see Utils.declaredChildNullability.
         list.setContainsNull(Utils.declaredChildNullability(a.elementType, a.containsNull))
         nestedParquetFieldId(parentField, elementPath, includeFieldIds)
           .foreach(list.setElementFieldId)

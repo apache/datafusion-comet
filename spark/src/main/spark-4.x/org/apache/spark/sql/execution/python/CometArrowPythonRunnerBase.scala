@@ -151,11 +151,9 @@ private[python] trait CometArrowPythonRunnerBase
             new FieldType(false, ArrowType.Struct.INSTANCE, null),
             childFields.asJava)
         val structVec = structField.createVector(allocator).asInstanceOf[StructVector]
-        // Declare the root's schema from `structField`, not from `structVec.getField`: Arrow's
-        // `MinorType.NULL` factory builds a NullType map key as a nullable `NullVector`, so the
-        // live vector reports an invalid key field even when `structField` is valid.
-        // `Utils.newArrowStreamWriter` repairs the declared schema if needed and returns the root
-        // the writer is bound to, which is the one to close.
+        // Declare the root's schema from `structField`, not from the live vector, whose NullType
+        // map key reports nullable (see `Utils.withNonNullableMapKeys`); `newArrowStreamWriter`
+        // returns the root the writer is bound to, which is the one to close.
         val declaredRoot =
           new VectorSchemaRoot(Seq(structField).asJava, Seq[FieldVector](structVec).asJava, 0)
         val (boundRoot, writer) =
@@ -209,10 +207,8 @@ private[python] trait CometArrowPythonRunnerBase
           // identical.
           val childNames = inputStructType.fieldNames
           streamFields = batchFields.zipWithIndex.map { case (field, i) =>
-            // A NullType map key comes back from Arrow as a nullable `NullVector`, which
-            // `MapVector.initializeChildrenFromFields` rejects when `createVector` rebuilds the
-            // struct in `startWriter`. Repair the key nullability the same way
-            // `Utils.serializeBatches` does.
+            // `startWriter` rebuilds the struct from these fields, so repair the NullType map key
+            // nullability first (see `Utils.withNonNullableMapKeys`).
             Utils.withNonNullableMapKeys(renamed(field, childNames(i), forceNullable = true))
           }
           startWriter(streamFields, dataOut)

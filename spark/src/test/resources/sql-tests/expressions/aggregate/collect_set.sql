@@ -298,3 +298,7 @@ SELECT grp, sort_array(collect_set(DISTINCT i)) FROM cs_src_int GROUP BY grp ORD
 query
 SELECT grp, sort_array(collect_set(i))
 FROM cs_src_int GROUP BY grp HAVING size(collect_set(i)) > 1 ORDER BY grp
+
+-- Same gate as collect_list: a NullType-bearing element stays in Spark.
+query expect_fallback(native collect_list/collect_set rebuilds a NullType-bearing element)
+SELECT grp, sort_array(collect_set(named_struct('i', i, 'n', NULL))) FROM cs_src_int GROUP BY grp

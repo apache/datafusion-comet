@@ -264,3 +264,9 @@ SELECT slice(arr, -2, 2) FROM test_slice_nested_str
 -- native declared nullable; the kernel's result must still match the planned type
 query
 SELECT slice(filter(array(), x -> true), 1, 1) FROM test_slice
+
+-- map_entries produces a list whose NullType-bearing struct item is declared non-nullable;
+-- native spark_array_slice keeps that item where a nullable one is promised, so the
+-- composition stays in Spark.
+query expect_fallback(native spark_array_slice keeps a non-nullable list item where a nullable one is promised)
+SELECT slice(map_entries(map(coalesce(start_idx, 0), NULL)), 1, 1) FROM test_slice
