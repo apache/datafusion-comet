@@ -338,7 +338,7 @@ Steps 3 and 4 are a static assessment and need no build. That is deliberate: the
 cheap to run over a pool of candidates. But a `Medium` on either axis is exactly where a static
 read is least trustworthy, so **when either rating is Medium, gather at least one piece of
 empirical evidence before writing the verdict.** Building is required from here
-(`make`; see `CLAUDE.md`).
+(`make`; see `docs/source/contributor-guide/development.md`).
 
 Any one of these is sufficient, cheapest first:
 

@@ -1995,6 +1995,30 @@ index 005e764cc30..92ec088efab 100644
    }
  
    private def checkSorts(query: String, enabledCount: Int, disabledCount: Int): Unit = {
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/RemoveRedundantWindowGroupLimitsSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/RemoveRedundantWindowGroupLimitsSuite.scala
+index 46ed8fdfd21..4585dbab5b8 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/execution/RemoveRedundantWindowGroupLimitsSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/RemoveRedundantWindowGroupLimitsSuite.scala
+@@ -18,6 +18,7 @@
+ package org.apache.spark.sql.execution
+ 
+ import org.apache.spark.sql.{DataFrame, QueryTest}
++import org.apache.spark.sql.comet.CometWindowGroupLimitExec
+ import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanHelper, DisableAdaptiveExecutionSuite, EnableAdaptiveExecutionSuite}
+ import org.apache.spark.sql.execution.window.WindowGroupLimitExec
+ import org.apache.spark.sql.functions.lit
+@@ -30,7 +31,10 @@ abstract class RemoveRedundantWindowGroupLimitsSuiteBase
+ 
+   private def checkNumWindowGroupLimits(df: DataFrame, count: Int): Unit = {
+     val plan = df.queryExecution.executedPlan
+-    assert(collectWithSubqueries(plan) { case exec: WindowGroupLimitExec => exec }.length == count)
++    assert(collectWithSubqueries(plan) {
++      case exec: WindowGroupLimitExec => exec
++      case exec: CometWindowGroupLimitExec => exec
++    }.length == count)
+   }
+ 
+   private def checkWindowGroupLimits(query: String, count: Int): Unit = {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/ReplaceHashWithSortAggSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/ReplaceHashWithSortAggSuite.scala
 index 47679ed7865..9ffbaecb98e 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/ReplaceHashWithSortAggSuite.scala

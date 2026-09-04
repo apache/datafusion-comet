@@ -18,10 +18,92 @@
 //! Helpers shared by the cast-from-string benchmarks, pulled in with
 //! `#[path = "common/mod.rs"] mod common;`. This lives in a subdirectory so that Cargo's bench
 //! auto-discovery, which only looks at `benches/*.rs`, does not treat it as a bench target.
+#![allow(dead_code)]
 
-use arrow::array::{builder::StringBuilder, RecordBatch};
+use arrow::array::{
+    builder::StringBuilder, ArrayRef, Float64Array, Int64Array, RecordBatch, StringArray,
+    TimestampMicrosecondArray,
+};
 use arrow::datatypes::{DataType, Field, Schema};
 use std::sync::Arc;
+
+pub const ROW_COUNTS: [usize; 3] = [8_192, 65_536, 524_288];
+
+pub const NULL_RATIOS: [(f64, &str); 3] = [(0.0, "no_nulls"), (0.1, "sparse"), (1.0, "all_null")];
+
+fn is_null(i: usize, null_ratio: f64) -> bool {
+    if null_ratio <= 0.0 {
+        false
+    } else if null_ratio >= 1.0 {
+        true
+    } else {
+        let stride = (1.0 / null_ratio).round() as usize;
+        stride != 0 && i.is_multiple_of(stride)
+    }
+}
+
+pub fn f64_array(rows: usize, null_ratio: f64, value: impl Fn(usize) -> f64) -> ArrayRef {
+    let arr: Float64Array = (0..rows)
+        .map(|i| {
+            if is_null(i, null_ratio) {
+                None
+            } else {
+                Some(value(i))
+            }
+        })
+        .collect();
+    Arc::new(arr)
+}
+
+pub fn i64_array(rows: usize, null_ratio: f64, value: impl Fn(usize) -> i64) -> ArrayRef {
+    let arr: Int64Array = (0..rows)
+        .map(|i| {
+            if is_null(i, null_ratio) {
+                None
+            } else {
+                Some(value(i))
+            }
+        })
+        .collect();
+    Arc::new(arr)
+}
+
+pub fn string_array(rows: usize, null_ratio: f64, value: impl Fn(usize) -> String) -> ArrayRef {
+    let arr: StringArray = (0..rows)
+        .map(|i| {
+            if is_null(i, null_ratio) {
+                None
+            } else {
+                Some(value(i))
+            }
+        })
+        .collect();
+    Arc::new(arr)
+}
+
+/// A `Timestamp(Microsecond, tz)` array of `rows` rows. Pass `tz = None` to build a
+/// TimestampNTZ array (no timezone) and `Some(name)` for a timezone-stamped array — the two
+/// take different code paths in the datetime kernels (NTZ skips timezone resolution).
+pub fn timestamp_micros_array(
+    rows: usize,
+    null_ratio: f64,
+    tz: Option<&str>,
+    value: impl Fn(usize) -> i64,
+) -> ArrayRef {
+    let arr: TimestampMicrosecondArray = (0..rows)
+        .map(|i| {
+            if is_null(i, null_ratio) {
+                None
+            } else {
+                Some(value(i))
+            }
+        })
+        .collect();
+    match tz {
+        Some(tz) => Arc::new(arr.with_timezone(tz)),
+        None => Arc::new(arr),
+    }
+}
 
 /// A single-column `Utf8` batch of `rows` rows, where row `i` holds `value(i)` unless
 /// `i % null_modulus == 0`, in which case it is null.

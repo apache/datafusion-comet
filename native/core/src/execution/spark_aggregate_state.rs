@@ -36,10 +36,16 @@ pub(crate) enum PartialMergeStateDecoder {
 }
 
 impl PartialMergeStateDecoder {
-    pub(crate) fn new(inner_expr: &AggregateFunctionExpr, state_fields: &[FieldRef]) -> Self {
-        SparkCollectStateDecoder::try_new(inner_expr, state_fields)
-            .map(Self::SparkCollect)
-            .unwrap_or(Self::PassThrough)
+    pub(crate) fn try_new(
+        inner_expr: &AggregateFunctionExpr,
+        state_fields: &[FieldRef],
+    ) -> Result<Self> {
+        Ok(
+            match SparkCollectStateDecoder::try_new(inner_expr, state_fields)? {
+                Some(decoder) => Self::SparkCollect(decoder),
+                None => Self::PassThrough,
+            },
+        )
     }
 
     pub(crate) fn decode<'a>(&self, values: &'a [ArrayRef]) -> Result<Cow<'a, [ArrayRef]>> {
@@ -57,23 +63,38 @@ impl PartialMergeStateDecoder {
 /// single-field `UnsafeRow`; field 0 is the `UnsafeArrayData` with the collected elements.
 /// DataFusion's collect accumulators expect the merge input to be a list-typed state column, so
 /// mixed Spark-Partial -> Comet-PartialMerge plans must materialize those unsafe bytes into an
-/// Arrow `ListArray` before calling the inner accumulator's `merge_batch`.
+/// Arrow `ListArray` before calling the inner accumulator's `merge_batch`. The single-field
+/// `UnsafeRow` and nested `UnsafeArrayData` layouts used here are unchanged across Spark 3.4-4.2.
 #[derive(Clone, Debug)]
 pub(crate) struct SparkCollectStateDecoder {
     item_field: FieldRef,
 }
 
 impl SparkCollectStateDecoder {
-    fn try_new(inner_expr: &AggregateFunctionExpr, state_fields: &[FieldRef]) -> Option<Self> {
-        match (inner_expr.fun().name(), state_fields) {
-            ("collect_list" | "collect_set", [state_field]) => match state_field.data_type() {
-                DataType::List(item_field) => Some(Self {
-                    item_field: Arc::clone(item_field),
-                }),
-                _ => None,
-            },
-            _ => None,
+    fn try_new(
+        inner_expr: &AggregateFunctionExpr,
+        state_fields: &[FieldRef],
+    ) -> Result<Option<Self>> {
+        if !matches!(inner_expr.fun().name(), "collect_list" | "collect_set") {
+            return Ok(None);
         }
+
+        let [state_field] = state_fields else {
+            return Err(DataFusionError::Internal(format!(
+                "Spark collect state decoder expected one state field, got {}",
+                state_fields.len()
+            )));
+        };
+        let DataType::List(item_field) = state_field.data_type() else {
+            return Err(DataFusionError::Internal(format!(
+                "Spark collect state decoder expected List state, got {}",
+                state_field.data_type()
+            )));
+        };
+
+        Ok(Some(Self {
+            item_field: Arc::clone(item_field),
+        }))
     }
 
     fn decode<'a>(&self, values: &'a [ArrayRef]) -> Result<Cow<'a, [ArrayRef]>> {
@@ -136,7 +157,7 @@ impl SparkCollectStateDecoder {
         row_bytes: &[u8],
         builder: &mut ListBuilder<Box<dyn ArrayBuilder>>,
     ) -> Result<()> {
-        match Self::spark_array_from_single_field_unsafe_row(row_bytes)? {
+        match self.spark_array_from_single_field_unsafe_row(row_bytes)? {
             Some(array) => {
                 append_to_builder::<true>(self.item_field.data_type(), builder.values(), &array)
                     .map_err(|e| Self::decode_error(e.to_string()))?;
@@ -148,6 +169,7 @@ impl SparkCollectStateDecoder {
     }
 
     fn spark_array_from_single_field_unsafe_row(
+        &self,
         row_bytes: &[u8],
     ) -> Result<Option<SparkUnsafeArray>> {
         const BITSET_WIDTH: usize = 8;
@@ -179,9 +201,9 @@ impl SparkCollectStateDecoder {
         let offset = (offset_and_size >> 32) as i32;
         let size = offset_and_size as i32;
 
-        if offset < MIN_ROW_WIDTH as i32 || size < 0 {
+        if offset != MIN_ROW_WIDTH as i32 || size < 0 {
             return Err(Self::decode_error(format!(
-                "Invalid UnsafeRow array field offset/size: offset={offset}, size={size}, row_size={}",
+                "Invalid single-field UnsafeRow array offset/size: offset={offset}, size={size}, row_size={}",
                 row_bytes.len()
             )));
         }
@@ -199,14 +221,256 @@ impl SparkCollectStateDecoder {
                 row_bytes.len()
             )));
         }
-        if size < 8 {
+        let array_bytes = &row_bytes[offset..end];
+        Self::validate_unsafe_array(array_bytes, self.item_field.data_type(), true)?;
+        Ok(Some(SparkUnsafeArray::new(array_bytes.as_ptr() as i64)))
+    }
+
+    fn validate_unsafe_array(
+        bytes: &[u8],
+        element_type: &DataType,
+        nullable: bool,
+    ) -> Result<usize> {
+        const NUM_ELEMENTS_WIDTH: usize = 8;
+
+        if bytes.len() < NUM_ELEMENTS_WIDTH {
             return Err(Self::decode_error(format!(
-                "UnsafeArrayData collect buffer is too small: {size} bytes"
+                "UnsafeArrayData is too small: {} bytes",
+                bytes.len()
             )));
         }
 
-        let array_addr = unsafe { row_bytes.as_ptr().add(offset) } as i64;
-        Ok(Some(SparkUnsafeArray::new(array_addr)))
+        let num_elements = Self::read_i64(bytes, 0, "UnsafeArrayData element count")?;
+        if !(0..=i32::MAX as i64).contains(&num_elements) {
+            return Err(Self::decode_error(format!(
+                "Invalid UnsafeArrayData element count: {num_elements}"
+            )));
+        }
+        let num_elements = num_elements as usize;
+        let bitset_width = num_elements
+            .div_ceil(64)
+            .checked_mul(8)
+            .ok_or_else(|| Self::decode_error("UnsafeArrayData bitset size overflows"))?;
+        let header_width = NUM_ELEMENTS_WIDTH
+            .checked_add(bitset_width)
+            .ok_or_else(|| Self::decode_error("UnsafeArrayData header size overflows"))?;
+        let (element_width, variable_width) = Self::unsafe_array_layout(element_type)?;
+        let fixed_width = num_elements
+            .checked_mul(element_width)
+            .ok_or_else(|| Self::decode_error("UnsafeArrayData fixed region size overflows"))?;
+        let fixed_end = header_width
+            .checked_add(fixed_width)
+            .ok_or_else(|| Self::decode_error("UnsafeArrayData fixed region end overflows"))?;
+        if fixed_end > bytes.len() {
+            return Err(Self::decode_error(format!(
+                "UnsafeArrayData fixed region is out of bounds: required={fixed_end}, size={}",
+                bytes.len()
+            )));
+        }
+
+        if variable_width {
+            for index in 0..num_elements {
+                if nullable && Self::is_null(bytes, NUM_ELEMENTS_WIDTH, index)? {
+                    continue;
+                }
+                let slot_offset = header_width + index * element_width;
+                let value = Self::variable_value(bytes, slot_offset, fixed_end)?;
+                Self::validate_variable_value(value, element_type)?;
+            }
+        }
+
+        Ok(num_elements)
+    }
+
+    fn validate_unsafe_row(bytes: &[u8], fields: &arrow::datatypes::Fields) -> Result<()> {
+        const FIELD_WIDTH: usize = 8;
+
+        let bitset_width = fields
+            .len()
+            .div_ceil(64)
+            .checked_mul(8)
+            .ok_or_else(|| Self::decode_error("UnsafeRow bitset size overflows"))?;
+        let fixed_width = fields
+            .len()
+            .checked_mul(FIELD_WIDTH)
+            .ok_or_else(|| Self::decode_error("UnsafeRow fixed region size overflows"))?;
+        let fixed_end = bitset_width
+            .checked_add(fixed_width)
+            .ok_or_else(|| Self::decode_error("UnsafeRow fixed region end overflows"))?;
+        if fixed_end > bytes.len() {
+            return Err(Self::decode_error(format!(
+                "UnsafeRow fixed region is out of bounds: required={fixed_end}, size={}",
+                bytes.len()
+            )));
+        }
+
+        for (index, field) in fields.iter().enumerate() {
+            let (_, variable_width) = Self::unsafe_array_layout(field.data_type())?;
+            if variable_width && !Self::is_null(bytes, 0, index)? {
+                let slot_offset = bitset_width + index * FIELD_WIDTH;
+                let value = Self::variable_value(bytes, slot_offset, fixed_end)?;
+                Self::validate_variable_value(value, field.data_type())?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn validate_unsafe_map(bytes: &[u8], entry_field: &FieldRef) -> Result<()> {
+        const KEY_SIZE_WIDTH: usize = 8;
+
+        if bytes.len() < KEY_SIZE_WIDTH || bytes.len() > i32::MAX as usize {
+            return Err(Self::decode_error(format!(
+                "Invalid UnsafeMapData size: {} bytes",
+                bytes.len()
+            )));
+        }
+        let key_size = Self::read_i64(bytes, 0, "UnsafeMapData key array size")?;
+        if !(0..=i32::MAX as i64).contains(&key_size) {
+            return Err(Self::decode_error(format!(
+                "Invalid UnsafeMapData key array size: {key_size}"
+            )));
+        }
+        let key_end = KEY_SIZE_WIDTH
+            .checked_add(key_size as usize)
+            .ok_or_else(|| Self::decode_error("UnsafeMapData key array end overflows"))?;
+        if key_end > bytes.len() {
+            return Err(Self::decode_error(format!(
+                "UnsafeMapData key array is out of bounds: key_end={key_end}, size={}",
+                bytes.len()
+            )));
+        }
+
+        let DataType::Struct(fields) = entry_field.data_type() else {
+            return Err(Self::decode_error(format!(
+                "UnsafeMapData entry field must be Struct, got {}",
+                entry_field.data_type()
+            )));
+        };
+        if fields.len() != 2 {
+            return Err(Self::decode_error(format!(
+                "UnsafeMapData entry struct must have two fields, got {}",
+                fields.len()
+            )));
+        }
+
+        let key_count = Self::validate_unsafe_array(
+            &bytes[KEY_SIZE_WIDTH..key_end],
+            fields[0].data_type(),
+            false,
+        )?;
+        let value_count =
+            Self::validate_unsafe_array(&bytes[key_end..], fields[1].data_type(), true)?;
+        if key_count != value_count {
+            return Err(Self::decode_error(format!(
+                "UnsafeMapData key/value counts differ: {key_count} vs {value_count}"
+            )));
+        }
+
+        Ok(())
+    }
+
+    fn validate_variable_value(bytes: &[u8], data_type: &DataType) -> Result<()> {
+        match data_type {
+            DataType::Binary | DataType::Utf8 => Ok(()),
+            DataType::Decimal128(precision, _) if *precision > 18 => {
+                if bytes.is_empty() || bytes.len() > 16 {
+                    Err(Self::decode_error(format!(
+                        "Invalid wide decimal byte length: {}",
+                        bytes.len()
+                    )))
+                } else {
+                    Ok(())
+                }
+            }
+            DataType::List(field) => {
+                Self::validate_unsafe_array(bytes, field.data_type(), true).map(|_| ())
+            }
+            DataType::Struct(fields) => Self::validate_unsafe_row(bytes, fields),
+            DataType::Map(field, _) => Self::validate_unsafe_map(bytes, field),
+            _ => Err(Self::decode_error(format!(
+                "Unsupported variable-width collect state type: {data_type}"
+            ))),
+        }
+    }
+
+    fn unsafe_array_layout(data_type: &DataType) -> Result<(usize, bool)> {
+        let layout = match data_type {
+            DataType::Boolean | DataType::Int8 => (1, false),
+            DataType::Int16 => (2, false),
+            DataType::Int32 | DataType::Float32 | DataType::Date32 => (4, false),
+            DataType::Int64
+            | DataType::Float64
+            | DataType::Time64(arrow::datatypes::TimeUnit::Nanosecond)
+            | DataType::Timestamp(arrow::datatypes::TimeUnit::Microsecond, _) => (8, false),
+            DataType::Decimal128(precision, _) if *precision <= 18 => (8, false),
+            DataType::Null => (0, false),
+            DataType::Binary
+            | DataType::Utf8
+            | DataType::List(_)
+            | DataType::Struct(_)
+            | DataType::Map(_, _)
+            | DataType::Decimal128(_, _) => (8, true),
+            _ => {
+                return Err(Self::decode_error(format!(
+                    "Unsupported collect state type: {data_type}"
+                )))
+            }
+        };
+        Ok(layout)
+    }
+
+    fn variable_value<'a>(
+        bytes: &'a [u8],
+        slot_offset: usize,
+        fixed_end: usize,
+    ) -> Result<&'a [u8]> {
+        let offset_and_size = Self::read_i64(bytes, slot_offset, "offset/size slot")?;
+        let offset = (offset_and_size >> 32) as i32;
+        let size = offset_and_size as i32;
+        if offset == 0 && size == 0 {
+            return Ok(&[]);
+        }
+        if offset < 0 || size < 0 || (offset as usize) < fixed_end {
+            return Err(Self::decode_error(format!(
+                "Invalid variable-width offset/size: offset={offset}, size={size}, fixed_end={fixed_end}"
+            )));
+        }
+
+        let offset = offset as usize;
+        let size = size as usize;
+        let end = offset.checked_add(size).ok_or_else(|| {
+            Self::decode_error(format!(
+                "Variable-width range overflows: offset={offset}, size={size}"
+            ))
+        })?;
+        bytes.get(offset..end).ok_or_else(|| {
+            Self::decode_error(format!(
+                "Variable-width range is out of bounds: offset={offset}, size={size}, buffer_size={}",
+                bytes.len()
+            ))
+        })
+    }
+
+    fn is_null(bytes: &[u8], bitset_offset: usize, index: usize) -> Result<bool> {
+        let word_offset = bitset_offset + (index / 64) * 8;
+        let word = Self::read_i64(bytes, word_offset, "null bitset")?;
+        Ok((word & (1_i64 << (index % 64))) != 0)
+    }
+
+    fn read_i64(bytes: &[u8], offset: usize, label: &str) -> Result<i64> {
+        let end = offset
+            .checked_add(8)
+            .ok_or_else(|| Self::decode_error(format!("{label} offset overflows")))?;
+        let value = bytes.get(offset..end).ok_or_else(|| {
+            Self::decode_error(format!(
+                "{label} is out of bounds: offset={offset}, size={}",
+                bytes.len()
+            ))
+        })?;
+        Ok(i64::from_le_bytes(
+            value.try_into().expect("slice length checked"),
+        ))
     }
 
     fn decode_error(message: impl Into<String>) -> DataFusionError {
@@ -375,5 +639,54 @@ mod tests {
         assert_eq!(values.value(1), "βeta");
         assert!(values.is_null(2));
         assert_eq!(values.value(3), "spark");
+    }
+
+    #[test]
+    fn decodes_null_spark_collect_state() {
+        let mut row = vec![0_u8; 16];
+        row[0] = 1;
+        let binary = BinaryArray::from_iter([Some(row.as_slice())]);
+        let input = [Arc::new(binary) as ArrayRef];
+        let decoder = collect_state_decoder(DataType::Int32);
+        let decoded = decoder.decode(&input).unwrap();
+        let list = decoded.as_ref()[0]
+            .as_any()
+            .downcast_ref::<ListArray>()
+            .unwrap();
+
+        assert!(list.is_null(0));
+    }
+
+    #[test]
+    fn rejects_malformed_spark_collect_state() {
+        let truncated_row = vec![0_u8; 15];
+
+        let mut two_field_row = vec![0_u8; 32];
+        let offset_and_size = (24_i64 << 32) | 8;
+        two_field_row[8..16].copy_from_slice(&offset_and_size.to_le_bytes());
+
+        let mut truncated_array = vec![0_u8; 16];
+        truncated_array[0..8].copy_from_slice(&1_i64.to_le_bytes());
+        let truncated_array_row = unsafe_row_with_array(truncated_array);
+
+        let decoder = collect_state_decoder(DataType::Int32);
+        for (name, row) in [
+            ("truncated row", truncated_row),
+            ("different field count", two_field_row),
+            ("truncated array", truncated_array_row),
+        ] {
+            let binary = BinaryArray::from_iter([Some(row.as_slice())]);
+            let input = [Arc::new(binary) as ArrayRef];
+            let error = match decoder.decode(&input) {
+                Ok(_) => panic!("{name} was accepted"),
+                Err(error) => error,
+            };
+            assert!(
+                error
+                    .to_string()
+                    .contains("Failed to decode Spark UnsafeRow collect aggregate buffer"),
+                "{name}: {error}"
+            );
+        }
     }
 }

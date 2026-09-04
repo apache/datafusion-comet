@@ -21,25 +21,38 @@ pub mod expression_registry;
 pub mod macros;
 pub mod operator_registry;
 
+// Glue that wires the optional Delta integration into core's plan-tree builder.
+// Compiled only under `--features contrib-delta`; default builds carry zero Delta
+// surface. The bulk of the Delta logic lives in the `comet-contrib-delta` crate --
+// this module is just the bridge that reaches into core's `pub(crate)` planner
+// helpers (`create_expr`, `init_datasource_exec`, `prepare_object_store_with_configs`)
+// and calls into that crate.
+#[cfg(feature = "contrib-delta")]
+mod delta_scan;
+
 use crate::execution::operators::init_csv_datasource_exec;
 use crate::execution::operators::AlignedArrowStreamReader;
 use crate::execution::operators::IcebergScanExec;
+use crate::execution::operators::IcebergWriteExec;
+use crate::execution::operators::{PartitionedRankLimitExec, WindowFnKind};
 use crate::execution::{
     expressions::list_empty_to_null::ListEmptyToNullExpr,
     expressions::list_positions::ListPositionsExpr,
     expressions::subquery::Subquery,
     operators::{
-        ExecutionError, ExpandExec, ParquetCompression, ParquetWriterExec, SampleExec, ScanExec,
-        ShuffleScanExec,
+        ExecutionError, ExpandExec, ExplodeExec, ParquetCompression, ParquetWriterExec, SampleExec,
+        ScanExec, ShuffleScanExec,
     },
     planner::expression_registry::ExpressionRegistry,
     planner::operator_registry::OperatorRegistry,
     serde::to_arrow_datatype,
-    shuffle::{SchemaAlignExec, ShuffleWriterExec},
+    shuffle::{SchemaAlignExec, ShuffleWriterDestination, ShuffleWriterExec},
 };
-use crate::jvm_bridge::{jni_call, JVMClasses};
+use crate::jvm_bridge::{jni_call, JVMClasses, ShufflePartitionPusher};
 use arrow::compute::CastOptions;
-use arrow::datatypes::{DataType, Field, FieldRef, Schema, TimeUnit, DECIMAL128_MAX_PRECISION};
+use arrow::datatypes::{
+    DataType, Field, FieldRef, Fields, Schema, TimeUnit, DECIMAL128_MAX_PRECISION,
+};
 use arrow::ffi_stream::FFI_ArrowArrayStream;
 use datafusion::functions_aggregate::bit_and_or_xor::{bit_and_udaf, bit_or_udaf, bit_xor_udaf};
 use datafusion::functions_aggregate::count::count_udaf;
@@ -115,7 +128,7 @@ use datafusion::common::UnnestOptions;
 use datafusion::physical_plan::filter::FilterExec;
 use datafusion::physical_plan::joins::NestedLoopJoinExec;
 use datafusion::physical_plan::limit::GlobalLimitExec;
-use datafusion::physical_plan::unnest::{ListUnnest, UnnestExec};
+use datafusion::physical_plan::unnest::ListUnnest;
 use datafusion_comet_proto::spark_expression::ListLiteral;
 use datafusion_comet_proto::spark_operator::SparkFilePartition;
 use datafusion_comet_proto::{
@@ -126,7 +139,8 @@ use datafusion_comet_proto::{
     spark_operator::{
         self, lower_window_frame_bound::LowerFrameBoundStruct, operator::OpStruct,
         upper_window_frame_bound::UpperFrameBoundStruct, AggregateMode as ProtoAggregateMode,
-        BuildSide, CompressionCodec as SparkCompressionCodec, JoinType, Operator, WindowFrameType,
+        BuildSide, CompressionCodec as SparkCompressionCodec, JoinType, Operator, RankLikeFunction,
+        WindowFrameType,
     },
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
 };
@@ -207,6 +221,39 @@ fn make_all_fields_nullable(data_type: &DataType) -> DataType {
     }
 }
 
+/// Return a copy of a `Map` type with only the outer entries `value` field marked nullable, keeping
+/// the key field non-nullable and every nested key/value type byte-for-byte unchanged. Any non-`Map`
+/// type is returned unchanged.
+///
+/// This is the shallow counterpart of `make_all_fields_nullable`, used for `map_entries`.
+/// `map_entries` reuses the input map's entries array as its output list values but declares that
+/// element's `value` field nullable (`Struct(key non-null, value nullable)`), deriving both nested
+/// types verbatim from the input. Arrow's `GenericListArray::try_new` compares the declared element
+/// field's type against the reused values array's type in full, so the ONLY field that can mismatch
+/// is the entries `value` field's own `nullable` flag; widening just that field is sufficient.
+/// Recursing into nested types (as `make_all_fields_nullable` does) would additionally flip, say, a
+/// nested `Map`'s `valueContainsNull`, which then diverges from the Spark-serialized `return_type`
+/// and makes a downstream `make_array` see unequal map types and panic.
+fn widen_map_entry_value_nullable(data_type: &DataType) -> DataType {
+    match data_type {
+        DataType::Map(entries, sorted) => match entries.data_type() {
+            DataType::Struct(kv) if kv.len() == 2 && !kv[1].is_nullable() => {
+                let new_value = Arc::new(kv[1].as_ref().clone().with_nullable(true));
+                let new_kv: Fields = vec![Arc::clone(&kv[0]), new_value].into();
+                let new_entries = Arc::new(
+                    entries
+                        .as_ref()
+                        .clone()
+                        .with_data_type(DataType::Struct(new_kv)),
+                );
+                DataType::Map(new_entries, *sorted)
+            }
+            _ => data_type.clone(),
+        },
+        other => other.clone(),
+    }
+}
+
 /// If `expr` evaluates to `Timestamp(_, Some(_))` against `schema`, wrap it in a
 /// metadata-only cast to `Timestamp(_, None)`. This is required because
 /// DataFusion's `SortMergeJoinExec` comparator only supports timezone-less
@@ -254,6 +301,9 @@ pub struct PhysicalPlanner {
     /// `ExecutionContext`; see that struct for the propagation rationale. `None` when no driving
     /// Spark task is available.
     class_loader: Option<Arc<Global<JObject<'static>>>>,
+    /// Task-owned destination for remote shuffle blocks, registered on the driving Spark task
+    /// thread before native planning. Only explicit RSS destinations may use it.
+    shuffle_partition_pusher: Option<Arc<dyn ShufflePartitionPusher>>,
 }
 
 impl Default for PhysicalPlanner {
@@ -272,6 +322,7 @@ impl PhysicalPlanner {
             sql_text_pool: vec![],
             task_context: None,
             class_loader: None,
+            shuffle_partition_pusher: None,
         }
     }
 
@@ -369,6 +420,18 @@ impl PhysicalPlanner {
         class_loader: Option<Arc<Global<JObject<'static>>>>,
     ) -> Self {
         self.class_loader = class_loader;
+        self
+    }
+
+    /// Attach the remote-shuffle callback owned by the Spark task that created this plan.
+    ///
+    /// The callback is retained by any RSS shuffle writer in the physical plan and must not be
+    /// supplied to a legacy or explicitly local shuffle writer.
+    pub fn with_shuffle_partition_pusher(
+        mut self,
+        shuffle_partition_pusher: Option<Arc<dyn ShufflePartitionPusher>>,
+    ) -> Self {
+        self.shuffle_partition_pusher = shuffle_partition_pusher;
         self
     }
 
@@ -914,6 +977,26 @@ impl PhysicalPlanner {
         }
     }
 
+    /// Normalize scalar floating-point comparison keys without changing output values.
+    /// Sort, Window, and WindowGroupLimit must use identical expressions so DataFusion
+    /// can recognize the ordering of window partition keys.
+    fn create_normalized_key_expr(
+        &self,
+        spark_expr: &Expr,
+        input_schema: SchemaRef,
+    ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
+        let child = self.create_expr(spark_expr, Arc::clone(&input_schema))?;
+        let data_type = child.data_type(input_schema.as_ref())?;
+        // Spark may already have normalized a partition or join key.
+        if matches!(data_type, DataType::Float32 | DataType::Float64)
+            && child.downcast_ref::<NormalizeNaNAndZero>().is_none()
+        {
+            Ok(Arc::new(NormalizeNaNAndZero::new(data_type, child)))
+        } else {
+            Ok(child)
+        }
+    }
+
     /// Create a DataFusion physical sort expression from Spark physical expression
     fn create_sort_expr<'a>(
         &'a self,
@@ -922,7 +1005,8 @@ impl PhysicalPlanner {
     ) -> Result<PhysicalSortExpr, ExecutionError> {
         match spark_expr.expr_struct.as_ref().unwrap() {
             ExprStruct::SortOrder(expr) => {
-                let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
+                let child =
+                    self.create_normalized_key_expr(expr.child.as_ref().unwrap(), input_schema)?;
                 let descending = expr.direction == 1;
                 let nulls_first = expr.null_ordering == 0;
 
@@ -1776,6 +1860,26 @@ impl PhysicalPlanner {
                     )),
                 ))
             }
+            OpStruct::ContribScan(contrib) => {
+                // Extension point for optional, out-of-tree contrib scans (Delta, Lance, ...). The
+                // concrete scan message is packed into the `ContribScan` envelope on the JVM side;
+                // here we route by `type_url` to whichever contrib was compiled in. Core names no
+                // specific contrib: the type_url match + decode lives entirely inside each
+                // contrib's gated module, so a default build carries zero contrib surface. The arm
+                // itself is unconditional so a default build that receives a contrib-shaped plan
+                // from a misconfigured driver gets a clear error instead of a "no match" decode
+                // failure.
+                #[cfg(feature = "contrib-delta")]
+                if let Some(result) = delta_scan::try_plan_contrib_scan(self, spark_plan, contrib) {
+                    return result;
+                }
+                Err(GeneralError(format!(
+                    "Received a contrib_scan operator (type_url: {}) but core was built without a \
+                     contrib that handles it. Rebuild with the matching contrib feature -- e.g. \
+                     `-Pcontrib-delta` (Maven) + `--features contrib-delta` (Cargo) for Delta Lake.",
+                    contrib.type_url
+                )))
+            }
             OpStruct::ShuffleWriter(writer) => {
                 assert_eq!(children.len(), 1);
                 let (scans, shuffle_scans, child) =
@@ -1804,17 +1908,18 @@ impl PhysicalPlanner {
                     ))),
                 }?;
 
+                let destination =
+                    shuffle_writer_destination(writer, self.shuffle_partition_pusher.as_ref())?;
                 let write_buffer_size = writer.write_buffer_size as usize;
                 // Zero on the wire means the limit is disabled; normalize it here so the writer
                 // only ever sees a real limit or none at all.
                 let max_buffer_bytes =
                     (writer.max_buffer_bytes > 0).then_some(writer.max_buffer_bytes as usize);
-                let shuffle_writer = Arc::new(ShuffleWriterExec::try_new(
+                let shuffle_writer = Arc::new(ShuffleWriterExec::try_new_with_destination(
                     writer_input,
                     partitioning,
                     codec,
-                    writer.output_data_file.clone(),
-                    writer.output_index_file.clone(),
+                    destination,
                     writer.tracing_enabled,
                     write_buffer_size,
                     max_buffer_bytes,
@@ -1826,6 +1931,24 @@ impl PhysicalPlanner {
                     Arc::new(SparkPlan::new(
                         spark_plan.plan_id,
                         shuffle_writer,
+                        vec![Arc::clone(&child)],
+                    )),
+                ))
+            }
+            OpStruct::IcebergWrite(iceberg_write) => {
+                assert_eq!(children.len(), 1);
+                let (scans, shuffle_scans, child) =
+                    self.create_plan(&children[0], inputs, partition_count)?;
+                let exec = Arc::new(IcebergWriteExec::try_new(
+                    Arc::clone(&child.native_plan),
+                    iceberg_write.clone(),
+                )?);
+                Ok((
+                    scans,
+                    shuffle_scans,
+                    Arc::new(SparkPlan::new(
+                        spark_plan.plan_id,
+                        exec,
                         vec![Arc::clone(&child)],
                     )),
                 ))
@@ -1866,6 +1989,8 @@ impl PhysicalPlanner {
                     codec,
                     self.partition,
                     writer.column_names.clone(),
+                    (!writer.output_schema.is_empty())
+                        .then(|| convert_spark_types_to_arrow_schema(&writer.output_schema)),
                     object_store_options,
                 )?);
 
@@ -2078,7 +2203,8 @@ impl PhysicalPlanner {
                     recursions: vec![],
                 };
 
-                let unnest_exec = Arc::new(UnnestExec::new(
+                // Comet's batch-size-respecting fork of `UnnestExec`; see `operators::explode`.
+                let unnest_exec = Arc::new(ExplodeExec::new(
                     project_exec,
                     list_unnests,
                     vec![], // No struct columns to unnest
@@ -2246,7 +2372,7 @@ impl PhysicalPlanner {
                 let partition_exprs: Result<Vec<Arc<dyn PhysicalExpr>>, ExecutionError> = wnd
                     .partition_by_list
                     .iter()
-                    .map(|expr| self.create_expr(expr, Arc::clone(&input_schema)))
+                    .map(|expr| self.create_normalized_key_expr(expr, Arc::clone(&input_schema)))
                     .collect();
 
                 let sort_exprs = &sort_exprs?;
@@ -2344,6 +2470,94 @@ impl PhysicalPlanner {
                     scans,
                     shuffle_scans,
                     Arc::new(SparkPlan::new(spark_plan.plan_id, final_plan, vec![child])),
+                ))
+            }
+            OpStruct::WindowGroupLimit(wgl) => {
+                // Route:
+                //   * ROW_NUMBER + empty PARTITION BY -> `LocalLimitExec`. Spark's WGL requires
+                //     the child to be sorted by ORDER BY, so `first K rows per input partition`
+                //     IS the global RANK top-K (Partial phase); the Final phase runs on the
+                //     single-partition post-shuffle stream and stays correct.
+                //   * Everything else (ROW_NUMBER partitioned, RANK / DENSE_RANK with any
+                //     PARTITION BY) -> Comet's streaming `PartitionedRankLimitExec`. Relies on
+                //     the Spark-injected sort of `[partition_keys, order_keys]`, which lets it
+                //     preserve input order for rows tied on the ORDER BY keys (matching Spark's
+                //     `SimpleLimitIterator` for ROW_NUMBER and `RankLimitIterator` for RANK /
+                //     DENSE_RANK). `partition_prefix_len == 0` degenerates to one big partition
+                //     per DF input partition.
+                assert_eq!(children.len(), 1);
+                let (scans, shuffle_scans, child) =
+                    self.create_plan(&children[0], inputs, partition_count)?;
+                let input_schema = child.schema();
+
+                let kind =
+                    match RankLikeFunction::try_from(wgl.rank_like_function).map_err(|_| {
+                        GeneralError(format!(
+                            "Unsupported WindowGroupLimit rank function tag: {}",
+                            wgl.rank_like_function
+                        ))
+                    })? {
+                        RankLikeFunction::RowNumber => WindowFnKind::RowNumber,
+                        RankLikeFunction::Rank => WindowFnKind::Rank,
+                        RankLikeFunction::DenseRank => WindowFnKind::DenseRank,
+                    };
+
+                let partition_prefix_len = wgl.partition_by_list.len();
+                let fetch = wgl.limit as usize;
+
+                // Fast path: ROW_NUMBER without PARTITION BY collapses to `first K rows per
+                // input DF partition`, which is exactly what `LocalLimitExec` does. No
+                // row-encoding overhead, no ORDER BY tie detection needed.
+                let topk: Arc<dyn ExecutionPlan> = if partition_prefix_len == 0
+                    && kind == WindowFnKind::RowNumber
+                {
+                    Arc::new(LocalLimitExec::new(Arc::clone(&child.native_plan), fetch))
+                } else {
+                    // Partition keys arrive as bare exprs (no direction). Spark's WGL
+                    // requires the child to be sorted by partition-keys ASCENDING then by
+                    // order-by keys, so materialize partition keys with SortOptions matching
+                    // Spark's `SortOrder(_, Ascending)` (ascending, nulls_first).
+                    let mut partition_keys: Vec<PhysicalSortExpr> =
+                        Vec::with_capacity(partition_prefix_len);
+                    for expr in &wgl.partition_by_list {
+                        let phys =
+                            self.create_normalized_key_expr(expr, Arc::clone(&input_schema))?;
+                        partition_keys.push(PhysicalSortExpr {
+                            expr: phys,
+                            options: SortOptions::default(),
+                        });
+                    }
+                    let mut order_keys: Vec<PhysicalSortExpr> =
+                        Vec::with_capacity(wgl.order_by_list.len());
+                    for expr in &wgl.order_by_list {
+                        order_keys.push(self.create_sort_expr(expr, Arc::clone(&input_schema))?);
+                    }
+
+                    // Always route to the streaming `PartitionedRankLimitExec`. Spark's
+                    // `WindowGroupLimitExec.requiredChildOrdering` guarantees the child is
+                    // sorted by `[partition_keys..., order_keys...]`, so a single pass
+                    // suffices. A heap-based top-K would be faster asymptotically but would
+                    // reorder rows tied on the ORDER BY keys, which breaks Spark's
+                    // `SimpleLimitIterator` / `RankLimitIterator` semantics: for
+                    // `ROW_NUMBER()`, Spark assigns ranks in input order to tied rows, and
+                    // any deviation surfaces as wrong-row diffs in SPARK-37099-shaped tests.
+                    Arc::new(PartitionedRankLimitExec::try_new(
+                        Arc::clone(&child.native_plan),
+                        partition_keys,
+                        order_keys,
+                        fetch,
+                        kind,
+                    )?)
+                };
+
+                Ok((
+                    scans,
+                    shuffle_scans,
+                    Arc::new(SparkPlan::new(
+                        spark_plan.plan_id,
+                        topk,
+                        vec![Arc::clone(&child)],
+                    )),
                 ))
             }
             OpStruct::ShuffleScan(scan) => {
@@ -3304,10 +3518,14 @@ impl PhysicalPlanner {
                     }
                 }
 
-                // Convert the collection of ScalarValues to collection of Arrow Arrays
+                // Normalize boundary arrays just like the incoming sort keys, so equal NaNs
+                // and signed zeros are assigned to the same range partition.
                 let arrays: Vec<ArrayRef> = scalar_values
                     .iter()
-                    .map(|scalar_vec| ScalarValue::iter_to_array(scalar_vec.iter().cloned()))
+                    .map(|scalar_vec| {
+                        ScalarValue::iter_to_array(scalar_vec.iter().cloned())
+                            .map(|array| NormalizeNaNAndZero::normalize_array(&array))
+                    })
                     .collect::<Result<Vec<_>, _>>()?;
 
                 // Create a RowConverter and use to create OwnedRows from the Arrays
@@ -3353,6 +3571,17 @@ impl PhysicalPlanner {
             .collect::<Result<Vec<_>, _>>()?;
 
         let fun_name = &expr.func;
+        // `map_entries` needs its argument's entry `value` field widened to nullable first (only
+        // that outer field). See `widen_map_entry_value_nullable`.
+        let args = if fun_name == "map_entries" {
+            args.into_iter()
+                .map(|arg| {
+                    Self::coerce_child_to(arg, &input_schema, widen_map_entry_value_nullable)
+                })
+                .collect::<Result<Vec<_>, ExecutionError>>()?
+        } else {
+            args
+        };
         let input_expr_types = args
             .iter()
             .map(|x| x.data_type(input_schema.as_ref()))
@@ -3485,24 +3714,54 @@ impl PhysicalPlanner {
         Ok(scalar_expr)
     }
 
-    /// `collect_list` / `collect_set` build their result list with all element fields marked
-    /// nullable, regardless of the input's nullability. However `SparkCollectList::return_type`
-    /// (and `SparkCollectSet`) derive the element type directly from the child, preserving any
-    /// non-nullable nested field. When the child is a nested type with a non-nullable inner field
-    /// (e.g. a struct field), the declared aggregate output disagrees with the array the
-    /// accumulator actually produces, and DataFusion's grouped `AggregateExec` fails validating
-    /// its output batch ("column types must match schema types"). Cast the child to the
-    /// all-nullable variant of its type so the declared and produced types stay consistent.
+    /// Normalizes a `collect_list` / `collect_set` argument to the all-nullable variant of its
+    /// declared type.
+    ///
+    /// `SparkCollectList::return_type` / `state_fields` (and `SparkCollectSet`) derive the list
+    /// element type from the argument's *declared* type, while the accumulator builds its list
+    /// from the argument arrays it actually received: `ScalarValue::new_list` honors its
+    /// `data_type` parameter only when the value set is empty, and otherwise just concatenates
+    /// the collected scalars. Nothing forces those two to agree, so if an expression's
+    /// `evaluate()` output type differs from its `data_type()` in nested field nullability, the
+    /// grouped `AggregateExec` fails validating its own output batch ("column types must match
+    /// schema types") — `RecordBatch::try_new` compares with `DataType::equals_datatype`, which
+    /// does compare nested nullability.
+    ///
+    /// Casting unconditionally (rather than only when the declared type has a non-nullable
+    /// nested field) makes this a normalization barrier: the accumulator is guaranteed to see
+    /// arrays of exactly the type the plan declared, whichever direction the drift goes. The
+    /// cast is metadata-only — `cast_struct_to_struct` and `cast_list_values` stamp the target
+    /// fields and clone the child buffers — so it does not copy data.
     fn coerce_collect_child_nullability(
         child: Arc<dyn PhysicalExpr>,
         schema: &SchemaRef,
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
         let child_type = child.data_type(schema.as_ref())?;
+        if !child_type.is_nested() {
+            // Only nested types carry field-level nullability that can drift.
+            return Ok(child);
+        }
         let nullable_type = make_all_fields_nullable(&child_type);
-        if child_type.equals_datatype(&nullable_type) {
+        Ok(Arc::new(CastExpr::new(child, nullable_type, None)))
+    }
+
+    /// Casts `child` so its type matches `widen(child_type)`, wrapping it in a `CastExpr` only when
+    /// the widened type differs. Used for the `map_entries` argument widening (with
+    /// `widen_map_entry_value_nullable`). Unlike `coerce_collect_child_nullability`, which casts
+    /// unconditionally as a normalization barrier for aggregate accumulators, this casts only when
+    /// the type actually changes. That is sufficient for the scalar `map_entries`, whose reused
+    /// entries array only needs its declared element type to line up.
+    fn coerce_child_to(
+        child: Arc<dyn PhysicalExpr>,
+        schema: &SchemaRef,
+        widen: impl Fn(&DataType) -> DataType,
+    ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
+        let child_type = child.data_type(schema.as_ref())?;
+        let widened = widen(&child_type);
+        if child_type.equals_datatype(&widened) {
             Ok(child)
         } else {
-            Ok(Arc::new(CastExpr::new(child, nullable_type, None)))
+            Ok(Arc::new(CastExpr::new(child, widened, None)))
         }
     }
 
@@ -3729,7 +3988,13 @@ pub fn from_protobuf_eval_mode(value: i32) -> Result<EvalMode, prost::UnknownEnu
     }
 }
 
-fn convert_spark_types_to_arrow_schema(
+/// Convert Comet's `SparkStructField` protos to an Arrow [`SchemaRef`].
+///
+/// `pub(crate)` so the optional `contrib-delta` scan module
+/// (`planner/delta_scan.rs`) can reuse the exact same Spark→Arrow schema
+/// mapping that the core scan path uses, keeping the two in lockstep. Kept
+/// crate-private — it is not part of any public API.
+pub(crate) fn convert_spark_types_to_arrow_schema(
     spark_types: &[spark_operator::SparkStructField],
 ) -> SchemaRef {
     let arrow_fields = spark_types
@@ -3763,6 +4028,101 @@ fn align_shuffle_writer_input(
     let expected = convert_spark_types_to_arrow_schema(expected_proto);
     SchemaAlignExec::try_new_or_passthrough(child, &expected)
         .map_err(|e| ExecutionError::DataFusionError(e.to_string()))
+}
+
+/// Resolves a native shuffle writer's destination and binds its task-owned callback, if any.
+///
+/// Plans serialized before partition-writer descriptors were introduced only contain the
+/// top-level paths. New local plans populate both representations so older native binaries can
+/// still consume them; when both are present they must agree to avoid ambiguous destinations.
+/// RSS plans must not contain local output paths and require the callback supplied by their own
+/// Spark task. Supplying a remote callback for a local destination is also rejected.
+fn shuffle_writer_destination(
+    writer: &spark_operator::ShuffleWriter,
+    shuffle_partition_pusher: Option<&Arc<dyn ShufflePartitionPusher>>,
+) -> Result<ShuffleWriterDestination, ExecutionError> {
+    let Some(partition_writer) = writer.partition_writer.as_ref() else {
+        if shuffle_partition_pusher.is_some() {
+            return Err(GeneralError(
+                "Local shuffle partition writer cannot use a remote shuffle callback".to_string(),
+            ));
+        }
+
+        return Ok(ShuffleWriterDestination::Local {
+            output_data_file: writer.output_data_file.clone(),
+            output_index_file: writer.output_index_file.clone(),
+        });
+    };
+
+    match partition_writer.writer.as_ref() {
+        Some(spark_operator::partition_writer::Writer::Local(local)) => {
+            if local.output_data_file.is_empty() {
+                return Err(GeneralError(
+                    "Local shuffle partition writer is missing its output data file".to_string(),
+                ));
+            }
+
+            if local.output_index_file.is_empty() {
+                return Err(GeneralError(
+                    "Local shuffle partition writer is missing its output index file".to_string(),
+                ));
+            }
+
+            if !writer.output_data_file.is_empty()
+                && writer.output_data_file != local.output_data_file
+            {
+                return Err(GeneralError(
+                    "Local shuffle partition writer output data file conflicts with the legacy \
+                     shuffle output data file"
+                        .to_string(),
+                ));
+            }
+
+            if !writer.output_index_file.is_empty()
+                && writer.output_index_file != local.output_index_file
+            {
+                return Err(GeneralError(
+                    "Local shuffle partition writer output index file conflicts with the legacy \
+                     shuffle output index file"
+                        .to_string(),
+                ));
+            }
+
+            if shuffle_partition_pusher.is_some() {
+                return Err(GeneralError(
+                    "Local shuffle partition writer cannot use a remote shuffle callback"
+                        .to_string(),
+                ));
+            }
+
+            Ok(ShuffleWriterDestination::Local {
+                output_data_file: local.output_data_file.clone(),
+                output_index_file: local.output_index_file.clone(),
+            })
+        }
+        Some(spark_operator::partition_writer::Writer::Rss(_)) => {
+            if !writer.output_data_file.is_empty() || !writer.output_index_file.is_empty() {
+                return Err(GeneralError(
+                    "RSS shuffle partition writer cannot have local output files".to_string(),
+                ));
+            }
+
+            let pusher = shuffle_partition_pusher.ok_or_else(|| {
+                GeneralError(
+                    "RSS shuffle partition writer requires a task-owned remote shuffle callback"
+                        .to_string(),
+                )
+            })?;
+
+            Ok(ShuffleWriterDestination::Rss {
+                pusher: Arc::clone(pusher),
+                max_frame_size: pusher.max_frame_size(),
+            })
+        }
+        None => Err(GeneralError(
+            "Shuffle partition writer has no destination".to_string(),
+        )),
+    }
 }
 
 /// Converts a protobuf PartitionValue to an iceberg Literal.
@@ -4558,32 +4918,52 @@ fn needs_fields_coercion(sig: &TypeSignature) -> bool {
 #[cfg(test)]
 mod tests {
     use futures::{poll, StreamExt};
-    use std::{sync::Arc, task::Poll};
+    use std::{
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        },
+        task::Poll,
+    };
 
     use arrow::array::{
-        Array, DictionaryArray, Int32Array, Int8Array, ListArray, RecordBatch, StringArray,
+        Array, ArrayRef, DictionaryArray, Float32Array, Float64Array, Int32Array, Int8Array,
+        ListArray, RecordBatch, StringArray,
     };
-    use arrow::datatypes::{DataType, Field, FieldRef, Fields, Schema};
+    use arrow::datatypes::{DataType, Field, FieldRef, Fields, Schema, SchemaRef};
     use datafusion::catalog::memory::DataSourceExec;
+    use datafusion::common::ScalarValue;
     use datafusion::config::TableParquetOptions;
     use datafusion::datasource::listing::PartitionedFile;
+    use datafusion::datasource::memory::MemorySourceConfig;
     use datafusion::datasource::object_store::ObjectStoreUrl;
     use datafusion::datasource::physical_plan::{
         FileGroup, FileScanConfigBuilder, FileSource, ParquetSource,
     };
     use datafusion::error::DataFusionError;
+    use datafusion::logical_expr::AggregateUDF;
     use datafusion::logical_expr::ScalarUDF;
+    use datafusion::physical_expr::expressions::Column;
+    use datafusion::physical_expr::{LexOrdering, PhysicalExpr, PhysicalSortExpr};
+    use datafusion::physical_plan::sorts::sort::SortExec;
+    use datafusion::physical_plan::windows::get_ordered_partition_by_indices;
     use datafusion::physical_plan::ExecutionPlan;
+    use datafusion::prelude::SessionConfig;
     use datafusion::{assert_batches_eq, physical_plan::common::collect, prelude::SessionContext};
     use datafusion_physical_expr_adapter::PhysicalExprAdapterFactory;
+    use datafusion_spark::function::aggregate::collect::{SparkCollectList, SparkCollectSet};
     use tempfile::TempDir;
     use tokio::sync::mpsc;
 
-    use crate::execution::{operators::InputBatch, planner::PhysicalPlanner};
+    use crate::execution::{
+        operators::InputBatch, planner::PhysicalPlanner, shuffle::ShuffleWriterDestination,
+    };
+    use crate::jvm_bridge::{JavaShufflePartitionPusher, ShufflePartitionPusher};
 
-    use crate::execution::operators::ExecutionError;
+    use crate::execution::operators::{ExecutionError, PartitionedRankLimitExec, WindowFnKind};
     use crate::execution::planner::literal_to_array_ref;
     use crate::execution::planner::parse_file_scan_tasks_from_common;
+    use crate::execution::shuffle::CometPartitioning;
     use crate::parquet::parquet_support::SparkParquetOptions;
     use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
     use datafusion_comet_proto::spark_expression::expr::ExprStruct;
@@ -4594,8 +4974,754 @@ mod tests {
         spark_expression::{self, literal},
         spark_operator,
         spark_operator::{operator::OpStruct, Operator},
+        spark_partitioning::{
+            partitioning::PartitioningStruct, BoundaryRow, Partitioning, RangePartition,
+        },
     };
     use datafusion_comet_spark_expr::EvalMode;
+
+    #[derive(Default)]
+    struct RecordingShufflePartitionPusher {
+        pushes: AtomicUsize,
+    }
+
+    impl ShufflePartitionPusher for RecordingShufflePartitionPusher {
+        fn push_partition_data(
+            &self,
+            _partition_id: i32,
+            _data: &[u8],
+        ) -> datafusion::common::Result<()> {
+            self.pushes.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
+    struct BoundedShufflePartitionPusher {
+        max_frame_size: usize,
+    }
+
+    impl ShufflePartitionPusher for BoundedShufflePartitionPusher {
+        fn push_partition_data(
+            &self,
+            _partition_id: i32,
+            _data: &[u8],
+        ) -> datafusion::common::Result<()> {
+            Ok(())
+        }
+
+        fn max_frame_size(&self) -> usize {
+            self.max_frame_size
+        }
+    }
+
+    fn local_shuffle_partition_writer(
+        output_data_file: &str,
+        output_index_file: &str,
+    ) -> spark_operator::PartitionWriter {
+        spark_operator::PartitionWriter {
+            writer: Some(spark_operator::partition_writer::Writer::Local(
+                spark_operator::LocalPartitionWriter {
+                    output_data_file: output_data_file.to_string(),
+                    output_index_file: output_index_file.to_string(),
+                },
+            )),
+        }
+    }
+
+    fn rss_shuffle_partition_writer() -> spark_operator::PartitionWriter {
+        spark_operator::PartitionWriter {
+            writer: Some(spark_operator::partition_writer::Writer::Rss(
+                spark_operator::RssPartitionWriter {},
+            )),
+        }
+    }
+
+    fn assert_local_shuffle_destination(
+        writer: &spark_operator::ShuffleWriter,
+        expected_data_file: &str,
+        expected_index_file: &str,
+    ) {
+        match super::shuffle_writer_destination(writer, None).unwrap() {
+            ShuffleWriterDestination::Local {
+                output_data_file,
+                output_index_file,
+            } => {
+                assert_eq!(output_data_file, expected_data_file);
+                assert_eq!(output_index_file, expected_index_file);
+            }
+            destination => panic!("expected a local shuffle destination, got {destination:?}"),
+        }
+    }
+
+    #[test]
+    fn shuffle_partition_writer_legacy_paths_remain_supported() {
+        let writer = spark_operator::ShuffleWriter {
+            output_data_file: "legacy.data".to_string(),
+            output_index_file: "legacy.index".to_string(),
+            ..Default::default()
+        };
+
+        assert_local_shuffle_destination(&writer, "legacy.data", "legacy.index");
+    }
+
+    #[test]
+    fn shuffle_partition_writer_uses_nested_local_paths() {
+        let writer = spark_operator::ShuffleWriter {
+            partition_writer: Some(local_shuffle_partition_writer(
+                "shuffle.data",
+                "shuffle.index",
+            )),
+            ..Default::default()
+        };
+
+        assert_local_shuffle_destination(&writer, "shuffle.data", "shuffle.index");
+    }
+
+    #[test]
+    fn shuffle_partition_writer_accepts_matching_legacy_paths() {
+        let writer = spark_operator::ShuffleWriter {
+            output_data_file: "shuffle.data".to_string(),
+            output_index_file: "shuffle.index".to_string(),
+            partition_writer: Some(local_shuffle_partition_writer(
+                "shuffle.data",
+                "shuffle.index",
+            )),
+            ..Default::default()
+        };
+
+        assert_local_shuffle_destination(&writer, "shuffle.data", "shuffle.index");
+    }
+
+    #[test]
+    fn shuffle_partition_writer_rejects_conflicting_legacy_data_path() {
+        let writer = spark_operator::ShuffleWriter {
+            output_data_file: "legacy.data".to_string(),
+            partition_writer: Some(local_shuffle_partition_writer(
+                "shuffle.data",
+                "shuffle.index",
+            )),
+            ..Default::default()
+        };
+
+        let error = super::shuffle_writer_destination(&writer, None).unwrap_err();
+        assert!(
+            error.to_string().contains("output data file conflicts"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn shuffle_partition_writer_rejects_conflicting_legacy_index_path() {
+        let writer = spark_operator::ShuffleWriter {
+            output_index_file: "legacy.index".to_string(),
+            partition_writer: Some(local_shuffle_partition_writer(
+                "shuffle.data",
+                "shuffle.index",
+            )),
+            ..Default::default()
+        };
+
+        let error = super::shuffle_writer_destination(&writer, None).unwrap_err();
+        assert!(
+            error.to_string().contains("output index file conflicts"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn shuffle_partition_writer_rejects_empty_local_data_path() {
+        let writer = spark_operator::ShuffleWriter {
+            output_data_file: "legacy.data".to_string(),
+            partition_writer: Some(local_shuffle_partition_writer("", "shuffle.index")),
+            ..Default::default()
+        };
+
+        let error = super::shuffle_writer_destination(&writer, None).unwrap_err();
+        assert!(
+            error.to_string().contains("missing its output data file"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn shuffle_partition_writer_rejects_empty_local_index_path() {
+        let writer = spark_operator::ShuffleWriter {
+            output_index_file: "legacy.index".to_string(),
+            partition_writer: Some(local_shuffle_partition_writer("shuffle.data", "")),
+            ..Default::default()
+        };
+
+        let error = super::shuffle_writer_destination(&writer, None).unwrap_err();
+        assert!(
+            error.to_string().contains("missing its output index file"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn shuffle_partition_writer_rejects_missing_destination() {
+        let writer = spark_operator::ShuffleWriter {
+            partition_writer: Some(spark_operator::PartitionWriter { writer: None }),
+            ..Default::default()
+        };
+
+        let error = super::shuffle_writer_destination(&writer, None).unwrap_err();
+        assert!(
+            error.to_string().contains("has no destination"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn shuffle_partition_writer_requires_a_task_callback_for_rss() {
+        let writer = spark_operator::ShuffleWriter {
+            partition_writer: Some(rss_shuffle_partition_writer()),
+            ..Default::default()
+        };
+
+        let error = super::shuffle_writer_destination(&writer, None).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("requires a task-owned remote shuffle callback"),
+            "unexpected error: {error}"
+        );
+    }
+
+    fn create_sort_order(index: i32, type_id: i32, descending: bool, nulls_first: bool) -> Expr {
+        Expr {
+            expr_struct: Some(SortOrder(Box::new(spark_expression::SortOrder {
+                child: Some(Box::new(Expr {
+                    expr_struct: Some(Bound(spark_expression::BoundReference {
+                        index,
+                        datatype: Some(spark_expression::DataType {
+                            type_id,
+                            type_info: None,
+                        }),
+                    })),
+                    ..Default::default()
+                })),
+                direction: i32::from(descending),
+                null_ordering: i32::from(!nulls_first),
+            }))),
+            ..Default::default()
+        }
+    }
+
+    fn floating_sort_batches() -> Vec<(i32, RecordBatch)> {
+        // Include distinct quiet/signaling NaNs of both signs. Construct them directly:
+        // round-tripping through Parquet or a string literal can canonicalize the payload.
+        let floats: ArrayRef = Arc::new(Float32Array::from(vec![
+            Some(f32::NAN),
+            Some(f32::from_bits(0xffc0_0042)),
+            Some(f32::from_bits(0x7fc0_1234)),
+            Some(0.0),
+            Some(-0.0),
+            Some(f32::NEG_INFINITY),
+            Some(1.0),
+            Some(f32::INFINITY),
+            Some(f32::from_bits(0xff80_0001)),
+            Some(f32::from_bits(0x7f80_0001)),
+            Some(0.0),
+            Some(-0.0),
+            None,
+            Some(-1.0),
+        ]));
+        let doubles: ArrayRef = Arc::new(Float64Array::from(vec![
+            Some(f64::NAN),
+            Some(f64::from_bits(0xfff8_0000_0000_0042)),
+            Some(f64::from_bits(0x7ff8_0000_0000_1234)),
+            Some(0.0),
+            Some(-0.0),
+            Some(f64::NEG_INFINITY),
+            Some(1.0),
+            Some(f64::INFINITY),
+            Some(f64::from_bits(0xfff0_0000_0000_0001)),
+            Some(f64::from_bits(0x7ff0_0000_0000_0001)),
+            Some(0.0),
+            Some(-0.0),
+            None,
+            Some(-1.0),
+        ]));
+        [(5, floats), (6, doubles)]
+            .into_iter()
+            .map(|(type_id, values)| {
+                let schema = Arc::new(Schema::new(vec![
+                    Field::new("ord", values.data_type().clone(), true),
+                    Field::new("suffix", DataType::Int32, false),
+                    Field::new("id", DataType::Int32, false),
+                ]));
+                let ids = Int32Array::from_iter_values(0..values.len() as i32);
+                let suffix = Int32Array::from(vec![1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 1]);
+                let batch =
+                    RecordBatch::try_new(schema, vec![values, Arc::new(suffix), Arc::new(ids)])
+                        .unwrap();
+                (type_id, batch)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn floating_window_partition_keys_preserve_ordering() {
+        let planner = PhysicalPlanner::default();
+        for (type_id, batch) in floating_sort_batches() {
+            for already_normalized in [false, true] {
+                let mut partition_sort = create_sort_order(0, type_id, false, true);
+                let Some(SortOrder(sort_order)) = partition_sort.expr_struct.as_mut() else {
+                    unreachable!();
+                };
+                if already_normalized {
+                    sort_order.child = Some(Box::new(Expr {
+                        expr_struct: Some(NormalizeNanAndZero(Box::new(
+                            spark_expression::NormalizeNaNAndZero {
+                                child: sort_order.child.take(),
+                                datatype: Some(spark_expression::DataType {
+                                    type_id,
+                                    type_info: None,
+                                }),
+                            },
+                        ))),
+                        ..Default::default()
+                    }));
+                }
+                // A key can arrive as Spark's normalization expression or as a
+                // materialized floating column. Both must match the sort prefix.
+                let partition_expr = planner
+                    .create_normalized_key_expr(sort_order.child.as_ref().unwrap(), batch.schema())
+                    .unwrap();
+                let sort_expr = planner
+                    .create_sort_expr(&partition_sort, batch.schema())
+                    .unwrap();
+                let input =
+                    MemorySourceConfig::try_new_exec(&[vec![batch.clone()]], batch.schema(), None)
+                        .unwrap();
+                let sorted: Arc<dyn ExecutionPlan> = Arc::new(SortExec::new(
+                    LexOrdering::new(vec![sort_expr.clone()]).unwrap(),
+                    input,
+                ));
+                let limited: Arc<dyn ExecutionPlan> = Arc::new(
+                    PartitionedRankLimitExec::try_new(
+                        Arc::clone(&sorted),
+                        vec![PhysicalSortExpr {
+                            expr: Arc::clone(&partition_expr),
+                            options: sort_expr.options,
+                        }],
+                        vec![],
+                        1,
+                        WindowFnKind::RowNumber,
+                    )
+                    .unwrap(),
+                );
+                for input in [sorted, limited] {
+                    assert_eq!(
+                        get_ordered_partition_by_indices(&[Arc::clone(&partition_expr)], &input)
+                            .unwrap(),
+                        vec![0],
+                        "type={type_id}, already_normalized={already_normalized}",
+                    );
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn floating_sort_keys_preserve_window_group_limit_peers() {
+        let planner = PhysicalPlanner::default();
+        let context = SessionContext::new_with_config(SessionConfig::new().with_batch_size(3));
+        for (type_id, batch) in floating_sort_batches() {
+            for (descending, kind, fetch, expected) in [
+                (true, WindowFnKind::Rank, 3, vec![0, 1, 2, 8, 9]),
+                (true, WindowFnKind::DenseRank, 2, vec![0, 1, 2, 8, 9]),
+                (true, WindowFnKind::RowNumber, 2, vec![8, 9]),
+                (false, WindowFnKind::Rank, 3, vec![5, 10, 11, 13]),
+                (false, WindowFnKind::DenseRank, 3, vec![5, 10, 11, 13]),
+                (false, WindowFnKind::RowNumber, 4, vec![5, 10, 11, 13]),
+            ] {
+                let order_keys = [
+                    create_sort_order(0, type_id, descending, false),
+                    create_sort_order(1, 3, false, false),
+                ]
+                .iter()
+                .map(|expr| planner.create_sort_expr(expr, batch.schema()).unwrap())
+                .collect::<Vec<_>>();
+                let input = MemorySourceConfig::try_new_exec(
+                    &[vec![
+                        batch.slice(0, 4),
+                        batch.slice(4, 4),
+                        batch.slice(8, 6),
+                    ]],
+                    batch.schema(),
+                    None,
+                )
+                .unwrap();
+                let sorted = Arc::new(SortExec::new(
+                    LexOrdering::new(order_keys.clone()).unwrap(),
+                    input,
+                ));
+                let limit =
+                    PartitionedRankLimitExec::try_new(sorted, vec![], order_keys, fetch, kind)
+                        .unwrap();
+                let output = collect(limit.execute(0, context.task_ctx()).unwrap())
+                    .await
+                    .unwrap();
+                let mut ids = vec![];
+                for out in &output {
+                    let out_ids = out.column(2).as_any().downcast_ref::<Int32Array>().unwrap();
+                    for row in 0..out.num_rows() {
+                        let id = out_ids.value(row);
+                        ids.push(id);
+                        // ScalarValue float equality compares raw bits, including NaN
+                        // payloads and the zero sign. Only comparison keys may change.
+                        assert_eq!(
+                            ScalarValue::try_from_array(out.column(0), row).unwrap(),
+                            ScalarValue::try_from_array(batch.column(0), id as usize).unwrap(),
+                        );
+                    }
+                }
+                ids.sort_unstable();
+                assert_eq!(
+                    ids, expected,
+                    "type={type_id}, descending={descending}, {kind:?}"
+                );
+                // The zero peer group and the second NaN peer group straddle size-3
+                // sort output batches. Tie state must survive those boundaries.
+                assert!(output.iter().all(|b| b.num_rows() <= 3));
+                if expected.len() > 3 {
+                    assert!(output.len() > 1);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn floating_range_boundaries_match_sort_keys() {
+        let planner = PhysicalPlanner::default();
+        for (type_id, batch) in floating_sort_batches() {
+            for descending in [false, true] {
+                for nulls_first in [false, true] {
+                    // Use -0 and a negative payload NaN, while the input contains both
+                    // zero signs and several NaN representations equivalent in Spark.
+                    let boundary_indices = if descending { [1, 4] } else { [4, 1] };
+                    let boundary_rows = boundary_indices
+                        .iter()
+                        .map(|&index| {
+                            let value = match ScalarValue::try_from_array(batch.column(0), index)
+                                .unwrap()
+                            {
+                                ScalarValue::Float32(Some(value)) => {
+                                    literal::Value::FloatVal(value)
+                                }
+                                ScalarValue::Float64(Some(value)) => {
+                                    literal::Value::DoubleVal(value)
+                                }
+                                _ => unreachable!(),
+                            };
+                            BoundaryRow {
+                                partition_bounds: vec![Expr {
+                                    expr_struct: Some(Literal(spark_expression::Literal {
+                                        value: Some(value),
+                                        datatype: Some(spark_expression::DataType {
+                                            type_id,
+                                            type_info: None,
+                                        }),
+                                        is_null: false,
+                                    })),
+                                    ..Default::default()
+                                }],
+                            }
+                        })
+                        .collect();
+                    let partitioning = Partitioning {
+                        partitioning_struct: Some(PartitioningStruct::RangePartition(
+                            RangePartition {
+                                sort_orders: vec![create_sort_order(
+                                    0,
+                                    type_id,
+                                    descending,
+                                    nulls_first,
+                                )],
+                                num_partitions: 3,
+                                boundary_rows,
+                            },
+                        )),
+                    };
+                    let CometPartitioning::RangePartitioning(ordering, _, converter, boundaries) =
+                        planner
+                            .create_partitioning(&partitioning, batch.schema())
+                            .unwrap()
+                    else {
+                        panic!("expected range partitioning");
+                    };
+                    let columns = ordering
+                        .iter()
+                        .map(|expr| {
+                            expr.expr
+                                .evaluate(&batch)
+                                .unwrap()
+                                .into_array(batch.num_rows())
+                                .unwrap()
+                        })
+                        .collect::<Vec<_>>();
+                    let rows = converter.convert_columns(&columns).unwrap();
+                    for index in [3, 4, 10, 11] {
+                        assert_eq!(rows.row(index), boundaries[usize::from(descending)].row());
+                    }
+                    for index in [0, 1, 2, 8, 9] {
+                        assert_eq!(rows.row(index), boundaries[usize::from(!descending)].row());
+                    }
+                    // Match the range shuffle writer's binary-search routing.
+                    let partitions = rows
+                        .iter()
+                        .map(|row| boundaries.partition_point(|bound| bound.row() <= row))
+                        .collect::<Vec<_>>();
+                    let null_partition = if nulls_first { 0 } else { 2 };
+                    let expected = if descending {
+                        vec![1, 1, 1, 2, 2, 2, 1, 1, 1, 1, 2, 2, null_partition, 2]
+                    } else {
+                        vec![2, 2, 2, 1, 1, 0, 1, 1, 2, 2, 1, 1, null_partition, 0]
+                    };
+                    assert_eq!(
+                        partitions, expected,
+                        "type={type_id}, descending={descending}, nulls_first={nulls_first}",
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn shuffle_partition_writer_binds_its_rss_task_callback() {
+        let writer = spark_operator::ShuffleWriter {
+            partition_writer: Some(rss_shuffle_partition_writer()),
+            ..Default::default()
+        };
+        let callback: Arc<dyn ShufflePartitionPusher> =
+            Arc::new(RecordingShufflePartitionPusher::default());
+
+        match super::shuffle_writer_destination(&writer, Some(&callback)).unwrap() {
+            ShuffleWriterDestination::Rss {
+                pusher,
+                max_frame_size,
+            } => {
+                assert!(Arc::ptr_eq(&pusher, &callback));
+                assert_eq!(max_frame_size, JavaShufflePartitionPusher::MAX_PAYLOAD_SIZE);
+            }
+            destination => panic!("expected an RSS shuffle destination, got {destination:?}"),
+        }
+    }
+
+    #[test]
+    fn shuffle_partition_writer_uses_its_task_callback_frame_limit() {
+        let writer = spark_operator::ShuffleWriter {
+            partition_writer: Some(rss_shuffle_partition_writer()),
+            ..Default::default()
+        };
+        let callback: Arc<dyn ShufflePartitionPusher> = Arc::new(BoundedShufflePartitionPusher {
+            max_frame_size: 4096,
+        });
+
+        match super::shuffle_writer_destination(&writer, Some(&callback)).unwrap() {
+            ShuffleWriterDestination::Rss { max_frame_size, .. } => {
+                assert_eq!(max_frame_size, 4096);
+            }
+            destination => panic!("expected an RSS shuffle destination, got {destination:?}"),
+        }
+    }
+
+    #[test]
+    fn shuffle_partition_writer_rejects_rss_with_legacy_data_path() {
+        let writer = spark_operator::ShuffleWriter {
+            output_data_file: "legacy.data".to_string(),
+            partition_writer: Some(rss_shuffle_partition_writer()),
+            ..Default::default()
+        };
+        let callback: Arc<dyn ShufflePartitionPusher> =
+            Arc::new(RecordingShufflePartitionPusher::default());
+
+        let error = super::shuffle_writer_destination(&writer, Some(&callback)).unwrap_err();
+        assert!(
+            error.to_string().contains("cannot have local output files"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn shuffle_partition_writer_rejects_rss_with_legacy_index_path() {
+        let writer = spark_operator::ShuffleWriter {
+            output_index_file: "legacy.index".to_string(),
+            partition_writer: Some(rss_shuffle_partition_writer()),
+            ..Default::default()
+        };
+        let callback: Arc<dyn ShufflePartitionPusher> =
+            Arc::new(RecordingShufflePartitionPusher::default());
+
+        let error = super::shuffle_writer_destination(&writer, Some(&callback)).unwrap_err();
+        assert!(
+            error.to_string().contains("cannot have local output files"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn shuffle_partition_writer_rejects_callback_for_legacy_local_destination() {
+        let writer = spark_operator::ShuffleWriter {
+            output_data_file: "legacy.data".to_string(),
+            output_index_file: "legacy.index".to_string(),
+            ..Default::default()
+        };
+        let callback: Arc<dyn ShufflePartitionPusher> =
+            Arc::new(RecordingShufflePartitionPusher::default());
+
+        let error = super::shuffle_writer_destination(&writer, Some(&callback)).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("cannot use a remote shuffle callback"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn shuffle_partition_writer_rejects_callback_for_explicit_local_destination() {
+        let writer = spark_operator::ShuffleWriter {
+            partition_writer: Some(local_shuffle_partition_writer(
+                "shuffle.data",
+                "shuffle.index",
+            )),
+            ..Default::default()
+        };
+        let callback: Arc<dyn ShufflePartitionPusher> =
+            Arc::new(RecordingShufflePartitionPusher::default());
+
+        let error = super::shuffle_writer_destination(&writer, Some(&callback)).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("cannot use a remote shuffle callback"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn shuffle_partition_writer_callbacks_remain_isolated_between_tasks() {
+        let writer = spark_operator::ShuffleWriter {
+            partition_writer: Some(rss_shuffle_partition_writer()),
+            ..Default::default()
+        };
+        let first_recorder = Arc::new(RecordingShufflePartitionPusher::default());
+        let second_recorder = Arc::new(RecordingShufflePartitionPusher::default());
+        let first_callback: Arc<dyn ShufflePartitionPusher> =
+            Arc::<RecordingShufflePartitionPusher>::clone(&first_recorder);
+        let second_callback: Arc<dyn ShufflePartitionPusher> =
+            Arc::<RecordingShufflePartitionPusher>::clone(&second_recorder);
+        let first_planner = PhysicalPlanner::default()
+            .with_shuffle_partition_pusher(Some(Arc::clone(&first_callback)));
+        let second_planner = PhysicalPlanner::default()
+            .with_shuffle_partition_pusher(Some(Arc::clone(&second_callback)));
+
+        let ShuffleWriterDestination::Rss {
+            pusher: first_pusher,
+            ..
+        } = super::shuffle_writer_destination(
+            &writer,
+            first_planner.shuffle_partition_pusher.as_ref(),
+        )
+        .unwrap()
+        else {
+            panic!("expected an RSS shuffle destination for the first task");
+        };
+        let ShuffleWriterDestination::Rss {
+            pusher: second_pusher,
+            ..
+        } = super::shuffle_writer_destination(
+            &writer,
+            second_planner.shuffle_partition_pusher.as_ref(),
+        )
+        .unwrap()
+        else {
+            panic!("expected an RSS shuffle destination for the second task");
+        };
+
+        assert!(Arc::ptr_eq(&first_pusher, &first_callback));
+        assert!(Arc::ptr_eq(&second_pusher, &second_callback));
+        assert!(!Arc::ptr_eq(&first_pusher, &second_pusher));
+
+        first_pusher.push_partition_data(0, b"first").unwrap();
+        assert_eq!(first_recorder.pushes.load(Ordering::Relaxed), 1);
+        assert_eq!(second_recorder.pushes.load(Ordering::Relaxed), 0);
+
+        second_pusher.push_partition_data(0, b"second").unwrap();
+        assert_eq!(first_recorder.pushes.load(Ordering::Relaxed), 1);
+        assert_eq!(second_recorder.pushes.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn shuffle_partition_writer_plans_and_executes_rss_with_its_task_callback() {
+        let scan = Operator {
+            plan_id: 0,
+            sql_text_pool: vec![],
+            children: vec![],
+            op_struct: Some(OpStruct::Scan(spark_operator::Scan {
+                fields: vec![],
+                source: "rss-task-input".to_string(),
+            })),
+        };
+        let shuffle = Operator {
+            plan_id: 1,
+            sql_text_pool: vec![],
+            children: vec![scan],
+            op_struct: Some(OpStruct::ShuffleWriter(spark_operator::ShuffleWriter {
+                partitioning: Some(datafusion_comet_proto::spark_partitioning::Partitioning {
+                    partitioning_struct: Some(
+                        datafusion_comet_proto::spark_partitioning::partitioning::PartitioningStruct::SinglePartition(
+                            datafusion_comet_proto::spark_partitioning::SinglePartition {},
+                        ),
+                    ),
+                }),
+                partition_writer: Some(rss_shuffle_partition_writer()),
+                write_buffer_size: 1024,
+                ..Default::default()
+            })),
+        };
+        let recorder = Arc::new(RecordingShufflePartitionPusher::default());
+        let callback: Arc<dyn ShufflePartitionPusher> =
+            Arc::<RecordingShufflePartitionPusher>::clone(&recorder);
+        let planner = PhysicalPlanner::default().with_shuffle_partition_pusher(Some(callback));
+        let (mut scans, shuffle_scans, plan) =
+            planner.create_plan(&shuffle, &mut vec![], 1).unwrap();
+
+        assert!(shuffle_scans.is_empty());
+        scans[0].set_input_batch(InputBatch::Batch(vec![], 17));
+        let mut stream = plan
+            .native_plan
+            .execute(0, planner.session_ctx().task_ctx())
+            .unwrap();
+
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(async move {
+                let mut eof_sent = false;
+
+                loop {
+                    match poll!(stream.next()) {
+                        Poll::Ready(Some(result)) => {
+                            let result = result.unwrap();
+                            panic!("shuffle writer must not produce output batches: {result:?}");
+                        }
+                        Poll::Ready(None) => break,
+                        Poll::Pending if !eof_sent => {
+                            scans[0].set_input_batch(InputBatch::EOF);
+                            eof_sent = true;
+                        }
+                        Poll::Pending => {
+                            panic!("shuffle writer remained pending after end of input")
+                        }
+                    }
+                }
+            });
+
+        assert_eq!(recorder.pushes.load(Ordering::Relaxed), 1);
+    }
 
     #[test]
     fn test_unpack_dictionary_primitive() {
@@ -4866,6 +5992,47 @@ mod tests {
         assert_eq!(2, hash_join_exec.children.len());
         assert_eq!("ScanExec", hash_join_exec.children[0].native_plan.name());
         assert_eq!("ScanExec", hash_join_exec.children[1].native_plan.name());
+    }
+
+    #[test]
+    fn projection_rolls_up_same_plan_id_child_metrics() {
+        let op_scan = Operator {
+            plan_id: 1,
+            ..create_scan()
+        };
+        let hash_agg = Operator {
+            plan_id: 2,
+            sql_text_pool: vec![],
+            children: vec![op_scan],
+            op_struct: Some(OpStruct::HashAgg(spark_operator::HashAggregate {
+                grouping_exprs: vec![create_bound_reference(0)],
+                agg_exprs: vec![],
+                mode: spark_operator::AggregateMode::Partial as i32,
+                expr_modes: vec![],
+                initial_input_buffer_offset: 0,
+            })),
+        };
+        let projection = Operator {
+            plan_id: 2,
+            sql_text_pool: vec![],
+            children: vec![hash_agg],
+            op_struct: Some(OpStruct::Projection(spark_operator::Projection {
+                project_list: vec![create_bound_reference(0)],
+            })),
+        };
+
+        let planner = PhysicalPlanner::default();
+        let (_scans, _shuffle_scans, projection_exec) =
+            planner.create_plan(&projection, &mut vec![], 1).unwrap();
+
+        assert_eq!("ProjectionExec", projection_exec.native_plan.name());
+        assert_eq!(1, projection_exec.additional_native_plans.len());
+        assert_eq!(
+            "AggregateExec",
+            projection_exec.additional_native_plans[0].name()
+        );
+        assert_eq!(1, projection_exec.children.len());
+        assert_eq!("ScanExec", projection_exec.children[0].native_plan.name());
     }
 
     fn create_bound_reference(index: i32) -> Expr {
@@ -5666,6 +6833,148 @@ mod tests {
                 }
             }
         });
+    }
+
+    /// `struct<flag: Boolean, items: List<Struct<n: Int32>>>`, with the leaf nullability
+    /// controlled by `nullable`: a non-nullable leaf both directly in the struct and buried
+    /// under a list-of-struct.
+    fn collect_agg_struct_type(nullable: bool) -> DataType {
+        let item = DataType::Struct(Fields::from(vec![Field::new(
+            "n",
+            DataType::Int32,
+            nullable,
+        )]));
+        DataType::Struct(Fields::from(vec![
+            Field::new("flag", DataType::Boolean, nullable),
+            Field::new(
+                "items",
+                DataType::List(Arc::new(Field::new("item", item, true))),
+                true,
+            ),
+        ]))
+    }
+
+    /// A struct array whose actual type has non-nullable leaves.
+    fn collect_agg_struct_array() -> ArrayRef {
+        use arrow::array::{BooleanArray, StructArray};
+        use arrow::buffer::OffsetBuffer;
+
+        let n = Arc::new(Int32Array::from(vec![7, 8])) as ArrayRef;
+        let item_fields = Fields::from(vec![Field::new("n", DataType::Int32, false)]);
+        let items_values = Arc::new(StructArray::new(item_fields.clone(), vec![n], None));
+        let items = Arc::new(ListArray::new(
+            Arc::new(Field::new("item", DataType::Struct(item_fields), true)),
+            OffsetBuffer::new(vec![0, 1, 2].into()),
+            items_values,
+            None,
+        )) as ArrayRef;
+        let flag = Arc::new(BooleanArray::from(vec![true, false])) as ArrayRef;
+        let DataType::Struct(fields) = collect_agg_struct_type(false) else {
+            unreachable!()
+        };
+        Arc::new(StructArray::new(fields, vec![flag, items], None))
+    }
+
+    fn collect_agg_schema(data_type: DataType) -> SchemaRef {
+        Arc::new(Schema::new(vec![Field::new("s", data_type, true)]))
+    }
+
+    /// Builds `func` over `child` against `plan_schema`, feeds it a batch built from
+    /// `batch_schema`, and returns (type declared by `state_fields()`, type of the emitted
+    /// state array). This is the pair `RecordBatch::try_new` compares inside
+    /// `GroupedHashAggregateStream::emit`.
+    fn collect_agg_declared_vs_produced(
+        child: &Arc<dyn PhysicalExpr>,
+        plan_schema: &SchemaRef,
+        batch_schema: &SchemaRef,
+        func: AggregateUDF,
+    ) -> (DataType, DataType) {
+        let agg = PhysicalPlanner::create_aggr_func_expr(
+            "collect",
+            Arc::clone(plan_schema),
+            vec![Arc::clone(child)],
+            func,
+        )
+        .unwrap();
+        let declared = agg.state_fields().unwrap()[0].data_type().clone();
+
+        let batch =
+            RecordBatch::try_new(Arc::clone(batch_schema), vec![collect_agg_struct_array()])
+                .unwrap();
+        let arg = child
+            .evaluate(&batch)
+            .unwrap()
+            .into_array(batch.num_rows())
+            .unwrap();
+        let mut acc = agg.create_accumulator().unwrap();
+        acc.update_batch(&[arg]).unwrap();
+        (declared, acc.state().unwrap()[0].data_type())
+    }
+
+    /// The plan declares nullable leaves while the batch that actually arrives carries
+    /// non-nullable ones. `collect_list` / `collect_set` derive their state type from the
+    /// declared type but emit the runtime type, so without the coercion the drift reaches
+    /// `AggregateExec` and it fails validating its own output batch.
+    ///
+    /// The first assertion deliberately pins the upstream behaviour this coercion defends
+    /// against. If `ScalarValue::new_list` is ever fixed to honour its `data_type` for non-empty
+    /// input, the drift disappears and that assertion starts failing — that is the signal to drop
+    /// `coerce_collect_child_nullability` entirely, not a regression.
+    #[test]
+    fn test_collect_agg_absorbs_nested_nullability_drift() {
+        let plan_schema = collect_agg_schema(collect_agg_struct_type(true));
+        let batch_schema = collect_agg_schema(collect_agg_struct_type(false));
+        let raw = Arc::new(Column::new("s", 0)) as Arc<dyn PhysicalExpr>;
+        let coerced =
+            PhysicalPlanner::coerce_collect_child_nullability(Arc::clone(&raw), &plan_schema)
+                .unwrap();
+
+        for func in [
+            AggregateUDF::new_from_impl(SparkCollectSet::new()),
+            AggregateUDF::new_from_impl(SparkCollectList::new()),
+        ] {
+            // Without the coercion, declared and produced disagree on nested nullability.
+            let (declared, produced) =
+                collect_agg_declared_vs_produced(&raw, &plan_schema, &batch_schema, func.clone());
+            assert!(
+                !declared.equals_datatype(&produced),
+                "expected drift for {}: declared {declared}, produced {produced}",
+                func.name()
+            );
+
+            // With it, the argument is normalized to the declared type before it reaches
+            // the accumulator.
+            let (declared, produced) =
+                collect_agg_declared_vs_produced(&coerced, &plan_schema, &batch_schema, func);
+            assert!(
+                declared.equals_datatype(&produced),
+                "declared {declared} != produced {produced}"
+            );
+        }
+    }
+
+    /// The coercion widens every nested field, so the declared element type is the
+    /// all-nullable variant of the argument's declared type.
+    #[test]
+    fn test_collect_agg_coercion_widens_all_nested_fields() {
+        let plan_schema = collect_agg_schema(collect_agg_struct_type(false));
+        let raw = Arc::new(Column::new("s", 0)) as Arc<dyn PhysicalExpr>;
+        let coerced = PhysicalPlanner::coerce_collect_child_nullability(raw, &plan_schema).unwrap();
+        assert_eq!(
+            coerced.data_type(plan_schema.as_ref()).unwrap(),
+            collect_agg_struct_type(true)
+        );
+    }
+
+    /// Primitive arguments carry no field-level nullability, so no cast is inserted.
+    #[test]
+    fn test_collect_agg_no_coercion_for_primitive_child() {
+        let plan_schema = collect_agg_schema(DataType::Int32);
+        let raw = Arc::new(Column::new("s", 0)) as Arc<dyn PhysicalExpr>;
+        let coerced =
+            PhysicalPlanner::coerce_collect_child_nullability(Arc::clone(&raw), &plan_schema)
+                .unwrap();
+        assert!(Arc::ptr_eq(&raw, &coerced));
     }
 
     #[test]

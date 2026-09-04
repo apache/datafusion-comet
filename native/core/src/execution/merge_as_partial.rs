@@ -91,7 +91,7 @@ impl MergeAsPartialUDF {
         let cached_state_fields = inner_expr.state_fields()?;
         let accumulator_expr_fields =
             Self::accumulator_expr_fields(inner_expr, &cached_state_fields);
-        let state_decoder = PartialMergeStateDecoder::new(inner_expr, &cached_state_fields);
+        let state_decoder = PartialMergeStateDecoder::try_new(inner_expr, &cached_state_fields)?;
 
         // Use a permissive signature since we accept state field types which
         // vary per aggregate function.
