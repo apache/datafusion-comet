@@ -667,12 +667,12 @@ impl SparkPhysicalExprAdapter {
                         }
 
                         let cast_expr: Arc<dyn PhysicalExpr> = Arc::new(
-                            CometCastColumnExpr::new(
+                            CometCastColumnExpr::try_new(
                                 remapped,
                                 Arc::clone(physical_field),
                                 Arc::clone(logical_field),
                                 None,
-                            )
+                            )?
                             .with_parquet_options(self.parquet_options.clone()),
                         );
                         return Ok(Transformed::yes(cast_expr));
@@ -956,12 +956,12 @@ impl SparkPhysicalExprAdapter {
                     | (DataType::Timestamp(_, _), DataType::Int64)
             ) {
                 let comet_cast: Arc<dyn PhysicalExpr> = Arc::new(
-                    CometCastColumnExpr::new(
+                    CometCastColumnExpr::try_new(
                         child,
                         input_field,
                         Arc::clone(cast.target_field()),
                         None,
-                    )
+                    )?
                     .with_parquet_options(self.parquet_options.clone()),
                 );
                 return Ok(Transformed::yes(comet_cast));

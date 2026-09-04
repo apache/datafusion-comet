@@ -43,6 +43,10 @@ SELECT tail FROM test_variant ORDER BY id
 query
 SELECT id, tail FROM test_variant WHERE tail IS NOT NULL ORDER BY id
 
+-- Carrying VariantType through schema serialization must not admit native Variant expressions.
+query expect_fallback(Native operators do not support schemas containing type VariantType)
+SELECT CAST(id AS VARIANT) FROM test_variant
+
 query expect_fallback(type VariantType)
 SELECT id, v FROM test_variant ORDER BY id
 

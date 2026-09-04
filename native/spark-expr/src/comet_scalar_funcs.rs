@@ -28,7 +28,8 @@ use crate::{
     spark_isnan, spark_lpad, spark_make_decimal, spark_month_name, spark_read_side_padding,
     spark_round, spark_rpad, spark_to_time, spark_unhex, spark_unscaled_value, EvalMode,
     SparkArrayPositionFunc, SparkArraySlice, SparkArraysOverlap, SparkContains, SparkDateDiff,
-    SparkDateFromUnixDate, SparkDateTrunc, SparkFlatten, SparkMakeDate, SparkMakeInterval,
+    SparkDateFromUnixDate, SparkDateTrunc, SparkFlatten, SparkIcebergBucket,
+    SparkIcebergTemporalTransform, SparkIcebergTruncate, SparkMakeDate, SparkMakeInterval,
     SparkMakeTime, SparkNextDay, SparkSecondsToTimestamp, SparkSizeFunc,
 };
 use arrow::datatypes::DataType;
@@ -293,6 +294,20 @@ fn all_scalar_functions() -> Vec<Arc<ScalarUDF>> {
         Arc::new(ScalarUDF::new_from_impl(SparkDateFromUnixDate::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkDateTrunc::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkFlatten::default())),
+        Arc::new(ScalarUDF::new_from_impl(SparkIcebergBucket::default())),
+        Arc::new(ScalarUDF::new_from_impl(SparkIcebergTruncate::default())),
+        Arc::new(ScalarUDF::new_from_impl(
+            SparkIcebergTemporalTransform::years(),
+        )),
+        Arc::new(ScalarUDF::new_from_impl(
+            SparkIcebergTemporalTransform::months(),
+        )),
+        Arc::new(ScalarUDF::new_from_impl(
+            SparkIcebergTemporalTransform::days(),
+        )),
+        Arc::new(ScalarUDF::new_from_impl(
+            SparkIcebergTemporalTransform::hours(),
+        )),
         Arc::new(ScalarUDF::new_from_impl(SparkMakeDate::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkMakeTime::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkNextDay::default())),
