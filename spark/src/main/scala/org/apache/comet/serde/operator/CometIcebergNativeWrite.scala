@@ -560,7 +560,6 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
     requireNoVoidFieldWithDroppedSource,
     requireNoUnknownPartitionSource,
     requireNoEncryptionPrefix,
-    requireNoBloomFilterColumnsEnabled,
     requireRowGroupCheckMinRecordCountAtDefault,
     requireRowGroupCheckMaxRecordCountAtDefault,
     requireParquetPageVersionDefault,
@@ -728,13 +727,6 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
   // written parquet footers with Iceberg's own `MetricsConfig` logic before commit (see
   // `CometIcebergWriteExec`), so every `write.metadata.metrics.*` value behaves exactly as it
   // does on the iceberg-java path.
-
-  private val requireNoBloomFilterColumnsEnabled: TriggerRule = ctx => {
-    val prefix = PropertyKeys.BloomFilterColumnEnabledPrefix
-    ctx.properties
-      .find { case (k, v) => k.startsWith(prefix) && v.equalsIgnoreCase("true") }
-      .map { case (k, _) => s"$k=true: bloom filters unsupported" }
-  }
 
   // Compared exactly: Iceberg 1.11 rejects `V1` ("must be v1 or v2"), so a trimmed or
   // lowercased match would write natively a table whose iceberg-java write fails. Earlier
