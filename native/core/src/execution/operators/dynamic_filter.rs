@@ -31,6 +31,7 @@ use arrow::compute::filter_record_batch;
 use arrow::datatypes::DataType;
 use datafusion::common::cast::as_boolean_array;
 use datafusion::common::config::ConfigOptions;
+use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{internal_err, JoinType, NullEquality, Result, ScalarValue, Statistics};
 use datafusion::datasource::physical_plan::ParquetSource;
 use datafusion::datasource::source::DataSourceExec;
@@ -40,13 +41,15 @@ use datafusion::physical_expr::expressions::{
     lit, BinaryExpr, Column, DynamicFilterPhysicalExpr, IsNotNullExpr,
 };
 use datafusion::physical_expr::PhysicalExpr;
+use datafusion::physical_plan::distribution_requirements::InputDistributionRequirements;
 use datafusion::physical_plan::execution_plan::CardinalityEffect;
 use datafusion::physical_plan::joins::{HashJoinExec, PartitionMode};
 use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, MetricBuilder, MetricsSet};
+use datafusion::physical_plan::statistics::{ChildStats, StatisticsArgs};
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
-    DisplayAs, DisplayFormatType, Distribution, ExecutionPlan, ExecutionPlanProperties,
-    PlanProperties, SendableRecordBatchStream,
+    apply_expression_roots, ChildrenPropertiesMode, DisplayAs, DisplayFormatType, ExecutionPlan,
+    ExecutionPlanProperties, PlanProperties, ReplaceChildrenOptions, SendableRecordBatchStream,
 };
 use futures::StreamExt;
 
@@ -90,6 +93,13 @@ impl ExecutionPlan for DynamicFilterExec {
         vec![&self.input]
     }
 
+    fn apply_expressions(
+        &self,
+        f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        apply_expression_roots([Arc::clone(&self.predicate) as Arc<dyn PhysicalExpr>], f)
+    }
+
     fn maintains_input_order(&self) -> Vec<bool> {
         vec![true]
     }
@@ -100,7 +110,18 @@ impl ExecutionPlan for DynamicFilterExec {
 
     fn with_new_children(
         self: Arc<Self>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        self.replace_children(
+            children,
+            ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+        )
+    }
+
+    fn replace_children(
+        self: Arc<Self>,
         mut children: Vec<Arc<dyn ExecutionPlan>>,
+        _options: ReplaceChildrenOptions,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         if children.len() != 1 {
             return internal_err!("CometDynamicFilterExec requires one child");
@@ -414,8 +435,8 @@ impl ExecutionPlan for DynamicFilterJoinExec {
         self.template.properties()
     }
 
-    fn required_input_distribution(&self) -> Vec<Distribution> {
-        self.template.required_input_distribution()
+    fn input_distribution_requirements(&self) -> InputDistributionRequirements {
+        self.template.input_distribution_requirements()
     }
 
     fn maintains_input_order(&self) -> Vec<bool> {
@@ -426,9 +447,27 @@ impl ExecutionPlan for DynamicFilterJoinExec {
         self.template.children()
     }
 
+    fn apply_expressions(
+        &self,
+        f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        self.template.apply_expressions(f)
+    }
+
     fn with_new_children(
         self: Arc<Self>,
         children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        self.replace_children(
+            children,
+            ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+        )
+    }
+
+    fn replace_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+        _options: ReplaceChildrenOptions,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let join = self
             .template
@@ -467,8 +506,16 @@ impl ExecutionPlan for DynamicFilterJoinExec {
         Some(self.metrics.clone_inner())
     }
 
-    fn partition_statistics(&self, partition: Option<usize>) -> Result<Arc<Statistics>> {
-        self.template.partition_statistics(partition)
+    fn child_stats_requests(&self, partition: Option<usize>) -> Vec<ChildStats> {
+        self.template.child_stats_requests(partition)
+    }
+
+    fn statistics_from_inputs(
+        &self,
+        input_stats: &[Arc<Statistics>],
+        args: &StatisticsArgs,
+    ) -> Result<Arc<Statistics>> {
+        self.template.statistics_from_inputs(input_stats, args)
     }
 }
 

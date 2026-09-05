@@ -25,6 +25,7 @@ use arrow::array::{ArrayRef, BooleanArray, Int32Array, Int64Array, Int8Array, Re
 use arrow::compute::cast;
 use arrow::datatypes::{Field, Schema};
 use datafusion::common::test_util::batches_to_sort_string;
+use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::datasource::memory::MemorySourceConfig;
 use datafusion::execution::memory_pool::{GreedyMemoryPool, MemoryPool};
@@ -34,6 +35,8 @@ use datafusion::physical_plan::collect;
 use datafusion::physical_plan::filter::FilterExec;
 use datafusion::physical_plan::metrics::MetricValue;
 use datafusion::physical_plan::projection::ProjectionExec;
+use datafusion::physical_plan::statistics::{StatisticsArgs, StatisticsContext};
+use datafusion::physical_plan::{ChildrenPropertiesMode, Distribution, ReplaceChildrenOptions};
 use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_comet_spark_expr::RandExpr;
 use datafusion_datasource::file::FileSource;
@@ -72,6 +75,13 @@ fn input(
 fn memory_exec(batches: Vec<RecordBatch>) -> Arc<dyn ExecutionPlan> {
     MemorySourceConfig::try_new_exec(std::slice::from_ref(&batches), batches[0].schema(), None)
         .unwrap()
+}
+
+fn produced_join_filter(join: &HashJoinExec) -> Arc<DynamicFilterPhysicalExpr> {
+    let mut expressions = join.dynamic_expressions_produced();
+    assert_eq!(expressions.len(), 1);
+    let expression: Arc<dyn std::any::Any + Send + Sync> = expressions.pop().unwrap();
+    expression.downcast::<DynamicFilterPhysicalExpr>().unwrap()
 }
 
 fn join(
@@ -244,7 +254,7 @@ async fn completed_filter_evaluates_only_the_shared_probe_key() {
         DynamicFilterJoinExec::new(&join, session.copied_config().options().as_ref().clone())
             .unwrap();
     let runtime = wrapper.build_runtime_join().unwrap();
-    let predicate = Arc::clone(runtime.join.dynamic_filter_expr().unwrap());
+    let predicate = produced_join_filter(&runtime.join);
     let actual = datafusion::physical_plan::common::collect(
         wrapper
             .execute_runtime_join(runtime.join, 0, session.task_ctx())
@@ -413,8 +423,8 @@ fn assert_skipped(join: HashJoinExec, config: &ConfigOptions) {
     assert!(attached
         .downcast_ref::<HashJoinExec>()
         .unwrap()
-        .dynamic_filter_expr()
-        .is_none());
+        .dynamic_expressions_produced()
+        .is_empty());
 }
 
 #[test]
@@ -1152,14 +1162,14 @@ async fn broadcast_filter_reaches_parquet_reader_after_complete_build() {
     let (_, source) = reader.downcast_to_file_source::<ParquetSource>().unwrap();
     let reader_filter = source.filter().unwrap();
     let reader_filter = find_dynamic_filter(&reader_filter).unwrap();
-    let join_filter = runtime.join.dynamic_filter_expr().unwrap();
+    let join_filter = produced_join_filter(&runtime.join);
     assert_eq!(
-        reader_filter.inner().expression_id,
-        join_filter.inner().expression_id
+        reader_filter.expression_id().unwrap(),
+        join_filter.expression_id().unwrap()
     );
-    let remapped_key = reader_filter.remapped_children().unwrap()[0]
-        .downcast_ref::<Column>()
-        .unwrap();
+    let reader_keys = reader_filter.children();
+    assert_eq!(reader_keys.len(), 1);
+    let remapped_key = reader_keys[0].downcast_ref::<Column>().unwrap();
     assert_eq!(remapped_key.name(), "key");
     assert_eq!(remapped_key.index(), 1);
 
@@ -1249,7 +1259,7 @@ async fn runtime_domains_release_with_streams_while_plans_remain_alive() {
             );
             let plan = DynamicFilterJoinExec::new(&join, ConfigOptions::default()).unwrap();
             let producer = plan.build_runtime_join().unwrap();
-            let predicate = Arc::downgrade(producer.join.dynamic_filter_expr().unwrap());
+            let predicate = Arc::downgrade(&produced_join_filter(&producer.join));
             let mut stream = plan
                 .execute_runtime_join(producer.join, 0, session.task_ctx())
                 .unwrap();
@@ -1288,7 +1298,7 @@ async fn runtime_domains_release_with_streams_while_plans_remain_alive() {
             // alone would miss the old plan-owned, unaccounted map retention.
             assert_eq!(pool.reserved(), 0, "{mode:?}: {finish}");
             assert!(predicate.upgrade().is_none(), "{mode:?}: {finish}");
-            assert!(plan.template.dynamic_filter_expr().is_none());
+            assert!(plan.template.dynamic_expressions_produced().is_empty());
         }
     }
 }
@@ -1318,7 +1328,7 @@ async fn duplicate_heavy_builds_do_not_materialize_unreserved_inlists() {
         assert!(configured_limit > 0);
         let plan = DynamicFilterJoinExec::new(&join, config.options().as_ref().clone()).unwrap();
         let producer = plan.build_runtime_join().unwrap();
-        let predicate = Arc::downgrade(producer.join.dynamic_filter_expr().unwrap());
+        let predicate = Arc::downgrade(&produced_join_filter(&producer.join));
         let mut stream = plan
             .execute_runtime_join(producer.join, 0, session.task_ctx())
             .unwrap();
@@ -1367,9 +1377,9 @@ async fn executions_and_resets_have_independent_producers() {
         );
         let plan = Arc::new(DynamicFilterJoinExec::new(&join, ConfigOptions::default()).unwrap());
         let first = plan.build_runtime_join().unwrap();
-        let first_filter = Arc::downgrade(first.join.dynamic_filter_expr().unwrap());
+        let first_filter = Arc::downgrade(&produced_join_filter(&first.join));
         let second = plan.build_runtime_join().unwrap();
-        let second_filter = Arc::downgrade(second.join.dynamic_filter_expr().unwrap());
+        let second_filter = Arc::downgrade(&produced_join_filter(&second.join));
         assert!(!first_filter.ptr_eq(&second_filter));
         let mut first = plan
             .execute_runtime_join(first.join, 0, session.task_ctx())
@@ -1398,10 +1408,13 @@ async fn executions_and_resets_have_independent_producers() {
             mode,
         );
         let rewritten = Arc::clone(&plan)
-            .with_new_children(vec![
-                Arc::clone(replacement.left()),
-                Arc::clone(replacement.right()),
-            ])
+            .replace_children(
+                vec![
+                    Arc::clone(replacement.left()),
+                    Arc::clone(replacement.right()),
+                ],
+                ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+            )
             .unwrap();
         let output = collect(rewritten, session.task_ctx()).await.unwrap();
         assert_eq!(row_count(&output), 1);
@@ -1438,18 +1451,21 @@ async fn child_replacement_rechecks_join_key_types() {
             (DataType::Utf8, false),
         ] {
             let rewritten = Arc::clone(&plan)
-                .with_new_children(vec![
-                    input(vec![Some(90)], &key_type, 1),
-                    input(vec![Some(5), Some(90)], &key_type, 0),
-                ])
+                .replace_children(
+                    vec![
+                        input(vec![Some(90)], &key_type, 1),
+                        input(vec![Some(5), Some(90)], &key_type, 0),
+                    ],
+                    ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+                )
                 .unwrap();
             assert_eq!(rewritten.is::<DynamicFilterJoinExec>(), supported);
             if !supported {
                 assert!(rewritten
                     .downcast_ref::<HashJoinExec>()
                     .unwrap()
-                    .dynamic_filter_expr()
-                    .is_none());
+                    .dynamic_expressions_produced()
+                    .is_empty());
             }
             let output = collect(Arc::clone(&rewritten), session.task_ctx())
                 .await
@@ -1502,12 +1518,125 @@ fn child_replacement_rechecks_native_partition_counts() {
             } else {
                 vec![Arc::clone(join.left()), two_partitions]
             };
-            let rewritten = Arc::clone(&plan).with_new_children(children).unwrap();
+            let rewritten = Arc::clone(&plan)
+                .replace_children(
+                    children,
+                    ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+                )
+                .unwrap();
             assert!(rewritten
                 .downcast_ref::<HashJoinExec>()
                 .unwrap()
-                .dynamic_filter_expr()
-                .is_none());
+                .dynamic_expressions_produced()
+                .is_empty());
         }
+    }
+}
+
+#[test]
+fn runtime_filter_is_visible_to_expression_visitors() {
+    let wrapper = DynamicFilterJoinExec::try_new(&plain_join(), &ConfigOptions::default())
+        .unwrap()
+        .unwrap();
+    let runtime = wrapper.build_runtime_join().unwrap();
+    let predicate = produced_join_filter(&runtime.join);
+    let consumer = runtime.join.right();
+    let mut consumer_expression_ids = Vec::new();
+    consumer
+        .apply_expressions(&mut |expression| {
+            consumer_expression_ids.push(expression.expression_id());
+            Ok(TreeNodeRecursion::Continue)
+        })
+        .unwrap();
+    assert_eq!(
+        consumer_expression_ids,
+        vec![Some(predicate.expression_id().unwrap())]
+    );
+    assert_eq!(
+        consumer
+            .apply_expressions(&mut |_| Ok(TreeNodeRecursion::Stop))
+            .unwrap(),
+        TreeNodeRecursion::Stop
+    );
+    assert!(consumer.dynamic_expressions_produced().is_empty());
+    assert!(wrapper.dynamic_expressions_produced().is_empty());
+
+    let mut join_key_count = 0;
+    wrapper
+        .apply_expressions(&mut |expression| {
+            assert!(expression.expression_id().is_none());
+            join_key_count += 1;
+            Ok(TreeNodeRecursion::Continue)
+        })
+        .unwrap();
+    assert_eq!(join_key_count, 2);
+}
+
+#[test]
+fn wrapper_preserves_join_statistics_and_distribution() {
+    for mode in [PartitionMode::Partitioned, PartitionMode::CollectLeft] {
+        let join = plain_join()
+            .builder()
+            .with_partition_mode(mode)
+            .build()
+            .unwrap();
+        let wrapper = DynamicFilterJoinExec::try_new(&join, &ConfigOptions::default())
+            .unwrap()
+            .unwrap();
+        for partition in [None, Some(0)] {
+            let context = StatisticsContext::new();
+            let args = StatisticsArgs::new().with_partition(partition);
+            let expected = context.compute(&join, &args).unwrap();
+            let actual = context.compute(&wrapper, &args).unwrap();
+            assert!(expected.num_rows.get_value().is_some());
+            assert_eq!(actual, expected, "{mode:?}: {partition:?}");
+        }
+
+        let expected = join.input_distribution_requirements();
+        let actual = wrapper.input_distribution_requirements();
+        assert_eq!(
+            actual.per_child_distributions().len(),
+            expected.per_child_distributions().len()
+        );
+        for (actual, expected) in actual
+            .per_child_distributions()
+            .zip(expected.per_child_distributions())
+        {
+            match (actual, expected) {
+                (Distribution::SinglePartition, Distribution::SinglePartition)
+                | (Distribution::UnspecifiedDistribution, Distribution::UnspecifiedDistribution) => {
+                }
+                (Distribution::KeyPartitioned(actual), Distribution::KeyPartitioned(expected)) => {
+                    assert_eq!(actual, expected);
+                }
+                _ => panic!("distribution changed: {expected:?} -> {actual:?}"),
+            }
+        }
+        let schema = join.right().schema();
+        let two_partitions = MemorySourceConfig::try_new_exec(
+            &[
+                vec![RecordBatch::new_empty(Arc::clone(&schema))],
+                vec![RecordBatch::new_empty(Arc::clone(&schema))],
+            ],
+            schema,
+            None,
+        )
+        .unwrap();
+        let candidate_children = [join.left().as_ref(), two_partitions.as_ref()];
+        let expected_unsatisfied = expected
+            .unsatisfied_co_partitioned_children(join.name(), &candidate_children)
+            .unwrap();
+        let actual_unsatisfied = actual
+            .unsatisfied_co_partitioned_children(wrapper.name(), &candidate_children)
+            .unwrap();
+        assert_eq!(actual_unsatisfied, expected_unsatisfied);
+        assert_eq!(
+            actual_unsatisfied,
+            if matches!(mode, PartitionMode::Partitioned) {
+                vec![0, 1]
+            } else {
+                vec![]
+            }
+        );
     }
 }

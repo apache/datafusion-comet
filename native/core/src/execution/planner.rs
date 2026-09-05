@@ -84,7 +84,7 @@ use datafusion::{
         limit::LocalLimitExec,
         projection::ProjectionExec,
         sorts::sort::SortExec,
-        ExecutionPlan,
+        ChildrenPropertiesMode, ExecutionPlan, ReplaceChildrenOptions,
     },
     prelude::SessionContext,
 };
@@ -2649,7 +2649,10 @@ impl PhysicalPlanner {
             let child =
                 Self::apply_join_dynamic_filter(Arc::clone(projection.input()), enabled, config)?;
             return if !Arc::ptr_eq(&child, projection.input()) {
-                Ok(plan.with_new_children(vec![child])?)
+                Ok(plan.replace_children(
+                    vec![child],
+                    ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+                )?)
             } else {
                 Ok(plan)
             };
