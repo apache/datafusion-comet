@@ -1026,8 +1026,9 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
           expr.getTagValue(CometExplainInfo.DISPATCHED_SELF).isEmpty) {
           withNativeExpr(expr, CometExplainInfo.exprDisplayName(expr))
         }
-        // Attach QueryContext and expr_id to the expression
-        attachExprIdAndContext(expr, protoExpr)
+        // Passthrough serdes such as Alias return an already-identified child expression. Preserve
+        // that child's context instead of replacing it with the structural wrapper's origin.
+        if (protoExpr.hasExprId) protoExpr else attachExprIdAndContext(expr, protoExpr)
       }
   }
 
