@@ -20,10 +20,7 @@
 //! auto-discovery, which only looks at `benches/*.rs`, does not treat it as a bench target.
 #![allow(dead_code)]
 
-use arrow::array::{
-    builder::{BooleanBuilder, ListBuilder, StringBuilder},
-    ArrayRef, Float64Array, Int64Array, ListArray, RecordBatch,
-};
+use arrow::array::{builder::{BooleanBuilder, ListBuilder, StringBuilder}, ArrayRef, Float64Array, Int64Array, ListArray, RecordBatch, StringArray, TimestampMicrosecondArray};
 use arrow::datatypes::{
     ArrowPrimitiveType, DataType, Date32Type, Decimal128Type, Field, Float32Type, Float64Type,
     Int16Type, Int32Type, Int64Type, Int8Type, Schema,
