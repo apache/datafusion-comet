@@ -335,6 +335,7 @@ pub(crate) fn cast_array(
         }
         (Utf8View, Utf8) => Ok(cast_with_options(&array, to_type, &CAST_OPTIONS)?),
         (Struct(_), Utf8) => Ok(casts_struct_to_string(array.as_struct(), cast_options)?),
+        (Map(_, _), Utf8) => Ok(cast_map_to_string(array.as_map(), cast_options)?),
         (Struct(_), Struct(_)) => Ok(cast_struct_to_struct(
             array.as_struct(),
             &from_type,
@@ -667,6 +668,68 @@ fn casts_struct_to_string(
     Ok(Arc::new(builder.finish()))
 }
 
+fn cast_map_to_string(
+    array: &MapArray,
+    spark_cast_options: &SparkCastOptions,
+) -> DataFusionResult<ArrayRef> {
+    let mut builder = StringBuilder::with_capacity(array.len(), array.len() * 16);
+    let mut str = String::with_capacity(array.len() * 16);
+
+    let casted_keys = cast_array(
+        Arc::clone(array.keys()),
+        &DataType::Utf8,
+        spark_cast_options,
+    )?;
+    let casted_values = cast_array(
+        Arc::clone(array.values()),
+        &DataType::Utf8,
+        spark_cast_options,
+    )?;
+    let key_values = casted_keys
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .expect("Casted keys should be StringArray");
+    let value_values = casted_values
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .expect("Casted values should be StringArray");
+
+    let offsets = array.offsets();
+    for row_index in 0..array.len() {
+        if array.is_null(row_index) {
+            builder.append_null();
+        } else {
+            str.clear();
+            let start = offsets[row_index] as usize;
+            let end = offsets[row_index + 1] as usize;
+
+            str.push('{');
+            let mut first = true;
+            for idx in start..end {
+                if !first {
+                    str.push_str(", ");
+                }
+                if key_values.is_null(idx) {
+                    str.push_str(&spark_cast_options.null_string);
+                } else {
+                    str.push_str(key_values.value(idx));
+                }
+                str.push_str(" -> ");
+                if value_values.is_null(idx) {
+                    str.push_str(&spark_cast_options.null_string);
+                } else {
+                    str.push_str(value_values.value(idx));
+                }
+                first = false;
+            }
+            str.push('}');
+            builder.append_value(&str);
+        }
+    }
+
+    Ok(Arc::new(builder.finish()))
+}
+
 impl Display for Cast {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(
@@ -847,7 +910,12 @@ fn cast_binary_to_string<O: OffsetSizeTrait>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{BinaryArray, ListArray, NullArray, PrimitiveArray, StringArray};
+    use arrow::array::builder::{
+        Int32Builder, MapBuilder, StringBuilder, TimestampMicrosecondBuilder,
+    };
+    use arrow::array::{
+        BinaryArray, ListArray, MapFieldNames, NullArray, PrimitiveArray, StringArray,
+    };
     use arrow::buffer::OffsetBuffer;
     use arrow::datatypes::{Field, Fields, Int32Type, TimestampMicrosecondType};
 
@@ -1154,6 +1222,92 @@ mod tests {
         } else {
             unreachable!()
         }
+    }
+
+    #[test]
+    fn test_cast_map_to_utf8() {
+        let mut map_builder = MapBuilder::new(
+            Some(MapFieldNames {
+                entry: "entries".into(),
+                key: "key".into(),
+                value: "value".into(),
+            }),
+            StringBuilder::new(),
+            Int32Builder::new(),
+        );
+
+        map_builder.keys().append_value("a");
+        map_builder.values().append_value(1);
+        map_builder.keys().append_value("b");
+        map_builder.values().append_null();
+        map_builder.append(true).unwrap();
+
+        map_builder.append(true).unwrap();
+        map_builder.append(false).unwrap();
+
+        let map_array: ArrayRef = Arc::new(map_builder.finish());
+        let string_array = cast_array(
+            map_array,
+            &DataType::Utf8,
+            &SparkCastOptions::new(EvalMode::Legacy, "UTC", false),
+        )
+        .unwrap();
+        let string_array = string_array.as_string::<i32>();
+        assert_eq!(3, string_array.len());
+        assert_eq!(r#"{a -> 1, b -> null}"#, string_array.value(0));
+        assert_eq!(r#"{}"#, string_array.value(1));
+        assert!(string_array.is_null(2));
+    }
+
+    #[test]
+    fn test_cast_map_to_utf8_ignores_values_outside_slice() {
+        let mut map_builder = MapBuilder::new(
+            None,
+            StringBuilder::new(),
+            TimestampMicrosecondBuilder::new(),
+        );
+        map_builder.keys().append_value("hidden");
+        map_builder.values().append_value(i64::MAX);
+        map_builder.append(true).unwrap();
+        map_builder.keys().append_value("visible");
+        map_builder.values().append_value(0);
+        map_builder.append(true).unwrap();
+
+        let string_array = cast_array(
+            Arc::new(map_builder.finish().slice(1, 1)),
+            &DataType::Utf8,
+            &SparkCastOptions::new(EvalMode::Ansi, "UTC", false),
+        )
+        .unwrap();
+        assert_eq!(
+            "{visible -> 1970-01-01 00:00:00}",
+            string_array.as_string::<i32>().value(0)
+        );
+    }
+
+    #[test]
+    fn test_cast_map_to_utf8_ignores_values_under_null_row() {
+        let mut map_builder = MapBuilder::new(
+            None,
+            StringBuilder::new(),
+            TimestampMicrosecondBuilder::new(),
+        );
+        map_builder.keys().append_value("hidden");
+        map_builder.values().append_value(i64::MAX);
+        map_builder.append(false).unwrap();
+        map_builder.keys().append_value("visible");
+        map_builder.values().append_value(0);
+        map_builder.append(true).unwrap();
+
+        let string_array = cast_array(
+            Arc::new(map_builder.finish()),
+            &DataType::Utf8,
+            &SparkCastOptions::new(EvalMode::Ansi, "UTC", false),
+        )
+        .unwrap();
+        let string_array = string_array.as_string::<i32>();
+        assert!(string_array.is_null(0));
+        assert_eq!("{visible -> 1970-01-01 00:00:00}", string_array.value(1));
     }
 
     #[test]

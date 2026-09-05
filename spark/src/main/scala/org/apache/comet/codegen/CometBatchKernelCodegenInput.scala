@@ -603,6 +603,7 @@ private[codegen] object CometBatchKernelCodegenInput extends CometTypeShim {
    * element or struct field. `idx` is the index/ordinal token (e.g. `"__i"` or `"3"`).
    */
   private def elementGetterCall(dt: DataType, idx: String): String = dt match {
+    case NullType => "null"
     case BooleanType => s"getBoolean($idx)"
     case ByteType => s"getByte($idx)"
     case ShortType => s"getShort($idx)"
@@ -691,6 +692,8 @@ private[codegen] object CometBatchKernelCodegenInput extends CometTypeShim {
       if (elementNullable) "        if (isNullAt(i)) return null;\n"
       else ""
     elemType match {
+      case NullType =>
+        ""
       case BooleanType =>
         s"""      @Override
            |      public boolean getBoolean(int i) {

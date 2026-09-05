@@ -321,6 +321,8 @@ object CometCast
         Compatible()
       case DataTypes.BinaryType =>
         Compatible()
+      case DataTypes.NullType =>
+        Compatible()
       case StructType(fields) =>
         for (field <- fields) {
           isSupported(field.dataType, DataTypes.StringType, timeZoneId, evalMode) match {
@@ -332,6 +334,13 @@ object CometCast
           }
         }
         Compatible()
+      case MapType(keyType, valueType, _) =>
+        isSupported(keyType, DataTypes.StringType, timeZoneId, evalMode) match {
+          case Compatible(_, _) =>
+            isSupported(valueType, DataTypes.StringType, timeZoneId, evalMode)
+          case other =>
+            other
+        }
       case _ => unsupported(fromType, DataTypes.StringType)
     }
   }

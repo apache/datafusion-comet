@@ -34,6 +34,10 @@ SELECT CAST(array(1, 2, null) AS STRING)
 query
 SELECT CAST(map('a', 1, 'b', null) AS STRING)
 
+-- Empty Map<NullType, NullType> → string.
+query
+SELECT CAST(map() AS STRING)
+
 -- Nested complex types via the outer struct.
 query
 SELECT CAST(struct(array(1, null), map('k', null)) AS STRING)

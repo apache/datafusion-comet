@@ -149,6 +149,7 @@ SELECT cast(named_struct('a', named_struct('b', named_struct('c', 1, 'd', 'leaf'
 query
 SELECT cast(named_struct('s1', '', 's2', ' ', 's3', cast(null as string)) as string)
 
+-- Map-valued field: supported via recursive map -> string casting.
 query
 SELECT cast(named_struct('m', map('k', 1)) as string)
 
@@ -269,15 +270,14 @@ SELECT cast(array(cast(1.5 as double), cast('NaN' as double), cast('-Infinity' a
 query
 SELECT cast(array(array(array(1, 2), array(3)), array(array(cast(null as int)))) as string)
 
--- Array of map: map-to-string is routed through the codegen dispatcher via the outer array.
+-- Array of map: supported via recursive map -> string casting.
 query
 SELECT cast(array(map('k', 1)) as string)
 
 -- ----------------------------------------------------------------------------
 -- Map → string
 -- ----------------------------------------------------------------------------
--- Comet has no native map-to-string cast; `CometCast` mixes in `CodegenDispatchFallback`, so
--- these stay native via the codegen dispatcher and match Spark exactly.
+-- Comet now implements map-to-string casts, including nested maps.
 -- Note: maps materialized through parquet have nondeterministic entry order, so map column
 -- tests use literal maps directly rather than reading from a parquet table.
 
