@@ -104,6 +104,148 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
     }
   }
 
+  test("native reader duplicate top-level fields in case-insensitive mode (non-ASCII)") {
+    withTempPath { path =>
+      // Two distinct top-level columns that fold to the same name under toLowerCase(Locale.ROOT).
+      withSQLConf(SQLConf.CASE_SENSITIVE.key -> "true") {
+        spark
+          .range(5)
+          .selectExpr("id as `CAFÉ`", "id as `café`")
+          .write
+          .mode("overwrite")
+          .parquet(path.toString)
+      }
+      val readSchema = new StructType().add("Café", LongType, nullable = true)
+      withSQLConf(SQLConf.CASE_SENSITIVE.key -> "false") {
+        val df = spark.read.schema(readSchema).parquet(path.toString)
+        // Confirm Comet's native scan raises this, not a Spark fallback that emits the same
+        // _LEGACY_ERROR_TEMP_2093 "duplicate field" substring for the same input.
+        assert(
+          find(df.queryExecution.executedPlan)(_.isInstanceOf[CometNativeScanExec]).isDefined,
+          "expected a CometNativeScanExec so the duplicate error is raised by Comet")
+        val e = intercept[Exception] {
+          df.collect()
+        }
+        assert(
+          e.getMessage.contains("duplicate field") ||
+            (e.getCause != null && e.getCause.getMessage.contains("duplicate field")),
+          s"Expected duplicate field error, got: ${e.getMessage}")
+      }
+    }
+  }
+
+  test("native reader duplicate nested struct fields in case-insensitive mode (non-ASCII)") {
+    withTempPath { path =>
+      // Sibling struct fields that fold to the same name; the nested convert must raise the same
+      // duplicate-field error Spark raises, not panic or resolve arbitrarily.
+      withSQLConf(SQLConf.CASE_SENSITIVE.key -> "true") {
+        spark
+          .range(3)
+          .selectExpr("named_struct('CAFÉ', id, 'café', id) as s")
+          .write
+          .mode("overwrite")
+          .parquet(path.toString)
+      }
+      val readSchema =
+        new StructType().add("s", new StructType().add("Café", LongType, nullable = true))
+      withSQLConf(SQLConf.CASE_SENSITIVE.key -> "false") {
+        val df = spark.read.schema(readSchema).parquet(path.toString)
+        // Confirm Comet's native scan (its nested Struct convert) raises this, not a Spark
+        // fallback that emits the same "duplicate field" substring for the same input.
+        assert(
+          find(df.queryExecution.executedPlan)(_.isInstanceOf[CometNativeScanExec]).isDefined,
+          "expected a CometNativeScanExec so the duplicate error is raised by Comet")
+        val e = intercept[Exception] {
+          df.collect()
+        }
+        assert(
+          e.getMessage.contains("duplicate field") ||
+            (e.getCause != null && e.getCause.getMessage.contains("duplicate field")),
+          s"Expected duplicate field error, got: ${e.getMessage}")
+      }
+    }
+  }
+
+  test("native reader case-insensitive resolution for top-level and nested struct fields") {
+    // Files carry mixed-case top-level and nested field names. Reading them back
+    // through a differently cased schema must mirror Spark's ParquetReadSupport.
+    // With spark.sql.caseSensitive=false the fields resolve via
+    // name.toLowerCase(Locale.ROOT). With caseSensitive=true they must not match,
+    // so the struct reads as null. Covers ASCII and non-ASCII folding, at both the
+    // top level and inside a struct.
+    val cases = Seq(
+      ("PersonInfo", "FirstName", "personinfo", "firstname"),
+      ("CAFÉ", "RÉSUMÉ", "café", "résumé"))
+
+    cases.foreach { case (fileTop, fileInner, readTop, readInner) =>
+      withTempPath { path =>
+        val fileSchema = new StructType().add(
+          fileTop,
+          new StructType()
+            .add(fileInner, StringType, nullable = true)
+            .add("Age", IntegerType, nullable = true),
+          nullable = true)
+        val data = java.util.Arrays.asList(Row(Row("John", 35)), Row(Row("Jane", 40)))
+        spark
+          .createDataFrame(data, fileSchema)
+          .repartition(1)
+          .write
+          .parquet(path.toString)
+
+        // Read schema differs in case at the top level, the nested field, and Age.
+        val readSchema = new StructType().add(
+          readTop,
+          new StructType()
+            .add(readInner, StringType, nullable = true)
+            .add("age", IntegerType, nullable = true),
+          nullable = true)
+
+        // Case-insensitive: names resolve to the file's differently cased fields.
+        withSQLConf(SQLConf.CASE_SENSITIVE.key -> "false") {
+          val df = spark.read.schema(readSchema).parquet(path.toString)
+          val (_, cometPlan) = checkSparkAnswerAndOperator(df)
+          assert(
+            cometPlan.collect { case n: CometNativeScanExec => n }.nonEmpty,
+            "Expected a CometNativeScanExec")
+          assert(
+            df.collect().forall(!_.isNullAt(0)),
+            s"case-insensitive read of $readTop should resolve to $fileTop, not null")
+        }
+
+        // Case-sensitive: the differently cased names must not match, so the native
+        // reader returns a null struct, exactly as Spark does.
+        withSQLConf(SQLConf.CASE_SENSITIVE.key -> "true") {
+          val df = spark.read.schema(readSchema).parquet(path.toString)
+          checkSparkAnswer(df)
+          assert(
+            df.collect().forall(_.isNullAt(0)),
+            s"case-sensitive read of $readTop should not match $fileTop")
+        }
+      }
+    }
+  }
+
+  test("native reader non-ASCII fold follows the JVM Unicode table") {
+    // `Ƛ` (U+A7DC) is a witness for the JNI fold: Rust's `to_lowercase` folds it to `ƛ`
+    // (U+019B) but JDK 11/17/21/22 leave it unchanged, so a case-insensitive read of `ƛ`
+    // against a file column `Ƛ` must resolve the way the JVM does (no match, all null) rather
+    // than the way a Rust in-process fold would (match, the id values). Asserting through
+    // `checkSparkAnswer` rather than a literal null keeps it honest on a future JDK that does
+    // fold `Ƛ`. Unlike the `U+A7C0`/`U+10570` families, no JDK we support folds `Ƛ`, so this
+    // stays stable.
+    withTempPath { path =>
+      spark.range(3).selectExpr("id as `Ƛ`").write.parquet(path.toString)
+      val readSchema = new StructType().add("ƛ", LongType, nullable = true)
+      withSQLConf(SQLConf.CASE_SENSITIVE.key -> "false") {
+        val df = spark.read.schema(readSchema).parquet(path.toString)
+        val (_, cometPlan) = checkSparkAnswerAndOperator(df)
+        assert(
+          cometPlan.collect { case n: CometNativeScanExec => n }.nonEmpty,
+          "Expected a CometNativeScanExec")
+      }
+    }
+  }
+
   test("native reader - read simple STRUCT fields") {
     testSingleLineQuery(
       """
@@ -598,7 +740,7 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
   test("SPARK-18053: ARRAY equality is broken") {
     withTable("array_tbl") {
       spark.range(10).select(array(col("id")).as("arr")).write.saveAsTable("array_tbl")
-      assert(sql("SELECT * FROM array_tbl where arr = ARRAY(1L)").count == 1)
+      assert(sql("SELECT * FROM array_tbl where arr = ARRAY(1L)").count() == 1)
     }
   }
 
@@ -829,6 +971,78 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
     }
   }
 
+  test("row-level pushdown reaches native scan when rowFilterPushdown.enabled is set") {
+    // Regression test for #4990: `table_parquet_options.global` never saw session-level
+    // `datafusion.execution.parquet.*` settings, so `pushdown_filters`/`reorder_filters` set via
+    // `spark.comet.parquet.rowFilterPushdown.enabled` never reached the reader even though the
+    // flag was translated into the DataFusion session config.
+    withTempPath { dir =>
+      spark
+        .range(0, 1000)
+        .toDF("c1")
+        .repartition(1)
+        .write
+        .format("parquet")
+        .save(dir.toString)
+
+      def rowLevelPushdownMetrics(): (Long, Long) = {
+        val df = spark.read.parquet(dir.toString).where("c1 > 500")
+        val (_, cometPlan) = checkSparkAnswerAndOperator(df)
+        val nativeScans = cometPlan.collect { case n: CometNativeScanExec => n }
+        assert(nativeScans.nonEmpty, "Expected a CometNativeScanExec")
+        val metrics = nativeScans.head.metrics
+        (metrics("pushdown_rows_pruned").value, metrics("pushdown_rows_matched").value)
+      }
+
+      // Default: rowFilterPushdown.enabled is false, so no per-row RowFilter evaluation
+      // happens at the scan; CometFilter above the scan does the row-level reduction instead.
+      val (prunedDefault, matchedDefault) = rowLevelPushdownMetrics()
+      assert(
+        prunedDefault == 0 && matchedDefault == 0,
+        "Expected no row-level pushdown by default, got " +
+          s"pruned=$prunedDefault matched=$matchedDefault")
+
+      withSQLConf(CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED.key -> "true") {
+        val (pruned, matched) = rowLevelPushdownMetrics()
+        assert(
+          pruned + matched > 0,
+          "Expected row-level pushdown to fire once rowFilterPushdown.enabled is set")
+      }
+    }
+  }
+
+  test("datafusion escape hatch override wins over rowFilterPushdown.enabled") {
+    // Regression test for the precedence fix: an explicit `spark.comet.datafusion.
+    // execution.parquet.pushdown_filters=false` (behind respectDataFusionConfigs) must not be
+    // silently forced back to `true` by rowFilterPushdown.enabled.
+    withTempPath { dir =>
+      spark
+        .range(0, 1000)
+        .toDF("c1")
+        .repartition(1)
+        .write
+        .format("parquet")
+        .save(dir.toString)
+
+      withSQLConf(
+        CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED.key -> "true",
+        CometConf.COMET_RESPECT_DATAFUSION_CONFIGS.key -> "true",
+        "spark.comet.datafusion.execution.parquet.pushdown_filters" -> "false") {
+        val df = spark.read.parquet(dir.toString).where("c1 > 500")
+        val (_, cometPlan) = checkSparkAnswerAndOperator(df)
+        val nativeScans = cometPlan.collect { case n: CometNativeScanExec => n }
+        assert(nativeScans.nonEmpty, "Expected a CometNativeScanExec")
+        val metrics = nativeScans.head.metrics
+        val pruned = metrics("pushdown_rows_pruned").value
+        val matched = metrics("pushdown_rows_matched").value
+        assert(
+          pruned == 0 && matched == 0,
+          "Expected the explicit pushdown_filters=false override to win over " +
+            s"rowFilterPushdown.enabled, got pruned=$pruned matched=$matched")
+      }
+    }
+  }
+
   test("row-group statistics pruning fires for native Parquet scan dataFilters") {
     // Regression test for the identity-cast pruning gap. DataFusion's default
     // PhysicalExprAdapter inserts a CastExpr around Column refs whenever the logical
@@ -874,6 +1088,54 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
           pruned > 0,
           "Row-group statistics pruning did not fire " +
             s"(pruned=$pruned, matched=$matched of $numRowGroups total)")
+      }
+    }
+  }
+
+  test("datafusion escape hatch pruning=false disables row-group statistics pruning") {
+    // Regression test pinning the `pruning` field of the newly-plumbed session
+    // `ParquetOptions` at the level users care about: an explicit
+    // `spark.comet.datafusion.execution.parquet.pruning=false` must actually turn off
+    // row-group statistics pruning at the native scan, not just be copied into
+    // `get_options()`'s output.
+    withTempPath { dir =>
+      withSQLConf(SQLConf.LEAF_NODE_DEFAULT_PARALLELISM.key -> "1") {
+        spark
+          .range(0, 1000)
+          .toDF("c1")
+          .repartition(1)
+          .write
+          .option("parquet.block.size", "1024")
+          .format("parquet")
+          .save(dir.toString)
+
+        val parquetFile = dir
+          .listFiles()
+          .find(_.getName.endsWith(".parquet"))
+          .getOrElse(fail("No parquet file was written"))
+        val reader = ParquetFileReader.open(
+          org.apache.parquet.hadoop.util.HadoopInputFile
+            .fromPath(new Path(parquetFile.getAbsolutePath), spark.sessionState.newHadoopConf()))
+        val numRowGroups =
+          try reader.getRowGroups.size()
+          finally reader.close()
+        assert(numRowGroups > 1, s"Test setup needs >1 row groups, got $numRowGroups")
+
+        withSQLConf(
+          CometConf.COMET_RESPECT_DATAFUSION_CONFIGS.key -> "true",
+          "spark.comet.datafusion.execution.parquet.pruning" -> "false") {
+          val df = spark.read.parquet(dir.toString).where("c1 > 500")
+          val (_, cometPlan) = checkSparkAnswerAndOperator(df)
+          val nativeScans = cometPlan.collect { case n: CometNativeScanExec => n }
+          assert(nativeScans.nonEmpty, "Expected a CometNativeScanExec")
+          val metrics = nativeScans.head.metrics
+          val pruned = metrics("row_groups_pruned_statistics").value
+          val matched = metrics("row_groups_matched_statistics").value
+          assert(
+            pruned == 0 && matched == numRowGroups,
+            "Expected the explicit pruning=false override to disable row-group statistics " +
+              s"pruning, got pruned=$pruned matched=$matched of $numRowGroups total")
+        }
       }
     }
   }

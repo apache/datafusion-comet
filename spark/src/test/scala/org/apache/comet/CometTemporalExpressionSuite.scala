@@ -21,6 +21,7 @@ package org.apache.comet
 
 import scala.util.Random
 
+import org.apache.spark.SparkThrowable
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row, SaveMode}
 import org.apache.spark.sql.catalyst.analysis.UnresolvedAttribute
 import org.apache.spark.sql.catalyst.expressions.{Days, Hours, Literal}
@@ -30,6 +31,7 @@ import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
 
+import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.serde.{CometDateFormat, CometTruncDate, CometTruncTimestamp}
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
@@ -38,6 +40,44 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
   /** Timezones used to verify that TimestampNTZ operations are timezone-independent. */
   private val crossTimezones =
     Seq("UTC", "America/Los_Angeles", "Europe/London", "Asia/Tokyo")
+
+  private def deepestSparkThrowable(error: Throwable): SparkThrowable with Throwable =
+    causeChain(error)
+      .collect { case e: SparkThrowable with Throwable => e }
+      .lastOption
+      .getOrElse(
+        fail(s"No SparkThrowable in cause chain: ${causeChain(error).map(_.getClass.getName)}"))
+
+  test("next_day and make_date ANSI errors match Spark exceptions") {
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "true",
+      SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+        "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
+      Seq(
+        "SELECT next_day(date('2024-01-01'), 'NOT_A_DAY')",
+        "SELECT make_date(2024, 13, 1)",
+        // 999999999 instead overflows the epoch-day conversion as a plain ArithmeticException.
+        "SELECT make_date(1000000000, 1, 1)",
+        "SELECT make_date(1000000000, 13, 0)")
+        .foreach { query =>
+          val df = sql(query)
+          checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
+
+          val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
+          val sparkFailure = sparkError.getOrElse(fail(s"Spark did not fail for: $query"))
+          val cometFailure = cometError.getOrElse(fail(s"Comet did not fail for: $query"))
+          val expected = deepestSparkThrowable(sparkFailure)
+          val actual = deepestSparkThrowable(cometFailure)
+
+          assert(actual.getClass == expected.getClass)
+          assert(actual.getErrorClass == expected.getErrorClass)
+          assert(actual.getSqlState == expected.getSqlState)
+          assert(actual.getMessageParameters == expected.getMessageParameters)
+          assert(actual.getMessage == expected.getMessage)
+          assert(!causeChain(cometFailure).exists(_.isInstanceOf[CometNativeException]))
+        }
+    }
+  }
 
   test("trunc (TruncDate)") {
     val supportedFormats = CometTruncDate.supportedFormats
@@ -56,10 +96,11 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
       checkSparkAnswerAndOperator(s"SELECT c0, trunc(c0, '$format') from tbl order by c0, c1")
     }
     for (format <- unsupportedFormats) {
-      // Comet should fall back to Spark for unsupported or invalid formats
-      checkSparkAnswerAndFallbackReason(
-        s"SELECT c0, trunc(c0, '$format') from tbl order by c0, c1",
-        s"Format $format is not supported")
+      // Formats outside the native set have no native path, but TruncDate mixes in
+      // CodegenDispatchFallback, so they route through the JVM codegen dispatcher (Spark's own
+      // TruncDate.doGenCode inside the Comet pipeline) and stay native while matching Spark
+      // exactly (an invalid format yields null in both engines).
+      checkSparkAnswerAndOperator(s"SELECT c0, trunc(c0, '$format') from tbl order by c0, c1")
     }
 
     // Non-literal format strings are Incompatible on the native path, so Comet routes them
@@ -80,10 +121,11 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
         checkSparkAnswerAndOperator(s"SELECT c0, date_trunc('$format', c0) from tbl order by c0")
       }
       for (format <- unsupportedFormats) {
-        // Comet should fall back to Spark for unsupported or invalid formats
-        checkSparkAnswerAndFallbackReason(
-          s"SELECT c0, date_trunc('$format', c0) from tbl order by c0",
-          s"Format $format is not supported")
+        // Formats outside the native set have no native path, but TruncTimestamp mixes in
+        // CodegenDispatchFallback, so they route through the JVM codegen dispatcher (Spark's own
+        // TruncTimestamp.doGenCode inside the Comet pipeline) and stay native while matching
+        // Spark exactly (an invalid format yields null in both engines).
+        checkSparkAnswerAndOperator(s"SELECT c0, date_trunc('$format', c0) from tbl order by c0")
       }
       // Non-literal format strings are Incompatible on the native path, so Comet routes them
       // through the codegen dispatcher and still executes natively.
@@ -107,10 +149,12 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
             s"SELECT c0, date_trunc('$format', c0) from tbl order by c0")
         }
         for (format <- unsupportedFormats) {
-          // Comet should fall back to Spark for unsupported or invalid formats
-          checkSparkAnswerAndFallbackReason(
-            s"SELECT c0, date_trunc('$format', c0) from tbl order by c0",
-            s"Format $format is not supported")
+          // Formats outside the native set have no native path, but TruncTimestamp mixes in
+          // CodegenDispatchFallback, so they route through the JVM codegen dispatcher (Spark's
+          // own TruncTimestamp.doGenCode inside the Comet pipeline) and stay native while
+          // matching Spark exactly (an invalid format yields null in both engines).
+          checkSparkAnswerAndOperator(
+            s"SELECT c0, date_trunc('$format', c0) from tbl order by c0")
         }
         // Non-literal format strings are Incompatible on the native path, so Comet routes them
         // through the codegen dispatcher and still executes natively.
@@ -216,11 +260,9 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
   }
 
   test("hour/minute/second - timestamp_ntz input") {
-    // TimestampNTZ extracts time components directly from the stored local time,
-    // so the result should be the same regardless of session timezone.
-    // The native path is Incompatible for TimestampNTZ inputs
-    // (https://github.com/apache/datafusion-comet/issues/3180), so Comet routes these
-    // through the codegen dispatcher and stays native while matching Spark exactly.
+    // TimestampNTZ extracts time components directly from the stored local time, so the native
+    // path applies no timezone conversion and the result is the same regardless of session
+    // timezone (https://github.com/apache/datafusion-comet/issues/3180).
     val r = new Random(42)
     val ntzSchema = StructType(Seq(StructField("ts_ntz", DataTypes.TimestampNTZType, true)))
     val ntzDF = FuzzDataGenerator.generateDataFrame(r, spark, ntzSchema, 100, DataGenOptions())
@@ -229,41 +271,6 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
       withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz) {
         checkSparkAnswerAndOperator(
           "SELECT ts_ntz, hour(ts_ntz), minute(ts_ntz), second(ts_ntz) from ntz_tbl order by ts_ntz")
-      }
-    }
-  }
-
-  test("hour/minute/second - timestamp_ntz falls back when codegen dispatcher disabled") {
-    // The native path is Incompatible for TimestampNTZ inputs (#3180). With the dispatcher
-    // disabled there is no native path, so the expression falls back to Spark.
-    val r = new Random(42)
-    val ntzSchema = StructType(Seq(StructField("ts_ntz", DataTypes.TimestampNTZType, true)))
-    val ntzDF = FuzzDataGenerator.generateDataFrame(r, spark, ntzSchema, 100, DataGenOptions())
-    ntzDF.createOrReplaceTempView("ntz_tbl")
-    withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
-      checkSparkAnswerAndFallbackReason(
-        "SELECT ts_ntz, hour(ts_ntz) from ntz_tbl order by ts_ntz",
-        CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key)
-    }
-  }
-
-  test("hour/minute/second - timestamp_ntz takes native path when allowIncompatible is enabled") {
-    val r = new Random(42)
-    val ntzSchema = StructType(Seq(StructField("ts_ntz", DataTypes.TimestampNTZType, true)))
-    val ntzDF = FuzzDataGenerator.generateDataFrame(r, spark, ntzSchema, 100, DataGenOptions())
-    ntzDF.createOrReplaceTempView("ntz_tbl")
-    for (tz <- crossTimezones) {
-      withSQLConf(
-        SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz,
-        "spark.comet.expression.Hour.allowIncompatible" -> "true",
-        "spark.comet.expression.Minute.allowIncompatible" -> "true",
-        "spark.comet.expression.Second.allowIncompatible" -> "true") {
-        // Native results may diverge from Spark for TimestampNTZ inputs (#3180, the reason the
-        // codegen dispatcher is the default), so we only check that execution stays inside Comet.
-        // ORDER BY is omitted to keep the plan free of AQEShuffleRead.
-        val df = sql("SELECT ts_ntz, hour(ts_ntz), minute(ts_ntz), second(ts_ntz) from ntz_tbl")
-        df.collect()
-        checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
       }
     }
   }
@@ -361,9 +368,9 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
               "SELECT ts_ntz, CAST(ts_ntz AS DATE) FROM ntz_cross_tz ORDER BY ts_ntz")
             checkSparkAnswerAndOperator(
               "SELECT ts_ntz, unix_timestamp(ts_ntz) FROM ntz_cross_tz ORDER BY ts_ntz")
-            // hour/minute/second are Incompatible for NTZ (issue #3180) and date_trunc is
-            // Incompatible when the session timezone is non-UTC (issue #2649), so both ride
-            // the codegen dispatcher and stay native while matching Spark.
+            // hour/minute/second run natively for NTZ without timezone conversion (issue #3180),
+            // and date_trunc is Incompatible when the session timezone is non-UTC (issue #2649),
+            // so the latter rides the codegen dispatcher; both stay native while matching Spark.
             checkSparkAnswerAndOperator(
               "SELECT ts_ntz, hour(ts_ntz), minute(ts_ntz), second(ts_ntz) FROM ntz_cross_tz ORDER BY ts_ntz")
             checkSparkAnswerAndOperator(
@@ -398,6 +405,31 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
         "unix_timestamp does not support input type: StringType")
     }
   }
+
+  test("unix_timestamp - string input falls back even when a collated format opts into native") {
+    assume(isSpark40Plus, "string collation requires Spark 4.0+")
+    withTempView("string_tbl") {
+      val schema = StructType(Seq(StructField("ts_str", DataTypes.StringType, true)))
+      val data = Seq(Row("2020-01-01 00:00:00"), Row("2021-06-15 12:30:45"), Row(null))
+      spark
+        .createDataFrame(spark.sparkContext.parallelize(data), schema)
+        .createOrReplaceTempView("string_tbl")
+
+      // A collated format argument makes the expression `Incompatible`, which
+      // `allowIncompatible=true` waves straight through to `convert`. The input type has to be
+      // rejected ahead of that opt-in: the native kernel accepts only date/timestamp input, so
+      // serializing a string child raises an execution error instead of falling back to Spark.
+      withSQLConf(CometConf.getExprAllowIncompatConfigKey("UnixTimestamp") -> "true") {
+        checkSparkAnswerAndFallbackReason(
+          "SELECT ts_str, unix_timestamp(ts_str, 'yyyy-MM-dd HH:mm:ss' COLLATE UTF8_LCASE) " +
+            "from string_tbl order by ts_str",
+          "unix_timestamp does not support input type: StringType")
+      }
+    }
+  }
+
+  // Time-window grouping (PreciseTimestampConversion / KnownNullable) is covered by the SQL file
+  // test spark/src/test/resources/sql-tests/expressions/datetime/window.sql.
 
   private def createTimestampTestData(
       baseDate: Long = FuzzDataGenerator.defaultBaseDate): DataFrame = {

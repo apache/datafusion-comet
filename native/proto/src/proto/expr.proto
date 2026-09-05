@@ -47,7 +47,6 @@ message Expr {
     BinaryExpr and = 17;
     BinaryExpr or = 18;
     SortOrder sort_order = 19;
-    Substring substring = 20;
     Hour hour = 22;
     Minute minute = 23;
     Second second = 24;
@@ -91,7 +90,14 @@ message Expr {
     HoursTransform hours_transform = 68;
     ArraysZip arrays_zip = 69;
     JvmScalarUdf jvm_scalar_udf = 70;
+    PreciseTimestampConversion precise_timestamp_conversion = 71;
+    Shuffle shuffle = 72;
+    RandStr rand_str = 73;
+    Uuid uuid = 74;
   }
+
+  reserved 20;
+  reserved "substring";
 
   // Optional QueryContext for error reporting (contains SQL text and position)
   optional QueryContext query_context = 90;
@@ -103,7 +109,11 @@ message Expr {
 // QueryContext provides SQL query context for error messages.
 // Mirrors Spark's SQLQueryContext for rich error reporting.
 message QueryContext {
-  // Full SQL query text
+  // Full SQL query text. Left empty when `sql_text_idx` is set, which is the case for a plan
+  // serialized through `CometNativeExec.convertBlock`. Still used by the paths that serialize an
+  // operator directly without interning (e.g. `CometNativeWriteExec`, the native shuffle writer,
+  // the Iceberg scan's `convertBlock` override) and by the bare-`Expr` Parquet filter path, which
+  // has no root operator to carry a pool.
   string sql_text = 1;
 
   // Character offset where expression starts (0-based)
@@ -123,6 +133,11 @@ message QueryContext {
 
   // Column position within the line (0-based)
   int32 start_position = 7;
+
+  // Index into the root `Operator.sql_text_pool` holding this context's SQL text. Set instead of
+  // `sql_text` so that a query text shared by many expressions is serialized once per plan rather
+  // than once per expression.
+  optional int32 sql_text_idx = 8;
 }
 
 message AggExpr {
@@ -144,6 +159,10 @@ message AggExpr {
     BloomFilterAgg bloomFilterAgg = 16;
     CollectSet collectSet = 17;
     Percentile percentile = 18;
+    ApproxPercentile approxPercentile = 19;
+    HllPlusPlus hllpp = 20;
+    CollectList collectList = 21;
+    Regr regr = 22;
   }
 
   // Optional filter expression for SQL FILTER (WHERE ...) clause.
@@ -245,11 +264,57 @@ message Correlation {
   DataType datatype = 4;
 }
 
+// Simple linear regression aggregates (regr_slope, regr_intercept, regr_r2,
+// regr_sxx, regr_syy, regr_sxy). child1 is the dependent variable (y) and
+// child2 is the independent variable (x).
+message Regr {
+  enum RegrType {
+    SLOPE = 0;
+    INTERCEPT = 1;
+    R2 = 2;
+    SXX = 3;
+    SYY = 4;
+    SXY = 5;
+  }
+  Expr child1 = 1;
+  Expr child2 = 2;
+  RegrType regr_type = 3;
+  DataType datatype = 4;
+  // Only consulted for SLOPE and INTERCEPT. When true (Spark 3.5+), VariancePop(x)
+  // is computed only over rows where both y and x are non-null. When false
+  // (Spark 3.4), VariancePop(x) includes every row where x is non-null even if y
+  // is null, matching the pre-fix Spark 3.4 semantics.
+  bool filter_var_by_pair_nulls = 5;
+  // Only consulted for R2. Spark swapped the degenerate-case handling of
+  // regr_r2. When true, a constant dependent variable (m2(y) = 0) returns 1.0
+  // and a constant independent variable (m2(x) = 0) returns null. When false
+  // those two cases are reversed. The swap is present in the Spark versions
+  // Comet builds against for 3.5 and later (3.5.9, 4.0.3+, 4.1, 4.2) but not
+  // in 3.4.
+  bool r2_constant_dependent_is_perfect_fit = 6;
+}
+
 message Percentile {
   Expr child = 1;
   // Single percentile in [0.0, 1.0] as a literal double expression.
   Expr percentage = 2;
   DataType datatype = 3;
+}
+
+message ApproxPercentile {
+  // Child value expression, already cast to Float64 by the serde.
+  Expr child = 1;
+  // The percentiles and accuracy are carried as resolved scalars rather than
+  // child Exprs (unlike Percentile/BloomFilterAgg) because they are needed at
+  // UDAF construction time to drive return_type and accumulator shape.
+  // One or more percentiles in [0.0, 1.0].
+  repeated double percentiles = 2;
+  // Spark's accuracy argument; relative_error = 1.0 / accuracy.
+  int64 accuracy = 3;
+  // True when the percentile argument was an array (output is a list).
+  bool return_array = 4;
+  // Spark's input/output type, used to cast results back from Float64.
+  DataType input_type = 5;
 }
 
 message BloomFilterAgg {
@@ -275,6 +340,18 @@ message CollectSet {
   DataType datatype = 2;
 }
 
+message CollectList {
+  Expr child = 1;
+  DataType datatype = 2;
+}
+
+// approx_count_distinct (Spark's HyperLogLogPlusPlus)
+message HllPlusPlus {
+  Expr child = 1;
+  // Number of addressing bits, computed from relativeSD to match Spark.
+  int32 precision = 2;
+}
+
 enum EvalMode {
   LEGACY = 0;
   TRY = 1;
@@ -286,6 +363,12 @@ message MathExpr {
   Expr right = 2;
   DataType return_type = 4;
   EvalMode eval_mode = 5;
+  // Only set for integral_divide: mirrors Spark's IntegralDivide.checkDivideOverflow
+  // (LONG operands with failOnError). When this is set and eval_mode is ANSI, a quotient
+  // that does not fit in a LONG (Long.MinValue div -1) throws ARITHMETIC_OVERFLOW
+  // instead of wrapping around. Never set for DECIMAL operands, which wrap around on
+  // the cast to LONG even in ANSI mode, matching Spark.
+  bool check_divide_overflow = 6;
 }
 
 message Cast {
@@ -297,6 +380,14 @@ message Cast {
   // True when running against Spark 4.0+. Controls version-specific cast behaviour
   // such as the handling of leading whitespace before T-prefixed time-only strings.
   bool is_spark4_plus = 6;
+}
+
+// Spark's internal PreciseTimestampConversion, used by time-window grouping to convert
+// between TimestampType/TimestampNTZType and LongType without losing microsecond precision.
+// This is a pure reinterpret: the underlying value is unchanged, only the type is changed.
+message PreciseTimestampConversion {
+  Expr child = 1;
+  DataType datatype = 2;
 }
 
 message BinaryExpr {
@@ -326,12 +417,6 @@ message SortOrder {
   Expr child = 1;
   SortDirection direction = 2;
   NullOrdering null_ordering = 3;
-}
-
-message Substring {
-  Expr child = 1;
-  int32 start = 2;
-  int32 len = 3;
 }
 
 message ToJson {
@@ -515,6 +600,32 @@ message ArrayJoin {
 
 message Rand {
   int64 seed = 1;
+}
+
+// Spark's Shuffle returns a random permutation of the given array. It is
+// non-deterministic: the resolved random seed is combined with the partition
+// index and drives a MersenneTwister-based inside-out Fisher-Yates shuffle,
+// matching org.apache.spark.sql.catalyst.util.RandomIndicesGenerator.
+message Shuffle {
+  Expr child = 1;
+  int64 seed = 2;
+}
+
+// Spark's Uuid returns a random RFC 4122 version 4 UUID string. It is
+// non-deterministic: the resolved random seed is combined with the partition
+// index and seeds a Commons Math3 MersenneTwister, matching
+// org.apache.spark.sql.catalyst.util.RandomUUIDGenerator.
+message Uuid {
+  int64 seed = 1;
+}
+
+// Spark's RandStr (Spark 4.0+) returns a random alphanumeric string of the given
+// length. It is non-deterministic: the resolved random seed is combined with the
+// partition index and seeds an XORShiftRandom, matching
+// org.apache.spark.sql.catalyst.expressions.ExpressionImplUtils.randStr.
+message RandStr {
+  int32 length = 1;
+  int64 seed = 2;
 }
 
 // Spark's ArraysZip takes children: Seq[Expression] and names: Seq[Expression]

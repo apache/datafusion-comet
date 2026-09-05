@@ -24,6 +24,7 @@ import java.util.Locale
 
 import scala.jdk.CollectionConverters._
 
+import org.apache.parquet.hadoop.ParquetOutputFormat
 import org.apache.spark.SparkException
 import org.apache.spark.sql.comet.{CometNativeExec, CometNativeWriteExec}
 import org.apache.spark.sql.execution.command.DataWritingCommandExec
@@ -36,7 +37,6 @@ import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.serde.{CometOperatorSerde, Incompatible, OperatorOuterClass, SupportLevel, Unsupported}
 import org.apache.comet.serde.OperatorOuterClass.Operator
-import org.apache.comet.serde.QueryPlanSerde.serializeDataType
 
 /**
  * CometOperatorSerde implementation for DataWritingCommandExec that converts Parquet write
@@ -44,7 +44,8 @@ import org.apache.comet.serde.QueryPlanSerde.serializeDataType
  */
 object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec] {
 
-  private val supportedCompressionCodes = Set("none", "snappy", "lz4", "zstd")
+  private val supportedCompressionCodes =
+    Set("none", "uncompressed", "snappy", "lz4", "zstd", "gzip")
 
   override def enabledConfig: Option[ConfigEntry[Boolean]] =
     Some(CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED)
@@ -93,27 +94,12 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
     try {
       val cmd = op.cmd.asInstanceOf[InsertIntoHadoopFsRelationCommand]
 
-      val scanOp = OperatorOuterClass.Scan
-        .newBuilder()
-        .setSource(cmd.query.nodeName)
-
-      // Add fields from the query output schema
-      val scanTypes = cmd.query.output.flatMap { attr =>
-        serializeDataType(attr.dataType)
+      val scanOperator = NativeWriteUtils.buildFfiScan(cmd.query, op.id) match {
+        case Some(scan) => scan
+        case None =>
+          withFallbackReason(op, "Cannot serialize data types for native write")
+          return None
       }
-
-      if (scanTypes.length != cmd.query.output.length) {
-        withFallbackReason(op, "Cannot serialize data types for native write")
-        return None
-      }
-
-      scanTypes.foreach(scanOp.addFields)
-
-      val scanOperator = Operator
-        .newBuilder()
-        .setPlanId(op.id)
-        .setScan(scanOp.build())
-        .build()
 
       val outputPath = cmd.outputPath.toString
 
@@ -121,7 +107,8 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
         case "snappy" => OperatorOuterClass.CompressionCodec.Snappy
         case "lz4" => OperatorOuterClass.CompressionCodec.Lz4
         case "zstd" => OperatorOuterClass.CompressionCodec.Zstd
-        case "none" => OperatorOuterClass.CompressionCodec.None
+        case "gzip" => OperatorOuterClass.CompressionCodec.Gzip
+        case "none" | "uncompressed" => OperatorOuterClass.CompressionCodec.None
         case other =>
           withFallbackReason(op, s"Unsupported compression codec: $other")
           return None
@@ -132,6 +119,10 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
         .setOutputPath(outputPath)
         .setCompression(codec)
         .addAllColumnNames(cmd.query.output.map(_.name).asJava)
+        .addAllOutputSchema(schema2Proto(
+          cmd.query.schema.fields.toIndexedSeq,
+          Some(
+            op.session.sessionState.conf.getConf(SQLConf.PARQUET_FIELD_ID_WRITE_ENABLED))).asJava)
       // Note: work_dir, job_id, and task_attempt_id will be set at execution time
       // in CometNativeWriteExec, as they depend on the Spark task context
 
@@ -200,13 +191,17 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
           throw new SparkException(s"Could not instantiate FileCommitProtocol: ${e.getMessage}")
       }
 
-    CometNativeWriteExec(nativeOp, childPlan, outputPath, committer, jobId)
+    CometNativeWriteExec(nativeOp, childPlan, outputPath, cmd.mode, committer, jobId)
   }
 
   private def parseCompressionCodec(cmd: InsertIntoHadoopFsRelationCommand) = {
+    // `compression`, `parquet.compression` (i.e., ParquetOutputFormat.COMPRESSION), and
+    // `spark.sql.parquet.compression.codec` are in order of precedence from highest to
+    // lowest, matching Spark's own ParquetOptions.compressionCodecClassName.
     cmd.options
+      .get("compression")
+      .orElse(cmd.options.get(ParquetOutputFormat.COMPRESSION))
       .getOrElse(
-        "compression",
         SQLConf.get.getConfString(
           SQLConf.PARQUET_COMPRESSION.key,
           SQLConf.PARQUET_COMPRESSION.defaultValueString))

@@ -19,6 +19,9 @@
 
 package org.apache.spark.sql.comet
 
+import java.util.IdentityHashMap
+import java.util.concurrent.ConcurrentHashMap
+
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.{SparkContext, TaskContext}
@@ -62,6 +65,46 @@ case class CometMetricNode(metrics: Map[String, SQLMetric], children: Seq[CometM
   }
 
   /**
+   * Sums `metricName` across this metric tree. A shared accumulator reachable through multiple
+   * paths in the tree contributes only once, and unset size metrics (initialized to -1) count as
+   * zero.
+   */
+  private[comet] def sumMetricValues(metricName: String): Long =
+    sumMetricValues(metricName, new IdentityHashMap[SQLMetric, java.lang.Boolean]())
+
+  private def sumMetricValues(
+      metricName: String,
+      seenMetrics: IdentityHashMap[SQLMetric, java.lang.Boolean]): Long = {
+    def sumFromNode(metricNode: CometMetricNode): Long = {
+      val nodeValue = metricNode.metrics.get(metricName).fold(0L) { metric =>
+        if (seenMetrics.put(metric, java.lang.Boolean.TRUE) == null) {
+          math.max(metric.value, 0L)
+        } else {
+          0L
+        }
+      }
+      nodeValue + metricNode.children.iterator.map(sumFromNode).sum
+    }
+
+    sumFromNode(this)
+  }
+
+  /**
+   * Range sampling executes aggregate inputs again for the actual shuffle, so exclude aggregate
+   * metrics during sampling to avoid counting their spills and memory usage twice.
+   */
+  private[comet] def withoutAggregateMetrics(plan: SparkPlan): CometMetricNode =
+    CometMetricNode(
+      if (plan.isInstanceOf[CometHashAggregateExec]) {
+        metrics -- CometMetricNode.aggregateMetricNames
+      } else {
+        metrics
+      },
+      children.zip(plan.children).map { case (child, childPlan) =>
+        child.withoutAggregateMetrics(childPlan)
+      })
+
+  /**
    * Reports aggregated scan input metrics (bytesRead, recordsRead) to Spark's task metrics.
    * Aggregates across all scan leaf nodes to handle plans with multiple scans (e.g., joins). Must
    * be called in a TaskCompletionListener after the iterator is fully consumed.
@@ -100,6 +143,34 @@ case class CometMetricNode(metrics: Map[String, SQLMetric], children: Seq[CometM
       }
       metrics.get("rows_written").foreach { m =>
         ctx.taskMetrics().outputMetrics.setRecordsWritten(m.value)
+      }
+    }
+  }
+
+  /**
+   * Reports this node's and its descendants' native spill metrics to Spark's task metrics,
+   * preserving the distinction between on-disk bytes and uncompressed in-memory bytes.
+   *
+   * Must be registered on the task thread before [[org.apache.comet.CometExecIterator]] so its
+   * completion listener publishes final SQL metrics before this listener runs, including when the
+   * attempt fails.
+   *
+   * A task may register several trees that share accumulators: an outer tree spans nested native
+   * blocks behind union/coalesce input boundaries, and a coalesced partition registers the same
+   * tree once per parent partition. All of a task's listeners claim accumulators from a shared
+   * per-task registry, so each accumulator is counted once while disjoint trees still all report.
+   */
+  def reportSpillMetrics(ctx: TaskContext): Unit = {
+    val seenMetrics = CometMetricNode.taskSeenSpillMetrics(ctx)
+    ctx.addTaskCompletionListener[Unit] { _ =>
+      val diskBytesSpilled = sumMetricValues("spilled_bytes", seenMetrics.disk)
+      if (diskBytesSpilled > 0L) {
+        ctx.taskMetrics().incDiskBytesSpilled(diskBytesSpilled)
+      }
+
+      val memoryBytesSpilled = sumMetricValues("memory_spilled_bytes", seenMetrics.memory)
+      if (memoryBytesSpilled > 0L) {
+        ctx.taskMetrics().incMemoryBytesSpilled(memoryBytesSpilled)
       }
     }
   }
@@ -151,6 +222,33 @@ case class CometMetricNode(metrics: Map[String, SQLMetric], children: Seq[CometM
 
 object CometMetricNode {
 
+  private val aggregateMetricNames =
+    Set("spill_count", "spilled_bytes", "spilled_rows", "peak_mem_used")
+
+  private case class SeenSpillMetrics(
+      disk: IdentityHashMap[SQLMetric, java.lang.Boolean],
+      memory: IdentityHashMap[SQLMetric, java.lang.Boolean])
+
+  // Per running task attempt: the spill accumulators already claimed by a reporting listener,
+  // one identity set per metric name (see reportSpillMetrics). The first registration installs
+  // a cleanup listener ahead of every reporting listener, so it runs last (reverse registration
+  // order) and removes the entry.
+  private val seenSpillMetricsByTask = new ConcurrentHashMap[Long, SeenSpillMetrics]()
+
+  private def taskSeenSpillMetrics(ctx: TaskContext): SeenSpillMetrics = {
+    val attemptId = ctx.taskAttemptId()
+    val existing = seenSpillMetricsByTask.get(attemptId)
+    if (existing != null) {
+      existing
+    } else {
+      // The task thread is the only registrant for its attempt id, so there is no put race.
+      val created = SeenSpillMetrics(new IdentityHashMap(), new IdentityHashMap())
+      seenSpillMetricsByTask.put(attemptId, created)
+      ctx.addTaskCompletionListener[Unit](_ => seenSpillMetricsByTask.remove(attemptId))
+      created
+    }
+  }
+
   /**
    * The baseline SQL metrics for DataFusion `BaselineMetrics`.
    */
@@ -160,6 +258,14 @@ object CometMetricNode {
       "elapsed_compute" -> SQLMetrics.createNanoTimingMetric(
         sc,
         "total time (in ms) spent in this operator"))
+  }
+
+  def aggregateMetrics(sc: SparkContext): Map[String, SQLMetric] = {
+    Map(
+      "spill_count" -> SQLMetrics.createMetric(sc, "number of spills"),
+      "spilled_bytes" -> SQLMetrics.createSizeMetric(sc, "total spilled bytes"),
+      "spilled_rows" -> SQLMetrics.createMetric(sc, "number of spilled rows"),
+      "peak_mem_used" -> SQLMetrics.createSizeMetric(sc, "peak native aggregate memory"))
   }
 
   /**
@@ -345,19 +451,39 @@ object CometMetricNode {
     Map(
       "elapsed_compute" -> SQLMetrics.createNanoTimingMetric(sc, "native shuffle writer time"),
       "repart_time" -> SQLMetrics.createNanoTimingMetric(sc, "repartition time"),
+      "interleave_time" -> SQLMetrics.createNanoTimingMetric(sc, "partition interleaving time"),
       "encode_time" -> SQLMetrics.createNanoTimingMetric(sc, "encoding and compression time"),
       "decode_time" -> SQLMetrics.createNanoTimingMetric(sc, "decoding and decompression time"),
       "spill_count" -> SQLMetrics.createMetric(sc, "number of spills"),
-      "spilled_bytes" -> SQLMetrics.createSizeMetric(sc, "spilled bytes"),
+      "spilled_bytes" -> SQLMetrics.createSizeMetric(sc, "disk spilled bytes"),
+      "memory_spilled_bytes" -> SQLMetrics.createSizeMetric(sc, "memory spilled bytes"),
       "input_batches" -> SQLMetrics.createMetric(sc, "number of input batches"))
   }
 
   /**
    * Creates a [[CometMetricNode]] from a [[CometPlan]].
+   *
+   * The `metrics` access on foreign (non-Comet) nodes is guarded against the one way it can fail:
+   * forcing an unmaterialised `metrics` lazy val on a node whose `@transient session` is `null`
+   * NPEs inside `SQLMetrics.createMetric(sparkContext, ...)`. That happens for a JVM-side exec
+   * constructed off the planning thread (e.g. `AQEShuffleReadExec` built by AQE's
+   * stage-finalisation rules when `SparkSession.getActiveSession` was `None`). It must NOT be
+   * pre-checked via `session`: this method also runs inside task closures on executors, where
+   * `session` is always `null` after deserialisation but `metrics` was materialised on the driver
+   * and shipped with the plan. Comet operators are exempt from the guard -- they reach here on
+   * the driver with a live session or on executors with `metrics` already materialised, so a
+   * genuine NPE inside a Comet operator's metric construction still fails loudly instead of
+   * silently reporting nothing. A foreign node whose metrics are unreachable contributes an empty
+   * map, but its subtree is still walked so every other operator keeps reporting.
    */
   def fromCometPlan(cometPlan: SparkPlan): CometMetricNode = {
-    val children = cometPlan.children.map(fromCometPlan)
-    CometMetricNode(cometPlan.metrics, children)
+    val nodeMetrics = cometPlan match {
+      case _: CometPlan => cometPlan.metrics
+      case _ =>
+        try cometPlan.metrics
+        catch { case _: NullPointerException => Map.empty[String, SQLMetric] }
+    }
+    CometMetricNode(nodeMetrics, cometPlan.children.map(fromCometPlan))
   }
 
   /**

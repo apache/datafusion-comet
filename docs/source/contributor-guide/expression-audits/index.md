@@ -21,7 +21,13 @@
 
 This section records per-version audit notes for Spark expressions that have been audited for Comet compatibility. These are findings from auditing the Spark implementation across versions (3.4.3, 3.5.8, 4.0.1), not a statement of support status.
 
-For the authoritative list of which expressions Comet supports, see the user guide [Spark Expression Support](../../user-guide/latest/expressions.md). To audit an expression, use the `audit-comet-expression` skill, which appends its findings to the relevant category page below.
+Three kinds of audit are recorded per expression:
+
+- **Correctness audits** compare the Spark implementation across versions and note divergences and test-coverage gaps. Use the `audit-comet-expression` skill, which appends its findings to the relevant category page below.
+- **Performance audits** record when a native expression has been performance-tuned, so contributors can see at a glance which expressions have already been optimized. Recorded as a dated `Performance (tuned ...)` line under the expression, they name the technique, the measured speedup, the linking PR, and the benchmark file. Use the `optimize-comet-expression` skill (see [Optimizing Scalar Expressions](../optimizing_expressions.md)), which appends this line after a change is benchmarked and merged.
+- **Native candidate assessments** record whether an expression that currently runs through the JVM codegen dispatcher is worth implementing natively, so candidates that have already been ruled out are not re-assessed. Recorded as a dated `Native candidate (assessed ...)` line under the expression, they give a verdict (`Recommended`, `Deferred`, or `Disqualified`), a compatibility rating, a native-upside rating, the specific blocker for anything not recommended, and the issue filed for a recommendation. Use the `suggest-native-expression` skill. A re-assessment adds a new dated line rather than editing the old one, so the history stays visible.
+
+For the authoritative list of which expressions Comet supports, see the user guide [Spark Expression Support](../../user-guide/latest/expressions.md).
 
 ```{toctree}
 :maxdepth: 1

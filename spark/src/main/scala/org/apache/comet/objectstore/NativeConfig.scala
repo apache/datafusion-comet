@@ -38,10 +38,9 @@ object NativeConfig {
     // Azure Blob Storage configurations (can use both prefixes)
     "wasb" -> Seq("fs.azure.", "fs.wasb."),
     "wasbs" -> Seq("fs.azure.", "fs.wasb."),
-    // Azure Data Lake Storage Gen2 configurations
-    "abfs" -> Seq("fs.abfs."),
-    // Azure Data Lake Storage Gen2 secure configurations (can use both prefixes)
-    "abfss" -> Seq("fs.abfss.", "fs.abfs."))
+    // Azure Data Lake Storage Gen2 (ABFS) configurations. Hadoop ABFS authentication keys
+    "abfs" -> Seq("fs.azure.", "fs.abfs."),
+    "abfss" -> Seq("fs.azure.", "fs.abfss.", "fs.abfs."))
 
   /**
    * Extract object store configurations from Hadoop configuration for native DataFusion usage.
@@ -76,13 +75,38 @@ object NativeConfig {
     // Extract all configurations that match the object store prefixes
     hadoopConf.iterator().asScala.foreach { entry =>
       val key = entry.getKey
-      val value = entry.getValue
       // Check if key starts with any of the prefixes for this scheme
       if (prefixes.get.exists(prefix => key.startsWith(prefix))) {
-        options(key) = value
+        options(key) = substitutedValue(hadoopConf, key, entry.getValue)
       }
     }
 
     options.toMap
+  }
+
+  /**
+   * The value Hadoop's own consumers observe for `key`. `Configuration#get` expands any `${...}`
+   * variable reference in the stored value against other conf entries and system properties,
+   * while `Configuration.Entry#getValue` (what `iterator()` surfaces) is the raw, unexpanded
+   * literal. Forwarding the raw literal here would diverge from every Hadoop-side consumer
+   * whenever a value contains such a reference. Substitution is bounded (Hadoop caps recursion at
+   * `MAX_SUBST`, currently 20 passes) and purely in-memory, so resolving it here is cheap and has
+   * no side effects.
+   *
+   * Falls back to `rawValue` when `get` returns `null` (deprecated-key aliasing can do this even
+   * though `key` came from the conf's own iterator) or when it raises `IllegalStateException` (a
+   * substitution cycle that never converges) -- either way, forwarding the raw literal preserves
+   * the extraction's prior behavior for that entry rather than aborting the whole object store's
+   * option extraction.
+   */
+  private def substitutedValue(
+      hadoopConf: Configuration,
+      key: String,
+      rawValue: String): String = {
+    try {
+      Option(hadoopConf.get(key)).getOrElse(rawValue)
+    } catch {
+      case _: IllegalStateException => rawValue
+    }
   }
 }

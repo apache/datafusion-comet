@@ -38,24 +38,19 @@ use datafusion::physical_plan::{
 };
 use futures::{Stream, StreamExt, TryStreamExt};
 use iceberg::arrow::ScanMetrics;
-use iceberg::io::{FileIO, FileIOBuilder, StorageFactory};
+use iceberg::io::FileIO;
 use iceberg::Runtime as IcebergRuntime;
 use iceberg::{Error, ErrorKind};
-use iceberg_storage_opendal::CustomAwsCredentialLoader;
-use iceberg_storage_opendal::OpenDalStorageFactory;
 
-use crate::cloud::s3::credential_bridge::{AccessMode, CometS3CredentialBridge};
+use crate::cloud::s3::credential_bridge::AccessMode;
 use crate::execution::jni_api::get_runtime;
+use crate::execution::operators::iceberg_common::load_file_io;
 use crate::execution::operators::ExecutionError;
 use crate::parquet::parquet_support::SparkParquetOptions;
 use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
 use datafusion_comet_spark_expr::EvalMode;
 use datafusion_physical_expr_adapter::{PhysicalExprAdapter, PhysicalExprAdapterFactory};
 use iceberg::scan::FileScanTask;
-
-/// Activation key for the `CometS3CredentialProvider` SPI on the Iceberg path, read from a Spark
-/// catalog's `s3.*` property bag.
-const ICEBERG_PROVIDER_CLASS_PROPERTY: &str = "s3.comet.credential.provider.class";
 
 /// A valid Parquet file ends with at least an 8-byte footer (4-byte metadata length + "PAR1").
 /// A delete file that stats below this cannot be read, so we reject it in the fill step. opendal
@@ -172,10 +167,11 @@ impl IcebergScanExec {
         context: Arc<TaskContext>,
     ) -> DFResult<SendableRecordBatchStream> {
         let output_schema = Arc::clone(&self.output_schema);
-        let file_io = Self::load_file_io(
+        let file_io = load_file_io(
             &self.catalog_properties,
             &self.metadata_location,
             &self.catalog_name,
+            AccessMode::Read,
         )?;
         let batch_size = context.session_config().batch_size();
 
@@ -195,16 +191,24 @@ impl IcebergScanExec {
         .try_flatten()
         .boxed();
 
-        // iceberg-rust's ArrowReader spawns IO/CPU work onto an iceberg::Runtime. execute() runs
-        // on the JVM-called thread outside any tokio context, so Runtime::current() would panic;
-        // build it from Comet's global runtime, which is where the stream is later polled.
-        let reader =
-            iceberg::arrow::ArrowReaderBuilder::new(file_io, IcebergRuntime::new(get_runtime()))
-                .with_batch_size(batch_size)
-                .with_data_file_concurrency_limit(self.data_file_concurrency_limit)
-                .with_row_selection_enabled(true)
-                .with_metadata_size_hint(512 * 1024) // Same as DataFusion's default
-                .build();
+        // iceberg-rust's ArrowReader spawns IO/CPU work onto an iceberg::Runtime, which only needs
+        // a tokio handle. execute() runs on the JVM-called thread outside any tokio context, so we
+        // enter Comet's global runtime to capture its handle (this is where the stream is later
+        // polled). Capturing the handle rather than borrowing the runtime keeps it tear-downable
+        // via release_runtime.
+        let iceberg_runtime = {
+            let handle = get_runtime();
+            let _guard = handle.enter();
+            IcebergRuntime::try_current().map_err(|e| {
+                DataFusionError::Execution(format!("Failed to build Iceberg runtime: {e}"))
+            })?
+        };
+        let reader = iceberg::arrow::ArrowReaderBuilder::new(file_io, iceberg_runtime)
+            .with_batch_size(batch_size)
+            .with_data_file_concurrency_limit(self.data_file_concurrency_limit)
+            .with_row_selection_enabled(true)
+            .with_metadata_size_hint(512 * 1024) // Same as DataFusion's default
+            .build();
 
         // Pass all tasks to iceberg-rust at once to utilize its flatten_unordered
         // parallelization, avoiding overhead of single-task streams
@@ -233,33 +237,6 @@ impl IcebergScanExec {
         };
 
         Ok(Box::pin(wrapped_stream))
-    }
-
-    fn storage_factory_for(
-        path: &str,
-        catalog_properties: &HashMap<String, String>,
-        catalog_name: &str,
-    ) -> Result<Arc<dyn StorageFactory>, DataFusionError> {
-        let scheme = if path.contains("://") {
-            path.split("://").next().unwrap_or("file")
-        } else {
-            "file"
-        };
-        match scheme {
-            "file" => Ok(Arc::new(OpenDalStorageFactory::Fs)),
-            "s3" | "s3a" => {
-                let customized_credential_load =
-                    build_s3_credential_loader(path, catalog_properties, catalog_name);
-                Ok(Arc::new(OpenDalStorageFactory::S3 {
-                    customized_credential_load,
-                }))
-            }
-            "gs" => Ok(Arc::new(OpenDalStorageFactory::Gcs)),
-            "oss" => Ok(Arc::new(OpenDalStorageFactory::Oss)),
-            _ => Err(DataFusionError::Execution(format!(
-                "Unsupported storage scheme: {scheme}"
-            ))),
-        }
     }
 
     /// Stats each unique delete file to fill its `file_size_in_bytes` (0 on arrival, since it is
@@ -340,69 +317,6 @@ impl IcebergScanExec {
             }
         }
         Ok(())
-    }
-
-    fn load_file_io(
-        catalog_properties: &HashMap<String, String>,
-        metadata_location: &str,
-        catalog_name: &str,
-    ) -> Result<FileIO, DataFusionError> {
-        let factory =
-            Self::storage_factory_for(metadata_location, catalog_properties, catalog_name)?;
-        let mut file_io_builder = FileIOBuilder::new(factory);
-
-        // Narrow to storage-prefix keys before forwarding to iceberg-rust's FileIO. The full
-        // unfiltered bag (catalog URI, OAuth tokens, credentials.uri, tenant-id, etc.) is kept
-        // upstream so CometS3CredentialBridge can read whatever the vendor needs.
-        for (key, value) in catalog_properties {
-            if STORAGE_PROPERTY_PREFIXES.iter().any(|p| key.starts_with(p)) {
-                file_io_builder = file_io_builder.with_prop(key, value);
-            }
-        }
-
-        Ok(file_io_builder.build())
-    }
-}
-
-const STORAGE_PROPERTY_PREFIXES: &[&str] = &["s3.", "gcs.", "adls.", "client."];
-
-/// Wires the configured Comet credential provider into opendal's S3 service, or returns `None`
-/// so opendal falls back to its default credential chain.
-fn build_s3_credential_loader(
-    metadata_location: &str,
-    catalog_properties: &HashMap<String, String>,
-    catalog_name: &str,
-) -> Option<CustomAwsCredentialLoader> {
-    let url = url::Url::parse(metadata_location).ok()?;
-    let bucket = url.host_str()?;
-    let provider_class = catalog_properties
-        .get(ICEBERG_PROVIDER_CLASS_PROPERTY)
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())?;
-    // Fall back to the bucket when the table has no catalog identity (e.g. HadoopTables loaded by
-    // raw path).
-    let dispatch_key: &str = if catalog_name.is_empty() {
-        bucket
-    } else {
-        catalog_name
-    };
-    let bridge = CometS3CredentialBridge::new(
-        provider_class,
-        dispatch_key,
-        bucket,
-        url.path(),
-        AccessMode::Read,
-        catalog_properties,
-    );
-    match bridge {
-        Ok(b) => Some(CustomAwsCredentialLoader::new(b)),
-        Err(e) => {
-            log::warn!(
-                "Failed to initialize CometS3CredentialBridge for {provider_class}: {e}; \
-                 falling back to default opendal credential chain"
-            );
-            None
-        }
     }
 }
 
@@ -625,6 +539,7 @@ mod tests {
     use std::io::Write;
     use std::sync::Arc;
 
+    use iceberg::encryption::StandardKeyMetadata;
     use iceberg::io::{FileIO, FileIOBuilder};
     use iceberg::scan::{FileScanTask, FileScanTaskDeleteFile};
     use iceberg::spec::{DataContentType, DataFileFormat, Schema};
@@ -651,7 +566,9 @@ mod tests {
             partition: None,
             partition_spec: None,
             name_mapping: None,
+            unified_partition_type: None,
             case_sensitive: false,
+            key_metadata: None,
         }
     }
 
@@ -662,6 +579,7 @@ mod tests {
             file_size_in_bytes: 0,
             partition_spec_id: 0,
             equality_ids: None,
+            key_metadata: None,
         }
     }
 
@@ -727,5 +645,61 @@ mod tests {
         IcebergScanExec::fill_delete_file_sizes(&mut tasks, &fs_file_io(), 4)
             .await
             .unwrap();
+    }
+
+    fn from_hex(s: &str) -> Vec<u8> {
+        assert!(s.len().is_multiple_of(2), "odd-length hex string");
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).expect("invalid hex"))
+            .collect()
+    }
+
+    // iceberg-rust encodes and decodes its own StandardKeyMetadata identically. Confirms the API
+    // is present after the rev bump and the [version byte][Avro datum] format round-trips.
+    #[test]
+    fn standard_key_metadata_roundtrips() {
+        let key: Vec<u8> = (0u8..16).collect();
+        let aad: &[u8] = b"comet-aad-prefix";
+        let km = StandardKeyMetadata::try_new(&key)
+            .unwrap()
+            .with_aad_prefix(aad);
+
+        let encoded = km.encode().unwrap();
+        assert_eq!(encoded[0], 0x01, "expected StandardKeyMetadata V1 marker");
+
+        let decoded = StandardKeyMetadata::decode(&encoded).unwrap();
+        assert_eq!(decoded.encryption_key().as_bytes(), key.as_slice());
+        assert_eq!(decoded.aad_prefix(), Some(aad));
+    }
+
+    // Cross-language gate for the encrypted-read passthrough plan: iceberg-rust must decode the
+    // exact StandardKeyMetadata bytes that Iceberg-Java writes into a data file's key_metadata,
+    // because Comet forwards those bytes verbatim (no re-encoding, no KMS) into
+    // FileScanTask::key_metadata. This fixture is a real Iceberg-Java blob produced by
+    // StandardEncryptionManager. To regenerate (e.g. after a wire-format change), print the bytes
+    // from CometIcebergEncryptionSuite's plaintext-DEK test and paste them here.
+    const JAVA_KEY_METADATA_HEX: &str =
+        "012084f49fba77f8ff1da0c115d1e46563cc0220f1d31d62b68808b469eb99fe9c57096000";
+    const JAVA_DEK_HEX: &str = "84f49fba77f8ff1da0c115d1e46563cc";
+
+    #[test]
+    fn decodes_java_produced_key_metadata() {
+        let blob = from_hex(JAVA_KEY_METADATA_HEX);
+        let expected_dek = from_hex(JAVA_DEK_HEX);
+
+        let decoded = StandardKeyMetadata::decode(&blob)
+            .expect("iceberg-rust failed to decode a Java-produced StandardKeyMetadata blob");
+        assert_eq!(
+            decoded.encryption_key().as_bytes(),
+            expected_dek.as_slice(),
+            "DEK recovered by Rust differs from the Java plaintext DEK"
+        );
+        // The Java blob carries a 16-byte AAD prefix; confirm the optional-field union decodes too.
+        assert_eq!(
+            decoded.aad_prefix().map(|a| a.len()),
+            Some(16),
+            "expected a 16-byte AAD prefix from the Java blob"
+        );
     }
 }

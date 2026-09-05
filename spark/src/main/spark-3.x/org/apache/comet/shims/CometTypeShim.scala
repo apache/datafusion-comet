@@ -30,8 +30,20 @@ trait CometTypeShim {
   @nowarn // Spark 4 feature; stubbed to false in Spark 3.x for compatibility.
   def hasNonDefaultStringCollation(dt: DataType): Boolean = false
 
+  @nowarn // Spark 4 feature; collation does not exist in Spark 3.x.
+  def hasCollationSupport: Boolean = false
+
   @nowarn // Spark 4 feature; Variant shredding doesn't exist in Spark 3.x.
   def isVariantStruct(s: StructType): Boolean = false
+
+  @nowarn // Spark 4 feature; VariantType doesn't exist in Spark 3.x.
+  def isVariantType(dt: DataType): Boolean = false
+
+  @nowarn // Spark 4 feature; VariantType doesn't exist in Spark 3.x.
+  def containsVariantType(dt: DataType): Boolean = false
+
+  @nowarn // Spark 4 feature; VariantType doesn't exist in Spark 3.x.
+  def variantType: Option[DataType] = None
 
   @nowarn // Spark 4.1 feature; TimeType doesn't exist in Spark 3.x.
   def isTimeType(dt: DataType): Boolean = false

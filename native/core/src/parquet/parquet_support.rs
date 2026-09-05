@@ -16,16 +16,17 @@
 // under the License.
 
 use crate::execution::operators::ExecutionError;
+use crate::parquet::name_fold::fold_names;
 use arrow::array::{FixedSizeBinaryArray, ListArray, MapArray, StringArray};
 use arrow::buffer::NullBuffer;
 use arrow::compute::can_cast_types;
 use arrow::datatypes::{FieldRef, Fields};
 use arrow::{
     array::{
-        cast::AsArray, new_null_array, types::Int32Type, types::TimestampMicrosecondType, Array,
-        ArrayRef, DictionaryArray, StructArray,
+        cast::AsArray, new_null_array, types::TimestampMicrosecondType,
+        types::TimestampMillisecondType, Array, ArrayRef, ArrowNativeTypeOp, StructArray,
     },
-    compute::{cast_with_options, take, CastOptions},
+    compute::{cast_with_options, CastOptions},
     datatypes::{DataType, TimeUnit},
     util::display::FormatOptions,
 };
@@ -34,6 +35,7 @@ use datafusion::error::DataFusionError;
 use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::physical_plan::ColumnarValue;
+use datafusion_comet_common::SparkError;
 use datafusion_comet_spark_expr::EvalMode;
 use log::debug;
 use object_store::path::Path;
@@ -99,6 +101,12 @@ pub struct SparkParquetOptions {
     /// (Spark 3.x, SPARK-36182). Mirrors Comet's per-Spark-version constant
     /// in ShimCometConf.
     pub allow_timestamp_ltz_to_ntz: bool,
+    /// When true (the default), a top-level TIMESTAMP_MILLIS column that overflows during
+    /// the millis->micros upscale raises an error, matching Spark's checked
+    /// `millisToMicros`. Filtered scans set this to false and retain the safe cast
+    /// (overflow -> NULL), because Spark may discard values through pruning paths that
+    /// DataFusion cannot fully mirror before conversion.
+    pub checked_timestamp_overflow: bool,
 }
 
 impl SparkParquetOptions {
@@ -115,6 +123,7 @@ impl SparkParquetOptions {
             ignore_missing_field_id: false,
             allow_type_promotion: false,
             allow_timestamp_ltz_to_ntz: false,
+            checked_timestamp_overflow: true,
         }
     }
 
@@ -131,6 +140,7 @@ impl SparkParquetOptions {
             ignore_missing_field_id: false,
             allow_type_promotion: false,
             allow_timestamp_ltz_to_ntz: false,
+            checked_timestamp_overflow: true,
         }
     }
 }
@@ -168,32 +178,16 @@ fn parquet_convert_array(
     to_type: &DataType,
     parquet_options: &SparkParquetOptions,
 ) -> DataFusionResult<ArrayRef> {
+    parquet_convert_array_impl(array, to_type, parquet_options, true)
+}
+
+fn parquet_convert_array_impl(
+    array: ArrayRef,
+    to_type: &DataType,
+    parquet_options: &SparkParquetOptions,
+    top_level: bool,
+) -> DataFusionResult<ArrayRef> {
     use DataType::*;
-    let from_type = array.data_type().clone();
-
-    let array = match &from_type {
-        Dictionary(key_type, value_type)
-            if key_type.as_ref() == &Int32
-                && (value_type.as_ref() == &Utf8 || value_type.as_ref() == &LargeUtf8) =>
-        {
-            let dict_array = array
-                .as_any()
-                .downcast_ref::<DictionaryArray<Int32Type>>()
-                .expect("Expected a dictionary array");
-
-            let casted_dictionary = DictionaryArray::<Int32Type>::new(
-                dict_array.keys().clone(),
-                parquet_convert_array(Arc::clone(dict_array.values()), to_type, parquet_options)?,
-            );
-
-            let casted_result = match to_type {
-                Dictionary(_, _) => Arc::new(casted_dictionary.clone()),
-                _ => take(casted_dictionary.values().as_ref(), dict_array.keys(), None)?,
-            };
-            return Ok(casted_result);
-        }
-        _ => array,
-    };
     let from_type = array.data_type();
 
     // Try Comet specific handlers first, then arrow-rs cast if supported,
@@ -207,10 +201,11 @@ fn parquet_convert_array(
         )?),
         (List(_), List(to_inner_type)) => {
             let list_arr: &ListArray = array.as_list();
-            let cast_field = parquet_convert_array(
+            let cast_field = parquet_convert_array_impl(
                 Arc::clone(list_arr.values()),
                 to_inner_type.data_type(),
                 parquet_options,
+                false,
             )?;
 
             Ok(Arc::new(ListArray::new(
@@ -219,6 +214,28 @@ fn parquet_convert_array(
                 cast_field,
                 list_arr.nulls().cloned(),
             )))
+        }
+        (
+            Timestamp(TimeUnit::Millisecond, _),
+            Timestamp(TimeUnit::Microsecond, target_tz),
+        ) if top_level && parquet_options.checked_timestamp_overflow => {
+            // Spark's Parquet reader calls the checked `millisToMicros` conversion for both
+            // direct and dictionary values, independent of CAST evaluation mode:
+            // https://github.com/apache/spark/blob/v4.2.0/sql/core/src/main/java/org/apache/spark/sql/execution/datasources/parquet/ParquetVectorUpdaterFactory.java#L817-L833
+            // `millisToMicros` uses `Math.multiplyExact`:
+            // https://github.com/apache/spark/blob/v4.2.0/sql/api/src/main/scala/org/apache/spark/sql/catalyst/util/SparkDateTimeUtils.scala#L103-L108
+            //
+            // The checked conversion is limited to TOP-LEVEL columns. Spark only avoids the
+            // error for filtered-out values through row-group statistics pruning, and
+            // DataFusion's PruningPredicate does not support nested fields yet, so a checked
+            // conversion on a nested field would fail queries whose predicates Spark prunes
+            // (e.g. `WHERE s.ts < X` over an all-overflowing file). Nested fields keep the
+            // pre-existing safe-cast behavior below (overflow -> NULL).
+            let micros = array
+                .as_primitive::<TimestampMillisecondType>()
+                .try_unary::<_, TimestampMicrosecondType, _>(|value| value.mul_checked(1_000))?
+                .with_timezone_opt(target_tz.clone());
+            Ok(Arc::new(micros))
         }
         (Timestamp(TimeUnit::Microsecond, None), Timestamp(TimeUnit::Microsecond, Some(tz))) => {
             Ok(Arc::new(
@@ -299,36 +316,63 @@ fn parquet_convert_struct_to_struct(
                 HashMap::new()
             };
 
-            let normalize_name = |name: &str| -> String {
-                if parquet_options.case_sensitive {
-                    name.to_string()
-                } else {
-                    name.to_lowercase()
-                }
-            };
-            let mut field_name_to_index_map = HashMap::new();
-            for (i, field) in from_fields.iter().enumerate() {
-                field_name_to_index_map.insert(normalize_name(field.name()), i);
+            // Fold the file (`from`) and requested (`to`) field names once via the JVM's
+            // `toLowerCase(Locale.ROOT)` (the same fold the top-level schema adapter uses), so
+            // nested case-insensitive matching is byte-for-byte consistent with the top level.
+            let mut all_names: Vec<&str> = Vec::with_capacity(from_fields.len() + to_fields.len());
+            all_names.extend(from_fields.iter().map(|f| f.name().as_str()));
+            all_names.extend(to_fields.iter().map(|f| f.name().as_str()));
+            let all_folded = fold_names(&all_names, parquet_options.case_sensitive);
+            let (from_folded, to_folded) = all_folded.split_at(from_fields.len());
+
+            // Group file field indices by folded name so a case-insensitive collision is detected
+            // (Spark's `caseInsensitiveParquetFieldMap`) rather than silently overwritten.
+            let mut folded_to_indices: HashMap<&str, Vec<usize>> = HashMap::new();
+            for (i, folded) in from_folded.iter().enumerate() {
+                folded_to_indices
+                    .entry(folded.as_str())
+                    .or_default()
+                    .push(i);
             }
-            assert_eq!(field_name_to_index_map.len(), from_fields.len());
 
             let mut field_overlap = false;
             let mut cast_fields: Vec<ArrayRef> = Vec::with_capacity(to_fields.len());
-            for to_field in to_fields.iter() {
+            for (to_pos, to_field) in to_fields.iter().enumerate() {
                 let from_index = match (should_match_by_id, field_id(to_field)) {
                     // Spark treats a missing ID match as a missing column rather than
                     // falling back to name match.
                     (true, Some(id)) => from_id_to_index.get(&id).copied(),
-                    _ => field_name_to_index_map
-                        .get(&normalize_name(to_field.name()))
-                        .copied(),
+                    _ => match folded_to_indices.get(to_folded[to_pos].as_str()) {
+                        // Mirror Spark's `foundDuplicateFieldInCaseInsensitiveModeError`: a
+                        // requested field matching more than one file field is ambiguous. Gated on
+                        // case-insensitive mode to match the top-level check (which only runs when
+                        // `!case_sensitive`): when case-sensitive the fold is identity, so a
+                        // collision means byte-identical sibling names, and raising an error whose
+                        // message says "in case-insensitive mode" would be wrong. Fall through to
+                        // the first match in that case.
+                        Some(indices) if indices.len() > 1 && !parquet_options.case_sensitive => {
+                            let matched: Vec<&str> = indices
+                                .iter()
+                                .map(|&i| from_fields[i].name().as_str())
+                                .collect();
+                            return Err(DataFusionError::External(Box::new(
+                                SparkError::duplicate_field_case_insensitive(
+                                    to_field.name(),
+                                    &matched,
+                                ),
+                            )));
+                        }
+                        Some(indices) => Some(indices[0]),
+                        None => None,
+                    },
                 };
 
                 if let Some(from_index) = from_index {
-                    cast_fields.push(parquet_convert_array(
+                    cast_fields.push(parquet_convert_array_impl(
                         Arc::clone(array.column(from_index)),
                         to_field.data_type(),
                         parquet_options,
+                        false,
                     )?);
                     field_overlap = true;
                 } else {
@@ -376,15 +420,17 @@ fn parquet_convert_map_to_map(
                 "map is missing value field".to_string(),
             ))?;
 
-            let key_array = parquet_convert_array(
+            let key_array = parquet_convert_array_impl(
                 Arc::clone(from.keys()),
                 key_field.data_type(),
                 parquet_options,
+                false,
             )?;
-            let value_array = parquet_convert_array(
+            let value_array = parquet_convert_array_impl(
                 Arc::clone(from.values()),
                 value_field.data_type(),
                 parquet_options,
+                false,
             )?;
 
             Ok(Arc::new(MapArray::new(
@@ -434,22 +480,9 @@ pub fn is_hdfs_scheme(url: &Url, object_store_configs: &HashMap<String, String>)
     }
 }
 
-// Creates an HDFS object store from a URL using the native HDFS implementation
-#[cfg(all(feature = "hdfs", not(feature = "hdfs-opendal")))]
-fn create_hdfs_object_store(
-    url: &Url,
-) -> Result<(Box<dyn ObjectStore>, Path), object_store::Error> {
-    match datafusion_comet_objectstore_hdfs::object_store::hdfs::HadoopFileSystem::new(url.as_ref())
-    {
-        Some(object_store) => {
-            let path = object_store.get_path(url.as_str());
-            Ok((Box::new(object_store), path))
-        }
-        _ => Err(object_store::Error::Generic {
-            store: "HadoopFileSystem",
-            source: "Could not create hdfs object store".into(),
-        }),
-    }
+/// Check if the scheme is an Azure ABFS URL.
+fn is_azure_scheme(scheme: &str) -> bool {
+    matches!(scheme, "abfs" | "abfss")
 }
 
 // Creates an OpenDAL HDFS Operator from a URL with optional configuration
@@ -458,12 +491,10 @@ pub(crate) fn create_hdfs_operator(url: &Url) -> Result<opendal::Operator, objec
     let name_node = get_name_node_uri(url)?;
     let builder = opendal::services::Hdfs::default().name_node(&name_node);
 
-    opendal::Operator::new(builder)
-        .map_err(|error| object_store::Error::Generic {
-            store: "hdfs-opendal",
-            source: error.into(),
-        })
-        .map(|op| op.finish())
+    opendal::Operator::new(builder).map_err(|error| object_store::Error::Generic {
+        store: "hdfs-opendal",
+        source: error.into(),
+    })
 }
 
 // Creates an HDFS object store from a URL using OpenDAL
@@ -499,7 +530,7 @@ fn get_name_node_uri(url: &Url) -> Result<String, object_store::Error> {
 }
 
 // Stub implementation when HDFS support is not enabled
-#[cfg(all(not(feature = "hdfs"), not(feature = "hdfs-opendal")))]
+#[cfg(not(feature = "hdfs-opendal"))]
 fn create_hdfs_object_store(
     _url: &Url,
 ) -> Result<(Box<dyn ObjectStore>, Path), object_store::Error> {
@@ -515,10 +546,11 @@ type ObjectStoreCache = RwLock<HashMap<(String, u64), Arc<dyn ObjectStore>>>;
 ///
 /// ## Why static / process lifetime?
 ///
-/// Comet's JNI architecture calls `initRecordBatchReader` once per Parquet file, and each
-/// call constructs a fresh `RuntimeEnv`.  There is therefore no executor-scoped Rust object
-/// with a lifetime longer than a single file read that could own this cache.  The executor
-/// process itself is the natural scope for HTTP connection-pool reuse, so process lifetime
+/// Comet's JNI architecture builds a fresh `SessionContext`/`RuntimeEnv` per native plan
+/// (`Java_org_apache_comet_Native_createPlan`, once per Spark task).  There is therefore no
+/// executor-scoped Rust object with a lifetime longer than a single task's plan that could
+/// own this cache.  The executor process itself is the natural scope for HTTP
+/// connection-pool reuse, so process lifetime
 /// (i.e. `static`) is the appropriate choice here.  In the standard Spark-on-Kubernetes
 /// deployment model each executor process is dedicated to a single Spark application, so
 /// process lifetime and application lifetime are equivalent; the cache is reclaimed when
@@ -606,6 +638,8 @@ pub(crate) fn prepare_object_store_with_configs(
                 create_hdfs_object_store(&url)
             } else if scheme == "s3" {
                 objectstore::s3::create_store(&url, object_store_configs, Duration::from_secs(300))
+            } else if is_azure_scheme(scheme) {
+                objectstore::azure::create_store(&url, object_store_configs)
             } else {
                 parse_url(&url)
             }
@@ -626,39 +660,24 @@ pub(crate) fn prepare_object_store_with_configs(
 
 #[cfg(test)]
 mod tests {
-    #[cfg(any(
-        all(not(feature = "hdfs"), not(feature = "hdfs-opendal")),
-        feature = "hdfs"
-    ))]
+    #[cfg(not(feature = "hdfs-opendal"))]
     use datafusion::execution::object_store::ObjectStoreUrl;
-    #[cfg(any(
-        all(not(feature = "hdfs"), not(feature = "hdfs-opendal")),
-        feature = "hdfs"
-    ))]
+    #[cfg(not(feature = "hdfs-opendal"))]
     use datafusion::execution::runtime_env::RuntimeEnv;
-    #[cfg(any(
-        all(not(feature = "hdfs"), not(feature = "hdfs-opendal")),
-        feature = "hdfs"
-    ))]
+    #[cfg(not(feature = "hdfs-opendal"))]
     use object_store::path::Path;
-    #[cfg(any(
-        all(not(feature = "hdfs"), not(feature = "hdfs-opendal")),
-        feature = "hdfs"
-    ))]
+    #[cfg(not(feature = "hdfs-opendal"))]
     use std::sync::Arc;
-    #[cfg(any(
-        all(not(feature = "hdfs"), not(feature = "hdfs-opendal")),
-        feature = "hdfs"
-    ))]
+    #[cfg(not(feature = "hdfs-opendal"))]
     use url::Url;
 
-    #[cfg(all(not(feature = "hdfs"), not(feature = "hdfs-opendal")))]
+    #[cfg(not(feature = "hdfs-opendal"))]
     use crate::execution::operators::ExecutionError;
-    #[cfg(all(not(feature = "hdfs"), not(feature = "hdfs-opendal")))]
+    #[cfg(not(feature = "hdfs-opendal"))]
     use std::collections::HashMap;
 
     /// Parses the url, registers the object store, and returns a tuple of the object store url and object store path
-    #[cfg(all(not(feature = "hdfs"), not(feature = "hdfs-opendal")))]
+    #[cfg(not(feature = "hdfs-opendal"))]
     pub(crate) fn prepare_object_store(
         runtime_env: Arc<RuntimeEnv>,
         url: String,
@@ -667,18 +686,7 @@ mod tests {
         prepare_object_store_with_configs(runtime_env, url, &HashMap::new())
     }
 
-    /// Parses the url, registers the object store, and returns a tuple of the object store url and object store path
-    #[cfg(feature = "hdfs")]
-    pub(crate) fn prepare_object_store(
-        runtime_env: Arc<RuntimeEnv>,
-        url: String,
-    ) -> Result<(ObjectStoreUrl, Path), crate::execution::operators::ExecutionError> {
-        use crate::parquet::parquet_support::prepare_object_store_with_configs;
-        use std::collections::HashMap;
-        prepare_object_store_with_configs(runtime_env, url, &HashMap::new())
-    }
-
-    #[cfg(all(not(feature = "hdfs"), not(feature = "hdfs-opendal")))]
+    #[cfg(not(feature = "hdfs-opendal"))]
     #[test]
     fn test_prepare_object_store() {
         use crate::execution::operators::ExecutionError;
@@ -722,21 +730,69 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "hdfs")]
-    fn test_prepare_object_store() {
-        // we use a local file system url instead of an hdfs url because the latter requires
-        // a running namenode
-        let hdfs_url = "file:///comet/spark-warehouse/part-00000.snappy.parquet";
-        let expected: (ObjectStoreUrl, Path) = (
-            ObjectStoreUrl::parse("file://").unwrap(),
-            Path::from("/comet/spark-warehouse/part-00000.snappy.parquet"),
+    fn test_millis_to_micros_overflow_checked_only_at_top_level() {
+        use crate::parquet::parquet_support::{parquet_convert_array, SparkParquetOptions};
+        use arrow::array::{Array, ArrayRef, StructArray, TimestampMillisecondArray};
+        use arrow::datatypes::{DataType, Field, Fields, TimeUnit};
+        use datafusion_comet_spark_expr::EvalMode;
+        use std::sync::Arc;
+
+        let options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        let overflow_millis = 9_223_372_036_854_776_i64;
+        let millis: ArrayRef = Arc::new(TimestampMillisecondArray::from(vec![
+            Some(overflow_millis),
+            None,
+        ]));
+        let micros_type = DataType::Timestamp(TimeUnit::Microsecond, None);
+
+        // Top-level: checked, matching Spark's `millisToMicros` (`Math.multiplyExact`).
+        let err = parquet_convert_array(Arc::clone(&millis), &micros_type, &options)
+            .expect_err("top-level overflow must error");
+        assert!(
+            err.to_string().to_lowercase().contains("overflow"),
+            "unexpected error: {err}"
         );
 
-        let url = &Url::parse(hdfs_url).unwrap();
-        let res = prepare_object_store(Arc::new(RuntimeEnv::default()), url.to_string());
+        // Filtered scans disable checked conversion because Spark may prune values before
+        // conversion through paths DataFusion cannot fully mirror.
+        let mut unchecked_options = options.clone();
+        unchecked_options.checked_timestamp_overflow = false;
+        let converted =
+            parquet_convert_array(Arc::clone(&millis), &micros_type, &unchecked_options)
+                .expect("unchecked overflow must not error");
+        assert!(converted.is_null(0), "overflow must become NULL");
+        assert!(converted.is_null(1));
 
-        let res = res.unwrap();
-        assert_eq!(res.0, expected.0);
-        assert_eq!(res.1, expected.1);
+        // Nested: DataFusion's PruningPredicate cannot prune nested fields, so a
+        // checked conversion would fail queries whose predicates Spark satisfies via
+        // row-group statistics pruning. The nested field keeps the safe-cast behavior:
+        // overflow becomes NULL.
+        let child_field = Arc::new(Field::new(
+            "ts",
+            DataType::Timestamp(TimeUnit::Millisecond, None),
+            true,
+        ));
+        let strukt: ArrayRef = Arc::new(StructArray::new(
+            Fields::from(vec![Arc::clone(&child_field)]),
+            vec![millis],
+            None,
+        ));
+        let target = DataType::Struct(Fields::from(vec![Arc::new(Field::new(
+            "ts",
+            micros_type.clone(),
+            true,
+        ))]));
+        let converted = parquet_convert_array(strukt, &target, &options)
+            .expect("nested overflow must not error");
+        let converted_child = Arc::clone(
+            converted
+                .as_any()
+                .downcast_ref::<StructArray>()
+                .unwrap()
+                .column(0),
+        );
+        assert_eq!(converted_child.data_type(), &micros_type);
+        assert!(converted_child.is_null(0), "overflow must become NULL");
+        assert!(converted_child.is_null(1));
     }
 }

@@ -22,6 +22,7 @@ package org.apache.comet.parquet
 import java.io.File
 import java.math.{BigDecimal, BigInteger}
 import java.time.{ZoneId, ZoneOffset}
+import java.util.{Base64, Collections}
 
 import scala.reflect.ClassTag
 import scala.reflect.runtime.universe.TypeTag
@@ -29,11 +30,15 @@ import scala.reflect.runtime.universe.TypeTag
 import org.scalactic.source.Position
 import org.scalatest.Tag
 
+import org.apache.arrow.vector.types.pojo.{ArrowType, DictionaryEncoding, Field => ArrowField, FieldType, Schema => ArrowSchema}
 import org.apache.hadoop.fs.Path
 import org.apache.parquet.example.data.simple.SimpleGroup
+import org.apache.parquet.hadoop.example.ExampleParquetWriter
+import org.apache.parquet.io.api.Binary
 import org.apache.parquet.schema.MessageTypeParser
 import org.apache.spark.SparkException
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
+import org.apache.spark.sql.catalyst.optimizer.{ConvertToLocalRelation, OptimizeIn}
 import org.apache.spark.sql.catalyst.util.DateTimeUtils
 import org.apache.spark.sql.comet.{CometNativeScanExec, CometScanExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
@@ -44,6 +49,8 @@ import org.apache.spark.sql.types._
 import com.google.common.primitives.UnsignedLong
 
 import org.apache.comet.CometConf
+import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
+import org.apache.comet.vector.CometVector
 
 abstract class ParquetReadSuite extends CometTestBase {
   import testImplicits._
@@ -78,6 +85,61 @@ abstract class ParquetReadSuite extends CometTestBase {
   test("simple count") {
     withParquetTable((0 until 10).map(i => (i, i.toString)), "tbl") {
       assert(sql("SELECT * FROM tbl WHERE _1 % 2 == 0").count() == 5)
+    }
+  }
+
+  // Spark ignores ARROW:schema during Parquet schema inference:
+  // https://github.com/apache/spark/blob/v4.2.0/sql/core/src/main/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFileFormat.scala#L585-L599
+  // With binaryAsString, Spark maps unannotated BINARY to StringType:
+  // https://github.com/apache/spark/blob/v4.2.0/sql/core/src/main/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaConverter.scala#L344-L350
+  test("native scan casts Arrow dictionary binary values with Spark semantics") {
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "dictionary-binary.parquet")
+      val parquetSchema = MessageTypeParser.parseMessageType("""message root {
+          |  optional binary value;
+          |}
+          |""".stripMargin)
+      val arrowField = new ArrowField(
+        "value",
+        new FieldType(
+          true,
+          ArrowType.Binary.INSTANCE,
+          new DictionaryEncoding(0L, false, new ArrowType.Int(32, true))),
+        Collections.emptyList[ArrowField]())
+      val arrowSchema = new ArrowSchema(Collections.singletonList(arrowField))
+      val metadata = Collections.singletonMap(
+        "ARROW:schema",
+        Base64.getEncoder.encodeToString(arrowSchema.serializeAsMessage()))
+      val writer = ExampleParquetWriter
+        .builder(path)
+        .withType(parquetSchema)
+        .withDictionaryEncoding(true)
+        .withExtraMetaData(metadata)
+        .withConf(spark.sessionState.newHadoopConf())
+        .build()
+
+      try {
+        Seq(
+          Array[Byte](0x66, 0x80.toByte, 0x6f),
+          Array[Byte](0x66, 0x80.toByte, 0x6f),
+          Array[Byte](0x76, 0x61, 0x6c, 0x69, 0x64)).foreach { bytes =>
+          val row = new SimpleGroup(parquetSchema)
+          row.add(0, Binary.fromConstantByteArray(bytes))
+          writer.write(row)
+        }
+      } finally {
+        writer.close()
+      }
+
+      withSQLConf(SQLConf.PARQUET_BINARY_AS_STRING.key -> "true") {
+        withParquetTable(path.toString, "dictionary_binary") {
+          val (_, cometPlan) =
+            checkSparkAnswerAndOperator(sql("SELECT value FROM dictionary_binary"))
+          assert(
+            collect(cometPlan) { case scan: CometNativeScanExec => scan }.nonEmpty,
+            "Expected a CometNativeScanExec")
+        }
+      }
     }
   }
 
@@ -197,6 +259,220 @@ abstract class ParquetReadSuite extends CometTestBase {
                   .toLocalDateTime
                 Row(ts, ts, ts, ldt, ts, ldt)
             })
+        }
+      }
+    }
+  }
+
+  test("TIMESTAMP_MILLIS overflow fails in native scan") {
+    // Spark routes both TimestampType and TimestampNTZType through LongAsMicrosUpdater:
+    // https://github.com/apache/spark/blob/v4.2.0/sql/core/src/main/java/org/apache/spark/sql/execution/datasources/parquet/ParquetVectorUpdaterFactory.java#L140-L164
+    // The updater calls checked millisToMicros for direct and dictionary values:
+    // https://github.com/apache/spark/blob/v4.2.0/sql/core/src/main/java/org/apache/spark/sql/execution/datasources/parquet/ParquetVectorUpdaterFactory.java#L800-L833
+    // Matches Spark's positive and negative overflow cases:
+    // https://github.com/apache/spark/blob/v4.2.0/sql/core/src/test/resources/sql-tests/inputs/timestamp.sql#L74-L83
+    def isOverflow(error: Throwable): Boolean =
+      Iterator
+        .iterate(error)(_.getCause)
+        .takeWhile(_ != null)
+        .exists(cause => Option(cause.getMessage).exists(_.toLowerCase.contains("overflow")))
+
+    Seq(false, true).foreach { dictionaryEnabled =>
+      Seq(92233720368547758L, -92233720368547758L).foreach { millis =>
+        withTempDir { dir =>
+          val path = new Path(dir.toURI.toString, "part-r-0.parquet")
+          val schema = MessageTypeParser.parseMessageType("""
+            |message root {
+            |  optional int64 ts(TIMESTAMP_MILLIS);
+            |  optional int64 ts_ntz(TIMESTAMP(MILLIS,false));
+            |}
+            |""".stripMargin)
+          val writer = createParquetWriter(schema, path, dictionaryEnabled)
+          // A single row falls back to PLAIN even with dictionary encoding enabled, because
+          // a one-entry dictionary page is not smaller than the raw values. Write enough
+          // repeated rows for the writer to keep dictionary-encoded data pages.
+          (0 until 16).foreach { _ =>
+            val record = new SimpleGroup(schema)
+            record.add(0, millis)
+            record.add(1, millis)
+            writer.write(record)
+          }
+          writer.close()
+
+          val footerReader = org.apache.parquet.hadoop.ParquetFileReader.open(
+            org.apache.parquet.hadoop.util.HadoopInputFile
+              .fromPath(path, spark.sessionState.newHadoopConf()))
+          try {
+            footerReader.getFooter.getBlocks.forEach { block =>
+              block.getColumns.forEach { column =>
+                assert(
+                  column.getEncodingStats.hasDictionaryEncodedPages == dictionaryEnabled,
+                  s"expected hasDictionaryEncodedPages=$dictionaryEnabled " +
+                    s"for column ${column.getPath}")
+              }
+            }
+          } finally {
+            footerReader.close()
+          }
+
+          Seq(false, true).foreach { ansiEnabled =>
+            withSQLConf(SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString) {
+              readParquetFile(path.toString) { df =>
+                Seq("ts", "ts_ntz").foreach { column =>
+                  val selected = df.select(column)
+                  assert(collect(selected.queryExecution.executedPlan) {
+                    case _: CometNativeScanExec => true
+                  }.nonEmpty)
+
+                  val (sparkError, cometError) = checkSparkAnswerMaybeThrows(selected)
+                  assert(Seq(sparkError, cometError).forall(_.exists(isOverflow)))
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("filtered TIMESTAMP_MILLIS scans do not convert values Spark can skip") {
+    Seq(false, true).foreach { dictionaryEnabled =>
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "part-r-0.parquet")
+        val schema = MessageTypeParser.parseMessageType("""
+          |message root {
+          |  optional int32 id;
+          |  optional int64 ts(TIMESTAMP_MILLIS);
+          |  optional group s {
+          |    optional int64 ts(TIMESTAMP_MILLIS);
+          |  }
+          |}
+          |""".stripMargin)
+        val writer = createParquetWriter(schema, path, dictionaryEnabled)
+        (0 until 32).foreach { i =>
+          val record = new SimpleGroup(schema)
+          record.add(0, if (i % 2 == 0) 1 else 3)
+          // Milliseconds that overflow Long when converted to microseconds
+          record.add(1, 9223372036854776L)
+          record.addGroup(2).add(0, 9223372036854776L)
+          writer.write(record)
+        }
+        writer.close()
+
+        val footerReader = org.apache.parquet.hadoop.ParquetFileReader.open(
+          org.apache.parquet.hadoop.util.HadoopInputFile
+            .fromPath(path, spark.sessionState.newHadoopConf()))
+        try {
+          val idEncoding =
+            footerReader.getFooter.getBlocks.get(0).getColumns.get(0).getEncodingStats
+          assert(idEncoding.hasDictionaryEncodedPages == dictionaryEnabled)
+          assert(!dictionaryEnabled || !idEncoding.hasNonDictionaryEncodedPages)
+        } finally {
+          footerReader.close()
+        }
+
+        def timestampIn(size: Int): String =
+          (0 until size)
+            .map(i => f"timestamp'1970-01-01 00:00:$i%02d'")
+            .mkString("ts IN (", ", ", ")")
+
+        val predicates = Seq(
+          "ts < timestamp'1970-01-01 00:00:00'",
+          timestampIn(20),
+          timestampIn(21),
+          "ts <=> timestamp'1970-01-01 00:00:00'",
+          "s.ts < timestamp'1970-01-01 00:00:00'",
+          "id < 0") ++ (if (dictionaryEnabled) Seq("id = 2") else Seq.empty)
+        Seq(false, true).foreach { ansiEnabled =>
+          Seq(false, true).foreach { rowFilterPushdown =>
+            withSQLConf(
+              SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString,
+              CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED.key ->
+                rowFilterPushdown.toString) {
+              readParquetFile(path.toString) { df =>
+                predicates.foreach { predicate =>
+                  val filtered = df.where(predicate)
+                  assert(collect(filtered.queryExecution.executedPlan) {
+                    case _: CometNativeScanExec => true
+                  }.nonEmpty)
+                  checkSparkAnswer(filtered)
+                }
+
+                if (CometConf.COMET_SCHEMA_EVOLUTION_ENABLED) {
+                  val widenedSchema = StructType(
+                    Seq(
+                      StructField("id", LongType),
+                      StructField("ts", TimestampType),
+                      StructField("s", StructType(Seq(StructField("ts", TimestampType))))))
+                  readParquetFile(path.toString, Some(widenedSchema)) { widened =>
+                    checkSparkAnswer(widened.where("id < 0").select("ts"))
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        withSQLConf(
+          SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED.key -> "true",
+          "spark.comet.expression.IsNull.enabled" -> "false") {
+          readParquetFile(path.toString) { df =>
+            val filtered = df.where("id IS NULL").select("ts")
+            assert(collect(filtered.queryExecution.executedPlan) { case _: CometNativeScanExec =>
+              true
+            }.nonEmpty)
+            checkSparkAnswer(filtered)
+          }
+        }
+
+        if (isSpark40Plus && dictionaryEnabled) {
+          withTempView("timestamp_millis_lookup") {
+            Seq(2).toDF("k").createOrReplaceTempView("timestamp_millis_lookup")
+            withSQLConf("spark.comet.expression.EqualNullSafe.enabled" -> "false") {
+              readParquetFile(path.toString) { df =>
+                val filtered = df
+                  .where("id <=> (SELECT max(k) FROM timestamp_millis_lookup)")
+                  .select("ts")
+                assert(collect(filtered.queryExecution.executedPlan) {
+                  case _: CometNativeScanExec => true
+                }.nonEmpty)
+                checkSparkAnswer(filtered)
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("filtered TIMESTAMP_MILLIS scan preserves empty NOT IN null semantics") {
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "part-r-0.parquet")
+      val schema = MessageTypeParser.parseMessageType("""
+        |message root {
+        |  optional int64 ts(TIMESTAMP_MILLIS);
+        |}
+        |""".stripMargin)
+      val writer = createParquetWriter(schema, path)
+      writer.write(new SimpleGroup(schema))
+      val epoch = new SimpleGroup(schema)
+      epoch.add(0, 0L)
+      writer.write(epoch)
+      writer.close()
+
+      Seq(false, true).foreach { rowFilterPushdown =>
+        withSQLConf(
+          SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+            Seq(ConvertToLocalRelation.ruleName, OptimizeIn.ruleName).mkString(","),
+          "spark.sql.legacy.nullInEmptyListBehavior" -> "false",
+          CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED.key -> rowFilterPushdown.toString) {
+          readParquetFile(path.toString) { df =>
+            val filtered = df.filter(!df("ts").isin())
+            assert(collect(filtered.queryExecution.executedPlan) { case _: CometNativeScanExec =>
+              true
+            }.nonEmpty)
+            checkSparkAnswer(filtered)
+          }
         }
       }
     }
@@ -518,6 +794,196 @@ abstract class ParquetReadSuite extends CometTestBase {
           assert(df.filter("col > 90").count() == 10)
         }
       }
+    }
+  }
+
+  test("read _metadata constant columns via native scan") {
+    // TODO(https://github.com/apache/datafusion-comet/issues/3432): `_metadata.row_index` is
+    // generated per row by the reader, not constant per file, so it needs DataFusion's
+    // virtual-column mechanism rather than the partition-value path used here. Not covered.
+    withTempPath { dir =>
+      (1 to 100).toDF("id").repartition(1).write.parquet(dir.getCanonicalPath)
+      val df = spark.read
+        .parquet(dir.getCanonicalPath)
+        .select(
+          $"id",
+          $"_metadata.file_path",
+          $"_metadata.file_name",
+          $"_metadata.file_size",
+          $"_metadata.file_block_start",
+          $"_metadata.file_block_length",
+          $"_metadata.file_modification_time")
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  /**
+   * Two tiny files easily fit in one Spark partition by data volume, but
+   * spark.sql.files.minPartitionNum defaults to the session's target parallelism, which pushes
+   * maxSplitBytes down to spark.sql.files.openCostInBytes; a single file's own virtual open-cost
+   * surcharge then already consumes that budget, so Spark schedules one file per task instead of
+   * packing both together. Forcing minPartitionNum to 1 is what actually gets both files into one
+   * partition, so partition2Proto's multi-file loop is exercised instead of one file per task.
+   */
+  private val forceSinglePartitionConf: (String, String) =
+    SQLConf.FILES_MIN_PARTITION_NUM.key -> "1"
+
+  /**
+   * Writes two Parquet files with distinct row counts (and thus distinct file sizes) into `dir`,
+   * and returns their (file_path, file_size) pairs sorted by size. Discovers them with Comet
+   * disabled so the tests below filter on ground truth rather than hardcoded assumptions.
+   */
+  private def writeTwoFilesAndDiscoverMetadata(dir: File): Array[(String, Long)] = {
+    (1 to 5).toDF("id").repartition(1).write.mode("overwrite").parquet(dir.getCanonicalPath)
+    (1000 to 1999).toDF("id").repartition(1).write.mode("append").parquet(dir.getCanonicalPath)
+    var files: Array[(String, Long)] = null
+    withSQLConf(forceSinglePartitionConf) {
+      assert(
+        spark.read.parquet(dir.getCanonicalPath).rdd.getNumPartitions == 1,
+        "expected both files to be packed into the same Spark partition, to exercise " +
+          "partition2Proto's multi-file loop rather than one file per task")
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        files = spark.read
+          .parquet(dir.getCanonicalPath)
+          .select($"_metadata.file_path", $"_metadata.file_size")
+          .distinct()
+          .as[(String, Long)]
+          .collect()
+          .sortBy(_._2)
+      }
+    }
+    files
+  }
+
+  test("filter on _metadata.file_size selects rows from the matching file only") {
+    withTempPath { dir =>
+      val files = writeTwoFilesAndDiscoverMetadata(dir)
+      assert(files.length == 2, s"expected two distinct files, got ${files.toSeq}")
+      val (_, smallerSize) = files(0)
+
+      withSQLConf(forceSinglePartitionConf) {
+        val df = spark.read
+          .parquet(dir.getCanonicalPath)
+          .filter($"_metadata.file_size" === smallerSize)
+          .select($"id")
+        checkSparkAnswerAndOperator(df)
+      }
+    }
+  }
+
+  test("filter on _metadata.file_size using a range predicate") {
+    withTempPath { dir =>
+      val files = writeTwoFilesAndDiscoverMetadata(dir)
+      val (_, smallerSize) = files(0)
+
+      withSQLConf(forceSinglePartitionConf) {
+        val df = spark.read
+          .parquet(dir.getCanonicalPath)
+          .filter($"_metadata.file_size" > smallerSize)
+          .select($"id")
+        checkSparkAnswerAndOperator(df)
+      }
+    }
+  }
+
+  test("filter combining _metadata column and a data column") {
+    withTempPath { dir =>
+      val files = writeTwoFilesAndDiscoverMetadata(dir)
+      val (_, largerSize) = files(1)
+
+      withSQLConf(forceSinglePartitionConf) {
+        val df = spark.read
+          .parquet(dir.getCanonicalPath)
+          .filter($"_metadata.file_size" === largerSize && $"id" > 1500)
+          .select($"id")
+        checkSparkAnswerAndOperator(df)
+      }
+    }
+  }
+
+  test("filter on _metadata.file_path exact match") {
+    withTempPath { dir =>
+      val files = writeTwoFilesAndDiscoverMetadata(dir)
+      val (targetPath, _) = files(0)
+
+      withSQLConf(forceSinglePartitionConf) {
+        val df = spark.read
+          .parquet(dir.getCanonicalPath)
+          .filter($"_metadata.file_path" === targetPath)
+          .select($"id")
+        checkSparkAnswerAndOperator(df)
+      }
+    }
+  }
+
+  test("read _metadata constant columns together with a real Hive partition column") {
+    withTempPath { dir =>
+      Seq((1, "a"), (2, "a"), (3, "b"), (4, "b"))
+        .toDF("id", "pcol")
+        .repartition(1)
+        .write
+        .partitionBy("pcol")
+        .parquet(dir.getCanonicalPath)
+      val df = spark.read
+        .parquet(dir.getCanonicalPath)
+        .select($"id", $"pcol", $"_metadata.file_path", $"_metadata.file_size")
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("filter combining a real Hive partition column and a metadata column") {
+    withTempPath { dir =>
+      Seq((1, "a"), (2, "a"), (3, "b"), (4, "b"))
+        .toDF("id", "pcol")
+        .repartition(1)
+        .write
+        .partitionBy("pcol")
+        .parquet(dir.getCanonicalPath)
+      val df = spark.read
+        .parquet(dir.getCanonicalPath)
+        .filter($"pcol" === "b" && $"_metadata.file_size" > 0)
+        .select($"id")
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("_metadata.file_path and file_name are url-encoded for a directory with a space") {
+    withTempDir { parent =>
+      val dir = new File(parent, "dir with space")
+      (1 to 10).toDF("id").repartition(1).write.parquet(dir.getCanonicalPath)
+      val df = spark.read
+        .parquet(dir.getCanonicalPath)
+        .select($"id", $"_metadata.file_path", $"_metadata.file_name")
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("_metadata column does not collide with a data column of the same name") {
+    withTempPath { dir =>
+      Seq((1L, 10), (2L, 20))
+        .toDF("file_size", "x")
+        .repartition(1)
+        .write
+        .parquet(dir.getCanonicalPath)
+      val df = spark.read
+        .parquet(dir.getCanonicalPath)
+        .select($"file_size", $"x", $"_metadata.file_size".as("meta_size"))
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("_metadata column does not collide with a partition column of the same name") {
+    withTempPath { dir =>
+      Seq((1, 100L), (2, 200L))
+        .toDF("id", "file_size")
+        .repartition(1)
+        .write
+        .partitionBy("file_size")
+        .parquet(dir.getCanonicalPath)
+      val df = spark.read
+        .parquet(dir.getCanonicalPath)
+        .select($"id", $"file_size", $"_metadata.file_size")
+      checkSparkAnswerAndOperator(df)
     }
   }
 
@@ -1019,10 +1485,7 @@ abstract class ParquetReadSuite extends CometTestBase {
           }
           // Walk the cause chain: Comet's shim adds an extra SparkException
           // wrap on Spark 3.x compared to vanilla Spark.
-          val chain = Iterator
-            .iterate[Throwable](outer)(_.getCause)
-            .takeWhile(_ != null)
-            .toSeq
+          val chain = causeChain(outer)
           assert(
             chain.exists(_.isInstanceOf[
               org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException]),
@@ -1202,7 +1665,7 @@ abstract class ParquetReadSuite extends CometTestBase {
     checkAnswer(
       // Decimal column in this file is encoded using plain dictionary
       readResourceParquetFile("test-data/dec-in-fixed-len.parquet"),
-      spark.range(1 << 4).select('id % 10 cast DecimalType(10, 2) as 'fixed_len_dec))
+      spark.range(1 << 4).select($"id" % 10 cast DecimalType(10, 2) as "fixed_len_dec"))
   }
 
   test("read long decimals with precision <= 9") {
@@ -1290,109 +1753,20 @@ abstract class ParquetReadSuite extends CometTestBase {
             .option("parquet.enable.dictionary", enableDictionary.toString)
             .parquet(file.getCanonicalPath)
 
-          Seq(true, false).foreach { useLazyMaterialization =>
-            Seq(true, false).foreach { enableCometExec =>
-              Seq(4, 13, 4049).foreach { batchSize =>
-                withSQLConf(
-                  CometConf.COMET_BATCH_SIZE.key -> batchSize.toString,
-                  CometConf.COMET_EXEC_ENABLED.key -> enableCometExec.toString,
-                  CometConf.COMET_USE_LAZY_MATERIALIZATION.key -> useLazyMaterialization.toString) {
-                  readParquetFile(file.getCanonicalPath) { parquetDf =>
-                    actions.foreach { action =>
-                      checkAnswer(action(parquetDf), action(df))
-                    }
+          Seq(true, false).foreach { enableCometExec =>
+            Seq(4, 13, 4049).foreach { batchSize =>
+              withSQLConf(
+                CometConf.COMET_BATCH_SIZE.key -> batchSize.toString,
+                CometConf.COMET_EXEC_ENABLED.key -> enableCometExec.toString) {
+                readParquetFile(file.getCanonicalPath) { parquetDf =>
+                  actions.foreach { action =>
+                    checkAnswer(action(parquetDf), action(df))
                   }
                 }
               }
             }
           }
         })
-      }
-    }
-  }
-
-  test("test merge scan range") {
-    def makeRawParquetFile(path: Path, n: Int): Seq[Option[Int]] = {
-      val dictionaryPageSize = 1024
-      val pageRowCount = 500
-      val schemaStr =
-        """
-          |message root {
-          |  optional int32   _1(INT_16);
-          |  optional int32   _2;
-          |  optional int64   _3;
-          |}
-        """.stripMargin
-
-      val schema = MessageTypeParser.parseMessageType(schemaStr)
-      val writer = createParquetWriter(
-        schema,
-        path,
-        dictionaryEnabled = true,
-        dictionaryPageSize = dictionaryPageSize,
-        pageRowCountLimit = pageRowCount)
-
-      val rand = new scala.util.Random(42)
-      val expected = (0 until n).map { i =>
-        // use a single value for the first page, to make sure dictionary encoding kicks in
-        val value = if (i < pageRowCount) i % 8 else i
-        if (rand.nextBoolean()) None
-        else Some(value)
-      }
-
-      expected.foreach { opt =>
-        val record = new SimpleGroup(schema)
-        opt match {
-          case Some(i) =>
-            record.add(0, i.toShort)
-            record.add(1, i)
-            record.add(2, i.toLong)
-          case _ =>
-        }
-        writer.write(record)
-      }
-
-      writer.close()
-      expected
-    }
-
-    Seq(16, 128).foreach { batchSize =>
-      Seq(1024, 1024 * 1024).foreach { mergeRangeDelta =>
-        {
-          withSQLConf(
-            CometConf.COMET_BATCH_SIZE.key -> batchSize.toString,
-            CometConf.COMET_IO_MERGE_RANGES.key -> "true",
-            CometConf.COMET_IO_MERGE_RANGES_DELTA.key -> mergeRangeDelta.toString) {
-            withTempDir { dir =>
-              val path = new Path(dir.toURI.toString, "part-r-0.parquet")
-              val expected = makeRawParquetFile(path, 10000)
-              val schema = StructType(
-                Seq(StructField("_1", ShortType, true), StructField("_3", LongType, true)))
-              readParquetFile(path.toString, Some(schema)) { df =>
-                {
-                  // CometScanExec calls sessionState.newHadoopConfWithOptions which copies
-                  // the sqlConf and some additional options to the hadoopConf and then
-                  // uses the result to create the inputRDD (https://github.com/apache/datafusion-comet/blob/3783faaa01078a35bee93b299368f8c72869198d/spark/src/main/scala/org/apache/spark/sql/comet/CometScanExec.scala#L181).
-                  // We don't have access to the created hadoop Conf, but can confirm that the
-                  // result does contain the correct configuration
-                  assert(
-                    df.sparkSession.sessionState
-                      .newHadoopConfWithOptions(Map.empty)
-                      .get(CometConf.COMET_IO_MERGE_RANGES_DELTA.key)
-                      .equals(mergeRangeDelta.toString))
-                  checkAnswer(
-                    df,
-                    expected.map {
-                      case None =>
-                        Row(null, null)
-                      case Some(i) =>
-                        Row(i.toShort, i.toLong)
-                    })
-                }
-              }
-            }
-          }
-        }
       }
     }
   }
@@ -1507,7 +1881,28 @@ abstract class ParquetReadSuite extends CometTestBase {
           .mode("overwrite")
           .parquet(dir.getCanonicalPath)
         val df = spark.read.schema(readSchema).parquet(dir.getCanonicalPath)
-        checkSparkAnswerAndOperator(df)
+        val (_, cometPlan) = checkSparkAnswerAndOperator(df)
+        val scan = collect(cometPlan) { case scan: CometNativeScanExec => scan }.head
+        val fieldIds = scan
+          .executeColumnar()
+          .mapPartitions { batches =>
+            batches.map { batch =>
+              try {
+                batch
+                  .column(0)
+                  .asInstanceOf[CometVector]
+                  .getValueVector
+                  .getField
+                  .getMetadata
+                  .get(CometParquetUtils.PARQUET_FIELD_ID_META_KEY)
+              } finally {
+                batch.close()
+              }
+            }
+          }
+          .collect()
+          .toSet
+        assert(fieldIds == Set("0"))
       }
     }
   }

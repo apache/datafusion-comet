@@ -120,7 +120,9 @@ INSERT INTO test_intersect_long VALUES (array(9223372036854775807, 1, -922337203
 query
 SELECT a, b, array_intersect(a, b) FROM test_intersect_long
 
--- float arrays with NaN, Infinity, -Infinity
+-- Float arrays with NaN, Infinity, -Infinity, and signed-zero membership.
+-- Opposite-sign singletons distinguish membership from deduplication. Spark 4.2+
+-- normalizes their zeros, so compare with the running Spark version.
 statement
 CREATE TABLE test_intersect_float(a array<float>, b array<float>) USING parquet
 
@@ -133,12 +135,15 @@ INSERT INTO test_intersect_float VALUES
   (array(1.0, 2.0), array(float('NaN'))),
   (array(float('NaN'), NULL), array(float('NaN'), NULL)),
   (array(float('Infinity'), 1.0, float('-Infinity')), array(float('Infinity'), float('-Infinity'))),
-  (array(cast(0.0 as float), cast(-0.0 as float)), array(cast(0.0 as float)))
+  (array(cast(0.0 as float), float('-0.0')), array(cast(0.0 as float))),
+  (array(float('-0.0')), array(float('0.0'))),
+  (array(float('0.0')), array(float('-0.0'))),
+  (array(float('-0.0')), array(float('-0.0')))
 
 query
 SELECT a, b, array_intersect(a, b) FROM test_intersect_float
 
--- double arrays with NaN, Infinity, -Infinity
+-- Double arrays with NaN, Infinity, -Infinity, and signed-zero membership.
 statement
 CREATE TABLE test_intersect_dbl(a array<double>, b array<double>) USING parquet
 
@@ -151,7 +156,10 @@ INSERT INTO test_intersect_dbl VALUES
   (array(1.0, 2.0), array(double('NaN'))),
   (array(double('NaN'), NULL), array(double('NaN'), NULL)),
   (array(double('Infinity'), 1.0, double('-Infinity')), array(double('Infinity'), double('-Infinity'))),
-  (array(0.0, -0.0), array(0.0)),
+  (array(0.0, double('-0.0')), array(0.0)),
+  (array(double('-0.0')), array(double('0.0'))),
+  (array(double('0.0')), array(double('-0.0'))),
+  (array(double('-0.0')), array(double('-0.0'))),
   (array(1.0, 2.0, NULL), array(1.0, NULL))
 
 query

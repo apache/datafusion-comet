@@ -215,6 +215,7 @@ impl ExpressionBuilder for IntegralDivideBuilder {
             input_schema,
             BinaryExprOptions {
                 is_integral_div: true,
+                check_divide_overflow: expr.check_divide_overflow,
             },
             eval_mode,
         )

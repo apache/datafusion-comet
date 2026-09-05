@@ -16,7 +16,7 @@
 // under the License.
 
 use crate::conversion_funcs::boolean::{
-    cast_boolean_to_decimal, cast_boolean_to_timestamp, is_df_cast_from_bool_spark_compatible,
+    cast_boolean_to_timestamp, is_df_cast_from_bool_spark_compatible,
 };
 use crate::conversion_funcs::numeric::{
     cast_decimal128_to_utf8, cast_decimal_to_timestamp, cast_float32_to_decimal128,
@@ -40,20 +40,19 @@ use crate::utils::{array_with_timezone, cast_timestamp_to_ntz, timestamp_ntz_to_
 use crate::EvalMode::Legacy;
 use crate::{cast_whole_num_to_binary, BinaryOutputStyle};
 use crate::{EvalMode, SparkError};
-use arrow::array::builder::StringBuilder;
+use arrow::array::builder::{GenericStringBuilder, StringBuilder};
 use arrow::array::{
-    new_null_array, BinaryBuilder, DictionaryArray, GenericByteArray, ListArray, MapArray,
-    StringArray, StructArray,
+    new_null_array, BinaryBuilder, GenericByteArray, ListArray, MapArray, StringArray, StructArray,
 };
-use arrow::datatypes::{ArrowDictionaryKeyType, ArrowNativeType, DataType, Schema};
+use arrow::datatypes::{DataType, Schema};
 use arrow::datatypes::{Field, Fields, GenericBinaryType};
 use arrow::error::ArrowError;
 use arrow::{
     array::{
-        cast::AsArray, types::Int32Type, Array, ArrayRef, GenericStringArray, Int16Array,
-        Int32Array, Int64Array, Int8Array, OffsetSizeTrait, PrimitiveArray,
+        cast::AsArray, Array, ArrayRef, Int16Array, Int32Array, Int64Array, Int8Array,
+        OffsetSizeTrait,
     },
-    compute::{cast_with_options, take, CastOptions},
+    compute::{cast_with_options, CastOptions},
     record_batch::RecordBatch,
     util::display::FormatOptions,
 };
@@ -62,8 +61,9 @@ use base64::Engine;
 use datafusion::common::{internal_err, DataFusionError, Result as DataFusionResult, ScalarValue};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::ColumnarValue;
+use datafusion_comet_common::decode_utf8_spark_lossy;
 use std::{
-    fmt::{Debug, Display, Formatter},
+    fmt::{Debug, Display, Formatter, Write},
     hash::Hash,
     sync::Arc,
 };
@@ -212,40 +212,6 @@ pub fn spark_cast(
     Ok(result)
 }
 
-// copied from datafusion common scalar/mod.rs
-fn dict_from_values<K: ArrowDictionaryKeyType>(
-    values_array: ArrayRef,
-) -> datafusion::common::Result<ArrayRef> {
-    // Create a key array with `size` elements of 0..array_len for all
-    // non-null value elements
-    let key_array: PrimitiveArray<K> = (0..values_array.len())
-        .map(|index| {
-            if values_array.is_valid(index) {
-                let native_index = K::Native::from_usize(index).ok_or_else(|| {
-                    DataFusionError::Internal(format!(
-                        "Can not create index of type {} from value {}",
-                        K::DATA_TYPE,
-                        index
-                    ))
-                })?;
-                Ok(Some(native_index))
-            } else {
-                Ok(None)
-            }
-        })
-        .collect::<datafusion::common::Result<Vec<_>>>()?
-        .into_iter()
-        .collect();
-
-    // create a new DictionaryArray
-    //
-    // Note: this path could be made faster by using the ArrayData
-    // APIs and skipping validation, if it every comes up in
-    // performance traces.
-    let dict_array = DictionaryArray::<K>::try_new(key_array, values_array)?;
-    Ok(Arc::new(dict_array))
-}
-
 pub(crate) fn cast_array(
     array: ArrayRef,
     to_type: &DataType,
@@ -253,6 +219,12 @@ pub(crate) fn cast_array(
 ) -> DataFusionResult<ArrayRef> {
     use DataType::*;
     let from_type = array.data_type().clone();
+
+    // Spark's SQL data-type grammar cannot express Dictionary as a cast target:
+    // https://github.com/apache/spark/blob/v4.2.0/sql/api/src/main/antlr4/org/apache/spark/sql/catalyst/parser/SqlBaseParser.g4#L1477-L1525
+    if matches!(to_type, Dictionary(_, _)) {
+        return internal_err!("Spark cannot specify dictionary types as cast targets");
+    }
 
     if &from_type == to_type {
         return Ok(Arc::new(array));
@@ -268,47 +240,18 @@ pub(crate) fn cast_array(
             .with_timestamp_format(TIMESTAMP_FORMAT),
     };
 
-    let array = match &from_type {
-        Dictionary(key_type, value_type)
-            if key_type.as_ref() == &Int32
-                && (value_type.as_ref() == &Utf8
-                    || value_type.as_ref() == &LargeUtf8
-                    || value_type.as_ref() == &Binary
-                    || value_type.as_ref() == &LargeBinary) =>
-        {
-            let dict_array = array
-                .as_any()
-                .downcast_ref::<DictionaryArray<Int32Type>>()
-                .expect("Expected a dictionary array");
-
-            let casted_result = match to_type {
-                Dictionary(_, to_value_type) => {
-                    let casted_dictionary = DictionaryArray::<Int32Type>::new(
-                        dict_array.keys().clone(),
-                        cast_array(Arc::clone(dict_array.values()), to_value_type, cast_options)?,
-                    );
-                    Arc::new(casted_dictionary.clone())
-                }
-                _ => {
-                    let casted_dictionary = DictionaryArray::<Int32Type>::new(
-                        dict_array.keys().clone(),
-                        cast_array(Arc::clone(dict_array.values()), to_type, cast_options)?,
-                    );
-                    take(casted_dictionary.values().as_ref(), dict_array.keys(), None)?
-                }
-            };
+    // Spark infers Parquet schemas from its own metadata or the Parquet MessageType, not
+    // ARROW:schema, so Arrow can expose a dictionary source while Spark requests its value type:
+    // https://github.com/apache/spark/blob/v4.2.0/sql/core/src/main/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFileFormat.scala#L585-L599
+    if let Dictionary(_, value_type) = &from_type {
+        if matches!(value_type.as_ref(), Utf8 | LargeUtf8 | Binary | LargeBinary) {
+            let dictionary = array.as_any_dictionary();
+            let values = cast_array(Arc::clone(dictionary.values()), to_type, cast_options)?;
+            let dictionary = dictionary.with_values(values);
+            let casted_result = cast_with_options(&dictionary, to_type, &native_cast_options)?;
             return Ok(spark_cast_postprocess(casted_result, &from_type, to_type));
         }
-        _ => {
-            if let Dictionary(_, _) = to_type {
-                let dict_array = dict_from_values::<Int32Type>(array)?;
-                let casted_result = cast_array(dict_array, to_type, cast_options)?;
-                return Ok(spark_cast_postprocess(casted_result, &from_type, to_type));
-            } else {
-                array
-            }
-        }
-    };
+    }
 
     let cast_result = match (&from_type, to_type) {
         // Null arrays carry no concrete values, so Arrow's native cast can change only the
@@ -436,9 +379,6 @@ pub(crate) fn cast_array(
         }
         (Int64, Binary) if (eval_mode == Legacy) => {
             cast_whole_num_to_binary!(&array, Int64Array, 8)
-        }
-        (Boolean, Decimal128(precision, scale)) => {
-            cast_boolean_to_decimal(&array, *precision, *scale)
         }
         (Int8 | Int16 | Int32 | Int64, Timestamp(_, tz)) => cast_int_to_timestamp(&array, tz),
         (Float32 | Float64, Timestamp(_, tz)) => cast_float_to_timestamp(&array, tz, eval_mode),
@@ -732,7 +672,7 @@ impl Display for Cast {
         write!(
             f,
             "Cast [data_type: {}, timezone: {}, child: {}, eval_mode: {:?}]",
-            self.data_type, self.cast_options.timezone, self.child, &self.cast_options.eval_mode
+            self.data_type, self.cast_options.timezone, self.child, self.cast_options.eval_mode
         )
     }
 }
@@ -792,6 +732,50 @@ impl PhysicalExpr for Cast {
     }
 }
 
+const UPPER_HEX_DIGITS: [u8; 16] = *b"0123456789ABCDEF";
+
+/// Writes `byte` as two uppercase hex digits.
+#[inline]
+fn write_upper_hex<W: Write>(out: &mut W, byte: u8) -> std::fmt::Result {
+    let buf = [
+        UPPER_HEX_DIGITS[(byte >> 4) as usize],
+        UPPER_HEX_DIGITS[(byte & 0x0f) as usize],
+    ];
+    // SAFETY: both bytes come from the ASCII UPPER_HEX_DIGITS table, so `buf` is valid UTF-8.
+    out.write_str(unsafe { std::str::from_utf8_unchecked(&buf) })
+}
+
+/// Writes `byte` reinterpreted as a signed decimal, as Spark does when printing a byte array.
+#[inline]
+fn write_i8<W: Write>(out: &mut W, byte: u8) -> std::fmt::Result {
+    write!(out, "{}", byte as i8)
+}
+
+/// Writes the bytes of `value` between square brackets, encoded with `encode` and joined by
+/// `separator`.
+fn write_bracketed<W: Write>(
+    out: &mut W,
+    value: &[u8],
+    separator: &str,
+    encode: fn(&mut W, u8) -> std::fmt::Result,
+) -> std::fmt::Result {
+    out.write_char('[')?;
+    for (i, byte) in value.iter().enumerate() {
+        if i > 0 {
+            out.write_str(separator)?;
+        }
+        encode(out, *byte)?;
+    }
+    out.write_char(']')
+}
+
+/// Casts a binary array to a string array. Without a binary output style the bytes are
+/// reinterpreted as a string as-is, which is what Spark's `Cast` does.
+///
+/// The other styles mimic the [BinaryFormatter]: https://github.com/apache/spark/blob/v4.0.0/sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/expressions/ToStringBase.scala#L449-L468
+/// used by SparkSQL's ToPrettyString expression.
+/// The BinaryFormatter was [introduced]: https://issues.apache.org/jira/browse/SPARK-47911 in Spark 4.0.0
+/// Before Spark 4.0.0, the default is SPACE_DELIMITED_UPPERCASE_HEX
 fn cast_binary_to_string<O: OffsetSizeTrait>(
     array: &dyn Array,
     spark_cast_options: &SparkCastOptions,
@@ -801,72 +785,224 @@ fn cast_binary_to_string<O: OffsetSizeTrait>(
         .downcast_ref::<GenericByteArray<GenericBinaryType<O>>>()
         .unwrap();
 
-    fn binary_formatter(value: &[u8], spark_cast_options: &SparkCastOptions) -> String {
-        match spark_cast_options.binary_output_style {
-            Some(s) => spark_binary_formatter(value, s),
-            None => cast_binary_formatter(value),
-        }
-    }
+    let num_rows = input.len();
+    let offsets = input.value_offsets();
+    let value_bytes = offsets[num_rows].as_usize() - offsets[0].as_usize();
+    // Upper bound on the encoded length so the value buffer is allocated once. For the
+    // JVM-lossy UTF-8 decoder path, valid UTF-8 sits at 1x; the builder grows on the rare
+    // invalid byte that expands to U+FFFD. Base64 rounds up to a full 4-char group via
+    // div_ceil, which already covers the group padding.
+    let capacity = match spark_cast_options.binary_output_style {
+        None | Some(BinaryOutputStyle::Utf8) => value_bytes,
+        Some(BinaryOutputStyle::Basic) => 6 * value_bytes + 2 * num_rows,
+        Some(BinaryOutputStyle::Base64) => 4 * value_bytes.div_ceil(3),
+        Some(BinaryOutputStyle::Hex) => 2 * value_bytes,
+        Some(BinaryOutputStyle::HexDiscrete) => 3 * value_bytes + 2 * num_rows,
+    };
 
-    let output_array = input
-        .iter()
-        .map(|value| match value {
-            Some(value) => Ok(Some(binary_formatter(value, spark_cast_options))),
-            _ => Ok(None),
-        })
-        .collect::<Result<GenericStringArray<O>, ArrowError>>()?;
-    Ok(Arc::new(output_array))
-}
-
-/// This function mimics the [BinaryFormatter]: https://github.com/apache/spark/blob/v4.0.0/sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/expressions/ToStringBase.scala#L449-L468
-/// used by SparkSQL's ToPrettyString expression.
-/// The BinaryFormatter was [introduced]: https://issues.apache.org/jira/browse/SPARK-47911 in Spark 4.0.0
-/// Before Spark 4.0.0, the default is SPACE_DELIMITED_UPPERCASE_HEX
-fn spark_binary_formatter(value: &[u8], binary_output_style: BinaryOutputStyle) -> String {
-    match binary_output_style {
-        BinaryOutputStyle::Utf8 => String::from_utf8(value.to_vec()).unwrap(),
-        BinaryOutputStyle::Basic => {
-            format!(
-                "{:?}",
-                value
-                    .iter()
-                    .map(|v| i8::from_ne_bytes([*v]))
-                    .collect::<Vec<i8>>()
-            )
-        }
-        BinaryOutputStyle::Base64 => BASE64_STANDARD_NO_PAD.encode(value),
-        BinaryOutputStyle::Hex => value
-            .iter()
-            .map(|v| hex::encode_upper([*v]))
-            .collect::<String>(),
-        BinaryOutputStyle::HexDiscrete => {
+    let mut builder = GenericStringBuilder::<O>::with_capacity(num_rows, capacity);
+    // Base64 is the only style that cannot encode straight into the builder.
+    let mut base64_buffer = String::new();
+    for value in input.iter() {
+        let Some(value) = value else {
+            // The previous iteration always finalized its row with `append_value("")`, so no
+            // bytes are pending in the builder here; a future edit that adds a `continue` or
+            // an early return inside the match below would break that invariant.
+            builder.append_null();
+            continue;
+        };
+        // Encode directly into the builder's value buffer; `append_value("")` then terminates
+        // the row. Writing to the builder is infallible.
+        let written = match spark_cast_options.binary_output_style {
+            // Default CAST(binary AS string) and the UTF8 ToPrettyString style (Spark 4.0+) both
+            // render via `new String(bytes, UTF_8)`. Route through the shared JVM-compatible lossy
+            // decoder so ill-formed bytes become U+FFFD (matching Spark) instead of being
+            // reinterpreted unchecked (UB) or panicking on non-UTF-8 input (#4488, #4763). The
+            // valid-UTF-8 path borrows, so it copies once (into the Arrow value buffer). Divergence
+            // for byte-level round-trips such as CAST(CAST(x AS string) AS binary) and value
+            // identity is documented in the compatibility guide and tracked by #4764.
+            None | Some(BinaryOutputStyle::Utf8) => {
+                builder.write_str(&decode_utf8_spark_lossy(value))
+            }
+            Some(BinaryOutputStyle::Basic) => write_bracketed(&mut builder, value, ", ", write_i8),
+            Some(BinaryOutputStyle::Base64) => {
+                base64_buffer.clear();
+                BASE64_STANDARD_NO_PAD.encode_string(value, &mut base64_buffer);
+                builder.write_str(&base64_buffer)
+            }
+            Some(BinaryOutputStyle::Hex) => value
+                .iter()
+                .try_for_each(|byte| write_upper_hex(&mut builder, *byte)),
             // Spark's default SPACE_DELIMITED_UPPERCASE_HEX
-            format!(
-                "[{}]",
-                value
-                    .iter()
-                    .map(|v| hex::encode_upper([*v]))
-                    .collect::<Vec<String>>()
-                    .join(" ")
-            )
-        }
+            Some(BinaryOutputStyle::HexDiscrete) => {
+                write_bracketed(&mut builder, value, " ", write_upper_hex)
+            }
+        };
+        written.expect("writing to a string builder cannot fail");
+        builder.append_value("");
     }
-}
-
-fn cast_binary_formatter(value: &[u8]) -> String {
-    match String::from_utf8(value.to_vec()) {
-        Ok(value) => value,
-        Err(_) => unsafe { String::from_utf8_unchecked(value.to_vec()) },
-    }
+    Ok(Arc::new(builder.finish()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{ListArray, NullArray, StringArray};
+    use arrow::array::{BinaryArray, ListArray, NullArray, PrimitiveArray, StringArray};
     use arrow::buffer::OffsetBuffer;
-    use arrow::datatypes::TimestampMicrosecondType;
-    use arrow::datatypes::{Field, Fields};
+    use arrow::datatypes::{Field, Fields, Int32Type, TimestampMicrosecondType};
+
+    #[test]
+    fn test_cast_to_dictionary_is_rejected() {
+        let error = cast_array(
+            Arc::new(StringArray::from(vec!["a"])),
+            &DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8)),
+            &SparkCastOptions::new(EvalMode::Legacy, "UTC", false),
+        )
+        .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("Spark cannot specify dictionary types as cast targets"));
+    }
+
+    #[test]
+    fn test_cast_binary_to_string_replaces_invalid_utf8_jvm_compatibly() {
+        // Invalid bytes are replaced with U+FFFD instead of reinterpreted as an invalid `str`,
+        // and the granularity matches the JVM: the surrogate-range sequence [ED A0 80] collapses
+        // to a single U+FFFD (Rust's `from_utf8_lossy` would emit three). Valid UTF-8 ("abc") is
+        // preserved exactly and NULL stays NULL.
+        let input = BinaryArray::from_opt_vec(vec![
+            Some(&[0xFFu8, 0xFE][..]),
+            None,
+            Some("abc".as_bytes()),
+            Some(&[0xEDu8, 0xA0, 0x80][..]),
+        ]);
+        // binary_output_style defaults to None, i.e. the plain (non-ToPrettyString) cast path.
+        let cast_options = SparkCastOptions::new(EvalMode::Legacy, "UTC", false);
+
+        let result = cast_binary_to_string::<i32>(&input, &cast_options).unwrap();
+
+        let strings = result.as_string::<i32>();
+        assert_eq!(strings.len(), 4);
+        assert_eq!(strings.value(0), "\u{FFFD}\u{FFFD}");
+        assert!(strings.is_null(1));
+        assert_eq!(strings.value(2), "abc");
+        assert_eq!(strings.value(3), "\u{FFFD}");
+    }
+
+    #[test]
+    fn test_cast_binary_to_string_utf8_output_style_replaces_invalid_utf8() {
+        // Spark's `binaryOutputStyle=UTF8` (Spark 4.0+) ToPrettyString formatter renders binary via
+        // `new String(bytes, UTF_8)`. Previously this arm called `String::from_utf8(..).unwrap()`,
+        // which panicked the executor on non-UTF-8 input. It must now decode JVM-compatibly-lossily,
+        // matching the default cast path's replacement behavior.
+        let input = BinaryArray::from_opt_vec(vec![
+            Some(&[0xFFu8, 0xFE][..]),
+            None,
+            Some("abc".as_bytes()),
+            Some(&[0xEDu8, 0xA0, 0x80][..]),
+        ]);
+        let mut cast_options = SparkCastOptions::new(EvalMode::Legacy, "UTC", false);
+        cast_options.binary_output_style = Some(BinaryOutputStyle::Utf8);
+
+        let result = cast_binary_to_string::<i32>(&input, &cast_options).unwrap();
+
+        let strings = result.as_string::<i32>();
+        assert_eq!(strings.len(), 4);
+        assert_eq!(strings.value(0), "\u{FFFD}\u{FFFD}");
+        assert!(strings.is_null(1));
+        assert_eq!(strings.value(2), "abc");
+        assert_eq!(strings.value(3), "\u{FFFD}");
+    }
+
+    #[test]
+    fn test_cast_binary_to_string_styles() {
+        let input: ArrayRef = Arc::new(BinaryArray::from_opt_vec(vec![
+            Some(b"\x00\x01\xfe".as_slice()),
+            Some(b"".as_slice()),
+            None,
+            Some(b"hi".as_slice()),
+        ]));
+        let cast = |style: Option<BinaryOutputStyle>| {
+            let mut options = SparkCastOptions::new(EvalMode::Legacy, "UTC", false);
+            options.binary_output_style = style;
+            let result = spark_cast(
+                ColumnarValue::Array(Arc::clone(&input)),
+                &DataType::Utf8,
+                &options,
+            )
+            .unwrap()
+            .into_array(input.len())
+            .unwrap();
+            let result = result.as_string::<i32>();
+            (0..result.len())
+                .map(|i| (!result.is_null(i)).then(|| result.value(i).to_string()))
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(
+            cast(Some(BinaryOutputStyle::HexDiscrete)),
+            vec![
+                Some("[00 01 FE]".to_string()),
+                Some("[]".to_string()),
+                None,
+                Some("[68 69]".to_string()),
+            ]
+        );
+        assert_eq!(
+            cast(Some(BinaryOutputStyle::Hex)),
+            vec![
+                Some("0001FE".to_string()),
+                Some("".to_string()),
+                None,
+                Some("6869".to_string()),
+            ]
+        );
+        assert_eq!(
+            cast(Some(BinaryOutputStyle::Basic)),
+            vec![
+                Some("[0, 1, -2]".to_string()),
+                Some("[]".to_string()),
+                None,
+                Some("[104, 105]".to_string()),
+            ]
+        );
+        assert_eq!(
+            cast(Some(BinaryOutputStyle::Base64)),
+            vec![
+                Some("AAH+".to_string()),
+                Some("".to_string()),
+                None,
+                Some("aGk".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_cast_binary_to_string_default_style_valid_utf8_through_spark_cast() {
+        // Exercises the default cast path through the public `spark_cast` entry point. Invalid bytes
+        // decode JVM-compatibly-lossily to U+FFFD (#4763), while valid multi-byte UTF-8 ("héllo") is
+        // preserved exactly.
+        let input: ArrayRef = Arc::new(BinaryArray::from_opt_vec(vec![
+            Some(b"\xff\xfe".as_slice()),
+            None,
+            Some("héllo".as_bytes()),
+        ]));
+        let options = SparkCastOptions::new(EvalMode::Legacy, "UTC", false);
+        let result = spark_cast(
+            ColumnarValue::Array(Arc::clone(&input)),
+            &DataType::Utf8,
+            &options,
+        )
+        .unwrap()
+        .into_array(input.len())
+        .unwrap();
+        let result = result.as_string::<i32>();
+        assert_eq!(result.value(0), "\u{FFFD}\u{FFFD}");
+        assert!(result.is_null(1));
+        assert_eq!(result.value(2), "héllo");
+    }
+
     #[test]
     fn test_cast_unsupported_timestamp_to_date() {
         // Since datafusion uses chrono::Datetime internally not all dates representable by TimestampMicrosecondType are supported

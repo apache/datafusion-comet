@@ -27,3 +27,22 @@ So Comet adds additional normalization expression of NaN and zero for comparison
 to Spark in some cases, especially when the data contains both positive and negative zero. This is likely an edge
 case that is not of concern for many users. If it is a concern, setting `spark.comet.exec.strictFloatingPoint=true`
 will make relevant operations fall back to Spark.
+
+## Ordering: NaN and signed zero (`-0.0` vs `+0.0`)
+
+Spark's `ORDER BY`, `RANK`, `DENSE_RANK`, and window frame comparisons route through
+`SQLOrderingUtil.compareDoubles` / `compareFloats`, which equate all NaN representations and
+define `-0.0 == 0.0`. NaN sorts above every non-NaN value.
+
+For scalar `FLOAT` and `DOUBLE` keys, Comet normalizes NaNs and signed zeros before native
+sorting, window peer comparisons, and `WindowGroupLimitExec` rank comparisons. Native range
+partitioning normalizes its keys and sampled boundaries in the same way. Only comparison keys
+are normalized; returned values retain their original NaN representations and zero signs.
+
+Native sorting of floating-point values nested in arrays or structs still uses Arrow's raw total
+ordering. Nested keys can therefore produce different ordering or rank results from Spark; see
+[#5507](https://github.com/apache/datafusion-comet/issues/5507).
+
+The existing `spark.comet.exec.strictFloatingPoint=true` fallback policy is unchanged, including
+its conservative fallback for scalar floating-point sort keys. Narrowing that scalar-sort
+admission policy is tracked in [#5506](https://github.com/apache/datafusion-comet/issues/5506).

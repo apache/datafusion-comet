@@ -34,16 +34,33 @@ Cast operations in Comet fall into three levels of support:
 
 Cast will fall back to Spark in some cases when ANSI mode is enabled. This can be enabled by setting `spark.comet.expression.Cast.allowIncompatible=true`. See the [Comet Supported Expressions Guide](../../../expressions.md) for more information on this configuration setting.
 
-There is an [epic](https://github.com/apache/datafusion-comet/issues/313) where we are tracking the work to fully implement ANSI support.
+## Whitespace Trimming in Casts from String
+
+Spark uses two different notions of whitespace when casting from string. Comet reproduces both,
+with one known exception noted below:
+
+| Trim set                               | Cast targets                                                              |
+| -------------------------------------- | ------------------------------------------------------------------------- |
+| Bytes `0x00`-`0x20` and `0x7F` (`DEL`) | `BOOLEAN`, `TINYINT`, `SMALLINT`, `INT`, `BIGINT`, `DATE`, `TIMESTAMP` \* |
+| Bytes `0x00`-`0x20` only               | `FLOAT`, `DOUBLE`, `DECIMAL`                                              |
+
+Neither set includes any non-ASCII whitespace, so padding a value with `U+0085`, `U+00A0`,
+`U+1680`, `U+2000`-`U+200A`, `U+2028`, `U+2029`, `U+202F`, `U+205F` or `U+3000` produces `NULL`
+(or raises under ANSI mode), even though those codepoints are whitespace to Unicode. Whitespace
+inside a value is never trimmed.
+
+\* `CAST(string AS TIMESTAMP)` and `CAST(string AS TIMESTAMP_NTZ)` still trim Unicode whitespace
+in Comet; see [#5149](https://github.com/apache/datafusion-comet/issues/5149).
 
 ## String to Decimal
 
 Comet's native `CAST(string AS DECIMAL)` implementation matches Apache Spark's behavior,
 including:
 
-- Leading and trailing ASCII whitespace is trimmed before parsing.
-- Null bytes (`\u0000`) at the start or end of a string are trimmed, matching Spark's
-  `UTF8String` behavior. Null bytes embedded in the middle of a string produce `NULL`.
+- Leading and trailing bytes `0x00`-`0x20` are trimmed before parsing, matching the
+  `java.lang.String.trim` that Spark applies before handing the value to `BigDecimal`.
+- Null bytes (`\u0000`) at the start or end of a string are therefore trimmed. Null bytes
+  embedded in the middle of a string produce `NULL`.
 - Fullwidth Unicode digits (U+FF10–U+FF19, e.g. `１２３.４５`) are treated as their ASCII
   equivalents, so `CAST('１２３.４５' AS DECIMAL(10,2))` returns `123.45`.
 - Scientific notation (e.g. `1.23E+5`) is supported.
@@ -60,7 +77,7 @@ Supported input formats match Spark exactly:
 
 - `yyyy`, `yyyy-[m]m`, `yyyy-[m]m-[d]d`
 - Optional `T` suffix with arbitrary trailing text (e.g. `2020-01-01T12:34:56`)
-- Leading/trailing whitespace and control characters are trimmed
+- Leading/trailing bytes `0x00`-`0x20` and `0x7F` are trimmed
 - Optional sign prefix (`-` for negative years)
 - Leading zeros (e.g. `0002020-01-01` is year 2020)
 
@@ -160,5 +177,3 @@ as `"1.23E+4"`).
 
 <!--BEGIN:CAST_ANSI_TABLE-->
 <!--END:CAST_ANSI_TABLE-->
-
-See the [tracking issue](https://github.com/apache/datafusion-comet/issues/286) for more details.
