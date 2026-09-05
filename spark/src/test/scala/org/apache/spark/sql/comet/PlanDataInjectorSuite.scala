@@ -153,7 +153,7 @@ class PlanDataInjectorSuite extends AnyFunSuite {
 
   /**
    * Builds an un-injected NativeScan operator the way the driver ships it: hasCommon, no
-   * file_partition, source_key embedded (see CometNativeScanExec.apply).
+   * file_partition, source_key_hash embedded (see CometNativeScanExec.apply).
    */
   private def nativeScanOp(source: String, columnNames: Seq[String]): Operator = {
     val common = nativeScanCommon(source, columnNames)
@@ -163,7 +163,7 @@ class PlanDataInjectorSuite extends AnyFunSuite {
         OperatorOuterClass.NativeScan
           .newBuilder()
           .setCommon(common)
-          .setSourceKey(NativeScanPlanDataInjector.sourceKey(common)))
+          .setSourceKeyHash(NativeScanPlanDataInjector.sourceKeyHash(common)))
       .build()
   }
 
@@ -564,7 +564,8 @@ class PlanDataInjectorSuite extends AnyFunSuite {
     assert(injectedB.getNativeScan.getCommon == commonB)
   }
 
-  test("NativeScan getKey reads the driver-computed source key from the plan") {
+  test("NativeScan getKey rebuilds the key from the source and the transported hash") {
+    // Only the hash travels in the plan; the source is already in the common next to it.
     val common = nativeScanCommon("file:///transported-tbl", Seq("id", "v"))
     val op = Operator
       .newBuilder()
@@ -572,10 +573,25 @@ class PlanDataInjectorSuite extends AnyFunSuite {
         OperatorOuterClass.NativeScan
           .newBuilder()
           .setCommon(common)
-          .setSourceKey("driver-key"))
+          .setSourceKeyHash(1234))
       .build()
 
-    assert(NativeScanPlanDataInjector.getKey(op).contains("driver-key"))
+    assert(NativeScanPlanDataInjector.getKey(op).contains("file:///transported-tbl_1234"))
+    assert(
+      NativeScanPlanDataInjector.sourceKey(common) ==
+        s"file:///transported-tbl_${NativeScanPlanDataInjector.sourceKeyHash(common)}",
+      "the driver-side key must be the same source and hash the executor rebuilds")
+  }
+
+  test("NativeScan getKey treats a zero hash as transported, not absent") {
+    val common = nativeScanCommon("file:///zero-hash-tbl", Seq("id"))
+    val op = Operator
+      .newBuilder()
+      .setNativeScan(
+        OperatorOuterClass.NativeScan.newBuilder().setCommon(common).setSourceKeyHash(0))
+      .build()
+
+    assert(NativeScanPlanDataInjector.getKey(op).contains("file:///zero-hash-tbl_0"))
   }
 
   test("NativeScan getKey derives the key only when the plan carries none") {
@@ -596,17 +612,15 @@ class PlanDataInjectorSuite extends AnyFunSuite {
     val op = Operator
       .newBuilder()
       .setNativeScan(
-        OperatorOuterClass.NativeScan
-          .newBuilder()
-          .setCommon(common)
-          .setSourceKey("shuffle-key"))
+        OperatorOuterClass.NativeScan.newBuilder().setCommon(common).setSourceKeyHash(77))
       .build()
+    val key = "file:///shuffle-tbl_77"
 
     val injected = PlanDataInjector.injectPlanDataForShuffle(
       424242,
       op,
-      Map("shuffle-key" -> common.toByteArray),
-      Map("shuffle-key" -> nativeScanPartitionBytes("shuffled.parquet")))
+      Map(key -> common.toByteArray),
+      Map(key -> nativeScanPartitionBytes("shuffled.parquet")))
 
     assert(injected.getNativeScan.getCommon == common)
     assert(

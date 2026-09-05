@@ -635,7 +635,10 @@ class CometCelebornShuffleManagerSuite extends AnyFunSuite {
     val scanOp = OperatorOuterClass.Operator
       .newBuilder()
       .setNativeScan(
-        OperatorOuterClass.NativeScan.newBuilder().setCommon(common).setSourceKey(key))
+        OperatorOuterClass.NativeScan
+          .newBuilder()
+          .setCommon(common)
+          .setSourceKeyHash(NativeScanPlanDataInjector.sourceKeyHash(common)))
       .build()
     val partition = OperatorOuterClass.NativeScan
       .newBuilder()

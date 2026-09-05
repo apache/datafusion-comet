@@ -529,24 +529,33 @@ private[comet] object NativeScanPlanDataInjector extends PlanDataInjector {
 
   override def getKey(op: Operator): Option[String] = {
     val scan = op.getNativeScan
-    // The driver derives the key once and ships it inside the plan (CometNativeScanExec.apply),
-    // so no per-task derivation happens here; deriving from the common is only a fallback for
-    // plans built without one.
-    val transported = scan.getSourceKey
-    Some(if (transported.nonEmpty) transported else sourceKey(scan.getCommon))
+    // The driver hashes the common once and ships the hash inside the plan
+    // (CometNativeScanExec.apply), so no per-task hashing happens here; deriving from the
+    // common is only a fallback for plans built without one.
+    Some(
+      if (scan.hasSourceKeyHash) sourceKey(scan.getCommon.getSource, scan.getSourceKeyHash)
+      else sourceKey(scan.getCommon))
   }
 
   /**
-   * The key under which a native scan's planning data is stored and looked up. Derived once on
-   * the driver by `CometNativeScanExec.apply`, which embeds it in the NativeScan proto so
-   * [[getKey]] reads the identical string back instead of re-deriving it.
-   *
-   * Data filters are stripped of their `QueryContext` before hashing so the key is stable across
-   * interning (see `QueryContextInterner`): the executor-side fallback derivation sees the
-   * interned plan while the driver holds the un-interned form. Only data filters can carry a
-   * context, so the other components are hashed as-is.
+   * The key under which a native scan's planning data is stored and looked up: the scan's source
+   * plus [[sourceKeyHash]]. `CometNativeScanExec.apply` computes the hash once on the driver and
+   * embeds it in the NativeScan proto, so [[getKey]] rebuilds the identical string from the
+   * source already carried by the common.
    */
-  private[comet] def sourceKey(common: OperatorOuterClass.NativeScanCommon): String = {
+  private[comet] def sourceKey(common: OperatorOuterClass.NativeScanCommon): String =
+    sourceKey(common.getSource, sourceKeyHash(common))
+
+  private[comet] def sourceKey(source: String, hash: Int): String = s"${source}_$hash"
+
+  /**
+   * Hash of the parts of a common that distinguish two scans of the same source: schema, data
+   * filters, projection and fields. Data filters are stripped of their `QueryContext` before
+   * hashing so the hash is stable across interning (see `QueryContextInterner`): the
+   * executor-side fallback derivation sees the interned plan while the driver holds the
+   * un-interned form. Only data filters can carry a context, so the rest is hashed as-is.
+   */
+  private[comet] def sourceKeyHash(common: OperatorOuterClass.NativeScanCommon): Int = {
     val dataFilters = common.getDataFiltersList.asScala
       .map(QueryContextInterner.stripQueryContexts(_).toString)
     val keyComponents = Seq(
@@ -554,7 +563,7 @@ private[comet] object NativeScanPlanDataInjector extends PlanDataInjector {
       dataFilters.mkString("[", ", ", "]"),
       common.getProjectionVectorList.toString,
       common.getFieldsList.toString)
-    s"${common.getSource}_${keyComponents.mkString("|").hashCode}"
+    keyComponents.mkString("|").hashCode
   }
 
   // Parsing wide-schema commons dominates inject(); injectPlanData memoizes the result in the
