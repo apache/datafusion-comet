@@ -264,7 +264,7 @@ class CometCelebornShuffleManager private[shuffle] (
         ownedNativeClients.keySet().asScala.foreach(CelebornShufflePusherFactory.releaseClient)
         ownedNativeClients.clear()
         nativeShuffleClients.clear()
-        PlanDataInjector.releaseAllPreparedShuffles()
+        PlanDataInjector.releaseAll()
       }
     }
   }

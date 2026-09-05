@@ -647,11 +647,11 @@ class CometCelebornShuffleManagerSuite extends AnyFunSuite {
       scanOp,
       Map(key -> common.toByteArray),
       Map(key -> partition))
-    key
+    PlanDataInjector.preparedKey(NativeScanPlanDataInjector, key)
   }
 
   test("unregisterShuffle releases that shuffle's prepared scan data") {
-    PlanDataInjector.releaseAllPreparedShuffles()
+    PlanDataInjector.releaseAll()
     val composite = manager(new RecordingShuffleManager)
     val gone = prepareShuffleScan(3, "s3://celeborn/unregister-gone")
     val kept = prepareShuffleScan(4, "s3://celeborn/unregister-kept")
@@ -665,15 +665,19 @@ class CometCelebornShuffleManagerSuite extends AnyFunSuite {
   test("stop releases every shuffle's prepared scan data") {
     // A recreated SparkContext restarts shuffle ids at zero, so whatever the stopped context
     // cached under those ids must not survive the manager that owned it.
-    PlanDataInjector.releaseAllPreparedShuffles()
+    PlanDataInjector.releaseAll()
     val composite = manager(new RecordingShuffleManager)
     prepareShuffleScan(0, "s3://celeborn/stop-a")
     prepareShuffleScan(1, "s3://celeborn/stop-b")
     assert(PlanDataInjector.preparedShuffleSnapshot.keySet == Set(0, 1))
+    val plan = OperatorOuterClass.Operator.newBuilder().setPlanId(1).build().toByteArray
+    PlanDataInjector.parseBasePlan(plan, PlanDataInjector.planFingerprint(plan))
+    assert(PlanDataInjector.basePlanSnapshot.nonEmpty)
 
     composite.stop()
 
     assert(PlanDataInjector.preparedShuffleSnapshot.isEmpty)
+    assert(PlanDataInjector.basePlanSnapshot.isEmpty)
   }
 
   test("registration failures retain their original exception without local fallback") {

@@ -83,11 +83,17 @@ private[comet] trait PlanDataInjector {
   def getKey(op: Operator): Option[String]
 
   /**
-   * Parse the partition-invariant common bytes into whatever form [[inject]] consumes.
-   * `injectPlanData` memoizes the result inside the base plan's cache entry, so a wide schema's
-   * common is prepared once per stage rather than once per task.
+   * What [[prepareCommon]] produces and [[inject]] consumes. Naming it lets the compiler check
+   * that an injector's two halves agree instead of relying on a cast inside `inject`.
    */
-  def prepareCommon(commonBytes: Array[Byte]): AnyRef
+  type Prepared <: AnyRef
+
+  /**
+   * Parse the partition-invariant common bytes into whatever form [[inject]] consumes.
+   * `injectPlanData` memoizes the result per plan entry or per shuffle, so a wide schema's common
+   * is prepared once per stage rather than once per task.
+   */
+  def prepareCommon(commonBytes: Array[Byte]): Prepared
 
   /**
    * Inject common + partition data into the operator node. `preparedCommon` is what
@@ -97,7 +103,7 @@ private[comet] trait PlanDataInjector {
    * the returned node's children, and relies on child reference identity to decide which
    * operators need rebuilding.
    */
-  def inject(op: Operator, preparedCommon: AnyRef, partitionBytes: Array[Byte]): Operator
+  def inject(op: Operator, preparedCommon: Prepared, partitionBytes: Array[Byte]): Operator
 }
 
 /**
@@ -108,13 +114,14 @@ private[comet] object PlanDataInjector extends Logging {
   import java.util.concurrent.ConcurrentHashMap
 
   private[comet] final val maxCachedBasePlans = 16
+  private[comet] final val maxCachedShuffles = 16
 
   /**
    * Content key for the base plan cache. The hash is the driver-computed [[planFingerprint]]
    * shipped with the plan bytes, so no task rescans the bytes to probe the cache; equality still
    * compares the bytes so a fingerprint collision cannot serve another plan.
    */
-  private[comet] final class PlanKey(val bytes: Array[Byte], fingerprint: Long) {
+  private[comet] final class PlanKey(val bytes: Array[Byte], val fingerprint: Long) {
     override def hashCode: Int = (fingerprint ^ (fingerprint >>> 32)).toInt
     override def equals(other: Any): Boolean = other match {
       case that: PlanKey => java.util.Arrays.equals(bytes, that.bytes)
@@ -144,10 +151,11 @@ private[comet] object PlanDataInjector extends Logging {
    * scans out of a shared LRU.
    */
   private[comet] final class CachedPlanData(val plan: Operator) {
-    // Keyed by the scan's driver-computed source key. Entries pin the finalized common bytes
-    // they were prepared from: scalar-subquery data filters are appended after planning (see
-    // CometNativeScanExec.serializedPartitionData), so a byte-identical base plan can ship
-    // different finalized commons under the same key across executions.
+    // Keyed by preparedKey (injector class plus the scan's driver-computed source key). Entries
+    // pin the finalized common bytes they were prepared from: scalar-subquery data filters are
+    // appended after planning (see CometNativeScanExec.serializedPartitionData), so a
+    // byte-identical base plan can ship different finalized commons under the same key across
+    // executions.
     private[comet] val preparedCommons = new ConcurrentHashMap[String, PreparedCommon]()
   }
 
@@ -171,6 +179,11 @@ private[comet] object PlanDataInjector extends Logging {
    * lock so unrelated misses never serialize behind each other; when two threads race the same
    * cold key, the first insert wins and the loser adopts it, so all tasks of a stage share one
    * plan entry (and with it one set of prepared per-scan commons).
+   *
+   * `cache` must be a `Collections.synchronizedMap` view: the check-then-put below locks the map
+   * object, which is that wrapper's own mutex, so it is atomic against the wrapper's get and put
+   * and against the LinkedHashMap's access-order bookkeeping. A ConcurrentHashMap would compile
+   * here but its operations ignore that monitor.
    */
   private[comet] def cachedOrCompute[K, V](cache: JMap[K, V], key: K)(compute: => V): V = {
     val cached = cache.get(key)
@@ -229,24 +242,15 @@ private[comet] object PlanDataInjector extends Logging {
     injectors.groupBy(_.opStructCase)
 
   /**
-   * Injects planning data into an Operator tree by finding nodes that need injection and applying
-   * the appropriate injector.
+   * Injects planning data into a cached base plan by finding the scans that need it and applying
+   * the matching injector. Each scan's prepared common is memoized inside the plan's own cache
+   * entry, so it is prepared once per stage rather than once per task.
    *
    * Supports joins over multiple tables by matching each operator with its corresponding data
    * based on a key (e.g., metadata_location for Iceberg).
    *
    * Operators are immutable protobuf messages, so any subtree needing no injection is returned by
    * reference rather than rebuilt; only the root-to-scan paths are rebuilt.
-   */
-  def injectPlanData(
-      op: Operator,
-      commonByKey: Map[String, Array[Byte]],
-      partitionByKey: Map[String, Array[Byte]]): Operator =
-    injectPlanData(op, commonByKey, partitionByKey, null)
-
-  /**
-   * Injects planning data into a cached base plan, memoizing each scan's prepared common inside
-   * the plan's own cache entry so it is prepared once per stage rather than once per task.
    */
   def injectPlanData(
       cachedPlan: CachedPlanData,
@@ -261,7 +265,7 @@ private[comet] object PlanDataInjector extends Logging {
     new LinkedHashMap[Integer, ConcurrentHashMap[String, PreparedCommon]](4, 0.75f, true) {
       override def removeEldestEntry(
           eldest: JMap.Entry[Integer, ConcurrentHashMap[String, PreparedCommon]]): Boolean = {
-        size() > maxCachedBasePlans
+        size() > maxCachedShuffles
       }
     })
 
@@ -282,20 +286,41 @@ private[comet] object PlanDataInjector extends Logging {
 
   // A shuffle's prepared data dies with the shuffle, and shuffle ids restart at zero for every
   // SparkContext in the JVM, so a recreated context would otherwise keep stacking new scan keys
-  // under ids the last context already used. The shuffle managers call these from
-  // unregisterShuffle and stop.
+  // under ids the last context already used. The shuffle managers call this from
+  // unregisterShuffle.
   private[comet] def releasePreparedShuffle(shuffleId: Int): Unit =
     shufflePreparedCommons.remove(Integer.valueOf(shuffleId))
 
-  private[comet] def releaseAllPreparedShuffles(): Unit = shufflePreparedCommons.clear()
+  // Both stores belong to the SparkEnv that filled them, so the shuffle managers drop them
+  // together from stop.
+  private[comet] def releaseAll(): Unit = {
+    shufflePreparedCommons.clear()
+    basePlanCache.clear()
+  }
 
-  /** Test-only view: each cached shuffle id with the scan keys prepared under it. */
+  /** Test-only view: each cached shuffle id with the memo keys prepared under it. */
   private[comet] def preparedShuffleSnapshot: Map[Int, Set[String]] =
     shufflePreparedCommons.synchronized {
       shufflePreparedCommons.asScala.map { case (id, prepared) =>
         id.intValue() -> prepared.keySet().asScala.toSet
       }.toMap
     }
+
+  /** Test-only view: each cached plan's fingerprint with the memo keys prepared under it. */
+  private[comet] def basePlanSnapshot: Map[Long, Set[String]] =
+    basePlanCache.synchronized {
+      basePlanCache.asScala.map { case (key, cached) =>
+        key.fingerprint -> cached.preparedCommons.keySet().asScala.toSet
+      }.toMap
+    }
+
+  /**
+   * Memo key for one injector's prepared common. Every contrib scan arrives as the same
+   * CONTRIB_SCAN envelope, so two injectors can agree on a scan key; the class prefix keeps their
+   * prepared objects apart.
+   */
+  private[comet] def preparedKey(injector: PlanDataInjector, key: String): String =
+    s"${injector.getClass.getName}:$key"
 
   private def injectPlanData(
       op: Operator,
@@ -344,28 +369,26 @@ private[comet] object PlanDataInjector extends Logging {
   }
 
   /**
-   * Prepared-common lookup scoped to the caller's cache entry, or a plain prepare when the caller
-   * has none. The byte comparison guards against a finalized common that changed under the same
-   * key -- scalar-subquery data filters resolve per execution -- so a stale entry is replaced,
-   * never served. Two overlapping executions alternating different finalized bytes under one key
-   * just alternate the slot: correct, only losing reuse for the overlap.
+   * Prepared-common lookup scoped to the caller's memo. The byte comparison guards against a
+   * finalized common that changed under the same key -- scalar-subquery data filters resolve per
+   * execution -- so a stale entry is replaced, never served. Two overlapping executions
+   * alternating different finalized bytes under one key just alternate the slot: correct, only
+   * losing reuse for the overlap.
    */
-  private def prepareShared(
+  private[comet] def prepareShared(
       injector: PlanDataInjector,
       key: String,
       commonBytes: Array[Byte],
-      preparedCommons: ConcurrentHashMap[String, PreparedCommon]): AnyRef = {
-    if (preparedCommons == null) {
-      injector.prepareCommon(commonBytes)
+      preparedCommons: ConcurrentHashMap[String, PreparedCommon]): injector.Prepared = {
+    val memoKey = preparedKey(injector, key)
+    val hit = preparedCommons.get(memoKey)
+    if (hit != null && java.util.Arrays.equals(hit.bytes, commonBytes)) {
+      // The memo key carries the injector class, so this slot only ever holds its own type.
+      hit.message.asInstanceOf[injector.Prepared]
     } else {
-      val hit = preparedCommons.get(key)
-      if (hit != null && java.util.Arrays.equals(hit.bytes, commonBytes)) {
-        hit.message
-      } else {
-        val prepared = new PreparedCommon(commonBytes, injector.prepareCommon(commonBytes))
-        preparedCommons.put(key, prepared)
-        prepared.message
-      }
+      val prepared = injector.prepareCommon(commonBytes)
+      preparedCommons.put(memoKey, new PreparedCommon(commonBytes, prepared))
+      prepared
     }
   }
 
@@ -458,23 +481,8 @@ private[comet] object PlanDataInjector extends Logging {
  * Injector for Iceberg scan operators.
  */
 private[comet] object IcebergPlanDataInjector extends PlanDataInjector {
-  import java.nio.ByteBuffer
-  import java.util.{LinkedHashMap, Map => JMap}
 
-  private final val maxCacheEntries = 16
-
-  // Cache parsed IcebergScanCommon to avoid reparsing for Iceberg tables with large numbers of
-  // partitions (thousands or more) that may repeatedly parse the same commonBytes.
-  // IcebergPlanDataInjector is a singleton, so we use an LRU cache to eventually evict old
-  // IcebergScanCommon objects. 16 seems like a reasonable starting point since these objects
-  // are not large. Thread-safe LinkedHashMap with accessOrder=true provides LRU ordering.
-  private val commonCache = java.util.Collections.synchronizedMap(
-    new LinkedHashMap[ByteBuffer, OperatorOuterClass.IcebergScanCommon](4, 0.75f, true) {
-      override def removeEldestEntry(
-          eldest: JMap.Entry[ByteBuffer, OperatorOuterClass.IcebergScanCommon]): Boolean = {
-        size() > maxCacheEntries
-      }
-    })
+  override type Prepared = OperatorOuterClass.IcebergScanCommon
 
   override val opStructCase: Operator.OpStructCase = Operator.OpStructCase.ICEBERG_SCAN
 
@@ -488,25 +496,12 @@ private[comet] object IcebergPlanDataInjector extends PlanDataInjector {
     Some(s"${common.getMetadataLocation}_${common.getScanHashCode}")
   }
 
-  // Cache the parsed common data to avoid deserializing on every partition. Also serves the
-  // native shuffle writer's per-task plans, which have no base plan cache entry to memoize into.
-  override def prepareCommon(commonBytes: Array[Byte]): AnyRef = {
-    val cacheKey = ByteBuffer.wrap(commonBytes)
-    commonCache.synchronized {
-      Option(commonCache.get(cacheKey)).getOrElse {
-        val parsed = OperatorOuterClass.IcebergScanCommon.parseFrom(commonBytes)
-        commonCache.put(cacheKey, parsed)
-        parsed
-      }
-    }
-  }
+  // Parsed once per stage or shuffle by injectPlanData's memo, never per partition.
+  override def prepareCommon(commonBytes: Array[Byte]): Prepared =
+    OperatorOuterClass.IcebergScanCommon.parseFrom(commonBytes)
 
-  override def inject(
-      op: Operator,
-      preparedCommon: AnyRef,
-      partitionBytes: Array[Byte]): Operator = {
+  override def inject(op: Operator, common: Prepared, partitionBytes: Array[Byte]): Operator = {
     val scan = op.getIcebergScan
-    val common = preparedCommon.asInstanceOf[OperatorOuterClass.IcebergScanCommon]
 
     val tasksOnly = OperatorOuterClass.IcebergScan.parseFrom(partitionBytes)
 
@@ -522,6 +517,8 @@ private[comet] object IcebergPlanDataInjector extends PlanDataInjector {
  * Injector for NativeScan operators.
  */
 private[comet] object NativeScanPlanDataInjector extends PlanDataInjector {
+
+  override type Prepared = OperatorOuterClass.NativeScanCommon
 
   override val opStructCase: Operator.OpStructCase = Operator.OpStructCase.NATIVE_SCAN
 
@@ -562,15 +559,10 @@ private[comet] object NativeScanPlanDataInjector extends PlanDataInjector {
 
   // Parsing wide-schema commons dominates inject(); injectPlanData memoizes the result in the
   // base plan's cache entry so it runs once per stage on that path.
-  override def prepareCommon(commonBytes: Array[Byte]): AnyRef =
+  override def prepareCommon(commonBytes: Array[Byte]): Prepared =
     OperatorOuterClass.NativeScanCommon.parseFrom(commonBytes)
 
-  override def inject(
-      op: Operator,
-      preparedCommon: AnyRef,
-      partitionBytes: Array[Byte]): Operator = {
-
-    val common = preparedCommon.asInstanceOf[OperatorOuterClass.NativeScanCommon]
+  override def inject(op: Operator, common: Prepared, partitionBytes: Array[Byte]): Operator = {
     val partitionOnly = OperatorOuterClass.NativeScan.parseFrom(partitionBytes)
 
     // Build complete NativeScan with common fields + this partition's file list

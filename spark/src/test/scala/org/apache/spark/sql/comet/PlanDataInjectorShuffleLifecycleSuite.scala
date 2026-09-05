@@ -21,17 +21,18 @@ package org.apache.spark.sql.comet
 
 import scala.concurrent.duration.DurationInt
 
-import org.apache.spark.sql.{CometTestBase, SparkSession}
+import org.apache.spark.sql.{CometTestBase, DataFrame, SparkSession}
 import org.apache.spark.sql.functions.col
 import org.apache.spark.util.Utils
 
 import org.apache.comet.CometConf
 
 /**
- * End-to-end lifecycle of the shuffle-scoped prepared scan data held by [[PlanDataInjector]]:
- * Spark's shuffle cleanup releases one shuffle's entry, and stopping the SparkContext releases
- * them all, so a context recreated in the same JVM starts from an empty store even though its
- * shuffle ids restart at zero.
+ * End-to-end lifecycle of the executor-side plan data held by [[PlanDataInjector]]. A map-only
+ * stage parses its plan once into the base plan cache; a scan fused into a native shuffle map
+ * stage prepares under the shuffle id instead. Spark's shuffle cleanup releases one shuffle's
+ * entry, and stopping the SparkContext releases both stores, so a context recreated in the same
+ * JVM starts empty even though its shuffle ids restart at zero.
  *
  * The recreated-context test stops the suite's SparkContext, so it runs last and nothing else may
  * follow it.
@@ -53,13 +54,38 @@ class PlanDataInjectorShuffleLifecycleSuite extends CometTestBase {
       }
   }
 
-  /** Runs a native shuffle fed directly by a native Parquet scan and returns its scan keys. */
-  private def runScanFusedShuffle(session: SparkSession, path: String): Set[String] = {
+  private def writeInput(session: SparkSession, path: String): Unit =
     session
       .range(0, 1000, 1, numPartitions = 4)
       .selectExpr("id AS _1", "CAST(id AS STRING) AS _2")
       .write
       .parquet(path)
+
+  /**
+   * Collects a native Parquet scan straight back, a map-only stage of four tasks, and returns the
+   * DataFrame with the fingerprint of the base plan entry the stage added. The shuffle store is
+   * checked for additions only: the ContextCleaner may remove an earlier test's shuffle at any
+   * time.
+   */
+  private def runMapOnlyScan(session: SparkSession, path: String): (DataFrame, Long) = {
+    writeInput(session, path)
+    val before = PlanDataInjector.basePlanSnapshot
+    val shufflesBefore = PlanDataInjector.preparedShuffleSnapshot.keySet
+    val df = session.read.parquet(path)
+    assert(df.collect().length == 1000)
+    val added = PlanDataInjector.basePlanSnapshot -- before.keySet
+    assert(added.size == 1, s"four tasks of one stage should add one base plan entry, saw $added")
+    assert(added.values.head.nonEmpty, "the scan must have been prepared under the plan entry")
+    val shufflesAdded = PlanDataInjector.preparedShuffleSnapshot.keySet -- shufflesBefore
+    assert(
+      shufflesAdded.isEmpty,
+      s"a map-only stage must not touch the shuffle store: $shufflesAdded")
+    (df, added.keys.head)
+  }
+
+  /** Runs a native shuffle fed directly by a native Parquet scan and returns its scan keys. */
+  private def runScanFusedShuffle(session: SparkSession, path: String): Set[String] = {
+    writeInput(session, path)
     withNativeShuffle(session) {
       val before = PlanDataInjector.preparedShuffleSnapshot
       val df = session.read.parquet(path).repartition(5, col("_1"))
@@ -74,8 +100,33 @@ class PlanDataInjectorShuffleLifecycleSuite extends CometTestBase {
     }
   }
 
+  test("a map-only stage hits the base plan cache on every task after the first") {
+    PlanDataInjector.releaseAll()
+    withTempDir { dir =>
+      val (df, fingerprint) =
+        runMapOnlyScan(spark, new java.io.File(dir, "map-only.parquet").toString)
+      // Re-executing the same plan ships the same bytes, so nothing new is parsed either.
+      assert(df.collect().length == 1000)
+      assert(
+        PlanDataInjector.basePlanSnapshot.keySet == Set(fingerprint),
+        "rerunning the stage must hit the cached entry, not add another")
+    }
+  }
+
+  test("a scan fused into a native shuffle prepares under the shuffle id, not the base cache") {
+    PlanDataInjector.releaseAll()
+    withTempDir { dir =>
+      val before = PlanDataInjector.basePlanSnapshot
+      val keys = runScanFusedShuffle(spark, new java.io.File(dir, "fused.parquet").toString)
+      assert(keys.nonEmpty)
+      assert(
+        PlanDataInjector.basePlanSnapshot == before,
+        "the shuffle writer's per-task plan never enters the base plan cache")
+    }
+  }
+
   test("Spark's shuffle cleanup releases the shuffle's prepared scan data") {
-    PlanDataInjector.releaseAllPreparedShuffles()
+    PlanDataInjector.releaseAll()
     withTempDir { dir =>
       val keys = runScanFusedShuffle(spark, new java.io.File(dir, "cleanup.parquet").toString)
       // The DataFrame is out of scope here; once the ShuffleDependency is collected, the
@@ -91,19 +142,25 @@ class PlanDataInjectorShuffleLifecycleSuite extends CometTestBase {
     }
   }
 
-  test("a recreated SparkContext starts from an empty shuffle store") {
-    PlanDataInjector.releaseAllPreparedShuffles()
+  test("a recreated SparkContext starts from empty plan data stores") {
+    PlanDataInjector.releaseAll()
     // Not withTempDir: its task-drain check needs the suite's context, which this test stops.
     val dir = Utils.createTempDir()
     try {
       val firstKeys =
         runScanFusedShuffle(spark, new java.io.File(dir, "first-context.parquet").toString)
       assert(PlanDataInjector.preparedShuffleSnapshot.values.flatten.toSet == firstKeys)
+      val (_, firstPlan) =
+        runMapOnlyScan(spark, new java.io.File(dir, "first-context-map.parquet").toString)
+      assert(PlanDataInjector.basePlanSnapshot.contains(firstPlan))
 
       spark.stop()
       assert(
         PlanDataInjector.preparedShuffleSnapshot.isEmpty,
         "stopping the context must release every shuffle's prepared data")
+      assert(
+        PlanDataInjector.basePlanSnapshot.isEmpty,
+        "stopping the context must release the base plan cache as well")
 
       val second = createSparkSession
       try {

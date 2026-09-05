@@ -290,7 +290,7 @@ class CometShuffleManager(conf: SparkConf) extends ShuffleManager with Logging {
   /** Shut down this ShuffleManager. */
   override def stop(): Unit = {
     try shuffleBlockResolver.stop()
-    finally PlanDataInjector.releaseAllPreparedShuffles()
+    finally PlanDataInjector.releaseAll()
   }
 }
 

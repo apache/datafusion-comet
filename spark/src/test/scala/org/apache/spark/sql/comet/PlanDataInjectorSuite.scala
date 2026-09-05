@@ -72,14 +72,15 @@ class PlanDataInjectorSuite extends AnyFunSuite {
     // injectorsByKind miss path (`case _ =>`) that replaced the per-injector canInject walk.
     val child = Operator.newBuilder().setPlanId(2).build()
     val root = Operator.newBuilder().setPlanId(1).addChildren(child).build()
+    val cached = parseBasePlan(root.toByteArray)
 
     val result = PlanDataInjector.injectPlanData(
-      root,
+      cached,
       Map.empty[String, Array[Byte]],
       Map.empty[String, Array[Byte]])
 
     assert(
-      result eq root,
+      result eq cached.plan,
       "a tree with nothing to inject should be returned by reference, not rebuilt")
   }
 
@@ -107,11 +108,12 @@ class PlanDataInjectorSuite extends AnyFunSuite {
       .addChildren(untouchedSibling)
       .build()
 
+    val cached = parseBasePlan(root.toByteArray)
     val result =
-      PlanDataInjector.injectPlanData(root, Map(key -> commonBytes), Map(key -> partitionBytes))
+      PlanDataInjector.injectPlanData(cached, Map(key -> commonBytes), Map(key -> partitionBytes))
 
     assert(
-      result.getChildren(1) eq untouchedSibling,
+      result.getChildren(1) eq cached.plan.getChildren(1),
       "a sibling subtree with no injectable scan should be shared, not rebuilt")
     val injectedScan = result.getChildren(0).getChildren(0)
     assert(injectedScan.getIcebergScan.getCommon.getRequiredSchemaCount == 2)
@@ -420,22 +422,76 @@ class PlanDataInjectorSuite extends AnyFunSuite {
       scanOp,
       Map(key -> scanOp.getNativeScan.getCommon.toByteArray),
       Map(key -> nativeScanPartitionBytes("map-0.parquet")))
-    key
+    PlanDataInjector.preparedKey(NativeScanPlanDataInjector, key)
+  }
+
+  test("the shuffle store evicts the oldest shuffle beyond maxCachedShuffles") {
+    PlanDataInjector.releaseAll()
+    val first = injectShuffleScan(100, "file:///evict-shuffle-first")
+    (1 to PlanDataInjector.maxCachedShuffles).foreach { i =>
+      injectShuffleScan(100 + i, s"file:///evict-shuffle-$i")
+    }
+    val snapshot = PlanDataInjector.preparedShuffleSnapshot
+    assert(snapshot.size == PlanDataInjector.maxCachedShuffles)
+    assert(!snapshot.contains(100), s"shuffle 100 should have been evicted, still holds $first")
+  }
+
+  private object IntInjector extends PlanDataInjector {
+    override type Prepared = java.lang.Integer
+    override val opStructCase: Operator.OpStructCase = Operator.OpStructCase.CONTRIB_SCAN
+    override def canInject(op: Operator): Boolean = false
+    override def getKey(op: Operator): Option[String] = None
+    override def prepareCommon(commonBytes: Array[Byte]): Prepared = commonBytes.length
+    override def inject(op: Operator, prepared: Prepared, partitionBytes: Array[Byte]): Operator =
+      op
+  }
+
+  private object StringInjector extends PlanDataInjector {
+    override type Prepared = String
+    override val opStructCase: Operator.OpStructCase = Operator.OpStructCase.CONTRIB_SCAN
+    override def canInject(op: Operator): Boolean = false
+    override def getKey(op: Operator): Option[String] = None
+    override def prepareCommon(commonBytes: Array[Byte]): Prepared =
+      new String(commonBytes, java.nio.charset.StandardCharsets.UTF_8)
+    override def inject(op: Operator, prepared: Prepared, partitionBytes: Array[Byte]): Operator =
+      op
+  }
+
+  test("two injectors agreeing on a key and bytes keep separate prepared commons") {
+    // Every contrib scan arrives as the same CONTRIB_SCAN envelope, so two injectors can agree on
+    // a scan key and receive byte-identical commons; each must still get its own prepared object.
+    import java.util.concurrent.ConcurrentHashMap
+    val memo = new ConcurrentHashMap[String, PlanDataInjector.PreparedCommon]()
+    val bytes = "shared".getBytes(java.nio.charset.StandardCharsets.UTF_8)
+
+    val asInt: java.lang.Integer = PlanDataInjector.prepareShared(IntInjector, "k", bytes, memo)
+    val asString: String = PlanDataInjector.prepareShared(StringInjector, "k", bytes, memo)
+
+    assert(asInt == bytes.length)
+    assert(asString == "shared")
+    assert(memo.size == 2, "each injector must own its own memo slot under the shared key")
+    assert(
+      PlanDataInjector.prepareShared(StringInjector, "k", bytes, memo) eq asString,
+      "a repeat lookup must serve the injector's own prepared object")
   }
 
   test("recreated context does not accumulate prepared commons under reused shuffle ids") {
     // Shuffle ids restart at zero for every SparkContext in a JVM, so a local or embedded caller
     // that stops and recreates its context reuses ids the previous context already cached under.
     // The manager's stop() is the boundary where the old context's prepared data must go.
-    PlanDataInjector.releaseAllPreparedShuffles()
+    PlanDataInjector.releaseAll()
     val firstContext = new CometShuffleManager(new SparkConf(false))
     val a = injectShuffleScan(0, "file:///recreated-ctx-a")
     val b = injectShuffleScan(0, "file:///recreated-ctx-b")
     assert(PlanDataInjector.preparedShuffleSnapshot(0) == Set(a, b))
+    parseBasePlan(nativeScanOp("file:///recreated-ctx-plan", Seq("id")).toByteArray)
+    assert(PlanDataInjector.basePlanSnapshot.nonEmpty)
 
     firstContext.stop()
 
-    new CometShuffleManager(new SparkConf(false))
+    assert(
+      PlanDataInjector.basePlanSnapshot.isEmpty,
+      "stopping the manager must drop the base plan cache with the shuffle store")
     val c = injectShuffleScan(0, "file:///recreated-ctx-c")
     val d = injectShuffleScan(0, "file:///recreated-ctx-d")
     assert(
@@ -444,7 +500,7 @@ class PlanDataInjectorSuite extends AnyFunSuite {
   }
 
   test("unregisterShuffle releases only that shuffle's prepared commons") {
-    PlanDataInjector.releaseAllPreparedShuffles()
+    PlanDataInjector.releaseAll()
     val manager = new CometShuffleManager(new SparkConf(false))
     val gone = injectShuffleScan(7, "file:///unregister-gone")
     val kept = injectShuffleScan(8, "file:///unregister-kept")
@@ -499,8 +555,10 @@ class PlanDataInjectorSuite extends AnyFunSuite {
       keyA -> nativeScanPartitionBytes("a.parquet"),
       keyB -> nativeScanPartitionBytes("b.parquet"))
 
-    val injectedA = PlanDataInjector.injectPlanData(scanA, commonByKey, partByKey)
-    val injectedB = PlanDataInjector.injectPlanData(scanB, commonByKey, partByKey)
+    val injectedA =
+      PlanDataInjector.injectPlanData(parseBasePlan(scanA.toByteArray), commonByKey, partByKey)
+    val injectedB =
+      PlanDataInjector.injectPlanData(parseBasePlan(scanB.toByteArray), commonByKey, partByKey)
 
     assert(injectedA.getNativeScan.getCommon == commonA)
     assert(injectedB.getNativeScan.getCommon == commonB)
@@ -544,7 +602,8 @@ class PlanDataInjectorSuite extends AnyFunSuite {
           .setSourceKey("shuffle-key"))
       .build()
 
-    val injected = PlanDataInjector.injectPlanData(
+    val injected = PlanDataInjector.injectPlanDataForShuffle(
+      424242,
       op,
       Map("shuffle-key" -> common.toByteArray),
       Map("shuffle-key" -> nativeScanPartitionBytes("shuffled.parquet")))
@@ -580,8 +639,14 @@ class PlanDataInjectorSuite extends AnyFunSuite {
     val commonByKey = Map(targetKey -> targetCommon, sourceKey -> sourceCommon)
     val partitionByKey = Map(targetKey -> targetPartition, sourceKey -> sourcePartition)
 
-    val injectedTarget = PlanDataInjector.injectPlanData(targetOp, commonByKey, partitionByKey)
-    val injectedSource = PlanDataInjector.injectPlanData(sourceOp, commonByKey, partitionByKey)
+    val injectedTarget = PlanDataInjector.injectPlanData(
+      parseBasePlan(targetOp.toByteArray),
+      commonByKey,
+      partitionByKey)
+    val injectedSource = PlanDataInjector.injectPlanData(
+      parseBasePlan(sourceOp.toByteArray),
+      commonByKey,
+      partitionByKey)
 
     assert(
       injectedTarget.getIcebergScan.getCommon.getRequiredSchemaList

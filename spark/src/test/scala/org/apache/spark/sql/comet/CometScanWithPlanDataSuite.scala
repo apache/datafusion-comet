@@ -179,10 +179,11 @@ class TestStubPlanDataInjector extends PlanDataInjector {
   override def opStructCase: Operator.OpStructCase = Operator.OpStructCase.OPSTRUCT_NOT_SET
   override def canInject(op: Operator): Boolean = false
   override def getKey(op: Operator): Option[String] = None
-  override def prepareCommon(commonBytes: Array[Byte]): AnyRef = commonBytes
+  override type Prepared = Array[Byte]
+  override def prepareCommon(commonBytes: Array[Byte]): Prepared = commonBytes
   override def inject(
       op: Operator,
-      preparedCommon: AnyRef,
+      preparedCommon: Prepared,
       partitionBytes: Array[Byte]): Operator =
     op
 }
