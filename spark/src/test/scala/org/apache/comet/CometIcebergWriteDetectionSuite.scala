@@ -264,17 +264,14 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     }
   }
 
-  test("fall-back: per-column bloom filter enabled") {
+  test("Compatible when a per-column bloom filter is enabled") {
     withDetectionCatalog { dir =>
       createTable(
         dir,
         "bloom_col",
         partitionSpec = "",
         properties = Some("'write.parquet.bloom-filter-enabled.column.id'='true'"))
-      assertUnsupportedContains(
-        "bloom_col",
-        "write.parquet.bloom-filter-enabled.column.id",
-        "true")
+      assertSupportLevelIs[Compatible]("bloom_col")
     }
   }
 

@@ -57,6 +57,8 @@ object IcebergWriteProtoTranslation {
       IcebergReflection.tablePropertyConstant("PARQUET_PAGE_ROW_LIMIT")
     lazy val ParquetDictSizeBytes: String =
       IcebergReflection.tablePropertyConstant("PARQUET_DICT_SIZE_BYTES")
+    lazy val ParquetBloomFilterColumnEnabledPrefix: String =
+      IcebergReflection.tablePropertyConstant("PARQUET_BLOOM_FILTER_COLUMN_ENABLED_PREFIX")
   }
 
   /** Iceberg's numeric defaults, pulled at runtime so they stay in lock-step with the runtime. */
@@ -112,6 +114,15 @@ object IcebergWriteProtoTranslation {
       parseJavaInt(props, Keys.ParquetDictSizeBytes, Defaults.DictSizeBytes.toInt).toLong
     val pageRowLimit = parseJavaInt(props, Keys.ParquetPageRowLimit, Defaults.PageRowLimit)
     val compression = resolveCompression(props)
+    val bloomFilterEnabledColumns = props.iterator
+      .collect {
+        case (key, value)
+            if key.startsWith(Keys.ParquetBloomFilterColumnEnabledPrefix) &&
+              value.equalsIgnoreCase("true") =>
+          key.substring(Keys.ParquetBloomFilterColumnEnabledPrefix.length)
+      }
+      .toSeq
+      .sorted
     val builder = IcebergParquetWriteSettings
       .newBuilder()
       .setCompression(compression)
@@ -120,6 +131,7 @@ object IcebergWriteProtoTranslation {
       .setDictSizeBytes(dictSize)
       .setPageRowLimit(pageRowLimit)
       .setCreatedBy(createdBy)
+      .addAllBloomFilterEnabledColumns(bloomFilterEnabledColumns.asJava)
 
     resolveCompressionLevel(props, compression).foreach(builder.setCompressionLevel)
 

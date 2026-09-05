@@ -175,7 +175,6 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
     requireFormatVersionAtMostTwo,
     requireNoUuidColumns,
     requireNoEncryptionPrefix,
-    requireNoBloomFilterColumnsEnabled,
     requireRowGroupCheckMinRecordCountAtDefault,
     requireRowGroupCheckMaxRecordCountAtDefault,
     requireParquetPageVersionDefault,
@@ -251,13 +250,6 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
   // written parquet footers with Iceberg's own `MetricsConfig` logic before commit (see
   // `CometIcebergWriteExec`), so every `write.metadata.metrics.*` value behaves exactly as it
   // does on the iceberg-java path.
-
-  private val requireNoBloomFilterColumnsEnabled: TriggerRule = ctx => {
-    val prefix = PropertyKeys.BloomFilterColumnEnabledPrefix
-    ctx.properties
-      .find { case (k, v) => k.startsWith(prefix) && v.equalsIgnoreCase("true") }
-      .map { case (k, _) => s"$k=true: bloom filters unsupported" }
-  }
 
   private val requireParquetPageVersionDefault: TriggerRule = ctx => {
     val key = PropertyKeys.ParquetPageVersion

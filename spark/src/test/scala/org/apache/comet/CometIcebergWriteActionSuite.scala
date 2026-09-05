@@ -26,7 +26,11 @@ import scala.collection.mutable
 import scala.concurrent.{Await, Future}
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.duration.DurationInt
+import scala.jdk.CollectionConverters._
 
+import org.apache.hadoop.fs.Path
+import org.apache.parquet.hadoop.ParquetFileReader
+import org.apache.parquet.hadoop.util.HadoopInputFile
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.Row
@@ -596,6 +600,27 @@ class CometIcebergWriteActionSuite
           "INSERT INTO cat.db.native_append_values VALUES " +
             "(1, 'us-east', 10.5), (2, 'us-west', 20.3), (3, 'eu', 30.7)")
       }
+    }
+  }
+
+  test("native acceleration: writes configured Iceberg Parquet bloom filters") {
+    assumeNativeAcceleration()
+    withIcebergCatalog { warehouseDir =>
+      createTable(
+        warehouseDir,
+        "native_bloom",
+        partitionSpec = "",
+        properties = Some("'write.parquet.bloom-filter-enabled.column.id'='true'"))
+
+      val expectedIds = 0 until 256
+      assertNativeWriteEngages("native_bloom", expectedIds) {
+        spark.sql(
+          "INSERT INTO cat.db.native_bloom " +
+            "SELECT CAST(id AS INT), CONCAT('region-', CAST(id % 4 AS STRING)), " +
+            "CAST(id AS DOUBLE) FROM range(256)")
+      }
+
+      assertParquetBloomFilters("native_bloom", enabledColumns = Set("id"))
     }
   }
 
@@ -1681,6 +1706,45 @@ class CometIcebergWriteActionSuite
       .map(_.getInt(0))
       .toSeq
     assert(ids == expectedIds, s"expected $expectedIds, got $ids")
+  }
+
+  /**
+   * Reads every current data-file footer and verifies that parquet-rs emitted bloom-filter data
+   * exactly for the configured columns. Checking the plan alone would not catch a translation bug
+   * that selected `CometIcebergWriteExec` but silently omitted the bloom writer properties.
+   */
+  private def assertParquetBloomFilters(tableName: String, enabledColumns: Set[String]): Unit = {
+    val paths = spark
+      .sql(s"SELECT file_path FROM $catalog.$ns.$tableName.data_files")
+      .collect()
+      .map(_.getString(0))
+      .toSeq
+    assert(paths.nonEmpty, s"expected $tableName to have at least one data file")
+
+    val conf = spark.sparkContext.hadoopConfiguration
+    paths.foreach { path =>
+      val input = HadoopInputFile.fromPath(new Path(path.stripPrefix("file:")), conf)
+      val reader = ParquetFileReader.open(input)
+      try {
+        val columns = reader.getFooter.getBlocks.asScala.flatMap(_.getColumns.asScala)
+        assert(columns.nonEmpty, s"expected at least one column chunk in $path")
+        columns.foreach { column =>
+          val columnName = column.getPath.toDotString
+          val bloomFilter = reader.readBloomFilter(column)
+          if (enabledColumns.contains(columnName)) {
+            assert(
+              bloomFilter != null && bloomFilter.getBitsetSize > 0,
+              s"expected a non-empty bloom filter for $columnName in $path")
+          } else {
+            assert(
+              bloomFilter == null,
+              s"expected no bloom filter for unconfigured column $columnName in $path")
+          }
+        }
+      } finally {
+        reader.close()
+      }
+    }
   }
 
   /** Native acceleration shared assumption -- currently just the Iceberg-on-classpath check. */

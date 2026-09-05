@@ -644,7 +644,7 @@ fn build_output_batch(manifest_bytes: Vec<u8>, output_schema: &SchemaRef) -> DFR
 /// the JVM re-derives from the footer with Iceberg's own `MetricsConfig` logic before commit.
 fn build_writer_properties(settings: &IcebergParquetWriteSettings) -> DFResult<WriterProperties> {
     let compression = compression_from_proto(settings.compression, settings.compression_level)?;
-    Ok(WriterProperties::builder()
+    let mut builder = WriterProperties::builder()
         .set_compression(compression)
         .set_created_by(settings.created_by.clone())
         .set_max_row_group_bytes(Some(settings.row_group_size_bytes as usize))
@@ -655,8 +655,11 @@ fn build_writer_properties(settings: &IcebergParquetWriteSettings) -> DFResult<W
         .set_dictionary_page_size_limit(settings.dict_size_bytes as usize)
         .set_data_page_row_count_limit(settings.page_row_limit as usize)
         .set_statistics_enabled(EnabledStatistics::Page)
-        .set_statistics_truncate_length(None)
-        .build())
+        .set_statistics_truncate_length(None);
+    for column in &settings.bloom_filter_enabled_columns {
+        builder = builder.set_column_bloom_filter_enabled(column.as_str().into(), true);
+    }
+    Ok(builder.build())
 }
 
 fn compression_from_proto(codec: i32, level: Option<i32>) -> DFResult<Compression> {
@@ -715,6 +718,7 @@ mod tests {
             dict_size_bytes: 2 * 1024 * 1024,
             page_row_limit: 20_000,
             created_by: "Apache Iceberg (Comet test)".to_string(),
+            bloom_filter_enabled_columns: Vec::new(),
         }
     }
 
@@ -792,6 +796,18 @@ mod tests {
         settings.created_by = "Apache Iceberg 1.7.1 (Comet 0.16.0)".to_string();
         let props = build_writer_properties(&settings).unwrap();
         assert_eq!(props.created_by(), "Apache Iceberg 1.7.1 (Comet 0.16.0)");
+    }
+
+    #[test]
+    fn enables_bloom_filters_only_for_configured_columns() {
+        let mut settings = base_settings();
+        settings.bloom_filter_enabled_columns = vec!["id".to_string(), "nested.value".to_string()];
+        let props = build_writer_properties(&settings).unwrap();
+        assert!(props.bloom_filter_properties(&"id".into()).is_some());
+        assert!(props
+            .bloom_filter_properties(&"nested.value".into())
+            .is_some());
+        assert!(props.bloom_filter_properties(&"other".into()).is_none());
     }
 
     #[test]
@@ -896,6 +912,7 @@ mod tests {
                 dict_size_bytes: 2 * 1024 * 1024,
                 page_row_limit: 20_000,
                 created_by: "Apache Iceberg (Comet integration test)".to_string(),
+                bloom_filter_enabled_columns: Vec::new(),
             };
             Arc::new(IcebergWriteCommon {
                 catalog_properties: HashMap::new(),
