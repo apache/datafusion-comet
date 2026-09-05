@@ -47,7 +47,8 @@ query
 SELECT a, b, array_union(a, b) FROM test_union_nulls
 
 -- empty array combinations
-query
+-- Both sides are Null-typed empty arrays, which the NullType-element gate keeps in Spark.
+query expect_fallback(native array_union drops the entries of a NullType-element array)
 SELECT array_union(array(), array()) FROM test_union_nulls
 
 query
@@ -56,7 +57,7 @@ SELECT array_union(array(), array(1, 2)) FROM test_union_nulls
 query
 SELECT array_union(array(1, 2), array()) FROM test_union_nulls
 
-query
+query expect_fallback(native array_union drops the entries of a NullType-element array)
 SELECT array_union(array(), array(NULL)) FROM test_union_nulls
 
 -- both-NULL arrays
@@ -224,3 +225,15 @@ SELECT array_union(array(NULL, 99), b) FROM test_array_union
 -- conditional (CASE WHEN) arrays
 query
 SELECT array_union(CASE WHEN a IS NOT NULL THEN a ELSE array(0) END, b) FROM test_array_union
+
+-- DataFusion's set-op kernel treats a Null element type as "return distinct(other side)" and
+-- drops the NULL entries the Null-typed list actually holds, so NullType-element unions stay
+-- in Spark.
+query expect_fallback(native array_union drops the entries of a NullType-element array)
+SELECT array_union(transform(a, x -> NULL), array()) FROM test_array_union
+
+-- The set-op kernel asserts identical element types, nested nullability included, and the two
+-- sides can arrive with different nested nullability (a literal field is non-nullable, a lambda
+-- variable over a list is not). Both sides are cast to a deeply-nullable element type first.
+query
+SELECT array_union(transform(a, x -> named_struct('i', 1)), transform(b, x -> named_struct('i', x))) FROM test_array_union

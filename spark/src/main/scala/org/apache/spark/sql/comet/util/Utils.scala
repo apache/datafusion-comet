@@ -21,7 +21,7 @@ package org.apache.spark.sql.comet.util
 
 import java.io.{DataInputStream, DataOutputStream, File}
 import java.nio.ByteBuffer
-import java.nio.channels.Channels
+import java.nio.channels.{Channels, WritableByteChannel}
 
 import scala.jdk.CollectionConverters._
 
@@ -181,6 +181,18 @@ object Utils extends CometTypeShim with Logging {
           s"Unsupported data type: [${dt.getClass.getName}] ${dt.catalogString}")
     }
 
+  /**
+   * Nullability to declare for a nested child (array element, struct field, map value) of type
+   * `dataType`. A `NullType` child is always declared nullable, whatever Spark's flag says: every
+   * value is null, so a non-nullable flag is a contradiction, and native kernels that rebuild a
+   * list around the input's actual child compare that child's nullability with the one they
+   * assume and fail on the mismatch. Applied here and in `QueryPlanSerde.serializeDataType` so
+   * the JVM-exported field and the type declared to native agree. Map keys are not children in
+   * this sense: Arrow requires them non-nullable.
+   */
+  def declaredChildNullability(dataType: DataType, nullable: Boolean): Boolean =
+    nullable || dataType == NullType
+
   /** Maps field from Spark to Arrow. NOTE: timeZoneId required for TimestampType */
   def toArrowField(name: String, dt: DataType, nullable: Boolean, timeZoneId: String): Field = {
     dt match {
@@ -189,7 +201,12 @@ object Utils extends CometTypeShim with Logging {
         new Field(
           name,
           fieldType,
-          Seq(toArrowField("element", elementType, containsNull, timeZoneId)).asJava)
+          Seq(
+            toArrowField(
+              "element",
+              elementType,
+              declaredChildNullability(elementType, containsNull),
+              timeZoneId)).asJava)
       case StructType(fields) =>
         val fieldType = new FieldType(nullable, ArrowType.Struct.INSTANCE, null)
         new Field(
@@ -197,24 +214,30 @@ object Utils extends CometTypeShim with Logging {
           fieldType,
           fields
             .map { field =>
-              toArrowField(field.name, field.dataType, field.nullable, timeZoneId)
+              toArrowField(
+                field.name,
+                field.dataType,
+                declaredChildNullability(field.dataType, field.nullable),
+                timeZoneId)
             }
             .toSeq
             .asJava)
       case MapType(keyType, valueType, valueContainsNull) =>
         val mapType = new FieldType(nullable, new ArrowType.Map(false), null)
-        // Note: Map Type struct can not be null, Struct Type key field can not be null
-        new Field(
-          name,
-          mapType,
+        // Note: Map Type struct can not be null, Struct Type key field can not be null (so the
+        // key is built here rather than through the StructType case and
+        // `declaredChildNullability`)
+        val entries = new Field(
+          MapVector.DATA_VECTOR_NAME,
+          new FieldType(false, ArrowType.Struct.INSTANCE, null),
           Seq(
+            toArrowField(MapVector.KEY_NAME, keyType, nullable = false, timeZoneId),
             toArrowField(
-              MapVector.DATA_VECTOR_NAME,
-              new StructType()
-                .add(MapVector.KEY_NAME, keyType, nullable = false)
-                .add(MapVector.VALUE_NAME, valueType, nullable = valueContainsNull),
-              nullable = false,
+              MapVector.VALUE_NAME,
+              valueType,
+              declaredChildNullability(valueType, valueContainsNull),
               timeZoneId)).asJava)
+        new Field(name, mapType, Seq(entries).asJava)
       case dataType =>
         val fieldType = new FieldType(nullable, toArrowType(dataType, timeZoneId), null)
         new Field(name, fieldType, Seq.empty[Field].asJava)
@@ -228,6 +251,118 @@ object Utils extends CometTypeShim with Logging {
     new Schema(schema.map { field =>
       toArrowField(field.name, field.dataType, field.nullable, timeZoneId)
     }.asJava)
+  }
+
+  /**
+   * Returns `field` with every map key field, at any nesting depth, marked non-nullable.
+   *
+   * Arrow requires map keys to be non-nullable and `MapVector.initializeChildrenFromFields`
+   * enforces it, so an IPC reader rejects a schema whose key field is nullable. Comet always
+   * declares keys non-nullable (`toArrowField`), but Arrow Java's `MinorType.NULL` factory builds
+   * a `NullVector` from the field name alone, so a `NullType` key (e.g. `map()`) reports a
+   * nullable field once a vector for it has been created by `Field.createVector`, i.e. after a
+   * native import, codegen dispatch output, or row-to-Arrow conversion. Apply this to the fields
+   * written to IPC.
+   */
+  def withNonNullableMapKeys(field: Field): Field = {
+    val children = field.getChildren.asScala.toSeq
+    if (children.isEmpty) {
+      return field
+    }
+    val newChildren = field.getType match {
+      case _: ArrowType.Map =>
+        children.map { entries =>
+          entries.getChildren.asScala.toSeq match {
+            case Seq(key, value) =>
+              val nonNullKey = withNonNullableMapKeys(key)
+              val repairedKey = if (nonNullKey.isNullable) {
+                new Field(
+                  nonNullKey.getName,
+                  new FieldType(
+                    false,
+                    nonNullKey.getType,
+                    nonNullKey.getDictionary,
+                    nonNullKey.getMetadata),
+                  nonNullKey.getChildren)
+              } else {
+                nonNullKey
+              }
+              new Field(
+                entries.getName,
+                entries.getFieldType,
+                Seq(repairedKey, withNonNullableMapKeys(value)).asJava)
+            case _ => withNonNullableMapKeys(entries)
+          }
+        }
+      case _ => children.map(withNonNullableMapKeys)
+    }
+    if (newChildren == children) {
+      field
+    } else {
+      new Field(field.getName, field.getFieldType, newChildren.asJava)
+    }
+  }
+
+  /**
+   * Returns `root` unchanged when its declared schema already satisfies Arrow's non-nullable
+   * map-key invariant, otherwise a new root that shares the same vectors but advertises repaired
+   * fields.
+   *
+   * The check is against `root.getSchema`, not the live vectors' fields: a caller that built the
+   * root with already-repaired fields keeps its own root object. That matters when the row count
+   * is set after the writer is created (see `CometArrowPythonRunnerBase.startWriter`), because a
+   * replacement root copies the row count at construction and does not track the original.
+   */
+  private def withNonNullableMapKeys(root: VectorSchemaRoot): VectorSchemaRoot = {
+    val declared = root.getSchema.getFields.asScala.toSeq
+    val repaired = declared.map(withNonNullableMapKeys)
+    if (repaired == declared) {
+      root
+    } else {
+      new VectorSchemaRoot(repaired.asJava, root.getFieldVectors, root.getRowCount)
+    }
+  }
+
+  /**
+   * The only supported way to build an `ArrowStreamWriter` in Comet; enforced by the scalastyle
+   * `arrowstreamwriter` rule. Repairs the declared schema with [[withNonNullableMapKeys]], so a
+   * new IPC writer cannot reintroduce the nullable `NullType` map key by forgetting to ask.
+   *
+   * Returns the writer together with the root it is bound to, which is `root` itself unless the
+   * declared schema needed repairing. Callers must use the returned root: a writer serializes the
+   * root it was constructed with, so a row count set on a superseded root is not seen (it
+   * surfaces in the Python worker as "Array length did not match record batch length").
+   */
+  def newArrowStreamWriter(
+      root: VectorSchemaRoot,
+      provider: DictionaryProvider,
+      channel: WritableByteChannel): (VectorSchemaRoot, ArrowStreamWriter) = {
+    val bound = withNonNullableMapKeys(root)
+    // scalastyle:off arrowstreamwriter
+    (bound, new ArrowStreamWriter(bound, provider, channel))
+    // scalastyle:on arrowstreamwriter
+  }
+
+  /**
+   * Whether an Arrow `Null` field is a direct child of a struct (map entries included) anywhere
+   * in `schema`. Arrow's `VectorAppender` cannot grow such a column: a struct's capacity is the
+   * minimum over its *direct* children, a `NullVector`'s capacity equals its value count and its
+   * `reAlloc()` is a no-op, so the struct's capacity loop never terminates.
+   *
+   * A list breaks that chain from both sides, because `ListVector` overrides
+   * `BaseRepeatedValueVector.getValueCapacity` with one that only looks at its own offset and
+   * validity buffers. So a `Null` under a list appends fine (`array(NULL)`), and so does a list
+   * under a struct even when the list holds nulls (`map(k, array(NULL))`) - the struct only sees
+   * the list's own, growable capacity. Top-level `NullVector`s are fine too.
+   */
+  private def hasNullDirectlyUnderStruct(schema: Schema): Boolean = {
+    def check(field: Field): Boolean = {
+      val isStruct = field.getType.isInstanceOf[ArrowType.Struct]
+      field.getChildren.asScala.exists { child =>
+        (isStruct && child.getType.isInstanceOf[ArrowType.Null]) || check(child)
+      }
+    }
+    schema.getFields.asScala.exists(check)
   }
 
   /**
@@ -264,10 +399,10 @@ object Utils extends CometTypeShim with Logging {
       }
       val provider = batchProviderOpt.getOrElse(dictionaryProvider)
 
-      val writer = new ArrowStreamWriter(root, provider, Channels.newChannel(out))
+      val (writeRoot, writer) = newArrowStreamWriter(root, provider, Channels.newChannel(out))
       writer.start()
       writer.writeBatch()
-      root.clear()
+      writeRoot.clear()
       writer.close()
 
       if (out.size() > 0) {
@@ -300,10 +435,10 @@ object Utils extends CometTypeShim with Logging {
       val out = new DataOutputStream(codec.compressedOutputStream(cbbos))
 
       val root = new VectorSchemaRoot(Seq(fieldVector).asJava)
-      val writer = new ArrowStreamWriter(root, provider, Channels.newChannel(out))
+      val (writeRoot, writer) = newArrowStreamWriter(root, provider, Channels.newChannel(out))
       writer.start()
       writer.writeBatch()
-      root.clear()
+      writeRoot.clear()
       writer.close()
 
       cbbos.toChunkedByteBuffer
@@ -388,19 +523,23 @@ object Utils extends CometTypeShim with Logging {
           val reader =
             new ArrowStreamReader(Channels.newChannel(compressedInputStream), allocator)
           try {
-            // Comet decodes dictionaries during execution, so this shouldn't happen.
-            // If it does, fall back to the original uncoalesced buffers because each
-            // partition can have a different dictionary, and appending index vectors
-            // would silently mix indices from incompatible dictionaries.
-            if (!reader.getDictionaryVectors.isEmpty) {
-              logWarning(
-                "Unexpected dictionary-encoded column during BroadcastExchange coalescing; " +
-                  "skipping coalesce")
-              reader.close()
-              if (targetRoot != null) {
-                targetRoot.close()
-                targetRoot = null
+            // Schemas that cannot be appended fall back to the original uncoalesced buffers:
+            // - Comet decodes dictionaries during execution, so a dictionary-encoded column
+            //   shouldn't happen. If it does, each partition can have a different dictionary,
+            //   and appending index vectors would silently mix incompatible dictionaries.
+            // - `VectorSchemaRootAppender` cannot grow a `NullVector` directly under a struct
+            //   (see `hasNullDirectlyUnderStruct`).
+            val skipReason =
+              if (!reader.getDictionaryVectors.isEmpty) {
+                Some("unexpected dictionary-encoded column")
+              } else if (hasNullDirectlyUnderStruct(reader.getVectorSchemaRoot.getSchema)) {
+                Some("NullType directly under a struct or map entry")
+              } else {
+                None
               }
+            if (skipReason.isDefined) {
+              logWarning(
+                s"${skipReason.get} during BroadcastExchange coalescing; skipping coalesce")
               return (buffers, 0L, 0L)
             }
             while (reader.loadNextBatch()) {
@@ -447,8 +586,8 @@ object Utils extends CometTypeShim with Logging {
         val outputStream = new ChunkedByteBufferOutputStream(1024 * 1024, ByteBuffer.allocate)
         val compressedOutputStream =
           new DataOutputStream(codec.compressedOutputStream(outputStream))
-        val writer =
-          new ArrowStreamWriter(targetRoot, null, Channels.newChannel(compressedOutputStream))
+        val (_, writer) =
+          newArrowStreamWriter(targetRoot, null, Channels.newChannel(compressedOutputStream))
         try {
           writer.start()
           writer.writeBatch()

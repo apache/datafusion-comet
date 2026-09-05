@@ -19,18 +19,21 @@
 
 package org.apache.comet
 
+import scala.jdk.CollectionConverters._
+
 import org.scalatest.funsuite.AnyFunSuite
 
 import org.apache.spark.SparkConf
 import org.apache.spark.serializer.JavaSerializer
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Add, AddMonths, BoundReference, Cast, Coalesce, Concat, CreateArray, CreateMap, DateFormatClass, ElementAt, Expression, GetStructField, IntegralDivide, LeafExpression, Length, Literal, MakeTimestamp, MicrosToTimestamp, MillisToTimestamp, MonthsBetween, Nondeterministic, Rand, Size, Substring, ToUnixTimestamp, Unevaluable, UnixMicros, UnixMillis, UnixSeconds, Upper}
+import org.apache.spark.sql.catalyst.expressions.{Add, AddMonths, BoundReference, Cast, Coalesce, Concat, CreateArray, CreateMap, CreateNamedStruct, DateFormatClass, ElementAt, Expression, GetStructField, IntegralDivide, IsNull, LeafExpression, Length, Literal, MakeTimestamp, MicrosToTimestamp, MillisToTimestamp, MonthsBetween, Nondeterministic, Rand, Size, Substring, ToUnixTimestamp, Unevaluable, UnixMicros, UnixMillis, UnixSeconds, Upper}
 import org.apache.spark.sql.catalyst.expressions.codegen.{CodeFormatter, CodegenContext, CodegenFallback, ExprCode}
 import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.codegen.CometBatchKernelCodegen
 import org.apache.comet.codegen.CometBatchKernelCodegen.{ArrayColumnSpec, ArrowColumnSpec, MapColumnSpec, ScalarColumnSpec, StructColumnSpec, StructFieldSpec}
+import org.apache.comet.serde.QueryPlanSerde
 import org.apache.comet.udf.codegen.CometScalaUDFCodegen
 
 // Resolve Arrow vector classes through the codegen object so tests see the same `Class` objects
@@ -285,6 +288,179 @@ class CometCodegenSourceSuite extends AnyFunSuite {
     assert(
       reason.get.contains("FakeUnevaluable"),
       s"expected reason to name the rejected expression class; got: ${reason.get}")
+  }
+
+  test("canHandle accepts NullType outputs, including nested in complex types") {
+    // Spark leaves the children of untyped constructors as NullType: `map()` is
+    // MapType(NullType, NullType), `map('a', NULL)` is MapType(StringType, NullType) and
+    // `array()` is ArrayType(NullType). Rejecting those forced the whole projection back to
+    // Spark even though a NullType output only ever has to write nulls.
+    Seq(
+      Literal(null, NullType),
+      Literal.create(Map.empty[Any, Any], MapType(NullType, NullType, valueContainsNull = false)),
+      Literal.create(Map("a" -> null), MapType(StringType, NullType, valueContainsNull = true)),
+      Literal.create(Seq(null), ArrayType(NullType)),
+      Literal.create(
+        Seq(Map.empty[Any, Any]),
+        ArrayType(MapType(NullType, NullType, valueContainsNull = false)))).foreach { expr =>
+      assert(
+        CometBatchKernelCodegen.canHandle(expr).isEmpty,
+        s"expected canHandle to accept output type ${expr.dataType}")
+    }
+  }
+
+  test("canHandle rejects NullType inputs, including nested in complex types") {
+    // `CometScalaUDFCodegen.specFor` has no ArrowColumnSpec for a NullVector, so a NullType input
+    // must keep falling back at plan time rather than throwing once the plan has committed to a
+    // kernel.
+    Seq(
+      NullType,
+      ArrayType(NullType),
+      MapType(StringType, NullType),
+      StructType(Seq(StructField("f", NullType)))).foreach { dt =>
+      val reason = CometBatchKernelCodegen.canHandle(BoundReference(0, dt, nullable = true))
+      assert(reason.isDefined, s"expected canHandle to reject input type $dt")
+      assert(
+        reason.get.contains("unsupported"),
+        s"expected an unsupported-type reason for $dt; got: ${reason.get}")
+    }
+  }
+
+  test("canHandle rejects duplicate struct field names, in outputs and inputs") {
+    // See `CometBatchKernelCodegen.hasDuplicateStructFieldNames`; the gate must also catch a
+    // struct buried inside a larger expression dispatched as a whole (e.g. a `transform` body).
+    val x = BoundReference(0, IntegerType, nullable = false)
+    val dupNull = CreateNamedStruct(Seq(Literal("a"), x, Literal("a"), Literal(null, NullType)))
+    val dupInt = CreateNamedStruct(Seq(Literal("a"), x, Literal("a"), Add(x, Literal(1))))
+    val dupInput = IsNull(
+      BoundReference(
+        0,
+        StructType(Seq(StructField("a", IntegerType), StructField("a", StringType))),
+        nullable = true))
+    Seq(dupNull, dupInt, CreateArray(Seq(dupInt)), dupInput).foreach { expr =>
+      val reason = CometBatchKernelCodegen.canHandle(expr)
+      assert(
+        reason.exists(_.contains("duplicate struct field name")),
+        s"expected canHandle to reject $expr; got: $reason")
+    }
+    val distinct =
+      CreateNamedStruct(Seq(Literal("a"), x, Literal("b"), Literal(null, NullType)))
+    assert(CometBatchKernelCodegen.canHandle(distinct).isEmpty)
+  }
+
+  test("NullType children are declared nullable whatever the Spark flags say") {
+    // Spark leaves containsNull / valueContainsNull / field nullability false on some untyped
+    // shapes (`filter(array(), ...)`, `map_filter(map(), ...)`), but a non-nullable Null child is a
+    // contradiction, and native kernels that rebuild a list around the input's actual child
+    // (map_entries, array_repeat, spark_array_slice) fail on the nullability mismatch. Non-Null
+    // children keep their flags; map keys stay non-nullable.
+    val exact = ArrayType(
+      StructType(
+        Seq(
+          StructField("n", NullType, nullable = false),
+          StructField("i", IntegerType, nullable = false),
+          StructField(
+            "m",
+            MapType(NullType, NullType, valueContainsNull = false),
+            nullable = false))),
+      containsNull = false)
+    val field = CometBatchKernelCodegen.toFfiArrowField("out", exact, nullable = false)
+    assert(!field.isNullable, "top-level nullability is the caller's")
+    val item = field.getChildren.get(0)
+    assert(!item.isNullable, "a non-Null element keeps containsNull = false")
+    val Seq(n, i, m) = item.getChildren.asScala.toSeq
+    assert(n.isNullable && !i.isNullable && !m.isNullable)
+    val Seq(key, value) = m.getChildren.get(0).getChildren.asScala.toSeq
+    assert(!key.isNullable, "map keys stay non-nullable")
+    assert(value.isNullable)
+
+    val nullElements = CometBatchKernelCodegen
+      .toFfiArrowField("out", ArrayType(NullType, containsNull = false), nullable = true)
+    assert(nullElements.getChildren.get(0).isNullable)
+
+    // The serde declares the same nullability to native.
+    val proto = QueryPlanSerde.serializeDataType(exact).get.getTypeInfo
+    assert(!proto.getList.getContainsNull)
+    val struct = proto.getList.getElementType.getTypeInfo.getStruct
+    assert(
+      struct.getFieldNullable(0) && !struct.getFieldNullable(1) && !struct.getFieldNullable(2))
+    assert(struct.getFieldDatatypes(2).getTypeInfo.getMap.getValueContainsNull)
+    assert(
+      QueryPlanSerde
+        .serializeDataType(ArrayType(NullType, containsNull = false))
+        .get
+        .getTypeInfo
+        .getList
+        .getContainsNull)
+  }
+
+  test("nested NullType output casts the child vector and writes setNull into it") {
+    // A scalar NullType output cannot distinguish `emitWrite`'s NullType branch from
+    // `defaultBody`'s own `ev.isNull -> output.setNull(i)` short-circuit, which emits the same
+    // text. A NullType *value* child inside a map is only reachable through `emitWrite`, so
+    // assert on that: the child vector must be cast to NullVector and written through `setNull`.
+    val src = CometBatchKernelCodegen
+      .generateSource(
+        Literal.create(Map("a" -> null), MapType(StringType, NullType, valueContainsNull = true)),
+        IndexedSeq(nullableString))
+      .body
+    val childCast =
+      """org\.apache\.arrow\.vector\.NullVector\s+(\w+)\s*=\s*\(org\.apache\.arrow\.vector\.NullVector\)""".r
+    val childVar = childCast
+      .findFirstMatchIn(src)
+      .map(_.group(1))
+      .getOrElse(fail(s"expected a NullVector child-vector cast; got:\n$src"))
+    assert(
+      src.contains(s"$childVar.setNull("),
+      s"expected a setNull write into the NullVector child `$childVar`; got:\n$src")
+  }
+
+  test("gate and output emitters agree across the whole accepted type surface") {
+    // If `canHandle` greenlights an output type, generating the kernel for it must not throw.
+    val leaves: Seq[DataType] = Seq(
+      NullType,
+      BooleanType,
+      ByteType,
+      ShortType,
+      IntegerType,
+      LongType,
+      FloatType,
+      DoubleType,
+      DecimalType(10, 2),
+      DecimalType(38, 18),
+      StringType,
+      BinaryType,
+      DateType,
+      TimestampType,
+      TimestampNTZType,
+      YearMonthIntervalType(),
+      DayTimeIntervalType(),
+      CalendarIntervalType)
+
+    val candidates: Seq[DataType] = leaves.flatMap { dt =>
+      Seq(
+        dt,
+        ArrayType(dt),
+        ArrayType(ArrayType(dt)),
+        MapType(StringType, dt),
+        StructType(Seq(StructField("f", dt))),
+        ArrayType(StructType(Seq(StructField("f", dt)))),
+        MapType(StringType, ArrayType(dt)))
+    }
+
+    val accepted =
+      candidates.filter(dt => CometBatchKernelCodegen.canHandle(Literal.create(null, dt)).isEmpty)
+    assert(
+      accepted.size > leaves.size,
+      s"expected the gate to accept nested shapes too; only got ${accepted.size}")
+
+    accepted.foreach { dt =>
+      withClue(s"canHandle accepted output type $dt, so the emitters must handle it: ") {
+        CometBatchKernelCodegen.generateSource(
+          Literal.create(null, dt),
+          IndexedSeq(nullableString))
+      }
+    }
   }
 
   test("CSE collapses a repeated subtree to one evaluation in the generated body") {

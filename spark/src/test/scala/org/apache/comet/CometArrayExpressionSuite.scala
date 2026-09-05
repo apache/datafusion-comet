@@ -1099,6 +1099,33 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     }
   }
 
+  test("size - non-deterministic child under the null guard") {
+    withParquetTable((0 until 16).map(i => Tuple1(i.toLong)), "t", withDictionary = false) {
+      // Non-legacy size wraps a nullable child in `CASE WHEN child IS NOT NULL`, which would
+      // evaluate a stateful child twice, so that shape stays in Spark; legacy mode builds no
+      // guard and keeps it native.
+      val nullableStateful =
+        "SELECT _1, size(IF(monotonically_increasing_id() % 2 = 0, array(_1), NULL)) FROM t"
+      withSQLConf(SQLConf.LEGACY_SIZE_OF_NULL.key -> "false") {
+        checkSparkAnswerAndFallbackReason(
+          nullableStateful,
+          "non-deterministic child under a null guard is evaluated on different rows than Spark's")
+      }
+      withSQLConf(
+        SQLConf.LEGACY_SIZE_OF_NULL.key -> "true",
+        SQLConf.ANSI_ENABLED.key -> "false") {
+        checkSparkAnswerAndOperator(nullableStateful)
+      }
+      // A non-nullable child gets no guard, so a stateful one whose length depends on the
+      // counter is evaluated once and matches Spark. The lambda runs through the JVM codegen
+      // dispatcher, where a guard's two copies would share one kernel and its counter.
+      withSQLConf(SQLConf.LEGACY_SIZE_OF_NULL.key -> "false") {
+        checkSparkAnswerAndOperator(
+          "SELECT _1, size(filter(array(_1, 1, 2), x -> x < monotonically_increasing_id())) FROM t")
+      }
+    }
+  }
+
   // https://github.com/apache/datafusion-comet/issues/4560
   test("array_size returns null for null input") {
     val table = "t1"

@@ -18,9 +18,9 @@
 use crate::{decode_remote_shuffle_batch, CompressionCodec, ShuffleBlockWriter};
 use arrow::array::{
     Array, ArrayRef, BinaryArray, BinaryDictionaryBuilder, DictionaryArray, FixedSizeListArray,
-    Int16Array, Int32Array, LargeListArray, ListArray, MapArray, PrimitiveDictionaryBuilder,
-    RecordBatch, RecordBatchOptions, StringArray, StringDictionaryBuilder, StructArray,
-    UInt16Array,
+    Int16Array, Int32Array, Int64Array, LargeListArray, ListArray, MapArray, NullArray,
+    PrimitiveDictionaryBuilder, RecordBatch, RecordBatchOptions, StringArray,
+    StringDictionaryBuilder, StructArray, UInt16Array,
 };
 use arrow::buffer::{NullBuffer, OffsetBuffer};
 use arrow::datatypes::{
@@ -569,4 +569,53 @@ fn remote_shuffle_preserves_row_count_without_columns() {
     let decoded = decode_remote_shuffle_batch(&bytes, &[]).unwrap();
     assert_eq!(decoded.num_columns(), 0);
     assert_eq!(decoded.num_rows(), 3);
+}
+
+// A `NullType` column, and one nested under a list, a map value and a struct field, decode
+// unchanged: a `NullArray` owns no buffers, so the encoding, the dictionary decoding and the
+// nested-nullability reconciliation all have to pass it through by length alone.
+#[test]
+fn null_type_columns_and_children_survive_remote_shuffle() {
+    let rows = 3;
+    let null_field = |name: &str| Arc::new(Field::new(name, DataType::Null, true));
+    let top_level: ArrayRef = Arc::new(NullArray::new(rows));
+    let list: ArrayRef = Arc::new(ListArray::new(
+        null_field("element"),
+        OffsetBuffer::from_lengths([1, 0, 2]),
+        Arc::new(NullArray::new(3)),
+        None,
+    ));
+    let struct_fields = Fields::from(vec![
+        Field::new("a", DataType::Int64, true),
+        Field::new("n", DataType::Null, true),
+    ]);
+    let structs: ArrayRef = Arc::new(StructArray::new(
+        struct_fields,
+        vec![
+            Arc::new(Int64Array::from(vec![Some(1), None, Some(3)])),
+            Arc::new(NullArray::new(rows)),
+        ],
+        Some(NullBuffer::from(vec![true, false, true])),
+    ));
+    let entry_fields = Fields::from(vec![
+        Field::new("key", DataType::Int64, false),
+        Field::new("value", DataType::Null, true),
+    ]);
+    let entries = StructArray::new(
+        entry_fields.clone(),
+        vec![
+            Arc::new(Int64Array::from(vec![10, 20, 30])),
+            Arc::new(NullArray::new(3)),
+        ],
+        None,
+    );
+    let map: ArrayRef = Arc::new(MapArray::new(
+        Arc::new(Field::new("entries", DataType::Struct(entry_fields), false)),
+        OffsetBuffer::from_lengths([2, 0, 1]),
+        entries,
+        None,
+        false,
+    ));
+    let columns = vec![top_level, list, structs, map];
+    assert_roundtrip(columns.clone(), columns);
 }

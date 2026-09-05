@@ -31,6 +31,7 @@ import org.apache.spark.sql.catalyst.expressions.aggregate._
 import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
 import org.apache.spark.sql.catalyst.expressions.xml.{XPathBoolean, XPathDouble, XPathFloat, XPathInt, XPathList, XPathLong, XPathShort, XPathString}
 import org.apache.spark.sql.comet.DecimalPrecision
+import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.{ScalarSubquery, SparkPlan}
 import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
 import org.apache.spark.sql.internal.SQLConf
@@ -72,7 +73,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     classOf[ArrayMin] -> CometArrayMin,
     classOf[ArrayPosition] -> CometArrayPosition,
     classOf[ArrayRemove] -> CometArrayRemove,
-    classOf[ArrayRepeat] -> CometScalarFunction("array_repeat"),
+    classOf[ArrayRepeat] -> CometArrayRepeat,
     classOf[Slice] -> CometSlice,
     classOf[SortArray] -> CometSortArray,
     classOf[ArraysOverlap] -> CometArraysOverlap,
@@ -641,7 +642,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
         val info = DataTypeInfo.newBuilder()
         val list = ListInfo.newBuilder()
         list.setElementType(elementType.get)
-        list.setContainsNull(a.containsNull)
+        list.setContainsNull(Utils.declaredChildNullability(a.elementType, a.containsNull))
         nestedParquetFieldId(parentField, elementPath, includeFieldIds)
           .foreach(list.setElementFieldId)
 
@@ -665,7 +666,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
         val map = MapInfo.newBuilder()
         map.setKeyType(keyType.get)
         map.setValueType(valueType.get)
-        map.setValueContainsNull(m.valueContainsNull)
+        map.setValueContainsNull(Utils.declaredChildNullability(m.valueType, m.valueContainsNull))
         nestedParquetFieldId(parentField, keyPath, includeFieldIds).foreach(map.setKeyFieldId)
         nestedParquetFieldId(parentField, valuePath, includeFieldIds).foreach(map.setValueFieldId)
 
@@ -682,7 +683,8 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
           val nestedFieldPath = if (nestedParentField.isDefined) Seq(field.name) else Seq.empty
           serializeDataType(field.dataType, nestedParentField, nestedFieldPath, includeFieldIds)
         }
-        val fieldNullable = s.map(f => Boolean.box(f.nullable)).asJava
+        val fieldNullable =
+          s.map(f => Boolean.box(Utils.declaredChildNullability(f.dataType, f.nullable))).asJava
 
         if (fieldDatatypes.exists(_.isEmpty)) {
           return None

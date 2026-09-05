@@ -28,7 +28,7 @@ import org.apache.spark.sql.catalyst.analysis.UnresolvedRelation
 import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometBroadcastNestedLoopJoinExec, CometSortMergeJoinExec, CometUnionExec}
 import org.apache.spark.sql.execution.adaptive.AQEShuffleReadExec
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ArrayType, IntegerType, MetadataBuilder, StructField, StructType}
+import org.apache.spark.sql.types.{ArrayType, IntegerType, MapType, MetadataBuilder, NullType, StructField, StructType}
 
 import org.apache.comet.CometConf
 
@@ -1016,6 +1016,41 @@ class CometJoinSuite extends CometTestBase {
               "SELECT /*+ BROADCAST(tbl_a) */ * FROM tbl_a LEFT OUTER JOIN tbl_b" +
                 " ON tbl_a._1 > tbl_b._1")
           checkSparkAnswer(df)
+        }
+      }
+    }
+  }
+
+  test("Broadcast HashJoin with NullType map columns on the build side") {
+    // map(k, NULL) and transform_values(map(), ...) leave NullType children in the map type
+    // (a bare map() would be constant-folded into a literal the optimizer hoists above the
+    // join). The build side goes through CometBroadcastExchangeExec's batch coalescing and an
+    // Arrow IPC round trip on the JVM (see #5525).
+    Seq(true, false).foreach { aqe =>
+      withSQLConf(
+        CometConf.COMET_BATCH_SIZE.key -> "100",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe.toString,
+        SQLConf.PREFER_SORTMERGEJOIN.key -> "false",
+        SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+        // `map()` is MapType(NullType, NullType) only while this legacy flag is off.
+        SQLConf.LEGACY_CREATE_EMPTY_COLLECTION_USING_STRING_TYPE.key -> "false") {
+        withParquetTable((0 until 1000).map(i => (i, i % 5)), "tbl_a") {
+          withParquetTable((0 until 300).map(i => (i % 10, i + 2)), "tbl_b") {
+            val df = sql("""
+                |SELECT /*+ BROADCAST(b) */ tbl_a._1, b.m1, b.m2
+                |FROM tbl_a JOIN (
+                |  SELECT _1, map(_1, NULL) AS m1, transform_values(map(), (k, v) -> _1) AS m2
+                |  FROM tbl_b) b
+                |ON tbl_a._2 = b._1""".stripMargin)
+            // Guard the premise: without a NullType child this test still passes while
+            // covering nothing.
+            assert(df.schema("m1").dataType.asInstanceOf[MapType].valueType === NullType)
+            assert(df.schema("m2").dataType.asInstanceOf[MapType].keyType === NullType)
+            checkSparkAnswerAndOperator(
+              df,
+              Seq(classOf[CometBroadcastExchangeExec], classOf[CometBroadcastHashJoinExec]))
+          }
         }
       }
     }
