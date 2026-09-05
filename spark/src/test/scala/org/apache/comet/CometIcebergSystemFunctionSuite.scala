@@ -140,6 +140,12 @@ class CometIcebergSystemFunctionSuite
       // Spark nulls only on materialization and a `Decimal128(p, s)` array cannot represent at
       // all; the expression stays with Spark rather than null early. `bucket` on the same columns
       // is unaffected and is covered by the bucket test above.
+      //
+      // This is also why `CometStaticInvoke` routes only *unrecognized* functions through the
+      // codegen dispatcher instead of mixing in `CodegenDispatchFallback` (see #5572): the
+      // dispatcher writes into the same Arrow `Decimal128(p, s)` vector, so rescuing this
+      // `Unsupported` produces the out-of-range value where Spark produces a null. Measured: the
+      // rescued plan returns `-100000000000000.0000` for a row Spark nulls.
       decimalColumns.foreach { column =>
         checkSparkAnswerAndFallbackReason(
           s"SELECT $catalog.system.truncate(10, $column) FROM $source",
@@ -329,20 +335,34 @@ class CometIcebergSystemFunctionSuite
         Unsupported(Some(CometIcebergTruncate.DecimalNote)))
   }
 
-  test("fallback reason for an unlisted static invoke names the declaring class") {
-    val expr = StaticInvoke(
-      classOf[java.lang.Math],
-      IntegerType,
-      "abs",
-      Seq(AttributeReference("v", IntegerType)()),
-      propagateNull = false)
-    assert(CometStaticInvoke.convert(expr, Seq.empty, binding = false).isEmpty)
-    val reasons = expr.getTagValue(CometExplainInfo.FALLBACK_REASONS).getOrElse(Set.empty)
+  test("an unlisted static invoke routes through the codegen dispatcher") {
+    val attr = AttributeReference("v", IntegerType)()
+    val expr =
+      StaticInvoke(classOf[java.lang.Math], IntegerType, "abs", Seq(attr), propagateNull = false)
+    // Nothing in the allowlist matches, so the dispatcher takes it: `StaticInvoke.doGenCode` emits
+    // a static method call, and both the argument and the result are types the kernel handles.
+    val proto = CometStaticInvoke.convert(expr, Seq(attr), binding = true)
     assert(
-      reasons.exists(r =>
-        r.contains("Static invoke expression: abs is not supported") &&
-          r.contains("java.lang.Math")),
-      s"unexpected fallback reasons: $reasons")
+      proto.exists(_.hasJvmScalarUdf),
+      s"expected a codegen-dispatch proto for an unlisted static invoke, got $proto")
+
+    // When the dispatcher is off there is nowhere left to run it, and the fallback reason has to
+    // name both the function and the declaring class -- every Iceberg system function is named
+    // `invoke`, so the function name alone is ambiguous.
+    withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
+      val fresh =
+        StaticInvoke(
+          classOf[java.lang.Math],
+          IntegerType,
+          "abs",
+          Seq(attr),
+          propagateNull = false)
+      assert(CometStaticInvoke.convert(fresh, Seq(attr), binding = true).isEmpty)
+      val reasons = fresh.getTagValue(CometExplainInfo.FALLBACK_REASONS).getOrElse(Set.empty)
+      assert(
+        reasons.exists(r => r.contains("abs") && r.contains("java.lang.Math")),
+        s"unexpected fallback reasons: $reasons")
+    }
   }
 
   /** Runs `f` with the Iceberg catalog registered and the source parquet table in scope. */
