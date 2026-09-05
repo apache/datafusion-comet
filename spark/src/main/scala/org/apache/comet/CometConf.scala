@@ -792,7 +792,12 @@ object CometConf extends ShimCometConf {
       .category(CATEGORY_TUNING)
       .doc(
         "The type of memory pool to be used for Comet native execution when running Spark in " +
-          "off-heap mode. Available pool types are `greedy_unified` and `fair_unified`. " +
+          "off-heap mode. Available pool types are `greedy_unified`, `fair_unified`, and " +
+          "`real_usage`. The experimental `real_usage` pool gates growth on real allocator " +
+          "usage against the off-heap budget rather than delegating per-task accounting to " +
+          "Spark, and arms the last-resort OOM breaker on its own, so it needs no separate " +
+          "`spark.comet.exec.memoryGuard.enabled`. It relies on the `oom-guard` native " +
+          "feature, which is enabled by default. " +
           s"$TUNING_GUIDE.")
       .stringConf
       .createWithDefault("fair_unified")
@@ -950,6 +955,27 @@ object CometConf extends ShimCometConf {
           "Once the limit is reached, further spills will fail and the query will error out.")
       .bytesConf(ByteUnit.BYTE)
       .createWithDefault(100L * 1024 * 1024 * 1024) // 100 GB
+
+  val COMET_EXEC_MEMORY_GUARD_ENABLED: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.memoryGuard.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Experimental. When enabled, Comet tracks real native memory allocations and aborts " +
+          "an over-budget task with a retriable error instead of risking an executor-wide OOM " +
+          "kill. The `real_usage` memory pool arms this automatically, so this flag is only " +
+          "needed to add the guard on top of another pool type. Uses the 'oom-guard' native " +
+          "feature, which is enabled by default. Has no effect if that feature is compiled out.")
+      .booleanConf
+      .createWithDefault(false)
+
+  val COMET_EXEC_MEMORY_GUARD_SIZE: OptionalConfigEntry[Long] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.memoryGuard.size")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Experimental. Memory budget for the Comet native OOM guard (accepts sizes like '4g'). " +
+          "Defaults to the executor off-heap memory size (spark.memory.offHeap.size) when unset.")
+      .bytesConf(ByteUnit.BYTE)
+      .createOptional
 
   val COMET_RESPECT_DATAFUSION_CONFIGS: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.respectDataFusionConfigs")
