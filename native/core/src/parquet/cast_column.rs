@@ -21,7 +21,9 @@ use arrow::{
     record_batch::RecordBatch,
 };
 
-use crate::parquet::parquet_support::{spark_parquet_convert, SparkParquetOptions};
+use crate::parquet::parquet_support::{
+    spark_parquet_convert_with_mapping, FieldMapping, SparkParquetOptions,
+};
 use datafusion::common::format::DEFAULT_CAST_OPTIONS;
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
 use datafusion::logical_expr::ColumnarValue;
@@ -149,8 +151,11 @@ pub struct CometCastColumnExpr {
     /// Options forwarded to [`cast_column`].
     cast_options: CastOptions<'static>,
     /// Spark parquet options for complex nested type conversions.
-    /// When present, enables `spark_parquet_convert` as a fallback.
+    /// When present, enables the nested conversion as a fallback.
     parquet_options: Option<SparkParquetOptions>,
+    /// Which file field supplies each requested nested field, resolved once per file and
+    /// reused for every batch. Set together with `parquet_options`.
+    field_mapping: Option<Arc<FieldMapping>>,
 }
 
 // Manually derive `PartialEq`/`Hash` as `Arc<dyn PhysicalExpr>` does not
@@ -162,6 +167,7 @@ impl PartialEq for CometCastColumnExpr {
             && self.target_field.eq(&other.target_field)
             && self.cast_options.eq(&other.cast_options)
             && self.parquet_options.eq(&other.parquet_options)
+            && self.field_mapping.eq(&other.field_mapping)
     }
 }
 
@@ -172,6 +178,7 @@ impl Hash for CometCastColumnExpr {
         self.target_field.hash(state);
         self.cast_options.hash(state);
         self.parquet_options.hash(state);
+        self.field_mapping.hash(state);
     }
 }
 
@@ -210,12 +217,19 @@ impl CometCastColumnExpr {
             target_field,
             cast_options: cast_options.unwrap_or(DEFAULT_CAST_OPTIONS),
             parquet_options: None,
+            field_mapping: None,
         })
     }
 
-    /// Set Spark parquet options to enable complex nested type conversions.
-    pub fn with_parquet_options(mut self, options: SparkParquetOptions) -> Self {
+    /// Enable nested type conversions with Spark parquet options and the field mapping
+    /// resolved for this expression's physical and target types.
+    pub fn with_parquet_options(
+        mut self,
+        options: SparkParquetOptions,
+        field_mapping: Arc<FieldMapping>,
+    ) -> Self {
         self.parquet_options = Some(options);
+        self.field_mapping = Some(field_mapping);
         self
     }
 }
@@ -254,12 +268,22 @@ impl PhysicalExpr for CometCastColumnExpr {
         let input_physical_field = self.input_physical_field.data_type();
         let target_field = self.target_field.data_type();
 
+        // Relabeling only swaps metadata, so it is right when every requested field reads
+        // the file field at its own position. A mapping that reorders fields (ids resolved
+        // to other positions) has to go through the nested conversion below.
+        let positional = self
+            .field_mapping
+            .as_ref()
+            .is_none_or(|mapping| mapping.is_positional());
+
         match (input_physical_field, target_field) {
             // Nested types that differ only in field names (e.g., List element named
             // "item" vs "element", or Map entries named "key_value" vs "entries").
             // Re-label the array so the DataType metadata matches the logical schema.
             (physical, logical)
-                if physical != logical && types_differ_only_in_field_names(physical, logical) =>
+                if positional
+                    && physical != logical
+                    && types_differ_only_in_field_names(physical, logical) =>
             {
                 match value {
                     ColumnarValue::Array(array) => {
@@ -269,16 +293,17 @@ impl PhysicalExpr for CometCastColumnExpr {
                     other => Ok(other),
                 }
             }
-            // Fallback: use spark_parquet_convert for complex nested type conversions
-            // (e.g., List<Struct{a,b,c}> → List<Struct{a,c}>, Map field selection, etc.)
-            _ => {
-                if let Some(parquet_options) = &self.parquet_options {
-                    let converted = spark_parquet_convert(value, target_field, parquet_options)?;
-                    Ok(converted)
-                } else {
-                    Ok(value)
-                }
-            }
+            // Fallback: nested conversion through the resolved mapping
+            // (e.g., List<Struct{a,b,c}> -> List<Struct{a,c}>, Map field selection, etc.)
+            _ => match (&self.parquet_options, &self.field_mapping) {
+                (Some(parquet_options), Some(mapping)) => spark_parquet_convert_with_mapping(
+                    value,
+                    target_field,
+                    mapping,
+                    parquet_options,
+                ),
+                _ => Ok(value),
+            },
         }
     }
 
@@ -302,8 +327,8 @@ impl PhysicalExpr for CometCastColumnExpr {
             Arc::clone(&self.target_field),
             Some(self.cast_options.clone()),
         )?;
-        if let Some(opts) = &self.parquet_options {
-            new_expr = new_expr.with_parquet_options(opts.clone());
+        if let (Some(opts), Some(mapping)) = (&self.parquet_options, &self.field_mapping) {
+            new_expr = new_expr.with_parquet_options(opts.clone(), Arc::clone(mapping));
         }
         Ok(Arc::new(new_expr))
     }
@@ -316,12 +341,166 @@ impl PhysicalExpr for CometCastColumnExpr {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::parquet::parquet_support::resolve_field_mapping;
     use arrow::array::{
         Array, Int32Array, StringArray, TimestampMicrosecondArray, TimestampMillisecondArray,
     };
     use arrow::datatypes::{Field, Fields};
     use datafusion::physical_expr::expressions::Column;
     use datafusion_comet_spark_expr::EvalMode;
+    use parquet::arrow::PARQUET_FIELD_ID_META_KEY;
+    use std::collections::HashMap;
+
+    fn int_field_with_id(name: &str, id: i32) -> Field {
+        Field::new(name, DataType::Int32, true).with_metadata(HashMap::from([(
+            PARQUET_FIELD_ID_META_KEY.to_string(),
+            id.to_string(),
+        )]))
+    }
+
+    /// File struct `x` (id 1) = 42, `y` (id 2) = 43; requested struct names them the same
+    /// but swaps the ids. Names and types match, so only the positional gate keeps the
+    /// relabel shortcut from firing: the mapping reads by id and the result must be
+    /// `x` = 43, `y` = 42.
+    #[test]
+    fn test_swapped_field_ids_bypass_relabel_shortcut() {
+        let physical_fields =
+            Fields::from(vec![int_field_with_id("x", 1), int_field_with_id("y", 2)]);
+        let logical_fields =
+            Fields::from(vec![int_field_with_id("x", 2), int_field_with_id("y", 1)]);
+
+        let input_field = Arc::new(Field::new(
+            "s",
+            DataType::Struct(physical_fields.clone()),
+            true,
+        ));
+        let target_field = Arc::new(Field::new(
+            "s",
+            DataType::Struct(logical_fields.clone()),
+            true,
+        ));
+
+        let columns: Vec<ArrayRef> = vec![
+            Arc::new(Int32Array::from(vec![42])),
+            Arc::new(Int32Array::from(vec![43])),
+        ];
+        let struct_arr = StructArray::new(physical_fields, columns, None);
+        let schema = Schema::new(vec![Arc::clone(&input_field)]);
+        let batch = RecordBatch::try_new(Arc::new(schema), vec![Arc::new(struct_arr)]).unwrap();
+
+        let mut opts = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        opts.use_field_id = true;
+        let mapping = Arc::new(
+            resolve_field_mapping(input_field.data_type(), target_field.data_type(), &opts)
+                .unwrap(),
+        );
+        assert!(!mapping.is_positional());
+
+        let col_expr: Arc<dyn PhysicalExpr> = Arc::new(Column::new("s", 0));
+        let cast_expr = CometCastColumnExpr::try_new(col_expr, input_field, target_field, None)
+            .unwrap()
+            .with_parquet_options(opts, mapping);
+
+        let ColumnarValue::Array(arr) = cast_expr.evaluate(&batch).unwrap() else {
+            panic!("expected array result");
+        };
+        assert_eq!(arr.data_type(), &DataType::Struct(logical_fields));
+        let result = arr.as_any().downcast_ref::<StructArray>().unwrap();
+        let x = result
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap();
+        let y = result
+            .column(1)
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap();
+        assert_eq!(x.value(0), 43);
+        assert_eq!(y.value(0), 42);
+    }
+
+    /// Companion guard: without any field ids the relabel shortcut must keep
+    /// handling name-only differences, whether or not id read mode is enabled.
+    #[test]
+    fn test_relabel_shortcut_kept_for_name_only_differences_without_ids() {
+        // Physical: s { col: List(Field("item", Int32)) }
+        // Logical:  s { col: List(Field("element", Int32)) }
+        let physical_list_field = Arc::new(Field::new("item", DataType::Int32, true));
+        let logical_list_field = Arc::new(Field::new("element", DataType::Int32, true));
+        let physical_fields = Fields::from(vec![Field::new(
+            "col",
+            DataType::List(Arc::clone(&physical_list_field)),
+            true,
+        )]);
+        let logical_fields = Fields::from(vec![Field::new(
+            "col",
+            DataType::List(logical_list_field),
+            true,
+        )]);
+
+        let input_field = Arc::new(Field::new(
+            "s",
+            DataType::Struct(physical_fields.clone()),
+            true,
+        ));
+        let target_field = Arc::new(Field::new(
+            "s",
+            DataType::Struct(logical_fields.clone()),
+            true,
+        ));
+
+        let values = Int32Array::from(vec![1, 2, 3]);
+        let list = ListArray::new(
+            physical_list_field,
+            arrow::buffer::OffsetBuffer::new(vec![0, 2, 3].into()),
+            Arc::new(values),
+            None,
+        );
+        let struct_arr = StructArray::new(physical_fields, vec![Arc::new(list) as ArrayRef], None);
+        let schema = Schema::new(vec![Arc::clone(&input_field)]);
+        let batch = RecordBatch::try_new(Arc::new(schema), vec![Arc::new(struct_arr)]).unwrap();
+
+        let col_expr: Arc<dyn PhysicalExpr> = Arc::new(Column::new("s", 0));
+
+        // Without parquet options the fallback arm would return the value
+        // unchanged, so a relabeled result proves the shortcut itself fired.
+        let plain_expr = CometCastColumnExpr::try_new(
+            Arc::clone(&col_expr),
+            Arc::clone(&input_field),
+            Arc::clone(&target_field),
+            None,
+        )
+        .unwrap();
+
+        // Enabling id read mode without any id metadata must not disable the
+        // shortcut either: the resolved mapping is positional.
+        let mut opts = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        opts.use_field_id = true;
+        let mapping = Arc::new(
+            resolve_field_mapping(input_field.data_type(), target_field.data_type(), &opts)
+                .unwrap(),
+        );
+        assert!(mapping.is_positional());
+        let id_mode_expr = CometCastColumnExpr::try_new(col_expr, input_field, target_field, None)
+            .unwrap()
+            .with_parquet_options(opts, mapping);
+
+        for cast_expr in [plain_expr, id_mode_expr] {
+            let result = cast_expr.evaluate(&batch).unwrap();
+            let ColumnarValue::Array(arr) = result else {
+                panic!("expected array result");
+            };
+            assert_eq!(arr.data_type(), &DataType::Struct(logical_fields.clone()));
+            let result_struct = arr.as_any().downcast_ref::<StructArray>().unwrap();
+            let result_list = result_struct
+                .column(0)
+                .as_any()
+                .downcast_ref::<ListArray>()
+                .unwrap();
+            assert_eq!(result_list.len(), 2);
+        }
+    }
 
     #[test]
     fn test_rejects_millisecond_logical_timestamp() {
@@ -369,7 +548,10 @@ mod tests {
                 let expr: Arc<dyn PhysicalExpr> = Arc::new(Column::new("ts", 0));
                 let cast_expr = CometCastColumnExpr::try_new(expr, input_field, target_field, None)
                     .unwrap()
-                    .with_parquet_options(SparkParquetOptions::new(eval_mode, "UTC", false));
+                    .with_parquet_options(
+                        SparkParquetOptions::new(eval_mode, "UTC", false),
+                        Arc::new(FieldMapping::Leaf),
+                    );
 
                 let input = TimestampMillisecondArray::from(vec![Some(1_234), Some(-1_234), None])
                     .with_timezone_opt(source_tz.clone());
