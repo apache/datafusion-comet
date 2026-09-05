@@ -176,6 +176,14 @@ class IcebergWriteProtoTranslationSuite extends AnyFunSuite {
     assert(settings.getPageRowLimit == 1000)
   }
 
+  test("per-column bloom filter properties are translated deterministically") {
+    val prefix = Keys.ParquetBloomFilterColumnEnabledPrefix
+    val settings = buildParquetSettings(
+      Map(s"${prefix}region" -> "TRUE", s"${prefix}id" -> "true", s"${prefix}amount" -> "false"),
+      TestCreatedBy)
+    assert(settings.getBloomFilterEnabledColumnsList == java.util.Arrays.asList("id", "region"))
+  }
+
   test("size properties are parsed with Java Integer.parseInt semantics") {
     // No trimming and no values past Int.MaxValue -- exactly what iceberg-java's
     // PropertyUtil.propertyAsInt would do. The eligibility gate declines these values
