@@ -52,7 +52,7 @@ use futures::TryStreamExt;
 use parquet::{
     arrow::ArrowWriter,
     basic::{Compression, GzipLevel, ZstdLevel},
-    file::properties::WriterProperties,
+    file::{metadata::KeyValue, properties::WriterProperties},
 };
 use url::Url;
 
@@ -234,6 +234,8 @@ pub struct ParquetWriterExec {
     column_names: Vec<String>,
     /// Catalyst's target schema, including nullability and Parquet field metadata.
     output_schema: Option<SchemaRef>,
+    /// Runtime Spark version to record in the Parquet metadata
+    spark_version: String,
     /// Object store configuration options
     object_store_options: HashMap<String, String>,
     /// Metrics
@@ -255,6 +257,7 @@ impl ParquetWriterExec {
         partition_id: i32,
         column_names: Vec<String>,
         output_schema: Option<SchemaRef>,
+        spark_version: String,
         object_store_options: HashMap<String, String>,
     ) -> Result<Self> {
         // Preserve the input's partitioning so each partition writes its own file
@@ -277,6 +280,7 @@ impl ParquetWriterExec {
             partition_id,
             column_names,
             output_schema,
+            spark_version,
             object_store_options,
             metrics: ExecutionPlanMetricsSet::new(),
             cache,
@@ -458,6 +462,7 @@ impl ExecutionPlan for ParquetWriterExec {
                 self.partition_id,
                 self.column_names.clone(),
                 self.output_schema.clone(),
+                self.spark_version.clone(),
                 self.object_store_options.clone(),
             )?)),
             _ => Err(DataFusionError::Internal(
@@ -515,6 +520,13 @@ impl ExecutionPlan for ParquetWriterExec {
         // Configure writer properties
         let props = WriterProperties::builder()
             .set_compression(compression)
+            // Spark identifies corrected datetime files by its writer version and the absence of
+            // legacy markers. Comet always writes corrected values, so use the same metadata:
+            // https://github.com/apache/spark/blob/v4.2.0/sql/core/src/main/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetWriteSupport.scala#L126-L146
+            .set_key_value_metadata(Some(vec![KeyValue::new(
+                "org.apache.spark.version".to_string(),
+                Some(self.spark_version.clone()),
+            )]))
             .build();
 
         let object_store_options = self.object_store_options.clone();
@@ -687,6 +699,7 @@ mod tests {
             0,
             vec!["required_id".to_string(), "values".to_string()],
             Some(output_schema),
+            "4.2.0".to_string(),
             HashMap::new(),
         )?;
 
@@ -756,6 +769,7 @@ mod tests {
             0,
             vec!["values".to_string()],
             Some(output_schema),
+            "4.2.0".to_string(),
             HashMap::new(),
         )?;
 
@@ -1015,8 +1029,9 @@ mod tests {
             ParquetCompression::None,
             0, // partition_id
             column_names,
-            None,           // output_schema
-            HashMap::new(), // object_store_options
+            None,                // output_schema
+            "4.2.0".to_string(), // spark_version
+            HashMap::new(),      // object_store_options
         )?;
 
         // Create a session context and execute the plan

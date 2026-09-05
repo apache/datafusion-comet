@@ -27,6 +27,7 @@ import java.util.concurrent.ConcurrentHashMap
 import scala.collection.mutable
 import scala.collection.mutable.ListBuffer
 import scala.jdk.CollectionConverters._
+import scala.util.control.NonFatal
 
 import org.apache.hadoop.conf.Configuration
 import org.apache.spark.internal.Logging
@@ -35,9 +36,10 @@ import org.apache.spark.sql.catalyst.expressions.{Attribute, DynamicPruningExpre
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.util.{sideBySide, ArrayBasedMapData, GenericArrayData, MetadataColumnHelper}
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
-import org.apache.spark.sql.comet.{CometBatchScanExec, CometScanExec}
+import org.apache.spark.sql.comet.{CometBatchScanExec, CometScanExec, CometScanUtils}
 import org.apache.spark.sql.execution.{FileSourceScanExec, InSubqueryExec, SparkPlan, SubqueryAdaptiveBroadcastExec}
 import org.apache.spark.sql.execution.datasources.HadoopFsRelation
+import org.apache.spark.sql.execution.datasources.parquet.ParquetOptions
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.datasources.v2.csv.CSVScan
 import org.apache.spark.sql.internal.SQLConf
@@ -50,6 +52,7 @@ import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.iceberg.{CometIcebergNativeScanMetadata, IcebergReflection}
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.parquet.CometParquetUtils.{encryptionEnabled, isEncryptionConfigSupported}
+import org.apache.comet.serde.SupportLevel
 import org.apache.comet.serde.operator.{CometIcebergNativeScan, CometNativeScan}
 import org.apache.comet.shims.{CometTypeShim, ShimCometStreaming, ShimFileFormat, ShimSubqueryBroadcast}
 
@@ -320,7 +323,45 @@ case class CometScanRule(session: SparkSession)
     if (!isSchemaSupported(scanExec, r)) {
       return None
     }
-    Some(CometScanExec(scanExec, session))
+    val cometScan = CometScanExec(scanExec, session)
+    val hasDate = SupportLevel.containsType(scanExec.requiredSchema, classOf[DateType])
+    // TIMESTAMP_NTZ values are never rebased by Spark, on write or on read (Spark's
+    // ParquetVectorUpdaterFactory: "TIMESTAMP_NTZ is a new data type and has no legacy files
+    // that need to do rebase"). The rebase question arises for a requested NTZ column only
+    // when the underlying Parquet column is a TIMESTAMP (LTZ or INT96) that may carry
+    // legacy-calendar values, and Comet permits that read only when
+    // COMET_ALLOW_TIMESTAMP_LTZ_AS_NTZ is true (Spark 4.x, SPARK-47447).
+    val hasTimestamp =
+      SupportLevel.containsType(scanExec.requiredSchema, classOf[TimestampType]) ||
+        (COMET_ALLOW_TIMESTAMP_LTZ_AS_NTZ &&
+          SupportLevel.containsType(scanExec.requiredSchema, classOf[TimestampNTZType]))
+    if ((hasDate || hasTimestamp) && COMET_SCAN_PARQUET_CHECK_DATETIME_REBASE.get()) {
+      val options = new ParquetOptions(r.options, conf)
+      val files = cometScan.selectedPartitions.iterator
+        .flatMap(_.files.iterator.map(f =>
+          CometScanUtils.ParquetFileInfo(f.getPath, f.getLen, f.getModificationTime)))
+        .toSeq
+      try {
+        if (CometScanUtils.requiresDatetimeRebase(
+            files,
+            hadoopConf,
+            options.datetimeRebaseModeInRead,
+            options.int96RebaseModeInRead,
+            hasDate,
+            hasTimestamp)) {
+          withFallbackReason(scanExec, "Native Parquet scan does not support datetime rebasing")
+          return None
+        }
+      } catch {
+        case NonFatal(e) =>
+          logWarning("Unable to inspect Parquet datetime rebase metadata", e)
+          withFallbackReason(
+            scanExec,
+            "Native Parquet scan could not verify datetime rebase metadata")
+          return None
+      }
+    }
+    Some(cometScan)
   }
 
   private def transformV2Scan(scanExec: BatchScanExec): SparkPlan = {
