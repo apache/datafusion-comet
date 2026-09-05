@@ -262,7 +262,18 @@ object CometArrayMin extends CometExpressionSerde[ArrayMin] {
   }
 }
 
-object CometArraysOverlap extends CometExpressionSerde[ArraysOverlap] {
+object CometArraysOverlap extends CometExpressionSerde[ArraysOverlap] with ArraysBase {
+
+  override def getIncompatibleReasons(): Seq[String] = Seq(nestedFloatIncompatibilityReason)
+
+  override def getSupportLevel(expr: ArraysOverlap): SupportLevel = {
+    if (hasNestedFloatElements(expr.left.dataType)) {
+      Incompatible(Some(nestedFloatIncompatibilityReason))
+    } else {
+      Compatible()
+    }
+  }
+
   override def convert(
       expr: ArraysOverlap,
       inputs: Seq[Attribute],
@@ -820,12 +831,18 @@ object CometSize extends CometExpressionSerde[Size] {
 
 object CometArrayPosition extends CometExpressionSerde[ArrayPosition] with ArraysBase {
 
+  override def getIncompatibleReasons(): Seq[String] = Seq(nestedFloatIncompatibilityReason)
+
   override def getSupportLevel(expr: ArrayPosition): SupportLevel = {
     if (expr.children.forall(_.foldable)) {
       // Fall back to Spark for all-literal args so ConstantFolding can handle it.
       Unsupported(Some("all arguments are literals, falling back to Spark"))
     } else {
-      childTypesSupportLevel(expr)
+      childTypesSupportLevel(expr) match {
+        case _: Compatible if hasNestedFloatElements(expr.left.dataType) =>
+          Incompatible(Some(nestedFloatIncompatibilityReason))
+        case level => level
+      }
     }
   }
 
@@ -914,6 +931,21 @@ object CometArraysZip extends CometExpressionSerde[ArraysZip] {
 }
 
 trait ArraysBase {
+
+  protected val nestedFloatIncompatibilityReason: String =
+    "Nested floating-point elements distinguish `-0.0` from `0.0`, unlike Spark " +
+      "(https://github.com/apache/datafusion-comet/issues/5191)"
+
+  protected def hasNestedFloatElements(dt: DataType): Boolean = dt match {
+    case ArrayType(elementType: ArrayType, _) =>
+      SupportLevel.containsType(elementType, classOf[FloatType], classOf[DoubleType])
+    case ArrayType(elementType: StructType, _) =>
+      SupportLevel.containsType(elementType, classOf[FloatType], classOf[DoubleType])
+    // Map elements cannot reach here: ArraysOverlap and ArrayPosition call
+    // TypeUtils.checkForOrderingExpr on the element type, and maps are not orderable,
+    // so Spark's analyzer rejects them before planning.
+    case _ => false
+  }
 
   def isTypeSupported(dt: DataType): Boolean = {
     import DataTypes._
