@@ -52,7 +52,6 @@ object IcebergReflection extends Logging {
     val SCHEMA = "org.apache.iceberg.Schema"
     val PARTITION_SPEC_PARSER = "org.apache.iceberg.PartitionSpecParser"
     val PARTITION_SPEC = "org.apache.iceberg.PartitionSpec"
-    val PARTITION_FIELD = "org.apache.iceberg.PartitionField"
     val UNBOUND_PREDICATE = "org.apache.iceberg.expressions.UnboundPredicate"
     val SPARK_BATCH_QUERY_SCAN = "org.apache.iceberg.spark.source.SparkBatchQueryScan"
     val SPARK_STAGED_SCAN = "org.apache.iceberg.spark.source.SparkStagedScan"
@@ -686,31 +685,28 @@ object IcebergReflection extends Logging {
    */
   private def partitionFieldSourceIds(spec: Any): Seq[Int] = {
     import scala.jdk.CollectionConverters._
+    // Exclude fields whose source column was dropped (unknown result type): their source is absent
+    // from the current schema and the serialized spec/values omit them too (see
+    // CometIcebergNativeScan.serializePartitionData), so augmenting the schema with them would
+    // resolve a stale id from history and collide with a live column of the same name.
     val specFields =
       getMethod(spec.getClass, "fields").invoke(spec).asInstanceOf[java.util.List[_]]
-    if (specFields.isEmpty) {
-      Seq.empty
-    } else {
-      // Exclude fields whose source column was dropped (unknown result type): their source is
-      // absent from the current schema and the serialized spec/values omit them too (see
-      // CometIcebergNativeScan.serializePartitionData), so augmenting the schema with them would
-      // resolve a stale id from history and collide with a live column of the same name.
-      val partitionType = getMethod(spec.getClass, "partitionType").invoke(spec)
-      val typeFields = getMethod(partitionType.getClass, "fields")
-        .invoke(partitionType)
-        .asInstanceOf[java.util.List[_]]
-      // Resolve `sourceId` off a field instance's class so getMethod caches it, instead of
-      // reloading the PartitionField class on every call.
-      val sourceIdMethod = getMethod(specFields.get(0).getClass, "sourceId")
-      specFields.asScala
-        .zip(typeFields.asScala)
-        .flatMap { case (partitionField, typeField) =>
-          val fieldType = getMethod(typeField.getClass, "type").invoke(typeField).toString
-          if (fieldType == TypeNames.UNKNOWN) None
-          else Some(sourceIdMethod.invoke(partitionField).asInstanceOf[Int])
-        }
-        .toSeq
-    }
+    val partitionType = getMethod(spec.getClass, "partitionType").invoke(spec)
+    val typeFields = getMethod(partitionType.getClass, "fields")
+      .invoke(partitionType)
+      .asInstanceOf[java.util.List[_]]
+    specFields.asScala
+      .zip(typeFields.asScala)
+      .flatMap { case (partitionField, typeField) =>
+        val fieldType = getMethod(typeField.getClass, "type").invoke(typeField).toString
+        if (fieldType == TypeNames.UNKNOWN) None
+        else
+          Some(
+            getMethod(partitionField.getClass, "sourceId")
+              .invoke(partitionField)
+              .asInstanceOf[Int])
+      }
+      .toSeq
   }
 
   /**

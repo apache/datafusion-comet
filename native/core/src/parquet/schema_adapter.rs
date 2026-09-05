@@ -120,6 +120,12 @@ fn is_pure_structural_narrowing(
             {
                 return false;
             }
+            // Fold the source field names once (O(sources), not O(targets x sources)), matching
+            // this file's bulk-fold convention.
+            let source_folded: Vec<String> = source_fields
+                .iter()
+                .map(|f| fold_name(f.name(), parquet_options.case_sensitive))
+                .collect();
             target_fields.iter().all(|target_field| {
                 // DataFusion's retained `CastExpr` resolves struct fields by *exact* name, so
                 // keeping it is only sound when Spark's configured resolver would pick the same
@@ -135,9 +141,9 @@ fn is_pure_structural_narrowing(
                 //    Spark and Comet's converter reject it, but DataFusion's cast would silently
                 //    return the exact-case field, so the cast must not be retained.
                 let folded_target = fold_name(target_field.name(), parquet_options.case_sensitive);
-                let resolver_matches = source_fields
+                let resolver_matches = source_folded
                     .iter()
-                    .filter(|f| fold_name(f.name(), parquet_options.case_sensitive) == folded_target)
+                    .filter(|&f| f == &folded_target)
                     .count();
                 resolver_matches == 1
                     && source_fields
