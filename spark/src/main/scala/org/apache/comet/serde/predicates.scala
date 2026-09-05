@@ -21,9 +21,10 @@ package org.apache.comet.serde
 
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.sql.catalyst.expressions.{And, Attribute, BinaryExpression, EqualNullSafe, EqualTo, Expression, GreaterThan, GreaterThanOrEqual, In, InSet, IsNaN, IsNotNull, IsNull, LessThan, LessThanOrEqual, Literal, Not, Or}
+import org.apache.spark.sql.catalyst.expressions.{And, Attribute, BinaryExpression, EqualNullSafe, EqualTo, Expression, GreaterThan, GreaterThanOrEqual, In, InSet, IsNaN, IsNotNull, IsNull, KnownFloatingPointNormalized, LessThan, LessThanOrEqual, Literal, Not, Or}
+import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.BooleanType
+import org.apache.spark.sql.types.{BooleanType, DoubleType, FloatType}
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
@@ -365,6 +366,19 @@ object ComparisonUtils {
   val inUnsupportedReasons: Seq[String] =
     Seq(nonDefaultCollationDocReason, legacyNullInEmptyListReason)
 
+  private def normalizeInOperand(expr: Expression): Expression = expr.dataType match {
+    case FloatType | DoubleType =>
+      expr match {
+        case _: KnownFloatingPointNormalized => expr
+        // DataFusion's static IN filter hashes raw floating-point bits. Fold literal
+        // normalization here so the list remains scalar and can still use that filter.
+        case literal: Literal =>
+          Literal(NormalizeNaNAndZero(literal).eval(), literal.dataType)
+        case _ => KnownFloatingPointNormalized(NormalizeNaNAndZero(expr))
+      }
+    case _ => expr
+  }
+
   def in(
       expr: Expression,
       value: Expression,
@@ -372,8 +386,19 @@ object ComparisonUtils {
       inputs: Seq[Attribute],
       binding: Boolean,
       negate: Boolean): Option[Expr] = {
-    val valueExpr = exprToProtoInternal(value, inputs, binding)
-    val listExprs = list.map(exprToProtoInternal(_, inputs, binding))
+    // NaNs and either sign of zero cannot match a non-NaN nonzero literal. Leave such lists
+    // unwrapped so native Parquet scans can still prune using the column's statistics.
+    val needsNormalization = !list.forall {
+      case Literal(null, _) => true
+      case Literal(v: Float, FloatType) => !java.lang.Float.isNaN(v) && v != 0.0f
+      case Literal(v: Double, DoubleType) => !java.lang.Double.isNaN(v) && v != 0.0d
+      case _ => false
+    }
+    // Otherwise normalize both sides for Spark's NaN/zero equality, including fused NOT IN.
+    val normalizedValue = if (needsNormalization) normalizeInOperand(value) else value
+    val normalizedList = if (needsNormalization) list.map(normalizeInOperand) else list
+    val valueExpr = exprToProtoInternal(normalizedValue, inputs, binding)
+    val listExprs = normalizedList.map(exprToProtoInternal(_, inputs, binding))
     if (valueExpr.isDefined && listExprs.forall(_.isDefined)) {
       val builder = ExprOuterClass.In.newBuilder()
       builder.setInValue(valueExpr.get)
@@ -385,6 +410,10 @@ object ComparisonUtils {
           .setIn(builder)
           .build())
     } else {
+      // Normalization creates temporary wrappers and literals outside the original tree. Keep
+      // their failure reasons on the membership expression so the operator can explain fallback.
+      liftFallbackReasons(normalizedValue, expr)
+      normalizedList.foreach(liftFallbackReasons(_, expr))
       None
     }
   }

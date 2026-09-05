@@ -898,7 +898,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
    * converted, so lifting one off a tree that converted fine would attribute a stale reason to an
    * operator that has no problem.
    */
-  private def liftFallbackReasons(from: Expression, to: Expression): Unit = {
+  private[serde] def liftFallbackReasons(from: Expression, to: Expression): Unit = {
     val reasons = mutable.Set.empty[String]
     from.foreach { e =>
       e.getTagValue(CometExplainInfo.FALLBACK_REASONS).foreach(reasons ++= _)
