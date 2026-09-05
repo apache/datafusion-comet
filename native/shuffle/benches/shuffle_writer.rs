@@ -301,6 +301,61 @@ fn schema_encoding_benchmark(c: &mut Criterion) {
     group.finish();
 }
 
+/// Compare context lifetimes through the production local block encoder. Both arms reuse
+/// the writer and destination capacity; only the Arrow IPC context lifetime differs.
+fn ipc_context_reuse_benchmark(c: &mut Criterion) {
+    let mut group = c.benchmark_group("shuffle_ipc_context");
+    for rows in [128, 8192] {
+        for (name, batch) in [
+            ("mixed", create_batch(rows, true)),
+            ("flat", flat_schema_batch(rows)),
+            ("nested", nested_schema_batch(rows)),
+        ] {
+            for codec in [
+                CompressionCodec::None,
+                CompressionCodec::Lz4Frame,
+                CompressionCodec::Snappy,
+                CompressionCodec::Zstd(1),
+            ] {
+                let writer = ShuffleBlockWriter::try_new(&batch.schema(), codec.clone()).unwrap();
+                for reuse in [false, true] {
+                    let lifetime = if reuse { "reused" } else { "fresh" };
+                    group.bench_function(format!("{name}/{rows}/{codec:?}/{lifetime}"), |b| {
+                        let ipc_time = Time::default();
+                        let mut context = IpcWriteContext::default();
+                        let mut buffer = Vec::new();
+                        // Warm the output buffer and the retained context before timing.
+                        writer
+                            .write_batch(
+                                &batch,
+                                &mut Cursor::new(&mut buffer),
+                                &mut context,
+                                &ipc_time,
+                            )
+                            .unwrap();
+                        b.iter(|| {
+                            if !reuse {
+                                context = IpcWriteContext::default();
+                            }
+                            buffer.clear();
+                            writer
+                                .write_batch(
+                                    &batch,
+                                    &mut Cursor::new(&mut buffer),
+                                    &mut context,
+                                    &ipc_time,
+                                )
+                                .unwrap();
+                            std::hint::black_box(&buffer);
+                        });
+                    });
+                }
+            }
+        }
+    }
+    group.finish();
+}
+
 /// A wide flat schema of primitive columns.
 fn flat_schema_batch(num_rows: usize) -> RecordBatch {
     let num_cols = 50;
@@ -375,6 +430,6 @@ fn config() -> Criterion {
 criterion_group! {
     name = benches;
     config = config();
-    targets = criterion_benchmark, schema_encoding_benchmark
+    targets = criterion_benchmark, schema_encoding_benchmark, ipc_context_reuse_benchmark
 }
 criterion_main!(benches);
