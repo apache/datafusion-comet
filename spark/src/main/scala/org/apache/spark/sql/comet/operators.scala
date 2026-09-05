@@ -291,8 +291,8 @@ private[comet] object PlanDataInjector extends Logging {
   private[comet] def releasePreparedShuffle(shuffleId: Int): Unit =
     shufflePreparedCommons.remove(Integer.valueOf(shuffleId))
 
-  // Both stores belong to the SparkEnv that filled them, so the shuffle managers drop them
-  // together from stop.
+  // Both stores are JVM-wide statics that assume one active SparkContext per JVM, so the shuffle
+  // managers drop them together from stop, before the next context can fill them.
   private[comet] def releaseAll(): Unit = {
     shufflePreparedCommons.clear()
     basePlanCache.clear()
@@ -317,7 +317,7 @@ private[comet] object PlanDataInjector extends Logging {
   /**
    * Memo key for one injector's prepared common. Every contrib scan arrives as the same
    * CONTRIB_SCAN envelope, so two injectors can agree on a scan key; the class prefix keeps their
-   * prepared objects apart.
+   * prepared objects apart. It assumes one classloader per injector class.
    */
   private[comet] def preparedKey(injector: PlanDataInjector, key: String): String =
     s"${injector.getClass.getName}:$key"
