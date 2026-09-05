@@ -46,7 +46,6 @@ import org.apache.spark.sql.types._
 import org.apache.comet.{CometConf, DataTypeSupport, NativeBase}
 import org.apache.comet.CometConf._
 import org.apache.comet.CometSparkSessionExtensions.{isCometLoaded, isSpark35Plus, withFallbackReason, withFallbackReasons}
-import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.iceberg.{CometIcebergNativeScanMetadata, IcebergReflection}
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.parquet.CometParquetUtils.{encryptionEnabled, isEncryptionConfigSupported}
@@ -845,13 +844,16 @@ case class CometScanRule(session: SparkSession)
             } else {
               val readSchema = scanExec.scan.readSchema()
 
-              // Identify complex type columns that would trigger accessor creation failures
+              // IS NULL/NOT NULL on struct columns must fall back: iceberg-rust's Arrow
+              // predicate visitor cannot project struct columns (see project_column in
+              // iceberg-rust arrow/reader/predicate_visitor.rs). List and map columns
+              // evaluate through arrow's native is_null/is_not_null and are supported.
               val complexColumns = readSchema
-                .filter(field => isComplexType(field.dataType))
+                .filter(field => field.dataType.isInstanceOf[StructType])
                 .map(_.name)
                 .toSet
 
-              // Detect IS NULL/NOT NULL on complex columns (pattern: is_null(ref(name="col")))
+              // Detect IS NULL/NOT NULL on struct columns (pattern: is_null(ref(name="col")))
               // Nested field filters use different patterns and don't trigger this issue
               val hasComplexNullCheck = filters.asScala.exists { expr =>
                 val exprStr = expr.toString
@@ -866,9 +868,10 @@ case class CometScanRule(session: SparkSession)
               }
 
               if (hasComplexNullCheck) {
-                fallbackReasons += "IS NULL / IS NOT NULL predicates on complex type columns " +
-                  "(struct/array/map) are not yet supported by iceberg-rust " +
-                  "(nested field filters like address.city = 'NYC' are supported)"
+                fallbackReasons += "IS NULL / IS NOT NULL predicates on struct type columns " +
+                  "are not yet supported by iceberg-rust " +
+                  "(list/map columns and nested field filters like address.city = 'NYC' " +
+                  "are supported)"
                 false
               } else {
                 true
