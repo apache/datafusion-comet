@@ -150,21 +150,12 @@ class CometStringExpressionSuite extends CometTestBase with CometCodegenAssertio
               s"SELECT $str, $len, $expr($str, $len) FROM t1 ORDER BY str, len, pad"
           }
 
-          val isLiteralStr = str != "str"
-          val isLiteralLen = !len.contains("len")
-          val isLiteralPad = !pad.contains("pad")
-
-          if (isLiteralStr && isLiteralLen && isLiteralPad) {
-            // all arguments are literal, so Spark constant folding will kick in
-            // and pad function will not be evaluated by Comet
-            checkSparkAnswerAndOperator(sql)
-          } else {
-            // Comet will fall back to Spark because the plan contains a staticinvoke instruction
-            // which is not supported
-            checkSparkAnswerAndFallbackReason(
-              sql,
-              s"Static invoke expression: $expr is not supported")
-          }
+          // `lpad` / `rpad` on binary input lowers to `StaticInvoke(ByteArray, funcName, ...)`,
+          // which has no native path and is not in `CometStaticInvoke`'s allowlist, so it routes
+          // through the JVM codegen dispatcher and the projection stays in the Comet pipeline.
+          // When every argument is a literal, Spark's constant folding evaluates the call before
+          // Comet ever sees it.
+          checkSparkAnswerAndOperator(sql)
         }
       }
     }
