@@ -25,7 +25,8 @@ import org.apache.arrow.vector._
 import org.apache.spark.{SparkConf, SparkEnv, TaskContext}
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.api.java.UDF1
-import org.apache.spark.sql.catalyst.expressions.{BoundReference, CreateArray, CreateMap, CreateNamedStruct, Expression, Literal, MapConcat}
+import org.apache.spark.sql.catalyst.expressions.{AttributeReference, BoundReference, CreateArray, CreateMap, CreateNamedStruct, Expression, Literal, MapConcat}
+import org.apache.spark.sql.catalyst.expressions.objects.Invoke
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.internal.SQLConf
@@ -35,6 +36,7 @@ import org.apache.spark.unsafe.types.UTF8String
 import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
 import org.apache.comet.codegen.CometBatchKernelCodegen
 import org.apache.comet.codegen.CometBatchKernelCodegen.ArrowColumnSpec
+import org.apache.comet.serde.{CometScalaUDF, QueryPlanSerde}
 import org.apache.comet.udf.codegen.CometScalaUDFCodegen
 import org.apache.comet.vector.CometVector
 
@@ -215,6 +217,84 @@ class CometCodegenSuite
           !explain.contains("JVM codegen dispatcher"),
           s"expected NO codegen-dispatch info with the flag off, got:\n$explain")
       }
+    }
+  }
+
+  private def withSequenceTable(f: => Unit): Unit = {
+    withTable("t") {
+      // `stp` carries a sign-correct step so `sequence(a, b, stp)` is legal on both rows:
+      // ascending (1, 5, 1) and descending (9, 2, -1). A single literal step would raise
+      // `Illegal sequence boundaries` on the mismatched row inside Spark's reference run.
+      sql("CREATE TABLE t (a INT, b INT, stp INT, d DATE) USING parquet")
+      sql("INSERT INTO t VALUES (1, 5, 1, DATE'2024-01-01'), (9, 2, -1, DATE'2024-03-01')")
+      withSQLConf(
+        CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true",
+        CometConf.COMET_EXPLAIN_CODEGEN_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_PROJECT_ENABLED.key -> "true",
+        CometConf.COMET_EXTENDED_EXPLAIN_FORMAT.key ->
+          CometConf.COMET_EXTENDED_EXPLAIN_FORMAT_VERBOSE)(f)
+    }
+  }
+
+  test("sequence with leaf integral args runs natively") {
+    // Integral sequence with column-reference/literal args lowers to the native spark_sequence
+    // kernel; no codegen-dispatch marker should appear. The three-argument form uses the `stp`
+    // column so both the ascending and descending rows have a sign-correct step (all args
+    // stay leaves, so the native path is exercised).
+    withSequenceTable {
+      val df = sql("SELECT sequence(a, b), sequence(a, b, stp) FROM t")
+      checkSparkAnswerAndOperator(df)
+      val explain =
+        new ExtendedExplainInfo().generateExtendedInfo(df.queryExecution.executedPlan)
+      assert(
+        !explain.contains("JVM codegen dispatcher"),
+        s"expected integral sequence with leaf args to run natively, got:\n$explain")
+    }
+  }
+
+  test("sequence with zero-arg UDF stop routes through the dispatcher") {
+    // A zero-argument Scala UDF has empty `children` but still fires on evaluation. The gate
+    // must reject it (rather than treating it as a safe leaf) so DataFusion does not call it
+    // over the whole batch on rows Spark's per-row null short-circuit would have skipped.
+    spark.udf.register("comet_seq_stopper", () => 10)
+    withSequenceTable {
+      val df = sql("SELECT sequence(a, comet_seq_stopper()) FROM t")
+      checkSparkAnswerAndOperator(df)
+      val explain =
+        new ExtendedExplainInfo().generateExtendedInfo(df.queryExecution.executedPlan)
+      assert(
+        explain.contains("JVM codegen dispatcher: sequence"),
+        s"expected zero-arg-UDF sequence to route through the dispatcher, got:\n$explain")
+    }
+  }
+
+  test("sequence with non-leaf integral args routes through the dispatcher") {
+    // A non-leaf argument (e.g. a `CASE WHEN` step) would be evaluated over the whole batch by
+    // DataFusion before the outer kernel runs, breaking Spark's per-row null short-circuit.
+    // `CometSequence` reports `Unsupported` for these shapes and hands them to the JVM codegen
+    // dispatcher.
+    withSequenceTable {
+      val df = sql("SELECT sequence(a, b, CASE WHEN a <= b THEN 2 ELSE -2 END) FROM t")
+      checkSparkAnswerAndOperator(df)
+      val explain =
+        new ExtendedExplainInfo().generateExtendedInfo(df.queryExecution.executedPlan)
+      assert(
+        explain.contains("JVM codegen dispatcher: sequence"),
+        s"expected composed-arg sequence to route through the dispatcher, got:\n$explain")
+    }
+  }
+
+  test("sequence with date element type routes through the dispatcher") {
+    // Date/timestamp sequences step through timezone/DST/legacy-calendar arithmetic
+    // (issue #5349), so `CometSequence` keeps them on the JVM codegen dispatcher.
+    withSequenceTable {
+      val df = sql("SELECT sequence(d, DATE'2024-06-01', INTERVAL 1 MONTH) FROM t")
+      checkSparkAnswerAndOperator(df)
+      val explain =
+        new ExtendedExplainInfo().generateExtendedInfo(df.queryExecution.executedPlan)
+      assert(
+        explain.contains("JVM codegen dispatcher: sequence"),
+        s"expected date sequence to route through the dispatcher, got:\n$explain")
     }
   }
 
@@ -1794,6 +1874,83 @@ class CometCodegenSuite
         }
       }
     }
+  }
+
+  test("dispatch falls back cleanly when the bound tree cannot be closure-serialized (#5573)") {
+    val attr = AttributeReference("s", StringType)()
+    val expr = Invoke(
+      Literal(
+        new CometCodegenSuite.NotSerializableTarget,
+        ObjectType(classOf[CometCodegenSuite.NotSerializableTarget])),
+      "twice",
+      StringType,
+      Seq(attr))
+    // `canHandle` greenlights this tree -- string in, string out, nothing unevaluable -- so the
+    // closure serializer is the step that refuses it. Every other failure mode in
+    // `emitJvmCodegenDispatch` already degraded to a Spark fallback; without the guard this one
+    // throws during planning instead, which is a much worse outcome.
+    assert(CometScalaUDF.emitJvmCodegenDispatch(expr, Seq(attr), binding = true).isEmpty)
+    val reasons = expr.getTagValue(CometExplainInfo.FALLBACK_REASONS).getOrElse(Set.empty)
+    assert(
+      reasons.exists(_.contains("could not be closure-serialized")),
+      s"unexpected fallback reasons: $reasons")
+  }
+
+  test(
+    "unrecognized StaticInvoke routes through the dispatcher instead of falling back (#5575)") {
+    withTable("t") {
+      sql("CREATE TABLE t (b BINARY) USING parquet")
+      sql("INSERT INTO t VALUES (unhex('CAFE')), (unhex('')), (NULL)")
+      // `lpad` on binary input lowers to `StaticInvoke(ByteArray, "lpad", ...)` on every supported
+      // Spark version, and is not in `CometStaticInvoke`'s allowlist. It has no native path, so
+      // before #5575 it failed the whole projection back to Spark.
+      val query = "SELECT lpad(b, 8, unhex('FF')) FROM t"
+      assertCodegenRan {
+        checkSparkAnswerAndOperator(sql(query))
+      }
+      // With the dispatcher off there is nowhere left to run it, so the operator falls back and
+      // says why.
+      withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
+        checkSparkAnswerAndFallbackReason(
+          query,
+          "expression has no native path so the plan falls back to Spark")
+      }
+    }
+  }
+
+  test("Invoke routes through the codegen dispatcher (#5575)") {
+    val target = Literal(
+      new CometCodegenSuite.SerializableTarget,
+      ObjectType(classOf[CometCodegenSuite.SerializableTarget]))
+    // `Invoke` has no serde of its own beyond the catch-all, so this also pins the registration:
+    // reaching a `JvmScalarUdf` proto means `QueryPlanSerde` resolved `CometInvoke`.
+    val attr = AttributeReference("s", StringType)()
+    val proto =
+      QueryPlanSerde.exprToProto(Invoke(target, "twice", StringType, Seq(attr)), Seq(attr))
+    assert(proto.exists(_.hasJvmScalarUdf), s"expected a codegen-dispatch proto, got $proto")
+    // ...and the emitted method call compiles and evaluates.
+    val folded =
+      Invoke(target, "twice", StringType, Seq(Literal(UTF8String.fromString("ab"), StringType)))
+    assert(runKernel(folded, 1)(_.getUTF8String(0).toString) === "abab")
+  }
+}
+
+/**
+ * Targets for the `Invoke` tests. Declared inside the companion object so they are static nested
+ * classes with no reference to the enclosing suite -- otherwise closure-serializing a tree that
+ * holds one would drag the whole suite in and the serialization outcome would say nothing about
+ * the target itself.
+ */
+object CometCodegenSuite {
+
+  /** Public and `Serializable`, so the dispatcher accepts a tree holding an instance. */
+  class SerializableTarget extends Serializable {
+    def twice(s: UTF8String): UTF8String = UTF8String.fromString(s.toString + s.toString)
+  }
+
+  /** Deliberately not `Serializable`, to make the closure serializer refuse the bound tree. */
+  class NotSerializableTarget {
+    def twice(s: UTF8String): UTF8String = UTF8String.fromString(s.toString + s.toString)
   }
 }
 

@@ -288,6 +288,10 @@ name = "contains"
 harness = false
 
 [[bench]]
+name = "sequence"
+harness = false
+
+[[bench]]
 name = "timestamp_trunc"
 harness = false
 
