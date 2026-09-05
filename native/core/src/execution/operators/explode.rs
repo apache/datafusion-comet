@@ -82,6 +82,7 @@ use arrow::record_batch::RecordBatch;
 // Upstream imports this as `arrow_ord::cmp::lt`; Comet reaches it through `arrow`,
 // which does not have `arrow_ord` as a direct dependency.
 use arrow::compute::kernels::cmp::lt;
+use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{
     exec_datafusion_err, exec_err, internal_err, Constraints, HashMap, HashSet, Result,
     UnnestOptions,
@@ -241,6 +242,15 @@ impl ExecutionPlan for ExplodeExec {
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         vec![&self.child]
+    }
+
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        // ExplodeExec holds no physical expressions of its own; the columns to unnest are
+        // identified by index, so there is nothing to visit here.
+        Ok(TreeNodeRecursion::Continue)
     }
 
     fn with_new_children(
@@ -895,7 +905,7 @@ fn build_batch(
 /// ```
 fn find_longest_length(list_arrays: &[ArrayRef], options: &UnnestOptions) -> Result<ArrayRef> {
     // The length of a NULL list
-    let null_length = if options.preserve_nulls {
+    let null_length = if options.preserve_nulls() {
         Scalar::new(Int64Array::from_value(1, 1))
     } else {
         Scalar::new(Int64Array::from_value(0, 1))
@@ -1228,10 +1238,7 @@ mod tests {
             }],
             vec![],
             output_schema,
-            UnnestOptions {
-                preserve_nulls,
-                recursions: vec![],
-            },
+            UnnestOptions::new().with_preserve_nulls(preserve_nulls),
         )?;
         let task_ctx = Arc::new(
             TaskContext::default()
@@ -1408,10 +1415,7 @@ mod tests {
                 depth: 1,
             }],
             struct_column_indices: HashSet::new(),
-            options: UnnestOptions {
-                preserve_nulls: true,
-                recursions: vec![],
-            },
+            options: UnnestOptions::new().with_preserve_nulls(true),
             baseline_metrics: BaselineMetrics::new(&metrics, 0),
             input_batches: MetricBuilder::new(&metrics).counter("input_batches", 0),
             input_rows: MetricBuilder::new(&metrics).counter("input_rows", 0),
@@ -1474,10 +1478,7 @@ mod tests {
             }],
             vec![],
             output_schema,
-            UnnestOptions {
-                preserve_nulls: true,
-                recursions: vec![],
-            },
+            UnnestOptions::new().with_preserve_nulls(true),
         )
         .unwrap();
 

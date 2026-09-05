@@ -62,11 +62,9 @@ pub(super) fn normalize_variant_array(
     let variant = VariantArray::try_new(array.as_ref())?;
     let prepared = prepare_variant_for_unshredding(&variant)?;
     let unshredded = unshred_variant(&prepared)?;
-    let value = unshredded.value_field().ok_or_else(|| {
-        DataFusionError::Execution("Unshredded Variant is missing its value field".to_string())
-    })?;
+    let value = unshredded.value_column();
     let value = cast(value.as_ref(), &DataType::Binary)?;
-    let metadata = cast(unshredded.metadata_field().as_ref(), &DataType::Binary)?;
+    let metadata = cast(unshredded.metadata_column().as_ref(), &DataType::Binary)?;
     let value = reorder_variant_values(&value, &metadata, unshredded.inner().nulls())?;
 
     Ok(Arc::new(StructArray::try_new(
@@ -158,16 +156,19 @@ fn rewrite_residual_values(
 ) -> DataFusionResult<(ArrayRef, bool)> {
     let binary = cast(value.as_ref(), &DataType::Binary)?;
     let binary = binary.as_binary::<i32>();
-    let mut output = BinaryBuilder::new();
-    let mut changed = false;
+    let mut output: Option<BinaryBuilder> = None;
 
     for (index, metadata_row) in metadata_rows.iter().enumerate() {
         if binary.is_null(index) {
-            output.append_null();
+            if let Some(output) = &mut output {
+                output.append_null();
+            }
             continue;
         }
         let Some(metadata_row) = metadata_row else {
-            output.append_value(binary.value(index));
+            if let Some(output) = &mut output {
+                output.append_value(binary.value(index));
+            }
             continue;
         };
         if metadata.is_null(*metadata_row) {
@@ -198,11 +199,15 @@ fn rewrite_residual_values(
         .map_err(|_| {
             DataFusionError::Execution(format!("Invalid Variant residual at row {metadata_row}"))
         })??;
-        changed |= rebuilt.is_some();
-        output.append_value(rebuilt.as_deref().unwrap_or_else(|| binary.value(index)));
+        if rebuilt.is_some() && output.is_none() {
+            output = Some(binary_prefix_builder(binary, index));
+        }
+        if let Some(output) = &mut output {
+            output.append_value(rebuilt.as_deref().unwrap_or_else(|| binary.value(index)));
+        }
     }
 
-    if changed {
+    if let Some(mut output) = output {
         Ok((Arc::new(output.finish()), true))
     } else {
         Ok((Arc::clone(value), false))
@@ -363,11 +368,11 @@ fn rewrite_typed_value(
 }
 
 fn prepare_variant_for_unshredding(variant: &VariantArray) -> DataFusionResult<VariantArray> {
-    if variant.typed_value_field().is_none() {
+    if variant.typed_value_column().is_none() {
         return Ok(variant.clone());
     }
 
-    let metadata = cast(variant.metadata_field().as_ref(), &DataType::Binary)?;
+    let metadata = cast(variant.metadata_column().as_ref(), &DataType::Binary)?;
     let metadata = metadata.as_binary::<i32>();
     let metadata_rows = (0..variant.len())
         .map(|index| variant.inner().is_valid(index).then_some(index))
@@ -523,13 +528,19 @@ fn reorder_variant_values(
     metadata: &ArrayRef,
     parent_nulls: Option<&NullBuffer>,
 ) -> DataFusionResult<ArrayRef> {
+    let original = value;
     let value = value.as_binary::<i32>();
     let metadata = metadata.as_binary::<i32>();
-    let mut output = BinaryBuilder::new();
+    let mut output: Option<BinaryBuilder> = None;
 
     for index in 0..value.len() {
         if parent_nulls.is_some_and(|nulls| nulls.is_null(index)) {
-            output.append_null();
+            if value.is_valid(index) && output.is_none() {
+                output = Some(binary_prefix_builder(value, index));
+            }
+            if let Some(output) = &mut output {
+                output.append_null();
+            }
             continue;
         }
         if value.is_null(index) {
@@ -560,10 +571,25 @@ fn reorder_variant_values(
         .map_err(|_| {
             DataFusionError::Execution(format!("Invalid Variant value at row {index}"))
         })??;
-        output.append_value(rebuilt.as_deref().unwrap_or_else(|| value.value(index)));
+        if rebuilt.is_some() && output.is_none() {
+            output = Some(binary_prefix_builder(value, index));
+        }
+        if let Some(output) = &mut output {
+            output.append_value(rebuilt.as_deref().unwrap_or_else(|| value.value(index)));
+        }
     }
 
-    Ok(Arc::new(output.finish()))
+    match output {
+        Some(mut output) => Ok(Arc::new(output.finish())),
+        None => Ok(Arc::clone(original)),
+    }
+}
+
+// Called only at the first changed row; the unchanged prefix is copied once.
+fn binary_prefix_builder(value: &BinaryArray, end: usize) -> BinaryBuilder {
+    let mut builder = BinaryBuilder::new();
+    builder.extend(value.iter().take(end));
+    builder
 }
 
 #[cfg(test)]

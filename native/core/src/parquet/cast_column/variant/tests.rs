@@ -70,7 +70,7 @@ fn normalize_full_shredding_reorders_children_and_preserves_parent_nulls() {
     builder.append_null();
     builder.append_variant(Variant::from(3_i64));
     let base = builder.build();
-    let metadata = Arc::clone(base.metadata_field());
+    let metadata = Arc::clone(base.metadata_column());
     let typed_value: ArrayRef = Arc::new(Int64Array::from(vec![Some(10), None, Some(30)]));
     let physical: ArrayRef = Arc::new(
         StructArray::try_new(
@@ -108,9 +108,9 @@ fn normalize_full_shredding_reorders_children_and_preserves_parent_nulls() {
 #[test]
 fn normalize_fully_shredded_object_orders_for_spark() {
     let keys = unicode_object_keys();
-    let (metadata, _) = VariantBuilder::new()
-        .with_field_names(keys.iter().map(String::as_str))
-        .finish();
+    let mut builder = VariantBuilder::new().with_field_names(keys.iter().map(String::as_str));
+    builder.append_value(Variant::Null);
+    let (metadata, _) = builder.finish();
     let mut fields = Vec::with_capacity(keys.len());
     let mut columns = Vec::with_capacity(keys.len());
     for (index, key) in keys.iter().enumerate() {
@@ -176,6 +176,16 @@ fn canonical_and_shredded_values_normalize_equally() {
     )
     .unwrap();
 
+    let prepared = prepare_variant_for_unshredding(&shredded).unwrap();
+    assert!(Arc::ptr_eq(
+        shredded.value_column(),
+        prepared.value_column()
+    ));
+    assert!(Arc::ptr_eq(
+        shredded.typed_value_column().unwrap(),
+        prepared.typed_value_column().unwrap(),
+    ));
+
     let normalize = |array: &VariantArray| {
         let array: ArrayRef = Arc::new(array.inner().clone());
         let output = normalize_variant_array(&array, &target_field(true)).unwrap();
@@ -228,6 +238,179 @@ fn normalize_unshredded_variant_orders_for_spark_and_is_idempotent() {
         second.as_struct().column(0).as_binary::<i32>().value(0),
         first_value
     );
+    assert_eq!(
+        second
+            .as_struct()
+            .column(0)
+            .as_binary::<i32>()
+            .values()
+            .as_ptr(),
+        first
+            .as_struct()
+            .column(0)
+            .as_binary::<i32>()
+            .values()
+            .as_ptr()
+    );
+}
+
+#[test]
+fn unchanged_values_reuse_buffers_and_still_validate() {
+    let mut builder = VariantBuilder::new();
+    builder.append_value(Variant::from("unchanged payload"));
+    let (metadata, bytes) = builder.finish();
+    let values: ArrayRef = Arc::new(BinaryArray::from(vec![
+        None,
+        Some(bytes.as_slice()),
+        Some(bytes.as_slice()),
+    ]));
+    // Exercise a sliced array: prefix offsets need not start at zero.
+    let values = values.slice(1, 2);
+    let metadata: ArrayRef = Arc::new(BinaryArray::from(vec![metadata.as_slice(); 2]));
+    let output = reorder_variant_values(&values, &metadata, None).unwrap();
+    assert!(Arc::ptr_eq(&values, &output));
+    let target = target_field(false);
+    let DataType::Struct(fields) = target.data_type() else {
+        unreachable!()
+    };
+    let input: ArrayRef = Arc::new(StructArray::new(
+        fields.clone(),
+        vec![Arc::clone(&values), Arc::clone(&metadata)],
+        None,
+    ));
+    let normalized = normalize_variant_array(&input, &target).unwrap();
+    for (input, output) in input
+        .as_struct()
+        .columns()
+        .iter()
+        .zip(normalized.as_struct().columns())
+    {
+        assert_eq!(
+            input.as_binary::<i32>().values().as_ptr(),
+            output.as_binary::<i32>().values().as_ptr()
+        );
+    }
+    let (output, changed) =
+        rewrite_residual_values(&values, metadata.as_binary::<i32>(), &[Some(0), None]).unwrap();
+    assert!(!changed);
+    assert!(Arc::ptr_eq(&values, &output));
+
+    let nulls = NullBuffer::from(vec![true, false]);
+    let output = reorder_variant_values(&values, &metadata, Some(&nulls)).unwrap();
+    assert_eq!(output.as_binary::<i32>().value(0), bytes);
+    assert!(output.is_null(1));
+    let again = reorder_variant_values(&output, &metadata, Some(&nulls)).unwrap();
+    assert!(Arc::ptr_eq(&output, &again));
+
+    let missing_metadata: ArrayRef = Arc::new(BinaryArray::from(vec![
+        Some(metadata.as_binary::<i32>().value(0)),
+        None,
+    ]));
+    assert!(reorder_variant_values(&values, &missing_metadata, None).is_err());
+    assert!(rewrite_residual_values(
+        &values,
+        missing_metadata.as_binary::<i32>(),
+        &[Some(0), Some(1)],
+    )
+    .is_err());
+}
+
+#[test]
+fn lazy_rewrites_preserve_prefix_nulls_and_suffix() {
+    let keys = unicode_object_keys();
+    let mut builder = VariantBuilder::new().with_field_names(keys.iter().map(String::as_str));
+    let mut object = builder.new_object();
+    for (index, key) in keys.iter().enumerate() {
+        object.insert(key, index as i64);
+    }
+    object.finish();
+    let (metadata, canonical) = builder.finish();
+    let values: ArrayRef = Arc::new(BinaryArray::from(vec![
+        Some(canonical.as_slice()),
+        None,
+        Some(canonical.as_slice()),
+        None,
+    ]));
+    let metadata: ArrayRef = Arc::new(BinaryArray::from(vec![metadata.as_slice(); 4]));
+    let parents = NullBuffer::from(vec![true, false, true, false]);
+    let legacy = reorder_variant_values(&values, &metadata, Some(&parents)).unwrap();
+    let mixed: ArrayRef = Arc::new(BinaryArray::from(vec![
+        Some(canonical.as_slice()),
+        None,
+        Some(legacy.as_binary::<i32>().value(2)),
+        None,
+    ]));
+    let (output, changed) = rewrite_residual_values(
+        &mixed,
+        metadata.as_binary::<i32>(),
+        &[Some(0), None, Some(2), None],
+    )
+    .unwrap();
+    assert!(changed);
+    let output = output.as_binary::<i32>();
+    assert_eq!(output.value(0), canonical);
+    assert!(output.is_null(1));
+    assert!(output.is_null(3));
+    assert_eq!(
+        Variant::new(metadata.as_binary::<i32>().value(2), output.value(2)),
+        Variant::new(metadata.as_binary::<i32>().value(2), &canonical),
+    );
+}
+
+// Run explicitly with --ignored --nocapture; fixture construction is outside the timed loop.
+#[test]
+#[ignore]
+fn benchmark_variant_buffer_reuse() {
+    use std::{hint::black_box, time::Instant};
+    let rows = 4096;
+    let payload = "x".repeat(4096);
+    let mut strings = VariantArrayBuilder::new(rows);
+    let mut objects = VariantArrayBuilder::new(rows);
+    for _ in 0..rows {
+        strings.append_variant(Variant::from(payload.as_str()));
+        objects
+            .new_object()
+            .with_field("known", 1_i64)
+            .with_field("payload", payload.as_str())
+            .finish();
+    }
+    let strings = strings.build();
+    let objects = objects.build();
+    let shredded = shred_variant(
+        &objects,
+        &DataType::Struct(Fields::from(vec![Field::new(
+            "known",
+            DataType::Int64,
+            true,
+        )])),
+    )
+    .unwrap();
+    let target = target_field(false);
+    let DataType::Struct(fields) = target.data_type() else {
+        unreachable!()
+    };
+    let strings: ArrayRef = Arc::new(StructArray::new(
+        fields.clone(),
+        vec![
+            cast(strings.value_column().as_ref(), &DataType::Binary).unwrap(),
+            cast(strings.metadata_column().as_ref(), &DataType::Binary).unwrap(),
+        ],
+        None,
+    ));
+    let shredded: ArrayRef = Arc::new(shredded.into_inner());
+    for (name, input) in [("canonical", strings), ("partially_shredded", shredded)] {
+        for _ in 0..3 {
+            black_box(normalize_variant_array(&input, &target).unwrap());
+        }
+        let start = Instant::now();
+        for _ in 0..30 {
+            black_box(normalize_variant_array(black_box(&input), &target).unwrap());
+        }
+        eprintln!(
+            "{name}: {:.3} ms/batch, {rows} rows, 4096-byte payload",
+            start.elapsed().as_secs_f64() * 1000.0 / 30.0
+        );
+    }
 }
 
 #[test]
