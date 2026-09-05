@@ -262,6 +262,9 @@ object CometMetricNode {
 
   def aggregateMetrics(sc: SparkContext): Map[String, SQLMetric] = {
     Map(
+      "skipped_aggregation_rows" -> SQLMetrics.createMetric(
+        sc,
+        "rows bypassing partial aggregation"),
       "spill_count" -> SQLMetrics.createMetric(sc, "number of spills"),
       "spilled_bytes" -> SQLMetrics.createSizeMetric(sc, "total spilled bytes"),
       "spilled_rows" -> SQLMetrics.createMetric(sc, "number of spilled rows"),
