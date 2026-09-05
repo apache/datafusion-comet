@@ -208,7 +208,7 @@ object CometInMemoryCacheBenchmark extends CometBenchmarkBase {
       runCacheBenchmark(
         nestedRelation,
         "in-memory cache nested full projection (6 of 6 columns)",
-        s"SELECT count(id), count(sc.a), count(deep.n.v), count(wide.p), count(tail), count(d) " +
+        "SELECT count(id), count(sc.a), count(deep.n.v), count(wide.p), count(tail), count(d) " +
           s"FROM $nestedCacheTable",
         scanned = 6)
     }
