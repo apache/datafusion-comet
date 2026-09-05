@@ -1644,47 +1644,6 @@ trait CometBaseAggregate {
     Compatible()
   }
 
-  /**
-   * For Partial mode aggregates containing TypedImperativeAggregate functions (like CollectSet),
-   * the Spark-side output declares buffer columns as BinaryType (Spark serializes state to
-   * binary). However, the native Comet aggregate produces the actual state type (e.g.,
-   * ArrayType(elementType) for CollectSet). This corrects the output schema to match the native
-   * state types so the shuffle exchange schema is consistent with the actual data.
-   *
-   * NOTE: If a new TypedImperativeAggregate function (e.g., CollectList) is added natively, add a
-   * case branch here mapping it to the native state type.
-   */
-  protected def adjustOutputForNativeState(op: BaseAggregateExec): Seq[Attribute] = {
-    val modes = op.aggregateExpressions.map(_.mode).distinct
-    if (modes != Seq(Partial)) {
-      return op.output
-    }
-
-    val numGrouping = op.groupingExpressions.length
-    val output = op.output.toArray
-
-    var bufferIdx = numGrouping
-    for (aggExpr <- op.aggregateExpressions) {
-      val aggFunc = aggExpr.aggregateFunction
-      val bufferAttrs = aggFunc.aggBufferAttributes
-      aggFunc match {
-        case cs: CollectSet =>
-          val elementType = cs.children.head.dataType
-          val nativeStateType = ArrayType(elementType, containsNull = true)
-          output(bufferIdx) = output(bufferIdx).withDataType(nativeStateType)
-        case _: Percentile =>
-          // DataFusion's percentile_cont keeps all values in a List<Float64> partial state.
-          // Comet casts the child to double, so the native state is ArrayType(DoubleType).
-          val nativeStateType = ArrayType(DoubleType, containsNull = true)
-          output(bufferIdx) = output(bufferIdx).withDataType(nativeStateType)
-        case _ =>
-      }
-      bufferIdx += bufferAttrs.length
-    }
-
-    output.toSeq
-  }
-
   def doConvert(
       aggregate: BaseAggregateExec,
       builder: Operator.Builder,

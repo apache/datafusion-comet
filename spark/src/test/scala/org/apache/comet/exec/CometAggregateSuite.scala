@@ -2416,8 +2416,8 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   // framework cannot check.
   private def assertSortAggregateRunsNatively(query: String): Unit = {
     withSQLConf(
-      "spark.sql.execution.useObjectHashAggregateExec" -> "false",
-      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      SQLConf.USE_OBJECT_HASH_AGG.key -> "false",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
       CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
       withTempView("tbl") {
         Seq((1, "a"), (2, "a"), (1, "a"), (3, "b"), (4, "b"), (4, "b"))

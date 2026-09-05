@@ -221,14 +221,14 @@ case class CometExecRule(session: SparkSession)
     def restore(plan: SparkPlan): SparkPlan = plan match {
       // Do not rewrite data that an earlier stage may already have materialized.
       case _: QueryStageExec | _: ShuffleExchangeLike | _: BroadcastExchangeLike => plan
-      case agg: CometHashAggregateExec
+      case agg: CometBaseAggregateExec
           if agg.modes == Seq(Partial) &&
             !QueryPlanSerde.allAggsSupportMixedExecution(agg.aggregateExpressions) =>
         val sparkAggregate = agg.originalPlan.withNewChildren(agg.children)
         sparkAggregate.setTagValue(CometExecRule.COMET_UNSAFE_PARTIAL, reason)
         withFallbackReason(sparkAggregate, reason)
       // Final output is ordinary SQL data; any partial below it belongs to another aggregate.
-      case agg: CometHashAggregateExec if agg.modes.contains(Final) => agg
+      case agg: CometBaseAggregateExec if agg.modes.contains(Final) => agg
       case agg: BaseAggregateExec if agg.aggregateExpressions.exists(_.mode == Final) => agg
       case placeholder: CometSinkPlaceHolder =>
         val child = restore(placeholder.child)
