@@ -350,6 +350,32 @@ message IcebergScan {
   repeated IcebergFileScanTask file_scan_tasks = 2;
 }
 
+// Common data shared by all partitions for native Lance scans.
+message LanceScanCommon {
+  string scan_id = 1;
+  repeated SparkStructField required_schema = 2;
+  string native_scan_plan_class = 3;
+  string dataset_uri = 4;
+  int64 resolved_version = 5;
+  map<string, string> storage_options = 6;
+  repeated SparkStructField projected_schema = 7;
+  optional string filter_sql = 8;
+  optional int64 limit = 9;
+  optional int64 offset = 10;
+  uint32 batch_size = 11;
+  uint32 descriptor_version = 12;
+}
+
+message LanceScanPartition {
+  uint32 partition_index = 1;
+  repeated uint32 fragment_ids = 2;
+}
+
+message LanceScan {
+  LanceScanCommon common = 1;
+  LanceScanPartition partition = 2;
+}
+
 // Helper message for deduplicating field ID lists
 message ProjectFieldIdList {
   repeated int32 field_ids = 1;
