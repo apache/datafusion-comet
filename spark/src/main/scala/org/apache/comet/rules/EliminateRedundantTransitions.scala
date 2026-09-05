@@ -19,6 +19,8 @@
 
 package org.apache.comet.rules
 
+import java.util.IdentityHashMap
+
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.util.sideBySide
@@ -74,6 +76,19 @@ case class EliminateRedundantTransitions(session: SparkSession)
   }
 
   private def _apply(plan: SparkPlan): SparkPlan = {
+    // `hasCometNativeChild` scans the subtree below every `ColumnarToRowExec` it is asked about,
+    // so stacked transitions rescan the same nodes and the combined cost is quadratic in the plan
+    // size. The scan stops at the first Comet operator it finds, which keeps the common case
+    // cheap, but a stack of transitions over a Comet-free subtree walks all of it every time. The
+    // memo below makes that linear.
+    //
+    // It is keyed on identity rather than equality because `SparkPlan` equality and hashing are
+    // themselves subtree walks, and it is scoped to a single rule invocation because the rule
+    // instance lives for the whole session and must not retain plans. `transformUp` reuses the
+    // identity of subtrees it does not rewrite, so a rebuilt node still hits the memo one level
+    // down.
+    val containsCometPlanMemo = new IdentityHashMap[SparkPlan, java.lang.Boolean]()
+
     val eliminatedPlan = plan transformUp {
       case ColumnarToRowExec(shuffleExchangeExec: CometShuffleExchangeExec)
           if plan.conf.adaptiveExecutionEnabled =>
@@ -91,7 +106,7 @@ case class EliminateRedundantTransitions(session: SparkSession)
       // Write should be final operation in the plan
       case ColumnarToRowExec(nativeWrite: CometNativeWriteExec) =>
         nativeWrite
-      case c @ ColumnarToRowExec(child) if hasCometNativeChild(child) =>
+      case c @ ColumnarToRowExec(child) if hasCometNativeChild(child, containsCometPlanMemo) =>
         val op = createColumnarToRowExec(child)
         if (c.logicalLink.isEmpty) {
           op.unsetTagValue(SparkPlan.LOGICAL_PLAN_TAG)
@@ -161,11 +176,32 @@ case class EliminateRedundantTransitions(session: SparkSession)
     }
   }
 
-  private def hasCometNativeChild(op: SparkPlan): Boolean = {
+  /**
+   * True if the subtree rooted at `op` contains a Comet operator. `QueryStageExec` and
+   * `ReusedExchangeExec` are leaves for tree traversal, so the plan they wrap is unwrapped
+   * explicitly, and only at the root of the checked subtree.
+   */
+  private def hasCometNativeChild(
+      op: SparkPlan,
+      memo: IdentityHashMap[SparkPlan, java.lang.Boolean]): Boolean = {
     op match {
-      case c: QueryStageExec => hasCometNativeChild(c.plan)
-      case c: ReusedExchangeExec => hasCometNativeChild(c.child)
-      case _ => op.exists(_.isInstanceOf[CometPlan])
+      case c: QueryStageExec => hasCometNativeChild(c.plan, memo)
+      case c: ReusedExchangeExec => hasCometNativeChild(c.child, memo)
+      case _ => containsCometPlan(op, memo)
+    }
+  }
+
+  /** Memoized equivalent of `op.exists(_.isInstanceOf[CometPlan])`. */
+  private def containsCometPlan(
+      op: SparkPlan,
+      memo: IdentityHashMap[SparkPlan, java.lang.Boolean]): Boolean = {
+    val cached = memo.get(op)
+    if (cached != null) {
+      cached.booleanValue()
+    } else {
+      val result = op.isInstanceOf[CometPlan] || op.children.exists(containsCometPlan(_, memo))
+      memo.put(op, result)
+      result
     }
   }
 
