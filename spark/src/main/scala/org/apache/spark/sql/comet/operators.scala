@@ -30,7 +30,7 @@ import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.internal.Logging
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSet, Expression, ExpressionSet, Generator, NamedExpression, SortOrder}
+import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSet, Expression, ExpressionSet, Generator, NamedExpression, SortOrder, XXH64}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode, CollectList, CollectSet, Final, First, Last, Partial, PartialMerge, Percentile}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
 import org.apache.spark.sql.catalyst.plans._
@@ -46,6 +46,7 @@ import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNes
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.types.{ArrayType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, TimestampNTZType, TimestampType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
+import org.apache.spark.unsafe.Platform
 import org.apache.spark.util.SerializableConfiguration
 import org.apache.spark.util.io.ChunkedByteBuffer
 
@@ -109,17 +110,25 @@ private[comet] object PlanDataInjector extends Logging {
   private[comet] final val maxCachedBasePlans = 16
 
   /**
-   * Content key for the base plan cache. The hash is stored, computed once per task outside the
-   * cache monitor; a raw ByteBuffer key would rescan every byte on each probe under the lock.
+   * Content key for the base plan cache. The hash is the driver-computed [[planFingerprint]]
+   * shipped with the plan bytes, so no task rescans the bytes to probe the cache; equality still
+   * compares the bytes so a fingerprint collision cannot serve another plan.
    */
-  private[comet] final class PlanKey(val bytes: Array[Byte]) {
-    private val hash: Int = java.util.Arrays.hashCode(bytes)
-    override def hashCode: Int = hash
+  private[comet] final class PlanKey(val bytes: Array[Byte], fingerprint: Long) {
+    override def hashCode: Int = (fingerprint ^ (fingerprint >>> 32)).toInt
     override def equals(other: Any): Boolean = other match {
-      case that: PlanKey => (this eq that) || java.util.Arrays.equals(bytes, that.bytes)
+      case that: PlanKey => java.util.Arrays.equals(bytes, that.bytes)
       case _ => false
     }
   }
+
+  /**
+   * 64-bit content fingerprint of a serialized plan, computed once on the driver and carried by
+   * CometExecRDD so every task's cache probe reuses it. XXH64 is the same hash Spark uses for
+   * xxhash64 and runs at memory speed over the byte array.
+   */
+  def planFingerprint(planBytes: Array[Byte]): Long =
+    XXH64.hashUnsafeBytes(planBytes, Platform.BYTE_ARRAY_OFFSET, planBytes.length, 42L)
 
   /**
    * A prepared common message together with the exact finalized bytes it was prepared from.
@@ -183,11 +192,11 @@ private[comet] object PlanDataInjector extends Logging {
 
   /**
    * Parse a stage's base plan bytes, sharing the parsed tree and its prepared per-scan data
-   * across the executor's tasks. Falls back to a plain parse on eviction, so a stage rerun is
-   * always correct.
+   * across the executor's tasks. `fingerprint` is [[planFingerprint]] of `bytes`, computed on the
+   * driver. Falls back to a plain parse on eviction, so a stage rerun is always correct.
    */
-  def parseBasePlan(bytes: Array[Byte]): CachedPlanData =
-    cachedOrCompute(basePlanCache, new PlanKey(bytes))(
+  def parseBasePlan(bytes: Array[Byte], fingerprint: Long): CachedPlanData =
+    cachedOrCompute(basePlanCache, new PlanKey(bytes, fingerprint))(
       new CachedPlanData(Operator.parseFrom(bytes)))
 
   // Registry of injectors for different operator types. The built-in injectors live in core.
@@ -814,6 +823,7 @@ abstract class CometNativeExec extends CometExec {
       ctx.commonByKey,
       ctx.perPartitionByKey,
       serializedPlan,
+      PlanDataInjector.planFingerprint(serializedPlan),
       ctx.numPartitions,
       output.length,
       nativeMetrics,

@@ -188,6 +188,24 @@ class PlanDataInjectorSuite extends AnyFunSuite {
       .toByteArray
   }
 
+  /** Parses the way CometExecRDD.compute does: the fingerprint comes with the plan bytes. */
+  private def parseBasePlan(bytes: Array[Byte]): PlanDataInjector.CachedPlanData =
+    PlanDataInjector.parseBasePlan(bytes, PlanDataInjector.planFingerprint(bytes))
+
+  test("PlanKey hashes by the driver fingerprint and still compares by content") {
+    val bytes = nativeScanOp("file:///fingerprint-tbl", Seq("a", "b")).toByteArray
+    val fingerprint = PlanDataInjector.planFingerprint(bytes)
+    assert(fingerprint == PlanDataInjector.planFingerprint(bytes.clone()))
+    assert(fingerprint != PlanDataInjector.planFingerprint(bytes.dropRight(1)))
+
+    val key = new PlanDataInjector.PlanKey(bytes, fingerprint)
+    assert(key.hashCode == (fingerprint ^ (fingerprint >>> 32)).toInt)
+    assert(key == new PlanDataInjector.PlanKey(bytes.clone(), fingerprint))
+    // A fingerprint collision must still keep distinct plans apart.
+    val other = nativeScanOp("file:///fingerprint-other", Seq("a", "b")).toByteArray
+    assert(key != new PlanDataInjector.PlanKey(other, fingerprint))
+  }
+
   test("parseBasePlan shares one parsed Operator across byte-identical plans") {
     val op = Operator
       .newBuilder()
@@ -200,8 +218,8 @@ class PlanDataInjectorSuite extends AnyFunSuite {
     val bytes2 = op.toByteArray
     assert(!(bytes1 eq bytes2))
 
-    val parsed1 = PlanDataInjector.parseBasePlan(bytes1)
-    val parsed2 = PlanDataInjector.parseBasePlan(bytes2)
+    val parsed1 = parseBasePlan(bytes1)
+    val parsed2 = parseBasePlan(bytes2)
 
     assert(parsed1 eq parsed2, "equal plan bytes should hit the cache, not re-parse")
     assert(parsed1.plan == Operator.parseFrom(bytes1))
@@ -219,8 +237,8 @@ class PlanDataInjectorSuite extends AnyFunSuite {
       .addChildren(nativeScanOp("file:///distinct-tbl-b", Seq("b")))
       .build()
 
-    val parsedA = PlanDataInjector.parseBasePlan(opA.toByteArray)
-    val parsedB = PlanDataInjector.parseBasePlan(opB.toByteArray)
+    val parsedA = parseBasePlan(opA.toByteArray)
+    val parsedB = parseBasePlan(opB.toByteArray)
 
     assert(parsedA.plan == opA)
     assert(parsedB.plan == opB)
@@ -234,7 +252,7 @@ class PlanDataInjectorSuite extends AnyFunSuite {
       .addChildren(nativeScanOp("file:///evict-tbl-first", Seq("a")))
       .build()
     val firstBytes = first.toByteArray
-    val firstParsed = PlanDataInjector.parseBasePlan(firstBytes)
+    val firstParsed = parseBasePlan(firstBytes)
 
     // Push enough distinct plans through to evict the first entry.
     (0 until PlanDataInjector.maxCachedBasePlans).foreach { i =>
@@ -243,10 +261,10 @@ class PlanDataInjectorSuite extends AnyFunSuite {
         .setPlanId(1000 + i)
         .addChildren(nativeScanOp(s"file:///evict-filler-$i", Seq("a")))
         .build()
-      PlanDataInjector.parseBasePlan(filler.toByteArray)
+      parseBasePlan(filler.toByteArray)
     }
 
-    val reParsed = PlanDataInjector.parseBasePlan(firstBytes)
+    val reParsed = parseBasePlan(firstBytes)
     assert(!(reParsed eq firstParsed), "the first plan should have been evicted")
     assert(reParsed.plan == first, "a rerun after eviction must still parse correctly")
   }
@@ -268,7 +286,7 @@ class PlanDataInjectorSuite extends AnyFunSuite {
     try {
       val checks = Future.sequence((0 until 64).map { i =>
         val plan = plans(i % plans.size)
-        Future(PlanDataInjector.parseBasePlan(plan.toByteArray).plan == plan)
+        Future(parseBasePlan(plan.toByteArray).plan == plan)
       })
       assert(Await.result(checks, 30.seconds).forall(identity))
     } finally {
@@ -295,7 +313,7 @@ class PlanDataInjectorSuite extends AnyFunSuite {
           .map { _ =>
             Future {
               barrier.await()
-              PlanDataInjector.parseBasePlan(op.toByteArray)
+              parseBasePlan(op.toByteArray)
             }
           }
           .map(Await.result(_, 30.seconds))
@@ -314,8 +332,8 @@ class PlanDataInjectorSuite extends AnyFunSuite {
     val key = NativeScanPlanDataInjector.getKey(scanOp).get
     // Two tasks of the same stage: each deserializes its own copy of the plan and common bytes,
     // and both resolve to the same cached base plan entry.
-    val task1 = PlanDataInjector.parseBasePlan(scanOp.toByteArray)
-    val task2 = PlanDataInjector.parseBasePlan(scanOp.toByteArray)
+    val task1 = parseBasePlan(scanOp.toByteArray)
+    val task2 = parseBasePlan(scanOp.toByteArray)
 
     val injected1 = PlanDataInjector.injectPlanData(
       task1,
@@ -357,15 +375,9 @@ class PlanDataInjectorSuite extends AnyFunSuite {
     assert(commonByKey.size == n)
 
     val first =
-      PlanDataInjector.injectPlanData(
-        PlanDataInjector.parseBasePlan(root.toByteArray),
-        commonByKey,
-        partByKey)
+      PlanDataInjector.injectPlanData(parseBasePlan(root.toByteArray), commonByKey, partByKey)
     val second =
-      PlanDataInjector.injectPlanData(
-        PlanDataInjector.parseBasePlan(root.toByteArray),
-        commonByKey,
-        partByKey)
+      PlanDataInjector.injectPlanData(parseBasePlan(root.toByteArray), commonByKey, partByKey)
 
     (0 until n).foreach { i =>
       assert(
@@ -457,7 +469,7 @@ class PlanDataInjectorSuite extends AnyFunSuite {
       .build()
     assert(baseCommon != finalizedCommon)
 
-    val cached = PlanDataInjector.parseBasePlan(scanOp.toByteArray)
+    val cached = parseBasePlan(scanOp.toByteArray)
     val firstRun = PlanDataInjector.injectPlanData(
       cached,
       Map(key -> baseCommon.toByteArray),
