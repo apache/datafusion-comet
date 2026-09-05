@@ -89,7 +89,7 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   private val datePattern = "0123456789/" + whitespaceChars
 
-  private val timestampPattern = "0123456789/:T" + whitespaceChars
+  private val timestampPattern = "0123456789/:T-.+Z" + whitespaceChars
 
   lazy val usingParquetExecWithIncompatTypes: Boolean =
     hasUnsignedSmallIntSafetyCheck(conf)
@@ -1267,10 +1267,12 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("cast StringType to TimestampType") {
     withSQLConf((SQLConf.SESSION_LOCAL_TIMEZONE.key, "UTC")) {
-      val values = Seq("2020-01-01T12:34:56.123456", "T2") ++ gen.generateStrings(
-        dataSize,
-        timestampPattern,
-        8)
+      // Spark accepts explicit positive years; Comet does not yet (#5716).
+      // Keep the wider alphabet, excluding only the known bare-year mismatch.
+      val fuzzValues = gen
+        .generateStrings(dataSize, timestampPattern, 8)
+        .filterNot(_.trim.matches("\\+[0-9]{4,6}"))
+      val values = Seq("2020-01-01T12:34:56.123456", "T2") ++ fuzzValues
       castTest(values.toDF("a"), DataTypes.TimestampType)
     }
   }
@@ -1401,12 +1403,15 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   // Spark's SparkDateTimeUtils.parseTimestampString validates each segment with isValidDigits:
   // month/day/hour/minute/second take 1-2 digits, the fraction may be empty, a timestamp year
   // takes at most 6 digits (only a date takes 7), and a zone id is only recognised after the
-  // seconds segment. The fuzz alphabet in timestampPattern contains neither '-' nor '.', so
-  // these shapes have to be listed explicitly (https://github.com/apache/datafusion-comet/issues/5674).
+  // seconds segment. Keep explicit cases as well as fuzz coverage for these segment boundaries.
   private val sparkSegmentRuleTimestamps = Seq(
     // 1-2 digit segments
     "2020-1",
     "2020-1-1",
+    "2020-10-1",
+    "2020-12-1",
+    "-0001-01-01T12:34:56",
+    "2021-11-22 10:54:27 +08:00",
     "2020-1-1T1",
     "2020-1-1 1:2",
     "2020-01-01 12:34:5",
@@ -1418,6 +1423,9 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     "002020-01-01 00:00:00")
 
   private val sparkSegmentRuleMalformedTimestamps = Seq(
+    "-0002020-01-01",
+    "2020-01-01 12:34:56.1٢٢٢",
+    "T1:2:3.1٢٢٢",
     // Spark's scanner only accepts ASCII digits in timestamp segments
     "٢020-1-1",
     "2020-٢",

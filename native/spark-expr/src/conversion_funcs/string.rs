@@ -1153,11 +1153,15 @@ fn parse_to_timestamp_info(
     let hour = parts.next().map_or(0, |h| h.parse::<u32>().unwrap_or(0));
     let minute = parts.next().map_or(0, |m| m.parse::<u32>().unwrap_or(0));
     let second = parts.next().map_or(0, |s| s.parse::<u32>().unwrap_or(0));
-    let microsecond = parts.next().map_or(0, |ms| {
-        let ms = &ms[..ms.len().min(6)];
+    let microsecond = if let Some(ms) = parts.next() {
+        let Some(ms) = ms.get(..ms.len().min(6)) else {
+            return Ok(None);
+        };
         let n = ms.len();
         ms.parse::<u32>().unwrap_or(0) * 10u32.pow((6 - n) as u32)
-    });
+    } else {
+        0
+    };
 
     let mut timestamp_info = TimeStampInfo::default();
 
@@ -1470,6 +1474,7 @@ fn timestamp_parser<T: TimeZone>(
 
     if !has_direct_match {
         if let Some((stripped, suffix_tz)) = extract_offset_suffix(value) {
+            let stripped = stripped.trim_end();
             // A zone suffix is only meaningful after the seconds segment. Otherwise fall
             // through with the unstripped value, which no base pattern matches, so it is
             // reported as malformed (null, or CAST_INVALID_INPUT under ANSI) like Spark does.
@@ -1648,6 +1653,7 @@ type TimestampParsePattern<T> = (&'static Regex, fn(&str, &T) -> SparkResult<Opt
 // digits each, and the fraction takes any number of digits including none ("12:34:56." is
 // valid), of which only the first six are kept. All digits must be ASCII, matching Spark's
 // byte scanner and the numeric parsers used after shape recognition.
+// Keep the ASCII ranges: Unicode `\d` also costs substantially more to match on valid input.
 static RE_YEAR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^-?[0-9]{4,6}$").unwrap());
 static RE_MONTH: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^-?[0-9]{4,6}-[0-9]{1,2}$").unwrap());
@@ -1901,7 +1907,9 @@ fn parse_str_to_time_only_timestamp<T: TimeZone>(value: &str, tz: &T) -> SparkRe
         let ns: u32 = if let Some(dot) = dot_idx {
             let frac = &sec_frac[dot + 1..];
             // Interpret up to 6 digits as microseconds, padding with trailing zeros.
-            let trimmed = &frac[..frac.len().min(6)];
+            let Some(trimmed) = frac.get(..frac.len().min(6)) else {
+                return Ok(None);
+            };
             let padded = format!("{:0<6}", trimmed);
             padded.parse::<u32>().unwrap_or(0) * 1000
         } else {
@@ -2981,6 +2989,8 @@ mod tests {
     /// 1-2 digit month/day/hour/minute/second, an empty fraction (also before a zone), and
     /// 6-digit years (issue #5674). Values are UTC micros, identical for TIMESTAMP_NTZ.
     const SPARK_SEGMENT_RULE_VALID: &[(&str, i64)] = &[
+        ("2020-10-1", 1_601_510_400_000_000),
+        ("2020-12-1", 1_606_780_800_000_000),
         ("2020-1", JAN1_2020),
         ("2020-1-1", JAN1_2020),
         ("2020-1-1T1", JAN1_2020 + 3600 * 1_000_000),
@@ -2994,6 +3004,8 @@ mod tests {
     /// Inputs Spark rejects: non-ASCII segment digits, a zone suffix anywhere but after the
     /// seconds segment, more than six year digits, and more than two digits in any other segment.
     const SPARK_SEGMENT_RULE_INVALID: &[&str] = &[
+        "2020-01-01 12:34:56.1٢٢٢",
+        "T1:2:3.1٢٢٢",
         "2020-1-1T٢",
         "2020-1-1T1:2:3.٢",
         "٢020-1-1",
@@ -3033,6 +3045,27 @@ mod tests {
     #[cfg_attr(miri, ignore)]
     fn timestamp_parser_spark_segment_rules_test() {
         let tz = &Tz::from_str("UTC").unwrap();
+        // Exercise the decoders without their regex gates: malformed UTF-8 boundaries
+        // must not panic even if the accepted patterns change later.
+        assert!(
+            parse_to_timestamp_info("2020-01-01 12:34:56.1٢٢٢", "microsecond")
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            parse_str_to_time_only_timestamp("T1:2:3.1٢٢٢", tz).unwrap(),
+            None
+        );
+        for mode in [EvalMode::Legacy, EvalMode::Try, EvalMode::Ansi] {
+            assert_eq!(
+                timestamp_parser("2021-11-22 10:54:27 +08:00", mode, tz, true).unwrap(),
+                Some(1_637_549_667_000_000)
+            );
+            assert_eq!(
+                timestamp_ntz_parser("2021-11-22 10:54:27 +08:00", mode, true, true).unwrap(),
+                Some(1_637_578_467_000_000)
+            );
+        }
         for &(input, expected) in SPARK_SEGMENT_RULE_VALID {
             for eval_mode in [EvalMode::Legacy, EvalMode::Try, EvalMode::Ansi] {
                 assert_eq!(
