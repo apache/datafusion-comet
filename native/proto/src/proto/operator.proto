@@ -679,6 +679,10 @@ message IcebergParquetWriteSettings {
   // String written into parquet file metadata. JVM-side default is
   // `"Apache Iceberg <ver> (Comet)"`.
   string created_by = 7;
+  // Iceberg columns whose `write.parquet.bloom-filter-enabled.column.<col>` property resolves to
+  // true. Entries use Iceberg's dotted column-path syntax and are translated to parquet-rs
+  // `ColumnPath`s by the native writer.
+  repeated string bloom_filter_enabled_columns = 8;
 }
 
 // Broadcast payload -- one of these per write, identical for every task.
