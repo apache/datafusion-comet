@@ -23,6 +23,7 @@ import scala.util.control.NonFatal
 
 import org.apache.spark.SparkEnv
 import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, AttributeSeq, BindReferences, Expression, Literal, RuntimeReplaceable, ScalaUDF}
+import org.apache.spark.sql.catalyst.trees.TreeNodeTag
 import org.apache.spark.sql.types.BinaryType
 
 import org.apache.comet.CometConf
@@ -54,6 +55,24 @@ import org.apache.comet.udf.codegen.CometScalaUDFCodegen
  * lowering is viable. See [[CometDateFormat]] for an example.
  */
 object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
+
+  /**
+   * Marks a subtree as "dispatch this whole thing as one kernel", overriding the normal per-node
+   * serde lookup in `QueryPlanSerde.exprToProtoInternal`.
+   *
+   * Needed when a rewrite builds a tree whose root has a perfectly good native serde but whose
+   * children must not be converted independently. `RewriteTypedDatasetMap` is the motivating
+   * case: it fuses a typed `Dataset.map` into a `CreateNamedStruct` over N serializer expressions
+   * that all share one `Invoke` of the user closure. Letting `CometCreateNamedStruct` convert
+   * each field separately would emit N dispatch protos and call the closure N times per row.
+   * Tagging the root produces one kernel instead, and subexpression elimination inside it
+   * collapses the shared `Invoke` to a single call per row.
+   *
+   * A tag rather than a Comet-specific `Expression` subclass on purpose: the rewritten plan stays
+   * built entirely from stock Spark expressions, so it still executes correctly if the enclosing
+   * operator ends up falling back to Spark for an unrelated reason.
+   */
+  val FORCE_DISPATCH: TreeNodeTag[Unit] = TreeNodeTag[Unit]("comet.forceCodegenDispatch")
 
   override def convert(expr: ScalaUDF, inputs: Seq[Attribute], binding: Boolean): Option[Expr] =
     emitJvmCodegenDispatch(expr, inputs, binding)
