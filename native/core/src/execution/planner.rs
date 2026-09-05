@@ -125,7 +125,7 @@ use arrow::array::{
 use arrow::buffer::{BooleanBuffer, NullBuffer, OffsetBuffer};
 use arrow::row::{OwnedRow, RowConverter, SortField};
 use datafusion::common::utils::SingleRowListArrayBuilder;
-use datafusion::common::{NullHandling, UnnestOptions};
+use datafusion::common::UnnestOptions;
 use datafusion::physical_plan::filter::FilterExec;
 use datafusion::physical_plan::joins::NestedLoopJoinExec;
 use datafusion::physical_plan::limit::GlobalLimitExec;
@@ -2210,14 +2210,7 @@ impl PhysicalPlanner {
                     depth: 1,
                 });
 
-                let unnest_options = UnnestOptions {
-                    null_handling: if explode.outer {
-                        NullHandling::Preserve
-                    } else {
-                        NullHandling::Drop
-                    },
-                    recursions: vec![],
-                };
+                let unnest_options = UnnestOptions::new().with_preserve_nulls(explode.outer);
 
                 // Comet's batch-size-respecting fork of `UnnestExec`; see `operators::explode`.
                 let unnest_exec = Arc::new(ExplodeExec::new(
@@ -4560,8 +4553,6 @@ fn parse_file_scan_tasks_from_common(
                 .with_start(proto_task.start)
                 .with_length(proto_task.length)
                 .with_record_count(proto_task.record_count)
-                .with_first_row_id(None)
-                .with_data_sequence_number(None)
                 // RAW data-file path -- do NOT rewrite the alias to s3://. iceberg-rust matches
                 // positional deletes by comparing this against the path recorded inside the delete
                 // file, so changing the scheme drops deletes. The S3 backend opens a raw alias path

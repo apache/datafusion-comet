@@ -121,24 +121,35 @@ fn is_pure_structural_narrowing(
                 return false;
             }
             target_fields.iter().all(|target_field| {
-                // Require an *exact* (case-sensitive) name match for every target field.
-                // `nested_struct::cast_column` always matches by exact name; Comet
-                // additionally matches case-insensitively when `case_sensitive` is false,
-                // which could resolve a field DataFusion would instead treat as missing (and
-                // null-fill). Requiring an exact match sidesteps that divergence regardless
-                // of the `case_sensitive` setting, and also sidesteps the missing-field
-                // nullability divergence: DataFusion errors when a non-nullable target field
-                // is missing from the source, whereas Comet null-fills unconditionally.
-                source_fields
+                // DataFusion's retained `CastExpr` resolves struct fields by *exact* name, so
+                // keeping it is only sound when Spark's configured resolver would pick the same
+                // single source field. Two requirements:
+                //
+                // 1. An exact-name match must exist. `nested_struct::cast_column` matches by exact
+                //    name, so a target Comet would resolve only case-insensitively (or null-fill as
+                //    missing) must not keep the cast. This also sidesteps the missing-field
+                //    nullability divergence: DataFusion errors on a missing non-nullable target,
+                //    Comet null-fills unconditionally.
+                // 2. The target must fold to exactly one source field under the configured
+                //    resolver. `struct<id,ID>` projecting `id` case-insensitively is ambiguous;
+                //    Spark and Comet's converter reject it, but DataFusion's cast would silently
+                //    return the exact-case field, so the cast must not be retained.
+                let folded_target = fold_name(target_field.name(), parquet_options.case_sensitive);
+                let resolver_matches = source_fields
                     .iter()
-                    .find(|f| f.name() == target_field.name())
-                    .is_some_and(|source_field| {
-                        is_pure_structural_narrowing(
-                            source_field.data_type(),
-                            target_field.data_type(),
-                            parquet_options,
-                        )
-                    })
+                    .filter(|f| fold_name(f.name(), parquet_options.case_sensitive) == folded_target)
+                    .count();
+                resolver_matches == 1
+                    && source_fields
+                        .iter()
+                        .find(|f| f.name() == target_field.name())
+                        .is_some_and(|source_field| {
+                            is_pure_structural_narrowing(
+                                source_field.data_type(),
+                                target_field.data_type(),
+                                parquet_options,
+                            )
+                        })
             })
         }
         (DataType::List(source_item), DataType::List(target_item))
