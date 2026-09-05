@@ -1033,6 +1033,124 @@ class CometIcebergWriteActionSuite
     }
   }
 
+  // iceberg-java renders a `timestamptz` partition value with
+  // `DateTimeUtil.microsToIsoTimestamptz` and a `binary` one with base64; iceberg-rust's
+  // `partition_to_path` renders the first as a `chrono` `DateTime<Utc>` (space separator, " UTC"
+  // suffix) -- and outright panics on a pre-1970 value with a sub-second part, since
+  // `microseconds_to_datetimetz` casts a negative remainder to `u32`
+  // (apache/datafusion-comet#5694) -- and the second as uppercase hex. Comet renders the path
+  // itself; this pins the result against the layout iceberg-java's own writer produces.
+  test("native acceleration: timestamptz and binary partition paths match iceberg-java") {
+    assumeNativeAcceleration()
+    withIcebergCatalog { warehouseDir =>
+      // A UTC session zone makes the stored micros of each literal exact, so the expected
+      // directory names below are not a function of the machine's zone.
+      withSQLConf("spark.sql.session.timeZone" -> "UTC") {
+        Seq("ts_path_native", "ts_path_jvm").foreach { table =>
+          spark.sql(s"""
+            CREATE TABLE $catalog.$ns.$table (id INT, ts TIMESTAMP, bin BINARY)
+            USING iceberg PARTITIONED BY (ts, bin)
+          """)
+        }
+        // Pre-epoch with a sub-second part (the panic case), pre-epoch on a whole second, the
+        // epoch itself, and a post-epoch microsecond value.
+        val values =
+          "(1, TIMESTAMP '1969-12-31 23:59:58.5', X'0001FF'), " +
+            "(2, TIMESTAMP '1969-12-31 23:59:58', X'00'), " +
+            "(3, TIMESTAMP '1970-01-01 00:00:00', X''), " +
+            "(4, TIMESTAMP '2024-04-01 19:25:00.123456', X'FF')"
+
+        assertNativeWriteEngages("ts_path_native", Seq(1, 2, 3, 4)) {
+          spark.sql(s"INSERT INTO $catalog.$ns.ts_path_native VALUES $values")
+        }
+        spark.sql(s"INSERT INTO $catalog.$ns.ts_path_jvm VALUES $values")
+
+        val nativeDirs = partitionDirs(warehouseDir, "ts_path_native")
+        assert(nativeDirs == partitionDirs(warehouseDir, "ts_path_jvm"), s"native: $nativeDirs")
+        assert(
+          nativeDirs.contains("ts=1969-12-31T23%3A59%3A58.5%2B00%3A00/bin=AAH%2F"),
+          s"native: $nativeDirs")
+        assert(
+          nativeDirs.contains("ts=1970-01-01T00%3A00%3A00%2B00%3A00/bin="),
+          s"native: $nativeDirs")
+        assert(
+          nativeDirs.contains("ts=2024-04-01T19%3A25%3A00.123456%2B00%3A00/bin=%2Fw%3D%3D"),
+          s"native: $nativeDirs")
+
+        // Values round-trip through both readers regardless of how the path was spelled.
+        Seq("true", "false").foreach { cometEnabled =>
+          withSQLConf(CometConf.COMET_ENABLED.key -> cometEnabled) {
+            val rows =
+              spark.sql(s"SELECT id, ts FROM $catalog.$ns.ts_path_native ORDER BY id").collect()
+            assert(
+              rows.toSeq ==
+                spark
+                  .sql(s"SELECT id, ts FROM $catalog.$ns.ts_path_jvm ORDER BY id")
+                  .collect()
+                  .toSeq,
+              s"comet=$cometEnabled: $rows")
+          }
+        }
+      }
+    }
+  }
+
+  // iceberg-java's `UpdatePartitionSpec` keeps a dropped partition field in a format-version-1
+  // spec as a `void` transform so its field id survives, and `PartitionSpec#isUnpartitioned` is
+  // "every field is void", not "no fields". The next write therefore runs through the
+  // unpartitioned writer -- which stamps an empty partition struct -- against a spec whose fields
+  // are non-empty, and iceberg-rust's `ManifestWriter` used to `zip_eq` the two and panic across
+  // the JNI boundary (apache/datafusion-comet#5691). Dropping the source column afterwards then
+  // broke the manifest's `partition_type` resolution as well (apache/datafusion-comet#5693).
+  test("native acceleration: writes after a V1 partition field is dropped match iceberg-java") {
+    assumeNativeAcceleration()
+    withIcebergCatalog { _ =>
+      Seq("evolved_native", "evolved_jvm").foreach { table =>
+        spark.sql(s"""
+          CREATE TABLE $catalog.$ns.$table (id INT, region STRING)
+          USING iceberg TBLPROPERTIES ('format-version'='1')
+        """)
+      }
+
+      def evolve(table: String, write: (String, Seq[Int]) => Unit): Unit = {
+        write("(1, 'us')", Seq(1))
+        spark.sql(s"ALTER TABLE $catalog.$ns.$table ADD PARTITION FIELD region AS region_part")
+        write("(2, 'eu')", Seq(1, 2))
+        spark.sql(s"ALTER TABLE $catalog.$ns.$table DROP PARTITION FIELD region_part")
+        // The spec is now void-only: the #5691 shape.
+        write("(3, 'ap')", Seq(1, 2, 3))
+        spark.sql(s"ALTER TABLE $catalog.$ns.$table DROP COLUMN region")
+        // The void field's source column is gone: the #5693 shape.
+        write("(4)", Seq(1, 2, 3, 4))
+      }
+
+      evolve(
+        "evolved_native",
+        (row, expectedIds) =>
+          assertNativeWriteEngages("evolved_native", expectedIds) {
+            spark.sql(s"INSERT INTO $catalog.$ns.evolved_native VALUES $row")
+          })
+      evolve(
+        "evolved_jvm",
+        (row, _) => spark.sql(s"INSERT INTO $catalog.$ns.evolved_jvm VALUES $row"))
+
+      def rows(table: String): Seq[Row] =
+        spark.sql(s"SELECT * FROM $catalog.$ns.$table ORDER BY id").collect().toSeq
+      assert(rows("evolved_native") == Seq(Row(1), Row(2), Row(3), Row(4)))
+      assert(rows("evolved_native") == rows("evolved_jvm"))
+
+      // The committed manifests carry the same partition summaries the JVM writer produced.
+      def partitionSummaries(table: String): Seq[Row] = spark
+        .sql(s"SELECT partition_spec_id, partition_summaries FROM $catalog.$ns.$table.manifests" +
+          " ORDER BY partition_spec_id")
+        .collect()
+        .toSeq
+      assert(
+        partitionSummaries("evolved_native") == partitionSummaries("evolved_jvm"),
+        s"native: ${partitionSummaries("evolved_native")}")
+    }
+  }
+
   test("native acceleration: fanout writer handles unsorted partitioned input") {
     assumeNativeAcceleration()
     withIcebergCatalog { warehouseDir =>
@@ -1312,20 +1430,10 @@ class CometIcebergWriteActionSuite
 
       // Every partition directory the native writer produced exists in the JVM writer's layout
       // and vice versa, so the two tables are byte-for-byte compatible in their data locations.
-      def partitionDirs(table: String): Set[String] = {
-        val location = warehouseDir.toURI.toString.stripSuffix("/")
-        spark
-          .sql(s"SELECT file_path FROM $catalog.$ns.$table.files")
-          .collect()
-          .map(_.getString(0))
-          .map { path =>
-            val relative = path.stripPrefix(location).split("/data/", 2)(1)
-            relative.substring(0, relative.lastIndexOf('/'))
-          }
-          .toSet
-      }
-      val nativeDirs = partitionDirs("escaped_native")
-      assert(nativeDirs == partitionDirs("escaped_jvm"), s"native layout: $nativeDirs")
+      val nativeDirs = partitionDirs(warehouseDir, "escaped_native")
+      assert(
+        nativeDirs == partitionDirs(warehouseDir, "escaped_jvm"),
+        s"native layout: $nativeDirs")
       assert(nativeDirs.contains("region=a%2Fb") && nativeDirs.contains("region=c%23d"))
       assert(nativeDirs.contains("region=g+h") && nativeDirs.contains("region=*-._"))
 
@@ -1795,6 +1903,24 @@ class CometIcebergWriteActionSuite
       writes.nonEmpty,
       s"expected >= 1 IcebergWriteExec in captured plans, got ${writes.size}. Plans:\n" +
         snapshot.plans.mkString("\n--\n"))
+  }
+
+  /**
+   * The partition directory of every committed data file, relative to the table's `data/`
+   * location. Comparing this set between a natively-written table and a JVM-written twin pins the
+   * on-disk layout against iceberg-java's `PartitionSpec#partitionToPath`.
+   */
+  private def partitionDirs(warehouseDir: File, tableName: String): Set[String] = {
+    val location = warehouseDir.toURI.toString.stripSuffix("/")
+    spark
+      .sql(s"SELECT file_path FROM $catalog.$ns.$tableName.files")
+      .collect()
+      .map(_.getString(0))
+      .map { path =>
+        val relative = path.stripPrefix(location).split("/data/", 2)(1)
+        relative.substring(0, relative.lastIndexOf('/'))
+      }
+      .toSet
   }
 
   private def assertRows(tableName: String, expectedIds: Seq[Int]): Unit = {

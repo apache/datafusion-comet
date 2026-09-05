@@ -52,9 +52,7 @@ use iceberg::spec::{
     Struct as IcebergStruct, StructType,
 };
 use iceberg::writer::base_writer::data_file_writer::DataFileWriterBuilder;
-use iceberg::writer::file_writer::location_generator::{
-    DefaultFileNameGenerator, DefaultLocationGenerator,
-};
+use iceberg::writer::file_writer::location_generator::DefaultFileNameGenerator;
 use iceberg::writer::file_writer::rolling_writer::RollingFileWriterBuilder;
 use iceberg::writer::file_writer::ParquetWriterBuilder;
 use iceberg::writer::partitioning::clustered_writer::ClusteredWriter;
@@ -72,10 +70,11 @@ use datafusion_comet_proto::spark_operator::{
 
 use crate::cloud::s3::credential_bridge::AccessMode;
 use crate::execution::operators::iceberg_common::load_file_io;
+use crate::execution::operators::iceberg_partition_path::CometLocationGenerator;
 
 /// Builder chain instantiated once per task and handed to the partitioning wrapper.
 type IcebergDataFileWriterBuilder =
-    DataFileWriterBuilder<ParquetWriterBuilder, DefaultLocationGenerator, DefaultFileNameGenerator>;
+    DataFileWriterBuilder<ParquetWriterBuilder, CometLocationGenerator, DefaultFileNameGenerator>;
 
 /// Native Iceberg write operator. Owns the parsed Iceberg schema/spec and the parquet writer
 /// properties; at task execution it builds the iceberg-rust writer stack, drains the upstream
@@ -310,8 +309,15 @@ async fn run_write_task(
         AccessMode::Write,
     )?;
 
-    let location_generator =
-        DefaultLocationGenerator::with_data_location(common.data_location.clone());
+    // Resolves the write's partition type once per task, before any data is written, so a spec the
+    // location generator could not render fails the task cleanly rather than panicking inside the
+    // infallible `LocationGenerator::generate_location`.
+    let location_generator = CometLocationGenerator::try_new(
+        common.data_location.clone(),
+        &partition_spec,
+        &iceberg_schema,
+    )
+    .map_err(iceberg_err)?;
     let file_name_generator = DefaultFileNameGenerator::new(
         file_name_prefix(partition_id, task_attempt_id, &common.operation_id),
         None,
@@ -617,9 +623,13 @@ async fn encode_data_files_as_manifest(
         operation_id,
     );
     let output_file = memory_io.new_output(&path).map_err(iceberg_err)?;
-    let mut manifest_writer =
-        ManifestWriterBuilder::new(output_file, None, iceberg_schema, (*partition_spec).clone())
-            .build_v2_data();
+    let mut manifest_writer = ManifestWriterBuilder::new(
+        output_file,
+        None,
+        iceberg_schema,
+        manifest_partition_spec(&partition_spec),
+    )
+    .build_v2_data();
     for data_file in data_files {
         manifest_writer
             .add_file(data_file, 0)
@@ -636,6 +646,37 @@ async fn encode_data_files_as_manifest(
         .await
         .map_err(iceberg_err)?;
     Ok(bytes.to_vec())
+}
+
+/// The partition spec the per-task transport manifest is encoded against.
+///
+/// Normally the write's own spec, but a spec that `PartitionSpec::is_unpartitioned` accepts can
+/// still carry fields: iceberg-java's `UpdatePartitionSpec` keeps a dropped partition field in a
+/// format-version-1 spec as a `void` transform to preserve its field id, and "unpartitioned" means
+/// *every* field is `void` on both the Java and Rust sides, not that there are none. `run_write_task`
+/// routes such a write through `UnpartitionedWriter`, which stamps every data file with an empty
+/// partition struct, while `ManifestWriter` derives its partition summaries from the spec's fields
+/// and `zip_eq`s the two -- panicking across the JNI boundary on the length mismatch
+/// (apache/datafusion-comet#5691). Encoding against a field-less spec of the same id makes the two
+/// agree.
+///
+/// Nothing downstream loses information. The JVM re-reads this manifest with the spec embedded in
+/// its own Avro metadata, then rebuilds each `DataFile` against the table's real output spec, whose
+/// `DataFiles.Builder` drops partition data outright for an unpartitioned spec -- so the manifest
+/// that reaches storage carries exactly what iceberg-java's own writer would have committed for a
+/// `void`-only spec (a null per `void` field, filled in by `PartitionData.get` returning null past
+/// the end of its backing array).
+///
+/// Dropping the fields also skips the `partition_type` resolution `ManifestWriter` would otherwise
+/// do, which fails once the `void` field's source column has itself been dropped from the schema
+/// (apache/datafusion-comet#5693).
+fn manifest_partition_spec(partition_spec: &PartitionSpecRef) -> PartitionSpec {
+    if partition_spec.is_unpartitioned() {
+        // A no-op when the spec already has no fields, which is the common case.
+        PartitionSpec::unpartition_spec().with_spec_id(partition_spec.spec_id())
+    } else {
+        (**partition_spec).clone()
+    }
 }
 
 fn build_output_batch(manifest_bytes: Vec<u8>, output_schema: &SchemaRef) -> DFResult<RecordBatch> {
@@ -1179,6 +1220,221 @@ mod tests {
                     .unwrap();
             let err = decorate_batch_with_field_ids(batch, &target).unwrap_err();
             assert!(format!("{err}").contains("column count mismatch"));
+        }
+
+        /// A spec whose only partition field is a `void` transform, as iceberg-java's
+        /// `UpdatePartitionSpec` leaves a format-version-1 spec after `DROP PARTITION FIELD`.
+        /// Built by deserialising the spec JSON rather than through `PartitionSpec::builder`,
+        /// which is how the real path builds it (`parse_partition_spec`) and which is also the
+        /// only way to reach a `void` field whose source column is gone.
+        fn void_spec(source_id: i32) -> PartitionSpec {
+            serde_json::from_str(&format!(
+                r#"{{"spec-id":2,"fields":[
+                     {{"source-id":{source_id},"field-id":1000,
+                       "name":"region_part","transform":"void"}}]}}"#
+            ))
+            .unwrap()
+        }
+
+        /// Regression for apache/datafusion-comet#5691. `is_unpartitioned()` accepts a spec whose
+        /// fields are all `void`, so the write routes through `UnpartitionedWriter` and every data
+        /// file gets an empty partition struct -- while `ManifestWriter` derives one partition
+        /// summary per spec field and `zip_eq`s the two, which used to panic (`itertools:
+        /// .zip_eq() reached end of one iterator before the other`) instead of returning an error.
+        #[tokio::test]
+        async fn void_only_spec_write_round_trips_through_the_manifest() {
+            let temp_dir = TempDir::new().unwrap();
+            let data_location = format!("file://{}", temp_dir.path().display());
+            let schema = iceberg_user_schema();
+            // source-id 2 is `region`, still present in the schema.
+            let spec = void_spec(2);
+            assert!(spec.is_unpartitioned() && !spec.fields().is_empty());
+            let common = common(
+                data_location.clone(),
+                serde_json::to_string(&spec).unwrap(),
+                serde_json::to_string(&schema).unwrap(),
+                ProtoIcebergWriterMode::IcebergWriterUnpartitioned,
+            );
+
+            let schema_arc = Arc::new(schema);
+            let spec_arc = Arc::new(spec);
+            let data_files = run_write_task(
+                input_stream(vec![batch(&[1, 2], &["us", "eu"])]),
+                Arc::clone(&common),
+                Arc::clone(&schema_arc),
+                Arc::clone(&spec_arc),
+                ProtoIcebergWriterMode::IcebergWriterUnpartitioned,
+                WriterProperties::builder().build(),
+                Some(0),
+                Some(0),
+                Time::default(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(data_files.len(), 1);
+            // No partition directory, matching iceberg-java's `UnpartitionedDataWriter`: the file
+            // sits directly under the data location.
+            let file_path = data_files[0].file_path().to_string();
+            let relative = file_path
+                .strip_prefix(&format!("{data_location}/"))
+                .unwrap_or_else(|| panic!("{file_path} is not under {data_location}"));
+            assert!(
+                !relative.contains('/'),
+                "unexpected directory in {relative}"
+            );
+
+            let manifest_bytes = encode_data_files_as_manifest(
+                data_files,
+                schema_arc,
+                Arc::clone(&spec_arc),
+                Some(0),
+                Some(0),
+                &common.operation_id,
+            )
+            .await
+            .unwrap();
+            let manifest = Manifest::parse_avro(&manifest_bytes).unwrap();
+            assert_eq!(manifest.entries().len(), 1);
+            assert_eq!(manifest.entries()[0].data_file().record_count(), 2);
+            // The transport manifest is encoded against a field-less spec of the same id, so the
+            // JVM reads back an empty partition struct -- which is what `DataFiles.Builder` would
+            // have kept for this spec anyway.
+            assert_eq!(manifest.metadata().partition_spec().spec_id(), 2);
+            assert!(manifest.metadata().partition_spec().fields().is_empty());
+        }
+
+        /// Regression for apache/datafusion-comet#5693, the same shape one step further along:
+        /// the `void` field's source column has since been dropped from the schema, which used to
+        /// fail the write with "No column with source column id 9 in schema" from the manifest
+        /// encode. Nothing needs that column -- a `void` field contributes no partition value and
+        /// no partition directory.
+        #[tokio::test]
+        async fn void_field_with_a_dropped_source_column_still_writes() {
+            let temp_dir = TempDir::new().unwrap();
+            let data_location = format!("file://{}", temp_dir.path().display());
+            let schema = iceberg_user_schema();
+            let spec = void_spec(9);
+            let common = common(
+                data_location,
+                serde_json::to_string(&spec).unwrap(),
+                serde_json::to_string(&schema).unwrap(),
+                ProtoIcebergWriterMode::IcebergWriterUnpartitioned,
+            );
+
+            let schema_arc = Arc::new(schema);
+            let spec_arc = Arc::new(spec);
+            let data_files = run_write_task(
+                input_stream(vec![batch(&[1], &["us"])]),
+                Arc::clone(&common),
+                Arc::clone(&schema_arc),
+                Arc::clone(&spec_arc),
+                ProtoIcebergWriterMode::IcebergWriterUnpartitioned,
+                WriterProperties::builder().build(),
+                Some(0),
+                Some(0),
+                Time::default(),
+            )
+            .await
+            .unwrap();
+            let manifest_bytes = encode_data_files_as_manifest(
+                data_files,
+                schema_arc,
+                spec_arc,
+                Some(0),
+                Some(0),
+                &common.operation_id,
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                Manifest::parse_avro(&manifest_bytes)
+                    .unwrap()
+                    .entries()
+                    .len(),
+                1
+            );
+        }
+
+        /// Regression for apache/datafusion-comet#5694. A pre-epoch `timestamptz` partition value
+        /// used to panic while iceberg-rust rendered the partition directory name
+        /// (`microseconds_to_datetimetz` unwraps a `None` for a negative sub-second remainder);
+        /// Comet now renders the path itself, in iceberg-java's format.
+        #[tokio::test]
+        async fn pre_epoch_timestamptz_partition_gets_a_java_shaped_directory() {
+            use arrow::array::TimestampMicrosecondArray;
+
+            let temp_dir = TempDir::new().unwrap();
+            let data_location = format!("file://{}", temp_dir.path().display());
+            let schema = Schema::builder()
+                .with_schema_id(1)
+                .with_fields(vec![
+                    NestedField::required(1, "id", Type::Primitive(PrimitiveType::Int)).into(),
+                    NestedField::required(2, "ts", Type::Primitive(PrimitiveType::Timestamptz))
+                        .into(),
+                ])
+                .build()
+                .unwrap();
+            let spec = PartitionSpec::builder(Arc::new(schema.clone()))
+                .with_spec_id(1)
+                .add_partition_field("ts", "ts_part", Transform::Identity)
+                .unwrap()
+                .build()
+                .unwrap();
+            let common = common(
+                data_location,
+                serde_json::to_string(&spec).unwrap(),
+                serde_json::to_string(&schema).unwrap(),
+                ProtoIcebergWriterMode::IcebergWriterFanout,
+            );
+
+            // 1969-12-31T23:59:58.5Z: negative micros with a sub-second remainder.
+            let arrow_schema = Arc::new(ArrowSchema::new(vec![
+                Field::new("id", DataType::Int32, false),
+                Field::new(
+                    "ts",
+                    DataType::Timestamp(
+                        arrow::datatypes::TimeUnit::Microsecond,
+                        Some("UTC".into()),
+                    ),
+                    false,
+                ),
+            ]));
+            let batch = RecordBatch::try_new(
+                Arc::clone(&arrow_schema),
+                vec![
+                    Arc::new(Int32Array::from(vec![1])),
+                    Arc::new(
+                        TimestampMicrosecondArray::from(vec![-1_500_000i64]).with_timezone("UTC"),
+                    ),
+                ],
+            )
+            .unwrap();
+
+            let data_files = run_write_task(
+                Box::pin(RecordBatchStreamAdapter::new(
+                    arrow_schema,
+                    futures::stream::iter(vec![Ok::<_, DataFusionError>(batch)]),
+                )),
+                common,
+                Arc::new(schema),
+                Arc::new(spec),
+                ProtoIcebergWriterMode::IcebergWriterFanout,
+                WriterProperties::builder().build(),
+                Some(0),
+                Some(0),
+                Time::default(),
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(data_files.len(), 1);
+            assert!(
+                data_files[0]
+                    .file_path()
+                    .contains("/ts_part=1969-12-31T23%3A59%3A58.5%2B00%3A00/"),
+                "unexpected partition directory in {}",
+                data_files[0].file_path()
+            );
         }
     }
 }

@@ -251,6 +251,12 @@ a data file but not what any reader computes from it:
   differences (iceberg-java checks the target file size every 1000 rows and names files
   `<partition>-<task>-<operation>-<count>`; iceberg-rust checks per batch and uses a
   process-local counter).
+- Partition directory names match iceberg-java's `PartitionSpec.partitionToPath` for every
+  partition type except `float` and `double`, where the value is rendered with Rust's shortest
+  representation instead of `Float.toString` / `Double.toString` (`f=1` where iceberg-java writes
+  `f=1.0`). Distinct partition values still get distinct directories, and no reader parses these
+  names — files are resolved through committed manifests. Iceberg deprecated float and double
+  partitioning in 1.3.
 - Compressed page bytes are implementation-defined: the codec and any explicit level are
   translated, but parquet-rs and parquet-mr embed different encoder implementations and
   defaults (zstd default levels, LZ4 framing), so byte-identical output is not achievable even
