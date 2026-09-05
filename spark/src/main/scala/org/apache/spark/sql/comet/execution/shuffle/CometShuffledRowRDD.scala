@@ -51,7 +51,18 @@ class CometShuffledBatchRDD(
     SortShuffleManager.FETCH_SHUFFLE_BLOCKS_IN_BATCH_ENABLED_KEY,
     SQLConf.get.fetchShuffleBlocksInBatch.toString)
 
-  override def getDependencies: Seq[Dependency[_]] = List(dependency)
+  // Start without waiting so constructing a join or union can start every independent input.
+  // Spark resolves dependencies on the submitting thread before queueing a downstream job;
+  // freeze the selected destination there, before Spark caches this RDD's dependency graph.
+  // Cache fixed partition metadata first: parents such as UnionRDD read it while discovering
+  // dependencies, and must not wait for the RDD lock held by a concurrent getDependencies call.
+  partitions
+  CometCelebornShuffleMaterialization.forDependency(dependency)
+
+  override def getDependencies: Seq[Dependency[_]] = {
+    dependency = CometCelebornShuffleMaterialization.selectForRead(dependency)
+    List(dependency)
+  }
 
   override val partitioner: Option[Partitioner] =
     if (partitionSpecs.forall(_.isInstanceOf[CoalescedPartitionSpec])) {
