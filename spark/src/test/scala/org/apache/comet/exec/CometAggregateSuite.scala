@@ -1650,7 +1650,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             "spark.comet.datafusion.execution.skip_partial_aggregation_probe_ratio_threshold" -> "0.8") {
             for (expression <- Seq("sum(v)", "count(v, w)", "count(*) + sum(v)")) {
               val result = aggregates(
-                s"SELECT sum(n) FROM " +
+                "SELECT sum(n) FROM " +
                   s"(SELECT k, $expression n FROM skip_partial_eligibility GROUP BY k)")
               assert(result.map(skipped).sum == 0L, s"Unexpected skipping for $expression")
             }
