@@ -289,6 +289,19 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_WRITE_ROW_VIEW_ENABLED: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.write.rowView.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Whether to feed Spark's file write path zero-copy row views over Arrow batches " +
+          "instead of materializing an UnsafeRow per row. Nothing on the write path requires " +
+          "an UnsafeRow, so the copy is undone immediately by the writer. Only applies to " +
+          "unpartitioned, unbucketed writes of a schema containing a struct, array or map, " +
+          "where the writer is guaranteed not to retain rows and the saving is large enough " +
+          "to be worth measuring. This feature is experimental.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.sortMergeJoinWithJoinFilter.enabled")
       .category(CATEGORY_ENABLE_EXEC)
