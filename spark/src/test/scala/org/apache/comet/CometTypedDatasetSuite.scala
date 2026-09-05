@@ -22,11 +22,9 @@ package org.apache.comet
 import java.util.concurrent.atomic.AtomicLong
 
 import org.apache.spark.api.java.function.MapFunction
-import org.apache.spark.sql.CometTestBase
-import org.apache.spark.sql.Encoders
+import org.apache.spark.sql.{CometTestBase, DataFrame, Dataset, Encoders}
 import org.apache.spark.sql.comet.CometProjectExec
-import org.apache.spark.sql.execution.{DeserializeToObjectExec, MapElementsExec, MapPartitionsExec, SerializeFromObjectExec, SparkPlan}
-import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+import org.apache.spark.sql.execution.{MapPartitionsExec, ObjectConsumerExec, ObjectProducerExec, SparkPlan}
 import org.apache.spark.sql.internal.SQLConf
 
 /** Top-level so `NewInstance` needs no outer pointer, which is the ordinary user shape. */
@@ -37,6 +35,21 @@ case class TypedWide(i: Int, s: String, d: java.math.BigDecimal, opt: Option[Lon
 case class TypedNested(id: Int, inner: TypedRec, tags: Seq[String])
 
 case class TypedDec(id: Int, d: java.math.BigDecimal)
+
+/** Twelve columns, to pin the `spark.sql.codegen.maxFields` accounting. */
+case class TypedWide12(
+    c1: Int,
+    c2: Int,
+    c3: Int,
+    c4: Int,
+    c5: Int,
+    c6: Int,
+    c7: Int,
+    c8: Int,
+    c9: Int,
+    c10: Int,
+    c11: Int,
+    c12: Int)
 
 /** JVM-static counter. Comet tests run in local mode, so driver and executor share this. */
 object TypedMapCounter {
@@ -50,7 +63,7 @@ object TypedMapCounter {
  * `SerializeFromObject` / `MapElements` / `DeserializeToObject` sandwich a typed `Dataset.map`
  * produces into a Comet projection. See https://github.com/apache/datafusion-comet/issues/5710.
  */
-class CometTypedDatasetSuite extends CometTestBase with AdaptiveSparkPlanHelper {
+class CometTypedDatasetSuite extends CometTestBase {
 
   import testImplicits._
 
@@ -60,24 +73,44 @@ class CometTypedDatasetSuite extends CometTestBase with AdaptiveSparkPlanHelper 
         CometConf.COMET_EXEC_TYPED_DATASET_MAP_ENABLED.key -> "true",
         CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true") ++ pairs): _*)(f)
 
-  private def objectOperators(plan: SparkPlan): Seq[SparkPlan] =
-    collectWithSubqueries(plan) {
-      case p: SerializeFromObjectExec => p
-      case p: DeserializeToObjectExec => p
-      case p: MapElementsExec => p
-      case p: MapPartitionsExec => p
+  /** The common fixture: `rows` rows of `(a: Int, b: String)` via Parquet, read back typed. */
+  private def withTypedRecs(rows: Int = 100)(f: Dataset[TypedRec] => Unit): Unit =
+    withParquetTable((0 until rows).map(i => (i, i.toString)), "tbl") {
+      f(spark.sql("select _1 as a, _2 as b from tbl").as[TypedRec])
     }
 
-  private def assertNoObjectOperators(plan: SparkPlan): Unit =
-    assert(
-      objectOperators(plan).isEmpty,
-      s"expected the typed sandwich to be fused away, but plan still has " +
-        s"${objectOperators(plan).map(_.nodeName).mkString(", ")}:\n$plan")
+  /**
+   * Round-trips `df` through Parquet and registers it as `tbl`. Needed rather than
+   * `withParquetTable(df, name)` because that registers the DataFrame directly, leaving a
+   * `LocalTableScanExec` that the native-plan assertions do not tolerate.
+   */
+  private def withParquetRoundTrip(df: => DataFrame)(f: => Unit): Unit =
+    withTempPath { path =>
+      df.write.parquet(path.toString)
+      withParquetTable(path.toString, "tbl")(f)
+    }
+
+  /**
+   * Every operator in the typed-Dataset family, via the two traits Spark uses to mark them. Wider
+   * than the `ds.map` sandwich on purpose: it also covers `FlatMapGroupsExec` /
+   * `AppendColumnsExec`, which this rule does not fuse, so a future change that starts fusing
+   * them is visible here.
+   */
+  private def objectOperators(plan: SparkPlan): Seq[SparkPlan] =
+    collectWithSubqueries(plan) { case p @ (_: ObjectConsumerExec | _: ObjectProducerExec) => p }
+
+  private def assertNoObjectOperators(plan: SparkPlan): Unit = {
+    val remaining = objectOperators(plan)
+    if (remaining.nonEmpty) {
+      fail(
+        "expected the typed sandwich to be fused away, but plan still has " +
+          s"${remaining.map(_.nodeName).mkString(", ")}:\n$plan")
+    }
+  }
 
   test("ds.map produces a fully native plan - single output column") {
     withFusion() {
-      withParquetTable((0 until 100).map(i => (i, i.toString)), "tbl") {
-        val ds = spark.sql("select _1 as a, _2 as b from tbl").as[TypedRec]
+      withTypedRecs() { ds =>
         val (_, cometPlan) = checkSparkAnswerAndOperator(ds.map(_.a + 1).toDF())
         assertNoObjectOperators(cometPlan)
       }
@@ -86,8 +119,7 @@ class CometTypedDatasetSuite extends CometTestBase with AdaptiveSparkPlanHelper 
 
   test("ds.map produces a fully native plan - multiple output columns") {
     withFusion() {
-      withParquetTable((0 until 100).map(i => (i, i.toString)), "tbl") {
-        val ds = spark.sql("select _1 as a, _2 as b from tbl").as[TypedRec]
+      withTypedRecs() { ds =>
         val (_, cometPlan) =
           checkSparkAnswerAndOperator(ds.map(r => TypedRec(r.a + 1, r.b + "!")).toDF())
         assertNoObjectOperators(cometPlan)
@@ -99,30 +131,35 @@ class CometTypedDatasetSuite extends CometTestBase with AdaptiveSparkPlanHelper 
     }
   }
 
-  test("output schema is unchanged by the rewrite") {
-    withParquetTable((0 until 20).map(i => (i, i.toString)), "tbl") {
-      // `withSQLConf` returns Unit on Spark 3.x, so capture rather than return from the block.
-      def schemaOf(fused: Boolean): String = {
-        var schema: String = null
+  test("executed-plan output attributes are unchanged by the rewrite") {
+    // `Dataset.schema` comes from the analyzed plan, which a physical rule cannot touch, so
+    // comparing it would be vacuous. The property that matters is that the rewritten projections
+    // reproduce `SerializeFromObjectExec.output` exactly -- names, types and nullability -- since
+    // parent operators reference those attributes.
+    withTypedRecs(20) { _ =>
+      def executedOutput(fused: Boolean): String = {
+        var out: String = null
         withSQLConf(CometConf.COMET_EXEC_TYPED_DATASET_MAP_ENABLED.key -> fused.toString) {
-          schema = spark
+          out = spark
             .sql("select _1 as a, _2 as b from tbl")
             .as[TypedRec]
             .map(r => TypedRec(r.a + 1, r.b))
             .toDF()
-            .schema
-            .treeString
+            .queryExecution
+            .executedPlan
+            .output
+            .map(a => s"${a.name}:${a.dataType.simpleString}:${a.nullable}")
+            .mkString(",")
         }
-        schema
+        out
       }
-      assert(schemaOf(fused = true) === schemaOf(fused = false))
+      assert(executedOutput(fused = true) === executedOutput(fused = false))
     }
   }
 
   test("closure runs exactly once per row with multiple output columns") {
     withFusion() {
-      withParquetTable((0 until 50).map(i => (i, i.toString)), "tbl") {
-        val ds = spark.sql("select _1 as a, _2 as b from tbl").as[TypedRec]
+      withTypedRecs(50) { ds =>
         TypedMapCounter.reset()
         val fused = ds
           .map { r =>
@@ -136,6 +173,21 @@ class CometTypedDatasetSuite extends CometTestBase with AdaptiveSparkPlanHelper 
         assert(
           TypedMapCounter.calls.get() === 50,
           s"expected 50 closure calls for 50 rows, got ${TypedMapCounter.calls.get()}")
+      }
+    }
+  }
+
+  test("a 12-column record still fuses (maxFields counts each input ordinal once)") {
+    // Every struct field carries the whole deserializer, so counting BoundReference occurrences
+    // rather than distinct ordinals made this 12 + 12*12 = 156 fields against a default
+    // `spark.sql.codegen.maxFields` of 100, and the rule silently declined.
+    withFusion() {
+      val cols = (1 to 12).map(i => s"_1 + $i as c$i").mkString(", ")
+      withParquetTable((0 until 20).map(i => (i, i.toString)), "tbl") {
+        val ds = spark.sql(s"select $cols from tbl").as[TypedWide12]
+        val (_, cometPlan) =
+          checkSparkAnswerAndOperator(ds.map(r => r.copy(c1 = r.c1 + 1)).toDF())
+        assertNoObjectOperators(cometPlan)
       }
     }
   }
@@ -159,52 +211,39 @@ class CometTypedDatasetSuite extends CometTestBase with AdaptiveSparkPlanHelper 
           s"s$i",
           new java.math.BigDecimal(s"$i.25"),
           if (i % 3 == 0) null else Long.box(i * 10L)))
-      withTempPath { path =>
-        rows.toDF("i", "s", "d", "opt").write.parquet(path.toString)
-        withParquetTable(path.toString, "tbl") {
-          val ds = spark.table("tbl").as[TypedWide]
-          val (_, cometPlan) = checkSparkAnswerAndOperator(
-            ds.map(r => TypedWide(r.i + 1, r.s, r.d, r.opt.map(_ + 1))).toDF())
-          assertNoObjectOperators(cometPlan)
-        }
+      withParquetRoundTrip(rows.toDF("i", "s", "d", "opt")) {
+        val ds = spark.table("tbl").as[TypedWide]
+        val (_, cometPlan) = checkSparkAnswerAndOperator(
+          ds.map(r => TypedWide(r.i + 1, r.s, r.d, r.opt.map(_ + 1))).toDF())
+        assertNoObjectOperators(cometPlan)
       }
     }
   }
 
   test("nested struct and array fields round-trip") {
     withFusion() {
-      withTempPath { path =>
-        (1 to 30)
-          .map(i => (i, (i, s"n$i"), Seq(s"t$i", s"u$i")))
-          .toDF("id", "inner", "tags")
-          .selectExpr("id", "named_struct('a', inner._1, 'b', inner._2) as inner", "tags")
-          .write
-          .parquet(path.toString)
-        withParquetTable(path.toString, "tbl") {
-          val ds = spark.table("tbl").as[TypedNested]
-          val (_, cometPlan) = checkSparkAnswerAndOperator(
-            ds.map(r => TypedNested(r.id + 1, TypedRec(r.inner.a, r.inner.b), r.tags.reverse))
-              .toDF())
-          assertNoObjectOperators(cometPlan)
-        }
+      val nested = (1 to 30)
+        .map(i => (i, (i, s"n$i"), Seq(s"t$i", s"u$i")))
+        .toDF("id", "inner", "tags")
+        .selectExpr("id", "named_struct('a', inner._1, 'b', inner._2) as inner", "tags")
+      withParquetRoundTrip(nested) {
+        val ds = spark.table("tbl").as[TypedNested]
+        val (_, cometPlan) = checkSparkAnswerAndOperator(
+          ds.map(r => TypedNested(r.id + 1, TypedRec(r.inner.a, r.inner.b), r.tags.reverse))
+            .toDF())
+        assertNoObjectOperators(cometPlan)
       }
     }
   }
 
   test("null field values in the input and the output") {
     withFusion() {
-      withTempPath { path =>
-        (1 to 30)
-          .map(i => (i, if (i % 4 == 0) null else s"s$i"))
-          .toDF("a", "b")
-          .write
-          .parquet(path.toString)
-        withParquetTable(path.toString, "tbl") {
-          val ds = spark.table("tbl").as[TypedRec]
-          val (_, cometPlan) = checkSparkAnswerAndOperator(
-            ds.map(r => TypedRec(r.a, if (r.a % 5 == 0) null else r.b)).toDF())
-          assertNoObjectOperators(cometPlan)
-        }
+      val withNulls = (1 to 30).map(i => (i, if (i % 4 == 0) null else s"s$i")).toDF("a", "b")
+      withParquetRoundTrip(withNulls) {
+        val ds = spark.table("tbl").as[TypedRec]
+        val (_, cometPlan) = checkSparkAnswerAndOperator(
+          ds.map(r => TypedRec(r.a, if (r.a % 5 == 0) null else r.b)).toDF())
+        assertNoObjectOperators(cometPlan)
       }
     }
   }
@@ -213,8 +252,7 @@ class CometTypedDatasetSuite extends CometTestBase with AdaptiveSparkPlanHelper 
     // Returning null for a non-nullable top-level product is an error in Spark. The serializer's
     // `assertnotnull` has to survive the fuse, or Comet would silently emit a null row instead.
     withFusion() {
-      withParquetTable((0 until 20).map(i => (i, i.toString)), "tbl") {
-        val ds = spark.sql("select _1 as a, _2 as b from tbl").as[TypedRec]
+      withTypedRecs(20) { ds =>
         val df = ds.map(r => if (r.a == 7) null else TypedRec(r.a, r.b)).toDF()
         assertNoObjectOperators(df.queryExecution.executedPlan)
         val err = intercept[Exception](df.collect())
@@ -261,8 +299,7 @@ class CometTypedDatasetSuite extends CometTestBase with AdaptiveSparkPlanHelper 
 
   test("Java MapFunction takes the same path as a Scala closure") {
     withFusion() {
-      withParquetTable((0 until 40).map(i => (i, i.toString)), "tbl") {
-        val ds = spark.sql("select _1 as a, _2 as b from tbl").as[TypedRec]
+      withTypedRecs(40) { ds =>
         val fn = new MapFunction[TypedRec, TypedRec] {
           override def call(r: TypedRec): TypedRec = TypedRec(r.a + 100, r.b)
         }
@@ -275,8 +312,7 @@ class CometTypedDatasetSuite extends CometTestBase with AdaptiveSparkPlanHelper 
 
   test("chained maps fuse into one native pipeline") {
     withFusion() {
-      withParquetTable((0 until 40).map(i => (i, i.toString)), "tbl") {
-        val ds = spark.sql("select _1 as a, _2 as b from tbl").as[TypedRec]
+      withTypedRecs(40) { ds =>
         val (_, cometPlan) = checkSparkAnswerAndOperator(
           ds.map(r => TypedRec(r.a + 1, r.b)).map(r => TypedRec(r.a * 2, r.b + "x")).toDF())
         assertNoObjectOperators(cometPlan)
@@ -285,8 +321,7 @@ class CometTypedDatasetSuite extends CometTestBase with AdaptiveSparkPlanHelper 
   }
 
   test("off by default") {
-    withParquetTable((0 until 20).map(i => (i, i.toString)), "tbl") {
-      val ds = spark.sql("select _1 as a, _2 as b from tbl").as[TypedRec]
+    withTypedRecs(20) { ds =>
       val df = ds.map(r => TypedRec(r.a + 1, r.b)).toDF()
       df.collect()
       assert(
@@ -299,13 +334,12 @@ class CometTypedDatasetSuite extends CometTestBase with AdaptiveSparkPlanHelper 
     withSQLConf(
       CometConf.COMET_EXEC_TYPED_DATASET_MAP_ENABLED.key -> "true",
       CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
-      withParquetTable((0 until 20).map(i => (i, i.toString)), "tbl") {
-        val ds = spark.sql("select _1 as a, _2 as b from tbl").as[TypedRec]
-        val df = ds.map(r => TypedRec(r.a + 1, r.b)).toDF()
-        checkSparkAnswer(df)
-        assert(
-          objectOperators(df.queryExecution.executedPlan).nonEmpty,
-          "without the dispatcher there is nothing to fuse into")
+      withTypedRecs(20) { ds =>
+        checkSparkAnswerAndFallbackReason(
+          ds.map(r => TypedRec(r.a + 1, r.b)).toDF(),
+          s"Cannot fuse typed Dataset map: " +
+            s"${CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key}=false, so there is no dispatcher " +
+            "to fuse into")
       }
     }
   }
@@ -314,21 +348,19 @@ class CometTypedDatasetSuite extends CometTestBase with AdaptiveSparkPlanHelper 
     // Without CSE the single kernel would evaluate the shared closure Invoke once per struct
     // field, so the rule must decline rather than change how many times user code runs.
     withFusion(SQLConf.SUBEXPRESSION_ELIMINATION_ENABLED.key -> "false") {
-      withParquetTable((0 until 20).map(i => (i, i.toString)), "tbl") {
-        val ds = spark.sql("select _1 as a, _2 as b from tbl").as[TypedRec]
-        val df = ds.map(r => TypedRec(r.a + 1, r.b)).toDF()
-        checkSparkAnswer(df)
-        assert(
-          objectOperators(df.queryExecution.executedPlan).nonEmpty,
-          "multi-column fusion needs CSE to keep the closure to one call per row")
+      withTypedRecs(20) { ds =>
+        checkSparkAnswerAndFallbackReason(
+          ds.map(r => TypedRec(r.a + 1, r.b)).toDF(),
+          "Cannot fuse typed Dataset map: 2 output columns require subexpression elimination " +
+            "to keep the closure to one call per row, but " +
+            s"${SQLConf.SUBEXPRESSION_ELIMINATION_ENABLED.key}=false")
       }
     }
   }
 
   test("mapPartitions is not fused") {
     withFusion() {
-      withParquetTable((0 until 20).map(i => (i, i.toString)), "tbl") {
-        val ds = spark.sql("select _1 as a, _2 as b from tbl").as[TypedRec]
+      withTypedRecs(20) { ds =>
         val df = ds.mapPartitions(it => it.map(r => TypedRec(r.a + 1, r.b))).toDF()
         checkSparkAnswer(df)
         assert(

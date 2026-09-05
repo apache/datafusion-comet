@@ -30,6 +30,7 @@ import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.aggregate._
 import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
 import org.apache.spark.sql.catalyst.expressions.xml.{XPathBoolean, XPathDouble, XPathFloat, XPathInt, XPathList, XPathLong, XPathShort, XPathString}
+import org.apache.spark.sql.catalyst.trees.TreeNodeTag
 import org.apache.spark.sql.comet.DecimalPrecision
 import org.apache.spark.sql.execution.{ScalarSubquery, SparkPlan}
 import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
@@ -51,6 +52,31 @@ import org.apache.comet.shims.{CometExprShim, CometTypeShim}
  * An utility object for query plan and expression serialization.
  */
 object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
+
+  /**
+   * Marks a subtree as "dispatch this whole thing as one kernel", overriding the normal per-node
+   * serde lookup in [[exprToProtoInternal]].
+   *
+   * Needed when a rewrite builds a tree whose root has a perfectly good native serde but whose
+   * children must not be converted independently. `RewriteTypedDatasetMap` is the motivating
+   * case: it fuses a typed `Dataset.map` into a `CreateNamedStruct` over N serializer expressions
+   * that all share one `Invoke` of the user closure. Letting `CometCreateNamedStruct` convert
+   * each field separately would emit N dispatch protos and call the closure N times per row.
+   * Tagging the root produces one kernel instead, and subexpression elimination inside it
+   * collapses the shared `Invoke` to a single call per row.
+   *
+   * A tag rather than a Comet-specific `Expression` subclass on purpose: the rewritten plan stays
+   * built entirely from stock Spark expressions, so it still executes correctly if the enclosing
+   * operator ends up falling back to Spark for an unrelated reason. (Comet has no `Expression`
+   * subclasses at all, and its whole expression story is serdes over stock Spark nodes.)
+   *
+   * Caveat for future callers: the tag routes straight to `CometScalaUDF.emitJvmCodegenDispatch`,
+   * bypassing the per-expression policy layer in `exprToProtoInternal`'s `convert` helper -- so
+   * `CometConf.isExprEnabled`, `getSupportLevel` and `allowIncompatible` are *not* consulted for
+   * a tagged node. Only tag trees you have already decided are dispatchable, via
+   * [[CometScalaUDF.canDispatch]].
+   */
+  val FORCE_DISPATCH: TreeNodeTag[Unit] = TreeNodeTag[Unit]("comet.forceCodegenDispatch")
 
   private[comet] val arrayExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     // ArrayAppend is a concrete expression only on Spark 3.x. Spark 4.0+ marks it
@@ -998,13 +1024,18 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       }
     }
 
+    // A rewrite rule asked for this whole subtree to compile into one kernel rather than letting
+    // each child pick its own serde. Checked ahead of the version shim so the override is
+    // unconditional: the shim pattern-matches on `Invoke`/`StaticInvoke`, which is exactly the
+    // shape `RewriteTypedDatasetMap` synthesizes. See `FORCE_DISPATCH`.
+    if (expr.getTagValue(FORCE_DISPATCH).isDefined) {
+      return CometScalaUDF
+        .emitJvmCodegenDispatch(expr, inputs, binding)
+        .map(attachExprIdAndContext(expr, _))
+    }
+
     sparkVersionSpecificExprToProtoInternal(expr, inputs, binding)
       .orElse(expr match {
-
-        case _ if expr.getTagValue(CometScalaUDF.FORCE_DISPATCH).isDefined =>
-          // A rewrite rule asked for this whole subtree to compile into one kernel rather than
-          // letting each child pick its own serde. See `CometScalaUDF.FORCE_DISPATCH`.
-          CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
 
         case UnaryExpression(child) if expr.prettyName == "promote_precision" =>
           // `UnaryExpression` includes `PromotePrecision` for Spark 3.3

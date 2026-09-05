@@ -21,7 +21,6 @@ package org.apache.comet.serde
 
 import org.apache.spark.SparkEnv
 import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, AttributeSeq, BindReferences, Expression, Literal, RuntimeReplaceable, ScalaUDF}
-import org.apache.spark.sql.catalyst.trees.TreeNodeTag
 import org.apache.spark.sql.types.BinaryType
 
 import org.apache.comet.CometConf
@@ -54,26 +53,47 @@ import org.apache.comet.udf.codegen.CometScalaUDFCodegen
  */
 object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
 
-  /**
-   * Marks a subtree as "dispatch this whole thing as one kernel", overriding the normal per-node
-   * serde lookup in `QueryPlanSerde.exprToProtoInternal`.
-   *
-   * Needed when a rewrite builds a tree whose root has a perfectly good native serde but whose
-   * children must not be converted independently. `RewriteTypedDatasetMap` is the motivating
-   * case: it fuses a typed `Dataset.map` into a `CreateNamedStruct` over N serializer expressions
-   * that all share one `Invoke` of the user closure. Letting `CometCreateNamedStruct` convert
-   * each field separately would emit N dispatch protos and call the closure N times per row.
-   * Tagging the root produces one kernel instead, and subexpression elimination inside it
-   * collapses the shared `Invoke` to a single call per row.
-   *
-   * A tag rather than a Comet-specific `Expression` subclass on purpose: the rewritten plan stays
-   * built entirely from stock Spark expressions, so it still executes correctly if the enclosing
-   * operator ends up falling back to Spark for an unrelated reason.
-   */
-  val FORCE_DISPATCH: TreeNodeTag[Unit] = TreeNodeTag[Unit]("comet.forceCodegenDispatch")
-
   override def convert(expr: ScalaUDF, inputs: Seq[Attribute], binding: Boolean): Option[Expr] =
     emitJvmCodegenDispatch(expr, inputs, binding)
+
+  /**
+   * Bind `expr` the way [[emitJvmCodegenDispatch]] will, returning the attributes it reads in
+   * ordinal order alongside the bound tree.
+   *
+   * Callers that only need to know whether a tree is dispatchable should use [[canDispatch]]
+   * rather than repeating this.
+   */
+  private def bindForDispatch(expr: Expression): (Seq[AttributeReference], Expression) = {
+    // `RuntimeReplaceable` expressions (e.g. Spark 4's `StructsToJson`) have a `doGenCode` that
+    // always throws "Cannot generate code for expression". Catalyst's `ReplaceExpressions` rule
+    // normally rewrites them to their `replacement` form before codegen runs. Comet's serde
+    // sometimes works with the pre-rewrite form (via shim reconstruction) for matching purposes,
+    // so unwrap to the replacement here before binding so the kernel compiles.
+    val target = expr match {
+      case rr: RuntimeReplaceable => rr.replacement
+      case other => other
+    }
+    // Bind against only the AttributeReferences the tree actually reads, so ordinals align with
+    // the data args we ship.
+    val attrs = target.collect { case a: AttributeReference => a }.distinct
+    (attrs, BindReferences.bindReference(target, AttributeSeq(attrs)))
+  }
+
+  /**
+   * Plan-time gate: `None` if the dispatcher would accept `expr`, `Some(reason)` otherwise.
+   *
+   * Exposed so a rule that decides whether to rewrite a plan into a dispatchable shape predicts
+   * the same answer [[emitJvmCodegenDispatch]] will give it later. Do not re-derive the binding
+   * at the call site -- the two would drift, and a stale prediction commits a plan neither side
+   * wants.
+   */
+  def canDispatch(expr: Expression): Option[String] = {
+    if (!CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.get()) {
+      return Some(
+        s"${CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key}=false; expression has no native path")
+    }
+    CometBatchKernelCodegen.canHandle(bindForDispatch(expr)._2)
+  }
 
   /**
    * Bind `expr`, closure-serialize it, and emit a `JvmScalarUdf` proto routed through
@@ -104,15 +124,7 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
     // normally rewrites them to their `replacement` form before codegen runs. Comet's serde
     // sometimes works with the pre-rewrite form (via shim reconstruction) for matching purposes,
     // so unwrap to the replacement here before binding so the kernel compiles.
-    val target = expr match {
-      case rr: RuntimeReplaceable => rr.replacement
-      case other => other
-    }
-
-    // Bind against only the AttributeReferences the tree actually reads, so ordinals align with
-    // the data args we ship.
-    val attrs = target.collect { case a: AttributeReference => a }.distinct
-    val boundExpr = BindReferences.bindReference(target, AttributeSeq(attrs))
+    val (attrs, boundExpr) = bindForDispatch(expr)
 
     // Gate at plan time. Surface the reason via withFallbackReason rather than crashing Janino
     // at execute.

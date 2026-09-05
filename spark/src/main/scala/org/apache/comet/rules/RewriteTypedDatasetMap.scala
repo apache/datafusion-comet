@@ -21,7 +21,7 @@ package org.apache.comet.rules
 
 import org.apache.spark.api.java.function.MapFunction
 import org.apache.spark.internal.Logging
-import org.apache.spark.sql.catalyst.expressions.{Alias, AttributeReference, AttributeSeq, AttributeSet, BindReferences, BoundReference, CreateNamedStruct, Expression, GetStructField, Literal, NamedExpression}
+import org.apache.spark.sql.catalyst.expressions.{Alias, AttributeSet, BoundReference, CreateNamedStruct, Expression, GetStructField, Literal, NamedExpression}
 import org.apache.spark.sql.catalyst.expressions.objects.Invoke
 import org.apache.spark.sql.catalyst.plans.logical.FunctionUtils
 import org.apache.spark.sql.execution.{DeserializeToObjectExec, MapElementsExec, ProjectExec, SerializeFromObjectExec, SparkPlan}
@@ -30,8 +30,7 @@ import org.apache.spark.sql.types.ObjectType
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
-import org.apache.comet.codegen.CometBatchKernelCodegen
-import org.apache.comet.serde.CometScalaUDF
+import org.apache.comet.serde.{CometScalaUDF, QueryPlanSerde}
 
 /**
  * Collapses the three-operator island that a typed `Dataset.map` produces
@@ -85,11 +84,11 @@ object RewriteTypedDatasetMap extends Logging {
       // `ds.map(f).map(g)` leaves two adjacent `MapElements` under one Serialize/Deserialize pair,
       // so walk the whole chain rather than expecting exactly one.
       val chain = mapElementsChain(serialize.child)
-      chain.lastOption.map(_.child) match {
-        case Some(deserialize: DeserializeToObjectExec) =>
-          fuse(serialize, chain, deserialize).getOrElse(plan)
-        case _ => plan
-      }
+      chain.lastOption
+        .map(_.child)
+        .collect { case deserialize: DeserializeToObjectExec => deserialize }
+        .flatMap(fuse(serialize, chain, _))
+        .getOrElse(plan)
     case _ => plan
   }
 
@@ -107,26 +106,36 @@ object RewriteTypedDatasetMap extends Logging {
     val serializer = serialize.serializer
     val objType = chain.head.outputObjectType
 
-    // Every serializer element is an `Alias` for encoder-generated serializers. The outer
-    // projection rebuilds them with `withNewChildren`, which needs exactly one child, and that
-    // is also what preserves `exprId` / qualifier / metadata across the rewrite.
-    if (!serializer.forall(_.isInstanceOf[Alias])) {
-      return declineQuietly(
+    // Cheapest precondition first: a config that cannot change mid-plan.
+    if (!CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.get()) {
+      return decline(
         serialize,
-        "serializer contains a non-Alias element: " +
-          serializer
-            .filterNot(_.isInstanceOf[Alias])
-            .map(_.getClass.getSimpleName)
-            .mkString(", "))
+        s"${CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key}=false, so there is no dispatcher to " +
+          "fuse into")
     }
 
-    // The serializer reads the object through `BoundReference(0, objType)`. Anything else means a
-    // shape this rule has not been reasoned about, so leave it alone rather than guess.
+    // Every serializer element is an `Alias` for encoder-generated serializers -- Spark builds them
+    // via `ExpressionEncoder.namedExpressions`, which aliases every field of the flattened
+    // `CreateNamedStruct`. The outer projection relies on that: it rebuilds each element with
+    // `withNewChildren`, which needs exactly one child, and that is what preserves `exprId` /
+    // qualifier / metadata across the rewrite.
+    val nonAliases = serializer.filterNot(_.isInstanceOf[Alias])
+    if (nonAliases.nonEmpty) {
+      return decline(
+        serialize,
+        "serializer contains a non-Alias element: " +
+          nonAliases.map(_.getClass.getSimpleName).mkString(", "))
+    }
+
+    // The serializer reads the object through `BoundReference(0, objType)` -- Spark asserts as much
+    // in `ExpressionEncoder` ("all serializer expressions must use the same BoundReference") and
+    // `ScalaReflection.serializerFor` builds it at ordinal 0. Anything else is a shape this rule
+    // has not been reasoned about, so leave it alone rather than guess.
     val badRefs = serializer.flatMap(_.collect {
       case b: BoundReference if b.ordinal != 0 || b.dataType != objType => b
     })
     if (badRefs.nonEmpty) {
-      return declineQuietly(
+      return decline(
         serialize,
         s"serializer reads unexpected bound references: ${badRefs.mkString(", ")}")
     }
@@ -148,95 +157,87 @@ object RewriteTypedDatasetMap extends Logging {
         propagateNull = false)
     }
 
-    // Substitute the closure call for the object the serializer reads. `transform` on an `Alias`
-    // preserves `exprId`, qualifier and metadata via `otherCopyArgs`, so the rewritten projection
-    // keeps `SerializeFromObjectExec`'s exact output attributes and parents stay valid.
+    // Substitute the closure call for the object the serializer reads. The guard above proved every
+    // `BoundReference` here is that object, and the pattern restates it so the substitution cannot
+    // outlive its precondition. `transform` on an `Alias` preserves `exprId`, qualifier and
+    // metadata via `otherCopyArgs`, so the rewritten projection keeps
+    // `SerializeFromObjectExec`'s exact output attributes and parents stay valid.
     val fused = serializer.map { ne =>
-      ne.transform { case _: BoundReference => callFunc }.asInstanceOf[NamedExpression]
+      ne.transform {
+        case b: BoundReference if b.ordinal == 0 && b.dataType == objType => callFunc
+      }.asInstanceOf[NamedExpression]
     }
 
-    // A projection may only reference its child's output. The deserializer reads `child.output`
-    // and the object reference is gone, so this should hold; check rather than assume.
-    val childOutput = AttributeSet(child.output)
-    val dangling = fused.flatMap(f => (f.references -- childOutput).toSeq)
+    // A projection may only reference its child's output. Spark asserts the serializer itself has
+    // no free references (`ExpressionEncoder`), and the substituted tree bottoms out in the
+    // deserializer, which reads `child.output` -- so this should hold; check rather than assume.
+    val dangling = AttributeSet(fused) -- child.outputSet
     if (dangling.nonEmpty) {
-      return declineQuietly(
+      return decline(
         serialize,
         s"fused expression references attributes outside the child: ${dangling.mkString(", ")}")
     }
 
-    if (fused.length == 1) {
-      // Single output column: the fused expression is already one dispatch kernel, so there is
-      // nothing for the struct wrapper to deduplicate.
-      val single = fused.head
-      val value = single.children.head
-      dispatchable(value).map { _ =>
-        value.setTagValue(CometScalaUDF.FORCE_DISPATCH, ())
-        ProjectExec(fused, child)
-      }
-    } else {
-      // Without subexpression elimination the single kernel would still evaluate the shared
-      // `Invoke` once per struct field, so the closure would run N times per row. Spark runs it
-      // once; decline rather than change how many times user code executes.
-      if (!SQLConf.get.subexpressionEliminationEnabled) {
-        return declineQuietly(
-          serialize,
-          s"${serializer.length} output columns require subexpression elimination to keep the " +
-            "closure to one call per row, but " +
-            s"${SQLConf.SUBEXPRESSION_ELIMINATION_ENABLED.key}=false")
-      }
+    // Without subexpression elimination the single kernel would evaluate the shared `Invoke` once
+    // per struct field, so the closure would run N times per row. Spark runs it once; decline
+    // rather than change how many times user code executes. One output column has nothing to
+    // deduplicate, so it does not need CSE.
+    if (fused.length > 1 && !SQLConf.get.subexpressionEliminationEnabled) {
+      return decline(
+        serialize,
+        s"${fused.length} output columns require subexpression elimination to keep the closure " +
+          s"to one call per row, but ${SQLConf.SUBEXPRESSION_ELIMINATION_ENABLED.key}=false")
+    }
 
-      val structExpr =
-        CreateNamedStruct(fused.flatMap(ne => Seq(Literal(ne.name), ne.children.head)))
-      dispatchable(structExpr).map { _ =>
-        structExpr.setTagValue(CometScalaUDF.FORCE_DISPATCH, ())
-        val structAlias = Alias(structExpr, FUSED_COLUMN)()
-        val inner = ProjectExec(Seq(structAlias), child)
-        val structAttr = structAlias.toAttribute
-        // `CreateNamedStruct` is never null and copies each field's nullability, so
-        // `GetStructField(structAttr, i).nullable` equals the original expression's nullability.
-        // The rewritten output attributes therefore match `SerializeFromObjectExec.output` exactly.
-        val outer = fused.zipWithIndex.map { case (ne, i) =>
-          ne.withNewChildren(Seq(GetStructField(structAttr, i, Some(ne.name))))
-            .asInstanceOf[NamedExpression]
+    fused match {
+      // One output column is already one kernel; the struct wrapper would have nothing to dedupe.
+      case Seq(only) =>
+        forceDispatch(only.children.head).map(_ => ProjectExec(fused, child))
+
+      case _ =>
+        forceDispatch(
+          CreateNamedStruct(fused.flatMap(ne => Seq(Literal(ne.name), ne.children.head)))).map {
+          structExpr =>
+            val structAlias = Alias(structExpr, FUSED_COLUMN)()
+            val inner = ProjectExec(Seq(structAlias), child)
+            val structAttr = structAlias.toAttribute
+            // `CreateNamedStruct` is never null and copies each field's nullability, so
+            // `GetStructField(structAttr, i).nullable` equals the original expression's
+            // nullability. The rewritten output attributes therefore match
+            // `SerializeFromObjectExec.output` exactly.
+            val outer = fused.zipWithIndex.map { case (ne, i) =>
+              ne.withNewChildren(Seq(GetStructField(structAttr, i, Some(ne.name))))
+                .asInstanceOf[NamedExpression]
+            }
+            ProjectExec(outer, inner)
         }
-        ProjectExec(outer, inner)
-      }
     }
   }
 
   /**
-   * Plan-time gate. The rewrite is only worth making if the fused tree can actually reach the
-   * dispatcher; otherwise the resulting projection would fall back to Spark anyway, and we would
-   * have replaced a whole-stage-fused island with an unfused one. Binds the same way
-   * `CometScalaUDF.emitJvmCodegenDispatch` does so `canHandle` sees the tree it will really get.
+   * Tag `expr` to compile into a single kernel, or `None` when the dispatcher would refuse it.
+   *
+   * The gate matters: if the fused tree cannot reach the dispatcher, the projection this rule
+   * builds would fall back to Spark anyway, and we would have traded a whole-stage-fused island
+   * for an unfused one. Delegating to [[CometScalaUDF.canDispatch]] rather than re-deriving the
+   * binding is what keeps the prediction identical to what the serde will really do.
    */
-  private def dispatchable(fusedValue: Expression): Option[Unit] = {
-    if (!CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.get()) {
-      logDebug(
-        "RewriteTypedDatasetMap: not rewriting because " +
-          s"${CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key}=false")
-      return None
-    }
-    // Same binding as `emitJvmCodegenDispatch`, so `canHandle` sees the tree it will really get.
-    val attrs = fusedValue.collect { case a: AttributeReference => a }.distinct
-    val bound = BindReferences.bindReference(fusedValue, AttributeSeq(attrs))
-    CometBatchKernelCodegen.canHandle(bound) match {
+  private def forceDispatch[T <: Expression](expr: T): Option[T] =
+    CometScalaUDF.canDispatch(expr) match {
       case Some(reason) =>
         logDebug(s"RewriteTypedDatasetMap: not rewriting because $reason")
         None
-      case None => Some(())
+      case None =>
+        expr.setTagValue(QueryPlanSerde.FORCE_DISPATCH, ())
+        Some(expr)
     }
-  }
 
   /**
    * Leave the sandwich alone and record why on the operator, so `EXPLAIN` shows the reason the
    * typed operation stayed on Spark rather than the bare "not supported" the un-rewritten
    * operators would otherwise produce.
    */
-  private def declineQuietly(
-      serialize: SerializeFromObjectExec,
-      reason: String): Option[SparkPlan] = {
+  private def decline(serialize: SerializeFromObjectExec, reason: String): Option[SparkPlan] = {
     withFallbackReason(serialize, s"Cannot fuse typed Dataset map: $reason")
     None
   }

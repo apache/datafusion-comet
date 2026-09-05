@@ -697,7 +697,29 @@ case class CometExecRule(session: SparkSession)
         plan
       }
     } else {
-      val normalizedPlan = normalizePlan(plan)
+      // Collapse the SerializeFromObject / MapElements / DeserializeToObject sandwich that a typed
+      // `Dataset.map` produces into a projection. Runs before `normalizePlan` so the projections it
+      // synthesizes get the same NaN / -0.0 normalization every other `ProjectExec` in the plan
+      // gets; encoder serializer trees contain no comparison operators today, so this is
+      // future-proofing rather than a live fix.
+      //
+      // A pre-pass rather than a `convertNode` case for now. Note that `convertNode` *could* do it:
+      // the bottom-up walk only tags `DeserializeToObjectExec` with a fallback reason, it never
+      // replaces it, so the sandwich is still structurally intact when the walk reaches
+      // `SerializeFromObjectExec`. Doing it there would additionally let the rule see whether the
+      // deserializer's child converted to a `CometNativeExec` and decline when it did not, which is
+      // the profitability signal this rewrite currently lacks. See
+      // https://github.com/apache/datafusion-comet/issues/5710.
+      val planWithTypedMapFused =
+        if (CometConf.COMET_EXEC_TYPED_DATASET_MAP_ENABLED.get(conf)) {
+          plan.transformUp { case p =>
+            RewriteTypedDatasetMap.rewrite(p)
+          }
+        } else {
+          plan
+        }
+
+      val normalizedPlan = normalizePlan(planWithTypedMapFused)
 
       val planWithJoinRewritten = if (CometConf.COMET_FORCE_SHJ.get()) {
         normalizedPlan.transformUp { case p =>
@@ -707,26 +729,13 @@ case class CometExecRule(session: SparkSession)
         normalizedPlan
       }
 
-      // Collapse the SerializeFromObject / MapElements / DeserializeToObject sandwich that a typed
-      // `Dataset.map` produces into a projection, before the bottom-up conversion sees the
-      // individual operators. `transform()` visits children first, so by the time it reached
-      // `DeserializeToObjectExec` the island would already have fallen back.
-      val planWithTypedMapFused =
-        if (CometConf.COMET_EXEC_TYPED_DATASET_MAP_ENABLED.get(conf)) {
-          planWithJoinRewritten.transformUp { case p =>
-            RewriteTypedDatasetMap.rewrite(p)
-          }
-        } else {
-          planWithJoinRewritten
-        }
-
       // Tag Partial aggregates that must not be converted to Comet because a
       // corresponding Final or PartialMerge cannot be converted and the intermediate buffer
       // formats are incompatible. This runs before transform() so the tags are checked
       // during the bottom-up conversion. Tags persist through AQE stage creation.
-      tagUnsafePartialAggregates(planWithTypedMapFused)
+      tagUnsafePartialAggregates(planWithJoinRewritten)
 
-      var newPlan = transform(planWithTypedMapFused)
+      var newPlan = transform(planWithJoinRewritten)
 
       // if the plan cannot be run fully natively then explain why (when appropriate
       // config is enabled)
