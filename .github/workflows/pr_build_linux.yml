@@ -431,6 +431,7 @@ jobs:
               org.apache.spark.sql.comet.util.UtilsSuite
               org.apache.comet.vector.NativeUtilSuite
               org.apache.comet.objectstore.NativeConfigSuite
+              org.apache.comet.serde.operator.CometIcebergNativeScanSuite
               org.apache.comet.serde.operator.CometNativeScanSuite
               org.apache.spark.sql.CometToPrettyStringSuite
               org.apache.spark.sql.CometCollationSuite
