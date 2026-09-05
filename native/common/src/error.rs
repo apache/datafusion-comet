@@ -135,11 +135,37 @@ pub enum SparkError {
     #[error("[EXCEED_LIMIT_LENGTH] Cannot create a map with {size} elements which exceeds the limit {max_size}.")]
     ExceedMapSizeLimit { size: i32, max_size: i32 },
 
-    #[error("[COLLECTION_SIZE_LIMIT_EXCEEDED] Cannot create array with {num_elements} elements which exceeds the limit {max_elements}.")]
+    /// `num_elements` is a decimal string because Spark reports the unclamped length, which can
+    /// exceed i64 (e.g. sequence(Long.MinValue, Long.MaxValue, 1)). The JVM shim maps this to the
+    /// version-appropriate `createArrayWithElementsExceedLimitError`, passing `function_name`
+    /// through on Spark 4.x (which includes it in the message) and ignoring it on 3.x.
+    #[error("[COLLECTION_SIZE_LIMIT_EXCEEDED] Can't create array with {num_elements} elements which exceeding the array size limit {max_elements}.")]
     CollectionSizeLimitExceeded {
-        num_elements: i64,
+        num_elements: String,
         max_elements: i64,
+        function_name: String,
     },
+
+    /// Step direction does not match the start/stop bounds in `sequence`. The JVM shim maps this
+    /// to a plain IllegalArgumentException on Spark 3.x and SparkIllegalArgumentException
+    /// (_LEGACY_ERROR_TEMP_3243) on 4.x, matching what Spark's codegen throws.
+    #[error("[_LEGACY_ERROR_TEMP_3243] Illegal sequence boundaries: {start} to {stop} by {step}")]
+    SequenceIllegalBoundaries {
+        start: String,
+        stop: String,
+        step: String,
+    },
+
+    /// Sum of every row's sequence length in one Arrow batch exceeds Comet's per-batch offset
+    /// ceiling (i32::MAX) or the allocator could not satisfy the reservation. Spark itself has
+    /// no equivalent limit because it stores each row as its own `long[]`. Reported with a
+    /// message that names `spark.comet.batchSize` as the actionable knob.
+    #[error(
+        "Comet's native `sequence` kernel cannot materialize a batch with {total_elements} \
+        total elements: it exceeds the per-batch limit or the allocator refused the reservation. \
+        Lower `spark.comet.batchSize` so fewer rows are grouped per batch."
+    )]
+    SequenceBatchTooLarge { total_elements: String },
 
     #[error("[NOT_NULL_ASSERT_VIOLATION] The field `{field_name}` cannot be null.")]
     NotNullAssertViolation { field_name: String },
@@ -306,6 +332,8 @@ impl SparkError {
             SparkError::MapKeyValueDiffSizes => "MapKeyValueDiffSizes",
             SparkError::ExceedMapSizeLimit { .. } => "ExceedMapSizeLimit",
             SparkError::CollectionSizeLimitExceeded { .. } => "CollectionSizeLimitExceeded",
+            SparkError::SequenceIllegalBoundaries { .. } => "SequenceIllegalBoundaries",
+            SparkError::SequenceBatchTooLarge { .. } => "SequenceBatchTooLarge",
             SparkError::NotNullAssertViolation { .. } => "NotNullAssertViolation",
             SparkError::ValueIsNull { .. } => "ValueIsNull",
             SparkError::CannotParseTimestamp { .. } => "CannotParseTimestamp",
@@ -450,10 +478,24 @@ impl SparkError {
             SparkError::CollectionSizeLimitExceeded {
                 num_elements,
                 max_elements,
+                function_name,
             } => {
                 serde_json::json!({
                     "numElements": num_elements,
                     "maxElements": max_elements,
+                    "functionName": function_name,
+                })
+            }
+            SparkError::SequenceIllegalBoundaries { start, stop, step } => {
+                serde_json::json!({
+                    "start": start,
+                    "stop": stop,
+                    "step": step,
+                })
+            }
+            SparkError::SequenceBatchTooLarge { total_elements } => {
+                serde_json::json!({
+                    "totalElements": total_elements,
                 })
             }
             SparkError::NotNullAssertViolation { field_name } => {
@@ -626,6 +668,7 @@ impl SparkError {
             | SparkError::MapKeyValueDiffSizes
             | SparkError::ExceedMapSizeLimit { .. }
             | SparkError::CollectionSizeLimitExceeded { .. }
+            | SparkError::SequenceBatchTooLarge { .. } // Comet-specific extension
             | SparkError::NotNullAssertViolation { .. }
             | SparkError::ValueIsNull { .. } // Comet-specific extension
             | SparkError::UnexpectedPositiveValue { .. }
@@ -644,7 +687,8 @@ impl SparkError {
             // IllegalArgumentException
             SparkError::DatatypeCannotOrder { .. }
             | SparkError::InvalidUtf8String { .. }
-            | SparkError::IllegalDayOfWeek { .. } => {
+            | SparkError::IllegalDayOfWeek { .. }
+            | SparkError::SequenceIllegalBoundaries { .. } => {
                 "org/apache/spark/SparkIllegalArgumentException"
             }
 
@@ -722,6 +766,10 @@ impl SparkError {
             SparkError::CollectionSizeLimitExceeded { .. } => {
                 Some("COLLECTION_SIZE_LIMIT_EXCEEDED")
             }
+            SparkError::SequenceIllegalBoundaries { .. } => Some("_LEGACY_ERROR_TEMP_3243"),
+
+            // Comet-specific: no Spark error class, the shim builds the message itself.
+            SparkError::SequenceBatchTooLarge { .. } => None,
 
             // Null validation errors
             SparkError::NotNullAssertViolation { .. } => Some("NOT_NULL_ASSERT_VIOLATION"),
