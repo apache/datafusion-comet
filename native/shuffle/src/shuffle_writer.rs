@@ -392,10 +392,9 @@ fn contextualize_shuffle_error(error: DataFusionError, phase: &str) -> DataFusio
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::{read_ipc_compressed, ShuffleBlockWriter};
+    use crate::{read_ipc_compressed, ShuffleBlockWriter, ShuffleCodecContext};
     use arrow::array::{Array, Int64Array, StringArray, StringBuilder};
     use arrow::datatypes::{DataType, Field, Schema};
-    use arrow::ipc::writer::CompressionContext;
     use arrow::record_batch::RecordBatch;
     use arrow::row::{RowConverter, SortField};
     use datafusion::datasource::memory::MemorySourceConfig;
@@ -425,14 +424,9 @@ mod test {
             let mut cursor = Cursor::new(&mut output);
             let writer =
                 ShuffleBlockWriter::try_new(batch.schema().as_ref(), codec.clone()).unwrap();
-            let mut compression_context = CompressionContext::default();
+            let mut codec_context = ShuffleCodecContext::default();
             let length = writer
-                .write_batch(
-                    &batch,
-                    &mut cursor,
-                    &mut compression_context,
-                    &Time::default(),
-                )
+                .write_batch(&batch, &mut cursor, &mut codec_context, &Time::default())
                 .unwrap();
             assert_eq!(length, output.len());
 
@@ -471,14 +465,9 @@ mod test {
             let mut output = vec![];
             let mut cursor = Cursor::new(&mut output);
             let writer = ShuffleBlockWriter::try_new(schema.as_ref(), codec.clone()).unwrap();
-            let mut compression_context = CompressionContext::default();
+            let mut codec_context = ShuffleCodecContext::default();
             writer
-                .write_batch(
-                    &batch,
-                    &mut cursor,
-                    &mut compression_context,
-                    &Time::default(),
-                )
+                .write_batch(&batch, &mut cursor, &mut codec_context, &Time::default())
                 .unwrap();
 
             let batch2 = read_ipc_compressed(&output[16..]).unwrap();
@@ -575,6 +564,74 @@ mod test {
 
         // insert another batch after spilling
         repartitioner.insert_batch(batch.clone()).await.unwrap();
+    }
+
+    /// The zstd context is reused within one encode burst but must not survive past it: a
+    /// spill event and the final shuffle write each end with the context released.
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
+    async fn local_writer_releases_zstd_context_at_burst_boundaries() {
+        let batch = create_batch(900);
+        let num_partitions = 2;
+        let runtime_env = create_runtime(512 * 1024);
+        let metrics_set = ExecutionPlanMetricsSet::new();
+        let dir = tempfile::tempdir().unwrap();
+        let shuffle_block_writer =
+            ShuffleBlockWriter::try_new(batch.schema().as_ref(), CompressionCodec::Zstd(1))
+                .unwrap();
+        let local_partition_writer = LocalPartitionWriter::try_new(
+            dir.path().join("data.out").to_str().unwrap().to_string(),
+            dir.path().join("index.out").to_str().unwrap().to_string(),
+            shuffle_block_writer,
+            num_partitions,
+            1024,
+            1024 * 1024,
+            Arc::clone(&runtime_env),
+        )
+        .unwrap();
+        let mut repartitioner = MultiPartitionShuffleRepartitioner::try_new(
+            0,
+            local_partition_writer,
+            CometPartitioning::Hash(vec![Arc::new(Column::new("a", 0))], num_partitions),
+            ShufflePartitionerMetrics::new(&metrics_set, 0),
+            runtime_env,
+            1024,
+            false,
+            None,
+        )
+        .unwrap();
+
+        repartitioner.insert_batch(batch.clone()).await.unwrap();
+        repartitioner.spill(0).unwrap();
+        assert!(
+            repartitioner
+                .partition_writer()
+                .get_spill_writers()
+                .iter()
+                .all(|writer| writer.has_spill_file()),
+            "the burst must encode blocks for every partition"
+        );
+        assert_eq!(
+            repartitioner.partition_writer().zstd_creation_count(),
+            1,
+            "one spill burst across all partitions must create the zstd context exactly once"
+        );
+        assert!(
+            !repartitioner.partition_writer().holds_zstd_cctx(),
+            "a finished spill burst must not keep the zstd context cached"
+        );
+
+        repartitioner.insert_batch(batch.clone()).await.unwrap();
+        repartitioner.shuffle_write().unwrap();
+        assert_eq!(
+            repartitioner.partition_writer().zstd_creation_count(),
+            2,
+            "the next burst re-creates the context once, not per block"
+        );
+        assert!(
+            !repartitioner.partition_writer().holds_zstd_cctx(),
+            "finish_all must release the zstd context"
+        );
     }
 
     #[tokio::test]
@@ -1211,6 +1268,7 @@ mod test {
         let codec = CompressionCodec::Lz4Frame;
         let encode_time = Time::default();
         let write_time = Time::default();
+        let mut codec_context = ShuffleCodecContext::default();
 
         // Write with coalescing (batch_size=8192)
         let mut coalesced_output = Vec::new();
@@ -1225,11 +1283,17 @@ mod test {
             let mut scratch = Vec::new();
             for batch in &small_batches {
                 buf_writer
-                    .write(batch, &mut scratch, &encode_time, &write_time)
+                    .write(
+                        batch,
+                        &mut scratch,
+                        &mut codec_context,
+                        &encode_time,
+                        &write_time,
+                    )
                     .unwrap();
             }
             buf_writer
-                .flush(&mut scratch, &encode_time, &write_time)
+                .flush(&mut scratch, &mut codec_context, &encode_time, &write_time)
                 .unwrap();
         }
 
@@ -1246,11 +1310,17 @@ mod test {
             let mut scratch = Vec::new();
             for batch in &small_batches {
                 buf_writer
-                    .write(batch, &mut scratch, &encode_time, &write_time)
+                    .write(
+                        batch,
+                        &mut scratch,
+                        &mut codec_context,
+                        &encode_time,
+                        &write_time,
+                    )
                     .unwrap();
             }
             buf_writer
-                .flush(&mut scratch, &encode_time, &write_time)
+                .flush(&mut scratch, &mut codec_context, &encode_time, &write_time)
                 .unwrap();
         }
 
@@ -1342,6 +1412,7 @@ mod test {
         let codec = CompressionCodec::Lz4Frame;
         let encode_time = Time::default();
         let write_time = Time::default();
+        let mut codec_context = ShuffleCodecContext::default();
 
         let mut output = Vec::new();
         {
@@ -1355,11 +1426,17 @@ mod test {
             let mut scratch = Vec::new();
             for batch in &inputs {
                 buf_writer
-                    .write(batch, &mut scratch, &encode_time, &write_time)
+                    .write(
+                        batch,
+                        &mut scratch,
+                        &mut codec_context,
+                        &encode_time,
+                        &write_time,
+                    )
                     .unwrap();
             }
             buf_writer
-                .flush(&mut scratch, &encode_time, &write_time)
+                .flush(&mut scratch, &mut codec_context, &encode_time, &write_time)
                 .unwrap();
         }
 

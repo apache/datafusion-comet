@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::codec_context::ShuffleCodecContext;
 use crate::metrics::ShufflePartitionerMetrics;
 use crate::writers::local::spill::SpillWriter;
 use crate::writers::partition_writer::PartitionWriter;
@@ -74,6 +75,10 @@ enum DataOutput {
 pub(crate) struct LocalPartitionWriter {
     output_index_file: String,
     data_output: DataOutput,
+    /// Compression state shared by every block this task writes; the per-partition
+    /// `BufBatchWriter`s borrow it (see [`ShuffleCodecContext`]). Retention is bounded:
+    /// released at spill/finish boundaries and whenever its workspace is oversized.
+    codec_context: ShuffleCodecContext,
     /// Start offset of each partition in the data file, plus a trailing entry
     /// with the total length so partition sizes are simple offset differences.
     /// Has `num_output_partitions + 1` elements.
@@ -135,12 +140,23 @@ impl LocalPartitionWriter {
         Ok(Self {
             output_index_file,
             data_output,
+            codec_context: ShuffleCodecContext::default(),
             offsets: vec![0u64; num_output_partitions + 1],
             batch_size,
             write_buffer_size,
             num_output_partitions,
             last_finish_pid: -1,
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn holds_zstd_cctx(&self) -> bool {
+        self.codec_context.holds_zstd_cctx()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn zstd_creation_count(&self) -> u32 {
+        self.codec_context.creation_count()
     }
 
     #[cfg(test)]
@@ -178,7 +194,13 @@ impl PartitionWriter for LocalPartitionWriter {
                 // `finish_all`.
                 for batch in iter.by_ref() {
                     let batch = batch?;
-                    writer.write(&batch, scratch, &metrics.encode_time, &metrics.write_time)?;
+                    writer.write(
+                        &batch,
+                        scratch,
+                        &mut self.codec_context,
+                        &metrics.encode_time,
+                        &metrics.write_time,
+                    )?;
                 }
             }
             DataOutput::Multi {
@@ -190,7 +212,13 @@ impl PartitionWriter for LocalPartitionWriter {
                 // Multi-partition output buffers each partition's batches into its own
                 // spill file. `finish_partition` later merges the spill files (and any
                 // remaining in-memory batches) into the shuffle output in partition order.
-                spill_writers[pid].write(iter, runtime, metrics, recycled_buffer)?;
+                spill_writers[pid].write(
+                    iter,
+                    &mut self.codec_context,
+                    runtime,
+                    metrics,
+                    recycled_buffer,
+                )?;
             }
         }
 
@@ -224,7 +252,13 @@ impl PartitionWriter for LocalPartitionWriter {
                 // flushed once in `finish_all`.
                 for batch in iter.by_ref() {
                     let batch = batch?;
-                    writer.write(&batch, scratch, &metrics.encode_time, &metrics.write_time)?;
+                    writer.write(
+                        &batch,
+                        scratch,
+                        &mut self.codec_context,
+                        &metrics.encode_time,
+                        &metrics.write_time,
+                    )?;
                 }
             }
             DataOutput::Multi {
@@ -258,18 +292,21 @@ impl PartitionWriter for LocalPartitionWriter {
                     write_buffer_size,
                     batch_size,
                 );
+                let codec_context = &mut self.codec_context;
                 let result: datafusion::common::Result<()> = (|| {
                     for batch in iter.by_ref() {
                         let batch = batch?;
                         buf_batch_writer.write(
                             &batch,
                             recycled_buffer,
+                            codec_context,
                             &metrics.encode_time,
                             &metrics.write_time,
                         )?;
                     }
                     buf_batch_writer.flush(
                         recycled_buffer,
+                        codec_context,
                         &metrics.encode_time,
                         &metrics.write_time,
                     )
@@ -290,7 +327,12 @@ impl PartitionWriter for LocalPartitionWriter {
         // single-partition writer this also finalizes the last coalesced batch.
         let final_offset = match &mut self.data_output {
             DataOutput::Single { writer, scratch } => {
-                writer.flush(scratch, &metrics.encode_time, &metrics.write_time)?;
+                writer.flush(
+                    scratch,
+                    &mut self.codec_context,
+                    &metrics.encode_time,
+                    &metrics.write_time,
+                )?;
                 writer.writer_stream_position()?
             }
             DataOutput::Multi { output_writer, .. } => {
@@ -322,7 +364,16 @@ impl PartitionWriter for LocalPartitionWriter {
         output_index.flush()?;
         write_timer.stop();
 
+        // The shuffle output is complete; nothing else encodes through this context.
+        self.codec_context.release_zstd();
+
         Ok(())
+    }
+
+    fn write_burst_complete(&mut self) {
+        // A spill burst just ended and the next encode may be a long time coming; the zstd
+        // workspace is native memory no reservation tracks, so don't sit on it.
+        self.codec_context.release_zstd();
     }
 }
 

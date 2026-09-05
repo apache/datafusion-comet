@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+mod codec_context;
 pub(crate) mod comet_partitioning;
 pub mod ipc;
 pub(crate) mod metrics;
@@ -30,9 +31,15 @@ mod spark_crc32c_hasher;
 pub mod spark_unsafe;
 pub(crate) mod writers;
 
+pub use codec_context::{ShuffleCodecContext, ShuffleDecodeContext};
 pub use comet_partitioning::CometPartitioning;
-pub use ipc::{read_ipc_compressed, read_ipc_compressed_validated};
-pub use remote_schema::{decode_remote_shuffle_batch, validate_remote_schema};
+pub use ipc::{
+    read_ipc_compressed, read_ipc_compressed_validated, read_ipc_compressed_validated_with,
+    read_ipc_compressed_with,
+};
+pub use remote_schema::{
+    decode_remote_shuffle_batch, decode_remote_shuffle_batch_with, validate_remote_schema,
+};
 pub use schema_align::SchemaAlignExec;
 pub use shuffle_writer::{ShuffleWriterDestination, ShuffleWriterExec};
 pub use writers::{CompressionCodec, ShuffleBlockWriter};

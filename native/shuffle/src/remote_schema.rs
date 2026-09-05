@@ -33,7 +33,23 @@ pub fn decode_remote_shuffle_batch(
     bytes: &[u8],
     expected_types: &[DataType],
 ) -> Result<RecordBatch> {
-    let batch = crate::read_ipc_compressed_validated(bytes)?;
+    reconcile_remote_batch(crate::read_ipc_compressed_validated(bytes)?, expected_types)
+}
+
+/// Same as [`decode_remote_shuffle_batch`] but decodes through a reusable decode context so
+/// the reader keeps its decompression state across blocks.
+pub fn decode_remote_shuffle_batch_with(
+    decode_context: &mut crate::ShuffleDecodeContext,
+    bytes: &[u8],
+    expected_types: &[DataType],
+) -> Result<RecordBatch> {
+    reconcile_remote_batch(
+        crate::read_ipc_compressed_validated_with(decode_context, bytes)?,
+        expected_types,
+    )
+}
+
+fn reconcile_remote_batch(batch: RecordBatch, expected_types: &[DataType]) -> Result<RecordBatch> {
     validate_remote_schema(&batch, expected_types)?;
     if batch
         .columns()

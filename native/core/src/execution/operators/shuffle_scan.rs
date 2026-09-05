@@ -20,7 +20,9 @@ use crate::{
     execution::{
         operators::ExecutionError,
         planner::TEST_EXEC_CONTEXT_ID,
-        shuffle::{decode_remote_shuffle_batch, read_ipc_compressed},
+        shuffle::{
+            decode_remote_shuffle_batch_with, read_ipc_compressed_with, ShuffleDecodeContext,
+        },
     },
     jvm_bridge::{jni_call, JVMClasses},
 };
@@ -60,8 +62,8 @@ pub struct ShuffleScanExec {
     pub data_types: Vec<DataType>,
     /// Schema of the shuffle output.
     pub schema: SchemaRef,
-    /// The current input batch, populated by get_next_batch() before poll_next().
-    pub batch: Arc<Mutex<Option<InputBatch>>>,
+    /// Input state shared with the streams cloned from this plan node.
+    input: Arc<Mutex<ScanInputState>>,
     /// Cache of plan properties.
     cache: Arc<PlanProperties>,
     /// Metrics collector.
@@ -107,7 +109,7 @@ impl ShuffleScanExec {
             exec_context_id,
             input_source,
             data_types,
-            batch: Arc::new(Mutex::new(None)),
+            input: Arc::new(Mutex::new(ScanInputState::default())),
             cache,
             metrics: metrics_set,
             baseline_metrics,
@@ -119,7 +121,7 @@ impl ShuffleScanExec {
 
     /// Feeds input batch into this scan. Only used in unit tests.
     pub fn set_input_batch(&mut self, input: InputBatch) {
-        *self.batch.try_lock().unwrap() = Some(input);
+        self.input.try_lock().unwrap().receive(input);
     }
 
     /// Pull next input batch from JVM. Called externally before poll_next()
@@ -131,16 +133,17 @@ impl ShuffleScanExec {
         }
         let mut timer = self.baseline_metrics.elapsed_compute().timer();
 
-        let mut current_batch = self.batch.try_lock().unwrap();
-        if current_batch.is_none() {
+        let mut input = self.input.try_lock().unwrap();
+        if input.batch.is_none() {
             let next_batch = Self::get_next(
                 self.exec_context_id,
                 self.input_source.as_ref().unwrap().as_obj(),
                 &self.data_types,
+                &mut input.decoder,
                 &self.decode_time,
                 self.requires_validation,
             )?;
-            *current_batch = Some(next_batch);
+            input.receive(next_batch);
         }
 
         timer.stop();
@@ -153,6 +156,7 @@ impl ShuffleScanExec {
         exec_context_id: i64,
         iter: &JObject,
         data_types: &[DataType],
+        decode_context: &mut ShuffleDecodeContext,
         decode_time: &Time,
         requires_validation: bool,
     ) -> Result<InputBatch, CometError> {
@@ -190,7 +194,12 @@ impl ShuffleScanExec {
 
             // Decode the compressed IPC data
             let mut timer = decode_time.timer();
-            let batch = match decode_shuffle_batch(slice, data_types, requires_validation) {
+            let batch = match decode_shuffle_batch(
+                decode_context,
+                slice,
+                data_types,
+                requires_validation,
+            ) {
                 Ok(batch) => batch,
                 Err(failure) => {
                     // Remote inputs must invalidate the failed shuffle generation even when
@@ -224,7 +233,31 @@ impl ShuffleScanExec {
     }
 }
 
+/// The batch that get_next_batch() hands to poll_next(), together with the decoder that
+/// produced it. Plan and stream clones share one instance behind a mutex.
+#[derive(Debug, Default)]
+struct ScanInputState {
+    /// The current input batch, populated by get_next_batch() before poll_next().
+    batch: Option<InputBatch>,
+    /// Decode state (zstd workspace) reused across this operator's shuffle blocks. Owning it
+    /// here scopes any retained workspace to the operator: it is released at EOF, or when the
+    /// plan's execution context drops, instead of persisting for the life of a decoding thread.
+    decoder: ShuffleDecodeContext,
+}
+
+impl ScanInputState {
+    /// Stores the next input for poll_next(). EOF is final for this input, so the decoder's
+    /// retained workspace is released here instead of living until the plan drops.
+    fn receive(&mut self, batch: InputBatch) {
+        if matches!(batch, InputBatch::EOF) {
+            self.decoder = ShuffleDecodeContext::default();
+        }
+        self.batch = Some(batch);
+    }
+}
+
 fn decode_shuffle_batch(
+    decode_context: &mut ShuffleDecodeContext,
     bytes: &[u8],
     expected_types: &[DataType],
     requires_validation: bool,
@@ -232,9 +265,12 @@ fn decode_shuffle_batch(
     if requires_validation {
         // Validate logical types before decoding dictionaries or normalizing nested fields.
         // Keep both validation and normalization failures inside get_next's recovery callback.
-        decode_remote_shuffle_batch(bytes, expected_types)
+        decode_remote_shuffle_batch_with(decode_context, bytes, expected_types)
     } else {
-        check_column_count(read_ipc_compressed(bytes)?, expected_types.len())
+        check_column_count(
+            read_ipc_compressed_with(decode_context, bytes)?,
+            expected_types.len(),
+        )
     }
 }
 
@@ -352,12 +388,9 @@ impl Stream for ShuffleScanStream {
 
     fn poll_next(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let mut timer = self.baseline_metrics.elapsed_compute().timer();
-        let mut scan_batch = self.shuffle_scan.batch.try_lock().unwrap();
+        let mut input = self.shuffle_scan.input.try_lock().unwrap();
 
-        let input_batch = &*scan_batch;
-        let input_batch = if let Some(batch) = input_batch {
-            batch
-        } else {
+        let Some(input_batch) = &input.batch else {
             timer.stop();
             return Poll::Pending;
         };
@@ -380,7 +413,7 @@ impl Stream for ShuffleScanStream {
             }
         };
 
-        *scan_batch = None;
+        input.batch = None;
 
         timer.stop();
 
@@ -396,10 +429,12 @@ impl RecordBatchStream for ShuffleScanStream {
 
 #[cfg(test)]
 mod tests {
-    use crate::execution::shuffle::{CompressionCodec, ShuffleBlockWriter};
+    use crate::execution::shuffle::{
+        read_ipc_compressed_validated_with, CompressionCodec, ShuffleBlockWriter,
+        ShuffleCodecContext, ShuffleDecodeContext,
+    };
     use arrow::array::{Int32Array, RecordBatchOptions, StringArray, UInt32Array};
     use arrow::datatypes::{DataType, Field, Schema};
-    use arrow::ipc::writer::CompressionContext;
     use arrow::record_batch::RecordBatch;
     use datafusion::physical_plan::metrics::Time;
     use std::io::Cursor;
@@ -408,13 +443,17 @@ mod tests {
     use crate::execution::shuffle::ipc::read_ipc_compressed;
 
     fn uncompressed_shuffle_payload(batch: &RecordBatch) -> Vec<u8> {
-        let writer = ShuffleBlockWriter::try_new(&batch.schema(), CompressionCodec::None).unwrap();
+        shuffle_payload(batch, CompressionCodec::None)
+    }
+
+    fn shuffle_payload(batch: &RecordBatch, codec: CompressionCodec) -> Vec<u8> {
+        let writer = ShuffleBlockWriter::try_new(&batch.schema(), codec).unwrap();
         let mut output = Cursor::new(Vec::new());
         writer
             .write_batch(
                 batch,
                 &mut output,
-                &mut CompressionContext::default(),
+                &mut ShuffleCodecContext::default(),
                 &Time::new(),
             )
             .unwrap();
@@ -450,7 +489,9 @@ mod tests {
         };
         payload[signed_flag] = 0;
 
-        let decoded = crate::execution::shuffle::read_ipc_compressed_validated(&payload).unwrap();
+        let decoded =
+            read_ipc_compressed_validated_with(&mut ShuffleDecodeContext::default(), &payload)
+                .unwrap();
         assert_eq!(decoded.num_columns(), 1);
         assert_eq!(decoded.column(0).data_type(), &DataType::UInt32);
         assert_eq!(
@@ -462,21 +503,52 @@ mod tests {
                 .values(),
             &[u32::MAX]
         );
-        let error = super::decode_shuffle_batch(&payload, &[DataType::Int32], true)
-            .unwrap_err()
-            .to_string();
+        let mut decode_context = ShuffleDecodeContext::default();
+        let error =
+            super::decode_shuffle_batch(&mut decode_context, &payload, &[DataType::Int32], true)
+                .unwrap_err()
+                .to_string();
         assert!(error.contains("type mismatch at column 0"), "{error}");
         assert!(error.contains("UInt32"), "{error}");
         assert!(error.contains("Int32"), "{error}");
 
         // The new logical validation is confined to remote inputs.
         assert_eq!(
-            super::decode_shuffle_batch(&payload, &[DataType::Int32], false)
+            super::decode_shuffle_batch(&mut decode_context, &payload, &[DataType::Int32], false)
                 .unwrap()
                 .column(0)
                 .data_type(),
             &DataType::UInt32
         );
+    }
+
+    /// EOF is final for a shuffle input, so the decoder workspace that served its blocks must
+    /// not stay retained for as long as the plan and its stream clones live.
+    #[test]
+    #[cfg_attr(miri, ignore)] // Miri cannot call FFI functions (zstd)
+    fn eof_releases_retained_decoder_workspace() {
+        use super::*;
+
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let batch =
+            RecordBatch::try_new(schema, vec![Arc::new(Int32Array::from(vec![1, 2, 3]))]).unwrap();
+        let payload = shuffle_payload(&batch, CompressionCodec::Zstd(1));
+
+        let mut state = ScanInputState::default();
+        let decoded =
+            super::decode_shuffle_batch(&mut state.decoder, &payload, &[DataType::Int32], false)
+                .unwrap();
+        assert!(state.decoder.holds_zstd_dctx());
+
+        // A decoded block keeps the workspace for the next one.
+        state.receive(InputBatch::new(decoded.columns().to_vec(), Some(3)));
+        assert!(state.decoder.holds_zstd_dctx());
+        assert!(matches!(state.batch, Some(InputBatch::Batch(_, 3))));
+
+        state.batch = None;
+        state.receive(InputBatch::EOF);
+        assert!(!state.decoder.holds_zstd_dctx());
+        assert!(matches!(state.batch, Some(InputBatch::EOF)));
     }
 
     #[test]
@@ -488,7 +560,9 @@ mod tests {
         )
         .unwrap();
         let payload = uncompressed_shuffle_payload(&batch);
-        let decoded = super::decode_shuffle_batch(&payload, &[], true).unwrap();
+        let decoded =
+            super::decode_shuffle_batch(&mut ShuffleDecodeContext::default(), &payload, &[], true)
+                .unwrap();
         assert_eq!(decoded.num_columns(), 0);
         assert_eq!(decoded.num_rows(), 3);
     }
@@ -533,7 +607,7 @@ mod tests {
             .write_batch(
                 &batch,
                 &mut buf,
-                &mut CompressionContext::default(),
+                &mut ShuffleCodecContext::default(),
                 &ipc_time,
             )
             .unwrap();
@@ -605,7 +679,7 @@ mod tests {
             .write_batch(
                 &dict_batch,
                 &mut buf,
-                &mut CompressionContext::default(),
+                &mut ShuffleCodecContext::default(),
                 &ipc_time,
             )
             .unwrap();
@@ -614,14 +688,24 @@ mod tests {
 
         // Local decoding preserves the wire encoding for get_next to unpack. Remote decoding
         // validates and unpacks first, so the same result can also be safely imported by the JVM.
-        let local =
-            super::decode_shuffle_batch(body, &[DataType::Int32, DataType::Utf8], false).unwrap();
+        let local = super::decode_shuffle_batch(
+            &mut ShuffleDecodeContext::default(),
+            body,
+            &[DataType::Int32, DataType::Utf8],
+            false,
+        )
+        .unwrap();
         assert!(matches!(
             local.column(1).data_type(),
             DataType::Dictionary(_, _)
         ));
-        let decoded =
-            super::decode_shuffle_batch(body, &[DataType::Int32, DataType::Utf8], true).unwrap();
+        let decoded = super::decode_shuffle_batch(
+            &mut ShuffleDecodeContext::default(),
+            body,
+            &[DataType::Int32, DataType::Utf8],
+            true,
+        )
+        .unwrap();
         assert_eq!(decoded.column(1).data_type(), &DataType::Utf8);
 
         // Create ShuffleScanExec with value types (Utf8, not Dictionary) — this is
@@ -690,8 +774,13 @@ mod tests {
         let declared = list_of_struct_type(true);
         let block = RecordBatch::try_from_iter([("payload", block_column)]).unwrap();
         let payload = uncompressed_shuffle_payload(&block);
-        let decoded =
-            super::decode_shuffle_batch(&payload, std::slice::from_ref(&declared), true).unwrap();
+        let decoded = super::decode_shuffle_batch(
+            &mut ShuffleDecodeContext::default(),
+            &payload,
+            std::slice::from_ref(&declared),
+            true,
+        )
+        .unwrap();
         let mut scan = ShuffleScanExec::new(
             super::super::super::planner::TEST_EXEC_CONTEXT_ID,
             None,
