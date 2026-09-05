@@ -35,6 +35,9 @@ include = [
 publish = false
 
 [dependencies]
+# Delta deletion-vector decoding (feature = "delta")
+roaring = { version = "0.11", optional = true }
+crc32fast = { version = "1.5", optional = true }
 arrow = { workspace = true }
 bytes = { workspace = true }
 parquet = { workspace = true, default-features = false, features = ["experimental", "arrow", "snap", "lz4", "zstd", "flate2-zlib-rs"] }
@@ -102,12 +105,22 @@ datafusion-functions-nested = { version = "54.1.0" }
 
 [features]
 backtrace = ["datafusion/backtrace"]
-default = ["hdfs-opendal"]
+default = ["hdfs-opendal", "delta"]
 hdfs-opendal = ["opendal", "object_store_opendal", "hdfs-sys"]
 jemalloc = ["tikv-jemallocator", "tikv-jemalloc-ctl"]
-# Delta Lake integration. When enabled, links the `comet-contrib-delta` crate
-# into `libcomet` and activates the `OpStruct::DeltaScan` dispatcher arm.
-# Default builds carry zero Delta surface.
+# Native Delta Lake scan support for the JVM-planned path (contrib/delta-spark).
+# In the default set: inert at runtime unless the contrib jar is on the
+# classpath (ServiceLoader) AND spark.comet.scan.delta.enabled is set, so it
+# cannot affect non-Delta scans. Opt out with --no-default-features for slim
+# builds; the planner arm then returns a clear "built without the delta
+# feature" error. Keeping it in the default set (about 82 KB of dylib) was
+# agreed in the review of apache/datafusion-comet#5365 so trying the contrib
+# needs only the jar and the config, not a custom native build.
+delta = ["dep:roaring", "dep:crc32fast"]
+# Delta Lake integration via delta-kernel-rs. When enabled, links the
+# `comet-contrib-delta` crate into `libcomet` and activates the contrib scan
+# dispatcher arm. Default builds carry zero delta-kernel surface; the `delta`
+# feature above has no kernel dependency.
 contrib-delta = ["dep:comet-contrib-delta"]
 
 # exclude optional packages from cargo machete verifications

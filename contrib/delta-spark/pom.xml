@@ -1,0 +1,210 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
+
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>org.apache.datafusion</groupId>
+    <artifactId>comet-parent-spark${spark.version.short}_${scala.binary.version}</artifactId>
+    <version>1.1.0-SNAPSHOT</version>
+    <relativePath>../../pom.xml</relativePath>
+  </parent>
+
+  <artifactId>comet-contrib-delta-spark${spark.version.short}_${scala.binary.version}</artifactId>
+  <name>comet-contrib-delta</name>
+
+  <properties>
+    <!-- This module sits one directory deeper than common/spark, so the default
+         jni.dir (basedir/../native) would point at contrib/native. -->
+    <jni.dir>${project.basedir}/../../native/target/debug</jni.dir>
+    <maven.deploy.skip>false</maven.deploy.skip>
+  </properties>
+
+  <dependencies>
+    <dependency>
+      <groupId>org.apache.datafusion</groupId>
+      <artifactId>comet-spark-spark${spark.version.short}_${scala.binary.version}</artifactId>
+      <version>${project.version}</version>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.delta</groupId>
+      <artifactId>${delta.artifact}_${scala.binary.version}</artifactId>
+      <version>${delta.version}</version>
+      <scope>provided</scope>
+      <exclusions>
+        <!-- Spark provides jcl-over-slf4j; a transitive commons-logging would duplicate it
+             and trip the BanDuplicateClasses enforcer rule. -->
+        <exclusion>
+          <groupId>commons-logging</groupId>
+          <artifactId>commons-logging</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.spark</groupId>
+      <artifactId>spark-sql_${scala.binary.version}</artifactId>
+      <scope>provided</scope>
+    </dependency>
+    <!-- The shaded comet-spark jar bundles+relocates org.apache.arrow:* but NOT its
+         com.google.flatbuffers dependency (it is excluded from relocation to keep JNI
+         lookups working), so consumers must supply it. -->
+    <dependency>
+      <groupId>com.google.flatbuffers</groupId>
+      <artifactId>flatbuffers-java</artifactId>
+      <version>25.2.10</version>
+      <scope>test</scope>
+    </dependency>
+    <!-- Comet's parent excludes Arrow from Spark's transitive deps (its shaded jar carries a
+         relocated copy), but spark-sql's own columnar classes still reference unshaded Arrow
+         at runtime in tests. -->
+    <dependency>
+      <groupId>org.apache.arrow</groupId>
+      <artifactId>arrow-vector</artifactId>
+      <version>${arrow.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.arrow</groupId>
+      <artifactId>arrow-memory-unsafe</artifactId>
+      <version>${arrow.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.arrow</groupId>
+      <artifactId>arrow-c-data</artifactId>
+      <version>${arrow.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <!-- parquet is provided-scope repo-wide (parquet.maven.scope), so tests must bring it
+         explicitly, same as the spark module. -->
+    <dependency>
+      <groupId>org.apache.parquet</groupId>
+      <artifactId>parquet-column</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.parquet</groupId>
+      <artifactId>parquet-hadoop</artifactId>
+    </dependency>
+    <!-- Test dependencies -->
+    <dependency>
+      <groupId>org.apache.datafusion</groupId>
+      <artifactId>comet-spark-spark${spark.version.short}_${scala.binary.version}</artifactId>
+      <version>${project.version}</version>
+      <type>test-jar</type>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.scalatest</groupId>
+      <artifactId>scalatest_${scala.binary.version}</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <!-- MinIO-backed integration coverage for cross-bucket Delta scans (CometDeltaS3Suite),
+         same GAVs as the spark module's CometS3TestBase / ParquetReadFromS3Suite; versions and
+         the docker-java transitive override come from the root pom's dependencyManagement. -->
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>minio</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>software.amazon.awssdk</groupId>
+      <artifactId>s3</artifactId>
+    </dependency>
+    <!-- Provides the org.apache.hadoop.fs.s3a.S3AFileSystem class (via its hadoop-aws transitive
+         dependency) so s3a:// paths resolve on the test classpath; same GAV as the spark
+         module's own test dependency (spark/pom.xml), version/scope/exclusions from the root
+         pom's dependencyManagement. -->
+    <dependency>
+      <groupId>org.apache.spark</groupId>
+      <artifactId>spark-hadoop-cloud_${scala.binary.version}</artifactId>
+      <classifier>tests</classifier>
+    </dependency>
+    <!-- delta-spark 4.x uses guava caches at runtime; Spark 4.1's test classpath no longer
+         provides it transitively. -->
+    <dependency>
+      <groupId>com.google.guava</groupId>
+      <artifactId>guava</artifactId>
+      <version>${guava.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.scalatestplus</groupId>
+      <artifactId>junit-4-13_${scala.binary.version}</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.spark</groupId>
+      <artifactId>spark-sql_${scala.binary.version}</artifactId>
+      <version>${spark.version}</version>
+      <type>test-jar</type>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.spark</groupId>
+      <artifactId>spark-core_${scala.binary.version}</artifactId>
+      <version>${spark.version}</version>
+      <type>test-jar</type>
+      <scope>test</scope>
+      <exclusions>
+        <!-- Spark provides jcl-over-slf4j; hadoop-client-runtime's commons-logging would
+             duplicate it and trip the BanDuplicateClasses enforcer rule. -->
+        <exclusion>
+          <groupId>commons-logging</groupId>
+          <artifactId>commons-logging</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.spark</groupId>
+      <artifactId>spark-catalyst_${scala.binary.version}</artifactId>
+      <version>${spark.version}</version>
+      <type>test-jar</type>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>net.alchim31.maven</groupId>
+        <artifactId>scala-maven-plugin</artifactId>
+      </plugin>
+      <plugin>
+        <groupId>org.scalatest</groupId>
+        <artifactId>scalatest-maven-plugin</artifactId>
+      </plugin>
+    </plugins>
+  </build>
+
+  <profiles>
+    <!-- Mirror the root pom's "release" profile: the base jni.dir above is
+         path-adjusted for this module's extra directory depth, so it must be
+         re-adjusted here too, or activating -Prelease from the root would be
+         silently ignored and this module would keep loading the debug build. -->
+    <profile>
+      <id>release</id>
+      <properties>
+        <jni.dir>${project.basedir}/../../native/target/release</jni.dir>
+      </properties>
+    </profile>
+  </profiles>
+
+</project>

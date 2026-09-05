@@ -323,6 +323,41 @@ pub(super) fn get_config_trimmed<'a>(
     get_config(configs, bucket, property).map(|s| s.trim())
 }
 
+/// Every `fs.s3a.*` property suffix (without the `fs.s3a.` prefix) this module resolves via
+/// [`get_config`]/[`get_config_trimmed`], i.e. every Hadoop S3A config key native's S3 client
+/// actually reads. Kept as an explicit, checked-in constant -- rather than only living implicitly
+/// as scattered string literals at call sites -- so it can be asserted against two things: (1) the
+/// `native_s3a_config_properties_matches_call_sites` test below, which mechanically re-derives the
+/// same set from this file's own source text and fails loudly if a call site is added/removed/
+/// retyped without updating this list; and (2) `DeltaScanSupport.scala`'s `AllS3ConfigKeys` in the
+/// `contrib/delta-spark` module, which the discovery-harness tests in `DeltaScanContribSuite`
+/// assert is a superset of this exact list.
+///
+/// SYNC NOTE: keep this list and `AllS3ConfigKeys`
+/// (`contrib/delta-spark/src/main/scala/org/apache/comet/contrib/delta/DeltaScanSupport.scala`)
+/// in sync manually -- Scala cannot reference this Rust constant directly, so
+/// `DeltaScanContribSuite`'s discovery-harness test carries its own hand-copied duplicate of
+/// these same literal values (with a sync-note pointing back here) and asserts `AllS3ConfigKeys`
+/// is a superset of it. Adding a `get_config`/`get_config_trimmed` call site here for a new
+/// property MUST add the corresponding `fs.s3a.<property>` entry on BOTH sides, or one of the two
+/// discovery-harness tests will fail. `#[cfg(test)]`-only: nothing in the production build reads
+/// this constant, only the mechanical self-check test below.
+#[cfg(test)]
+pub(super) const NATIVE_S3A_CONFIG_PROPERTIES: &[&str] = &[
+    "endpoint.region",
+    "path.style.access",
+    "endpoint",
+    "requester.pays.enabled",
+    "comet.credential.provider.class",
+    "aws.credentials.provider",
+    "access.key",
+    "secret.key",
+    "session.token",
+    "assumed.role.credentials.provider",
+    "assumed.role.arn",
+    "assumed.role.session.name",
+];
+
 /// Activation key (without `fs.s3a.` prefix) naming the vendor `CometS3CredentialProvider` FQCN.
 /// Per-bucket override is honored via [`get_config_trimmed`].
 const PROVIDER_CLASS_PROPERTY: &str = "comet.credential.provider.class";
@@ -873,9 +908,96 @@ impl CredentialProviderMetadata {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
     use std::sync::atomic::{AtomicI32, Ordering};
 
     use super::*;
+
+    /// Discovery-harness test (see `NATIVE_S3A_CONFIG_PROPERTIES`'s doc): mechanically re-derives
+    /// the set of `fs.s3a.*` property suffixes this file actually resolves by scanning this
+    /// file's OWN source text (via `include_str!`) for every `get_config(configs, bucket, ...)`/
+    /// `get_config_trimmed(configs, bucket, ...)` call site, resolving an identifier argument
+    /// (e.g. `PROVIDER_CLASS_PROPERTY`) through its own `const NAME: &str = "..."` definition, and
+    /// asserts the result is EXACTLY `NATIVE_S3A_CONFIG_PROPERTIES`. This fails loudly the moment
+    /// a call site is added, removed, or its literal changes without updating that constant --
+    /// which is exactly the class of bug (a config key silently added to one side of the
+    /// Scala/Rust boundary but not the other) that let a Hadoop-side resolution rule diverge
+    /// unnoticed in the round-15 SSE-C finding.
+    ///
+    /// The `configs, property` call inside `get_config_trimmed`'s own body (a passthrough of its
+    /// own `property` parameter, not a call site naming a fixed config key) is deliberately
+    /// excluded by name.
+    #[test]
+    fn native_s3a_config_properties_matches_call_sites() {
+        let full_source = include_str!("s3.rs");
+        // Scan only the non-test portion of this file: the test module below (this very test)
+        // necessarily contains the pattern strings themselves as strings, which would otherwise
+        // make the scan match itself and capture garbage.
+        let test_mod_start = full_source
+            .find("#[cfg(test)]\nmod tests {")
+            .expect("this file must contain a `#[cfg(test)] mod tests {` block");
+        let source = &full_source[..test_mod_start];
+        let mut found: BTreeSet<String> = BTreeSet::new();
+
+        for pattern in [
+            "get_config_trimmed(configs, bucket, ",
+            "get_config(configs, bucket, ",
+        ] {
+            let mut search_start = 0usize;
+            while let Some(rel_idx) = source[search_start..].find(pattern) {
+                let start = search_start + rel_idx + pattern.len();
+                let end = start
+                    + source[start..]
+                        .find(')')
+                        .expect("unterminated get_config(_trimmed) call in source scan");
+                let arg = source[start..end].trim();
+                search_start = end + 1;
+
+                if arg == "property" {
+                    // get_config_trimmed's own passthrough of its `property` parameter -- not a
+                    // call site naming a fixed config key.
+                    continue;
+                }
+
+                let literal = if let Some(stripped) = arg.strip_prefix('"') {
+                    stripped
+                        .strip_suffix('"')
+                        .unwrap_or_else(|| panic!("malformed string literal argument: {arg}"))
+                        .to_string()
+                } else {
+                    // Identifier argument (e.g. PROVIDER_CLASS_PROPERTY): resolve via its own
+                    // `const NAME: &str = "value";` definition elsewhere in this file.
+                    let const_decl = format!("const {arg}: &str = \"");
+                    let decl_start = source.find(&const_decl).unwrap_or_else(|| {
+                        panic!(
+                            "no `const {arg}: &str = \"...\";` definition found for identifier \
+                             argument passed to get_config/get_config_trimmed -- update this \
+                             test's resolution logic or the source"
+                        )
+                    }) + const_decl.len();
+                    let decl_end = source[decl_start..]
+                        .find('"')
+                        .expect("unterminated const string literal")
+                        + decl_start;
+                    source[decl_start..decl_end].to_string()
+                };
+                found.insert(literal);
+            }
+        }
+
+        let expected: BTreeSet<String> = NATIVE_S3A_CONFIG_PROPERTIES
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+
+        assert_eq!(
+            found, expected,
+            "NATIVE_S3A_CONFIG_PROPERTIES must exactly match every property name passed to \
+             get_config/get_config_trimmed in this file -- update the constant (and keep \
+             DeltaScanSupport.scala's AllS3ConfigKeys in sync, see that constant's SYNC NOTE) \
+             when a call site changes"
+        );
+    }
 
     /// Test configuration builder for easier setup Hadoop configurations
     #[derive(Debug, Default)]
