@@ -33,7 +33,7 @@ use datafusion_physical_expr_adapter::{
     replace_columns_with_literals, DefaultPhysicalExprAdapterFactory, PhysicalExprAdapter,
     PhysicalExprAdapterFactory,
 };
-use parquet::arrow::PARQUET_FIELD_ID_META_KEY;
+use parquet::{arrow::PARQUET_FIELD_ID_META_KEY, variant::VariantType};
 use std::collections::{HashMap, HashSet};
 use std::fmt::{self, Display};
 use std::hash::{Hash, Hasher};
@@ -577,6 +577,7 @@ impl PhysicalExprAdapter for SparkPhysicalExprAdapter {
                 self.wrap_all_type_mismatches(expr)?
             }
         };
+        let expr = self.wrap_direct_variant_column(expr)?;
 
         // For case-insensitive mode: remap column names from logical back to
         // original physical names. The default adapter was given a remapped
@@ -605,6 +606,37 @@ impl PhysicalExprAdapter for SparkPhysicalExprAdapter {
 }
 
 impl SparkPhysicalExprAdapter {
+    /// The default adapter leaves an identical physical/logical Field as a bare Column. Variant
+    /// still needs normalization because a canonical unshredded value may already have that exact
+    /// marked layout.
+    fn wrap_direct_variant_column(
+        &self,
+        expr: Arc<dyn PhysicalExpr>,
+    ) -> DataFusionResult<Arc<dyn PhysicalExpr>> {
+        let Some(column) = expr.downcast_ref::<Column>() else {
+            return Ok(expr);
+        };
+        let Ok(logical_field) = self.logical_file_schema.field_with_name(column.name()) else {
+            return Ok(expr);
+        };
+        if !logical_field.has_valid_extension_type::<VariantType>() {
+            return Ok(expr);
+        }
+        let Some(physical_field) = self.physical_file_schema.fields().get(column.index()) else {
+            return Ok(expr);
+        };
+
+        Ok(Arc::new(
+            CometCastColumnExpr::try_new(
+                expr,
+                Arc::clone(physical_field),
+                Arc::new(logical_field.clone()),
+                None,
+            )?
+            .with_parquet_options(self.parquet_options.clone()),
+        ))
+    }
+
     /// Wrap ALL Column expressions that have type mismatches with CometCastColumnExpr.
     /// This is the fallback path when the default adapter fails (e.g., for complex
     /// nested type casts like List<Struct> or Map). Uses `spark_parquet_convert`
@@ -650,7 +682,9 @@ impl SparkPhysicalExprAdapter {
                         Arc::clone(&e)
                     };
 
-                    if logical_field.data_type() != physical_field.data_type() {
+                    if logical_field.has_valid_extension_type::<VariantType>()
+                        || logical_field.data_type() != physical_field.data_type()
+                    {
                         // Mirror the same string/binary -> non-string/binary rejection in
                         // `replace_with_spark_cast`; this branch is reached when the default
                         // adapter rejected the cast and we'd otherwise build a CometCastColumnExpr
@@ -708,6 +742,22 @@ impl SparkPhysicalExprAdapter {
                 Arc::new(Field::new(cast.target_field().name(), child_type, true))
             };
             let physical_type = input_field.data_type();
+
+            if cast
+                .target_field()
+                .has_valid_extension_type::<VariantType>()
+            {
+                let comet_cast: Arc<dyn PhysicalExpr> = Arc::new(
+                    CometCastColumnExpr::try_new(
+                        child,
+                        input_field,
+                        Arc::clone(cast.target_field()),
+                        None,
+                    )?
+                    .with_parquet_options(self.parquet_options.clone()),
+                );
+                return Ok(Transformed::yes(comet_cast));
+            }
 
             // Identity cast: DataFusion's default adapter inserts a CastExpr
             // whenever the logical and physical Arrow Fields differ in any
@@ -1161,6 +1211,7 @@ impl PhysicalExpr for RejectOnNonEmpty {
 
 #[cfg(test)]
 mod test {
+    use crate::parquet::cast_column::CometCastColumnExpr;
     use crate::parquet::parquet_support::SparkParquetOptions;
     use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
     use arrow::array::UInt32Array;
@@ -1169,7 +1220,7 @@ mod test {
         Int64Array, StringArray, TimestampMicrosecondArray,
     };
     use arrow::datatypes::SchemaRef;
-    use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::datatypes::{DataType, Field, Fields, Schema};
     use arrow::record_batch::RecordBatch;
     use datafusion::common::DataFusionError;
     use datafusion::datasource::listing::PartitionedFile;
@@ -1177,6 +1228,8 @@ mod test {
     use datafusion::datasource::source::DataSourceExec;
     use datafusion::execution::object_store::ObjectStoreUrl;
     use datafusion::execution::TaskContext;
+    use datafusion::physical_expr::expressions::Column;
+    use datafusion::physical_expr::PhysicalExpr;
     use datafusion::physical_plan::ExecutionPlan;
     use datafusion_comet_spark_expr::test_common::file_util::get_temp_filename;
     use datafusion_comet_spark_expr::EvalMode;
@@ -1184,6 +1237,7 @@ mod test {
     use futures::StreamExt;
     use parquet::arrow::ArrowWriter;
     use parquet::arrow::PARQUET_FIELD_ID_META_KEY;
+    use parquet::variant::VariantType;
     use std::collections::HashMap;
     use std::fs::File;
     use std::sync::Arc;
@@ -1934,5 +1988,44 @@ mod test {
             "id-resolved read must not raise a duplicate-field error: {:?}",
             rewritten.err()
         );
+    }
+
+    #[test]
+    fn marked_variant_column_is_wrapped_after_unicode_name_remap() {
+        let storage = DataType::Struct(Fields::from(vec![
+            Field::new("value", DataType::Binary, false),
+            Field::new("metadata", DataType::Binary, false),
+        ]));
+        let logical = Arc::new(Schema::new(vec![Field::new(
+            "münchen",
+            storage.clone(),
+            true,
+        )
+        .with_extension_type(VariantType)]));
+        let physical = Arc::new(Schema::new(vec![
+            Field::new("MÜNCHEN", storage, true).with_extension_type(VariantType)
+        ]));
+        let mut options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        options.case_sensitive = false;
+        let adapter = SparkPhysicalExprAdapterFactory::new(options, None)
+            .create(Arc::clone(&logical), Arc::clone(&physical))
+            .unwrap();
+
+        let expr: Arc<dyn PhysicalExpr> = Arc::new(Column::new("münchen", 0));
+        let rewritten = adapter.rewrite(expr).unwrap();
+        let cast = rewritten
+            .downcast_ref::<CometCastColumnExpr>()
+            .expect("marked Variant must retain its normalization wrapper");
+        assert_eq!(
+            cast.children()[0]
+                .downcast_ref::<Column>()
+                .expect("normalization input must remain a column")
+                .name(),
+            "MÜNCHEN"
+        );
+        assert!(rewritten
+            .return_field(&physical)
+            .unwrap()
+            .has_valid_extension_type::<VariantType>());
     }
 }
