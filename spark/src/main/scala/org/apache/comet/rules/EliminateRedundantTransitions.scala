@@ -22,15 +22,17 @@ package org.apache.comet.rules
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.util.sideBySide
-import org.apache.spark.sql.comet.{CometCollectLimitExec, CometColumnarToRowExec, CometMapInBatchExec, CometNativeColumnarToRowExec, CometNativeWriteExec, CometPlan, CometSparkToColumnarExec}
+import org.apache.spark.sql.comet.{CometCollectLimitExec, CometColumnarToRowExec, CometMapInBatchExec, CometNativeColumnarToRowExec, CometNativeWriteExec, CometPlan, CometRowViewWriteFilesExec, CometSparkToColumnarExec}
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.comet.shims.{MapInBatchInfo, ShimCometMapInBatch}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, RowToColumnarExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.QueryStageExec
+import org.apache.spark.sql.execution.datasources.WriteFilesExec
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
+import org.apache.spark.sql.types.{ArrayType, DataType, MapType, StructType}
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, withInfo}
 import org.apache.comet.serde.NativeOptIn
 import org.apache.comet.shims.ShimSQLConf
 
@@ -91,6 +93,15 @@ case class EliminateRedundantTransitions(session: SparkSession)
       // Write should be final operation in the plan
       case ColumnarToRowExec(nativeWrite: CometNativeWriteExec) =>
         nativeWrite
+      // Spark's file writers only ever read the row they are handed, so the columnar-to-row
+      // transition below a write can be dropped entirely and the writer driven from the Arrow
+      // batches directly. `transformUp` has already rewritten the child into one of the Comet
+      // transitions by the time this arm is visited.
+      case w: WriteFilesExec if writeRowViewEligible(w) =>
+        columnarChildForWrite(w)
+          .map(child => CometRowViewWriteFilesExec(child))
+          .getOrElse(w)
+
       case c @ ColumnarToRowExec(child) if hasCometNativeChild(child) =>
         val op = createColumnarToRowExec(child)
         if (c.logicalLink.isEmpty) {
@@ -159,6 +170,82 @@ case class EliminateRedundantTransitions(session: SparkSession)
       case other =>
         other
     }
+  }
+
+  /**
+   * Whether the per-task write of `w` can be driven from Arrow batches by
+   * [[CometRowViewWriteFilesExec]] rather than from materialized `UnsafeRow`s.
+   *
+   * The rows that reach Spark's `OutputWriter` are then reused, mutable views over the Arrow
+   * buffers, which is only correct for a writer that finishes with a row before asking for the
+   * next one. Three things establish that:
+   *
+   *   - Spark 4.0+, where `V1WritesUtils.getWriteFilesOpt` matches the `WriteFilesExecBase`
+   *     trait. On 3.4 / 3.5 it matches the concrete `WriteFilesExec` case class, so a replacement
+   *     node is invisible to `FileFormatWriter` and the write would silently take a path that
+   *     calls `doExecute` on it.
+   *   - `spark.sql.maxConcurrentOutputFileWriters` at its default of 0. Above 0, `V1Writes`
+   *     plants no sort (`V1WritesUtils.getSortOrder`) and `FileFormatWriter` picks
+   *     `DynamicPartitionDataConcurrentWriter`, which both requires `UnsafeRow` for its spill and
+   *     would leave `DynamicPartitionDataSingleWriter` with unsorted input.
+   *   - one of Spark's own `FileFormat`s, whose `OutputWriter`s encode each row on the spot
+   *     (Parquet through `ParquetWriteSupport`, ORC through `OrcSerializer` into a
+   *     `VectorizedRowBatch`, the text formats directly). A third-party format is free to buffer
+   *     the `InternalRow` it is handed.
+   *
+   * Note that no check for a `SortExec` between the write and the transition is needed. This arm
+   * only rewrites `w.child`, so a write whose required ordering was satisfied by a Spark
+   * `SortExec` rather than a Comet one simply does not match.
+   */
+  private def writeRowViewEligible(w: WriteFilesExec): Boolean =
+    CometConf.COMET_EXEC_WRITE_ROW_VIEW_ENABLED.get() &&
+      isSpark40Plus &&
+      w.conf.maxConcurrentOutputFileWriters == 0 &&
+      w.fileFormat.getClass.getName.startsWith("org.apache.spark.sql.execution.datasources.")
+
+  /**
+   * The Comet columnar producer under a write's columnar-to-row transition, or `None` when there
+   * is no transition to strip or the write would not gain from removing it.
+   *
+   * How much there is to gain depends on how many projections the write performs per row.
+   *
+   * A partitioned or bucketed write performs two: the columnar-to-row transition, and
+   * `BaseDynamicPartitionDataWriter.writeRecord`'s `getOutputRow`, which exists only to strip the
+   * partition and bucket columns. Both are removed here, and that is worth doing whatever the
+   * schema: `CometWriteRowViewBenchmark` measures 5% on a flat 10-column schema and 15% once a
+   * struct, array or map is present, against a 1% noise floor.
+   *
+   * An unpartitioned write performs only the transition, so a flat schema is declined. There the
+   * projection is a generated fixed-width copy that measures inside the noise of a Parquet write,
+   * which does not pay for putting a reused mutable row in front of Spark's writer. The saving
+   * becomes real once a complex type is in play, because the projection then has to build nested
+   * `UnsafeRow` / `UnsafeArrayData` with offset-and-length bookkeeping that the writer
+   * immediately walks back out.
+   *
+   * Partition and bucket columns never count towards the complex-type test: they are stripped
+   * before the `OutputWriter` sees the row.
+   */
+  private def columnarChildForWrite(w: WriteFilesExec): Option[SparkPlan] = {
+    val columnarChild = w.child match {
+      case CometColumnarToRowExec(child) => Some(child)
+      case CometNativeColumnarToRowExec(child) => Some(child)
+      case _ => None
+    }
+    val removesWriterProjection = w.partitionColumns.nonEmpty || w.bucketSpec.isDefined
+    columnarChild.filter { child =>
+      removesWriterProjection || {
+        val partitionIds = w.partitionColumns.map(_.exprId).toSet
+        child.output
+          .filterNot(a => partitionIds.contains(a.exprId))
+          .exists(a => isComplex(a.dataType))
+      }
+    }
+  }
+
+  /** Whether a type is a struct, array or map. */
+  private def isComplex(dataType: DataType): Boolean = dataType match {
+    case _: StructType | _: ArrayType | _: MapType => true
+    case _ => false
   }
 
   private def hasCometNativeChild(op: SparkPlan): Boolean = {
