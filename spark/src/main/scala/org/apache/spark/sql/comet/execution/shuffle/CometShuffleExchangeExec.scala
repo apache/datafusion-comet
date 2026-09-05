@@ -148,7 +148,10 @@ case class CometShuffleExchangeExec(
     if (inputRDD.getNumPartitions == 0) {
       Future.successful(null)
     } else {
-      sparkContext.submitMapStage(shuffleDependency)
+      CometCelebornShuffleMaterialization.forDependency(shuffleDependency) match {
+        case Some(materialization) => materialization
+        case None => sparkContext.submitMapStage(shuffleDependency)
+      }
     }
   }
 
@@ -167,7 +170,13 @@ case class CometShuffleExchangeExec(
   }
 
   // TODO: add `override` keyword after dropping Spark-3.x supports
-  def shuffleId: Int = getShuffleId(shuffleDependency)
+  def shuffleId: Int = {
+    val current = shuffleDependency match {
+      case comet: CometShuffleDependency[Int @unchecked, _, _] => comet.currentShuffleDependency
+      case other => other
+    }
+    getShuffleId(current)
+  }
 
   /**
    * A [[ShuffleDependency]] that will partition rows of its child based on the partitioning
@@ -882,19 +891,31 @@ object CometShuffleExchangeExec
           None)
     }
 
+    // The remote stage can finish some maps before an oversized row requires a complete local
+    // replacement. Keep output statistics separate from the public counters so neither those
+    // completed maps nor late remote updates inflate the selected shuffle's AQE statistics.
+    val outputMetrics = thinRDD.context.env.shuffleManager match {
+      case _: CometCelebornShuffleManager if numParts > 0 =>
+        Some(CometShuffleOutputMetrics(thinRDD.context, metrics))
+      case _ => None
+    }
+    val destinationMetrics = metrics ++ outputMetrics.toSeq.flatMap(_.metrics)
+
     new CometShuffleDependency[Int, ColumnarBatch, ColumnarBatch](
       thinRDD,
       serializer = serializer,
-      shuffleWriterProcessor = ShuffleExchangeExec.createShuffleWriteProcessor(metrics),
+      shuffleWriterProcessor =
+        ShuffleExchangeExec.createShuffleWriteProcessor(destinationMetrics),
       shuffleType = CometNativeShuffle,
       partitioner = partitioner,
       decodeTime = metrics("decode_time"),
       outputPartitioning = Some(outputPartitioning),
       outputAttributes = outputAttributes,
-      shuffleWriteMetrics = metrics,
+      shuffleWriteMetrics = destinationMetrics,
       numParts = numParts,
       rangePartitionBounds = rangePartitionBounds,
-      nativeShuffleSpec = Some(augmentedSpec))
+      nativeShuffleSpec = Some(augmentedSpec),
+      outputMetrics = outputMetrics)
   }
 
   /**

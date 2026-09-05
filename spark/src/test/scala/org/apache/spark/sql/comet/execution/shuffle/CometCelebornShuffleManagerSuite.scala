@@ -19,6 +19,8 @@
 
 package org.apache.spark.sql.comet.execution.shuffle
 
+import java.util.concurrent.{CountDownLatch, Executors, TimeUnit}
+
 import scala.collection.mutable
 
 import org.scalatest.funsuite.AnyFunSuite
@@ -363,6 +365,157 @@ class CometCelebornShuffleManagerSuite extends AnyFunSuite {
     assert(coordinator.claimMapAttempt(ClaimCelebornMapAttempt(11, stageId, 1, 0, 0)).authorized)
   }
 
+  test("an accepted size fallback abandons the remote shuffle and invalidates every owner") {
+    val sparkCoordinator = new OutputCommitCoordinator(new SparkConf(false), true)
+    val requestedFallbacks = mutable.ArrayBuffer.empty[Int]
+    val coordinator = new CelebornShuffleGenerationCoordinator(
+      sparkCoordinator,
+      _ => true,
+      shuffleId => {
+        requestedFallbacks += shuffleId
+        true
+      })
+    val shuffleId = 13
+    val stageId = 77
+    startStage(sparkCoordinator, stageId, numMappers = 2)
+    val generation = PrepareCelebornShuffleGeneration(shuffleId, 99, stageId, 0, 2)
+    assert(coordinator.prepareGeneration(generation))
+    val validations = (0 until 2).map { mapId =>
+      val owner =
+        coordinator.claimMapAttempt(ClaimCelebornMapAttempt(shuffleId, stageId, 0, mapId, 0))
+      ValidateCelebornMapAttempt(shuffleId, 99, stageId, 0, mapId, 0, owner.epoch)
+    }
+    assert(validations.forall(coordinator.validateMapAttempt))
+
+    assert(coordinator.requestLocalShuffle(RequestLocalCometShuffle(validations.head, 100L)))
+    assert(requestedFallbacks.toSeq == Seq(shuffleId))
+    assert(validations.forall(validation => !coordinator.validateMapAttempt(validation)))
+    assert(!coordinator.requestLocalShuffle(RequestLocalCometShuffle(validations.last, 101L)))
+    assert(
+      !coordinator.prepareGeneration(generation.copy(celebornShuffleId = 100, stageAttempt = 1)))
+    assert(
+      !coordinator
+        .claimMapAttempt(ClaimCelebornMapAttempt(shuffleId, stageId, 0, 0, 1))
+        .authorized)
+    assert(
+      !coordinator
+        .claimMapAttempt(ClaimCelebornMapAttempt(shuffleId, stageId, 1, 0, 0))
+        .authorized)
+    assert(requestedFallbacks.toSeq == Seq(shuffleId))
+
+    coordinator.unregisterShuffle(shuffleId)
+    assert(
+      coordinator.prepareGeneration(generation.copy(celebornShuffleId = 101, stageAttempt = 2)))
+  }
+
+  test("a declined size fallback preserves the remote generation and can be requested again") {
+    val sparkCoordinator = new OutputCommitCoordinator(new SparkConf(false), true)
+    var acceptFallback = false
+    var requests = 0
+    val coordinator = new CelebornShuffleGenerationCoordinator(
+      sparkCoordinator,
+      _ => true,
+      _ => {
+        requests += 1
+        acceptFallback
+      })
+    val stageId = 80
+    startStage(sparkCoordinator, stageId, numMappers = 1)
+    assert(
+      coordinator.prepareGeneration(PrepareCelebornShuffleGeneration(16, 105, stageId, 0, 1)))
+    val remote = coordinator.claimMapAttempt(ClaimCelebornMapAttempt(16, stageId, 0, 0, 0))
+    val validation = ValidateCelebornMapAttempt(16, 105, stageId, 0, 0, 0, remote.epoch)
+    val request = RequestLocalCometShuffle(validation, 105L)
+
+    assert(!coordinator.requestLocalShuffle(request))
+    assert(coordinator.validateMapAttempt(validation))
+    acceptFallback = true
+    assert(coordinator.requestLocalShuffle(request))
+    assert(!coordinator.validateMapAttempt(validation))
+    assert(requests == 2)
+  }
+
+  test("concurrent size reports invoke the active fallback once") {
+    val sparkCoordinator = new OutputCommitCoordinator(new SparkConf(false), true)
+    val requestedFallbacks = mutable.ArrayBuffer.empty[Int]
+    val coordinator = new CelebornShuffleGenerationCoordinator(
+      sparkCoordinator,
+      _ => true,
+      shuffleId => {
+        requestedFallbacks += shuffleId
+        true
+      })
+    val stageId = 78
+    startStage(sparkCoordinator, stageId, numMappers = 2)
+    assert(
+      coordinator.prepareGeneration(PrepareCelebornShuffleGeneration(14, 102, stageId, 0, 2)))
+    val requests = (0 until 2).map { mapId =>
+      val owner = coordinator.claimMapAttempt(ClaimCelebornMapAttempt(14, stageId, 0, mapId, 0))
+      RequestLocalCometShuffle(
+        ValidateCelebornMapAttempt(14, 102, stageId, 0, mapId, 0, owner.epoch),
+        102L + mapId)
+    }
+    val executor = Executors.newFixedThreadPool(2)
+    val ready = new CountDownLatch(2)
+    val start = new CountDownLatch(1)
+    try {
+      val reports = requests.map { request =>
+        executor.submit(new java.util.concurrent.Callable[Boolean] {
+          override def call(): Boolean = {
+            ready.countDown()
+            assert(start.await(5, TimeUnit.SECONDS))
+            coordinator.requestLocalShuffle(request)
+          }
+        })
+      }
+      assert(ready.await(5, TimeUnit.SECONDS))
+      start.countDown()
+      assert(reports.map(_.get(5, TimeUnit.SECONDS)).count(identity) == 1)
+      assert(requestedFallbacks.toSeq == Seq(14))
+    } finally {
+      start.countDown()
+      executor.shutdownNow()
+    }
+  }
+
+  test("stale or unsafe size reports never invoke the active fallback") {
+    Seq(false, true).foreach { stale =>
+      val sparkCoordinator = new OutputCommitCoordinator(new SparkConf(false), true)
+      val coordinator = new CelebornShuffleGenerationCoordinator(
+        sparkCoordinator,
+        _ => stale,
+        _ => fail("A stale or unsafe map attempt must not request fallback"))
+      val stageId = 79
+      startStage(sparkCoordinator, stageId, numMappers = 1)
+      val generation = PrepareCelebornShuffleGeneration(15, 103, stageId, 0, 1)
+      assert(coordinator.prepareGeneration(generation))
+      val owner = coordinator.claimMapAttempt(ClaimCelebornMapAttempt(15, stageId, 0, 0, 0))
+      val validation = ValidateCelebornMapAttempt(15, 103, stageId, 0, 0, 0, owner.epoch)
+      if (stale) {
+        assert(
+          coordinator.prepareGeneration(
+            generation.copy(celebornShuffleId = 104, stageAttempt = 1)))
+      }
+
+      assert(!coordinator.requestLocalShuffle(RequestLocalCometShuffle(validation, 104L)))
+      if (!stale) assert(coordinator.validateMapAttempt(validation))
+    }
+  }
+
+  test("a size report without an active materialization preserves the remote generation") {
+    val sparkCoordinator = new OutputCommitCoordinator(new SparkConf(false), true)
+    val coordinator = new CelebornShuffleGenerationCoordinator(sparkCoordinator, _ => true)
+    val stageId = 81
+    startStage(sparkCoordinator, stageId, numMappers = 1)
+    assert(
+      coordinator.prepareGeneration(PrepareCelebornShuffleGeneration(17, 106, stageId, 0, 1)))
+    val remote = coordinator.claimMapAttempt(ClaimCelebornMapAttempt(17, stageId, 0, 0, 0))
+    val validation = ValidateCelebornMapAttempt(17, 106, stageId, 0, 0, 0, remote.epoch)
+
+    assert(!coordinator.requestLocalShuffle(RequestLocalCometShuffle(validation, 106L)))
+    assert(coordinator.validateMapAttempt(validation))
+  }
+
   test("manager preserves the application Spark configuration and driver identity") {
     val conf = new SparkConf(false).set("spark.app.name", "existing-celeborn-application")
     val backend = new RecordingShuffleManager
@@ -417,6 +570,24 @@ class CometCelebornShuffleManagerSuite extends AnyFunSuite {
     assert(composite.registerShuffle[Any, Any, Any](31, null) eq backend.returnedHandle)
   }
 
+  test("native planning uses client compatibility without a scheduler-version gate") {
+    var configurationLoads = 0
+    var completionProbes = 0
+    val support = CometCelebornShuffleManager.nativeShufflePlanningSupport(
+      new SparkConf(false),
+      _ => {
+        configurationLoads += 1
+        new ReflectedPlanningConf
+      },
+      () => {
+        completionProbes += 1
+        None
+      })
+    assert(support.fallbackReason(1).isEmpty)
+    assert(configurationLoads == 1)
+    assert(completionProbes == 1)
+  }
+
   test("encrypted native planning falls back before loading the optional Celeborn API") {
     val conf = new SparkConf(false).set("spark.io.encryption.enabled", "true")
     var loads = 0
@@ -430,6 +601,75 @@ class CometCelebornShuffleManagerSuite extends AnyFunSuite {
 
     assert(support.fallbackReason(1).exists(_.contains("encryption")))
     assert(loads == 0)
+  }
+
+  test("native planning requires executor retention for local size-limit fallback") {
+    val cases = Seq(
+      ("fixed executors", false, false, false, true),
+      ("shuffle tracking", true, false, true, true),
+      ("external shuffle service", true, true, false, true),
+      ("both retention mechanisms", true, true, true, true),
+      ("remote storage alone", true, false, false, false))
+    cases.foreach { case (name, dynamicAllocation, shuffleService, tracking, supported) =>
+      val conf = new SparkConf(false)
+        .set("spark.dynamicAllocation.enabled", dynamicAllocation.toString)
+        .set("spark.shuffle.service.enabled", shuffleService.toString)
+        .set("spark.dynamicAllocation.shuffleTracking.enabled", tracking.toString)
+      var probes = 0
+      val support = CometCelebornShuffleManager.nativeShufflePlanningSupport(
+        conf,
+        _ => new ReflectedPlanningConf,
+        () => {
+          probes += 1
+          None
+        })
+      assert(support.fallbackReason(1).isEmpty == supported, name)
+      assert(probes == (if (supported) 1 else 0), name)
+    }
+
+    // Read Spark's ConfigEntry so omitting the setting agrees with the executor allocation
+    // manager's effective behavior on each supported Spark version.
+    val defaultTracking = CometCelebornShuffleManager.nativeShufflePlanningSupport(
+      new SparkConf(false).set("spark.dynamicAllocation.enabled", "true"),
+      _ => new ReflectedPlanningConf,
+      () => None)
+    assert(
+      defaultTracking.fallbackReason(1).isEmpty ==
+        new SparkConf(false).get(
+          org.apache.spark.internal.config.DYN_ALLOCATION_SHUFFLE_TRACKING_ENABLED))
+  }
+
+  test("unprotected local fallback retains ordinary delegated shuffle") {
+    Seq(false, true).foreach { decommission =>
+      val conf = new SparkConf(false)
+        .set("spark.dynamicAllocation.enabled", "true")
+        .set("spark.shuffle.service.enabled", "false")
+        .set("spark.dynamicAllocation.shuffleTracking.enabled", "false")
+        .set("spark.decommission.enabled", decommission.toString)
+        .set("spark.storage.decommission.enabled", decommission.toString)
+        .set("spark.storage.decommission.shuffleBlocks.enabled", decommission.toString)
+      val backend = new RecordingShuffleManager
+      val composite = new CometCelebornShuffleManager(
+        conf,
+        false,
+        (_, _) => backend,
+        planningSupportFactory = actualConf =>
+          CometCelebornShuffleManager.nativeShufflePlanningSupport(
+            actualConf,
+            _ => fail("Unprotected local fallback must not load native Celeborn configuration"),
+            () => fail("Unprotected local fallback must not probe native push completion")))
+      try {
+        assert(composite.nativeShuffleFallbackReason(1).exists(_.contains("local fallback")))
+        val handle = composite.registerShuffle[Any, Any, Any](31, null)
+        assert(composite.getWriter[Any, Any](handle, 12L, null, null) == null)
+        assert(composite.getReader[Any, Any](handle, 0, 2, null, null) == null)
+        assert(backend.writerCall.contains((handle, 12L)))
+        assert(backend.rangedReaderCall.contains((handle, 0, Int.MaxValue, 0, 2)))
+      } finally {
+        composite.stop()
+      }
+      assert(backend.stopped)
+    }
   }
 
   test("native planning uses Celeborn's effective stage-rerun setting") {

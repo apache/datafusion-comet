@@ -39,7 +39,7 @@ import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.types.StructField
 import org.apache.spark.util.{ThreadUtils, Utils}
 
-import org.apache.comet.{CometConf, CometExecIterator}
+import org.apache.comet.{CometConf, CometExecIterator, CometShuffleSizeLimitException}
 import org.apache.comet.serde.{OperatorOuterClass, PartitioningOuterClass, QueryPlanSerde}
 import org.apache.comet.serde.OperatorOuterClass.{CompressionCodec, Operator}
 import org.apache.comet.serde.operator.schema2Proto
@@ -102,6 +102,9 @@ class CometNativeShuffleWriter[K, V](
           try destination.pusher.abort()
           catch {
             case cleanupFailure: Throwable => failure.addSuppressed(cleanupFailure)
+          }
+          if (CometNativeShuffleWriter.isSizeLimitFailure(failure)) {
+            destination.onSizeLimitExceeded(failure)
           }
         }
         throw failure
@@ -489,6 +492,16 @@ class CometNativeShuffleWriter[K, V](
 }
 
 private[shuffle] object CometNativeShuffleWriter {
+  private[shuffle] def isSizeLimitFailure(failure: Throwable): Boolean = {
+    var cause = failure
+    val visited = new java.util.IdentityHashMap[Throwable, java.lang.Boolean]()
+    while (cause != null && visited.put(cause, java.lang.Boolean.TRUE) == null) {
+      if (cause.isInstanceOf[CometShuffleSizeLimitException]) return true
+      cause = cause.getCause
+    }
+    false
+  }
+
   def drainAndClose(iterator: Iterator[_], close: () => Unit): Unit = {
     Utils.tryWithSafeFinally {
       while (iterator.hasNext) {
@@ -508,7 +521,8 @@ private[shuffle] final case class CelebornNativeShuffleDestination(
     maxFrameBytes: Int,
     numPartitions: Int,
     commitAuthorized: Boolean = false,
-    commitValidator: () => Boolean = () => true) {
+    commitValidator: () => Boolean = () => true,
+    onSizeLimitExceeded: Throwable => Unit = _ => ()) {
   require(pusher != null, "The Celeborn shuffle partition pusher must not be null")
   require(maxFrameBytes >= 20, "The Celeborn shuffle frame limit must fit a complete frame")
   require(

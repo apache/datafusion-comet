@@ -43,7 +43,7 @@ import org.apache.spark.sql.functions.{col, count, sum}
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 
-import org.apache.comet.{CometConf, CometExecIterator, CometShuffleBlockIterator, Native}
+import org.apache.comet.{CometConf, CometExecIterator, CometShuffleBlockIterator, CometShuffleSizeLimitException, Native}
 import org.apache.comet.serde.{OperatorOuterClass, PartitioningOuterClass}
 import org.apache.comet.shuffle.ShufflePartitionPusher
 
@@ -249,8 +249,11 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
             iterator.hasNext
             Iterator.single((false, callbacks))
           } catch {
-            case failure: Exception =>
-              Iterator.single((failure.getMessage.contains("admission budget"), callbacks))
+            case failure: CometShuffleSizeLimitException =>
+              Iterator.single(
+                (
+                  failure.getMessage.contains("spark.comet.shuffle.rss.maxInFlightBytes"),
+                  callbacks))
           }
         } finally {
           iterator.close()
