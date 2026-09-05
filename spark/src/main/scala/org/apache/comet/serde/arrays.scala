@@ -844,10 +844,14 @@ object CometArrayPosition extends CometExpressionSerde[ArrayPosition] with Array
   }
 }
 
-object CometArraysZip extends CometExpressionSerde[ArraysZip] {
+object CometArraysZip extends CometExpressionSerde[ArraysZip] with CodegenDispatchFallback {
 
+  // MapType elements have no native impl; they route through the JVM codegen dispatcher.
+  // This reason surfaces only when the dispatcher is disabled or refuses the tree.
   override def getUnsupportedReasons(): Seq[String] = Seq(
-    "Not all input data types are supported; falls back to Spark for unsupported types")
+    "MapType element arrays are not supported natively and are handled via JVM codegen dispatch; " +
+      "this fallback only applies when the dispatcher is disabled. NullType elements remain " +
+      "unsupported (the dispatcher's isSupportedDataType does not admit NullType).")
 
   private def isTypeSupported(dt: DataType): Boolean = {
     import DataTypes._
