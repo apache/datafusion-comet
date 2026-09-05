@@ -80,7 +80,7 @@ private[comet] class SparkColumnarArrowReader(
     writer.writeColumns(current, rowsConsumedInCurrent, rowsToProduce)
     rowsConsumedInCurrent += rowsToProduce
 
-    writer.finish()
+    writer.finish(rowsToProduce)
     onConversionNs(System.nanoTime() - startNs)
     true
   }
