@@ -29,6 +29,7 @@ use arrow::buffer::OffsetBuffer;
 use arrow::datatypes::{DataType, Field, Int16Type, Int32Type, Int64Type};
 use arrow_select::dictionary::garbage_collect_any_dictionary;
 use datafusion::common::{DataFusionError, Result};
+use datafusion_comet_jni_bridge::errors::CometError;
 use datafusion_comet_jni_bridge::ShufflePartitionPusher;
 use std::io::{self, Cursor, Seek, SeekFrom, Write};
 use std::sync::Arc;
@@ -163,14 +164,19 @@ impl RssPartitionWriter {
         let (metadata_scratch, planning_scratch) = Self::estimated_ipc_metadata_scratch(batch);
         let codec_workspace = self.block_writer.rss_codec_workspace()?;
         let reservation_limit = self.pusher.max_reservation_size();
-        if metadata_scratch
+        let minimum_reservation = metadata_scratch
             .saturating_add(codec_workspace)
-            .saturating_add(60)
-            > reservation_limit
-        {
+            .saturating_add(60);
+        if minimum_reservation > reservation_limit {
             // Neither schema descriptors nor codec workspace gets smaller when rows are split.
-            return Err(DataFusionError::Execution(format!(
-                "Remote shuffle frame schema and encoding workspace exceed the byte admission budget of {reservation_limit} bytes"
+            return Err(Self::size_limit_error(format!(
+                "Remote shuffle schema, encoding workspace, and minimum frame copies require at least \
+                 {minimum_reservation} bytes of reservation, but only {reservation_limit} \
+                 bytes per frame are available under spark.comet.shuffle.rss.maxInFlightBytes. \
+                 Increase that setting to allow the required reservation plus transport overhead. \
+                 The effective frame limit from spark.comet.shuffle.rss.maxFrameBytes and \
+                 spark.comet.shuffle.rss.maxInFlightBytes is {} bytes",
+                self.max_frame_size
             )));
         }
 
@@ -202,7 +208,7 @@ impl RssPartitionWriter {
             .and_then(|bytes| bytes.checked_add(compaction_scratch))
             .and_then(|bytes| bytes.checked_add(codec_workspace))
             .ok_or_else(|| {
-                DataFusionError::Execution(
+                Self::size_limit_error(
                     "Remote shuffle encoding workspace exceeds the native integer limit"
                         .to_string(),
                 )
@@ -213,8 +219,16 @@ impl RssPartitionWriter {
             if batch.num_rows() > 1 {
                 return self.push_split_batch(partition_id, batch, metrics);
             }
-            return Err(DataFusionError::Execution(format!(
-                "Remote shuffle frame for a single row and encoding workspace exceed the byte admission budget of {reservation_limit} bytes"
+            return Err(Self::size_limit_error(format!(
+                "Remote shuffle encoding workspace for a single row requires {ipc_scratch} bytes; \
+                 at least {} bytes of reservation are needed including a minimum frame, but only \
+                 {reservation_limit} bytes per frame are available under \
+                 spark.comet.shuffle.rss.maxInFlightBytes. Increase that setting to allow the \
+                 required reservation plus transport overhead. \
+                 The effective frame limit from spark.comet.shuffle.rss.maxFrameBytes and \
+                 spark.comet.shuffle.rss.maxInFlightBytes is {} bytes",
+                ipc_scratch.saturating_add(60),
+                self.max_frame_size
             )));
         }
 
@@ -234,7 +248,7 @@ impl RssPartitionWriter {
                 .checked_mul(3)
                 .and_then(|bytes| bytes.checked_add(ipc_scratch))
                 .ok_or_else(|| {
-                    DataFusionError::Execution(
+                    Self::size_limit_error(
                         "Remote shuffle frame-copy reservation exceeds the native integer limit"
                             .to_string(),
                     )
@@ -280,6 +294,7 @@ impl RssPartitionWriter {
                 &metrics.encode_time,
             ) {
                 let exceeded = output.exceeded;
+                let minimum_frame_size = output.minimum_size;
                 drop(output);
                 drop(compacted);
                 self.pusher.release_partition_data_reservation()?;
@@ -291,9 +306,32 @@ impl RssPartitionWriter {
                     continue;
                 }
                 if batch.num_rows() <= 1 {
-                    return Err(DataFusionError::Execution(format!(
-                        "Remote shuffle frame exceeds its configured maximum: a single row exceeds {} bytes",
-                        admitted_frame_limit
+                    let minimum_reservation =
+                        ipc_scratch.saturating_add(minimum_frame_size.saturating_mul(3));
+                    let reason = if admitted_frame_limit < self.max_frame_size {
+                        format!(
+                            "only {admitted_frame_limit} encoded bytes fit alongside the \
+                             {ipc_scratch}-byte encoding workspace in the {reservation_limit}-byte \
+                             reservation available per frame under \
+                             spark.comet.shuffle.rss.maxInFlightBytes \
+                             (effective frame limit from spark.comet.shuffle.rss.maxFrameBytes \
+                             and spark.comet.shuffle.rss.maxInFlightBytes: {} bytes)",
+                            self.max_frame_size
+                        )
+                    } else {
+                        format!(
+                            "the effective frame limit from spark.comet.shuffle.rss.maxFrameBytes \
+                             and spark.comet.shuffle.rss.maxInFlightBytes is {} bytes; encoding \
+                             workspace requires {ipc_scratch} bytes and the reservation available \
+                             per frame is {reservation_limit} bytes",
+                            self.max_frame_size
+                        )
+                    };
+                    return Err(Self::size_limit_error(format!(
+                        "Remote shuffle cannot encode a single row: the frame needs at least \
+                         {minimum_frame_size} bytes, but {reason}. Increase the limiting setting; \
+                         the required reservation is at least {minimum_reservation} bytes plus \
+                         transport overhead"
                     )));
                 }
                 return self.push_split_batch(partition_id, batch, metrics);
@@ -317,6 +355,10 @@ impl RssPartitionWriter {
             let released = self.pusher.release_partition_data_reservation();
             return result.and(released);
         }
+    }
+
+    fn size_limit_error(message: String) -> DataFusionError {
+        DataFusionError::External(Box::new(CometError::ShuffleSizeLimit(message)))
     }
 
     fn push_split_batch(
@@ -1095,6 +1137,8 @@ struct BoundedBuffer {
     inner: Cursor<Vec<u8>>,
     limit: usize,
     exceeded: bool,
+    // The first rejected write/seek establishes a lower bound without allocating more output.
+    minimum_size: usize,
 }
 
 impl BoundedBuffer {
@@ -1116,6 +1160,7 @@ impl BoundedBuffer {
             inner: Cursor::new(bytes),
             limit,
             exceeded: false,
+            minimum_size: 0,
         })
     }
 
@@ -1131,6 +1176,11 @@ impl Write for BoundedBuffer {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         let end = self.inner.position().checked_add(bytes.len() as u64);
         if end.is_none_or(|end| end > self.limit as u64) {
+            if !self.exceeded {
+                self.minimum_size = end
+                    .and_then(|end| usize::try_from(end).ok())
+                    .unwrap_or(usize::MAX);
+            }
             self.exceeded = true;
             return Err(Self::limit_error());
         }
@@ -1148,6 +1198,9 @@ impl Seek for BoundedBuffer {
         let next = self.inner.seek(position)?;
         if next > self.limit as u64 {
             self.inner.set_position(previous);
+            if !self.exceeded {
+                self.minimum_size = usize::try_from(next).unwrap_or(usize::MAX);
+            }
             self.exceeded = true;
             return Err(Self::limit_error());
         }
@@ -1189,6 +1242,7 @@ mod buffer_tests {
         assert_eq!(output.inner.get_ref().capacity(), 67_996);
         assert!(output.write(&[1]).is_err());
         assert!(output.exceeded);
+        assert_eq!(output.minimum_size, 67_997);
         assert_eq!(output.inner.get_ref().capacity(), 67_996);
     }
 }

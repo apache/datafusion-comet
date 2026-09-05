@@ -32,6 +32,7 @@ mod tests {
     use arrow::record_batch::RecordBatch;
     use datafusion::common::{DataFusionError, Result};
     use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, Time};
+    use datafusion_comet_jni_bridge::errors::CometError;
     use datafusion_comet_jni_bridge::ShufflePartitionPusher;
     use std::collections::HashMap;
     use std::io::{self, Cursor};
@@ -405,6 +406,28 @@ mod tests {
             .unwrap()
     }
 
+    fn single_string_row(bytes: usize) -> RecordBatch {
+        RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "value",
+                DataType::Utf8,
+                false,
+            )])),
+            vec![Arc::new(StringArray::from(vec!["x".repeat(bytes)]))],
+        )
+        .unwrap()
+    }
+
+    fn size_limit_message(error: &DataFusionError) -> &str {
+        let DataFusionError::External(cause) = error else {
+            panic!("expected a typed shuffle size limit, got {error}");
+        };
+        let Some(CometError::ShuffleSizeLimit(message)) = cause.downcast_ref::<CometError>() else {
+            panic!("expected a typed shuffle size limit, got {error}");
+        };
+        message
+    }
+
     #[test]
     #[cfg_attr(miri, ignore)]
     fn round_trips_all_supported_compression_codecs() {
@@ -627,7 +650,15 @@ mod tests {
             frame_size - 1,
         );
 
-        assert!(write_batches(&mut writer, 0, vec![batch], &metrics()).is_err());
+        let error = write_batches(&mut writer, 0, vec![batch], &metrics()).unwrap_err();
+        let message = size_limit_message(&error);
+        assert!(message.contains(&format!(
+            "effective frame limit from spark.comet.shuffle.rss.maxFrameBytes \
+             and spark.comet.shuffle.rss.maxInFlightBytes is {} bytes",
+            frame_size - 1
+        )));
+        assert!(message.contains("spark.comet.shuffle.rss.maxInFlightBytes"));
+        assert!(message.contains(&format!("frame needs at least {frame_size} bytes")));
         assert!(
             pusher.frames().is_empty(),
             "a single oversized Arrow IPC row must never be fragmented"
@@ -780,7 +811,7 @@ mod tests {
     #[test]
     fn small_batches_encode_concurrently_with_default_frame_and_admission_limits() {
         let frame_limit = 64 * 1024 * 1024;
-        let admission_limit = 256 * 1024 * 1024;
+        let admission_limit = 512 * 1024 * 1024;
         let pusher = Arc::new(ConcurrentAdmissionPusher::new(admission_limit));
 
         thread::scope(|scope| {
@@ -810,6 +841,115 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
+    fn large_single_rows_fit_default_frame_and_admission_limits() {
+        let frame_limit = 64 * 1024 * 1024;
+        // Celeborn reserves its 16-byte request header separately from the native reservation.
+        let reservation_limit = 512 * 1024 * 1024 - 16;
+        for row_size_mib in [38, 50, 63] {
+            let batch = single_string_row(row_size_mib * 1024 * 1024);
+            let pusher = Arc::new(ReservationRecordingPusher {
+                max_reservation: Some(reservation_limit),
+                capacity: Some(reservation_limit),
+                ..ReservationRecordingPusher::default()
+            });
+            let mut writer = writer(
+                &batch,
+                CompressionCodec::None,
+                pusher.clone(),
+                1,
+                frame_limit,
+            );
+            let metrics = metrics();
+
+            finish_partition(&mut writer, 0, vec![batch.clone()], &metrics).unwrap();
+            writer.finish_all(&metrics).unwrap();
+
+            let frames = pusher.frames.lock().unwrap();
+            assert_eq!(frames.len(), 1);
+            assert!(frames[0].1.len() <= frame_limit);
+            assert_eq!(decode_frame(&frames[0].1), batch);
+            assert!(pusher.outstanding.lock().unwrap().is_none());
+            assert!(pusher
+                .reservations
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|bytes| *bytes <= reservation_limit));
+        }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn reports_admission_limit_when_a_single_row_fits_the_configured_frame_limit() {
+        let batch = single_string_row(38 * 1024 * 1024);
+        let frame_limit = 64 * 1024 * 1024;
+        let reservation_limit = 256 * 1024 * 1024 - 16;
+        let pusher = Arc::new(ReservationRecordingPusher {
+            max_reservation: Some(reservation_limit),
+            capacity: Some(reservation_limit),
+            ..ReservationRecordingPusher::default()
+        });
+        let mut writer = writer(
+            &batch,
+            CompressionCodec::None,
+            pusher.clone(),
+            1,
+            frame_limit,
+        );
+        assert!(encoded_frame_size(&batch) < frame_limit);
+
+        let error = write_batches(&mut writer, 0, vec![batch], &metrics()).unwrap_err();
+
+        let message = size_limit_message(&error);
+        assert!(
+            message.contains("effective frame limit from spark.comet.shuffle.rss.maxFrameBytes")
+        );
+        assert!(message.contains(&format!(": {frame_limit} bytes)")));
+        assert!(message.contains("spark.comet.shuffle.rss.maxInFlightBytes"));
+        assert!(message.contains(&format!("{reservation_limit}-byte reservation")));
+        assert!(message.contains("encoded bytes fit alongside"));
+        assert!(message.contains("required reservation is at least"));
+        assert!(pusher.frames.lock().unwrap().is_empty());
+        assert!(pusher.outstanding.lock().unwrap().is_none());
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn reports_workspace_limit_before_encoding_a_single_row() {
+        let batch = single_string_row(20 * 1024 * 1024);
+        let frame_limit = 64 * 1024 * 1024;
+        let reservation_limit = 64 * 1024 * 1024 - 16;
+        let pusher = Arc::new(ReservationRecordingPusher {
+            max_reservation: Some(reservation_limit),
+            capacity: Some(reservation_limit),
+            ..ReservationRecordingPusher::default()
+        });
+        let mut writer = writer(
+            &batch,
+            CompressionCodec::None,
+            pusher.clone(),
+            1,
+            frame_limit,
+        );
+
+        let error = write_batches(&mut writer, 0, vec![batch], &metrics()).unwrap_err();
+
+        let message = size_limit_message(&error);
+        assert!(message.contains("encoding workspace for a single row requires"));
+        assert!(message.contains("bytes of reservation are needed"));
+        assert!(message.contains(&format!("only {reservation_limit} bytes per frame")));
+        assert!(message.contains("spark.comet.shuffle.rss.maxInFlightBytes"));
+        assert!(
+            message.contains("effective frame limit from spark.comet.shuffle.rss.maxFrameBytes")
+        );
+        assert!(message.contains(&format!("is {frame_limit} bytes")));
+        assert_eq!(pusher.reservations.lock().unwrap().len(), 1);
+        assert!(pusher.frames.lock().unwrap().is_empty());
+        assert!(pusher.outstanding.lock().unwrap().is_none());
+    }
+
+    #[test]
     fn codec_workspace_is_rejected_before_encoding_under_a_tiny_budget() {
         let batch = sample_batch(0, 1);
         for codec in [
@@ -824,7 +964,12 @@ mod tests {
             });
             let mut writer = writer(&batch, codec, pusher.clone(), 1, 5_456);
             let error = write_batches(&mut writer, 0, vec![batch.clone()], &metrics()).unwrap_err();
-            assert!(error.to_string().contains("encoding workspace"));
+            let message = size_limit_message(&error);
+            assert!(message.contains("encoding workspace"));
+            assert!(message.contains("spark.comet.shuffle.rss.maxInFlightBytes"));
+            assert!(message
+                .contains("effective frame limit from spark.comet.shuffle.rss.maxFrameBytes"));
+            assert!(message.contains("is 5456 bytes"));
             assert!(pusher.reservations.lock().unwrap().is_empty());
             assert!(pusher.frames.lock().unwrap().is_empty());
         }
