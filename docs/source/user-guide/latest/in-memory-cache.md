@@ -91,21 +91,43 @@ nowhere to record either that a column is dictionary encoded or the dictionary i
 
 ## Performance
 
-Measured with `CometInMemoryCacheBenchmark` on a 5M-row, six-column relation (Apple M3 Ultra,
-JDK 17, Spark 4.1, release build). Regenerate with:
+Measured with `CometInMemoryCacheBenchmark` (Apple M3 Max, JDK 17, Spark 4.1, release build).
+Regenerate with:
 
 ```sh
 SPARK_GENERATE_BENCHMARK_FILES=1 \
   make benchmark-org.apache.spark.sql.benchmark.CometInMemoryCacheBenchmark
 ```
 
+On a 5M-row relation of six flat columns:
+
 | Query shape                    | Spark cache scan + convert | `CometInMemoryTableScan` | Relative |
 | ------------------------------ | -------------------------: | -----------------------: | -------: |
-| Repeated scan (3 of 6 columns) |                     157 ms |                   116 ms |     1.4x |
-| Selective filter               |                      44 ms |                    38 ms |     1.1x |
-| Row count only (0 of 6)        |                      30 ms |                    28 ms |     1.1x |
-| Narrow projection (1 of 6)     |                      49 ms |                    39 ms |     1.3x |
-| Full projection (6 of 6)       |                     299 ms |                   135 ms |     2.2x |
+| Repeated scan (3 of 6 columns) |                     201 ms |                   167 ms |     1.2x |
+| Selective filter               |                      69 ms |                    61 ms |     1.1x |
+| Row count only (0 of 6)        |                      45 ms |                    47 ms |     1.0x |
+| Narrow projection (1 of 6)     |                      70 ms |                    57 ms |     1.2x |
+| Full projection (6 of 6)       |                     556 ms |                   290 ms |     1.9x |
+
+And on a 1M-row relation of six columns whose middle three are structs, one of them nested two
+levels deep:
+
+| Query shape                | Spark cache scan + convert | `CometInMemoryTableScan` | Relative |
+| -------------------------- | -------------------------: | -----------------------: | -------: |
+| Row count only (0 of 6)    |                      39 ms |                    35 ms |     1.1x |
+| Narrow projection (1 of 6) |                     109 ms |                    61 ms |     1.8x |
+| Full projection (6 of 6)   |                     282 ms |                   126 ms |     2.2x |
+
+The two relations are not comparable to each other — different row counts, and a struct column
+carries several values per row. Within the struct relation the gap is wider than the flat one at
+every width, because the conversion the left column pays scales with the values per row rather than
+with the columns.
+
+Array and map columns are deliberately absent from the benchmark, not from the format — the cache
+stores and projects them, and `CometInMemoryCacheSuite` covers them. They cannot be measured _here_
+because the left column would not exist: it needs Spark's cache scan to bridge into Comet operators,
+and `CometSparkToColumnarExec` declines `ArrayType` and `MapType`, so a query projecting one falls
+back to Spark row execution above the scan and the two columns stop measuring the same boundary.
 
 Read what this compares carefully. Comet execution is on in both columns, so the aggregation runs
 on Comet either way and only the cache-scan boundary moves: on the left, Spark's

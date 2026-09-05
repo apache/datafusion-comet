@@ -1019,11 +1019,49 @@ class CometInMemoryCacheSuite extends CometTestBase {
     }
   }
 
+  // Enough rows that every column's buffers are big enough for Arrow to actually compress them.
+  // Arrow stores a buffer verbatim when compressing it would not make it smaller, and a boolean
+  // column of a few hundred rows is a few dozen bytes, which takes that fallback -- leaving the
+  // corruption the projection tests rely on with nothing to corrupt.
+  private val projectionCacheRows = 8000
+
+  private val flatProjectionColumns = Seq(
+    "id",
+    "id % 100 AS k",
+    "cast(id as double) / 3 AS d",
+    "concat('a_', cast(id as string)) AS s1",
+    "concat('b_', cast(id % 17 as string)) AS s2",
+    "cast(id % 2 = 0 as boolean) AS flag")
+
+  // A flat column always owns one field node and two or three buffers; a nested one owns a run
+  // whose length is a property of its whole subtree. That arithmetic is what turns a column index
+  // into a window of the payload, so a run computed short or long by a single buffer misaligns
+  // every column after it -- which a full projection cannot see, because selecting everything
+  // covers the whole sequence however it is partitioned. These are the shapes that exercise it: a
+  // struct, an array, a map (which Arrow stores as a list of two-child structs, so one column
+  // spans four field nodes), a struct wrapping an array, and flat columns on both sides of them.
+  private val nestedProjectionColumns = Seq(
+    "id",
+    "named_struct('a', id, 'b', concat('sa_', cast(id as string))) AS sc",
+    "array(concat('e0_', cast(id as string)), concat('e1_', cast(id as string))) AS ar",
+    "map(concat('k_', cast(id % 97 as string)), id) AS mp",
+    "named_struct('nums', array(id, id + 1, id + 2)) AS deep",
+    "concat('t_', cast(id as string)) AS tail")
+
   /**
-   * Cache a six-column relation and hand the collected batches to `f` along with the relation, so
-   * a test can doctor the payload before decoding it again through the serializer.
+   * Cache a six-column flat relation and hand the collected batches to `f` along with the
+   * relation, so a test can doctor the payload before decoding it again through the serializer.
    */
   private def withProjectionCache(
+      f: (org.apache.spark.sql.execution.columnar.InMemoryRelation, Array[CachedBatch]) => Unit)
+      : Unit = withCachedProjection("projection_cache", flatProjectionColumns)(f)
+
+  /** The same, over a relation of the same width whose middle four columns are nested. */
+  private def withNestedProjectionCache(
+      f: (org.apache.spark.sql.execution.columnar.InMemoryRelation, Array[CachedBatch]) => Unit)
+      : Unit = withCachedProjection("nested_projection_cache", nestedProjectionColumns)(f)
+
+  private def withCachedProjection(view: String, columns: Seq[String])(
       f: (org.apache.spark.sql.execution.columnar.InMemoryRelation, Array[CachedBatch]) => Unit)
       : Unit = {
     withSQLConf(
@@ -1033,28 +1071,18 @@ class CometInMemoryCacheSuite extends CometTestBase {
       SQLConf.CACHE_VECTORIZED_READER_ENABLED.key -> "true") {
 
       spark.catalog.clearCache()
-      // Wide enough that every column's buffers are big enough for Arrow to actually compress
-      // them. Arrow stores a buffer verbatim when compressing it would not make it smaller, and a
-      // boolean column of a few hundred rows is a few dozen bytes, which takes that fallback --
-      // leaving the corruption the projection tests rely on with nothing to corrupt.
       spark
-        .range(0, 8000, 1, 2)
-        .selectExpr(
-          "id",
-          "id % 100 AS k",
-          "cast(id as double) / 3 AS d",
-          "concat('a_', cast(id as string)) AS s1",
-          "concat('b_', cast(id % 17 as string)) AS s2",
-          "cast(id % 2 = 0 as boolean) AS flag")
-        .createOrReplaceTempView("projection_cache")
-      spark.catalog.cacheTable("projection_cache")
-      assert(spark.table("projection_cache").count() == 8000)
+        .range(0, projectionCacheRows, 1, 2)
+        .selectExpr(columns: _*)
+        .createOrReplaceTempView(view)
+      spark.catalog.cacheTable(view)
+      assert(spark.table(view).count() == projectionCacheRows)
       assert(
-        cachedBatchTypes("projection_cache").sameElements(
+        cachedBatchTypes(view).sameElements(
           Array("org.apache.spark.sql.comet.execution.arrow.CometCachedBatch")))
 
       val relation = spark.sharedState.cacheManager
-        .lookupCachedData(spark.table("projection_cache"))
+        .lookupCachedData(spark.table(view))
         .get
         .cachedRepresentation
 
@@ -1189,12 +1217,93 @@ class CometInMemoryCacheSuite extends CometTestBase {
       }
 
       assert(
-        decodedRowCount(relation, batches, selected) == 8000,
+        decodedRowCount(relation, batches, selected) == projectionCacheRows,
         "reading one column must not decompress the other five")
 
       batches.foreach(b => CometCachedBatchHelper.corruptColumn(b, cacheSchema, selectedIdx))
       interceptDecodeFailure {
         decodedRowCount(relation, batches, selected)
+      }
+    }
+  }
+
+  test("Comet in-memory cache decodes only the projected columns of a nested relation") {
+    // The flat case above pins one column and corrupts the rest. Here every column takes its turn,
+    // because a nested column's run of buffers is as long as its subtree rather than a fixed two or
+    // three: a run computed short or long shifts every column after it, so which column is selected
+    // decides whether the misalignment reaches into a corrupted neighbour.
+    nestedProjectionColumns.indices.foreach { selectedIdx =>
+      withNestedProjectionCache { (relation, batches) =>
+        val cacheSchema = Utils.fromAttributes(relation.output)
+        val selected = Seq(relation.output(selectedIdx))
+        val name = relation.output(selectedIdx).name
+
+        relation.output.indices.foreach { i =>
+          assert(
+            batches.forall(b => CometCachedBatchHelper.columnIsCompressed(b, cacheSchema, i)),
+            s"column ${relation.output(i).name} is not stored compressed, so corrupting it " +
+              "would prove nothing")
+        }
+
+        relation.output.indices.filter(_ != selectedIdx).foreach { i =>
+          batches.foreach(b => CometCachedBatchHelper.corruptColumn(b, cacheSchema, i))
+        }
+
+        assert(
+          decodedRowCount(relation, batches, selected) == projectionCacheRows,
+          s"reading $name must not decompress the other ${relation.output.length - 1} columns")
+
+        batches.foreach(b => CometCachedBatchHelper.corruptColumn(b, cacheSchema, selectedIdx))
+        interceptDecodeFailure {
+          decodedRowCount(relation, batches, selected)
+        }
+      }
+    }
+  }
+
+  test("Comet in-memory cache reads correct nested values under a narrow projection") {
+    // The corruption test above proves the projected read leaves the other columns' bytes alone,
+    // but it asserts on row counts, and a row count comes from the record batch header rather than
+    // from any buffer. A window taken from the wrong place within the selected column's own subtree
+    // -- a child's buffers swapped, say -- still decodes to the right number of rows and the wrong
+    // values. Comparing values against the uncached query is what rules that out.
+    withNativeCache {
+      val query =
+        s"SELECT ${nestedProjectionColumns.mkString(", ")} FROM range($projectionCacheRows)"
+      spark.sql(query).createOrReplaceTempView("nested_value_cache")
+      spark.catalog.cacheTable("nested_value_cache")
+      spark.table("nested_value_cache").count()
+
+      assert(
+        cachedBatchTypes("nested_value_cache").sameElements(
+          Array("org.apache.spark.sql.comet.execution.arrow.CometCachedBatch")))
+
+      val names = Seq("id", "sc", "ar", "mp", "deep", "tail")
+
+      // Each nested column on its own, then paired with `id`, then two projections that ask for
+      // columns out of cache-schema order, then the whole relation. Spark selects cached columns in
+      // whatever order the query wants them, and a full projection cannot stand in for that: with
+      // every column selected in order, the projected schema and the node/buffer windows are both
+      // the whole sequence, so nothing distinguishes them from windows taken in a different order.
+      val projections =
+        names.filter(_ != "id").map(Seq(_)) ++
+          names.filter(_ != "id").map(n => Seq("id", n)) ++
+          Seq(Seq("tail", "mp", "id"), Seq("deep", "sc")) ++
+          Seq(names)
+
+      projections.foreach { cols =>
+        val list = cols.mkString(", ")
+        // Ordering by the JSON form rather than by the columns themselves, since a projection that
+        // excludes `id` has no orderable key of its own and ORDER BY over a map is not allowed.
+        val ordered = s"SELECT to_json(struct($list)) AS j FROM %s ORDER BY j"
+        val expected = spark.sql(ordered.format(s"($query)")).collect()
+        assert(expected.length == projectionCacheRows)
+
+        val df = spark.sql(ordered.format("nested_value_cache"))
+        assert(
+          df.queryExecution.executedPlan.toString().contains("CometInMemoryTableScan"),
+          s"projection ($list) should read the cache natively")
+        assert(df.collect() === expected, s"projection ($list) read the wrong values")
       }
     }
   }
@@ -1209,15 +1318,19 @@ class CometInMemoryCacheSuite extends CometTestBase {
         batches.foreach(b => CometCachedBatchHelper.corruptColumn(b, cacheSchema, i))
       }
 
-      assert(decodedRowCount(relation, batches, Seq.empty) == 8000)
+      assert(decodedRowCount(relation, batches, Seq.empty) == projectionCacheRows)
     }
   }
 
   test("Comet in-memory cache records per-column sizes in its statistics") {
     // SimpleMetricsCachedBatch reserves a fifth field per column for its size. A column owns a
     // known run of buffers in the payload, so the real stored size is known and must be reported
-    // rather than left at zero.
-    withProjectionCache { (relation, batches) =>
+    // rather than left at zero. Run over the nested relation as well: a nested column's size is
+    // the sum of its whole subtree, so this is also where a size attributed to the wrong column
+    // surfaces.
+    def checkSizes(
+        relation: org.apache.spark.sql.execution.columnar.InMemoryRelation,
+        batches: Array[CachedBatch]): Unit = {
       val cacheSchema = Utils.fromAttributes(relation.output)
       batches.foreach { batch =>
         val sizes = CometCachedBatchHelper.columnSizes(batch, cacheSchema)
@@ -1225,10 +1338,14 @@ class CometInMemoryCacheSuite extends CometTestBase {
         sizes.zipWithIndex.foreach { case (size, i) =>
           assert(
             stats.getLong(i * 5 + 4) == size,
-            s"column $i should report the stored size of its own buffers in the statistics row")
+            s"column ${relation.output(i).name} should report the stored size of its own " +
+              "buffers in the statistics row")
         }
       }
     }
+
+    withProjectionCache(checkSizes)
+    withNestedProjectionCache(checkSizes)
   }
 
   test("Comet in-memory cache scans no columns for a row-count-only query") {
