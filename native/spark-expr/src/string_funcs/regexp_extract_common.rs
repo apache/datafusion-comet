@@ -20,6 +20,7 @@
 //! module centralizes that parsing and the null short-circuit so each UDF is left with
 //! its own per-row loop.
 
+use super::pattern_cache::PatternCache;
 use datafusion::common::{exec_err, DataFusionError, Result as DataFusionResult, ScalarValue};
 use datafusion::logical_expr::ColumnarValue;
 use regex::Regex;
@@ -44,6 +45,7 @@ pub(super) enum ParsedArgs<'a> {
 pub(super) fn parse_args<'a>(
     fn_name: &'static str,
     args: &'a [ColumnarValue],
+    regex_cache: &PatternCache,
 ) -> DataFusionResult<ParsedArgs<'a>> {
     if args.len() < 2 || args.len() > 3 {
         return exec_err!(
@@ -82,7 +84,9 @@ pub(super) fn parse_args<'a>(
         }
     };
 
-    let regex = Regex::new(pattern).map_err(|e| {
+    // The pattern is a plan-time literal, so the cache makes this compile a one-time cost
+    // for the expression instead of a per-batch cost.
+    let regex = regex_cache.get_or_compile(pattern).map_err(|e| {
         DataFusionError::Execution(format!(
             "The value of parameter `regexp` in `{fn_name}` is invalid: '{pattern}' ({e})"
         ))
