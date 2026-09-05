@@ -26,6 +26,7 @@ import java.util.concurrent.atomic.AtomicLong
 import scala.collection.mutable
 import scala.util.control.NonFatal
 
+import org.apache.arrow.memory.BufferAllocator
 import org.apache.arrow.vector._
 import org.apache.arrow.vector.complex.{ListVector, MapVector, StructVector}
 import org.apache.arrow.vector.types.pojo.Field
@@ -52,7 +53,7 @@ import org.apache.comet.udf.CometUDF
  *   +----------------------------+  +----------------------------+  +----------------------------+
  *   | 1. JVM bytecode cache      |  | 2. Per-task dispatcher     |  | 3. Per-task kernel cache   |
  *   |    (Spark's CodeGenerator) |  |    (CometUdfBridge.        |  |    (kernelCache field)     |
- *   |                            |  |     INSTANCES)             |  |                            |
+ *   |                            |  |     TASKS)                 |  |                            |
  *   +----------------------------+  +----------------------------+  +----------------------------+
  *   | Key:   generated Java      |  | Key:   task + UDF class    |  | Key:   bound expression +  |
  *   |        source              |  |                            |  |        input column shapes |
@@ -87,7 +88,10 @@ class CometScalaUDFCodegen extends CometUDF with Logging {
       : mutable.Map[CometScalaUDFCodegen.CacheKey, CometScalaUDFCodegen.CacheEntry] =
     mutable.HashMap.empty
 
-  override def evaluate(inputs: Array[ValueVector], numRows: Int): ValueVector = {
+  override def evaluate(
+      allocator: BufferAllocator,
+      inputs: Array[ValueVector],
+      numRows: Int): ValueVector = {
     require(
       inputs.length >= 1,
       "CometScalaUDFCodegen requires at least 1 input (serialized expression), " +
@@ -123,6 +127,7 @@ class CometScalaUDFCodegen extends CometUDF with Logging {
       val entry = lookupOrCompile(key, bytes, specsSeq)
 
       val out = CometBatchKernelCodegen.allocateOutput(
+        allocator,
         entry.outputField,
         n,
         estimatedOutputBytes(entry.outputType, dataCols))
