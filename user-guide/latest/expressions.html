@@ -2956,9 +2956,9 @@ expressions. The following function families are <strong>not currently planned</
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">encode</span></code></p></td>
-<td><p>🔜</p></td>
+<td><p>✅</p></td>
 <td><p>—</p></td>
-<td><p>Lowers to <code class="docutils literal notranslate"><span class="pre">StaticInvoke(encode)</span></code> (not allowlisted); falls back</p></td>
+<td><p>Spark 4.0+ lowers to <code class="docutils literal notranslate"><span class="pre">StaticInvoke(Encode.encode)</span></code>, which runs via codegen dispatch; on Spark 3.x it falls back</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">endswith</span></code></p></td>
 <td><p>✅</p></td>
@@ -3163,7 +3163,7 @@ expressions. The following function families are <strong>not currently planned</
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">to_binary</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>—</p></td>
-<td><p>Hex form accelerated; other formats fall back</p></td>
+<td><p>Hex and base64 forms accelerated natively; the <code class="docutils literal notranslate"><span class="pre">utf-8</span></code> form rewrites to <code class="docutils literal notranslate"><span class="pre">encode</span></code> and runs via codegen dispatch on Spark 4.0+</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">to_char</span></code></p></td>
 <td><p>✅</p></td>

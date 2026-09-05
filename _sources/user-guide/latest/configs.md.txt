@@ -303,6 +303,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.InSet.enabled` | Enable Comet acceleration for `InSet` | true |
 | `spark.comet.expression.InitCap.enabled` | Enable Comet acceleration for `InitCap` | true |
 | `spark.comet.expression.IntegralDivide.enabled` | Enable Comet acceleration for `IntegralDivide` | true |
+| `spark.comet.expression.Invoke.enabled` | Enable Comet acceleration for `Invoke` | true |
 | `spark.comet.expression.IsNaN.enabled` | Enable Comet acceleration for `IsNaN` | true |
 | `spark.comet.expression.IsNotNull.enabled` | Enable Comet acceleration for `IsNotNull` | true |
 | `spark.comet.expression.IsNull.enabled` | Enable Comet acceleration for `IsNull` | true |
