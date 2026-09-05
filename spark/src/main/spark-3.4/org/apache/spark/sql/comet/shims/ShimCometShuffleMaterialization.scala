@@ -17,16 +17,28 @@
  * under the License.
  */
 
-package org.apache.spark.shuffle.celeborn
+package org.apache.spark.sql.comet.shims
 
-import org.apache.spark.ShuffleDependency
-import org.apache.spark.shuffle.BaseShuffleHandle
+import org.apache.spark.sql.SparkSession
 
-/** Exact-name test handle for the optional Celeborn manager's reflective reader integration. */
-class CelebornShuffleHandle[K, V, C](
-    shuffleId: Int,
-    dependency: ShuffleDependency[K, V, C],
-    val stageRerunEnabled: Boolean = true)
-    extends BaseShuffleHandle[K, V, C](shuffleId, dependency) {
-  val numMappers: Int = dependency.rdd.getNumPartitions
+/**
+ * Restores the session context captured before shuffle materialization leaves the caller thread.
+ */
+trait ShimCometShuffleMaterialization {
+  private val activeSession = SparkSession.getActiveSession
+
+  protected def withCapturedSession[T](body: => T): T = {
+    val previousSession = SparkSession.getActiveSession
+    activeSession match {
+      case Some(session) => SparkSession.setActiveSession(session)
+      case None => SparkSession.clearActiveSession()
+    }
+    try body
+    finally {
+      previousSession match {
+        case Some(session) => SparkSession.setActiveSession(session)
+        case None => SparkSession.clearActiveSession()
+      }
+    }
+  }
 }

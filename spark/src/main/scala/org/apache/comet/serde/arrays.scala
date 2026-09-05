@@ -954,4 +954,61 @@ object CometArraySort extends CometCodegenDispatch[ArraySort]
 
 object CometZipWith extends CometCodegenDispatch[ZipWith]
 
-object CometSequence extends CometCodegenDispatch[Sequence]
+object CometSequence extends CometExpressionSerde[Sequence] with CodegenDispatchFallback {
+
+  private val temporalUnsupportedReason =
+    "date and timestamp element types run through the JVM codegen dispatcher"
+
+  private val unsafeArgUnsupportedReason =
+    "sequence arguments must be literals or column references; other shapes run through the " +
+      "JVM codegen dispatcher to preserve Spark's per-row null short-circuit"
+
+  override def getSupportLevel(expr: Sequence): SupportLevel = expr.start.dataType match {
+    case ByteType | ShortType | IntegerType | LongType =>
+      // Spark's codegen for `Sequence` short-circuits per row: any null argument returns null
+      // without evaluating the rest. DataFusion evaluates each scalar-UDF argument over the
+      // whole batch before calling the outer kernel, so a sub-expression with side effects
+      // (a nested call, a `CASE WHEN`, even a zero-arg UDF like `boom()`) could fire on rows
+      // Spark's null check would have discarded. A tree-shape "no children" test is not
+      // enough — a zero-arg UDF has empty children but still executes. Only literals and
+      // column references are safe to lower natively; anything else falls back to the
+      // codegen dispatcher, which keeps the whole tree inside Spark's guarded evaluation.
+      if (argsAreLiteralsOrRefs(expr)) Compatible()
+      else Unsupported(Some(unsafeArgUnsupportedReason))
+    case DateType | TimestampType | TimestampNTZType =>
+      // Temporal sequences step through timezone/DST/legacy-calendar arithmetic
+      // (https://github.com/apache/datafusion-comet/issues/5349), so they stay on the JVM
+      // codegen dispatcher.
+      Unsupported(Some(temporalUnsupportedReason))
+    case other =>
+      Unsupported(Some(s"sequence with element type $other is not supported natively"))
+  }
+
+  private def argsAreLiteralsOrRefs(expr: Sequence): Boolean = {
+    val args = Seq(expr.start, expr.stop) ++ expr.stepOpt
+    args.forall {
+      case _: Literal | _: Attribute | _: BoundReference => true
+      case _ => false
+    }
+  }
+
+  override def getUnsupportedReasons(): Seq[String] =
+    Seq(temporalUnsupportedReason, unsafeArgUnsupportedReason)
+
+  override def convert(
+      expr: Sequence,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val startExprProto = exprToProto(expr.start, inputs, binding)
+    val stopExprProto = exprToProto(expr.stop, inputs, binding)
+    // With no step argument the native kernel computes Spark's per-row default,
+    // `start <= stop ? 1 : -1`, which cannot be expressed as a plan-time literal.
+    val argProtos = Seq(startExprProto, stopExprProto) ++
+      expr.stepOpt.map(exprToProto(_, inputs, binding))
+    scalarFunctionExprToProtoWithReturnType(
+      "spark_sequence",
+      expr.dataType,
+      failOnError = false,
+      argProtos: _*)
+  }
+}

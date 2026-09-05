@@ -17,16 +17,11 @@
  * under the License.
  */
 
-package org.apache.spark.shuffle.celeborn
+package org.apache.comet;
 
-import org.apache.spark.ShuffleDependency
-import org.apache.spark.shuffle.BaseShuffleHandle
-
-/** Exact-name test handle for the optional Celeborn manager's reflective reader integration. */
-class CelebornShuffleHandle[K, V, C](
-    shuffleId: Int,
-    dependency: ShuffleDependency[K, V, C],
-    val stageRerunEnabled: Boolean = true)
-    extends BaseShuffleHandle[K, V, C](shuffleId, dependency) {
-  val numMappers: Int = dependency.rdd.getNumPartitions
+/** A remote shuffle frame or its encoding workspace cannot fit the configured byte limits. */
+public final class CometShuffleSizeLimitException extends CometNativeException {
+  public CometShuffleSizeLimitException(String message) {
+    super(message);
+  }
 }
