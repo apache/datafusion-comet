@@ -1372,6 +1372,17 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("cast StringType to TimestampType - time-only offset leading whitespace") {
+    withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC") {
+      // One Parquet-backed column value per query exercises each input in Legacy, TRY and ANSI.
+      // Spark 4 rejects the leading whitespace; Spark 3.5 accepts it. NTZ rejects time-only input.
+      Seq("\tT1:2:3 +08:00", " T1:2:3.4 +08:00", "T1:2:3 +08:00").foreach { value =>
+        castTimestampTest(Seq(value).toDF("a"), DataTypes.TimestampType, assertNative = true)
+        castTimestampTest(Seq(value).toDF("a"), DataTypes.TimestampNTZType, assertNative = true)
+      }
+    }
+  }
+
   test("cast StringType to TimestampNTZType") {
     representativeTimezones.foreach { tz =>
       withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz) {

@@ -1421,14 +1421,8 @@ fn timestamp_parser<T: TimeZone>(
     // Spark 4.0+ rejects leading whitespace for ALL T-prefixed time-only strings
     // (T<h>, T<h>:<m>, T<h>:<m>:<s>, T<h>:<m>:<s>.<f>), but accepts trailing whitespace.
     // Spark 3.x trims all whitespace first, so leading whitespace is accepted there.
-    // Check the raw (pre-trim) value for leading whitespace before any T-time-only match.
-    if is_spark4_plus
-        && value.len() > value.trim_start().len()
-        && (RE_TIME_ONLY_H.is_match(trimmed)
-            || RE_TIME_ONLY_HM.is_match(trimmed)
-            || RE_TIME_ONLY_HMS.is_match(trimmed)
-            || RE_TIME_ONLY_HMSU.is_match(trimmed))
-    {
+    // Check the prefix, not the base patterns: a zone suffix can hide a time-only match.
+    if is_spark4_plus && value.len() > value.trim_start().len() && trimmed.starts_with('T') {
         return if eval_mode == EvalMode::Ansi {
             Err(SparkError::InvalidInputInCastToDatetime {
                 value: value.to_string(),
@@ -2573,13 +2567,24 @@ mod tests {
     fn test_leading_whitespace_t_hm() {
         let tz = &Tz::from_str("UTC").unwrap();
         // Spark 4.0+ rejects leading whitespace for ALL T-prefixed time-only patterns.
-        for ws_input in &[" T2:30", "\tT2:30", "\nT2:30", " T2", "\tT2", "\nT2"] {
-            assert!(
-                timestamp_parser(ws_input, EvalMode::Legacy, tz, true)
-                    .unwrap()
-                    .is_none(),
-                "'{ws_input}' should be null in Legacy mode on Spark 4.0+"
-            );
+        for ws_input in &[
+            " T2:30",
+            "\tT2:30",
+            "\nT2:30",
+            " T2",
+            "\tT2",
+            "\nT2",
+            "\tT1:2:3 +08:00",
+            " T1:2:3.4 +08:00",
+        ] {
+            for mode in [EvalMode::Legacy, EvalMode::Try] {
+                assert!(
+                    timestamp_parser(ws_input, mode, tz, true)
+                        .unwrap()
+                        .is_none(),
+                    "'{ws_input}' should be null in {mode:?} mode on Spark 4.0+"
+                );
+            }
             // In ANSI mode the same inputs must raise an error (not silently return null).
             assert!(
                 timestamp_parser(ws_input, EvalMode::Ansi, tz, true).is_err(),
@@ -2594,7 +2599,7 @@ mod tests {
             );
         }
         // Without leading whitespace, these must be valid on all versions.
-        for ok_input in &["T2:30", "T2"] {
+        for ok_input in &["T2:30", "T2", "T1:2:3 +08:00", "T1:2:3.4 +08:00"] {
             assert!(
                 timestamp_parser(ok_input, EvalMode::Legacy, tz, true)
                     .unwrap()
