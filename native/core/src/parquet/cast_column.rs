@@ -14,6 +14,9 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+mod variant;
+
+use self::variant::normalize_variant_array;
 use arrow::{
     array::{make_array, Array, ArrayRef, LargeListArray, ListArray, MapArray, StructArray},
     compute::CastOptions,
@@ -26,6 +29,7 @@ use datafusion::common::format::DEFAULT_CAST_OPTIONS;
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::physical_expr::PhysicalExpr;
+use parquet::variant::VariantType;
 use std::{
     fmt::{self, Display},
     hash::Hash,
@@ -242,6 +246,18 @@ impl PhysicalExpr for CometCastColumnExpr {
 
     fn evaluate(&self, batch: &RecordBatch) -> DataFusionResult<ColumnarValue> {
         let value = self.expr.evaluate(batch)?;
+
+        if self.target_field.has_valid_extension_type::<VariantType>() {
+            return match value {
+                ColumnarValue::Array(array) => Ok(ColumnarValue::Array(normalize_variant_array(
+                    &array,
+                    &self.target_field,
+                )?)),
+                ColumnarValue::Scalar(_) => Err(DataFusionError::Execution(
+                    "Variant Parquet projection requires an array".to_string(),
+                )),
+            };
+        }
 
         // Use == (PartialEq) instead of equals_datatype because equals_datatype
         // ignores field names in nested types (Struct, List, Map). We need to detect
