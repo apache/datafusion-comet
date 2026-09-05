@@ -76,11 +76,11 @@ omitted from the tables below and may be reconsidered based on demand:
 
 ## Aggregation
 
-| Operator                  | Status | Notes                                                             |
-| ------------------------- | ------ | ----------------------------------------------------------------- |
-| `HashAggregateExec`       | ✅     |                                                                   |
-| `ObjectHashAggregateExec` | ✅     | Supports a limited set of aggregates, such as `bloom_filter_agg`. |
-| `SortAggregateExec`       | 🔜     | Falls back today; Comet currently accelerates hash aggregates.    |
+| Operator                  | Status | Notes                                                                                                                                                                                                                   |
+| ------------------------- | ------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `HashAggregateExec`       | ✅     |                                                                                                                                                                                                                         |
+| `ObjectHashAggregateExec` | ✅     | Supports a limited set of aggregates, such as `bloom_filter_agg`.                                                                                                                                                       |
+| `SortAggregateExec`       | ✅     | Requires Comet shuffle, since the intermediate buffer formats differ between Spark and Comet. Supports the same aggregates as `ObjectHashAggregateExec`; user-defined `TypedImperativeAggregate` UDAFs still fall back. |
 
 ## Joins
 
