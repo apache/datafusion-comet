@@ -120,6 +120,23 @@ omitted from the tables below and may be reconsidered based on demand:
 | ------------------------ | ------ | ----------------------------------------------------------------- |
 | `DataWritingCommandExec` | ⚠️     | Experimental native Parquet writes, disabled by default (opt-in). |
 
+## Typed Dataset operations
+
+Typed `Dataset` operations bracket a JVM object in a `DeserializeToObject` / `SerializeFromObject`
+pair. Neither operator can run natively on its own, because its input or output is a raw JVM object
+reference that has no Arrow representation. What Comet can do is fuse a whole sandwich back into a
+projection when everything between the pair is per-row, so the typed operation no longer forces a
+Spark fallback island in the middle of an otherwise native plan. The user closure still runs on the
+JVM, once per row, inside Comet's codegen dispatcher, so results match Spark exactly.
+
+| Operator                                                                     | Status | Notes                                                                                                                                                                                                                                                               |
+| ---------------------------------------------------------------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SerializeFromObjectExec` + `MapElementsExec` + `DeserializeToObjectExec`    | ⚠️     | The `ds.map(f)` sandwich is fused into a projection when `spark.comet.exec.typedDatasetMap.enabled=true` (off by default). Worth enabling when the typed operation sits between native operators ([#5710](https://github.com/apache/datafusion-comet/issues/5710)). |
+| `MapPartitionsExec`, `FlatMapGroupsExec`, `CoGroupExec`, `AppendColumnsExec` | 🔜     | These consume iterators or groups rather than rows, so there is no per-row expression to fuse. `AppendColumnsExec` is per-row but widens the schema and is not handled yet.                                                                                         |
+
+Typed filters (`ds.filter(func)`) do not produce this sandwich at all: Catalyst lowers them to an
+ordinary `FilterExec` whose condition is an `Invoke` of the closure, which Comet already dispatches.
+
 ## Python and UDF
 
 | Operator                                                                                | Status | Notes                                                                                                                        |

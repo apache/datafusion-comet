@@ -1001,6 +1001,11 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     sparkVersionSpecificExprToProtoInternal(expr, inputs, binding)
       .orElse(expr match {
 
+        case _ if expr.getTagValue(CometScalaUDF.FORCE_DISPATCH).isDefined =>
+          // A rewrite rule asked for this whole subtree to compile into one kernel rather than
+          // letting each child pick its own serde. See `CometScalaUDF.FORCE_DISPATCH`.
+          CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
+
         case UnaryExpression(child) if expr.prettyName == "promote_precision" =>
           // `UnaryExpression` includes `PromotePrecision` for Spark 3.3
           // `PromotePrecision` is just a wrapper, don't need to serialize it.
