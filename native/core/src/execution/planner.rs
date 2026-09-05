@@ -30,9 +30,9 @@ pub mod operator_registry;
 #[cfg(feature = "contrib-delta")]
 mod delta_scan;
 
-use crate::execution::operators::attach_join_dynamic_filter;
 use crate::execution::operators::init_csv_datasource_exec;
 use crate::execution::operators::AlignedArrowStreamReader;
+use crate::execution::operators::DynamicFilterJoinExec;
 use crate::execution::operators::IcebergScanExec;
 use crate::execution::operators::IcebergWriteExec;
 use crate::execution::operators::{PartitionedRankLimitExec, WindowFnKind};
@@ -2349,9 +2349,10 @@ impl PhysicalPlanner {
                 // (which matches DataFusion's default), and swap_inputs would turn LeftAnti
                 // into RightAnti, which DataFusion rejects with null_aware=true.
                 if join.build_side == BuildSide::BuildLeft as i32 || join.null_aware_anti_join {
-                    let hash_join = self.apply_join_dynamic_filter(
+                    let hash_join = Self::apply_join_dynamic_filter(
                         hash_join,
                         join.dynamic_filter_enabled && !join.null_aware_anti_join,
+                        self.session_ctx.copied_config().options(),
                     )?;
                     Ok((
                         scans,
@@ -2365,9 +2366,10 @@ impl PhysicalPlanner {
                 } else {
                     let swapped_hash_join =
                         hash_join.as_ref().swap_inputs(PartitionMode::Partitioned)?;
-                    let swapped_hash_join = self.apply_join_dynamic_filter(
+                    let swapped_hash_join = Self::apply_join_dynamic_filter(
                         swapped_hash_join,
                         join.dynamic_filter_enabled,
+                        self.session_ctx.copied_config().options(),
                     )?;
 
                     let mut additional_native_plans = vec![];
@@ -2633,17 +2635,36 @@ impl PhysicalPlanner {
         Arc::new(prepared)
     }
 
-    /// Connect the producer and consumer without running DataFusion's physical optimizer.
-    fn apply_join_dynamic_filter(
-        &self,
+    /// Attach after choosing the final build side, including the projection emitted
+    /// by `swap_inputs`, without running DataFusion's physical optimizer.
+    pub(crate) fn apply_join_dynamic_filter(
         plan: Arc<dyn ExecutionPlan>,
         enabled: bool,
+        config: &ConfigOptions,
     ) -> Result<Arc<dyn ExecutionPlan>, ExecutionError> {
         if !enabled {
             return Ok(plan);
         }
-        let config = self.session_ctx.copied_config();
-        Ok(attach_join_dynamic_filter(plan, config.options())?)
+        if let Some(projection) = plan.downcast_ref::<ProjectionExec>() {
+            let child =
+                Self::apply_join_dynamic_filter(Arc::clone(projection.input()), enabled, config)?;
+            return if !Arc::ptr_eq(&child, projection.input()) {
+                Ok(plan.with_new_children(vec![child])?)
+            } else {
+                Ok(plan)
+            };
+        }
+        let Some(join) = plan.downcast_ref::<HashJoinExec>() else {
+            log::debug!(
+                "Join dynamic filter skipped: unexpected plan shape {}",
+                plan.name()
+            );
+            return Ok(plan);
+        };
+        match DynamicFilterJoinExec::try_new(join, config)? {
+            Some(wrapper) => Ok(Arc::new(wrapper)),
+            None => Ok(plan),
+        }
     }
 
     #[allow(clippy::too_many_arguments)]

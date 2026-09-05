@@ -43,7 +43,6 @@ use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::execution_plan::CardinalityEffect;
 use datafusion::physical_plan::joins::{HashJoinExec, PartitionMode};
 use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, MetricBuilder, MetricsSet};
-use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, Distribution, ExecutionPlan, ExecutionPlanProperties,
@@ -195,7 +194,7 @@ impl ExecutionPlan for DynamicFilterExec {
 /// Keep an unexecuted template here and create the producer and consumer together
 /// for each stream. Only their metric handles are retained by the Spark plan.
 #[derive(Debug)]
-struct DynamicFilterJoinExec {
+pub(crate) struct DynamicFilterJoinExec {
     template: HashJoinExec,
     config: ConfigOptions,
     metrics: ExecutionPlanMetricsSet,
@@ -299,6 +298,15 @@ fn try_attach_parquet_reader_filter(
 }
 
 impl DynamicFilterJoinExec {
+    /// Return no wrapper when the join cannot safely use a runtime filter.
+    pub(crate) fn try_new(join: &HashJoinExec, config: &ConfigOptions) -> Result<Option<Self>> {
+        if let Some(reason) = ineligible_reason(join, config)? {
+            log::debug!("Join dynamic filter skipped: {reason}");
+            return Ok(None);
+        }
+        Ok(Some(Self::new(join, config.clone())?))
+    }
+
     fn new(join: &HashJoinExec, config: ConfigOptions) -> Result<Self> {
         Ok(Self {
             template: join.builder().reset_state().build()?,
@@ -428,7 +436,10 @@ impl ExecutionPlan for DynamicFilterJoinExec {
             .reset_state()
             .with_new_children(children)?
             .build()?;
-        attach_join_dynamic_filter(Arc::new(join), &self.config)
+        match Self::try_new(&join, &self.config)? {
+            Some(wrapper) => Ok(Arc::new(wrapper)),
+            None => Ok(Arc::new(join)),
+        }
     }
 
     fn reset_state(self: Arc<Self>) -> Result<Arc<dyn ExecutionPlan>> {
@@ -459,34 +470,6 @@ impl ExecutionPlan for DynamicFilterJoinExec {
     fn partition_statistics(&self, partition: Option<usize>) -> Result<Arc<Statistics>> {
         self.template.partition_statistics(partition)
     }
-}
-
-/// Attach after choosing the final build side, including the projection emitted
-/// by `swap_inputs`. The wrapper owns both join and dedicated filter metrics.
-pub(crate) fn attach_join_dynamic_filter(
-    plan: Arc<dyn ExecutionPlan>,
-    config: &ConfigOptions,
-) -> Result<Arc<dyn ExecutionPlan>> {
-    if let Some(projection) = plan.downcast_ref::<ProjectionExec>() {
-        let child = attach_join_dynamic_filter(Arc::clone(projection.input()), config)?;
-        return if !Arc::ptr_eq(&child, projection.input()) {
-            plan.with_new_children(vec![child])
-        } else {
-            Ok(plan)
-        };
-    }
-    let Some(join) = plan.downcast_ref::<HashJoinExec>() else {
-        log::debug!(
-            "Join dynamic filter skipped: unexpected plan shape {}",
-            plan.name()
-        );
-        return Ok(plan);
-    };
-    if let Some(reason) = ineligible_reason(join, config)? {
-        log::debug!("Join dynamic filter skipped: {reason}");
-        return Ok(plan);
-    }
-    Ok(Arc::new(DynamicFilterJoinExec::new(join, config.clone())?))
 }
 
 fn ineligible_reason(join: &HashJoinExec, config: &ConfigOptions) -> Result<Option<&'static str>> {

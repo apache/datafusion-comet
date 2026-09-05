@@ -19,6 +19,7 @@ use super::*;
 use std::fmt::Display;
 use std::hash::{Hash, Hasher};
 
+use crate::execution::planner::PhysicalPlanner;
 use crate::parquet::parquet_exec::init_datasource_exec;
 use arrow::array::{ArrayRef, BooleanArray, Int32Array, Int64Array, Int8Array, RecordBatch};
 use arrow::compute::cast;
@@ -32,6 +33,7 @@ use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::physical_plan::collect;
 use datafusion::physical_plan::filter::FilterExec;
 use datafusion::physical_plan::metrics::MetricValue;
+use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_comet_spark_expr::RandExpr;
 use datafusion_datasource::file::FileSource;
@@ -303,8 +305,9 @@ async fn completed_build_filters_both_sides_and_session_inlist_settings() {
                     let build = input(build_values.clone(), &key_type, 1);
                     let probe = input((-100..=100).map(Some).chain([None]).collect(), &key_type, 0);
                     let plain = join(Arc::clone(&build), Arc::clone(&probe), swap);
-                    let attached = attach_join_dynamic_filter(
+                    let attached = PhysicalPlanner::apply_join_dynamic_filter(
                         join(build, probe, swap),
+                        true,
                         session.copied_config().options(),
                     )
                     .unwrap();
@@ -401,7 +404,8 @@ fn plain_join() -> HashJoinExec {
 
 fn assert_skipped(join: HashJoinExec, config: &ConfigOptions) {
     let plain: Arc<dyn ExecutionPlan> = Arc::new(join);
-    let attached = attach_join_dynamic_filter(Arc::clone(&plain), config).unwrap();
+    let attached =
+        PhysicalPlanner::apply_join_dynamic_filter(Arc::clone(&plain), true, config).unwrap();
     assert!(
         Arc::ptr_eq(&plain, &attached),
         "fallback must preserve the original plan"
@@ -490,8 +494,12 @@ fn skips_unsupported_keys_and_multiple_native_partitions() {
             input(vec![Some(10)], &key_type, 0),
             false,
         );
-        let same =
-            attach_join_dynamic_filter(Arc::clone(&plan), &ConfigOptions::default()).unwrap();
+        let same = PhysicalPlanner::apply_join_dynamic_filter(
+            Arc::clone(&plan),
+            true,
+            &ConfigOptions::default(),
+        )
+        .unwrap();
         assert!(Arc::ptr_eq(&plan, &same));
     }
     let plain = plain_join();
@@ -551,7 +559,12 @@ async fn independent_attempts_do_not_share_build_domains() {
             input(vec![Some(5), Some(90)], &DataType::Int32, 0),
             false,
         );
-        let attached = attach_join_dynamic_filter(plan, session.copied_config().options()).unwrap();
+        let attached = PhysicalPlanner::apply_join_dynamic_filter(
+            plan,
+            true,
+            session.copied_config().options(),
+        )
+        .unwrap();
         let output = collect(Arc::clone(&attached), session.task_ctx())
             .await
             .unwrap();
@@ -932,8 +945,12 @@ async fn reader_filter_does_not_cross_fetch_limits() {
             .unwrap()]);
             let join = single_key_join_plans(build, probe, PartitionMode::Partitioned);
             let plan: Arc<dyn ExecutionPlan> = if enabled {
-                attach_join_dynamic_filter(Arc::new(join), session.copied_config().options())
-                    .unwrap()
+                PhysicalPlanner::apply_join_dynamic_filter(
+                    Arc::new(join),
+                    true,
+                    session.copied_config().options(),
+                )
+                .unwrap()
             } else {
                 Arc::new(join)
             };
@@ -991,7 +1008,12 @@ async fn reader_filter_does_not_cross_seeded_rand_probe_filter() {
             PartitionMode::Partitioned,
         );
         let plan: Arc<dyn ExecutionPlan> = if enabled {
-            attach_join_dynamic_filter(Arc::new(join), session.copied_config().options()).unwrap()
+            PhysicalPlanner::apply_join_dynamic_filter(
+                Arc::new(join),
+                true,
+                session.copied_config().options(),
+            )
+            .unwrap()
         } else {
             Arc::new(join)
         };
@@ -1073,7 +1095,12 @@ async fn run_parquet_join(values: Vec<i32>, enabled: bool) -> (usize, usize, usi
     let probe = Arc::clone(&filter) as Arc<dyn ExecutionPlan>;
     let join = single_key_join_plans(two_batch_build(), probe, PartitionMode::Partitioned);
     let plan: Arc<dyn ExecutionPlan> = if enabled {
-        attach_join_dynamic_filter(Arc::new(join), session.copied_config().options()).unwrap()
+        PhysicalPlanner::apply_join_dynamic_filter(
+            Arc::new(join),
+            true,
+            session.copied_config().options(),
+        )
+        .unwrap()
     } else {
         Arc::new(join)
     };
@@ -1388,5 +1415,99 @@ async fn executions_and_resets_have_independent_producers() {
             90
         );
         assert_eq!(pool.reserved(), 0);
+    }
+}
+
+#[tokio::test]
+async fn child_replacement_rechecks_join_key_types() {
+    let session = SessionContext::new();
+    for mode in [PartitionMode::Partitioned, PartitionMode::CollectLeft] {
+        let join = plain_join()
+            .builder()
+            .with_partition_mode(mode)
+            .build()
+            .unwrap();
+        let plan = Arc::new(
+            DynamicFilterJoinExec::try_new(&join, &ConfigOptions::default())
+                .unwrap()
+                .unwrap(),
+        );
+        for (key_type, supported) in [
+            (DataType::Int64, true),
+            (DataType::Float64, false),
+            (DataType::Utf8, false),
+        ] {
+            let rewritten = Arc::clone(&plan)
+                .with_new_children(vec![
+                    input(vec![Some(90)], &key_type, 1),
+                    input(vec![Some(5), Some(90)], &key_type, 0),
+                ])
+                .unwrap();
+            assert_eq!(rewritten.is::<DynamicFilterJoinExec>(), supported);
+            if !supported {
+                assert!(rewritten
+                    .downcast_ref::<HashJoinExec>()
+                    .unwrap()
+                    .dynamic_filter_expr()
+                    .is_none());
+            }
+            let output = collect(Arc::clone(&rewritten), session.task_ctx())
+                .await
+                .unwrap();
+            assert_eq!(row_count(&output), 1);
+            if supported {
+                assert_eq!(metric(&rewritten, "dynamic_filter_rows_pruned"), 1);
+                let reset = rewritten.reset_state().unwrap();
+                assert!(reset.is::<DynamicFilterJoinExec>());
+                let reset_output = collect(Arc::clone(&reset), session.task_ctx())
+                    .await
+                    .unwrap();
+                assert_eq!(row_count(&reset_output), 1);
+                assert_eq!(metric(&reset, "dynamic_filter_rows_pruned"), 1);
+            }
+        }
+    }
+}
+
+#[test]
+fn child_replacement_rechecks_native_partition_counts() {
+    for mode in [PartitionMode::Partitioned, PartitionMode::CollectLeft] {
+        let join = plain_join()
+            .builder()
+            .with_partition_mode(mode)
+            .build()
+            .unwrap();
+        let plan = Arc::new(
+            DynamicFilterJoinExec::try_new(&join, &ConfigOptions::default())
+                .unwrap()
+                .unwrap(),
+        );
+        for replace_build in [false, true] {
+            let schema = if replace_build {
+                join.left().schema()
+            } else {
+                join.right().schema()
+            };
+            let two_partitions: Arc<dyn ExecutionPlan> = MemorySourceConfig::try_new_exec(
+                &[
+                    vec![RecordBatch::new_empty(Arc::clone(&schema))],
+                    vec![RecordBatch::new_empty(Arc::clone(&schema))],
+                ],
+                schema,
+                None,
+            )
+            .unwrap();
+            let children = if replace_build {
+                vec![two_partitions, Arc::clone(join.right())]
+            } else {
+                vec![Arc::clone(join.left()), two_partitions]
+            };
+            let rewritten = Arc::clone(&plan).with_new_children(children).unwrap();
+            assert!(rewritten
+                .downcast_ref::<HashJoinExec>()
+                .unwrap()
+                .dynamic_filter_expr()
+                .is_none());
+        }
     }
 }
