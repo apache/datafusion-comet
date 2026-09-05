@@ -23,9 +23,9 @@ use jni::{
     Env,
 };
 
-/// A struct that holds all the JNI methods and fields for JVM `org.apache.arrow.c.ArrowArrayStream`
-/// class. `memoryAddress()` is read once per partition so native can take ownership of the
-/// underlying C struct via `AlignedArrowStreamReader::from_raw`.
+/// A struct that holds all the JNI methods and fields for the JVM `ArrowArrayStream` class.
+/// `memoryAddress()` is read once per partition so native can take ownership of the underlying C
+/// struct via `AlignedArrowStreamReader::from_raw`.
 #[allow(dead_code)] // we need to keep references to Java items to prevent GC
 pub struct ArrowArrayStream<'a> {
     pub class: JClass<'a>,
@@ -34,14 +34,24 @@ pub struct ArrowArrayStream<'a> {
 }
 
 impl<'a> ArrowArrayStream<'a> {
-    pub const JVM_CLASS: &'static str = "org/apache/arrow/c/ArrowArrayStream";
+    const SHADED_JVM_CLASS: &'static str = "org/apache/comet/shaded/arrow/c/ArrowArrayStream";
+    const UNSHADED_JVM_CLASS: &'static str = "org/apache/arrow/c/ArrowArrayStream";
 
     pub fn new(env: &mut Env<'a>) -> JniResult<ArrowArrayStream<'a>> {
-        let class = env.find_class(JNIString::new(Self::JVM_CLASS))?;
+        let (class, class_name) = match env.find_class(JNIString::new(Self::SHADED_JVM_CLASS)) {
+            Ok(class) => (class, Self::SHADED_JVM_CLASS),
+            Err(_) => {
+                env.exception_clear();
+                (
+                    env.find_class(JNIString::new(Self::UNSHADED_JVM_CLASS))?,
+                    Self::UNSHADED_JVM_CLASS,
+                )
+            }
+        };
 
         Ok(ArrowArrayStream {
             method_memory_address: env.get_method_id(
-                JNIString::new(Self::JVM_CLASS),
+                JNIString::new(class_name),
                 jni::jni_str!("memoryAddress"),
                 jni::jni_sig!("()J"),
             )?,
