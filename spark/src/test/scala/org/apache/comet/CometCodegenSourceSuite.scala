@@ -114,6 +114,24 @@ class CometCodegenSourceSuite extends AnyFunSuite {
       s"expected nullable isNullAt to delegate to the Arrow vector; got:\n$src")
   }
 
+  test("nullable struct delegates isNullAt to Arrow isNull") {
+    val structType = StructType(Seq(StructField("i", IntegerType, nullable = true)))
+    val structSpec = StructColumnSpec(
+      nullable = true,
+      fields = Seq(
+        StructFieldSpec(
+          "i",
+          IntegerType,
+          nullable = true,
+          ScalarColumnSpec(
+            CometBatchKernelCodegen.vectorClassBySimpleName("IntVector"),
+            nullable = true))))
+    val src = gen(BoundReference(0, structType, nullable = true), structSpec)
+    assert(
+      src.contains("case 0: return this.col0.isNull(this.rowIdx);"),
+      s"expected nullable StructVector to use Arrow isNull; got:\n$src")
+  }
+
   test("VarCharVector getUTF8String uses zero-copy fromAddress") {
     val expr = Length(BoundReference(0, StringType, nullable = true))
     val src = gen(expr, nullableString)
