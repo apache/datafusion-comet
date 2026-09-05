@@ -190,8 +190,7 @@ fn parquet_convert_array_impl(
     use DataType::*;
     let from_type = array.data_type();
 
-    // Try Comet specific handlers first, then arrow-rs cast if supported,
-    // return uncasted data otherwise
+    // Try Comet specific handlers first, then arrow-rs cast if supported, and fail otherwise.
     match (from_type, to_type) {
         (Struct(_), Struct(_)) => Ok(parquet_convert_struct_to_struct(
             array.as_struct(),
@@ -208,12 +207,12 @@ fn parquet_convert_array_impl(
                 false,
             )?;
 
-            Ok(Arc::new(ListArray::new(
+            Ok(Arc::new(ListArray::try_new(
                 Arc::clone(to_inner_type),
                 list_arr.offsets().clone(),
                 cast_field,
                 list_arr.nulls().cloned(),
-            )))
+            )?))
         }
         (
             Timestamp(TimeUnit::Millisecond, _),
@@ -274,7 +273,13 @@ fn parquet_convert_array_impl(
         _ if can_cast_types(from_type, to_type) => {
             Ok(cast_with_options(&array, to_type, &PARQUET_OPTIONS)?)
         }
-        _ => Ok(array),
+        // Every pair reaching here should already have passed the schema adapter's
+        // `check_conversion` (Spark's `getUpdater` matrix), so this is a gap in that gate. Fail
+        // instead of handing back an array of the wrong type, which a parent `StructArray` /
+        // `ListArray` constructor would otherwise panic on (#5671).
+        _ => Err(DataFusionError::Execution(format!(
+            "Unsupported Parquet type conversion from {from_type} to {to_type}"
+        ))),
     }
 }
 
@@ -284,6 +289,89 @@ fn field_id(field: &arrow::datatypes::Field) -> Option<i32> {
         .metadata()
         .get(PARQUET_FIELD_ID_META_KEY)
         .and_then(|v| v.parse::<i32>().ok())
+}
+
+/// Resolve each requested (`to`) struct field to the index of the file (`from`) field it reads
+/// from, or `None` when the file holds no such field. Mirrors Spark's `clipParquetGroupFields`:
+/// when the requested struct carries Parquet field IDs anywhere (and `use_field_id` is set),
+/// ID-bearing requested fields match ONLY by ID (a missing ID is a missing column, never a name
+/// fallback); other fields match by name, folded with the same `toLowerCase(Locale.ROOT)` fold
+/// the top-level schema adapter uses when `case_sensitive` is false. A requested field whose
+/// folded name matches more than one file field in case-insensitive mode raises Spark's
+/// `foundDuplicateFieldInCaseInsensitiveModeError`.
+///
+/// Shared by the runtime convert (`parquet_convert_struct_to_struct`) and the plan-time
+/// conversion check in `schema_adapter`, so both resolve nested fields identically.
+pub(crate) fn match_struct_fields(
+    from_fields: &[FieldRef],
+    to_fields: &[FieldRef],
+    parquet_options: &SparkParquetOptions,
+) -> DataFusionResult<Vec<Option<usize>>> {
+    let should_match_by_id =
+        parquet_options.use_field_id && to_fields.iter().any(|f| field_id(f).is_some());
+
+    let from_id_to_index: HashMap<i32, usize> = if should_match_by_id {
+        let mut map = HashMap::new();
+        for (i, field) in from_fields.iter().enumerate() {
+            if let Some(id) = field_id(field) {
+                map.entry(id).or_insert(i);
+            }
+        }
+        map
+    } else {
+        HashMap::new()
+    };
+
+    // Fold the file (`from`) and requested (`to`) field names once via the JVM's
+    // `toLowerCase(Locale.ROOT)` (the same fold the top-level schema adapter uses), so
+    // nested case-insensitive matching is byte-for-byte consistent with the top level.
+    let mut all_names: Vec<&str> = Vec::with_capacity(from_fields.len() + to_fields.len());
+    all_names.extend(from_fields.iter().map(|f| f.name().as_str()));
+    all_names.extend(to_fields.iter().map(|f| f.name().as_str()));
+    let all_folded = fold_names(&all_names, parquet_options.case_sensitive);
+    let (from_folded, to_folded) = all_folded.split_at(from_fields.len());
+
+    // Group file field indices by folded name so a case-insensitive collision is detected
+    // (Spark's `caseInsensitiveParquetFieldMap`) rather than silently overwritten.
+    let mut folded_to_indices: HashMap<&str, Vec<usize>> = HashMap::new();
+    for (i, folded) in from_folded.iter().enumerate() {
+        folded_to_indices
+            .entry(folded.as_str())
+            .or_default()
+            .push(i);
+    }
+
+    to_fields
+        .iter()
+        .enumerate()
+        .map(
+            |(to_pos, to_field)| match (should_match_by_id, field_id(to_field)) {
+                // Spark treats a missing ID match as a missing column rather than
+                // falling back to name match.
+                (true, Some(id)) => Ok(from_id_to_index.get(&id).copied()),
+                _ => match folded_to_indices.get(to_folded[to_pos].as_str()) {
+                    // Mirror Spark's `foundDuplicateFieldInCaseInsensitiveModeError`: a
+                    // requested field matching more than one file field is ambiguous. Gated on
+                    // case-insensitive mode to match the top-level check (which only runs when
+                    // `!case_sensitive`): when case-sensitive the fold is identity, so a
+                    // collision means byte-identical sibling names, and raising an error whose
+                    // message says "in case-insensitive mode" would be wrong. Fall through to
+                    // the first match in that case.
+                    Some(indices) if indices.len() > 1 && !parquet_options.case_sensitive => {
+                        let matched: Vec<&str> = indices
+                            .iter()
+                            .map(|&i| from_fields[i].name().as_str())
+                            .collect();
+                        Err(DataFusionError::External(Box::new(
+                            SparkError::duplicate_field_case_insensitive(to_field.name(), &matched),
+                        )))
+                    }
+                    Some(indices) => Ok(Some(indices[0])),
+                    None => Ok(None),
+                },
+            },
+        )
+        .collect()
 }
 
 /// Cast between struct types based on logic in
@@ -296,77 +384,11 @@ fn parquet_convert_struct_to_struct(
 ) -> DataFusionResult<ArrayRef> {
     match (from_type, to_type) {
         (DataType::Struct(from_fields), DataType::Struct(to_fields)) => {
-            // Match `from` (file) fields to `to` (logical) fields. Mirrors Spark's
-            // `clipParquetGroupFields`: when the logical struct carries Parquet field IDs
-            // anywhere, ID-bearing logical fields match ONLY by ID; non-ID-bearing fields
-            // fall back to name match. When no logical field carries an ID, fall back to
-            // name match across the board.
-            let should_match_by_id =
-                parquet_options.use_field_id && to_fields.iter().any(|f| field_id(f).is_some());
-
-            let from_id_to_index: HashMap<i32, usize> = if should_match_by_id {
-                let mut map = HashMap::new();
-                for (i, field) in from_fields.iter().enumerate() {
-                    if let Some(id) = field_id(field) {
-                        map.entry(id).or_insert(i);
-                    }
-                }
-                map
-            } else {
-                HashMap::new()
-            };
-
-            // Fold the file (`from`) and requested (`to`) field names once via the JVM's
-            // `toLowerCase(Locale.ROOT)` (the same fold the top-level schema adapter uses), so
-            // nested case-insensitive matching is byte-for-byte consistent with the top level.
-            let mut all_names: Vec<&str> = Vec::with_capacity(from_fields.len() + to_fields.len());
-            all_names.extend(from_fields.iter().map(|f| f.name().as_str()));
-            all_names.extend(to_fields.iter().map(|f| f.name().as_str()));
-            let all_folded = fold_names(&all_names, parquet_options.case_sensitive);
-            let (from_folded, to_folded) = all_folded.split_at(from_fields.len());
-
-            // Group file field indices by folded name so a case-insensitive collision is detected
-            // (Spark's `caseInsensitiveParquetFieldMap`) rather than silently overwritten.
-            let mut folded_to_indices: HashMap<&str, Vec<usize>> = HashMap::new();
-            for (i, folded) in from_folded.iter().enumerate() {
-                folded_to_indices
-                    .entry(folded.as_str())
-                    .or_default()
-                    .push(i);
-            }
+            let from_indices = match_struct_fields(from_fields, to_fields, parquet_options)?;
 
             let mut field_overlap = false;
             let mut cast_fields: Vec<ArrayRef> = Vec::with_capacity(to_fields.len());
-            for (to_pos, to_field) in to_fields.iter().enumerate() {
-                let from_index = match (should_match_by_id, field_id(to_field)) {
-                    // Spark treats a missing ID match as a missing column rather than
-                    // falling back to name match.
-                    (true, Some(id)) => from_id_to_index.get(&id).copied(),
-                    _ => match folded_to_indices.get(to_folded[to_pos].as_str()) {
-                        // Mirror Spark's `foundDuplicateFieldInCaseInsensitiveModeError`: a
-                        // requested field matching more than one file field is ambiguous. Gated on
-                        // case-insensitive mode to match the top-level check (which only runs when
-                        // `!case_sensitive`): when case-sensitive the fold is identity, so a
-                        // collision means byte-identical sibling names, and raising an error whose
-                        // message says "in case-insensitive mode" would be wrong. Fall through to
-                        // the first match in that case.
-                        Some(indices) if indices.len() > 1 && !parquet_options.case_sensitive => {
-                            let matched: Vec<&str> = indices
-                                .iter()
-                                .map(|&i| from_fields[i].name().as_str())
-                                .collect();
-                            return Err(DataFusionError::External(Box::new(
-                                SparkError::duplicate_field_case_insensitive(
-                                    to_field.name(),
-                                    &matched,
-                                ),
-                            )));
-                        }
-                        Some(indices) => Some(indices[0]),
-                        None => None,
-                    },
-                };
-
+            for (to_field, from_index) in to_fields.iter().zip(from_indices) {
                 if let Some(from_index) = from_index {
                     cast_fields.push(parquet_convert_array_impl(
                         Arc::clone(array.column(from_index)),
@@ -393,11 +415,11 @@ fn parquet_convert_struct_to_struct(
                     array.nulls().cloned()
                 };
 
-            Ok(Arc::new(StructArray::new(
+            Ok(Arc::new(StructArray::try_new(
                 to_fields.clone(),
                 cast_fields,
                 nulls,
-            )))
+            )?))
         }
         _ => unreachable!(),
     }
@@ -433,17 +455,17 @@ fn parquet_convert_map_to_map(
                 false,
             )?;
 
-            Ok(Arc::new(MapArray::new(
+            Ok(Arc::new(MapArray::try_new(
                 Arc::<arrow::datatypes::Field>::clone(entries_field),
                 from.offsets().clone(),
-                StructArray::new(
+                StructArray::try_new(
                     Fields::from(vec![key_field, value_field]),
                     vec![key_array, value_array],
                     from.entries().nulls().cloned(),
-                ),
+                )?,
                 from.nulls().cloned(),
                 to_ordered,
-            )))
+            )?))
         }
         dt => Err(DataFusionError::Internal(format!(
             "Expected MapType. Got: {dt}"
@@ -684,6 +706,34 @@ mod tests {
     ) -> Result<(ObjectStoreUrl, Path), ExecutionError> {
         use crate::parquet::parquet_support::prepare_object_store_with_configs;
         prepare_object_store_with_configs(runtime_env, url, &HashMap::new())
+    }
+
+    /// A conversion the schema adapter should have rejected must surface as an error, never
+    /// as a mismatched child array that `StructArray::new` panics on (#5671).
+    #[test]
+    fn convert_list_to_int_inside_struct_errors_instead_of_panicking() {
+        use crate::parquet::parquet_support::{spark_parquet_convert, SparkParquetOptions};
+        use arrow::array::{Array, ListArray, StructArray};
+        use arrow::datatypes::{DataType, Field, Fields, Int32Type};
+        use datafusion::physical_plan::ColumnarValue;
+        use datafusion_comet_spark_expr::EvalMode;
+        use std::sync::Arc;
+
+        let list = ListArray::from_iter_primitive::<Int32Type, _, _>(vec![Some(vec![Some(1)])]);
+        let from_fields = Fields::from(vec![Field::new("x", list.data_type().clone(), true)]);
+        let array = StructArray::new(from_fields, vec![Arc::new(list)], None);
+        let to_type = DataType::Struct(Fields::from(vec![Field::new("x", DataType::Int32, true)]));
+        let err = spark_parquet_convert(
+            ColumnarValue::Array(Arc::new(array)),
+            &to_type,
+            &SparkParquetOptions::new(EvalMode::Legacy, "UTC", false),
+        )
+        .expect_err("array<int> -> int must be an error");
+        assert!(
+            err.to_string()
+                .contains("Unsupported Parquet type conversion"),
+            "unexpected error: {err}"
+        );
     }
 
     #[cfg(not(feature = "hdfs-opendal"))]
