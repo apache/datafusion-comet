@@ -1969,18 +1969,22 @@ object CometIcebergNativeScanMetadata extends Logging {
    *   Path to the table metadata file (already extracted)
    * @param catalogProperties
    *   Catalog properties for FileIO (already extracted)
+   * @param tasks
+   *   The scan's FileScanTasks (already extracted). Passed in rather than re-read via
+   *   [[IcebergReflection.getTasks]], which for a staged scan rebuilds a flattened list of every
+   *   task on each call.
    * @return
    *   Some(metadata) if all reflection succeeds, None to trigger fallback
    */
   def extract(
       scan: Any,
       metadataLocation: String,
-      catalogProperties: Map[String, String]): Option[CometIcebergNativeScanMetadata] = {
+      catalogProperties: Map[String, String],
+      tasks: java.util.List[_]): Option[CometIcebergNativeScanMetadata] = {
     import org.apache.comet.iceberg.IcebergReflection._
 
     for {
       table <- getTable(scan)
-      tasks <- getTasks(scan)
       scanSchema <- getExpectedSchema(scan)
       tableSchema <- getSchema(table)
     } yield {
