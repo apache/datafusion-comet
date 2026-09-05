@@ -35,10 +35,10 @@ INSERT INTO test_round VALUES
  (cast('Infinity' as double), cast('Infinity' as float), 0.0, 0, 0),
  (cast('-Infinity' as double), cast('-Infinity' as float), 0.0, 0, 0)
 
-query
+query expect_dispatch(round)
 SELECT d, round(d), round(d, 0), round(d, 2), round(d, -1) FROM test_round
 
-query
+query expect_dispatch(round)
 SELECT f, round(f), round(f, 0), round(f, 2), round(f, -1) FROM test_round
 
 -- Null scale makes the whole result null without evaluating the child.
@@ -46,10 +46,10 @@ query
 SELECT round(d, NULL), round(f, NULL) FROM test_round
 
 -- Decimal and integral inputs stay on the native path.
-query
+query expect_native(round)
 SELECT dec, round(dec), round(dec, 2), round(dec, -1) FROM test_round
 
-query
+query expect_native(round)
 SELECT i, round(i, 0), round(i, -1), round(l, -1) FROM test_round
 
 -- Doubles whose shortest decimal representation rounds differently than the exact binary value.
@@ -63,12 +63,18 @@ CREATE TABLE test_round_repr(d double) USING parquet
 statement
 INSERT INTO test_round_repr VALUES (-5.81855622136895E8), (6.1317116247283497E18)
 
-query
+query expect_dispatch(round)
 SELECT d, round(d, 5), round(d, -5) FROM test_round_repr
 
--- literal + literal
-query
-SELECT round(123.456, 2), round(2.5, 0), round(3.5, 0), round(-2.5, 0), round(NULL, 0)
+-- literal + literal. Unsuffixed decimal literals keep the native path; the D / F suffixed ones
+-- are float and double, so they dispatch.
+query expect_native(round)
+SELECT round(123.456, 2), round(2.5, 0), round(3.5, 0), round(-2.5, 0)
 
-query
+-- `round(NULL, 0)` is not a decimal: the untyped null is implicitly cast to double, so this one
+-- dispatches. Kept in its own query because a single query carries a single mode.
+query expect_dispatch(round)
+SELECT round(NULL, 0)
+
+query expect_dispatch(round)
 SELECT round(2.5D, 0), round(3.5D, 0), round(-2.5D, 0), round(2.5F, 0), round(-2.5F, 0)
