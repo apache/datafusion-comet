@@ -40,17 +40,11 @@ INSERT INTO names VALUES(1, 'James', 'B', 'Taylor'), (2, 'Smith', 'C', 'Davis'),
 query
 SELECT concat_ws(' ', first_name, middle_initial, last_name) FROM names
 
--- literal + literal + literal (declined natively when all args are foldable; routed through the
--- JVM codegen dispatcher, or falls back to Spark when the dispatcher is disabled)
+-- All-scalar inputs retain codegen dispatch.
 query spark_answer_only
 SELECT concat_ws(',', 'hello', 'world'), concat_ws(',', '', ''), concat_ws(',', NULL, 'b', 'c'), concat_ws(NULL, 'a', 'b')
 
--- https://github.com/apache/datafusion-comet/issues/5675
--- Spark accepts array<string> arguments after the separator and flattens their elements into the
--- strings to join (skipping null elements). DataFusion's concat_ws rejects list arguments, so
--- ConcatWs mixes in CodegenDispatchFallback: these calls route through the JVM codegen dispatcher
--- (Spark's own ConcatWs.doGenCode inside the Comet pipeline) and stay native while matching Spark
--- exactly.
+-- Mixed string and array arguments execute natively.
 statement
 CREATE TABLE test_concat_ws_array(arr array<string>, s string) USING parquet
 
@@ -85,3 +79,14 @@ SELECT concat_ws(NULL, arr, s) FROM test_concat_ws_array
 -- literal array arguments
 query
 SELECT concat_ws(',', array('a', 'b'), 'c'), concat_ws(',', array('x', NULL, 'y')), concat_ws(',', CAST(array() AS array<string>), 'w')
+
+-- Non-foldable separators, including empty strings and NULL.
+query
+SELECT concat_ws(s, arr, 'tail', arr), concat_ws(s) FROM test_concat_ws_array
+
+-- Empty strings count as elements; null strings, arrays, and elements do not.
+query
+SELECT concat_ws(',', array('', NULL, 'é'), s, CAST(NULL AS array<string>), array(NULL, '', '世界')) FROM test_concat_ws_array
+
+query
+SELECT concat_ws(','), concat_ws(NULL), concat_ws(',', array(NULL, NULL)), concat_ws(',', CAST(NULL AS array<string>))

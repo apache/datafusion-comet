@@ -26,6 +26,31 @@ mod tests {
     use datafusion_comet_spark_expr::register_all_comet_functions;
 
     #[tokio::test]
+    async fn test_concat_ws_array_arguments() -> Result<()> {
+        use arrow::array::{AsArray, StringArray};
+
+        let ctx = SessionContext::new();
+        let state = ctx.state();
+        let udf = create_comet_physical_fun("concat_ws", DataType::Utf8, &state, None)?;
+        ctx.register_udf(udf.as_ref().clone());
+        let results = ctx
+            .sql(
+                "SELECT concat_ws(sep, make_array(a, NULL, b), 'tail', make_array(b, a))
+                 FROM (VALUES ('|', '', 'é'), ('', NULL, 'x'), (NULL, 'a', 'b'))
+                 AS t(sep, a, b)",
+            )
+            .await?
+            .collect()
+            .await?;
+        assert_eq!(results.len(), 1);
+        assert_eq!(
+            results[0].column(0).as_string::<i32>(),
+            &StringArray::from(vec![Some("|é|tail|é|"), Some("xtailx"), None])
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn test_udf_registration() -> Result<()> {
         // 1. Setup session with UDF registration of existing Spark-compatible expression
         let mut session_state = SessionStateBuilder::new().build();
