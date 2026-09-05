@@ -186,6 +186,19 @@ object CometCast
       return unsupported(fromType, toType)
     }
 
+    // Spark 4.0's collation metadata rides on `StringType`, but `serializeDataType` maps every
+    // `StringType` to the same proto id, so a non-default collation is dropped on the way into
+    // the native plan with no warning. Reject the cast outright rather than relying on the
+    // pattern matching below, which only misses collated types because `DataTypes.StringType` is
+    // the default-collation singleton and Scala pattern equality happens not to match. This runs
+    // above the `fromType == toType` shortcut so that an identity cast on a collated type is
+    // checked too, and `hasNonDefaultStringCollation` walks nested element, key, value, and field
+    // types. The version-shimmed helper returns false on Spark 3.x, where collation does not
+    // exist. See https://github.com/apache/datafusion-comet/issues/4489.
+    if (hasNonDefaultStringCollation(fromType) || hasNonDefaultStringCollation(toType)) {
+      return unsupported(fromType, toType)
+    }
+
     if (fromType == toType) {
       return Compatible()
     }
