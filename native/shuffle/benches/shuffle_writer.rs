@@ -173,6 +173,35 @@ fn criterion_benchmark(c: &mut Criterion) {
             },
         );
     }
+    group.finish();
+
+    // High partition counts stress the per-partition write path (one short-lived
+    // buffered writer per partition), which low counts barely exercise; compression
+    // is disabled to isolate it. Few samples: each iteration is a full end-to-end
+    // write across thousands of partitions.
+    let mut high_partition_group = c.benchmark_group("shuffle_writer_high_partition");
+    high_partition_group.sample_size(10);
+    for num_partitions in [200usize, 2000, 8000] {
+        high_partition_group.bench_function(
+            format!("shuffle_writer: end to end (partitions={num_partitions}, compression=None)"),
+            |b| {
+                let ctx = SessionContext::new();
+                let exec = create_shuffle_writer_exec(
+                    CompressionCodec::None,
+                    CometPartitioning::Hash(vec![Arc::new(Column::new("a", 0))], num_partitions),
+                    8192,
+                    10,
+                );
+                b.iter(|| {
+                    let task_ctx = ctx.task_ctx();
+                    let stream = exec.execute(0, task_ctx).unwrap();
+                    let rt = Runtime::new().unwrap();
+                    rt.block_on(collect(stream)).unwrap();
+                });
+            },
+        );
+    }
+    high_partition_group.finish();
 }
 
 fn create_shuffle_writer_exec(

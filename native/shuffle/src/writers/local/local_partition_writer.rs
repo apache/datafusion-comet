@@ -43,7 +43,12 @@ use std::sync::Arc;
 ///   boundaries. They hold the raw output writer and block writer directly.
 enum DataOutput {
     /// Single-partition output: one long-lived writer streams all batches.
-    Single(BufBatchWriter<ShuffleBlockWriter, File>),
+    Single {
+        writer: BufBatchWriter<ShuffleBlockWriter, File>,
+        /// Task-scoped scratch byte buffer threaded through every call on the
+        /// long-lived writer, which borrows rather than owns its serialization buffer.
+        scratch: Vec<u8>,
+    },
     /// Multi-partition output: batches are staged per partition and merged into
     /// `output_writer` one partition at a time during `finish_partition`.
     Multi {
@@ -54,6 +59,11 @@ enum DataOutput {
         spill_writers: Vec<SpillWriter>,
         /// Runtime used to allocate the temporary spill files.
         runtime: Arc<RuntimeEnv>,
+        /// Byte buffer recycled through the short-lived per-partition `BufBatchWriter`s.
+        /// Partitions are written strictly one at a time, so a single buffer keeps its
+        /// grown capacity across the whole task instead of every partition regrowing a
+        /// fresh allocation toward the write buffer size.
+        recycled_buffer: Vec<u8>,
     },
 }
 
@@ -99,12 +109,15 @@ impl LocalPartitionWriter {
             .map_err(|e| DataFusionError::Execution(format!("shuffle write error: {e:?}")))?;
 
         let data_output = if num_output_partitions == 1 {
-            DataOutput::Single(BufBatchWriter::new(
-                shuffle_block_writer,
-                output_file,
-                write_buffer_size,
-                batch_size,
-            ))
+            DataOutput::Single {
+                writer: BufBatchWriter::new(
+                    shuffle_block_writer,
+                    output_file,
+                    write_buffer_size,
+                    batch_size,
+                ),
+                scratch: Vec::new(),
+            }
         } else {
             let output_writer = BufWriter::with_capacity(write_buffer_size, output_file);
             let spill_writers = (0..num_output_partitions)
@@ -121,6 +134,7 @@ impl LocalPartitionWriter {
                 shuffle_block_writer,
                 spill_writers,
                 runtime,
+                recycled_buffer: Vec::new(),
             }
         };
         Ok(Self {
@@ -149,7 +163,7 @@ impl LocalPartitionWriter {
     pub(crate) fn get_spill_writers(&self) -> &Vec<SpillWriter> {
         match &self.data_output {
             DataOutput::Multi { spill_writers, .. } => spill_writers,
-            DataOutput::Single(_) => panic!("single-partition output has no spill writers"),
+            DataOutput::Single { .. } => panic!("single-partition output has no spill writers"),
         }
     }
 }
@@ -165,7 +179,7 @@ impl PartitionWriter for LocalPartitionWriter {
         I: Iterator<Item = datafusion::common::Result<RecordBatch>>,
     {
         match &mut self.data_output {
-            DataOutput::Single(writer) => {
+            DataOutput::Single { writer, scratch } => {
                 if pid != 0 {
                     return Err(DataFusionError::Execution(
                         "LocalPartitionWriter single-partition output only supports partition 0."
@@ -182,6 +196,7 @@ impl PartitionWriter for LocalPartitionWriter {
                     let batch = batch?;
                     writer.write(
                         &batch,
+                        scratch,
                         &mut self.codec_context,
                         &metrics.encode_time,
                         &metrics.write_time,
@@ -191,12 +206,19 @@ impl PartitionWriter for LocalPartitionWriter {
             DataOutput::Multi {
                 spill_writers,
                 runtime,
+                recycled_buffer,
                 ..
             } => {
                 // Multi-partition output buffers each partition's batches into its own
                 // spill file. `finish_partition` later merges the spill files (and any
                 // remaining in-memory batches) into the shuffle output in partition order.
-                spill_writers[pid].write(iter, &mut self.codec_context, runtime, metrics)?;
+                spill_writers[pid].write(
+                    iter,
+                    &mut self.codec_context,
+                    runtime,
+                    metrics,
+                    recycled_buffer,
+                )?;
             }
         }
 
@@ -223,7 +245,7 @@ impl PartitionWriter for LocalPartitionWriter {
         let batch_size = self.batch_size;
 
         match &mut self.data_output {
-            DataOutput::Single(writer) => {
+            DataOutput::Single { writer, scratch } => {
                 // Single-partition data was already streamed via `write`, starting at
                 // offset 0 (already recorded in `self.offsets[0]`). Stream any trailing
                 // batches (normally none) without flushing; the long-lived writer is
@@ -232,6 +254,7 @@ impl PartitionWriter for LocalPartitionWriter {
                     let batch = batch?;
                     writer.write(
                         &batch,
+                        scratch,
                         &mut self.codec_context,
                         &metrics.encode_time,
                         &metrics.write_time,
@@ -242,6 +265,7 @@ impl PartitionWriter for LocalPartitionWriter {
                 output_writer,
                 shuffle_block_writer,
                 spill_writers,
+                recycled_buffer,
                 ..
             } => {
                 self.offsets[pid] = output_writer.stream_position()?;
@@ -260,27 +284,36 @@ impl PartitionWriter for LocalPartitionWriter {
                 }
 
                 // Write in memory batches to output data file. Each partition uses its
-                // own writer so coalescing does not cross partition boundaries.
+                // own writer so coalescing does not cross partition boundaries, but the
+                // scratch buffer is shared so its capacity carries over to the next one.
                 let mut buf_batch_writer = BufBatchWriter::new(
                     shuffle_block_writer,
                     output_writer,
                     write_buffer_size,
                     batch_size,
                 );
-                for batch in iter.by_ref() {
-                    let batch = batch?;
-                    buf_batch_writer.write(
-                        &batch,
-                        &mut self.codec_context,
+                let codec_context = &mut self.codec_context;
+                let result: datafusion::common::Result<()> = (|| {
+                    for batch in iter.by_ref() {
+                        let batch = batch?;
+                        buf_batch_writer.write(
+                            &batch,
+                            recycled_buffer,
+                            codec_context,
+                            &metrics.encode_time,
+                            &metrics.write_time,
+                        )?;
+                    }
+                    buf_batch_writer.flush(
+                        recycled_buffer,
+                        codec_context,
                         &metrics.encode_time,
                         &metrics.write_time,
-                    )?;
-                }
-                buf_batch_writer.flush(
-                    &mut self.codec_context,
-                    &metrics.encode_time,
-                    &metrics.write_time,
-                )?;
+                    )
+                })();
+                // An errored partition must hand back a drained buffer, or its bytes
+                // leak into the next partition's block.
+                result.inspect_err(|_| recycled_buffer.clear())?;
             }
         }
         Ok(())
@@ -293,8 +326,9 @@ impl PartitionWriter for LocalPartitionWriter {
         // Flush the data output and capture the final position. For the
         // single-partition writer this also finalizes the last coalesced batch.
         let final_offset = match &mut self.data_output {
-            DataOutput::Single(writer) => {
+            DataOutput::Single { writer, scratch } => {
                 writer.flush(
+                    scratch,
                     &mut self.codec_context,
                     &metrics.encode_time,
                     &metrics.write_time,
@@ -340,5 +374,59 @@ impl PartitionWriter for LocalPartitionWriter {
         // A spill burst just ended and the next encode may be a long time coming; the zstd
         // workspace is native memory no reservation tracks, so don't sit on it.
         self.codec_context.release_zstd();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::CompressionCodec;
+    use arrow::array::Int64Array;
+    use arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
+
+    /// A partition whose batch iterator fails after a batch was already encoded must hand
+    /// back a drained scratch; leftover bytes would land in the next partition's block.
+    #[test]
+    fn finish_partition_error_drains_recycled_buffer() {
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, false)]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(Int64Array::from_iter_values(0..100))],
+        )
+        .unwrap();
+        let block_writer =
+            ShuffleBlockWriter::try_new(schema.as_ref(), CompressionCodec::None).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let mut writer = LocalPartitionWriter::try_new(
+            dir.path().join("data.out").to_str().unwrap().to_string(),
+            dir.path().join("index.out").to_str().unwrap().to_string(),
+            block_writer,
+            2,
+            // batch_size below the row count so the write serializes into the scratch.
+            10,
+            1 << 20,
+            Arc::new(RuntimeEnv::default()),
+        )
+        .unwrap();
+
+        let metrics = ShufflePartitionerMetrics::new(&ExecutionPlanMetricsSet::new(), 0);
+        let mut iter = vec![
+            Ok(batch),
+            Err(DataFusionError::Execution("injected failure".to_string())),
+        ]
+        .into_iter();
+
+        assert!(writer.finish_partition(0, &mut iter, &metrics).is_err());
+        match &writer.data_output {
+            DataOutput::Multi {
+                recycled_buffer, ..
+            } => assert!(
+                recycled_buffer.is_empty(),
+                "errored partition left {} bytes in the recycled buffer",
+                recycled_buffer.len()
+            ),
+            DataOutput::Single { .. } => unreachable!("two partitions use the multi output"),
+        }
     }
 }

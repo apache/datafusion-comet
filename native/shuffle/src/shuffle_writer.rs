@@ -1280,13 +1280,20 @@ mod test {
                 1024 * 1024,
                 8192,
             );
+            let mut scratch = Vec::new();
             for batch in &small_batches {
                 buf_writer
-                    .write(batch, &mut codec_context, &encode_time, &write_time)
+                    .write(
+                        batch,
+                        &mut scratch,
+                        &mut codec_context,
+                        &encode_time,
+                        &write_time,
+                    )
                     .unwrap();
             }
             buf_writer
-                .flush(&mut codec_context, &encode_time, &write_time)
+                .flush(&mut scratch, &mut codec_context, &encode_time, &write_time)
                 .unwrap();
         }
 
@@ -1300,13 +1307,20 @@ mod test {
                 1024 * 1024,
                 1,
             );
+            let mut scratch = Vec::new();
             for batch in &small_batches {
                 buf_writer
-                    .write(batch, &mut codec_context, &encode_time, &write_time)
+                    .write(
+                        batch,
+                        &mut scratch,
+                        &mut codec_context,
+                        &encode_time,
+                        &write_time,
+                    )
                     .unwrap();
             }
             buf_writer
-                .flush(&mut codec_context, &encode_time, &write_time)
+                .flush(&mut scratch, &mut codec_context, &encode_time, &write_time)
                 .unwrap();
         }
 
@@ -1409,13 +1423,20 @@ mod test {
                 1024 * 1024,
                 batch_size as usize,
             );
+            let mut scratch = Vec::new();
             for batch in &inputs {
                 buf_writer
-                    .write(batch, &mut codec_context, &encode_time, &write_time)
+                    .write(
+                        batch,
+                        &mut scratch,
+                        &mut codec_context,
+                        &encode_time,
+                        &write_time,
+                    )
                     .unwrap();
             }
             buf_writer
-                .flush(&mut codec_context, &encode_time, &write_time)
+                .flush(&mut scratch, &mut codec_context, &encode_time, &write_time)
                 .unwrap();
         }
 

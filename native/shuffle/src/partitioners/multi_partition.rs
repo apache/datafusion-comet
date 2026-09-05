@@ -520,12 +520,17 @@ impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
         with_trace("shuffle_spill", self.tracing_enabled, || {
             let num_output_partitions = self.partition_indices.len();
             let write_result = {
-                let mut partitioned_batches = self.partitioned_batches();
+                let partitioned_batches = self.partitioned_batches();
+                // Build the batch-ref slice once and share it across all partitions.
+                let batch_refs = partitioned_batches.batch_refs();
                 (0..num_output_partitions).try_for_each(|partition_id| {
                     self.partition_writer.write(
                         partition_id,
-                        &mut partitioned_batches
-                            .produce(partition_id, &self.metrics.interleave_time),
+                        &mut partitioned_batches.produce(
+                            &batch_refs,
+                            partition_id,
+                            &self.metrics.interleave_time,
+                        ),
                         &self.metrics,
                     )
                 })
@@ -580,15 +585,17 @@ impl<T: PartitionWriter> ShufflePartitioner for MultiPartitionShuffleRepartition
         with_trace("shuffle_write", self.tracing_enabled, || {
             let start_time = Instant::now();
 
-            let mut partitioned_batches = self.partitioned_batches();
+            let partitioned_batches = self.partitioned_batches();
             self.pinned_buffers.clear();
             let num_output_partitions = self.partition_indices.len();
 
+            // Build the batch-ref slice once and share it across all partitions.
+            let batch_refs = partitioned_batches.batch_refs();
             #[allow(clippy::needless_range_loop)]
             for i in 0..num_output_partitions {
                 self.partition_writer.finish_partition(
                     i,
-                    &mut partitioned_batches.produce(i, &self.metrics.interleave_time),
+                    &mut partitioned_batches.produce(&batch_refs, i, &self.metrics.interleave_time),
                     &self.metrics,
                 )?;
             }

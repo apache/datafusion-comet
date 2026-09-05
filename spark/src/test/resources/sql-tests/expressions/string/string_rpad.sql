@@ -19,13 +19,17 @@ statement
 CREATE TABLE test_rpad(s string, len int, pad string) USING parquet
 
 statement
-INSERT INTO test_rpad VALUES ('hi', 5, 'x'), ('hello', 3, 'x'), ('hi', 5, 'xy'), ('', 3, 'a'), (NULL, 5, 'x'), ('hi', 0, 'x'), ('hi', -1, 'x')
+INSERT INTO test_rpad VALUES ('hi', 5, 'x'), ('hello', 3, 'x'), ('hi', 5, 'xy'), ('', 3, 'a'), (NULL, 5, 'x'), ('hi', 0, 'x'), ('hi', -1, 'x'), ('hi', NULL, 'x'), (NULL, NULL, 'x')
 
 query expect_fallback(Only scalar values are supported for the `pad` argument)
 SELECT rpad(s, len, pad) FROM test_rpad
 
 query
 SELECT rpad(s, len) FROM test_rpad
+
+-- column + column + literal
+query
+SELECT rpad(s, len, 'x') FROM test_rpad
 
 -- column + literal + literal
 query
