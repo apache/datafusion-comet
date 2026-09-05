@@ -221,6 +221,25 @@ pub(crate) fn init_datasource_exec(
     Ok(data_source_exec)
 }
 
+// Registration URLs use a reserved suffix to distinguish backend/configuration
+// identities. Encryption must use the physical URI that Spark registered. Match
+// the complete suffix, from the right, so custom Hadoop schemes are preserved.
+fn physical_object_store_scheme(object_store_url: &ObjectStoreUrl) -> &str {
+    let store_url: &url::Url = object_store_url.as_ref();
+    let scheme = store_url.scheme();
+    if let Some((physical_scheme, identity)) = scheme.rsplit_once("+comet-") {
+        if let Some((hash, backend)) = identity.split_once('-') {
+            if hash.len() == 16
+                && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+                && matches!(backend, "native" | "hdfs")
+            {
+                return physical_scheme;
+            }
+        }
+    }
+    scheme
+}
+
 #[allow(clippy::too_many_arguments)]
 fn get_options(
     session_timezone: &str,
@@ -281,10 +300,15 @@ fn get_options(
     spark_parquet_options.allow_timestamp_ltz_to_ntz = allow_timestamp_ltz_to_ntz;
 
     if encryption_enabled {
+        let store_url: &url::Url = object_store_url.as_ref();
         table_parquet_options.crypto.configure_factory(
             ENCRYPTION_FACTORY_ID,
             &CometEncryptionConfig {
-                uri_base: object_store_url.to_string(),
+                uri_base: format!(
+                    "{}://{}/",
+                    physical_object_store_scheme(object_store_url),
+                    &store_url[url::Position::BeforeHost..url::Position::AfterPort],
+                ),
             },
         );
     }
@@ -305,6 +329,51 @@ mod tests {
     use parquet::arrow::ArrowWriter;
     use parquet::file::properties::{EnabledStatistics, WriterProperties};
     use std::fs::File;
+
+    #[test]
+    fn preserves_physical_uri_for_isolated_encrypted_object_stores() {
+        fn encryption_uri(url: &str) -> String {
+            let object_store_url = ObjectStoreUrl::parse(url).unwrap();
+            let (options, _) = get_options(
+                "UTC",
+                true,
+                false,
+                false,
+                false,
+                &object_store_url,
+                true,
+                &ParquetOptions::default(),
+            );
+            let encryption: CometEncryptionConfig = options
+                .crypto
+                .factory_options
+                .to_extension_options()
+                .unwrap();
+            encryption.uri_base
+        }
+
+        // Native s3a is canonicalized to s3 before registration; Hadoop-selected
+        // s3a keeps its physical spelling. Both must strip only the identity suffix.
+        for scheme in ["s3", "s3a", "abfss", "custom+comet-existing"] {
+            let normal = format!("{scheme}://bucket:9000/");
+            for backend in ["native", "hdfs"] {
+                let isolated = format!("{scheme}+comet-0123456789abcdef-{backend}://bucket:9000/");
+                assert_eq!(encryption_uri(&isolated), encryption_uri(&normal));
+                assert_eq!(encryption_uri(&isolated), normal);
+            }
+        }
+        assert_eq!(encryption_uri("file:///"), "file:///");
+        assert_eq!(
+            encryption_uri("file+comet-0123456789abcdef-hdfs:///"),
+            "file:///"
+        );
+        // A physical custom scheme containing a similar, incomplete suffix is not
+        // itself a synthetic registration URL.
+        for scheme in ["custom+comet-name", "custom+comet-1234-native"] {
+            let normal = format!("{scheme}://bucket/");
+            assert_eq!(encryption_uri(&normal), normal);
+        }
+    }
 
     // Regression test for #4990: a fresh `TableParquetOptions::new()` ignored session-level
     // `datafusion.execution.parquet.*` settings entirely, so `spark.comet.datafusion.
