@@ -169,9 +169,11 @@ object CometUnhex extends CometExpressionSerde[Unhex] with MathExprBase {
   }
 }
 
-object CometAbs extends CometExpressionSerde[Abs] with MathExprBase {
+object CometAbs extends CometExpressionSerde[Abs] with MathExprBase with CodegenDispatchFallback {
 
-  val unsupportedReason: String = "Only integral, floating-point, and decimal types are supported"
+  val unsupportedReason: String =
+    "Interval types are not supported natively and are handled via JVM codegen dispatch; " +
+      "this fallback only applies when the dispatcher is disabled"
 
   override def getUnsupportedReasons(): Seq[String] = Seq(unsupportedReason)
 
