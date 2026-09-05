@@ -42,6 +42,7 @@ import com.google.protobuf.ByteString
 
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.iceberg.{CometIcebergNativeScanMetadata, IcebergReflection}
+import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.serde.{CometOperatorSerde, OperatorOuterClass}
 import org.apache.comet.serde.OperatorOuterClass.{Operator, SparkStructField}
 import org.apache.comet.serde.QueryPlanSerde.serializeDataType
@@ -567,46 +568,46 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
    *
    * Iceberg-rust's FileIO expects Iceberg-format keys (e.g., s3.access-key-id), not Hadoop keys
    * (e.g., fs.s3a.access.key). This function converts Hadoop keys extracted from Spark's
-   * configuration to the format expected by iceberg-rust.
+   * configuration to the format expected by iceberg-rust. The key mapping itself lives in
+   * `NativeConfig.s3aSuffixToIcebergGlobalKey`, shared with the vendor-key translation.
+   *
+   * @param targetBucket
+   *   the bucket whose Hadoop per-bucket `fs.s3a.bucket.<b>.*` settings are promoted to global
+   *   `s3.*`. Required with no default: the pinned iceberg-rust S3 parser reads ONLY global
+   *   `s3.*` (never `s3.bucket.*`), so the caller must decide, and a `= None` default would
+   *   silently restore the old lossy behavior for a future caller that forgets to pass it. Both
+   *   call sites pass the DATA bucket, which Iceberg allows to differ from the metadata bucket.
+   *   TODO: drop the promotion once iceberg-rust is unpinned to a release whose S3 parser reads
+   *   `s3.bucket.*`.
    */
-  def hadoopToIcebergS3Properties(hadoopProps: Map[String, String]): Map[String, String] = {
-    hadoopProps.flatMap { case (key, value) =>
-      key match {
-        // Global S3A configuration keys
-        case "fs.s3a.access.key" => Some("s3.access-key-id" -> value)
-        case "fs.s3a.secret.key" => Some("s3.secret-access-key" -> value)
-        case "fs.s3a.session.token" => Some("s3.session-token" -> value)
-        case "fs.s3a.endpoint" => Some("s3.endpoint" -> value)
-        case "fs.s3a.path.style.access" => Some("s3.path-style-access" -> value)
-        case "fs.s3a.endpoint.region" => Some("s3.region" -> value)
+  def hadoopToIcebergS3Properties(
+      hadoopProps: Map[String, String],
+      targetBucket: Option[String]): Map[String, String] = {
+    val targetPrefix = targetBucket.map(bucket => s"fs.s3a.bucket.$bucket.")
+    val global = Map.newBuilder[String, String]
+    // Promoted target-bucket keys must win over their global namesakes, so they are collected
+    // separately and merged last. Prefix-matched (not split) so dotted bucket names survive.
+    val promoted = Map.newBuilder[String, String]
 
-        // Per-bucket configuration keys (e.g., fs.s3a.bucket.mybucket.access.key)
-        // Extract bucket name and property, then transform to s3.* format
-        case k if k.startsWith("fs.s3a.bucket.") =>
-          val parts = k.stripPrefix("fs.s3a.bucket.").split("\\.", 2)
-          if (parts.length == 2) {
-            val bucket = parts(0)
-            val property = parts(1)
-            property match {
-              case "access.key" => Some(s"s3.bucket.$bucket.access-key-id" -> value)
-              case "secret.key" => Some(s"s3.bucket.$bucket.secret-access-key" -> value)
-              case "session.token" => Some(s"s3.bucket.$bucket.session.token" -> value)
-              case "endpoint" => Some(s"s3.bucket.$bucket.endpoint" -> value)
-              case "path.style.access" => Some(s"s3.bucket.$bucket.path-style-access" -> value)
-              case "endpoint.region" => Some(s"s3.bucket.$bucket.region" -> value)
-              case _ => None
-            }
-          } else {
-            None
-          }
-
-        // Pass through any keys that are already in Iceberg format
-        case k if k.startsWith("s3.") => Some(key -> value)
-
-        // Ignore all other keys
-        case _ => None
+    hadoopProps.foreach { case (key, value) =>
+      // Per-bucket keys for OTHER buckets fall through every branch and are dropped: the pinned
+      // parser would ignore an `s3.bucket.*` emission anyway.
+      targetPrefix match {
+        case Some(prefix) if key.startsWith(prefix) =>
+          NativeConfig.s3aSuffixToIcebergGlobalKey
+            .get(key.stripPrefix(prefix))
+            .foreach(promoted += _ -> value)
+        case _ if key.startsWith("fs.s3a.") =>
+          NativeConfig.s3aSuffixToIcebergGlobalKey
+            .get(key.stripPrefix("fs.s3a."))
+            .foreach(global += _ -> value)
+        // Keys already in Iceberg format pass through.
+        case _ if key.startsWith("s3.") => global += key -> value
+        case _ => // not an object-store key
       }
     }
+
+    global.result() ++ promoted.result()
   }
 
   /**
