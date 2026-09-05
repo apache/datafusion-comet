@@ -95,6 +95,25 @@ These settings can be used to determine which parts of the plan are accelerated 
 
 ## Shuffle Configuration Settings
 
+For native remote shuffle, `spark.comet.shuffle.rss.maxFrameBytes` limits one complete
+encoded frame, while `spark.comet.shuffle.rss.maxInFlightBytes` limits the memory reserved
+by map attempts sharing an executor's remote shuffle client. The reservation includes
+encoding workspace and overlapping frame copies. An ordinary uncompressed frame needs
+approximately seven times its size plus schema and transport overhead. The default 512 MiB
+reservation budget accommodates ordinary frames up to the default 64 MiB frame limit.
+Compressed frames still need workspace for their uncompressed data. Increase the reservation
+budget when larger rows or schemas need more workspace.
+
+If a row cannot fit the remote limits, Comet materializes a replacement shuffle using its
+local writer before publishing the exchange to downstream tasks. The replacement has a separate
+shuffle and scheduling identity, so late remote results or failures cannot affect local output.
+Independent exchanges can materialize concurrently, and runtime output statistics describe only
+the selected destination. Subsequent fetch failures retain Spark's normal recovery behavior.
+With dynamic allocation enabled, native Celeborn shuffle also requires either
+`spark.shuffle.service.enabled=true` or `spark.dynamicAllocation.shuffleTracking.enabled=true`
+(the Spark default) to preserve fallback files. Otherwise exchanges retain ordinary Spark/Celeborn
+shuffle, including applications that rely only on remote reliable storage or decommissioning.
+
 <!--BEGIN:CONFIG_TABLE[shuffle]-->
 <!-- prettier-ignore-start -->
 | Config | Description | Default Value |
@@ -116,7 +135,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.shuffle.native.writeBufferSize` | Size of the write buffer in bytes used by the native shuffle writer when writing shuffle data to disk. Larger values may improve write performance by reducing the number of system calls, but will use more memory. The default is 1MB which provides a good balance between performance and memory usage. | 1048576b |
 | `spark.comet.shuffle.revertRedundantColumnar.enabled` | When enabled, Comet reverts a `CometShuffleExchangeExec` with `CometColumnarShuffle` back to Spark's `ShuffleExchangeExec` when both its parent and child are non-Comet hash aggregate operators. This avoids a redundant row -> Arrow -> shuffle -> Arrow -> row conversion when no Comet operator on either side can consume columnar output. Disable to keep Comet columnar shuffle even in that case, which preserves Comet's off-heap shuffle memory accounting at the cost of the extra conversion. | true |
 | `spark.comet.shuffle.rss.maxFrameBytes` | Maximum encoded size of one complete native shuffle frame sent to a remote shuffle service. Frames are never split across remote push requests. | 67108864b |
-| `spark.comet.shuffle.rss.maxInFlightBytes` | Maximum shuffle bytes admitted concurrently by native Comet map attempts sharing an executor-side remote shuffle client. Admission includes native encoding scratch and overlapping native, JNI, and remote shuffle frame copies. A frame must fit its codec and Arrow workspace as well as its encoded bytes; too-small limits fail before encoding. Encrypted native RSS is not supported; use ordinary Spark shuffle when spark.io.encryption.enabled is true. | 268435456b |
+| `spark.comet.shuffle.rss.maxInFlightBytes` | Maximum shuffle bytes admitted concurrently by native Comet map attempts sharing an executor-side remote shuffle client. Admission includes native encoding scratch and overlapping native, JNI, and remote shuffle frame copies. A frame must fit its codec and Arrow workspace as well as its encoded bytes; ordinary uncompressed frames need approximately seven times their size plus schema and transport overhead. Compressed frames also reserve workspace for their uncompressed data. Admission is acquired before encoding. Encrypted native RSS is not supported; use ordinary Spark shuffle when spark.io.encryption.enabled is true. | 536870912b |
 | `spark.comet.shuffle.sizeInBytesMultiplier` | Comet reports smaller sizes for shuffle due to using Arrow's columnar memory format and this can result in Spark choosing a different join strategy due to the estimated size of the exchange being smaller. Comet will multiple sizeInBytes by this amount to avoid regressions in join strategy. | 1.0 |
 <!-- prettier-ignore-end -->
 <!--END:CONFIG_TABLE-->

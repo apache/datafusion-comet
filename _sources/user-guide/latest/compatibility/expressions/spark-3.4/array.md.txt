@@ -53,6 +53,13 @@ The following cases are not supported by Comet and always fall back to Spark, re
 
 - Not all input data types are supported; falls back to Spark for unsupported types
 
+## Sequence
+
+The following cases have no native implementation and always run in the JVM using Spark's code-generated implementation (inside the Comet pipeline):
+
+- date and timestamp element types run through the JVM codegen dispatcher
+- sequence arguments must be literals or column references; other shapes run through the JVM codegen dispatcher to preserve Spark's per-row null short-circuit
+
 ## Shuffle
 
 The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:

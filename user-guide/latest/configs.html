@@ -988,6 +988,23 @@ under the License.
 </section>
 <section id="shuffle-configuration-settings">
 <h2>Shuffle Configuration Settings<a class="headerlink" href="#shuffle-configuration-settings" title="Link to this heading">#</a></h2>
+<p>For native remote shuffle, <code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.rss.maxFrameBytes</span></code> limits one complete
+encoded frame, while <code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.rss.maxInFlightBytes</span></code> limits the memory reserved
+by map attempts sharing an executor’s remote shuffle client. The reservation includes
+encoding workspace and overlapping frame copies. An ordinary uncompressed frame needs
+approximately seven times its size plus schema and transport overhead. The default 512 MiB
+reservation budget accommodates ordinary frames up to the default 64 MiB frame limit.
+Compressed frames still need workspace for their uncompressed data. Increase the reservation
+budget when larger rows or schemas need more workspace.</p>
+<p>If a row cannot fit the remote limits, Comet materializes a replacement shuffle using its
+local writer before publishing the exchange to downstream tasks. The replacement has a separate
+shuffle and scheduling identity, so late remote results or failures cannot affect local output.
+Independent exchanges can materialize concurrently, and runtime output statistics describe only
+the selected destination. Subsequent fetch failures retain Spark’s normal recovery behavior.
+With dynamic allocation enabled, native Celeborn shuffle also requires either
+<code class="docutils literal notranslate"><span class="pre">spark.shuffle.service.enabled=true</span></code> or <code class="docutils literal notranslate"><span class="pre">spark.dynamicAllocation.shuffleTracking.enabled=true</span></code>
+(the Spark default) to preserve fallback files. Otherwise exchanges retain ordinary Spark/Celeborn
+shuffle, including applications that rely only on remote reliable storage or decommissioning.</p>
 <!--BEGIN:CONFIG_TABLE[shuffle]-->
 <!-- prettier-ignore-start -->
 <div class="pst-scrollable-table-container"><table class="table">
@@ -1067,8 +1084,8 @@ under the License.
 <td><p>67108864b</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.rss.maxInFlightBytes</span></code></p></td>
-<td><p>Maximum shuffle bytes admitted concurrently by native Comet map attempts sharing an executor-side remote shuffle client. Admission includes native encoding scratch and overlapping native, JNI, and remote shuffle frame copies. A frame must fit its codec and Arrow workspace as well as its encoded bytes; too-small limits fail before encoding. Encrypted native RSS is not supported; use ordinary Spark shuffle when spark.io.encryption.enabled is true.</p></td>
-<td><p>268435456b</p></td>
+<td><p>Maximum shuffle bytes admitted concurrently by native Comet map attempts sharing an executor-side remote shuffle client. Admission includes native encoding scratch and overlapping native, JNI, and remote shuffle frame copies. A frame must fit its codec and Arrow workspace as well as its encoded bytes; ordinary uncompressed frames need approximately seven times their size plus schema and transport overhead. Compressed frames also reserve workspace for their uncompressed data. Admission is acquired before encoding. Encrypted native RSS is not supported; use ordinary Spark shuffle when spark.io.encryption.enabled is true.</p></td>
+<td><p>536870912b</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.sizeInBytesMultiplier</span></code></p></td>
 <td><p>Comet reports smaller sizes for shuffle due to using Arrow’s columnar memory format and this can result in Spark choosing a different join strategy due to the estimated size of the exchange being smaller. Comet will multiple sizeInBytes by this amount to avoid regressions in join strategy.</p></td>

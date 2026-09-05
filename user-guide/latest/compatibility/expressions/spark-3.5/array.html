@@ -820,6 +820,14 @@ under the License.
 <li><p>Not all input data types are supported; falls back to Spark for unsupported types</p></li>
 </ul>
 </section>
+<section id="sequence">
+<h2>Sequence<a class="headerlink" href="#sequence" title="Link to this heading">#</a></h2>
+<p>The following cases have no native implementation and always run in the JVM using Spark’s code-generated implementation (inside the Comet pipeline):</p>
+<ul class="simple">
+<li><p>date and timestamp element types run through the JVM codegen dispatcher</p></li>
+<li><p>sequence arguments must be literals or column references; other shapes run through the JVM codegen dispatcher to preserve Spark’s per-row null short-circuit</p></li>
+</ul>
+</section>
 <section id="shuffle">
 <h2>Shuffle<a class="headerlink" href="#shuffle" title="Link to this heading">#</a></h2>
 <p>The following cases are not supported by Comet and always fall back to Spark, regardless of any <code class="docutils literal notranslate"><span class="pre">allowIncompatible</span></code> setting:</p>
@@ -889,6 +897,7 @@ under the License.
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#arrayintersect">ArrayIntersect</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#arrayjoin">ArrayJoin</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#arrayszip">ArraysZip</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#sequence">Sequence</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#shuffle">Shuffle</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#sortarray">SortArray</a></li>
 </ul>
