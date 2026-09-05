@@ -699,12 +699,9 @@ object IcebergReflection extends Logging {
       .zip(typeFields.asScala)
       .flatMap { case (partitionField, typeField) =>
         val fieldType = getMethod(typeField.getClass, "type").invoke(typeField).toString
-        if (fieldType == TypeNames.UNKNOWN) None
-        else
-          Some(
-            getMethod(partitionField.getClass, "sourceId")
-              .invoke(partitionField)
-              .asInstanceOf[Int])
+        val sourceId =
+          getMethod(partitionField.getClass, "sourceId").invoke(partitionField).asInstanceOf[Int]
+        if (fieldType == TypeNames.UNKNOWN) None else Some(sourceId)
       }
       .toSeq
   }
