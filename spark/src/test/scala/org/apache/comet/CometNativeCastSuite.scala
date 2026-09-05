@@ -89,7 +89,7 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   private val datePattern = "0123456789/" + whitespaceChars
 
-  private val timestampPattern = "0123456789/:T" + whitespaceChars
+  private val timestampPattern = "0123456789/:T-.+Z" + whitespaceChars
 
   lazy val usingParquetExecWithIncompatTypes: Boolean =
     hasUnsignedSmallIntSafetyCheck(conf)
@@ -1428,10 +1428,12 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("cast StringType to TimestampType") {
     withSQLConf((SQLConf.SESSION_LOCAL_TIMEZONE.key, "UTC")) {
-      val values = Seq("2020-01-01T12:34:56.123456", "T2") ++ gen.generateStrings(
-        dataSize,
-        timestampPattern,
-        8)
+      // Spark accepts explicit positive years; Comet does not yet (#5716).
+      // Keep the wider alphabet, excluding only the known bare-year mismatch.
+      val fuzzValues = gen
+        .generateStrings(dataSize, timestampPattern, 8)
+        .filterNot(_.trim.matches("\\+[0-9]{4,6}"))
+      val values = Seq("2020-01-01T12:34:56.123456", "T2") ++ fuzzValues
       castTest(values.toDF("a"), DataTypes.TimestampType)
     }
   }
@@ -1555,6 +1557,91 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           "2023-02-29 00:00:00",
           null)
         castTimestampTest(values.toDF("a"), DataTypes.TimestampNTZType, assertNative = true)
+      }
+    }
+  }
+
+  // Spark's SparkDateTimeUtils.parseTimestampString validates each segment with isValidDigits:
+  // month/day/hour/minute/second take 1-2 digits, the fraction may be empty, a timestamp year
+  // takes at most 6 digits (only a date takes 7), and a zone id is only recognised after the
+  // seconds segment. Keep explicit cases as well as fuzz coverage for these segment boundaries.
+  private val sparkSegmentRuleTimestamps = Seq(
+    // 1-2 digit segments
+    "2020-1",
+    "2020-1-1",
+    "2020-10-1",
+    "2020-12-1",
+    "-0001-01-01T12:34:56",
+    "2021-11-22 10:54:27 +08:00",
+    "2020-1-1T1",
+    "2020-1-1 1:2",
+    "2020-01-01 12:34:5",
+    "2020-1-1T1:2:3.4",
+    // empty fraction, alone and before a zone
+    "2020-01-01 12:34:56.",
+    "2020-01-01 12:34:56.Z",
+    // 6-digit year is the timestamp maximum
+    "002020-01-01 00:00:00")
+
+  private val sparkSegmentRuleMalformedTimestamps = Seq(
+    "-0002020-01-01",
+    "2020-01-01 12:34:56.1٢٢٢",
+    "T1:2:3.1٢٢٢",
+    // Spark's scanner only accepts ASCII digits in timestamp segments
+    "٢020-1-1",
+    "2020-٢",
+    "2020-01-٢",
+    "2020-1-1T٢",
+    "2020-01-01T1:٢",
+    "2020-01-01T1:2:٣",
+    "2020-1-1T1:2:3.٢",
+    "2020-1-1T1:2:3.٢Z",
+    "T٢",
+    "T1:٢",
+    "T1:2:٣",
+    "T1:2:3.٢",
+    "1:٢",
+    "1:2:٣",
+    "1:2:3.٢",
+    // zone suffix before the seconds segment
+    "2020Z",
+    "2020-10-01Z",
+    "2020-01-01+05:30",
+    "2020-01-01-08:00",
+    "2020-10-01 UTC",
+    "2020-01-01T12Z",
+    "2020-01-01T12:34Z",
+    "2020-01-01 12:34 UTC",
+    "2020-01-01T12:34:Z",
+    // 7-digit year
+    "0002020-01-01",
+    "0002020-01-01 00:00:00",
+    // 3-digit segments
+    "2020-001-01",
+    "2020-01-01T12:345")
+
+  test("cast StringType to TimestampType - Spark segment rules") {
+    withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC") {
+      castTimestampTest(
+        sparkSegmentRuleTimestamps.toDF("a"),
+        DataTypes.TimestampType,
+        assertNative = true)
+      // One row per query so that every malformed value is checked under ANSI mode rather
+      // than only the first row that fails a batch.
+      sparkSegmentRuleMalformedTimestamps.foreach { value =>
+        castTimestampTest(Seq(value).toDF("a"), DataTypes.TimestampType, assertNative = true)
+      }
+    }
+  }
+
+  test("cast StringType to TimestampNTZType - Spark segment rules") {
+    withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC") {
+      castTimestampTest(
+        sparkSegmentRuleTimestamps.toDF("a"),
+        DataTypes.TimestampNTZType,
+        assertNative = true)
+      sparkSegmentRuleMalformedTimestamps.foreach { value =>
+        castTimestampTest(Seq(value).toDF("a"), DataTypes.TimestampNTZType, assertNative = true)
       }
     }
   }

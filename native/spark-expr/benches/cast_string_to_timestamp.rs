@@ -36,6 +36,18 @@ fn criterion_benchmark(c: &mut Criterion) {
     // invalid values so the null path is measured too.
     let batches = [
         (
+            "single_digit_segments",
+            create_batch(|i| format!("2020-{:02}-{}T1:2:3", i % 12 + 1, i % 9 + 1)),
+        ),
+        (
+            "empty_fraction",
+            create_batch(|i| format!("2020-01-{:02}T12:34:56.", i % 28 + 1)),
+        ),
+        (
+            "date_only_zone",
+            create_batch(|i| format!("2020-01-{:02}Z", i % 28 + 1)),
+        ),
+        (
             "canonical",
             create_batch(|i| {
                 format!(
@@ -151,7 +163,7 @@ fn criterion_benchmark(c: &mut Criterion) {
             for (name, batch) in &batches {
                 // ANSI raises on the first invalid value, so timing it against a batch that is
                 // mostly invalid would measure the error path rather than the parser.
-                if mode == EvalMode::Ansi && *name == "mixed" {
+                if mode == EvalMode::Ansi && matches!(*name, "mixed" | "date_only_zone") {
                     continue;
                 }
                 let cast = Cast::new(
