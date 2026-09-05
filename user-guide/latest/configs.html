@@ -809,6 +809,10 @@ under the License.
 <td><p>Defines filesystem schemes (e.g., hdfs, webhdfs) that the native side accesses via libhdfs, separated by commas. Valid only when built with hdfs-opendal feature enabled.</p></td>
 <td><p></p></td>
 </tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.hadoop.fs.comet.s3Compliant.schemes</span></code></p></td>
+<td><p>Defines filesystem schemes (e.g., blob, minio, r2) that Comet treats as S3-compliant, separated by commas. Such schemes reuse the <code class="docutils literal notranslate"><span class="pre">fs.s3a.*</span></code> credential surface and accept vendor-style <code class="docutils literal notranslate"><span class="pre">fs.&lt;scheme&gt;.&lt;authority&gt;.*</span></code> keys. Empty by default, so no alias scheme is claimed unless opted in. Read from the Hadoop configuration, so it must be set before the SparkSession is created.</p></td>
+<td><p></p></td>
+</tr>
 </tbody>
 </table>
 </div>

@@ -1010,6 +1010,77 @@ installed.</p>
 </div>
 <p>All configuration options support bucket-specific overrides using the pattern <code class="docutils literal notranslate"><span class="pre">fs.s3a.bucket.{bucket-name}.{option}</span></code>.</p>
 </section>
+<section id="s3-compliant-filesystem-schemes">
+<h3>S3-Compliant Filesystem Schemes<a class="headerlink" href="#s3-compliant-filesystem-schemes" title="Link to this heading">#</a></h3>
+<p>Some environments front an S3-compatible service (MinIO, Ceph RGW, Cloudflare R2, Wasabi, and
+similar) with a vendor-branded Hadoop filesystem client that registers its own URL scheme, for
+example <code class="docutils literal notranslate"><span class="pre">blob://</span></code>, instead of <code class="docutils literal notranslate"><span class="pre">s3://</span></code> or <code class="docutils literal notranslate"><span class="pre">s3a://</span></code>. Comet can treat such schemes as aliases for
+<code class="docutils literal notranslate"><span class="pre">s3://</span></code> so the native Parquet and Iceberg scans read them directly, without the caller rewriting
+URLs.</p>
+<p>This is opt-in and disabled by default. Enable it by listing the schemes to treat as S3-compliant
+aliases in <code class="docutils literal notranslate"><span class="pre">spark.hadoop.fs.comet.s3Compliant.schemes</span></code> (Hadoop key
+<code class="docutils literal notranslate"><span class="pre">fs.comet.s3Compliant.schemes</span></code>), a comma-separated, case-insensitive list. This mirrors the
+existing <code class="docutils literal notranslate"><span class="pre">fs.comet.libhdfs.schemes</span></code> config.</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>--conf<span class="w"> </span>spark.hadoop.fs.comet.s3Compliant.schemes<span class="o">=</span>blob
+</pre></div>
+</div>
+<p>Multiple schemes can be listed together:</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>--conf<span class="w"> </span>spark.hadoop.fs.comet.s3Compliant.schemes<span class="o">=</span>blob,minio,r2
+</pre></div>
+</div>
+<p>With no configuration, Comet claims none of these aliases, so for example a <code class="docutils literal notranslate"><span class="pre">blob://</span></code> path falls
+back to Spark unchanged. The empty default is deliberate: short scheme names like <code class="docutils literal notranslate"><span class="pre">blob</span></code> are not
+unique to S3-compatible storage. Azure Blob Storage is the clearest example, so claiming <code class="docutils literal notranslate"><span class="pre">blob://</span></code>
+unconditionally would risk misrouting paths that were never meant for Comet’s S3 client. Only add a
+scheme here if you intend Comet to treat it as S3-compatible.</p>
+<p>For each scheme <code class="docutils literal notranslate"><span class="pre">&lt;s&gt;</span></code> listed in <code class="docutils literal notranslate"><span class="pre">fs.comet.s3Compliant.schemes</span></code>, Comet also reads vendor-style,
+per-authority Hadoop keys of the form <code class="docutils literal notranslate"><span class="pre">fs.&lt;s&gt;.&lt;authority&gt;.&lt;property&gt;</span></code> (the authority is typically
+the bucket or account name from the URL) and translates them into the <code class="docutils literal notranslate"><span class="pre">fs.s3a.*</span></code> surface described
+above. The recognized vendor-style properties and their <code class="docutils literal notranslate"><span class="pre">fs.s3a.*</span></code> targets are:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Vendor property (<code class="docutils literal notranslate"><span class="pre">fs.&lt;s&gt;.&lt;authority&gt;.&lt;property&gt;</span></code>)</p></th>
+<th class="head"><p>Translated <code class="docutils literal notranslate"><span class="pre">fs.s3a.*</span></code> suffix</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">awsAccessKeyId</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">access.key</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">awsSecretAccessKey</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">secret.key</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">awsSessionToken</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">session.token</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">endpoint</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">endpoint</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">region</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">endpoint.region</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">pathStyleAccess</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">path.style.access</span></code></p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Unrecognized <code class="docutils literal notranslate"><span class="pre">fs.&lt;s&gt;.&lt;authority&gt;.*</span></code> properties are ignored.</p>
+<p>A URL with no authority, such as the triple-slash <code class="docutils literal notranslate"><span class="pre">blob:///bucket/key</span></code> form, reports its authority
+as the literal string <code class="docutils literal notranslate"><span class="pre">default</span></code>. For that case, list the keys under <code class="docutils literal notranslate"><span class="pre">fs.&lt;s&gt;.default.&lt;property&gt;</span></code>.
+Comet resolves <code class="docutils literal notranslate"><span class="pre">default</span></code> to the bucket taken from the URL path (<code class="docutils literal notranslate"><span class="pre">bucket</span></code> here) and applies the
+translated settings at that bucket’s scope, exactly as if they had been written under
+<code class="docutils literal notranslate"><span class="pre">fs.&lt;s&gt;.bucket.&lt;property&gt;</span></code>.</p>
+<p>When <code class="docutils literal notranslate"><span class="pre">fs.&lt;s&gt;.&lt;authority&gt;.endpoint</span></code> is set, Comet defaults path-style access to enabled for that
+bucket, since most non-AWS S3-compatible services require it. This is only a default: set
+<code class="docutils literal notranslate"><span class="pre">fs.s3a.bucket.&lt;bucket&gt;.path.style.access</span></code> (or the equivalent per-scheme key) explicitly to
+override it.</p>
+<p>Once translated, these values are applied at the same <code class="docutils literal notranslate"><span class="pre">fs.s3a.bucket.{bucket-name}.*</span></code> scope
+described in <a class="reference internal" href="#additional-s3-configuration-options">Additional S3 Configuration Options</a>, so the
+credential providers and options documented above also apply to alias-scheme URLs. The same
+translation feeds the native Iceberg scan; see
+<a class="reference internal" href="iceberg.html#object-store-configuration-s3"><span class="std std-ref">Object store configuration (S3)</span></a> in the Iceberg guide.</p>
+</section>
 <section id="examples">
 <h3>Examples<a class="headerlink" href="#examples" title="Link to this heading">#</a></h3>
 <p>The following examples demonstrate how to configure S3 access using different authentication methods.</p>
@@ -1262,6 +1333,7 @@ As with S3, standard Hadoop ABFS configurations (the <code class="docutils liter
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#root-ca-certificates">Root CA Certificates</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#supported-credential-providers">Supported Credential Providers</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#additional-s3-configuration-options">Additional S3 Configuration Options</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#s3-compliant-filesystem-schemes">S3-Compliant Filesystem Schemes</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#examples">Examples</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#limitations">Limitations</a></li>
 </ul>
