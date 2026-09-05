@@ -168,7 +168,7 @@ The tables below list every Spark built-in expression with its current status.
 | `element_at` | ✅ | Native |  |
 | `flatten` | ✅ | Native | Binary/struct/map elements fall back |
 | `get` | ✅ | — |  |
-| `sequence` | ✅ | Codegen dispatch |  |
+| `sequence` | ✅ | Hybrid | Integral types run natively; date/timestamp sequences use codegen dispatch |
 | `shuffle` | ✅ | Native | Binary/struct/map elements fall back |
 | `slice` | ✅ | Native | Native ([#4149](https://github.com/apache/datafusion-comet/pull/4149)) |
 | `sort_array` | ✅ | Hybrid | Nested struct/null arrays fall back |
@@ -561,11 +561,11 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `chr` | ✅ | Native |  |
 | `collate` | 🔜 | — | Spark collation (umbrella [#2190](https://github.com/apache/datafusion-comet/issues/2190)) |
 | `collation` | ✅ | — | Constant-folded to a literal (Spark 4.0+) |
-| `concat_ws` | ✅ | Native |  |
+| `concat_ws` | ✅ | Hybrid | Array arguments route through the JVM codegen dispatcher; string arguments run natively ([details](compatibility/expressions/string.md)) |
 | `contains` | ✅ | — |  |
 | `decode` | ✅ | — |  |
 | `elt` | ✅ | Codegen dispatch |  |
-| `encode` | 🔜 | — | Lowers to `StaticInvoke(encode)` (not allowlisted); falls back |
+| `encode` | ✅ | — | Spark 4.0+ lowers to `StaticInvoke(Encode.encode)`, which runs via codegen dispatch; on Spark 3.x it falls back |
 | `endswith` | ✅ | — |  |
 | `find_in_set` | ✅ | Codegen dispatch |  |
 | `format_number` | ✅ | Codegen dispatch |  |
@@ -606,7 +606,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `substr` | ✅ | Native |  |
 | `substring` | ✅ | Native |  |
 | `substring_index` | ✅ | Native |  |
-| `to_binary` | ✅ | — | Hex form accelerated; other formats fall back |
+| `to_binary` | ✅ | — | Hex and base64 forms accelerated natively; the `utf-8` form rewrites to `encode` and runs via codegen dispatch on Spark 4.0+ |
 | `to_char` | ✅ | Codegen dispatch |  |
 | `to_number` | ✅ | Codegen dispatch |  |
 | `to_varchar` | ✅ | Codegen dispatch |  |

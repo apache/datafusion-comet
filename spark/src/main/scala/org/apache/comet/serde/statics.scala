@@ -20,7 +20,7 @@
 package org.apache.comet.serde
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Base64, ExpressionImplUtils, Literal, StringDecode, TryEval, UrlCodec}
-import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
+import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
 import org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils
 import org.apache.spark.sql.types.StringType
 
@@ -59,6 +59,23 @@ object CometStaticInvoke extends CometExpressionSerde[StaticInvoke] {
   private def handlerFor(expr: StaticInvoke): Option[CometExpressionSerde[StaticInvoke]] =
     staticInvokeExpressions.get((expr.functionName, expr.staticObject.getName))
 
+  /** Every Iceberg system function is named `invoke`, so name the declaring class too. */
+  private def noNativePathNote(expr: StaticInvoke): String =
+    s"Static invoke expression: ${expr.functionName} has no native implementation and the " +
+      s"codegen dispatcher declined it (declared on ${expr.staticObject.getName})"
+
+  /**
+   * A `StaticInvoke` outside the allowlist reports `Compatible` and is handled in [[convert]],
+   * which routes it through the codegen dispatcher. Deliberately not `Unsupported` +
+   * [[CodegenDispatchFallback]]: that would also route a *handler's* `Unsupported` through the
+   * dispatcher, and at least one of those is not dispatchable. `CometIcebergTruncate` declines a
+   * decimal because Iceberg's `truncate` can return a value wider than the column's declared
+   * precision, which Spark nulls only when the row is materialized; the dispatcher writes into an
+   * Arrow `Decimal128(precision, scale)` vector just like a native kernel does, so it produces
+   * the out-of-range value instead of a null. The mixin's contract ("the case must be something
+   * `doGenCode` can compile") does not cover a limit that lives at the Arrow output boundary, so
+   * enrollment stays with the individual handlers.
+   */
   override def getSupportLevel(expr: StaticInvoke): SupportLevel =
     handlerFor(expr).map(_.getSupportLevel(expr)).getOrElse(Compatible())
 
@@ -78,15 +95,37 @@ object CometStaticInvoke extends CometExpressionSerde[StaticInvoke] {
       case Some(handler) =>
         handler.convert(expr, inputs, binding)
       case None =>
-        // Every Iceberg system function is named `invoke`, so name the declaring class too.
-        withFallbackReason(
-          expr,
-          s"Static invoke expression: ${expr.functionName} is not supported " +
-            s"(declared on ${expr.staticObject.getName})")
-        None
+        // Nothing in the allowlist covers this lowering, so run Spark's own implementation inside
+        // the Comet pipeline rather than failing the whole operator back to Spark.
+        // `StaticInvoke.doGenCode` emits a static method call, so the kernel matches Spark by
+        // construction. Spark 4.x keeps lowering more `RuntimeReplaceable` functions this way
+        // (`encode`, `is_valid_utf8`, the `TIME` family, ...) and `lpad` / `rpad` on binary has
+        // lowered to `StaticInvoke(ByteArray, ...)` since Spark 3.4.
+        //
+        // The encoder and deserializer trees that make up most `StaticInvoke` usage in typed
+        // Dataset operations are unaffected: their arguments are `ObjectType`, which
+        // `CometBatchKernelCodegen.isSupportedDataType` rejects, so the dispatcher declines them
+        // and they fall back exactly as before.
+        CometStaticInvokeCodegenDispatch.convert(expr, inputs, binding).orElse {
+          // The dispatcher tags its own reason, but not which static invoke it was.
+          withFallbackReason(expr, noNativePathNote(expr))
+          None
+        }
     }
   }
 }
+
+/**
+ * Catch-all for `Invoke`, which has no allowlist at all. Spark 4.x lowers a growing number of
+ * `RuntimeReplaceable` expressions to evaluator-backed `Invoke` nodes; the Spark 4.x shim
+ * reconstructs the handful it recognizes and everything else lands here. `Invoke.doGenCode` emits
+ * a method call on the target object, so the dispatcher runs Spark's own implementation inside
+ * the Comet pipeline rather than failing the operator back to Spark.
+ *
+ * As with [[CometStaticInvoke]], the object-typed `Invoke` nodes in encoder / deserializer trees
+ * are rejected by `CometBatchKernelCodegen.canHandle` and fall back as before.
+ */
+object CometInvoke extends CometCodegenDispatch[Invoke]
 
 object CometUrlEncodeStaticInvoke extends CometExpressionSerde[StaticInvoke] {
   override def convert(

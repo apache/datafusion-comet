@@ -21,7 +21,7 @@ use crate::parquet::encryption_support::{CometEncryptionConfig, ENCRYPTION_FACTO
 use crate::parquet::name_fold::fold_schema_names;
 use crate::parquet::parquet_support::SparkParquetOptions;
 use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
-use arrow::datatypes::{Field, SchemaRef};
+use arrow::datatypes::{Field, FieldRef, SchemaRef};
 use datafusion::config::{ParquetOptions, TableParquetOptions};
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::datasource::physical_plan::{
@@ -55,8 +55,9 @@ use std::sync::Arc;
 ///
 ///   `projection_vector`: A vector of the indexes in the schema of the fields to be projected
 ///
-///   `data_filters`: Any predicate that must be applied to the data returned by the scan. If
-/// specified, then `data_schema` must also be specified.
+///   `data_filters`: Any predicate that must be applied to the data returned by the scan. An empty
+/// `Vec` means Spark supplied filters that Comet could not serialize. If specified, then
+/// `data_schema` must also be specified.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn init_datasource_exec(
     required_schema: SchemaRef,
@@ -94,6 +95,12 @@ pub(crate) fn init_datasource_exec(
     );
     spark_parquet_options.use_field_id = use_field_id;
     spark_parquet_options.ignore_missing_field_id = ignore_missing_field_id;
+    // Spark can discard filtered-out values before timestamp conversion using statistics,
+    // dictionary, and row-level filters. Comet cannot mirror every pruning path, so applying
+    // checked conversion in a filtered scan can fail on values Spark never reads. Preserve the
+    // existing safe cast for filtered scans and use checked conversion only when every value is
+    // necessarily read.
+    spark_parquet_options.checked_timestamp_overflow = data_filters.is_none();
 
     // Determine the schema and projection to use for ParquetSource.
     // When data_schema is provided, use it as the base schema so DataFusion knows the full
@@ -125,13 +132,14 @@ pub(crate) fn init_datasource_exec(
         }
         _ => (Arc::clone(&required_schema), None),
     };
-    let partition_fields: Vec<_> = partition_schema
+    let partition_fields: Vec<FieldRef> = partition_schema
         .iter()
         .flat_map(|s| s.fields().iter())
-        .map(|f| Arc::new(Field::new(f.name(), f.data_type().clone(), f.is_nullable())) as _)
+        .map(|f| Arc::new(Field::new(f.name(), f.data_type().clone(), f.is_nullable())))
         .collect();
-    let table_schema =
-        TableSchema::from_file_schema(base_schema).with_table_partition_cols(partition_fields);
+    let table_schema = TableSchema::builder(base_schema)
+        .with_table_partition_cols(partition_fields)
+        .build();
 
     let mut parquet_source = ParquetSource::new(table_schema)
         .with_table_parquet_options(table_parquet_options)

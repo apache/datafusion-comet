@@ -28,7 +28,7 @@ import scala.jdk.CollectionConverters._
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.aggregate._
-import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
+import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
 import org.apache.spark.sql.catalyst.expressions.xml.{XPathBoolean, XPathDouble, XPathFloat, XPathInt, XPathList, XPathLong, XPathShort, XPathString}
 import org.apache.spark.sql.comet.DecimalPrecision
 import org.apache.spark.sql.execution.{ScalarSubquery, SparkPlan}
@@ -153,7 +153,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[Signum] -> CometScalarFunction("signum"),
       classOf[Sin] -> CometScalarFunction("sin"),
       classOf[Sinh] -> CometScalarFunction("sinh"),
-      classOf[Sqrt] -> CometScalarFunction("sqrt"),
+      classOf[Sqrt] -> CometSqrt,
       classOf[Subtract] -> CometSubtract,
       classOf[Tan] -> CometScalarFunction("tan"),
       classOf[Tanh] -> CometScalarFunction("tanh"),
@@ -365,6 +365,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[BloomFilterMightContain] -> CometBloomFilterMightContain,
       classOf[CheckOverflow] -> CometCheckOverflow,
       classOf[Coalesce] -> CometCoalesce,
+      classOf[Invoke] -> CometInvoke,
       classOf[KnownFloatingPointNormalized] -> CometKnownFloatingPointNormalized,
       classOf[KnownNotNull] -> CometKnownNotNull,
       classOf[KnownNullable] -> CometKnownNullable,
@@ -570,9 +571,9 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
   }
 
   /**
-   * Serializes Spark datatype to protobuf. Note that, a datatype can be serialized by this method
-   * doesn't mean it is supported by Comet native execution, i.e., `supportedDataType` may return
-   * false for it.
+   * Serializes a Spark datatype to protobuf. Successful serialization preserves schema identity;
+   * it does not imply native execution support. Callers must still apply the support gate for
+   * their path, such as `supportedDataType` or `containsVariantType` for native operators.
    */
   def serializeDataType(dt: org.apache.spark.sql.types.DataType): Option[Types.DataType] =
     serializeDataType(dt, None, Seq.empty, includeFieldIds = true)
@@ -609,6 +610,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       case _: YearMonthIntervalType => 18
       case _: DayTimeIntervalType => 19
       case CalendarIntervalType => 20
+      case dt if isVariantType(dt) => 21
       case dt =>
         logWarning(s"Cannot serialize Spark data type: $dt")
         return None

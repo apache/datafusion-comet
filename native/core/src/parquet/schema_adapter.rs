@@ -19,6 +19,7 @@ use crate::parquet::cast_column::CometCastColumnExpr;
 use crate::parquet::name_fold::{fold_name, fold_names, fold_schema_names};
 use crate::parquet::parquet_support::{spark_parquet_convert, SparkParquetOptions};
 use arrow::array::new_empty_array;
+use arrow::compute::can_cast_types;
 use arrow::datatypes::{DataType, Field, FieldRef, Schema, SchemaRef};
 use arrow::record_batch::RecordBatch;
 use datafusion::common::tree_node::{Transformed, TransformedResult, TreeNode};
@@ -75,6 +76,108 @@ fn parse_field_id(field: &Field) -> Option<i32> {
 
 fn schema_has_field_ids(schema: &SchemaRef) -> bool {
     schema.fields().iter().any(|f| parse_field_id(f).is_some())
+}
+
+/// Returns true when casting `physical_type` to `target_type` is a *pure* structural
+/// narrowing (dropping unrequested struct/list fields, no leaf-level value reinterpretation)
+/// that DataFusion's own `datafusion_common::nested_struct::cast_column` already computes
+/// identically to Comet's `spark_parquet_convert`. `ColumnarValue::cast_to` (the function a
+/// plain, un-swapped `CastExpr` runs at execution time; see
+/// datafusion/expr-common/src/columnar_value.rs) routes to that same function whenever
+/// `datafusion_common::nested_struct::requires_nested_struct_cast` holds, matching arbitrary
+/// struct/list fields by name, null-filling missing target fields, and dropping extra source
+/// fields, exactly the shape apache/datafusion-comet#4859 needs pruned. Confirmed
+/// byte-identical to `spark_parquet_convert` for the covered shapes by
+/// `test::nested_struct_narrowing_cast_matches_datafusion_generic_cast`.
+///
+/// When this returns `true`, `replace_with_spark_cast` leaves DataFusion's `CastExpr` in
+/// place instead of swapping in `CometCastColumnExpr`, so DataFusion's leaf-pruning
+/// (`build_projection_read_plan`'s cast-clipping, apache/datafusion#24090) can see the cast
+/// and read only the requested Parquet leaves, instead of falling back to a full-column read
+/// because it can't recognize `CometCastColumnExpr`.
+///
+/// This is deliberately an allow list, not a deny list: it only recurses through the two
+/// container shapes `nested_struct::cast_column` actually implements (Struct, List /
+/// LargeList), and requires every leaf it bottoms out at to be an *exact* type match. Pruning
+/// (the only case this predicate needs to cover, see apache/datafusion-comet#4859) only
+/// changes which struct/list fields are kept, never a leaf's type, so exact-match leaves are
+/// sufficient. A deny list here (enumerate every case where Comet's nested cast differs from
+/// Arrow's, allow everything else) would fail open: a future addition to
+/// `parquet_convert_array` that this predicate does not know to also exclude would silently
+/// start producing wrong results instead of just missing an optimization.
+fn is_pure_structural_narrowing(
+    physical_type: &DataType,
+    target_type: &DataType,
+    parquet_options: &SparkParquetOptions,
+) -> bool {
+    match (physical_type, target_type) {
+        (DataType::Struct(source_fields), DataType::Struct(target_fields)) => {
+            // Comet matches by Parquet field id first when the target carries one;
+            // DataFusion's generic cast has no field-id concept, so any field-id-bearing
+            // target field is a potential divergence.
+            if parquet_options.use_field_id
+                && target_fields.iter().any(|f| parse_field_id(f).is_some())
+            {
+                return false;
+            }
+            // Fold the source field names once (O(sources), not O(targets x sources)), matching
+            // this file's bulk-fold convention.
+            let source_folded: Vec<String> = source_fields
+                .iter()
+                .map(|f| fold_name(f.name(), parquet_options.case_sensitive))
+                .collect();
+            target_fields.iter().all(|target_field| {
+                // DataFusion's retained `CastExpr` resolves struct fields by *exact* name, so
+                // keeping it is only sound when Spark's configured resolver would pick the same
+                // single source field. Two requirements:
+                //
+                // 1. An exact-name match must exist. `nested_struct::cast_column` matches by exact
+                //    name, so a target Comet would resolve only case-insensitively (or null-fill as
+                //    missing) must not keep the cast. This also sidesteps the missing-field
+                //    nullability divergence: DataFusion errors on a missing non-nullable target,
+                //    Comet null-fills unconditionally.
+                // 2. The target must fold to exactly one source field under the configured
+                //    resolver. `struct<id,ID>` projecting `id` case-insensitively is ambiguous;
+                //    Spark and Comet's converter reject it, but DataFusion's cast would silently
+                //    return the exact-case field, so the cast must not be retained.
+                let folded_target = fold_name(target_field.name(), parquet_options.case_sensitive);
+                let resolver_matches = source_folded
+                    .iter()
+                    .filter(|&f| f == &folded_target)
+                    .count();
+                resolver_matches == 1
+                    && source_fields
+                        .iter()
+                        .find(|f| f.name() == target_field.name())
+                        .is_some_and(|source_field| {
+                            is_pure_structural_narrowing(
+                                source_field.data_type(),
+                                target_field.data_type(),
+                                parquet_options,
+                            )
+                        })
+            })
+        }
+        (DataType::List(source_item), DataType::List(target_item))
+        | (DataType::LargeList(source_item), DataType::LargeList(target_item)) => {
+            is_pure_structural_narrowing(
+                source_item.data_type(),
+                target_item.data_type(),
+                parquet_options,
+            )
+        }
+        // Map is excluded structurally, not by the equality check below: `replace_with_spark_cast`
+        // only reaches this predicate after its own top-level `physical_type == target_type`
+        // check, but `is_pure_structural_narrowing` is tested (and may be called) independently
+        // of that guard, so an equal Map must not slip through here either.
+        (DataType::Map(_, _), _) | (_, DataType::Map(_, _)) => false,
+        // Every other shape, including Dictionary and any leaf-level type change (timestamp
+        // tz relabeling, `nanosAsLong`, decimal/numeric promotion, and so on), must be an
+        // exact match. Comet's nested cast handling for those shapes carries Spark-specific
+        // value or matching semantics that `nested_struct::cast_column` does not replicate,
+        // and none of them arise from pruning alone.
+        _ => physical_type == target_type,
+    }
 }
 
 /// Remap physical schema field names to match logical schema field names. Mirrors Spark's
@@ -667,12 +770,12 @@ impl SparkPhysicalExprAdapter {
                         }
 
                         let cast_expr: Arc<dyn PhysicalExpr> = Arc::new(
-                            CometCastColumnExpr::new(
+                            CometCastColumnExpr::try_new(
                                 remapped,
                                 Arc::clone(physical_field),
                                 Arc::clone(logical_field),
                                 None,
-                            )
+                            )?
                             .with_parquet_options(self.parquet_options.clone()),
                         );
                         return Ok(Transformed::yes(cast_expr));
@@ -942,6 +1045,39 @@ impl SparkPhysicalExprAdapter {
                 ));
             }
 
+            // Leave DataFusion's `CastExpr` in place for a pure structural narrowing instead
+            // of swapping in `CometCastColumnExpr` (see `is_pure_structural_narrowing`'s doc
+            // comment for why that's safe and apache/datafusion-comet#4859 for why it matters).
+            //
+            // `ColumnarValue::cast_to` does not always route a `true` result here through
+            // `nested_struct::cast_column`: for a List wrapping a Struct-free, leaf-unchanged
+            // interior (e.g. `List(Int32)` differing only in the item field's name or
+            // nullability, the "read simple ARRAY fields" shape),
+            // `nested_struct::requires_nested_struct_cast` is false and it falls to Arrow's
+            // plain `cast_with_options` instead. Both dispatch targets independently implement
+            // the same "recast values, rewrap with the target field" pattern for List, so they
+            // agree regardless of which one runs; confirmed by
+            // `test::list_of_unchanged_leaf_with_differing_item_metadata_matches_columnar_value_cast_to`
+            // alongside `test::nested_struct_narrowing_cast_matches_datafusion_generic_cast`
+            // for the Struct-pruning shape that always does route through
+            // `nested_struct::cast_column`.
+            if is_pure_structural_narrowing(physical_type, target_type, &self.parquet_options) {
+                // Not an assertion that `nested_struct::cast_column` specifically runs (it may
+                // not, see above), only that *some* DataFusion cast path can actually perform
+                // this pair, so a bug in the predicate surfaces here at plan time instead of
+                // as an opaque `ArrowError` deep inside a parquet read.
+                debug_assert!(
+                    datafusion::common::nested_struct::requires_nested_struct_cast(
+                        physical_type,
+                        target_type
+                    ) || can_cast_types(physical_type, target_type),
+                    "is_pure_structural_narrowing({physical_type:?}, {target_type:?}) returned \
+                     true but neither nested_struct::cast_column nor Arrow's plain cast can \
+                     perform this pair"
+                );
+                return Ok(Transformed::no(expr));
+            }
+
             // Same-shape complex casts, timestamp tz relabel (e.g. Timestamp(us, None)
             // -> Timestamp(us, Some("UTC")) for INT96 reads), and Timestamp -> Int64
             // (Spark's `nanosAsLong`) need spark_parquet_convert: it handles nested
@@ -956,12 +1092,12 @@ impl SparkPhysicalExprAdapter {
                     | (DataType::Timestamp(_, _), DataType::Int64)
             ) {
                 let comet_cast: Arc<dyn PhysicalExpr> = Arc::new(
-                    CometCastColumnExpr::new(
+                    CometCastColumnExpr::try_new(
                         child,
                         input_field,
                         Arc::clone(cast.target_field()),
                         None,
-                    )
+                    )?
                     .with_parquet_options(self.parquet_options.clone()),
                 );
                 return Ok(Transformed::yes(comet_cast));
@@ -1162,7 +1298,9 @@ impl PhysicalExpr for RejectOnNonEmpty {
 #[cfg(test)]
 mod test {
     use crate::parquet::parquet_support::SparkParquetOptions;
-    use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
+    use crate::parquet::schema_adapter::{
+        is_pure_structural_narrowing, SparkPhysicalExprAdapterFactory,
+    };
     use arrow::array::UInt32Array;
     use arrow::array::{
         BinaryArray, Date32Array, Decimal128Array, Float32Array, Float64Array, Int32Array,
@@ -1177,6 +1315,7 @@ mod test {
     use datafusion::datasource::source::DataSourceExec;
     use datafusion::execution::object_store::ObjectStoreUrl;
     use datafusion::execution::TaskContext;
+    use datafusion::physical_expr::PhysicalExpr;
     use datafusion::physical_plan::ExecutionPlan;
     use datafusion_comet_spark_expr::test_common::file_util::get_temp_filename;
     use datafusion_comet_spark_expr::EvalMode;
@@ -1934,5 +2073,445 @@ mod test {
             "id-resolved read must not raise a duplicate-field error: {:?}",
             rewritten.err()
         );
+    }
+
+    /// #4859 investigation: for a pure structural narrowing of a nested column (dropping
+    /// unrequested struct fields, no leaf-type promotion, no tz relabeling, no field-id
+    /// matching, case-sensitive), does Comet's `CometCastColumnExpr` (via
+    /// `spark_parquet_convert`) produce the same result as DataFusion's own
+    /// `datafusion_common::nested_struct::cast_column`, which is what a plain, un-swapped
+    /// `CastExpr` would run at execution time (see `ColumnarValue::cast_to` ->
+    /// `cast_array_by_name` in datafusion/expr-common/src/columnar_value.rs)? If so, that
+    /// class of cast could be left as DataFusion's own `CastExpr` (like the identity-cast
+    /// unwrap in #4730) so DataFusion's #24090 leaf-pruning can see it.
+    #[test]
+    fn nested_struct_narrowing_cast_matches_datafusion_generic_cast() -> Result<(), DataFusionError>
+    {
+        use crate::parquet::parquet_support::spark_parquet_convert;
+        use arrow::array::{ListArray, StructArray};
+        use arrow::buffer::OffsetBuffer;
+        use arrow::compute::CastOptions;
+        use arrow::datatypes::Fields;
+        use datafusion::physical_plan::ColumnarValue;
+
+        // events: array<struct<id: Int64, payload: Utf8>> -> array<struct<id: Int64>>,
+        // mirroring the physical vs. logical (Spark-pruned) schema in the #4859 repro.
+        let id_array: Arc<dyn arrow::array::Array> =
+            Arc::new(Int64Array::from(vec![1i64, 2, 3, 4]));
+        let payload_array: Arc<dyn arrow::array::Array> =
+            Arc::new(StringArray::from(vec!["a", "b", "c", "d"]));
+        let from_struct_fields: Fields = vec![
+            Field::new("id", DataType::Int64, true),
+            Field::new("payload", DataType::Utf8, true),
+        ]
+        .into();
+        let struct_array = StructArray::new(
+            from_struct_fields.clone(),
+            vec![id_array, payload_array],
+            None,
+        );
+        let from_item_field = Arc::new(Field::new(
+            "element",
+            DataType::Struct(from_struct_fields),
+            true,
+        ));
+        let offsets = OffsetBuffer::new(vec![0, 2, 4].into());
+        let list_array: Arc<dyn arrow::array::Array> = Arc::new(ListArray::new(
+            Arc::clone(&from_item_field),
+            offsets,
+            Arc::new(struct_array),
+            None,
+        ));
+
+        let to_struct_fields: Fields = vec![Field::new("id", DataType::Int64, true)].into();
+        let to_item_field = Arc::new(Field::new(
+            "element",
+            DataType::Struct(to_struct_fields),
+            true,
+        ));
+        let target_type = DataType::List(Arc::clone(&to_item_field));
+
+        let spark_parquet_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        let comet_result = spark_parquet_convert(
+            ColumnarValue::Array(Arc::clone(&list_array)),
+            &target_type,
+            &spark_parquet_options,
+        )?;
+        let comet_array = match comet_result {
+            ColumnarValue::Array(a) => a,
+            _ => panic!("expected array"),
+        };
+
+        let df_array = datafusion::common::nested_struct::cast_column(
+            &list_array,
+            &target_type,
+            &CastOptions::default(),
+        )?;
+
+        assert_eq!(
+            format!("{comet_array:?}"),
+            format!("{df_array:?}"),
+            "Comet's CometCastColumnExpr / spark_parquet_convert and DataFusion's own \
+             nested_struct::cast_column disagree for pure struct-narrowing"
+        );
+        Ok(())
+    }
+
+    /// #4859 follow-up: `List(Int32)` with an unchanged leaf type but differing item-field
+    /// metadata (Parquet's inferred "element" name, non-nullable vs. Spark's generic "item"
+    /// name, nullable) does NOT trigger `requires_nested_struct_cast` (the item type itself,
+    /// Int32, is not Struct/List), so `ColumnarValue::cast_to` (what a plain `CastExpr` runs
+    /// at execution time) takes the *other* branch: Arrow's plain `cast_with_options`, not
+    /// `nested_struct::cast_column`. This is the exact shape from the "read simple ARRAY
+    /// fields" CometNativeReaderSuite failure. Compares against `ColumnarValue::cast_to`
+    /// directly (the real call site), not `nested_struct::cast_column`, since that is what
+    /// actually executes here.
+    #[test]
+    fn list_of_unchanged_leaf_with_differing_item_metadata_matches_columnar_value_cast_to(
+    ) -> Result<(), DataFusionError> {
+        use crate::parquet::parquet_support::spark_parquet_convert;
+        use arrow::array::{Int32Array, ListArray};
+        use arrow::buffer::OffsetBuffer;
+        use datafusion::physical_plan::ColumnarValue;
+
+        let values: Arc<dyn arrow::array::Array> = Arc::new(Int32Array::from(vec![1, 2, 3, 4]));
+        let physical_item_field = Arc::new(Field::new("element", DataType::Int32, false));
+        let offsets = OffsetBuffer::new(vec![0, 2, 4].into());
+        let list_array: Arc<dyn arrow::array::Array> = Arc::new(ListArray::new(
+            Arc::clone(&physical_item_field),
+            offsets,
+            values,
+            None,
+        ));
+
+        let target_item_field = Arc::new(Field::new("item", DataType::Int32, true));
+        let target_type = DataType::List(Arc::clone(&target_item_field));
+
+        let spark_parquet_options = default_options();
+        let comet_result = spark_parquet_convert(
+            ColumnarValue::Array(Arc::clone(&list_array)),
+            &target_type,
+            &spark_parquet_options,
+        )?;
+        let comet_array = match comet_result {
+            ColumnarValue::Array(a) => a,
+            _ => panic!("expected array"),
+        };
+
+        let df_result =
+            ColumnarValue::Array(Arc::clone(&list_array)).cast_to(&target_type, None)?;
+        let df_array = match df_result {
+            ColumnarValue::Array(a) => a,
+            _ => panic!("expected array"),
+        };
+
+        assert_eq!(
+            format!("{comet_array:?}"),
+            format!("{df_array:?}"),
+            "Comet's spark_parquet_convert and DataFusion's ColumnarValue::cast_to disagree \
+             for a List whose leaf type is unchanged but whose item field metadata differs"
+        );
+        Ok(())
+    }
+
+    fn struct_type(fields: Vec<(&str, DataType)>) -> DataType {
+        DataType::Struct(
+            fields
+                .into_iter()
+                .map(|(name, dt)| Field::new(name, dt, true))
+                .collect(),
+        )
+    }
+
+    fn struct_type_with_field_id(fields: Vec<(&str, DataType, i32)>) -> DataType {
+        DataType::Struct(
+            fields
+                .into_iter()
+                .map(|(name, dt, id)| {
+                    Field::new(name, dt, true).with_metadata(std::collections::HashMap::from([(
+                        PARQUET_FIELD_ID_META_KEY.to_string(),
+                        id.to_string(),
+                    )]))
+                })
+                .collect(),
+        )
+    }
+
+    fn list_type(item: DataType) -> DataType {
+        DataType::List(Arc::new(Field::new("element", item, true)))
+    }
+
+    fn default_options() -> SparkParquetOptions {
+        SparkParquetOptions::new(EvalMode::Legacy, "UTC", false)
+    }
+
+    /// Dropping a struct field by exact name, including through nested struct-in-struct and
+    /// list-of-struct, is the actual #4859 pruning shape and must be allowed.
+    #[test]
+    fn is_pure_structural_narrowing_allows_struct_and_list_field_drop() {
+        let opts = default_options();
+
+        let physical = struct_type(vec![("id", DataType::Int64), ("payload", DataType::Utf8)]);
+        let target = struct_type(vec![("id", DataType::Int64)]);
+        assert!(is_pure_structural_narrowing(&physical, &target, &opts));
+
+        let physical = list_type(struct_type(vec![
+            ("id", DataType::Int64),
+            (
+                "inner",
+                struct_type(vec![("a", DataType::Int64), ("blob", DataType::Utf8)]),
+            ),
+        ]));
+        let target = list_type(struct_type(vec![(
+            "inner",
+            struct_type(vec![("a", DataType::Int64)]),
+        )]));
+        assert!(is_pure_structural_narrowing(&physical, &target, &opts));
+    }
+
+    /// A target field with no exact-name match in the source (here, only a case-insensitive
+    /// one) must be denied: `nested_struct::cast_column` always matches by exact name and
+    /// would null-fill this field instead of resolving it the way Comet's case-insensitive
+    /// matching does.
+    #[test]
+    fn is_pure_structural_narrowing_denies_case_insensitive_only_match() {
+        let opts = default_options();
+        let physical = struct_type(vec![("ID", DataType::Int64)]);
+        let target = struct_type(vec![("id", DataType::Int64)]);
+        assert!(!is_pure_structural_narrowing(&physical, &target, &opts));
+    }
+
+    /// A target field with no name match at all must be denied: DataFusion's
+    /// `nested_struct::cast_column` null-fills it unconditionally, while Comet's behavior
+    /// additionally depends on `return_null_struct_if_all_fields_missing` at the struct level.
+    #[test]
+    fn is_pure_structural_narrowing_denies_missing_target_field() {
+        let opts = default_options();
+        let physical = struct_type(vec![("id", DataType::Int64)]);
+        let target = struct_type(vec![("id", DataType::Int64), ("payload", DataType::Utf8)]);
+        assert!(!is_pure_structural_narrowing(&physical, &target, &opts));
+    }
+
+    /// When `use_field_id` is set and the target struct carries Parquet field ids, Comet
+    /// matches by id first; DataFusion's generic cast has no field-id concept at all, so this
+    /// must be denied even though the names also happen to match.
+    #[test]
+    fn is_pure_structural_narrowing_denies_field_id_matching() {
+        let mut opts = default_options();
+        opts.use_field_id = true;
+        let physical = struct_type_with_field_id(vec![("id", DataType::Int64, 1)]);
+        let target = struct_type_with_field_id(vec![("id", DataType::Int64, 1)]);
+        assert!(!is_pure_structural_narrowing(&physical, &target, &opts));
+    }
+
+    /// Map value narrowing has no equivalent in `nested_struct::cast_column` (it has no Map
+    /// arm), so it must stay on the `CometCastColumnExpr` path regardless of nesting depth.
+    #[test]
+    fn is_pure_structural_narrowing_denies_map() {
+        let opts = default_options();
+        let physical = DataType::Map(
+            Arc::new(Field::new(
+                "entries",
+                struct_type(vec![("k", DataType::Int64), ("v", DataType::Utf8)]),
+                false,
+            )),
+            false,
+        );
+        let target = physical.clone();
+        // Even a no-op Map "narrowing" (target == physical) must not be routed through this
+        // predicate; Map is excluded structurally, not by an equality shortcut.
+        assert!(!is_pure_structural_narrowing(&physical, &target, &opts));
+    }
+
+    /// A leaf-level type change (timestamp tz relabeling, `nanosAsLong`, decimal promotion,
+    /// and so on) never arises from pruning alone and must be denied: Comet's nested cast
+    /// handling for those shapes carries Spark-specific semantics `nested_struct::cast_column`
+    /// does not replicate.
+    #[test]
+    fn is_pure_structural_narrowing_denies_leaf_type_change() {
+        let opts = default_options();
+        let physical = struct_type(vec![("id", DataType::Int32)]);
+        let target = struct_type(vec![("id", DataType::Int64)]);
+        assert!(!is_pure_structural_narrowing(&physical, &target, &opts));
+    }
+
+    /// NTZ -> LTZ timestamp relabeling (INT96 reads) is a metadata-only reinterpretation
+    /// Comet applies via a raw `reinterpret_cast`; Arrow's generic timestamp cast performs an
+    /// actual timezone conversion instead, changing the value. Locked in as its own test
+    /// because it is the subtlest denial: both sides are "just" Timestamp, so it is exactly
+    /// the shape a future refactor might accidentally fold into the equality catch-all.
+    #[test]
+    fn is_pure_structural_narrowing_denies_timestamp_ntz_to_ltz_relabel() {
+        use arrow::datatypes::TimeUnit;
+        let opts = default_options();
+        let physical = struct_type(vec![(
+            "ts",
+            DataType::Timestamp(TimeUnit::Microsecond, None),
+        )]);
+        let target = struct_type(vec![(
+            "ts",
+            DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+        )]);
+        assert!(!is_pure_structural_narrowing(&physical, &target, &opts));
+    }
+
+    /// Dictionary-encoded columns get Comet's own dictionary-preserving or
+    /// dictionary-flattening handling; Arrow's generic cast does not special-case this, so a
+    /// Dictionary value narrowing must be denied like Map, Timestamp relabeling, and any other
+    /// leaf-level divergence.
+    #[test]
+    fn is_pure_structural_narrowing_denies_dictionary() {
+        let opts = default_options();
+        let physical = struct_type(vec![(
+            "d",
+            DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8)),
+        )]);
+        let target = struct_type(vec![(
+            "d",
+            DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::LargeUtf8)),
+        )]);
+        assert!(!is_pure_structural_narrowing(&physical, &target, &opts));
+    }
+
+    /// Build a `SparkPhysicalExprAdapter` over a single "events" column and run the real
+    /// `PhysicalExprAdapter::rewrite` pipeline on a plain `Column` reference to it, mirroring
+    /// exactly what DataFusion's parquet opener does with the un-adapted projection
+    /// (`opener/mod.rs`'s `rewriter.rewrite(p)`). Returns the rewritten expression so callers
+    /// can assert on its concrete type.
+    fn rewrite_events_column(
+        physical_type: DataType,
+        target_type: DataType,
+        opts: SparkParquetOptions,
+    ) -> Result<Arc<dyn PhysicalExpr>, DataFusionError> {
+        use datafusion::physical_expr::expressions::Column;
+
+        let physical_schema =
+            Arc::new(Schema::new(vec![Field::new("events", physical_type, true)]));
+        let logical_schema = Arc::new(Schema::new(vec![Field::new("events", target_type, true)]));
+
+        let factory = SparkPhysicalExprAdapterFactory::new(opts, None);
+        let adapter = factory.create(Arc::clone(&logical_schema), Arc::clone(&physical_schema))?;
+
+        let col_expr: Arc<dyn PhysicalExpr> = Arc::new(Column::new("events", 0));
+        adapter.rewrite(col_expr)
+    }
+
+    /// End-to-end check of the actual wiring, not just the predicate: routing a pure
+    /// structural narrowing through the real `PhysicalExprAdapter::rewrite` pipeline (the
+    /// same path DataFusion's opener calls with the plain, un-adapted projection Column) must
+    /// leave DataFusion's own `CastExpr` in place rather than swapping in
+    /// `CometCastColumnExpr`, or DataFusion's leaf-pruning (#24090) would never see it.
+    #[test]
+    fn replace_with_spark_cast_preserves_cast_expr_for_pure_narrowing(
+    ) -> Result<(), DataFusionError> {
+        use crate::parquet::cast_column::CometCastColumnExpr;
+        use datafusion::physical_expr::expressions::CastExpr;
+
+        let physical_type = struct_type(vec![("id", DataType::Int64), ("payload", DataType::Utf8)]);
+        let target_type = struct_type(vec![("id", DataType::Int64)]);
+        let rewritten = rewrite_events_column(physical_type, target_type, default_options())?;
+
+        assert!(
+            rewritten.downcast_ref::<CastExpr>().is_some(),
+            "expected DataFusion's own CastExpr to survive a pure structural narrowing, got: \
+             {rewritten}"
+        );
+        assert!(
+            rewritten.downcast_ref::<CometCastColumnExpr>().is_none(),
+            "CometCastColumnExpr should not appear for a pure structural narrowing"
+        );
+        Ok(())
+    }
+
+    /// Companion to the previous test: a narrowing the predicate must deny (here, a
+    /// case-insensitive-only field match) has to still get `CometCastColumnExpr`'s correctness
+    /// handling through the real pipeline, not just fall through untouched.
+    #[test]
+    fn replace_with_spark_cast_wraps_cast_expr_when_not_pure_narrowing(
+    ) -> Result<(), DataFusionError> {
+        use crate::parquet::cast_column::CometCastColumnExpr;
+
+        let physical_type = struct_type(vec![("ID", DataType::Int64)]);
+        let target_type = struct_type(vec![("id", DataType::Int64)]);
+        let mut opts = default_options();
+        opts.case_sensitive = false;
+        let rewritten = rewrite_events_column(physical_type, target_type, opts)?;
+
+        assert!(
+            rewritten.downcast_ref::<CometCastColumnExpr>().is_some(),
+            "expected CometCastColumnExpr for a case-insensitive-only match, got: {rewritten}"
+        );
+        Ok(())
+    }
+
+    /// `use_field_id` being enabled session-wide must not deny a struct whose fields simply
+    /// don't carry Parquet field-id metadata (e.g. a plain Parquet file read with Iceberg
+    /// field-id matching turned on for the table in general). The field-id bail must key off
+    /// whether *this* struct's fields actually carry ids, not the config flag alone.
+    #[test]
+    fn is_pure_structural_narrowing_allows_use_field_id_enabled_without_field_id_metadata() {
+        let mut opts = default_options();
+        opts.use_field_id = true;
+        let physical = struct_type(vec![("id", DataType::Int64), ("payload", DataType::Utf8)]);
+        let target = struct_type(vec![("id", DataType::Int64)]);
+        assert!(is_pure_structural_narrowing(&physical, &target, &opts));
+    }
+
+    /// The field-id bail must apply at every nesting level it is reached, not just the
+    /// outermost struct: an inner struct carrying field ids must deny the whole cast even
+    /// though the outer struct matches cleanly by name.
+    #[test]
+    fn is_pure_structural_narrowing_denies_field_id_matching_at_nested_level() {
+        let mut opts = default_options();
+        opts.use_field_id = true;
+        let physical = struct_type(vec![(
+            "outer",
+            struct_type_with_field_id(vec![("id", DataType::Int64, 1)]),
+        )]);
+        let target = struct_type(vec![(
+            "outer",
+            struct_type_with_field_id(vec![("id", DataType::Int64, 1)]),
+        )]);
+        assert!(!is_pure_structural_narrowing(&physical, &target, &opts));
+    }
+
+    /// A target struct with zero field-name overlap against the source is denied, distinct
+    /// from (and in addition to) the partial-overlap case in
+    /// `is_pure_structural_narrowing_denies_missing_target_field`: DataFusion's
+    /// `validate_struct_compatibility` hard-errors on zero overlap, while Comet null-fills
+    /// every field, governed by `return_null_struct_if_all_fields_missing`.
+    #[test]
+    fn is_pure_structural_narrowing_denies_zero_field_overlap() {
+        let opts = default_options();
+        let physical = struct_type(vec![("left", DataType::Int64)]);
+        let target = struct_type(vec![("right", DataType::Int64)]);
+        assert!(!is_pure_structural_narrowing(&physical, &target, &opts));
+    }
+
+    /// `case_sensitive = true` with an exact-case match must still be allowed: the predicate's
+    /// exact-name requirement does not depend on the `case_sensitive` flag's value, only on
+    /// whether the names actually match exactly.
+    #[test]
+    fn is_pure_structural_narrowing_allows_case_sensitive_true_with_exact_match() {
+        let mut opts = default_options();
+        opts.case_sensitive = true;
+        let physical = struct_type(vec![("id", DataType::Int64), ("payload", DataType::Utf8)]);
+        let target = struct_type(vec![("id", DataType::Int64)]);
+        assert!(is_pure_structural_narrowing(&physical, &target, &opts));
+    }
+
+    /// `case_sensitive = true` with a case-differing name is denied, same as the
+    /// `case_sensitive = false` case. This is conservative rather than strictly necessary: with
+    /// `case_sensitive = true`, Comet's own matching would also fail to match "ID" to "id" and
+    /// null-fill it, agreeing with DataFusion. Denying here only costs a missed optimization,
+    /// never a wrong result, and keeps the predicate's exact-match rule uniform regardless of
+    /// `case_sensitive`.
+    #[test]
+    fn is_pure_structural_narrowing_denies_case_mismatch_even_when_case_sensitive_true() {
+        let mut opts = default_options();
+        opts.case_sensitive = true;
+        let physical = struct_type(vec![("ID", DataType::Int64)]);
+        let target = struct_type(vec![("id", DataType::Int64)]);
+        assert!(!is_pure_structural_narrowing(&physical, &target, &opts));
     }
 }

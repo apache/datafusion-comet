@@ -659,14 +659,17 @@ object CometConf extends ShimCometConf {
           "an executor-side remote shuffle client. Admission includes native encoding " +
           "scratch and overlapping native, JNI, and remote shuffle frame copies. " +
           "A frame must fit its codec and Arrow workspace as well as its encoded bytes; " +
-          "too-small limits fail before encoding. Encrypted native RSS is not supported; " +
+          "ordinary uncompressed frames need approximately seven times their size plus " +
+          "schema and transport overhead. Compressed frames also reserve workspace for " +
+          "their uncompressed data. Admission is acquired before encoding. " +
+          "Encrypted native RSS is not supported; " +
           "use ordinary Spark shuffle when spark.io.encryption.enabled is true.")
       .bytesConf(ByteUnit.BYTE)
       .checkValue(
         value => value >= 76 && value <= Int.MaxValue,
         "Remote shuffle in-flight byte limit must fit three complete frame copies and a " +
           "Celeborn request header")
-      .createWithDefault(256L * 1024 * 1024)
+      .createWithDefault(512L * 1024 * 1024)
 
   val COMET_DEBUG_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.debug.enabled")
@@ -936,6 +939,24 @@ object CometConf extends ShimCometConf {
         "Defines filesystem schemes (e.g., hdfs, webhdfs) that the native side accesses " +
           "via libhdfs, separated by commas. Valid only when built with hdfs-opendal feature " +
           "enabled.")
+      .stringConf
+      .createOptional
+
+  val COMET_S3_COMPLIANT_SCHEMES_KEY = "fs.comet.s3Compliant.schemes"
+
+  // Declared so the value appears in the generated config reference and can be set via
+  // `spark.hadoop.*`, but never read through this entry: `NativeConfig.resolveS3CompliantSchemes`
+  // reads the Hadoop key below instead, so `core-site.xml` is honored too. Same shape as
+  // COMET_LIBHDFS_SCHEMES.
+  val COMET_S3_COMPLIANT_SCHEMES: OptionalConfigEntry[String] =
+    conf(s"spark.hadoop.$COMET_S3_COMPLIANT_SCHEMES_KEY")
+      .category(CATEGORY_SCAN)
+      .doc(
+        "Defines filesystem schemes (e.g., blob, minio, r2) that Comet treats as S3-compliant, " +
+          "separated by commas. Such schemes reuse the `fs.s3a.*` credential surface and accept " +
+          "vendor-style `fs.<scheme>.<authority>.*` keys. Empty by default, so no alias scheme " +
+          "is claimed unless opted in. Read from the Hadoop configuration, so it must be set " +
+          "before the SparkSession is created.")
       .stringConf
       .createOptional
 
