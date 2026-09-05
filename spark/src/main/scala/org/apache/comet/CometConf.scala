@@ -939,6 +939,24 @@ object CometConf extends ShimCometConf {
       .stringConf
       .createOptional
 
+  val COMET_S3_COMPLIANT_SCHEMES_KEY = "fs.comet.s3Compliant.schemes"
+
+  // Declared so the value appears in the generated config reference and can be set via
+  // `spark.hadoop.*`, but never read through this entry: `NativeConfig.resolveS3CompliantSchemes`
+  // reads the Hadoop key below instead, so `core-site.xml` is honored too. Same shape as
+  // COMET_LIBHDFS_SCHEMES.
+  val COMET_S3_COMPLIANT_SCHEMES: OptionalConfigEntry[String] =
+    conf(s"spark.hadoop.$COMET_S3_COMPLIANT_SCHEMES_KEY")
+      .category(CATEGORY_SCAN)
+      .doc(
+        "Defines filesystem schemes (e.g., blob, minio, r2) that Comet treats as S3-compliant, " +
+          "separated by commas. Such schemes reuse the `fs.s3a.*` credential surface and accept " +
+          "vendor-style `fs.<scheme>.<authority>.*` keys. Empty by default, so no alias scheme " +
+          "is claimed unless opted in. Read from the Hadoop configuration, so it must be set " +
+          "before the SparkSession is created.")
+      .stringConf
+      .createOptional
+
   // Used on native side. Check spark_config.rs how the config is used
   val COMET_MAX_TEMP_DIRECTORY_SIZE: ConfigEntry[Long] =
     conf("spark.comet.maxTempDirectorySize")
