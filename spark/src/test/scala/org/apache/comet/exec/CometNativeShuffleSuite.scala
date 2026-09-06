@@ -35,7 +35,7 @@ import org.apache.arrow.vector.types.pojo.{Field, Schema}
 import org.apache.hadoop.fs.Path
 import org.apache.spark.SparkEnv
 import org.apache.spark.sql.{CometTestBase, DataFrame, Dataset, Row}
-import org.apache.spark.sql.comet.{CometExec, CometMetricNode}
+import org.apache.spark.sql.comet.{CometExec, CometMetricNode, CometTakeOrderedAndProjectExec}
 import org.apache.spark.sql.comet.execution.arrow.CometArrowStream
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
@@ -43,7 +43,8 @@ import org.apache.spark.sql.functions.{col, count, sum}
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 
-import org.apache.comet.{CometConf, CometExecIterator, CometShuffleBlockIterator, Native}
+import org.apache.comet.{CometConf, CometExecIterator, CometShuffleBlockIterator, CometShuffleSizeLimitException, Native}
+import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.serde.{OperatorOuterClass, PartitioningOuterClass}
 import org.apache.comet.shuffle.ShufflePartitionPusher
 
@@ -61,6 +62,13 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
   }
 
   import testImplicits._
+
+  /**
+   * Runs `f` with nested hash partitioning keys enabled. The config is disabled by default, so
+   * every test that expects a nested key to reach native shuffle has to opt in.
+   */
+  private def withNestedHashPartitioning(f: => Unit): Unit =
+    withSQLConf(CometConf.COMET_SHUFFLE_NATIVE_HASH_PARTITIONING_NESTED_ENABLED.key -> "true")(f)
 
   private def rssShufflePlanBytes: Array[Byte] = {
     val scan = OperatorOuterClass.Operator
@@ -249,8 +257,11 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
             iterator.hasNext
             Iterator.single((false, callbacks))
           } catch {
-            case failure: Exception =>
-              Iterator.single((failure.getMessage.contains("admission budget"), callbacks))
+            case failure: CometShuffleSizeLimitException =>
+              Iterator.single(
+                (
+                  failure.getMessage.contains("spark.comet.shuffle.rss.maxInFlightBytes"),
+                  callbacks))
           }
         } finally {
           iterator.close()
@@ -444,8 +455,14 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
                 .filter($"_3" > 10)
                 .repartition(numPartitions, $"_2")
 
-              // Partitioning on nested array falls back to Spark
+              // Partitioning on a nested array falls back to Spark by default, and is native
+              // when nested hash partitioning is enabled.
               checkShuffleAnswer(df, 0)
+              withNestedHashPartitioning {
+                checkShuffleAnswer(
+                  sql("SELECT * FROM tbl").filter($"_3" > 10).repartition(numPartitions, $"_2"),
+                  1)
+              }
 
               df = sql("SELECT * FROM tbl")
                 .filter($"_3" > 10)
@@ -611,11 +628,374 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
     withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
       val df = spark.sql("SELECT id, map(id, null) AS m FROM VALUES (1), (2), (3) AS t(id)")
       val shuffled = df.repartition(2, $"id")
-      println(shuffled.queryExecution.executedPlan)
       checkShuffleAnswer(shuffled, 1)
     }
   }
 
+  test("native shuffle on struct data column") {
+    // The native shuffle type gate (CometShuffleExchangeExec.supportedSerializableDataType)
+    // allows struct data columns, but nothing exercised them: struct columns can only reach
+    // native shuffle as DATA, since supportedHashPartitioningDataType rejects them as a
+    // hash key. So partition on a primitive and carry the struct along.
+    Seq(10, 201).foreach { numPartitions =>
+      withParquetTable((0 until 50).map(i => (i, (i + 1, (i + 2).toString), i + 3)), "tbl") {
+        val df = sql("SELECT * FROM tbl")
+          .filter($"_3" > 10)
+          .repartition(numPartitions, $"_1")
+          .sortWithinPartitions($"_1")
+
+        checkShuffleAnswer(df, 1)
+      }
+    }
+  }
+
+  test("native shuffle on struct data column including nulls") {
+    Seq(10, 201).foreach { numPartitions =>
+      val data: Seq[(Int, (Int, String))] =
+        Seq((1, (0, "1")), (2, (3, "3")), (3, null), (4, (5, null)))
+      withParquetTable(data, "tbl") {
+        val df = sql("SELECT * FROM tbl")
+          .repartition(numPartitions, $"_1")
+          .sortWithinPartitions($"_1")
+
+        checkShuffleAnswer(df, 1)
+      }
+    }
+  }
+
+  test("native shuffle on deeply nested data columns") {
+    // struct<array<...>> and array<struct<...>>: the recursive branches of the type gate.
+    Seq(10, 201).foreach { numPartitions =>
+      withParquetTable(
+        (0 until 50).map(i =>
+          (i, (Seq(i + 1, i + 2), (i + 3).toString), Seq((i + 4, (i + 5).toString)))),
+        "tbl") {
+        val df = sql("SELECT * FROM tbl")
+          .repartition(numPartitions, $"_1")
+          .sortWithinPartitions($"_1")
+
+        checkShuffleAnswer(df, 1)
+      }
+    }
+  }
+
+  test("native shuffle on struct data column with map field") {
+    withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+      val df = spark.sql(
+        "SELECT id, named_struct('m', map(id, id + 1), 's', cast(id AS STRING)) AS st " +
+          "FROM VALUES (1), (2), (3) AS t(id)")
+      val shuffled = df.repartition(2, $"id")
+      checkShuffleAnswer(shuffled, 1)
+    }
+  }
+
+  test("native shuffle on struct hash partitioning key") {
+    withNestedHashPartitioning {
+      Seq(10, 201).foreach { numPartitions =>
+        withParquetTable((0 until 50).map(i => (i, (i % 7, (i % 5).toString))), "tbl") {
+          val df = sql("SELECT * FROM tbl")
+            .repartition(numPartitions, $"_2")
+            .sortWithinPartitions($"_1")
+
+          checkShuffleAnswer(df, 1)
+        }
+      }
+    }
+  }
+
+  test("native shuffle on array hash partitioning key") {
+    withNestedHashPartitioning {
+      Seq(10, 201).foreach { numPartitions =>
+        withParquetTable((0 until 50).map(i => (i, Seq(i % 7, i % 5))), "tbl") {
+          val df = sql("SELECT * FROM tbl")
+            .repartition(numPartitions, $"_2")
+            .sortWithinPartitions($"_1")
+
+          checkShuffleAnswer(df, 1)
+        }
+      }
+    }
+  }
+
+  test("native shuffle on two-level nested hash partitioning key") {
+    withNestedHashPartitioning {
+      // struct<array<int>, string> and array<struct<int, string>>: one level of nesting inside the
+      // top-level type, covering both recursive branches of the type gate.
+      Seq(10, 201).foreach { numPartitions =>
+        withParquetTable(
+          (0 until 50).map(i => (i, (Seq(i % 7, i % 3), (i % 5).toString), Seq((i % 4, "x")))),
+          "tbl") {
+          val df = sql("SELECT * FROM tbl")
+            .repartition(numPartitions, $"_2", $"_3")
+            .sortWithinPartitions($"_1")
+
+          checkShuffleAnswer(df, 1)
+        }
+      }
+    }
+  }
+
+  test("native shuffle on deeply nested hash partitioning key") {
+    withNestedHashPartitioning {
+      // Four levels of nesting, mixing all three recursive branches:
+      //   struct< array< struct< m: map<string, array<int>>, s: string > >, i: int >
+      // so the gate and the native hasher both have to descend struct -> array -> struct -> map
+      // -> array -> int.
+      assume(isSpark40Plus, "map shuffle keys are only normalized with mapsort on Spark 4.0+")
+      withTable("tbl") {
+        sql("""CREATE TABLE tbl(
+              id INT,
+              k STRUCT<
+                a: ARRAY<STRUCT<m: MAP<STRING, ARRAY<INT>>, s: STRING>>,
+                i: INT>)
+              USING parquet""")
+        sql("""INSERT INTO tbl VALUES
+              (1, named_struct('a', array(named_struct('m', map('x', array(1, 2)), 's', 'p')), 'i', 1)),
+              (2, named_struct('a', array(named_struct('m', map('y', array(3)), 's', 'q')), 'i', 2)),
+              (3, named_struct('a', array(named_struct('m', map('x', array(1, 2)), 's', 'p')), 'i', 1)),
+              (4, named_struct('a', array(), 'i', 4)),
+              (5, null)""")
+        val df = sql("SELECT * FROM tbl").repartition(10, $"k").sortWithinPartitions($"id")
+
+        checkShuffleAnswer(df, 1)
+      }
+    }
+  }
+
+  test("native shuffle on map hash partitioning key below an offset") {
+    // A native OFFSET slices the batch and Arrow keeps a sliced MapArray's original entry offsets,
+    // so the `mapsort` Spark inserts for a map shuffle key sees a map whose first entry offset is
+    // nonzero. That overran the sorted entries until #5630; this is the repartition-on-map route
+    // into it, alongside the group-by route covered in CometMapExpressionSuite.
+    assume(isSpark40Plus, "map shuffle keys are only normalized with mapsort on Spark 4.0+")
+    withNestedHashPartitioning {
+      withParquetTable(
+        (0 until 20).map(i => (i, Map(s"b${i % 5}" -> i, s"a${i % 5}" -> (i + 1)))),
+        "tbl") {
+        val df =
+          sql("SELECT * FROM (SELECT * FROM tbl ORDER BY _1 LIMIT 15 OFFSET 5) DISTRIBUTE BY _2")
+
+        // Both operators have to stay native, otherwise the sliced map never reaches the native
+        // mapsort and this stops covering the fix.
+        checkCometExchange(df, 1, true)
+        assert(
+          collectFirst(stripAQEPlan(df.queryExecution.executedPlan)) {
+            case t: CometTakeOrderedAndProjectExec => t
+          }.isDefined,
+          "expected a native offset below the shuffle")
+        checkSparkAnswer(df)
+      }
+    }
+  }
+  test("native shuffle on map hash partitioning key") {
+    withNestedHashPartitioning {
+      // Map entry order carries no meaning, so equal maps must hash alike. Spark 4.0+ normalizes a
+      // map shuffle key with `mapsort(...)`; earlier versions do not, so Comet must not hash a raw
+      // map there. The gate therefore only admits map keys on Spark 4.0+, and only when the
+      // `mapsort` itself is convertible (CometMapSort supports scalar map keys only).
+      withParquetTable((0 until 50).map(i => (i, Map(i % 7 -> (i % 5)))), "tbl") {
+        val df = sql("SELECT * FROM tbl").repartition(10, $"_2").sortWithinPartitions($"_1")
+
+        checkShuffleAnswer(df, if (isSpark40Plus) 1 else 0)
+      }
+    }
+  }
+
+  test("native shuffle on map hash partitioning key with non-scalar map key falls back") {
+    // A map whose own key is nested cannot be `mapsort`ed by Comet (Arrow's sort_to_indices
+    // handles scalar keys only), so the normalization Spark 4.0+ requires is unavailable and the
+    // shuffle must fall back rather than hash an unnormalized map.
+    assume(isSpark40Plus, "map shuffle keys are only normalized with mapsort on Spark 4.0+")
+    withParquetTable((0 until 50).map(i => (i, Map(Seq(i % 7) -> (i % 5)))), "tbl") {
+      val df = sql("SELECT * FROM tbl").repartition(10, $"_2").sortWithinPartitions($"_1")
+
+      checkShuffleAnswer(df, 0)
+    }
+  }
+
+  test("native shuffle on struct hash partitioning key with collated string falls back") {
+    // The top-level gate rejects collated strings because Comet hashes raw bytes, which would
+    // misroute rows that are equal under the collation. Recursing through the nested cases must
+    // preserve that: a collated leaf disqualifies the whole key.
+    assume(isSpark40Plus, "string collation requires Spark 4.0+")
+    withTable("tbl") {
+      sql(
+        "CREATE TABLE tbl(id INT, s STRUCT<a: STRING COLLATE UTF8_LCASE, b: INT>) USING parquet")
+      sql("INSERT INTO tbl VALUES (1, named_struct('a', 'x', 'b', 1))")
+      sql("INSERT INTO tbl VALUES (2, named_struct('a', 'X', 'b', 2))")
+      val df = sql("SELECT * FROM tbl").repartition(10, $"s")
+
+      checkShuffleAnswer(df, 0)
+    }
+  }
+
+  test("native shuffle nested hash partitioning key honors its config") {
+    withParquetTable((0 until 50).map(i => (i, (i % 7, (i % 5).toString))), "tbl") {
+      // "false" is the default; "true" opts in.
+      Seq("true" -> 1, "false" -> 0).foreach { case (enabled, expectedShuffles) =>
+        withSQLConf(
+          CometConf.COMET_SHUFFLE_NATIVE_HASH_PARTITIONING_NESTED_ENABLED.key -> enabled) {
+          val df = sql("SELECT * FROM tbl").repartition(10, $"_2").sortWithinPartitions($"_1")
+
+          checkShuffleAnswer(df, expectedShuffles)
+        }
+      }
+    }
+  }
+  test("native shuffle nested hash partitioning key matches Spark's partition assignment") {
+    withNestedHashPartitioning {
+      // checkShuffleAnswer only compares the query answer, which is order-insensitive and so would
+      // pass even if Comet routed rows to different partitions than Spark. Nested keys are only safe
+      // if partition ASSIGNMENT matches, so compare spark_partition_id() per row against Spark.
+      withParquetTable(
+        (0 until 200).map(i => (i, (i % 13, (i % 7).toString), Seq(i % 11, i % 5))),
+        "tbl") {
+        Seq("_2", "_3", "_2, _3").foreach { keys =>
+          val query =
+            "SELECT _1, spark_partition_id() AS pid FROM (" +
+              s"SELECT /*+ REPARTITION(10, $keys) */ * FROM tbl)"
+          val cometRows = sql(query).collect().map(r => (r.getInt(0), r.getInt(1))).sorted
+          // `withSQLConf` returns Unit, so capture the Spark-side rows via a var rather than
+          // relying on the block's value.
+          // `SQLHelper.withSQLConf` returns T on Spark 4.x but Unit on Spark 3.x, so capture the
+          // Spark-side rows via a var to keep this compiling on both.
+          var sparkRows: Array[(Int, Int)] = Array.empty
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            sparkRows = sql(query).collect().map(r => (r.getInt(0), r.getInt(1))).sorted
+          }
+          assert(sparkRows.nonEmpty, "Spark produced no rows; the comparison would be vacuous")
+          // Without this the test would still pass if the gate stopped admitting these keys, having
+          // quietly compared Spark against Spark.
+          checkCometExchange(sql(s"SELECT /*+ REPARTITION(10, $keys) */ * FROM tbl"), 1, true)
+          assert(
+            cometRows === sparkRows,
+            s"partition assignment differs from Spark for keys ($keys)")
+        }
+      }
+
+      // Same check for a deeply nested key, where Spark rewrites the partitioning expression into a
+      // transform(...) containing a nested mapsort(...).
+      if (isSpark40Plus) {
+        withTable("deep") {
+          sql("""CREATE TABLE deep(
+                id INT,
+                k STRUCT<a: ARRAY<STRUCT<m: MAP<STRING, ARRAY<INT>>, s: STRING>>, i: INT>)
+                USING parquet""")
+          (0 until 40).foreach { i =>
+            sql(s"""INSERT INTO deep VALUES
+                  ($i, named_struct('a', array(named_struct(
+                    'm', map('k${i % 6}', array(${i % 4}, ${i % 3})), 's', 's${i % 5}')),
+                    'i', ${i % 7}))""")
+          }
+          val query =
+            "SELECT id, spark_partition_id() AS pid FROM (" +
+              "SELECT /*+ REPARTITION(10, k) */ * FROM deep)"
+          val cometRows = sql(query).collect().map(r => (r.getInt(0), r.getInt(1))).sorted
+          var sparkRows: Array[(Int, Int)] = Array.empty
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            sparkRows = sql(query).collect().map(r => (r.getInt(0), r.getInt(1))).sorted
+          }
+          assert(sparkRows.nonEmpty, "Spark produced no rows; the comparison would be vacuous")
+          checkCometExchange(sql("SELECT /*+ REPARTITION(10, k) */ * FROM deep"), 1, true)
+          assert(
+            cometRows === sparkRows,
+            "partition assignment differs from Spark for a deep key")
+        }
+      }
+    }
+  }
+  test("native shuffle on nested hash partitioning key with interval leaf falls back") {
+    // CalendarIntervalType is allowed as a shuffle DATA column but the native hasher has no
+    // branch for it (https://github.com/apache/datafusion-comet/issues/5059). Because the nested
+    // cases recurse through this same predicate, an interval leaf disqualifies the whole key and
+    // the shuffle falls back instead of failing in native code.
+    withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+      val nested = spark
+        .sql("SELECT id, named_struct('i', INTERVAL '1' MONTH, 'n', id) AS s " +
+          "FROM VALUES (1), (2), (3) AS t(id)")
+        .repartition(2, $"s")
+      checkShuffleAnswer(nested, 0)
+
+      val topLevel = spark
+        .sql("SELECT id, INTERVAL '1' MONTH AS i FROM VALUES (1), (2), (3) AS t(id)")
+        .repartition(2, $"i")
+      checkShuffleAnswer(topLevel, 0)
+    }
+  }
+
+  test("native shuffle map hash partitioning key ignores entry order") {
+    withNestedHashPartitioning {
+      // The reason map keys are only admitted on Spark 4.0+ is that two equal maps with different
+      // physical entry order must hash alike, which relies on Spark's `mapsort` normalization. A
+      // single-entry map cannot show that, so use multi-entry maps written in opposite key orders
+      // and assert both rows land in the same partition.
+      assume(isSpark40Plus, "map shuffle keys are only normalized with mapsort on Spark 4.0+")
+      withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+        val query = """
+          SELECT id, spark_partition_id() AS pid FROM (
+            SELECT /*+ REPARTITION(10, m) */ * FROM VALUES
+              (1, map('a', 1, 'b', 2)),
+              (2, map('b', 2, 'a', 1)),
+              (3, map('a', 1, 'b', 2, 'c', 3)),
+              (4, map('c', 3, 'b', 2, 'a', 1)) AS t(id, m))"""
+        val rows = sql(query).collect().map(r => (r.getInt(0), r.getInt(1))).toMap
+        assert(rows(1) == rows(2), "equal maps in different entry order must share a partition")
+        assert(rows(3) == rows(4), "equal maps in different entry order must share a partition")
+
+        var sparkRows: Map[Int, Int] = Map.empty
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          sparkRows = sql(query).collect().map(r => (r.getInt(0), r.getInt(1))).toMap
+        }
+        assert(sparkRows.nonEmpty)
+        assert(rows == sparkRows, "map key partition assignment differs from Spark")
+      }
+    }
+  }
+
+  test("native shuffle nested hash partitioning key with null keys at each level") {
+    withNestedHashPartitioning {
+      // Spark hashes a null struct as the seed. The struct branch in hash_funcs/utils.rs recurses
+      // into `columns()` without consulting its own null mask (unlike the List and Map branches,
+      // which guard on `is_null(row_idx)`), so a null struct whose children are not themselves null
+      // would hash off leftover child values. Cover nulls at the top level, inside a struct, inside
+      // an array element, and as a map value.
+      assume(isSpark40Plus, "map shuffle keys are only normalized with mapsort on Spark 4.0+")
+      withTable("nulls") {
+        sql("""CREATE TABLE nulls(
+              id INT,
+              k STRUCT<a: ARRAY<STRUCT<m: MAP<STRING, INT>, s: STRING>>, i: INT>)
+              USING parquet""")
+        sql("""INSERT INTO nulls VALUES
+              (1, NULL),
+              (2, NULL),
+              (3, named_struct('a', NULL, 'i', 1)),
+              (4, named_struct('a', NULL, 'i', 1)),
+              (5, named_struct('a', array(NULL), 'i', 2)),
+              (6, named_struct('a', array(NULL), 'i', 2)),
+              (7, named_struct('a', array(named_struct('m', NULL, 's', NULL)), 'i', 3)),
+              (8, named_struct('a', array(named_struct('m', NULL, 's', NULL)), 'i', 3)),
+              (9, named_struct('a', array(named_struct('m', map('k', 1), 's', 'v')), 'i', NULL)),
+              (10, named_struct('a', array(named_struct('m', map('k', 1), 's', 'v')), 'i', NULL))""")
+
+        val query =
+          "SELECT id, spark_partition_id() AS pid FROM (" +
+            "SELECT /*+ REPARTITION(10, k) */ * FROM nulls)"
+        val rows = sql(query).collect().map(r => (r.getInt(0), r.getInt(1))).toMap
+        // Each pair shares a key, so each pair must share a partition.
+        Seq((1, 2), (3, 4), (5, 6), (7, 8), (9, 10)).foreach { case (l, r) =>
+          assert(rows(l) == rows(r), s"rows $l and $r have equal keys but different partitions")
+        }
+
+        checkCometExchange(sql("SELECT /*+ REPARTITION(10, k) */ * FROM nulls"), 1, true)
+        var sparkRows: Map[Int, Int] = Map.empty
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          sparkRows = sql(query).collect().map(r => (r.getInt(0), r.getInt(1))).toMap
+        }
+        assert(sparkRows.nonEmpty)
+        assert(rows == sparkRows, "null-key partition assignment differs from Spark")
+      }
+    }
+  }
   test("fix: Comet native shuffle with binary data") {
     withParquetTable((0 until 5).map(i => (i, (i + 1).toLong)), "tbl") {
       val df = sql("SELECT cast(cast(_1 as STRING) as BINARY) as binary, _2 FROM tbl")

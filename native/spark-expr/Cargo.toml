@@ -88,6 +88,34 @@ name = "aggregate"
 harness = false
 
 [[bench]]
+name = "array_position"
+harness = false
+
+[[bench]]
+name = "array_slice"
+harness = false
+
+[[bench]]
+name = "array_insert"
+harness = false
+
+[[bench]]
+name = "list_extract"
+harness = false
+
+[[bench]]
+name = "arrays_zip"
+harness = false
+
+[[bench]]
+name = "flatten"
+harness = false
+
+[[bench]]
+name = "get_array_struct_fields"
+harness = false
+
+[[bench]]
 name = "bloom_filter_agg"
 harness = false
 
@@ -109,6 +137,10 @@ harness = false
 
 [[bench]]
 name = "normalize_nan"
+harness = false
+
+[[bench]]
+name = "sort_float_keys"
 harness = false
 
 [[bench]]
@@ -240,6 +272,26 @@ name = "abs"
 harness = false
 
 [[bench]]
+name = "isnan"
+harness = false
+
+[[bench]]
+name = "rlike"
+harness = false
+
+[[bench]]
+name = "create_named_struct"
+harness = false
+
+[[bench]]
+name = "get_struct_field"
+harness = false
+
+[[bench]]
+name = "from_json"
+harness = false
+
+[[bench]]
 name = "modulo"
 harness = false
 
@@ -261,4 +313,28 @@ harness = false
 
 [[bench]]
 name = "contains"
+harness = false
+
+[[bench]]
+name = "sequence"
+harness = false
+
+[[bench]]
+name = "timestamp_trunc"
+harness = false
+
+[[bench]]
+name = "unix_timestamp"
+harness = false
+
+[[bench]]
+name = "from_utc_timestamp"
+harness = false
+
+[[bench]]
+name = "to_utc_timestamp"
+harness = false
+
+[[bench]]
+name = "iceberg_transforms"
 harness = false

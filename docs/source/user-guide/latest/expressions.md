@@ -121,12 +121,12 @@ The tables below list every Spark built-in expression with its current status.
 | `regr_avgx` | ✅ | — | Native: Spark rewrites to `Average` (tests in [#4551](https://github.com/apache/datafusion-comet/pull/4551)) |
 | `regr_avgy` | ✅ | — | Native: Spark rewrites to `Average` (tests in [#4551](https://github.com/apache/datafusion-comet/pull/4551)) |
 | `regr_count` | ✅ | — | Native: Spark rewrites to `Count` (tests in [#4551](https://github.com/apache/datafusion-comet/pull/4551)) |
-| `regr_intercept` | 🔜 | — | Falls back; can reuse `covar_pop`/`var_pop` accumulators ([#4552](https://github.com/apache/datafusion-comet/issues/4552)) |
-| `regr_r2` | 🔜 | — | Falls back; can reuse the `corr` accumulator ([#4552](https://github.com/apache/datafusion-comet/issues/4552)) |
-| `regr_slope` | 🔜 | — | Falls back; can reuse `covar_pop`/`var_pop` accumulators ([#4552](https://github.com/apache/datafusion-comet/issues/4552)) |
-| `regr_sxx` | 🔜 | — | Falls back; can reuse `var_pop` accumulator ([#4552](https://github.com/apache/datafusion-comet/issues/4552)) |
-| `regr_sxy` | 🔜 | — | Falls back; can reuse `covar_pop` accumulator ([#4552](https://github.com/apache/datafusion-comet/issues/4552)) |
-| `regr_syy` | 🔜 | — | Falls back; can reuse `var_pop` accumulator ([#4552](https://github.com/apache/datafusion-comet/issues/4552)) |
+| `regr_intercept` | ✅ | Native |  |
+| `regr_r2` | ✅ | Native |  |
+| `regr_slope` | ✅ | Native |  |
+| `regr_sxx` | ✅ | Native |  |
+| `regr_sxy` | ✅ | Native |  |
+| `regr_syy` | ✅ | Native |  |
 | `skewness` | 🔜 | — | Not yet implemented natively |
 | `some` | ✅ | — |  |
 | `std` | ✅ | Native |  |
@@ -155,7 +155,7 @@ The tables below list every Spark built-in expression with its current status.
 | `array_except` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default; the incompatible native path is opt-in via allowIncompatible ([details](compatibility/expressions/array.md)) |
 | `array_insert` | ✅ | Native |  |
 | `array_intersect` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default; the incompatible native path is opt-in via allowIncompatible ([details](compatibility/expressions/array.md)) |
-| `array_join` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default; the incompatible native path is opt-in via allowIncompatible ([details](compatibility/expressions/array.md)) |
+| `array_join` | ✅ | Hybrid | Native for literal or column delimiter and null replacement; other cases and non-UTF8_BINARY collations use the JVM codegen dispatcher ([details](compatibility/expressions/array.md)) |
 | `array_max` | ✅ | Native | NaN ordering may differ ([details](compatibility/floating-point.md)) |
 | `array_min` | ✅ | Native | NaN ordering may differ ([details](compatibility/floating-point.md)) |
 | `array_position` | ✅ | Native | Binary/struct/map/null elements fall back |
@@ -168,7 +168,7 @@ The tables below list every Spark built-in expression with its current status.
 | `element_at` | ✅ | Native |  |
 | `flatten` | ✅ | Native | Binary/struct/map elements fall back |
 | `get` | ✅ | — |  |
-| `sequence` | ✅ | Codegen dispatch |  |
+| `sequence` | ✅ | Hybrid | Integral types run natively; date/timestamp sequences use codegen dispatch |
 | `shuffle` | ✅ | Native | Binary/struct/map elements fall back |
 | `slice` | ✅ | Native | Native ([#4149](https://github.com/apache/datafusion-comet/pull/4149)) |
 | `sort_array` | ✅ | Hybrid | Nested struct/null arrays fall back |
@@ -465,7 +465,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `random` | ✅ | Native | Alias for `rand` (Spark 4.0+); seed must be a literal |
 | `randstr` | ✅ | Native | Random string (Spark 4.0+); length and seed must be literals |
 | `rint` | ✅ | Native |  |
-| `round` | ✅ | Native | Float/double inputs fall back |
+| `round` | ✅ | Hybrid | Float/double inputs route through the JVM codegen dispatcher; other types run natively |
 | `sec` | ✅ | Native |  |
 | `shiftleft` | ✅ | Native |  |
 | `sign` | ✅ | Native |  |
@@ -561,11 +561,11 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `chr` | ✅ | Native |  |
 | `collate` | 🔜 | — | Spark collation (umbrella [#2190](https://github.com/apache/datafusion-comet/issues/2190)) |
 | `collation` | ✅ | — | Constant-folded to a literal (Spark 4.0+) |
-| `concat_ws` | ✅ | Native |  |
+| `concat_ws` | ✅ | Hybrid | Array arguments route through the JVM codegen dispatcher; string arguments run natively ([details](compatibility/expressions/string.md)) |
 | `contains` | ✅ | — |  |
 | `decode` | ✅ | — |  |
 | `elt` | ✅ | Codegen dispatch |  |
-| `encode` | 🔜 | — | Lowers to `StaticInvoke(encode)` (not allowlisted); falls back |
+| `encode` | ✅ | — | Spark 4.0+ lowers to `StaticInvoke(Encode.encode)`, which runs via codegen dispatch; on Spark 3.x it falls back |
 | `endswith` | ✅ | — |  |
 | `find_in_set` | ✅ | Codegen dispatch |  |
 | `format_number` | ✅ | Codegen dispatch |  |
@@ -606,7 +606,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `substr` | ✅ | Native |  |
 | `substring` | ✅ | Native |  |
 | `substring_index` | ✅ | Native |  |
-| `to_binary` | ✅ | — | Hex form accelerated; other formats fall back |
+| `to_binary` | ✅ | — | Hex and base64 forms accelerated natively; the `utf-8` form rewrites to `encode` and runs via codegen dispatch on Spark 4.0+ |
 | `to_char` | ✅ | Codegen dispatch |  |
 | `to_number` | ✅ | Codegen dispatch |  |
 | `to_varchar` | ✅ | Codegen dispatch |  |
