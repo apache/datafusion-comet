@@ -156,6 +156,53 @@ macro_rules! hash_array_primitive_float {
 }
 
 #[macro_export]
+macro_rules! hash_array_interval_month_day_nano {
+    ($column: ident, $hashes: ident, $hash_method: ident) => {
+        let array = $column
+            .as_any()
+            .downcast_ref::<IntervalMonthDayNanoArray>()
+            .unwrap_or_else(|| {
+                panic!(
+                    "Failed to downcast column to {}. Actual data type: {:?}.",
+                    stringify!(IntervalMonthDayNanoArray),
+                    $column.data_type()
+                )
+            });
+
+        // The `nanoseconds / 1_000` below is exact: Spark's `CalendarInterval` is
+        // microsecond-based, and both JVM-to-Arrow producers
+        // (`ArrowWriters.CalendarIntervalWriter` and the codegen dispatch kernel) convert
+        // with `Math.multiplyExact(microseconds, 1000L)`, so the nanoseconds field is
+        // always an exact multiple of 1000 and out-of-range intervals throw at
+        // conversion time instead of reaching this hasher.
+        if array.null_count() == 0 {
+            // Fast path: no nulls, use direct indexing
+            for i in 0..$hashes.len() {
+                let value = array.value(i);
+                // Match Spark 4.2 generated code, which omits the days field:
+                // https://github.com/apache/spark/blob/v4.2.0/sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/expressions/hash.scala#L428-L431
+                // SPARK-58236 includes days starting in Spark 4.3; the version
+                // switch for that is tracked in
+                // https://github.com/apache/datafusion-comet/issues/5498.
+                $hashes[i] =
+                    $hash_method((value.nanoseconds / 1_000).to_le_bytes(), $hashes[i]);
+                $hashes[i] = $hash_method(value.months.to_le_bytes(), $hashes[i]);
+            }
+        } else {
+            // Slow path: check nulls
+            for i in 0..$hashes.len() {
+                if !array.is_null(i) {
+                    let value = array.value(i);
+                    $hashes[i] =
+                        $hash_method((value.nanoseconds / 1_000).to_le_bytes(), $hashes[i]);
+                    $hashes[i] = $hash_method(value.months.to_le_bytes(), $hashes[i]);
+                }
+            }
+        }
+    };
+}
+
+#[macro_export]
 macro_rules! hash_array_small_decimal {
     ($array_type:ident, $column: ident, $hashes: ident, $hash_method: ident) => {
         let array = $column
@@ -572,7 +619,7 @@ macro_rules! hash_list_array {
 #[macro_export]
 macro_rules! create_hashes_internal {
     ($arrays: ident, $hashes_buffer: ident, $hash_method: ident, $create_dictionary_hash_method: ident, $recursive_hash_method: ident) => {
-        use arrow::datatypes::{DataType, TimeUnit};
+        use arrow::datatypes::{DataType, IntervalUnit, TimeUnit};
         use arrow::array::{types::*, *};
 
         for (i, col) in $arrays.iter().enumerate() {
@@ -702,6 +749,13 @@ macro_rules! create_hashes_internal {
                         Time64NanosecondArray,
                         col,
                         i64,
+                        $hashes_buffer,
+                        $hash_method
+                    );
+                }
+                DataType::Interval(IntervalUnit::MonthDayNano) => {
+                    $crate::hash_array_interval_month_day_nano!(
+                        col,
                         $hashes_buffer,
                         $hash_method
                     );
