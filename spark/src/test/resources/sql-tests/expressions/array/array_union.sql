@@ -129,7 +129,7 @@ statement
 CREATE TABLE test_union_dbl(a array<double>, b array<double>) USING parquet
 
 statement
-INSERT INTO test_union_dbl VALUES (array(1.0, 2.0), array(2.0, 3.0)), (array(1.0, double('NaN')), array(double('NaN'), 2.0)), (array(double('NaN'), 1.0), array(2.0, 3.0)), (array(1.0, 2.0), array(double('NaN'), 3.0)), (array(double('NaN'), double('NaN')), array(double('NaN'))), (array(double('Infinity'), 1.0), array(double('Infinity'))), (array(double('-Infinity')), array(double('Infinity'))), (array(0.0), array(-0.0)), (array(1.0, NULL), array(2.0, NULL))
+INSERT INTO test_union_dbl VALUES (array(1.0, 2.0), array(2.0, 3.0)), (array(1.0, double('NaN')), array(double('NaN'), 2.0)), (array(double('NaN'), 1.0), array(2.0, 3.0)), (array(1.0, 2.0), array(double('NaN'), 3.0)), (array(double('NaN'), double('NaN')), array(double('NaN'))), (array(double('Infinity'), 1.0), array(double('Infinity'))), (array(double('-Infinity')), array(double('Infinity'))), (array(1.0, NULL), array(2.0, NULL))
 
 query
 SELECT a, b, array_union(a, b) FROM test_union_dbl
@@ -139,10 +139,32 @@ statement
 CREATE TABLE test_union_float(a array<float>, b array<float>) USING parquet
 
 statement
-INSERT INTO test_union_float VALUES (array(cast(1.0 as float), cast(2.0 as float)), array(cast(2.0 as float), cast(3.0 as float))), (array(cast(1.0 as float), float('NaN')), array(float('NaN'), cast(2.0 as float))), (array(float('NaN'), float('NaN')), array(float('NaN'))), (array(float('Infinity'), cast(1.0 as float)), array(float('Infinity'))), (array(float('-Infinity')), array(float('Infinity'))), (array(cast(0.0 as float)), array(cast(-0.0 as float))), (array(cast(1.0 as float), NULL), array(cast(2.0 as float), NULL))
+INSERT INTO test_union_float VALUES (array(cast(1.0 as float), cast(2.0 as float)), array(cast(2.0 as float), cast(3.0 as float))), (array(cast(1.0 as float), float('NaN')), array(float('NaN'), cast(2.0 as float))), (array(float('NaN'), float('NaN')), array(float('NaN'))), (array(float('Infinity'), cast(1.0 as float)), array(float('Infinity'))), (array(float('-Infinity')), array(float('Infinity'))), (array(cast(1.0 as float), NULL), array(cast(2.0 as float), NULL))
 
 query
 SELECT a, b, array_union(a, b) FROM test_union_float
+
+-- negative zero (column-sourced). Spark keeps -0.0 distinct from 0.0 while Comet
+-- (DataFusion) collapses them, so array_union([0.0], [-0.0]) is [0.0, -0.0] in Spark
+-- but [0.0] in Comet. NormalizeFloatingNumbers only rewrites literals, not parquet
+-- columns. Skip until Spark normalizes these zeros (Spark 4.2+, SPARK-54918).
+statement
+CREATE TABLE test_union_dbl_negzero(a array<double>, b array<double>) USING parquet
+
+statement
+INSERT INTO test_union_dbl_negzero VALUES (array(0.0), array(double('-0.0')))
+
+query ignore(https://issues.apache.org/jira/browse/SPARK-54918)
+SELECT a, b, array_union(a, b) FROM test_union_dbl_negzero
+
+statement
+CREATE TABLE test_union_flt_negzero(a array<float>, b array<float>) USING parquet
+
+statement
+INSERT INTO test_union_flt_negzero VALUES (array(cast(0.0 as float)), array(float('-0.0')))
+
+query ignore(https://issues.apache.org/jira/browse/SPARK-54918)
+SELECT a, b, array_union(a, b) FROM test_union_flt_negzero
 
 -- boolean arrays
 query

@@ -203,18 +203,14 @@ on the unoptimized path.
   session time zone such a UDF can diverge from the unoptimized path. Set
   `spark.comet.exec.pyarrowUDF.enabled=false` for those UDFs.
 - `spark.sql.execution.arrow.useLargeVarTypes=true` is not supported. With this conf enabled,
-  Spark widens `StringType` and `BinaryType` to Arrow's 8-byte-offset variants in the
-  destination IPC root, while Comet's source vectors always use 4-byte offsets. The buffer-copy
-  path cannot bridge that mismatch, so `EliminateRedundantTransitions` skips the rewrite and
-  vanilla Spark handles the operation.
-- Each batch is copied twice on the JVM side: once from Comet's vectors into Spark's
-  destination IPC root (per-buffer `setBytes`), and a second time inside the IPC writer when
-  `VectorUnloader` / `MessageSerializer.serialize` walks the root and writes bytes to the
-  pipe to the Python worker. The pipe write is structural (Spark's transport to Python is
-  fork + pipe + Arrow IPC, so the buffer bytes must reach the pipe at least once); dropping
-  the first copy by serialising directly from Comet's vectors is tracked in
-  [#4294](https://github.com/apache/datafusion-comet/issues/4294). Even after that,
-  true zero-copy at the JVM boundary is blocked because Comet's source `FieldVector`s are
-  imported from native via Arrow C Data Interface (their buffers route `release` through FFI),
-  while Spark's destination IPC root is a child of `ArrowUtils.rootAllocator`. The two
-  reference managers cannot share buffers via `TransferPair`.
+  Spark supplies `large_string` and `large_binary` input columns with 8-byte offsets. Native
+  Comet vectors use 4-byte offsets, and direct serialization advertises their matching `string`
+  and `binary` types. This produces a valid IPC stream, but does not preserve the input types
+  requested by the configuration. `EliminateRedundantTransitions` therefore skips the rewrite
+  and vanilla Spark handles the operation. Comet can read `large_string` and `large_binary`
+  columns returned by a Python worker; that output support does not widen the input vectors.
+- Comet writes input Arrow IPC record batches directly from its existing vector buffers. The
+  only additional Arrow buffer is the validity bitmap for the non-null struct that wraps the
+  input columns. Writing the IPC bytes to the Python worker's pipe still requires one copy;
+  that copy is inherent to Spark's process-based Python transport. This path does not transfer
+  buffers between Arrow allocators or change their ownership.

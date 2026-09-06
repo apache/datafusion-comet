@@ -22,6 +22,8 @@ package org.apache.comet.iceberg
 import java.lang.reflect.Method
 import java.util.concurrent.ConcurrentHashMap
 
+import scala.util.control.NonFatal
+
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
 
@@ -50,7 +52,6 @@ object IcebergReflection extends Logging {
     val SCHEMA = "org.apache.iceberg.Schema"
     val PARTITION_SPEC_PARSER = "org.apache.iceberg.PartitionSpecParser"
     val PARTITION_SPEC = "org.apache.iceberg.PartitionSpec"
-    val PARTITION_FIELD = "org.apache.iceberg.PartitionField"
     val UNBOUND_PREDICATE = "org.apache.iceberg.expressions.UnboundPredicate"
     val SPARK_BATCH_QUERY_SCAN = "org.apache.iceberg.spark.source.SparkBatchQueryScan"
     val SPARK_STAGED_SCAN = "org.apache.iceberg.spark.source.SparkStagedScan"
@@ -58,6 +59,15 @@ object IcebergReflection extends Logging {
     val TABLE = "org.apache.iceberg.Table"
     val PARTITIONING = "org.apache.iceberg.Partitioning"
     val SPARK_WRITE = "org.apache.iceberg.spark.source.SparkWrite"
+    val TABLE_PROPERTIES = "org.apache.iceberg.TableProperties"
+    val INMEMORY_INPUT_FILE = "org.apache.iceberg.inmemory.InMemoryInputFile"
+    val INMEMORY_FILE_IO = "org.apache.iceberg.inmemory.InMemoryFileIO"
+    val INPUT_FILE = "org.apache.iceberg.io.InputFile"
+    val FILE_IO = "org.apache.iceberg.io.FileIO"
+    val GENERIC_MANIFEST_FILE = "org.apache.iceberg.GenericManifestFile"
+    val MANIFEST_FILE = "org.apache.iceberg.ManifestFile"
+    val MANIFEST_FILES = "org.apache.iceberg.ManifestFiles"
+    val DATA_FILE = "org.apache.iceberg.DataFile"
 
     // Iceberg 1.5.2 uses its own `ReplaceIcebergData` due to lack of `ReplaceData` in Spark 3.4.
     val REPLACE_ICEBERG_DATA = "org.apache.spark.sql.catalyst.plans.logical.ReplaceIcebergData"
@@ -145,6 +155,29 @@ object IcebergReflection extends Logging {
   /** Whether `write` is an Iceberg `SparkWrite` (false if Iceberg isn't on the classpath). */
   def isIcebergSparkWrite(write: Any): Boolean =
     sparkWriteClassOpt.exists(_.isInstance(write))
+
+  def isIcebergBatchWrite(batchWrite: Any): Boolean = {
+    if (batchWrite == null) return false
+    batchWrite.getClass.getName.startsWith(ClassNames.SPARK_WRITE + "$")
+  }
+
+  def getOuterSparkWrite(batchWrite: Any): Option[Any] = {
+    if (batchWrite == null) None
+    else {
+      try {
+        val field = batchWrite.getClass.getDeclaredField("this$0")
+        field.setAccessible(true)
+        Option(field.get(batchWrite))
+      } catch {
+        case _: NoSuchFieldException =>
+          None
+        case e: Exception =>
+          logError(
+            s"Iceberg reflection failure: outer SparkWrite from BatchWrite: ${e.getMessage}")
+          None
+      }
+    }
+  }
 
   def isReplaceIcebergData(plan: Any): Boolean =
     plan != null && plan.getClass.getName == ClassNames.REPLACE_ICEBERG_DATA
@@ -305,31 +338,22 @@ object IcebergReflection extends Logging {
    * Different Iceberg versions expose file paths differently:
    *   - Newer versions: location() returns String
    *   - Older versions: path() returns CharSequence
+   *
+   * `None` means neither accessor is declared; a genuine invoke failure propagates instead.
    */
-  def extractFileLocation(contentFileClass: Class[_], file: Any): Option[String] = {
-    try {
-      findMethod(contentFileClass, "location") match {
-        case Some(locationMethod) => Some(locationMethod.invoke(file).asInstanceOf[String])
-        case None =>
-          findMethod(contentFileClass, "path")
-            .map(_.invoke(file).asInstanceOf[CharSequence].toString)
-      }
-    } catch {
-      case _: Exception => None
+  def extractFileLocation(contentFileClass: Class[_], file: Any): Option[String] =
+    findMethod(contentFileClass, "location") match {
+      case Some(locationMethod) => Some(locationMethod.invoke(file).asInstanceOf[String])
+      case None =>
+        findMethod(contentFileClass, "path")
+          .map(_.invoke(file).asInstanceOf[CharSequence].toString)
     }
-  }
 
   /**
    * Extracts file location from ContentFile instance using dynamic class lookup.
    */
-  def extractFileLocation(file: Any): Option[String] = {
-    try {
-      val contentFileClass = loadClass(ClassNames.CONTENT_FILE)
-      extractFileLocation(contentFileClass, file)
-    } catch {
-      case _: Exception => None
-    }
-  }
+  def extractFileLocation(file: Any): Option[String] =
+    tryLoadClass(ClassNames.CONTENT_FILE).flatMap(extractFileLocation(_, file))
 
   /**
    * The file format of a ContentFile (data or delete file), e.g. "PARQUET", "AVRO", "ORC".
@@ -337,14 +361,11 @@ object IcebergReflection extends Logging {
    * `contentFileClass` is the public ContentFile interface, which callers already hold: Iceberg's
    * concrete file impls are package-private, so `format()` resolved on the concrete class throws
    * IllegalAccessException when invoked.
+   *
+   * `None` means `format()` isn't declared; a genuine invoke failure propagates instead.
    */
-  def getFileFormat(contentFileClass: Class[_], file: Any): Option[String] = {
-    try {
-      findMethod(contentFileClass, "format").map(_.invoke(file).toString)
-    } catch {
-      case _: Exception => None
-    }
-  }
+  def getFileFormat(contentFileClass: Class[_], file: Any): Option[String] =
+    findMethod(contentFileClass, "format").map(_.invoke(file).toString)
 
   /**
    * Gets the Iceberg Table from a SparkScan.
@@ -501,6 +522,25 @@ object IcebergReflection extends Logging {
   }
 
   /**
+   * The table's `EncryptionManager` (`table.encryption()`). Unlike the `encryption.*` property
+   * prefix, this reflects what the table's `TableOperations` actually installed, so it also
+   * covers custom operations that enable encryption without any table property. Returns `None` on
+   * reflection failure -- callers gate on the concrete manager and must fail closed.
+   */
+  def getEncryptionManager(table: Any): Option[AnyRef] = {
+    try {
+      val encryptionMethod = getMethod(table.getClass, "encryption")
+      Option(encryptionMethod.invoke(table))
+    } catch {
+      case e: Exception =>
+        logError(
+          "Iceberg reflection failure: Failed to get EncryptionManager from table: " +
+            s"${e.getMessage}")
+        None
+    }
+  }
+
+  /**
    * Gets storage properties from an Iceberg table's FileIO.
    *
    * This extracts credentials from the FileIO implementation, which is critical for REST catalog
@@ -576,21 +616,25 @@ object IcebergReflection extends Logging {
    * not already present is resolved from the table's schema history (`table.schemas()`) and
    * appended.
    *
-   * This mirrors Iceberg-Java's `DeleteFilter.fileProjection`: an equality delete may be keyed on
-   * a column that has since been dropped from the current schema, and iceberg-rust needs that
-   * column in the task schema to read and apply the delete. Called at serialization time, so it
-   * throws on failure (a required id that cannot be resolved, or any reflection error) rather
-   * than silently degrading; CometScanRule is responsible for falling back before we get here.
+   * Two callers need this: an equality delete may be keyed on a column since dropped from the
+   * current schema (mirroring Iceberg-Java's `DeleteFilter.fileProjection`), and a partition
+   * spec's source columns must be present for iceberg-rust to resolve `partition_type` when the
+   * query projects them out. Called at serialization time, so it throws on failure (a required id
+   * that cannot be resolved, or any reflection error) rather than silently degrading.
+   * CometScanRule is responsible for falling back before we get here.
    */
   def schemaWithRequiredFields(baseSchema: Any, table: Any, requiredFieldIds: Seq[Int]): Any = {
-    val existingIds = buildFieldIdMapping(baseSchema).values.toSet
-    val missingIds = requiredFieldIds.distinct.filterNot(existingIds.contains)
+    // `findFieldObject` searches recursively, so a source column already present as a nested field
+    // (e.g. `s.region`) is not re-appended at the top level, which would create a duplicate field
+    // id. Empty `requiredFieldIds` (the common non-partitioned, no-delete task) does no lookups.
+    val missingIds =
+      requiredFieldIds.distinct.filter(id => findFieldObject(baseSchema, id).isEmpty)
     if (missingIds.isEmpty) {
       baseSchema
     } else {
       logDebug(
-        s"Iceberg equality delete references field id(s) ${missingIds.mkString(",")} absent from " +
-          "the task schema; resolving from table schema history to build the native scan schema")
+        s"Native Iceberg scan schema is missing field id(s) ${missingIds.mkString(",")}; " +
+          "resolving them from table schema history")
       val history = getAllSchemas(table)
       val resolvedFields = missingIds.map { id =>
         history.iterator
@@ -598,7 +642,7 @@ object IcebergReflection extends Logging {
           .toSeq
           .headOption
           .getOrElse(throw new IllegalStateException(
-            s"Cannot resolve equality-delete field id $id in table schema history"))
+            s"Cannot resolve field id $id in table schema history"))
       }
       val existing =
         getMethod(baseSchema.getClass, "columns")
@@ -611,6 +655,55 @@ object IcebergReflection extends Logging {
         .newInstance(newColumns)
         .asInstanceOf[AnyRef]
     }
+  }
+
+  /**
+   * The source column field ids referenced by a task's partition spec.
+   *
+   * iceberg-rust validates a `FileScanTask` by resolving its partition spec against the task
+   * schema (`partition_type(schema)`), so a task carrying a partition spec needs those source
+   * columns present in the schema even when the query projects them out (for example selecting
+   * only `_spec_id` or `_partition`). These ids are unioned into the native task schema via
+   * [[schemaWithRequiredFields]]. project_field_ids still drives the read, so the columns are not
+   * materialized into the scan output. All ids resolve from the table's schema history, including
+   * a source column later dropped by partition evolution.
+   *
+   * Returns an empty sequence when the task has no partition spec.
+   */
+  def partitionSourceFieldIds(task: Any, fileScanTaskClass: Class[_]): Seq[Int] = {
+    val spec =
+      try {
+        getMethod(fileScanTaskClass, "spec").invoke(task)
+      } catch {
+        case _: Exception => null
+      }
+    if (spec == null) Seq.empty else partitionFieldSourceIds(spec)
+  }
+
+  /**
+   * The `sourceId`s of a partition spec's fields, in spec order. Empty for an unpartitioned spec.
+   */
+  private def partitionFieldSourceIds(spec: Any): Seq[Int] = {
+    import scala.jdk.CollectionConverters._
+    // Exclude fields whose source column was dropped (unknown result type): their source is absent
+    // from the current schema and the serialized spec/values omit them too (see
+    // CometIcebergNativeScan.serializePartitionData), so augmenting the schema with them would
+    // resolve a stale id from history and collide with a live column of the same name.
+    val specFields =
+      getMethod(spec.getClass, "fields").invoke(spec).asInstanceOf[java.util.List[_]]
+    val partitionType = getMethod(spec.getClass, "partitionType").invoke(spec)
+    val typeFields = getMethod(partitionType.getClass, "fields")
+      .invoke(partitionType)
+      .asInstanceOf[java.util.List[_]]
+    specFields.asScala
+      .zip(typeFields.asScala)
+      .flatMap { case (partitionField, typeField) =>
+        val fieldType = getMethod(typeField.getClass, "type").invoke(typeField).toString
+        val sourceId =
+          getMethod(partitionField.getClass, "sourceId").invoke(partitionField).asInstanceOf[Int]
+        if (fieldType == TypeNames.UNKNOWN) None else Some(sourceId)
+      }
+      .toSeq
   }
 
   /**
@@ -704,7 +797,9 @@ object IcebergReflection extends Logging {
     getTableMetadata(table).flatMap { metadata =>
       try {
         val metadataFileLocationMethod = getMethod(metadata.getClass, "metadataFileLocation")
-        Some(metadataFileLocationMethod.invoke(metadata).asInstanceOf[String])
+        // Option(...) not Some(...): a brand-new table (CTAS/RTAS before the first commit) has
+        // no metadata file yet and the reflected value is null.
+        Option(metadataFileLocationMethod.invoke(metadata).asInstanceOf[String])
       } catch {
         case e: Exception =>
           logError(
@@ -762,20 +857,18 @@ object IcebergReflection extends Logging {
    *   An Iceberg DeleteFile object
    * @return
    *   List of field IDs used in equality deletes, or empty list for position deletes
+   *
+   * Empty means either `equalityFieldIds()` isn't declared, or it returned `null` (Iceberg's
+   * normal contract for a position-delete file). A genuine invoke failure propagates instead of
+   * collapsing into empty.
    */
-  def getEqualityFieldIds(deleteFileClass: Class[_], deleteFile: Any): java.util.List[_] = {
-    try {
-      val ids =
-        getMethod(deleteFileClass, "equalityFieldIds")
-          .invoke(deleteFile)
-          .asInstanceOf[java.util.List[_]]
-      if (ids == null) new java.util.ArrayList[Any]() else ids
-    } catch {
-      case _: Exception =>
-        // Position delete files return null/empty for equalityFieldIds
-        new java.util.ArrayList[Any]()
+  def getEqualityFieldIds(deleteFileClass: Class[_], deleteFile: Any): java.util.List[_] =
+    findMethod(deleteFileClass, "equalityFieldIds") match {
+      case None => new java.util.ArrayList[Any]()
+      case Some(method) =>
+        val ids = method.invoke(deleteFile).asInstanceOf[java.util.List[_]]
+        if (ids == null) new java.util.ArrayList[Any]() else ids
     }
-  }
 
   /**
    * Gets field name and type from schema by field ID.
@@ -926,19 +1019,11 @@ object IcebergReflection extends Logging {
    *   typeStr, reason)
    */
   def validatePartitionTypes(partitionSpec: Any, schema: Any): List[(String, String, String)] = {
-    import scala.jdk.CollectionConverters._
-
-    val fieldsMethod = getMethod(partitionSpec.getClass, "fields")
-    val fields = fieldsMethod.invoke(partitionSpec).asInstanceOf[java.util.List[_]]
-
-    val partitionFieldClass = loadClass(ClassNames.PARTITION_FIELD)
-    val sourceIdMethod = getMethod(partitionFieldClass, "sourceId")
     val findFieldMethod = getMethod(schema.getClass, "findField", classOf[Int])
 
     val unsupportedTypes = scala.collection.mutable.ListBuffer[(String, String, String)]()
 
-    fields.asScala.foreach { field =>
-      val sourceId = sourceIdMethod.invoke(field).asInstanceOf[Int]
+    partitionFieldSourceIds(partitionSpec).foreach { sourceId =>
       val column = findFieldMethod.invoke(schema, sourceId.asInstanceOf[Object])
 
       if (column != null) {
@@ -1033,6 +1118,847 @@ object IcebergReflection extends Logging {
     getTableProperties(table).filter(_.containsKey("encryption.key-id")).map { props =>
       Option(props.get("encryption.data-key-length")).map(_.toInt).getOrElse(16)
     }
+
+  /**
+   * Reads a `private final` field from a `SparkWrite` instance via reflection. The field names
+   * referenced by callers (`queryId`, `targetFileSize`, `useFanoutWriter`, `outputSpecId`,
+   * `writeSchema`) are present on `SparkWrite` across the Iceberg 1.5.2 / 1.8.1 / 1.10.0 versions
+   * Comet supports.
+   */
+  private def getSparkWriteField(sparkWrite: Any, fieldName: String): Option[Any] =
+    sparkWriteClassOpt.flatMap { cls =>
+      try {
+        val field = cls.getDeclaredField(fieldName)
+        field.setAccessible(true)
+        Option(field.get(sparkWrite))
+      } catch {
+        case _: NoSuchFieldException =>
+          // Field may have been renamed across Iceberg versions. Callers that probe multiple
+          // candidate names (e.g. `useFanoutWriter` / `partitionedFanoutEnabled`) should expect
+          // this and `.orElse` onto the alternative.
+          None
+        case e: Exception =>
+          logError(
+            s"Iceberg reflection failure: Failed to read SparkWrite.$fieldName: ${e.getMessage}")
+          None
+      }
+    }
+
+  /** Operation id used in data-file names; sourced from `SparkWrite.queryId`. */
+  def getOperationIdFromSparkWrite(sparkWrite: Any): Option[String] =
+    getSparkWriteField(sparkWrite, "queryId").map(_.asInstanceOf[String])
+
+  /** Target data file size in bytes; sourced from `SparkWrite.targetFileSize`. */
+  def getTargetFileSizeFromSparkWrite(sparkWrite: Any): Option[Long] =
+    getSparkWriteField(sparkWrite, "targetFileSize")
+      .map(_.asInstanceOf[java.lang.Long].longValue())
+
+  /**
+   * Whether the planner would use a fanout writer.
+   *
+   * Field name changed between Iceberg releases:
+   *   - 1.5.2 (Spark 3.4 profile): `partitionedFanoutEnabled`
+   *   - 1.8.1+ (Spark 3.5 / 4.0 profiles): `useFanoutWriter`
+   *
+   * Same semantic in both versions. Try the newer name first; fall back to the older one so the
+   * helper resolves across all supported Iceberg versions without a per-version shim.
+   */
+  def getUseFanoutWriterFromSparkWrite(sparkWrite: Any): Option[Boolean] =
+    getSparkWriteField(sparkWrite, "useFanoutWriter")
+      .orElse(getSparkWriteField(sparkWrite, "partitionedFanoutEnabled"))
+      .map(_.asInstanceOf[java.lang.Boolean].booleanValue())
+
+  /** Output partition spec id; sourced from `SparkWrite.outputSpecId`. */
+  def getOutputSpecIdFromSparkWrite(sparkWrite: Any): Option[Int] =
+    getSparkWriteField(sparkWrite, "outputSpecId")
+      .map(_.asInstanceOf[java.lang.Integer].intValue())
+
+  /** Iceberg `Schema` the write was planned against; sourced from `SparkWrite.writeSchema`. */
+  def getWriteSchemaFromSparkWrite(sparkWrite: Any): Option[Any] =
+    getSparkWriteField(sparkWrite, "writeSchema")
+
+  /**
+   * Effective output file format resolved by Iceberg via `SparkWriteConf.dataFileFormat()`. Java
+   * consults the `write-format` write option BEFORE the `write.format.default` table property, so
+   * a per-write option override must win - gating only on table properties produces false-pass
+   * and false-fall-back outcomes when the two disagree.
+   *
+   * `SparkWrite.format` is a `FileFormat` enum (`PARQUET`/`ORC`/`AVRO`); returned lower-cased.
+   */
+  def getFormatFromSparkWrite(sparkWrite: Any): Option[String] =
+    getSparkWriteField(sparkWrite, "format")
+      .map(_.toString.toLowerCase(java.util.Locale.ROOT))
+
+  def getTableFromSparkWrite(sparkWrite: Any): Option[Any] =
+    getSparkWriteField(sparkWrite, "table")
+
+  def getWritePropertiesFromSparkWrite(sparkWrite: Any): Option[Map[String, String]] = {
+    import scala.jdk.CollectionConverters._
+    getSparkWriteField(sparkWrite, "writeProperties")
+      .map(_.asInstanceOf[java.util.Map[String, String]].asScala.toMap)
+  }
+
+  /**
+   * Output sort order id resolved by Iceberg's
+   * `SparkWriteConf.outputSortOrderId(writeRequirements)`: a per-write `output-sort-order-id`
+   * option wins, else the table's sort order when an ordering is required, else `0` (unsorted).
+   * Stamping the table sort order id unconditionally (the previous behaviour) writes the wrong
+   * value when Java would have used `unsorted`.
+   *
+   * Iceberg 1.5.2 (Spark 3.4 profile) lacks this method on `SparkWriteConf`; we return `None` and
+   * let the caller fall back to `Table.sortOrder().orderId()`.
+   */
+  def getOutputSortOrderIdFromSparkWrite(sparkWrite: Any): Option[Int] = {
+    val writeConf =
+      getSparkWriteField(sparkWrite, "writeConf").map(_.asInstanceOf[AnyRef]).getOrElse {
+        return None
+      }
+    val writeRequirements =
+      getSparkWriteField(sparkWrite, "writeRequirements").map(_.asInstanceOf[AnyRef]).getOrElse {
+        return None
+      }
+    try {
+      val method = writeConf.getClass.getDeclaredMethods
+        .find(m => m.getName == "outputSortOrderId" && m.getParameterCount == 1)
+        .getOrElse(return None)
+      method.setAccessible(true)
+      val result = method.invoke(writeConf, writeRequirements)
+      Some(result.asInstanceOf[java.lang.Integer].intValue())
+    } catch {
+      case e: Exception =>
+        logError(
+          "Iceberg reflection failure: SparkWriteConf.outputSortOrderId failed " +
+            s"(${e.getMessage}); falling back to table.sortOrder().orderId()")
+        None
+    }
+  }
+
+  /**
+   * Looks up a `PartitionSpec` from `Table.specs()` by its id. Used to retrieve the spec the
+   * write was planned against (`outputSpecId`), which may differ from the table's current spec
+   * for evolution scenarios.
+   */
+  def getPartitionSpecById(table: Any, specId: Int): Option[Any] =
+    try {
+      val method = table.getClass.getMethod("specs")
+      val specs = method.invoke(table).asInstanceOf[java.util.Map[java.lang.Integer, _]]
+      Option(specs.get(java.lang.Integer.valueOf(specId)))
+    } catch {
+      case e: Exception =>
+        logError(
+          "Iceberg reflection failure: Failed to look up partition spec " +
+            s"$specId: ${e.getMessage}")
+        None
+    }
+
+  /** Renders an Iceberg `Schema` to its JSON wire format via `SchemaParser.toJson(Schema)`. */
+  def schemaToJson(schema: Any): Option[String] =
+    try {
+      val parserClass = loadClass(ClassNames.SCHEMA_PARSER)
+      val schemaClass = loadClass(ClassNames.SCHEMA)
+      val method = parserClass.getMethod("toJson", schemaClass)
+      Some(method.invoke(null, schema.asInstanceOf[AnyRef]).asInstanceOf[String])
+    } catch {
+      case e: Exception =>
+        logError(s"Iceberg reflection failure: SchemaParser.toJson: ${e.getMessage}")
+        None
+    }
+
+  /**
+   * Renders an Iceberg `PartitionSpec` to its JSON wire format via
+   * `PartitionSpecParser.toJson(PartitionSpec)`.
+   */
+  def partitionSpecToJson(spec: Any): Option[String] =
+    try {
+      val parserClass = loadClass(ClassNames.PARTITION_SPEC_PARSER)
+      val specClass = loadClass(ClassNames.PARTITION_SPEC)
+      val method = parserClass.getMethod("toJson", specClass)
+      Some(method.invoke(null, spec.asInstanceOf[AnyRef]).asInstanceOf[String])
+    } catch {
+      case e: Exception =>
+        logError(s"Iceberg reflection failure: PartitionSpecParser.toJson: ${e.getMessage}")
+        None
+    }
+
+  private lazy val tablePropertiesClassOpt: Option[Class[_]] =
+    tryLoadClass(ClassNames.TABLE_PROPERTIES)
+
+  def tablePropertyConstant(fieldName: String): String =
+    readTablePropertiesField(fieldName).asInstanceOf[String]
+
+  def tablePropertyIntConstant(fieldName: String): Int =
+    readTablePropertiesField(fieldName).asInstanceOf[Integer].intValue()
+
+  /**
+   * Like [[tablePropertyConstant]] but returns `None` when the constant is absent in the Iceberg
+   * version on the classpath rather than throwing. Used to gate behaviour that only some Iceberg
+   * versions implement -- e.g. `PARQUET_COLUMN_STATS_ENABLED_PREFIX`, added in 1.10.0; on 1.5.2 /
+   * 1.8.1 the corresponding property is silently ignored by Iceberg-Java, so there is nothing to
+   * gate.
+   */
+  def tablePropertyConstantOpt(fieldName: String): Option[String] =
+    tablePropertiesClassOpt.flatMap { cls =>
+      try Some(cls.getField(fieldName).get(null).asInstanceOf[String])
+      catch { case _: NoSuchFieldException => None }
+    }
+
+  private def readTablePropertiesField(fieldName: String): Any = {
+    val cls = tablePropertiesClassOpt.getOrElse(
+      throw new IllegalStateException(s"${ClassNames.TABLE_PROPERTIES} is not on the classpath"))
+    try cls.getField(fieldName).get(null)
+    catch {
+      case e: NoSuchFieldException =>
+        throw new IllegalStateException(
+          s"${ClassNames.TABLE_PROPERTIES}.$fieldName not found " +
+            "(unsupported Iceberg version?)",
+          e)
+    }
+  }
+
+  def getDataLocation(table: Any): Option[String] =
+    try {
+      val locationProviderMethod =
+        findMethodInHierarchy(table.getClass, "locationProvider").getOrElse(
+          throw new NoSuchMethodException(
+            s"locationProvider() not found on ${table.getClass.getName}"))
+      val provider = locationProviderMethod.invoke(table)
+      val newDataLocMethod = provider.getClass.getMethod("newDataLocation", classOf[String])
+      newDataLocMethod.setAccessible(true)
+      val location = newDataLocMethod.invoke(provider, "").asInstanceOf[String]
+      Some(location.stripSuffix("/"))
+    } catch {
+      case e: Exception =>
+        logError(s"Iceberg reflection failure: Failed to get data location: ${e.getMessage}", e)
+        None
+    }
+
+  /**
+   * Returns the top-level column names of an Iceberg `Schema`, in declared order. Used by the
+   * native write serde to project Spark 4.x `ReplaceData` row streams (which carry an
+   * `__row_operation` column plus optional file-metadata columns) down to just the data columns
+   * the native iceberg-rust writer expects.
+   */
+  def getSchemaFieldNames(schema: Any): Option[Seq[String]] =
+    try {
+      val cols = schema.getClass
+        .getMethod("columns")
+        .invoke(schema)
+        .asInstanceOf[java.util.List[_]]
+      val names = new scala.collection.mutable.ArrayBuffer[String](cols.size())
+      val it = cols.iterator()
+      while (it.hasNext) {
+        val col = it.next().asInstanceOf[AnyRef]
+        names += col.getClass.getMethod("name").invoke(col).asInstanceOf[String]
+      }
+      Some(names.toSeq)
+    } catch {
+      case e: Exception =>
+        logError(s"Iceberg reflection failure: Schema.columns(): ${e.getMessage}")
+        None
+    }
+
+  /**
+   * Finds the first field -- nested struct/list/map fields included -- whose Iceberg type's
+   * `TypeID` name is in `typeIds` (e.g. `Set("UUID")`), returning its `(name, typeId)`. Used by
+   * write detection to decline schemas containing types the native writer cannot reproduce.
+   * Reflection failures are deliberately not swallowed: the caller's detection wrapper turns them
+   * into a fall-back, so a failed walk reads as "cannot verify" rather than "supported".
+   */
+  def findFieldWithTypeIds(schema: Any, typeIds: Set[String]): Option[(String, String)] = {
+    val queue = new java.util.ArrayDeque[AnyRef]()
+    queue.addAll(
+      schema.getClass.getMethod("columns").invoke(schema).asInstanceOf[java.util.List[AnyRef]])
+    while (!queue.isEmpty) {
+      val field = queue.poll()
+      val fieldType = field.getClass.getMethod("type").invoke(field)
+      val typeId = fieldType.getClass.getMethod("typeId").invoke(fieldType)
+      val typeIdName = typeId.asInstanceOf[Enum[_]].name()
+      if (typeIds.contains(typeIdName)) {
+        val name = field.getClass.getMethod("name").invoke(field).asInstanceOf[String]
+        return Some((name, typeIdName))
+      }
+      val isNested =
+        fieldType.getClass.getMethod("isNestedType").invoke(fieldType).asInstanceOf[Boolean]
+      if (isNested) {
+        val nested = fieldType.getClass.getMethod("asNestedType").invoke(fieldType)
+        queue.addAll(
+          nested.getClass
+            .getMethod("fields")
+            .invoke(nested)
+            .asInstanceOf[java.util.List[AnyRef]])
+      }
+    }
+    None
+  }
+
+  /**
+   * Sum `recordCount` and `fileSizeInBytes` across `dataFiles` for SQL-metric reporting. The
+   * concrete `DataFile` impl (`BaseFile`) is package-private in Iceberg, so look the accessors up
+   * on the public `DataFile` interface instead; virtual dispatch still hits the concrete
+   * implementation at invoke time.
+   */
+  def sumDataFileMetrics(dataFiles: java.util.List[_]): (Long, Long) = {
+    if (dataFiles.isEmpty) return (0L, 0L)
+    val dataFileClass = loadClass(ClassNames.DATA_FILE)
+    val recordCountMethod = dataFileClass.getMethod("recordCount")
+    val fileSizeMethod = dataFileClass.getMethod("fileSizeInBytes")
+    var rows = 0L
+    var bytes = 0L
+    val it = dataFiles.iterator()
+    while (it.hasNext) {
+      val df = it.next().asInstanceOf[AnyRef]
+      rows += recordCountMethod.invoke(df).asInstanceOf[java.lang.Long].longValue()
+      bytes += fileSizeMethod.invoke(df).asInstanceOf[java.lang.Long].longValue()
+    }
+    (rows, bytes)
+  }
+
+  /**
+   * Looks up a `SortOrder` from `Table.sortOrders()` by its id. Used to recover the sort order
+   * the write was planned against (`outputSortOrderId`) so it can be re-applied to the decoded
+   * `DataFile`s through the public `DataFiles.Builder.withSortOrder` -- iceberg-rust's writer
+   * doesn't expose the field, so the manifest comes back with `sort_order_id` unset. `SortOrder`
+   * is `Serializable`, so the result can ship in a task closure.
+   *
+   * Id 0 falls back to `SortOrder.unsorted()` when absent from the map: a write whose
+   * `outputSortOrderId` resolves to unsorted (no ordering required) may run against a table whose
+   * metadata only records its non-trivial sort orders.
+   */
+  def getSortOrderById(table: Any, sortOrderId: Int): Option[AnyRef] =
+    try {
+      val method = table.getClass.getMethod("sortOrders")
+      val orders = method.invoke(table).asInstanceOf[java.util.Map[java.lang.Integer, AnyRef]]
+      Option(orders.get(java.lang.Integer.valueOf(sortOrderId))).orElse {
+        if (sortOrderId == 0) {
+          val sortOrderClass = loadClass("org.apache.iceberg.SortOrder")
+          Some(sortOrderClass.getMethod("unsorted").invoke(null))
+        } else {
+          None
+        }
+      }
+    } catch {
+      case e: Exception =>
+        logError(
+          "Iceberg reflection failure: Failed to look up sort order " +
+            s"$sortOrderId: ${e.getMessage}")
+        None
+    }
+
+  /**
+   * Construct a `SparkWrite$TaskCommit(DataFile[])` instance for the native commit path. The
+   * constructor is package-private; `setAccessible(true)` is required on every Iceberg version.
+   */
+  def buildTaskCommit(dataFiles: java.util.List[_]): AnyRef = {
+    val taskCommitClass = loadClass("org.apache.iceberg.spark.source.SparkWrite$TaskCommit")
+    val dataFileClass = loadClass("org.apache.iceberg.DataFile")
+    val arrayClass = java.lang.reflect.Array.newInstance(dataFileClass, 0).getClass
+    val ctor = taskCommitClass.getDeclaredConstructor(arrayClass)
+    ctor.setAccessible(true)
+    val array = java.lang.reflect.Array.newInstance(dataFileClass, dataFiles.size())
+    for (i <- 0 until dataFiles.size()) {
+      java.lang.reflect.Array.set(array, i, dataFiles.get(i))
+    }
+    ctor.newInstance(array.asInstanceOf[AnyRef]).asInstanceOf[AnyRef]
+  }
+
+  /**
+   * Eagerly resolves every class, method, and constructor the executor-side commit-message
+   * assembly reflects on (`decodeManifestToDataFiles`, `rebuildDataFilesWithJavaMetrics`,
+   * `sumDataFileMetrics`, `buildTaskCommit`). That code runs after iceberg-rust has already
+   * written the task's data files, so a reflection miss there is a task failure; probing the full
+   * surface from the eligibility gate turns an Iceberg release that moves any of it into a
+   * plan-time fallback instead. Executors share the driver's classpath, so driver-side resolution
+   * is representative.
+   *
+   * Memoized per Iceberg class loader, not per JVM: dynamic classpath changes (`ADD JAR`,
+   * REPL-style `--jars` additions) can shift what `loadClass` resolves to mid-run, and a result
+   * cached against the old Iceberg -- in either direction -- would be wrong for the new one. The
+   * loader of the resolved `ContentFile` class identifies the Iceberg the probe ran against.
+   *
+   * Returns a description of the first unresolvable member, or `None` when the whole executor
+   * surface resolves.
+   */
+  def executorReflectionUnresolved: Option[String] = {
+    val loader =
+      try {
+        loadClass(ClassNames.CONTENT_FILE).getClassLoader
+      } catch {
+        case NonFatal(e) =>
+          return Some(s"Iceberg is not on the classpath: ${e.getMessage}")
+      }
+    executorReflectionProbeCache.get() match {
+      case Some((cachedLoader, result)) if cachedLoader eq loader => result
+      case _ =>
+        val result = probeExecutorReflection()
+        executorReflectionProbeCache.set(Some((loader, result)))
+        result
+    }
+  }
+
+  private val executorReflectionProbeCache =
+    new java.util.concurrent.atomic.AtomicReference[Option[(ClassLoader, Option[String])]](None)
+
+  private def probeExecutorReflection(): Option[String] =
+    try {
+      // decodeManifestToDataFiles
+      val inMemoryFileIO = loadClass(ClassNames.INMEMORY_FILE_IO)
+      inMemoryFileIO.getDeclaredConstructor()
+      inMemoryFileIO.getMethod("addFile", classOf[String], classOf[Array[Byte]])
+      loadClass(ClassNames.INMEMORY_INPUT_FILE)
+        .getConstructor(classOf[String], classOf[Array[Byte]])
+      val inputFileClass = loadClass(ClassNames.INPUT_FILE)
+      val genericManifestFile = loadClass(ClassNames.GENERIC_MANIFEST_FILE)
+      try {
+        genericManifestFile.getDeclaredConstructor(inputFileClass, classOf[Int], classOf[Long])
+      } catch {
+        case _: NoSuchMethodException =>
+          genericManifestFile.getDeclaredConstructor(inputFileClass, classOf[Int])
+      }
+      val fileIOClass = loadClass(ClassNames.FILE_IO)
+      val manifestReadMethod = loadClass(ClassNames.MANIFEST_FILES)
+        .getMethod("read", loadClass(ClassNames.MANIFEST_FILE), fileIOClass)
+      manifestReadMethod.getReturnType.getMethod("iterator")
+      manifestReadMethod.getReturnType.getMethod("close")
+      val contentFileClass = loadClass(ClassNames.CONTENT_FILE)
+      contentFileClass.getMethod("copy")
+
+      // sumDataFileMetrics
+      val dataFileClass = loadClass(ClassNames.DATA_FILE)
+      dataFileClass.getMethod("recordCount")
+      dataFileClass.getMethod("fileSizeInBytes")
+
+      // rebuildDataFilesWithJavaMetrics
+      if (findMethodInHierarchy(contentFileClass, "location").isEmpty) {
+        getMethod(contentFileClass, "path")
+      }
+      fileIOClass.getMethod("newInputFile", classOf[String], classOf[Long])
+      // readParquetFooter, incl. the shading-sensitive ParquetFileReader derivation
+      val parquet = resolveParquetFooterReflection()
+      parquet.parquetFileReaderOpen.getReturnType.getMethod("getFooter")
+      val builderClass = loadClass("org.apache.iceberg.DataFiles")
+        .getMethod("builder", loadClass(ClassNames.PARTITION_SPEC))
+        .getReturnType
+      builderClass.getMethod("copy", dataFileClass)
+      builderClass.getMethod("withSortOrder", loadClass("org.apache.iceberg.SortOrder"))
+      builderClass.getMethod("withMetrics", parquet.footerMetrics.getReturnType)
+      builderClass.getMethod("build")
+
+      // buildFloatFieldMetrics
+      Seq("valueCounts", "nullValueCounts", "nanValueCounts", "lowerBounds", "upperBounds")
+        .foreach(contentFileClass.getMethod(_))
+      loadClass(ClassNames.SCHEMA).getMethod("findType", classOf[Int])
+      val typeClass = loadClass("org.apache.iceberg.types.Type")
+      typeClass.getMethod("typeId")
+      loadClass("org.apache.iceberg.types.Conversions")
+        .getMethod("fromByteBuffer", typeClass, classOf[java.nio.ByteBuffer])
+      loadClass("org.apache.iceberg.FieldMetrics").getConstructor(
+        classOf[Int],
+        classOf[Long],
+        classOf[Long],
+        classOf[Long],
+        classOf[Object],
+        classOf[Object])
+
+      // buildTaskCommit
+      loadClass("org.apache.iceberg.spark.source.SparkWrite$TaskCommit")
+        .getDeclaredConstructor(java.lang.reflect.Array.newInstance(dataFileClass, 0).getClass)
+
+      None
+    } catch {
+      case NonFatal(e) =>
+        Some(
+          s"executor-side Iceberg reflection did not resolve: ${e.getClass.getSimpleName}: " +
+            s"${e.getMessage}")
+    }
+
+  /**
+   * Returns the runtime Iceberg version (`IcebergBuild.version()`) when available. Used to stamp
+   * the Parquet `created_by` field so files written natively can be traced back to the Iceberg
+   * release whose property defaults Comet mirrored.
+   */
+  def icebergVersion(): String =
+    try {
+      val cls = loadClass("org.apache.iceberg.IcebergBuild")
+      cls.getMethod("loadBuildInfo").invoke(null)
+      cls.getMethod("version").invoke(null).asInstanceOf[String]
+    } catch {
+      case e: Exception =>
+        logWarning(s"Iceberg reflection failure: IcebergBuild.version: ${e.getMessage}")
+        "unknown"
+    }
+
+  /**
+   * Decode the per-task manifest bytes the native Iceberg writer emits into an `Iterable` of
+   * Iceberg `DataFile` snapshots. The native operator writes one V2 data manifest per task
+   * (Avro-encoded) via iceberg-rust's `ManifestWriter`; this helper builds an
+   * `InMemoryFileIO`/`InMemoryInputFile` pair so the manifest stays in process, then reads it via
+   * the standard `ManifestFiles.read` entry point. Each entry is `copy()`-ed so the returned
+   * `DataFile`s outlive the reader. The 3-arg `GenericManifestFile` constructor is
+   * package-private and requires `setAccessible(true)` on every supported Iceberg version (1.5.2
+   * / 1.8.1 / 1.10.0 verified).
+   *
+   * `specId` is stamped onto the synthesised `ManifestFile` because the manifest reader uses it
+   * to pick the correct partition spec when materialising partition data on each `DataFile`.
+   */
+  def decodeManifestToDataFiles(bytes: Array[Byte], specId: Int): java.util.List[AnyRef] = {
+    // Iceberg's `ManifestReader.open` infers format from the file extension; the in-memory path
+    // must end in `.avro` for the v2 data-manifest path to be picked. The "memory:" scheme just
+    // namespaces the location so it can't collide with on-disk paths in the same FileIO.
+    val location = s"memory:comet-manifest-${java.util.UUID.randomUUID()}.avro"
+    val fileIO = newInMemoryFileIO(location, bytes)
+    val inputFile = newInMemoryInputFile(location, bytes)
+    val manifestFile = newDataManifestFile(inputFile, specId)
+    readDataFilesFromManifest(manifestFile, fileIO)
+  }
+
+  private def newInMemoryFileIO(location: String, bytes: Array[Byte]): AnyRef = {
+    val cls = loadClass(ClassNames.INMEMORY_FILE_IO)
+    val instance = cls.getDeclaredConstructor().newInstance().asInstanceOf[AnyRef]
+    cls
+      .getMethod("addFile", classOf[String], classOf[Array[Byte]])
+      .invoke(instance, location, bytes)
+    instance
+  }
+
+  private def newInMemoryInputFile(location: String, bytes: Array[Byte]): AnyRef = {
+    val cls = loadClass(ClassNames.INMEMORY_INPUT_FILE)
+    cls
+      .getConstructor(classOf[String], classOf[Array[Byte]])
+      .newInstance(location, bytes)
+      .asInstanceOf[AnyRef]
+  }
+
+  /**
+   * Construct a `GenericManifestFile` pointing at an in-memory data manifest. Two version-skew
+   * issues to handle:
+   *
+   *   1. Constructor shape changed in Iceberg 1.6 when V3's `first_row_id` field was added:
+   *      - 1.5.2 (Spark 3.4 profile): `(InputFile, int)` -- 2-arg
+   *      - 1.6+ (Spark 3.5 / 4.0 profiles): `(InputFile, int, long)` -- 3-arg with `firstRowId`
+   *        Both forms are package-private. We pass `firstRowId = 0` for the V3 variant because
+   *        all our data manifests are V2 (V3 row-lineage is gated as Unsupported in
+   *        `checkTriggers`).
+   *
+   * 2. `ManifestFiles.read` on Iceberg 1.5.2 refuses to read a `ManifestFile` whose
+   * `snapshotId()` is `null` (`InheritableMetadataFactory.fromManifest` throws "Cannot read from
+   * ManifestFile with null (unassigned) snapshot ID"). Iceberg 1.8+ relaxed that check. We set
+   * `snapshotId = 0L` via reflection so the read path is happy across versions; the real snapshot
+   * id is stamped onto the embedded `DataFile`s later by `BatchWrite.commit(messages)`, so the
+   * placeholder never reaches storage.
+   */
+  private def newDataManifestFile(inputFile: AnyRef, specId: Int): AnyRef = {
+    val inputFileClass = loadClass(ClassNames.INPUT_FILE)
+    val cls = loadClass(ClassNames.GENERIC_MANIFEST_FILE)
+    val (ctor, args): (java.lang.reflect.Constructor[_], Array[Object]) =
+      try {
+        val c = cls.getDeclaredConstructor(inputFileClass, classOf[Int], classOf[Long])
+        (c, Array[Object](inputFile, Integer.valueOf(specId), java.lang.Long.valueOf(0L)))
+      } catch {
+        case _: NoSuchMethodException =>
+          val c = cls.getDeclaredConstructor(inputFileClass, classOf[Int])
+          (c, Array[Object](inputFile, Integer.valueOf(specId)))
+      }
+    ctor.setAccessible(true)
+    val manifest = ctor.newInstance(args: _*).asInstanceOf[AnyRef]
+    try {
+      val snapshotIdField = cls.getDeclaredField("snapshotId")
+      snapshotIdField.setAccessible(true)
+      snapshotIdField.set(manifest, java.lang.Long.valueOf(0L))
+    } catch {
+      case _: NoSuchFieldException => () // field renamed in a future release; soft-fail
+    }
+    manifest
+  }
+
+  private def readDataFilesFromManifest(
+      manifestFile: AnyRef,
+      fileIO: AnyRef): java.util.List[AnyRef] = {
+    val manifestFileClass = loadClass(ClassNames.MANIFEST_FILE)
+    val fileIOClass = loadClass(ClassNames.FILE_IO)
+    val contentFileClass = loadClass(ClassNames.CONTENT_FILE)
+    val readMethod = loadClass(ClassNames.MANIFEST_FILES)
+      .getMethod("read", manifestFileClass, fileIOClass)
+    val reader = readMethod.invoke(null, manifestFile, fileIO)
+    try {
+      val iterator = reader.getClass
+        .getMethod("iterator")
+        .invoke(reader)
+        .asInstanceOf[java.util.Iterator[AnyRef]]
+      val result = new java.util.ArrayList[AnyRef]()
+      val copyMethod = contentFileClass.getMethod("copy")
+      while (iterator.hasNext) {
+        result.add(copyMethod.invoke(iterator.next()))
+      }
+      result
+    } finally {
+      try reader.getClass.getMethod("close").invoke(reader)
+      catch {
+        case e: Exception => logWarning(s"Failed to close ManifestReader: ${e.getMessage}")
+      }
+    }
+  }
+
+  /** The table's `FileIO` (`table.io()`). Iceberg requires `FileIO` to be `Serializable`. */
+  def getTableIO(table: Any): Option[AnyRef] =
+    findMethodInHierarchy(table.getClass, "io").map(_.invoke(table))
+
+  /**
+   * `MetricsConfig.forTable(table)` -- the same resolved config (metrics modes, sorted-column
+   * promotion, inferred-column cap) iceberg-java's own writer consults. `Serializable`.
+   */
+  def metricsConfigForTable(table: Any): Option[AnyRef] =
+    try {
+      val cls = loadClass("org.apache.iceberg.MetricsConfig")
+      val method = cls.getMethod("forTable", loadClass(ClassNames.TABLE))
+      Some(method.invoke(null, table.asInstanceOf[AnyRef]))
+    } catch {
+      case e: Exception =>
+        logError(s"Iceberg reflection failure: MetricsConfig.forTable: ${e.getMessage}")
+        None
+    }
+
+  /**
+   * Replace each native-written `DataFile`'s metrics with the metrics iceberg-java's own writer
+   * would have committed, so manifest metadata is Java's decision by construction.
+   *
+   * The base metrics come from re-reading the written parquet footer through the version-matched
+   * `ParquetUtil.footerMetrics(footer, fieldMetrics, metricsConfig, nameMapping)` -- the exact
+   * entry point `SparkWrite`'s parquet writer uses. Java sources float/double bounds and NaN
+   * counts from writer-tracked `FieldMetrics` rather than the footer, so we synthesise one
+   * `FieldMetrics` per float/double leaf from the counts and bounds the iceberg-rust writer
+   * recorded on the incoming `DataFile` (rust tracks NaN counts per batch; its bounds are the
+   * untruncated footer values, which are NaN-free by parquet-rs construction). Version-specific
+   * decisions -- metrics modes, truncate(N) bound adjustment, list/map bound suppression, the
+   * inferred-column cap -- all run inside the linked Iceberg's own code.
+   *
+   * Rebuilding runs through `DataFiles.builder(spec).copy(file)`, which also gives us a public
+   * seam to re-apply the write's `SortOrder` (`withSortOrder`) -- iceberg-rust's writer doesn't
+   * expose the field, so decoded files carry `sort_order_id` unset. `sortOrder` may be `null`
+   * (unresolvable), in which case the copied value is kept.
+   *
+   * Runs on executors; every argument must be `Serializable` (`FileIO`, `MetricsConfig`,
+   * `PartitionSpec`, `Schema`, and `SortOrder` all are). Any failure is a task failure: at this
+   * point the plan is committed to the native path and silently keeping rust-computed metrics
+   * could change query results via manifest pruning.
+   */
+  def rebuildDataFilesWithJavaMetrics(
+      dataFiles: java.util.List[AnyRef],
+      io: AnyRef,
+      metricsConfig: AnyRef,
+      spec: AnyRef,
+      schema: AnyRef,
+      sortOrder: AnyRef): java.util.List[AnyRef] = {
+    if (dataFiles.isEmpty) return dataFiles
+    val contentFileClass = loadClass(ClassNames.CONTENT_FILE)
+    val dataFileClass = loadClass(ClassNames.DATA_FILE)
+    // location() replaced the deprecated path() in newer Iceberg releases; prefer it.
+    val pathMethod = findMethodInHierarchy(contentFileClass, "location")
+      .getOrElse(getMethod(contentFileClass, "path"))
+    val sizeMethod = getMethod(contentFileClass, "fileSizeInBytes")
+    val newInputFile =
+      loadClass(ClassNames.FILE_IO).getMethod("newInputFile", classOf[String], classOf[Long])
+    val builderFactory =
+      loadClass("org.apache.iceberg.DataFiles")
+        .getMethod("builder", loadClass(ClassNames.PARTITION_SPEC))
+    val parquet = resolveParquetFooterReflection()
+
+    val result = new java.util.ArrayList[AnyRef](dataFiles.size())
+    val it = dataFiles.iterator()
+    while (it.hasNext) {
+      val dataFile = it.next().asInstanceOf[AnyRef]
+      val path = pathMethod.invoke(dataFile).toString
+      val length = sizeMethod.invoke(dataFile).asInstanceOf[java.lang.Long]
+      val inputFile = newInputFile.invoke(io, path, length)
+      val footer = readParquetFooter(parquet, inputFile)
+      val fieldMetrics = buildFloatFieldMetrics(dataFile, schema)
+      val metrics = parquet.footerMetrics.invoke(null, footer, fieldMetrics, metricsConfig, null)
+      val builder = builderFactory.invoke(null, spec)
+      val copied = getMethod(builder.getClass, "copy", dataFileClass).invoke(builder, dataFile)
+      if (sortOrder != null) {
+        getMethod(copied.getClass, "withSortOrder", loadClass("org.apache.iceberg.SortOrder"))
+          .invoke(copied, sortOrder)
+      }
+      val withMetrics = getMethod(copied.getClass, "withMetrics", metrics.getClass)
+        .invoke(copied, metrics)
+      val built = getMethod(withMetrics.getClass, "build").invoke(withMetrics)
+      result.add(built.asInstanceOf[AnyRef])
+    }
+    result
+  }
+
+  /**
+   * The three parquet-mr-bridging members the footer re-read depends on. Resolved together, per
+   * call, rather than memoized in JVM-lifetime lazy vals: `executorReflectionUnresolved` keys its
+   * verdict on the current Iceberg class loader, and a probe re-run after a classpath change must
+   * not be satisfied by `Method`s resolved against a previous Iceberg. Resolution is a per-task
+   * cost (once per `rebuildDataFilesWithJavaMetrics` call), not per-file.
+   */
+  private case class ParquetFooterReflection(
+      footerMetrics: Method,
+      parquetIOFile: Method,
+      parquetFileReaderOpen: Method)
+
+  private def resolveParquetFooterReflection(): ParquetFooterReflection = {
+    // `ParquetUtil.footerMetrics(ParquetMetadata, Stream[FieldMetrics], MetricsConfig,
+    // NameMapping)`. In `iceberg-spark-runtime` jars parquet-mr is shaded, so the
+    // `ParquetMetadata` parameter type is the relocated class -- resolved from the method itself
+    // rather than by name.
+    val footerMetrics = loadClass("org.apache.iceberg.parquet.ParquetUtil").getMethods
+      .filter(_.getName == "footerMetrics")
+      .find(_.getParameterCount == 4)
+      .getOrElse(throw new IllegalStateException(
+        "ParquetUtil.footerMetrics(footer, fieldMetrics, metricsConfig, nameMapping) not found"))
+    // `ParquetIO.file` bridges Iceberg's `InputFile` to the same (possibly shaded) parquet-mr
+    // classes `footerMetrics` expects; it is package-private, hence `setAccessible`.
+    val parquetIOFile = loadClass("org.apache.iceberg.parquet.ParquetIO")
+      .getDeclaredMethod("file", loadClass(ClassNames.INPUT_FILE))
+    parquetIOFile.setAccessible(true)
+    val parquetMetadataClass = footerMetrics.getParameterTypes()(0)
+    val readerClass = loadClass(
+      parquetMetadataClass.getName
+        .replace("hadoop.metadata.ParquetMetadata", "hadoop.ParquetFileReader"))
+    val parquetFileReaderOpen = readerClass.getMethod("open", parquetIOFile.getReturnType)
+    ParquetFooterReflection(footerMetrics, parquetIOFile, parquetFileReaderOpen)
+  }
+
+  private def readParquetFooter(parquet: ParquetFooterReflection, inputFile: AnyRef): AnyRef = {
+    val parquetInputFile = parquet.parquetIOFile.invoke(null, inputFile)
+    val reader = parquet.parquetFileReaderOpen.invoke(null, parquetInputFile)
+    try {
+      getMethod(reader.getClass, "getFooter").invoke(reader)
+    } finally {
+      reader.asInstanceOf[java.io.Closeable].close()
+    }
+  }
+
+  /**
+   * One synthesised `FieldMetrics` per float/double leaf column, mirroring what the JVM writer's
+   * `FloatFieldMetrics`/`DoubleFieldMetrics` would have tracked. Counts and bounds come from the
+   * rust-written `DataFile`: value/null counts are footer-derived on both sides, NaN counts are
+   * rust writer-tracked, and bounds are the untruncated footer min/max (NaN-skipping like Java;
+   * parquet-rs additionally normalises zero bounds to -0.0/+0.0, a strictly conservative widening
+   * documented as an accepted divergence). An all-NaN column has no footer bounds, so both bound
+   * arguments are null -- exactly the shape `FloatFieldMetrics.build()` produces.
+   */
+  private def buildFloatFieldMetrics(dataFile: AnyRef, schema: AnyRef): AnyRef = {
+    val contentFileClass = loadClass(ClassNames.CONTENT_FILE)
+    def intLongMap(method: String): java.util.Map[Integer, java.lang.Long] = {
+      val value = getMethod(contentFileClass, method).invoke(dataFile)
+      if (value == null) java.util.Collections.emptyMap()
+      else value.asInstanceOf[java.util.Map[Integer, java.lang.Long]]
+    }
+    def boundsMap(method: String): java.util.Map[Integer, java.nio.ByteBuffer] = {
+      val value = getMethod(contentFileClass, method).invoke(dataFile)
+      if (value == null) java.util.Collections.emptyMap()
+      else value.asInstanceOf[java.util.Map[Integer, java.nio.ByteBuffer]]
+    }
+    val valueCounts = intLongMap("valueCounts")
+    val nullCounts = intLongMap("nullValueCounts")
+    val nanCounts = intLongMap("nanValueCounts")
+    val lowerBounds = boundsMap("lowerBounds")
+    val upperBounds = boundsMap("upperBounds")
+
+    val schemaClass = loadClass(ClassNames.SCHEMA)
+    val findType = getMethod(schemaClass, "findType", classOf[Int])
+    val conversions = loadClass("org.apache.iceberg.types.Conversions")
+    val typeClass = loadClass("org.apache.iceberg.types.Type")
+    val fromByteBuffer =
+      conversions.getMethod("fromByteBuffer", typeClass, classOf[java.nio.ByteBuffer])
+    // Resolve by exact parameter types: Iceberg 1.10+ declares a SECOND public 6-arg
+    // constructor `(int, long, long, T, T, Type)`, so arity alone is ambiguous and can bind
+    // the NaN count to a bound argument.
+    val fieldMetricsCtor = loadClass("org.apache.iceberg.FieldMetrics").getConstructor(
+      classOf[Int],
+      classOf[Long],
+      classOf[Long],
+      classOf[Long],
+      classOf[Object],
+      classOf[Object])
+
+    val fieldMetrics = new java.util.ArrayList[AnyRef]()
+    val ids = valueCounts.keySet().iterator()
+    while (ids.hasNext) {
+      val id = ids.next()
+      val fieldType = findType.invoke(schema, Integer.valueOf(id.intValue()))
+      val typeName =
+        if (fieldType == null) ""
+        else getMethod(fieldType.getClass, "typeId").invoke(fieldType).toString
+      if (typeName == "FLOAT" || typeName == "DOUBLE") {
+        def bound(map: java.util.Map[Integer, java.nio.ByteBuffer]): AnyRef =
+          Option(map.get(id))
+            .map(buf => fromByteBuffer.invoke(null, fieldType, buf))
+            .orNull
+        val nan = Option(nanCounts.get(id)).getOrElse(java.lang.Long.valueOf(0L))
+        fieldMetrics.add(
+          fieldMetricsCtor
+            .newInstance(
+              Integer.valueOf(id.intValue()),
+              valueCounts.get(id),
+              Option(nullCounts.get(id)).getOrElse(java.lang.Long.valueOf(0L)),
+              nan,
+              bound(lowerBounds),
+              bound(upperBounds))
+            .asInstanceOf[AnyRef])
+      }
+    }
+    fieldMetrics.stream().asInstanceOf[AnyRef]
+  }
+
+  /**
+   * Extracts the Spark V2 catalog name from an Iceberg `Table`. `Table.name()` returns
+   * `catalog.namespace.table` for tables loaded through a catalog; we intersect against the
+   * registered V2 catalogs so a value like `s3.foo` is not mistaken for a catalog `s3`. Returns
+   * `None` for HadoopTables loaded by raw path or when reflection fails.
+   */
+  def deriveCatalogName(table: Any): Option[String] =
+    deriveCatalogName(table, registeredCatalogNames _)
+
+  /**
+   * Test seam that lets tests inject a fixed catalog set without bootstrapping a SparkSession.
+   */
+  private[iceberg] def deriveCatalogName(
+      table: Any,
+      knownCatalogNames: () => Iterable[String]): Option[String] = {
+    if (table == null) return None
+    invokeTableName(table).flatMap { name =>
+      if (name.isEmpty || name == "null") {
+        None
+      } else {
+        knownCatalogNames()
+          .find(c => name == c || name.startsWith(c + "."))
+          .orElse {
+            val idx = name.indexOf('.')
+            if (idx > 0) Some(name.substring(0, idx)) else None
+          }
+      }
+    }
+  }
+
+  private def invokeTableName(table: Any): Option[String] = {
+    try {
+      IcebergReflection.getMethod(table.getClass, "name").invoke(table) match {
+        case s: String => Some(s)
+        case other if other != null => Some(other.toString)
+        case null => None
+      }
+    } catch {
+      case e: Exception =>
+        logWarning(
+          s"Iceberg reflection: Table.name() not callable on ${table.getClass.getName}. " +
+            "Native S3 credential dispatch will fall back to bucket-keyed isolation: " +
+            s"${e.getMessage}")
+        None
+    }
+  }
+
+  private def registeredCatalogNames(): Iterable[String] =
+    try {
+      SparkSession.active.sessionState.catalogManager.listCatalogs(None)
+    } catch {
+      case e: Exception =>
+        logDebug(s"Could not list V2 catalogs from SparkSession: ${e.getMessage}")
+        Nil
+    }
 }
 
 /**
@@ -1087,18 +2013,22 @@ object CometIcebergNativeScanMetadata extends Logging {
    *   Path to the table metadata file (already extracted)
    * @param catalogProperties
    *   Catalog properties for FileIO (already extracted)
+   * @param tasks
+   *   The scan's FileScanTasks (already extracted). Passed in rather than re-read via
+   *   [[IcebergReflection.getTasks]], which for a staged scan rebuilds a flattened list of every
+   *   task on each call.
    * @return
    *   Some(metadata) if all reflection succeeds, None to trigger fallback
    */
   def extract(
       scan: Any,
       metadataLocation: String,
-      catalogProperties: Map[String, String]): Option[CometIcebergNativeScanMetadata] = {
+      catalogProperties: Map[String, String],
+      tasks: java.util.List[_]): Option[CometIcebergNativeScanMetadata] = {
     import org.apache.comet.iceberg.IcebergReflection._
 
     for {
       table <- getTable(scan)
-      tasks <- getTasks(scan)
       scanSchema <- getExpectedSchema(scan)
       tableSchema <- getSchema(table)
     } yield {
@@ -1126,64 +2056,9 @@ object CometIcebergNativeScanMetadata extends Logging {
         tableSchema = tableSchema,
         globalFieldIdMapping = globalFieldIdMapping,
         catalogProperties = catalogProperties,
-        catalogName = deriveCatalogName(table),
+        catalogName = IcebergReflection.deriveCatalogName(table),
         fileFormat = FileFormats.PARQUET)
     }
   }
 
-  /**
-   * Extracts the Spark V2 catalog name from an Iceberg `Table`. `Table.name()` returns
-   * `catalog.namespace.table` for tables loaded through a catalog; we intersect against the
-   * registered V2 catalogs so a value like `s3.foo` is not mistaken for a catalog `s3`. Returns
-   * `None` for HadoopTables loaded by raw path or when reflection fails.
-   */
-  private[iceberg] def deriveCatalogName(table: Any): Option[String] =
-    deriveCatalogName(table, registeredCatalogNames _)
-
-  /**
-   * Test seam that lets tests inject a fixed catalog set without bootstrapping a SparkSession.
-   */
-  private[iceberg] def deriveCatalogName(
-      table: Any,
-      knownCatalogNames: () => Iterable[String]): Option[String] = {
-    if (table == null) return None
-    invokeTableName(table).flatMap { name =>
-      if (name.isEmpty || name == "null") {
-        None
-      } else {
-        knownCatalogNames()
-          .find(c => name == c || name.startsWith(c + "."))
-          .orElse {
-            val idx = name.indexOf('.')
-            if (idx > 0) Some(name.substring(0, idx)) else None
-          }
-      }
-    }
-  }
-
-  private def invokeTableName(table: Any): Option[String] = {
-    try {
-      IcebergReflection.getMethod(table.getClass, "name").invoke(table) match {
-        case s: String => Some(s)
-        case other if other != null => Some(other.toString)
-        case null => None
-      }
-    } catch {
-      case e: Exception =>
-        logWarning(
-          s"Iceberg reflection: Table.name() not callable on ${table.getClass.getName}. " +
-            "Native S3 credential dispatch will fall back to bucket-keyed isolation: " +
-            s"${e.getMessage}")
-        None
-    }
-  }
-
-  private def registeredCatalogNames(): Iterable[String] =
-    try {
-      SparkSession.active.sessionState.catalogManager.listCatalogs(None)
-    } catch {
-      case e: Exception =>
-        logDebug(s"Could not list V2 catalogs from SparkSession: ${e.getMessage}")
-        Nil
-    }
 }

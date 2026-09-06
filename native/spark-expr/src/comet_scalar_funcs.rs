@@ -23,12 +23,14 @@ use crate::math_funcs::checked_arithmetic::{checked_add, checked_div, checked_mu
 use crate::math_funcs::log::spark_log;
 use crate::math_funcs::modulo_expr::spark_modulo;
 use crate::math_funcs::pow::spark_pow;
+use crate::math_funcs::sqrt::spark_sqrt;
 use crate::{
     spark_ceil, spark_day_name, spark_decimal_div, spark_decimal_integral_div, spark_floor,
     spark_isnan, spark_lpad, spark_make_decimal, spark_month_name, spark_read_side_padding,
-    spark_round, spark_rpad, spark_to_time, spark_unhex, spark_unscaled_value, EvalMode,
-    SparkArrayPositionFunc, SparkArraySlice, SparkArraysOverlap, SparkContains, SparkDateDiff,
-    SparkDateFromUnixDate, SparkDateTrunc, SparkFlatten, SparkMakeDate, SparkMakeInterval,
+    spark_round, spark_rpad, spark_sequence, spark_to_time, spark_unhex, spark_unscaled_value,
+    EvalMode, SparkArrayPositionFunc, SparkArraySlice, SparkArraysOverlap, SparkContains,
+    SparkDateDiff, SparkDateFromUnixDate, SparkDateTrunc, SparkFlatten, SparkIcebergBucket,
+    SparkIcebergTemporalTransform, SparkIcebergTruncate, SparkMakeDate, SparkMakeInterval,
     SparkMakeTime, SparkNextDay, SparkSecondsToTimestamp, SparkSizeFunc,
 };
 use arrow::datatypes::DataType;
@@ -118,6 +120,9 @@ pub fn create_comet_physical_fun_with_eval_mode(
     match fun_name {
         "ceil" => {
             make_comet_scalar_udf!("ceil", spark_ceil, data_type)
+        }
+        "spark_sequence" => {
+            make_comet_scalar_udf!("spark_sequence", spark_sequence, data_type)
         }
         "floor" => {
             make_comet_scalar_udf!("floor", spark_floor, data_type)
@@ -213,9 +218,17 @@ pub fn create_comet_physical_fun_with_eval_mode(
             let func = Arc::new(spark_pow);
             make_comet_scalar_udf!("pow", func, without data_type)
         }
+        "spark_sqrt" => {
+            let func = Arc::new(spark_sqrt);
+            make_comet_scalar_udf!("spark_sqrt", func, without data_type)
+        }
         "base64" => {
             let func = Arc::new(crate::string_funcs::spark_base64);
             make_comet_scalar_udf!("base64", func, without data_type)
+        }
+        "unbase64" => {
+            let func = Arc::new(crate::string_funcs::spark_unbase64);
+            make_comet_scalar_udf!("unbase64", func, without data_type)
         }
         "split" => {
             let func = Arc::new(crate::string_funcs::spark_split);
@@ -260,6 +273,17 @@ pub fn create_comet_physical_fun_with_eval_mode(
             let func = Arc::new(crate::string_funcs::spark_levenshtein);
             make_comet_scalar_udf!("levenshtein", func, without data_type)
         }
+        // Spark 4.1+ serde always sets fail_on_error=true (always-throw semantics).
+        // SparkMakeTime already throws on invalid input, so accept the flag here rather
+        // than falling through to the registry fail-closed path.
+        "make_time" => Ok(Arc::new(ScalarUDF::new_from_impl(SparkMakeTime::new()))),
+        // Registry UDFs (including datafusion-spark) cannot receive fail_on_error.
+        _ if fail_on_error => Err(DataFusionError::Execution(format!(
+            "Function '{fun_name}' is resolved from the UDF registry and cannot \
+             honor fail_on_error=true. Use a name-based ANSI/try variant \
+             (e.g. parse_url / try_parse_url) or a dedicated match arm that \
+             consumes the flag."
+        ))),
         _ => registry.udf(fun_name).map_err(|e| {
             DataFusionError::Execution(format!(
                 "Function {fun_name} not found in the registry: {e}",
@@ -278,6 +302,20 @@ fn all_scalar_functions() -> Vec<Arc<ScalarUDF>> {
         Arc::new(ScalarUDF::new_from_impl(SparkDateFromUnixDate::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkDateTrunc::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkFlatten::default())),
+        Arc::new(ScalarUDF::new_from_impl(SparkIcebergBucket::default())),
+        Arc::new(ScalarUDF::new_from_impl(SparkIcebergTruncate::default())),
+        Arc::new(ScalarUDF::new_from_impl(
+            SparkIcebergTemporalTransform::years(),
+        )),
+        Arc::new(ScalarUDF::new_from_impl(
+            SparkIcebergTemporalTransform::months(),
+        )),
+        Arc::new(ScalarUDF::new_from_impl(
+            SparkIcebergTemporalTransform::days(),
+        )),
+        Arc::new(ScalarUDF::new_from_impl(
+            SparkIcebergTemporalTransform::hours(),
+        )),
         Arc::new(ScalarUDF::new_from_impl(SparkMakeDate::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkMakeTime::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkNextDay::default())),

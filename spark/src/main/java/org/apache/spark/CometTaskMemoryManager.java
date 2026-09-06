@@ -113,8 +113,14 @@ public class CometTaskMemoryManager {
     }
 
     @Override
+    public long getUsed() {
+      // Native allocations call TaskMemoryManager directly, bypassing MemoryConsumer.used.
+      return CometTaskMemoryManager.this.used.get();
+    }
+
+    @Override
     public String toString() {
-      return String.format("NativeMemoryConsumer(id=%)", id);
+      return String.format("NativeMemoryConsumer(id=%d)", id);
     }
   }
 }
