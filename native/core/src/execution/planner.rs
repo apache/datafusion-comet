@@ -116,6 +116,7 @@ use datafusion::physical_expr::expressions::{Literal, StatsType};
 use datafusion::physical_expr::window::WindowExpr;
 use datafusion::physical_expr::LexOrdering;
 
+use crate::execution::expressions::arithmetic::CheckedBinaryExpr;
 use crate::parquet::parquet_exec::init_datasource_exec;
 use arrow::array::{
     new_empty_array, Array, ArrayRef, BinaryBuilder, BooleanArray, Date32Array, Decimal128Array,
@@ -659,18 +660,35 @@ impl PhysicalPlanner {
                     self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&input_schema))?;
                 let data_type = to_arrow_datatype(expr.datatype.as_ref().unwrap());
                 let fail_on_error = expr.fail_on_error;
+                let query_context = spark_expr.expr_id.and_then(|expr_id| {
+                    let registry = &self.query_context_registry;
+                    registry.get(expr_id)
+                });
 
                 // WideDecimalBinaryExpr already handles overflow — skip redundant check
-                // but only if its output type matches CheckOverflow's declared type
-                if child.downcast_ref::<WideDecimalBinaryExpr>().is_some() {
+                // but only if its output type matches CheckOverflow's declared type. A binary
+                // expression with query context is wrapped in CheckedBinaryExpr, so look
+                // through any such wrappers.
+                let is_wide_decimal = unwrap_checked(&child)
+                    .downcast_ref::<WideDecimalBinaryExpr>()
+                    .is_some();
+                if is_wide_decimal {
                     let child_type = child.data_type(&input_schema)?;
                     if child_type == data_type {
-                        return Ok(child);
+                        return if query_context.is_some()
+                            && child.downcast_ref::<CheckedBinaryExpr>().is_none()
+                        {
+                            Ok(Arc::new(CheckedBinaryExpr::new(child, query_context)))
+                        } else {
+                            Ok(child)
+                        };
                     }
                 }
 
                 // Fuse Cast(Decimal128→Decimal128) + CheckOverflow into single rescale+check
-                // Only fuse when the Cast target type matches the CheckOverflow output type
+                // Only fuse when the Cast target type matches the CheckOverflow output type.
+                // Spark 3.4+ does not currently emit this shape, but keep its errors typed and
+                // contextualized in case a future serializer makes the fusion reachable.
                 if let Some(cast) = child.downcast_ref::<Cast>() {
                     if let (
                         DataType::Decimal128(p_out, s_out),
@@ -679,23 +697,33 @@ impl PhysicalPlanner {
                     {
                         let cast_target = cast.data_type(&input_schema)?;
                         if cast_target == data_type {
-                            return Ok(Arc::new(DecimalRescaleCheckOverflow::new(
-                                Arc::clone(&cast.child),
-                                s_in,
-                                *p_out,
-                                *s_out,
-                                fail_on_error,
-                            )));
+                            let fused: Arc<dyn PhysicalExpr> =
+                                Arc::new(DecimalRescaleCheckOverflow::new(
+                                    Arc::clone(&cast.child),
+                                    s_in,
+                                    *p_out,
+                                    *s_out,
+                                    fail_on_error,
+                                ));
+                            return if query_context.is_some() {
+                                Ok(Arc::new(CheckedBinaryExpr::new(fused, query_context)))
+                            } else {
+                                Ok(fused)
+                            };
                         }
                     }
                 }
 
-                // Look up query context from registry if expr_id is present
-                let query_context = spark_expr.expr_id.and_then(|expr_id| {
-                    let registry = &self.query_context_registry;
-                    registry.get(expr_id)
-                });
-
+                // Generated child protos may not carry an expression id of their own, so retain
+                // the outer CheckOverflow context as a fallback for bare child SparkErrors.
+                let child = if query_context.is_some()
+                    && child.downcast_ref::<CheckedBinaryExpr>().is_none()
+                {
+                    Arc::new(CheckedBinaryExpr::new(child, query_context.clone()))
+                        as Arc<dyn PhysicalExpr>
+                } else {
+                    child
+                };
                 Ok(Arc::new(CheckOverflow::new(
                     child,
                     data_type,
@@ -1099,9 +1127,14 @@ impl PhysicalPlanner {
                     DataFusionOperator::Multiply => WideDecimalOp::Multiply,
                     _ => unreachable!(),
                 };
-                Ok(Arc::new(WideDecimalBinaryExpr::new(
+                let expr: Arc<dyn PhysicalExpr> = Arc::new(WideDecimalBinaryExpr::new(
                     left, right, wide_op, p_out, s_out, eval_mode,
-                )))
+                ));
+                if query_context.is_some() {
+                    Ok(Arc::new(CheckedBinaryExpr::new(expr, query_context)))
+                } else {
+                    Ok(expr)
+                }
             }
             (
                 DataFusionOperator::Divide,
@@ -1126,13 +1159,18 @@ impl PhysicalPlanner {
                     Some(options.check_divide_overflow),
                     eval_mode,
                 )?;
-                Ok(Arc::new(ScalarFunctionExpr::new(
+                let expr: Arc<dyn PhysicalExpr> = Arc::new(ScalarFunctionExpr::new(
                     func_name,
                     fun_expr,
                     vec![left, right],
                     Arc::new(Field::new(func_name, data_type, true)),
                     Arc::new(ConfigOptions::default()),
-                )))
+                ));
+                if query_context.is_some() {
+                    Ok(Arc::new(CheckedBinaryExpr::new(expr, query_context)))
+                } else {
+                    Ok(expr)
+                }
             }
             // Date +/- Int8/Int16/Int32: DataFusion 52's arrow-arith kernels only
             // support Date32 +/- Interval types, not raw integers. Use the Spark
@@ -1199,9 +1237,11 @@ impl PhysicalPlanner {
                         Arc::new(ConfigOptions::default()),
                     ));
 
-                    // Wrap with CheckedBinaryExpr to add query_context to errors
-                    use crate::execution::expressions::arithmetic::CheckedBinaryExpr;
-                    Ok(Arc::new(CheckedBinaryExpr::new(scalar_expr, query_context)))
+                    if query_context.is_some() {
+                        Ok(Arc::new(CheckedBinaryExpr::new(scalar_expr, query_context)))
+                    } else {
+                        Ok(scalar_expr)
+                    }
                 } else {
                     Ok(Arc::new(BinaryExpr::new(left, op, right)))
                 }
@@ -4010,6 +4050,16 @@ fn rewrite_physical_expr(
     );
 
     Ok(expr.rewrite(&mut rewriter).data()?)
+}
+
+/// Strip any [`CheckedBinaryExpr`] wrappers so callers can inspect the expression
+/// they decorate, however many context-wrapping layers the planner emitted.
+fn unwrap_checked(expr: &Arc<dyn PhysicalExpr>) -> &Arc<dyn PhysicalExpr> {
+    let mut current = expr;
+    while let Some(checked) = current.downcast_ref::<CheckedBinaryExpr>() {
+        current = checked.child();
+    }
+    current
 }
 
 pub fn from_protobuf_eval_mode(value: i32) -> Result<EvalMode, prost::UnknownEnumValue> {
