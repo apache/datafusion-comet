@@ -211,9 +211,10 @@ class CometInMemoryCacheSuite extends CometTestBase {
           assert(batches.forall(
             _.getClass.getName == "org.apache.spark.sql.comet.execution.arrow.CometCachedBatch"))
           assert(batches.map(_.numRows.toLong).sum == 60000L)
-          assert(relation.cacheBuilder.rowCountStats.value == 60000L)
-          assert(relation.cacheBuilder.sizeInBytesStats.value == batches.map(_.sizeInBytes).sum)
-          assert(relation.cacheBuilder.sizeInBytesStats.value > 1024L)
+          val stats = relation.computeStats()
+          assert(stats.rowCount.contains(BigInt(60000)))
+          assert(stats.sizeInBytes == batches.map(_.sizeInBytes).sum)
+          assert(stats.sizeInBytes > 1024L)
         }
       }
     }
