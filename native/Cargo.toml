@@ -35,18 +35,18 @@ license = "Apache-2.0"
 edition = "2021"
 
 # Comet uses the same minimum Rust version as DataFusion
-rust-version = "1.88"
+rust-version = "1.94.0"
 
 [workspace.dependencies]
-arrow = { version = "58.4.0", features = ["prettyprint", "ffi", "chrono-tz"] }
-arrow-select = { version = "58.4.0" }
+arrow = { version = "59.2.0", features = ["prettyprint", "ffi", "chrono-tz"] }
+arrow-select = { version = "59.2.0" }
 async-trait = { version = "0.1" }
 bytes = { version = "1.11.1" }
-parquet = { version = "58.4.0", default-features = false, features = ["experimental"] }
-datafusion = { version = "54.1.0", default-features = false, features = ["unicode_expressions", "crypto_expressions", "nested_expressions", "parquet"] }
-datafusion-datasource = { version = "54.1.0" }
-datafusion-physical-expr-adapter = { version = "54.1.0" }
-datafusion-spark = { version = "54.1.0", features = ["core"] }
+parquet = { version = "59.2.0", default-features = false, features = ["experimental"] }
+datafusion = { version = "55.0.0", default-features = false, features = ["unicode_expressions", "crypto_expressions", "nested_expressions", "parquet"] }
+datafusion-datasource = { version = "55.0.0" }
+datafusion-physical-expr-adapter = { version = "55.0.0" }
+datafusion-spark = { version = "55.0.0", features = ["core"] }
 datafusion-comet-spark-expr = { path = "spark-expr" }
 datafusion-comet-common = { path = "common" }
 datafusion-comet-jni-bridge = { path = "jni-bridge" }
@@ -62,8 +62,8 @@ object_store = { version = "0.13.2", features = ["gcp", "azure", "aws", "http"] 
 url = "2.2"
 aws-config = "1.8.18"
 aws-credential-types = "1.2.13"
-iceberg = { git = "https://github.com/apache/iceberg-rust", rev = "8adaa872f31549dd5ad8255848715758228038bc" }
-iceberg-storage-opendal = { git = "https://github.com/apache/iceberg-rust", rev = "8adaa872f31549dd5ad8255848715758228038bc", features = ["opendal-memory", "opendal-fs", "opendal-s3", "opendal-gcs", "opendal-oss", "opendal-azdls"] }
+iceberg = { git = "https://github.com/apache/iceberg-rust", rev = "665c64e48e8d33797ecb1a421f327edd9b024879" }
+iceberg-storage-opendal = { git = "https://github.com/apache/iceberg-rust", rev = "665c64e48e8d33797ecb1a421f327edd9b024879", features = ["opendal-memory", "opendal-fs", "opendal-s3", "opendal-gcs", "opendal-oss", "opendal-azdls"] }
 reqsign-core = "3"
 
 [profile.release]

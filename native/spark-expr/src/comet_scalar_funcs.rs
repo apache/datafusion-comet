@@ -23,12 +23,13 @@ use crate::math_funcs::checked_arithmetic::{checked_add, checked_div, checked_mu
 use crate::math_funcs::log::spark_log;
 use crate::math_funcs::modulo_expr::spark_modulo;
 use crate::math_funcs::pow::spark_pow;
+use crate::math_funcs::sqrt::spark_sqrt;
 use crate::{
     spark_ceil, spark_day_name, spark_decimal_div, spark_decimal_integral_div, spark_floor,
     spark_isnan, spark_lpad, spark_make_decimal, spark_month_name, spark_read_side_padding,
-    spark_round, spark_rpad, spark_to_time, spark_unhex, spark_unscaled_value, EvalMode,
-    SparkArrayPositionFunc, SparkArraySlice, SparkArraysOverlap, SparkContains, SparkDateDiff,
-    SparkDateFromUnixDate, SparkDateTrunc, SparkFlatten, SparkIcebergBucket,
+    spark_round, spark_rpad, spark_sequence, spark_to_time, spark_unhex, spark_unscaled_value,
+    EvalMode, SparkArrayPositionFunc, SparkArraySlice, SparkArraysOverlap, SparkContains,
+    SparkDateDiff, SparkDateFromUnixDate, SparkDateTrunc, SparkFlatten, SparkIcebergBucket,
     SparkIcebergTemporalTransform, SparkIcebergTruncate, SparkMakeDate, SparkMakeInterval,
     SparkMakeTime, SparkNextDay, SparkSecondsToTimestamp, SparkSizeFunc,
 };
@@ -119,6 +120,9 @@ pub fn create_comet_physical_fun_with_eval_mode(
     match fun_name {
         "ceil" => {
             make_comet_scalar_udf!("ceil", spark_ceil, data_type)
+        }
+        "spark_sequence" => {
+            make_comet_scalar_udf!("spark_sequence", spark_sequence, data_type)
         }
         "floor" => {
             make_comet_scalar_udf!("floor", spark_floor, data_type)
@@ -213,6 +217,10 @@ pub fn create_comet_physical_fun_with_eval_mode(
         "pow" => {
             let func = Arc::new(spark_pow);
             make_comet_scalar_udf!("pow", func, without data_type)
+        }
+        "spark_sqrt" => {
+            let func = Arc::new(spark_sqrt);
+            make_comet_scalar_udf!("spark_sqrt", func, without data_type)
         }
         "base64" => {
             let func = Arc::new(crate::string_funcs::spark_base64);

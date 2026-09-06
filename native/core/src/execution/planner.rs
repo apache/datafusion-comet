@@ -98,6 +98,7 @@ use iceberg::expr::Bind;
 use crate::execution::operators::ExecutionError::GeneralError;
 use crate::execution::shuffle::{CometPartitioning, CompressionCodec};
 use crate::execution::spark_plan::SparkPlan;
+use crate::parquet::objectstore::s3_blob_fs_support::normalize_object_store_url;
 use crate::parquet::parquet_support::prepare_object_store_with_configs;
 use datafusion::common::scalar::ScalarStructBuilder;
 use datafusion::common::{
@@ -158,7 +159,6 @@ use num::{BigInt, ToPrimitive};
 use object_store::path::Path;
 use std::cmp::max;
 use std::{collections::HashMap, sync::Arc};
-use url::Url;
 
 // For clippy error on type_complexity.
 type PhyAggResult = Result<Vec<AggregateFunctionExpr>, ExecutionError>;
@@ -450,6 +450,7 @@ impl PhysicalPlanner {
     fn get_partitioned_files(
         &self,
         partition: &SparkFilePartition,
+        object_store_options: &HashMap<String, String>,
     ) -> Result<Vec<PartitionedFile>, ExecutionError> {
         let mut files = Vec::with_capacity(partition.partitioned_file.len());
         partition.partitioned_file.iter().try_for_each(|file| {
@@ -462,10 +463,11 @@ impl PhysicalPlanner {
                 file.start + file.length,
             );
 
-            // Spark sends the path over as URL-encoded, parse that first.
-            let url =
-                Url::parse(file.file_path.as_ref()).map_err(|e| GeneralError(e.to_string()))?;
-            // Convert that to a Path object to use in the PartitionedFile.
+            // Apply the same alias/s3a scheme rewrite the object store construction uses, so the
+            // object-store key we hand DataFusion is stripped of the bucket prefix. Skipping this
+            // would leave `bucket/key` as the object key, and path-style S3 GETs would double the
+            // bucket (`<endpoint>/bucket/bucket/key`).
+            let url = normalize_object_store_url(&file.file_path, object_store_options)?;
             let path = Path::from_url_path(url.path()).map_err(|e| GeneralError(e.to_string()))?;
             partitioned_file.object_meta.location = path;
 
@@ -1720,7 +1722,7 @@ impl PhysicalPlanner {
                 )?;
 
                 // Get files for this partition
-                let files = self.get_partitioned_files(partition_files)?;
+                let files = self.get_partitioned_files(partition_files, &object_store_options)?;
                 let file_groups: Vec<Vec<PartitionedFile>> = vec![files];
 
                 let scan = init_datasource_exec(
@@ -1774,8 +1776,10 @@ impl PhysicalPlanner {
                     one_file,
                     &object_store_options,
                 )?;
-                let files =
-                    self.get_partitioned_files(&scan.file_partitions[self.partition as usize])?;
+                let files = self.get_partitioned_files(
+                    &scan.file_partitions[self.partition as usize],
+                    &object_store_options,
+                )?;
                 let file_groups: Vec<Vec<PartitionedFile>> = vec![files];
                 let scan = init_csv_datasource_exec(
                     object_store_url,
@@ -1847,6 +1851,9 @@ impl PhysicalPlanner {
                     .iter()
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect();
+                // Passed RAW, like every other Iceberg location (see `data_file_path` in
+                // `parse_file_scan_tasks_from_common`). `storage_factory_for` routes an opted-in
+                // alias to the S3 backend by scheme, so no URL rewrite is needed here.
                 let metadata_location = common.metadata_location.clone();
                 let catalog_name = common.catalog_name.clone();
                 let tasks = parse_file_scan_tasks_from_common(common, &scan.file_scan_tasks)?;
@@ -2209,10 +2216,7 @@ impl PhysicalPlanner {
                     depth: 1,
                 });
 
-                let unnest_options = UnnestOptions {
-                    preserve_nulls: explode.outer,
-                    recursions: vec![],
-                };
+                let unnest_options = UnnestOptions::new().with_preserve_nulls(explode.outer);
 
                 // Comet's batch-size-respecting fork of `UnnestExec`; see `operators::explode`.
                 let unnest_exec = Arc::new(ExplodeExec::new(
@@ -4315,8 +4319,15 @@ fn parse_file_scan_tasks_from_common(
             };
 
             Ok(iceberg::scan::FileScanTaskDeleteFile {
+                // Passed RAW, like `data_file_path` below (same exact-string delete-matching
+                // constraint -- see there).
                 file_path: del.file_path.clone(),
                 file_type,
+                // Comet forwards Parquet position/equality delete files and carries no
+                // deletion-vector (Puffin) metadata, so the format is always Parquet. This keeps
+                // iceberg-rust on the regular delete-file read path rather than the DV path,
+                // consistent with the unset content_offset/content_size_in_bytes below.
+                file_format: iceberg::spec::DataFileFormat::Parquet,
                 // Not serialized; filled in by IcebergScanExec::fill_delete_file_sizes.
                 file_size_in_bytes: 0,
                 partition_spec_id: del.partition_spec_id,
@@ -4325,6 +4336,12 @@ fn parse_file_scan_tasks_from_common(
                 } else {
                     Some(del.equality_ids.clone())
                 },
+                // Deletion-vector metadata is not part of Comet's delete-file serde, so these
+                // are left unset. iceberg-rust only requires them when reading a Puffin DV blob.
+                referenced_data_file: None,
+                content_offset: None,
+                content_size_in_bytes: None,
+                record_count: None,
                 // Plaintext StandardKeyMetadata forwarded verbatim from the JVM; decoded by
                 // iceberg-rust with no KMS unwrap. None for unencrypted delete files.
                 key_metadata: del.key_metadata.clone().map(Vec::into_boxed_slice),
@@ -4534,26 +4551,37 @@ fn parse_file_scan_tasks_from_common(
                 None
             };
 
-            Ok(iceberg::scan::FileScanTask {
-                file_size_in_bytes: proto_task.file_size_in_bytes,
-                data_file_path: proto_task.data_file_path.clone(),
-                start: proto_task.start,
-                length: proto_task.length,
-                record_count: proto_task.record_count,
-                data_file_format,
-                schema: schema_ref,
-                project_field_ids,
-                predicate: bound_predicate,
-                deletes,
-                partition,
-                partition_spec,
-                name_mapping,
-                unified_partition_type: unified_partition_type_for_task,
-                case_sensitive: false,
+            // `FileScanTask`'s fields are private as of iceberg-rust 665c64e, so the task is
+            // constructed through its builder. `build()` runs the task's validation (partition
+            // vs. partition-spec consistency), surfaced here as a GeneralError.
+            iceberg::scan::FileScanTask::builder()
+                .with_file_size_in_bytes(proto_task.file_size_in_bytes)
+                .with_start(proto_task.start)
+                .with_length(proto_task.length)
+                .with_record_count(proto_task.record_count)
+                // RAW data-file path -- do NOT rewrite the alias to s3://. iceberg-rust matches
+                // positional deletes by comparing this against the path recorded inside the delete
+                // file, so changing the scheme drops deletes. The S3 backend opens a raw alias path
+                // fine (bucket from host, key sliced verbatim), and `metadata_location` above
+                // already selected the storage factory.
+                .with_data_file_path(proto_task.data_file_path.clone())
+                .with_data_file_format(data_file_format)
+                .with_schema(schema_ref)
+                .with_project_field_ids(project_field_ids)
+                .with_predicate(bound_predicate)
+                .with_deletes(deletes)
+                .with_partition(partition)
+                .with_partition_spec(partition_spec)
+                .with_name_mapping(name_mapping)
+                .with_unified_partition_type(unified_partition_type_for_task)
+                .with_case_sensitive(false)
                 // Plaintext StandardKeyMetadata forwarded verbatim from the JVM; decoded by
                 // iceberg-rust with no KMS unwrap. None for unencrypted data files.
-                key_metadata: proto_task.key_metadata.clone().map(Vec::into_boxed_slice),
-            })
+                .with_key_metadata(proto_task.key_metadata.clone().map(Vec::into_boxed_slice))
+                .build()
+                .map_err(|e| {
+                    ExecutionError::GeneralError(format!("Invalid Iceberg scan task: {e}"))
+                })
         })
         .collect();
 
@@ -6970,15 +6998,16 @@ mod tests {
         (declared, acc.state().unwrap()[0].data_type())
     }
 
-    /// The plan declares nullable leaves while the batch that actually arrives carries
-    /// non-nullable ones. `collect_list` / `collect_set` derive their state type from the
-    /// declared type but emit the runtime type, so without the coercion the drift reaches
-    /// `AggregateExec` and it fails validating its own output batch.
+    /// `collect_list` / `collect_set` derive their accumulator state type from the declared
+    /// argument type but can emit the runtime type, so a plan that declares nullable leaves while
+    /// the arriving batch carries non-nullable ones drifts, and the drift reaches `AggregateExec`
+    /// and fails its output-batch validation. `coerce_collect_child_nullability` normalizes the
+    /// argument to the declared type before it reaches the accumulator.
     ///
-    /// The first assertion deliberately pins the upstream behaviour this coercion defends
-    /// against. If `ScalarValue::new_list` is ever fixed to honour its `data_type` for non-empty
-    /// input, the drift disappears and that assertion starts failing — that is the signal to drop
-    /// `coerce_collect_child_nullability` entirely, not a regression.
+    /// DataFusion 55's `ScalarValue::new_list` fix removed the drift for `collect_set`, which
+    /// rebuilds its state list honouring `data_type`. `collect_list` still rebuilds from the
+    /// runtime array and drifts, so the coercion remains necessary. This test pins that
+    /// `collect_list` still drifts without the coercion, and that the coercion normalizes both.
     #[test]
     fn test_collect_agg_absorbs_nested_nullability_drift() {
         let plan_schema = collect_agg_schema(collect_agg_struct_type(true));
@@ -6992,17 +7021,21 @@ mod tests {
             AggregateUDF::new_from_impl(SparkCollectSet::new()),
             AggregateUDF::new_from_impl(SparkCollectList::new()),
         ] {
-            // Without the coercion, declared and produced disagree on nested nullability.
+            // Without the coercion, collect_list still drifts (declared nullable leaves vs
+            // produced non-null ones). collect_set no longer drifts after DataFusion 55's new_list
+            // fix, so only assert the drift for the func that still exhibits it.
             let (declared, produced) =
                 collect_agg_declared_vs_produced(&raw, &plan_schema, &batch_schema, func.clone());
-            assert!(
-                !declared.equals_datatype(&produced),
-                "expected drift for {}: declared {declared}, produced {produced}",
-                func.name()
-            );
+            if func.name() == "collect_list" {
+                assert!(
+                    !declared.equals_datatype(&produced),
+                    "expected drift for {}: declared {declared}, produced {produced}",
+                    func.name()
+                );
+            }
 
-            // With it, the argument is normalized to the declared type before it reaches
-            // the accumulator.
+            // With the coercion, the argument is normalized to the declared type before it
+            // reaches the accumulator, so both funcs emit a state matching the declared type.
             let (declared, produced) =
                 collect_agg_declared_vs_produced(&coerced, &plan_schema, &batch_schema, func);
             assert!(
@@ -7126,11 +7159,15 @@ mod tests {
             ..Default::default()
         };
 
+        // No partition_spec_idx/partition_data_idx: this test exercises unified-type merging,
+        // which is driven by the type/spec pools rather than the task's own spec. `FileScanTask`
+        // validation rejects a partitioned spec without matching partition data, and the JVM
+        // serializer always sends spec and data together, so a spec-without-data task never
+        // occurs in practice.
         let proto_task = spark_operator::IcebergFileScanTask {
             data_file_path: "file:///tmp/data.parquet".to_string(),
             file_size_in_bytes: 100,
             schema_idx: 0,
-            partition_spec_idx: Some(0),
             project_field_ids_idx: 0,
             ..Default::default()
         };
@@ -7140,8 +7177,7 @@ mod tests {
         assert_eq!(tasks.len(), 1);
 
         let unified = tasks[0]
-            .unified_partition_type
-            .as_ref()
+            .unified_partition_type()
             .expect("unified_partition_type must be set when _partition is projected");
 
         let fields = unified.fields();
@@ -7209,8 +7245,7 @@ mod tests {
         assert_eq!(tasks.len(), 1);
         assert!(
             tasks[0]
-                .unified_partition_type
-                .as_ref()
+                .unified_partition_type()
                 .map(|t| t.fields().is_empty())
                 .unwrap_or(true),
             "unified partition type should have no fields for an all-unknown-transform spec"
