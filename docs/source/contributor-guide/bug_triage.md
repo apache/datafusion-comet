@@ -82,17 +82,22 @@ A bug should be escalated to a higher priority if:
 Area labels indicate which subsystem is affected. A bug may have multiple area labels. These
 help contributors find bugs in their area of expertise.
 
-| Label              | Description                               |
-| ------------------ | ----------------------------------------- |
-| `area:writer`      | Native writer (Parquet and other formats) |
-| `area:shuffle`     | Shuffle (JVM and native)                  |
-| `area:aggregation` | Hash aggregates, aggregate expressions    |
-| `area:scan`        | Data source scan (Parquet, CSV, Iceberg)  |
-| `area:expressions` | Expression evaluation                     |
-| `area:ffi`         | Arrow FFI / JNI boundary                  |
-| `area:ci`          | CI/CD, GitHub Actions, build tooling      |
+| Label              | Description                                |
+| ------------------ | ------------------------------------------ |
+| `area:writer`      | Native writer (Parquet and other formats)  |
+| `area:shuffle`     | Shuffle (JVM and native)                   |
+| `area:aggregation` | Hash aggregates, aggregate expressions     |
+| `area:scan`        | Data source scan (Parquet, CSV, Iceberg)   |
+| `area:expressions` | Expression evaluation                      |
+| `area:ffi`         | Arrow FFI / JNI boundary                   |
+| `area:ci`          | CI/CD, GitHub Actions, build tooling       |
+| `area:Iceberg`     | Iceberg reads and writes                   |
+| `area:udf`         | Scala, Python, and native UDFs             |
+| `area:memory`      | Memory pools, reservations, OOM handling   |
+| `area:joins`       | Join operators and dynamic filter pushdown |
 
-The following pre-existing labels also serve as area indicators: `spark 4`, `spark sql tests`.
+The following pre-existing labels also serve as area indicators: `spark 4`, `spark sql tests`,
+`array expressions`, `map expressions`, `json expressions`, `temporal expressions`.
 
 ## Triage Process
 
@@ -173,6 +178,29 @@ The native Parquet writer has a cluster of known test failures tracked as indivi
 [#3430](https://github.com/apache/datafusion-comet/issues/3430). These are lower priority since the
 native writer is still maturing, but they should be addressed before the writer is promoted to
 production-ready status.
+
+## Pull Request Triage
+
+Open pull requests are labeled with the same type and area labels as issues, so that a reviewer
+can filter the backlog down to their area of expertise, for example
+`is:pr is:open label:area:shuffle`.
+
+The rules differ from issue triage in three ways:
+
+- **No priority labels.** `priority:*` is for issues only.
+- **Derive the area from the changed files, not the title.** A PR titled
+  `perf: reuse zstd compression contexts` never says "shuffle", but its diff does.
+- **A `fix:` prefix does not always mean `bug`.** A PR that adds support for a type Comet
+  previously fell back on is an `enhancement`: nothing was broken.
+
+Beyond the type label, apply `performance`, `correctness`, `crash`, `test`, `build`, and
+`documentation` where they describe the change. Reserve `correctness` for PRs that fix or prevent
+silently wrong results, since that is the label a release manager greps for.
+
+Leave Dependabot PRs alone; they already carry `dependencies`.
+
+Some PRs legitimately have no area label. Plan rules, AQE integration, EXPLAIN output, and caching
+have no area today. Leave those without one rather than stretching an existing label to fit.
 
 ## How to Help with Triage
 
