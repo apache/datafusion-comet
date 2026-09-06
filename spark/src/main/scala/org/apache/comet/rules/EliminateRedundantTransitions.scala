@@ -22,9 +22,9 @@ package org.apache.comet.rules
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.util.sideBySide
-import org.apache.spark.sql.comet.{CometCollectLimitExec, CometColumnarToRowExec, CometIcebergWriteExec, CometMapInBatchExec, CometNativeColumnarToRowExec, CometNativeWriteExec, CometPlan, CometSparkToColumnarExec}
+import org.apache.spark.sql.comet.{CometArrowEvalPythonExec, CometCollectLimitExec, CometColumnarToRowExec, CometIcebergWriteExec, CometMapInBatchExec, CometNativeColumnarToRowExec, CometNativeWriteExec, CometPlan, CometSparkToColumnarExec}
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometShuffleExchangeExec}
-import org.apache.spark.sql.comet.shims.{MapInBatchInfo, ShimCometMapInBatch}
+import org.apache.spark.sql.comet.shims.{ArrowEvalPythonInfo, MapInBatchInfo, ShimCometArrowEvalPython, ShimCometMapInBatch}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, RowToColumnarExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.QueryStageExec
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
@@ -58,6 +58,7 @@ import org.apache.comet.shims.ShimSQLConf
 case class EliminateRedundantTransitions(session: SparkSession)
     extends Rule[SparkPlan]
     with ShimCometMapInBatch
+    with ShimCometArrowEvalPython
     with ShimSQLConf {
 
   private lazy val showTransformations = CometConf.COMET_EXPLAIN_TRANSFORMATIONS.get()
@@ -135,6 +136,21 @@ case class EliminateRedundantTransitions(session: SparkSession)
             NativeOptIn.message(
               "PyArrow UDFs (mapInArrow/mapInPandas)",
               CometConf.COMET_PYARROW_UDF_ENABLED.key))
+        }
+
+      // Replace ArrowEvalPythonExec (scalar Python UDFs: an Arrow-optimized `udf()`, a
+      // `@pandas_udf`, or a 4.1 `@arrow_udf`) that has a ColumnarToRow child with
+      // CometArrowEvalPythonExec, which sends the UDF argument columns to the worker directly and
+      // appends its results to the input batch, replacing Spark's per-row row queue and
+      // projections. Gated on the same feature flag and the same `useLargeVarTypes` fallback as
+      // the mapInArrow path, and version-shimmed the same way (Spark 3.4 / 3.5 return None).
+      case p @ EligibleArrowEvalPython(info, columnarChild) =>
+        if (CometConf.COMET_PYARROW_UDF_ENABLED.get()) {
+          CometArrowEvalPythonExec(info.udfs, info.resultAttrs, columnarChild, info.evalType)
+        } else {
+          withInfo(
+            p,
+            NativeOptIn.message("scalar Python UDFs", CometConf.COMET_PYARROW_UDF_ENABLED.key))
         }
 
       // Spark adds `RowToColumnar` under Comet columnar shuffle. But it's redundant as the
@@ -236,6 +252,10 @@ case class EliminateRedundantTransitions(session: SparkSession)
     // columnar output directly. Its flattened output vectors are `CometVector`s, exactly what
     // `CometMapInBatchExec`'s input path expects.
     case child: CometMapInBatchExec => Some(child)
+    // Stacked scalar UDFs (`df.withColumn("a", udf1(...)).withColumn("b", udf2(...))` when the
+    // two cannot be folded into one operator) reach here the same way, and
+    // `CometArrowEvalPythonExec` likewise emits `CometVector`s.
+    case child: CometArrowEvalPythonExec => Some(child)
     case _ => None
   }
 
@@ -257,6 +277,30 @@ case class EliminateRedundantTransitions(session: SparkSession)
       } else {
         matchMapInArrow(plan)
           .orElse(matchMapInPandas(plan))
+          .flatMap(info => extractColumnarChild(info.child).map(child => (info, child)))
+      }
+    }
+  }
+
+  /**
+   * Matches the `ArrowEvalPythonExec` plans that could run natively as
+   * `CometArrowEvalPythonExec`, independent of whether the `spark.comet.exec.pyarrowUDF.enabled`
+   * feature flag is set; the `transformUp` arm reads that flag to decide between rewriting the
+   * operator and merely annotating it with an opt-in hint. Returns `(info, columnarChild)` where
+   * `columnarChild` is the Comet columnar producer the operator will consume directly.
+   *
+   * Returns `None` (and the arm misses) when `useLargeVarTypes` forces the fallback, when the
+   * plan is not an `ArrowEvalPythonExec` of a supported eval type, when some UDF argument is not
+   * a plain attribute of the child, or when the child is not a Comet columnar-to-row transition
+   * we can strip.
+   */
+  private object EligibleArrowEvalPython {
+    def unapply(plan: SparkPlan): Option[(ArrowEvalPythonInfo, SparkPlan)] = {
+      if (arrowUseLargeVarTypes(plan.conf)) {
+        None
+      } else {
+        matchArrowEvalPython(plan)
+          .filter(info => resolveArrowEvalPythonArgs(info.udfs, info.child.output).isDefined)
           .flatMap(info => extractColumnarChild(info.child).map(child => (info, child)))
       }
     }

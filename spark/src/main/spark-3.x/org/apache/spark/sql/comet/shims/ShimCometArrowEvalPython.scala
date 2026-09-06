@@ -20,32 +20,29 @@
 package org.apache.spark.sql.comet.shims
 
 import org.apache.spark.TaskContext
+import org.apache.spark.sql.catalyst.expressions.{Attribute, PythonUDF}
 import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 /**
- * Spark 3.x stub for the PyArrow UDF acceleration support.
+ * Spark 3.x stub for scalar Python UDF acceleration.
  *
- * The columnar runner introduced in #4234 only targets Spark 4.0+. On Spark 3.4 / 3.5 the
- * matchers return `None`, the rewrite does not fire, and vanilla Spark handles `mapInArrow` /
- * `mapInPandas` unchanged. The runner factory throws; it is never called because the matchers
- * always return `None`. 3.x support can be added later if there is user demand.
- *
- * Shared across spark-3.4 and spark-3.5 because both are identical: 3.4 lacks the modern
- * `ArrowPythonRunner` constructor and `arrowUseLargeVarTypes`, and 3.5's `PythonArrowInput` trait
- * has a different contract (`writeIteratorToArrowStream` one-shot vs 4.x's
- * `writeNextBatchToArrowStream` batch-at-a-time), so neither version can host the columnar input
- * implementation without a separate rewrite.
+ * Like the `mapInArrow` / `mapInPandas` support it builds on, the columnar runner targets Spark
+ * 4.0+ only, so the matcher returns `None` on 3.4 / 3.5 and vanilla Spark evaluates
+ * `ArrowEvalPythonExec` unchanged. The runner factory throws; it is never called because the
+ * matcher always returns `None`.
  */
-trait ShimCometMapInBatch extends ShimPythonRunnerInputs {
+trait ShimCometArrowEvalPython extends ShimPythonRunnerInputs {
 
-  protected def matchMapInArrow(plan: SparkPlan): Option[MapInBatchInfo] = None
+  protected def matchArrowEvalPython(plan: SparkPlan): Option[ArrowEvalPythonInfo] = None
 
-  protected def matchMapInPandas(plan: SparkPlan): Option[MapInBatchInfo] = None
+  protected def resolveArrowEvalPythonArgs(
+      udfs: Seq[PythonUDF],
+      childOutput: Seq[Attribute]): Option[ArrowEvalPythonArgs] = None
 
-  protected def computeArrowPython(
+  protected def computeArrowEvalPython(
       runnerInputs: RunnerInputs,
       evalType: Int,
       argOffsets: Array[Array[Int]],
@@ -54,5 +51,6 @@ trait ShimCometMapInBatch extends ShimPythonRunnerInputs {
       batchIter: Iterator[Iterator[ColumnarBatch]],
       partitionId: Int,
       context: TaskContext): Iterator[ColumnarBatch] =
-    throw new UnsupportedOperationException("CometMapInBatchExec is not supported on Spark 3.x")
+    throw new UnsupportedOperationException(
+      "CometArrowEvalPythonExec is not supported on Spark 3.x")
 }

@@ -17,8 +17,11 @@
 # under the License.
 
 """
-Shared helpers for the pytest modules under this directory and for the
-benchmark scripts that import them.
+Shared fixtures and helpers for the pytest modules under this directory and
+for the benchmark scripts that import them.
+
+The `spark` and `accelerated` fixtures are shared by every UDF test module, so
+one Spark session (and one JVM) serves the whole run.
 
 `resolve_comet_jar` returns the path to the Comet jar a Spark session needs.
 Resolution order: the `COMET_JAR` env var (taken verbatim if it points at a
@@ -28,6 +31,9 @@ the installed pyspark major.minor version.
 
 import glob
 import os
+
+import pytest
+from pyspark.sql import SparkSession
 
 
 REPO_ROOT = os.path.abspath(
@@ -77,3 +83,47 @@ def resolve_comet_jar() -> str:
             f"Looked under {pattern}."
         )
     return candidates[-1]
+
+
+@pytest.fixture(scope="session")
+def spark():
+    jar = resolve_comet_jar()
+    # PYSPARK_SUBMIT_ARGS is consumed when pyspark launches its JVM. Setting
+    # --jars puts the Comet jar on both driver and executor classpaths so the
+    # CometPlugin can be loaded.
+    os.environ["PYSPARK_SUBMIT_ARGS"] = (
+        f"--jars {jar} --driver-class-path {jar} pyspark-shell"
+    )
+    session = (
+        SparkSession.builder.master("local[2]")
+        .appName("comet-python-udf-tests")
+        .config("spark.plugins", "org.apache.spark.CometPlugin")
+        .config("spark.comet.enabled", "true")
+        .config("spark.comet.exec.enabled", "true")
+        # spark.comet.shuffle.enabled defaults to true, and
+        # CometSparkSessionExtensions.isCometLoaded refuses to register Comet's rules
+        # at all when shuffle is on but spark.shuffle.manager is not the Comet manager.
+        # These tests do not need Comet shuffle, so disable it explicitly to keep
+        # Comet's scan and exec rules active without configuring shuffle.
+        .config("spark.comet.shuffle.enabled", "false")
+        .config("spark.memory.offHeap.enabled", "true")
+        .config("spark.memory.offHeap.size", "2g")
+        .getOrCreate()
+    )
+    try:
+        yield session
+    finally:
+        session.stop()
+
+
+@pytest.fixture(params=[True, False], ids=["accelerated", "fallback"])
+def accelerated(request, spark) -> bool:
+    spark.conf.set(
+        "spark.comet.exec.pyarrowUDF.enabled",
+        "true" if request.param else "false",
+    )
+    return request.param
+
+
+def executed_plan(df) -> str:
+    return df._jdf.queryExecution().executedPlan().toString()
