@@ -269,7 +269,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `dayofmonth` | ✅ | Native |  |
 | `dayofweek` | ✅ | Native |  |
 | `dayofyear` | ✅ | Native |  |
-| `extract` | ✅ | — |  |
+| `extract` | ✅ | — | `SECOND FROM TIME` is native for Spark 4.1 (`Decimal(8,6)` output) |
 | `from_unixtime` | ✅ | Hybrid |  |
 | `from_utc_timestamp` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default (handles all timezone forms); the native path is opt-in via allowIncompatible ([details](compatibility/expressions/datetime.md)) |
 | `hour` | ✅ | Native |  |

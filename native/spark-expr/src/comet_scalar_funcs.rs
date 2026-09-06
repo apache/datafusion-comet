@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::datetime_funcs::spark_seconds_of_time;
 use crate::hash_funcs::*;
 use crate::json_funcs::JsonArrayLength;
 use crate::map_funcs::spark_map_sort;
@@ -253,6 +254,10 @@ pub fn create_comet_physical_fun_with_eval_mode(
         "map_sort" => {
             let func = Arc::new(spark_map_sort);
             make_comet_scalar_udf!("spark_map_sort", func, without data_type)
+        }
+        "seconds_of_time" => {
+            let func = Arc::new(spark_seconds_of_time);
+            make_comet_scalar_udf!("seconds_of_time", func, without data_type)
         }
         "to_time" => {
             make_comet_scalar_udf!("to_time", spark_to_time, without data_type, fail_on_error)

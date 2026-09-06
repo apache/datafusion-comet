@@ -588,9 +588,12 @@ impl PhysicalPlanner {
                             DataType::Duration(TimeUnit::Microsecond) => {
                                 ScalarValue::DurationMicrosecond(Some(*value))
                             }
+                            DataType::Time64(TimeUnit::Nanosecond) => {
+                                ScalarValue::Time64Nanosecond(Some(*value))
+                            }
                             dt => {
                                 return Err(GeneralError(format!(
-                                    "Expected 'Int64', 'Timestamp', or 'Duration(Microsecond)' for LongVal, but found {dt:?}"
+                                    "Expected 'Int64', 'Timestamp', 'Duration(Microsecond)', or 'Time64(Nanosecond)' for LongVal, but found {dt:?}"
                                 )))
                             }
                         },
