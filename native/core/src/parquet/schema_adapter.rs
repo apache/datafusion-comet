@@ -2281,6 +2281,43 @@ mod test {
         assert!(!is_pure_structural_narrowing(&physical, &target, &opts));
     }
 
+    #[test]
+    fn structural_narrowing_requires_unambiguous_exact_match() -> Result<(), DataFusionError> {
+        use crate::parquet::cast_column::CometCastColumnExpr;
+        use datafusion::physical_expr::expressions::CastExpr;
+
+        // #5707: an exact match must not hide a second case-insensitive match.
+        for (upper, lower) in [("ID", "id"), ("CAFÉ", "café")] {
+            let physical = struct_type(vec![(upper, DataType::Int64), (lower, DataType::Int64)]);
+            let target = struct_type(vec![(lower, DataType::Int64)]);
+            for (physical, target) in [
+                (physical.clone(), target.clone()),
+                (
+                    struct_type(vec![("inner", physical.clone())]),
+                    struct_type(vec![("inner", target.clone())]),
+                ),
+                (list_type(physical), list_type(target)),
+            ] {
+                for case_sensitive in [false, true] {
+                    let mut opts = default_options();
+                    opts.case_sensitive = case_sensitive;
+                    assert_eq!(
+                        is_pure_structural_narrowing(&physical, &target, &opts),
+                        case_sensitive,
+                        "{physical:?} -> {target:?}, case_sensitive={case_sensitive}"
+                    );
+                    let rewritten = rewrite_events_column(physical.clone(), target.clone(), opts)?;
+                    if case_sensitive {
+                        assert!(rewritten.downcast_ref::<CastExpr>().is_some());
+                    } else {
+                        assert!(rewritten.downcast_ref::<CometCastColumnExpr>().is_some());
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// A target field with no name match at all must be denied: DataFusion's
     /// `nested_struct::cast_column` null-fills it unconditionally, while Comet's behavior
     /// additionally depends on `return_null_struct_if_all_fields_missing` at the struct level.
