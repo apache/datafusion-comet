@@ -77,8 +77,6 @@ pub struct SparkParquetOptions {
     pub allow_incompat: bool,
     /// Support casting unsigned ints to signed ints (used by Parquet SchemaAdapter)
     pub allow_cast_unsigned_ints: bool,
-    /// Whether to read dates/timestamps that were written in the legacy hybrid Julian + Gregorian calendar as it is. If false, throw exceptions instead. If the spark type is TimestampNTZ, this should be true.
-    pub use_legacy_date_timestamp_or_ntz: bool,
     // Whether schema field names are case sensitive
     pub case_sensitive: bool,
     /// SPARK-53535 (Spark 4.1+): when reading a struct whose requested fields are all
@@ -117,7 +115,6 @@ impl SparkParquetOptions {
             timezone: timezone.to_string(),
             allow_incompat,
             allow_cast_unsigned_ints: false,
-            use_legacy_date_timestamp_or_ntz: false,
             case_sensitive: false,
             return_null_struct_if_all_fields_missing: true,
             use_field_id: false,
@@ -134,7 +131,6 @@ impl SparkParquetOptions {
             timezone: "".to_string(),
             allow_incompat,
             allow_cast_unsigned_ints: false,
-            use_legacy_date_timestamp_or_ntz: false,
             case_sensitive: false,
             return_null_struct_if_all_fields_missing: true,
             use_field_id: false,

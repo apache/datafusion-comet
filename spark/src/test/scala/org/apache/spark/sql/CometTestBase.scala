@@ -693,6 +693,8 @@ abstract class CometTestBase
       .withPageSize(pageSize)
       .withDictionaryPageSize(dictionaryPageSize)
       .withPageRowCountLimit(pageRowCountLimit)
+      .withExtraMetaData(
+        java.util.Collections.singletonMap("org.apache.spark.version", SPARK_VERSION))
       .withConf(hadoopConf)
       .build()
   }
