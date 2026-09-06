@@ -29,6 +29,26 @@ Comet operators report the following metrics in the Spark SQL UI.
 | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `scan time` | Total time to scan a Parquet file. This is not comparable to the same metric in Spark because Comet's scan metric is more accurate. Although both Comet and Spark measure the time in nanoseconds, Spark rounds this time to the nearest millisecond per batch and Comet does not. |
 
+### Hash Joins
+
+With `spark.comet.exec.join.dynamicFilter.enabled=true`, native broadcast and shuffled hash joins
+report these additional metric keys. See [Join Runtime Filters](tuning.md#join-runtime-filters) for
+eligibility and reader restrictions.
+
+| Metric                                   | Description                                                       |
+| ---------------------------------------- | ----------------------------------------------------------------- |
+| `dynamic_filter_rows_evaluated`          | Probe rows evaluated by the runtime filter.                       |
+| `dynamic_filter_rows_pruned`             | Probe rows rejected by that filter before the hash probe.         |
+| `dynamic_filter_rows_bypassed`           | Probe rows passed through while the runtime filter is inactive.   |
+| `dynamic_filter_eval_time`               | Time evaluating the runtime filter.                               |
+| `dynamic_filter_reader_filters_attached` | Executions that attach their runtime filter to a native reader.   |
+| `dynamic_filter_reader_filters_skipped`  | Executions whose probe input is ineligible for reader attachment. |
+
+The row counters measure residual filtering of decoded probe batches. They exclude rows skipped
+by the reader. An attached filter does not guarantee that any row groups are pruned: compare the
+probe scan's `bytes_scanned` and `row_groups_pruned_statistics` with filtering disabled to assess
+reader savings. Existing join, scan, and intervening filter metrics retain their own meanings.
+
 ### Exchange
 
 Comet adds some additional metrics:

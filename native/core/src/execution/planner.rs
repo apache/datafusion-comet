@@ -32,6 +32,7 @@ mod delta_scan;
 
 use crate::execution::operators::init_csv_datasource_exec;
 use crate::execution::operators::AlignedArrowStreamReader;
+use crate::execution::operators::DynamicFilterJoinExec;
 use crate::execution::operators::IcebergScanExec;
 use crate::execution::operators::IcebergWriteExec;
 use crate::execution::operators::{PartitionedRankLimitExec, WindowFnKind};
@@ -40,8 +41,8 @@ use crate::execution::{
     expressions::list_positions::ListPositionsExpr,
     expressions::subquery::Subquery,
     operators::{
-        ExecutionError, ExpandExec, ExplodeExec, ParquetCompression, ParquetWriterExec, SampleExec,
-        ScanExec, ShuffleScanExec,
+        CometFilterExec, ExecutionError, ExpandExec, ExplodeExec, ParquetCompression,
+        ParquetWriterExec, SampleExec, ScanExec, ShuffleScanExec,
     },
     planner::expression_registry::ExpressionRegistry,
     planner::operator_registry::OperatorRegistry,
@@ -83,7 +84,7 @@ use datafusion::{
         limit::LocalLimitExec,
         projection::ProjectionExec,
         sorts::sort::SortExec,
-        ExecutionPlan,
+        ChildrenPropertiesMode, ExecutionPlan, ReplaceChildrenOptions,
     },
     prelude::SessionContext,
 };
@@ -2294,7 +2295,7 @@ impl PhysicalPlanner {
                 ))
             }
             OpStruct::HashJoin(join) => {
-                let (join_params, scans, shuffle_scans) = self.parse_join_parameters(
+                let (mut join_params, scans, shuffle_scans) = self.parse_join_parameters(
                     inputs,
                     children,
                     &join.left_join_keys,
@@ -2303,6 +2304,17 @@ impl PhysicalPlanner {
                     &join.condition,
                     partition_count,
                 )?;
+
+                // Reader attachment replaces the probe filter's child per execution.
+                // Keep its metrics owned by the same Spark filter node.
+                if join.dynamic_filter_enabled && !join.null_aware_anti_join {
+                    let probe = if join.build_side == BuildSide::BuildLeft as i32 {
+                        &mut join_params.right
+                    } else {
+                        &mut join_params.left
+                    };
+                    *probe = Self::prepare_probe_filter_for_runtime_reader(Arc::clone(probe));
+                }
 
                 let left = Arc::clone(&join_params.left.native_plan);
                 let right = Arc::clone(&join_params.right.native_plan);
@@ -2337,6 +2349,11 @@ impl PhysicalPlanner {
                 // (which matches DataFusion's default), and swap_inputs would turn LeftAnti
                 // into RightAnti, which DataFusion rejects with null_aware=true.
                 if join.build_side == BuildSide::BuildLeft as i32 || join.null_aware_anti_join {
+                    let hash_join = Self::apply_join_dynamic_filter(
+                        hash_join,
+                        join.dynamic_filter_enabled && !join.null_aware_anti_join,
+                        self.session_ctx.copied_config().options(),
+                    )?;
                     Ok((
                         scans,
                         shuffle_scans,
@@ -2349,6 +2366,11 @@ impl PhysicalPlanner {
                 } else {
                     let swapped_hash_join =
                         hash_join.as_ref().swap_inputs(PartitionMode::Partitioned)?;
+                    let swapped_hash_join = Self::apply_join_dynamic_filter(
+                        swapped_hash_join,
+                        join.dynamic_filter_enabled,
+                        self.session_ctx.copied_config().options(),
+                    )?;
 
                     let mut additional_native_plans = vec![];
                     if swapped_hash_join.is::<ProjectionExec>() {
@@ -2600,6 +2622,51 @@ impl PhysicalPlanner {
                 "Unsupported or unregistered operator type: {:?}",
                 spark_plan.op_struct
             ))),
+        }
+    }
+
+    /// Keep the Spark filter's metric identity when its reader is replaced for an execution.
+    fn prepare_probe_filter_for_runtime_reader(plan: Arc<SparkPlan>) -> Arc<SparkPlan> {
+        let Some(filter) = plan.native_plan.downcast_ref::<FilterExec>() else {
+            return plan;
+        };
+        let mut prepared = plan.as_ref().clone();
+        prepared.native_plan = Arc::new(CometFilterExec::from_datafusion(filter.clone()));
+        Arc::new(prepared)
+    }
+
+    /// Attach after choosing the final build side, including the projection emitted
+    /// by `swap_inputs`, without running DataFusion's physical optimizer.
+    pub(crate) fn apply_join_dynamic_filter(
+        plan: Arc<dyn ExecutionPlan>,
+        enabled: bool,
+        config: &ConfigOptions,
+    ) -> Result<Arc<dyn ExecutionPlan>, ExecutionError> {
+        if !enabled {
+            return Ok(plan);
+        }
+        if let Some(projection) = plan.downcast_ref::<ProjectionExec>() {
+            let child =
+                Self::apply_join_dynamic_filter(Arc::clone(projection.input()), enabled, config)?;
+            return if !Arc::ptr_eq(&child, projection.input()) {
+                Ok(plan.replace_children(
+                    vec![child],
+                    ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+                )?)
+            } else {
+                Ok(plan)
+            };
+        }
+        let Some(join) = plan.downcast_ref::<HashJoinExec>() else {
+            log::debug!(
+                "Join dynamic filter skipped: unexpected plan shape {}",
+                plan.name()
+            );
+            return Ok(plan);
+        };
+        match DynamicFilterJoinExec::try_new(join, config)? {
+            Some(wrapper) => Ok(Arc::new(wrapper)),
+            None => Ok(plan),
         }
     }
 
@@ -6061,6 +6128,7 @@ mod tests {
                 condition: None,
                 build_side: 0,
                 null_aware_anti_join: false,
+                dynamic_filter_enabled: false,
             })),
         };
 
@@ -6073,6 +6141,89 @@ mod tests {
         assert_eq!(2, hash_join_exec.children.len());
         assert_eq!("ScanExec", hash_join_exec.children[0].native_plan.name());
         assert_eq!("ScanExec", hash_join_exec.children[1].native_plan.name());
+    }
+
+    #[tokio::test]
+    async fn spark_plan_dynamic_filter_preserves_metrics() {
+        use crate::execution::metrics::utils::to_native_metric_node;
+
+        for build_side in [
+            spark_operator::BuildSide::BuildLeft,
+            spark_operator::BuildSide::BuildRight,
+        ] {
+            for enabled in [false, true] {
+                let session = Arc::new(SessionContext::new());
+                let planner = PhysicalPlanner::new(Arc::clone(&session), 0);
+                let operator = Operator {
+                    children: vec![create_scan(), create_scan()],
+                    op_struct: Some(OpStruct::HashJoin(spark_operator::HashJoin {
+                        left_join_keys: vec![create_bound_reference(0)],
+                        right_join_keys: vec![create_bound_reference(0)],
+                        join_type: spark_operator::JoinType::Inner as i32,
+                        build_side: build_side as i32,
+                        dynamic_filter_enabled: enabled,
+                        ..Default::default()
+                    })),
+                    ..Default::default()
+                };
+                let (mut scans, _, planned) =
+                    planner.create_plan(&operator, &mut vec![], 1).unwrap();
+                let build = vec![10, 20, 20, 90];
+                let probe = (0..100).collect::<Vec<_>>();
+                let inputs = if build_side == spark_operator::BuildSide::BuildLeft {
+                    [build, probe]
+                } else {
+                    [probe, build]
+                };
+                let mut inputs = inputs.map(|values| {
+                    values
+                        .chunks(2)
+                        .map(|chunk| {
+                            InputBatch::Batch(
+                                vec![Arc::new(Int32Array::from(chunk.to_vec())) as ArrayRef],
+                                chunk.len(),
+                            )
+                        })
+                        .chain(std::iter::once(InputBatch::EOF))
+                        .collect::<Vec<_>>()
+                        .into_iter()
+                });
+                let mut stream = planned.native_plan.execute(0, session.task_ctx()).unwrap();
+                let mut output_rows = 0;
+                while let Some(batch) = futures::future::poll_fn(|cx| {
+                    let result = stream.poll_next_unpin(cx);
+                    if result.is_pending() {
+                        for (scan, input) in scans.iter_mut().zip(inputs.iter_mut()) {
+                            if scan.batch.try_lock().unwrap().is_none() {
+                                if let Some(batch) = input.next() {
+                                    scan.set_input_batch(batch);
+                                    cx.waker().wake_by_ref();
+                                }
+                            }
+                        }
+                    }
+                    result
+                })
+                .await
+                {
+                    output_rows += batch.unwrap().num_rows();
+                }
+                assert_eq!(output_rows, 4);
+                let metrics = to_native_metric_node(&planned).unwrap();
+                assert_eq!(metrics.children.len(), 2);
+                assert_eq!(metrics.metrics["output_rows"], 4);
+                assert_eq!(metrics.metrics["build_input_rows"], 4);
+                if enabled {
+                    assert_eq!(metrics.metrics["input_rows"], 3);
+                    assert_eq!(metrics.metrics["dynamic_filter_rows_evaluated"], 100);
+                    assert_eq!(metrics.metrics["dynamic_filter_rows_pruned"], 97);
+                    assert_eq!(metrics.metrics["dynamic_filter_rows_bypassed"], 0);
+                } else {
+                    assert_eq!(metrics.metrics["input_rows"], 100);
+                    assert!(!metrics.metrics.contains_key("dynamic_filter_rows_pruned"));
+                }
+            }
+        }
     }
 
     #[test]
