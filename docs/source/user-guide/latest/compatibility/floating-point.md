@@ -46,3 +46,14 @@ ordering. Nested keys can therefore produce different ordering or rank results f
 The existing `spark.comet.exec.strictFloatingPoint=true` fallback policy is unchanged, including
 its conservative fallback for scalar floating-point sort keys. Narrowing that scalar-sort
 admission policy is tracked in [#5506](https://github.com/apache/datafusion-comet/issues/5506).
+
+## Array distinct and union
+
+`array_distinct` and `array_union` fall back to Spark when their element type contains
+`FLOAT` or `DOUBLE` and the running Spark version predates SPARK-54918. Native execution
+is enabled for Spark 4.0.5+, 4.1.4+, and 4.2+, which normalize signed zeros in these
+functions. Spark 3.4 and 3.5 retain the fallback. Other element types remain native.
+
+Setting `spark.comet.expression.ArrayDistinct.allowIncompatible=true` or
+`spark.comet.expression.ArrayUnion.allowIncompatible=true` opts into native execution on
+older versions, where positive and negative zero may be deduplicated differently from Spark.

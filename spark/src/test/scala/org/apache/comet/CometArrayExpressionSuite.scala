@@ -23,20 +23,77 @@ import scala.util.Random
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.CometTestBase
-import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayExcept, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayRepeat}
+import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayDistinct, ArrayExcept, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayRepeat, ArrayUnion}
 import org.apache.spark.sql.catalyst.expressions.{ArrayContains, ArrayRemove}
 import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Cast, CreateArray, ElementAt, Literal, MonotonicallyIncreasingID}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ArrayType, StringType}
+import org.apache.spark.sql.types.{ArrayType, DoubleType, FloatType, IntegerType, StringType, StructType}
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
 import org.apache.comet.DataTypeSupport.isComplexType
-import org.apache.comet.serde.{CometArrayExcept, CometArrayJoin, CometArrayRemove, CometArrayReverse, CometFlatten, Compatible, ExprOuterClass, Incompatible}
+import org.apache.comet.serde.{ArraySetSupport, CometArrayDistinct, CometArrayExcept, CometArrayJoin, CometArrayRemove, CometArrayReverse, CometArrayUnion, CometFlatten, Compatible, ExprOuterClass, Incompatible}
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator, SchemaGenOptions}
 
 class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
+
+  test("array set signed-zero Spark patch versions") {
+    Seq("3.4.9", "3.5.10", "4.0.4", "4.1.3").foreach { version =>
+      assert(!ArraySetSupport.normalizesSignedZero(version), version)
+    }
+    Seq("4.0.5", "4.0.10", "4.1.4", "4.1.10", "4.2.0", "4.2.0-SNAPSHOT", "5.0.0")
+      .foreach { version =>
+        assert(ArraySetSupport.normalizesSignedZero(version), version)
+      }
+  }
+
+  test("array set signed-zero support levels") {
+    val fixed = ArraySetSupport.normalizesSignedZero(org.apache.spark.SPARK_VERSION)
+    Seq(FloatType, DoubleType, ArrayType(FloatType), new StructType().add("x", DoubleType))
+      .foreach { elementType =>
+        val child = AttributeReference("a", ArrayType(elementType))()
+        val expected =
+          if (fixed) Compatible() else Incompatible(Some(ArraySetSupport.signedZeroReason))
+        assert(CometArrayDistinct.getSupportLevel(ArrayDistinct(child)) == expected)
+        assert(CometArrayUnion.getSupportLevel(ArrayUnion(child, child)) == expected)
+      }
+    Seq(IntegerType, StringType, ArrayType(IntegerType)).foreach { elementType =>
+      val child = AttributeReference("a", ArrayType(elementType))()
+      assert(CometArrayDistinct.getSupportLevel(ArrayDistinct(child)) == Compatible())
+      assert(CometArrayUnion.getSupportLevel(ArrayUnion(child, child)) == Compatible())
+    }
+  }
+
+  test("array set signed-zero fallback and native opt-in") {
+    withSQLConf(
+      SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+        "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
+      Seq("float", "double").foreach { dataType =>
+        Seq(
+          "array_distinct" -> s"array($dataType('0.0'), $dataType('-0.0'))",
+          "array_union" -> s"array($dataType('0.0')), array($dataType('-0.0'))")
+          .foreach { case (function, arguments) =>
+            val query = s"SELECT $function($arguments)"
+            if (ArraySetSupport.normalizesSignedZero(org.apache.spark.SPARK_VERSION)) {
+              checkSparkAnswerAndOperator(query)
+            } else {
+              checkSparkAnswerAndFallbackReason(query, "SPARK-54918")
+            }
+          }
+      }
+      Seq(classOf[ArrayDistinct], classOf[ArrayUnion]).foreach { exprClass =>
+        withSQLConf(CometConf.getExprAllowIncompatConfigKey(exprClass) -> "true") {
+          val query = if (exprClass == classOf[ArrayDistinct]) {
+            "SELECT array_distinct(array(double('1.0'), double('1.0')))"
+          } else {
+            "SELECT array_union(array(double('1.0')), array(double('1.0')))"
+          }
+          checkSparkAnswerAndOperator(query)
+        }
+      }
+    }
+  }
 
   test("array_remove - integer") {
     withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[ArrayRemove]) -> "true") {

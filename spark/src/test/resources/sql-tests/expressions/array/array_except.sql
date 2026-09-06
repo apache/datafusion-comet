@@ -72,10 +72,10 @@ INSERT INTO test_except_float VALUES
 query
 SELECT a, b, array_except(a, b) FROM test_except_float
 
--- negative zero (column-sourced). Spark keeps -0.0 distinct from 0.0 while Comet
--- (DataFusion) collapses them, so array_except([0.0, -0.0, 1.0], [0.0]) is [-0.0, 1.0]
--- in Spark but [1.0] in Comet. NormalizeFloatingNumbers only rewrites literals, not
--- parquet columns. Skip until Spark normalizes these zeros (Spark 4.2+, SPARK-54918).
+statement
+SET spark.comet.expression.ArrayExcept.allowIncompatible=false
+
+-- Signed zeros exercise the default Spark-compatible dispatch.
 statement
 CREATE TABLE test_except_dbl_negzero(a array<double>, b array<double>) USING parquet
 
@@ -84,7 +84,7 @@ INSERT INTO test_except_dbl_negzero VALUES
   (array(0.0, double('-0.0'), 1.0), array(0.0)),
   (array(0.0, 1.0), array(double('-0.0')))
 
-query ignore(https://issues.apache.org/jira/browse/SPARK-54918)
+query spark_answer_only
 SELECT a, b, array_except(a, b) FROM test_except_dbl_negzero
 
 statement
@@ -94,5 +94,5 @@ statement
 INSERT INTO test_except_flt_negzero VALUES
   (array(cast(0.0 as float), float('-0.0'), cast(1.0 as float)), array(cast(0.0 as float)))
 
-query ignore(https://issues.apache.org/jira/browse/SPARK-54918)
+query spark_answer_only
 SELECT a, b, array_except(a, b) FROM test_except_flt_negzero

@@ -22,8 +22,10 @@ package org.apache.comet.serde
 import scala.annotation.tailrec
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.sql.catalyst.expressions.{And, ArrayAggregate, ArrayAppend, ArrayContains, ArrayExcept, ArrayExists, ArrayFilter, ArrayForAll, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayPosition, ArrayRemove, ArraySort, ArraysOverlap, ArraysZip, ArrayTransform, ArrayUnion, Attribute, BoundReference, Cast, CreateArray, ElementAt, EmptyRow, Expression, Flatten, GetArrayItem, IsNotNull, IsNull, LambdaFunction, Literal, NamedLambdaVariable, Reverse, Sequence, Size, Slice, SortArray, ZipWith}
+import org.apache.spark.SPARK_VERSION
+import org.apache.spark.sql.catalyst.expressions.{And, ArrayAggregate, ArrayAppend, ArrayContains, ArrayDistinct, ArrayExcept, ArrayExists, ArrayFilter, ArrayForAll, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayPosition, ArrayRemove, ArraySort, ArraysOverlap, ArraysZip, ArrayTransform, ArrayUnion, Attribute, BoundReference, Cast, CreateArray, ElementAt, EmptyRow, Expression, Flatten, GetArrayItem, IsNotNull, IsNull, LambdaFunction, Literal, NamedLambdaVariable, Reverse, Sequence, Size, Slice, SortArray, ZipWith}
 import org.apache.spark.sql.catalyst.util.GenericArrayData
+import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
@@ -516,7 +518,42 @@ object CometSlice extends CometExpressionSerde[Slice] {
   }
 }
 
+private[comet] object ArraySetSupport {
+  val signedZeroReason =
+    "Floating-point array elements require Spark with SPARK-54918 " +
+      "(4.0.5+, 4.1.4+, or 4.2+) for matching signed-zero semantics"
+
+  def normalizesSignedZero(version: String): Boolean = {
+    Utils.majorMinorPatchVersion(version).exists {
+      case (4, 0, patch) => patch >= 5
+      case (4, 1, patch) => patch >= 4
+      case (major, minor, _) => major > 4 || (major == 4 && minor >= 2)
+    }
+  }
+
+  def supportLevel(dataType: DataType): SupportLevel = {
+    if (SupportLevel.containsType(dataType, classOf[FloatType], classOf[DoubleType]) &&
+      !normalizesSignedZero(SPARK_VERSION)) {
+      Incompatible(Some(signedZeroReason))
+    } else {
+      Compatible()
+    }
+  }
+}
+
+object CometArrayDistinct extends CometScalarFunction[ArrayDistinct]("array_distinct") {
+  override def getIncompatibleReasons(): Seq[String] = Seq(ArraySetSupport.signedZeroReason)
+
+  override def getSupportLevel(expr: ArrayDistinct): SupportLevel =
+    ArraySetSupport.supportLevel(expr.dataType)
+}
+
 object CometArrayUnion extends CometExpressionSerde[ArrayUnion] {
+  override def getIncompatibleReasons(): Seq[String] = Seq(ArraySetSupport.signedZeroReason)
+
+  override def getSupportLevel(expr: ArrayUnion): SupportLevel =
+    ArraySetSupport.supportLevel(expr.dataType)
+
   override def convert(
       expr: ArrayUnion,
       inputs: Seq[Attribute],
