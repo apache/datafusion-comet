@@ -124,6 +124,15 @@ const NULL: &str = "null";
 /// The value half of one `name=value` partition-path pair, as iceberg-java's
 /// `Transform#toHumanString(Type, T)` renders it.
 ///
+/// "as iceberg-java renders it" means iceberg-java 1.8 or later, which is what Comet targets on
+/// every profile. Iceberg 1.5.x -- still the pinned runtime for the Spark 3.4 profile -- rendered
+/// `timestamp` and `timestamptz` with `LocalDateTime.toString()` and `OffsetDateTime.toString()`
+/// instead of the `DateTimeUtil.microsToIsoTimestamp[tz]` formatters 1.8 switched to, so it spells
+/// the same instant `1969-12-31T23:59:58.500Z` rather than `1969-12-31T23:59:58.5+00:00`. (1.5.x
+/// also left the field *name* unescaped, which no Comet version has reproduced either.) Every other
+/// type renders identically from 1.5 through 1.11, and the partition values themselves are
+/// unaffected -- only the directory name, which nothing parses.
+///
 /// Delegates to iceberg-rust's `Transform::to_human_string` and overrides only the arms where the
 /// two disagree:
 ///

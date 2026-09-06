@@ -1040,6 +1040,14 @@ class CometIcebergWriteActionSuite
   // `microseconds_to_datetimetz` casts a negative remainder to `u32`
   // (apache/datafusion-comet#5694) -- and the second as uppercase hex. Comet renders the path
   // itself; this pins the result against the layout iceberg-java's own writer produces.
+  //
+  // The byte-for-byte comparison against the JVM writer holds on Iceberg 1.8+ only. Iceberg 1.5.x
+  // (the Spark 3.4 profile) rendered a `timestamptz` partition value with
+  // `ChronoUnit.MICROS.addTo(EPOCH, micros).toString()`, i.e. `OffsetDateTime.toString()`, which
+  // spells the same instant `1969-12-31T23:59:58.500Z` rather than `1969-12-31T23:59:58.5+00:00`;
+  // 1.8 switched it to `microsToIsoTimestamptz` (and started escaping the field name too). Comet
+  // targets the 1.8+ spelling on every profile. The values Comet writes are the same either way,
+  // so the pinned expectations and the readback below stay unconditional.
   test("native acceleration: timestamptz and binary partition paths match iceberg-java") {
     assumeNativeAcceleration()
     withIcebergCatalog { warehouseDir =>
@@ -1066,7 +1074,9 @@ class CometIcebergWriteActionSuite
         spark.sql(s"INSERT INTO $catalog.$ns.ts_path_jvm VALUES $values")
 
         val nativeDirs = partitionDirs(warehouseDir, "ts_path_native")
-        assert(nativeDirs == partitionDirs(warehouseDir, "ts_path_jvm"), s"native: $nativeDirs")
+        if (icebergVersionAtLeast(1, 8)) {
+          assert(nativeDirs == partitionDirs(warehouseDir, "ts_path_jvm"), s"native: $nativeDirs")
+        }
         assert(
           nativeDirs.contains("ts=1969-12-31T23%3A59%3A58.5%2B00%3A00/bin=AAH%2F"),
           s"native: $nativeDirs")
@@ -1100,12 +1110,40 @@ class CometIcebergWriteActionSuite
   // "every field is void", not "no fields". The next write therefore runs through the
   // unpartitioned writer -- which stamps an empty partition struct -- against a spec whose fields
   // are non-empty, and iceberg-rust's `ManifestWriter` used to `zip_eq` the two and panic across
-  // the JNI boundary (apache/datafusion-comet#5691). Dropping the source column afterwards then
-  // broke the manifest's `partition_type` resolution as well (apache/datafusion-comet#5693).
+  // the JNI boundary (apache/datafusion-comet#5691).
   test("native acceleration: writes after a V1 partition field is dropped match iceberg-java") {
     assumeNativeAcceleration()
+    assertDroppedPartitionFieldParity("evolved", dropSourceColumn = false)
+  }
+
+  // Dropping the `void` field's source column afterwards broke the transport manifest's
+  // `partition_type` resolution too (apache/datafusion-comet#5693). Only Iceberg 1.11+ can commit
+  // this at all, on either path: `PartitionSpec.partitionType` NPEs on the missing source before
+  // 1.10, and `PartitionSpec.javaClasses` still does on 1.10 (`getResultType(null)` returns null).
+  // 1.11 substitutes `UnknownType` in both. The driver-side commit is shared with the stock path,
+  // so normalising the native manifest cannot rescue the older runtimes.
+  test(
+    "native acceleration: writes after a V1 partition source column is dropped match " +
+      "iceberg-java") {
+    assumeNativeAcceleration()
+    assume(
+      icebergVersionAtLeast(1, 11),
+      "Iceberg < 1.11 cannot commit a dropped partition source")
+    assertDroppedPartitionFieldParity("evolved_dropped", dropSourceColumn = true)
+  }
+
+  /**
+   * Walks the format-version-1 partition-spec evolution from #5691 twice -- once through the
+   * native writer, once through iceberg-java's -- and compares the results. `dropSourceColumn`
+   * extends the walk with the #5693 stage, which drops the `void` field's source column before
+   * writing again.
+   */
+  private def assertDroppedPartitionFieldParity(
+      prefix: String,
+      dropSourceColumn: Boolean): Unit = {
+    val (nativeTable, jvmTable) = (s"${prefix}_native", s"${prefix}_jvm")
     withIcebergCatalog { _ =>
-      Seq("evolved_native", "evolved_jvm").foreach { table =>
+      Seq(nativeTable, jvmTable).foreach { table =>
         spark.sql(s"""
           CREATE TABLE $catalog.$ns.$table (id INT, region STRING)
           USING iceberg TBLPROPERTIES ('format-version'='1')
@@ -1119,35 +1157,38 @@ class CometIcebergWriteActionSuite
         spark.sql(s"ALTER TABLE $catalog.$ns.$table DROP PARTITION FIELD region_part")
         // The spec is now void-only: the #5691 shape.
         write("(3, 'ap')", Seq(1, 2, 3))
-        spark.sql(s"ALTER TABLE $catalog.$ns.$table DROP COLUMN region")
-        // The void field's source column is gone: the #5693 shape.
-        write("(4)", Seq(1, 2, 3, 4))
+        if (dropSourceColumn) {
+          spark.sql(s"ALTER TABLE $catalog.$ns.$table DROP COLUMN region")
+          write("(4)", Seq(1, 2, 3, 4))
+        }
       }
 
       evolve(
-        "evolved_native",
+        nativeTable,
         (row, expectedIds) =>
-          assertNativeWriteEngages("evolved_native", expectedIds) {
-            spark.sql(s"INSERT INTO $catalog.$ns.evolved_native VALUES $row")
+          assertNativeWriteEngages(nativeTable, expectedIds) {
+            spark.sql(s"INSERT INTO $catalog.$ns.$nativeTable VALUES $row")
           })
-      evolve(
-        "evolved_jvm",
-        (row, _) => spark.sql(s"INSERT INTO $catalog.$ns.evolved_jvm VALUES $row"))
+      evolve(jvmTable, (row, _) => spark.sql(s"INSERT INTO $catalog.$ns.$jvmTable VALUES $row"))
 
       def rows(table: String): Seq[Row] =
         spark.sql(s"SELECT * FROM $catalog.$ns.$table ORDER BY id").collect().toSeq
-      assert(rows("evolved_native") == Seq(Row(1), Row(2), Row(3), Row(4)))
-      assert(rows("evolved_native") == rows("evolved_jvm"))
+      val expected =
+        if (dropSourceColumn) Seq(Row(1), Row(2), Row(3), Row(4))
+        else Seq(Row(1, "us"), Row(2, "eu"), Row(3, "ap"))
+      assert(rows(nativeTable) == expected, s"native: ${rows(nativeTable)}")
+      assert(rows(nativeTable) == rows(jvmTable))
 
       // The committed manifests carry the same partition summaries the JVM writer produced.
       def partitionSummaries(table: String): Seq[Row] = spark
-        .sql(s"SELECT partition_spec_id, partition_summaries FROM $catalog.$ns.$table.manifests" +
-          " ORDER BY partition_spec_id")
+        .sql(
+          s"SELECT partition_spec_id, partition_summaries FROM $catalog.$ns.$table.manifests" +
+            " ORDER BY partition_spec_id")
         .collect()
         .toSeq
       assert(
-        partitionSummaries("evolved_native") == partitionSummaries("evolved_jvm"),
-        s"native: ${partitionSummaries("evolved_native")}")
+        partitionSummaries(nativeTable) == partitionSummaries(jvmTable),
+        s"native: ${partitionSummaries(nativeTable)}")
     }
   }
 

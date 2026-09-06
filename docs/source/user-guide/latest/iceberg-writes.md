@@ -251,12 +251,15 @@ a data file but not what any reader computes from it:
   differences (iceberg-java checks the target file size every 1000 rows and names files
   `<partition>-<task>-<operation>-<count>`; iceberg-rust checks per batch and uses a
   process-local counter).
-- Partition directory names match iceberg-java's `PartitionSpec.partitionToPath` for every
+- Partition directory names match iceberg-java 1.8+'s `PartitionSpec.partitionToPath` for every
   partition type except `float` and `double`, where the value is rendered with Rust's shortest
   representation instead of `Float.toString` / `Double.toString` (`f=1` where iceberg-java writes
-  `f=1.0`). Distinct partition values still get distinct directories, and no reader parses these
-  names — files are resolved through committed manifests. Iceberg deprecated float and double
-  partitioning in 1.3.
+  `f=1.0`). On Iceberg 1.5.x, which the Spark 3.4 profile pins, iceberg-java itself spelled
+  `timestamp` and `timestamptz` directories with `LocalDateTime.toString()` /
+  `OffsetDateTime.toString()` (`ts=1969-12-31T23:59:58.500Z`) and left the partition field name
+  unescaped; Comet uses the 1.8+ spelling on every profile. Distinct partition values still get
+  distinct directories in all cases, and no reader parses these names — files are resolved through
+  committed manifests. Iceberg deprecated float and double partitioning in 1.3.
 - Compressed page bytes are implementation-defined: the codec and any explicit level are
   translated, but parquet-rs and parquet-mr embed different encoder implementations and
   defaults (zstd default levels, LZ4 framing), so byte-identical output is not achievable even
