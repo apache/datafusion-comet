@@ -56,6 +56,7 @@ object IcebergReflection extends Logging {
     val SPARK_BATCH_QUERY_SCAN = "org.apache.iceberg.spark.source.SparkBatchQueryScan"
     val SPARK_STAGED_SCAN = "org.apache.iceberg.spark.source.SparkStagedScan"
     val SPARK_SCHEMA_UTIL = "org.apache.iceberg.spark.SparkSchemaUtil"
+    val PARQUET_SCHEMA_UTIL = "org.apache.iceberg.parquet.ParquetSchemaUtil"
     val TABLE = "org.apache.iceberg.Table"
     val PARTITIONING = "org.apache.iceberg.Partitioning"
     val SPARK_WRITE = "org.apache.iceberg.spark.source.SparkWrite"
@@ -576,6 +577,52 @@ object IcebergReflection extends Logging {
     } catch {
       case e: Exception =>
         logError(s"Iceberg reflection failure: Failed to get schema from table: ${e.getMessage}")
+        None
+    }
+  }
+
+  // scalastyle:off line.size.limit
+  /**
+   * Maps Iceberg's logical primitive-column names to their physical Parquet leaf paths.
+   *
+   * This mirrors the map Iceberg Java builds before applying per-column writer settings. In
+   * particular, Parquet's canonical three-level encodings insert `list` for array elements and
+   * `key_value` for map keys/values, so logical names such as `tags.element` and `attrs.value`
+   * cannot be passed directly to Parquet writer properties.
+   *
+   * See:
+   * https://github.com/apache/iceberg/blob/apache-iceberg-1.11.0/parquet/src/main/java/org/apache/iceberg/parquet/Parquet.java#L411-L421
+   */
+  // scalastyle:on line.size.limit
+  def getParquetPathByIcebergColumnName(schema: Any): Option[Map[String, String]] = {
+    import scala.jdk.CollectionConverters._
+    try {
+      val parquetSchemaUtil = loadClass(ClassNames.PARQUET_SCHEMA_UTIL)
+      val parquetSchema = parquetSchemaUtil
+        .getMethod("convert", loadClass(ClassNames.SCHEMA), classOf[String])
+        .invoke(null, schema.asInstanceOf[AnyRef], "table")
+      val columns = getMethod(parquetSchema.getClass, "getColumns")
+        .invoke(parquetSchema)
+        .asInstanceOf[java.util.List[AnyRef]]
+      val findColumnName = getMethod(schema.getClass, "findColumnName", classOf[Int])
+
+      Some(columns.asScala.flatMap { column =>
+        val primitiveType = getMethod(column.getClass, "getPrimitiveType").invoke(column)
+        val parquetId = getMethod(primitiveType.getClass, "getId").invoke(primitiveType)
+        Option(parquetId).flatMap { id =>
+          val fieldId = getMethod(id.getClass, "intValue").invoke(id).asInstanceOf[Int]
+          Option(findColumnName.invoke(schema, Int.box(fieldId))).map { icebergName =>
+            val parquetPath = getMethod(column.getClass, "getPath")
+              .invoke(column)
+              .asInstanceOf[Array[String]]
+              .mkString(".")
+            icebergName.asInstanceOf[String] -> parquetPath
+          }
+        }
+      }.toMap)
+    } catch {
+      case e: Exception =>
+        logError(s"Iceberg reflection failure: Parquet column paths: ${e.getMessage}")
         None
     }
   }
@@ -1288,6 +1335,12 @@ object IcebergReflection extends Logging {
 
   def tablePropertyIntConstant(fieldName: String): Int =
     readTablePropertiesField(fieldName).asInstanceOf[Integer].intValue()
+
+  def tablePropertyDoubleConstantOpt(fieldName: String): Option[Double] =
+    tablePropertiesClassOpt.flatMap { cls =>
+      try Some(cls.getField(fieldName).get(null).asInstanceOf[java.lang.Double].doubleValue())
+      catch { case _: NoSuchFieldException => None }
+    }
 
   /**
    * Like [[tablePropertyConstant]] but returns `None` when the constant is absent in the Iceberg
