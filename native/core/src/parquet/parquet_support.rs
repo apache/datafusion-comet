@@ -239,7 +239,7 @@ fn parquet_convert_array_impl(
             // https://github.com/apache/spark/blob/v4.2.0/sql/api/src/main/scala/org/apache/spark/sql/catalyst/util/SparkDateTimeUtils.scala#L103-L108
             //
             // Filtered scans retain safe conversion until DataFusion can mirror Spark's
-            // pruning paths, including nested predicates (issue #5553).
+            // pruning paths, including nested predicates.
             let millis = array.as_primitive::<TimestampMillisecondType>();
             // Ignore values hidden by null ancestors or by sliced list/map offsets.
             // Restore the original child validity: required fields must remain non-null.
