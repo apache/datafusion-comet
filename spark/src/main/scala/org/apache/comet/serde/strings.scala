@@ -120,14 +120,24 @@ object CometStringTranslate extends CometScalarFunction[StringTranslate]("transl
     Some(incompatReason))
 }
 
-object CometLevenshtein extends CometExpressionSerde[Levenshtein] {
+/**
+ * The native `levenshtein` kernel compares raw bytes, so a non-UTF8_BINARY collation is reported
+ * as `Unsupported` and `CodegenDispatchFallback` routes it through the JVM codegen dispatcher
+ * instead of failing the projection back to Spark. Dispatching is not only the compatible answer
+ * here, it is also the faster one: over 1M rows a collated `levenshtein` measured 341ms
+ * dispatched against 378ms for Spark. See https://github.com/apache/datafusion-comet/issues/5591.
+ */
+object CometLevenshtein extends CometExpressionSerde[Levenshtein] with CodegenDispatchFallback {
 
-  override def getUnsupportedReasons(): Seq[String] = Seq(
-    "Non-default collation (non-UTF8_BINARY) is not supported")
+  private val collationReason =
+    "Non-default (non-UTF8_BINARY) collated input. The native kernel compares raw bytes, so " +
+      "collation-aware comparison has no native path."
+
+  override def getUnsupportedReasons(): Seq[String] = Seq(collationReason)
 
   override def getSupportLevel(expr: Levenshtein): SupportLevel =
     if (expr.children.exists(child => QueryPlanSerde.isStringCollationType(child.dataType))) {
-      Unsupported(Some("Levenshtein with non-default collation is not supported"))
+      Unsupported(Some(collationReason))
     } else {
       Compatible()
     }
