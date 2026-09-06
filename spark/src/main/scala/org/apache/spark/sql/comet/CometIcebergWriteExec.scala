@@ -31,6 +31,7 @@ import org.apache.spark.sql.execution.{SparkPlan, UnaryExecNode}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.types.BinaryType
 import org.apache.spark.sql.vectorized.ColumnarBatch
+import org.apache.spark.util.TaskFailureListener
 
 import com.google.protobuf.CodedOutputStream
 
@@ -171,10 +172,10 @@ case class CometIcebergWriteExec(
       .getOrElse(
         throw new IllegalStateException(s"Native Iceberg write: no sort order id=$sortOrderId"))
     columnarRdd.mapPartitionsInternal { batches =>
-      // Per-task: drain the native output (single-row Binary column carrying one V2 data
-      // manifest), decode it via Iceberg's `ManifestFiles.read` to recover `DataFile`s, rebuild
-      // each file's metrics into the ones iceberg-java's own writer would have committed
-      // (re-derived from the written parquet footer through the version-matched
+      // Per-task: drain the native output (one row carrying one V2 data manifest and the locations
+      // the task wrote), decode the manifest via Iceberg's `ManifestFiles.read` to recover
+      // `DataFile`s, rebuild each file's metrics into the ones iceberg-java's own writer would
+      // have committed (re-derived from the written parquet footer through the version-matched
       // `ParquetUtil.footerMetrics` + `MetricsConfig`, with float/double NaN counts and bounds
       // carried over from the rust writer) while re-applying the write's `SortOrder` (which
       // iceberg-rust doesn't stamp), wrap them in `SparkWrite$TaskCommit` via reflection
@@ -182,7 +183,17 @@ case class CometIcebergWriteExec(
       // `IcebergCommitExec` consumes it identically to the JVM-path output. Empty manifests
       // (zero data files written) are still committed; the surrounding
       // `BatchWrite.commit(messages)` handles the no-op case correctly.
-      val manifestBytes = drainAvroPayload(batches)
+      //
+      // Cleanup ownership crosses the native boundary here. The listener is registered before the
+      // native payload is pulled and starts with nothing to delete; `drainNativePayload` hands it
+      // the written-file locations off the payload's locations column, which the native side fills
+      // in for exactly this purpose, before anything expensive runs. From that point a failure in
+      // the manifest decode, the metrics rebuild, `TaskCommit` construction, or serialization
+      // deletes the files the way iceberg-java's `DataWriter.abort()` would; failures inside the
+      // native writer, or before its output reaches us, are cleaned up on the native side.
+      val cleanup = new CometIcebergWriteExec.WrittenFileCleanup(tableIO)
+      Option(TaskContext.get()).foreach(_.addTaskFailureListener(cleanup))
+      val manifestBytes = drainNativePayload(batches, cleanup)
       val proj = UnsafeProjection.create(schemaTypes)
       val decoded =
         if (manifestBytes.isEmpty) new java.util.ArrayList[AnyRef]()
@@ -223,8 +234,9 @@ case class CometIcebergWriteExec(
     }
 
     val numPartitions = childRDD.getNumPartitions
-    // Native side emits a single Binary column carrying the per-task Avro `DataFile` blob.
-    val numOutputCols = 1
+    // Native side emits the per-task Avro `DataFile` blob and the locations it wrote, one Binary
+    // column each (see `build_output_schema` in `iceberg_write.rs`).
+    val numOutputCols = 2
     val capturedNativeOp = nativeOp
 
     childRDD.mapPartitionsInternal { iter =>
@@ -273,10 +285,16 @@ case class CometIcebergWriteExec(
 
   /**
    * Drain a partition's columnar output. `iceberg_write.rs` always emits exactly one batch with
-   * one `BINARY` row carrying the per-task V2 data manifest (possibly empty bytes when no data
-   * files were written). The asserts guard against a future native-side change.
+   * one row: a `BINARY` per-task V2 data manifest (possibly empty bytes when no data files were
+   * written) and a `BINARY` framing of the locations the task's writers were handed. The asserts
+   * guard against a future native-side change.
+   *
+   * `cleanup` takes ownership of those locations before the manifest bytes are copied out of the
+   * off-heap batch, so neither that copy nor anything after it can orphan the written files.
    */
-  private def drainAvroPayload(batches: Iterator[ColumnarBatch]): Array[Byte] = {
+  private def drainNativePayload(
+      batches: Iterator[ColumnarBatch],
+      cleanup: CometIcebergWriteExec.WrittenFileCleanup): Array[Byte] = {
     require(batches.hasNext, "iceberg_write produced no output batch for this task")
     val batch = batches.next()
     val payload =
@@ -284,11 +302,78 @@ case class CometIcebergWriteExec(
         require(
           batch.numRows() == 1,
           s"iceberg_write expected exactly 1 row per task, got ${batch.numRows()}")
+        require(
+          batch.numCols() == 2,
+          s"iceberg_write expected 2 output columns per task, got ${batch.numCols()}")
+        cleanup.own(CometIcebergWriteExec.decodeLocations(batch.column(1).getBinary(0)))
         batch.column(0).getBinary(0)
       } finally {
         batch.close()
       }
     require(!batches.hasNext, "iceberg_write produced more than one batch for this task")
     payload
+  }
+}
+
+object CometIcebergWriteExec {
+
+  /**
+   * Decode the `written_file_locations` column written by `encode_locations` in
+   * `iceberg_write.rs`: a big-endian `int` count, then a big-endian `int` byte length and the
+   * UTF-8 bytes for each location. Kept free of Iceberg and of the Avro decoder so cleanup
+   * ownership never depends on decoding the manifest that the task may have failed to decode.
+   *
+   * Strict about consuming the whole column: every native write decodes it, so a framing
+   * divergence between the two sides fails loudly here rather than silently handing cleanup a
+   * truncated list of the files to delete.
+   */
+  def decodeLocations(encoded: Array[Byte]): Seq[String] = {
+    if (encoded.isEmpty) return Nil
+    val buffer = java.nio.ByteBuffer.wrap(encoded)
+    val count = buffer.getInt
+    val locations = new Array[String](count)
+    var i = 0
+    while (i < count) {
+      val bytes = new Array[Byte](buffer.getInt)
+      buffer.get(bytes)
+      locations(i) = new String(bytes, java.nio.charset.StandardCharsets.UTF_8)
+      i += 1
+    }
+    require(
+      !buffer.hasRemaining,
+      s"iceberg_write locations column has ${buffer.remaining()} trailing byte(s) after " +
+        s"$count location(s)")
+    locations.toSeq
+  }
+
+  /**
+   * Deletes the data files a failed native Iceberg write task had already written, the
+   * counterpart of iceberg-java's `DataWriter.abort()` / `SparkCleanupUtil.deleteTaskFiles`.
+   *
+   * Registered before the task consumes the native output and left registered for the rest of the
+   * task: a task that fails at any point after the write never contributes a commit message, so
+   * every file it created is an orphan. It starts owning nothing and takes ownership of the
+   * locations the native writer reported as soon as they are read off the payload, which is why a
+   * failure in the manifest decode -- the step the locations would otherwise have to be recovered
+   * from -- is covered. Deletion is best-effort and never throws, so the failure Spark reports
+   * stays the real one.
+   *
+   * @param io
+   *   the table's `FileIO`, resolved on the driver and shipped in the task closure.
+   */
+  class WrittenFileCleanup(io: AnyRef) extends TaskFailureListener {
+    // Captured at construction (executor-side, inside the task) rather than read from the
+    // listener argument, so the log line is identical however the cleanup is triggered.
+    private val describeTask = Option(TaskContext.get())
+      .map(tc => s"failed Iceberg write task ${tc.partitionId()} (attempt ${tc.attemptNumber()})")
+      .getOrElse("failed Iceberg write task")
+
+    @volatile private var locations: Seq[String] = Nil
+
+    /** Take ownership of the locations the native writer reported. */
+    def own(written: Seq[String]): Unit = locations = written
+
+    override def onTaskFailure(context: TaskContext, error: Throwable): Unit =
+      IcebergReflection.deleteFilesQuietly(io, locations, describeTask)
   }
 }
