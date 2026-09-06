@@ -553,11 +553,11 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | --- | --- | --- | --- |
 | `ascii` | ✅ | Native |  |
 | `base64` | ✅ | Native |  |
-| `bit_length` | ✅ | Native |  |
+| `bit_length` | ✅ | Hybrid |  |
 | `btrim` | ✅ | — |  |
 | `char` | ✅ | Native |  |
-| `char_length` | ✅ | Native |  |
-| `character_length` | ✅ | Native |  |
+| `char_length` | ✅ | Hybrid |  |
+| `character_length` | ✅ | Hybrid |  |
 | `chr` | ✅ | Native |  |
 | `collate` | 🔜 | — | Spark collation (umbrella [#2190](https://github.com/apache/datafusion-comet/issues/2190)) |
 | `collation` | ✅ | — | Constant-folded to a literal (Spark 4.0+) |
@@ -574,8 +574,8 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `instr` | ✅ | Native |  |
 | `lcase` | ✅ | Hybrid |  |
 | `left` | ✅ | Native |  |
-| `len` | ✅ | Native |  |
-| `length` | ✅ | Native |  |
+| `len` | ✅ | Hybrid |  |
+| `length` | ✅ | Hybrid |  |
 | `levenshtein` | ✅ | Native |  |
 | `locate` | ✅ | Codegen dispatch |  |
 | `lower` | ✅ | Hybrid |  |
@@ -583,7 +583,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `ltrim` | ✅ | Native |  |
 | `luhn_check` | ✅ | — | Native via `StaticInvoke` (tests: luhn_check.sql) |
 | `mask` | ✅ | — | Routed through the JVM codegen dispatcher |
-| `octet_length` | ✅ | Native |  |
+| `octet_length` | ✅ | Hybrid |  |
 | `overlay` | ✅ | Codegen dispatch |  |
 | `position` | ✅ | Codegen dispatch |  |
 | `printf` | ✅ | Codegen dispatch |  |
