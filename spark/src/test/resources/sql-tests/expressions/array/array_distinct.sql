@@ -121,30 +121,26 @@ INSERT INTO test_array_distinct_double VALUES
   (array(CAST('NaN' AS DOUBLE), NULL, CAST('NaN' AS DOUBLE), NULL, 1.0)),
   (array(CAST('Infinity' AS DOUBLE), CAST('-Infinity' AS DOUBLE), CAST('Infinity' AS DOUBLE), 0.0))
 
-query
+query spark_answer_only
 SELECT array_distinct(arr) FROM test_array_distinct_double
 
 -- NaN deduplication
-query
+query spark_answer_only
 SELECT array_distinct(array(CAST('NaN' AS DOUBLE), CAST('NaN' AS DOUBLE), 1.0, 1.0))
 
 -- NaN with NULL
-query
+query spark_answer_only
 SELECT array_distinct(array(CAST('NaN' AS DOUBLE), NULL, CAST('NaN' AS DOUBLE), NULL, 1.0))
 
 -- Infinity
-query
+query spark_answer_only
 SELECT array_distinct(array(CAST('Infinity' AS DOUBLE), CAST('-Infinity' AS DOUBLE), CAST('Infinity' AS DOUBLE), 0.0))
 
--- negative zero (literal). Spark's NormalizeFloatingNumbers rewrites -0.0 to 0.0 at
--- analysis time, so both Spark and Comet collapse it and agree here.
-query ignore(https://issues.apache.org/jira/browse/SPARK-54918)
+-- Signed zeros use Spark fallback on versions without SPARK-54918.
+query spark_answer_only
 SELECT array_distinct(array(0.0, double('-0.0'), 1.0))
 
--- negative zero (column-sourced). NormalizeFloatingNumbers does not touch parquet
--- columns, so Spark keeps -0.0 distinct from 0.0 while Comet (DataFusion) collapses
--- them: array_distinct([0.0, -0.0, 1.0]) is [0.0, -0.0, 1.0] in Spark but [0.0, 1.0]
--- in Comet. Skip until Spark normalizes these zeros (Spark 4.2+, SPARK-54918).
+-- Signed zeros use Spark fallback on versions without SPARK-54918.
 statement
 CREATE TABLE test_array_distinct_dbl_negzero(arr array<double>) USING parquet
 
@@ -152,7 +148,7 @@ statement
 INSERT INTO test_array_distinct_dbl_negzero VALUES
   (array(0.0, double('-0.0'), 1.0))
 
-query ignore(https://issues.apache.org/jira/browse/SPARK-54918)
+query spark_answer_only
 SELECT array_distinct(arr) FROM test_array_distinct_dbl_negzero
 
 -- ===== FLOAT arrays =====
@@ -170,15 +166,14 @@ INSERT INTO test_array_distinct_float VALUES
   (array(CAST('NaN' AS FLOAT), NULL, CAST('NaN' AS FLOAT), NULL, CAST(1.0 AS FLOAT))),
   (array(CAST('Infinity' AS FLOAT), CAST('-Infinity' AS FLOAT), CAST('Infinity' AS FLOAT), CAST(0.0 AS FLOAT)))
 
-query
+query spark_answer_only
 SELECT array_distinct(arr) FROM test_array_distinct_float
 
 -- Float NaN deduplication
-query
+query spark_answer_only
 SELECT array_distinct(array(CAST('NaN' AS FLOAT), CAST('NaN' AS FLOAT), CAST(1.0 AS FLOAT)))
 
--- negative zero (column-sourced). Same divergence as the double case above, skipped
--- until Spark normalizes these zeros (Spark 4.2+, SPARK-54918).
+-- Signed zeros use Spark fallback on versions without SPARK-54918.
 statement
 CREATE TABLE test_array_distinct_flt_negzero(arr array<float>) USING parquet
 
@@ -186,7 +181,7 @@ statement
 INSERT INTO test_array_distinct_flt_negzero VALUES
   (array(CAST(0.0 AS FLOAT), float('-0.0'), CAST(1.0 AS FLOAT)))
 
-query ignore(https://issues.apache.org/jira/browse/SPARK-54918)
+query spark_answer_only
 SELECT array_distinct(arr) FROM test_array_distinct_flt_negzero
 
 -- ===== DECIMAL arrays =====

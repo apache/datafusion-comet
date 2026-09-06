@@ -156,11 +156,10 @@ INSERT INTO test_intersect_dbl VALUES
 query
 SELECT a, b, array_intersect(a, b) FROM test_intersect_dbl
 
--- Signed-zero membership. Spark keeps -0.0 distinct from 0.0 while Comet (DataFusion)
--- collapses them, so array_intersect([-0.0], [0.0]) is [] in Spark but [0.0] in Comet,
--- and array_intersect([-0.0], [-0.0]) is [-0.0] in Spark but [0.0] in Comet.
--- NormalizeFloatingNumbers only rewrites literals, not parquet columns. Skip until
--- Spark normalizes these zeros (Spark 4.2+, SPARK-54918).
+statement
+SET spark.comet.expression.ArrayIntersect.allowIncompatible=false
+
+-- Signed zeros exercise the default Spark-compatible dispatch.
 statement
 CREATE TABLE test_intersect_flt_negzero(a array<float>, b array<float>) USING parquet
 
@@ -171,7 +170,7 @@ INSERT INTO test_intersect_flt_negzero VALUES
   (array(float('0.0')), array(float('-0.0'))),
   (array(float('-0.0')), array(float('-0.0')))
 
-query ignore(https://issues.apache.org/jira/browse/SPARK-54918)
+query spark_answer_only
 SELECT a, b, array_intersect(a, b) FROM test_intersect_flt_negzero
 
 statement
@@ -184,8 +183,11 @@ INSERT INTO test_intersect_dbl_negzero VALUES
   (array(double('0.0')), array(double('-0.0'))),
   (array(double('-0.0')), array(double('-0.0')))
 
-query ignore(https://issues.apache.org/jira/browse/SPARK-54918)
+query spark_answer_only
 SELECT a, b, array_intersect(a, b) FROM test_intersect_dbl_negzero
+
+statement
+SET spark.comet.expression.ArrayIntersect.allowIncompatible=true
 
 -- decimal arrays
 statement

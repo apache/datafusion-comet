@@ -151,7 +151,7 @@ The tables below list every Spark built-in expression with its current status.
 | `array_append` | ✅ | Native |  |
 | `array_compact` | ✅ | — |  |
 | `array_contains` | ✅ | Native | NaN/signed-zero handling may differ ([details](compatibility/floating-point.md)) |
-| `array_distinct` | ✅ | Native | NaN/signed-zero handling may differ ([details](compatibility/floating-point.md)) |
+| `array_distinct` | ✅ | Native | Floating-point elements fall back on Spark versions without SPARK-54918 ([details](compatibility/floating-point.md)) |
 | `array_except` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default; the incompatible native path is opt-in via allowIncompatible ([details](compatibility/expressions/array.md)) |
 | `array_insert` | ✅ | Native |  |
 | `array_intersect` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default; the incompatible native path is opt-in via allowIncompatible ([details](compatibility/expressions/array.md)) |
@@ -162,7 +162,7 @@ The tables below list every Spark built-in expression with its current status.
 | `array_prepend` | ✅ | — |  |
 | `array_remove` | ✅ | Native |  |
 | `array_repeat` | ✅ | Native |  |
-| `array_union` | ✅ | Native | NaN/signed-zero handling may differ ([details](compatibility/floating-point.md)) |
+| `array_union` | ✅ | Native | Floating-point elements fall back on Spark versions without SPARK-54918 ([details](compatibility/floating-point.md)) |
 | `arrays_overlap` | ✅ | Native |  |
 | `arrays_zip` | ✅ | Native |  |
 | `element_at` | ✅ | Native |  |
