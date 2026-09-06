@@ -19,6 +19,8 @@
 
 package org.apache.spark.sql.comet.execution.arrow
 
+import java.lang.{Boolean => JBoolean, Byte => JByte, Double => JDouble, Float => JFloat, Integer => JInteger, Long => JLong, Short => JShort}
+
 import scala.collection.JavaConverters._
 import scala.util.control.NonFatal
 
@@ -26,6 +28,7 @@ import org.apache.spark.TaskContext
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, GenericInternalRow, IsNotNull, IsNull, UnsafeProjection}
+import org.apache.spark.sql.catalyst.util.TypeUtils
 import org.apache.spark.sql.columnar.{CachedBatch, SimpleMetricsCachedBatch, SimpleMetricsCachedBatchSerializer}
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.columnar.{DefaultCachedBatch, DefaultCachedBatchSerializer}
@@ -33,7 +36,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 import org.apache.spark.storage.StorageLevel
-import org.apache.spark.unsafe.types.{ByteArray, UTF8String}
+import org.apache.spark.unsafe.types.UTF8String
 import org.apache.spark.util.io.ChunkedByteBuffer
 
 import org.apache.comet.CometArrowAllocator
@@ -92,20 +95,169 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
       val dt = attrs(c).dataType
       val col = batch.column(c)
       var r = 0
-      while (r < numRows) {
-        if (col.isNullAt(r)) {
-          nulls(c) += 1
-        } else if (tracksBounds(dt)) {
-          val value = readValue(col, dt, r)
-          if (lower(c) == null || compare(dt, value, lower(c)) < 0) {
-            lower(c) = value
+      var nullCount = 0
+      // Dispatch once per column and box only the final bounds. r == nullCount identifies
+      // the first non-null value, including when a column starts with nulls.
+      dt match {
+        case BooleanType =>
+          var min = false
+          var max = false
+          while (r < numRows) {
+            if (col.isNullAt(r)) {
+              nullCount += 1
+            } else {
+              val value = col.getBoolean(r)
+              if (r == nullCount || JBoolean.compare(value, min) < 0) min = value
+              if (r == nullCount || JBoolean.compare(value, max) > 0) max = value
+            }
+            r += 1
           }
-          if (upper(c) == null || compare(dt, value, upper(c)) > 0) {
-            upper(c) = value
+          if (nullCount < numRows) {
+            lower(c) = min
+            upper(c) = max
           }
-        }
-        r += 1
+        case ByteType =>
+          var min = 0.toByte
+          var max = 0.toByte
+          while (r < numRows) {
+            if (col.isNullAt(r)) {
+              nullCount += 1
+            } else {
+              val value = col.getByte(r)
+              if (r == nullCount || JByte.compare(value, min) < 0) min = value
+              if (r == nullCount || JByte.compare(value, max) > 0) max = value
+            }
+            r += 1
+          }
+          if (nullCount < numRows) {
+            lower(c) = min
+            upper(c) = max
+          }
+        case ShortType =>
+          var min = 0.toShort
+          var max = 0.toShort
+          while (r < numRows) {
+            if (col.isNullAt(r)) {
+              nullCount += 1
+            } else {
+              val value = col.getShort(r)
+              if (r == nullCount || JShort.compare(value, min) < 0) min = value
+              if (r == nullCount || JShort.compare(value, max) > 0) max = value
+            }
+            r += 1
+          }
+          if (nullCount < numRows) {
+            lower(c) = min
+            upper(c) = max
+          }
+        case IntegerType | DateType =>
+          var min = 0
+          var max = 0
+          while (r < numRows) {
+            if (col.isNullAt(r)) {
+              nullCount += 1
+            } else {
+              val value = col.getInt(r)
+              if (r == nullCount || JInteger.compare(value, min) < 0) min = value
+              if (r == nullCount || JInteger.compare(value, max) > 0) max = value
+            }
+            r += 1
+          }
+          if (nullCount < numRows) {
+            lower(c) = min
+            upper(c) = max
+          }
+        case LongType | TimestampType | TimestampNTZType =>
+          var min = 0L
+          var max = 0L
+          while (r < numRows) {
+            if (col.isNullAt(r)) {
+              nullCount += 1
+            } else {
+              val value = col.getLong(r)
+              if (r == nullCount || JLong.compare(value, min) < 0) min = value
+              if (r == nullCount || JLong.compare(value, max) > 0) max = value
+            }
+            r += 1
+          }
+          if (nullCount < numRows) {
+            lower(c) = min
+            upper(c) = max
+          }
+        case FloatType =>
+          var min = 0.0f
+          var max = 0.0f
+          while (r < numRows) {
+            if (col.isNullAt(r)) {
+              nullCount += 1
+            } else {
+              val value = col.getFloat(r)
+              if (r == nullCount || JFloat.compare(value, min) < 0) min = value
+              if (r == nullCount || JFloat.compare(value, max) > 0) max = value
+            }
+            r += 1
+          }
+          if (nullCount < numRows) {
+            lower(c) = min
+            upper(c) = max
+          }
+        case DoubleType =>
+          var min = 0.0d
+          var max = 0.0d
+          while (r < numRows) {
+            if (col.isNullAt(r)) {
+              nullCount += 1
+            } else {
+              val value = col.getDouble(r)
+              if (r == nullCount || JDouble.compare(value, min) < 0) min = value
+              if (r == nullCount || JDouble.compare(value, max) > 0) max = value
+            }
+            r += 1
+          }
+          if (nullCount < numRows) {
+            lower(c) = min
+            upper(c) = max
+          }
+        case d: DecimalType =>
+          var min: Decimal = null
+          var max: Decimal = null
+          while (r < numRows) {
+            if (col.isNullAt(r)) {
+              nullCount += 1
+            } else {
+              val value = col.getDecimal(r, d.precision, d.scale)
+              if (min == null || value.compare(min) < 0) min = value
+              if (max == null || value.compare(max) > 0) max = value
+            }
+            r += 1
+          }
+          lower(c) = min
+          upper(c) = max
+        case StringType =>
+          val ordering = TypeUtils.getInterpretedOrdering(dt)
+          var min: UTF8String = null
+          var max: UTF8String = null
+          while (r < numRows) {
+            if (col.isNullAt(r)) {
+              nullCount += 1
+            } else {
+              val value = col.getUTF8String(r)
+              // Compare the UTF-8 bytes directly, without allocating getBytes arrays.
+              // Borrow the value for comparison, but retain owned copies of the bounds.
+              if (min == null || ordering.compare(value, min) < 0) min = value.copy()
+              if (max == null || ordering.compare(value, max) > 0) max = value.copy()
+            }
+            r += 1
+          }
+          lower(c) = min
+          upper(c) = max
+        case _ =>
+          while (r < numRows) {
+            if (col.isNullAt(r)) nullCount += 1
+            r += 1
+          }
       }
+      nulls(c) = nullCount
       c += 1
     }
 
@@ -147,47 +299,6 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
         _: DecimalType | StringType | DateType | TimestampType | TimestampNTZType =>
       true
     case _ => false
-  }
-
-  // Read a non-null value from a ColumnVector using Spark's internal value type
-  // for the corresponding DataType.
-  private def readValue(col: ColumnVector, dt: DataType, rowId: Int): Any = dt match {
-    case BooleanType => col.getBoolean(rowId)
-    case ByteType => col.getByte(rowId)
-    case ShortType => col.getShort(rowId)
-    case IntegerType | DateType => col.getInt(rowId)
-    case LongType | TimestampType | TimestampNTZType => col.getLong(rowId)
-    case FloatType => col.getFloat(rowId)
-    case DoubleType => col.getDouble(rowId)
-    case d: DecimalType => col.getDecimal(rowId, d.precision, d.scale)
-    case StringType => col.getUTF8String(rowId).copy()
-    case _ => null
-  }
-
-  // Compare values using the same physical representation used in the stats row.
-  private def compare(dt: DataType, left: Any, right: Any): Int = dt match {
-    case BooleanType =>
-      java.lang.Boolean.compare(left.asInstanceOf[Boolean], right.asInstanceOf[Boolean])
-    case ByteType =>
-      java.lang.Byte.compare(left.asInstanceOf[Byte], right.asInstanceOf[Byte])
-    case ShortType =>
-      java.lang.Short.compare(left.asInstanceOf[Short], right.asInstanceOf[Short])
-    case IntegerType | DateType =>
-      java.lang.Integer.compare(left.asInstanceOf[Int], right.asInstanceOf[Int])
-    case LongType | TimestampType | TimestampNTZType =>
-      java.lang.Long.compare(left.asInstanceOf[Long], right.asInstanceOf[Long])
-    case FloatType =>
-      java.lang.Float.compare(left.asInstanceOf[Float], right.asInstanceOf[Float])
-    case DoubleType =>
-      java.lang.Double.compare(left.asInstanceOf[Double], right.asInstanceOf[Double])
-    case _: DecimalType =>
-      left.asInstanceOf[Decimal].compare(right.asInstanceOf[Decimal])
-    case StringType =>
-      ByteArray.compareBinary(
-        left.asInstanceOf[UTF8String].getBytes,
-        right.asInstanceOf[UTF8String].getBytes)
-    case other =>
-      throw new IllegalStateException(s"compare called for unsupported type $other")
   }
 
   // Compute Spark-compatible cache stats before serializing each batch to Arrow.
