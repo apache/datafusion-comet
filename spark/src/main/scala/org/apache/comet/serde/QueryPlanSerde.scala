@@ -740,8 +740,10 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     }
   }
 
-  // Aggregate functions bypass exprToProto: their arguments and filters are independent roots
-  // and must enter through exprToProto to receive decimal promotion.
+  /**
+   * This method does not promote the aggregate tree. Its arguments and filters are independent
+   * roots and must be serialized through [[exprToProto]] to receive decimal promotion.
+   */
   def aggExprToProto(
       aggExpr: AggregateExpression,
       inputs: Seq[Attribute],

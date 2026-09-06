@@ -81,7 +81,8 @@ object CometArrayAppend extends CometExpressionSerde[ArrayAppend] {
       binding,
       (builder, unaryExpr) => builder.setIsNotNull(unaryExpr))
 
-    val nullLiteralProto = exprToProto(Literal(null, elementType), Seq.empty)
+    val nullLiteralProto =
+      exprToProtoInternal(Literal(null, elementType), Seq.empty, binding = true)
 
     if (arrayAppendScalarExpr.isDefined && isNotNullExpr.isDefined && nullLiteralProto.isDefined) {
       val caseWhenExpr = ExprOuterClass.CaseWhen
@@ -420,8 +421,8 @@ object CometArrayJoin
       case Some(nullReplacementExpr) =>
         for {
           innerProto <- joined
-          replacementIsNull <- exprToProto(IsNull(nullReplacementExpr), inputs, binding)
-          nullLiteral <- exprToProto(Literal(null, expr.dataType), inputs, binding)
+          replacementIsNull <- exprToProtoInternal(IsNull(nullReplacementExpr), inputs, binding)
+          nullLiteral <- exprToProtoInternal(Literal(null, expr.dataType), inputs, binding)
         } yield ExprOuterClass.Expr
           .newBuilder()
           .setIf(
@@ -499,8 +500,8 @@ object CometSlice extends CometExpressionSerde[Slice] {
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val elementType = expr.x.dataType.asInstanceOf[ArrayType].elementType
     val arrayExprProto = exprToProtoInternal(expr.x, inputs, binding)
-    val startExprProto = exprToProto(Cast(expr.start, LongType), inputs, binding)
-    val lengthExprProto = exprToProto(Cast(expr.length, LongType), inputs, binding)
+    val startExprProto = exprToProtoInternal(Cast(expr.start, LongType), inputs, binding)
+    val lengthExprProto = exprToProtoInternal(Cast(expr.length, LongType), inputs, binding)
     // DataFusion list types always have nullable inner elements, so promise
     // ArrayType(elementType, containsNull = true) here even if Spark's
     // expr.dataType reports containsNull = false (e.g. for array(1, 2, 3)).
@@ -697,7 +698,8 @@ object CometElementAt extends CometExpressionSerde[ElementAt] {
         inputs,
         binding,
         (builder, unaryExpr) => builder.setIsNotNull(unaryExpr))
-      val nullLiteralProto = exprToProto(Literal(null, expr.dataType), Seq.empty)
+      val nullLiteralProto =
+        exprToProtoInternal(Literal(null, expr.dataType), Seq.empty, binding = true)
       for {
         base <- baseExpr
         notNull <- isNotNullExpr
@@ -813,7 +815,7 @@ object CometSize extends CometExpressionSerde[Size] {
 
   private def createLiteralExprProto(legacySizeOfNull: Boolean): Option[ExprOuterClass.Expr] = {
     val value = if (legacySizeOfNull) -1 else null
-    exprToProto(Literal(value, IntegerType), Seq.empty)
+    exprToProtoInternal(Literal(value, IntegerType), Seq.empty, binding = true)
   }
 
 }
@@ -884,7 +886,8 @@ object CometArraysZip extends CometExpressionSerde[ArraysZip] {
     // mimic Spark's ArraysZip behavior: returns NULL if any argument is NULL
     val combinedNullCheck = expr.children.map(child => IsNotNull(child)).reduce(And)
     val isNotNullExpr = exprToProtoInternal(combinedNullCheck, inputs, binding)
-    val nullLiteralProto = exprToProto(Literal(null, expr.dataType), Seq.empty)
+    val nullLiteralProto =
+      exprToProtoInternal(Literal(null, expr.dataType), Seq.empty, binding = true)
 
     if (exprChildren.forall(
         _.isDefined) && isNotNullExpr.isDefined && nullLiteralProto.isDefined) {

@@ -25,6 +25,7 @@ import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression,
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DecimalType, IntegerType}
 
+import org.apache.comet.CometConf
 import org.apache.comet.serde.{CometDivide, ExprOuterClass, QueryPlanSerde, Unsupported}
 
 class CometDecimalPromotionSuite extends CometTestBase {
@@ -63,9 +64,10 @@ class CometDecimalPromotionSuite extends CometTestBase {
           DecimalPrecision.promote(promoted) == promoted,
           s"$name promotion is not idempotent: $promoted")
 
-        // Recursive child serialization must retain exactly one equivalent overflow wrapper.
+        // Deliberately re-enter the public serializer with an already-promoted tree. Recursive
+        // serdes no longer do this, but re-promotion must still preserve the protobuf shape.
         val arithmeticProto = QueryPlanSerde
-          .exprToProto(expression, plan.children.head.output)
+          .exprToProto(promoted, plan.children.head.output)
           .get
           .getScalarFunc
           .getArgs(1)
@@ -104,7 +106,7 @@ class CometDecimalPromotionSuite extends CometTestBase {
       val arithmetic = Add(multiply, right, mode)
       val contains = ArrayContains(CreateArray(Seq(arithmetic)), arithmetic)
 
-      def check(proto: ExprOuterClass.Expr): Unit = {
+      def check(proto: ExprOuterClass.Expr, binding: Boolean = true): Unit = {
         assert(proto.hasCheckOverflow, s"$mode: $proto")
         val outer = proto.getCheckOverflow
         assert(outer.getDatatype === QueryPlanSerde.serializeDataType(arithmetic.dataType).get)
@@ -119,13 +121,19 @@ class CometDecimalPromotionSuite extends CometTestBase {
         assert(
           inner.getCheckOverflow.getChild.hasMultiply,
           s"Duplicate inner CheckOverflow: $proto")
+        val reference = inner.getCheckOverflow.getChild.getMultiply.getLeft
+        if (binding) {
+          assert(reference.hasBound && reference.getBound.getIndex == 0)
+        } else {
+          assert(reference.hasUnbound && reference.getUnbound.getName == "left")
+        }
       }
 
       // Exercise both array child paths, including CreateArray's recursive serialization.
       Seq(true, false).foreach { binding =>
         val proto = QueryPlanSerde.exprToProto(contains, inputs, binding).get.getScalarFunc
-        check(proto.getArgs(0).getScalarFunc.getArgs(0))
-        check(proto.getArgs(1))
+        check(proto.getArgs(0).getScalarFunc.getArgs(0), binding)
+        check(proto.getArgs(1), binding)
         val bitwise = BitwiseNot(Cast(arithmetic, IntegerType))
         check(
           QueryPlanSerde
@@ -134,7 +142,8 @@ class CometDecimalPromotionSuite extends CometTestBase {
             .getScalarFunc
             .getArgs(0)
             .getCast
-            .getChild)
+            .getChild,
+          binding)
       }
 
       // Aggregate serialization does not promote the aggregate tree before visiting its inputs.
@@ -147,6 +156,75 @@ class CometDecimalPromotionSuite extends CometTestBase {
       val proto = QueryPlanSerde.aggExprToProto(aggregate, inputs, true, SQLConf.get).get
       check(proto.getSum.getChild)
       check(proto.getFilter.getScalarFunc.getArgs(1))
+    }
+  }
+
+  Seq(false, true).foreach { ansi =>
+    test(s"issue #5248: decimal overflow values under recursive serdes, ANSI=$ansi") {
+      withSQLConf(
+        SQLConf.ANSI_ENABLED.key -> ansi.toString,
+        CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false",
+        CometConf.getExprAllowIncompatConfigKey("ArrayIntersect") -> "true",
+        CometConf.getExprAllowIncompatConfigKey("ArrayExcept") -> "true",
+        CometConf.getExprAllowIncompatConfigKey("ArrayJoin") -> "true") {
+        withTempPath { path =>
+          // Read actual decimal columns from Parquet so constant folding cannot hide promotion.
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            sql(s"""SELECT CAST(a AS DECIMAL(38,0)) a, CAST(b AS DECIMAL(38,0)) b,
+                   |CAST(c AS DECIMAL(38,6)) c, CAST(d AS DECIMAL(38,6)) d
+                   |FROM VALUES
+                   |('${"9" * 38}', '2', '${"9" * 32}.999999', '0.000001'),
+                   |('4', '2', '4', '2'), (NULL, NULL, NULL, NULL) AS t(a,b,c,d)
+                   |""".stripMargin).write.parquet(path.toString)
+          }
+          withParquetTable(path.toString, "decimal_overflow") {
+            val expressions = Seq(
+              "array_remove(array($e), $e)",
+              "array_append(array($e), $e)",
+              "array_contains(array($e), $e)",
+              "array_intersect(array($e), array($e))",
+              "array_max(array($e))",
+              "array_min(array($e))",
+              "arrays_overlap(array($e), array($e))",
+              "array_compact(array($e))",
+              "array_except(array($e), array($e))",
+              "array_join(array(CAST($e AS STRING)), ',')",
+              // Spark's ArrayJoin codegen needs a nullable array or delimiter to clear isNull
+              // when the replacement is nullable. Use a column-based delimiter for this case.
+              "array_join(array('x', NULL), CAST(a AS STRING), CAST($e AS STRING))",
+              "slice(array($e), 1, 1)",
+              "slice(array(1, 2), CAST($e AS INT), 2)",
+              "slice(array(1, 2), 1, CAST($e AS INT))",
+              "array_union(array($e), array($e))",
+              "reverse(array($e))",
+              "flatten(array(array($e)))",
+              "size(array($e))",
+              "array_position(array($e), $e)",
+              "~CAST($e AS BIGINT)",
+              "bit_get(CAST($e AS BIGINT), 1)",
+              "element_at(array($e), 1)",
+              "arrays_zip(array($e), array($e))")
+            // Decimal division's overflow sentinel needs CheckOverflow to become NULL in LEGACY.
+            for (arithmetic <- Seq("a * b", "c / d"); expression <- expressions) {
+              val query = s"SELECT ${expression.replace("$e", arithmetic)} FROM decimal_overflow"
+              withClue(query) {
+                if (ansi) {
+                  val df = sql(query)
+                  assert(df.queryExecution.executedPlan.collect { case _: CometProjectExec =>
+                    true
+                  }.nonEmpty)
+                  val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
+                  assert(sparkError.isDefined == cometError.isDefined)
+                } else {
+                  checkSparkAnswerAndOperator(
+                    sql(query),
+                    includeClasses = Seq(classOf[CometNativeScanExec]))
+                }
+              }
+            }
+          }
+        }
+      }
     }
   }
 
