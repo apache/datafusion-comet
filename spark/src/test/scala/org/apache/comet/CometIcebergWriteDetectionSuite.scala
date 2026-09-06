@@ -253,14 +253,54 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     }
   }
 
-  test("fall-back: write.parquet.bloom-filter-max-bytes set") {
+  test("bloom-filter max-bytes accepts only representable power-of-two values") {
     withDetectionCatalog { dir =>
-      createTable(
-        dir,
-        "bloom_max",
-        partitionSpec = "",
-        properties = Some("'write.parquet.bloom-filter-max-bytes'='524288'"))
-      assertUnsupportedContains("bloom_max", "write.parquet.bloom-filter-max-bytes")
+      Seq("32", "524288", "1048576", "134217728").zipWithIndex.foreach { case (value, index) =>
+        val table = s"bloom_max_ok_$index"
+        createTable(
+          dir,
+          table,
+          partitionSpec = "",
+          properties = Some(s"'write.parquet.bloom-filter-max-bytes'='$value'"))
+        assertSupportLevelIs[Compatible](table)
+      }
+
+      Seq("31", "33", "100", "134217729", "0", "-1", " 32", "garbage", "2147483648").zipWithIndex
+        .foreach { case (value, index) =>
+          val table = s"bloom_max_bad_$index"
+          createTable(
+            dir,
+            table,
+            partitionSpec = "",
+            properties = Some(s"'write.parquet.bloom-filter-max-bytes'='$value'"))
+          assertUnsupportedContainsAllowingWriteFailure(
+            table,
+            "write.parquet.bloom-filter-max-bytes")
+        }
+    }
+  }
+
+  test("fall-back: invalid enabled-column FPP and NDV") {
+    withDetectionCatalog { dir =>
+      Seq(
+        "'write.parquet.bloom-filter-fpp.column.id'='0'",
+        "'write.parquet.bloom-filter-fpp.column.id'='1'",
+        "'write.parquet.bloom-filter-fpp.column.id'='NaN'",
+        // Positive and below one, but too small for any integer NDV to encode the requested
+        // power-of-two allocation through parquet-rs's NDV/FPP API.
+        "'write.parquet.bloom-filter-fpp.column.id'='4.9E-324'",
+        "'write.parquet.bloom-filter-ndv.column.id'='0'",
+        "'write.parquet.bloom-filter-ndv.column.id'='garbage'").zipWithIndex.foreach {
+        case (property, index) =>
+          val table = s"bloom_shape_bad_$index"
+          createTable(
+            dir,
+            table,
+            partitionSpec = "",
+            properties =
+              Some(s"'write.parquet.bloom-filter-enabled.column.id'='true', $property"))
+          assertUnsupportedContainsAllowingWriteFailure(table, "write.parquet.bloom-filter")
+      }
     }
   }
 

@@ -179,9 +179,34 @@ class IcebergWriteProtoTranslationSuite extends AnyFunSuite {
   test("per-column bloom filter properties are translated deterministically") {
     val prefix = Keys.ParquetBloomFilterColumnEnabledPrefix
     val settings = buildParquetSettings(
-      Map(s"${prefix}region" -> "TRUE", s"${prefix}id" -> "true", s"${prefix}amount" -> "false"),
+      Map(
+        s"${prefix}region" -> "TRUE",
+        s"${prefix}id" -> "true",
+        s"${prefix}amount" -> "false",
+        s"${Keys.ParquetBloomFilterColumnFppPrefix}region" -> "0.02",
+        s"${Keys.ParquetBloomFilterColumnNdvPrefix}id" -> "1234"),
       TestCreatedBy)
     assert(settings.getBloomFilterEnabledColumnsList == java.util.Arrays.asList("id", "region"))
+    assert(settings.getBloomFilterMaxBytes == 1024L * 1024L)
+    assert(settings.getBloomFilterFppByColumnMap.get("id") == 0.01d)
+    assert(settings.getBloomFilterFppByColumnMap.get("region") == 0.02d)
+    assert(settings.getBloomFilterNdvByColumnMap.get("id") == 1234L)
+    assert(!settings.getBloomFilterNdvByColumnMap.containsKey("region"))
+    assert(!settings.getBloomFilterFppByColumnMap.containsKey("amount"))
+  }
+
+  test("Iceberg bloom filter defaults and explicit max are translated exactly") {
+    val enabled = Keys.ParquetBloomFilterColumnEnabledPrefix + "id"
+    val defaults = buildParquetSettings(Map(enabled -> "true"), TestCreatedBy)
+    assert(defaults.getBloomFilterMaxBytes == Defaults.BloomFilterMaxBytes)
+    assert(Defaults.BloomFilterMaxBytes == 1024 * 1024)
+    assert(defaults.getBloomFilterFppByColumnMap.get("id") == Defaults.BloomFilterFpp)
+    assert(Defaults.BloomFilterFpp == 0.01d)
+
+    val explicit = buildParquetSettings(
+      Map(enabled -> "true", Keys.ParquetBloomFilterMaxBytes -> "67108864"),
+      TestCreatedBy)
+    assert(explicit.getBloomFilterMaxBytes == 64L * 1024L * 1024L)
   }
 
   test("size properties are parsed with Java Integer.parseInt semantics") {

@@ -1245,6 +1245,12 @@ object IcebergReflection extends Logging {
   def tablePropertyIntConstant(fieldName: String): Int =
     readTablePropertiesField(fieldName).asInstanceOf[Integer].intValue()
 
+  def tablePropertyDoubleConstantOpt(fieldName: String): Option[Double] =
+    tablePropertiesClassOpt.flatMap { cls =>
+      try Some(cls.getField(fieldName).get(null).asInstanceOf[java.lang.Double].doubleValue())
+      catch { case _: NoSuchFieldException => None }
+    }
+
   /**
    * Like [[tablePropertyConstant]] but returns `None` when the constant is absent in the Iceberg
    * version on the classpath rather than throwing. Used to gate behaviour that only some Iceberg

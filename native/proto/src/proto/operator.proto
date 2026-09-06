@@ -683,6 +683,15 @@ message IcebergParquetWriteSettings {
   // true. Entries use Iceberg's dotted column-path syntax and are translated to parquet-rs
   // `ColumnPath`s by the native writer.
   repeated string bloom_filter_enabled_columns = 8;
+  // Iceberg `write.parquet.bloom-filter-max-bytes` (default 1 MiB). Native eligibility only
+  // admits powers of two in [32, 128 MiB], which parquet-rs can represent exactly.
+  uint64 bloom_filter_max_bytes = 9;
+  // Effective per-column FPP, including Iceberg's 0.01 default. A value is present for every
+  // enabled column so parquet-rs's different 0.05 default can never leak into Iceberg writes.
+  map<string, double> bloom_filter_fpp_by_column = 10;
+  // User-provided Iceberg NDV values. Absence is significant: parquet-mr allocates the full
+  // max in that case, whereas an explicit NDV sizes the filter before applying the max as a cap.
+  map<string, uint64> bloom_filter_ndv_by_column = 11;
 }
 
 // Broadcast payload -- one of these per write, identical for every task.

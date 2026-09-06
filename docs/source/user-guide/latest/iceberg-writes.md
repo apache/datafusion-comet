@@ -155,6 +155,8 @@ A write is eligible only when ALL of the following hold:
 | `write.parquet.shred-variants`                                                                                                              | unset or `false` (Spark 4.x / Iceberg 1.11 resolve this into every parquet write)                                                                                                                                                                                                                                                                                                                                                                                               |
 | `write.parquet.variant-inference-buffer-size`                                                                                               | any value (only meaningful when shredding, which is gated)                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | `write.parquet.bloom-filter-enabled.column.<col>`                                                                                           | `true` or `false`; bloom filters are written only for columns set to `true`                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `write.parquet.bloom-filter-fpp.column.<col>` / `write.parquet.bloom-filter-ndv.column.<col>`                                               | FPP must be a finite double strictly between 0 and 1; NDV must be a positive Java long; both are used only when the corresponding column is enabled. The Iceberg FPP default is `0.01`.                                                                                                                                                                                                                                                                                             |
+| `write.parquet.bloom-filter-max-bytes`                                                                                                      | unset (Iceberg default: 1 MiB), or a power of two from 32 bytes through 128 MiB inclusive; every other value falls back to iceberg-java                                                                                                                                                                                                                                                                                                                                           |
 | `write.metadata.metrics.*`                                                                                                                  | any value (manifest metrics are re-derived on the JVM with Iceberg's own logic)                                                                                                                                                                                                                                                                                                                                                                                                 |
 | `write.spark.fanout.enabled`                                                                                                                | any value (the native writer implements both clustered and fanout modes)                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `write.target-file-size-bytes`                                                                                                              | any value (file rolling cadence differs; see accepted divergences)                                                                                                                                                                                                                                                                                                                                                                                                              |
@@ -164,7 +166,7 @@ A write is eligible only when ALL of the following hold:
 
 Within the namespaces that shape data-file bytes — `write.parquet.*` and `parquet.*` —
 everything not listed above must be absent: unvetted `write.parquet.*` keys (e.g.
-`bloom-filter-max-bytes`, `stats-enabled.column.*`, keys added by future Iceberg versions),
+`stats-enabled.column.*`, keys added by future Iceberg versions),
 any `parquet.*` table property (including `parquet.enable.dictionary`), and any `parquet.*`
 key in the session Hadoop configuration (with `HadoopFileIO`-backed output those reach
 iceberg-java's writer but not the native one). Also gated explicitly: any `encryption.*` key,
@@ -230,6 +232,41 @@ different blast radius: differences confined to the physical bytes of a data fil
 no reader decision is based on them), differences visible in manifest metadata (these outlive
 the write and feed later readers' pruning decisions, so each one is analyzed individually
 below), and one operational path-layout caveat.
+
+### Parquet Bloom-filter sizing
+
+[Iceberg's documented write properties](https://iceberg.apache.org/docs/latest/configuration/#write-properties)
+describe three related inputs. FPP is the requested false-positive probability (default `0.01`),
+NDV is the expected number of distinct values when explicitly set, and `max-bytes` is an upper
+bound (default 1 MiB).
+
+Apache Parquet Java permits arbitrary integer caps. When such a cap binds, it serializes exactly
+that many bytes, although only complete 32-byte SBBF blocks are used and any trailing partial
+block remains zero. The Apache Arrow Rust `parquet` crate requires a power-of-two block count so
+its post-write folding remains valid. A non-power-of-two cap can therefore change the
+hash-to-block mapping, making a filter that may have worse reader pruning than Parquet Java's
+filter.
+
+Comet uses its native Iceberg writer only when the effective `max-bytes` value is a power of two
+from 32 bytes through 128 MiB inclusive. If an explicit value is not a power of two or is outside
+that range, `CometIcebergWriteExec` is not used for the write; Spark's default Iceberg Java writer
+writes the table instead.
+
+For supported values, Apache Parquet Java applies the sizing properties as follows:
+
+- with no NDV, allocate the full `max-bytes` value;
+- with an NDV, calculate a requested size from NDV and FPP, then cap it at `max-bytes`;
+- when the cap binds, it takes precedence, so the requested FPP is not guaranteed;
+- a large maximum never enlarges the allocation selected by an explicit, smaller NDV.
+
+For every write that is eligible for the native path, Comet applies exactly the same allocation
+decision algorithm, including the defaults and the precedence among FPP, NDV, and `max-bytes`.
+
+After values are inserted, the Apache Arrow Rust `parquet` crate may fold a sparsely populated
+filter to a smaller power-of-two filter while preserving the requested FPP. Parquet Java's
+non-adaptive Iceberg path keeps its initial allocation. The native result can consequently use
+less file space while remaining safe for every Parquet reader. When folding does not reduce the
+allocation, tests also verify that the native and Parquet Java SBBF bitsets are byte-identical.
 
 ### Physical file layout only (cosmetic)
 
