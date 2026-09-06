@@ -116,7 +116,7 @@ use crate::execution::spark_config::{
 };
 use crate::parquet::encryption_support::{CometEncryptionFactory, ENCRYPTION_FACTORY_ID};
 use datafusion_comet_proto::spark_operator::operator::OpStruct;
-use log::info;
+use log::{info, warn};
 use std::sync::OnceLock;
 #[cfg(feature = "jemalloc")]
 use tikv_jemalloc_ctl::{epoch, stats};
@@ -238,8 +238,47 @@ fn build_runtime(default_worker_threads: Option<usize>) -> Runtime {
     }
     builder
         .enable_all()
+        .on_thread_start(attach_thread_as_daemon)
+        .on_thread_stop(detach_thread)
         .build()
         .expect("Failed to create Tokio runtime")
+}
+
+/// Attaches a runtime thread to the JVM as a daemon thread.
+///
+/// jni-rs attaches threads lazily with `AttachCurrentThread`, which makes them non-daemon JVM
+/// threads. `DestroyJavaVM` waits for all non-daemon threads to exit before it runs shutdown
+/// hooks, but runtime threads only exit once the shutdown hook has called `SparkContext.stop()`
+/// and [`release_runtime`]. An application that returns from `main` without calling
+/// `SparkContext.stop()` would therefore never exit. Daemon threads are not waited for, and
+/// jni-rs reuses an existing attachment rather than attaching again.
+fn attach_thread_as_daemon() {
+    let Some(vm) = crate::JAVA_VM.get() else {
+        return;
+    };
+    let vm = vm.get_raw();
+    let mut env: *mut std::ffi::c_void = std::ptr::null_mut();
+    // SAFETY: `vm` is the JavaVM stored by `NativeBase.init` and outlives the runtime. Null
+    // attach args select the default JNI version, thread name and thread group.
+    let rc =
+        unsafe { ((**vm).v1_4.AttachCurrentThreadAsDaemon)(vm, &mut env, std::ptr::null_mut()) };
+    if rc != jni::sys::JNI_OK {
+        warn!("Failed to attach tokio runtime thread to the JVM as a daemon thread: {rc}");
+    }
+}
+
+/// Detaches a thread attached by [`attach_thread_as_daemon`] before it exits. jni-rs only
+/// detaches threads it attached itself.
+fn detach_thread() {
+    let Some(vm) = crate::JAVA_VM.get() else {
+        return;
+    };
+    let vm = vm.get_raw();
+    // SAFETY: see `attach_thread_as_daemon`. Detaching an unattached thread is a JNI error,
+    // not undefined behavior.
+    unsafe {
+        ((**vm).v1_1.DetachCurrentThread)(vm);
+    }
 }
 
 /// Initialize the global Tokio runtime with the given default worker thread count.
