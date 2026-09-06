@@ -740,6 +740,8 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     }
   }
 
+  // Aggregate functions bypass exprToProto: their arguments and filters are independent roots
+  // and must enter through exprToProto to receive decimal promotion.
   def aggExprToProto(
       aggExpr: AggregateExpression,
       inputs: Seq[Attribute],
@@ -844,7 +846,9 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
    * expression.
    *
    * This method performs a transformation on the plan to handle decimal promotion and then calls
-   * into the recursive method [[exprToProtoInternal]].
+   * into the recursive method [[exprToProtoInternal]]. Use this entry point for independent roots
+   * (including aggregate arguments and filters) and synthesized trees needing decimal promotion.
+   * Serdes must use [[exprToProtoInternal]] for children of the already-promoted tree.
    *
    * @param expr
    *   The input expression
@@ -912,6 +916,11 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
   /**
    * Convert a Spark expression to a protocol-buffer representation of a native Comet/DataFusion
    * expression.
+   *
+   * The caller owns decimal promotion: this method serializes children of an already-promoted
+   * root without traversing them again. Literals and wrappers that introduce no decimal
+   * arithmetic can also use this path. Newly synthesized arithmetic must enter through
+   * [[exprToProto]].
    *
    * @param expr
    *   The input expression
@@ -1062,7 +1071,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       binding: Boolean,
       f: (ExprOuterClass.Expr.Builder, ExprOuterClass.UnaryExpr) => ExprOuterClass.Expr.Builder)
       : Option[ExprOuterClass.Expr] = {
-    val childExpr = exprToProtoInternal(child, inputs, binding) // TODO review
+    val childExpr = exprToProtoInternal(child, inputs, binding)
     if (childExpr.isDefined) {
       // create the generic UnaryExpr message
       val inner = ExprOuterClass.UnaryExpr

@@ -44,8 +44,8 @@ object CometArrayRemove
       expr: ArrayRemove,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val arrayExprProto = exprToProto(expr.left, inputs, binding)
-    val keyExprProto = exprToProto(expr.right, inputs, binding)
+    val arrayExprProto = exprToProtoInternal(expr.left, inputs, binding)
+    val keyExprProto = exprToProtoInternal(expr.right, inputs, binding)
 
     scalarFunctionExprToProto("array_remove_all", arrayExprProto, keyExprProto)
   }
@@ -60,8 +60,8 @@ object CometArrayAppend extends CometExpressionSerde[ArrayAppend] {
     val child = expr.children.head
     val elementType = child.dataType.asInstanceOf[ArrayType].elementType
 
-    val arrayExprProto = exprToProto(expr.children.head, inputs, binding)
-    val keyExprProto = exprToProto(expr.children(1), inputs, binding)
+    val arrayExprProto = exprToProtoInternal(expr.children.head, inputs, binding)
+    val keyExprProto = exprToProtoInternal(expr.children(1), inputs, binding)
 
     // DataFusion's array_append always returns a list with nullable elements,
     // so we must promise ArrayType(elementType, containsNull = true) here even if
@@ -128,8 +128,8 @@ object CometArrayContains
       expr: ArrayContains,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val arrayExprProto = exprToProto(expr.children.head, inputs, binding)
-    val keyExprProto = exprToProto(expr.children(1), inputs, binding)
+    val arrayExprProto = exprToProtoInternal(expr.children.head, inputs, binding)
+    val keyExprProto = exprToProtoInternal(expr.children(1), inputs, binding)
 
     scalarFunctionExprToProto("array_contains", arrayExprProto, keyExprProto)
   }
@@ -228,8 +228,8 @@ object CometArrayIntersect
       expr: ArrayIntersect,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val leftArrayExprProto = exprToProto(expr.children.head, inputs, binding)
-    val rightArrayExprProto = exprToProto(expr.children(1), inputs, binding)
+    val leftArrayExprProto = exprToProtoInternal(expr.children.head, inputs, binding)
+    val rightArrayExprProto = exprToProtoInternal(expr.children(1), inputs, binding)
 
     val arraysIntersectScalarExpr =
       scalarFunctionExprToProto("array_intersect", leftArrayExprProto, rightArrayExprProto)
@@ -242,7 +242,7 @@ object CometArrayMax extends CometExpressionSerde[ArrayMax] {
       expr: ArrayMax,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val arrayExprProto = exprToProto(expr.children.head, inputs, binding)
+    val arrayExprProto = exprToProtoInternal(expr.children.head, inputs, binding)
 
     val arrayMaxScalarExpr =
       scalarFunctionExprToProto("array_max", arrayExprProto)
@@ -255,7 +255,7 @@ object CometArrayMin extends CometExpressionSerde[ArrayMin] {
       expr: ArrayMin,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val arrayExprProto = exprToProto(expr.children.head, inputs, binding)
+    val arrayExprProto = exprToProtoInternal(expr.children.head, inputs, binding)
 
     val arrayMinScalarExpr = scalarFunctionExprToProto("array_min", arrayExprProto)
     arrayMinScalarExpr
@@ -267,8 +267,8 @@ object CometArraysOverlap extends CometExpressionSerde[ArraysOverlap] {
       expr: ArraysOverlap,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val leftArrayExprProto = exprToProto(expr.left, inputs, binding)
-    val rightArrayExprProto = exprToProto(expr.right, inputs, binding)
+    val leftArrayExprProto = exprToProtoInternal(expr.left, inputs, binding)
+    val rightArrayExprProto = exprToProtoInternal(expr.right, inputs, binding)
 
     val arraysOverlapScalarExpr = scalarFunctionExprToProtoWithReturnType(
       "spark_arrays_overlap",
@@ -287,7 +287,7 @@ object CometArrayCompact extends CometExpressionSerde[Expression] {
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val child = expr.children.head
-    val arrayExprProto = exprToProto(child, inputs, binding)
+    val arrayExprProto = exprToProtoInternal(child, inputs, binding)
 
     val arrayCompactScalarExpr = scalarFunctionExprToProto("array_compact", arrayExprProto)
     arrayCompactScalarExpr
@@ -343,8 +343,8 @@ object CometArrayExcept
         return None
       case None =>
     }
-    val leftArrayExprProto = exprToProto(expr.left, inputs, binding)
-    val rightArrayExprProto = exprToProto(expr.right, inputs, binding)
+    val leftArrayExprProto = exprToProtoInternal(expr.left, inputs, binding)
+    val rightArrayExprProto = exprToProtoInternal(expr.right, inputs, binding)
 
     val arrayExceptScalarExpr =
       scalarFunctionExprToProto("array_except", leftArrayExprProto, rightArrayExprProto)
@@ -400,8 +400,8 @@ object CometArrayJoin
       expr: ArrayJoin,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val arrayExprProto = exprToProto(expr.array, inputs, binding)
-    val delimiterExprProto = exprToProto(expr.delimiter, inputs, binding)
+    val arrayExprProto = exprToProtoInternal(expr.array, inputs, binding)
+    val delimiterExprProto = exprToProtoInternal(expr.delimiter, inputs, binding)
 
     val joined = expr.nullReplacement match {
       case Some(nullReplacementExpr) =>
@@ -409,7 +409,7 @@ object CometArrayJoin
           "array_to_string",
           arrayExprProto,
           delimiterExprProto,
-          exprToProto(nullReplacementExpr, inputs, binding))
+          exprToProtoInternal(nullReplacementExpr, inputs, binding))
       case None =>
         scalarFunctionExprToProto("array_to_string", arrayExprProto, delimiterExprProto)
     }
@@ -498,7 +498,7 @@ object CometSlice extends CometExpressionSerde[Slice] {
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val elementType = expr.x.dataType.asInstanceOf[ArrayType].elementType
-    val arrayExprProto = exprToProto(expr.x, inputs, binding)
+    val arrayExprProto = exprToProtoInternal(expr.x, inputs, binding)
     val startExprProto = exprToProto(Cast(expr.start, LongType), inputs, binding)
     val lengthExprProto = exprToProto(Cast(expr.length, LongType), inputs, binding)
     // DataFusion list types always have nullable inner elements, so promise
@@ -521,8 +521,8 @@ object CometArrayUnion extends CometExpressionSerde[ArrayUnion] {
       expr: ArrayUnion,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val leftArrayExprProto = exprToProto(expr.children.head, inputs, binding)
-    val rightArrayExprProto = exprToProto(expr.children(1), inputs, binding)
+    val leftArrayExprProto = exprToProtoInternal(expr.children.head, inputs, binding)
+    val rightArrayExprProto = exprToProtoInternal(expr.children(1), inputs, binding)
 
     val arraysUnionScalarExpr =
       scalarFunctionExprToProto("array_union", leftArrayExprProto, rightArrayExprProto)
@@ -629,7 +629,7 @@ object CometArrayReverse extends CometExpressionSerde[Reverse] with ArraysBase {
       withFallbackReason(expr, s"child data type not supported: ${expr.child.dataType}")
       return None
     }
-    val reverseExprProto = exprToProto(expr.child, inputs, binding)
+    val reverseExprProto = exprToProtoInternal(expr.child, inputs, binding)
     val reverseScalarExpr = scalarFunctionExprToProto("array_reverse", reverseExprProto)
     reverseScalarExpr
   }
@@ -735,7 +735,7 @@ object CometFlatten extends CometExpressionSerde[Flatten] with ArraysBase {
       expr: Flatten,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val flattenExprProto = exprToProto(expr.child, inputs, binding)
+    val flattenExprProto = exprToProtoInternal(expr.child, inputs, binding)
     val flattenScalarExpr = scalarFunctionExprToProto("flatten", flattenExprProto)
     flattenScalarExpr
   }
@@ -780,7 +780,7 @@ object CometSize extends CometExpressionSerde[Size] {
       expr: Size,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val arrayExprProto = exprToProto(expr.child, inputs, binding)
+    val arrayExprProto = exprToProtoInternal(expr.child, inputs, binding)
     for {
       isNotNullExprProto <- createIsNotNullExprProto(expr, inputs, binding)
       sizeScalarExprProto <- scalarFunctionExprToProto("size", arrayExprProto)
@@ -833,8 +833,8 @@ object CometArrayPosition extends CometExpressionSerde[ArrayPosition] with Array
       expr: ArrayPosition,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val arrayExprProto = exprToProto(expr.left, inputs, binding)
-    val elementExprProto = exprToProto(expr.right, inputs, binding)
+    val arrayExprProto = exprToProtoInternal(expr.left, inputs, binding)
+    val elementExprProto = exprToProtoInternal(expr.right, inputs, binding)
 
     // Use spark_array_position which returns Int64 and 0 when not found
     // (matching Spark's behavior)
@@ -999,12 +999,12 @@ object CometSequence extends CometExpressionSerde[Sequence] with CodegenDispatch
       expr: Sequence,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val startExprProto = exprToProto(expr.start, inputs, binding)
-    val stopExprProto = exprToProto(expr.stop, inputs, binding)
+    val startExprProto = exprToProtoInternal(expr.start, inputs, binding)
+    val stopExprProto = exprToProtoInternal(expr.stop, inputs, binding)
     // With no step argument the native kernel computes Spark's per-row default,
     // `start <= stop ? 1 : -1`, which cannot be expressed as a plan-time literal.
     val argProtos = Seq(startExprProto, stopExprProto) ++
-      expr.stepOpt.map(exprToProto(_, inputs, binding))
+      expr.stepOpt.map(exprToProtoInternal(_, inputs, binding))
     scalarFunctionExprToProtoWithReturnType(
       "spark_sequence",
       expr.dataType,

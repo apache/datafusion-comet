@@ -20,7 +20,8 @@
 package org.apache.spark.sql.comet
 
 import org.apache.spark.sql.CometTestBase
-import org.apache.spark.sql.catalyst.expressions.{ArrayContains, AttributeReference, Divide, EvalMode}
+import org.apache.spark.sql.catalyst.expressions.{Add, ArrayContains, AttributeReference, BitwiseNot, Cast, CreateArray, Divide, EvalMode, Multiply, NamedExpression}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Partial, Sum}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DecimalType, IntegerType}
 
@@ -62,9 +63,7 @@ class CometDecimalPromotionSuite extends CometTestBase {
           DecimalPrecision.promote(promoted) == promoted,
           s"$name promotion is not idempotent: $promoted")
 
-        // This proto-shape check relies on CometArrayContains re-entering exprToProto for its
-        // children. If https://github.com/apache/datafusion-comet/issues/5248 changes that,
-        // re-point it to another recursively serializing serde.
+        // Recursive child serialization must retain exactly one equivalent overflow wrapper.
         val arithmeticProto = QueryPlanSerde
           .exprToProto(expression, plan.children.head.output)
           .get
@@ -93,6 +92,62 @@ class CometDecimalPromotionSuite extends CometTestBase {
       divide,
       TestMode(name = "TRY", ansiEnabled = true, failOnError = false),
       s"try_divide($left, $right)")
+  }
+
+  test("issue #5248: nested decimal children and aggregate roots retain overflow wrappers") {
+    val left = AttributeReference("left", DecimalType(10, 0))()
+    val right = AttributeReference("right", DecimalType(10, 0))()
+    val inputs = Seq(left, right)
+
+    Seq(EvalMode.LEGACY, EvalMode.ANSI, EvalMode.TRY).foreach { mode =>
+      val multiply = Multiply(left, right, mode)
+      val arithmetic = Add(multiply, right, mode)
+      val contains = ArrayContains(CreateArray(Seq(arithmetic)), arithmetic)
+
+      def check(proto: ExprOuterClass.Expr): Unit = {
+        assert(proto.hasCheckOverflow, s"$mode: $proto")
+        val outer = proto.getCheckOverflow
+        assert(outer.getDatatype === QueryPlanSerde.serializeDataType(arithmetic.dataType).get)
+        assert(outer.getFailOnError === (mode == EvalMode.ANSI))
+        assert(outer.getChild.hasAdd, s"Duplicate outer CheckOverflow: $proto")
+        val inner = outer.getChild.getAdd.getLeft
+        assert(inner.hasCheckOverflow, s"Missing nested CheckOverflow: $proto")
+        assert(
+          inner.getCheckOverflow.getDatatype ===
+            QueryPlanSerde.serializeDataType(multiply.dataType).get)
+        assert(inner.getCheckOverflow.getFailOnError === (mode == EvalMode.ANSI))
+        assert(
+          inner.getCheckOverflow.getChild.hasMultiply,
+          s"Duplicate inner CheckOverflow: $proto")
+      }
+
+      // Exercise both array child paths, including CreateArray's recursive serialization.
+      Seq(true, false).foreach { binding =>
+        val proto = QueryPlanSerde.exprToProto(contains, inputs, binding).get.getScalarFunc
+        check(proto.getArgs(0).getScalarFunc.getArgs(0))
+        check(proto.getArgs(1))
+        val bitwise = BitwiseNot(Cast(arithmetic, IntegerType))
+        check(
+          QueryPlanSerde
+            .exprToProto(bitwise, inputs, binding)
+            .get
+            .getScalarFunc
+            .getArgs(0)
+            .getCast
+            .getChild)
+      }
+
+      // Aggregate serialization does not promote the aggregate tree before visiting its inputs.
+      val aggregate = AggregateExpression(
+        Sum(arithmetic),
+        Partial,
+        false,
+        Some(contains),
+        NamedExpression.newExprId)
+      val proto = QueryPlanSerde.aggExprToProto(aggregate, inputs, true, SQLConf.get).get
+      check(proto.getSum.getChild)
+      check(proto.getFilter.getScalarFunc.getArgs(1))
+    }
   }
 
   test("decimal Divide with a non-decimal operand is unsupported") {
