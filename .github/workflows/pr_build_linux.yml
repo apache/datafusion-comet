@@ -409,6 +409,7 @@ jobs:
               org.apache.comet.CometSetOpWithGroupBySuite
               org.apache.comet.CometSparkSessionExtensionsSuite
               org.apache.spark.CometPluginsSuite
+              org.apache.spark.CometRuntimeShutdownSuite
               org.apache.spark.CometTaskMemoryManagerSuite
               org.apache.spark.CometExecIteratorLifecycleSuite
               org.apache.spark.CometPluginsDefaultSuite
