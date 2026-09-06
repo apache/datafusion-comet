@@ -814,8 +814,18 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       builder.setExprId(nextExprId())
 
       // Serialize FILTER (WHERE ...) clause if present.
-      // The filter is only meaningful in Partial mode; Final/PartialMerge never set it.
-      if (aggExpr.filter.isDefined && aggExpr.mode == Partial) {
+      // Spark only attaches the filter to Partial mode aggregates in an aggregate operator;
+      // Final/PartialMerge never set it. Only the native aggregate operator honors the filter, so
+      // decline any other mode carrying one rather than silently evaluating the aggregate over
+      // the unfiltered input (window aggregates, which are Complete mode, are declined earlier in
+      // CometWindowExec).
+      if (aggExpr.filter.isDefined) {
+        if (aggExpr.mode != Partial) {
+          withFallbackReason(
+            aggExpr,
+            s"FILTER (WHERE ...) is not supported for aggregate mode ${aggExpr.mode}")
+          return None
+        }
         val filterProto = exprToProto(aggExpr.filter.get, inputs, binding)
         if (filterProto.isEmpty) {
           return None
@@ -895,11 +905,15 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
    * https://github.com/apache/datafusion-comet/issues/5230. Same copy-back that the `Invoke` /
    * `StaticInvoke` rewrites in `Spark4xCometExprShim` do.
    *
+   * Callers are the serde paths that rebuild an expression tree before converting it, so the
+   * reasons land on copies the operator does not hold: `DecimalPrecision.promote` here, and
+   * `CometWindowExec`'s `DecimalAggregates` unwrapping.
+   *
    * Only called when conversion failed: a fallback reason states why an expression could not be
    * converted, so lifting one off a tree that converted fine would attribute a stale reason to an
    * operator that has no problem.
    */
-  private def liftFallbackReasons(from: Expression, to: Expression): Unit = {
+  def liftFallbackReasons(from: Expression, to: Expression): Unit = {
     val reasons = mutable.Set.empty[String]
     from.foreach { e =>
       e.getTagValue(CometExplainInfo.FALLBACK_REASONS).foreach(reasons ++= _)
