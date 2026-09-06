@@ -1423,6 +1423,16 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     "2020-12-1",
     "-0001-01-01T12:34:56",
     "2021-11-22 10:54:27 +08:00",
+    "2020-01-01 12:34:56 Z",
+    "2020-01-01 12:34:56\t+08:00",
+    "2020-01-01 12:34:56\n+08:00",
+    "2020-01-01 12:34:56.123 +08:00",
+    "2020-01-01 12:34:56. +08:00",
+    "2020-01-01 12:34:56  +08:00",
+    "2020-01-01 12:34:56 -08:00",
+    "2020-01-01 12:34:56 Europe/Moscow",
+    "-0001-01-01T12:34:56 +08:00",
+    "-0001-01-01T12:34:56-08:00",
     "2020-1-1T1",
     "2020-1-1 1:2",
     "2020-01-01 12:34:5",
@@ -1454,6 +1464,12 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     "1:2:٣",
     "1:2:3.٢",
     // zone suffix before the seconds segment
+    "2020-01-01 12:34 +08:00",
+    "2020-01-01 12 +08:00",
+    "2020-01-01 +08:00",
+    "2020-01-01 Z",
+    "2020-01 +08:00",
+    "2020 +08:00",
     "2020Z",
     "2020-10-01Z",
     "2020-01-01+05:30",
@@ -1492,6 +1508,24 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         assertNative = true)
       sparkSegmentRuleMalformedTimestamps.foreach { value =>
         castTimestampTest(Seq(value).toDF("a"), DataTypes.TimestampNTZType, assertNative = true)
+      }
+    }
+  }
+
+  test("cast StringType to TimestampType/TimestampNTZType - whitespace before zone suffix") {
+    // Zone names use Java String.trim (<= U+0020), not Unicode whitespace trimming.
+    val values = Seq(0x01, 0x0b, 0x0c, 0x1f, 0x7f, 0x00a0, 0x2009, 0x3000)
+      .map(ws => s"2020-01-01 12:34:56${ws.toChar}+08:00") ++ Seq(
+      "2020-01-01 12:34:56\u00a0UTC",
+      "2020-01-01 12:34:56\u00a0Z",
+      "2020-01-01 12:34:56.123\u00a0+08:00")
+    for (tz <- Seq("UTC", "America/Los_Angeles")) {
+      withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz) {
+        // One Parquet-backed value at a time checks every invalid input in ANSI as well.
+        for (value <- values;
+          dataType <- Seq(DataTypes.TimestampType, DataTypes.TimestampNTZType)) {
+          castTimestampTest(Seq(value).toDF("a"), dataType, assertNative = true)
+        }
       }
     }
   }

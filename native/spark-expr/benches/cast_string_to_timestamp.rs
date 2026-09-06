@@ -30,10 +30,9 @@ const BATCH_SIZE: usize = 8192;
 fn criterion_benchmark(c: &mut Criterion) {
     let expr = Arc::new(Column::new("a", 0)) as Arc<dyn PhysicalExpr>;
 
-    // Input shapes, chosen to cover each branch `timestamp_parser` can take: the canonical
-    // form, the fractional-second form, an offset suffix (which takes the extract-offset
-    // path), a date-only string, whitespace padding (the trim), and a mix that includes
-    // invalid values so the null path is measured too.
+    // Cover single-digit segments, empty fractions, rejected date-only zones, canonical
+    // timestamps, microseconds, offset extraction, date-only input, whitespace padding,
+    // and a mix containing invalid values so the null path is measured too.
     let batches = [
         (
             "single_digit_segments",
@@ -181,8 +180,8 @@ fn criterion_benchmark(c: &mut Criterion) {
         }
     }
 
-    // The Spark 4 path adds a leading-whitespace check for T-prefixed time-only strings, so it
-    // is measured separately on the inputs where that check can fire.
+    // Measure the cost of Spark 4's leading-whitespace/T-prefix check. Neither padded nor
+    // mixed combines both conditions, so these inputs never take its rejection branch.
     let mut group = c.benchmark_group("cast_string_to_timestamp/spark4_legacy");
     for name in ["padded", "mixed"] {
         let batch = &batches.iter().find(|(n, _)| *n == name).unwrap().1;

@@ -1468,7 +1468,8 @@ fn timestamp_parser<T: TimeZone>(
 
     if !has_direct_match {
         if let Some((stripped, suffix_tz)) = extract_offset_suffix(value) {
-            let stripped = stripped.trim_end();
+            // Spark applies Java String.trim to the zone, not Unicode whitespace trimming.
+            let stripped = stripped.trim_end_matches(|c: char| c <= '\u{20}');
             // A zone suffix is only meaningful after the seconds segment. Otherwise fall
             // through with the unstripped value, which no base pattern matches, so it is
             // reported as malformed (null, or CAST_INVALID_INPUT under ANSI) like Spark does.
@@ -1820,7 +1821,11 @@ fn timestamp_ntz_parser(
     // pattern matches, so the inner parser reports it as malformed.
     let value_to_parse = if !has_direct_match {
         match extract_offset_suffix(value) {
-            Some((stripped, _tz)) if ends_with_seconds_segment(stripped.trim_end()) => {
+            Some((stripped, _tz))
+                if ends_with_seconds_segment(
+                    stripped.trim_end_matches(|c: char| c <= '\u{20}'),
+                ) =>
+            {
                 if !allow_time_zone {
                     return if eval_mode == EvalMode::Ansi {
                         Err(SparkError::InvalidInputInCastToDatetime {
@@ -1832,7 +1837,7 @@ fn timestamp_ntz_parser(
                         Ok(None)
                     };
                 }
-                stripped.trim_end()
+                stripped.trim_end_matches(|c: char| c <= '\u{20}')
             }
             _ => value,
         }
@@ -3045,6 +3050,60 @@ mod tests {
         "2020-01-01T12:345",
         "2020-01-01T12:34:567",
     ];
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn timestamp_zone_whitespace_matches_java_trim() {
+        let tz = &Tz::from_str("UTC").unwrap();
+        for whitespace in [
+            " ", "\t", "\n", "\u{1}", "\u{b}", "\u{c}", "\u{7f}", "\u{a0}", "\u{2009}", "\u{3000}",
+        ] {
+            let valid = whitespace.chars().all(|c| c <= '\u{20}');
+            for (suffix, offset) in [("+08:00", 28_800_000_000), ("UTC", 0), ("Z", 0)] {
+                for (fraction, micros) in [("", 0), (".123", 123_000)] {
+                    let input = format!("2020-01-01 12:34:56{fraction}{whitespace}{suffix}");
+                    for mode in [EvalMode::Legacy, EvalMode::Try, EvalMode::Ansi] {
+                        for spark4 in [false, true] {
+                            for (result, expected) in [
+                                (
+                                    timestamp_parser(&input, mode, tz, spark4),
+                                    JAN1_2020_123456 + micros - offset,
+                                ),
+                                (
+                                    timestamp_ntz_parser(&input, mode, true, spark4),
+                                    JAN1_2020_123456 + micros,
+                                ),
+                            ] {
+                                if valid {
+                                    assert_eq!(
+                                        result.unwrap(),
+                                        Some(expected),
+                                        "{input:?}, {mode:?}"
+                                    );
+                                } else if mode == EvalMode::Ansi {
+                                    assert!(
+                                        matches!(
+                                            result,
+                                            Err(SparkError::InvalidInputInCastToDatetime { .. })
+                                        ),
+                                        "{input:?}"
+                                    );
+                                } else {
+                                    assert_eq!(result.unwrap(), None, "{input:?}, {mode:?}");
+                                }
+                            }
+                            let no_zone = timestamp_ntz_parser(&input, mode, false, spark4);
+                            if mode == EvalMode::Ansi {
+                                assert!(no_zone.is_err(), "{input:?}");
+                            } else {
+                                assert_eq!(no_zone.unwrap(), None, "{input:?}");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     #[cfg_attr(miri, ignore)]
