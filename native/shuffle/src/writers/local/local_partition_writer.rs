@@ -240,7 +240,7 @@ impl PartitionWriter for LocalPartitionWriter {
                 // if we wrote a spill file for this partition then copy the
                 // contents into the shuffle file
                 if let Some(writer) = spill_writers.get(pid) {
-                    if let Some(spill_path) = writer.path() {
+                    if let Some(spill_path) = writer.path()? {
                         // Use raw File handle (not BufReader) so that std::io::copy
                         // can use copy_file_range/sendfile for zero-copy on Linux.
                         let mut spill_file = File::open(spill_path)?;
@@ -330,25 +330,30 @@ impl PartitionWriter for LocalPartitionWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::writers::local::spill::pathless_backend;
     use crate::CompressionCodec;
     use arrow::array::Int64Array;
     use arrow::datatypes::{DataType, Field, Schema};
     use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
 
-    /// A partition whose batch iterator fails after a batch was already encoded must hand
-    /// back a drained scratch; leftover bytes would land in the next partition's block.
-    #[test]
-    fn finish_partition_error_drains_recycled_buffer() {
+    fn test_batch() -> RecordBatch {
         let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, false)]));
-        let batch = RecordBatch::try_new(
+        RecordBatch::try_new(
             Arc::clone(&schema),
             vec![Arc::new(Int64Array::from_iter_values(0..100))],
         )
-        .unwrap();
+        .unwrap()
+    }
+
+    fn partition_writer(
+        batch: &RecordBatch,
+        dir: &tempfile::TempDir,
+        runtime: Arc<RuntimeEnv>,
+    ) -> LocalPartitionWriter {
         let block_writer =
-            ShuffleBlockWriter::try_new(schema.as_ref(), CompressionCodec::None).unwrap();
-        let dir = tempfile::tempdir().unwrap();
-        let mut writer = LocalPartitionWriter::try_new(
+            ShuffleBlockWriter::try_new(batch.schema_ref().as_ref(), CompressionCodec::None)
+                .unwrap();
+        LocalPartitionWriter::try_new(
             dir.path().join("data.out").to_str().unwrap().to_string(),
             dir.path().join("index.out").to_str().unwrap().to_string(),
             block_writer,
@@ -356,9 +361,18 @@ mod tests {
             // batch_size below the row count so the write serializes into the scratch.
             10,
             1 << 20,
-            Arc::new(RuntimeEnv::default()),
+            runtime,
         )
-        .unwrap();
+        .unwrap()
+    }
+
+    /// A partition whose batch iterator fails after a batch was already encoded must hand
+    /// back a drained scratch; leftover bytes would land in the next partition's block.
+    #[test]
+    fn finish_partition_error_drains_recycled_buffer() {
+        let batch = test_batch();
+        let dir = tempfile::tempdir().unwrap();
+        let mut writer = partition_writer(&batch, &dir, Arc::new(RuntimeEnv::default()));
 
         let metrics = ShufflePartitionerMetrics::new(&ExecutionPlanMetricsSet::new(), 0);
         let mut iter = vec![
@@ -378,5 +392,28 @@ mod tests {
             ),
             DataOutput::Single { .. } => unreachable!("two partitions use the multi output"),
         }
+    }
+
+    /// Spilled bytes the writer cannot reach must fail the task. Skipping the copy the way
+    /// an unspilled partition is skipped would leave the offsets claiming bytes that were
+    /// never written, so the reader would decode the next partition's block as this one's.
+    #[test]
+    fn finish_partition_fails_when_spill_has_no_local_path() {
+        let batch = test_batch();
+        let dir = tempfile::tempdir().unwrap();
+        let mut writer = partition_writer(&batch, &dir, Arc::new(pathless_backend::runtime()));
+        let metrics = ShufflePartitionerMetrics::new(&ExecutionPlanMetricsSet::new(), 0);
+
+        writer
+            .write(0, &mut vec![Ok(batch)].into_iter(), &metrics)
+            .unwrap();
+
+        let err = writer
+            .finish_partition(0, &mut std::iter::empty(), &metrics)
+            .expect_err("unreachable spilled data must fail rather than truncate the partition");
+        assert!(
+            err.to_string().contains("no local path"),
+            "unexpected error: {err}"
+        );
     }
 }
