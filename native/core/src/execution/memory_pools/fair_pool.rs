@@ -24,10 +24,9 @@ use jni::objects::{Global, JObject};
 
 use crate::{errors::CometResult, jvm_bridge::JVMClasses};
 use datafusion::common::resources_err;
-use datafusion::execution::memory_pool::MemoryConsumer;
 use datafusion::{
     common::DataFusionError,
-    execution::memory_pool::{MemoryPool, MemoryReservation},
+    execution::memory_pool::{MemoryConsumer, MemoryLimit, MemoryPool, MemoryReservation},
 };
 use parking_lot::Mutex;
 
@@ -42,6 +41,17 @@ pub struct CometFairMemoryPool {
 struct CometFairPoolState {
     used: usize,
     num: usize,
+}
+
+fn fair_limit_exceeded(
+    pool_size: usize,
+    num: usize,
+    reservation: &MemoryReservation,
+    additional: usize,
+) -> Option<(usize, usize)> {
+    let used = reservation.size();
+    let limit = pool_size.checked_div(num).expect("overflow in checked_div");
+    (limit < used.saturating_add(additional)).then_some((used, limit))
 }
 
 impl Debug for CometFairMemoryPool {
@@ -142,21 +152,15 @@ impl MemoryPool for CometFairMemoryPool {
 
     fn try_grow(
         &self,
-        _reservation: &MemoryReservation,
+        reservation: &MemoryReservation,
         additional: usize,
     ) -> Result<(), DataFusionError> {
         if additional > 0 {
             let mut state = self.state.lock();
             let num = state.num;
-            let limit = self
-                .pool_size
-                .checked_div(num)
-                .expect("overflow in checked_div");
-            // We use state.used instead of reservation.size() because DataFusion 53+
-            // calls pool.try_grow() before incrementing the reservation's atomic size,
-            // so reservation.size() would not include prior grows.
-            let used = state.used;
-            if limit < used + additional {
+            if let Some((used, limit)) =
+                fair_limit_exceeded(self.pool_size, num, reservation, additional)
+            {
                 return resources_err!(
                     "Failed to acquire {additional} bytes where {used} bytes already reserved and the fair limit is {limit} bytes, {num} registered"
                 );
@@ -186,5 +190,30 @@ impl MemoryPool for CometFairMemoryPool {
 
     fn reserved(&self) -> usize {
         self.state.lock().used
+    }
+
+    fn memory_limit(&self) -> MemoryLimit {
+        MemoryLimit::Finite(self.pool_size)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use datafusion::execution::memory_pool::UnboundedMemoryPool;
+
+    #[test]
+    fn fair_share_uses_requesting_reservation_and_reports_pool_limit() {
+        let backing: Arc<dyn MemoryPool> = Arc::new(UnboundedMemoryPool::default());
+        let other = MemoryConsumer::new("other").register(&backing);
+        let requesting = MemoryConsumer::new("requesting").register(&backing);
+        other.grow(10);
+        requesting.grow(6);
+
+        assert_eq!(fair_limit_exceeded(32, 2, &requesting, 10), None);
+        assert_eq!(fair_limit_exceeded(32, 2, &requesting, 11), Some((6, 16)));
+
+        let pool = CometFairMemoryPool::new(Arc::new(Global::null()), 32);
+        assert!(matches!(pool.memory_limit(), MemoryLimit::Finite(32)));
     }
 }
