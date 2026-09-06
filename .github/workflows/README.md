@@ -38,8 +38,11 @@ is a `workflow_call` reusable invoked from the umbrella.
   (PR+push)    (PR+push)    (PR+push)
                                                        |           |           |
                                                        v           v           v
-                                     spark_3_4 / spark_4_1 / spark_4_2  iceberg_1_8 / 1_9
-                                            (push or PR + label)        (push only)
+                                            spark_3_4 / spark_4_1   iceberg_1_8 / 1_9
+                                            (push or PR + label)    (push only)
+
+                                                  spark_4_2
+                                            (workflow_dispatch only)
 
   reusable workflows invoked via `uses:`:
     pr_build_linux.yml         spark_sql_test_reusable.yml
@@ -62,7 +65,7 @@ is a `workflow_call` reusable invoked from the umbrella.
 | `spark_4_0`          | PR or push, paths matched                        | Spark 4.0 sources                   |
 | `spark_3_4`          | push, **or** PR with `run-spark-3.4-tests` label | Spark 3.4 sources                   |
 | `spark_4_1`          | push, **or** PR with `run-spark-4.1-tests` label | Spark 4.1 sources                   |
-| `spark_4_2`          | push, **or** PR with `run-spark-4.2-tests` label | Spark 4.2 sources                   |
+| `spark_4_2`          | `workflow_dispatch` only (on demand)             | Spark 4.2 sources                   |
 | `iceberg_1_10`       | PR or push, paths matched                        | Iceberg sources                     |
 | `iceberg_1_8`        | push only                                        | Iceberg sources                     |
 | `iceberg_1_9`        | push only                                        | Iceberg sources                     |

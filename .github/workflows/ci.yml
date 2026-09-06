@@ -66,7 +66,6 @@ jobs:
       github.event.label.name == 'run-spark-3.4-tests' ||
       github.event.label.name == 'run-spark-4.0-tests' ||
       github.event.label.name == 'run-spark-4.1-tests' ||
-      github.event.label.name == 'run-spark-4.2-tests' ||
       github.event.label.name == 'run-iceberg-tests'
     steps:
       - uses: actions/checkout@v7
@@ -283,14 +282,13 @@ jobs:
   spark_4_2:
     name: Spark SQL Tests (Spark 4.2)
     needs: changes
-    # Main-only by default; PRs need the `run-spark-4.2-tests` label. Spark 4.2
-    # support is still experimental, so keep it off the default PR path.
+    # On demand only for now: Spark 4.2 support is brand new, so this job runs
+    # neither on PRs nor on pushes to main. Trigger it from the Actions tab
+    # (CI -> Run workflow), which forces every `changes` output true. Wiring it
+    # into the PR and push paths is a follow-up once the version has settled.
     if: |
       needs.changes.outputs.spark_4_2 == 'true' &&
-      (github.event_name == 'push' ||
-       github.event_name == 'workflow_dispatch' ||
-       (github.event_name == 'pull_request' &&
-        contains(github.event.pull_request.labels.*.name, 'run-spark-4.2-tests')))
+      github.event_name == 'workflow_dispatch'
     uses: ./.github/workflows/spark_sql_test_reusable.yml
     with:
       spark-short: '4.2'
