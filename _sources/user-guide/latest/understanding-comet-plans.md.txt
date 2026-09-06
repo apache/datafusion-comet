@@ -122,7 +122,7 @@ natively in DataFusion" from "runs Spark's generated code inside a Comet
 kernel". The annotation only appears for expressions Comet actually routed
 through the dispatcher on this plan — either because no native DataFusion
 implementation exists (`CometCodegenDispatch` serdes such as `hypot`,
-`levenshtein`, `pmod`), or because a native path exists but declined this
+`pmod`, `months_between`), or because a native path exists but declined this
 specific input (`CodegenDispatchFallback` mixins). It is not a general "this
 expression ran here" marker.
 
@@ -132,7 +132,7 @@ Example:
 spark.conf.set("spark.comet.exec.scalaUDF.codegen.enabled", "true")
 spark.conf.set("spark.comet.explain.codegen.enabled", "true")
 
-val df = spark.sql("SELECT hypot(a, b), levenshtein(s1, s2) FROM t")
+val df = spark.sql("SELECT hypot(a, b), pmod(a, b) FROM t")
 println(new org.apache.comet.ExtendedExplainInfo()
   .generateExtendedInfo(df.queryExecution.executedPlan))
 ```
@@ -141,14 +141,14 @@ Output:
 
 ```
 CometColumnarToRow
-+- CometProject [COMET-INFO: JVM codegen dispatcher: hypot, levenshtein]
++- CometProject [COMET-INFO: JVM codegen dispatcher: hypot, pmod]
    +- CometNativeScan parquet spark_catalog.default.t
 
 Comet accelerated 2 out of 2 eligible operators (100%). Final plan contains 1 transitions between Spark and Comet. Accelerated expressions: 0 native, 2 codegen dispatch.
 ```
 
 Note that the operator is still `CometProject` (Comet-accelerated); only the
-per-expression evaluation for `hypot` and `levenshtein` takes the JVM codegen
+per-expression evaluation for `hypot` and `pmod` takes the JVM codegen
 path.
 
 ### `spark.comet.explain.format`

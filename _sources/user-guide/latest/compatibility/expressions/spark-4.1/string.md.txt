@@ -76,9 +76,9 @@ The following cases are not supported by Comet and always fall back to Spark, re
 
 ## Levenshtein
 
-The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
+The following cases have no native implementation and always run in the JVM using Spark's code-generated implementation (inside the Comet pipeline):
 
-- Non-default collation (non-UTF8_BINARY) is not supported
+- Non-default (non-UTF8_BINARY) collated input. The native kernel compares raw bytes, so collation-aware comparison has no native path.
 
 ## Like
 

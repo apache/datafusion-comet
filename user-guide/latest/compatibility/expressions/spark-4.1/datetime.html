@@ -878,7 +878,7 @@ with Spark. For dates beyond this range, functions that involve timezone-aware c
 </section>
 <section id="nextday">
 <h2>NextDay<a class="headerlink" href="#nextday" title="Link to this heading">#</a></h2>
-<p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">NextDay</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.NextDay.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
+<p>By default, <code class="docutils literal notranslate"><span class="pre">NextDay</span></code> is evaluated in the JVM using Spark’s own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.NextDay.allowIncompatible=true</span></code> to opt into Comet’s native implementation instead, which has the following differences from Spark:</p>
 <ul class="simple">
 <li><p>next_day does not support non-UTF8_BINARY collations (https://github.com/apache/datafusion-comet/issues/4646)</p></li>
 </ul>

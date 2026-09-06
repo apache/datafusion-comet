@@ -108,7 +108,7 @@ By default, `MakeTimestamp` is evaluated in the JVM using Spark's own code-gener
 
 ## NextDay
 
-The following incompatibilities cause `NextDay` to fall back to Spark by default. Set `spark.comet.expression.NextDay.allowIncompatible=true` to enable Comet acceleration despite these differences.
+By default, `NextDay` is evaluated in the JVM using Spark's own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set `spark.comet.expression.NextDay.allowIncompatible=true` to opt into Comet's native implementation instead, which has the following differences from Spark:
 
 - next_day does not support non-UTF8_BINARY collations (https://github.com/apache/datafusion-comet/issues/4646)
 
