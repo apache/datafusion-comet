@@ -24,17 +24,19 @@ import scala.util.Random
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.FunctionIdentifier
 import org.apache.spark.sql.catalyst.expressions.{Expression, ExpressionInfo}
-import org.apache.spark.sql.catalyst.expressions.aggregate.BloomFilterAggregate
+import org.apache.spark.sql.catalyst.expressions.aggregate.{BloomFilterAggregate, Partial}
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.QueryStageExec
 import org.apache.spark.sql.execution.aggregate.{HashAggregateExec, ObjectHashAggregateExec}
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ShuffleExchangeExec}
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
 
-import org.apache.comet.{CometConf, CometExplainInfo}
+import org.apache.comet.{CometConf, CometExplainInfo, ExtendedExplainInfo}
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark42Plus}
+import org.apache.comet.serde.{Compatible, Unsupported}
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
 /**
@@ -76,6 +78,30 @@ class CometExecRuleSuite extends CometTestBase {
       case op if op.getClass.isAssignableFrom(opClass) => 1
     }.sum
   }
+
+  /**
+   * Build a Spark plan containing an `ObjectHashAggregateExec` and hand it to `f`. `collect_list`
+   * is a `TypedImperativeAggregate`, so Spark plans it as `ObjectHashAggregateExec` rather than
+   * `HashAggregateExec`. Each call builds a fresh plan, which matters because fallback reasons
+   * accumulate on plan-node tags.
+   */
+  private def withObjectHashAggPlan(f: SparkPlan => Unit): Unit = {
+    withSQLConf(SQLConf.USE_OBJECT_HASH_AGG.key -> "true") {
+      withTempView("test_data") {
+        createTestDataFrame.createOrReplaceTempView("test_data")
+        val sparkPlan =
+          createSparkPlan(spark, "SELECT id, collect_list(name) FROM test_data GROUP BY id")
+        assert(countOperators(sparkPlan, classOf[ObjectHashAggregateExec]) > 0)
+        f(sparkPlan)
+      }
+    }
+  }
+
+  /** The partial-mode `ObjectHashAggregateExec` in `plan`. */
+  private def partialObjectHashAgg(plan: SparkPlan): ObjectHashAggregateExec =
+    stripAQEPlan(plan).collectFirst {
+      case a: ObjectHashAggregateExec if a.aggregateExpressions.forall(_.mode == Partial) => a
+    }.get
 
   test("expression-level fallback reasons are rolled up onto the operator that falls back") {
     // Extended explain only walks plan nodes, so a reason recorded on a sub-expression is
@@ -171,6 +197,100 @@ class CometExecRuleSuite extends CometTestBase {
         // must complete rather than throw.
         val transformedPlan = applyCometExecRule(sparkPlan)
         assert(transformedPlan != null)
+      }
+    }
+  }
+
+  test("ObjectHashAggregate records a reason when it declines because Comet shuffle is off") {
+    // CometObjectHashAggregateExec deliberately declines when Comet shuffle is disabled, because
+    // converting it would leave a Comet partial aggregate feeding a Spark final aggregate. That
+    // decline used to return None from `convert` without recording why, so strict mode saw an
+    // unexplained fallback and the generic "<operator> is not supported" message hid the real
+    // cause. See https://github.com/apache/datafusion-comet/issues/5500.
+    //
+    // Both strict settings matter and are covered here: strict mode turns a missing reason into a
+    // hard failure, while the lenient production default is where the generic message used to
+    // stand in for the real cause, so it is the half a user actually sees.
+    Seq(true, false).foreach { strictFallbackReasons =>
+      // A fresh plan per iteration: fallback reasons accumulate on plan-node tags, so reusing
+      // one plan would let the first iteration's reasons satisfy the second.
+      withObjectHashAggPlan { sparkPlan =>
+        withSQLConf(
+          CometConf.COMET_SHUFFLE_ENABLED.key -> "false",
+          CometConf.COMET_STRICT_FALLBACK_REASONS.key -> strictFallbackReasons.toString,
+          CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+          val transformedPlan = applyCometExecRule(sparkPlan)
+          // Assert on the partial stage: its child is the Comet local table scan, so it is the
+          // node whose children are all native and which therefore reaches the strict
+          // unexplained-fallback check in CometExecRule.
+          val partialAgg = partialObjectHashAgg(transformedPlan)
+
+          val reasons = partialAgg
+            .getTagValue(CometExplainInfo.FALLBACK_REASONS)
+            .getOrElse(Set.empty[String])
+          assert(
+            reasons.exists(_.contains("Comet shuffle is not enabled")),
+            "expected the shuffle-disabled reason on the ObjectHashAggregateExec, " +
+              s"got: $reasons")
+          // The generic catch-all must not appear: a real reason was available.
+          assert(
+            !reasons.contains(s"${partialAgg.nodeName} is not supported"),
+            s"a real reason was available but the generic message was used too: $reasons")
+
+          // The reason must survive into the rendered extended-explain output, which is what
+          // the user actually reads.
+          val explained = new ExtendedExplainInfo().getFallbackReasons(transformedPlan)
+          // Match the tail, not the "Comet shuffle is not enabled" prefix: with shuffle off,
+          // CometShuffleExchangeExec.shuffleSupported tags the ShuffleExchangeExec with its own
+          // "Comet shuffle is not enabled: ..." reason, and getFallbackReasons flattens every
+          // node's tags into one unattributed set. The prefix alone would match that instead.
+          assert(
+            explained.exists(_.contains("would split the aggregate across Comet and Spark")),
+            s"expected the aggregate's own reason in extended explain output, got: $explained")
+        }
+      }
+    }
+  }
+
+  test("CometObjectHashAggregateExec reports the shuffle-disabled decline in getSupportLevel") {
+    // The decline belongs in getSupportLevel, not convert: that is where CometExecRule attaches
+    // the fallback reason centrally, and it matches CometCollectLimitExec and
+    // CometTakeOrderedAndProjectExec, which gate on the same shuffle predicate.
+    // See https://github.com/apache/datafusion-comet/issues/5500.
+    withObjectHashAggPlan { sparkPlan =>
+      val agg = partialObjectHashAgg(sparkPlan)
+
+      withSQLConf(CometConf.COMET_SHUFFLE_ENABLED.key -> "false") {
+        CometObjectHashAggregateExec.getSupportLevel(agg) match {
+          case Unsupported(Some(notes)) =>
+            // Assert the aggregate-specific tail, not the "Comet shuffle is not enabled"
+            // prefix: that prefix is shared with CometCollectLimitExec and
+            // CometTakeOrderedAndProjectExec, so matching it alone would not notice this
+            // message losing the half that explains the split.
+            assert(
+              notes.contains("would split the aggregate across Comet and Spark"),
+              s"expected the aggregate-specific shuffle-disabled reason, got: $notes")
+          case other =>
+            fail(s"expected Unsupported with a shuffle-disabled reason, got: $other")
+        }
+      }
+
+      // Enabling shuffle must leave eligibility untouched.
+      withSQLConf(CometConf.COMET_SHUFFLE_ENABLED.key -> "true") {
+        assert(CometObjectHashAggregateExec.getSupportLevel(agg).isInstanceOf[Compatible])
+      }
+    }
+  }
+
+  test("ObjectHashAggregate still converts when Comet shuffle is enabled") {
+    // Guards the other half of https://github.com/apache/datafusion-comet/issues/5500: adding the
+    // fallback reason must not change which aggregates Comet accepts.
+    withObjectHashAggPlan { sparkPlan =>
+      withSQLConf(
+        CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+        val transformedPlan = applyCometExecRule(sparkPlan)
+        assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) > 0)
       }
     }
   }
