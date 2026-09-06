@@ -117,7 +117,7 @@ use datafusion::physical_expr::expressions::{LambdaExpr, LambdaVariable, Literal
 use datafusion::physical_expr::window::WindowExpr;
 use datafusion::physical_expr::{HigherOrderFunctionExpr, LexOrdering};
 
-use crate::execution::lambda::{pin_unused_params, LambdaScope, LambdaScopes};
+use crate::execution::lambda::{LambdaScope, LambdaScopes};
 use crate::parquet::parquet_exec::init_datasource_exec;
 use arrow::array::{
     new_empty_array, Array, ArrayRef, BinaryBuilder, BooleanArray, Date32Array, Decimal128Array,
@@ -132,7 +132,7 @@ use datafusion::physical_plan::filter::FilterExec;
 use datafusion::physical_plan::joins::NestedLoopJoinExec;
 use datafusion::physical_plan::limit::GlobalLimitExec;
 use datafusion::physical_plan::unnest::ListUnnest;
-use datafusion_comet_proto::spark_expression::ListLiteral;
+use datafusion_comet_proto::spark_expression::{HigherOrderFunc, LambdaFunction, ListLiteral};
 use datafusion_comet_proto::spark_operator::SparkFilePartition;
 use datafusion_comet_proto::{
     spark_expression::{
@@ -3730,9 +3730,6 @@ impl PhysicalPlanner {
         let body_expr = self
             .lambda_scopes
             .with_scope(scope, || self.create_expr(lambda_body, body_schema))?;
-
-        // Pin unused params so LambdaExpr's index compaction stays consistent.
-        let body_expr = pin_unused_params(body_expr, &scope_entries);
 
         Ok(Arc::new(LambdaExpr::try_new(param_names, body_expr)?))
     }

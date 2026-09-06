@@ -28,16 +28,9 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::Arc;
 
-use arrow::array::RecordBatch;
-use arrow::datatypes::{FieldRef, Schema};
-use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
-use datafusion::common::{DataFusionError, Result};
-use datafusion::physical_expr::expressions::LambdaVariable;
-use datafusion::physical_expr::PhysicalExpr;
-use datafusion::physical_plan::ColumnarValue;
-use std::collections::HashSet;
+use arrow::datatypes::FieldRef;
+use datafusion::common::Result;
 
 /// Maps Spark `exprId` -> (column index in the extended body schema, field).
 pub(crate) type LambdaScope = HashMap<i64, (usize, FieldRef)>;
@@ -72,122 +65,5 @@ impl LambdaScopes {
         let out = f();
         self.stack.borrow_mut().pop();
         out
-    }
-}
-
-/// Wrap a lambda body so that params which are *unused* in the body still
-/// appear in `children()`.
-///
-/// Why: `LambdaExpr::new` compacts referenced `LambdaVariable` indices to
-/// `0..k` while HOF `evaluate` builds the lambda batch as
-/// `[projected env columns] ++ [ALL params]`. An unreferenced param would
-/// otherwise let a nested lambda's variable get compacted into its runtime
-/// slot, tripping DataFusion's exact field check.
-///
-/// Public helper: prefer [`pin_unused_params`] over constructing this
-/// directly.
-#[derive(Debug)]
-pub(crate) struct LambdaParamsCapture {
-    body: Arc<dyn PhysicalExpr>,
-    unused_params: Vec<Arc<dyn PhysicalExpr>>,
-}
-
-impl std::fmt::Display for LambdaParamsCapture {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{}", self.body)
-    }
-}
-
-// `Arc<dyn PhysicalExpr>` blocks derive (see rust-lang/rust#78808).
-// Equality/hash must cover *both* fields: two captures with the same body
-// but different pinned params yield different projections and are not
-// interchangeable under CSE / plan-equality.
-impl PartialEq for LambdaParamsCapture {
-    fn eq(&self, other: &Self) -> bool {
-        self.body.eq(&other.body) && self.unused_params == other.unused_params
-    }
-}
-
-impl Eq for LambdaParamsCapture {}
-
-impl std::hash::Hash for LambdaParamsCapture {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.body.hash(state);
-        self.unused_params.hash(state);
-    }
-}
-
-impl PhysicalExpr for LambdaParamsCapture {
-    fn data_type(&self, s: &Schema) -> Result<arrow::datatypes::DataType> {
-        self.body.data_type(s)
-    }
-
-    fn nullable(&self, s: &Schema) -> Result<bool> {
-        self.body.nullable(s)
-    }
-
-    fn evaluate(&self, batch: &RecordBatch) -> Result<ColumnarValue> {
-        // Params are never evaluated — they exist only for the index scan
-        // in `LambdaExpr::new` and the `transform_down` remapping.
-        self.body.evaluate(batch)
-    }
-
-    fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
-        let mut c = Vec::with_capacity(1 + self.unused_params.len());
-        c.push(&self.body);
-        c.extend(self.unused_params.iter());
-        c
-    }
-
-    fn with_new_children(
-        self: Arc<Self>,
-        children: Vec<Arc<dyn PhysicalExpr>>,
-    ) -> Result<Arc<dyn PhysicalExpr>> {
-        let (body, params) = children.split_first().ok_or_else(|| {
-            DataFusionError::Internal("LambdaParamsCapture requires children".into())
-        })?;
-        Ok(Arc::new(Self {
-            body: Arc::clone(body),
-            unused_params: params.to_vec(),
-        }))
-    }
-
-    fn fmt_sql(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.body.fmt_sql(f)
-    }
-}
-
-/// Wrap `body` in a [`LambdaParamsCapture`] if there are params which the
-/// body never references. Returns `body` unchanged otherwise.
-///
-/// `params` is `(column_index, field)` for every declared lambda param.
-pub(crate) fn pin_unused_params(
-    body: Arc<dyn PhysicalExpr>,
-    params: &[(usize, FieldRef)],
-) -> Arc<dyn PhysicalExpr> {
-    let mut used_indices = HashSet::new();
-
-    let _ = body.apply(|e| {
-        if let Some(v) = e.downcast_ref::<LambdaVariable>() {
-            used_indices.insert(v.index());
-        }
-        Ok(TreeNodeRecursion::Continue)
-    });
-
-    let unused_params: Vec<Arc<dyn PhysicalExpr>> = params
-        .iter()
-        .filter(|(idx, _)| !used_indices.contains(idx))
-        .map(|(idx, field)| {
-            Arc::new(LambdaVariable::new(*idx, Arc::clone(field))) as Arc<dyn PhysicalExpr>
-        })
-        .collect();
-
-    if unused_params.is_empty() {
-        body
-    } else {
-        Arc::new(LambdaParamsCapture {
-            body,
-            unused_params,
-        })
     }
 }
