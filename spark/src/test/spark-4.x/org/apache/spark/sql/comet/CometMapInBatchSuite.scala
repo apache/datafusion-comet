@@ -45,6 +45,26 @@ private case class StubCometLeaf(override val output: Seq[Attribute])
 }
 
 /**
+ * Inert `PythonFunction` for the plan-rule suites in this package, which build a `PythonUDF`
+ * without ever launching a worker. Shared by `CometMapInBatchSuite` and
+ * `CometArrowEvalPythonSuite`.
+ */
+private object StubPythonFunction {
+  def apply(): PythonFunction = new PythonFunction {
+    override val command: Seq[Byte] = Seq.empty[Byte]
+    override val envVars: java.util.Map[String, String] =
+      new java.util.HashMap[String, String]()
+    override val pythonIncludes: java.util.List[String] =
+      java.util.Collections.emptyList[String]()
+    override val pythonExec: String = "python3"
+    override val pythonVer: String = "3"
+    override val broadcastVars: java.util.List[Broadcast[PythonBroadcast]] =
+      java.util.Collections.emptyList[Broadcast[PythonBroadcast]]()
+    override val accumulator: PythonAccumulatorV2 = null
+  }
+}
+
+/**
  * Plan-rule test for the `EliminateRedundantTransitions` rewrite that produces
  * `CometMapInBatchExec`. Pure Python execution paths are covered by the pytest module
  * `test_pyarrow_udf.py`; this suite verifies the JVM-side rule without spinning up Python.
@@ -56,18 +76,7 @@ private case class StubCometLeaf(override val output: Seq[Attribute])
 class CometMapInBatchSuite extends CometTestBase {
 
   private def stubPythonUDF: PythonUDF = {
-    val pyFunc = new PythonFunction {
-      override val command: Seq[Byte] = Seq.empty[Byte]
-      override val envVars: java.util.Map[String, String] =
-        new java.util.HashMap[String, String]()
-      override val pythonIncludes: java.util.List[String] =
-        java.util.Collections.emptyList[String]()
-      override val pythonExec: String = "python3"
-      override val pythonVer: String = "3"
-      override val broadcastVars: java.util.List[Broadcast[PythonBroadcast]] =
-        java.util.Collections.emptyList[Broadcast[PythonBroadcast]]()
-      override val accumulator: PythonAccumulatorV2 = null
-    }
+    val pyFunc = StubPythonFunction()
     PythonUDF(
       name = "test_udf",
       func = pyFunc,
