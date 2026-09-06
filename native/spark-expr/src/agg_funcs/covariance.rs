@@ -21,7 +21,9 @@ use arrow::array::{Array, ArrayRef, AsArray, BooleanArray, Float64Array};
 use arrow::buffer::NullBuffer;
 use arrow::compute::cast;
 use arrow::datatypes::{DataType, Field, FieldRef, Float64Type};
-use datafusion::common::{downcast_value, unwrap_or_internal_err, Result, ScalarValue};
+use datafusion::common::{
+    downcast_value, not_impl_err, unwrap_or_internal_err, Result, ScalarValue,
+};
 use datafusion::logical_expr::function::{AccumulatorArgs, StateFieldsArgs};
 use datafusion::logical_expr::{
     Accumulator, AggregateUDFImpl, EmitTo, GroupsAccumulator, Signature, Volatility,
@@ -414,7 +416,6 @@ impl GroupsAccumulator for CovarianceGroupsAccumulator {
         &mut self,
         values: &[ArrayRef],
         group_indices: &[usize],
-        _opt_filter: Option<&BooleanArray>,
         total_num_groups: usize,
     ) -> Result<()> {
         assert_eq!(values.len(), 4, "four arguments to merge_batch");
@@ -465,6 +466,14 @@ impl GroupsAccumulator for CovarianceGroupsAccumulator {
             Arc::new(Float64Array::new(mean2s.into(), None)),
             Arc::new(Float64Array::new(cs.into(), None)),
         ])
+    }
+
+    fn convert_to_state(
+        &self,
+        _values: &[ArrayRef],
+        _opt_filter: Option<&BooleanArray>,
+    ) -> Result<Vec<ArrayRef>> {
+        not_impl_err!("Input batch conversion to state not implemented")
     }
 
     fn size(&self) -> usize {
@@ -563,8 +572,8 @@ mod groups_tests {
         let rstate = right.state(EmitTo::All).unwrap();
 
         let mut merged = pop();
-        merged.merge_batch(&lstate, &[0], None, 1).unwrap();
-        merged.merge_batch(&rstate, &[0], None, 1).unwrap();
+        merged.merge_batch(&lstate, &[0], 1).unwrap();
+        merged.merge_batch(&rstate, &[0], 1).unwrap();
         let merged_result = evaluate(&mut merged)[0].unwrap();
 
         assert!((single - merged_result).abs() < 1e-12);

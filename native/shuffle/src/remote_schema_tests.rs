@@ -27,7 +27,7 @@ use arrow::datatypes::{
     ArrowDictionaryKeyType, DataType, Field, Fields, Int16Type, Int32Type, Int64Type, Int8Type,
     Schema, UInt16Type, UInt32Type, UInt64Type, UInt8Type,
 };
-use arrow::ipc::writer::CompressionContext;
+use arrow::ipc::writer::IpcWriteContext;
 use datafusion::physical_plan::metrics::Time;
 use std::io::Cursor;
 use std::sync::Arc;
@@ -40,7 +40,7 @@ fn encoded_batch(batch: &RecordBatch, codec: CompressionCodec, rss: bool) -> Vec
     }
     .unwrap();
     let mut output = Cursor::new(Vec::new());
-    let mut context = CompressionContext::default();
+    let mut context = IpcWriteContext::default();
     if rss {
         writer
             .write_rss_batch(batch, &mut output, &mut context, &Time::default())
