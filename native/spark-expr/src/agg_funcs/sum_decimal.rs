@@ -21,7 +21,7 @@ use arrow::array::{
     cast::AsArray, types::Decimal128Type, Array, ArrayRef, BooleanArray, Decimal128Array,
 };
 use arrow::datatypes::{DataType, Field, FieldRef};
-use datafusion::common::{DataFusionError, Result as DFResult, ScalarValue};
+use datafusion::common::{not_impl_err, DataFusionError, Result as DFResult, ScalarValue};
 use datafusion::logical_expr::function::{AccumulatorArgs, StateFieldsArgs};
 use datafusion::logical_expr::Volatility::Immutable;
 use datafusion::logical_expr::{
@@ -541,14 +541,8 @@ impl GroupsAccumulator for SumDecimalGroupsAccumulator {
         &mut self,
         values: &[ArrayRef],
         group_indices: &[usize],
-        opt_filter: Option<&BooleanArray>,
         total_num_groups: usize,
     ) -> DFResult<()> {
-        debug_assert!(
-            opt_filter.is_none(),
-            "opt_filter is not supported in merge_batch"
-        );
-
         self.resize_helper(total_num_groups);
 
         // For decimal sum, always expect 2 arrays regardless of eval_mode
@@ -607,6 +601,14 @@ impl GroupsAccumulator for SumDecimalGroupsAccumulator {
         }
 
         Ok(())
+    }
+
+    fn convert_to_state(
+        &self,
+        _values: &[ArrayRef],
+        _opt_filter: Option<&BooleanArray>,
+    ) -> DFResult<Vec<ArrayRef>> {
+        not_impl_err!("Input batch conversion to state not implemented")
     }
 
     fn size(&self) -> usize {

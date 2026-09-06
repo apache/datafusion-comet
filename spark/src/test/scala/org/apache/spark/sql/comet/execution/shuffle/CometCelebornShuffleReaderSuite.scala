@@ -1390,7 +1390,9 @@ class CometCelebornShuffleReaderSuite extends CometTestBase {
       val (rows, failure, reports) =
         readRemoteFrame(mapFrame(nullableKeys = true), attributes, raw)
       assert(rows.isEmpty)
-      assert(failure.exists(_.toLowerCase(java.util.Locale.ROOT).contains("type mismatch")))
+      assert(
+        failure.exists(
+          _.toLowerCase(java.util.Locale.ROOT).contains("map key field must not be nullable")))
       assert(reports == 1)
     }
 
