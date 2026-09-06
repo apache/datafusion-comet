@@ -211,6 +211,8 @@ class CometScalaUDFCodegen extends CometUDF with Logging {
     case list: ListVector =>
       val child = list.getDataVector
       ArrayColumnSpec(nullable = true, Utils.fromArrowField(child.getField), specFor(child))
+    case struct: StructVector if Utils.isCalendarIntervalStructField(struct.getField) =>
+      ScalarColumnSpec(classOf[StructVector], nullable = true)
     case struct: StructVector =>
       val fieldSpecs = (0 until struct.size()).map { fi =>
         val childVec = struct.getChildByOrdinal(fi).asInstanceOf[ValueVector]
