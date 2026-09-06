@@ -337,6 +337,9 @@ def build_spark_submit_cmd(config, benchmark, args):
     if args.query is not None:
         cmd += ["--query", str(args.query)]
 
+    if args.plan_dir is not None:
+        cmd += ["--plan-dir", args.plan_dir]
+
     if profile["format"] and not use_iceberg:
         cmd += ["--format", profile["format"]]
 
@@ -396,6 +399,10 @@ def main():
     )
     parser.add_argument(
         "--query", type=int, default=None, help="Run a single query number"
+    )
+    parser.add_argument(
+        "--plan-dir",
+        help="Optional directory to write formatted physical plans per query",
     )
     parser.add_argument(
         "--no-restart",
