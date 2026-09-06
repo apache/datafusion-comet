@@ -175,6 +175,14 @@ jobs:
           - {name: "sql_hive-1", args1: "", args2: "hive/testOnly * -- -l org.apache.spark.tags.ExtendedHiveTest -l org.apache.spark.tags.SlowHiveTest"}
           - {name: "sql_hive-2", args1: "", args2: "hive/testOnly * -- -n org.apache.spark.tags.ExtendedHiveTest"}
           - {name: "sql_hive-3", args1: "", args2: "hive/testOnly * -- -n org.apache.spark.tags.SlowHiveTest"}
+          # sql_hive_compat-*: sql/hive/compatibility/src/test/scala is only wired into Spark's
+          # Maven build via the `hive` profile in sql/hive/pom.xml; SBT's `hive` project does
+          # not include it, so `hive/testOnly *` above never sees HiveWindowFunctionQuerySuite
+          # et al. Prepend an SBT `set` command to graft that source directory into the hive
+          # project's test sources, then target the three compatibility suites explicitly.
+          - {name: "sql_hive_compat-1", args1: "'set LocalProject(\"hive\") / Test / unmanagedSourceDirectories += file(\"sql/hive/compatibility/src/test/scala\")'", args2: "hive/testOnly org.apache.spark.sql.hive.execution.HiveWindowFunctionQuerySuite org.apache.spark.sql.hive.execution.HiveWindowFunctionQueryFileSuite org.apache.spark.sql.hive.execution.HiveCompatibilitySuite -- -l org.apache.spark.tags.ExtendedHiveTest -l org.apache.spark.tags.SlowHiveTest"}
+          - {name: "sql_hive_compat-2", args1: "'set LocalProject(\"hive\") / Test / unmanagedSourceDirectories += file(\"sql/hive/compatibility/src/test/scala\")'", args2: "hive/testOnly org.apache.spark.sql.hive.execution.HiveWindowFunctionQuerySuite org.apache.spark.sql.hive.execution.HiveWindowFunctionQueryFileSuite org.apache.spark.sql.hive.execution.HiveCompatibilitySuite -- -n org.apache.spark.tags.ExtendedHiveTest"}
+          - {name: "sql_hive_compat-3", args1: "'set LocalProject(\"hive\") / Test / unmanagedSourceDirectories += file(\"sql/hive/compatibility/src/test/scala\")'", args2: "hive/testOnly org.apache.spark.sql.hive.execution.HiveWindowFunctionQuerySuite org.apache.spark.sql.hive.execution.HiveWindowFunctionQueryFileSuite org.apache.spark.sql.hive.execution.HiveCompatibilitySuite -- -n org.apache.spark.tags.SlowHiveTest"}
       fail-fast: false
     name: spark-sql-${{ matrix.module.name }}/spark-${{ inputs.spark-full }}-jdk${{ inputs.java }}
     runs-on: ubuntu-24.04
