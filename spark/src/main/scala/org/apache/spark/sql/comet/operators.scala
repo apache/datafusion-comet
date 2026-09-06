@@ -2019,6 +2019,22 @@ object CometObjectHashAggregateExec
       op.aggregateExpressions.exists(_.mode == Final)) {
       return Unsupported(Some("Final aggregates disabled via test config"))
     }
+    // When Comet shuffle is disabled we do not want to transform the ObjectHashAggregate to
+    // CometHashAggregate, because we would probably get partial Comet aggregation and final
+    // Spark aggregation. The reason text stays mode-neutral because `getSupportLevel` runs for
+    // every stage, so the Final node receives it too and must not be told it is the partial.
+    // Declining here rather than in `convert` is what lets CometExecRule
+    // record the reason centrally, so the fallback is explained rather than silent - see
+    // https://github.com/apache/datafusion-comet/issues/5500. The message deliberately does not
+    // name a config key: `isCometShuffleEnabled` is a conjunction of the shuffle config, the
+    // configured shuffle manager and the Celeborn compatibility check, so naming one of them
+    // would misdirect when another is the cause.
+    if (!isCometShuffleEnabled(op.conf)) {
+      return Unsupported(
+        Some(
+          "Comet shuffle is not enabled, so converting ObjectHashAggregate would split the " +
+            "aggregate across Comet and Spark"))
+    }
     Compatible()
   }
 
@@ -2026,14 +2042,6 @@ object CometObjectHashAggregateExec
       aggregate: ObjectHashAggregateExec,
       builder: Operator.Builder,
       childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
-
-    if (!isCometShuffleEnabled(aggregate.conf)) {
-      // When Comet shuffle is disabled, we don't want to transform the HashAggregate
-      // to CometHashAggregate. Otherwise, we probably get partial Comet aggregation
-      // and final Spark aggregation.
-      return None
-    }
-
     doConvert(aggregate, builder, childOp: _*)
   }
 

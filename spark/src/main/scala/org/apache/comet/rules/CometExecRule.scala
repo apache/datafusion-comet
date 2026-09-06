@@ -1178,12 +1178,6 @@ case class CometExecRule(session: SparkSession)
     val serde = handler.get.asInstanceOf[CometOperatorSerde[SparkPlan]]
     if (!isOperatorEnabled(serde, agg.asInstanceOf[SparkPlan])) return false
 
-    // ObjectHashAggregate has an extra shuffle-enabled guard in its convert method
-    agg match {
-      case _: ObjectHashAggregateExec if !isCometShuffleEnabled(agg.conf) => return false
-      case _ =>
-    }
-
     val aggregateExpressions = agg.aggregateExpressions
     val groupingExpressions = agg.groupingExpressions
 
