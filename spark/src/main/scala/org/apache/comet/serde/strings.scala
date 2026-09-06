@@ -20,11 +20,11 @@
 package org.apache.comet.serde
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Base64, BitLength, Cast, Concat, ConcatWs, Contains, Elt, Empty2Null, EndsWith, Expression, FindInSet, FormatNumber, FormatString, GetJsonObject, InitCap, Left, Length, Levenshtein, Like, Literal, Lower, Mask, OctetLength, Overlay, RegExpExtract, RegExpExtractAll, RegExpInStr, RegExpReplace, Right, RLike, SoundEx, StartsWith, StringLocate, StringLPad, StringRepeat, StringReplace, StringRPad, StringSplit, StringTranslate, Substring, SubstringIndex, ToCharacter, ToNumber, TryToNumber, UnBase64, Upper}
-import org.apache.spark.sql.types.{ArrayType, BinaryType, DataTypes, IntegerType, LongType, StringType}
+import org.apache.spark.sql.types._
 
 import org.apache.comet.CometConf
 import org.apache.comet.serde.ExprOuterClass.Expr
-import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType}
+import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProto, exprToProtoInternal, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType}
 import org.apache.comet.shims.CometTypeShim
 
 object CometStringRepeat extends CometExpressionSerde[StringRepeat] {
@@ -697,9 +697,22 @@ object CometGetJsonObject extends CometCodegenDispatch[GetJsonObject] with Nativ
     }
 }
 
+object CometElt extends CometExpressionSerde[Elt] {
+  def convert(expr: Elt, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
+    val indexExprProto = exprToProto(Cast(expr.children.head, LongType), inputs, binding)
+    val inputsExpr = expr.children.tail
+    val inputsExprProto = inputsExpr.map(exprToProto(_, inputs, binding))
+    val returnType = inputsExpr.map(_.dataType).headOption.getOrElse(StringType)
+    scalarFunctionExprToProtoWithReturnType(
+      "elt",
+      returnType,
+      expr.failOnError,
+      indexExprProto +: inputsExprProto: _*)
+  }
+}
+
 // Expressions routed through the JVM codegen dispatcher: no native implementation, so Spark's own
 // doGenCode runs inside the Comet pipeline, matching Spark exactly.
-object CometElt extends CometCodegenDispatch[Elt]
 
 object CometFindInSet extends CometCodegenDispatch[FindInSet]
 
