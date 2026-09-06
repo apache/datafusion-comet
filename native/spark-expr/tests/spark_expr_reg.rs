@@ -25,13 +25,57 @@ mod tests {
     use datafusion_comet_spark_expr::create_comet_physical_fun;
     use datafusion_comet_spark_expr::register_all_comet_functions;
 
+    #[test]
+    fn test_concat_ws_runtime_scalars() -> Result<()> {
+        use arrow::datatypes::Field;
+        use datafusion::common::{config::ConfigOptions, ScalarValue};
+        use datafusion::logical_expr::{ColumnarValue, ScalarFunctionArgs};
+        use std::sync::Arc;
+
+        let state = SessionStateBuilder::new().build();
+        let udf = create_comet_physical_fun("spark_concat_ws", DataType::Utf8, &state, None)?;
+        let value = ScalarValue::Utf8(Some("a".into()));
+        let list = ScalarValue::List(ScalarValue::new_list(
+            &[
+                value.clone(),
+                ScalarValue::Utf8(None),
+                ScalarValue::Utf8(Some("".into())),
+            ],
+            &DataType::Utf8,
+            true,
+        ));
+        for (input, expected) in [(value, "a"), (list, "a,")] {
+            for number_rows in [8, 1, 0] {
+                for separator in [Some(",".to_string()), None] {
+                    let expected =
+                        ScalarValue::Utf8(separator.as_ref().map(|_| expected.to_string()));
+                    let result = udf.invoke_with_args(ScalarFunctionArgs {
+                        args: vec![
+                            ColumnarValue::Scalar(ScalarValue::Utf8(separator)),
+                            ColumnarValue::Scalar(input.clone()),
+                        ],
+                        arg_fields: vec![],
+                        number_rows,
+                        return_field: Arc::new(Field::new("result", DataType::Utf8, true)),
+                        config_options: Arc::new(ConfigOptions::default()),
+                    })?;
+                    let ColumnarValue::Scalar(result) = result else {
+                        panic!("expected scalar output");
+                    };
+                    assert_eq!(result, expected);
+                }
+            }
+        }
+        Ok(())
+    }
+
     #[tokio::test]
     async fn test_concat_ws_array_arguments() -> Result<()> {
         use arrow::array::{AsArray, StringArray};
 
         let ctx = SessionContext::new();
         let state = ctx.state();
-        let udf = create_comet_physical_fun("concat_ws", DataType::Utf8, &state, None)?;
+        let udf = create_comet_physical_fun("spark_concat_ws", DataType::Utf8, &state, None)?;
         ctx.register_udf(udf.as_ref().clone());
         let results = ctx
             .sql(

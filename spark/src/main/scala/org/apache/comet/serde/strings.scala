@@ -292,8 +292,8 @@ object CometConcatWs extends CometExpressionSerde[ConcatWs] with CodegenDispatch
   override def getSupportLevel(expr: ConcatWs): SupportLevel = expr.children.headOption match {
     case Some(Literal(null, _)) => Compatible()
     case _ if expr.children.forall(_.foldable) =>
-      // The upstream kernel expands scalar arguments to one row but iterates over the batch
-      // length. Keep codegen dispatch for this shape until it supports all-scalar batches.
+      // Preserve the existing ConstantFolding/codegen behavior for foldable expressions.
+      // Non-foldable runtime scalars are handled by the native adapter.
       Unsupported(Some("all arguments are foldable"))
     case _ => Compatible()
   }
@@ -302,10 +302,17 @@ object CometConcatWs extends CometExpressionSerde[ConcatWs] with CodegenDispatch
     expr.children.headOption match {
       case Some(Literal(null, _)) =>
         exprToProtoInternal(Literal.create(null, expr.dataType), inputs, binding)
-      case _ =>
+      case _
+          if expr.children.length == 1 ||
+            expr.children.exists(_.dataType.isInstanceOf[ArrayType]) =>
         val childExprs = expr.children.map(exprToProtoInternal(_, inputs, binding))
-        // Bypass DataFusion's string-only concat_ws signature.
-        scalarFunctionExprToProtoWithReturnType("concat_ws", expr.dataType, false, childExprs: _*)
+        scalarFunctionExprToProtoWithReturnType(
+          "spark_concat_ws",
+          expr.dataType,
+          false,
+          childExprs: _*)
+      case _ =>
+        CometScalarFunction[ConcatWs]("concat_ws").convert(expr, inputs, binding)
     }
   }
 }

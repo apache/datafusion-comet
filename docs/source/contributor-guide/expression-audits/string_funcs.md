@@ -67,7 +67,7 @@
 ## concat_ws
 
 - Spark 3.4.3 (audited 2026-09-06): identical to 3.5.8.
-- Spark 3.5.8 (audited 2026-09-06): accepts ordered mixtures of strings and string arrays, skips null arguments and array elements, and returns NULL for a NULL separator. Comet uses DataFusion Spark's `SparkConcatWs`, with native column coverage for multiple arrays, empty arrays, nulls, empty strings, Unicode, and varying separators. The existing all-foldable codegen fallback remains because the upstream kernel assumes a column input for multirow batches.
+- Spark 3.5.8 (audited 2026-09-06): accepts ordered mixtures of strings and string arrays, skips null arguments and array elements, and returns NULL for a NULL separator. Comet retains DataFusion's string kernel and uses DataFusion Spark's `SparkConcatWs` for arrays and separator-only inputs, with native column coverage for multiple arrays, empty arrays, nulls, empty strings, Unicode, and varying separators. The existing all-foldable codegen fallback remains. A native adapter evaluates runtime scalars once and returns a scalar for broadcasting, including non-foldable scalar subqueries.
 - Spark 4.0.1 (audited 2026-09-06): collation-aware input and result types; concatenation still uses `UTF8String.concatWs` without collation-dependent comparisons.
 - Spark 4.1.1 (audited 2026-09-06): same concatenation and null semantics as 4.0.1.
 

@@ -725,6 +725,23 @@ class CometStringExpressionSuite extends CometTestBase with CometCodegenAssertio
     // scalastyle:on
   }
 
+  test("concat_ws with scalar subqueries over a multi-row batch") {
+    withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
+      withParquetTable((1 to 32).map(i => (i, "row")), "fact") {
+        withParquetTable(Seq(Tuple1("a"), Tuple1("b")), "lookup") {
+          for (subquery <- Seq(
+              "(SELECT max(_1) FROM lookup)",
+              "(SELECT max(_1) FROM lookup WHERE _1 = 'missing')")) {
+            checkSparkAnswerAndOperator(s"SELECT _1, concat_ws($subquery) FROM fact")
+            checkSparkAnswerAndOperator(s"SELECT _1, concat_ws(',', $subquery) FROM fact")
+            checkSparkAnswerAndOperator(
+              s"SELECT _1, concat_ws(',', array('x', NULL, ''), $subquery) FROM fact")
+          }
+        }
+      }
+    }
+  }
+
   test("concat_ws with array<string> arguments") {
     val data: Seq[(Seq[String], String)] = Seq(
       (Seq("a", "b"), "c d"),
