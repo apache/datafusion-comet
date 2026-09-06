@@ -24,7 +24,7 @@ import org.apache.spark.sql.types._
 
 import org.apache.comet.CometConf
 import org.apache.comet.serde.ExprOuterClass.Expr
-import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType}
+import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProto, exprToProtoInternal, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType}
 import org.apache.comet.shims.CometTypeShim
 
 object CometStringRepeat extends CometExpressionSerde[StringRepeat] {
@@ -697,15 +697,17 @@ object CometGetJsonObject extends CometCodegenDispatch[GetJsonObject] with Nativ
     }
 }
 
-object CometElt extends CometScalarFunction[Elt]("elt") with CodegenDispatchFallback {
-  override def getIncompatibleReasons(): Seq[String] = Seq(
-    "The elt function does not respect spark.sql.ansi.enabled=true")
-
-  override def getSupportLevel(expr: Elt): SupportLevel = {
-    if (expr.failOnError) {
-      return Incompatible(Some("The elt function does not respect spark.sql.ansi.enabled=true"))
-    }
-    Compatible()
+object CometElt extends CometExpressionSerde[Elt] {
+  def convert(expr: Elt, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
+    val indexExprProto = exprToProto(Cast(expr.children.head, LongType), inputs, binding)
+    val inputsExpr = expr.children.tail
+    val inputsExprProto = inputsExpr.map(exprToProto(_, inputs, binding))
+    val returnType = inputsExpr.map(_.dataType).headOption.getOrElse(StringType)
+    scalarFunctionExprToProtoWithReturnType(
+      "elt",
+      returnType,
+      expr.failOnError,
+      indexExprProto +: inputsExprProto: _*)
   }
 }
 
