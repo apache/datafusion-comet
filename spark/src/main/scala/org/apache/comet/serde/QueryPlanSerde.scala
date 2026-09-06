@@ -553,21 +553,70 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     builder.build()
   }
 
-  def supportedDataType(dt: DataType, allowComplex: Boolean = false): Boolean = dt match {
-    case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
-        _: DoubleType | _: StringType | _: BinaryType | _: TimestampType | _: TimestampNTZType |
-        _: DecimalType | _: DateType | _: BooleanType | _: NullType | CalendarIntervalType =>
-      true
-    case dt if isTimeType(dt) =>
-      true
-    case s: StructType if allowComplex =>
-      s.fields.nonEmpty && s.fields.map(_.dataType).forall(supportedDataType(_, allowComplex))
-    case a: ArrayType if allowComplex =>
-      supportedDataType(a.elementType, allowComplex)
-    case m: MapType if allowComplex =>
-      supportedDataType(m.keyType, allowComplex) && supportedDataType(m.valueType, allowComplex)
-    case _ =>
-      false
+  /**
+   * Returns whether `dt` is supported at a caller's data-type boundary.
+   *
+   * The defaults preserve expression-serde behavior: primitive types, `CalendarIntervalType`,
+   * `TimeType`, and all `StringType` variants are accepted, while complex and ANSI interval types
+   * are rejected. Sinks and native shuffle enable complex and ANSI interval types because their
+   * Arrow IPC paths support them. Local scans additionally reject `TimeType` and non-default
+   * strings, while JVM columnar shuffle rejects ANSI intervals, calendar intervals, and duplicate
+   * struct field names because its unsafe-row-to-Arrow path cannot handle them.
+   *
+   * Note that the option polarity is mixed: `allowComplex` and `allowIntervals` are restrictive
+   * by default; the other four options are permissive by default.
+   *
+   * @param dt
+   *   data type to check
+   * @param allowComplex
+   *   recursively allow non-empty structs, arrays, and maps
+   * @param allowIntervals
+   *   allow year-month and day-time interval types
+   * @param allowCalendarInterval
+   *   allow calendar interval types
+   * @param allowTimeType
+   *   allow Spark `TimeType`
+   * @param allowAnyStringType
+   *   allow non-default `StringType` variants such as collated strings; when false, only the
+   *   default `StringType` is accepted
+   * @param allowDuplicateStructFieldNames
+   *   allow duplicate field names in nested structs
+   */
+  def supportedDataType(
+      dt: DataType,
+      allowComplex: Boolean = false,
+      allowIntervals: Boolean = false,
+      allowCalendarInterval: Boolean = true,
+      allowTimeType: Boolean = true,
+      allowAnyStringType: Boolean = true,
+      allowDuplicateStructFieldNames: Boolean = true): Boolean = {
+    def supported(dt: DataType): Boolean = dt match {
+      case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
+          _: DoubleType | _: BinaryType | _: TimestampType | _: TimestampNTZType |
+          _: DecimalType | _: DateType | _: BooleanType | _: NullType =>
+        true
+      case CalendarIntervalType if allowCalendarInterval =>
+        true
+      case st: StringType if allowAnyStringType || st == StringType =>
+        true
+      case _: YearMonthIntervalType | _: DayTimeIntervalType if allowIntervals =>
+        true
+      case dt if allowTimeType && isTimeType(dt) =>
+        true
+      case s: StructType if allowComplex =>
+        s.fields.nonEmpty &&
+        (allowDuplicateStructFieldNames ||
+          s.fields.map(_.name).distinct.length == s.fields.length) &&
+        s.fields.forall(f => supported(f.dataType))
+      case a: ArrayType if allowComplex =>
+        supported(a.elementType)
+      case m: MapType if allowComplex =>
+        supported(m.keyType) && supported(m.valueType)
+      case _ =>
+        false
+    }
+
+    supported(dt)
   }
 
   /**

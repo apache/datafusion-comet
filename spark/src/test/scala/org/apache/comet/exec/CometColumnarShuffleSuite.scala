@@ -31,7 +31,7 @@ import org.apache.spark.{Partitioner, SparkConf}
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.comet.execution.shuffle.{CometShuffleDependency, CometShuffleExchangeExec, CometShuffleManager}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanHelper, AQEShuffleReadExec, ShuffleQueryStageExec}
-import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
+import org.apache.spark.sql.execution.exchange.{ReusedExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.execution.joins.SortMergeJoinExec
 import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.SQLConf
@@ -75,6 +75,29 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
       """.stripMargin).select($"r.*")
 
     checkSparkAnswer(df)
+    checkCometExchange(df, 0, false)
+  }
+
+  test("Fallback to Spark when shuffling CalendarIntervalType data") {
+    val df = spark
+      .sql("select id, make_interval(1,2,3,4,5,6,7) as i from range(100)")
+      .repartition(4)
+
+    assert(df.collect().length == 100)
+
+    val plan = df.queryExecution.executedPlan
+    assert(
+      find(plan) {
+        case _: ShuffleExchangeExec => true
+        case _ => false
+      }.nonEmpty,
+      plan)
+    assert(
+      find(plan) {
+        case _: CometShuffleExchangeExec => true
+        case _ => false
+      }.isEmpty,
+      plan)
   }
 
   test("Unsupported types for SinglePartition should fallback to Spark") {
