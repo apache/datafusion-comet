@@ -32,9 +32,14 @@ import org.apache.arrow.vector.dictionary.Dictionary
 import org.apache.arrow.vector.dictionary.DictionaryProvider.MapDictionaryProvider
 import org.apache.arrow.vector.types.pojo.{ArrowType, DictionaryEncoding, Field, FieldType}
 import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.comet.CometExec
+import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.vectorized.ConstantColumnVector
 import org.apache.spark.sql.types.{IntegerType, StringType, StructField, StructType}
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
+
+import org.apache.comet.CometConf
+import org.apache.comet.serde.{OperatorOuterClass, QueryPlanSerde}
 
 class NativeUtilSuite extends CometTestBase {
 
@@ -363,6 +368,78 @@ class NativeUtilSuite extends CometTestBase {
         imported.close()
       }
       nativeUtil.close()
+    }
+  }
+
+  test("Variant schema identity round-trips through native Arrow FFI") {
+    val variantType = Utils.variantType.getOrElse {
+      cancel("VariantType requires Spark 4.0+")
+    }
+
+    withTempPath { dir =>
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        sql("SELECT named_struct('value', X'00', 'metadata', X'010000') AS v")
+          .coalesce(1)
+          .write
+          .parquet(dir.getCanonicalPath)
+      }
+      val parquetFile = dir
+        .listFiles()
+        .find(_.getName.endsWith(".parquet"))
+        .getOrElse(fail("No parquet file was written"))
+      val fileSize = parquetFile.length()
+
+      val variantProto = QueryPlanSerde.serializeDataType(variantType).get
+      val variantField = OperatorOuterClass.SparkStructField
+        .newBuilder()
+        .setName("v")
+        .setDataType(variantProto)
+        .setNullable(false)
+        .build()
+      val common = OperatorOuterClass.NativeScanCommon
+        .newBuilder()
+        .addRequiredSchema(variantField)
+        .addDataSchema(variantField)
+        .addProjectionVector(0L)
+        .setSessionTimezone("UTC")
+        .setCaseSensitive(true)
+        .setSource("variant-schema-ffi-roundtrip")
+        .build()
+      val file = OperatorOuterClass.SparkPartitionedFile
+        .newBuilder()
+        .setFilePath(parquetFile.toURI.toString)
+        .setStart(0L)
+        .setLength(fileSize)
+        .setFileSize(fileSize)
+        .build()
+      val partition = OperatorOuterClass.SparkFilePartition
+        .newBuilder()
+        .addPartitionedFile(file)
+        .build()
+      val plan = OperatorOuterClass.Operator
+        .newBuilder()
+        .setNativeScan(
+          OperatorOuterClass.NativeScan
+            .newBuilder()
+            .setCommon(common)
+            .setFilePartition(partition))
+        .build()
+        .toByteArray
+
+      val actual = spark.sparkContext
+        .parallelize(Seq(0), 1)
+        .mapPartitions { _ =>
+          val iterator = CometExec.getCometIterator(Array.empty[Object], 1, plan, 1, 0)
+          try {
+            assert(iterator.hasNext)
+            Iterator.single(iterator.next().column(0).dataType())
+          } finally {
+            iterator.close()
+          }
+        }
+        .collect()
+
+      assert(actual.sameElements(Array(variantType)))
     }
   }
 }

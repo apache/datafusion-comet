@@ -359,7 +359,9 @@ jobs:
               org.apache.comet.CometIcebergRewriteActionSuite
               org.apache.comet.CometIcebergWriteActionSuite
               org.apache.comet.CometIcebergWriteDetectionSuite
+              org.apache.comet.CometIcebergSystemFunctionSuite
               org.apache.comet.iceberg.IcebergReflectionSuite
+              org.apache.comet.serde.operator.IcebergWriteProtoTranslationSuite
               org.apache.comet.csv.CometCsvNativeReadSuite
               org.apache.comet.CometFuzzTestSuite
               org.apache.comet.CometFuzzIcebergSuite
@@ -373,9 +375,14 @@ jobs:
               org.apache.comet.shuffle.CelebornShufflePartitionPusherSuite
               org.apache.spark.sql.comet.execution.shuffle.CometCelebornShuffleManagerSuite
               org.apache.spark.sql.comet.execution.shuffle.CometCelebornNativeShuffleWriterSuite
+              org.apache.spark.sql.comet.execution.shuffle.CometCelebornShuffleFallbackSuite
+              org.apache.spark.sql.comet.execution.shuffle.CometCelebornConcurrentMaterializationSuite
+              org.apache.spark.sql.comet.execution.shuffle.CometCelebornShuffleStatisticsSuite
+              org.apache.spark.sql.comet.execution.shuffle.CometCelebornLocalFetchFailureSuite
               org.apache.spark.sql.comet.execution.shuffle.CometCelebornShuffleReaderSuite
               org.apache.spark.sql.comet.execution.shuffle.CometCelebornShufflePlanningSuite
               org.apache.spark.sql.comet.execution.shuffle.CometNativeShuffleInputRDDSuite
+              org.apache.spark.sql.comet.execution.shuffle.CometDiskBlockWriterSuite
               org.apache.comet.exec.CometShuffleEncryptionSuite
               org.apache.comet.exec.CometShuffleManagerSuite
               org.apache.comet.exec.CometAsyncShuffleSuite
@@ -427,6 +434,8 @@ jobs:
               org.apache.spark.sql.comet.util.UtilsSuite
               org.apache.comet.vector.NativeUtilSuite
               org.apache.comet.objectstore.NativeConfigSuite
+              org.apache.comet.serde.operator.CometIcebergNativeScanSuite
+              org.apache.comet.serde.operator.CometNativeScanSuite
               org.apache.spark.sql.CometToPrettyStringSuite
               org.apache.spark.sql.CometCollationSuite
               org.apache.comet.CometFuzzAggregateSuite
@@ -437,6 +446,7 @@ jobs:
               org.apache.comet.CometExpressionSuite
               org.apache.comet.CometSqlFileTestSuite
               org.apache.comet.CometExpressionCoverageSuite
+              org.apache.comet.CometVariantTypeSuite
               org.apache.comet.CometHashExpressionSuite
               org.apache.comet.CometTemporalExpressionSuite
               org.apache.comet.CometArrayExpressionSuite

@@ -363,6 +363,46 @@ class CelebornShufflePartitionPusherSuite extends AnyFunSuite {
     assert(wrongReturnType.getMessage.contains("returning an int"))
   }
 
+  test("final transport fields are rejected before client setup or raw submission") {
+    val client = new FinalFieldsRecordingCelebornPushClient
+    val originalBootstraps = client.factory.clientBootstraps
+    val originalRetryPool = client.pushDataRetryPool
+    val readerStarted = new CountDownLatch(1)
+    val checkReferences = new CountDownLatch(1)
+    val readerFailure = new AtomicReference[Throwable]()
+    val reader = new Thread(() => {
+      try {
+        // A Celeborn thread may keep these references indefinitely after final-field reads.
+        val bootstraps = client.factory.clientBootstraps
+        val retryPool = client.pushDataRetryPool
+        readerStarted.countDown()
+        assert(checkReferences.await(5, TimeUnit.SECONDS))
+        assert(client.factory.clientBootstraps eq bootstraps)
+        assert(client.pushDataRetryPool eq retryPool)
+        assert(bootstraps.isEmpty)
+      } catch {
+        case failure: Throwable => readerFailure.set(failure)
+      }
+    })
+    reader.start()
+    try {
+      assert(readerStarted.await(5, TimeUnit.SECONDS))
+      val failure = intercept[UnsupportedOperationException](pusher(client))
+      assert(failure.getMessage.contains("completion"))
+      assert(failure.getMessage.contains("volatile"))
+      intercept[UnsupportedOperationException](CelebornTransportCallbackTracker.tryCreate(client))
+      assert(client.factoryCalls.get() == 0)
+      assert(client.pushCount == 0)
+      assert(client.factory.clientBootstraps eq originalBootstraps)
+      assert(client.pushDataRetryPool eq originalRetryPool)
+    } finally {
+      checkReferences.countDown()
+      reader.join(5000)
+    }
+    assert(!reader.isAlive)
+    assert(readerFailure.get() == null)
+  }
+
   test("adapter rejects invalid shuffle, map-attempt, mapper, and partition metadata") {
     val client = new RecordingCelebornPushClient
     val invalidMetadata = Seq(
@@ -575,8 +615,8 @@ class CelebornShufflePartitionPusherSuite extends AnyFunSuite {
     val cancelledState = client.currentState(19, 3, encodedAttemptId)
     first.abort()
     first.abort()
-    assert(client.cleanupCalls.get() == 1)
-    assert(cancelledState.exception.get().getMessage == "Cleaned Up")
+    assert(client.cleanupCalls.get() == 0)
+    assert(cancelledState.exception.get() == null)
     assert(cancelledState.inFlightRequestTracker.totalInflightReqs.sum() == 1)
 
     val retry =
@@ -595,6 +635,7 @@ class CelebornShufflePartitionPusherSuite extends AnyFunSuite {
     worker.join(5000)
     assert(!worker.isAlive)
     assert(failure.get() == null)
+    awaitCleanup(client)
     val retryState = client.currentState(19, 3, encodedAttemptId + 1)
     client.complete(retryState)
     assert(retry.finish()(1) == bytes.length)
@@ -726,6 +767,228 @@ class CelebornShufflePartitionPusherSuite extends AnyFunSuite {
     }
   }
 
+  test("cancelled exact ownership remains sealed after a later bootstrap downgrade") {
+    val client = new TransportRecordingCelebornPushClient
+    val first =
+      new CelebornShufflePartitionPusher(client, 19, 3, encodedAttemptId, 12, 9, 604, 2416)
+    val bytes = frame(596)
+    first.pushPartitionData(0, bytes, bytes.length)
+    val state = client.currentState(19, 3, encodedAttemptId)
+    val originalHandler = client.dataClientFactory.handler
+
+    first.abort()
+    assert(state.exception.get().getMessage == "Cleaned Up")
+    client.dataClientFactory.openUninstrumentableConnection()
+
+    assertNextMapWaitsForCompletion(client) {
+      originalHandler
+        .remove(state)
+        .callback
+        .onFailure(new IOException("sealed callback failed after global downgrade"))
+    }
+  }
+
+  test("failed bootstrap instrumentation falls back to push-state completion") {
+    val client = new TransportRecordingCelebornPushClient
+    client.openUninstrumentableConnectionBeforePush = true
+    val bytes = frame()
+    val first =
+      new CelebornShufflePartitionPusher(client, 19, 3, encodedAttemptId, 12, 9, 64)
+
+    first.pushPartitionData(0, bytes, bytes.length)
+    val firstState = client.currentState(19, 3, encodedAttemptId)
+
+    def startPush(attemptId: Int)
+        : (CelebornShufflePartitionPusher, AtomicReference[Throwable], CountDownLatch, Thread) = {
+      val next = new CelebornShufflePartitionPusher(client, 19, 3, attemptId, 12, 9, 64)
+      val failure = new AtomicReference[Throwable]()
+      val started = new CountDownLatch(1)
+      val worker = new Thread(() => {
+        try {
+          started.countDown()
+          next.pushPartitionData(1, bytes, bytes.length)
+        } catch { case error: Throwable => failure.set(error) }
+      })
+      worker.start()
+      (next, failure, started, worker)
+    }
+
+    val (second, secondFailure, secondStarted, secondWorker) = startPush(encodedAttemptId + 1)
+    try {
+      assert(secondStarted.await(5, TimeUnit.SECONDS))
+      secondWorker.join(100)
+      assert(secondWorker.isAlive, "an uninstrumented push must retain counter-backed admission")
+      client.complete(firstState)
+      secondWorker.join(5000)
+      assert(!secondWorker.isAlive)
+      assert(secondFailure.get() == null)
+
+      val secondState = client.currentState(19, 3, encodedAttemptId + 1)
+      val (third, thirdFailure, thirdStarted, thirdWorker) = startPush(encodedAttemptId + 2)
+      try {
+        assert(thirdStarted.await(5, TimeUnit.SECONDS))
+        thirdWorker.join(100)
+        assert(thirdWorker.isAlive, "counter fallback must persist for later pushes")
+        client.complete(secondState)
+        thirdWorker.join(5000)
+        assert(!thirdWorker.isAlive)
+        assert(thirdFailure.get() == null)
+        val thirdState = client.currentState(19, 3, encodedAttemptId + 2)
+        client.complete(thirdState)
+        assert(third.finish()(1) == bytes.length)
+      } finally {
+        thirdWorker.interrupt()
+        thirdWorker.join(5000)
+      }
+      assert(second.finish()(1) == bytes.length)
+      assert(first.finish()(0) == bytes.length)
+    } finally {
+      secondWorker.interrupt()
+      secondWorker.join(5000)
+    }
+  }
+
+  test("aborted fallback push releases admission after its failed transport completes") {
+    val client = new TransportRecordingCelebornPushClient
+    client.openUninstrumentableConnectionBeforePush = true
+    val first =
+      new CelebornShufflePartitionPusher(client, 19, 3, encodedAttemptId, 12, 9, 604, 2416)
+    val bytes = frame(596)
+
+    first.pushPartitionData(0, bytes, bytes.length)
+    val state = client.currentState(19, 3, encodedAttemptId)
+    first.abort()
+    assert(client.cleanupCalls.get() == 0)
+    assert(state.exception.get() == null)
+
+    val terminalFailure = new IOException(
+      s"Push data to worker failed for shuffle 19 map 3 attempt $encodedAttemptId " +
+        "partition 0 batch 1.")
+    assertNextMapWaitsForCompletion(client) {
+      client.failTransport(state, terminalFailure)
+      // Stock Celeborn's failure path leaves this counter charged. The terminal failure itself
+      // is the completion signal for the cancelled fallback request.
+      assert(state.inFlightRequestTracker.totalInflightReqs.sum() == 1)
+    }
+    awaitCleanup(client)
+    assert(state.exception.get() eq terminalFailure)
+  }
+
+  test("aborted fallback push keeps its state until a published request completes") {
+    val client = new TransportRecordingCelebornPushClient
+    client.openUninstrumentableConnectionBeforePush = true
+    val first =
+      new CelebornShufflePartitionPusher(client, 19, 3, encodedAttemptId, 12, 9, 604, 2416)
+    val original = client.getPushState(s"19-3-$encodedAttemptId")
+    val published = new AtomicReference[RecordingCelebornPushState]()
+    val expected = new IOException("raw fallback push failed after publishing the request")
+    client.beforePushBegins = () => first.abort()
+    client.beforePushReturns = state => {
+      published.set(state)
+      throw expected
+    }
+    val bytes = frame(596)
+
+    val failure = intercept[IOException] {
+      first.pushPartitionData(0, bytes, bytes.length)
+    }
+    assert(failure eq expected)
+    client.beforePushBegins = () => ()
+    client.beforePushReturns = _ => ()
+    assert(published.get() eq original)
+    assert(client.cleanupCalls.get() == 0)
+    assert(original.exception.get() == null)
+
+    assertNextMapWaitsForCompletion(client) {
+      client.complete(published.get())
+    }
+    awaitCleanup(client)
+  }
+
+  test("fallback submissions wait for prior transport completion") {
+    val client = new TransportRecordingCelebornPushClient
+    val bytes = frame(596)
+    val admissionBytes = 5484
+
+    // Disable precise ownership once, then verify later fallback submissions on the same pusher.
+    client.openUninstrumentableConnectionBeforePush = true
+    val initializer =
+      new CelebornShufflePartitionPusher(
+        client,
+        19,
+        3,
+        encodedAttemptId,
+        12,
+        9,
+        604,
+        admissionBytes)
+    initializer.pushPartitionData(0, bytes, bytes.length)
+    client.complete(client.currentState(19, 3, encodedAttemptId))
+    assert(initializer.finish()(0) == bytes.length)
+
+    val attemptId = encodedAttemptId + 1
+    val pusher =
+      new CelebornShufflePartitionPusher(client, 19, 3, attemptId, 12, 9, 604, admissionBytes)
+    val rawEntries = new AtomicInteger()
+    val firstPublished = new CountDownLatch(1)
+    val resumeFirst = new CountDownLatch(1)
+    val firstFailure = new AtomicReference[Throwable]()
+    val secondFailure = new AtomicReference[Throwable]()
+    client.beforePushBegins = () => rawEntries.incrementAndGet()
+    client.beforePushReturns = _ => {
+      if (firstPublished.getCount > 0) {
+        firstPublished.countDown()
+        if (!resumeFirst.await(5, TimeUnit.SECONDS)) {
+          throw new IOException("timed out waiting to resume the first fallback submission")
+        }
+      }
+    }
+    val first = new Thread(() => {
+      try pusher.pushPartitionData(0, bytes, bytes.length)
+      catch { case failure: Throwable => firstFailure.set(failure) }
+    })
+    val second = new Thread(() => {
+      try pusher.pushPartitionData(1, bytes, bytes.length)
+      catch { case failure: Throwable => secondFailure.set(failure) }
+    })
+    try {
+      first.start()
+      assert(firstPublished.await(5, TimeUnit.SECONDS))
+      second.start()
+      second.join(100)
+      assert(second.isAlive)
+      assert(
+        rawEntries.get() == 1,
+        "a second raw submission must not race the first submission's PushState resolution")
+
+      resumeFirst.countDown()
+      first.join(5000)
+      assert(!first.isAlive)
+      assert(firstFailure.get() == null)
+      second.join(100)
+      assert(second.isAlive, "a second fallback push must wait for the first callback")
+      assert(rawEntries.get() == 1)
+
+      val state = client.currentState(19, 3, attemptId)
+      client.complete(state)
+      second.join(5000)
+      assert(!second.isAlive)
+      assert(secondFailure.get() == null)
+      assert(rawEntries.get() == 2)
+
+      client.complete(state)
+      assert(pusher.finish().take(2).sum == 2L * bytes.length)
+    } finally {
+      resumeFirst.countDown()
+      first.interrupt()
+      second.interrupt()
+      first.join(5000)
+      second.join(5000)
+      client.beforePushBegins = () => ()
+      client.beforePushReturns = _ => ()
+    }
+  }
+
   private def assertNextMapWaitsForCompletion(client: TransportRecordingCelebornPushClient)(
       completePending: => Unit): Unit = {
     val bytes = frame(596)
@@ -760,7 +1023,15 @@ class CelebornShufflePartitionPusherSuite extends AnyFunSuite {
     }
   }
 
-  test("cleanup during raw submission keeps callbacks on a recreated push state observable") {
+  private def awaitCleanup(client: RecordingCelebornPushClient): Unit = {
+    val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+    while (client.cleanupCalls.get() == 0 && System.nanoTime() < deadline) {
+      Thread.sleep(10)
+    }
+    assert(client.cleanupCalls.get() == 1)
+  }
+
+  test("cleanup during raw submission waits until callback ownership is registered") {
     val client = new TransportRecordingCelebornPushClient
     val first =
       new CelebornShufflePartitionPusher(client, 19, 3, encodedAttemptId, 12, 9, 604, 2416)
@@ -775,12 +1046,55 @@ class CelebornShufflePartitionPusherSuite extends AnyFunSuite {
     client.beforePushBegins = () => ()
     client.beforePushReturns = _ => ()
     val state = recreated.get()
-    assert(state != null && (state ne original))
+    assert(state eq original)
+    assert(client.cleanupCalls.get() == 1)
     assert(state.exception.get().getMessage == "Cleaned Up")
 
     assertNextMapWaitsForCompletion(client) {
       client.failTransport(state, new IOException("connection failed after final cleanup"))
       assert(state.inFlightRequestTracker.totalInflightReqs.sum() == 1)
+    }
+  }
+
+  test("abort interrupts a raw invocation blocked before publication") {
+    val client = new TransportRecordingCelebornPushClient
+    val first =
+      new CelebornShufflePartitionPusher(client, 19, 3, encodedAttemptId, 12, 9, 604, 2416)
+    val enteredRawPush = new CountDownLatch(1)
+    val blockRawPush = new CountDownLatch(1)
+    val pushFailure = new AtomicReference[Throwable]()
+    client.beforePushBegins = () => {
+      enteredRawPush.countDown()
+      try blockRawPush.await()
+      catch {
+        case interrupted: InterruptedException =>
+          Thread.currentThread().interrupt()
+          val failure =
+            new IOException("Interrupted while waiting for Celeborn admission", interrupted)
+          client.currentState(19, 3, encodedAttemptId).exception.compareAndSet(null, failure)
+          throw failure
+      }
+    }
+    val bytes = frame(596)
+    val worker = new Thread(() => {
+      try first.pushPartitionData(0, bytes, bytes.length)
+      catch { case error: Throwable => pushFailure.set(error) }
+    })
+
+    try {
+      worker.start()
+      assert(enteredRawPush.await(5, TimeUnit.SECONDS))
+      first.abort()
+      worker.join(5000)
+      assert(!worker.isAlive, "abort must interrupt a raw push waiting on Celeborn admission")
+      assert(pushFailure.get().isInstanceOf[IOException])
+      assert(client.dataClientFactory.handler.outstandingPushes.isEmpty)
+      awaitCleanup(client)
+    } finally {
+      blockRawPush.countDown()
+      worker.interrupt()
+      worker.join(5000)
+      client.beforePushBegins = () => ()
     }
   }
 
@@ -806,7 +1120,7 @@ class CelebornShufflePartitionPusherSuite extends AnyFunSuite {
     }
   }
 
-  test("queued retry completion after cleanup releases admission without a transport callback") {
+  test("cleanup discards a queued retry without waiting for its executor") {
     val client = new TransportRecordingCelebornPushClient
     client.retriesBeforeFailure = 1
     val first =
@@ -819,12 +1133,26 @@ class CelebornShufflePartitionPusherSuite extends AnyFunSuite {
     assert(client.dataClientFactory.handler.outstandingPushes.isEmpty)
     first.abort()
 
-    assertNextMapWaitsForCompletion(client) {
-      // Stock retries retain the original callback, not the proxy in PushRequestInfo.
-      client.retryExecutor.runNext()
-      assert(client.retryExecutor.pendingCount == 0)
-      assert(state.inFlightRequestTracker.totalInflightReqs.sum() == 1)
-    }
+    val next =
+      new CelebornShufflePartitionPusher(client, 19, 3, encodedAttemptId + 1, 12, 9, 604, 2416)
+    val failure = new AtomicReference[Throwable]()
+    val worker = new Thread(() => {
+      try next.pushPartitionData(1, bytes, bytes.length)
+      catch { case error: Throwable => failure.set(error) }
+    })
+    worker.start()
+    worker.join(5000)
+    assert(!worker.isAlive, "queued retries must not retain admission after cancellation")
+    assert(failure.get() == null)
+
+    // The delegate executor may retain the cancelled wrapper, but it no longer retains or runs
+    // the stock retry and its payload.
+    client.retryExecutor.runNext()
+    assert(client.retryExecutor.pendingCount == 0)
+    assert(state.inFlightRequestTracker.totalInflightReqs.sum() == 1)
+    val nextState = client.currentState(19, 3, encodedAttemptId + 1)
+    client.complete(nextState)
+    assert(next.finish()(1) == bytes.length)
   }
 
   test("retry handoff to another transport keeps admission until its callback returns") {
@@ -955,13 +1283,13 @@ class CelebornShufflePartitionPusherSuite extends AnyFunSuite {
     client.complete(cancelledState)
     worker.join(100)
     assert(worker.isAlive, "one success must not also release the other live request")
-    assert(cancelledState.inFlightRequestTracker.totalInflightReqs.sum() == 1)
+    assert(cancelledState.inFlightRequestTracker.totalInflightReqs.sum() == 2)
 
     client.failTransport(cancelledState, new IOException("cancelled connection closed"))
     worker.join(5000)
     assert(!worker.isAlive)
     assert(failure.get() == null)
-    assert(cancelledState.inFlightRequestTracker.totalInflightReqs.sum() == 1)
+    assert(cancelledState.inFlightRequestTracker.totalInflightReqs.sum() == 2)
 
     val retryState = client.currentState(19, 3, encodedAttemptId + 1)
     client.complete(retryState)
@@ -1082,6 +1410,22 @@ class CelebornShufflePartitionPusherSuite extends AnyFunSuite {
 
   test("completed and discarded retry wrappers no longer retain captured payloads") {
     CelebornTransportOwnershipTestHelper.assertCompletedRetriesForgetPayloads()
+  }
+
+  test("Celeborn bootstrap failures do not escape shared client creation") {
+    CelebornTransportOwnershipTestHelper.assertBootstrapFailureDoesNotEscapeClientCreation()
+  }
+
+  test("Celeborn bootstrap hooks remain only while their shared clients are owned") {
+    CelebornTransportOwnershipTestHelper.assertBootstrapHookFollowsClientLifetime()
+  }
+
+  test("fatal Celeborn bootstrap errors do not leak shared hook registrations") {
+    CelebornTransportOwnershipTestHelper.assertFatalBootstrapErrorsDoNotLeakRegistrations()
+  }
+
+  test("Celeborn hook release waits for an active bootstrap invocation") {
+    CelebornTransportOwnershipTestHelper.assertBootstrapReleaseWaitsForActiveInvocation()
   }
 
   test("failed push keeps native frame admission until the JNI caller retires its buffers") {
@@ -1413,16 +1757,34 @@ class AsyncRecordingCelebornPushClient extends RecordingCelebornPushClient {
   }
 }
 
-/** Reproduces stock Celeborn's client-factory, handler, and callback completion boundaries. */
+/** Models the final references in released clients without starting Celeborn network services. */
+final class FinalFieldsRecordingCelebornPushClient extends RecordingCelebornPushClient {
+  val factory = new FinalFieldsRecordingCelebornFactory
+  val pushDataRetryPool: ExecutorService = new RecordingCelebornRetryExecutor
+  val factoryCalls = new AtomicInteger()
+
+  def getDataClientFactory: FinalFieldsRecordingCelebornFactory = {
+    factoryCalls.incrementAndGet()
+    factory
+  }
+}
+
+final class FinalFieldsRecordingCelebornFactory {
+  val clientBootstraps: JList[RecordingCelebornTransportClientBootstrap] =
+    new JArrayList[RecordingCelebornTransportClientBootstrap]()
+}
+
+/** Models completion boundaries with safely published hooks, unlike stock Celeborn 0.6/0.7. */
 final class TransportRecordingCelebornPushClient extends AsyncRecordingCelebornPushClient {
   val dataClientFactory: RecordingCelebornTransportClientFactory =
     new RecordingCelebornTransportClientFactory
   val retryExecutor = new RecordingCelebornRetryExecutor
-  val pushDataRetryPool: ExecutorService = retryExecutor
+  @volatile var pushDataRetryPool: ExecutorService = retryExecutor
 
   def getDataClientFactory: RecordingCelebornTransportClientFactory = dataClientFactory
 
   var openConnectionBeforePush: Boolean = false
+  var openUninstrumentableConnectionBeforePush: Boolean = false
   var beforePushBegins: () => Unit = () => ()
   var beforePushReturns: RecordingCelebornPushState => Unit = (_: RecordingCelebornPushState) =>
     ()
@@ -1459,6 +1821,10 @@ final class TransportRecordingCelebornPushClient extends AsyncRecordingCelebornP
     if (openConnectionBeforePush) {
       openConnectionBeforePush = false
       dataClientFactory.openConnection()
+    }
+    if (openUninstrumentableConnectionBeforePush) {
+      openUninstrumentableConnectionBeforePush = false
+      dataClientFactory.openUninstrumentableConnection()
     }
     val state = currentState(shuffleId, mapId, attemptId)
     dataClientFactory.handler.add(
@@ -1524,15 +1890,23 @@ final class RecordingCelebornRetryExecutor extends AbstractExecutorService {
 final class RecordingCelebornTransportClientFactory {
   var handler: RecordingCelebornTransportResponseHandler =
     new RecordingCelebornTransportResponseHandler
-  val clientBootstraps: JList[RecordingCelebornTransportClientBootstrap] =
+  @volatile var clientBootstraps: JList[RecordingCelebornTransportClientBootstrap] =
     new JArrayList[RecordingCelebornTransportClientBootstrap]()
   val connectionPool: ConcurrentHashMap[String, RecordingCelebornTransportClientPool] =
     new ConcurrentHashMap[String, RecordingCelebornTransportClientPool]()
   connectionPool.put("worker", new RecordingCelebornTransportClientPool(handler))
 
   def openConnection(): Unit = {
+    openConnection(new io.netty.channel.embedded.EmbeddedChannel())
+  }
+
+  def openUninstrumentableConnection(): Unit = {
+    openConnection(null)
+  }
+
+  private def openConnection(channel: io.netty.channel.Channel): Unit = {
     handler = new RecordingCelebornTransportResponseHandler
-    val pool = new RecordingCelebornTransportClientPool(handler)
+    val pool = new RecordingCelebornTransportClientPool(handler, channel)
     val bootstraps = clientBootstraps.iterator()
     while (bootstraps.hasNext) {
       bootstraps.next().doBootstrap(pool.clients(0))
@@ -1546,21 +1920,24 @@ trait RecordingCelebornTransportClientBootstrap {
 }
 
 final class RecordingCelebornTransportClientPool(
-    handler: RecordingCelebornTransportResponseHandler) {
+    handler: RecordingCelebornTransportResponseHandler,
+    channel: io.netty.channel.Channel = new io.netty.channel.embedded.EmbeddedChannel()) {
   val clients: Array[RecordingCelebornTransportClient] =
-    Array(new RecordingCelebornTransportClient(handler))
+    Array(new RecordingCelebornTransportClient(handler, channel))
   val locks: Array[Object] = Array(new Object)
 }
 
-final class RecordingCelebornTransportClient(handler: RecordingCelebornTransportResponseHandler) {
-  val channel: io.netty.channel.Channel = new io.netty.channel.embedded.EmbeddedChannel()
+final class RecordingCelebornTransportClient(
+    handler: RecordingCelebornTransportResponseHandler,
+    @volatile var channel: io.netty.channel.Channel) {
   def getChannel: io.netty.channel.Channel = channel
   def getHandler: RecordingCelebornTransportResponseHandler = handler
 }
 
 final class RecordingCelebornTransportResponseHandler {
   private val nextRequestId = new AtomicLong()
-  val outstandingPushes: ConcurrentHashMap[java.lang.Long, RecordingCelebornTransportRequest] =
+  @volatile var outstandingPushes
+      : ConcurrentHashMap[java.lang.Long, RecordingCelebornTransportRequest] =
     new ConcurrentHashMap[java.lang.Long, RecordingCelebornTransportRequest]()
 
   def add(pushState: RecordingCelebornPushState): Unit =
@@ -1614,7 +1991,11 @@ final class RecordingCelebornTransportCallback(
         retriesRemaining -= 1
         submitRetry(this)
       } else {
-        pushState.exception.compareAndSet(null, new IOException(failure))
+        val reportedFailure = failure match {
+          case io: IOException => io
+          case _ => new IOException(failure)
+        }
+        pushState.exception.compareAndSet(null, reportedFailure)
       }
     }
   }

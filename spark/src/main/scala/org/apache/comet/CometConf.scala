@@ -404,6 +404,22 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(true)
 
+  val COMET_SHUFFLE_NATIVE_HASH_PARTITIONING_NESTED_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.shuffle.native.partitioning.hash.nested.enabled")
+      .category(CATEGORY_SHUFFLE)
+      .doc(
+        "Whether to allow nested types (struct, array, map) as hash partitioning keys in " +
+          "Comet native shuffle. Comet's native Murmur3 kernel hashes nested types " +
+          "recursively and shares that kernel, and Spark's seed, with the `hash` expression, " +
+          "so partition assignment matches Spark. A map key additionally requires the " +
+          "`mapsort` normalization that Spark 4.0 and later insert, so maps are rejected on " +
+          "earlier versions. Disabled by default until the performance of the nested hashing " +
+          "paths has been measured: shapes whose leaves are not primitives, such as " +
+          "`array<struct<...>>`, fall back to a per-element code path in the native hasher " +
+          "rather than a vectorized one.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_SHUFFLE_NATIVE_RANGE_PARTITIONING_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.shuffle.native.partitioning.range.enabled")
       .withAlternative("spark.comet.native.shuffle.partitioning.range.enabled")
@@ -547,6 +563,18 @@ object CometConf extends ShimCometConf {
       .intConf
       .createWithDefault(Int.MaxValue)
 
+  val COMET_SHUFFLE_JVM_MEMORY_WAIT_TIMEOUT: ConfigEntry[Long] =
+    conf("spark.comet.shuffle.jvm.memoryWaitTimeout")
+      .category(CATEGORY_SHUFFLE)
+      .doc(
+        "How long a Comet JVM (columnar) shuffle task running in on-heap mode waits for other " +
+          "tasks to free shared shuffle pool memory before failing with an out-of-memory error " +
+          "(Spark may then retry the task). The wait ends earlier when it provably cannot " +
+          "succeed. This is an internal config for testing purpose or advanced tuning.")
+      .internal()
+      .timeConf(TimeUnit.MILLISECONDS)
+      .createWithDefault(TimeUnit.MINUTES.toMillis(5))
+
   val COMET_SHUFFLE_JVM_MEMORY_FACTOR: ConfigEntry[Double] =
     conf("spark.comet.shuffle.jvm.memoryFactor")
       .withAlternative("spark.comet.columnar.shuffle.memory.factor")
@@ -647,14 +675,17 @@ object CometConf extends ShimCometConf {
           "an executor-side remote shuffle client. Admission includes native encoding " +
           "scratch and overlapping native, JNI, and remote shuffle frame copies. " +
           "A frame must fit its codec and Arrow workspace as well as its encoded bytes; " +
-          "too-small limits fail before encoding. Encrypted native RSS is not supported; " +
+          "ordinary uncompressed frames need approximately seven times their size plus " +
+          "schema and transport overhead. Compressed frames also reserve workspace for " +
+          "their uncompressed data. Admission is acquired before encoding. " +
+          "Encrypted native RSS is not supported; " +
           "use ordinary Spark shuffle when spark.io.encryption.enabled is true.")
       .bytesConf(ByteUnit.BYTE)
       .checkValue(
         value => value >= 76 && value <= Int.MaxValue,
         "Remote shuffle in-flight byte limit must fit three complete frame copies and a " +
           "Celeborn request header")
-      .createWithDefault(256L * 1024 * 1024)
+      .createWithDefault(512L * 1024 * 1024)
 
   val COMET_DEBUG_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.debug.enabled")
@@ -924,6 +955,24 @@ object CometConf extends ShimCometConf {
         "Defines filesystem schemes (e.g., hdfs, webhdfs) that the native side accesses " +
           "via libhdfs, separated by commas. Valid only when built with hdfs-opendal feature " +
           "enabled.")
+      .stringConf
+      .createOptional
+
+  val COMET_S3_COMPLIANT_SCHEMES_KEY = "fs.comet.s3Compliant.schemes"
+
+  // Declared so the value appears in the generated config reference and can be set via
+  // `spark.hadoop.*`, but never read through this entry: `NativeConfig.resolveS3CompliantSchemes`
+  // reads the Hadoop key below instead, so `core-site.xml` is honored too. Same shape as
+  // COMET_LIBHDFS_SCHEMES.
+  val COMET_S3_COMPLIANT_SCHEMES: OptionalConfigEntry[String] =
+    conf(s"spark.hadoop.$COMET_S3_COMPLIANT_SCHEMES_KEY")
+      .category(CATEGORY_SCAN)
+      .doc(
+        "Defines filesystem schemes (e.g., blob, minio, r2) that Comet treats as S3-compliant, " +
+          "separated by commas. Such schemes reuse the `fs.s3a.*` credential surface and accept " +
+          "vendor-style `fs.<scheme>.<authority>.*` keys. Empty by default, so no alias scheme " +
+          "is claimed unless opted in. Read from the Hadoop configuration, so it must be set " +
+          "before the SparkSession is created.")
       .stringConf
       .createOptional
 

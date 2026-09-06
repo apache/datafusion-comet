@@ -51,7 +51,7 @@ import com.google.common.base.Objects
 
 import org.apache.comet.{CometConf, CometExplainInfo}
 import org.apache.comet.CometConf.{COMET_SHUFFLE_ENABLED, COMET_SHUFFLE_MODE}
-import org.apache.comet.CometSparkSessionExtensions.{cometCelebornShuffleFallbackReason, hasFallbackReason, isCometCelebornShuffleManagerEnabled, isCometShuffleManagerEnabled, withFallbackReasons}
+import org.apache.comet.CometSparkSessionExtensions.{cometCelebornShuffleFallbackReason, hasFallbackReason, isCometCelebornShuffleManagerEnabled, isCometShuffleManagerEnabled, isSpark40Plus, withFallbackReasons}
 import org.apache.comet.serde.{Compatible, OperatorOuterClass, QueryPlanSerde, SupportLevel, Unsupported}
 import org.apache.comet.serde.operator.CometSink
 import org.apache.comet.shims.{CometTypeShim, ShimCometShuffleExchangeExec}
@@ -148,7 +148,10 @@ case class CometShuffleExchangeExec(
     if (inputRDD.getNumPartitions == 0) {
       Future.successful(null)
     } else {
-      sparkContext.submitMapStage(shuffleDependency)
+      CometCelebornShuffleMaterialization.forDependency(shuffleDependency) match {
+        case Some(materialization) => materialization
+        case None => sparkContext.submitMapStage(shuffleDependency)
+      }
     }
   }
 
@@ -167,7 +170,13 @@ case class CometShuffleExchangeExec(
   }
 
   // TODO: add `override` keyword after dropping Spark-3.x supports
-  def shuffleId: Int = getShuffleId(shuffleDependency)
+  def shuffleId: Int = {
+    val current = shuffleDependency match {
+      case comet: CometShuffleDependency[Int @unchecked, _, _] => comet.currentShuffleDependency
+      case other => other
+    }
+    getShuffleId(current)
+  }
 
   /**
    * A [[ShuffleDependency]] that will partition rows of its child based on the partitioning
@@ -401,12 +410,21 @@ object CometShuffleExchangeExec
   private def nativeShuffleFailureReasons(s: ShuffleExchangeExec): Seq[String] = {
     val conf = SQLConf.get
 
+    val nestedHashPartitioningEnabled =
+      CometConf.COMET_SHUFFLE_NATIVE_HASH_PARTITIONING_NESTED_ENABLED.get(conf)
+
     /**
      * Determine which data types are supported as partition columns in native shuffle.
      *
      * For HashPartitioning this defines the key that determines how data should be collocated for
-     * operations like `groupByKey`, `reduceByKey`, or `join`. Native code does not support
-     * hashing complex types, see hash_funcs/utils.rs
+     * operations like `groupByKey`, `reduceByKey`, or `join`.
+     *
+     * Nested types (struct/array/map) are supported when
+     * `spark.comet.shuffle.native.partitioning.hash.nested.enabled` is enabled: the native
+     * Murmur3 kernel in hash_funcs/utils.rs hashes them recursively. Nesting is checked
+     * recursively, so a leaf type that cannot be hashed natively -- a collated string, or an
+     * interval the hasher has no branch for -- disqualifies the whole key and the shuffle falls
+     * back to Spark.
      */
     def supportedHashPartitioningDataType(dt: DataType): Boolean = dt match {
       // Collated strings require collation-aware hashing; Comet only hashes raw bytes,
@@ -424,6 +442,22 @@ object CometShuffleExchangeExec
         true
       case dt if isTimeType(dt) =>
         true
+      case StructType(fields) if nestedHashPartitioningEnabled =>
+        // `fields.nonEmpty` mirrors the guard on the data-column gate below. An empty struct is
+        // not reachable end-to-end anyway: Parquet cannot store an empty group, and an in-memory
+        // relation with one does not survive scan conversion.
+        fields.nonEmpty && fields.forall(f => supportedHashPartitioningDataType(f.dataType))
+      case ArrayType(elementType, _) if nestedHashPartitioningEnabled =>
+        supportedHashPartitioningDataType(elementType)
+      case MapType(keyType, valueType, _) if nestedHashPartitioningEnabled =>
+        // Map entry order is not semantically meaningful, so two equal maps must hash alike.
+        // Spark 4.0+ normalizes a map shuffle key by wrapping it in `mapsort(...)`, which is
+        // gated separately by CometMapSort (scalar map keys only) and, when unsupported, fails
+        // the expression check below. Earlier Spark versions insert no such normalization, so
+        // Comet would hash physical entry order and could route equal maps differently.
+        isSpark40Plus &&
+        supportedHashPartitioningDataType(keyType) &&
+        supportedHashPartitioningDataType(valueType)
       case _ =>
         false
     }
@@ -882,19 +916,31 @@ object CometShuffleExchangeExec
           None)
     }
 
+    // The remote stage can finish some maps before an oversized row requires a complete local
+    // replacement. Keep output statistics separate from the public counters so neither those
+    // completed maps nor late remote updates inflate the selected shuffle's AQE statistics.
+    val outputMetrics = thinRDD.context.env.shuffleManager match {
+      case _: CometCelebornShuffleManager if numParts > 0 =>
+        Some(CometShuffleOutputMetrics(thinRDD.context, metrics))
+      case _ => None
+    }
+    val destinationMetrics = metrics ++ outputMetrics.toSeq.flatMap(_.metrics)
+
     new CometShuffleDependency[Int, ColumnarBatch, ColumnarBatch](
       thinRDD,
       serializer = serializer,
-      shuffleWriterProcessor = ShuffleExchangeExec.createShuffleWriteProcessor(metrics),
+      shuffleWriterProcessor =
+        ShuffleExchangeExec.createShuffleWriteProcessor(destinationMetrics),
       shuffleType = CometNativeShuffle,
       partitioner = partitioner,
       decodeTime = metrics("decode_time"),
       outputPartitioning = Some(outputPartitioning),
       outputAttributes = outputAttributes,
-      shuffleWriteMetrics = metrics,
+      shuffleWriteMetrics = destinationMetrics,
       numParts = numParts,
       rangePartitionBounds = rangePartitionBounds,
-      nativeShuffleSpec = Some(augmentedSpec))
+      nativeShuffleSpec = Some(augmentedSpec),
+      outputMetrics = outputMetrics)
   }
 
   /**
