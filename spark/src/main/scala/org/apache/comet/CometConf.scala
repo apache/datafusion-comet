@@ -396,6 +396,16 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(true)
 
+  val COMET_EXEC_HIGHER_ORDER_FUNCTION_NATIVE_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.exec.higherOrderFunction.native.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "When enabled, supported higher-order functions (e.g. filter) are executed by the " +
+          "native DataFusion engine. Shapes the native path cannot handle fall back to the " +
+          "codegen dispatcher, and finally to Spark.")
+      .booleanConf
+      .createWithDefault(true)
+
   val COMET_SHUFFLE_NATIVE_HASH_PARTITIONING_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.shuffle.native.partitioning.hash.enabled")
       .withAlternative("spark.comet.native.shuffle.partitioning.hash.enabled")
