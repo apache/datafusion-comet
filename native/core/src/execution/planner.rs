@@ -1075,14 +1075,20 @@ impl PhysicalPlanner {
             left.data_type(&input_schema),
             right.data_type(&input_schema),
         ) {
+            // The width test is done in `i16` rather than `u8`: a negative scale makes
+            // `s as u8` wrap to a huge value and `p - s as u8` underflow, which panics in debug
+            // builds and silently selects the wrong branch in release (`overflow-checks = false`).
+            // Precision and scale are both bounded well inside `i16`, so this cannot overflow.
             (
                 DataFusionOperator::Plus | DataFusionOperator::Minus | DataFusionOperator::Multiply,
                 Ok(DataType::Decimal128(p1, s1)),
                 Ok(DataType::Decimal128(p2, s2)),
             ) if ((op == DataFusionOperator::Plus || op == DataFusionOperator::Minus)
-                && max(s1, s2) as u8 + max(p1 - s1 as u8, p2 - s2 as u8)
-                    >= DECIMAL128_MAX_PRECISION)
-                || (op == DataFusionOperator::Multiply && p1 + p2 >= DECIMAL128_MAX_PRECISION) =>
+                && max(s1 as i16, s2 as i16)
+                    + max(p1 as i16 - s1 as i16, p2 as i16 - s2 as i16)
+                    >= DECIMAL128_MAX_PRECISION as i16)
+                || (op == DataFusionOperator::Multiply
+                    && p1 as i16 + p2 as i16 >= DECIMAL128_MAX_PRECISION as i16) =>
             {
                 let data_type = return_type.map(to_arrow_datatype).unwrap();
                 let (p_out, s_out) = match &data_type {

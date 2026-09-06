@@ -23,7 +23,7 @@ import scala.util.Random
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{Column, CometTestBase, DataFrame, Row}
-import org.apache.spark.sql.catalyst.expressions.{Alias, Cast, FromUnixTime, Literal, StructsToJson, TruncDate, TruncTimestamp}
+import org.apache.spark.sql.catalyst.expressions.{Add, Alias, AttributeReference, Cast, Divide, FromUnixTime, IntegralDivide, Literal, Remainder, StructsToJson, Subtract, TruncDate, TruncTimestamp}
 import org.apache.spark.sql.catalyst.optimizer.{ConvertToLocalRelation, OptimizeIn, SimplifyExtractValueOps}
 import org.apache.spark.sql.comet.CometProjectExec
 import org.apache.spark.sql.execution.{ProjectExec, SparkPlan}
@@ -34,6 +34,7 @@ import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
 import org.apache.spark.sql.types._
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, isSpark41Plus, isSpark42Plus}
+import org.apache.comet.serde.{CometAdd, CometDivide, CometIntegralDivide, CometRemainder, CometSubtract, Unsupported}
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
 class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
@@ -1042,6 +1043,91 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         assert(
           explain.contains("native implementation of FromUTCTimestamp"),
           s"Expected 'native implementation of FromUTCTimestamp' in: $explain")
+      }
+    }
+  }
+
+  test("arithmetic on negative-scale decimal reports unsupported via getSupportLevel") {
+    // Guards issue #5013: native scale-align multiplies by 10^|delta| which overflows to a
+    // subtract-with-overflow panic (debug) / silent wrap (release) whenever any operand or the
+    // result has negative scale. Constructing the expressions requires
+    // allowNegativeScaleOfDecimal so DecimalType(_, s<0) passes Spark's own check.
+    withSQLConf("spark.sql.legacy.allowNegativeScaleOfDecimal" -> "true") {
+      Seq(DecimalType(10, -1), DecimalType(20, -5)).foreach { negScale =>
+        val posDec = DecimalType(10, 0)
+        val negAttr = AttributeReference("n", negScale)()
+        val posAttr = AttributeReference("p", posDec)()
+        val expected = Unsupported(Some(CometAdd.negScaleDecimalArithmeticReason))
+
+        assert(CometAdd.getSupportLevel(Add(negAttr, posAttr)) == expected)
+        assert(CometSubtract.getSupportLevel(Subtract(negAttr, posAttr)) == expected)
+        assert(CometDivide.getSupportLevel(Divide(negAttr, posAttr)) == expected)
+        assert(CometIntegralDivide.getSupportLevel(IntegralDivide(negAttr, posAttr)) == expected)
+        assert(CometRemainder.getSupportLevel(Remainder(negAttr, posAttr)) == expected)
+        // Guard also fires when negative scale is only on the right operand.
+        assert(CometAdd.getSupportLevel(Add(posAttr, negAttr)) == expected)
+      }
+    }
+  }
+
+  test("arithmetic on negative-scale decimal falls back and returns correct results") {
+    // End-to-end proof for issue #5013 that the previously-panicking queries now complete.
+    // ConvertToLocalRelation is excluded so the arithmetic actually runs on the plan rather
+    // than being folded at plan time (#4789). `DecimalType(_, s<0)` must be constructed under
+    // allowNegativeScaleOfDecimal=true because the case class initializer reads the flag, so
+    // wrap everything (including the type value) in one block.
+    withSQLConf(
+      "spark.sql.legacy.allowNegativeScaleOfDecimal" -> "true",
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+        "org.apache.spark.sql.catalyst.optimizer.ConvertToLocalRelation") {
+      // Cover a narrow and a wide negative-scale type: at precision 20 the combined operand
+      // width crosses DECIMAL128_MAX_PRECISION, which routes the operation to
+      // `WideDecimalBinaryExpr` / `decimal_div`'s BigInt path rather than the narrow arrow
+      // kernels. `unit` is the smallest magnitude representable at that scale.
+      val negScaleCases = Seq((DecimalType(10, -1), 10), (DecimalType(20, -5), 100000))
+      negScaleCases.foreach { case (negScaleType, unit) =>
+        // Build the neg-scale column via string -> Decimal(neg), a known-safe cast, so the
+        // source construction does not depend on any of the guards under test.
+        val strs = Seq(10 * unit, 20 * unit, 30 * unit).map(_.toString)
+        val v = strs.toDF("s").select(col("s").cast(negScaleType).as("v"))
+        // v % v keeps both operands at the negative-scale type through Spark's coercion so the
+        // arithmetic guard is the only thing preventing a native panic.
+        checkSparkAnswer(v.selectExpr("v % v"))
+        checkSparkAnswer(v.selectExpr("v + cast(2 as decimal(10, 0))"))
+        checkSparkAnswer(v.selectExpr("v - cast(2 as decimal(10, 0))"))
+        checkSparkAnswer(v.selectExpr("v / cast(3 as decimal(10, 0))"))
+        checkSparkAnswer(v.selectExpr("v div cast(3 as decimal(10, 0))"))
+      }
+    }
+  }
+
+  test("safe ops on negative-scale decimal run natively (regression pin)") {
+    // Multiply and UnaryMinus on negative-scale decimals don't scale-align an integer and
+    // ran natively at the time #5013 was fixed. The arithmetic guard intentionally does
+    // not cover them. If a future change ever adds scale-alignment to Multiply or a
+    // decimal codepath is added to UnaryMinus that does the multiply-by-10^n trick,
+    // these assertions will start returning a Comet fallback plan and this test will
+    // catch it before it reaches production as a silent-wrap or debug panic.
+    withSQLConf(
+      "spark.sql.legacy.allowNegativeScaleOfDecimal" -> "true",
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+        "org.apache.spark.sql.catalyst.optimizer.ConvertToLocalRelation") {
+      // The wide case matters most for `v * v`: Decimal(20,-5) * Decimal(20,-5) has
+      // p1 + p2 >= DECIMAL128_MAX_PRECISION, so it takes `WideDecimalBinaryExpr`'s multiply
+      // branch (which does compute a scale adjustment against the output precision/scale)
+      // and its result type is Decimal(38,-10) -- a negative *output* scale, not just
+      // negative inputs.
+      val negScaleCases = Seq((DecimalType(10, -1), 10), (DecimalType(20, -5), 100000))
+      negScaleCases.foreach { case (negScaleType, unit) =>
+        val strs = Seq(10 * unit, 20 * unit, 30 * unit).map(_.toString)
+        val v = strs.toDF("s").select(col("s").cast(negScaleType).as("v"))
+        // Same-scale Multiply - no alignment needed, must stay native.
+        checkSparkAnswerAndOperator(v.selectExpr("v * v"))
+        checkSparkAnswerAndOperator(v.selectExpr("v * cast(2 as int)"))
+        // UnaryMinus on Decimal(neg) - no alignment, must stay native.
+        checkSparkAnswerAndOperator(v.selectExpr("-v"))
       }
     }
   }
