@@ -19,8 +19,10 @@ use crate::utils::resolve_local_datetime;
 use crate::{SparkCastOptions, SparkResult};
 use arrow::array::timezone::Tz;
 use arrow::array::{ArrayRef, AsArray, TimestampMicrosecondBuilder};
-use arrow::datatypes::{DataType, Date32Type};
+use arrow::compute::cast_with_options;
+use arrow::datatypes::{DataType, Date32Type, TimeUnit};
 use chrono::NaiveDate;
+use datafusion::common::format::DEFAULT_CAST_OPTIONS;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -40,49 +42,46 @@ pub(crate) fn cast_date_to_timestamp(
     cast_options: &SparkCastOptions,
     target_tz: &Option<Arc<str>>,
 ) -> SparkResult<ArrayRef> {
+    if target_tz.is_none() {
+        // TIMESTAMP_NTZ ignores session TZ. Like Spark's daysToMicros, reject overflow.
+        return Ok(cast_with_options(
+            array_ref.as_ref(),
+            &DataType::Timestamp(TimeUnit::Microsecond, None),
+            &DEFAULT_CAST_OPTIONS,
+        )?);
+    }
+
     let date_array = array_ref.as_primitive::<Date32Type>();
     let mut builder = TimestampMicrosecondBuilder::with_capacity(date_array.len());
-
-    if target_tz.is_none() {
-        // TIMESTAMP_NTZ: pure day arithmetic, no session-TZ offset.
-        // Matches Spark: daysToMicros(d, ZoneOffset.UTC)
-        for date in date_array.iter() {
-            match date {
-                Some(d) => builder.append_value((d as i64) * 86_400 * 1_000_000),
-                None => builder.append_null(),
-            }
-        }
+    // TIMESTAMP: midnight in session TZ → UTC epoch μs
+    let tz_str = if cast_options.timezone.is_empty() {
+        "UTC"
     } else {
-        // TIMESTAMP: midnight in session TZ → UTC epoch μs
-        let tz_str = if cast_options.timezone.is_empty() {
-            "UTC"
-        } else {
-            cast_options.timezone.as_str()
-        };
-        // safe to unwrap since we are falling back to UTC above
-        let tz = Tz::from_str(tz_str)?;
-        let epoch = NaiveDate::from_ymd_opt(1970, 1, 1).unwrap();
-        for date in date_array.iter() {
-            match date {
-                Some(d) => {
-                    // safe to unwrap since chrono's range ( 262,143 yrs) is higher than
-                    // number of years possible with days as i32 (~ 6 mil yrs)
-                    // convert date in session timezone to timestamp in UTC
-                    let naive_date = epoch + chrono::Duration::days(d as i64);
-                    let local_midnight = naive_date.and_hms_opt(0, 0, 0).unwrap();
-                    // Use resolve_local_datetime to correctly handle DST transitions:
-                    // - Single: normal case, uses the given offset
-                    // - Ambiguous (fall back): uses the earlier/DST occurrence, matching Spark
-                    // - None (spring forward gap at midnight, e.g. America/Sao_Paulo): uses the
-                    //   pre-transition offset to compute the correct UTC time, matching Spark's
-                    //   LocalDate.atStartOfDay(zoneId) behaviour.
-                    let local_midnight_in_microsec =
-                        resolve_local_datetime(&tz, local_midnight).timestamp_micros();
-                    builder.append_value(local_midnight_in_microsec);
-                }
-                None => {
-                    builder.append_null();
-                }
+        cast_options.timezone.as_str()
+    };
+    // safe to unwrap since we are falling back to UTC above
+    let tz = Tz::from_str(tz_str)?;
+    let epoch = NaiveDate::from_ymd_opt(1970, 1, 1).unwrap();
+    for date in date_array.iter() {
+        match date {
+            Some(d) => {
+                // safe to unwrap since chrono's range ( 262,143 yrs) is higher than
+                // number of years possible with days as i32 (~ 6 mil yrs)
+                // convert date in session timezone to timestamp in UTC
+                let naive_date = epoch + chrono::Duration::days(d as i64);
+                let local_midnight = naive_date.and_hms_opt(0, 0, 0).unwrap();
+                // Use resolve_local_datetime to correctly handle DST transitions:
+                // - Single: normal case, uses the given offset
+                // - Ambiguous (fall back): uses the earlier/DST occurrence, matching Spark
+                // - None (spring forward gap at midnight, e.g. America/Sao_Paulo): uses the
+                //   pre-transition offset to compute the correct UTC time, matching Spark's
+                //   LocalDate.atStartOfDay(zoneId) behaviour.
+                let local_midnight_in_microsec =
+                    resolve_local_datetime(&tz, local_midnight).timestamp_micros();
+                builder.append_value(local_midnight_in_microsec);
+            }
+            None => {
+                builder.append_null();
             }
         }
     }
@@ -171,6 +170,8 @@ mod tests {
             Some(-1),    // 1969-12-31
             Some(19723), // 2024-01-01
             None,
+            Some(106_751_991), // largest day count representable in microseconds
+            Some(-106_751_991),
         ]));
 
         // NTZ target: no timezone annotation
@@ -200,8 +201,23 @@ mod tests {
                 "2024-01-01, tz={tz}"
             );
             assert!(ts.is_null(4), "null, tz={tz}");
+            assert_eq!(ts.value(5), 106_751_991i64 * 86_400_000_000);
+            assert_eq!(ts.value(6), -106_751_991i64 * 86_400_000_000);
             // output array has no timezone annotation
             assert_eq!(ts.timezone(), None, "no tz annotation, tz={tz}");
+        }
+
+        for day in [106_751_992, -106_751_992, i32::MIN, i32::MAX] {
+            let dates: ArrayRef = Arc::new(Date32Array::from(vec![None, Some(day)]));
+            assert!(
+                cast_date_to_timestamp(
+                    &dates,
+                    &SparkCastOptions::new(EvalMode::Legacy, "UTC", false),
+                    &ntz_target,
+                )
+                .is_err(),
+                "day={day}"
+            );
         }
     }
 }
