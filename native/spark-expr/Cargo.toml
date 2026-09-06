@@ -88,6 +88,46 @@ name = "aggregate"
 harness = false
 
 [[bench]]
+name = "date_diff"
+harness = false
+
+[[bench]]
+name = "date_from_unix_date"
+harness = false
+
+[[bench]]
+name = "day_month_name"
+harness = false
+
+[[bench]]
+name = "extract_date_part"
+harness = false
+
+[[bench]]
+name = "hours"
+harness = false
+
+[[bench]]
+name = "make_date"
+harness = false
+
+[[bench]]
+name = "make_time"
+harness = false
+
+[[bench]]
+name = "make_interval"
+harness = false
+
+[[bench]]
+name = "next_day"
+harness = false
+
+[[bench]]
+name = "seconds_to_timestamp"
+harness = false
+
+[[bench]]
 name = "bloom_filter_agg"
 harness = false
 
