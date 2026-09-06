@@ -6477,7 +6477,8 @@ mod tests {
      */
     #[tokio::test]
     async fn test_nested_types_list_of_struct_by_index() -> Result<(), DataFusionError> {
-        let test_data = "select make_array(named_struct('a', 1, 'b', 'n', 'c', 'x')) c0";
+        let test_data =
+            "select make_array(named_struct('a', cast(1 as int), 'b', 'n', 'c', 'x')) c0";
 
         // Define schema Comet reads with
         let required_schema = Schema::new(Fields::from(vec![Field::new(
