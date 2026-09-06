@@ -95,7 +95,7 @@ case class CometMetricNode(metrics: Map[String, SQLMetric], children: Seq[CometM
    */
   private[comet] def withoutAggregateMetrics(plan: SparkPlan): CometMetricNode =
     CometMetricNode(
-      if (plan.isInstanceOf[CometHashAggregateExec]) {
+      if (plan.isInstanceOf[CometBaseAggregateExec]) {
         metrics -- CometMetricNode.aggregateMetricNames
       } else {
         metrics

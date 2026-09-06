@@ -29,7 +29,7 @@ import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, Attribut
 import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial, PartialMerge}
 import org.apache.spark.sql.catalyst.plans.logical.LocalRelation
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, RangePartitioning, RoundRobinPartitioning, SinglePartition}
-import org.apache.spark.sql.comet.{CometCollectLimitExec, CometHashAggregateExec, CometLocalTableScanExec, CometNativeExec, CometScanWrapper, CometSortExec, CometSparkToColumnarExec, CometTakeOrderedAndProjectExec}
+import org.apache.spark.sql.comet.{CometBaseAggregateExec, CometCollectLimitExec, CometHashAggregateExec, CometLocalTableScanExec, CometNativeExec, CometScanWrapper, CometSortAggregateExec, CometSortExec, CometSparkToColumnarExec, CometTakeOrderedAndProjectExec}
 import org.apache.spark.sql.execution.{CollectLimitExec, ColumnarToRowTransition, LocalTableScanExec, SortExec, SparkPlan, TakeOrderedAndProjectExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanExec
 import org.apache.spark.sql.execution.aggregate.BaseAggregateExec
@@ -427,6 +427,37 @@ class CometCelebornShufflePlanningSuite extends CometTestBase {
         assert(
           retainedAggregates.forall(
             _.originalPlan.getTagValue(CometExecRule.COMET_UNSAFE_PARTIAL).isEmpty))
+      }
+    }
+  }
+
+  // SortAggregateExec carries the same TypedImperativeAggregate buffer formats as
+  // ObjectHashAggregateExec, so preserveSparkAggregateBuffers must restore a Comet sort-aggregate
+  // Partial too. Regression guard: that predicate matched only CometHashAggregateExec before
+  // CometSortAggregateExec existed, which would have let a native collect_list buffer reach a
+  // Spark Final across a fallen-back Celeborn exchange.
+  test("a Comet sort-aggregate Partial is restored when a Celeborn exchange falls back") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      CometConf.COMET_SHUFFLE_MODE.key -> "native",
+      SQLConf.USE_OBJECT_HASH_AGG.key -> "false") {
+      val partial = collect(collectionAggregatePlan) {
+        case aggregate: CometSortAggregateExec if aggregate.modes == Seq(Partial) => aggregate
+      }.head
+
+      manager.withPlanningSupport(
+        CelebornNativeShufflePlanningSupport(fallbackPartitionThreshold = 2L)) {
+        val exchange =
+          ShuffleExchangeExec(HashPartitioning(Seq(partial.output.head), 4), partial)
+        val restored = CometExecRule(spark)(exchange)
+        assertSparkExchange(restored)
+        assert(
+          collect(restored) { case aggregate: CometBaseAggregateExec => aggregate }.isEmpty,
+          s"$restored")
+        val sparkPartial = collect(restored) { case aggregate: BaseAggregateExec =>
+          aggregate
+        }.head
+        assert(sparkPartial.getTagValue(CometExecRule.COMET_UNSAFE_PARTIAL).isDefined)
       }
     }
   }
