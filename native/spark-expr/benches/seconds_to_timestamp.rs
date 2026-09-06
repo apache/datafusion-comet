@@ -30,10 +30,22 @@ use common::{f32_array, f64_array, i32_array, i64_array, NULL_RATIOS, ROW_COUNTS
 
 fn inputs(rows: usize, null_ratio: f64) -> Vec<(&'static str, ArrayRef)> {
     vec![
-        ("int32", i32_array(rows, null_ratio, |i| (i % 100_000) as i32)),
-        ("int64", i64_array(rows, null_ratio, |i| (i % 100_000) as i64)),
-        ("float32", f32_array(rows, null_ratio, |i| (i % 100_000) as f32)),
-        ("float64", f64_array(rows, null_ratio, |i| (i % 100_000) as f64)),
+        (
+            "int32",
+            i32_array(rows, null_ratio, |i| (i % 100_000) as i32),
+        ),
+        (
+            "int64",
+            i64_array(rows, null_ratio, |i| (i % 100_000) as i64),
+        ),
+        (
+            "float32",
+            f32_array(rows, null_ratio, |i| (i % 100_000) as f32),
+        ),
+        (
+            "float64",
+            f64_array(rows, null_ratio, |i| (i % 100_000) as f64),
+        ),
     ]
 }
 

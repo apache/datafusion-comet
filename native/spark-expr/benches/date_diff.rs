@@ -33,8 +33,12 @@ fn criterion_benchmark(c: &mut Criterion) {
     for rows in ROW_COUNTS {
         for (null_ratio, tag) in NULL_RATIOS {
             let args = vec![
-                ColumnarValue::Array(date32_array(rows, null_ratio, |i| 19_000 + (i % 5000) as i32)),
-                ColumnarValue::Array(date32_array(rows, null_ratio, |i| 18_000 + (i % 5000) as i32)),
+                ColumnarValue::Array(date32_array(rows, null_ratio, |i| {
+                    19_000 + (i % 5000) as i32
+                })),
+                ColumnarValue::Array(date32_array(rows, null_ratio, |i| {
+                    18_000 + (i % 5000) as i32
+                })),
             ];
             group.bench_with_input(
                 BenchmarkId::from_parameter(format!("{rows}/{tag}")),
