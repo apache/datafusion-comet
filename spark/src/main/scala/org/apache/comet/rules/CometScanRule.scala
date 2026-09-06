@@ -1134,7 +1134,8 @@ object CometScanRule extends Logging {
    * native can't be consulted (library not loaded), assume supported -- the gate is only an
    * early-fallback optimization and such a build can't run the native scan anyway.
    */
-  private[rules] def isNativelyReadableScheme(
+  // private[comet] (not [rules]) so contrib scan extensions can apply the same gate.
+  private[comet] def isNativelyReadableScheme(
       uri: URI,
       s3CompliantSchemes: Set[String]): Boolean = {
     val scheme = uri.getScheme
@@ -1201,7 +1202,8 @@ object CometScanRule extends Logging {
     catch { case _: Throwable => true }
 
   /** [[probeObjectStore]] against a URI's real path, not just its scheme. Uncached. */
-  private[rules] def objectStoreAcceptsPath(uri: URI): Boolean =
+  // private[comet] (not [rules]) so contrib scan extensions can apply the same gate.
+  private[comet] def objectStoreAcceptsPath(uri: URI): Boolean =
     probeObjectStore(uri.toString)
 
   /**

@@ -29,6 +29,9 @@ pub mod operator_registry;
 // and calls into that crate.
 #[cfg(feature = "contrib-delta")]
 mod delta_scan;
+// JVM-planned Delta sibling of the kernel handler above; see delta_spark_scan.rs.
+#[cfg(feature = "delta")]
+mod delta_spark_scan;
 
 use crate::execution::operators::init_csv_datasource_exec;
 use crate::execution::operators::AlignedArrowStreamReader;
@@ -106,6 +109,7 @@ use datafusion::common::{
     JoinType as DFJoinType, NullEquality, ScalarValue,
 };
 use datafusion::datasource::listing::PartitionedFile;
+use datafusion::datasource::object_store::ObjectStoreUrl;
 use datafusion::logical_expr::type_coercion::functions::fields_with_udf;
 use datafusion::logical_expr::type_coercion::other::get_coerce_type_for_case_expression;
 use datafusion::logical_expr::{
@@ -444,6 +448,176 @@ impl PhysicalPlanner {
     /// Return partition id of this planner.
     pub fn partition(&self) -> i32 {
         self.partition
+    }
+
+    /// Build the native parquet `DataSourceExec` shared by the parquet-backed scan arms
+    /// (NativeScan and, behind the `delta` feature, DeltaScan): schema conversion, data-filter
+    /// binding, object-store setup, file-group construction, and `init_datasource_exec`.
+    /// Arm-specific concerns (file-list decoding, deletion-vector handling) stay in the arms.
+    /// `rebase_from_file_metadata` opts the scan into per-file datetime calendar-rebase
+    /// resolution (see `datetime_rebase.rs`): the Delta arm passes true, while NativeScan
+    /// passes false to keep its documented no-rebase behavior (#5010).
+    /// `datetime_rebase_mode_in_read` / `int96_rebase_mode_in_read` carry the session's
+    /// effective read modes for files whose footer metadata does not decide the policy;
+    /// they are only consulted when `rebase_from_file_metadata` is true (empty means
+    /// EXCEPTION, the conservative refuse-ancient posture).
+    #[allow(clippy::too_many_arguments)]
+    fn build_parquet_scan_plan(
+        &self,
+        plan_id: u32,
+        common: &spark_operator::NativeScanCommon,
+        object_store_url: ObjectStoreUrl,
+        files: Vec<PartitionedFile>,
+        rebase_from_file_metadata: bool,
+        datetime_rebase_mode_in_read: &str,
+        int96_rebase_mode_in_read: &str,
+    ) -> Result<Arc<SparkPlan>, ExecutionError> {
+        let data_schema = convert_spark_types_to_arrow_schema(common.data_schema.as_slice());
+        let required_schema: SchemaRef =
+            convert_spark_types_to_arrow_schema(common.required_schema.as_slice());
+        let partition_schema: SchemaRef =
+            convert_spark_types_to_arrow_schema(common.partition_schema.as_slice());
+        let projection_vector: Vec<usize> = common
+            .projection_vector
+            .iter()
+            .map(|offset| *offset as usize)
+            .collect();
+
+        // Check if this partition has any files (bucketed scan with bucket pruning may have
+        // empty partitions; a fully-pruned Delta partition likewise).
+        if files.is_empty() {
+            let empty_exec = Arc::new(EmptyExec::new(required_schema));
+            return Ok(Arc::new(SparkPlan::new(plan_id, empty_exec, vec![])));
+        }
+
+        // data_filters may reference partition columns and constant metadata columns
+        // (e.g. `_metadata.file_size`), which the Parquet reader appends after
+        // required_schema's columns once partition_values are projected into the
+        // batch. Bind against the combined schema so `Bound` indices resolve
+        // correctly -- Scala's `exprToProto(filter, scan.output)`
+        // (CometNativeScan.scala) numbers columns against that same ordering.
+        let data_filters: Result<Vec<Arc<dyn PhysicalExpr>>, ExecutionError> =
+            if common.data_filters.is_empty() {
+                Ok(vec![])
+            } else {
+                let filter_schema: SchemaRef = Arc::new(Schema::new(
+                    required_schema
+                        .fields()
+                        .iter()
+                        .chain(partition_schema.fields().iter())
+                        .cloned()
+                        .collect::<Vec<FieldRef>>(),
+                ));
+                common
+                    .data_filters
+                    .iter()
+                    .map(|expr| self.create_expr(expr, Arc::clone(&filter_schema)))
+                    .collect()
+            };
+
+        let default_values = self.parse_default_values(common, &required_schema)?;
+
+        let file_groups: Vec<Vec<PartitionedFile>> = vec![files];
+
+        let scan = init_datasource_exec(
+            required_schema,
+            Some(data_schema),
+            Some(partition_schema),
+            object_store_url,
+            file_groups,
+            Some(projection_vector),
+            if common.has_data_filters || !common.data_filters.is_empty() {
+                Some(data_filters?)
+            } else {
+                None
+            },
+            default_values,
+            common.session_timezone.as_str(),
+            common.case_sensitive,
+            common.return_null_struct_if_all_fields_missing,
+            common.allow_type_promotion,
+            common.allow_timestamp_ltz_to_ntz,
+            self.session_ctx(),
+            common.encryption_enabled,
+            common.use_field_id,
+            common.ignore_missing_field_id,
+            rebase_from_file_metadata,
+            datetime_rebase_mode_in_read,
+            int96_rebase_mode_in_read,
+        )?;
+        Ok(Arc::new(SparkPlan::new(plan_id, scan, vec![])))
+    }
+
+    /// Register the scan's object store and convert its proto file list into DataFusion
+    /// [`PartitionedFile`]. Shared by the NativeScan and DeltaScan arms; empty partitions
+    /// yield an empty file list (handled by `build_parquet_scan_plan`).
+    fn prepare_scan_store_and_files(
+        &self,
+        common: &spark_operator::NativeScanCommon,
+        partition_files: &SparkFilePartition,
+    ) -> Result<(ObjectStoreUrl, Vec<PartitionedFile>), ExecutionError> {
+        let one_file = match partition_files.partitioned_file.first() {
+            Some(f) => f.file_path.clone(),
+            None => {
+                // Empty partition: no store to resolve; the URL is unused because the
+                // file group is empty and build_parquet_scan_plan returns EmptyExec.
+                return Ok((ObjectStoreUrl::local_filesystem(), vec![]));
+            }
+        };
+        let object_store_options: HashMap<String, String> = common
+            .object_store_options
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        let (object_store_url, _) = prepare_object_store_with_configs(
+            self.session_ctx.runtime_env(),
+            one_file,
+            &object_store_options,
+        )?;
+        let files = self.get_partitioned_files(partition_files, &object_store_options)?;
+        Ok((object_store_url, files))
+    }
+
+    /// Parse a scan's serialized default values (for columns missing in older files) into the
+    /// map consumed by the SchemaMapper. Shared by the NativeScan and DeltaScan arms.
+    fn parse_default_values(
+        &self,
+        common: &spark_operator::NativeScanCommon,
+        required_schema: &SchemaRef,
+    ) -> Result<Option<HashMap<Column, ScalarValue>>, ExecutionError> {
+        if common.default_values.is_empty() {
+            return Ok(None);
+        }
+        // We have default values. Extract the two lists (same length) of values and
+        // indexes in the schema, and then create a HashMap to use in the SchemaMapper.
+        let default_values: Result<Vec<ScalarValue>, DataFusionError> = common
+            .default_values
+            .iter()
+            .map(|expr| {
+                let literal = self.create_expr(expr, Arc::clone(required_schema))?;
+                let df_literal = literal.downcast_ref::<DataFusionLiteral>().ok_or_else(|| {
+                    GeneralError("Expected literal of default value.".to_string())
+                })?;
+                Ok(df_literal.value().clone())
+            })
+            .collect();
+        let default_values = default_values?;
+        let default_values_indexes: Vec<usize> = common
+            .default_values_indexes
+            .iter()
+            .map(|offset| *offset as usize)
+            .collect();
+        Ok(Some(
+            default_values_indexes
+                .into_iter()
+                .zip(default_values)
+                .map(|(idx, scalar_value)| {
+                    let field = required_schema.field(idx);
+                    let column = Column::new(field.name().as_str(), idx);
+                    (column, scalar_value)
+                })
+                .collect(),
+        ))
     }
 
     /// get DataFusion PartitionedFiles from a Spark FilePartition
@@ -1606,147 +1780,23 @@ impl PhysicalPlanner {
                     .as_ref()
                     .ok_or_else(|| GeneralError("NativeScan missing common data".into()))?;
 
-                let data_schema =
-                    convert_spark_types_to_arrow_schema(common.data_schema.as_slice());
-                let required_schema: SchemaRef =
-                    convert_spark_types_to_arrow_schema(common.required_schema.as_slice());
-                let partition_schema: SchemaRef =
-                    convert_spark_types_to_arrow_schema(common.partition_schema.as_slice());
-                let projection_vector: Vec<usize> = common
-                    .projection_vector
-                    .iter()
-                    .map(|offset| *offset as usize)
-                    .collect();
-
                 let partition_files = scan
                     .file_partition
                     .as_ref()
                     .ok_or_else(|| GeneralError("NativeScan missing file_partition".into()))?;
 
-                // Check if this partition has any files (bucketed scan with bucket pruning may have empty partitions)
-                if partition_files.partitioned_file.is_empty() {
-                    let empty_exec = Arc::new(EmptyExec::new(required_schema));
-                    return Ok((
-                        vec![],
-                        vec![],
-                        Arc::new(SparkPlan::new(spark_plan.plan_id, empty_exec, vec![])),
-                    ));
-                }
-
-                // data_filters may reference partition columns and constant metadata columns
-                // (e.g. `_metadata.file_size`), which the Parquet reader appends after
-                // required_schema's columns once partition_values are projected into the
-                // batch. Bind against the combined schema so `Bound` indices resolve
-                // correctly -- Scala's `exprToProto(filter, scan.output)`
-                // (CometNativeScan.scala) numbers columns against that same ordering.
-                let data_filters: Result<Vec<Arc<dyn PhysicalExpr>>, ExecutionError> =
-                    if common.data_filters.is_empty() {
-                        Ok(vec![])
-                    } else {
-                        let filter_schema: SchemaRef = Arc::new(Schema::new(
-                            required_schema
-                                .fields()
-                                .iter()
-                                .chain(partition_schema.fields().iter())
-                                .cloned()
-                                .collect::<Vec<FieldRef>>(),
-                        ));
-                        common
-                            .data_filters
-                            .iter()
-                            .map(|expr| self.create_expr(expr, Arc::clone(&filter_schema)))
-                            .collect()
-                    };
-
-                let default_values: Option<HashMap<Column, ScalarValue>> = if !common
-                    .default_values
-                    .is_empty()
-                {
-                    // We have default values. Extract the two lists (same length) of values and
-                    // indexes in the schema, and then create a HashMap to use in the SchemaMapper.
-                    let default_values: Result<Vec<ScalarValue>, DataFusionError> = common
-                        .default_values
-                        .iter()
-                        .map(|expr| {
-                            let literal = self.create_expr(expr, Arc::clone(&required_schema))?;
-                            let df_literal =
-                                literal.downcast_ref::<DataFusionLiteral>().ok_or_else(|| {
-                                    GeneralError("Expected literal of default value.".to_string())
-                                })?;
-                            Ok(df_literal.value().clone())
-                        })
-                        .collect();
-                    let default_values = default_values?;
-                    let default_values_indexes: Vec<usize> = common
-                        .default_values_indexes
-                        .iter()
-                        .map(|offset| *offset as usize)
-                        .collect();
-                    Some(
-                        default_values_indexes
-                            .into_iter()
-                            .zip(default_values)
-                            .map(|(idx, scalar_value)| {
-                                let field = required_schema.field(idx);
-                                let column = Column::new(field.name().as_str(), idx);
-                                (column, scalar_value)
-                            })
-                            .collect(),
-                    )
-                } else {
-                    None
-                };
-
-                // Get one file from this partition (we know it's not empty due to early return above)
-                let one_file = partition_files
-                    .partitioned_file
-                    .first()
-                    .map(|f| f.file_path.clone())
-                    .expect("partition should have files after empty check");
-
-                let object_store_options: HashMap<String, String> = common
-                    .object_store_options
-                    .iter()
-                    .map(|(k, v)| (k.clone(), v.clone()))
-                    .collect();
-                let (object_store_url, _) = prepare_object_store_with_configs(
-                    self.session_ctx.runtime_env(),
-                    one_file,
-                    &object_store_options,
-                )?;
-
-                // Get files for this partition
-                let files = self.get_partitioned_files(partition_files, &object_store_options)?;
-                let file_groups: Vec<Vec<PartitionedFile>> = vec![files];
-
-                let scan = init_datasource_exec(
-                    required_schema,
-                    Some(data_schema),
-                    Some(partition_schema),
+                let (object_store_url, files) =
+                    self.prepare_scan_store_and_files(common, partition_files)?;
+                let scan = self.build_parquet_scan_plan(
+                    spark_plan.plan_id,
+                    common,
                     object_store_url,
-                    file_groups,
-                    Some(projection_vector),
-                    if common.has_data_filters || !common.data_filters.is_empty() {
-                        Some(data_filters?)
-                    } else {
-                        None
-                    },
-                    default_values,
-                    common.session_timezone.as_str(),
-                    common.case_sensitive,
-                    common.return_null_struct_if_all_fields_missing,
-                    common.allow_type_promotion,
-                    common.allow_timestamp_ltz_to_ntz,
-                    self.session_ctx(),
-                    common.encryption_enabled,
-                    common.use_field_id,
-                    common.ignore_missing_field_id,
+                    files,
+                    false,
+                    "",
+                    "",
                 )?;
-                Ok((
-                    vec![],
-                    vec![],
-                    Arc::new(SparkPlan::new(spark_plan.plan_id, scan, vec![])),
-                ))
+                Ok((vec![], vec![], scan))
             }
             OpStruct::CsvScan(scan) => {
                 let data_schema = convert_spark_types_to_arrow_schema(scan.data_schema.as_slice());
@@ -1885,10 +1935,18 @@ impl PhysicalPlanner {
                 if let Some(result) = delta_scan::try_plan_contrib_scan(self, spark_plan, contrib) {
                     return result;
                 }
+                #[cfg(feature = "delta")]
+                if let Some(result) =
+                    delta_spark_scan::try_plan_contrib_scan(self, spark_plan, contrib)
+                {
+                    return result;
+                }
                 Err(GeneralError(format!(
                     "Received a contrib_scan operator (type_url: {}) but core was built without a \
                      contrib that handles it. Rebuild with the matching contrib feature -- e.g. \
-                     `-Pcontrib-delta` (Maven) + `--features contrib-delta` (Cargo) for Delta Lake.",
+                     `-Pcontrib-delta` (Maven) + `--features contrib-delta` (Cargo) for the \
+                     kernel-planned Delta path, or `-Pdelta` + `--features delta` for the \
+                     JVM-planned Delta path.",
                     contrib.type_url
                 )))
             }
@@ -5134,6 +5192,21 @@ mod tests {
         }
     }
 
+    /// Pack a `DeltaSparkScan` into the generic `ContribScan` envelope exactly as the
+    /// contrib jar does on the JVM side.
+    fn delta_spark_envelope(scan: spark_operator::DeltaSparkScan) -> Operator {
+        use prost::Message;
+        Operator {
+            plan_id: 0,
+            sql_text_pool: vec![],
+            children: vec![],
+            op_struct: Some(OpStruct::ContribScan(spark_operator::ContribScan {
+                type_url: "type.googleapis.com/comet.contrib.delta_spark.DeltaSparkScan".into(),
+                value: scan.encode_to_vec(),
+            })),
+        }
+    }
+
     #[test]
     fn shuffle_partition_writer_legacy_paths_remain_supported() {
         let writer = spark_operator::ShuffleWriter {
@@ -5623,6 +5696,88 @@ mod tests {
         assert!(
             error.to_string().contains("cannot have local output files"),
             "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn delta_scan_errors_without_delta_feature() {
+        let op = delta_spark_envelope(spark_operator::DeltaSparkScan {
+            common: None,
+            delta_common: None,
+            file_partition: None,
+        });
+        let planner = PhysicalPlanner::default();
+        let err = planner.create_plan(&op, &mut vec![], 1).unwrap_err();
+        let msg = format!("{err}");
+        #[cfg(not(feature = "delta"))]
+        assert!(
+            msg.contains("built without a contrib that handles it"),
+            "expected mismatched-build error, got: {msg}"
+        );
+        #[cfg(feature = "delta")]
+        assert!(
+            msg.contains("missing common data"),
+            "expected missing-common-data error for an empty DeltaSparkScan, got: {msg}"
+        );
+    }
+
+    #[cfg(feature = "delta")]
+    fn delta_scan_op(files: Vec<spark_operator::DeltaSparkPartitionedFile>) -> Operator {
+        delta_spark_envelope(spark_operator::DeltaSparkScan {
+            common: Some(Default::default()),
+            delta_common: None,
+            file_partition: Some(spark_operator::DeltaSparkFilePartition {
+                partitioned_file: files,
+            }),
+        })
+    }
+
+    #[cfg(feature = "delta")]
+    #[test]
+    fn delta_scan_rejects_dv_without_source() {
+        let op = delta_scan_op(vec![spark_operator::DeltaSparkPartitionedFile {
+            file: Some(spark_operator::SparkPartitionedFile {
+                file_path: "file:///tmp/f.parquet".into(),
+                start: 0,
+                length: 0,
+                file_size: 0,
+                partition_values: vec![],
+            }),
+            dv: Some(spark_operator::DeltaSparkDvDescriptor {
+                storage_type: "u".into(),
+                absolute_path: None,
+                inline_data: None,
+                offset: Some(1),
+                size_in_bytes: 1,
+                cardinality: 1,
+            }),
+            // (file_path carries a scheme because store resolution now precedes
+            // the DV handling)
+        }]);
+        let err = PhysicalPlanner::default()
+            .create_plan(&op, &mut vec![], 1)
+            .unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("neither inline data nor a path"),
+            "expected malformed-descriptor error, got: {msg}"
+        );
+    }
+
+    #[cfg(feature = "delta")]
+    #[test]
+    fn delta_scan_rejects_missing_inner_file() {
+        let op = delta_scan_op(vec![spark_operator::DeltaSparkPartitionedFile {
+            file: None,
+            dv: None,
+        }]);
+        let err = PhysicalPlanner::default()
+            .create_plan(&op, &mut vec![], 1)
+            .unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("missing inner file"),
+            "expected missing-inner-file error, got: {msg}"
         );
     }
 

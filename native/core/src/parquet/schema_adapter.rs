@@ -16,6 +16,10 @@
 // under the License.
 
 use crate::parquet::cast_column::CometCastColumnExpr;
+use crate::parquet::datetime_rebase::{
+    resolve_file_rebase_policies, wrap_datetime_rebase, FileRebasePolicies, RebaseReadMode,
+    SessionRebaseModes,
+};
 use crate::parquet::name_fold::{fold_name, fold_names, fold_schema_names};
 use crate::parquet::parquet_support::{spark_parquet_convert, SparkParquetOptions};
 use arrow::array::new_empty_array;
@@ -67,7 +71,7 @@ impl SparkPhysicalExprAdapterFactory {
 }
 
 /// Read the Parquet field id stored under arrow-rs's `PARQUET_FIELD_ID_META_KEY`.
-fn parse_field_id(field: &Field) -> Option<i32> {
+pub(crate) fn parse_field_id(field: &Field) -> Option<i32> {
     field
         .metadata()
         .get(PARQUET_FIELD_ID_META_KEY)
@@ -561,6 +565,55 @@ impl PhysicalExprAdapterFactory for SparkPhysicalExprAdapterFactory {
             Arc::clone(&adapted_physical_schema),
         )?;
 
+        // Per-file calendar-rebase policies, resolved from the ORIGINAL physical file schema:
+        // its metadata carries the parquet footer's key-value pairs (they survive the parquet
+        // -> arrow schema conversion; the remapped schema above rebuilds fields only and keeps
+        // no metadata) including the reader factory's INT96 leaf stamp, and its field tree
+        // validates that stamp. `None` -- the overwhelmingly common case -- means no wrapping
+        // in `rewrite` at all.
+        let rebase_policies = if self.parquet_options.rebase_from_file_metadata {
+            // The session read modes only matter for files without Spark writer metadata
+            // (getRebaseSpec's modeByConfig fallback); empty strings parse to EXCEPTION.
+            let session_modes = SessionRebaseModes {
+                datetime: RebaseReadMode::from_conf_value(
+                    &self.parquet_options.datetime_rebase_mode_in_read,
+                ),
+                int96: RebaseReadMode::from_conf_value(
+                    &self.parquet_options.int96_rebase_mode_in_read,
+                ),
+            };
+            let policies = resolve_file_rebase_policies(&physical_file_schema, session_modes);
+            policies.any_rebase_needed().then(|| {
+                // Pair each physical column with the logical field the adapter narrows it to,
+                // through the folded names computed above (the remap already renamed id-matched
+                // columns to their logical names), so the wrapper -- which sits beneath the
+                // nested narrowing -- never checks a nested leaf the narrowing drops. An
+                // unpaired physical column keeps every leaf; nothing references it anyway.
+                // First match wins on a folded-name collision, the same tie-break as
+                // `wrap_all_type_mismatches` and `remap_physical_schema`.
+                let mut logical_index: HashMap<&str, usize> = HashMap::new();
+                for (i, name) in logical_folded.iter().enumerate() {
+                    logical_index.entry(name.as_str()).or_insert(i);
+                }
+                let requested: Vec<Option<&DataType>> = physical_folded
+                    .iter()
+                    .map(|name| {
+                        logical_index
+                            .get(name.as_str())
+                            .map(|&i| logical_file_schema.field(i).data_type())
+                    })
+                    .collect();
+                policies.restrict_to_requested(
+                    &physical_file_schema,
+                    &requested,
+                    case_sensitive,
+                    self.parquet_options.use_field_id,
+                )
+            })
+        } else {
+            None
+        };
+
         Ok(Arc::new(SparkPhysicalExprAdapter {
             logical_file_schema,
             physical_file_schema: adapted_physical_schema,
@@ -572,6 +625,7 @@ impl PhysicalExprAdapterFactory for SparkPhysicalExprAdapterFactory {
             id_resolved_logical_folded,
             logical_folded,
             physical_folded,
+            rebase_policies,
         }))
     }
 }
@@ -618,6 +672,10 @@ struct SparkPhysicalExprAdapter {
     /// `physical_file_schema` field names pre-folded once, parallel to
     /// `physical_file_schema.fields()`. See `logical_folded`.
     physical_folded: Vec<String>,
+    /// This file's datetime calendar-rebase policies, resolved once in `create` from the file's
+    /// footer metadata. `Some` only when `rebase_from_file_metadata` is set AND some policy is
+    /// not the plain proleptic-Gregorian pass-through; see `datetime_rebase.rs`.
+    rebase_policies: Option<FileRebasePolicies>,
 }
 
 impl PhysicalExprAdapter for SparkPhysicalExprAdapter {
@@ -699,6 +757,16 @@ impl PhysicalExprAdapter for SparkPhysicalExprAdapter {
                 Ok(Transformed::no(e))
             })
             .data()?
+        } else {
+            expr
+        };
+
+        // Last, wrap column references to this file's date/timestamp columns per its resolved
+        // calendar-rebase policies (Delta arm only; see `datetime_rebase.rs`). Runs after every
+        // remap so the wrap keys on the FINAL physical column indices, and wraps the raw column
+        // BENEATH any cast the adapters inserted, so casts see rebased (proleptic) values.
+        let expr = if let Some(policies) = &self.rebase_policies {
+            wrap_datetime_rebase(expr, &self.physical_file_schema, policies)?
         } else {
             expr
         };

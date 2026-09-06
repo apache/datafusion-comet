@@ -245,6 +245,23 @@ FILTERS = {
         ".github/actions/setup-builder/**",
         ".github/actions/setup-iceberg-builder/**",
     ],
+    "delta": [
+        "contrib/delta/**",
+        "contrib/delta-spark/**",
+        "native/**/src/**",
+        "native/**/Cargo.toml",
+        "native/Cargo.lock",
+        "common/src/main/**",
+        "common/pom.xml",
+        "spark/src/main/**",
+        "!spark/src/main/scala/org/apache/comet/GenerateDocs.scala",
+        "spark/pom.xml",
+        "pom.xml",
+        "rust-toolchain.toml",
+        ".github/workflows/ci.yml",
+        ".github/workflows/delta_contrib_test.yml",
+        ".github/actions/setup-builder/**",
+    ],
 }
 
 

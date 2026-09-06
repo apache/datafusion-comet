@@ -121,6 +121,7 @@ jobs:
       iceberg_1_9:  ${{ steps.compute.outputs.iceberg_1_9 }}
       iceberg_1_10: ${{ steps.compute.outputs.iceberg_1_10 }}
       iceberg_1_11: ${{ steps.compute.outputs.iceberg_1_11 }}
+      delta:        ${{ steps.compute.outputs.delta }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -140,7 +141,7 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
-            for key in build_linux build_macos benchmark docs spark_3_4 spark_3_5 spark_4_0 spark_4_1 iceberg_1_8 iceberg_1_9 iceberg_1_10 iceberg_1_11; do
+            for key in build_linux build_macos benchmark docs spark_3_4 spark_3_5 spark_4_0 spark_4_1 iceberg_1_8 iceberg_1_9 iceberg_1_10 iceberg_1_11 delta; do
               echo "${key}=true" >> "$GITHUB_OUTPUT"
             done
             exit 0
@@ -233,6 +234,18 @@ jobs:
       spark-short: '3.5'
       spark-full: '3.5.9'
       java: 17
+
+  delta_contrib:
+    name: Delta Contrib Tests
+    needs: changes
+    permissions:
+      contents: read
+    if: |
+      needs.changes.outputs.delta == 'true' &&
+      (github.event_name == 'push' ||
+       github.event_name == 'workflow_dispatch' ||
+       github.event_name == 'pull_request')
+    uses: ./.github/workflows/delta_contrib_test.yml
 
   spark_4_0:
     name: Spark SQL Tests (Spark 4.0)

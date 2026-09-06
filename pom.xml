@@ -95,6 +95,11 @@ under the License.
     <guava.version>33.2.1-jre</guava.version>
     <testcontainers.version>1.21.4</testcontainers.version>
     <amazon-awssdk-v2.version>2.31.51</amazon-awssdk-v2.version>
+    <!-- Delta Lake pairing for the contrib/delta-spark module (-Pdelta). Each Spark profile
+         overrides these with its matching Delta release; the defaults match the default
+         spark-4.1 profile. Delta 2.x ships as artifact delta-core, 3.x/4.x as delta-spark. -->
+    <delta.artifact>delta-spark</delta.artifact>
+    <delta.version>4.3.1</delta.version>
     <jni.dir>${project.basedir}/../native/target/debug</jni.dir>
     <platform>darwin</platform>
     <arch>x86_64</arch>
@@ -674,6 +679,11 @@ under the License.
         <shims.majorVerSrc>spark-3.x</shims.majorVerSrc>
         <shims.minorVerSrc>spark-3.4</shims.minorVerSrc>
         <shims.minorPlusVerSrc>spark-none</shims.minorPlusVerSrc>
+        <!-- Delta 2.4 (the last Spark 3.4 line, artifact delta-core) predates the 3.x
+             DeltaParquetFileFormat API the contrib compiles against; the delta profile is
+             NOT yet supported on spark-3.4 (compile fails). Shim work tracked as future. -->
+        <delta.artifact>delta-core</delta.artifact>
+        <delta.version>2.4.0</delta.version>
         <java.version>11</java.version>
         <maven.compiler.source>${java.version}</maven.compiler.source>
         <maven.compiler.target>${java.version}</maven.compiler.target>
@@ -693,6 +703,7 @@ under the License.
         <shims.majorVerSrc>spark-3.x</shims.majorVerSrc>
         <shims.minorVerSrc>spark-3.5</shims.minorVerSrc>
         <shims.minorPlusVerSrc>spark-none</shims.minorPlusVerSrc>
+        <delta.version>3.3.2</delta.version>
         <java.version>11</java.version>
         <maven.compiler.source>${java.version}</maven.compiler.source>
         <maven.compiler.target>${java.version}</maven.compiler.target>
@@ -712,6 +723,7 @@ under the License.
         <shims.majorVerSrc>spark-4.x</shims.majorVerSrc>
         <shims.minorVerSrc>spark-4.0</shims.minorVerSrc>
         <shims.minorPlusVerSrc>spark-none</shims.minorPlusVerSrc>
+        <delta.version>4.0.1</delta.version>
         <java.version>17</java.version>
         <maven.compiler.source>${java.version}</maven.compiler.source>
         <maven.compiler.target>${java.version}</maven.compiler.target>
@@ -735,6 +747,9 @@ under the License.
         <shims.majorVerSrc>spark-4.x</shims.majorVerSrc>
         <shims.minorPlusVerSrc>spark-4.1+</shims.minorPlusVerSrc>
         <shims.minorVerSrc>spark-4.1</shims.minorVerSrc>
+        <!-- Delta 4.1.0/4.2.0 are binary-incompatible with Spark 4.1.3 (IgnoreCachedData
+             was removed in the 4.1 patch line); 4.3.1 also targets Spark 4.1 and works. -->
+        <delta.version>4.3.1</delta.version>
         <java.version>17</java.version>
         <maven.compiler.source>${java.version}</maven.compiler.source>
         <maven.compiler.target>${java.version}</maven.compiler.target>
@@ -755,11 +770,25 @@ under the License.
         <shims.majorVerSrc>spark-4.x</shims.majorVerSrc>
         <shims.minorPlusVerSrc>spark-4.1+</shims.minorPlusVerSrc>
         <shims.minorVerSrc>spark-4.2</shims.minorVerSrc>
+        <!-- No Delta release targets Spark 4.2 yet (Delta 4.3.x still builds against
+             Spark 4.1). The contrib compiles against 4.3.1 here but is unsupported on
+             this profile until Delta ships Spark 4.2 support. -->
+        <delta.version>4.3.1</delta.version>
         <!-- Use jdk17 by default -->
         <java.version>17</java.version>
         <maven.compiler.source>${java.version}</maven.compiler.source>
         <maven.compiler.target>${java.version}</maven.compiler.target>
       </properties>
+    </profile>
+
+    <profile>
+      <!-- Builds the out-of-tree Delta Lake scan contrib. Pair with a Spark profile
+           (e.g. -Pspark-3.5,delta); the native library must be built with the matching
+           `delta` Cargo feature (COMET_FEATURES=delta). -->
+      <id>delta</id>
+      <modules>
+        <module>contrib/delta-spark</module>
+      </modules>
     </profile>
 
     <profile>
@@ -1275,6 +1304,21 @@ under the License.
                         <!-- Spark 4.2.0 bundles its own copy of this class in spark-catalyst,
                              which collides with the transitive datasketches-memory jar. -->
                         <ignoreClass>org.apache.datasketches.memory.internal.ResourceImpl</ignoreClass>
+                      </ignoreClasses>
+                    </dependency>
+                    <dependency>
+                      <groupId>org.apache.datafusion</groupId>
+                      <artifactId>comet-common-spark${spark.version.short}_${scala.binary.version}</artifactId>
+                      <ignoreClasses>
+                        <!-- The comet-spark shaded jar bundles comet-common (see its shade
+                             artifactSet), so a module that depends on comet-spark inside a
+                             single reactor build (contrib/delta-spark with -Pdelta) sees every
+                             comet-common class twice — the dependency-reduced pom only
+                             shields consumers resolving from a repository. The copies come
+                             from the same compilation, but shade's ASM pass renumbers some
+                             constant pools, so ignoreWhenIdentical cannot collapse all of
+                             them. -->
+                        <ignoreClass>org.apache.comet.*</ignoreClass>
                       </ignoreClasses>
                     </dependency>
                   </dependencies>
