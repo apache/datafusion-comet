@@ -537,6 +537,93 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateFloats(), DataTypes.LongType)
   }
 
+  // Boundary values of the ANSI casts from floating point to integral types
+  // (https://github.com/apache/datafusion-comet/issues/5673). Spark accepts a value when
+  // `floor(x) <= MaxValue && ceil(x) >= MinValue` holds in double precision and then truncates it
+  // towards zero with saturation, so the exactly representable bounds are valid inputs and, since
+  // Long.MaxValue.toDouble == 2^63, so is ±2^63 for BIGINT. Casts to TINYINT and SMALLINT first
+  // apply the INT range check and then require the truncated INT to fit the narrower type.
+  //
+  // Values that must overflow are cast one at a time so that each of them is checked in both
+  // engines. Comet renders the offending value in the error message with Rust's `{:e}` format,
+  // which only agrees with Java's Double.toString/Float.toString for large values with several
+  // significant digits, so the overflowing values are chosen from that range; the exact bounds of
+  // the narrower targets (such as 128.0 for TINYINT or 2^31 as a FLOAT for INT) are covered by the
+  // native unit tests in numeric.rs.
+
+  test("cast FloatType to IntegerType - ANSI boundary values") {
+    // 2147483520.0f is the largest float below 2^31 (Int.MaxValue.toFloat rounds up to 2^31)
+    castTest(
+      withNulls(Seq(2147483520.0f, Int.MinValue.toFloat, -2147483520.0f)).toDF("a"),
+      DataTypes.IntegerType,
+      useDataFrameDiff = true)
+    Seq(2.5e9f, -2.5e9f, Float.NaN).foreach { v =>
+      castTest(
+        Seq(v).toDF("a"),
+        DataTypes.IntegerType,
+        expectAnsiFailure = true,
+        useDataFrameDiff = true)
+    }
+  }
+
+  test("cast FloatType to LongType - ANSI boundary values") {
+    castTest(
+      withNulls(Seq(Math.nextDown(Long.MaxValue.toFloat), Long.MinValue.toFloat)).toDF("a"),
+      DataTypes.LongType,
+      useDataFrameDiff = true)
+    // Long.MaxValue.toFloat == 2^63 is accepted by Spark and saturates to Long.MaxValue.
+    // TODO: try_cast is not compared for this value because the native TRY path goes through
+    // Arrow's cast, which returns NULL for 2^63 where Spark returns Long.MaxValue
+    castTest(
+      withNulls(Seq(Long.MaxValue.toFloat)).toDF("a"),
+      DataTypes.LongType,
+      testTry = false,
+      useDataFrameDiff = true)
+    Seq(
+      Math.nextUp(Long.MaxValue.toFloat),
+      Math.nextDown(Long.MinValue.toFloat),
+      1.5e19f,
+      -1.5e19f,
+      Float.NaN).foreach { v =>
+      castTest(
+        Seq(v).toDF("a"),
+        DataTypes.LongType,
+        expectAnsiFailure = true,
+        useDataFrameDiff = true)
+    }
+  }
+
+  test("cast FloatType to ShortType - ANSI boundary values") {
+    castTest(
+      withNulls(Seq(Short.MaxValue.toFloat, Short.MinValue.toFloat, 32767.9f, -32768.9f))
+        .toDF("a"),
+      DataTypes.ShortType,
+      useDataFrameDiff = true)
+    // 1.5e7 passes the INT range check but does not fit a SMALLINT; 2.5e9 fails the INT check
+    Seq(1.5e7f, -1.5e7f, 2.5e9f, -2.5e9f, Float.NaN).foreach { v =>
+      castTest(
+        Seq(v).toDF("a"),
+        DataTypes.ShortType,
+        expectAnsiFailure = true,
+        useDataFrameDiff = true)
+    }
+  }
+
+  test("cast FloatType to ByteType - ANSI boundary values") {
+    castTest(
+      withNulls(Seq(Byte.MaxValue.toFloat, Byte.MinValue.toFloat, 127.9f, -128.9f)).toDF("a"),
+      DataTypes.ByteType,
+      useDataFrameDiff = true)
+    // 1.5e7 passes the INT range check but does not fit a TINYINT; 2.5e9 fails the INT check
+    Seq(1.5e7f, -1.5e7f, 2.5e9f, -2.5e9f, Float.NaN).foreach { v =>
+      castTest(
+        Seq(v).toDF("a"),
+        DataTypes.ByteType,
+        expectAnsiFailure = true,
+        useDataFrameDiff = true)
+    }
+  }
+
   test("cast FloatType to DoubleType") {
     castTest(generateFloats(), DataTypes.DoubleType)
   }
@@ -612,6 +699,80 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("cast DoubleType to LongType") {
     castTest(generateDoubles(), DataTypes.LongType)
+  }
+
+  test("cast DoubleType to IntegerType - ANSI boundary values") {
+    castTest(
+      withNulls(Seq(Int.MaxValue.toDouble, Int.MinValue.toDouble, 2147483647.5d, -2147483648.5d))
+        .toDF("a"),
+      DataTypes.IntegerType,
+      useDataFrameDiff = true)
+    Seq(2147483648.0d, -2147483649.0d, 2147483648.5d, -2147483649.5d).foreach { v =>
+      castTest(
+        Seq(v).toDF("a"),
+        DataTypes.IntegerType,
+        expectAnsiFailure = true,
+        useDataFrameDiff = true)
+    }
+  }
+
+  test("cast DoubleType to LongType - ANSI boundary values") {
+    castTest(
+      withNulls(Seq(Math.nextDown(Long.MaxValue.toDouble), Long.MinValue.toDouble)).toDF("a"),
+      DataTypes.LongType,
+      useDataFrameDiff = true)
+    // Long.MaxValue.toDouble == 2^63 is accepted by Spark and saturates to Long.MaxValue.
+    // TODO: try_cast is not compared for this value because the native TRY path goes through
+    // Arrow's cast, which returns NULL for 2^63 where Spark returns Long.MaxValue
+    castTest(
+      withNulls(Seq(Long.MaxValue.toDouble)).toDF("a"),
+      DataTypes.LongType,
+      testTry = false,
+      useDataFrameDiff = true)
+    Seq(
+      Math.nextUp(Long.MaxValue.toDouble),
+      Math.nextDown(Long.MinValue.toDouble),
+      1.5e19d,
+      -1.5e19d).foreach { v =>
+      castTest(
+        Seq(v).toDF("a"),
+        DataTypes.LongType,
+        expectAnsiFailure = true,
+        useDataFrameDiff = true)
+    }
+  }
+
+  test("cast DoubleType to ShortType - ANSI boundary values") {
+    castTest(
+      withNulls(Seq(Short.MaxValue.toDouble, Short.MinValue.toDouble, 32767.9d, -32768.9d))
+        .toDF("a"),
+      DataTypes.ShortType,
+      useDataFrameDiff = true)
+    // 2147483647.5 passes the INT range check but the truncated INT does not fit a SMALLINT;
+    // 2147483648.0 fails the INT range check itself
+    Seq(2147483647.5d, -2147483648.5d, 2147483648.0d, -2147483649.0d).foreach { v =>
+      castTest(
+        Seq(v).toDF("a"),
+        DataTypes.ShortType,
+        expectAnsiFailure = true,
+        useDataFrameDiff = true)
+    }
+  }
+
+  test("cast DoubleType to ByteType - ANSI boundary values") {
+    castTest(
+      withNulls(Seq(Byte.MaxValue.toDouble, Byte.MinValue.toDouble, 127.9d, -128.9d)).toDF("a"),
+      DataTypes.ByteType,
+      useDataFrameDiff = true)
+    // 2147483647.5 passes the INT range check but the truncated INT does not fit a TINYINT;
+    // 2147483648.0 fails the INT range check itself
+    Seq(2147483647.5d, -2147483648.5d, 2147483648.0d, -2147483649.0d).foreach { v =>
+      castTest(
+        Seq(v).toDF("a"),
+        DataTypes.ByteType,
+        expectAnsiFailure = true,
+        useDataFrameDiff = true)
+    }
   }
 
   test("cast DoubleType to FloatType") {
@@ -751,6 +912,7 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           BigDecimal("1.500000000000000000"),
           BigDecimal("123456789.123456789"))),
       DataTypes.FloatType)
+    castTest(generateDecimalsWithLargeUnscaledValues(), DataTypes.FloatType)
   }
 
   test("cast DecimalType(38,18) to DoubleType") {
@@ -764,6 +926,7 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           BigDecimal("1.500000000000000000"),
           BigDecimal("123456789.123456789"))),
       DataTypes.DoubleType)
+    castTest(generateDecimalsWithLargeUnscaledValues(), DataTypes.DoubleType)
   }
 
   test("cast DecimalType(38,18) to BooleanType") {
@@ -781,6 +944,14 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("cast DecimalType(38,18) to StringType") {
     castTest(generateDecimalsPrecision38Scale18(), DataTypes.StringType)
+  }
+
+  test("cast DecimalType(38,10) to FloatType") {
+    castTest(generateDecimalsPrecision38Scale10(), DataTypes.FloatType)
+  }
+
+  test("cast DecimalType(38,10) to DoubleType") {
+    castTest(generateDecimalsPrecision38Scale10(), DataTypes.DoubleType)
   }
 
   test("cast DecimalType with negative scale to StringType") {
@@ -1802,13 +1973,7 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       FloatType,
       DoubleType,
       DecimalType(10, 2),
-      // DecimalType(38, 18) is excluded here: random data exposes a ~1 ULP difference between
-      // DataFusion's (i128 as f64) / 10^scale path and Spark's BigDecimal.doubleValue() for
-      // float/double casts; and extreme boundary values that would avoid the ULP issue overflow
-      // byte/short/int in ANSI mode, causing non-deterministic exception-message differences
-      // between Spark's row-at-a-time and Comet's vectorized execution. The individual scalar
-      // tests (cast DecimalType(38,18) to FloatType / DoubleType / BooleanType / etc.) already
-      // cover this type fully.
+      DecimalType(38, 18),
       DateType,
       TimestampType,
       DataTypes.TimestampNTZType,
@@ -1930,8 +2095,7 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       FloatType,
       DoubleType,
       DecimalType(10, 2),
-      // DecimalType(38, 18) is excluded for the same reason as the one-dimensional array
-      // matrix: decimal-to-float/double casts can differ by ~1 ULP from Spark.
+      DecimalType(38, 18),
       DateType,
       TimestampType,
       BinaryType)
@@ -2246,6 +2410,38 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   private def generateDecimalsPrecision38Scale18(values: Seq[BigDecimal]): DataFrame = {
     withNulls(values).toDF("a")
+  }
+
+  // https://github.com/apache/datafusion-comet/issues/5670: with 18 fractional digits, every
+  // value of magnitude >= 0.01 has an unscaled representation above 2^53, so rounding the
+  // unscaled value to a double before dividing by 10^18 lands one ulp away from Spark's
+  // BigDecimal.doubleValue() / floatValue() for ordinary values such as these.
+  private def generateDecimalsWithLargeUnscaledValues(): DataFrame = {
+    generateDecimalsPrecision38Scale18(
+      Seq(
+        BigDecimal("12345.6789"),
+        BigDecimal("-12345.6789"),
+        BigDecimal("123456.789012"),
+        BigDecimal("76543.21"),
+        BigDecimal("-76543.21"),
+        BigDecimal("577312.285583388355022308")))
+  }
+
+  private def generateDecimalsPrecision38Scale10(): DataFrame = {
+    val values = Seq(
+      // https://github.com/apache/datafusion-comet/issues/5670: just above the midpoint of the
+      // floats 16777216 and 16777218. Its nearest double (16777217.0) is exactly that midpoint
+      // and narrows to 16777216, whereas BigDecimal.floatValue() rounds once, to 16777218.
+      BigDecimal("16777217.0000000001"),
+      BigDecimal("-16777217.0000000001"),
+      BigDecimal("16777216.9999999999"),
+      BigDecimal("12345.6789"),
+      BigDecimal("-12345.6789"),
+      // unscaled value above 2^53
+      BigDecimal("1234567.8901234567"),
+      BigDecimal("0.0000000001"),
+      BigDecimal("0"))
+    withNulls(values).toDF("b").withColumn("a", col("b").cast(DecimalType(38, 10))).drop("b")
   }
 
   private def generateDateLiterals(): Seq[String] = {
