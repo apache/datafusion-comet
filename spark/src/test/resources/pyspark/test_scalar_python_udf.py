@@ -52,7 +52,7 @@ import pyspark
 import pytest
 from pyspark.sql import functions as F, types as T
 
-from conftest import executed_plan
+from conftest import executed_plan, temp_conf
 
 SPARK_VERSION = tuple(int(p) for p in pyspark.__version__.split(".")[:2])
 
@@ -69,12 +69,8 @@ def arrow_udf_conf(spark):
     Comet deliberately does not flip this on the user's behalf: it changes
     Spark's own type coercion and error semantics, not just the transport.
     """
-    previous = spark.conf.get("spark.sql.execution.pythonUDF.arrow.enabled")
-    spark.conf.set("spark.sql.execution.pythonUDF.arrow.enabled", "true")
-    try:
+    with temp_conf(spark, "spark.sql.execution.pythonUDF.arrow.enabled", "true"):
         yield
-    finally:
-        spark.conf.set("spark.sql.execution.pythonUDF.arrow.enabled", previous)
 
 
 def _without_comet_transitions(plan: str) -> str:
@@ -291,9 +287,7 @@ def test_arrow_batched_udf_empty_input(spark, tmp_path, accelerated, arrow_udf_c
 def test_arrow_batched_udf_many_batches(spark, tmp_path, accelerated, arrow_udf_conf):
     """More rows than one Arrow batch, so the input/output batch pairing is
     exercised across several batches."""
-    previous = spark.conf.get("spark.sql.execution.arrow.maxRecordsPerBatch")
-    spark.conf.set("spark.sql.execution.arrow.maxRecordsPerBatch", "100")
-    try:
+    with temp_conf(spark, "spark.sql.execution.arrow.maxRecordsPerBatch", "100"):
         data = [(i,) for i in range(1000)]
         df = _write(spark, tmp_path, data, ["a"])
         result = df.withColumn("b", F.udf(lambda x: x + 1, T.LongType())("a"))
@@ -303,8 +297,6 @@ def test_arrow_batched_udf_many_batches(spark, tmp_path, accelerated, arrow_udf_
         rows = result.orderBy("a").collect()
         assert len(rows) == 1000
         assert [row["b"] for row in rows] == [a + 1 for (a,) in data]
-    finally:
-        spark.conf.set("spark.sql.execution.arrow.maxRecordsPerBatch", previous)
 
 
 # ---------------------------------------------------------------------------
@@ -371,9 +363,7 @@ def test_large_var_types_falls_back(spark, tmp_path, arrow_udf_conf):
     """Comet's string vectors use 4-byte offsets, so it cannot honour the
     large_string input types this conf asks for."""
     spark.conf.set("spark.comet.exec.pyarrowUDF.enabled", "true")
-    previous = spark.conf.get("spark.sql.execution.arrow.useLargeVarTypes")
-    spark.conf.set("spark.sql.execution.arrow.useLargeVarTypes", "true")
-    try:
+    with temp_conf(spark, "spark.sql.execution.arrow.useLargeVarTypes", "true"):
         df = _write(spark, tmp_path, [(f"s{i}",) for i in range(20)], ["a"])
         result = df.withColumn("b", F.udf(lambda s: s + "!", T.StringType())("a"))
 
@@ -381,8 +371,6 @@ def test_large_var_types_falls_back(spark, tmp_path, arrow_udf_conf):
         assert [row["b"] for row in result.orderBy("a").collect()] == sorted(
             f"s{i}!" for i in range(20)
         )
-    finally:
-        spark.conf.set("spark.sql.execution.arrow.useLargeVarTypes", previous)
 
 
 def test_pickled_udf_is_untouched(spark, tmp_path):

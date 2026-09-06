@@ -19,8 +19,7 @@
 
 package org.apache.spark.sql.comet
 
-import org.apache.spark.api.python.{PythonAccumulatorV2, PythonBroadcast, PythonEvalType, PythonFunction}
-import org.apache.spark.broadcast.Broadcast
+import org.apache.spark.api.python.PythonEvalType
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.catalyst.expressions.{Add, AttributeReference, Expression, ExprId, Literal, PythonUDF}
 import org.apache.spark.sql.execution.ColumnarToRowExec
@@ -45,25 +44,12 @@ class CometArrowEvalPythonSuite extends CometTestBase {
   private val inputAttr = AttributeReference("id", LongType)(ExprId(0L))
   private val resultAttr = AttributeReference("result", LongType)(ExprId(1L))
 
-  private def stubPythonFunction: PythonFunction = new PythonFunction {
-    override val command: Seq[Byte] = Seq.empty[Byte]
-    override val envVars: java.util.Map[String, String] =
-      new java.util.HashMap[String, String]()
-    override val pythonIncludes: java.util.List[String] =
-      java.util.Collections.emptyList[String]()
-    override val pythonExec: String = "python3"
-    override val pythonVer: String = "3"
-    override val broadcastVars: java.util.List[Broadcast[PythonBroadcast]] =
-      java.util.Collections.emptyList[Broadcast[PythonBroadcast]]()
-    override val accumulator: PythonAccumulatorV2 = null
-  }
-
   private def stubPythonUDF(
       children: Seq[Expression] = Seq(inputAttr),
       evalType: Int = PythonEvalType.SQL_ARROW_BATCHED_UDF): PythonUDF =
     PythonUDF(
       name = "test_udf",
-      func = stubPythonFunction,
+      func = StubPythonFunction(),
       dataType = LongType,
       children = children,
       evalType = evalType,

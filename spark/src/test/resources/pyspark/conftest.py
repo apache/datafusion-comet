@@ -31,6 +31,7 @@ the installed pyspark major.minor version.
 
 import glob
 import os
+from contextlib import contextmanager
 
 import pytest
 from pyspark.sql import SparkSession
@@ -127,3 +128,14 @@ def accelerated(request, spark) -> bool:
 
 def executed_plan(df) -> str:
     return df._jdf.queryExecution().executedPlan().toString()
+
+
+@contextmanager
+def temp_conf(spark, key, value):
+    """Set a Spark conf for the duration of the block, restoring it afterwards."""
+    previous = spark.conf.get(key)
+    spark.conf.set(key, value)
+    try:
+        yield
+    finally:
+        spark.conf.set(key, previous)

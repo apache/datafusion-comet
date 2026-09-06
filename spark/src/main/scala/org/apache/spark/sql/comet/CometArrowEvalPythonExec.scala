@@ -153,7 +153,9 @@ case class CometArrowEvalPythonExec(
         numInputRows += batch.numRows()
         val root = CometBatchDeepCopy.copy(batch, allocator)
         retained.add(root)
-        val arguments = new ColumnarBatch(inputColumnIndices.map(cometColumns(root)))
+        // Only the argument columns are sent to the worker; the rest of the retained batch is
+        // wrapped later, when the output batch is assembled.
+        val arguments = new ColumnarBatch(inputColumnIndices.map(i => cometColumn(root, i)))
         arguments.setNumRows(batch.numRows())
         arguments
       }
@@ -198,13 +200,17 @@ case class CometArrowEvalPythonExec(
   }
 
   /**
-   * Wraps a retained root's Arrow vectors as Comet columns. Fresh wrappers each call: they are
-   * thin views, and the root owns the buffers they read.
+   * Wraps every one of a retained root's Arrow vectors as a Comet column. Fresh wrappers each
+   * call: they are thin views, and the root owns the buffers they read.
    */
   private def cometColumns(root: VectorSchemaRoot): Array[ColumnVector] =
     root.getFieldVectors.asScala.map { vector =>
       CometVector.getVector(vector, null).asInstanceOf[ColumnVector]
     }.toArray
+
+  /** Wraps a single column of a retained root, for the subset sent to the Python worker. */
+  private def cometColumn(root: VectorSchemaRoot, index: Int): ColumnVector =
+    CometVector.getVector(root.getVector(index), null).asInstanceOf[ColumnVector]
 
   override protected def withNewChildInternal(newChild: SparkPlan): CometArrowEvalPythonExec =
     copy(child = newChild)

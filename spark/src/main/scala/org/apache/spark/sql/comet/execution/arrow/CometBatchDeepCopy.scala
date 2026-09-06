@@ -25,13 +25,11 @@ import scala.collection.mutable.ListBuffer
 import scala.jdk.CollectionConverters._
 
 import org.apache.arrow.memory.{ArrowBuf, BufferAllocator}
+import org.apache.arrow.util.AutoCloseables
 import org.apache.arrow.vector.{FieldVector, VectorLoader, VectorSchemaRoot, VectorUnloader}
-import org.apache.arrow.vector.dictionary.DictionaryEncoder
 import org.apache.arrow.vector.ipc.message.ArrowRecordBatch
 import org.apache.arrow.vector.types.pojo.Schema
 import org.apache.spark.sql.vectorized.ColumnarBatch
-
-import org.apache.comet.vector.{CometDictionaryVector, CometVector}
 
 /**
  * Copies an Arrow-backed `ColumnarBatch` produced by a Comet operator into buffers owned by a
@@ -45,8 +43,7 @@ import org.apache.comet.vector.{CometDictionaryVector, CometVector}
  * contents.
  *
  * The copy is a bulk `memcpy` per Arrow buffer, not a per-row loop: the batch is unloaded to its
- * buffer list, each buffer is copied, and the result is loaded into a fresh root. Dictionary
- * columns are decoded first so the copy has the column's logical type.
+ * buffer list, each buffer is copied, and the result is loaded into a fresh root.
  */
 private[comet] object CometBatchDeepCopy {
 
@@ -59,15 +56,9 @@ private[comet] object CometBatchDeepCopy {
     // their contents have been copied into the target root.
     val decoded = ListBuffer.empty[FieldVector]
     try {
-      val sourceVectors = new JArrayList[FieldVector](batch.numCols())
-      var i = 0
-      while (i < batch.numCols()) {
-        sourceVectors.add(
-          materialize(batch.column(i).asInstanceOf[CometVector], allocator, decoded))
-        i += 1
-      }
-
+      val sourceVectors = CometArrowVectors.materialize(batch, allocator, decoded)
       val fields = sourceVectors.asScala.map(_.getField).asJava
+
       // Borrows `batch`'s field vectors, so it must not be closed: that would release references
       // the source batch still owns. The row count is passed to the constructor rather than set
       // afterwards, because `setRowCount` would call `setValueCount` on the borrowed vectors and
@@ -79,9 +70,13 @@ private[comet] object CometBatchDeepCopy {
       try {
         val sourceBatch = new VectorUnloader(transient).getRecordBatch
         try {
-          // `VectorLoader.load` also sets the target's row count from the batch.
-          copyRecordBatch(sourceBatch, allocator) { copiedBatch =>
+          val copiedBatch = copyRecordBatch(sourceBatch, allocator)
+          try {
+            // `load` retains the copies into `target` and sets its row count, so `target` keeps
+            // the bytes alive after the batch below is closed.
             new VectorLoader(target).load(copiedBatch)
+          } finally {
+            copiedBatch.close()
           }
         } finally {
           sourceBatch.close()
@@ -92,41 +87,20 @@ private[comet] object CometBatchDeepCopy {
         if (!loaded) target.close()
       }
     } finally {
-      decoded.foreach(v =>
-        try v.close()
-        catch { case _: Throwable => () })
+      AutoCloseables.close(decoded.asJava)
     }
   }
 
   /**
-   * The Arrow vector holding `column`'s logical values. Dictionary-encoded columns are decoded,
-   * because their `getValueVector` exposes the index vector, whose buffer layout does not match
-   * the field the column advertises.
-   */
-  private def materialize(
-      column: CometVector,
-      allocator: BufferAllocator,
-      decoded: ListBuffer[FieldVector]): FieldVector = column match {
-    case d: CometDictionaryVector =>
-      val indices = d.getValueVector
-      val dictionary = d.provider.lookup(indices.getField.getDictionary.getId)
-      val plain =
-        DictionaryEncoder.decode(indices, dictionary, allocator).asInstanceOf[FieldVector]
-      decoded += plain
-      plain
-    case other => other.getValueVector.asInstanceOf[FieldVector]
-  }
-
-  /**
-   * Runs `use` on a record batch whose buffers are `memcpy`ed copies of `source`'s, allocated
-   * from `allocator`, then releases those copies.
+   * A record batch whose buffers are `memcpy`ed copies of `source`'s, allocated from `allocator`.
    *
-   * The batch is built with `retainBuffers = true`, so it holds its own reference to each copy
-   * and the references created here are dropped immediately. Whatever `use` retains (a
-   * `VectorLoader.load`, say) survives the batch being closed.
+   * Built with `retainBuffers = false`, so the batch adopts the references created here instead
+   * of adding its own: closing it releases the copies, and the caller has nothing else to clean
+   * up on the success path.
    */
-  private def copyRecordBatch(source: ArrowRecordBatch, allocator: BufferAllocator)(
-      use: ArrowRecordBatch => Unit): Unit = {
+  private def copyRecordBatch(
+      source: ArrowRecordBatch,
+      allocator: BufferAllocator): ArrowRecordBatch = {
     val copies = new JArrayList[ArrowBuf](source.getBuffers.size())
     try {
       source.getBuffers.asScala.foreach { src =>
@@ -138,7 +112,7 @@ private[comet] object CometBatchDeepCopy {
         dst.writerIndex(length)
         copies.add(dst)
       }
-      val copiedBatch = new ArrowRecordBatch(
+      new ArrowRecordBatch(
         source.getLength,
         source.getNodes,
         copies,
@@ -146,16 +120,12 @@ private[comet] object CometBatchDeepCopy {
         // Variadic counts describe the view-type data buffers, which are copied along with the
         // rest, so they carry over unchanged.
         source.getVariadicBufferCounts,
-        true)
-      try {
-        use(copiedBatch)
-      } finally {
-        copiedBatch.close()
-      }
-    } finally {
-      copies.asScala.foreach(buf =>
-        try buf.close()
-        catch { case _: Throwable => () })
+        true,
+        false)
+    } catch {
+      case failure: Throwable =>
+        AutoCloseables.close(failure, copies)
+        throw failure
     }
   }
 }

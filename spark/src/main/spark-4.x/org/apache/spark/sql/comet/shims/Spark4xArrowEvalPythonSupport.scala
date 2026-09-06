@@ -63,33 +63,30 @@ trait Spark4xArrowEvalPythonSupport extends ShimPythonRunnerInputs {
       udfs: Seq[PythonUDF],
       childOutput: Seq[Attribute]): Option[ArrowEvalPythonArgs] = {
     val inputColumnIndices = ArrayBuffer.empty[Int]
-    val argOffsets = ArrayBuffer.empty[Seq[Int]]
 
     // The offset in the exchanged batch of `argument`, adding it as a new column when this is its
     // first use, or `None` when it is not a column of the child at all.
     def offsetOf(argument: Expression): Option[Int] = argument match {
       case attr: Attribute =>
-        val childIndex = childOutput.indexWhere(_.exprId == attr.exprId)
-        if (childIndex < 0) {
-          None
-        } else {
-          val existing = inputColumnIndices.indexOf(childIndex)
-          if (existing >= 0) {
-            Some(existing)
-          } else {
-            inputColumnIndices += childIndex
-            Some(inputColumnIndices.length - 1)
-          }
+        childOutput.indexWhere(_.exprId == attr.exprId) match {
+          case -1 => None
+          case childIndex =>
+            val existing = inputColumnIndices.indexOf(childIndex)
+            if (existing >= 0) {
+              Some(existing)
+            } else {
+              inputColumnIndices += childIndex
+              Some(inputColumnIndices.length - 1)
+            }
         }
       case _ => None
     }
 
-    val resolved = udfs.forall { udf =>
-      val offsets = udf.children.map(offsetOf)
-      argOffsets += offsets.flatten
-      offsets.forall(_.isDefined)
+    val argOffsets = udfs.map(_.children.map(offsetOf))
+    if (argOffsets.forall(_.forall(_.isDefined))) {
+      Some(ArrowEvalPythonArgs(inputColumnIndices.toSeq, argOffsets.map(_.flatten)))
+    } else {
+      None
     }
-
-    if (resolved) Some(ArrowEvalPythonArgs(inputColumnIndices.toSeq, argOffsets.toSeq)) else None
   }
 }
