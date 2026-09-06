@@ -86,7 +86,7 @@ object CometArrowWriterBenchmark extends BenchmarkBase {
           col += 1
         }
       }
-      writer.finish(input.numRows())
+      writer.finish()
     }
 
     try {

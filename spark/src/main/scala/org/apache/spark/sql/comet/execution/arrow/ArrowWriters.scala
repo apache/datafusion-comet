@@ -144,20 +144,25 @@ class ArrowWriter(val root: VectorSchemaRoot, fields: Array[ArrowFieldWriter]) {
 
   def schema: StructType = Utils.fromArrowSchema(root.getSchema())
 
+  private var count: Int = 0
+
   def write(row: InternalRow): Unit = {
     var i = 0
     while (i < fields.length) {
       fields(i).writeUnsafe(row, i)
       i += 1
     }
+    count += 1
   }
 
   def writeCol(input: ColumnarArray, columnIndex: Int): Unit = {
     fields(columnIndex).writeCol(input)
+    count = input.numElements()
   }
 
   def writeColNoNull(input: ColumnarArray, columnIndex: Int): Unit = {
     fields(columnIndex).writeColNoNull(input)
+    count = input.numElements()
   }
 
   def writeColumns(input: ColumnarBatch, startRow: Int, numRows: Int): Unit = {
@@ -166,16 +171,17 @@ class ArrowWriter(val root: VectorSchemaRoot, fields: Array[ArrowFieldWriter]) {
       fields(columnIndex).writeColumnSlice(input.column(columnIndex), startRow, numRows)
       columnIndex += 1
     }
+    count = numRows
   }
 
-  /** Finish with the caller's logical batch size, including batches with no columns. */
-  def finish(rowCount: Int): Unit = {
-    root.setRowCount(rowCount)
+  def finish(): Unit = {
+    root.setRowCount(count)
     fields.foreach(_.finish())
   }
 
   def reset(): Unit = {
     root.setRowCount(0)
+    count = 0
     fields.foreach(_.reset())
   }
 }

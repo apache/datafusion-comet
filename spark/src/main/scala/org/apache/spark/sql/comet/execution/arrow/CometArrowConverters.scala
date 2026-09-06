@@ -76,7 +76,7 @@ object CometArrowConverters extends Logging {
             writer.write(rowIter.next())
             rowCount += 1
           }
-          writer.finish(rowCount)
+          writer.finish()
           NativeUtil.rootAsBatch(root)
         }
       }
@@ -102,7 +102,7 @@ object CometArrowConverters extends Logging {
     closingRootOnFailure(root) {
       val writer = ArrowWriter.create(root, numRows)
       writer.writeColumns(batch, 0, numRows)
-      writer.finish(numRows)
+      writer.finish()
       NativeUtil.rootAsBatch(root)
     }
   }

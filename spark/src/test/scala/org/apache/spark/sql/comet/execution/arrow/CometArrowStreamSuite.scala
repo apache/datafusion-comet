@@ -68,7 +68,7 @@ class CometArrowStreamSuite extends AnyFunSuite with Matchers {
       val writer = ArrowWriter.create(root, 2)
       writer.write(new GenericInternalRow(Array[Any](expected)))
       writer.write(new GenericInternalRow(Array[Any](null)))
-      writer.finish(2)
+      writer.finish()
 
       val arrow = root.getVector(0).asInstanceOf[IntervalMonthDayNanoVector]
       IntervalMonthDayNanoVector.getMonths(arrow.getDataBuffer, 0) shouldBe expected.months
@@ -297,16 +297,9 @@ class CometArrowStreamSuite extends AnyFunSuite with Matchers {
     try {
       val writer = ArrowWriter.create(root, numRows)
       writer.writeColumns(input, 0, numRows)
-      writer.finish(numRows)
+      writer.finish()
 
       root.getRowCount shouldBe numRows
-      writer.reset()
-      root.getRowCount shouldBe 0
-      // The logical count comes from finish, even when there are no values to encode.
-      writer.finish(3)
-      root.getRowCount shouldBe 3
-      writer.finish(0)
-      root.getRowCount shouldBe 0
     } finally {
       input.close()
       root.close()
@@ -523,7 +516,7 @@ class CometArrowStreamSuite extends AnyFunSuite with Matchers {
       vector.getValueCapacity should be < numRows
 
       writer.writeColNoNull(new ColumnarArray(input, 0, numRows), 0)
-      writer.finish(numRows)
+      writer.finish()
 
       vector.getValueCapacity should be >= numRows
       vector.get(numRows - 1) shouldBe numRows - 1

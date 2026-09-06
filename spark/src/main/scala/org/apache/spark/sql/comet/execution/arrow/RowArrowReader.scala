@@ -63,7 +63,7 @@ private[comet] class RowArrowReader(
       writer.write(rowIter.next())
       rowCount += 1
     }
-    writer.finish(rowCount)
+    writer.finish()
     onConversionNs(System.nanoTime() - startNs)
     true
   }
