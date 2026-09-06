@@ -30,7 +30,7 @@ use arrow::array::{
     Array, ArrayRef, AsArray, BooleanArray, Float32Array, Float64Array, Int64Array,
 };
 use arrow::datatypes::{DataType, Field, FieldRef, Float32Type, Float64Type};
-use datafusion::common::{Result, ScalarValue};
+use datafusion::common::{not_impl_err, Result, ScalarValue};
 use datafusion::logical_expr::function::{AccumulatorArgs, StateFieldsArgs};
 use datafusion::logical_expr::{
     Accumulator, AggregateUDFImpl, EmitTo, GroupsAccumulator, Signature, Volatility,
@@ -425,7 +425,6 @@ impl GroupsAccumulator for HllPlusPlusGroupsAccumulator {
         &mut self,
         values: &[ArrayRef],
         group_indices: &[usize],
-        _opt_filter: Option<&BooleanArray>,
         total_num_groups: usize,
     ) -> Result<()> {
         self.resize(total_num_groups);
@@ -465,6 +464,14 @@ impl GroupsAccumulator for HllPlusPlusGroupsAccumulator {
             columns.push(Arc::new(Int64Array::from(col)));
         }
         Ok(columns)
+    }
+
+    fn convert_to_state(
+        &self,
+        _values: &[ArrayRef],
+        _opt_filter: Option<&BooleanArray>,
+    ) -> Result<Vec<ArrayRef>> {
+        not_impl_err!("Input batch conversion to state not implemented")
     }
 
     fn size(&self) -> usize {
@@ -639,9 +646,7 @@ mod tests {
         for part in [&mut left, &mut right] {
             let state = part.state(EmitTo::All).unwrap();
             let n = state[0].len();
-            merged
-                .merge_batch(&state, &vec![0usize; n], None, 1)
-                .unwrap();
+            merged.merge_batch(&state, &vec![0usize; n], 1).unwrap();
         }
         let single = {
             let mut a = acc(9);

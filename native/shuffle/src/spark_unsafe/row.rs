@@ -38,6 +38,7 @@ use arrow::array::{
 use arrow::compute::cast;
 use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
 use arrow::error::ArrowError;
+use arrow::ipc::writer::IpcWriteContext;
 use datafusion::physical_plan::metrics::Time;
 use datafusion_comet_jni_bridge::errors::CometError;
 use jni::sys::{jint, jlong};
@@ -1387,6 +1388,7 @@ pub fn process_sorted_row_partition(
 
     // Single ipc_time accumulates encode + compression time across all batches.
     let ipc_time = Time::default();
+    let mut compression_context = IpcWriteContext::default();
 
     while current_row < row_num {
         let n = std::cmp::min(batch_size, row_num - current_row);
@@ -1420,7 +1422,8 @@ pub fn process_sorted_row_partition(
         let mut cursor = Cursor::new(&mut frozen);
 
         let block_writer = ShuffleBlockWriter::try_new(batch.schema().as_ref(), codec.clone())?;
-        written += block_writer.write_batch(&batch, &mut cursor, &ipc_time)?;
+        written +=
+            block_writer.write_batch(&batch, &mut cursor, &mut compression_context, &ipc_time)?;
 
         if let Some(checksum) = &mut current_checksum {
             checksum.update(&mut cursor)?;

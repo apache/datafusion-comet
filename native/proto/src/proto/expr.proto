@@ -109,7 +109,11 @@ message Expr {
 // QueryContext provides SQL query context for error messages.
 // Mirrors Spark's SQLQueryContext for rich error reporting.
 message QueryContext {
-  // Full SQL query text
+  // Full SQL query text. Left empty when `sql_text_idx` is set, which is the case for a plan
+  // serialized through `CometNativeExec.convertBlock`. Still used by the paths that serialize an
+  // operator directly without interning (e.g. `CometNativeWriteExec`, the native shuffle writer,
+  // the Iceberg scan's `convertBlock` override) and by the bare-`Expr` Parquet filter path, which
+  // has no root operator to carry a pool.
   string sql_text = 1;
 
   // Character offset where expression starts (0-based)
@@ -129,6 +133,11 @@ message QueryContext {
 
   // Column position within the line (0-based)
   int32 start_position = 7;
+
+  // Index into the root `Operator.sql_text_pool` holding this context's SQL text. Set instead of
+  // `sql_text` so that a query text shared by many expressions is serialized once per plan rather
+  // than once per expression.
+  optional int32 sql_text_idx = 8;
 }
 
 message AggExpr {
@@ -153,6 +162,7 @@ message AggExpr {
     ApproxPercentile approxPercentile = 19;
     HllPlusPlus hllpp = 20;
     CollectList collectList = 21;
+    Regr regr = 22;
   }
 
   // Optional filter expression for SQL FILTER (WHERE ...) clause.
@@ -252,6 +262,36 @@ message Correlation {
   Expr child2 = 2;
   bool null_on_divide_by_zero = 3;
   DataType datatype = 4;
+}
+
+// Simple linear regression aggregates (regr_slope, regr_intercept, regr_r2,
+// regr_sxx, regr_syy, regr_sxy). child1 is the dependent variable (y) and
+// child2 is the independent variable (x).
+message Regr {
+  enum RegrType {
+    SLOPE = 0;
+    INTERCEPT = 1;
+    R2 = 2;
+    SXX = 3;
+    SYY = 4;
+    SXY = 5;
+  }
+  Expr child1 = 1;
+  Expr child2 = 2;
+  RegrType regr_type = 3;
+  DataType datatype = 4;
+  // Only consulted for SLOPE and INTERCEPT. When true (Spark 3.5+), VariancePop(x)
+  // is computed only over rows where both y and x are non-null. When false
+  // (Spark 3.4), VariancePop(x) includes every row where x is non-null even if y
+  // is null, matching the pre-fix Spark 3.4 semantics.
+  bool filter_var_by_pair_nulls = 5;
+  // Only consulted for R2. Spark swapped the degenerate-case handling of
+  // regr_r2. When true, a constant dependent variable (m2(y) = 0) returns 1.0
+  // and a constant independent variable (m2(x) = 0) returns null. When false
+  // those two cases are reversed. The swap is present in the Spark versions
+  // Comet builds against for 3.5 and later (3.5.9, 4.0.3+, 4.1, 4.2) but not
+  // in 3.4.
+  bool r2_constant_dependent_is_perfect_fit = 6;
 }
 
 message Percentile {

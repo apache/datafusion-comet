@@ -30,18 +30,6 @@ pub(crate) enum MemoryPoolType {
     Unbounded,
 }
 
-impl MemoryPoolType {
-    pub(crate) fn is_task_shared(&self) -> bool {
-        matches!(
-            self,
-            MemoryPoolType::GreedyTaskShared
-                | MemoryPoolType::FairSpillTaskShared
-                | MemoryPoolType::FairUnified
-                | MemoryPoolType::GreedyUnified
-        )
-    }
-}
-
 pub(crate) struct MemoryPoolConfig {
     pub(crate) pool_type: MemoryPoolType,
     pub(crate) pool_size: usize,

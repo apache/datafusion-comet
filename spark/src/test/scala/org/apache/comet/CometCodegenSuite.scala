@@ -22,16 +22,20 @@ package org.apache.comet
 import scala.util.Random
 
 import org.apache.arrow.vector._
-import org.apache.spark.{SparkConf, TaskContext}
+import org.apache.spark.{SparkConf, SparkEnv, TaskContext}
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.api.java.UDF1
-import org.apache.spark.sql.catalyst.expressions.{BoundReference, CreateArray, CreateMap, CreateNamedStruct, Expression, Literal, MapConcat}
+import org.apache.spark.sql.catalyst.expressions.{AttributeReference, BoundReference, CreateArray, CreateMap, CreateNamedStruct, Expression, Literal, MapConcat}
+import org.apache.spark.sql.catalyst.expressions.objects.Invoke
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
 
+import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
 import org.apache.comet.codegen.CometBatchKernelCodegen
 import org.apache.comet.codegen.CometBatchKernelCodegen.ArrowColumnSpec
+import org.apache.comet.serde.{CometScalaUDF, QueryPlanSerde}
 import org.apache.comet.udf.codegen.CometScalaUDFCodegen
 import org.apache.comet.vector.CometVector
 
@@ -205,6 +209,202 @@ class CometCodegenSuite
           !explain.contains("JVM codegen dispatcher"),
           s"expected NO codegen-dispatch info with the flag off, got:\n$explain")
       }
+    }
+  }
+
+  private def withSequenceTable(f: => Unit): Unit = {
+    withTable("t") {
+      // `stp` carries a sign-correct step so `sequence(a, b, stp)` is legal on both rows:
+      // ascending (1, 5, 1) and descending (9, 2, -1). A single literal step would raise
+      // `Illegal sequence boundaries` on the mismatched row inside Spark's reference run.
+      sql("CREATE TABLE t (a INT, b INT, stp INT, d DATE) USING parquet")
+      sql("INSERT INTO t VALUES (1, 5, 1, DATE'2024-01-01'), (9, 2, -1, DATE'2024-03-01')")
+      withSQLConf(
+        CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true",
+        CometConf.COMET_EXPLAIN_CODEGEN_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_PROJECT_ENABLED.key -> "true",
+        CometConf.COMET_EXTENDED_EXPLAIN_FORMAT.key ->
+          CometConf.COMET_EXTENDED_EXPLAIN_FORMAT_VERBOSE)(f)
+    }
+  }
+
+  test("sequence with leaf integral args runs natively") {
+    // Integral sequence with column-reference/literal args lowers to the native spark_sequence
+    // kernel; no codegen-dispatch marker should appear. The three-argument form uses the `stp`
+    // column so both the ascending and descending rows have a sign-correct step (all args
+    // stay leaves, so the native path is exercised).
+    withSequenceTable {
+      val df = sql("SELECT sequence(a, b), sequence(a, b, stp) FROM t")
+      checkSparkAnswerAndOperator(df)
+      val explain =
+        new ExtendedExplainInfo().generateExtendedInfo(df.queryExecution.executedPlan)
+      assert(
+        !explain.contains("JVM codegen dispatcher"),
+        s"expected integral sequence with leaf args to run natively, got:\n$explain")
+    }
+  }
+
+  test("sequence with zero-arg UDF stop routes through the dispatcher") {
+    // A zero-argument Scala UDF has empty `children` but still fires on evaluation. The gate
+    // must reject it (rather than treating it as a safe leaf) so DataFusion does not call it
+    // over the whole batch on rows Spark's per-row null short-circuit would have skipped.
+    spark.udf.register("comet_seq_stopper", () => 10)
+    withSequenceTable {
+      val df = sql("SELECT sequence(a, comet_seq_stopper()) FROM t")
+      checkSparkAnswerAndOperator(df)
+      val explain =
+        new ExtendedExplainInfo().generateExtendedInfo(df.queryExecution.executedPlan)
+      assert(
+        explain.contains("JVM codegen dispatcher: sequence"),
+        s"expected zero-arg-UDF sequence to route through the dispatcher, got:\n$explain")
+    }
+  }
+
+  test("sequence with non-leaf integral args routes through the dispatcher") {
+    // A non-leaf argument (e.g. a `CASE WHEN` step) would be evaluated over the whole batch by
+    // DataFusion before the outer kernel runs, breaking Spark's per-row null short-circuit.
+    // `CometSequence` reports `Unsupported` for these shapes and hands them to the JVM codegen
+    // dispatcher.
+    withSequenceTable {
+      val df = sql("SELECT sequence(a, b, CASE WHEN a <= b THEN 2 ELSE -2 END) FROM t")
+      checkSparkAnswerAndOperator(df)
+      val explain =
+        new ExtendedExplainInfo().generateExtendedInfo(df.queryExecution.executedPlan)
+      assert(
+        explain.contains("JVM codegen dispatcher: sequence"),
+        s"expected composed-arg sequence to route through the dispatcher, got:\n$explain")
+    }
+  }
+
+  test("sequence with date element type routes through the dispatcher") {
+    // Date/timestamp sequences step through timezone/DST/legacy-calendar arithmetic
+    // (issue #5349), so `CometSequence` keeps them on the JVM codegen dispatcher.
+    withSequenceTable {
+      val df = sql("SELECT sequence(d, DATE'2024-06-01', INTERVAL 1 MONTH) FROM t")
+      checkSparkAnswerAndOperator(df)
+      val explain =
+        new ExtendedExplainInfo().generateExtendedInfo(df.queryExecution.executedPlan)
+      assert(
+        explain.contains("JVM codegen dispatcher: sequence"),
+        s"expected date sequence to route through the dispatcher, got:\n$explain")
+    }
+  }
+
+  test("expression coverage stats split native from codegen-dispatch expressions") {
+    // `abs` and `sqrt` lower to native DataFusion expressions; `hypot` and `nanvl` are
+    // `CometCodegenDispatch` and so run Spark's own codegen inside the Comet pipeline. The
+    // coverage stats and the accessors report the two groups separately, and they do so
+    // regardless of `explain.codegen.enabled` (which only controls the `[COMET-INFO:` line).
+    withTable("t") {
+      sql("CREATE TABLE t (a DOUBLE, b DOUBLE) USING parquet")
+      sql("INSERT INTO t VALUES (3.0, 4.0)")
+
+      withSQLConf(
+        CometConf.COMET_EXPLAIN_CODEGEN_ENABLED.key -> "false",
+        CometConf.COMET_EXTENDED_EXPLAIN_FORMAT.key ->
+          CometConf.COMET_EXTENDED_EXPLAIN_FORMAT_VERBOSE) {
+        val df = sql("SELECT abs(a), sqrt(b), hypot(a, b), nanvl(a, b) FROM t")
+        checkSparkAnswerAndOperator(df)
+        val plan = df.queryExecution.executedPlan
+        val info = new ExtendedExplainInfo()
+
+        assert(info.getNativeExpressions(plan) === Seq("abs", "sqrt"))
+        assert(info.getCodegenDispatchExpressions(plan) === Seq("hypot", "nanvl"))
+
+        val explain = info.generateExtendedInfo(plan)
+        assert(
+          explain.contains("Accelerated expressions: 2 native, 2 codegen dispatch."),
+          s"expected expression coverage in the summary, got:\n$explain")
+        assert(
+          !explain.contains("JVM codegen dispatcher"),
+          s"expected NO codegen-dispatch info with the flag off, got:\n$explain")
+      }
+    }
+  }
+
+  test("expression coverage stats survive the decimal promotion rewrite") {
+    // `DecimalPrecision.promote` rebuilds the expression tree before serde runs, wrapping decimal
+    // arithmetic in a synthesized `CheckOverflow`, so the coverage tags land on a copy the
+    // operator does not hold. `QueryPlanSerde.liftCoverageTags` moves them back onto the tree the
+    // operator holds, which for a projection is the `Alias`.
+    //
+    // `checkoverflow` is the name that pins that lift: `promote` reuses the original `Add`
+    // instance as the wrapper's child, so `add` stays reachable from the untouched tree and would
+    // be reported either way. The wrapper exists only on the rebuilt copy.
+    withTable("t") {
+      sql("CREATE TABLE t (a DECIMAL(10, 2), b DECIMAL(12, 4)) USING parquet")
+      sql("INSERT INTO t VALUES (1.23, 4.5678)")
+
+      withSQLConf(
+        CometConf.COMET_EXTENDED_EXPLAIN_FORMAT.key ->
+          CometConf.COMET_EXTENDED_EXPLAIN_FORMAT_VERBOSE) {
+        val df = sql("SELECT a + b FROM t")
+        checkSparkAnswerAndOperator(df)
+        val native =
+          new ExtendedExplainInfo().getNativeExpressions(df.queryExecution.executedPlan)
+        assert(native.contains("checkoverflow"), s"expected the promoted wrapper, got: $native")
+        assert(native.contains("add"), s"expected the arithmetic expression, got: $native")
+      }
+    }
+  }
+
+  test("tags copied onto the shared TrueLiteral do not leak into unrelated plans") {
+    // Catalyst copies a rewritten node's tags onto its replacement, so a tagged expression that an
+    // earlier query rewrote into `Literal.TrueLiteral` brands that process-wide singleton for the
+    // lifetime of the JVM. Planting the tags stands in for that history. The `fact` scan below
+    // carries a cleaned-up dynamic pruning filter, `dynamicpruningexpression(true)`, which is that
+    // very singleton, so before https://github.com/apache/datafusion-comet/issues/5229 the
+    // operator reported a name and an info message belonging to some unrelated query.
+    val planted = Literal.TrueLiteral
+    planted.setTagValue(CometExplainInfo.EXTENSION_INFO, Set("PLANTED_INFO"))
+    planted.setTagValue(CometExplainInfo.NATIVE_EXPRS, Set("plantedexpr"))
+    try {
+      withSQLConf(
+        CometConf.COMET_EXTENDED_EXPLAIN_FORMAT.key ->
+          CometConf.COMET_EXTENDED_EXPLAIN_FORMAT_VERBOSE,
+        SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true",
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+        withTable("fact", "dim") {
+          sql("CREATE TABLE fact (v INT, p INT) USING parquet PARTITIONED BY (p)")
+          sql("INSERT INTO fact VALUES (1, 1), (2, 2)")
+          sql("CREATE TABLE dim (k INT, s STRING) USING parquet")
+          sql("INSERT INTO dim VALUES (1, 'a'), (2, 'b')")
+
+          val plan = sql(
+            "SELECT * FROM fact JOIN dim ON fact.p = dim.k WHERE dim.s = 'a'").queryExecution.executedPlan
+
+          // Guard against the test going vacuous if planning stops producing the singleton.
+          assert(
+            plan.exists(_.expressions.exists(_.exists(_ eq planted))),
+            s"expected a plan holding Literal.TrueLiteral, got:\n$plan")
+
+          val info = new ExtendedExplainInfo()
+          assert(!info.getNativeExpressions(plan).contains("plantedexpr"))
+          val explain = info.generateExtendedInfo(plan)
+          assert(!explain.contains("PLANTED_INFO"), s"tag leaked into:\n$explain")
+        }
+      }
+    } finally {
+      planted.unsetTagValue(CometExplainInfo.EXTENSION_INFO)
+      planted.unsetTagValue(CometExplainInfo.NATIVE_EXPRS)
+    }
+  }
+
+  test("expression coverage stats count nothing when the plan falls back entirely") {
+    withSQLConf(
+      CometConf.COMET_ENABLED.key -> "false",
+      CometConf.COMET_EXTENDED_EXPLAIN_FORMAT.key ->
+        CometConf.COMET_EXTENDED_EXPLAIN_FORMAT_VERBOSE) {
+      val df = sql("SELECT abs(1.0)")
+      val plan = df.queryExecution.executedPlan
+      val info = new ExtendedExplainInfo()
+      assert(info.getNativeExpressions(plan).isEmpty)
+      assert(info.getCodegenDispatchExpressions(plan).isEmpty)
+      assert(
+        info
+          .generateExtendedInfo(plan)
+          .contains("Accelerated expressions: 0 native, 0 codegen dispatch."))
     }
   }
 
@@ -1324,6 +1524,178 @@ class CometCodegenSuite
     }
   }
 
+  test("multi-input NullIntolerant tree does not swallow an ANSI error (#5218)") {
+    // `add_months` is NullIntolerant and a plain BinaryExpression, so Spark's `nullSafeCodeGen`
+    // emits the LEFT child's code unconditionally before testing the right child's null. On the
+    // ('notadate', NULL) row Spark therefore evaluates the cast and raises CAST_INVALID_INPUT.
+    // The dispatcher used to short-circuit on the union of input ordinals, see the null on `i`,
+    // and return NULL -- silently losing the error. Note `pmod` / `div` are not witnesses here:
+    // `DivModLike` deliberately evaluates its right child first, so Spark also returns NULL.
+    withTable("t") {
+      sql("CREATE TABLE t (s STRING, i INT) USING parquet")
+      sql("INSERT INTO t VALUES ('notadate', NULL), ('2024-01-31', 1)")
+      withSQLConf("spark.sql.ansi.enabled" -> "true") {
+        CometScalaUDFCodegen.resetStats()
+        val (sparkErr, cometErr) =
+          checkSparkAnswerMaybeThrows(sql("SELECT add_months(CAST(s AS DATE), i) FROM t"))
+        val stats = CometScalaUDFCodegen.stats()
+        assert(
+          stats.compileCount + stats.cacheHitCount >= 1,
+          s"expected the codegen dispatcher to run for this query, got $stats")
+        assert(
+          sparkErr.isDefined,
+          "expected Spark to raise on the invalid ANSI cast; the test row is no longer a witness")
+        assert(
+          cometErr.isDefined,
+          "Comet returned a value where Spark raised: the null short-circuit swallowed the error")
+        assert(
+          cometErr.get.getMessage.contains("CAST_INVALID_INPUT"),
+          s"expected the same CAST_INVALID_INPUT error Spark raises, got: ${cometErr.get}")
+      }
+    }
+  }
+
+  test("single-input NullIntolerant tree still short-circuits nulls") {
+    // Guards against over-correcting #5218: the single-ordinal short-circuit is exact (Spark also
+    // evaluates nothing when that one input is null) and must be preserved.
+    withSubjects("abc", null, "xyz") {
+      assertCodegenRan {
+        checkSparkAnswerAndOperator(sql("SELECT upper(substring(s, 1, 2)) FROM t"))
+      }
+    }
+  }
+
+  test(
+    "single-input short-circuit does not swallow an ANSI error from a foldable subtree (#5608)") {
+    // The residual hole left by #5218: `canShortCircuitNulls` assumed a single input ordinal
+    // leaves Spark nothing to evaluate ahead of that ordinal's null check. Not true when a
+    // foldable subtree sits between the root and the ordinal. `ConstantFolding` refuses to fold
+    // `1L DIV 0L` because evaluating it throws and it sits under an `If` branch, so the throwing
+    // expression survives into the physical plan. `TernaryExpression.nullSafeCodeGen` then emits
+    // `Substring`'s `pos` code -- the division -- before it tests `len`'s null, so Spark raises
+    // DIVIDE_BY_ZERO on the (true, NULL) row while the short-circuit returned NULL.
+    withTable("t") {
+      sql("CREATE TABLE t (flag BOOLEAN, n INT) USING parquet")
+      sql("INSERT INTO t VALUES (true, NULL), (false, NULL)")
+      withSQLConf("spark.sql.ansi.enabled" -> "true") {
+        CometScalaUDFCodegen.resetStats()
+        val (sparkErr, cometErr) = checkSparkAnswerMaybeThrows(
+          sql("SELECT IF(flag, upper(substring('abc', CAST(1L DIV 0L AS INT), n)), NULL) FROM t"))
+        val stats = CometScalaUDFCodegen.stats()
+        assert(
+          stats.compileCount + stats.cacheHitCount >= 1,
+          s"expected the codegen dispatcher to run for this query, got $stats")
+        assert(
+          sparkErr.isDefined,
+          "expected Spark to raise DIVIDE_BY_ZERO; the test row is no longer a witness")
+        assert(
+          cometErr.isDefined,
+          "Comet returned a value where Spark raised: the null short-circuit swallowed the error")
+        assert(
+          cometErr.get.getMessage.contains("DIVIDE_BY_ZERO"),
+          s"expected the same DIVIDE_BY_ZERO error Spark raises, got: ${cometErr.get}")
+      }
+    }
+  }
+
+  test("multi-input leaf-only NullIntolerant tree short-circuits nulls correctly (#5218)") {
+    // The leaf-only-children shape keeps the union-of-ordinals short-circuit, because the only
+    // code Spark runs ahead of its own null checks is `BoundReference` reads. Exercises every
+    // null combination across two ordinals to confirm the disjunction matches Spark's per-node
+    // left-to-right null handling row for row. Wrapped in a UDF so the argument expression is
+    // guaranteed to route through the dispatcher rather than Comet's native path.
+    spark.udf.register("idInt", (i: Integer) => i)
+    withTable("t") {
+      sql("CREATE TABLE t (a INT, b INT) USING parquet")
+      sql(
+        "INSERT INTO t VALUES (7, 3), (NULL, 3), (7, NULL), (NULL, NULL), " +
+          "(-7, 3), (7, -3), (0, 3)")
+      assertCodegenRan {
+        checkSparkAnswerAndOperator(sql("SELECT idInt(pmod(a, b)) FROM t"))
+      }
+      assertCodegenRan {
+        checkSparkAnswerAndOperator(sql("SELECT idInt(a + b) FROM t"))
+      }
+    }
+  }
+
+  test("leaf-only short-circuit preserves ANSI remainder-by-zero behaviour (#5218)") {
+    // The one shape where a `NullIntolerant` root's error check is not simply gated behind
+    // "all inputs non-null": `Pmod.doGenCode` evaluates the divisor first and throws on a zero
+    // divisor under ANSI. It still tests the dividend's null *before* that throw, so
+    // `pmod(NULL, 0)` returns NULL in Spark and the union short-circuit stays exact. The
+    // (NULL, 0) row pins the non-raising case, the (7, 0) row the raising one.
+    //
+    // Spark 4.1 introduced REMAINDER_BY_ZERO; older versions raise DIVIDE_BY_ZERO for `pmod`.
+    // The error comes from Spark's own generated code running inside the kernel, so the class
+    // tracks the Spark version under test.
+    val expectedError = if (isSpark41Plus) "REMAINDER_BY_ZERO" else "DIVIDE_BY_ZERO"
+    spark.udf.register("idInt", (i: Integer) => i)
+    withTable("t") {
+      sql("CREATE TABLE t (a INT, b INT) USING parquet")
+      sql("INSERT INTO t VALUES (NULL, 0)")
+      withSQLConf("spark.sql.ansi.enabled" -> "true") {
+        assertCodegenRan {
+          checkSparkAnswerAndOperator(sql("SELECT idInt(pmod(a, b)) FROM t"))
+        }
+      }
+      sql("INSERT INTO t VALUES (7, 0)")
+      withSQLConf("spark.sql.ansi.enabled" -> "true") {
+        val (sparkErr, cometErr) =
+          checkSparkAnswerMaybeThrows(sql("SELECT idInt(pmod(a, b)) FROM t"))
+        assert(
+          sparkErr.isDefined,
+          "expected Spark to raise on pmod by zero under ANSI; the test row is no longer a witness")
+        assert(
+          cometErr.isDefined,
+          "Comet returned a value where Spark raised: the null short-circuit swallowed the error")
+        assert(
+          cometErr.get.getMessage.contains(expectedError),
+          s"expected the same $expectedError error Spark raises, got: ${cometErr.get}")
+        assert(
+          sparkErr.get.getMessage.contains(expectedError),
+          s"expected Spark to raise $expectedError, got: ${sparkErr.get}")
+      }
+    }
+  }
+
+  test("TIME input column routes through the dispatcher (#5218)") {
+    assume(isSpark41Plus, "TimeType requires Spark 4.1+")
+    // `canHandle` accepts TIME (`isSupportedDataType`) and `emitTypedGetters` emits a getLong
+    // case for `TimeNanoVector`, but `CometScalaUDFCodegen.specFor` used to omit the vector class
+    // and throw `UnsupportedOperationException` at execute time -- after the plan had already
+    // committed to the kernel, so there was no fallback. Driven through the dispatcher directly
+    // because Spark 4.1 still rejects TIME columns in file-based data sources, so no SQL query
+    // can produce a TIME input today.
+    val timeVec = new TimeNanoVector("tm", CometArrowAllocator)
+    val exprVec = new VarBinaryVector("expr", CometArrowAllocator)
+    var out: ValueVector = null
+    try {
+      timeVec.allocateNew()
+      timeVec.setSafe(0, 45296000000000L) // 12:34:56
+      timeVec.setNull(1)
+      timeVec.setValueCount(2)
+
+      val timeType = org.apache.spark.sql.comet.util.Utils.fromArrowField(timeVec.getField)
+      val expr = BoundReference(0, timeType, nullable = true)
+      val serialized = SparkEnv.get.closureSerializer.newInstance().serialize(expr)
+      val bytes = new Array[Byte](serialized.remaining())
+      serialized.get(bytes)
+      exprVec.allocateNew()
+      exprVec.setSafe(0, bytes)
+      exprVec.setValueCount(1)
+
+      out = new CometScalaUDFCodegen().evaluate(Array(exprVec, timeVec), 2)
+      val comet = CometVector.getVector(out.asInstanceOf[FieldVector], null)
+      assert(comet.getLong(0) === 45296000000000L)
+      assert(comet.isNullAt(1))
+    } finally {
+      if (out != null) out.close()
+      exprVec.close()
+      timeVec.close()
+    }
+  }
+
   // Runtime coverage for nullable nested `getStruct` / `getArray` / `getMap` element reads is
   // exercised through HOFs in `CometCodegenHOFSuite`. Static emitter assertions live in
   // `CometCodegenSourceSuite`.
@@ -1494,6 +1866,83 @@ class CometCodegenSuite
         }
       }
     }
+  }
+
+  test("dispatch falls back cleanly when the bound tree cannot be closure-serialized (#5573)") {
+    val attr = AttributeReference("s", StringType)()
+    val expr = Invoke(
+      Literal(
+        new CometCodegenSuite.NotSerializableTarget,
+        ObjectType(classOf[CometCodegenSuite.NotSerializableTarget])),
+      "twice",
+      StringType,
+      Seq(attr))
+    // `canHandle` greenlights this tree -- string in, string out, nothing unevaluable -- so the
+    // closure serializer is the step that refuses it. Every other failure mode in
+    // `emitJvmCodegenDispatch` already degraded to a Spark fallback; without the guard this one
+    // throws during planning instead, which is a much worse outcome.
+    assert(CometScalaUDF.emitJvmCodegenDispatch(expr, Seq(attr), binding = true).isEmpty)
+    val reasons = expr.getTagValue(CometExplainInfo.FALLBACK_REASONS).getOrElse(Set.empty)
+    assert(
+      reasons.exists(_.contains("could not be closure-serialized")),
+      s"unexpected fallback reasons: $reasons")
+  }
+
+  test(
+    "unrecognized StaticInvoke routes through the dispatcher instead of falling back (#5575)") {
+    withTable("t") {
+      sql("CREATE TABLE t (b BINARY) USING parquet")
+      sql("INSERT INTO t VALUES (unhex('CAFE')), (unhex('')), (NULL)")
+      // `lpad` on binary input lowers to `StaticInvoke(ByteArray, "lpad", ...)` on every supported
+      // Spark version, and is not in `CometStaticInvoke`'s allowlist. It has no native path, so
+      // before #5575 it failed the whole projection back to Spark.
+      val query = "SELECT lpad(b, 8, unhex('FF')) FROM t"
+      assertCodegenRan {
+        checkSparkAnswerAndOperator(sql(query))
+      }
+      // With the dispatcher off there is nowhere left to run it, so the operator falls back and
+      // says why.
+      withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
+        checkSparkAnswerAndFallbackReason(
+          query,
+          "expression has no native path so the plan falls back to Spark")
+      }
+    }
+  }
+
+  test("Invoke routes through the codegen dispatcher (#5575)") {
+    val target = Literal(
+      new CometCodegenSuite.SerializableTarget,
+      ObjectType(classOf[CometCodegenSuite.SerializableTarget]))
+    // `Invoke` has no serde of its own beyond the catch-all, so this also pins the registration:
+    // reaching a `JvmScalarUdf` proto means `QueryPlanSerde` resolved `CometInvoke`.
+    val attr = AttributeReference("s", StringType)()
+    val proto =
+      QueryPlanSerde.exprToProto(Invoke(target, "twice", StringType, Seq(attr)), Seq(attr))
+    assert(proto.exists(_.hasJvmScalarUdf), s"expected a codegen-dispatch proto, got $proto")
+    // ...and the emitted method call compiles and evaluates.
+    val folded =
+      Invoke(target, "twice", StringType, Seq(Literal(UTF8String.fromString("ab"), StringType)))
+    assert(runKernel(folded, 1)(_.getUTF8String(0).toString) === "abab")
+  }
+}
+
+/**
+ * Targets for the `Invoke` tests. Declared inside the companion object so they are static nested
+ * classes with no reference to the enclosing suite -- otherwise closure-serializing a tree that
+ * holds one would drag the whole suite in and the serialization outcome would say nothing about
+ * the target itself.
+ */
+object CometCodegenSuite {
+
+  /** Public and `Serializable`, so the dispatcher accepts a tree holding an instance. */
+  class SerializableTarget extends Serializable {
+    def twice(s: UTF8String): UTF8String = UTF8String.fromString(s.toString + s.toString)
+  }
+
+  /** Deliberately not `Serializable`, to make the closure serializer refuse the bound tree. */
+  class NotSerializableTarget {
+    def twice(s: UTF8String): UTF8String = UTF8String.fromString(s.toString + s.toString)
   }
 }
 

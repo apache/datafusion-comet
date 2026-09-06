@@ -18,6 +18,7 @@
 use arrow::array::builder::{Date32Builder, Decimal128Builder, Int32Builder};
 use arrow::array::{builder::StringBuilder, Array, Int32Array, RecordBatch};
 use arrow::datatypes::{DataType, Field, Schema};
+use arrow::ipc::writer::IpcWriteContext;
 use arrow::row::{RowConverter, SortField};
 use criterion::{criterion_group, criterion_main, Criterion};
 use datafusion::datasource::memory::MemorySourceConfig;
@@ -53,10 +54,12 @@ fn criterion_benchmark(c: &mut Criterion) {
             let ipc_time = Time::default();
             let w =
                 ShuffleBlockWriter::try_new(&batch.schema(), compression_codec.clone()).unwrap();
+            let mut compression_context = IpcWriteContext::default();
             b.iter(|| {
                 buffer.clear();
                 let mut cursor = Cursor::new(&mut buffer);
-                w.write_batch(&batch, &mut cursor, &ipc_time).unwrap();
+                w.write_batch(&batch, &mut cursor, &mut compression_context, &ipc_time)
+                    .unwrap();
             });
         });
     }
@@ -171,6 +174,35 @@ fn criterion_benchmark(c: &mut Criterion) {
             },
         );
     }
+    group.finish();
+
+    // High partition counts stress the per-partition write path (one short-lived
+    // buffered writer per partition), which low counts barely exercise; compression
+    // is disabled to isolate it. Few samples: each iteration is a full end-to-end
+    // write across thousands of partitions.
+    let mut high_partition_group = c.benchmark_group("shuffle_writer_high_partition");
+    high_partition_group.sample_size(10);
+    for num_partitions in [200usize, 2000, 8000] {
+        high_partition_group.bench_function(
+            format!("shuffle_writer: end to end (partitions={num_partitions}, compression=None)"),
+            |b| {
+                let ctx = SessionContext::new();
+                let exec = create_shuffle_writer_exec(
+                    CompressionCodec::None,
+                    CometPartitioning::Hash(vec![Arc::new(Column::new("a", 0))], num_partitions),
+                    8192,
+                    10,
+                );
+                b.iter(|| {
+                    let task_ctx = ctx.task_ctx();
+                    let stream = exec.execute(0, task_ctx).unwrap();
+                    let rt = Runtime::new().unwrap();
+                    rt.block_on(collect(stream)).unwrap();
+                });
+            },
+        );
+    }
+    high_partition_group.finish();
 }
 
 fn create_shuffle_writer_exec(
@@ -253,12 +285,15 @@ fn schema_encoding_benchmark(c: &mut Criterion) {
         let writer =
             ShuffleBlockWriter::try_new(batch.schema().as_ref(), CompressionCodec::None).unwrap();
         let ipc_time = Time::default();
+        let mut compression_context = IpcWriteContext::default();
         group.bench_function(format!("write_batch ({name} schema)"), |b| {
             let mut buffer = vec![];
             b.iter(|| {
                 buffer.clear();
                 let mut cursor = Cursor::new(&mut buffer);
-                writer.write_batch(&batch, &mut cursor, &ipc_time).unwrap();
+                writer
+                    .write_batch(&batch, &mut cursor, &mut compression_context, &ipc_time)
+                    .unwrap();
             });
         });
     }

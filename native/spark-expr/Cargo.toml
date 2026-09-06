@@ -30,7 +30,7 @@ edition = { workspace = true }
 arrow = { workspace = true }
 chrono = { workspace = true }
 datafusion = { workspace = true }
-chrono-tz = { workspace = true }
+datafusion-spark = { workspace = true }
 num = { workspace = true }
 regex = { workspace = true }
 # preserve_order: needed for get_json_object to match Spark's JSON key ordering
@@ -43,6 +43,9 @@ futures = { workspace = true }
 twox-hash = "2.1.2"
 rand = { workspace = true }
 base64 = "0.23.0"
+# shortest round-trip float formatting, used to match Spark's Double.toString-based
+# float/double to decimal conversion
+ryu = "1.0"
 uuid = "1.23.3"
 
 [dev-dependencies]
@@ -85,6 +88,34 @@ name = "aggregate"
 harness = false
 
 [[bench]]
+name = "array_position"
+harness = false
+
+[[bench]]
+name = "array_slice"
+harness = false
+
+[[bench]]
+name = "array_insert"
+harness = false
+
+[[bench]]
+name = "list_extract"
+harness = false
+
+[[bench]]
+name = "arrays_zip"
+harness = false
+
+[[bench]]
+name = "flatten"
+harness = false
+
+[[bench]]
+name = "get_array_struct_fields"
+harness = false
+
+[[bench]]
 name = "bloom_filter_agg"
 harness = false
 
@@ -93,11 +124,23 @@ name = "padding"
 harness = false
 
 [[bench]]
+name = "base64"
+harness = false
+
+[[bench]]
+name = "unbase64"
+harness = false
+
+[[bench]]
 name = "date_trunc"
 harness = false
 
 [[bench]]
 name = "normalize_nan"
+harness = false
+
+[[bench]]
+name = "sort_float_keys"
 harness = false
 
 [[bench]]
@@ -206,4 +249,92 @@ harness = false
 
 [[bench]]
 name = "unscaled_value"
+harness = false
+
+[[bench]]
+name = "make_decimal"
+harness = false
+
+[[bench]]
+name = "cast_int_to_decimal"
+harness = false
+
+[[bench]]
+name = "log"
+harness = false
+
+[[bench]]
+name = "pow"
+harness = false
+
+[[bench]]
+name = "abs"
+harness = false
+
+[[bench]]
+name = "isnan"
+harness = false
+
+[[bench]]
+name = "rlike"
+harness = false
+
+[[bench]]
+name = "create_named_struct"
+harness = false
+
+[[bench]]
+name = "get_struct_field"
+harness = false
+
+[[bench]]
+name = "from_json"
+harness = false
+
+[[bench]]
+name = "modulo"
+harness = false
+
+[[bench]]
+name = "levenshtein"
+harness = false
+
+[[bench]]
+name = "negative"
+harness = false
+
+[[bench]]
+name = "split"
+harness = false
+
+[[bench]]
+name = "regexp_extract_all"
+harness = false
+
+[[bench]]
+name = "contains"
+harness = false
+
+[[bench]]
+name = "sequence"
+harness = false
+
+[[bench]]
+name = "timestamp_trunc"
+harness = false
+
+[[bench]]
+name = "unix_timestamp"
+harness = false
+
+[[bench]]
+name = "from_utc_timestamp"
+harness = false
+
+[[bench]]
+name = "to_utc_timestamp"
+harness = false
+
+[[bench]]
+name = "iceberg_transforms"
 harness = false

@@ -103,16 +103,16 @@ omitted from the tables below and may be reconsidered based on demand:
 | Operator               | Status | Notes                                                                                                                                                                                            |
 | ---------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `WindowExec`           | ⚠️     | Runs natively and is enabled by default. A broad set of window functions is accelerated; unsupported shapes fall back to Spark. See [window function compatibility](compatibility/operators.md). |
-| `WindowGroupLimitExec` | 🔜     | Window-based limit pushdown falls back today ([#4837](https://github.com/apache/datafusion-comet/issues/4837)).                                                                                  |
+| `WindowGroupLimitExec` | ✅     | Streaming per-partition top-K pushdown for `ROW_NUMBER`, `RANK`, and `DENSE_RANK`.                                                                                                               |
 
 ## Generators and set operations
 
-| Operator       | Status | Notes                                                                                                                      |
-| -------------- | ------ | -------------------------------------------------------------------------------------------------------------------------- |
-| `GenerateExec` | ✅     | Supports `explode` and `posexplode` over arrays. The `_outer` variants are incompatible, and `inline` / `stack` fall back. |
-| `ExpandExec`   | ✅     |                                                                                                                            |
-| `UnionExec`    | ✅     |                                                                                                                            |
-| `CoalesceExec` | ✅     |                                                                                                                            |
+| Operator       | Status | Notes                                                                                                            |
+| -------------- | ------ | ---------------------------------------------------------------------------------------------------------------- |
+| `GenerateExec` | ✅     | Supports `explode`, `explode_outer`, `posexplode`, `posexplode_outer` over arrays. `inline` / `stack` fall back. |
+| `ExpandExec`   | ✅     |                                                                                                                  |
+| `UnionExec`    | ✅     |                                                                                                                  |
+| `CoalesceExec` | ✅     |                                                                                                                  |
 
 ## Writes
 
