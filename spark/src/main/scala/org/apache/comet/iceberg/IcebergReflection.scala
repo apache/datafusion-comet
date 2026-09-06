@@ -26,7 +26,9 @@ import scala.util.control.NonFatal
 
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.catalyst.expressions.SortOrder
 
+import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.util.ClassLoaders
 
 /**
@@ -981,26 +983,56 @@ object IcebergReflection extends Logging {
    *     types with either layout (e.g. geometry).
    */
   def pageIndexUnsupportedColumns(schema: Any): Set[String] = {
+    topLevelColumnTypes(schema, "page-index-unsupported columns")
+      .getOrElse(Seq.empty)
+      .collect {
+        case (name, typeStr)
+            if typeStr.startsWith("decimal(") || typeStr == "uuid" ||
+              typeStr.startsWith("fixed[") || typeStr == "binary" =>
+          name
+      }
+      .toSet
+  }
+
+  /**
+   * Names of top-level columns whose Iceberg sort order can differ from Spark's comparison of the
+   * Spark type they map to, so a native k-way merge keyed on the Spark value could mis-order
+   * rows. Today that is UUID: Iceberg maps UUID to Spark StringType (see TypeToSparkType) but
+   * sorts by its own UUID comparator, not by the canonical string, so the file order and a string
+   * comparison can disagree. reportableOrdering refuses a sort key in this set. v1 only reports
+   * identity, top-level sort keys, so top-level columns are enough.
+   *
+   * Returns None if the schema could not be read. That is the fail-closed answer: we cannot rule
+   * out a UUID (or any other unsafe) sort key, so the caller must refuse the ordering rather than
+   * assume it is safe -- reporting an ordering the native merge cannot reproduce returns silently
+   * mis-ordered rows, because Spark has already dropped the Sort by then.
+   */
+  def orderingUnsafeColumns(schema: Any): Option[Set[String]] = {
+    topLevelColumnTypes(schema, "ordering-unsafe columns").map { columns =>
+      columns.collect { case (name, typeStr) if typeStr == "uuid" => name }.toSet
+    }
+  }
+
+  /**
+   * Read the top-level columns of an Iceberg schema by reflection, yielding (name, typeStr) per
+   * column. Returns None if the schema could not be read, letting each caller pick its own
+   * fail-open vs fail-closed answer.
+   */
+  private def topLevelColumnTypes(schema: Any, context: String): Option[Seq[(String, String)]] = {
     import scala.jdk.CollectionConverters._
     try {
       val columns = getMethod(schema.getClass, "columns")
         .invoke(schema)
         .asInstanceOf[java.util.List[_]]
-      columns.asScala.flatMap { column =>
+      Some(columns.asScala.iterator.map { column =>
         val name = getMethod(column.getClass, "name").invoke(column).asInstanceOf[String]
         val typeStr = getMethod(column.getClass, "type").invoke(column).toString
-        if (typeStr.startsWith("decimal(") || typeStr == "uuid" || typeStr.startsWith("fixed[") ||
-          typeStr == "binary") {
-          Some(name)
-        } else {
-          None
-        }
-      }.toSet
+        (name, typeStr)
+      }.toSeq)
     } catch {
       case e: Exception =>
-        logWarning(
-          s"Failed to inspect schema for page-index-unsupported columns: ${e.getMessage}")
-        Set.empty[String]
+        logWarning(s"Failed to inspect schema for $context: ${e.getMessage}")
+        None
     }
   }
 
@@ -1997,7 +2029,18 @@ case class CometIcebergNativeScanMetadata(
     globalFieldIdMapping: Map[String, Int],
     catalogProperties: Map[String, String],
     catalogName: Option[String],
-    fileFormat: String)
+    fileFormat: String,
+    // The ordering the scan will report to Spark, evaluated once in CometScanRule and carried here
+    // so CometIcebergNativeScanExec.outputOrdering and the proto serde read the same value instead
+    // of re-running the gate. Empty means "report no ordering". Defaulted so the extract() path,
+    // which runs before output/ordering are known, can build the metadata and CometScanRule fills
+    // it in via copy().
+    reportedOrdering: Seq[SortOrder] = Nil,
+    // The same ordering already bound to proto at planning time (against the scan's output), so the
+    // executor-side serde writes it directly without re-binding. Bound once in CometScanRule; if
+    // the binding fails there the scan falls back to Spark rather than converting and failing at
+    // task start. Index-aligned with reportedOrdering.
+    reportedOrderingProto: Seq[Expr] = Nil)
 
 object CometIcebergNativeScanMetadata extends Logging {
 
