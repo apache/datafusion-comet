@@ -2080,54 +2080,46 @@ impl PhysicalPlanner {
                 // unnesting. See https://github.com/apache/datafusion/issues/19053. Once
                 // Comet moves to a DataFusion release carrying
                 // https://github.com/apache/datafusion/pull/22100, `ListEmptyToNullExpr`
-                // and the pre-projection below can be removed in favor of
-                // `NullHandling::PreserveAndExpandEmpty`. See
+                // can be removed in favor of `NullHandling::PreserveAndExpandEmpty`. See
                 // https://github.com/apache/datafusion-comet/issues/5210.
-                //
-                // For `posexplode_outer` the wrapped array is materialized in a
-                // pre-projection so `ListPositionsExpr` and the array passthrough share
-                // a single evaluation of `ListEmptyToNullExpr` instead of re-running it
-                // per branch. Plain `explode_outer` references the wrapped array exactly
-                // once, so no pre-projection is needed there.
-                let (child_expr, child_native_plan): (Arc<dyn PhysicalExpr>, _) =
-                    match (explode.outer, explode.position) {
-                        (true, true) => {
-                            let wrapped: Arc<dyn PhysicalExpr> =
-                                Arc::new(ListEmptyToNullExpr::new(raw_child_expr));
-                            let reserved_name =
-                                format!("__comet_explode_outer_{}", child_field_name);
+                let child_expr: Arc<dyn PhysicalExpr> = if explode.outer {
+                    Arc::new(ListEmptyToNullExpr::new(raw_child_expr))
+                } else {
+                    raw_child_expr
+                };
 
-                            let mut pre_exprs: Vec<(Arc<dyn PhysicalExpr>, String)> = child_schema
-                                .fields()
-                                .iter()
-                                .enumerate()
-                                .map(|(i, f)| {
-                                    (
-                                        Arc::new(Column::new(f.name(), i)) as Arc<dyn PhysicalExpr>,
-                                        f.name().to_string(),
-                                    )
-                                })
-                                .collect();
-                            let wrapped_idx = pre_exprs.len();
-                            pre_exprs.push((wrapped, reserved_name.clone()));
-
-                            let pre_exec = Arc::new(ProjectionExec::try_new(
-                                pre_exprs,
-                                Arc::clone(&child.native_plan),
-                            )?);
+                // Both posexplode variants reference the array twice: once for positions
+                // and once for values. Materialize computed arrays so both references
+                // share one evaluation. A plain Column is already materialized.
+                let (child_expr, child_native_plan) = if explode.position
+                    && !child_expr.is::<Column>()
+                {
+                    let reserved_name = format!("__comet_explode_{}", child_field_name);
+                    let mut pre_exprs: Vec<(Arc<dyn PhysicalExpr>, String)> = child_schema
+                        .fields()
+                        .iter()
+                        .enumerate()
+                        .map(|(i, f)| {
                             (
-                                Arc::new(Column::new(&reserved_name, wrapped_idx))
-                                    as Arc<dyn PhysicalExpr>,
-                                pre_exec as Arc<dyn ExecutionPlan>,
+                                Arc::new(Column::new(f.name(), i)) as Arc<dyn PhysicalExpr>,
+                                f.name().to_string(),
                             )
-                        }
-                        (true, false) => (
-                            Arc::new(ListEmptyToNullExpr::new(raw_child_expr))
-                                as Arc<dyn PhysicalExpr>,
-                            Arc::clone(&child.native_plan),
-                        ),
-                        (false, _) => (raw_child_expr, Arc::clone(&child.native_plan)),
-                    };
+                        })
+                        .collect();
+                    let child_idx = pre_exprs.len();
+                    pre_exprs.push((child_expr, reserved_name.clone()));
+
+                    let pre_exec = Arc::new(ProjectionExec::try_new(
+                        pre_exprs,
+                        Arc::clone(&child.native_plan),
+                    )?);
+                    (
+                        Arc::new(Column::new(&reserved_name, child_idx)) as Arc<dyn PhysicalExpr>,
+                        pre_exec as Arc<dyn ExecutionPlan>,
+                    )
+                } else {
+                    (child_expr, Arc::clone(&child.native_plan))
+                };
 
                 // Create projection expressions for other columns
                 let projections: Vec<Arc<dyn PhysicalExpr>> = explode
@@ -6143,6 +6135,162 @@ mod tests {
         spark_expression::DataType {
             type_id: 3,
             type_info: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn explode_evaluates_array_once_per_batch() {
+        use arrow::datatypes::Int32Type;
+        use datafusion::common::tree_node::{Transformed, TreeNode};
+        use datafusion::logical_expr::{create_udf, Volatility};
+        use datafusion::physical_plan::projection::ProjectionExec;
+        use spark_expression::data_type::{data_type_info::DatatypeStruct, DataTypeInfo, ListInfo};
+
+        let array_type = spark_expression::DataType {
+            type_id: 14,
+            type_info: Some(Box::new(DataTypeInfo {
+                datatype_struct: Some(DatatypeStruct::List(Box::new(ListInfo {
+                    element_type: Some(Box::new(create_proto_datatype())),
+                    contains_null: true,
+                    element_field_id: None,
+                }))),
+            })),
+        };
+        let arrays = Arc::new(ListArray::from_iter_primitive::<Int32Type, _, _>(vec![
+            Some(vec![Some(10), None]),
+            Some(vec![]),
+            None,
+            Some(vec![Some(20)]),
+        ])) as ArrayRef;
+
+        for outer in [false, true] {
+            for position in [false, true] {
+                for computed in [false, true] {
+                    let calls = Arc::new(AtomicUsize::new(0));
+                    let counter = Arc::clone(&calls);
+                    let ctx = SessionContext::new();
+                    ctx.register_udf(create_udf(
+                        "counted_array",
+                        vec![arrays.data_type().clone()],
+                        arrays.data_type().clone(),
+                        Volatility::Immutable,
+                        Arc::new(move |args| {
+                            counter.fetch_add(1, Ordering::Relaxed);
+                            Ok(args[0].clone())
+                        }),
+                    ));
+                    let task_ctx = ctx.task_ctx();
+                    let planner = PhysicalPlanner::new(Arc::new(ctx), 0);
+                    let bound = Expr {
+                        expr_struct: Some(Bound(spark_expression::BoundReference {
+                            index: 0,
+                            datatype: Some(array_type.clone()),
+                        })),
+                        ..Default::default()
+                    };
+                    let child_expr = if computed {
+                        Expr {
+                            expr_struct: Some(ScalarFunc(spark_expression::ScalarFunc {
+                                func: "counted_array".to_string(),
+                                args: vec![bound.clone()],
+                                ..Default::default()
+                            })),
+                            ..Default::default()
+                        }
+                    } else {
+                        bound.clone()
+                    };
+                    let op = Operator {
+                        children: vec![Operator {
+                            op_struct: Some(OpStruct::Scan(spark_operator::Scan {
+                                fields: vec![array_type.clone()],
+                                source: String::new(),
+                            })),
+                            ..Default::default()
+                        }],
+                        op_struct: Some(OpStruct::Explode(spark_operator::Explode {
+                            child: Some(child_expr),
+                            outer,
+                            position,
+                            project_list: vec![bound],
+                        })),
+                        ..Default::default()
+                    };
+                    let (_, _, plan) = planner.create_plan(&op, &mut vec![], 1).unwrap();
+                    let schema = plan.children[0].schema();
+                    let batch = RecordBatch::try_new(schema, vec![Arc::clone(&arrays)]).unwrap();
+                    let input: Arc<dyn ExecutionPlan> = MemorySourceConfig::try_new_exec(
+                        &[vec![batch.clone(), batch.clone()]],
+                        batch.schema(),
+                        None,
+                    )
+                    .unwrap();
+                    let mut projections = 0;
+                    // Replace only the JNI-fed scan, keeping the planner's generated operators.
+                    let native_plan = Arc::clone(&plan.native_plan)
+                        .transform_up(|node| {
+                            projections += usize::from(node.is::<ProjectionExec>());
+                            Ok(if node.name() == "ScanExec" {
+                                Transformed::yes(Arc::clone(&input))
+                            } else {
+                                Transformed::no(node)
+                            })
+                        })
+                        .unwrap()
+                        .data;
+                    let results = collect(native_plan.execute(0, task_ctx).unwrap())
+                        .await
+                        .unwrap();
+                    let context =
+                        format!("outer={outer}, position={position}, computed={computed}");
+                    assert_eq!(
+                        calls.load(Ordering::Relaxed),
+                        if computed { 2 } else { 0 },
+                        "{context}"
+                    );
+                    assert_eq!(
+                        projections,
+                        1 + usize::from(position && (outer || computed)),
+                        "{context}"
+                    );
+                    let expected_values = if outer {
+                        vec![Some(10), None, None, None, Some(20)]
+                    } else {
+                        vec![Some(10), None, Some(20)]
+                    };
+                    let values: Vec<_> = results
+                        .iter()
+                        .flat_map(|batch| {
+                            batch
+                                .column(batch.num_columns() - 1)
+                                .as_any()
+                                .downcast_ref::<Int32Array>()
+                                .unwrap()
+                                .iter()
+                        })
+                        .collect();
+                    assert_eq!(values, expected_values.repeat(2), "{context}");
+                    if position {
+                        let expected_positions = if outer {
+                            vec![Some(0), Some(1), None, None, Some(0)]
+                        } else {
+                            vec![Some(0), Some(1), Some(0)]
+                        };
+                        let positions: Vec<_> = results
+                            .iter()
+                            .flat_map(|batch| {
+                                batch
+                                    .column(1)
+                                    .as_any()
+                                    .downcast_ref::<Int32Array>()
+                                    .unwrap()
+                                    .iter()
+                            })
+                            .collect();
+                        assert_eq!(positions, expected_positions.repeat(2), "{context}");
+                    }
+                }
+            }
         }
     }
 
