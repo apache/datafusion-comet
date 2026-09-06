@@ -61,7 +61,10 @@ import org.apache.comet.serde.{Compatible, Incompatible, Unsupported}
  * through the dispatcher instead. Adding a native cast implementation therefore means moving a
  * pair out of the `Unsupported` assertions and into the parity matrix below.
  */
-class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
+class CometNativeCastSuite
+    extends CometTestBase
+    with AdaptiveSparkPlanHelper
+    with CometCodegenAssertions {
 
   import testImplicits._
 
@@ -1004,10 +1007,12 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("cast between negative-scale decimal and integer/timestamp is unsupported") {
-    // Native casts here scale-align by multiplying by 10^|scale|, which overflows the
-    // underlying integer (panic in debug, silent wrap in release). Both directions fall
-    // back. `Decimal(neg) -> Timestamp` panics for the same reason (probed). See #5013.
+  test("cast between negative-scale decimal and integer/float/timestamp is unsupported") {
+    // Native casts here have no usable path in either direction. Integer and timestamp
+    // scale-align by multiplying by 10^|scale|, which overflows the underlying integer (panic
+    // in debug, silent wrap in release). Float and double divide by 10^scale, which is not
+    // exactly representable for a negative scale, so they silently diverge from Spark -- a
+    // Decimal(20,-5) holding 1000000 comes back as 999999.9999999999. See #5013.
     // `DecimalType(_, s<0)` must be constructed under allowNegativeScaleOfDecimal=true
     // because the case class initializer reads the flag, so wrap everything in one block.
     withSQLConf(
@@ -1015,43 +1020,68 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
       SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
         "org.apache.spark.sql.catalyst.optimizer.ConvertToLocalRelation") {
-      val negScaleType = DecimalType(10, -1)
-      val expected = Unsupported(Some(CometCast.negativeScaleDecimalCastReason))
-      val intTypes =
-        Seq(DataTypes.ByteType, DataTypes.ShortType, DataTypes.IntegerType, DataTypes.LongType)
-      intTypes.foreach { intType =>
+      // Cover a narrow and a wide negative-scale type. `unit` is the smallest magnitude the
+      // type can represent exactly (10^|scale|), so the sample values survive the round trip
+      // instead of all collapsing to zero at the wider scale.
+      val negScaleCases = Seq((DecimalType(10, -1), 10), (DecimalType(20, -5), 100000))
+      negScaleCases.foreach { case (negScaleType, unit) =>
+        val expected = Unsupported(Some(CometCast.negativeScaleDecimalCastReason))
+        val intTypes =
+          Seq(DataTypes.ByteType, DataTypes.ShortType, DataTypes.IntegerType, DataTypes.LongType)
+        intTypes.foreach { intType =>
+          assert(
+            CometCast.isSupported(intType, negScaleType, None, CometEvalMode.LEGACY) == expected,
+            s"expected $intType -> $negScaleType to be Unsupported")
+          assert(
+            CometCast.isSupported(negScaleType, intType, None, CometEvalMode.LEGACY) == expected,
+            s"expected $negScaleType -> $intType to be Unsupported")
+        }
+        // Decimal(neg) -> Timestamp: multiply-with-overflow panic observed in debug build.
         assert(
-          CometCast.isSupported(intType, negScaleType, None, CometEvalMode.LEGACY) == expected,
-          s"expected $intType -> $negScaleType to be Unsupported")
-        assert(
-          CometCast.isSupported(negScaleType, intType, None, CometEvalMode.LEGACY) == expected,
-          s"expected $negScaleType -> $intType to be Unsupported")
-      }
-      // Decimal(neg) -> Timestamp: multiply-with-overflow panic observed in debug build.
-      assert(
-        CometCast.isSupported(
-          negScaleType,
-          DataTypes.TimestampType,
-          None,
-          CometEvalMode.LEGACY) == expected)
+          CometCast.isSupported(
+            negScaleType,
+            DataTypes.TimestampType,
+            None,
+            CometEvalMode.LEGACY) == expected)
+        // Decimal(neg) -> Float/Double: divides by a 10^scale that is not representable.
+        Seq(DataTypes.FloatType, DataTypes.DoubleType).foreach { fpType =>
+          assert(
+            CometCast.isSupported(negScaleType, fpType, None, CometEvalMode.LEGACY) == expected,
+            s"expected $negScaleType -> $fpType to be Unsupported")
+        }
 
-      // End-to-end: fall back with the same reason and produce Spark-equal results.
-      // ConvertToLocalRelation is excluded so the cast actually runs on the plan rather
-      // than being folded away at plan time (#4789).
-      val ints = Seq(100, 200, 300).toDF("i")
-      checkSparkAnswerAndFallbackReason(
-        ints.select(col("i").cast(negScaleType).as("v")),
-        CometCast.negativeScaleDecimalCastReason)
-      // Build the neg-scale column via string -> Decimal(neg), a known-safe cast, so the
-      // source construction does not depend on any of the guards under test.
-      val negDec =
-        Seq("100", "200", "300").toDF("s").select(col("s").cast(negScaleType).as("v"))
-      checkSparkAnswerAndFallbackReason(
-        negDec.select(col("v").cast(DataTypes.IntegerType).as("i")),
-        CometCast.negativeScaleDecimalCastReason)
-      checkSparkAnswerAndFallbackReason(
-        negDec.select(col("v").cast(DataTypes.TimestampType).as("t")),
-        CometCast.negativeScaleDecimalCastReason)
+        // End-to-end: reporting `Unsupported` does not fall the projection back to Spark --
+        // `CometCast` mixes in `CodegenDispatchFallback`, so these route through the JVM codegen
+        // dispatcher (Spark's own `doGenCode`) and stay in the Comet pipeline. That path is safe
+        // for negative scale: Spark's generated code works on `Decimal` / `BigDecimal` and the
+        // Arrow vectors carry the unscaled value with the scale as metadata, so none of the
+        // `10^|scale|` arithmetic that panics in the native kernel is reachable. Assert both that
+        // the dispatcher actually ran and that results match Spark.
+        // ConvertToLocalRelation is excluded so the cast actually runs on the plan rather
+        // than being folded away at plan time (#4789).
+        val values = Seq(10 * unit, 20 * unit, 30 * unit)
+        val ints = values.toDF("i")
+        assertCodegenRan {
+          checkSparkAnswerAndOperator(ints.select(col("i").cast(negScaleType).as("v")))
+        }
+        // Build the neg-scale column via string -> Decimal(neg), a known-safe cast, so the
+        // source construction does not depend on any of the guards under test.
+        val negDec =
+          values.map(_.toString).toDF("s").select(col("s").cast(negScaleType).as("v"))
+        assertCodegenRan {
+          checkSparkAnswerAndOperator(negDec.select(col("v").cast(DataTypes.IntegerType).as("i")))
+        }
+        assertCodegenRan {
+          checkSparkAnswerAndOperator(
+            negDec.select(col("v").cast(DataTypes.TimestampType).as("t")))
+        }
+        assertCodegenRan {
+          checkSparkAnswerAndOperator(negDec.select(col("v").cast(FloatType).as("f")))
+        }
+        assertCodegenRan {
+          checkSparkAnswerAndOperator(negDec.select(col("v").cast(DoubleType).as("d")))
+        }
+      }
     }
   }
 
@@ -1066,23 +1096,28 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
       SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
         "org.apache.spark.sql.catalyst.optimizer.ConvertToLocalRelation") {
-      val negScaleType = DecimalType(10, -1)
-      val negDec =
-        Seq("100", "200", "300").toDF("s").select(col("s").cast(negScaleType).as("v"))
-      // Casts INTO Decimal(neg) that don't scale-align an integer.
-      checkSparkAnswerAndOperator(Seq("100", "200").toDF("s").select(col("s").cast(negScaleType)))
-      checkSparkAnswerAndOperator(
-        Seq("100", "200").toDF("s").select(col("s").cast(DecimalType(10, 0)).cast(negScaleType)))
-      withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true") {
-        checkSparkAnswerAndOperator(Seq(1.0f, 2.5f).toDF("n").select(col("n").cast(negScaleType)))
-        checkSparkAnswerAndOperator(Seq(1.0, 2.5).toDF("n").select(col("n").cast(negScaleType)))
+      val negScaleCases = Seq((DecimalType(10, -1), 10), (DecimalType(20, -5), 100000))
+      negScaleCases.foreach { case (negScaleType, unit) =>
+        val strs = Seq(10 * unit, 20 * unit, 30 * unit).map(_.toString)
+        val negDec = strs.toDF("s").select(col("s").cast(negScaleType).as("v"))
+        // Casts INTO Decimal(neg) that don't scale-align an integer.
+        checkSparkAnswerAndOperator(strs.toDF("s").select(col("s").cast(negScaleType)))
+        checkSparkAnswerAndOperator(
+          strs.toDF("s").select(col("s").cast(DecimalType(20, 0)).cast(negScaleType)))
+        withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true") {
+          val floats = Seq(1.0f * unit, 2.5f * unit)
+          val doubles = Seq(1.0d * unit, 2.5d * unit)
+          checkSparkAnswerAndOperator(floats.toDF("n").select(col("n").cast(negScaleType)))
+          checkSparkAnswerAndOperator(doubles.toDF("n").select(col("n").cast(negScaleType)))
+        }
+        // Casts OUT of Decimal(neg) that neither scale-align an integer nor divide by
+        // 10^scale. Float and double are deliberately absent: they divide by a 10^scale that
+        // is not representable for a negative scale, so they are guarded and covered by the
+        // dispatcher assertions in the test above.
+        checkSparkAnswerAndOperator(negDec.select(col("v").cast(StringType)))
+        checkSparkAnswerAndOperator(negDec.select(col("v").cast(DecimalType(38, 10))))
+        checkSparkAnswerAndOperator(negDec.select(col("v").cast(BooleanType)))
       }
-      // Casts OUT of Decimal(neg) that don't scale-align an integer.
-      checkSparkAnswerAndOperator(negDec.select(col("v").cast(FloatType)))
-      checkSparkAnswerAndOperator(negDec.select(col("v").cast(DoubleType)))
-      checkSparkAnswerAndOperator(negDec.select(col("v").cast(StringType)))
-      checkSparkAnswerAndOperator(negDec.select(col("v").cast(DecimalType(38, 10))))
-      checkSparkAnswerAndOperator(negDec.select(col("v").cast(BooleanType)))
     }
   }
 

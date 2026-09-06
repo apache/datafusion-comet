@@ -1051,21 +1051,22 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     // Guards issue #5013: native scale-align multiplies by 10^|delta| which overflows to a
     // subtract-with-overflow panic (debug) / silent wrap (release) whenever any operand or the
     // result has negative scale. Constructing the expressions requires
-    // allowNegativeScaleOfDecimal so DecimalType(_, -1) passes Spark's own check.
+    // allowNegativeScaleOfDecimal so DecimalType(_, s<0) passes Spark's own check.
     withSQLConf("spark.sql.legacy.allowNegativeScaleOfDecimal" -> "true") {
-      val negScale = DecimalType(10, -1)
-      val posDec = DecimalType(10, 0)
-      val negAttr = AttributeReference("n", negScale)()
-      val posAttr = AttributeReference("p", posDec)()
-      val expected = Unsupported(Some(CometAdd.negScaleDecimalArithmeticReason))
+      Seq(DecimalType(10, -1), DecimalType(20, -5)).foreach { negScale =>
+        val posDec = DecimalType(10, 0)
+        val negAttr = AttributeReference("n", negScale)()
+        val posAttr = AttributeReference("p", posDec)()
+        val expected = Unsupported(Some(CometAdd.negScaleDecimalArithmeticReason))
 
-      assert(CometAdd.getSupportLevel(Add(negAttr, posAttr)) == expected)
-      assert(CometSubtract.getSupportLevel(Subtract(negAttr, posAttr)) == expected)
-      assert(CometDivide.getSupportLevel(Divide(negAttr, posAttr)) == expected)
-      assert(CometIntegralDivide.getSupportLevel(IntegralDivide(negAttr, posAttr)) == expected)
-      assert(CometRemainder.getSupportLevel(Remainder(negAttr, posAttr)) == expected)
-      // Guard also fires when negative scale is only on the right operand.
-      assert(CometAdd.getSupportLevel(Add(posAttr, negAttr)) == expected)
+        assert(CometAdd.getSupportLevel(Add(negAttr, posAttr)) == expected)
+        assert(CometSubtract.getSupportLevel(Subtract(negAttr, posAttr)) == expected)
+        assert(CometDivide.getSupportLevel(Divide(negAttr, posAttr)) == expected)
+        assert(CometIntegralDivide.getSupportLevel(IntegralDivide(negAttr, posAttr)) == expected)
+        assert(CometRemainder.getSupportLevel(Remainder(negAttr, posAttr)) == expected)
+        // Guard also fires when negative scale is only on the right operand.
+        assert(CometAdd.getSupportLevel(Add(posAttr, negAttr)) == expected)
+      }
     }
   }
 
@@ -1080,17 +1081,24 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
       SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
         "org.apache.spark.sql.catalyst.optimizer.ConvertToLocalRelation") {
-      val negScaleType = DecimalType(10, -1)
-      // Build the neg-scale column via string -> Decimal(neg), a known-safe cast, so the
-      // source construction does not depend on any of the guards under test.
-      val v = Seq("100", "200", "300").toDF("s").select(col("s").cast(negScaleType).as("v"))
-      // v % v keeps both operands at DecimalType(10, -1) through Spark's coercion so the
-      // arithmetic guard is the only thing preventing a native panic.
-      checkSparkAnswer(v.selectExpr("v % v"))
-      checkSparkAnswer(v.selectExpr("v + cast(2 as decimal(10, 0))"))
-      checkSparkAnswer(v.selectExpr("v - cast(2 as decimal(10, 0))"))
-      checkSparkAnswer(v.selectExpr("v / cast(3 as decimal(10, 0))"))
-      checkSparkAnswer(v.selectExpr("v div cast(3 as decimal(10, 0))"))
+      // Cover a narrow and a wide negative-scale type: at precision 20 the combined operand
+      // width crosses DECIMAL128_MAX_PRECISION, which routes the operation to
+      // `WideDecimalBinaryExpr` / `decimal_div`'s BigInt path rather than the narrow arrow
+      // kernels. `unit` is the smallest magnitude representable at that scale.
+      val negScaleCases = Seq((DecimalType(10, -1), 10), (DecimalType(20, -5), 100000))
+      negScaleCases.foreach { case (negScaleType, unit) =>
+        // Build the neg-scale column via string -> Decimal(neg), a known-safe cast, so the
+        // source construction does not depend on any of the guards under test.
+        val strs = Seq(10 * unit, 20 * unit, 30 * unit).map(_.toString)
+        val v = strs.toDF("s").select(col("s").cast(negScaleType).as("v"))
+        // v % v keeps both operands at the negative-scale type through Spark's coercion so the
+        // arithmetic guard is the only thing preventing a native panic.
+        checkSparkAnswer(v.selectExpr("v % v"))
+        checkSparkAnswer(v.selectExpr("v + cast(2 as decimal(10, 0))"))
+        checkSparkAnswer(v.selectExpr("v - cast(2 as decimal(10, 0))"))
+        checkSparkAnswer(v.selectExpr("v / cast(3 as decimal(10, 0))"))
+        checkSparkAnswer(v.selectExpr("v div cast(3 as decimal(10, 0))"))
+      }
     }
   }
 
@@ -1106,13 +1114,21 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
       SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
         "org.apache.spark.sql.catalyst.optimizer.ConvertToLocalRelation") {
-      val negScaleType = DecimalType(10, -1)
-      val v = Seq("100", "200", "300").toDF("s").select(col("s").cast(negScaleType).as("v"))
-      // Same-scale Multiply - no alignment needed, must stay native.
-      checkSparkAnswerAndOperator(v.selectExpr("v * v"))
-      checkSparkAnswerAndOperator(v.selectExpr("v * cast(2 as int)"))
-      // UnaryMinus on Decimal(neg) - no alignment, must stay native.
-      checkSparkAnswerAndOperator(v.selectExpr("-v"))
+      // The wide case matters most for `v * v`: Decimal(20,-5) * Decimal(20,-5) has
+      // p1 + p2 >= DECIMAL128_MAX_PRECISION, so it takes `WideDecimalBinaryExpr`'s multiply
+      // branch (which does compute a scale adjustment against the output precision/scale)
+      // and its result type is Decimal(38,-10) -- a negative *output* scale, not just
+      // negative inputs.
+      val negScaleCases = Seq((DecimalType(10, -1), 10), (DecimalType(20, -5), 100000))
+      negScaleCases.foreach { case (negScaleType, unit) =>
+        val strs = Seq(10 * unit, 20 * unit, 30 * unit).map(_.toString)
+        val v = strs.toDF("s").select(col("s").cast(negScaleType).as("v"))
+        // Same-scale Multiply - no alignment needed, must stay native.
+        checkSparkAnswerAndOperator(v.selectExpr("v * v"))
+        checkSparkAnswerAndOperator(v.selectExpr("v * cast(2 as int)"))
+        // UnaryMinus on Decimal(neg) - no alignment, must stay native.
+        checkSparkAnswerAndOperator(v.selectExpr("-v"))
+      }
     }
   }
 

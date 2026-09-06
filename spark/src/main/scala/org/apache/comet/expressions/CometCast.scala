@@ -41,11 +41,16 @@ object CometCast
   private[comet] val negativeScaleDecimalToStringReason: String =
     "Negative-scale decimal requires spark.sql.legacy.allowNegativeScaleOfDecimal=true"
 
-  // Casts between integer/timestamp and negative-scale decimals panic in the native path
-  // because scale alignment multiplies by 10^|scale|, which overflows in debug builds
-  // (aborts) and silently wraps in release builds (wrong results). See issue #5013.
+  // Casts between negative-scale decimals and integer / floating-point / timestamp types have
+  // no usable native path. Integer and timestamp scale-align by multiplying by 10^|scale|,
+  // which overflows in debug builds (aborts) and silently wraps in release builds (wrong
+  // results). Float and double divide by 10^scale, which is not exactly representable for a
+  // negative scale, so the result silently diverges from Spark's exact
+  // `BigDecimal.doubleValue()` -- Decimal(20,-5) holding 1000000 comes back as
+  // 999999.9999999999. See issue #5013.
   private[comet] val negativeScaleDecimalCastReason: String =
-    "Cast between integer/timestamp and negative-scale decimal is not supported natively"
+    "Cast between negative-scale decimal and integer/floating-point/timestamp is not " +
+      "supported natively"
 
   // When `spark.sql.legacy.castComplexTypesToString.enabled` is true, Spark wraps maps and
   // structs with `[]` (instead of `{}`) when casting to string, and omits NULL elements of
@@ -468,9 +473,10 @@ object CometCast
 
   private def canCastFromDecimal(fromType: DecimalType, toType: DataType): SupportLevel =
     toType match {
-      // Negative-scale source overflows natively; see #5013.
+      // Negative-scale source either overflows or loses precision natively; see #5013.
       case DataTypes.ByteType | DataTypes.ShortType | DataTypes.IntegerType | DataTypes.LongType |
-          DataTypes.TimestampType if fromType.scale < 0 =>
+          DataTypes.FloatType | DataTypes.DoubleType | DataTypes.TimestampType
+          if fromType.scale < 0 =>
         Unsupported(Some(negativeScaleDecimalCastReason))
       case DataTypes.FloatType | DataTypes.DoubleType | DataTypes.ByteType | DataTypes.ShortType |
           DataTypes.IntegerType | DataTypes.LongType | DataTypes.BooleanType |

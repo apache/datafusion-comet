@@ -170,6 +170,9 @@ trait MathBase {
 
 object CometAdd extends CometExpressionSerde[Add] with MathBase {
 
+  override def getUnsupportedReasons(): Seq[String] =
+    Seq(negScaleDecimalArithmeticReason)
+
   override def getSupportLevel(expr: Add): SupportLevel =
     negScaleDecimalRejection(expr).getOrElse(mathDataTypeSupportLevel(expr.left.dataType))
 
@@ -207,6 +210,9 @@ object CometAdd extends CometExpressionSerde[Add] with MathBase {
 }
 
 object CometSubtract extends CometExpressionSerde[Subtract] with MathBase {
+
+  override def getUnsupportedReasons(): Seq[String] =
+    Seq(negScaleDecimalArithmeticReason)
 
   override def getSupportLevel(expr: Subtract): SupportLevel =
     negScaleDecimalRejection(expr).getOrElse(mathDataTypeSupportLevel(expr.left.dataType))
@@ -269,6 +275,9 @@ object CometMultiply extends CometExpressionSerde[Multiply] with MathBase {
 
 object CometDivide extends CometExpressionSerde[Divide] with MathBase {
 
+  override def getUnsupportedReasons(): Seq[String] =
+    Seq(negScaleDecimalArithmeticReason)
+
   override def getSupportLevel(expr: Divide): SupportLevel =
     negScaleDecimalRejection(expr).getOrElse {
       if (expr.dataType.isInstanceOf[DecimalType] &&
@@ -303,6 +312,9 @@ object CometDivide extends CometExpressionSerde[Divide] with MathBase {
 }
 
 object CometIntegralDivide extends CometExpressionSerde[IntegralDivide] with MathBase {
+
+  override def getUnsupportedReasons(): Seq[String] =
+    Seq(negScaleDecimalArithmeticReason)
 
   override def getSupportLevel(expr: IntegralDivide): SupportLevel =
     negScaleDecimalRejection(expr).getOrElse(mathDataTypeSupportLevel(expr.left.dataType))
@@ -369,6 +381,9 @@ object CometIntegralDivide extends CometExpressionSerde[IntegralDivide] with Mat
 }
 
 object CometRemainder extends CometExpressionSerde[Remainder] with MathBase {
+
+  override def getUnsupportedReasons(): Seq[String] =
+    Seq(negScaleDecimalArithmeticReason)
 
   override def getSupportLevel(expr: Remainder): SupportLevel =
     negScaleDecimalRejection(expr).getOrElse(mathDataTypeSupportLevel(expr.left.dataType))
