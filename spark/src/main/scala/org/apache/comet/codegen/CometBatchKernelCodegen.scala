@@ -124,9 +124,22 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim with Come
     // typed input field count, the typed-getter switch, and the constant pool. Refuse here so the
     // operator falls back to Spark cleanly rather than tripping a Janino compile failure
     // mid-execution (Comet has no recovery for that).
+    //
+    // Count each input ordinal once. WSCG gates on the operator's *schema*
+    // (`plan.schema.map(_.dataType).map(numOfNestedFields).sum`), so a column read more than once
+    // contributes once; the kernel likewise emits one typed field and one getter per ordinal, not
+    // per occurrence. Counting occurrences instead would scale with how often the tree happens to
+    // repeat a column, which is what `RewriteTypedDatasetMap` does deliberately: it puts the same
+    // shared subtree in every struct field so subexpression elimination can collapse it. A
+    // 12-column typed map reads 12 ordinals in each of 12 fields, which counted per occurrence
+    // came to 156 and refused a kernel that is really 24 fields wide.
     val maxFields = SQLConf.get.wholeStageMaxNumFields
-    val totalFields = numOfNestedFields(boundExpr.dataType) +
-      boundExpr.collect { case b: BoundReference => numOfNestedFields(b.dataType) }.sum
+    val inputFields = boundExpr
+      .collect { case b: BoundReference => b.ordinal -> b.dataType }
+      .distinct
+      .map { case (_, dt) => numOfNestedFields(dt) }
+      .sum
+    val totalFields = numOfNestedFields(boundExpr.dataType) + inputFields
     if (totalFields > maxFields) {
       return Some(
         s"codegen dispatch: too many nested fields ($totalFields > " +

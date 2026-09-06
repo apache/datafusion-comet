@@ -396,6 +396,20 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(true)
 
+  val COMET_EXEC_TYPED_DATASET_MAP_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.exec.typedDatasetMap.enabled")
+      .category(CATEGORY_EXEC)
+      .doc("Experimental. Whether to fuse the `SerializeFromObject` / `MapElements` / " +
+        "`DeserializeToObject` operator sandwich that a typed `Dataset.map` produces into a " +
+        "Comet projection, so the typed operation no longer forces a Spark fallback island in " +
+        "the middle of an otherwise native plan. The user closure still runs on the JVM, once " +
+        "per row, inside Comet's Arrow-direct codegen dispatcher, so results match Spark. Off " +
+        "by default: the rewrite only pays off when the typed operation sits between native " +
+        "operators, and can cost a little when it is at the top of the plan. Requires " +
+        s"${COMET_SCALA_UDF_CODEGEN_ENABLED.key}=true.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_SHUFFLE_NATIVE_HASH_PARTITIONING_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.shuffle.native.partitioning.hash.enabled")
       .withAlternative("spark.comet.native.shuffle.partitioning.hash.enabled")

@@ -698,7 +698,29 @@ case class CometExecRule(session: SparkSession)
         plan
       }
     } else {
-      val normalizedPlan = normalizePlan(plan)
+      // Collapse the SerializeFromObject / MapElements / DeserializeToObject sandwich that a typed
+      // `Dataset.map` produces into a projection. Runs before `normalizePlan` so the projections it
+      // synthesizes get the same NaN / -0.0 normalization every other `ProjectExec` in the plan
+      // gets; encoder serializer trees contain no comparison operators today, so this is
+      // future-proofing rather than a live fix.
+      //
+      // A pre-pass rather than a `convertNode` case for now. Note that `convertNode` *could* do it:
+      // the bottom-up walk only tags `DeserializeToObjectExec` with a fallback reason, it never
+      // replaces it, so the sandwich is still structurally intact when the walk reaches
+      // `SerializeFromObjectExec`. Doing it there would additionally let the rule see whether the
+      // deserializer's child converted to a `CometNativeExec` and decline when it did not, which is
+      // the profitability signal this rewrite currently lacks. See
+      // https://github.com/apache/datafusion-comet/issues/5710.
+      val planWithTypedMapFused =
+        if (CometConf.COMET_EXEC_TYPED_DATASET_MAP_ENABLED.get(conf)) {
+          plan.transformUp { case p =>
+            RewriteTypedDatasetMap.rewrite(p)
+          }
+        } else {
+          plan
+        }
+
+      val normalizedPlan = normalizePlan(planWithTypedMapFused)
 
       val planWithJoinRewritten = if (CometConf.COMET_FORCE_SHJ.get()) {
         normalizedPlan.transformUp { case p =>
