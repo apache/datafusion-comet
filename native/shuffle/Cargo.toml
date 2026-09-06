@@ -76,9 +76,5 @@ name = "shuffle_writer"
 harness = false
 
 [[bench]]
-name = "ipc_decode"
-harness = false
-
-[[bench]]
 name = "row_columnar"
 harness = false

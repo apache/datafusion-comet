@@ -610,7 +610,7 @@ mod tests {
     }
 
     /// A failed write must not poison the context: the next block through the same context
-    /// has to come out clean. Write-side mirror of `decode_context_usable_after_error`.
+    /// has to come out clean.
     #[test]
     #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
     fn codec_context_usable_after_write_error() {
