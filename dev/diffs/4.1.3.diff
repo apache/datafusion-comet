@@ -3254,6 +3254,29 @@ index 09ed6955a51..236a4e99824 100644
      )
    }
    test(s"parquet widening conversion $fromType -> $toType") {
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetVariantShreddingSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetVariantShreddingSuite.scala
+index 1cc6d3afbee..1ca791bc0cc 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetVariantShreddingSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetVariantShreddingSuite.scala
+@@ -29,7 +29,7 @@ import org.apache.parquet.schema.{LogicalTypeAnnotation, PrimitiveType, Type}
+ import org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName
+ 
+ import org.apache.spark.SparkException
+-import org.apache.spark.sql.{AnalysisException, QueryTest, Row}
++import org.apache.spark.sql.{AnalysisException, IgnoreComet, QueryTest, Row}
+ import org.apache.spark.sql.internal.SQLConf
+ import org.apache.spark.sql.internal.SQLConf.ParquetOutputTimestampType
+ import org.apache.spark.sql.test.SharedSparkSession
+@@ -230,7 +230,8 @@ class ParquetVariantShreddingSuite extends QueryTest with ParquetTest with Share
+     }
+   }
+ 
+-  test("variant logical type annotation - ignore variant annotation") {
++  test("variant logical type annotation - ignore variant annotation",
++    IgnoreComet("https://github.com/apache/datafusion-comet/issues/5741")) {
+     Seq(true, false).foreach { ignoreVariantAnnotation =>
+       withSQLConf(SQLConf.PARQUET_ANNOTATE_VARIANT_LOGICAL_TYPE.key -> "true",
+         SQLConf.PARQUET_IGNORE_VARIANT_ANNOTATION.key -> ignoreVariantAnnotation.toString,
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/debug/DebuggingSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/debug/DebuggingSuite.scala
 index b8f3ea3c6f3..bbd44221288 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/debug/DebuggingSuite.scala
