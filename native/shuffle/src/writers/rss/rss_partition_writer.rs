@@ -26,7 +26,7 @@ use arrow::array::{
 };
 use arrow::buffer::OffsetBuffer;
 use arrow::datatypes::{DataType, Field, Int16Type, Int32Type, Int64Type};
-use arrow::ipc::writer::CompressionContext;
+use arrow::ipc::writer::IpcWriteContext;
 use arrow_select::dictionary::garbage_collect_any_dictionary;
 use datafusion::common::{DataFusionError, Result};
 use datafusion_comet_jni_bridge::errors::CometError;
@@ -50,7 +50,7 @@ pub(crate) struct RssPartitionWriter {
     pusher: Arc<dyn ShufflePartitionPusher>,
     num_partitions: usize,
     max_frame_size: usize,
-    compression_context: CompressionContext,
+    compression_context: IpcWriteContext,
     next_partition_to_finish: usize,
     finished: bool,
     failed: bool,
@@ -91,7 +91,7 @@ impl RssPartitionWriter {
             pusher,
             num_partitions,
             max_frame_size,
-            compression_context: CompressionContext::default(),
+            compression_context: IpcWriteContext::default(),
             next_partition_to_finish: 0,
             finished: false,
             failed: false,
@@ -1231,7 +1231,7 @@ mod buffer_tests {
             .write_rss_batch(
                 &batch,
                 &mut output,
-                &mut CompressionContext::default(),
+                &mut IpcWriteContext::default(),
                 &Time::default(),
             )
             .unwrap();
