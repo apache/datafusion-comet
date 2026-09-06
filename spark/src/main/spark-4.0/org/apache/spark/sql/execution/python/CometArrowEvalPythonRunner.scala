@@ -21,7 +21,7 @@ package org.apache.spark.sql.execution.python
 
 import java.io.DataOutputStream
 
-import org.apache.spark.api.python.{BasePythonRunner, ChainedPythonFunctions, PythonEvalType, PythonWorkerUtils}
+import org.apache.spark.api.python.{BasePythonRunner, ChainedPythonFunctions}
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.execution.python.EvalPythonExec.ArgumentMetadata
 import org.apache.spark.sql.types.StructType
@@ -60,13 +60,12 @@ class CometArrowEvalPythonRunner(
    * argument offset. Comet uses the same `ArgumentMetadata` form to stay on that protocol, always
    * with an absent name: an operator whose UDF takes a keyword argument never reaches the native
    * path, because a `NamedArgumentExpression` is not an `Attribute`.
+   *
+   * Spark 4.0's worker does not read an input schema for `SQL_ARROW_BATCHED_UDF` (it goes
+   * straight to the profiler flag), so nothing is written before the UDFs. Spark 4.1 is the one
+   * version that does; see its copy of this runner.
    */
   override protected def writeUDF(dataOut: DataOutputStream): Unit = {
-    if (evalType == PythonEvalType.SQL_ARROW_BATCHED_UDF) {
-      // Arrow-optimized Python UDFs are the one eval type whose worker reads the input schema, to
-      // build the per-argument converters its `ArrowBatchUDFSerializer` applies.
-      PythonWorkerUtils.writeUTF(schema.json, dataOut)
-    }
     val argMetas = argOffsets.map(_.map(offset => ArgumentMetadata(offset, None)))
     PythonUDFRunner.writeUDFs(dataOut, funcs, argMetas, None)
   }

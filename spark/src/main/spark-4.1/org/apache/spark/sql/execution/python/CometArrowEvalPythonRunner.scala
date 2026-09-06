@@ -63,8 +63,10 @@ class CometArrowEvalPythonRunner(
    */
   override protected def writeUDF(dataOut: DataOutputStream): Unit = {
     if (evalType == PythonEvalType.SQL_ARROW_BATCHED_UDF) {
-      // Arrow-optimized Python UDFs are the one eval type whose worker reads the input schema, to
-      // build the per-argument converters its `ArrowBatchUDFSerializer` applies.
+      // Spark 4.1 alone reads an input schema here, to build the per-argument converters its
+      // `ArrowBatchUDFSerializer` applies. Writing it on 4.0 or 4.2, whose workers do not read
+      // it, desynchronizes the command stream and hangs the worker, so their copies of this
+      // runner omit it.
       PythonWorkerUtils.writeUTF(schema.json, dataOut)
     }
     val argMetas = argOffsets.map(_.map(offset => ArgumentMetadata(offset, None)))

@@ -80,6 +80,9 @@ jobs:
   pyarrow-udf:
     name: PyArrow UDF (${{ matrix.name }}, JDK 17, Python 3.11)
     runs-on: ubuntu-latest
+    # A Python worker protocol mismatch blocks the worker forever rather than failing, so without
+    # a cap the job would sit until GitHub's 6-hour default. The build plus tests take ~17 min.
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
