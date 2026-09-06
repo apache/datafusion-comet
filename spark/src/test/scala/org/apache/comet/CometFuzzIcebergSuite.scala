@@ -237,6 +237,36 @@ class CometFuzzIcebergSuite extends CometFuzzIcebergBase {
     }
   }
 
+  test(
+    "filter pushdown - IS NULL/IS NOT NULL on list and map columns stays native, struct falls back") {
+    // Spark pushes isnotnull(arr) below Generate for explode(arr), so list-column null checks
+    // are a common pushed predicate. iceberg-rust's Arrow predicate visitor projects list and
+    // map columns but not struct columns, so the scan-rule fallback must be struct-only.
+    val tableName = "hadoop_catalog.db.null_check_test"
+    try {
+      spark.sql(
+        s"CREATE TABLE $tableName (l array<int>, m map<string,int>, s struct<a:int>) USING iceberg")
+      spark.sql(s"INSERT INTO $tableName SELECT array(1, 2), map('k', 1), named_struct('a', 1)")
+      spark.sql(s"INSERT INTO $tableName SELECT NULL, NULL, NULL")
+      val (_, cometPlanList) =
+        checkSparkAnswer(s"SELECT count(*) FROM $tableName WHERE l IS NOT NULL")
+      assert(
+        1 == collectIcebergNativeScans(cometPlanList).length,
+        s"expected native scan for list null check\n$cometPlanList")
+      val (_, cometPlanMap) =
+        checkSparkAnswer(s"SELECT count(*) FROM $tableName WHERE m IS NOT NULL")
+      assert(
+        1 == collectIcebergNativeScans(cometPlanMap).length,
+        s"expected native scan for map null check\n$cometPlanMap")
+      val (_, cometPlanStruct) =
+        checkSparkAnswer(s"SELECT count(*) FROM $tableName WHERE s IS NOT NULL")
+      assert(
+        0 == collectIcebergNativeScans(cometPlanStruct).length,
+        s"expected Spark fallback for struct null check\n$cometPlanStruct")
+    } finally {
+      spark.sql(s"DROP TABLE IF EXISTS $tableName")
+    }
+  }
   def collectCometShuffleExchanges(plan: org.apache.spark.sql.execution.SparkPlan)
       : Seq[org.apache.spark.sql.execution.SparkPlan] = {
     collect(plan) {
