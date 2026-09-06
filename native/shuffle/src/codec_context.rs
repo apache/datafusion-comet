@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::ipc::writer::CompressionContext;
+use arrow::ipc::writer::IpcWriteContext;
 use std::io;
 use zstd::zstd_safe::{CCtx, CParameter, DCtx, ResetDirective};
 
@@ -53,7 +53,7 @@ const MAX_RETAINED_ZSTD_CONTEXT_BYTES: usize = 8 * 1024 * 1024;
 #[derive(Default)]
 pub struct ShuffleCodecContext {
     /// Arrow's per-message IPC compression scratch, reused across encodes.
-    pub(crate) arrow_ipc: CompressionContext,
+    pub(crate) arrow_ipc: IpcWriteContext,
     /// Lazily created, reused across blocks.
     zstd: Option<CCtx<'static>>,
     /// How many zstd contexts this value has created, so tests can assert that N blocks
@@ -71,7 +71,7 @@ impl ShuffleCodecContext {
     pub(crate) fn zstd_cctx(
         &mut self,
         level: i32,
-    ) -> io::Result<(&mut CCtx<'static>, &mut CompressionContext)> {
+    ) -> io::Result<(&mut CCtx<'static>, &mut IpcWriteContext)> {
         let cctx = match &mut self.zstd {
             Some(cctx) => cctx,
             none => {

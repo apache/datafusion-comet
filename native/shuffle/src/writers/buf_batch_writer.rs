@@ -54,6 +54,9 @@ pub(crate) struct BufBatchWriter<S: Borrow<ShuffleBlockWriter>, W: Write> {
     /// one, or unflushed bytes in the other buffer would be silently abandoned.
     #[cfg(debug_assertions)]
     scratch_addr: Option<usize>,
+    /// Running total of bytes serialized through this writer, used to report spilled bytes when
+    /// the underlying writer does not implement [`Seek`] (e.g. a `Box<dyn SpillWriter>`).
+    total_bytes_written: u64,
 }
 
 impl<S: Borrow<ShuffleBlockWriter>, W: Write> BufBatchWriter<S, W> {
@@ -71,6 +74,7 @@ impl<S: Borrow<ShuffleBlockWriter>, W: Write> BufBatchWriter<S, W> {
             batch_size,
             #[cfg(debug_assertions)]
             scratch_addr: None,
+            total_bytes_written: 0,
         }
     }
 
@@ -170,6 +174,7 @@ impl<S: Borrow<ShuffleBlockWriter>, W: Write> BufBatchWriter<S, W> {
             write_timer.stop();
             scratch.clear();
         }
+        self.total_bytes_written += bytes_written as u64;
         Ok(bytes_written)
     }
 
@@ -206,6 +211,13 @@ impl<S: Borrow<ShuffleBlockWriter>, W: Write> BufBatchWriter<S, W> {
         // that crossed the threshold; keep only the configured buffer size across reuses.
         scratch.shrink_to(self.buffer_max_size);
         Ok(())
+    }
+
+    /// Total number of bytes serialized through this writer since it was created. Unlike
+    /// [`Self::writer_stream_position`], this does not require the underlying writer to implement
+    /// [`Seek`], so it is used to report spilled bytes when writing to a `Box<dyn SpillWriter>`.
+    pub(crate) fn bytes_written(&self) -> u64 {
+        self.total_bytes_written
     }
 }
 

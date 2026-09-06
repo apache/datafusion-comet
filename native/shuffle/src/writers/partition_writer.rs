@@ -32,7 +32,7 @@ use arrow::record_batch::RecordBatch;
 /// ascending id order, then a single [`finish_all`](PartitionWriter::finish_all).
 ///
 /// [`LocalPartitionWriter`]: crate::writers::local::local_partition_writer::LocalPartitionWriter
-pub(crate) trait PartitionWriter: Send + Sync {
+pub(crate) trait PartitionWriter: Send {
     /// Stages the batches from `iter` for partition `pid` without finalizing it.
     ///
     /// Used to stream single-partition output and to stage multi-partition
