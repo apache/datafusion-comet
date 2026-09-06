@@ -417,7 +417,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `*` | ✅ | Native | DayTime interval multiplication routes through the JVM codegen dispatcher; YearMonth and Calendar interval multiplication fall back |
 | `+` | ✅ | Native |  |
 | `-` | ✅ | Native |  |
-| `/` | ✅ | Native |  |
+| `/` | ✅ | Native | DayTime interval division routes through the JVM codegen dispatcher; YearMonth and Calendar interval division fall back |
 | `abs` | ✅ | Native | Interval types fall back |
 | `acos` | ✅ | Native |  |
 | `acosh` | ✅ | Native |  |
