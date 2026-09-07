@@ -81,8 +81,15 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim with Come
   /**
    * Type surface the kernel covers on both input and output sides. Recursive: complex types are
    * supported when their children are.
+   *
+   * `NullType` is output-only: [[CometBatchKernelCodegenOutput]] can write an all-null Arrow
+   * `NullVector`, but `CometScalaUDFCodegen.specFor` cannot build an [[ArrowColumnSpec]] for one,
+   * so a `NullType` input (nested or not) has to keep falling back to Spark.
    */
-  def isSupportedDataType(dt: DataType): Boolean = dt match {
+  def isSupportedDataType(dt: DataType): Boolean = isSupportedDataType(dt, allowNullType = false)
+
+  private def isSupportedDataType(dt: DataType, allowNullType: Boolean): Boolean = dt match {
+    case NullType => allowNullType
     case BooleanType | ByteType | ShortType | IntegerType | LongType => true
     case FloatType | DoubleType => true
     case _: DecimalType => true
@@ -90,11 +97,39 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim with Come
     case DateType | TimestampType | TimestampNTZType => true
     case dt if isTimeType(dt) => true
     case _: YearMonthIntervalType | _: DayTimeIntervalType | CalendarIntervalType => true
-    case ArrayType(inner, _) => isSupportedDataType(inner)
-    case st: StructType => st.fields.forall(f => isSupportedDataType(f.dataType))
-    case mt: MapType => isSupportedDataType(mt.keyType) && isSupportedDataType(mt.valueType)
+    case ArrayType(inner, _) => isSupportedDataType(inner, allowNullType)
+    case st: StructType => st.fields.forall(f => isSupportedDataType(f.dataType, allowNullType))
+    case mt: MapType =>
+      isSupportedDataType(mt.keyType, allowNullType) &&
+      isSupportedDataType(mt.valueType, allowNullType)
     case _ => false
   }
+
+  /**
+   * Spark keeps duplicate struct field names as distinct positional fields, but Arrow's
+   * `StructVector` keys its children by name (`ConflictPolicy.CONFLICT_REPLACE`), so the
+   * generated ordinal-based child casts would hit a missing or differently typed vector.
+   * `CometCreateNamedStruct` refuses the same shape, but whole-expression dispatch never consults
+   * that rule for a `named_struct` nested inside e.g. a `transform` lambda.
+   */
+  private def hasDuplicateStructFieldNames(dt: DataType): Boolean = dt match {
+    case st: StructType =>
+      st.fieldNames.distinct.length != st.fieldNames.length ||
+      st.fields.exists(f => hasDuplicateStructFieldNames(f.dataType))
+    case ArrayType(inner, _) => hasDuplicateStructFieldNames(inner)
+    case MapType(k, v, _) => hasDuplicateStructFieldNames(k) || hasDuplicateStructFieldNames(v)
+    case _ => false
+  }
+
+  /** Why `dt` cannot cross the kernel boundary, if it cannot. */
+  private def typeRejection(dt: DataType, allowNullType: Boolean): Option[String] =
+    if (!isSupportedDataType(dt, allowNullType)) {
+      Some(s"unsupported type $dt")
+    } else if (hasDuplicateStructFieldNames(dt)) {
+      Some(s"duplicate struct field name in type $dt")
+    } else {
+      None
+    }
 
   /**
    * Mirrors `WholeStageCodegenExec.numOfNestedFields` so [[canHandle]] can reuse
@@ -113,12 +148,13 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim with Come
    * back cleanly rather than crashing the Janino compile at execute time.
    *
    * Checks every `BoundReference`'s data type and the root `expr.dataType` against
-   * [[isSupportedDataType]], rejects aggregates / generators / `Unevaluable`, and gates total
-   * nested-field count on `spark.sql.codegen.maxFields`.
+   * [[isSupportedDataType]] and [[hasDuplicateStructFieldNames]], rejects aggregates, generators
+   * and `Unevaluable`, and gates total nested-field count on `spark.sql.codegen.maxFields`.
    */
   def canHandle(boundExpr: Expression): Option[String] = {
-    if (!isSupportedDataType(boundExpr.dataType)) {
-      return Some(s"codegen dispatch: unsupported output type ${boundExpr.dataType}")
+    typeRejection(boundExpr.dataType, allowNullType = true) match {
+      case Some(reason) => return Some(s"codegen dispatch: output $reason")
+      case None =>
     }
     // Mirror WSCG's `spark.sql.codegen.maxFields` gate. Wide schemas blow the generated class's
     // typed input field count, the typed-getter switch, and the constant pool. Refuse here so the
@@ -168,12 +204,15 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim with Come
             "(aggregate, generator, or unevaluable)")
       case None =>
     }
-    val badRef = boundExpr.collectFirst {
-      case b: BoundReference if !isSupportedDataType(b.dataType) =>
-        b
-    }
-    badRef.map(b =>
-      s"codegen dispatch: unsupported input type ${b.dataType} at ordinal ${b.ordinal}")
+    boundExpr.collectFirst(Function.unlift(inputRejection))
+  }
+
+  /** Why `expr` cannot be read as a codegen input, if it cannot. */
+  private def inputRejection(expr: Expression): Option[String] = expr match {
+    case b: BoundReference =>
+      typeRejection(b.dataType, allowNullType = false)
+        .map(reason => s"codegen dispatch: input $reason at ordinal ${b.ordinal}")
+    case _ => None
   }
 
   /**

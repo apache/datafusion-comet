@@ -42,6 +42,8 @@ import org.apache.spark.sql.types.DecimalType
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions
 
+import CometBenchmarkBase.BenchmarkArm
+
 trait CometBenchmarkBase
     extends SqlBasedBenchmark
     with AdaptiveSparkPlanHelper
@@ -62,6 +64,7 @@ trait CometBenchmarkBase
       .set(
         "spark.shuffle.manager",
         "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
+    extraSparkConf.foreach { case (key, value) => conf.set(key, value) }
 
     val sparkSession = SparkSession
       .builder()
@@ -79,6 +82,12 @@ trait CometBenchmarkBase
 
     sparkSession
   }
+
+  /**
+   * Static Spark settings a benchmark needs in its context, applied on top of the defaults above
+   * before the context starts. Session-level SQL configs belong in the cases instead.
+   */
+  protected def extraSparkConf: Map[String, String] = Map.empty
 
   def runCometBenchmark(args: Array[String]): Unit
 
@@ -123,26 +132,25 @@ trait CometBenchmarkBase
    *   SQL query to benchmark
    * @param extraCometConfigs
    *   Additional configurations to apply for the Comet case (optional)
+   * @param extraArms
+   *   Extra Comet cases, each overlaying its configs on the Comet case, e.g. a prior path with a
+   *   dispatcher off (see [[CometBenchmarkBase.BenchmarkArm]]).
+   * @param expectNative
+   *   Whether the Comet case is checked to be fully Comet native. False for a case that measures
+   *   a deliberate fallback.
    */
   final def runExpressionBenchmark(
       name: String,
       cardinality: Long,
       query: String,
-      extraCometConfigs: Map[String, String] = Map.empty): Unit = {
+      extraCometConfigs: Map[String, String] = Map.empty,
+      extraArms: Seq[BenchmarkArm] = Nil,
+      expectNative: Boolean = true): Unit = {
     val benchmark = new Benchmark(name, cardinality, output = output)
 
-    // Constant folding is excluded so that expressions over literal arguments are still evaluated
-    // per row. It must be excluded for both arms: if only Comet excludes it, Spark folds the
-    // expression away and does no per-row work, and the comparison is meaningless.
-    val noConstantFolding =
-      SQLConf.OPTIMIZER_EXCLUDED_RULES.key -> excludedRulesWith(ConstantFolding.ruleName)
-
-    val sparkConfigs = Seq(noConstantFolding, CometConf.COMET_ENABLED.key -> "false")
-
-    val cometConfigs = Seq(
-      noConstantFolding,
-      CometConf.COMET_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_ENABLED.key -> "true") ++ extraCometConfigs
+    val arms = expressionBenchmarkArms(extraCometConfigs, extraArms)
+      .map(arm => if (arm.name == "Comet") arm.copy(expectNative = expectNative) else arm)
+    val sparkConfigs = arms.head.configs
 
     // Check that the benchmarked expression survives optimization into the Spark baseline plan.
     // The query is not executed: before execution `stripAQEPlan` yields the initial physical
@@ -169,36 +177,62 @@ trait CometBenchmarkBase
       }
     }
 
-    // Check that the plan is fully Comet native before running the benchmark. Unlike the check
-    // above this one does execute the query, because AQE can re-plan a join after the first
-    // stage completes and the Comet operators are what we are checking for.
-    withSQLConf(cometConfigs: _*) {
-      val df = spark.sql(query)
-      df.noop()
-      val plan = stripAQEPlan(df.queryExecution.executedPlan)
-      findFirstNonCometOperator(plan).foreach { op =>
-        warn(
-          benchmark,
-          s"""WARNING: the Comet plan is NOT fully Comet native, so the Comet case below is
-             |partly or wholly measuring Spark.
-             |First non-Comet operator: ${op.nodeName}
-             |Comet plan:""".stripMargin + "\n" + plan.treeString)
+    // Check that the plan of every arm expected to be native is fully Comet native before running
+    // the benchmark. Unlike the check above this one does execute the query, because AQE can
+    // re-plan a join after the first stage completes and the Comet operators are what we are
+    // checking for.
+    arms.filter(_.expectNative).foreach { arm =>
+      withSQLConf(arm.configs: _*) {
+        val df = spark.sql(query)
+        df.noop()
+        val plan = stripAQEPlan(df.queryExecution.executedPlan)
+        findFirstNonCometOperator(plan).foreach { op =>
+          warn(
+            benchmark,
+            s"""WARNING: the ${arm.name} plan is NOT fully Comet native, so that case below is
+               |partly or wholly measuring Spark.
+               |First non-Comet operator: ${op.nodeName}
+               |Comet plan:""".stripMargin + "\n" + plan.treeString)
+        }
       }
     }
 
-    benchmark.addCase("Spark") { _ =>
-      withSQLConf(sparkConfigs: _*) {
-        spark.sql(query).noop()
-      }
-    }
-
-    benchmark.addCase("Comet") { _ =>
-      withSQLConf(cometConfigs: _*) {
-        spark.sql(query).noop()
+    arms.foreach { arm =>
+      benchmark.addCase(arm.name) { _ =>
+        withSQLConf(arm.configs: _*) {
+          spark.sql(query).noop()
+        }
       }
     }
 
     benchmark.run()
+  }
+
+  /**
+   * The arms `runExpressionBenchmark` times, in order: the Spark baseline, the Comet case with
+   * `extraCometConfigs`, then each extra arm overlaid on the Comet case. Exposed so a benchmark
+   * can run its own checks (result equality, memory, plan) over exactly the timed configurations.
+   */
+  protected def expressionBenchmarkArms(
+      extraCometConfigs: Map[String, String],
+      extraArms: Seq[BenchmarkArm]): Seq[BenchmarkArm] = {
+    // Constant folding is excluded so that expressions over literal arguments are still evaluated
+    // per row. It must be excluded for both arms: if only Comet excludes it, Spark folds the
+    // expression away and does no per-row work, and the comparison is meaningless.
+    val noConstantFolding =
+      SQLConf.OPTIMIZER_EXCLUDED_RULES.key -> excludedRulesWith(ConstantFolding.ruleName)
+
+    val sparkConfigs = Seq(noConstantFolding, CometConf.COMET_ENABLED.key -> "false")
+
+    val cometConfigs = Seq(
+      noConstantFolding,
+      CometConf.COMET_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_ENABLED.key -> "true") ++ extraCometConfigs
+
+    Seq(
+      BenchmarkArm("Spark", sparkConfigs, expectNative = false),
+      BenchmarkArm("Comet", cometConfigs, expectNative = true)) ++
+      extraArms.map(arm => arm.copy(configs = cometConfigs ++ arm.configs))
   }
 
   /**
@@ -381,6 +415,19 @@ trait CometBenchmarkBase
 }
 
 object CometBenchmarkBase {
+
+  /**
+   * One timed case of `runExpressionBenchmark`.
+   *
+   * @param name
+   *   the case name in the results table
+   * @param configs
+   *   the SQL configs the case runs under; for an extra arm, these overlay the Comet case
+   * @param expectNative
+   *   whether the plan is checked to be fully Comet native before timing. False for an arm that
+   *   deliberately measures a fallback path.
+   */
+  case class BenchmarkArm(name: String, configs: Seq[(String, String)], expectNative: Boolean)
 
   /**
    * SplitMix64 finalizer, used to turn a row id into a well distributed pseudo-random value.
