@@ -16,13 +16,18 @@
 // under the License.
 
 use crate::utils::array_with_timezone;
+use arrow::array::Decimal128Array;
 use arrow::compute::{date_part, DatePart};
 use arrow::datatypes::{DataType, TimeUnit::Microsecond};
-use datafusion::common::{internal_datafusion_err, DataFusionError};
+use datafusion::common::cast::as_time64_nanosecond_array;
+use datafusion::common::{
+    internal_datafusion_err, utils::take_function_args, DataFusionError, Result, ScalarValue,
+};
 use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
 };
 use std::fmt::Debug;
+use std::sync::Arc;
 
 /// Returns true when the type is a timestamp without a timezone (Spark's TimestampNTZType),
 /// including when wrapped in a dictionary. Such values store local wall-clock time and must not
@@ -117,6 +122,38 @@ extract_date_part!(SparkHour, "hour", Hour);
 extract_date_part!(SparkMinute, "minute", Minute);
 extract_date_part!(SparkSecond, "second", Second);
 
+/// Spark 4.1 EXTRACT(SECOND FROM TIME): truncate to the input precision and return
+/// Decimal(8,6). The precision is a literal supplied by Spark's TimeType lowering.
+pub fn spark_seconds_of_time(args: &[ColumnarValue]) -> Result<ColumnarValue> {
+    let [time, precision] = take_function_args("seconds_of_time", args)?;
+    let precision = match precision {
+        ColumnarValue::Scalar(ScalarValue::Int32(Some(p))) if (0..=6).contains(p) => *p as u32,
+        _ => {
+            return Err(internal_datafusion_err!(
+                "seconds_of_time requires a literal precision from 0 to 6"
+            ))
+        }
+    };
+    let divisor = 10_i64.pow(9 - precision);
+    let multiplier = 10_i128.pow(6 - precision);
+    let extract = |nanos: i64| i128::from((nanos % 60_000_000_000) / divisor) * multiplier;
+    match time {
+        ColumnarValue::Array(array) => {
+            let times = as_time64_nanosecond_array(array.as_ref())?;
+            let seconds: Decimal128Array = times.iter().map(|nanos| nanos.map(extract)).collect();
+            Ok(ColumnarValue::Array(Arc::new(
+                seconds.with_precision_and_scale(8, 6)?,
+            )))
+        }
+        ColumnarValue::Scalar(ScalarValue::Time64Nanosecond(nanos)) => Ok(ColumnarValue::Scalar(
+            ScalarValue::Decimal128(nanos.map(extract), 8, 6),
+        )),
+        _ => Err(internal_datafusion_err!(
+            "seconds_of_time requires Time64(Nanosecond)"
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -124,6 +161,69 @@ mod tests {
     use arrow::datatypes::{Field, TimeUnit};
     use datafusion::config::ConfigOptions;
     use std::sync::Arc;
+
+    #[test]
+    fn seconds_of_time_truncates_to_input_precision() {
+        for (precision, expected) in [
+            45_000_000, 45_100_000, 45_120_000, 45_123_000, 45_123_400, 45_123_450, 45_123_456,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let precision = ColumnarValue::Scalar(ScalarValue::Int32(Some(precision as i32)));
+            for nanos in [Some(45_045_123_456_789), None] {
+                let args = [
+                    ColumnarValue::Scalar(ScalarValue::Time64Nanosecond(nanos)),
+                    precision.clone(),
+                ];
+                let ColumnarValue::Scalar(result) = spark_seconds_of_time(&args).unwrap() else {
+                    panic!("expected scalar")
+                };
+                assert_eq!(
+                    result,
+                    ScalarValue::Decimal128(nanos.map(|_| expected), 8, 6)
+                );
+            }
+            let times =
+                arrow::array::Time64NanosecondArray::from(vec![Some(45_045_123_456_789), None]);
+            let args = [ColumnarValue::Array(Arc::new(times)), precision];
+            let ColumnarValue::Array(result) = spark_seconds_of_time(&args).unwrap() else {
+                panic!("expected array")
+            };
+            let expected = Decimal128Array::from(vec![Some(expected), None])
+                .with_precision_and_scale(8, 6)
+                .unwrap();
+            assert_eq!(result.as_ref(), &expected);
+        }
+    }
+
+    #[test]
+    fn seconds_of_time_boundaries() {
+        for (nanos, expected) in [
+            (0, 0),
+            (999, 0),
+            (1_000, 1),
+            (59_999_999_999, 59_999_999),
+            (60_000_000_000, 0),
+            (86_399_999_999_999, 59_999_999),
+        ] {
+            let args = [
+                ColumnarValue::Scalar(ScalarValue::Time64Nanosecond(Some(nanos))),
+                ColumnarValue::Scalar(ScalarValue::Int32(Some(6))),
+            ];
+            let ColumnarValue::Scalar(result) = spark_seconds_of_time(&args).unwrap() else {
+                panic!("expected scalar")
+            };
+            assert_eq!(result, ScalarValue::Decimal128(Some(expected), 8, 6));
+        }
+        for precision in [-1, 7, i32::MAX] {
+            assert!(spark_seconds_of_time(&[
+                ColumnarValue::Scalar(ScalarValue::Time64Nanosecond(Some(0))),
+                ColumnarValue::Scalar(ScalarValue::Int32(Some(precision)))
+            ])
+            .is_err());
+        }
+    }
 
     // 2024-01-15 18:30:45 UTC, in microseconds since the epoch.
     const MICROS: i64 = 1_705_343_445_000_000;
