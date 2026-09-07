@@ -18,10 +18,7 @@
 -- percentile_cont(p) WITHIN GROUP (ORDER BY col) was added in Spark 4.0. It is a
 -- RuntimeReplaceable that rewrites to Percentile(col, p, reverse), so the ascending form runs
 -- natively through Comet, while the descending (DESC) form falls back to Spark because the
--- native percentile_cont always interpolates in ascending order.
--- Percentile is marked Incompatible because DataFusion quantizes the interpolation weight to 6
--- decimal places (#4719); allow it here so the ascending native path is exercised.
--- Config: spark.comet.expression.Percentile.allowIncompatible=true
+-- native percentile UDAF always interpolates in ascending order.
 -- MinSparkVersion: 4.0
 
 statement
@@ -31,9 +28,19 @@ statement
 INSERT INTO test_pct_wg VALUES
   (1, 1.0), (1, 2.0), (1, 3.0), (1, 4.0), (2, 10.0), (2, 20.0), (2, NULL)
 
+statement
+CREATE TABLE test_pct_wg_precision(v double) USING parquet
+
+statement
+INSERT INTO test_pct_wg_precision VALUES (0.0), (10000000.0)
+
 -- ascending WITHIN GROUP runs natively
 query
 SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY v) FROM test_pct_wg
+
+-- deeply interpolated percentile that would differ if the interpolation weight were quantized
+query
+SELECT percentile_cont(0.123456789) WITHIN GROUP (ORDER BY v) FROM test_pct_wg_precision
 
 query
 SELECT g, percentile_cont(0.25) WITHIN GROUP (ORDER BY v) FROM test_pct_wg GROUP BY g ORDER BY g

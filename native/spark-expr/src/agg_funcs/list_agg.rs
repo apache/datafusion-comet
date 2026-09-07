@@ -320,13 +320,8 @@ impl GroupsAccumulator for ListAggGroupsAccumulator {
         &mut self,
         values: &[ArrayRef],
         group_indices: &[usize],
-        opt_filter: Option<&BooleanArray>,
         total_num_groups: usize,
     ) -> Result<()> {
-        debug_assert!(
-            opt_filter.is_none(),
-            "opt_filter is not supported in merge_batch"
-        );
         self.values.resize(total_num_groups, None);
         // State is `Binary`: each non-null entry is another partition's joined
         // group value as UTF-8 bytes.
@@ -340,6 +335,14 @@ impl GroupsAccumulator for ListAggGroupsAccumulator {
             }
         }
         Ok(())
+    }
+
+    fn convert_to_state(
+        &self,
+        _values: &[ArrayRef],
+        _opt_filter: Option<&BooleanArray>,
+    ) -> Result<Vec<ArrayRef>> {
+        not_impl_err!("Input batch conversion to state not implemented")
     }
 
     fn size(&self) -> usize {
@@ -469,8 +472,8 @@ mod tests {
         let s1 = p1.state(EmitTo::All)?.remove(0);
 
         let mut fin = ListAggGroupsAccumulator::new(",".to_string());
-        fin.merge_batch(&[s0], &[0], None, 1)?;
-        fin.merge_batch(&[s1], &[0], None, 1)?;
+        fin.merge_batch(&[s0], &[0], 1)?;
+        fin.merge_batch(&[s1], &[0], 1)?;
         assert_eq!(groups_result(&mut fin), vec![Some("a,b,c".to_string())]);
         Ok(())
     }

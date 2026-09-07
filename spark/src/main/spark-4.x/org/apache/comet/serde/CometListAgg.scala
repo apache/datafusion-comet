@@ -97,7 +97,7 @@ object CometListAgg extends CometAggregateExpressionSerde[ListAgg] {
           .setListAgg(builder)
           .build())
     } else {
-      withFallbackReason(aggExpr, expr.child, expr.delimiter)
+      withFallbackReason(aggExpr, "Child expression or data type not supported")
       None
     }
   }

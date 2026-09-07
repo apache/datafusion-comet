@@ -19,11 +19,18 @@ statement
 CREATE TABLE test_flatten(arr array<array<int>>) USING parquet
 
 statement
-INSERT INTO test_flatten VALUES (array(array(1, 2), array(3, 4))), (array(array(), array(1))), (array()), (NULL), (array(array(1, NULL), array(NULL)))
+INSERT INTO test_flatten VALUES
+  (array(array(1, 2), array(3, 4))),
+  (array(array(), array(1))),
+  (array()),
+  (NULL),
+  (array(array(1, NULL), array(NULL))),
+  (array(array(1), CAST(NULL AS ARRAY<INT>))),
+  (array(CAST(NULL AS ARRAY<INT>), CAST(NULL AS ARRAY<INT>)))
 
-query spark_answer_only
+query
 SELECT flatten(arr) FROM test_flatten
 
 -- literal arguments
-query spark_answer_only
+query
 SELECT flatten(array(array(1, 2), array(3, 4)))

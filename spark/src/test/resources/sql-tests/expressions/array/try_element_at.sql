@@ -42,9 +42,14 @@ SELECT try_element_at(arr, 100) FROM test_try_element_at
 query
 SELECT try_element_at(CAST(NULL AS ARRAY<INT>), 1)
 
--- literal array arguments: same codegen bug as element_at with literal arrays
-query ignore(Spark codegen bug with literal element_at when constant folding is disabled)
-SELECT try_element_at(array(10, 20, 30), 1), try_element_at(array(10, 20, 30), 99)
+statement
+CREATE TABLE t(id int) USING parquet
+
+statement
+INSERT INTO t VALUES (1), (3), (-1), (99), (NULL)
+
+query
+SELECT try_element_at(array(10, 20, 30), id) FROM t
 
 -- map input
 query

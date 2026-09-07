@@ -26,7 +26,7 @@ then serialized to Comet's native execution engine (see
 [PR #2528](https://github.com/apache/datafusion-comet/pull/2528)).
 
 The example below uses Spark's package downloader to retrieve Comet $COMET_VERSION and Iceberg
-1.8.1, but Comet has been tested with Iceberg 1.5, 1.7, 1.8, 1.9, and 1.10. The native Iceberg
+1.8.1, but Comet has been tested with Iceberg 1.5, 1.7, 1.8, 1.9, 1.10, and 1.11. The native Iceberg
 reader is enabled by default. To disable it, set `spark.comet.scan.icebergNative.enabled=false`.
 
 The example uses the Spark 3.5 / Scala 2.12 build of Comet; substitute the Comet artifact
@@ -43,7 +43,7 @@ $SPARK_HOME/bin/spark-shell \
     --conf spark.sql.catalog.spark_catalog.warehouse=/tmp/warehouse \
     --conf spark.plugins=org.apache.spark.CometPlugin \
     --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
-    --conf spark.comet.explainFallback.enabled=true \
+    --conf spark.comet.explain.fallback.enabled=true \
     --conf spark.memory.offHeap.enabled=true \
     --conf spark.memory.offHeap.size=2g
 ```
@@ -63,7 +63,15 @@ The native Iceberg reader supports the following features:
 
 **Table specifications:**
 
-- Iceberg table spec v1 and v2 (v3 will fall back to Spark)
+- Iceberg table spec v1, v2, and v3
+
+**Encryption:**
+
+- Encrypted v3 tables using 128-bit or 256-bit AES-GCM data keys (requires Iceberg 1.11 or newer).
+  Iceberg-Java unwraps the key envelope on the driver during planning and stores the plaintext data
+  key in each file's `key_metadata`, which the native reader uses directly, so no KMS integration is
+  needed on the native side. Iceberg-Java also permits 192-bit data keys; those tables fall back to
+  Spark (no AES-192-GCM in the underlying crypto).
 
 **Schema and data types:**
 
@@ -120,7 +128,7 @@ $SPARK_HOME/bin/spark-shell \
     --conf spark.sql.catalog.rest_cat.warehouse=/tmp/warehouse \
     --conf spark.plugins=org.apache.spark.CometPlugin \
     --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
-    --conf spark.comet.explainFallback.enabled=true \
+    --conf spark.comet.explain.fallback.enabled=true \
     --conf spark.memory.offHeap.enabled=true \
     --conf spark.memory.offHeap.size=2g
 ```
@@ -136,7 +144,7 @@ scala> spark.sql("SELECT * FROM rest_cat.db.test_table").show()
 
 ### Object store configuration (S3)
 
-The native reader has its own Rust object store client and does not go through Iceberg's JVM FileIO, neither `S3FileIO` nor the older Hadoop S3A filesystem. It configures that client from the catalog's `s3.*` properties (the same keys `S3FileIO` reads) or from `spark.hadoop.fs.s3a.*` settings, so S3 configuration only reaches the native reader through one of those two channels.
+The native reader has its own Rust object store client and does not go through Iceberg's JVM FileIO, neither `S3FileIO` nor the older Hadoop S3A filesystem. It configures that client from the catalog's `s3.*` properties (the same keys `S3FileIO` reads), from `spark.hadoop.fs.s3a.*` settings, or, for a scheme opted into `spark.hadoop.fs.comet.s3Compliant.schemes`, from vendor-style `fs.<scheme>.<authority>.*` keys (see [S3-Compliant Filesystem Schemes](datasources.md#s3-compliant-filesystem-schemes)). That third source is translated into the same `fs.s3a.*` shape as the second before it reaches the reader. S3 configuration therefore reaches the native reader through one of these three channels.
 
 For a custom S3-compatible endpoint, configure the catalog with the endpoint, path-style access, region, and credentials (Hive shown):
 
@@ -156,17 +164,19 @@ These `s3.*` storage properties are not specific to the Hive catalog shown here.
 
 ### Current limitations
 
-The following scenarios will fall back to Spark's native Iceberg reader:
+The following scenarios will fall back to the JVM Iceberg reader:
 
-- Iceberg table spec v3 scans
+- Iceberg table spec v4 or newer
+- v3 tables with columns that declare an initial default value
+- v3 column types the native reader cannot read (`variant`, `geometry`, `geography`, `unknown`)
+- Encrypted tables with 192-bit data keys (no AES-192-GCM in the underlying crypto)
+- Deletion vectors (v3 Puffin deletes); positional and equality deletes in Parquet are supported
 - Iceberg writes (reads are accelerated, writes use Spark)
 - Tables backed by Avro or ORC data files (only Parquet is accelerated)
 - Tables partitioned on `BINARY` or `DECIMAL` (with precision >28) columns
 - Scans with residual filters using `truncate`, `bucket`, `year`, `month`, `day`, or `hour`
   transform functions (partition pruning still works, but row-level filtering of these
   transforms falls back)
-- Dynamic Partition Pruning under Adaptive Query Execution (non-AQE DPP is supported);
-  see [#3510](https://github.com/apache/datafusion-comet/issues/3510)
 
 ### Iceberg UDFs
 
@@ -185,6 +195,41 @@ the project, exchange, and sort operators around them stay on the Comet path end
 `spark.comet.exec.scalaUDF.codegen.enabled=false` causes the enclosing operator to fall back to
 Spark, which forces a columnar-to-row roundtrip and demotes the surrounding shuffle from
 `CometExchange` to `CometColumnarExchange`.
+
+### Iceberg system functions
+
+Iceberg's system functions `bucket`, `truncate`, `years`, `months`, `days`, and `hours` (the SQL
+form of its partition transforms, for example `SELECT system.bucket(16, id) FROM t`) run natively.
+Spark binds them as static invocations of Iceberg's per-type implementations under
+`org.apache.iceberg.spark.functions`, and Comet recognizes those classes wherever the expression
+appears: in a projection, a filter, a sort key, or the hash partitioning of a shuffle.
+
+The native kernels reproduce Iceberg's Java semantics exactly rather than approximately:
+
+- `bucket` hashes the spec's byte encoding of each value (8-byte little-endian for integers, dates,
+  and timestamps; UTF-8 for strings; raw bytes for binary; the minimal big-endian two's complement
+  of the unscaled value for decimals) with 32-bit Murmur3 and masks the sign bit before taking the
+  modulus.
+- `truncate` uses Java's wrapping integer arithmetic and counts code points (not bytes) for
+  strings. Decimal inputs are the one case that stays with Spark, see below.
+- `years`, `months`, `days`, and `hours` are evaluated in UTC regardless of the session timezone
+  and go negative before the epoch; `days` returns a date, the other three an int. They cover the
+  whole `DATE` and `TIMESTAMP` domain, as Iceberg's `DateTimeUtil` does.
+
+`truncate` on a `decimal` column falls back to Spark. Truncating a negative decimal grows its
+magnitude, so the result can need one more digit than the column's precision allows:
+`truncate(10, v)` on a `decimal(18,4)` value of `-99999999999999.9999` is
+`-100000000000000.0000`, which has 19 digits. Iceberg's `TruncateDecimal` hands that oversized
+value back unchanged and Spark turns it into null only when the row is materialized. An Arrow
+`Decimal128(precision, scale)` array has no encoding for that intermediate, so a native kernel
+would have to null it during evaluation, which changes what an enclosing predicate or hash sees.
+Every other `truncate` input type, and `bucket` on decimals, runs natively.
+
+This matters most for writes. A partitioned table with the default `write.distribution-mode`
+(`hash`) is planned with a shuffle and a local sort keyed on the partition transforms, and with
+these functions native the whole sub-plan feeding the [native Iceberg writer](iceberg-writes.md)
+stays in Comet. A `numBuckets` or `width` argument that is not a positive integer literal makes
+the expression fall back to Spark.
 
 ### Task input metrics
 

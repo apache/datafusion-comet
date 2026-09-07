@@ -50,4 +50,12 @@ trait ShimCometTestBase {
   def createMakeDecimalColumn(child: Expression, precision: Int, scale: Int): Column = {
     new Column(MakeDecimal(child, precision, scale))
   }
+
+  def createMakeDecimalColumn(
+      child: Expression,
+      precision: Int,
+      scale: Int,
+      nullOnOverflow: Boolean): Column = {
+    new Column(MakeDecimal(child, precision, scale, nullOnOverflow))
+  }
 }

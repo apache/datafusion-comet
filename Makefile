@@ -15,14 +15,25 @@
 # specific language governing permissions and limitations
 # under the License.
 
-.PHONY: all core jvm test clean release-linux release bench
+.PHONY: all core jvm test clean release-linux release bench print-benchmark-args
 
 define spark_jvm_17_extra_args
-$(shell ./mvnw help:evaluate -q -DforceStdout -Dexpression=extraJavaTestArgs)
+$(shell ./mvnw help:evaluate -q -DforceStdout -Dexpression=extraJavaTestArgs $(PROFILES))
 endef
 
-# Build optional Comet native features (like hdfs e.g)
+# Build optional Comet native features (like hdfs-opendal e.g)
 FEATURES_ARG := $(shell ! [ -z $(COMET_FEATURES) ] && echo '--features=$(COMET_FEATURES)')
+
+# JVM max heap for the benchmark targets. Lower this when benchmarking on a
+# machine with less memory, for example BENCH_HEAP=8g on a 16 GiB instance.
+BENCH_HEAP ?= 20g
+
+# How a benchmark suite is invoked. benchmarks/micro/run.py reads these through
+# `print-benchmark-args` rather than restating them, because it runs many suites
+# against one build and so cannot use the benchmark-% target, whose `release`
+# prerequisite would rebuild before each one.
+BENCH_MAVEN_OPTS = -Xmx$(BENCH_HEAP) ${call spark_jvm_17_extra_args}
+BENCH_MVN_ARGS = exec:java -Dexec.classpathScope=test -Dexec.cleanupDaemonThreads=false
 
 all: core jvm
 
@@ -45,24 +56,29 @@ clean:
 bench:
 	cd native && RUSTFLAGS="-Ctarget-cpu=native" cargo bench $(FEATURES_ARG) $(filter-out $@,$(MAKECMDGOALS))
 format:
+	@if command -v prettier >/dev/null 2>&1; then \
+		prettier -w "**/*.md"; \
+	else \
+		echo "prettier not found, skipping markdown formatting (npm i -g prettier)"; \
+	fi
 	cd native && cargo fmt
 	./mvnw compile test-compile scalafix:scalafix -Psemanticdb $(PROFILES)
 	./mvnw spotless:apply $(PROFILES)
 
 # build native libs for amd64 architecture Linux/MacOS on a Linux/amd64 machine/container
 core-amd64-libs:
-	cd native && RUSTFLAGS="-Ctarget-cpu=x86-64-v3" cargo build -j 2 --release $(FEATURES_ARG)
+	cd native && RUSTFLAGS="-Ctarget-cpu=x86-64-v3" cargo build --release $(FEATURES_ARG)
 ifdef HAS_OSXCROSS
 	rustup target add x86_64-apple-darwin
-	cd native && cargo build -j 2 --target x86_64-apple-darwin --release $(FEATURES_ARG)
+	cd native && cargo build --target x86_64-apple-darwin --release $(FEATURES_ARG)
 endif
 
 # build native libs for arm64 architecture Linux/MacOS on a Linux/arm64 machine/container
 core-arm64-libs:
-	cd native && RUSTFLAGS="-Ctarget-cpu=neoverse-n1" cargo build -j 2 --release $(FEATURES_ARG)
+	cd native && RUSTFLAGS="-Ctarget-cpu=neoverse-n1" cargo build --release $(FEATURES_ARG)
 ifdef HAS_OSXCROSS
 	rustup target add aarch64-apple-darwin
-	cd native && cargo build -j 2 --target aarch64-apple-darwin --release $(FEATURES_ARG)
+	cd native && cargo build --target aarch64-apple-darwin --release $(FEATURES_ARG)
 endif
 
 core-amd64:
@@ -104,6 +120,11 @@ release-nogit:
 	cd native && RUSTFLAGS="-Ctarget-cpu=native" cargo build --release
 	./mvnw install -Prelease -DskipTests $(PROFILES) -Dmaven.gitcommitid.skip=true
 benchmark-%: release
-	cd spark && COMET_CONF_DIR=$(shell pwd)/conf MAVEN_OPTS='-Xmx20g ${call spark_jvm_17_extra_args}' ../mvnw exec:java -Dexec.mainClass="$*" -Dexec.classpathScope="test" -Dexec.cleanupDaemonThreads="false" -Dexec.args="$(filter-out $@,$(MAKECMDGOALS))" $(PROFILES)
+	cd spark && COMET_CONF_DIR=$(shell pwd)/conf MAVEN_OPTS='$(BENCH_MAVEN_OPTS)' ../mvnw $(BENCH_MVN_ARGS) -Dexec.mainClass="$*" -Dexec.args="$(filter-out $@,$(MAKECMDGOALS))" $(PROFILES)
+
+# Emit the benchmark invocation as KEY=VALUE lines for benchmarks/micro/run.py.
+print-benchmark-args:
+	@echo 'MAVEN_OPTS=$(BENCH_MAVEN_OPTS)'
+	@echo 'MVN_ARGS=$(BENCH_MVN_ARGS)'
 .DEFAULT:
 	@: # ignore arguments provided to benchmarks e.g. "make benchmark-foo -- --bar", we do not want to treat "--bar" as target
