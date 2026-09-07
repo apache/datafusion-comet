@@ -272,6 +272,14 @@ name = "abs"
 harness = false
 
 [[bench]]
+name = "murmur3"
+harness = false
+
+[[bench]]
+name = "xxhash64"
+harness = false
+
+[[bench]]
 name = "isnan"
 harness = false
 
