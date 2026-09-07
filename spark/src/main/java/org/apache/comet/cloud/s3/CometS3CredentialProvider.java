@@ -21,6 +21,8 @@ package org.apache.comet.cloud.s3;
 
 import java.util.Map;
 
+import org.apache.comet.annotation.Public;
+
 /**
  * SPI for supplying AWS credentials to Comet's native S3 readers, which bypass Hadoop S3A. See the
  * user guide (operator setup, vendor contract) and the contributor-guide design notes for the
@@ -29,6 +31,7 @@ import java.util.Map;
  * <p>{@link #getCredentialsForPath} may be invoked concurrently from many native worker threads;
  * implementations must be thread-safe. It returns credentials or throws (no fall-through).
  */
+@Public
 public interface CometS3CredentialProvider extends AutoCloseable {
 
   /**

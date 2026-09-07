@@ -37,7 +37,7 @@ on:
         required: true
         type: string
       spark-full:
-        description: 'Spark full version, e.g. 3.5.8'
+        description: 'Spark full version, e.g. 3.5.9'
         required: true
         type: string
       java:

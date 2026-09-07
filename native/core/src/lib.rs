@@ -125,13 +125,18 @@ pub extern "system" fn Java_org_apache_comet_NativeBase_init(
     })
 }
 
+#[no_mangle]
+/// Releases the global Tokio runtime used by Comet native execution.
+pub extern "system" fn Java_org_apache_comet_NativeBase_release(_e: EnvUnowned, _class: JClass) {
+    execution::jni_api::release_runtime();
+}
+
 const LOG_PATTERN: &str = "{d(%y/%m/%d %H:%M:%S)} {l} {f}: {m}{n}";
 
 /// JNI method to check if a specific feature is enabled in the native Rust code.
 /// # Arguments
 /// * `feature_name` - The name of the feature to check. Supported features:
 ///   - "jemalloc" - tikv-jemallocator memory allocator
-///   - "hdfs" - HDFS object store support
 ///   - "hdfs-opendal" - HDFS support via OpenDAL
 /// # Returns
 /// * `1` (true) if the feature is enabled
@@ -147,7 +152,6 @@ pub extern "system" fn Java_org_apache_comet_NativeBase_isFeatureEnabled(
 
         let enabled = match feature.as_str() {
             "jemalloc" => cfg!(feature = "jemalloc"),
-            "hdfs" => cfg!(feature = "hdfs"),
             "hdfs-opendal" => cfg!(feature = "hdfs-opendal"),
             _ => false, // Unknown features return false
         };
@@ -156,15 +160,22 @@ pub extern "system" fn Java_org_apache_comet_NativeBase_isFeatureEnabled(
     })
 }
 
-/// JNI method: does object_store recognize this URL's scheme?
+/// JNI: can object_store build a store AND an object key for this URL?
 ///
-/// This is the source of truth for the JVM planner's "can Comet's native reader handle this
-/// filesystem?" check. Comet's `prepare_object_store_with_configs` dispatches non-hdfs/non-s3
-/// schemes to object_store's `parse_url`, which is driven by `ObjectStoreScheme::parse`; an
-/// unrecognized scheme (e.g. a custom Hadoop FileSystem) fails there at execution time. By
-/// answering from `ObjectStoreScheme::parse` here, the planner can decline early without
-/// hardcoding -- and drifting from -- the object_store-supported scheme set. (hdfs / libhdfs
-/// schemes are handled separately on the JVM side via the user's libhdfs scheme config.)
+/// Source of truth for the JVM planner's "can the native reader handle this filesystem?" check.
+/// `prepare_object_store_with_configs` dispatches non-hdfs/non-s3 schemes to object_store's
+/// `parse_url` (driven by `ObjectStoreScheme::parse`), so answering from the same parser lets the
+/// planner decline early without hardcoding the supported set. (hdfs/libhdfs are handled JVM-side.)
+///
+/// `ObjectStoreScheme::parse` validates the PATH as well as the scheme -- it ends in
+/// `Path::from_url_path` -- so a recognized scheme carrying a key object_store forbids (e.g. a
+/// directory name with a newline) answers false. `CometScanRule` relies on both halves: it probes
+/// a synthetic scheme-only URL for the cached scheme gate and the real URL for the path gate.
+///
+/// Alias schemes (e.g. `blob`) are NOT answered here: this gate has no config. Their opt-in lives
+/// in the JVM `CometScanRule` via `fs.comet.s3Compliant.schemes`; natively they are rewritten to
+/// `s3://` by `normalize_object_store_url`, the first step of
+/// `prepare_object_store_with_configs`.
 #[no_mangle]
 pub extern "system" fn Java_org_apache_comet_NativeBase_isObjectStoreSchemeSupported(
     env: EnvUnowned,

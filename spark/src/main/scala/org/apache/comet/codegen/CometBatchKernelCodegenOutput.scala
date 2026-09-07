@@ -170,11 +170,12 @@ private[codegen] object CometBatchKernelCodegenOutput extends CometTypeShim {
     case _: StringType => classOf[VarCharVector].getName
     case BinaryType => classOf[VarBinaryVector].getName
     case DateType => classOf[DateDayVector].getName
+    case dt if isTimeType(dt) => classOf[TimeNanoVector].getName
     case TimestampType => classOf[TimeStampMicroTZVector].getName
     case TimestampNTZType => classOf[TimeStampMicroVector].getName
     case _: YearMonthIntervalType => classOf[IntervalYearVector].getName
     case _: DayTimeIntervalType => classOf[DurationVector].getName
-    case dt if isTimeType(dt) => classOf[TimeNanoVector].getName
+    case CalendarIntervalType => classOf[IntervalMonthDayNanoVector].getName
     case _: ArrayType => classOf[ListVector].getName
     case _: StructType => classOf[StructVector].getName
     case _: MapType => classOf[MapVector].getName
@@ -218,8 +219,15 @@ private[codegen] object CometBatchKernelCodegenOutput extends CometTypeShim {
       // DayTimeIntervalType -> DurationVector.set(int, long micros).
       val set = if (nested) "setSafe" else "set"
       OutputEmit("", s"$targetVec.$set($idx, $source);")
+    case CalendarIntervalType =>
+      val set = if (nested) "setSafe" else "set"
+      val interval = ctx.freshName("interval")
+      OutputEmit(
+        "",
+        s"""org.apache.spark.unsafe.types.CalendarInterval $interval = $source;
+           |$targetVec.$set($idx, $interval.months, $interval.days,
+           |    java.lang.Math.multiplyExact($interval.microseconds, 1000L));""".stripMargin)
     case dt if isTimeType(dt) =>
-      // TIME is stored as nanoseconds-of-day in a Long, matching TimeNanoVector.set(int, long).
       val set = if (nested) "setSafe" else "set"
       OutputEmit("", s"$targetVec.$set($idx, $source);")
     case dt: DecimalType =>
@@ -402,8 +410,10 @@ private[codegen] object CometBatchKernelCodegenOutput extends CometTypeShim {
       case BooleanType => s"$target.getBoolean($idx)"
       case ByteType => s"$target.getByte($idx)"
       case ShortType => s"$target.getShort($idx)"
-      case IntegerType | DateType => s"$target.getInt($idx)"
-      case LongType | TimestampType | TimestampNTZType => s"$target.getLong($idx)"
+      case IntegerType | DateType | _: YearMonthIntervalType => s"$target.getInt($idx)"
+      case LongType | TimestampType | TimestampNTZType | _: DayTimeIntervalType =>
+        s"$target.getLong($idx)"
+      case CalendarIntervalType => s"$target.getInterval($idx)"
       case dt if isTimeType(dt) => s"$target.getLong($idx)"
       case FloatType => s"$target.getFloat($idx)"
       case DoubleType => s"$target.getDouble($idx)"

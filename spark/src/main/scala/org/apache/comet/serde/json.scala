@@ -23,7 +23,7 @@ import org.apache.spark.sql.catalyst.expressions.{Attribute, JsonObjectKeys, Len
 
 import org.apache.comet.CometConf
 import org.apache.comet.serde.ExprOuterClass.Expr
-import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithFallbackReason, scalarFunctionExprToProto}
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, scalarFunctionExprToProto}
 
 /**
  * `json_array_length` runs Spark's own implementation through the codegen dispatcher by default,
@@ -56,7 +56,7 @@ object CometLengthOfJsonArray
     if (CometConf.isExprAllowIncompat(getExprConfigName(expr))) {
       val childExpr = expr.children.map(exprToProtoInternal(_, inputs, binding))
       val optExpr = scalarFunctionExprToProto("json_array_length", childExpr: _*)
-      optExprWithFallbackReason(optExpr, expr, expr.children: _*)
+      optExpr
     } else {
       super.convert(expr, inputs, binding)
     }

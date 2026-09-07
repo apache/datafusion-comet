@@ -83,7 +83,6 @@ pub enum ExpressionType {
     CaseWhen,
     In,
     If,
-    Substring,
     Like,
     Rlike,
     CheckOverflow,
@@ -101,7 +100,9 @@ pub enum ExpressionType {
     ArrayInsert,
     Rand,
     Randn,
+    RandStr,
     Shuffle,
+    Uuid,
     SparkPartitionId,
     MonotonicallyIncreasingId,
     ArraysZip,
@@ -286,8 +287,6 @@ impl ExpressionRegistry {
         use crate::execution::expressions::strings::*;
 
         self.builders
-            .insert(ExpressionType::Substring, Box::new(SubstringBuilder));
-        self.builders
             .insert(ExpressionType::Like, Box::new(LikeBuilder));
         self.builders
             .insert(ExpressionType::Rlike, Box::new(RlikeBuilder));
@@ -359,7 +358,6 @@ impl ExpressionRegistry {
             Some(ExprStruct::CaseWhen(_)) => Ok(ExpressionType::CaseWhen),
             Some(ExprStruct::In(_)) => Ok(ExpressionType::In),
             Some(ExprStruct::If(_)) => Ok(ExpressionType::If),
-            Some(ExprStruct::Substring(_)) => Ok(ExpressionType::Substring),
             Some(ExprStruct::Like(_)) => Ok(ExpressionType::Like),
             Some(ExprStruct::Rlike(_)) => Ok(ExpressionType::Rlike),
             Some(ExprStruct::CheckOverflow(_)) => Ok(ExpressionType::CheckOverflow),
@@ -379,7 +377,9 @@ impl ExpressionRegistry {
             Some(ExprStruct::ArrayInsert(_)) => Ok(ExpressionType::ArrayInsert),
             Some(ExprStruct::Rand(_)) => Ok(ExpressionType::Rand),
             Some(ExprStruct::Randn(_)) => Ok(ExpressionType::Randn),
+            Some(ExprStruct::RandStr(_)) => Ok(ExpressionType::RandStr),
             Some(ExprStruct::Shuffle(_)) => Ok(ExpressionType::Shuffle),
+            Some(ExprStruct::Uuid(_)) => Ok(ExpressionType::Uuid),
             Some(ExprStruct::SparkPartitionId(_)) => Ok(ExpressionType::SparkPartitionId),
             Some(ExprStruct::MonotonicallyIncreasingId(_)) => {
                 Ok(ExpressionType::MonotonicallyIncreasingId)
@@ -413,6 +413,10 @@ impl ExpressionRegistry {
             .insert(ExpressionType::Randn, Box::new(RandnBuilder));
         self.builders
             .insert(ExpressionType::Shuffle, Box::new(ShuffleBuilder));
+        self.builders
+            .insert(ExpressionType::Uuid, Box::new(UuidBuilder));
+        self.builders
+            .insert(ExpressionType::RandStr, Box::new(RandStrBuilder));
     }
 
     /// Register partition expression builders

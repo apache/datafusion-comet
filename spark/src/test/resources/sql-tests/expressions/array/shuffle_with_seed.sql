@@ -138,13 +138,13 @@ statement
 INSERT INTO test_shuffle_seed_double VALUES
   (array(1.1, 2.2, 3.3, 4.4, 5.5)),
   (NULL),
-  (array(CAST('NaN' AS DOUBLE), CAST('Infinity' AS DOUBLE), CAST('-Infinity' AS DOUBLE), 0.0, -0.0))
+  (array(CAST('NaN' AS DOUBLE), CAST('Infinity' AS DOUBLE), CAST('-Infinity' AS DOUBLE), 0.0, double('-0.0')))
 
 query
 SELECT shuffle(arr, 42) FROM test_shuffle_seed_double
 
 query
-SELECT shuffle(array(CAST('NaN' AS DOUBLE), CAST('Infinity' AS DOUBLE), CAST('-Infinity' AS DOUBLE), 0.0, -0.0), 8)
+SELECT shuffle(array(CAST('NaN' AS DOUBLE), CAST('Infinity' AS DOUBLE), CAST('-Infinity' AS DOUBLE), 0.0, double('-0.0')), 8)
 
 -- ===== DECIMAL arrays =====
 

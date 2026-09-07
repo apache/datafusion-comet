@@ -22,14 +22,30 @@
 -- MinSparkVersion: 4.0
 
 statement
-CREATE TABLE test_variant(id INT, v VARIANT) USING parquet
+CREATE TABLE test_variant(id INT, v VARIANT, tail STRING) USING parquet
 
 statement
 INSERT INTO test_variant VALUES
-  (1, parse_json('{"a": 1, "b": "hello"}')),
-  (2, parse_json('{"a": 2, "b": "world"}')),
-  (3, parse_json('null')),
-  (4, NULL)
+  (1, parse_json('{"a": 1, "b": "hello"}'), 'first'),
+  (2, parse_json('{"a": 2, "b": "world"}'), NULL),
+  (3, parse_json('null'), 'variant-null'),
+  (4, NULL, 'sql-null')
+
+-- A plain Parquet scan can remain native when its required schema prunes the
+-- Variant column completely, including both SQL NULL and Variant null values.
+query
+SELECT id FROM test_variant ORDER BY id
+
+-- A projected column after the pruned Variant must use its rebased native index.
+query
+SELECT tail FROM test_variant ORDER BY id
+
+query
+SELECT id, tail FROM test_variant WHERE tail IS NOT NULL ORDER BY id
+
+-- Carrying VariantType through schema serialization must not admit native Variant expressions.
+query expect_fallback(Native operators do not support schemas containing type VariantType)
+SELECT CAST(id AS VARIANT) FROM test_variant
 
 query expect_fallback(type VariantType)
 SELECT id, v FROM test_variant ORDER BY id
@@ -44,12 +60,85 @@ query expect_fallback(type VariantType)
 SELECT COUNT(*) FROM test_variant WHERE v IS NOT NULL
 
 statement
-CREATE TABLE test_variant_struct(id INT, s STRUCT<v: VARIANT>) USING parquet
+CREATE TABLE test_variant_struct(id INT, s STRUCT<safe: INT, v: VARIANT>, tail STRING)
+USING parquet
 
 statement
 INSERT INTO test_variant_struct VALUES
-  (1, named_struct('v', parse_json('{"x": 10}'))),
-  (2, named_struct('v', parse_json('{"x": 20}')))
+  (1, named_struct('safe', 10, 'v', parse_json('{"x": 10}')), 'first'),
+  (2, named_struct('safe', NULL, 'v', parse_json('{"x": 20}')), NULL),
+  (3, NULL, 'null-parent')
+
+query
+SELECT id FROM test_variant_struct ORDER BY id
+
+query
+SELECT tail FROM test_variant_struct ORDER BY id
+
+-- Projecting a supported sibling replaces the full struct with Spark's pruned nested schema.
+query
+SELECT s.safe FROM test_variant_struct ORDER BY id
 
 query expect_fallback(type VariantType)
 SELECT id, s FROM test_variant_struct ORDER BY id
+
+statement
+CREATE TABLE test_variant_collections(
+  id INT,
+  variants ARRAY<VARIANT>,
+  variants_by_key MAP<STRING, VARIANT>,
+  tail STRING)
+USING parquet
+
+statement
+INSERT INTO test_variant_collections VALUES
+  (1,
+   array(parse_json('{"x": 1}'), parse_json('null')),
+   map('first', parse_json('{"x": 2}')),
+   'first'),
+  (2,
+   array(CAST(NULL AS VARIANT)),
+   map('sql-null', CAST(NULL AS VARIANT)),
+   NULL),
+  (3, NULL, NULL, 'null-collections')
+
+-- Variant-bearing arrays and maps can be pruned as entire top-level fields.
+query
+SELECT id, tail FROM test_variant_collections ORDER BY id
+
+-- Exposing either collection still requires Spark to decode its nested Variant values.
+query expect_fallback(type VariantType)
+SELECT id, variants FROM test_variant_collections ORDER BY id
+
+query expect_fallback(type VariantType)
+SELECT id, variants_by_key FROM test_variant_collections ORDER BY id
+
+statement
+CREATE TABLE test_variant_partitioned(id INT, v VARIANT, tail STRING, p INT)
+USING parquet PARTITIONED BY (p)
+
+statement
+INSERT INTO test_variant_partitioned VALUES
+  (1, parse_json('{"a": 1}'), 'first', 10),
+  (2, NULL, 'second', 20)
+
+-- Partition columns are appended after the pruned data schema, so their offsets must be rebased.
+query
+SELECT tail, p FROM test_variant_partitioned ORDER BY id
+
+-- File-constant metadata follows the partition columns and needs the same rebased offsets.
+query
+SELECT tail, p, _metadata.file_name FROM test_variant_partitioned ORDER BY id
+
+statement
+CREATE TABLE test_plain_variant_shape(id INT, payload STRUCT<value: BINARY, metadata: BINARY>)
+USING parquet
+
+statement
+INSERT INTO test_plain_variant_shape VALUES
+  (1, named_struct('value', X'01', 'metadata', X'02')),
+  (2, NULL)
+
+-- An ordinary binary struct with Variant-like field names is not a logical Variant.
+query
+SELECT payload FROM test_plain_variant_shape ORDER BY id
