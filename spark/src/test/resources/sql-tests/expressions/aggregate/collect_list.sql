@@ -163,7 +163,7 @@ INSERT INTO cl_src_float VALUES
   (CAST('NaN' AS FLOAT), 'b'), (CAST('NaN' AS FLOAT), 'b'), (1.0, 'b'),
   (CAST('Infinity' AS FLOAT), 'c'), (CAST('-Infinity' AS FLOAT), 'c'),
   (CAST('Infinity' AS FLOAT), 'c'),
-  (CAST(0.0 AS FLOAT), 'd'), (CAST(-0.0 AS FLOAT), 'd'), (1.0, 'd'), (NULL, 'd')
+  (CAST(0.0 AS FLOAT), 'd'), (float('-0.0'), 'd'), (1.0, 'd'), (NULL, 'd')
 
 query
 SELECT grp, sort_array(collect_list(v)) FROM cl_src_float GROUP BY grp ORDER BY grp
@@ -181,7 +181,7 @@ INSERT INTO cl_src_double VALUES
   (CAST('NaN' AS DOUBLE), 'b'), (CAST('NaN' AS DOUBLE), 'b'), (1.0, 'b'),
   (CAST('Infinity' AS DOUBLE), 'c'), (CAST('-Infinity' AS DOUBLE), 'c'),
   (CAST('Infinity' AS DOUBLE), 'c'),
-  (0.0,  'd'), (-0.0,  'd'), (1.0, 'd'), (NULL, 'd')
+  (0.0,  'd'), (double('-0.0'),  'd'), (1.0, 'd'), (NULL, 'd')
 
 query
 SELECT grp, sort_array(collect_list(v)) FROM cl_src_double GROUP BY grp ORDER BY grp
@@ -247,20 +247,53 @@ query
 SELECT grp, sort_array(collect_list(v)) FROM cl_src_date GROUP BY grp ORDER BY grp
 
 -- ============================================================
--- Timestamp (with NULLs)
+-- Timestamp / Timestamp NTZ (with NULLs). Both are in
+-- QueryPlanSerde.supportedDataType, so both run through the
+-- native SparkCollectList accumulator.
 -- ============================================================
 
 statement
-CREATE TABLE cl_src_ts(v timestamp, grp string) USING parquet
+CREATE TABLE cl_src_ts(v timestamp, v_ntz timestamp_ntz, grp string) USING parquet
 
 statement
 INSERT INTO cl_src_ts VALUES
-  (TIMESTAMP '2024-01-01 00:00:00', 'a'), (TIMESTAMP '2024-06-15 12:30:00', 'a'),
-  (TIMESTAMP '2024-01-01 00:00:00', 'a'), (NULL, 'a'),
-  (TIMESTAMP '1970-01-01 00:00:00', 'b'), (NULL, 'b')
+  (TIMESTAMP '2024-01-01 00:00:00', TIMESTAMP_NTZ '2024-01-01 00:00:00', 'a'),
+  (TIMESTAMP '2024-06-15 12:30:00', TIMESTAMP_NTZ '2024-06-15 12:30:00', 'a'),
+  (TIMESTAMP '2024-01-01 00:00:00', TIMESTAMP_NTZ '2024-01-01 00:00:00', 'a'),
+  (NULL, NULL, 'a'),
+  (TIMESTAMP '1970-01-01 00:00:00', TIMESTAMP_NTZ '1970-01-01 00:00:00', 'b'),
+  (NULL, NULL, 'b')
 
 query
 SELECT grp, sort_array(collect_list(v)) FROM cl_src_ts GROUP BY grp ORDER BY grp
+
+query
+SELECT grp, sort_array(collect_list(v_ntz)) FROM cl_src_ts GROUP BY grp ORDER BY grp
+
+-- ============================================================
+-- ANSI intervals (with NULLs). Neither YearMonthIntervalType nor
+-- DayTimeIntervalType is in QueryPlanSerde.supportedDataType, so
+-- the scan rejects the column and the query falls back to Spark.
+-- ============================================================
+
+statement
+CREATE TABLE cl_src_interval(ym interval year to month, dt interval day to second, grp string)
+USING parquet
+
+statement
+INSERT INTO cl_src_interval VALUES
+  (INTERVAL '1-2' YEAR TO MONTH, INTERVAL '3 04:05:06' DAY TO SECOND, 'a'),
+  (INTERVAL '0-0' YEAR TO MONTH, INTERVAL '0 00:00:00' DAY TO SECOND, 'a'),
+  (INTERVAL '1-2' YEAR TO MONTH, INTERVAL '3 04:05:06' DAY TO SECOND, 'a'),
+  (NULL, NULL, 'a'),
+  (INTERVAL '-3-4' YEAR TO MONTH, INTERVAL '-5 06:07:08' DAY TO SECOND, 'b'),
+  (NULL, NULL, 'b')
+
+query expect_fallback(Unsupported ym of type YearMonthIntervalType)
+SELECT grp, sort_array(collect_list(ym)) FROM cl_src_interval GROUP BY grp ORDER BY grp
+
+query expect_fallback(Unsupported dt of type DayTimeIntervalType)
+SELECT grp, sort_array(collect_list(dt)) FROM cl_src_interval GROUP BY grp ORDER BY grp
 
 -- ============================================================
 -- Mixed with other aggregates
