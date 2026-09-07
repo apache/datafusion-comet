@@ -212,6 +212,84 @@ class CometCodegenSuite
     }
   }
 
+  private def withSequenceTable(f: => Unit): Unit = {
+    withTable("t") {
+      // `stp` carries a sign-correct step so `sequence(a, b, stp)` is legal on both rows:
+      // ascending (1, 5, 1) and descending (9, 2, -1). A single literal step would raise
+      // `Illegal sequence boundaries` on the mismatched row inside Spark's reference run.
+      sql("CREATE TABLE t (a INT, b INT, stp INT, d DATE) USING parquet")
+      sql("INSERT INTO t VALUES (1, 5, 1, DATE'2024-01-01'), (9, 2, -1, DATE'2024-03-01')")
+      withSQLConf(
+        CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true",
+        CometConf.COMET_EXPLAIN_CODEGEN_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_PROJECT_ENABLED.key -> "true",
+        CometConf.COMET_EXTENDED_EXPLAIN_FORMAT.key ->
+          CometConf.COMET_EXTENDED_EXPLAIN_FORMAT_VERBOSE)(f)
+    }
+  }
+
+  test("sequence with leaf integral args runs natively") {
+    // Integral sequence with column-reference/literal args lowers to the native spark_sequence
+    // kernel; no codegen-dispatch marker should appear. The three-argument form uses the `stp`
+    // column so both the ascending and descending rows have a sign-correct step (all args
+    // stay leaves, so the native path is exercised).
+    withSequenceTable {
+      val df = sql("SELECT sequence(a, b), sequence(a, b, stp) FROM t")
+      checkSparkAnswerAndOperator(df)
+      val explain =
+        new ExtendedExplainInfo().generateExtendedInfo(df.queryExecution.executedPlan)
+      assert(
+        !explain.contains("JVM codegen dispatcher"),
+        s"expected integral sequence with leaf args to run natively, got:\n$explain")
+    }
+  }
+
+  test("sequence with zero-arg UDF stop routes through the dispatcher") {
+    // A zero-argument Scala UDF has empty `children` but still fires on evaluation. The gate
+    // must reject it (rather than treating it as a safe leaf) so DataFusion does not call it
+    // over the whole batch on rows Spark's per-row null short-circuit would have skipped.
+    spark.udf.register("comet_seq_stopper", () => 10)
+    withSequenceTable {
+      val df = sql("SELECT sequence(a, comet_seq_stopper()) FROM t")
+      checkSparkAnswerAndOperator(df)
+      val explain =
+        new ExtendedExplainInfo().generateExtendedInfo(df.queryExecution.executedPlan)
+      assert(
+        explain.contains("JVM codegen dispatcher: sequence"),
+        s"expected zero-arg-UDF sequence to route through the dispatcher, got:\n$explain")
+    }
+  }
+
+  test("sequence with non-leaf integral args routes through the dispatcher") {
+    // A non-leaf argument (e.g. a `CASE WHEN` step) would be evaluated over the whole batch by
+    // DataFusion before the outer kernel runs, breaking Spark's per-row null short-circuit.
+    // `CometSequence` reports `Unsupported` for these shapes and hands them to the JVM codegen
+    // dispatcher.
+    withSequenceTable {
+      val df = sql("SELECT sequence(a, b, CASE WHEN a <= b THEN 2 ELSE -2 END) FROM t")
+      checkSparkAnswerAndOperator(df)
+      val explain =
+        new ExtendedExplainInfo().generateExtendedInfo(df.queryExecution.executedPlan)
+      assert(
+        explain.contains("JVM codegen dispatcher: sequence"),
+        s"expected composed-arg sequence to route through the dispatcher, got:\n$explain")
+    }
+  }
+
+  test("sequence with date element type routes through the dispatcher") {
+    // Date/timestamp sequences step through timezone/DST/legacy-calendar arithmetic
+    // (issue #5349), so `CometSequence` keeps them on the JVM codegen dispatcher.
+    withSequenceTable {
+      val df = sql("SELECT sequence(d, DATE'2024-06-01', INTERVAL 1 MONTH) FROM t")
+      checkSparkAnswerAndOperator(df)
+      val explain =
+        new ExtendedExplainInfo().generateExtendedInfo(df.queryExecution.executedPlan)
+      assert(
+        explain.contains("JVM codegen dispatcher: sequence"),
+        s"expected date sequence to route through the dispatcher, got:\n$explain")
+    }
+  }
+
   test("expression coverage stats split native from codegen-dispatch expressions") {
     // `abs` and `sqrt` lower to native DataFusion expressions; `hypot` and `nanvl` are
     // `CometCodegenDispatch` and so run Spark's own codegen inside the Comet pipeline. The

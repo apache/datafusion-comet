@@ -68,9 +68,11 @@ pub(crate) fn is_df_cast_from_decimal_spark_compatible(to_type: &DataType) -> bo
             | DataType::Int16
             | DataType::Int32
             | DataType::Int64
-            | DataType::Float32 // DataFusion divides i128 by 10^scale in f64, then narrows to
-            | DataType::Float64 // f32 if needed; empirically matches Spark's BigDecimal.doubleValue
-                                // / floatValue for all tested values
+            // Float32 / Float64 are intentionally absent: DataFusion computes
+            // `(unscaled as f64) / 10^scale`, which rounds twice (three times for f32, via the
+            // f64 intermediate) and can differ from Spark's correctly rounded
+            // BigDecimal.doubleValue() / floatValue() by one ulp once |unscaled| > 2^53.
+            // cast.rs routes Decimal128 sources to cast_decimal128_to_float64 / _float32.
             | DataType::Decimal128(_, _)
             | DataType::Decimal256(_, _)
             // DataFusion's Decimal128→Utf8 cast uses plain notation (toPlainString semantics),
@@ -879,6 +881,109 @@ pub(crate) fn spark_cast_decimal_to_boolean(array: &dyn Array) -> SparkResult<Ar
         }
     }
     Ok(Arc::new(result.finish()))
+}
+
+/// Powers of ten that are exactly representable as `f64` (`10^n = 2^n * 5^n` and `5^22 < 2^53`);
+/// the same table as Java's `BigDecimal.DOUBLE_10_POW`.
+const F64_EXACT_POW10: [f64; 23] = [
+    1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10, 1e11, 1e12, 1e13, 1e14, 1e15, 1e16,
+    1e17, 1e18, 1e19, 1e20, 1e21, 1e22,
+];
+
+/// Powers of ten that are exactly representable as `f32` (`5^10 < 2^24`); the same table as
+/// Java's `BigDecimal.FLOAT_10_POW`.
+const F32_EXACT_POW10: [f32; 11] = [1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10];
+
+/// Largest integer magnitude that converts to `f64` without rounding.
+const F64_EXACT_INT_LIMIT: u128 = 1 << 53;
+
+/// Largest integer magnitude that converts to `f32` without rounding.
+const F32_EXACT_INT_LIMIT: u128 = 1 << 24;
+
+/// Converts a Decimal128 value to the `f64` nearest to its exact decimal value (ties to even),
+/// matching Spark's `Decimal.toDouble`, i.e. `java.math.BigDecimal.doubleValue()`.
+///
+/// DataFusion's kernel computes `(unscaled as f64) / 10^scale`, which rounds the unscaled value
+/// first and the quotient second; once `|unscaled| > 2^53` (any `DECIMAL(38,18)` value of
+/// magnitude `>= 0.01`) the two roundings can land one ulp away from the correctly rounded
+/// result, e.g. `12345.6789` becomes `12345.678899999999`.
+pub(crate) fn decimal128_to_f64(unscaled: i128, scale: i8) -> f64 {
+    if scale == 0 {
+        return unscaled as f64;
+    }
+
+    // Fast path (also Java's): when the unscaled value and the power of ten are both exact
+    // doubles, a single IEEE division or multiplication is correctly rounded.
+    if unscaled.unsigned_abs() <= F64_EXACT_INT_LIMIT {
+        let m = unscaled as f64;
+        match scale {
+            1..=22 => return m / F64_EXACT_POW10[scale as usize],
+            -22..=-1 => return m * F64_EXACT_POW10[scale.unsigned_abs() as usize],
+            _ => {}
+        }
+    }
+    parse_exact_decimal(unscaled, scale)
+}
+
+/// Converts a Decimal128 value to the `f32` nearest to its exact decimal value (ties to even),
+/// matching Spark's `Decimal.toFloat`, i.e. `java.math.BigDecimal.floatValue()`.
+///
+/// The exact value is rounded straight to `f32`, never through an `f64` intermediate, because
+/// rounding twice is observable: `16777217.0000000001` is `16777218` as a float, but narrowing
+/// the nearest `f64` (`16777217.0`, a tie) gives `16777216`.
+pub(crate) fn decimal128_to_f32(unscaled: i128, scale: i8) -> f32 {
+    if scale == 0 {
+        return unscaled as f32;
+    }
+
+    if unscaled.unsigned_abs() <= F32_EXACT_INT_LIMIT {
+        let m = unscaled as f32;
+        match scale {
+            1..=10 => return m / F32_EXACT_POW10[scale as usize],
+            -10..=-1 => return m * F32_EXACT_POW10[scale.unsigned_abs() as usize],
+            _ => {}
+        }
+    }
+    parse_exact_decimal(unscaled, scale)
+}
+
+/// Rounds the exact value `unscaled * 10^-scale` once, by formatting it as `<unscaled>e<-scale>`
+/// into a stack buffer and parsing it with Rust's correctly rounded float parser. This mirrors
+/// Java's fallback of `Double.parseDouble(BigDecimal.toString())` /
+/// `Float.parseFloat(BigDecimal.toString())`, which likewise round the exact decimal directly to
+/// the target width; a value beyond the target's range parses to an infinity, as in Java.
+fn parse_exact_decimal<F>(unscaled: i128, scale: i8) -> F
+where
+    F: std::str::FromStr,
+    F::Err: std::fmt::Debug,
+{
+    use std::io::Write;
+    // Sign and up to 39 digits, 'e', and an exponent of up to 4 characters (`-127`).
+    let mut buf = [0u8; 48];
+    let mut cursor = &mut buf[..];
+    write!(cursor, "{unscaled}e{}", -i32::from(scale)).expect("buffer holds any i128 and i8");
+    let remaining = cursor.len();
+    let text = std::str::from_utf8(&buf[..buf.len() - remaining]).expect("ascii");
+    text.parse::<F>().expect("well-formed float literal")
+}
+
+/// Casts a Decimal128 array to Float64 with `BigDecimal.doubleValue()` semantics; see
+/// [`decimal128_to_f64`]. The conversion is total and cannot overflow, so every eval mode
+/// behaves alike and the input null buffer carries over unchanged.
+pub(crate) fn cast_decimal128_to_float64(array: &dyn Array, scale: i8) -> SparkResult<ArrayRef> {
+    let input = array.as_primitive::<Decimal128Type>();
+    let result: Float64Array = input.unary(|v| decimal128_to_f64(v, scale));
+    Ok(Arc::new(result))
+}
+
+/// Casts a Decimal128 array to Float32 with `BigDecimal.floatValue()` semantics; see
+/// [`decimal128_to_f32`]. Every Decimal128 magnitude (`< 2^127`) is below `f32::MAX`, so for
+/// the non-negative scales Spark produces the conversion cannot overflow and every eval mode
+/// behaves alike.
+pub(crate) fn cast_decimal128_to_float32(array: &dyn Array, scale: i8) -> SparkResult<ArrayRef> {
+    let input = array.as_primitive::<Decimal128Type>();
+    let result: Float32Array = input.unary(|v| decimal128_to_f32(v, scale));
+    Ok(Arc::new(result))
 }
 
 pub(crate) fn cast_float64_to_decimal128(
@@ -1833,6 +1938,242 @@ mod tests {
             assert_eq!(ts_array.timezone(), tz.as_ref().map(|s| s.as_ref()));
         }
     }
+
+    #[test]
+    fn test_decimal128_to_f64_matches_bigdecimal_double_value() {
+        // Expected values were checked against Java's
+        // `new BigDecimal(BigInteger(unscaled), scale).doubleValue()`.
+        let cases: Vec<(i128, i8, f64)> = vec![
+            // https://github.com/apache/datafusion-comet/issues/5670
+            (12345678900000000000000, 18, 12345.6789),
+            (123456789012000000000000, 18, 123456.789012),
+            (76543210000000000000000, 18, 76543.21),
+            (577312285583388355022308, 18, 577312.2855833884),
+            (-12345678900000000000000, 18, -12345.6789),
+            (-577312285583388355022308, 18, -577312.2855833884),
+            // zero and the smallest magnitudes
+            (0, 18, 0.0),
+            (0, 38, 0.0),
+            (1, 38, 1e-38),
+            (-1, 38, -1e-38),
+            // 38-digit extremes
+            (99999999999999999999999999999999999999, 0, 1e38),
+            (-99999999999999999999999999999999999999, 0, -1e38),
+            (99999999999999999999999999999999999999, 38, 1.0),
+            (-99999999999999999999999999999999999999, 38, -1.0),
+            (i128::MAX, 0, 2f64.powi(127)),
+            (i128::MIN, 0, -(2f64.powi(127))),
+            // 2^53 + 1 is halfway between two doubles and rounds to even
+            (9007199254740993, 0, 9007199254740992.0),
+            // exact-operand fast path
+            (1, 18, 1e-18),
+            (-15, 1, -1.5),
+            (123456789, 3, 123456.789),
+            (9007199254740992, 22, 9007199254740992e-22),
+            // negative scales, which arrow permits but Spark never produces
+            (123456789, -3, 123456789e3),
+            (9007199254740992, -22, 9007199254740992e22),
+            (9007199254740993, -22, 9007199254740993e22),
+        ];
+        for (unscaled, scale, expected) in cases {
+            let actual = decimal128_to_f64(unscaled, scale);
+            assert_eq!(
+                actual.to_bits(),
+                expected.to_bits(),
+                "{unscaled}e{}: got {actual:?}, expected {expected:?}",
+                -i32::from(scale)
+            );
+        }
+        // The double-rounding formula the kernel replaces gets the issue's example wrong.
+        assert_ne!((12345678900000000000000_i128 as f64) / 1e18, 12345.6789);
+    }
+
+    #[test]
+    fn test_decimal128_to_f32_matches_bigdecimal_float_value() {
+        // Expected values were checked against Java's
+        // `new BigDecimal(BigInteger(unscaled), scale).floatValue()`.
+        let cases: Vec<(i128, i8, f32)> = vec![
+            // https://github.com/apache/datafusion-comet/issues/5670: 16777217.0000000001 lies
+            // above the midpoint of the floats 16777216 and 16777218, but its nearest double
+            // (16777217.0) is exactly that midpoint and would narrow to 16777216.
+            (167772170000000001, 10, 16777218.0),
+            (-167772170000000001, 10, -16777218.0),
+            (12345678900000000000000, 18, 12345.679),
+            (76543210000000000000000, 18, 76543.21),
+            (-12345678900000000000000, 18, -12345.679),
+            // zero and the smallest magnitudes (1e-38 is subnormal in f32)
+            (0, 18, 0.0),
+            (0, 38, 0.0),
+            (1, 38, 1e-38),
+            (-1, 38, -1e-38),
+            // 38-digit extremes
+            (99999999999999999999999999999999999999, 0, 1e38),
+            (-99999999999999999999999999999999999999, 0, -1e38),
+            (99999999999999999999999999999999999999, 38, 1.0),
+            (-99999999999999999999999999999999999999, 38, -1.0),
+            (i128::MAX, 0, 2f32.powi(127)),
+            (i128::MIN, 0, -(2f32.powi(127))),
+            // 2^24 + 1 is halfway between two floats and rounds to even
+            (16777217, 0, 16777216.0),
+            // exact-operand fast path
+            (1, 10, 1e-10),
+            (-15, 1, -1.5),
+            (123456789, 3, 123456.79),
+            (16777216, 10, 16777216e-10),
+            // negative scales, which arrow permits but Spark never produces; beyond the f32
+            // range the result is an infinity, like Float.parseFloat
+            (123456789, -3, 1.2345679e11),
+            (16777216, -10, 16777216e10),
+            (1, -39, f32::INFINITY),
+            (-1, -39, f32::NEG_INFINITY),
+        ];
+        for (unscaled, scale, expected) in cases {
+            let actual = decimal128_to_f32(unscaled, scale);
+            assert_eq!(
+                actual.to_bits(),
+                expected.to_bits(),
+                "{unscaled}e{}: got {actual:?}, expected {expected:?}",
+                -i32::from(scale)
+            );
+        }
+        // Narrowing the (already correctly rounded) double gets the issue's example wrong.
+        assert_ne!(
+            decimal128_to_f64(167772170000000001, 10) as f32,
+            16777218.0_f32
+        );
+    }
+
+    #[test]
+    fn test_decimal128_to_float_fast_path_matches_exact_path() {
+        use rand::rngs::StdRng;
+        use rand::{RngExt, SeedableRng};
+        let mut rng = StdRng::seed_from_u64(5670);
+
+        let mut cases: Vec<(i128, i8)> = Vec::new();
+        // Magnitudes spread over the whole i128 range, so both the exact-operand fast paths
+        // (|unscaled| <= 2^24 for f32, <= 2^53 for f64) and the parse fallback are exercised.
+        for _ in 0..10_000 {
+            let bits = rng.random_range(0_u32..=127);
+            let magnitude = if bits == 0 {
+                0
+            } else {
+                rng.random::<u128>() >> (128 - bits)
+            };
+            let unscaled = if rng.random::<bool>() {
+                magnitude as i128
+            } else {
+                -(magnitude as i128)
+            };
+            cases.push((unscaled, rng.random_range(-30_i8..=38)));
+        }
+        // Values around the fast-path limits, where a wrong bound would show up.
+        for _ in 0..10_000 {
+            let limit = if rng.random::<bool>() {
+                1_i128 << 53
+            } else {
+                1 << 24
+            };
+            let unscaled = limit + rng.random_range(-1000_i128..=1000);
+            let unscaled = if rng.random::<bool>() {
+                unscaled
+            } else {
+                -unscaled
+            };
+            cases.push((unscaled, rng.random_range(-23_i8..=23)));
+        }
+        // Decimal-looking values with few digits, all on the fast paths.
+        for _ in 0..10_000 {
+            let unscaled = rng.random_range(-10_000_000_i128..=10_000_000);
+            cases.push((unscaled, rng.random_range(0_i8..=10)));
+        }
+
+        for (unscaled, scale) in cases {
+            // Rust's float parser rounds the exact decimal value once, like BigDecimal does.
+            let text = format!("{unscaled}e{}", -i32::from(scale));
+            let expected_f64: f64 = text.parse().unwrap();
+            let expected_f32: f32 = text.parse().unwrap();
+            let actual_f64 = decimal128_to_f64(unscaled, scale);
+            let actual_f32 = decimal128_to_f32(unscaled, scale);
+            assert_eq!(
+                actual_f64.to_bits(),
+                expected_f64.to_bits(),
+                "{text}: got {actual_f64:?}, expected {expected_f64:?}"
+            );
+            assert_eq!(
+                actual_f32.to_bits(),
+                expected_f32.to_bits(),
+                "{text}: got {actual_f32:?}, expected {expected_f32:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_cast_decimal128_to_float_arrays_keep_nulls_in_every_eval_mode() {
+        use crate::conversion_funcs::cast::cast_array;
+        use crate::SparkCastOptions;
+
+        let decimals_38_18: ArrayRef = Arc::new(
+            Decimal128Array::from(vec![
+                Some(12345678900000000000000_i128),
+                None,
+                Some(-76543210000000000000000),
+                Some(0),
+                Some(577312285583388355022308),
+                None,
+            ])
+            .with_precision_and_scale(38, 18)
+            .unwrap(),
+        );
+        let decimals_38_10: ArrayRef = Arc::new(
+            Decimal128Array::from(vec![Some(167772170000000001_i128), None, Some(-123456789)])
+                .with_precision_and_scale(38, 10)
+                .unwrap(),
+        );
+
+        for eval_mode in [EvalMode::Legacy, EvalMode::Ansi, EvalMode::Try] {
+            let options = SparkCastOptions::new(eval_mode, "UTC", false);
+
+            let doubles =
+                cast_array(Arc::clone(&decimals_38_18), &DataType::Float64, &options).unwrap();
+            let doubles = doubles.as_primitive::<Float64Type>();
+            assert_eq!(doubles.len(), 6);
+            assert_eq!(doubles.null_count(), 2);
+            assert_eq!(doubles.value(0), 12345.6789);
+            assert!(doubles.is_null(1));
+            assert_eq!(doubles.value(2), -76543.21);
+            assert_eq!(doubles.value(3).to_bits(), 0.0_f64.to_bits());
+            assert_eq!(doubles.value(4), 577312.2855833884);
+            assert!(doubles.is_null(5));
+
+            let floats =
+                cast_array(Arc::clone(&decimals_38_18), &DataType::Float32, &options).unwrap();
+            let floats = floats.as_primitive::<Float32Type>();
+            assert_eq!(floats.len(), 6);
+            assert_eq!(floats.null_count(), 2);
+            assert_eq!(floats.value(0), 12345.679_f32);
+            assert!(floats.is_null(1));
+            assert_eq!(floats.value(2), -76543.21_f32);
+            assert_eq!(floats.value(3).to_bits(), 0.0_f32.to_bits());
+            assert_eq!(floats.value(4), 577312.3_f32);
+            assert!(floats.is_null(5));
+
+            let floats =
+                cast_array(Arc::clone(&decimals_38_10), &DataType::Float32, &options).unwrap();
+            let floats = floats.as_primitive::<Float32Type>();
+            assert_eq!(floats.value(0), 16777218.0_f32);
+            assert!(floats.is_null(1));
+            assert_eq!(floats.value(2), -0.012345679_f32);
+
+            let doubles =
+                cast_array(Arc::clone(&decimals_38_10), &DataType::Float64, &options).unwrap();
+            let doubles = doubles.as_primitive::<Float64Type>();
+            // 16777217.0000000001 rounds to the double 16777217.0
+            assert_eq!(doubles.value(0), 16777217.0);
+            assert!(doubles.is_null(1));
+            assert_eq!(doubles.value(2), -0.0123456789);
+        }
+    }
+
     #[test]
     fn test_cast_float_to_decimal() {
         let a: ArrayRef = Arc::new(Float64Array::from(vec![

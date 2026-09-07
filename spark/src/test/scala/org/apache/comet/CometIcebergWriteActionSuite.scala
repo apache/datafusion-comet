@@ -32,8 +32,9 @@ import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.Row
 import org.apache.spark.sql.comet.{CometIcebergWriteExec, IcebergCommitExec, IcebergWriteExec}
 import org.apache.spark.sql.connector.catalog.InMemoryTableCatalog
-import org.apache.spark.sql.execution.SparkPlan
+import org.apache.spark.sql.execution.{ColumnarToRowTransition, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DoubleType, IntegerType, StringType, StructField, StructType}
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark41Plus}
@@ -696,6 +697,57 @@ class CometIcebergWriteActionSuite
     }
   }
 
+  // https://github.com/apache/datafusion-comet/issues/5689: the Iceberg CoW rewrite plan mixes a
+  // Spark-columnar `BatchScan` with row-based joins/filters underneath the write, so the write's
+  // subtree needs Spark to insert columnar-to-row transitions inside it. With AQE on those
+  // transitions are re-inserted when each stage materialises, which is why every other Iceberg
+  // suite in this file misses the problem; with AQE off the plan gets exactly one insertion pass
+  // and a missed transition fails the task with
+  // `ColumnarBatch cannot be cast to InternalRow`.
+  test("native acceleration: ReplaceData (CoW DELETE) with AQE disabled") {
+    assumeNativeAcceleration()
+    withIcebergCatalog { warehouseDir =>
+      createTable(
+        warehouseDir,
+        "native_cow_delete_no_aqe",
+        partitionSpec = "PARTITIONED BY (region)",
+        properties = Some("'write.delete.mode'='copy-on-write'"))
+      withSQLConf(CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.key -> "false") {
+        coalesceInsert(
+          "native_cow_delete_no_aqe",
+          Seq((1, "us-east", 10.0), (2, "us-west", 20.0), (3, "eu", 30.0), (4, "us-east", 40.0)))
+      }
+      // The IN-subquery is what puts a row-based join between the columnar CoW scan and the
+      // write, so the subtree genuinely needs a transition rather than being Comet-native
+      // end to end.
+      withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+        val snapshot = withNativeEnabled {
+          captureWrite("native_cow_delete_no_aqe") {
+            spark.sql("DELETE FROM cat.db.native_cow_delete_no_aqe WHERE id IN " +
+              "(SELECT col1 FROM VALUES (2) AS t(col1))")
+          }
+        }
+        assert(
+          snapshot.snapshotDelta == 1L,
+          s"expected 1 commit via native path, got ${snapshot.snapshotDelta}")
+        val nativeExecs = snapshot.plans.flatMap { p =>
+          collectWithSubqueries(p) { case e: CometIcebergWriteExec => e }
+        }
+        assert(
+          nativeExecs.nonEmpty,
+          "expected >= 1 CometIcebergWriteExec in captured plans, got 0. Plans:\n" +
+            snapshot.plans.mkString("\n--\n"))
+        // The transition Spark inserts below the write must have been stripped again, otherwise
+        // `doExecuteColumnar` has no columnar child to pull Arrow batches from.
+        assert(
+          nativeExecs.forall(_.child.supportsColumnar),
+          "the native write must sit directly on its columnar child, got " +
+            nativeExecs.map(_.child.nodeName).mkString(", "))
+      }
+      assertRows("native_cow_delete_no_aqe", Seq(1, 3, 4))
+    }
+  }
+
   test("native acceleration: ReplaceData (CoW UPDATE)") {
     assumeNativeAcceleration()
     withIcebergCatalog { warehouseDir =>
@@ -748,6 +800,73 @@ class CometIcebergWriteActionSuite
           |WHEN MATCHED THEN UPDATE SET t.amount = s.amount
           |WHEN NOT MATCHED THEN INSERT (id, region, amount) VALUES (s.id, s.region, s.amount)
           |""".stripMargin)
+      }
+    }
+  }
+
+  // The remaining two CoW shapes from issue #5689, with AQE off so the plan gets exactly one
+  // transition-insertion pass. `captureWrite` runs `assertColumnarContract` on every captured
+  // plan, so these pin the same invariant as the DELETE case over the UPDATE and MERGE rewrite
+  // shapes, which put different operators between the columnar CoW scan and the write.
+  test("native acceleration: ReplaceData (CoW UPDATE) with AQE disabled") {
+    assumeNativeAcceleration()
+    withIcebergCatalog { warehouseDir =>
+      createTable(
+        warehouseDir,
+        "native_cow_update_no_aqe",
+        partitionSpec = "PARTITIONED BY (region)",
+        properties = Some("'write.update.mode'='copy-on-write'"))
+      withSQLConf(CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.key -> "false") {
+        coalesceInsert(
+          "native_cow_update_no_aqe",
+          Seq((1, "us-east", 10.0), (2, "us-west", 20.0), (3, "eu", 30.0)))
+      }
+      // As in the DELETE case, the IN-subquery is what puts a row-based join between the
+      // Spark-columnar CoW scan and the write.
+      withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+        assertNativeWriteEngages("native_cow_update_no_aqe", Seq(1, 2, 3)) {
+          spark.sql(
+            "UPDATE cat.db.native_cow_update_no_aqe SET amount = amount * 2 " +
+              "WHERE id IN (SELECT col1 FROM VALUES (2) AS t(col1))")
+        }
+      }
+      val r = spark
+        .sql("SELECT amount FROM cat.db.native_cow_update_no_aqe WHERE id = 2")
+        .collect()
+      assert(r.length == 1 && r(0).getDouble(0) == 40.0, s"got ${r.toSeq}")
+    }
+  }
+
+  test("native acceleration: ReplaceData (CoW MERGE) with AQE disabled") {
+    // Unlike the unpartitioned MERGE above, this one *does* engage natively: partitioning the
+    // table puts a `CometColumnarExchange` (REBALANCE_PARTITIONS_BY_COL) between the JVM
+    // `MergeRowsExec` and the write, so the write's own child is Comet-native and
+    // `requiresNativeChildren` is satisfied even though `MergeRowsExec` itself is not.
+    //
+    // That makes this the strongest of the three CoW shapes for issue #5689: the subtree below
+    // the write mixes a Spark-columnar `BatchScan`, a row-based `MergeRowsExec` and Comet
+    // operators, so it needs transitions inserted in three different places.
+    assumeNativeAcceleration()
+    withIcebergCatalog { warehouseDir =>
+      createTable(
+        warehouseDir,
+        "native_cow_merge_no_aqe",
+        partitionSpec = "PARTITIONED BY (region)",
+        properties = Some("'write.merge.mode'='copy-on-write'"))
+      withSQLConf(CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.key -> "false") {
+        coalesceInsert("native_cow_merge_no_aqe", Seq((1, "us-east", 10.0), (2, "us-west", 20.0)))
+      }
+      withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+        assertNativeWriteEngages("native_cow_merge_no_aqe", Seq(1, 2, 3)) {
+          spark.sql("""
+            |MERGE INTO cat.db.native_cow_merge_no_aqe t
+            |USING (SELECT 2 AS id, 'us-west' AS region, 200.0 AS amount UNION ALL
+            |       SELECT 3 AS id, 'eu' AS region, 30.0 AS amount) s
+            |ON t.id = s.id
+            |WHEN MATCHED THEN UPDATE SET t.amount = s.amount
+            |WHEN NOT MATCHED THEN INSERT (id, region, amount) VALUES (s.id, s.region, s.amount)
+            |""".stripMargin)
+        }
       }
     }
   }
@@ -1633,6 +1752,10 @@ class CometIcebergWriteActionSuite
   private def captureWrite(tableName: String)(action: => Unit): WriteSnapshot = {
     val before = countSnapshots(tableName)
     val plans = capturePlans(spark)(action)
+    // Every write in this suite gets the columnar contract checked, not just the ones written to
+    // exercise it: a Comet rewrite that hides part of a subtree from Spark's transition-insertion
+    // pass is a whole class of bug (issue #5689) and the check is free once the plans are here.
+    plans.foreach(assertColumnarContract)
     WriteSnapshot(countSnapshots(tableName) - before, plans)
   }
 
@@ -1686,6 +1809,31 @@ class CometIcebergWriteActionSuite
   /** Native acceleration shared assumption -- currently just the Iceberg-on-classpath check. */
   private def assumeNativeAcceleration(): Unit = {
     assume(icebergAvailable, "Iceberg not available in classpath")
+  }
+
+  /**
+   * Every row-consuming operator must receive row-based input. Spark guarantees that by inserting
+   * `ColumnarToRow` transitions in `ApplyColumnarRulesAndInsertTransitions`; an operator that
+   * Comet rewrote in a way that skips the insertion pass shows up here as a row-based node with a
+   * columnar-only child, and would fail at runtime with a `ColumnarBatch cannot be cast to
+   * InternalRow` `ClassCastException` rather than at planning time.
+   *
+   * `CometIcebergWriteExec` is the one legitimate exception: it is row-based on the outside but
+   * pulls Arrow batches from its Comet-native child over FFI (see the class docstring), so the
+   * transition below it is deliberately stripped again by `EliminateRedundantTransitions`.
+   */
+  private def assertColumnarContract(plan: SparkPlan): Unit = {
+    val violations = collectWithSubqueries(plan) {
+      case p
+          if !p.supportsColumnar && !p.isInstanceOf[ColumnarToRowTransition] &&
+            !p.isInstanceOf[CometIcebergWriteExec] &&
+            p.children.exists(c => c.supportsColumnar && !c.supportsRowBased) =>
+        p
+    }
+    assert(
+      violations.isEmpty,
+      "row-based operators consuming columnar-only children (missing ColumnarToRow): " +
+        s"${violations.map(_.nodeName).mkString(", ")}. Plan:\n$plan")
   }
 
   /**

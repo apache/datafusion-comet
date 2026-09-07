@@ -24,7 +24,7 @@ import java.lang.reflect.{InvocationHandler, Method, Proxy}
 import java.nio.{ByteBuffer, ByteOrder}
 import java.nio.channels.Channels
 import java.nio.charset.StandardCharsets
-import java.nio.file.Files
+import java.nio.file.{Files, Path}
 import java.util.{LinkedHashSet, Set => JSet}
 import java.util.concurrent.{CountDownLatch, TimeoutException, TimeUnit}
 import java.util.concurrent.atomic.{AtomicInteger, AtomicReference}
@@ -81,11 +81,15 @@ class CometCelebornShuffleReaderSuite extends CometTestBase {
       extends ShuffleManager {
     var readRange: Option[(Int, Int, Int, Int)] = None
     var unregistered: Option[Int] = None
+    var fileToRemove: Option[Path] = None
+    var stopped = false
 
     override def registerShuffle[K, V, C](
         shuffleId: Int,
         dependency: ShuffleDependency[K, V, C]): ShuffleHandle =
-      throw new UnsupportedOperationException("This fixture only reads existing native shuffles")
+      new CometNativeShuffleHandle[K, V](
+        shuffleId,
+        dependency.asInstanceOf[ShuffleDependency[K, V, V]])
 
     override def getWriter[K, V](
         handle: ShuffleHandle,
@@ -110,10 +114,11 @@ class CometCelebornShuffleReaderSuite extends CometTestBase {
 
     override def unregisterShuffle(shuffleId: Int): Boolean = {
       unregistered = Some(shuffleId)
+      fileToRemove.foreach(Files.deleteIfExists(_))
       true
     }
 
-    override def stop(): Unit = ()
+    override def stop(): Unit = stopped = true
   }
 
   private final class RecordingReaderApi extends CelebornRawPartitionReader.Api {
@@ -169,13 +174,17 @@ class CometCelebornShuffleReaderSuite extends CometTestBase {
       context.taskMetrics().createTempShuffleReadMetrics(),
       retries)
 
-  private def simpleDependency(partitions: Int = 3, attributes: Seq[Attribute] = Seq.empty)
+  private def simpleDependency(
+      partitions: Int = 3,
+      attributes: Seq[Attribute] = Seq.empty,
+      useLocalShuffle: Boolean = false)
       : CometShuffleDependency[Int, ColumnarBatch, ColumnarBatch] =
     new CometShuffleDependency[Int, ColumnarBatch, ColumnarBatch](
       spark.sparkContext.emptyRDD[(Int, ColumnarBatch)],
       new HashPartitioner(partitions),
       decodeTime = SQLMetrics.createMetric(spark.sparkContext, "Celeborn decode time"),
-      outputAttributes = attributes)
+      outputAttributes = attributes,
+      useLocalShuffle = useLocalShuffle)
 
   private def ownedClients(manager: CometCelebornShuffleManager)
       : java.util.concurrent.ConcurrentHashMap[AnyRef, java.lang.Boolean] = {
@@ -296,6 +305,47 @@ class CometCelebornShuffleReaderSuite extends CometTestBase {
     assert(remote.readAsRawStream().readAllBytes().toSeq == frameBytes(9).toSeq)
     assert(client.updateFileGroupCalls == 1)
     context.markTaskCompleted(None)
+  }
+
+  test("local fallback shutdown preserves files until explicit shuffle unregister") {
+    Seq(false, true).foreach { unregister =>
+      val context = TaskContext.empty()
+      val dependency = simpleDependency(useLocalShuffle = true)
+      val backend = new RecordingReaderBackend(new RecordingCelebornRawClient)
+      val local = new RecordingReaderBackend(new RecordingCelebornRawClient)
+      val file = Files.createTempFile("comet-local-fallback", ".data")
+      local.fileToRemove = Some(file)
+      val manager = new CometCelebornShuffleManager(
+        new SparkConf(false).set("spark.shuffle.service.enabled", "true"),
+        false,
+        (_, _) => backend,
+        localManagerFactory = _ => local)
+      val handle = manager.registerShuffle(17, dependency)
+      assert(handle.isInstanceOf[CometNativeShuffleHandle[_, _]])
+      try {
+        manager.getReader[Int, ColumnarBatch](
+          handle,
+          0,
+          1,
+          context,
+          context.taskMetrics.createTempShuffleReadMetrics())
+        assert(local.readRange.contains((0, Int.MaxValue, 0, 1)))
+        assert(backend.readRange.isEmpty)
+        if (unregister) {
+          assert(manager.unregisterShuffle(17))
+          assert(local.unregistered.contains(17))
+          assert(backend.unregistered.isEmpty)
+        }
+        manager.stop()
+        assert(local.stopped)
+        assert(backend.stopped)
+        assert(Files.exists(file) == !unregister)
+        if (!unregister) assert(local.unregistered.isEmpty)
+      } finally {
+        Files.deleteIfExists(file)
+        context.markTaskCompleted(None)
+      }
+    }
   }
 
   test("the manager routes native Celeborn handles through its reflected raw reader") {
@@ -1340,7 +1390,9 @@ class CometCelebornShuffleReaderSuite extends CometTestBase {
       val (rows, failure, reports) =
         readRemoteFrame(mapFrame(nullableKeys = true), attributes, raw)
       assert(rows.isEmpty)
-      assert(failure.exists(_.toLowerCase(java.util.Locale.ROOT).contains("type mismatch")))
+      assert(
+        failure.exists(
+          _.toLowerCase(java.util.Locale.ROOT).contains("map key field must not be nullable")))
       assert(reports == 1)
     }
 

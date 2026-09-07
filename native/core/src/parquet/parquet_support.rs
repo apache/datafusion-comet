@@ -49,6 +49,7 @@ use std::{fmt::Debug, hash::Hash, sync::Arc};
 use url::Url;
 
 use super::objectstore;
+use super::objectstore::s3_blob_fs_support::normalize_object_store_url;
 
 // This file originates from cast.rs. While developing native scan support and implementing
 // SparkSchemaAdapter we observed that Spark's type conversion logic on Parquet reads does not
@@ -469,14 +470,21 @@ fn value_field(entries_field: &FieldRef) -> Option<FieldRef> {
     }
 }
 
+/// True if `scheme` appears in a Comet comma-separated scheme-list config, compared trimmed and
+/// case-insensitively. Shared by every such config (`fs.comet.libhdfs.schemes`,
+/// `fs.comet.s3Compliant.schemes`) so native parses them exactly like the JVM's
+/// `NativeConfig.parseSchemeSet`, which feeds the planner's fallback gate.
+pub(crate) fn scheme_in_list(list: &str, scheme: &str) -> bool {
+    list.split(',')
+        .any(|s| s.trim().eq_ignore_ascii_case(scheme))
+}
+
 pub fn is_hdfs_scheme(url: &Url, object_store_configs: &HashMap<String, String>) -> bool {
     const COMET_LIBHDFS_SCHEMES_KEY: &str = "fs.comet.libhdfs.schemes";
     let scheme = url.scheme();
-    if let Some(libhdfs_schemes) = object_store_configs.get(COMET_LIBHDFS_SCHEMES_KEY) {
-        use itertools::Itertools;
-        libhdfs_schemes.split(",").contains(scheme)
-    } else {
-        scheme == "hdfs"
+    match object_store_configs.get(COMET_LIBHDFS_SCHEMES_KEY) {
+        Some(libhdfs_schemes) => scheme_in_list(libhdfs_schemes, scheme),
+        None => scheme == "hdfs",
     }
 }
 
@@ -598,16 +606,9 @@ pub(crate) fn prepare_object_store_with_configs(
     url: String,
     object_store_configs: &HashMap<String, String>,
 ) -> Result<(ObjectStoreUrl, Path), ExecutionError> {
-    let mut url = Url::parse(url.as_str())
-        .map_err(|e| ExecutionError::GeneralError(format!("Error parsing URL {url}: {e}")))?;
+    let url = normalize_object_store_url(url.as_str(), object_store_configs)?;
     let is_hdfs_scheme = is_hdfs_scheme(&url, object_store_configs);
-    let mut scheme = url.scheme();
-    if !is_hdfs_scheme && scheme == "s3a" {
-        scheme = "s3";
-        url.set_scheme("s3").map_err(|_| {
-            ExecutionError::GeneralError("Could not convert scheme from s3a to s3".to_string())
-        })?;
-    }
+    let scheme = url.scheme();
     let url_key = format!(
         "{}://{}",
         scheme,
@@ -794,5 +795,56 @@ mod tests {
         assert_eq!(converted_child.data_type(), &micros_type);
         assert!(converted_child.is_null(0), "overflow must become NULL");
         assert!(converted_child.is_null(1));
+    }
+
+    #[cfg(not(feature = "hdfs-opendal"))]
+    #[test]
+    #[cfg_attr(miri, ignore)] // AWS credential providers and object_store call foreign functions
+    fn test_prepare_object_store_rewrites_blob_alias_to_s3() {
+        // `fs.comet.s3Compliant.schemes` opts `blob` in, so `prepare_object_store_with_configs`
+        // must rewrite the alias to `s3://`. Otherwise `ObjectStoreScheme::parse` rejects the URL
+        // and the native scan fails at runtime (`Unsupported filesystem schemes: blob`). Two forms
+        // must both land on `s3://bucket/key`: the canonical `blob://bucket/key`, and the empty-
+        // authority `blob:///bucket/key` (host=None), whose first path segment is promoted into the
+        // host because object_store 0.13 needs a `Some(host)` (a naive `s3:///bucket/key` fails).
+        use crate::parquet::parquet_support::prepare_object_store_with_configs;
+        let mut configs: HashMap<String, String> = HashMap::new();
+        configs.insert(
+            "fs.comet.s3Compliant.schemes".to_string(),
+            "blob".to_string(),
+        );
+        configs.insert(
+            "fs.s3a.aws.credentials.provider".to_string(),
+            "org.apache.hadoop.fs.s3a.AnonymousAWSCredentialsProvider".to_string(),
+        );
+        configs.insert(
+            "fs.s3a.endpoint.region".to_string(),
+            "us-east-1".to_string(),
+        );
+
+        for (input, expected_bucket, expected_path) in [
+            (
+                "blob://test_bucket/comet/spark-warehouse/part-00000.snappy.parquet",
+                "s3://test_bucket",
+                "/comet/spark-warehouse/part-00000.snappy.parquet",
+            ),
+            (
+                "blob:///mybucket/warehouse/data/part-0.snappy.parquet",
+                "s3://mybucket",
+                "warehouse/data/part-0.snappy.parquet",
+            ),
+        ] {
+            let (object_store_url, path) = prepare_object_store_with_configs(
+                Arc::new(RuntimeEnv::default()),
+                input.to_string(),
+                &configs,
+            )
+            .unwrap_or_else(|e| panic!("{input} should normalize to s3://: {e}"));
+            assert_eq!(
+                object_store_url,
+                ObjectStoreUrl::parse(expected_bucket).unwrap()
+            );
+            assert_eq!(path, Path::from(expected_path));
+        }
     }
 }

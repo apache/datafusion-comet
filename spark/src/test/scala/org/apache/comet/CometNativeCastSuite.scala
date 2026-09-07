@@ -912,6 +912,7 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           BigDecimal("1.500000000000000000"),
           BigDecimal("123456789.123456789"))),
       DataTypes.FloatType)
+    castTest(generateDecimalsWithLargeUnscaledValues(), DataTypes.FloatType)
   }
 
   test("cast DecimalType(38,18) to DoubleType") {
@@ -925,6 +926,7 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           BigDecimal("1.500000000000000000"),
           BigDecimal("123456789.123456789"))),
       DataTypes.DoubleType)
+    castTest(generateDecimalsWithLargeUnscaledValues(), DataTypes.DoubleType)
   }
 
   test("cast DecimalType(38,18) to BooleanType") {
@@ -942,6 +944,14 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("cast DecimalType(38,18) to StringType") {
     castTest(generateDecimalsPrecision38Scale18(), DataTypes.StringType)
+  }
+
+  test("cast DecimalType(38,10) to FloatType") {
+    castTest(generateDecimalsPrecision38Scale10(), DataTypes.FloatType)
+  }
+
+  test("cast DecimalType(38,10) to DoubleType") {
+    castTest(generateDecimalsPrecision38Scale10(), DataTypes.DoubleType)
   }
 
   test("cast DecimalType with negative scale to StringType") {
@@ -1963,13 +1973,7 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       FloatType,
       DoubleType,
       DecimalType(10, 2),
-      // DecimalType(38, 18) is excluded here: random data exposes a ~1 ULP difference between
-      // DataFusion's (i128 as f64) / 10^scale path and Spark's BigDecimal.doubleValue() for
-      // float/double casts; and extreme boundary values that would avoid the ULP issue overflow
-      // byte/short/int in ANSI mode, causing non-deterministic exception-message differences
-      // between Spark's row-at-a-time and Comet's vectorized execution. The individual scalar
-      // tests (cast DecimalType(38,18) to FloatType / DoubleType / BooleanType / etc.) already
-      // cover this type fully.
+      DecimalType(38, 18),
       DateType,
       TimestampType,
       DataTypes.TimestampNTZType,
@@ -2091,8 +2095,7 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       FloatType,
       DoubleType,
       DecimalType(10, 2),
-      // DecimalType(38, 18) is excluded for the same reason as the one-dimensional array
-      // matrix: decimal-to-float/double casts can differ by ~1 ULP from Spark.
+      DecimalType(38, 18),
       DateType,
       TimestampType,
       BinaryType)
@@ -2407,6 +2410,38 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   private def generateDecimalsPrecision38Scale18(values: Seq[BigDecimal]): DataFrame = {
     withNulls(values).toDF("a")
+  }
+
+  // https://github.com/apache/datafusion-comet/issues/5670: with 18 fractional digits, every
+  // value of magnitude >= 0.01 has an unscaled representation above 2^53, so rounding the
+  // unscaled value to a double before dividing by 10^18 lands one ulp away from Spark's
+  // BigDecimal.doubleValue() / floatValue() for ordinary values such as these.
+  private def generateDecimalsWithLargeUnscaledValues(): DataFrame = {
+    generateDecimalsPrecision38Scale18(
+      Seq(
+        BigDecimal("12345.6789"),
+        BigDecimal("-12345.6789"),
+        BigDecimal("123456.789012"),
+        BigDecimal("76543.21"),
+        BigDecimal("-76543.21"),
+        BigDecimal("577312.285583388355022308")))
+  }
+
+  private def generateDecimalsPrecision38Scale10(): DataFrame = {
+    val values = Seq(
+      // https://github.com/apache/datafusion-comet/issues/5670: just above the midpoint of the
+      // floats 16777216 and 16777218. Its nearest double (16777217.0) is exactly that midpoint
+      // and narrows to 16777216, whereas BigDecimal.floatValue() rounds once, to 16777218.
+      BigDecimal("16777217.0000000001"),
+      BigDecimal("-16777217.0000000001"),
+      BigDecimal("16777216.9999999999"),
+      BigDecimal("12345.6789"),
+      BigDecimal("-12345.6789"),
+      // unscaled value above 2^53
+      BigDecimal("1234567.8901234567"),
+      BigDecimal("0.0000000001"),
+      BigDecimal("0"))
+    withNulls(values).toDF("b").withColumn("a", col("b").cast(DecimalType(38, 10))).drop("b")
   }
 
   private def generateDateLiterals(): Seq[String] = {
