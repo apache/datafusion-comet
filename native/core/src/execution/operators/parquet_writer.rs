@@ -220,10 +220,14 @@ impl ParquetWriter {
 pub struct ParquetWriterExec {
     /// Input execution plan
     input: Arc<dyn ExecutionPlan>,
-    /// Output file path (final destination)
+    /// Where this task writes. When `work_dir` is set (the Spark 3.x `CometNativeWriteExec`
+    /// path) this is the write's output directory and is unused; the file name is derived from
+    /// `work_dir`. Otherwise (Spark 4.0+, `CometWriteFilesExec`) it is the exact path of the file
+    /// to write, chosen by the JVM commit protocol and used verbatim - this operator then never
+    /// derives file names of its own.
     output_path: String,
-    /// Working directory for temporary files (used by FileCommitProtocol)
-    work_dir: String,
+    /// Working directory for temporary files (used by FileCommitProtocol). Spark 3.x only.
+    work_dir: Option<String>,
     /// Job ID for tracking this write operation
     job_id: Option<String>,
     /// Task attempt ID for this specific task
@@ -250,7 +254,7 @@ impl ParquetWriterExec {
     pub fn try_new(
         input: Arc<dyn ExecutionPlan>,
         output_path: String,
-        work_dir: String,
+        work_dir: Option<String>,
         job_id: Option<String>,
         task_attempt_id: Option<i32>,
         compression: ParquetCompression,
@@ -510,15 +514,18 @@ impl ExecutionPlan for ParquetWriterExec {
             Arc::new(Schema::new(fields))
         });
 
-        // Generate part file name for this partition
-        // If using FileCommitProtocol (work_dir is set), include task_attempt_id in the filename
-        let part_file = if let Some(attempt_id) = task_attempt_id {
-            format!(
-                "{}/part-{:05}-{:05}.parquet",
-                work_dir, self.partition_id, attempt_id
-            )
-        } else {
-            format!("{}/part-{:05}.parquet", work_dir, self.partition_id)
+        // Spark 4.0+ hands over the exact file to write, chosen by the JVM commit protocol.
+        // Spark 3.x hands over a working directory instead and expects the writer to name the
+        // file; that branch goes away with Spark 3.x support.
+        let part_file = match &work_dir {
+            None => self.output_path.clone(),
+            Some(work_dir) => match task_attempt_id {
+                Some(attempt_id) => format!(
+                    "{}/part-{:05}-{:05}.parquet",
+                    work_dir, self.partition_id, attempt_id
+                ),
+                None => format!("{}/part-{:05}.parquet", work_dir, self.partition_id),
+            },
         };
 
         // Configure writer properties
@@ -647,6 +654,56 @@ mod tests {
         );
     }
 
+    /// Spark 4.0+ hands over the exact file to write rather than a working directory. The writer
+    /// must use that path verbatim - Spark's commit protocol owns naming and staging, and
+    /// committers that track individual files depend on the name it chose.
+    #[tokio::test]
+    async fn test_parquet_writer_uses_output_path_verbatim_without_work_dir() -> Result<()> {
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, true)]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+        )?;
+
+        let memory_source = MemorySourceConfig::try_new(&[vec![batch]], Arc::clone(&schema), None)?;
+        let input = Arc::new(DataSourceExec::new(Arc::new(memory_source)));
+        let temp_dir = tempfile::tempdir()?;
+        // A name the writer could never have derived itself, matching Spark's convention.
+        let file_name = "part-00007-11111111-2222-3333-4444-555555555555-c000.parquet";
+        let output_path = format!("file://{}/{}", temp_dir.path().display(), file_name);
+
+        let writer = ParquetWriterExec::try_new(
+            input,
+            output_path,
+            None, // work_dir: Spark 4.0+ path
+            None,
+            None,
+            ParquetCompression::None,
+            // A non-zero partition id must not leak into the file name.
+            3,
+            vec!["id".to_string()],
+            None,
+            HashMap::new(),
+        )?;
+
+        let mut stream = writer.execute(0, SessionContext::new().task_ctx())?;
+        while stream.try_next().await?.is_some() {}
+
+        let written = temp_dir.path().join(file_name);
+        assert!(
+            written.exists(),
+            "expected the writer to use the given path verbatim, found: {:?}",
+            std::fs::read_dir(temp_dir.path())?
+                .filter_map(|e| e.ok().map(|e| e.file_name()))
+                .collect::<Vec<_>>()
+        );
+
+        let reader = SerializedFileReader::new(File::open(written)?)?;
+        assert_eq!(reader.metadata().file_metadata().num_rows(), 3);
+
+        Ok(())
+    }
+
     #[tokio::test]
     async fn test_parquet_writer_preserves_catalyst_schema_in_footer() -> Result<()> {
         let values = ListArray::from_iter_primitive::<Int32Type, _, _>([
@@ -689,7 +746,7 @@ mod tests {
         let writer = ParquetWriterExec::try_new(
             input,
             work_dir.clone(),
-            work_dir,
+            Some(work_dir),
             None,
             None,
             ParquetCompression::None,
@@ -758,7 +815,7 @@ mod tests {
         let writer = ParquetWriterExec::try_new(
             input,
             work_dir.clone(),
-            work_dir,
+            Some(work_dir),
             None,
             None,
             ParquetCompression::None,
@@ -1018,7 +1075,7 @@ mod tests {
         let parquet_writer = ParquetWriterExec::try_new(
             memory_exec,
             output_path,
-            work_dir,
+            Some(work_dir),
             None,      // job_id
             Some(123), // task_attempt_id
             ParquetCompression::None,

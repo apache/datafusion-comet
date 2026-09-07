@@ -36,7 +36,6 @@ import org.apache.spark.sql.comet.execution.shuffle.CometNativeShuffle
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
-import org.apache.spark.sql.execution.command.DataWritingCommandExec
 import org.apache.spark.sql.execution.exchange.ShuffleExchangeLike
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.internal.SQLConf
@@ -44,7 +43,7 @@ import org.apache.spark.sql.types.{IntegerType, StructType}
 import org.apache.spark.unsafe.Platform
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
+import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, isSpark41Plus}
 import org.apache.comet.serde.OperatorOuterClass
 
 class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
@@ -815,8 +814,13 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           withSQLConf(
             CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
             CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.getOperatorAllowIncompatConfigKey(
-              classOf[DataWritingCommandExec]) -> "true",
+            // The native write opt-in moved from DataWritingCommandExec to WriteFilesExec on
+            // Spark 4.0+, where Comet replaces only the per-task write. See CometWriteFiles.
+            (if (isSpark40Plus) {
+               CometConf.COMET_OPERATOR_WRITE_FILES_ALLOW_INCOMPAT.key
+             } else {
+               CometConf.COMET_OPERATOR_DATA_WRITING_COMMAND_ALLOW_INCOMPAT.key
+             }) -> "true",
             SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Halifax") {
             spark.sparkContext.setJobGroup(jobGroupId, "native parquet write output metrics")
             try {
