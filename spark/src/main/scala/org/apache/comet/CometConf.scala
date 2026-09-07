@@ -1012,7 +1012,7 @@ object CometConf extends ShimCometConf {
    * itself - otherwise an old key would read `true` from the entry while the planner saw `false`.
    */
   private val operatorIncompatAlternatives =
-    scala.collection.mutable.Map.empty[String, Seq[String]]
+    scala.collection.mutable.Map.empty[String, String]
 
   /** Spark 3.x only: native writes replace the whole `DataWritingCommandExec` there. */
   val COMET_OPERATOR_DATA_WRITING_COMMAND_ALLOW_INCOMPAT: ConfigEntry[Boolean] =
@@ -1026,7 +1026,7 @@ object CometConf extends ShimCometConf {
   val COMET_OPERATOR_WRITE_FILES_ALLOW_INCOMPAT: ConfigEntry[Boolean] =
     createOperatorIncompatConfig(
       "WriteFilesExec",
-      Seq(getOperatorAllowIncompatConfigKey("DataWritingCommandExec")))
+      Some(getOperatorAllowIncompatConfigKey("DataWritingCommandExec")))
 
   /** Create a config to enable a specific operator */
   private def createExecEnabledConfig(
@@ -1053,17 +1053,17 @@ object CometConf extends ShimCometConf {
 
   private def createOperatorIncompatConfig(
       name: String,
-      alternatives: Seq[String] = Nil): ConfigEntry[Boolean] = {
+      alternative: Option[String] = None): ConfigEntry[Boolean] = {
     val configKey = getOperatorAllowIncompatConfigKey(name)
     val envVar = configKeyToEnvVar(configKey)
-    // ConfigBuilder mutates in place, so the result of withAlternative is `builder` itself.
     val builder = conf(configKey)
       .category(CATEGORY_EXEC)
       .doc(s"Whether to allow incompatibility for operator: $name. " +
         s"False by default. Can be overridden with $envVar env variable")
-    if (alternatives.nonEmpty) {
-      operatorIncompatAlternatives.put(name, alternatives)
-      builder.withAlternative(alternatives.head, alternatives.tail: _*)
+    alternative.foreach { alt =>
+      operatorIncompatAlternatives.put(name, alt)
+      // ConfigBuilder mutates in place, so the result of withAlternative is `builder` itself.
+      builder.withAlternative(alt)
     }
     builder.booleanConf.createWithEnvVarOrDefault(envVar, false)
   }
@@ -1092,7 +1092,7 @@ object CometConf extends ShimCometConf {
     val value = CometConfDeprecations.readWithAlternatives(
       conf,
       getOperatorAllowIncompatConfigKey(name),
-      operatorIncompatAlternatives.getOrElse(name, Nil))
+      operatorIncompatAlternatives.get(name).toSeq)
     value != null && value.toLowerCase(Locale.ROOT) == "true"
   }
 
