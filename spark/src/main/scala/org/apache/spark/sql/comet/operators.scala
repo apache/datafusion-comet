@@ -1735,6 +1735,15 @@ trait CometBaseAggregate {
     if (aggregateExpressions.isEmpty) {
       val hashAggBuilder = OperatorOuterClass.HashAggregate.newBuilder()
       hashAggBuilder.addAllGroupingExprs(groupingExprs.map(_.get).asJava)
+      // Spark has no expression mode to serialize here. An empty aggregate with a required child
+      // distribution must fully deduplicate its keys (Final, or a pre-distinct PartialMerge), so
+      // use native Final to keep skip-partial disabled.
+      val mode = if (aggregate.requiredChildDistributionExpressions.isDefined) {
+        CometAggregateMode.Final
+      } else {
+        CometAggregateMode.Partial
+      }
+      hashAggBuilder.setModeValue(mode.getNumber)
       buildAggOp(
         builder,
         hashAggBuilder,

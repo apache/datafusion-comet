@@ -28,7 +28,7 @@ import org.apache.spark.{CometListenerBusUtils, SparkConf}
 import org.apache.spark.scheduler.{SparkListener, SparkListenerTaskEnd}
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.expressions.Cast
-import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial, PartialMerge}
 import org.apache.spark.sql.catalyst.optimizer.EliminateSorts
 import org.apache.spark.sql.catalyst.plans.physical.RangePartitioning
 import org.apache.spark.sql.comet.CometHashAggregateExec
@@ -1559,6 +1559,108 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                   "SELECT COUNT(col2), MIN(col2), COUNT(DISTINCT col2), SUM(col2)," +
                     s" SUM(DISTINCT col2), COUNT(DISTINCT col2), col1 FROM $table group by col1")
               }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("skip partial aggregation preserves post-shuffle distinct") {
+    val writers = 8
+    val rowsPerWriter = 300L
+    val overlap = 60L
+    val rows = writers * rowsPerWriter
+
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "input")
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        spark
+          .range(0L, rows, 1L, writers)
+          .selectExpr(s"id - spark_partition_id() * $overlap AS k")
+          .write
+          .parquet(path.toUri.toString)
+      }
+
+      withParquetTable(path.toUri.toString, "skip_partial_distinct") {
+        withSQLConf(
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+          SQLConf.SHUFFLE_PARTITIONS.key -> writers.toString,
+          CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+          CometConf.COMET_SHUFFLE_MODE.key -> "native",
+          CometConf.COMET_RESPECT_DATAFUSION_CONFIGS.key -> "true",
+          "spark.comet.datafusion.execution.skip_partial_aggregation_probe_rows_threshold" -> "100",
+          "spark.comet.datafusion.execution.skip_partial_aggregation_probe_ratio_threshold" -> "0.8") {
+          checkSparkAnswerAndOperator(
+            "SELECT count(*) FROM (SELECT DISTINCT k FROM skip_partial_distinct)")
+          checkSparkAnswerAndOperator("SELECT count(DISTINCT k) FROM skip_partial_distinct")
+        }
+      }
+    }
+  }
+
+  test("skip partial aggregation admits only supported native shuffle plans") {
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "input").toUri.toString
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        spark
+          .range(0L, 16384L, 1L, 8)
+          .selectExpr(
+            "id AS k",
+            "CASE WHEN id % 5 = 0 THEN NULL ELSE id % 17 END AS v",
+            "CASE WHEN id % 7 = 0 THEN NULL ELSE id % 11 END AS w")
+          .write
+          .parquet(path)
+      }
+      withParquetTable(path, "skip_partial_eligibility") {
+        withSQLConf(
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+          SQLConf.SHUFFLE_PARTITIONS.key -> "8",
+          CometConf.COMET_BATCH_SIZE.key -> "128",
+          CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+          CometConf.COMET_SHUFFLE_MODE.key -> "native",
+          CometConf.COMET_RESPECT_DATAFUSION_CONFIGS.key -> "true",
+          "spark.comet.datafusion.execution.skip_partial_aggregation_probe_rows_threshold" -> "100") {
+          def aggregates(query: String): Seq[CometHashAggregateExec] = {
+            val (_, plan) = checkSparkAnswerAndOperator(query)
+            val result = stripAQEPlan(plan).collect { case aggregate: CometHashAggregateExec =>
+              aggregate
+            }
+            assert(result.nonEmpty)
+            result
+          }
+          def skipped(aggregate: CometHashAggregateExec): Long =
+            aggregate.metrics.get("skipped_aggregation_rows").map(_.value).getOrElse(0L)
+
+          val countQuery = "SELECT sum(n) FROM " +
+            "(SELECT k, count(*) n FROM skip_partial_eligibility GROUP BY k)"
+          // No ratio override: the eligible plan uses DataFusion's adaptive default.
+          assert(aggregates(countQuery).map(skipped).sum > 0L)
+          assert(
+            aggregates("SELECT sum(n) FROM " +
+              "(SELECT k % 2, count(*) n FROM skip_partial_eligibility GROUP BY k % 2)")
+              .map(skipped)
+              .sum == 0L)
+
+          withSQLConf(
+            "spark.comet.datafusion.execution.skip_partial_aggregation_probe_ratio_threshold" -> "1.1") {
+            assert(aggregates(countQuery).map(skipped).sum == 0L)
+          }
+          withSQLConf(
+            "spark.comet.datafusion.execution.skip_partial_aggregation_probe_ratio_threshold" -> "0.8") {
+            for (expression <- Seq("sum(v)", "count(v, w)", "count(*) + sum(v)")) {
+              val result = aggregates(
+                "SELECT sum(n) FROM " +
+                  s"(SELECT k, $expression n FROM skip_partial_eligibility GROUP BY k)")
+              assert(result.map(skipped).sum == 0L, s"Unexpected skipping for $expression")
+            }
+            val mixed =
+              aggregates("SELECT count(DISTINCT k), count(*) FROM skip_partial_eligibility")
+                .filter(_.modes.contains(PartialMerge))
+            assert(mixed.nonEmpty, "Expected a PartialMerge stage in the DISTINCT plan")
+            assert(mixed.map(skipped).sum == 0L)
+            withSQLConf(CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
+              assert(aggregates(countQuery).map(skipped).sum == 0L)
             }
           }
         }
