@@ -1,0 +1,83 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+name: Label pull requests
+
+# Runs on pull_request_target so it can label pull requests from forks. Nothing from the pull
+# request is checked out or executed: the labeler reads the changed file list through the API
+# and the title step reads the event payload.
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  label:
+    runs-on: ubuntu-slim
+    steps:
+      - name: Label by changed paths
+        uses: actions/labeler@v7
+        with:
+          configuration-path: .github/labeler.yml
+          sync-labels: false
+
+      # The type label follows the conventional commit prefix in the title, matching how
+      # maintainers label by hand. Only on open, so later hand edits are not overwritten, and
+      # not for dependabot, whose PRs already carry the dependencies label.
+      - name: Label by title prefix
+        if: github.event.action == 'opened' && github.actor != 'dependabot[bot]'
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const title = context.payload.pull_request.title.trim();
+            const match = /^(feat|fix|perf|test|docs?|chore|refactor|ci|build|deps)(\([^)]*\))?!?:/i.exec(title);
+            if (!match) {
+              core.info(`No conventional prefix in "${title}", skipping the type label`);
+              return;
+            }
+            const byPrefix = {
+              feat: ['enhancement'],
+              refactor: ['enhancement'],
+              chore: ['enhancement'],
+              fix: ['bug'],
+              perf: ['enhancement', 'performance'],
+              test: ['enhancement', 'test'],
+              doc: ['documentation'],
+              docs: ['documentation'],
+              ci: ['enhancement', 'build'],
+              build: ['enhancement', 'build'],
+              deps: ['dependencies'],
+            };
+            const labels = byPrefix[match[1].toLowerCase()];
+            const present = new Set(context.payload.pull_request.labels.map((l) => l.name));
+            const missing = labels.filter((l) => !present.has(l));
+            if (missing.length === 0) {
+              return;
+            }
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              labels: missing,
+            });
