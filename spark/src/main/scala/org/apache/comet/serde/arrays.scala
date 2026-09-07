@@ -519,7 +519,7 @@ object CometSlice extends CometExpressionSerde[Slice] {
 }
 
 private[comet] object ArraySetSupport {
-  val signedZeroReason =
+  val signedZeroReason: String =
     "Floating-point array elements require Spark with SPARK-54918 " +
       "(4.0.5+, 4.1.4+, or 4.2+) for matching signed-zero semantics"
 
