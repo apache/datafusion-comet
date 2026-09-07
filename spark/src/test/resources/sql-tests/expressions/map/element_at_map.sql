@@ -51,3 +51,48 @@ SELECT element_at(mi, CAST(1 AS BIGINT)), element_at(mi, CAST(2 AS SMALLINT)) FR
 -- literal map arguments
 query
 SELECT element_at(map('a', 1, 'b', 2), 'a'), element_at(map('a', 1, 'b', 2), 'missing'), element_at(map('a', 1, 'b', 2), NULL)
+
+-- Map key types whose Spark equality Comet's native `map_extract` cannot reproduce fall back to
+-- Spark. These stay on the constructor path here because the SQL harness excludes
+-- `ConstantFolding`; `CometMapExpressionSuite` covers the folded-literal form of each.
+
+-- Spark stores `-0.0` map keys as `+0.0` and compares with `nanSafeCompareDoubles`, so a `-0.0`
+-- lookup finds the `+0.0` key. Native lookup compares the raw Arrow values.
+query expect_fallback(Spark normalizes floating-point map keys)
+SELECT element_at(map(CAST(0 AS DOUBLE), 7), CAST(-0.0 AS DOUBLE))
+
+query expect_fallback(Spark normalizes floating-point map keys)
+SELECT element_at(map(CAST(0 AS FLOAT), 7), CAST(-0.0 AS FLOAT))
+
+-- The floating-point decline walks every nesting level of the key type, so an array-of-double key
+-- falls back for the same reason.
+query expect_fallback(Spark normalizes floating-point map keys)
+SELECT element_at(map(array(CAST(0 AS DOUBLE)), 7), array(CAST(-0.0 AS DOUBLE)))
+
+-- A complex key type: `map_extract` casts the lookup key to the map's exact Arrow key type, so a
+-- NULL inside the lookup key would abort the cast instead of missing the lookup.
+query expect_fallback(casts the lookup key to the map's exact Arrow key type)
+SELECT element_at(map(array(1), 7), array(CAST(NULL AS INT)))
+
+query expect_fallback(casts the lookup key to the map's exact Arrow key type)
+SELECT element_at(map(named_struct('a', 1), 7), named_struct('a', 1))
+
+-- `BinaryType` keys need no decline: Arrow compares them by content, as Spark's ordering does.
+query
+SELECT element_at(map(CAST('a' AS BINARY), 1, CAST('b' AS BINARY), 2), CAST('b' AS BINARY))
+
+-- Nested INT-keyed map: the inner `element_at` returns NULL for ids not in the outer map (2, 3),
+-- and the outer `element_at` looks it up with a per-row key `id % (id - 2)`. This harness runs with
+-- ANSI disabled, so the remainder-by-zero at id = 2 evaluates to NULL rather than throwing, and
+-- `element_at(NULL_map, NULL)` returns NULL -- matching Spark's 7, NULL, NULL natively. (Under ANSI,
+-- native scalar functions evaluate the key eagerly and throw where Spark short-circuits after the
+-- NULL inner map; that is a pre-existing eager-evaluation difference in native `ElementAt`.)
+statement
+CREATE TABLE test_element_at_nested(id int) USING parquet
+
+statement
+INSERT INTO test_element_at_nested VALUES (1), (2), (3)
+
+query
+SELECT id, element_at(element_at(map(1, map(0, 7)), id), id % (id - 2)) AS v
+FROM test_element_at_nested
