@@ -23,8 +23,10 @@ import scala.collection.JavaConverters._
 
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.expressions.Attribute
-import org.apache.spark.sql.columnar.CachedBatchSerializer
-import org.apache.spark.sql.execution.{LeafExecNode, SparkPlan}
+import org.apache.spark.sql.catalyst.plans.logical.Statistics
+import org.apache.spark.sql.columnar.{CachedBatch, CachedBatchSerializer}
+import org.apache.spark.sql.comet.shims.ShimCometInMemoryTableScanExec
+import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.columnar.{CachedRDDBuilder, InMemoryTableScanExec}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.vectorized.ColumnarBatch
@@ -52,7 +54,14 @@ case class CometInMemoryTableScanExec(
     relationOutput: Seq[Attribute],
     scanOutput: Seq[Attribute])
     extends CometExec
-    with LeafExecNode {
+    with ShimCometInMemoryTableScanExec {
+
+  // Implements InMemoryTableScanLike on Spark 3.5+; Spark 3.4 has no such interface.
+  def isMaterialized: Boolean = cacheBuilder.isCachedColumnBuffersLoaded
+
+  def baseCacheRDD(): RDD[CachedBatch] = cacheBuilder.cachedColumnBuffers
+
+  def runtimeStatistics: Statistics = originalPlan.relation.computeStats()
 
   override lazy val metrics: Map[String, SQLMetric] = Map(
     "numOutputRows" -> SQLMetrics.createMetric(sparkContext, "number of output rows"))

@@ -24,18 +24,22 @@ import java.{util => ju}
 import org.apache.arrow.vector.types.pojo.ArrowType
 import org.apache.spark.CometDriverPlugin
 import org.apache.spark.SparkConf
-import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.{CometTestBase, Row}
 import org.apache.spark.sql.catalyst.expressions.{And, Attribute, Expression, GreaterThanOrEqual, LessThan, Literal}
 import org.apache.spark.sql.columnar.{CachedBatch, SimpleMetricsCachedBatch}
-import org.apache.spark.sql.comet.CometInMemoryTableScanExec
+import org.apache.spark.sql.comet.{CometBroadcastHashJoinExec, CometInMemoryTableScanExec, CometSortExec, CometSortMergeJoinExec}
 import org.apache.spark.sql.comet.execution.arrow.CometCachedBatchHelper
+import org.apache.spark.sql.execution.SortExec
+import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, QueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.columnar.{CometInMemoryRelationHelper, InMemoryRelation}
-import org.apache.spark.sql.execution.exchange.{Exchange, ReusedExchangeExec}
+import org.apache.spark.sql.execution.exchange.{Exchange, ReusedExchangeExec, ShuffleExchangeLike}
+import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, SortMergeJoinExec}
+import org.apache.spark.sql.functions.max
 import org.apache.spark.sql.internal.{SQLConf, StaticSQLConf}
 import org.apache.spark.storage.StorageLevel
 
 import org.apache.comet.{CometArrowAllocator, CometConf}
-import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
+import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
 import org.apache.comet.vector.CometVector
 
 class CometInMemoryCacheSuite extends CometTestBase {
@@ -86,6 +90,134 @@ class CometInMemoryCacheSuite extends CometTestBase {
       .map(_.getClass.getName)
       .distinct()
       .collect()
+  }
+
+  // The tests below are ported from Spark 4.1.2's AdaptiveQueryExecSuite; see each source link.
+  private def withAQECache(f: => Unit): Unit = {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+      SQLConf.CAN_CHANGE_CACHED_PLAN_OUTPUT_PARTITIONING.key -> "true",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "3",
+      CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
+      CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true",
+      "spark.comet.sparkToColumnar.enabled" -> "true") {
+      try {
+        f
+      } finally {
+        spark.catalog.clearCache()
+      }
+    }
+  }
+
+  // https://github.com/apache/spark/blob/v4.1.2/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala#L3114-L3154
+  test("AQE SPARK-42101: cold and warm Comet cache materialization") {
+    assume(isSpark35Plus, "Table-cache query stages require Spark 3.5+")
+    withAQECache {
+      withSQLConf(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+        val left = spark.range(0, 10, 1, 2).selectExpr("cast(id as string) c1")
+        val right = spark.range(0, 10, 1, 2).selectExpr("cast(id as string) c2")
+        val cached = left.join(right, $"c1" === $"c2").cache()
+        val builder = spark.sharedState.cacheManager
+          .lookupCachedData(cached)
+          .get
+          .cachedRepresentation
+          .cacheBuilder
+
+        Seq(true, false).foreach { firstAccess =>
+          val df = cached.groupBy("c1").agg(max($"c2"))
+          val adaptive = df.queryExecution.executedPlan.asInstanceOf[AdaptiveSparkPlanExec]
+          assert(!adaptive.isFinalPlan)
+          assert(builder.isCachedColumnBuffersLoaded != firstAccess)
+          assert(
+            collect(adaptive) { case s: ShuffleExchangeLike => s }.size ==
+              (if (firstAccess) 1 else 0))
+          assert(collect(adaptive) { case s: CometInMemoryTableScanExec => s }.size == 1)
+
+          checkAnswer(df, (0L until 10L).map(i => Row(i.toString, i.toString)))
+          assert(adaptive.isFinalPlan)
+          assert(builder.isCachedColumnBuffersLoaded)
+          assert(collect(adaptive) { case s: ShuffleExchangeLike => s }.isEmpty)
+          assert(collect(adaptive) { case s @ (_: CometSortExec | _: SortExec) => s }.isEmpty)
+          assert(collect(adaptive) { case s: CometInMemoryTableScanExec => s }.size == 1)
+        }
+      }
+    }
+  }
+
+  // https://github.com/apache/spark/blob/v4.1.2/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala#L3156-L3176
+  test("AQE SPARK-42101: preserve shuffle partitions beside a table cache stage") {
+    assume(isSpark35Plus, "Table-cache query stages require Spark 3.5+")
+    withAQECache {
+      withSQLConf(
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+        SQLConf.COALESCE_PARTITIONS_MIN_PARTITION_NUM.key -> "1") {
+        val cached = Seq(1, 2).toDF("c1").repartition(3, $"c1").cache()
+        val df = cached.join(Seq(1, 2).toDF("c2"), $"c1" === $"c2")
+        checkAnswer(df, Seq(Row(1, 1), Row(2, 2)))
+        val plan = df.queryExecution.executedPlan
+        assert(plan.asInstanceOf[AdaptiveSparkPlanExec].isFinalPlan)
+        // Match by name because this suite must also compile on Spark 3.4.
+        assert(collect(plan) {
+          case s: QueryStageExec if s.getClass.getSimpleName == "TableCacheQueryStageExec" => s
+        }.size == 1)
+        assert(collect(plan) { case s: CometInMemoryTableScanExec => s }.size == 1)
+        assert(collect(plan) { case s: ShuffleQueryStageExec => s }.size == 1)
+        assert(collect(plan) { case s: AQEShuffleReadExec => s }.isEmpty)
+      }
+    }
+  }
+
+  // https://github.com/apache/spark/blob/v4.1.2/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala#L2780-L2832
+  test("AQE SPARK-37742: use valid Comet cache statistics for join selection") {
+    withAQECache {
+      // Comet reports compressed Arrow bytes, so use a threshold below the compressed
+      // large cache as well as below its logical estimate. The single-row side still fits.
+      withSQLConf(
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "1024",
+        SQLConf.ADAPTIVE_OPTIMIZER_EXCLUDED_RULES.key ->
+          "org.apache.spark.sql.execution.adaptive.AQEPropagateEmptyRelation") {
+        withTempView("cache_large", "cache_other", "cache_small") {
+          val key = "00112233445566778899"
+          Seq.fill(60000)(key).toDF("key").createOrReplaceTempView("cache_large")
+          Seq
+            .fill(60000)("11223344556677889900")
+            .toDF("key")
+            .createOrReplaceTempView("cache_other")
+          Seq(key).toDF("key").createOrReplaceTempView("cache_small")
+          val cached = spark.sql("SELECT key AS newKey FROM cache_large").cache()
+          val relation =
+            spark.sharedState.cacheManager.lookupCachedData(cached).get.cachedRepresentation
+          assert(!relation.cacheBuilder.isCachedColumnBuffersLoaded)
+          val df = spark.sql("""
+            SELECT t3.newKey FROM
+              (SELECT t1.newKey FROM (SELECT key AS newKey FROM cache_large) t1
+               JOIN cache_small t2 ON t1.newKey = t2.key) t3
+            JOIN cache_other t4 ON t3.newKey = t4.key
+            UNION
+            SELECT t1.newKey FROM (SELECT key AS newKey FROM cache_large) t1
+            JOIN cache_other t2 ON t1.newKey = t2.key
+          """)
+          checkAnswer(df, Seq.empty[Row])
+          val plan = df.queryExecution.executedPlan
+          assert(plan.asInstanceOf[AdaptiveSparkPlanExec].isFinalPlan)
+          assert(collect(plan) { case s: CometInMemoryTableScanExec => s }.nonEmpty)
+          assert(collect(plan) {
+            case j @ (_: CometBroadcastHashJoinExec | _: BroadcastHashJoinExec) => j
+          }.size == 1)
+          assert(collect(plan) { case j @ (_: CometSortMergeJoinExec | _: SortMergeJoinExec) =>
+            j
+          }.size == 2)
+          val batches = relation.cacheBuilder.cachedColumnBuffers.collect()
+          assert(batches.forall(
+            _.getClass.getName == "org.apache.spark.sql.comet.execution.arrow.CometCachedBatch"))
+          assert(batches.map(_.numRows.toLong).sum == 60000L)
+          val stats = relation.computeStats()
+          assert(stats.rowCount.contains(BigInt(60000)))
+          assert(stats.sizeInBytes == batches.map(_.sizeInBytes).sum)
+          assert(stats.sizeInBytes > 1024L)
+        }
+      }
+    }
   }
 
   test("CometInMemoryTableScan over CometCachedBatch") {

@@ -39,7 +39,7 @@ import org.apache.spark.sql.comet.execution.arrow.{CometArrowStream, CometNative
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution._
-import org.apache.spark.sql.execution.adaptive.{AQEShuffleReadExec, BroadcastQueryStageExec, ShuffleQueryStageExec}
+import org.apache.spark.sql.execution.adaptive.{AQEShuffleReadExec, BroadcastQueryStageExec, QueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec}
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, HashJoin, ShuffledHashJoinExec, SortMergeJoinExec}
@@ -836,7 +836,7 @@ abstract class CometNativeExec extends CometExec {
    *   - CometScanExec - Comet scan node
    *   - CometBatchScanExec - Comet scan node
    *   - CometIcebergNativeScanExec - Native Iceberg scan node
-   *   - ShuffleQueryStageExec - AQE shuffle stage node on top of Comet shuffle
+   *   - QueryStageExec - AQE shuffle, broadcast, or table-cache stage
    *   - AQEShuffleReadExec - AQE shuffle read node on top of Comet shuffle
    *   - CometShuffleExchangeExec - Comet shuffle exchange node
    *   - CometUnionExec, etc. which executes its children native plan and produces ColumnarBatches
@@ -858,10 +858,9 @@ abstract class CometNativeExec extends CometExec {
       // input-boundary concept from "this fixed list" to "any leaf Comet exec".
       case _: CometLeafExec =>
         func(plan)
-      case _: CometScanExec | _: CometBatchScanExec | _: ShuffleQueryStageExec |
-          _: AQEShuffleReadExec | _: CometShuffleExchangeExec | _: CometUnionExec |
-          _: CometTakeOrderedAndProjectExec | _: CometCoalesceExec | _: ReusedExchangeExec |
-          _: CometBroadcastExchangeExec | _: BroadcastQueryStageExec |
+      case _: CometScanExec | _: CometBatchScanExec | _: QueryStageExec | _: AQEShuffleReadExec |
+          _: CometShuffleExchangeExec | _: CometUnionExec | _: CometTakeOrderedAndProjectExec |
+          _: CometCoalesceExec | _: ReusedExchangeExec | _: CometBroadcastExchangeExec |
           _: CometSparkToColumnarExec | _: CometLocalTableScanExec |
           _: CometInMemoryTableScanExec =>
         func(plan)
