@@ -18,7 +18,6 @@
 use arrow::array::builder::{Date32Builder, Decimal128Builder, Int32Builder};
 use arrow::array::{builder::StringBuilder, Array, Int32Array, RecordBatch};
 use arrow::datatypes::{DataType, Field, Schema};
-use arrow::ipc::writer::IpcWriteContext;
 use arrow::row::{RowConverter, SortField};
 use criterion::{criterion_group, criterion_main, Criterion};
 use datafusion::datasource::memory::MemorySourceConfig;
@@ -31,7 +30,7 @@ use datafusion::{
     prelude::SessionContext,
 };
 use datafusion_comet_shuffle::{
-    CometPartitioning, CompressionCodec, ShuffleBlockWriter, ShuffleWriterExec,
+    CometPartitioning, CompressionCodec, ShuffleBlockWriter, ShuffleCodecContext, ShuffleWriterExec,
 };
 use itertools::Itertools;
 use std::io::Cursor;
@@ -54,11 +53,11 @@ fn criterion_benchmark(c: &mut Criterion) {
             let ipc_time = Time::default();
             let w =
                 ShuffleBlockWriter::try_new(&batch.schema(), compression_codec.clone()).unwrap();
-            let mut compression_context = IpcWriteContext::default();
+            let mut codec_context = ShuffleCodecContext::default();
             b.iter(|| {
                 buffer.clear();
                 let mut cursor = Cursor::new(&mut buffer);
-                w.write_batch(&batch, &mut cursor, &mut compression_context, &ipc_time)
+                w.write_batch(&batch, &mut cursor, &mut codec_context, &ipc_time)
                     .unwrap();
             });
         });
@@ -285,14 +284,14 @@ fn schema_encoding_benchmark(c: &mut Criterion) {
         let writer =
             ShuffleBlockWriter::try_new(batch.schema().as_ref(), CompressionCodec::None).unwrap();
         let ipc_time = Time::default();
-        let mut compression_context = IpcWriteContext::default();
+        let mut codec_context = ShuffleCodecContext::default();
         group.bench_function(format!("write_batch ({name} schema)"), |b| {
             let mut buffer = vec![];
             b.iter(|| {
                 buffer.clear();
                 let mut cursor = Cursor::new(&mut buffer);
                 writer
-                    .write_batch(&batch, &mut cursor, &mut compression_context, &ipc_time)
+                    .write_batch(&batch, &mut cursor, &mut codec_context, &ipc_time)
                     .unwrap();
             });
         });

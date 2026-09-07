@@ -22,14 +22,13 @@ mod tests {
     use super::rss_partition_writer::RssPartitionWriter;
     use crate::metrics::ShufflePartitionerMetrics;
     use crate::writers::PartitionWriter;
-    use crate::{read_ipc_compressed, CompressionCodec, ShuffleBlockWriter};
+    use crate::{read_ipc_compressed, CompressionCodec, ShuffleBlockWriter, ShuffleCodecContext};
     use arrow::array::{
         Array, ArrayRef, DictionaryArray, Int32Array, ListArray, MapArray, StringArray, StructArray,
     };
     use arrow::buffer::OffsetBuffer;
     use arrow::compute::cast;
     use arrow::datatypes::{DataType, Field, Int32Type, Schema};
-    use arrow::ipc::writer::IpcWriteContext;
     use arrow::record_batch::RecordBatch;
     use datafusion::common::{DataFusionError, Result};
     use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, Time};
@@ -500,14 +499,9 @@ mod tests {
         let block_writer =
             ShuffleBlockWriter::try_new(batch.schema().as_ref(), CompressionCodec::None).unwrap();
         let mut frame = Cursor::new(Vec::new());
-        let mut compression_context = IpcWriteContext::default();
+        let mut codec_context = ShuffleCodecContext::default();
         block_writer
-            .write_batch(
-                batch,
-                &mut frame,
-                &mut compression_context,
-                &Time::default(),
-            )
+            .write_batch(batch, &mut frame, &mut codec_context, &Time::default())
             .unwrap()
     }
 
