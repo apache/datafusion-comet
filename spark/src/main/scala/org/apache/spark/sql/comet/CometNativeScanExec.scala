@@ -200,6 +200,7 @@ case class CometNativeScanExec(
         })
       if (resolvedFilters.nonEmpty) {
         val commonBuilder = base.toBuilder
+        commonBuilder.setHasDataFilters(true)
         for (filter <- resolvedFilters) {
           exprToProto(filter, output) match {
             case Some(proto) => commonBuilder.addDataFilters(proto)

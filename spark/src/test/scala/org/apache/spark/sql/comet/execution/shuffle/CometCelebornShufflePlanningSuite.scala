@@ -638,6 +638,43 @@ class CometCelebornShufflePlanningSuite extends CometTestBase {
       }
     }
 
+    test(s"unavailable push completion executes Spark shuffles with AQE=$adaptive") {
+      val reason = "Celeborn client cannot safely observe native push completion"
+      manager.withPlanningSupport(
+        CelebornNativeShufflePlanningSupport(unavailableReason = Some(reason))) {
+        withSQLConf(
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+          CometConf.COMET_SHUFFLE_MODE.key -> "native") {
+          assertNativeExecutionLoaded()
+          assert(!isCometShuffleEnabled(spark.sessionState.conf))
+          val exchange = ShuffleExchangeExec(SinglePartition, nativeChild())
+          assert(CometShuffleExchangeExec.shuffleSupported(exchange).isEmpty)
+          assert(reasons(exchange).contains(reason))
+          assertSpecialSupport(expected = false)
+
+          val nativeRegistrations = manager.nativeRegistrations.get()
+          val sparkRegistrations = manager.sparkRegistrations.get()
+          val repartitioned = input.repartition(2, col("value"))
+          assertSparkExchange(repartitioned.queryExecution.executedPlan)
+          checkAnswer(repartitioned, (1L to 32L).map(Row(_)))
+
+          val limit = input.limit(3)
+          val topK = input.orderBy(col("value").desc).limit(3)
+          assert(collect(limit.queryExecution.executedPlan) { case op: CometCollectLimitExec =>
+            op
+          }.isEmpty)
+          assert(collect(topK.queryExecution.executedPlan) {
+            case op: CometTakeOrderedAndProjectExec => op
+          }.isEmpty)
+          checkAnswer(limit, Seq(Row(1L), Row(2L), Row(3L)))
+          checkAnswer(topK, Seq(Row(32L), Row(31L), Row(30L)))
+          assert(cometExchanges(repartitioned.queryExecution.executedPlan).isEmpty)
+          assert(manager.nativeRegistrations.get() == nativeRegistrations)
+          assert(manager.sparkRegistrations.get() > sparkRegistrations)
+        }
+      }
+    }
+
     test(s"QueryExecution protects hidden limit and topK shuffles with AQE=$adaptive") {
       withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString) {
         withSQLConf(CometConf.COMET_SHUFFLE_MODE.key -> "native") {

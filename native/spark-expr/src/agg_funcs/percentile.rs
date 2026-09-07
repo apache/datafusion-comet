@@ -20,7 +20,7 @@ use arrow::array::{
 };
 use arrow::buffer::{OffsetBuffer, ScalarBuffer};
 use arrow::datatypes::{DataType, Field, FieldRef, Float64Type};
-use datafusion::common::{internal_err, plan_err, Result, ScalarValue};
+use datafusion::common::{internal_err, not_impl_err, plan_err, Result, ScalarValue};
 use datafusion::logical_expr::function::{AccumulatorArgs, StateFieldsArgs};
 use datafusion::logical_expr::Volatility::Immutable;
 use datafusion::logical_expr::{
@@ -221,7 +221,6 @@ impl GroupsAccumulator for SparkPercentileGroupsAccumulator {
         &mut self,
         values: &[ArrayRef],
         group_indices: &[usize],
-        _opt_filter: Option<&BooleanArray>,
         total_num_groups: usize,
     ) -> Result<()> {
         let input_group_values = values[0].as_list::<i32>();
@@ -266,6 +265,14 @@ impl GroupsAccumulator for SparkPercentileGroupsAccumulator {
             builder.append_option(spark_percentile(values.as_mut_slice(), self.percentile));
         }
         Ok(Arc::new(builder.finish()))
+    }
+
+    fn convert_to_state(
+        &self,
+        _values: &[ArrayRef],
+        _opt_filter: Option<&BooleanArray>,
+    ) -> Result<Vec<ArrayRef>> {
+        not_impl_err!("Input batch conversion to state not implemented")
     }
 
     fn size(&self) -> usize {
