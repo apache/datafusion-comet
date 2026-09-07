@@ -672,6 +672,14 @@ case class CometExecRule(session: SparkSession)
   }
 
   override def apply(plan: SparkPlan): SparkPlan = {
+    // Plan-only mode: leave the plan alone, so Spark executes exactly what it would with Comet
+    // off, and arrange for the Comet plan to be reported once the query is over. See
+    // `CometPlanOnly` for why the report is not built here.
+    if (CometConf.COMET_EXPLAIN_PLAN_ONLY_ENABLED.get()) {
+      CometPlanOnly.register(session)
+      return plan
+    }
+
     val newPlan = _apply(plan)
     if (showTransformations && !newPlan.fastEquals(plan)) {
       logInfo(s"""
@@ -682,7 +690,7 @@ case class CometExecRule(session: SparkSession)
     newPlan
   }
 
-  private def _apply(plan: SparkPlan): SparkPlan = {
+  private[rules] def _apply(plan: SparkPlan): SparkPlan = {
     // We shouldn't transform Spark query plan if Comet is not loaded.
     if (!isCometLoaded(conf)) return plan
 
