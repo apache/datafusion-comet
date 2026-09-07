@@ -40,8 +40,8 @@ use crate::execution::{
     expressions::list_positions::ListPositionsExpr,
     expressions::subquery::Subquery,
     operators::{
-        ExecutionError, ExpandExec, ExplodeExec, ParquetCompression, ParquetWriterExec, SampleExec,
-        ScanExec, ShuffleScanExec,
+        ExecutionError, ExpandExec, ExplodeExec, MergeInstructionExec, MergeRowsExec,
+        ParquetCompression, ParquetWriterExec, SampleExec, ScanExec, ShuffleScanExec,
     },
     planner::expression_registry::ExpressionRegistry,
     planner::operator_registry::OperatorRegistry,
@@ -219,6 +219,58 @@ fn make_all_fields_nullable(data_type: &DataType) -> DataType {
             }
         }
         other => other.clone(),
+    }
+}
+
+/// Returns true when `actual` can be stamped as `expected` without changing a leaf type or
+/// narrowing nested nullability. Spark may declare a wider nullable output than an individual
+/// MERGE projection, so that one direction is intentionally accepted.
+fn merge_output_type_compatible(actual: &DataType, expected: &DataType) -> bool {
+    match (actual, expected) {
+        (DataType::Struct(actual_fields), DataType::Struct(expected_fields)) => {
+            actual_fields.len() == expected_fields.len()
+                && actual_fields.iter().zip(expected_fields.iter()).all(
+                    |(actual_field, expected_field)| {
+                        actual_field.name() == expected_field.name()
+                            && (expected_field.is_nullable() || !actual_field.is_nullable())
+                            && merge_output_type_compatible(
+                                actual_field.data_type(),
+                                expected_field.data_type(),
+                            )
+                    },
+                )
+        }
+        (DataType::List(actual_field), DataType::List(expected_field))
+        | (DataType::LargeList(actual_field), DataType::LargeList(expected_field)) => {
+            (expected_field.is_nullable() || !actual_field.is_nullable())
+                && merge_output_type_compatible(
+                    actual_field.data_type(),
+                    expected_field.data_type(),
+                )
+        }
+        (
+            DataType::FixedSizeList(actual_field, actual_size),
+            DataType::FixedSizeList(expected_field, expected_size),
+        ) => {
+            actual_size == expected_size
+                && (expected_field.is_nullable() || !actual_field.is_nullable())
+                && merge_output_type_compatible(
+                    actual_field.data_type(),
+                    expected_field.data_type(),
+                )
+        }
+        (
+            DataType::Map(actual_entries, actual_sorted),
+            DataType::Map(expected_entries, expected_sorted),
+        ) => {
+            actual_sorted == expected_sorted
+                && (expected_entries.is_nullable() || !actual_entries.is_nullable())
+                && merge_output_type_compatible(
+                    actual_entries.data_type(),
+                    expected_entries.data_type(),
+                )
+        }
+        _ => actual == expected,
     }
 }
 
@@ -2050,6 +2102,130 @@ impl PhysicalPlanner {
                     scans,
                     shuffle_scans,
                     Arc::new(SparkPlan::new(spark_plan.plan_id, expand, vec![child])),
+                ))
+            }
+            OpStruct::MergeRows(merge) => {
+                let [child] = children.as_slice() else {
+                    return Err(ExecutionError::GeneralError(format!(
+                        "MergeRows expects exactly one child, got {}",
+                        children.len()
+                    )));
+                };
+                let (scans, shuffle_scans, child) =
+                    self.create_plan(child, inputs, partition_count)?;
+
+                let missing_field = |name: &str| {
+                    ExecutionError::GeneralError(format!("MergeRows proto missing `{name}`"))
+                };
+                let is_source_row_present = self.create_expr(
+                    merge
+                        .is_source_row_present
+                        .as_ref()
+                        .ok_or_else(|| missing_field("is_source_row_present"))?,
+                    child.schema(),
+                )?;
+                let is_target_row_present = self.create_expr(
+                    merge
+                        .is_target_row_present
+                        .as_ref()
+                        .ok_or_else(|| missing_field("is_target_row_present"))?,
+                    child.schema(),
+                )?;
+
+                let compile_instructions = |instrs: &[spark_operator::MergeInstruction]| -> Result<
+                    Vec<MergeInstructionExec>,
+                    ExecutionError,
+                > {
+                    instrs
+                        .iter()
+                        .map(|instr| {
+                            let condition = self.create_expr(
+                                instr
+                                    .condition
+                                    .as_ref()
+                                    .ok_or_else(|| missing_field("instruction condition"))?,
+                                child.schema(),
+                            )?;
+                            let outputs = instr
+                                .outputs
+                                .iter()
+                                .map(|row| {
+                                    row.exprs
+                                        .iter()
+                                        .map(|e| self.create_expr(e, child.schema()))
+                                        .collect::<Result<Vec<_>, _>>()
+                                })
+                                .collect::<Result<Vec<_>, _>>()?;
+                            Ok(MergeInstructionExec { condition, outputs })
+                        })
+                        .collect()
+                };
+
+                let matched_instructions = compile_instructions(&merge.matched_instructions)?;
+                let not_matched_instructions =
+                    compile_instructions(&merge.not_matched_instructions)?;
+                let not_matched_by_source_instructions =
+                    compile_instructions(&merge.not_matched_by_source_instructions)?;
+
+                // Spark's declared MergeRows output is the contract presented to the downstream
+                // V2 write. Derive the expression schema as an independent check, then stamp native
+                // batches with Spark's declared types so compatible nested-nullability widening does
+                // not leak a narrower physical schema across the JVM/native boundary.
+                let output_rows: Vec<Vec<Arc<dyn PhysicalExpr>>> = matched_instructions
+                    .iter()
+                    .chain(&not_matched_instructions)
+                    .chain(&not_matched_by_source_instructions)
+                    .flat_map(|instr| instr.outputs.iter().cloned())
+                    .collect();
+                let expected_fields: Vec<Field> = merge
+                    .output_types
+                    .iter()
+                    .map(to_arrow_datatype)
+                    .enumerate()
+                    .map(|(idx, dt)| Field::new(format!("col_{idx}"), dt, true))
+                    .collect();
+                let schema = Arc::new(Schema::new(expected_fields));
+
+                if !output_rows.is_empty() {
+                    let derived_schema = ExpandExec::build_schema(&output_rows, &child.schema())?;
+                    if derived_schema.fields().len() != schema.fields().len() {
+                        return Err(ExecutionError::GeneralError(format!(
+                            "MergeRows projected {} columns but Spark declared {}",
+                            derived_schema.fields().len(),
+                            schema.fields().len()
+                        )));
+                    }
+                    for (idx, (actual, expected)) in derived_schema
+                        .fields()
+                        .iter()
+                        .zip(schema.fields().iter())
+                        .enumerate()
+                    {
+                        if !merge_output_type_compatible(actual.data_type(), expected.data_type()) {
+                            return Err(ExecutionError::GeneralError(format!(
+                                "MergeRows output column {idx} has projected type {:?}, incompatible with Spark output type {:?}",
+                                actual.data_type(),
+                                expected.data_type()
+                            )));
+                        }
+                    }
+                }
+
+                let exec = Arc::new(MergeRowsExec::try_new(
+                    is_source_row_present,
+                    is_target_row_present,
+                    matched_instructions,
+                    not_matched_instructions,
+                    not_matched_by_source_instructions,
+                    merge.row_id_ordinal.map(|ord| ord as usize),
+                    Arc::clone(&child.native_plan),
+                    schema,
+                )?);
+
+                Ok((
+                    scans,
+                    shuffle_scans,
+                    Arc::new(SparkPlan::new(spark_plan.plan_id, exec, vec![child])),
                 ))
             }
             OpStruct::Explode(explode) => {
