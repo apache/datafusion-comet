@@ -21,7 +21,7 @@ package org.apache.comet
 
 import scala.util.Random
 
-import org.apache.spark.sql.Column
+import org.apache.spark.sql.{Column, Row}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanExec
 import org.apache.spark.sql.functions.{col, lit}
 import org.apache.spark.sql.types._
@@ -239,30 +239,43 @@ class CometFuzzIcebergSuite extends CometFuzzIcebergBase {
 
   test(
     "filter pushdown - IS NULL/IS NOT NULL on list and map columns stays native, struct falls back") {
-    // Spark pushes isnotnull(arr) below Generate for explode(arr), so list-column null checks
-    // are a common pushed predicate. iceberg-rust's Arrow predicate visitor projects list and
-    // map columns but not struct columns, so the scan-rule fallback must be struct-only.
     val tableName = "hadoop_catalog.db.null_check_test"
     try {
-      spark.sql(
-        s"CREATE TABLE $tableName (l array<int>, m map<string,int>, s struct<a:int>) USING iceberg")
-      spark.sql(s"INSERT INTO $tableName SELECT array(1, 2), map('k', 1), named_struct('a', 1)")
-      spark.sql(s"INSERT INTO $tableName SELECT NULL, NULL, NULL")
-      val (_, cometPlanList) =
-        checkSparkAnswer(s"SELECT count(*) FROM $tableName WHERE l IS NOT NULL")
-      assert(
-        1 == collectIcebergNativeScans(cometPlanList).length,
-        s"expected native scan for list null check\n$cometPlanList")
-      val (_, cometPlanMap) =
-        checkSparkAnswer(s"SELECT count(*) FROM $tableName WHERE m IS NOT NULL")
-      assert(
-        1 == collectIcebergNativeScans(cometPlanMap).length,
-        s"expected native scan for map null check\n$cometPlanMap")
-      val (_, cometPlanStruct) =
-        checkSparkAnswer(s"SELECT count(*) FROM $tableName WHERE s IS NOT NULL")
-      assert(
-        0 == collectIcebergNativeScans(cometPlanStruct).length,
-        s"expected Spark fallback for struct null check\n$cometPlanStruct")
+      spark.sql(s"""
+        CREATE TABLE $tableName (
+          id INT, l ARRAY<STRUCT<a: INT>>, m MAP<STRING, STRUCT<a: INT>>, s STRUCT<a: INT>
+        ) USING iceberg
+      """)
+      // Container nullness is distinct from emptiness, null elements and null struct fields.
+      spark.sql(s"""
+        INSERT INTO $tableName VALUES
+          (1, array(named_struct('a', 1)), map('k', named_struct('a', 1)), named_struct('a', 1)),
+          (2, NULL, NULL, NULL),
+          (3, array(), map(), named_struct('a', NULL)),
+          (4, array(NULL), map('k', NULL), named_struct('a', NULL)),
+          (5, array(named_struct('a', NULL)), map('k', named_struct('a', NULL)), named_struct('a', NULL))
+      """)
+      for (column <- Seq("l", "m", "s"); predicate <- Seq("IS NULL", "IS NOT NULL")) {
+        val query = s"SELECT id FROM $tableName WHERE $column $predicate"
+        withClue(query) {
+          val (_, cometPlan) = checkSparkAnswer(query)
+          val expected = if (predicate == "IS NULL") Seq(Row(2)) else Seq(1, 3, 4, 5).map(Row(_))
+          checkAnswer(spark.sql(query), expected)
+          val expectedScans = if (column == "s") 0 else 1
+          assert(collectIcebergNativeScans(cometPlan).length == expectedScans, s"$cometPlan")
+        }
+      }
+
+      // Spark infers IS NOT NULL below ordinary generators, but not outer generators.
+      // Compare complete rows to preserve null elements and distinguish null struct parents
+      // from non-null structs with null fields. Native scanning does not imply residual pushdown.
+      for (column <- Seq("l", "m"); generator <- Seq("explode", "explode_outer")) {
+        val query = s"SELECT id, $generator($column) FROM $tableName"
+        withClue(query) {
+          val (_, cometPlan) = checkSparkAnswer(query)
+          assert(collectIcebergNativeScans(cometPlan).length == 1, s"$cometPlan")
+        }
+      }
     } finally {
       spark.sql(s"DROP TABLE IF EXISTS $tableName")
     }

@@ -2355,7 +2355,7 @@ class CometIcebergNativeSuite
             (3, 'Charlie', NULL)
         """)
 
-        // iceberg-rust evaluates IS NULL on list columns natively, so the scan stays native
+        // The scan stays native; the retained post-scan filter enforces the list null check.
         checkIcebergNativeScan(
           "SELECT * FROM test_cat.db.array_filter_test WHERE values IS NULL ORDER BY id")
 
@@ -2470,7 +2470,7 @@ class CometIcebergNativeSuite
             (3, 'Charlie', NULL)
         """)
 
-        // iceberg-rust evaluates IS NULL on map columns natively, so the scan stays native
+        // The scan stays native; the retained post-scan filter enforces the map null check.
         checkIcebergNativeScan(
           "SELECT * FROM test_cat.db.map_filter_test WHERE properties IS NULL ORDER BY id")
 

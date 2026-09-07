@@ -98,6 +98,12 @@ The native Iceberg reader supports the following features:
 - `IN` and `NOT IN` list operations
 - `BETWEEN` operations
 
+Native scanning does not imply that every predicate is evaluated inside iceberg-rust.
+List/map NULL checks can use native scans; when a residual cannot be bound, the
+retained post-scan filter enforces it. Direct struct-column NULL checks retain Spark
+scan fallback. Empty collections and collections containing null elements are
+non-null, matching Spark.
+
 **Partitioning:**
 
 - Standard partitioning with partition pruning

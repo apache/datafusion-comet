@@ -833,9 +833,9 @@ case class CometScanRule(session: SparkSession)
         // Get filter expressions for complex predicates check
         val filterExpressionsOpt = IcebergReflection.getFilterExpressions(scanExec.scan)
 
-        // IS NULL/NOT NULL on complex types fail because iceberg-rust's accessor creation
-        // only handles primitive fields. Nested field filters work because Iceberg Java
-        // pre-binds them to field IDs. Element/key access filters don't push down to FileScanTasks.
+        // Retain the conservative fallback for direct struct-column null checks. List/map
+        // null checks can scan natively: the native planner skips residuals it cannot bind,
+        // while Iceberg's retained post-scan filter enforces row-level correctness.
         val complexTypePredicatesSupported = filterExpressionsOpt
           .map { filters =>
             // Empty filters can't trigger accessor issues
@@ -844,22 +844,19 @@ case class CometScanRule(session: SparkSession)
             } else {
               val readSchema = scanExec.scan.readSchema()
 
-              // IS NULL/NOT NULL on struct columns must fall back: iceberg-rust's Arrow
-              // predicate visitor cannot project struct columns (see project_column in
-              // iceberg-rust arrow/reader/predicate_visitor.rs). List and map columns
-              // evaluate through arrow's native is_null/is_not_null and are supported.
-              val complexColumns = readSchema
+              // A struct inside a list/map does not make the container null check a struct check.
+              val structColumns = readSchema
                 .filter(field => field.dataType.isInstanceOf[StructType])
                 .map(_.name)
                 .toSet
 
               // Detect IS NULL/NOT NULL on struct columns (pattern: is_null(ref(name="col")))
               // Nested field filters use different patterns and don't trigger this issue
-              val hasComplexNullCheck = filters.asScala.exists { expr =>
+              val hasStructNullCheck = filters.asScala.exists { expr =>
                 val exprStr = expr.toString
                 val isNullCheck = exprStr.contains("is_null") || exprStr.contains("not_null")
                 if (isNullCheck) {
-                  complexColumns.exists { colName =>
+                  structColumns.exists { colName =>
                     exprStr.contains(s"""ref(name="$colName")""")
                   }
                 } else {
@@ -867,11 +864,9 @@ case class CometScanRule(session: SparkSession)
                 }
               }
 
-              if (hasComplexNullCheck) {
+              if (hasStructNullCheck) {
                 fallbackReasons += "IS NULL / IS NOT NULL predicates on struct type columns " +
-                  "are not yet supported by iceberg-rust " +
-                  "(list/map columns and nested field filters like address.city = 'NYC' " +
-                  "are supported)"
+                  "require Spark scan fallback"
                 false
               } else {
                 true
