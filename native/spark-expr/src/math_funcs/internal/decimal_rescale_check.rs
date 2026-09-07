@@ -20,11 +20,10 @@
 //! Replaces the pattern `CheckOverflow(Cast(expr, Decimal128(p2,s2)), Decimal128(p2,s2))`
 //! with a single expression that rescales and validates precision in one pass.
 
-use arrow::array::{as_primitive_array, Array, ArrayRef, Decimal128Array};
-use arrow::datatypes::{DataType, Decimal128Type, Schema};
-use arrow::error::ArrowError;
+use arrow::compute::CastOptions;
+use arrow::datatypes::{DataType, Schema};
 use arrow::record_batch::RecordBatch;
-use datafusion::common::{DataFusionError, ScalarValue};
+use datafusion::common::DataFusionError;
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::physical_expr::PhysicalExpr;
 use std::hash::Hash;
@@ -93,65 +92,6 @@ impl Display for DecimalRescaleCheckOverflow {
     }
 }
 
-/// Maximum absolute value for a given decimal precision: 10^p - 1.
-/// Precision must be <= 38 (max for Decimal128).
-#[inline]
-fn precision_bound(precision: u8) -> i128 {
-    assert!(
-        precision <= 38,
-        "precision_bound: precision {precision} exceeds maximum 38"
-    );
-    10i128.pow(precision as u32) - 1
-}
-
-/// Rescale a single i128 value by the given delta (output_scale - input_scale)
-/// and check precision bounds. Returns `Ok(value)` or `Ok(i128::MAX)` as sentinel
-/// for overflow in legacy mode, or `Err` in ANSI mode.
-#[inline]
-fn rescale_and_check(
-    value: i128,
-    delta: i8,
-    scale_factor: i128,
-    bound: i128,
-    fail_on_error: bool,
-) -> Result<i128, ArrowError> {
-    let rescaled = if delta > 0 {
-        // Scale up: multiply. Check for overflow.
-        match value.checked_mul(scale_factor) {
-            Some(v) => v,
-            None => {
-                if fail_on_error {
-                    return Err(ArrowError::ComputeError(
-                        "Decimal overflow during rescale".to_string(),
-                    ));
-                }
-                return Ok(i128::MAX); // sentinel
-            }
-        }
-    } else if delta < 0 {
-        // Scale down with HALF_UP rounding
-        // divisor = 10^(-delta), half = divisor / 2
-        let divisor = scale_factor; // already 10^abs(delta)
-        let half = divisor / 2;
-        let sign = value.signum();
-        (value + sign * half) / divisor
-    } else {
-        value
-    };
-
-    // Precision check
-    if rescaled.abs() > bound {
-        if fail_on_error {
-            return Err(ArrowError::ComputeError(
-                "Decimal overflow: value does not fit in precision".to_string(),
-            ));
-        }
-        Ok(i128::MAX) // sentinel for null_if_overflow_precision
-    } else {
-        Ok(rescaled)
-    }
-}
-
 impl PhysicalExpr for DecimalRescaleCheckOverflow {
     fn fmt_sql(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         Display::fmt(self, f)
@@ -170,66 +110,19 @@ impl PhysicalExpr for DecimalRescaleCheckOverflow {
 
     fn evaluate(&self, batch: &RecordBatch) -> datafusion::common::Result<ColumnarValue> {
         let arg = self.child.evaluate(batch)?;
-        let delta = self.output_scale - self.input_scale;
-        let abs_delta = delta.unsigned_abs();
-        // If abs_delta > 38, the scale factor overflows i128. In that case,
-        // any non-zero value will overflow the output precision, so we treat
-        // it as an immediate overflow condition.
-        if abs_delta > 38 {
+        if !matches!(arg.data_type(), DataType::Decimal128(_, _)) {
             return Err(DataFusionError::Execution(format!(
-                "DecimalRescaleCheckOverflow: scale delta {delta} exceeds maximum supported range"
+                "DecimalRescaleCheckOverflow expects Decimal128, but found {arg:?}"
             )));
         }
-        let scale_factor = 10i128.pow(abs_delta as u32);
-        let bound = precision_bound(self.output_precision);
-        let fail_on_error = self.fail_on_error;
-        let p_out = self.output_precision;
-        let s_out = self.output_scale;
 
-        match arg {
-            ColumnarValue::Array(array)
-                if matches!(array.data_type(), DataType::Decimal128(_, _)) =>
-            {
-                let decimal_array = as_primitive_array::<Decimal128Type>(&array);
-
-                let result: Decimal128Array =
-                    arrow::compute::kernels::arity::try_unary(decimal_array, |value| {
-                        rescale_and_check(value, delta, scale_factor, bound, fail_on_error)
-                    })?;
-
-                let result = if !fail_on_error {
-                    result.null_if_overflow_precision(p_out)
-                } else {
-                    result
-                };
-
-                let result = result
-                    .with_precision_and_scale(p_out, s_out)
-                    .map(|a| Arc::new(a) as ArrayRef)?;
-
-                Ok(ColumnarValue::Array(result))
-            }
-            ColumnarValue::Scalar(ScalarValue::Decimal128(v, _precision, _scale)) => {
-                let new_v = match v {
-                    Some(val) => {
-                        let r = rescale_and_check(val, delta, scale_factor, bound, fail_on_error)
-                            .map_err(|e| DataFusionError::ArrowError(Box::new(e), None))?;
-                        if r == i128::MAX {
-                            None
-                        } else {
-                            Some(r)
-                        }
-                    }
-                    None => None,
-                };
-                Ok(ColumnarValue::Scalar(ScalarValue::Decimal128(
-                    new_v, p_out, s_out,
-                )))
-            }
-            v => Err(DataFusionError::Execution(format!(
-                "DecimalRescaleCheckOverflow expects Decimal128, but found {v:?}"
-            ))),
-        }
+        arg.cast_to(
+            &DataType::Decimal128(self.output_precision, self.output_scale),
+            Some(&CastOptions {
+                safe: !self.fail_on_error,
+                ..Default::default()
+            }),
+        )
     }
 
     fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
@@ -259,9 +152,10 @@ impl PhysicalExpr for DecimalRescaleCheckOverflow {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{AsArray, Decimal128Array};
-    use arrow::datatypes::{Field, Schema};
+    use arrow::array::{Array, ArrayRef, AsArray, Decimal128Array};
+    use arrow::datatypes::{Decimal128Type, Field, Schema};
     use arrow::record_batch::RecordBatch;
+    use datafusion::common::ScalarValue;
     use datafusion::physical_expr::expressions::Column;
 
     fn make_batch(values: Vec<Option<i128>>, precision: u8, scale: i8) -> RecordBatch {
@@ -317,6 +211,17 @@ mod tests {
     }
 
     #[test]
+    fn test_scale_down_rounding_overflow() {
+        let batch = make_batch(vec![Some(994), Some(995), Some(-995)], 3, 1);
+
+        let result = eval_expr(&batch, 1, 2, 0, false).unwrap();
+        let arr = result.as_primitive::<Decimal128Type>();
+        assert_eq!(arr.iter().collect::<Vec<_>>(), vec![Some(99), None, None]);
+
+        assert!(eval_expr(&batch, 1, 2, 0, true).is_err());
+    }
+
+    #[test]
     fn test_same_scale_precision_check_only() {
         // Same scale, just check precision. Value 999 fits in precision 3, 1000 does not.
         let batch = make_batch(vec![Some(999), Some(1000)], 38, 0);
@@ -341,6 +246,40 @@ mod tests {
         let batch = make_batch(vec![Some(10)], 38, 0);
         let result = eval_expr(&batch, 0, 3, 2, true);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_overflow_with_nulls_legacy() {
+        // Overflow and null both yield null, while valid values are preserved.
+        let batch = make_batch(vec![Some(150), Some(10_000), None, Some(250)], 10, 2);
+        let result = eval_expr(&batch, 2, 4, 2, false).unwrap();
+        let arr = result.as_primitive::<Decimal128Type>();
+        assert_eq!(arr.value(0), 150);
+        assert!(arr.is_null(1)); // 10000 > 9999 (max for precision 4) -> null
+        assert!(arr.is_null(2)); // input null stays null
+        assert_eq!(arr.value(3), 250);
+    }
+
+    #[test]
+    fn test_all_values_overflow_legacy() {
+        // Every value overflows, so the whole result is null.
+        let batch = make_batch(vec![Some(10_000), Some(20_000), Some(30_000)], 10, 2);
+        let result = eval_expr(&batch, 2, 4, 2, false).unwrap();
+        let arr = result.as_primitive::<Decimal128Type>();
+        assert!(arr.is_null(0)); // all > 9999 (max for precision 4) -> null
+        assert!(arr.is_null(1));
+        assert!(arr.is_null(2));
+    }
+
+    #[test]
+    fn test_precision_boundary_legacy() {
+        // Pins the exact bound the overflow predicate turns on: 10^p - 1 fits, 10^p overflows.
+        // Output precision 4, scale 0: 9999 (= 10^4 - 1) fits, 10000 (= 10^4) does not.
+        let batch = make_batch(vec![Some(9999), Some(10_000)], 10, 0);
+        let result = eval_expr(&batch, 0, 4, 0, false).unwrap();
+        let arr = result.as_primitive::<Decimal128Type>();
+        assert_eq!(arr.value(0), 9999); // fits precision 4
+        assert!(arr.is_null(1)); // overflows precision 4 -> null
     }
 
     #[test]

@@ -36,7 +36,8 @@ publish = false
 
 [dependencies]
 arrow = { workspace = true }
-parquet = { workspace = true, default-features = false, features = ["experimental", "arrow"] }
+bytes = { workspace = true }
+parquet = { workspace = true, default-features = false, features = ["experimental", "arrow", "snap", "lz4", "zstd", "flate2-zlib-rs"] }
 futures = { workspace = true }
 mimalloc = { version = "*", default-features = false, optional = true }
 tikv-jemallocator = { version = "0.6.1", optional = true, features = ["disable_initial_exec_tls"] }
@@ -67,15 +68,21 @@ url = { workspace = true }
 aws-config = { workspace = true }
 aws-credential-types = { workspace = true }
 parking_lot = "0.12.5"
-datafusion-comet-objectstore-hdfs = { path = "../hdfs", optional = true, default-features = false, features = ["hdfs"] }
+# Optional Delta Lake contrib (enabled by the `contrib-delta` feature). Source lives
+# under `contrib/delta/native/` so non-Delta committers can ignore it.
+comet-contrib-delta = { path = "../../contrib/delta/native", optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "http2"] }
-object_store_opendal = { version = "0.57.0", optional = true }
+object_store_opendal = { version = "0.58.0", optional = true }
 hdfs-sys = {version = "0.3", optional = true, features = ["hdfs_3_3"]}
-opendal = { version = "0.57.0", optional = true, features = ["services-hdfs"] }
+opendal = { version = "0.58.1", optional = true, features = ["services-hdfs"] }
 iceberg = { workspace = true }
 iceberg-storage-opendal = { workspace = true }
 reqsign-core = { workspace = true }
 serde_json = "1.0"
+# serde derive + typetag are required to implement iceberg's `Storage`/`StorageFactory` traits,
+# which carry `typetag::Serialize`/`Deserialize` supertraits (see BlobHostPromotingS3Storage).
+serde = { version = "1.0", features = ["derive"] }
+typetag = "0.2"
 uuid = "1.23.3"
 
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -91,14 +98,17 @@ jni = { version = "0.22.4", features = ["invocation"] }
 lazy_static = "1.4"
 assertables = "10"
 hex = "0.4.3"
-datafusion-functions-nested = { version = "54.0.0" }
+datafusion-functions-nested = { version = "55.0.0" }
 
 [features]
 backtrace = ["datafusion/backtrace"]
 default = ["hdfs-opendal"]
-hdfs = ["datafusion-comet-objectstore-hdfs"]
 hdfs-opendal = ["opendal", "object_store_opendal", "hdfs-sys"]
 jemalloc = ["tikv-jemallocator", "tikv-jemalloc-ctl"]
+# Delta Lake integration. When enabled, links the `comet-contrib-delta` crate
+# into `libcomet` and activates the `OpStruct::DeltaScan` dispatcher arm.
+# Default builds carry zero Delta surface.
+contrib-delta = ["dep:comet-contrib-delta"]
 
 # exclude optional packages from cargo machete verifications
 [package.metadata.cargo-machete]
@@ -111,4 +121,8 @@ crate-type = ["cdylib", "rlib"]
 
 [[bench]]
 name = "array_element_append"
+harness = false
+
+[[bench]]
+name = "explode"
 harness = false

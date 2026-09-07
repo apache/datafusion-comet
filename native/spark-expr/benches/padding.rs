@@ -16,7 +16,7 @@
 // under the License.
 
 use arrow::array::builder::StringBuilder;
-use arrow::array::ArrayRef;
+use arrow::array::{ArrayRef, Int32Array};
 use criterion::{criterion_group, criterion_main, Criterion};
 use datafusion::common::ScalarValue;
 use datafusion::physical_plan::ColumnarValue;
@@ -36,9 +36,16 @@ fn create_string_array(size: usize) -> ArrayRef {
     Arc::new(builder.finish())
 }
 
+fn create_length_array(size: usize) -> ArrayRef {
+    Arc::new(Int32Array::from(
+        (0..size).map(|i| (i % 24) as i32).collect::<Vec<_>>(),
+    ))
+}
+
 fn criterion_benchmark(c: &mut Criterion) {
     let size = 8192;
     let string_array = create_string_array(size);
+    let length_array = create_length_array(size);
 
     // lpad with default padding (space)
     c.bench_function("spark_lpad: default padding", |b| {
@@ -112,6 +119,34 @@ fn criterion_benchmark(c: &mut Criterion) {
         let args = vec![
             ColumnarValue::Array(Arc::clone(&string_array)),
             ColumnarValue::Scalar(ScalarValue::Int32(Some(5))),
+        ];
+        b.iter(|| black_box(spark_rpad(black_box(&args)).unwrap()))
+    });
+
+    // lpad with the target length taken from a column
+    c.bench_function("spark_lpad: length from column", |b| {
+        let args = vec![
+            ColumnarValue::Array(Arc::clone(&string_array)),
+            ColumnarValue::Array(Arc::clone(&length_array)),
+        ];
+        b.iter(|| black_box(spark_lpad(black_box(&args)).unwrap()))
+    });
+
+    // rpad with the target length taken from a column
+    c.bench_function("spark_rpad: length from column", |b| {
+        let args = vec![
+            ColumnarValue::Array(Arc::clone(&string_array)),
+            ColumnarValue::Array(Arc::clone(&length_array)),
+        ];
+        b.iter(|| black_box(spark_rpad(black_box(&args)).unwrap()))
+    });
+
+    // rpad with the target length from a column and a multi-char padding string
+    c.bench_function("spark_rpad: length from column, multi-char padding", |b| {
+        let args = vec![
+            ColumnarValue::Array(Arc::clone(&string_array)),
+            ColumnarValue::Array(Arc::clone(&length_array)),
+            ColumnarValue::Scalar(ScalarValue::Utf8(Some("abc".to_string()))),
         ];
         b.iter(|| black_box(spark_rpad(black_box(&args)).unwrap()))
     });

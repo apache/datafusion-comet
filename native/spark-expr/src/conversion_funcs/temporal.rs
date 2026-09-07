@@ -16,7 +16,8 @@
 // under the License.
 
 use crate::utils::resolve_local_datetime;
-use crate::{timezone, SparkCastOptions, SparkResult};
+use crate::{SparkCastOptions, SparkResult};
+use arrow::array::timezone::Tz;
 use arrow::array::{ArrayRef, AsArray, TimestampMicrosecondBuilder};
 use arrow::datatypes::{DataType, Date32Type};
 use chrono::NaiveDate;
@@ -59,7 +60,7 @@ pub(crate) fn cast_date_to_timestamp(
             cast_options.timezone.as_str()
         };
         // safe to unwrap since we are falling back to UTC above
-        let tz = timezone::Tz::from_str(tz_str)?;
+        let tz = Tz::from_str(tz_str)?;
         let epoch = NaiveDate::from_ymd_opt(1970, 1, 1).unwrap();
         for date in date_array.iter() {
             match date {

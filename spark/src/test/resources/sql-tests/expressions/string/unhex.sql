@@ -19,7 +19,7 @@ statement
 CREATE TABLE test_unhex(s string) USING parquet
 
 statement
-INSERT INTO test_unhex VALUES ('537061726B2053514C'), ('41'), ('0A1B'), (''), (NULL), ('GG'), ('hello'), ('A1B')
+INSERT INTO test_unhex VALUES ('537061726B2053514C'), ('41'), ('0A1B'), (''), (NULL), ('GG'), ('hello'), ('A1B'), ('-123'), ('\0')
 
 query
 SELECT hex(unhex(s)) FROM test_unhex
@@ -30,3 +30,7 @@ SELECT unhex(s) IS NULL FROM test_unhex
 -- literal arguments
 query
 SELECT unhex('41'), unhex('GG'), unhex(''), unhex(NULL)
+
+-- invalid inputs: non-hex characters and the null character both return NULL
+query
+SELECT unhex('-123'), unhex('\0')

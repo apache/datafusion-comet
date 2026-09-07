@@ -98,6 +98,11 @@ private[spark] class CometExecRDD(
   }
 
   override def compute(split: Partition, context: TaskContext): Iterator[ColumnarBatch] = {
+    // Must precede resolveInputObjects and the CometExecIterator: completion listeners run in
+    // reverse registration order, so registering first means this listener runs last, after
+    // nested native blocks and the iterator have published their final metric values.
+    Option(context).foreach(nativeMetrics.reportSpillMetrics)
+
     val partition = split.asInstanceOf[CometExecPartition]
 
     val (inputObjects, shuffleBlockIters) =

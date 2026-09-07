@@ -17,7 +17,7 @@
 
 -- try_to_timestamp() under LEGACY timeParserPolicy.
 -- Lenient SimpleDateFormat parsing accepts inputs that the new formatter rejects.
--- MinSparkVersion: 4.0
+-- MinSparkVersion: 3.4
 -- Config: spark.sql.legacy.timeParserPolicy=LEGACY
 -- Config: spark.sql.session.timeZone=UTC
 
@@ -32,5 +32,5 @@ INSERT INTO test_try_to_ts_lenient VALUES
   ('2024-01-01garbage'),
   ('2024')
 
-query spark_answer_only
+query
 SELECT s, try_to_timestamp(s, 'yyyy-MM-dd') FROM test_try_to_ts_lenient ORDER BY s
