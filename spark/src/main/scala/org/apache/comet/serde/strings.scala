@@ -433,7 +433,7 @@ private object PadReasons {
   val nonLiteralPadReason = "Only scalar values are supported for the `pad` argument."
 }
 
-object CometStringRPad extends CometExpressionSerde[StringRPad] {
+object CometStringRPad extends CometExpressionSerde[StringRPad] with CodegenDispatchFallback {
 
   override def getUnsupportedReasons(): Seq[String] =
     Seq(PadReasons.literalStrReason, PadReasons.nonLiteralPadReason)
@@ -461,7 +461,7 @@ object CometStringRPad extends CometExpressionSerde[StringRPad] {
   }
 }
 
-object CometStringLPad extends CometExpressionSerde[StringLPad] {
+object CometStringLPad extends CometExpressionSerde[StringLPad] with CodegenDispatchFallback {
 
   override def getUnsupportedReasons(): Seq[String] =
     Seq(PadReasons.literalStrReason, PadReasons.nonLiteralPadReason)

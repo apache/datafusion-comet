@@ -46,6 +46,53 @@ class CometStringExpressionSuite extends CometTestBase with CometCodegenAssertio
     testStringPadding("rpad")
   }
 
+  for ((function, expressionName) <- Seq("lpad" -> "StringLPad", "rpad" -> "StringRPad")) {
+    test(s"$function dispatches unsupported argument shapes (issue #5579)") {
+      val data: Seq[(String, Option[Int], String)] = Seq(
+        ("hi", Some(5), "xy"),
+        ("hello", Some(3), "x"),
+        ("", Some(3), "a"),
+        ("hi", Some(5), ""),
+        (null, Some(5), "x"),
+        ("hi", None, "x"),
+        ("hi", Some(5), null),
+        (null, None, null))
+      withParquetTable(data, "tbl") {
+        withSQLConf(
+          SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+            "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
+          for (allowIncompatible <- Seq("false", "true")) {
+            withSQLConf(
+              CometConf.getExprAllowIncompatConfigKey(expressionName) -> allowIncompatible) {
+              for (query <- Seq(
+                  s"SELECT $function(_1, _2, _3) FROM tbl",
+                  s"SELECT $function('hi', _2, 'xy') FROM tbl",
+                  s"SELECT $function('hi', 5, 'xy') FROM tbl")) {
+                assertCodegenRan {
+                  checkSparkAnswerAndOperator(query)
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    test(s"$function keeps supported argument shapes native") {
+      withParquetTable(Seq(("hi", 5), ("hello", 3), ("", 0)), "tbl") {
+        for (query <- Seq(
+            s"SELECT $function(_1, _2) FROM tbl",
+            s"SELECT $function(_1, _2, 'xy') FROM tbl")) {
+          CometScalaUDFCodegen.resetStats()
+          checkSparkAnswerAndOperator(query)
+          assert(
+            CometScalaUDFCodegen.stats().totalLookups == 0,
+            s"expected native execution for $query")
+        }
+      }
+    }
+  }
+
   test("lpad/rpad with NULL length") {
     // FuzzDataGenerator never generates NULL integers (#5389), so build the rows explicitly.
     // Spark's StringLPad/StringRPad are null-intolerant: a NULL length yields a NULL row.
@@ -109,14 +156,10 @@ class CometStringExpressionSuite extends CometTestBase with CometCodegenAssertio
             // all arguments are literal, so Spark constant folding will kick in
             // and pad function will not be evaluated by Comet
             checkSparkAnswerAndOperator(sql)
-          } else if (isLiteralStr) {
-            checkSparkAnswerAndFallbackReason(
-              sql,
-              "Scalar values are not supported for the `str` argument")
-          } else if (!isLiteralPad) {
-            checkSparkAnswerAndFallbackReason(
-              sql,
-              "Only scalar values are supported for the `pad` argument")
+          } else if (isLiteralStr || !isLiteralPad) {
+            assertCodegenRan {
+              checkSparkAnswerAndOperator(sql)
+            }
           } else {
             checkSparkAnswerAndOperator(sql)
           }
