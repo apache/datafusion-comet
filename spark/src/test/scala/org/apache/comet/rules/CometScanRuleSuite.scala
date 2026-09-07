@@ -134,4 +134,51 @@ class CometScanRuleSuite extends CometTestBase {
     }
   }
 
+  test("CometScanRule should fallback to Spark for unsupported _metadata columns") {
+    withTempPath { path =>
+      createTestDataFrame.write.parquet(path.toString)
+
+      // A temp view's output schema is fixed at creation time (here [id, name]), so
+      // `_metadata` cannot resolve through one; query the relation directly.
+      for (df <- Seq(
+          spark.read.parquet(path.toString).select("id", "_metadata"),
+          spark.read.parquet(path.toString).selectExpr("id", "_metadata.row_index"))) {
+        var sparkPlan: SparkPlan = null
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          sparkPlan = df.queryExecution.executedPlan
+        }
+        val transformedPlan = applyCometScanRule(stripAQEPlan(sparkPlan))
+        assert(countOperators(transformedPlan, classOf[FileSourceScanExec]) == 1)
+        assert(countOperators(transformedPlan, classOf[CometScanExec]) == 0)
+      }
+    }
+  }
+
+  test("CometScanRule should report the metadata-column fallback reason for a V1 scan") {
+    // Companion to the test above: that one pins *that* a `_metadata` scan falls back, this one
+    // pins the reason the user is shown.
+    //
+    // It also pins where the guard sits relative to the contrib hook. `transformV1Scan` now offers
+    // the scan to `CometScanContrib` before applying any built-in guard, so a contrib that
+    // synthesises `_metadata` in its own reader still gets a chance to claim it. On a default
+    // build the registry is empty, the hook declines instantly, and the guard below must report
+    // exactly what it did before the hook existed.
+    withTempPath { path =>
+      // One file, so `row_index` is unique across the result and `(id, row_index)` is a total
+      // order -- the generated `id`s are not unique (Int.MinValue repeats), so ordering by `id`
+      // alone would leave tied rows free to come back in either order.
+      createTestDataFrame.repartition(1).write.parquet(path.toString)
+      checkSparkAnswerAndFallbackReason(
+        spark.read
+          .parquet(path.toString)
+          // `row_index` is generated per row by the reader, so unlike the file-constant metadata
+          // columns (`file_path`, `file_size`, ...) it is not supported natively.
+          .selectExpr("id", "_metadata.row_index")
+          .orderBy("id", "row_index"),
+        // Spark rewrites `_metadata.row_index` into a `_tmp_metadata_row_index` scan column, so
+        // that -- not `row_index` -- is the attribute the guard sees and names.
+        "Metadata column(s) _tmp_metadata_row_index is not supported")
+    }
+  }
+
 }

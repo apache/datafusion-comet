@@ -49,12 +49,12 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
       childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
     val output = op.child.output
 
-    val winExprs: Array[WindowExpressionInfo] = op.windowExpression.map { expr =>
+    val winExprs: Seq[WindowExpressionInfo] = op.windowExpression.map { expr =>
       extractWindowExpression(expr).getOrElse {
-        withFallbackReason(op, s"Unsupported window expression: $expr", expr)
+        withFallbackReason(op, s"Unsupported window expression: $expr")
         return None
       }
-    }.toArray
+    }
 
     if (winExprs.length != op.windowExpression.length) {
       withFallbackReason(op, "Unsupported window expression(s)")
@@ -69,21 +69,13 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
     if (windowExprProto.forall(_.isDefined) && partitionExprs.forall(_.isDefined)
       && sortOrders.forall(_.isDefined)) {
       val windowBuilder = OperatorOuterClass.Window.newBuilder()
-      windowBuilder.addAllWindowExpr(windowExprProto.map(_.get).toIterable.asJava)
+      windowBuilder.addAllWindowExpr(windowExprProto.map(_.get).asJava)
       windowBuilder.addAllPartitionByList(partitionExprs.map(_.get).asJava)
       windowBuilder.addAllOrderByList(sortOrders.map(_.get).asJava)
       Some(builder.setWindow(windowBuilder).build())
     } else {
-      // Roll up reasons already attached to per-expression nodes so the Window
-      // operator itself carries a fallback attribution. Without this, the plan
-      // prints a bare `Window` and the real reason lives on a sub-expression
-      // that isn't obvious in the standard explain output.
-      val failing = winExprs.toSeq.zip(windowExprProto).collect { case (we, None) =>
-        we.windowExpression
-      } ++
-        op.partitionSpec.zip(partitionExprs).collect { case (e, None) => e } ++
-        op.orderSpec.zip(sortOrders).collect { case (e, None) => e }
-      withFallbackReason(op, failing: _*)
+      // Whichever of the window / partition / order expressions failed has already recorded its
+      // own reason; `CometExecRule.rollUpFallbackReasons` lifts it onto this operator.
       None
     }
   }
@@ -204,28 +196,28 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
               if (AggSerde.minMaxDataTypeSupported(min.dataType)) {
                 Some(agg)
               } else {
-                withFallbackReason(windowExpr, s"datatype ${min.dataType} is not supported", expr)
+                withFallbackReason(windowExpr, s"datatype ${min.dataType} is not supported")
                 None
               }
             case max: Max =>
               if (AggSerde.minMaxDataTypeSupported(max.dataType)) {
                 Some(agg)
               } else {
-                withFallbackReason(windowExpr, s"datatype ${max.dataType} is not supported", expr)
+                withFallbackReason(windowExpr, s"datatype ${max.dataType} is not supported")
                 None
               }
             case s: Sum =>
               if (AggSerde.sumDataTypeSupported(s.dataType)) {
                 Some(agg)
               } else {
-                withFallbackReason(windowExpr, s"datatype ${s.dataType} is not supported", expr)
+                withFallbackReason(windowExpr, s"datatype ${s.dataType} is not supported")
                 None
               }
             case a: Average =>
               if (AggSerde.avgDataTypeSupported(a.dataType)) {
                 Some(agg)
               } else {
-                withFallbackReason(windowExpr, s"datatype ${a.dataType} is not supported", expr)
+                withFallbackReason(windowExpr, s"datatype ${a.dataType} is not supported")
                 None
               }
             case _: First =>
@@ -236,8 +228,7 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
               withFallbackReason(
                 windowExpr,
                 s"aggregate ${agg.aggregateFunction}" +
-                  " is not supported for window function",
-                expr)
+                  " is not supported for window function")
               None
           }
         case _ =>
@@ -268,7 +259,7 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
       windowExpr.windowFunction match {
         case lag: Lag if !lag.default.isInstanceOf[Literal] =>
           // https://github.com/apache/datafusion-comet/issues/4268
-          withFallbackReason(windowExpr, "Lag default value must be a literal", lag.default)
+          withFallbackReason(windowExpr, "Lag default value must be a literal")
           (None, None, false)
         case lag: Lag =>
           val inputExpr = exprToProto(lag.input, output)
@@ -278,7 +269,7 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
           (None, func, lag.ignoreNulls)
         case lead: Lead if !lead.default.isInstanceOf[Literal] =>
           // https://github.com/apache/datafusion-comet/issues/4268
-          withFallbackReason(windowExpr, "Lead default value must be a literal", lead.default)
+          withFallbackReason(windowExpr, "Lead default value must be a literal")
           (None, None, false)
         case lead: Lead =>
           val inputExpr = exprToProto(lead.input, output)
@@ -317,8 +308,7 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
         case other =>
           withFallbackReason(
             windowExpr,
-            s"window function ${other.getClass.getSimpleName} is not supported",
-            other)
+            s"window function ${other.getClass.getSimpleName} is not supported")
           (None, None, false)
       }
     }

@@ -41,23 +41,113 @@ macro_rules! downcast_compute_op {
     }};
 }
 
+/// Evaluates `$body` with `$exp` bound as a compile-time constant equal to `$scale`, for every
+/// decimal scale whose divisor `10^scale` fits in an `i64`. Larger scales evaluate `$fallback`,
+/// which must derive the divisor at runtime.
+///
+/// Specializing on the scale lets the divisor be folded into the generated code, turning the
+/// division by `10^scale` into a multiply-and-shift.
+macro_rules! dispatch_pow10 {
+    ($scale:expr, $exp:ident => $body:expr, $fallback:expr) => {
+        match $scale {
+            1 => {
+                const $exp: u32 = 1;
+                $body
+            }
+            2 => {
+                const $exp: u32 = 2;
+                $body
+            }
+            3 => {
+                const $exp: u32 = 3;
+                $body
+            }
+            4 => {
+                const $exp: u32 = 4;
+                $body
+            }
+            5 => {
+                const $exp: u32 = 5;
+                $body
+            }
+            6 => {
+                const $exp: u32 = 6;
+                $body
+            }
+            7 => {
+                const $exp: u32 = 7;
+                $body
+            }
+            8 => {
+                const $exp: u32 = 8;
+                $body
+            }
+            9 => {
+                const $exp: u32 = 9;
+                $body
+            }
+            10 => {
+                const $exp: u32 = 10;
+                $body
+            }
+            11 => {
+                const $exp: u32 = 11;
+                $body
+            }
+            12 => {
+                const $exp: u32 = 12;
+                $body
+            }
+            13 => {
+                const $exp: u32 = 13;
+                $body
+            }
+            14 => {
+                const $exp: u32 = 14;
+                $body
+            }
+            15 => {
+                const $exp: u32 = 15;
+                $body
+            }
+            16 => {
+                const $exp: u32 = 16;
+                $body
+            }
+            17 => {
+                const $exp: u32 = 17;
+                $body
+            }
+            18 => {
+                const $exp: u32 = 18;
+                $body
+            }
+            _ => $fallback,
+        }
+    };
+}
+
+pub(crate) use dispatch_pow10;
+
 #[inline]
 pub(crate) fn make_decimal_scalar(
     a: &Option<i128>,
     precision: u8,
     scale: i8,
-    f: &dyn Fn(i128) -> i128,
+    f: impl Fn(i128) -> i128,
 ) -> Result<ColumnarValue, DataFusionError> {
     let result = ScalarValue::Decimal128(a.map(f), precision, scale);
     Ok(ColumnarValue::Scalar(result))
 }
 
+/// Generic over the operation so that it is monomorphized into the element loop rather than
+/// called through a vtable for every value.
 #[inline]
 pub(crate) fn make_decimal_array(
     array: &ArrayRef,
     precision: u8,
     scale: i8,
-    f: &dyn Fn(i128) -> i128,
+    f: impl Fn(i128) -> i128,
 ) -> Result<ColumnarValue, DataFusionError> {
     let array = array.as_primitive::<Decimal128Type>();
     let result: Decimal128Array = arrow::compute::kernels::arity::unary(array, f);

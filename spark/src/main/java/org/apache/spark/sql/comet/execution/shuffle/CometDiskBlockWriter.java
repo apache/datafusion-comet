@@ -23,9 +23,6 @@ import java.io.*;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.LinkedList;
-import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicLong;
 
 import scala.reflect.ClassTag;
@@ -60,24 +57,17 @@ import org.apache.comet.Native;
  * stream the data to disk. However, for Comet, we need to buffer rows in memory page and then write
  * them to disk as batches in Arrow IPC format. So, we need to extend `MemoryConsumer` to be able to
  * spill the buffered rows to disk when memory pressure is high.
- *
- * <p>Similar to `CometShuffleExternalSorter`, this class also provides asynchronous spill
- * mechanism. But different from `CometShuffleExternalSorter`, as a writer class for Spark
- * hash-based shuffle, it writes all the rows for a partition into a single file, instead of each
- * file for each spill.
  */
 public final class CometDiskBlockWriter {
   private static final Logger logger = LoggerFactory.getLogger(CometDiskBlockWriter.class);
   private static final ClassTag<Object> OBJECT_CLASS_TAG = ClassTag$.MODULE$.Object();
 
-  /** List of all `NativeDiskBlockArrowIPCWriter`s of same shuffle task. */
-  private static final LinkedList<CometDiskBlockWriter> currentWriters = new LinkedList<>();
-
-  /** Queue of pending asynchronous spill tasks. */
-  private ConcurrentLinkedQueue<Future<Void>> asyncSpillTasks = new ConcurrentLinkedQueue<>();
-
-  /** List of `ArrowIPCWriter`s which are spilling. */
-  private final LinkedList<ArrowIPCWriter> spillingWriters = new LinkedList<>();
+  /**
+   * All writers of the same shuffle task. Spilling under memory pressure only ever touches this
+   * task's writers, never those of other tasks. Access is normally confined to the task thread;
+   * synchronization below only guards against overlapping lifecycle calls.
+   */
+  private final LinkedList<CometDiskBlockWriter> currentWriters;
 
   private final TaskContext taskContext;
 
@@ -104,10 +94,7 @@ public final class CometDiskBlockWriter {
   private final int columnarBatchSize;
   private final String compressionCodec;
   private final int compressionLevel;
-  private final boolean isAsync;
   private final boolean tracingEnabled;
-  private final int asyncThreadNum;
-  private final ExecutorService threadPool;
   private final int numElementsForSpillThreshold;
 
   private final double preferDictionaryRatio;
@@ -145,32 +132,27 @@ public final class CometDiskBlockWriter {
       StructType schema,
       ShuffleWriteMetricsReporter writeMetrics,
       SparkConf conf,
-      boolean isAsync,
-      int asyncThreadNum,
-      ExecutorService threadPool,
-      boolean tracingEnabled) {
+      boolean tracingEnabled,
+      LinkedList<CometDiskBlockWriter> taskWriters) {
     this.nativeLib = new Native();
+    this.currentWriters = taskWriters;
     this.allocator = allocator;
     this.taskContext = taskContext;
     this.serializer = serializer;
     this.schema = schema;
     this.writeMetrics = writeMetrics;
     this.file = file;
-    this.isAsync = isAsync;
     this.tracingEnabled = tracingEnabled;
-    this.asyncThreadNum = asyncThreadNum;
-    this.threadPool = threadPool;
 
-    this.columnarBatchSize = (int) CometConf$.MODULE$.COMET_COLUMNAR_SHUFFLE_BATCH_SIZE().get();
-    this.compressionCodec = CometConf$.MODULE$.COMET_EXEC_SHUFFLE_COMPRESSION_CODEC().get();
-    this.compressionLevel =
-        (int) CometConf$.MODULE$.COMET_EXEC_SHUFFLE_COMPRESSION_ZSTD_LEVEL().get();
+    this.columnarBatchSize = (int) CometConf$.MODULE$.COMET_SHUFFLE_JVM_BATCH_SIZE().get();
+    this.compressionCodec = CometConf$.MODULE$.COMET_SHUFFLE_COMPRESSION_CODEC().get();
+    this.compressionLevel = (int) CometConf$.MODULE$.COMET_SHUFFLE_COMPRESSION_ZSTD_LEVEL().get();
 
     this.numElementsForSpillThreshold =
-        (int) CometConf$.MODULE$.COMET_COLUMNAR_SHUFFLE_SPILL_THRESHOLD().get();
+        (int) CometConf$.MODULE$.COMET_SHUFFLE_JVM_SPILL_THRESHOLD().get();
 
     this.preferDictionaryRatio =
-        (double) CometConf$.MODULE$.COMET_SHUFFLE_PREFER_DICTIONARY_RATIO().get();
+        (double) CometConf$.MODULE$.COMET_SHUFFLE_JVM_PREFER_DICTIONARY_RATIO().get();
 
     this.activeWriter = new ArrowIPCWriter();
 
@@ -191,7 +173,7 @@ public final class CometDiskBlockWriter {
     return this.activeWriter.getChecksum();
   }
 
-  private void doSpill(boolean forceSync) throws IOException {
+  private void doSpill() throws IOException {
     // We only allow spilling request from `NativeDiskBlockArrowIPCWriter`.
     if (spilling || activeWriter.numRecords() == 0) {
       return;
@@ -200,50 +182,9 @@ public final class CometDiskBlockWriter {
     // Set this into spilling state first, so it cannot recursively trigger another spill on itself.
     spilling = true;
 
-    if (isAsync && !forceSync) {
-      // Although we can continue to submit spill tasks to thread pool, buffering more rows in
-      // memory page will increase memory usage. So, we need to wait for at least one spilling
-      // task to finish.
-      while (asyncSpillTasks.size() == asyncThreadNum) {
-        for (Future<Void> task : asyncSpillTasks) {
-          if (task.isDone()) {
-            asyncSpillTasks.remove(task);
-            break;
-          }
-        }
-      }
-
-      final ArrowIPCWriter spillingWriter = activeWriter;
-      activeWriter = new ArrowIPCWriter();
-
-      spillingWriters.add(spillingWriter);
-
-      asyncSpillTasks.add(
-          threadPool.submit(
-              new Runnable() {
-                @Override
-                public void run() {
-                  try {
-                    long written = spillingWriter.doSpilling(false);
-                    totalWritten += written;
-                  } catch (IOException e) {
-                    throw new RuntimeException(e);
-                  } finally {
-                    spillingWriter.freeMemory();
-                    spillingWriters.remove(spillingWriter);
-                  }
-                }
-              },
-              null));
-
-    } else {
-      // Spill in a synchronous way.
-      // This spill could be triggered by other thread (i.e., other `CometDiskBlockWriter`),
-      // so we need to synchronize it.
-      synchronized (CometDiskBlockWriter.this) {
-        totalWritten += activeWriter.doSpilling(false);
-        activeWriter.freeMemory();
-      }
+    synchronized (CometDiskBlockWriter.this) {
+      totalWritten += activeWriter.doSpilling(false);
+      activeWriter.freeMemory();
     }
 
     spilling = false;
@@ -272,8 +213,6 @@ public final class CometDiskBlockWriter {
     final int serializedRecordSize = serBuffer.size();
     assert (serializedRecordSize > 0);
 
-    // While proceeding with possible spilling and inserting the record, we need to synchronize
-    // it, because other threads may be spilling this writer at the same time.
     synchronized (CometDiskBlockWriter.this) {
       if (activeWriter.numRecords() >= numElementsForSpillThreshold
           || activeWriter.numRecords() >= columnarBatchSize) {
@@ -281,7 +220,7 @@ public final class CometDiskBlockWriter {
         logger.info(
             "Spilling data because number of spilledRecords crossed the threshold " + threshold);
         // Spill the current writer
-        doSpill(false);
+        doSpill();
         if (activeWriter.numRecords() != 0) {
           throw new RuntimeException(
               "activeWriter.numRecords()(" + activeWriter.numRecords() + ") != 0");
@@ -302,16 +241,6 @@ public final class CometDiskBlockWriter {
   }
 
   FileSegment close() throws IOException {
-    if (isAsync) {
-      for (Future<Void> task : asyncSpillTasks) {
-        try {
-          task.get();
-        } catch (Exception e) {
-          throw new RuntimeException(e);
-        }
-      }
-    }
-
     totalWritten += activeWriter.doSpilling(true);
 
     if (outputRecords != insertRecords) {
@@ -345,9 +274,6 @@ public final class CometDiskBlockWriter {
   }
 
   void freeMemory() {
-    for (ArrowIPCWriter writer : spillingWriters) {
-      writer.freeMemory();
-    }
     activeWriter.freeMemory();
   }
 
@@ -367,14 +293,13 @@ public final class CometDiskBlockWriter {
       this.nativeLib = CometDiskBlockWriter.this.nativeLib;
       this.dataTypes = serializeSchema(schema);
 
-      // Share the writer-level AtomicLong so all ArrowIPCWriter instances
-      // (including async spilling ones) accumulate into the same counter.
+      // Share the writer-level AtomicLong so all ArrowIPCWriter instances (active and spilling)
+      // accumulate into the same counter.
       this.setEncodeNanosAccumulator(CometDiskBlockWriter.this.encodeNanos);
     }
 
     /** Inserts a record into current allocated page. */
     void insertRecord(Object recordBase, long recordOffset, int length) {
-      // This `ArrowIPCWriter` could be spilled by other threads, so we need to synchronize it.
       final Object base = currentPage.getBaseObject();
 
       // Add row addresses
@@ -409,7 +334,6 @@ public final class CometDiskBlockWriter {
 
       final long written;
 
-      // All threads are writing to the same file, so we need to synchronize it.
       synchronized (file) {
         outputRecords += rowPartition.getNumRows();
         written =
@@ -425,7 +349,6 @@ public final class CometDiskBlockWriter {
       }
 
       // Update metrics
-      // Other threads may be updating the metrics at the same time, so we need to synchronize it.
       synchronized (writeMetrics) {
         if (!isLast) {
           writeMetrics.incRecordsWritten(
@@ -447,6 +370,14 @@ public final class CometDiskBlockWriter {
     protected void spill(int required) throws IOException {
       // Cannot allocate enough memory, spill and try again
       synchronized (currentWriters) {
+        // initialCurrentPage() requires this writer to have released its current page, even when
+        // spilling a larger sibling would free enough memory for the allocation on its own.
+        long totalFreed = getActiveMemoryUsage();
+        CometDiskBlockWriter.this.doSpill();
+        if (totalFreed >= required) {
+          return;
+        }
+
         // Spill from the largest writer first to maximize the amount of memory we can
         // acquire
         Collections.sort(
@@ -460,19 +391,18 @@ public final class CometDiskBlockWriter {
               }
             });
 
-        long totalFreed = 0;
         for (CometDiskBlockWriter writer : currentWriters) {
-          // Force to spill the writer in a synchronous way, otherwise, we may not be able to
-          // acquire enough memory.
-          long used = writer.getActiveMemoryUsage();
-
-          writer.doSpill(true);
-
-          totalFreed += used;
-
           if (totalFreed >= required) {
             break;
           }
+          if (writer == CometDiskBlockWriter.this) {
+            continue;
+          }
+          long used = writer.getActiveMemoryUsage();
+
+          writer.doSpill();
+
+          totalFreed += used;
         }
       }
     }

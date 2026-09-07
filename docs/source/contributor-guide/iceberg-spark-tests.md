@@ -31,8 +31,13 @@ Here is an overview of the changes that the diffs make to Iceberg:
   uses a native Iceberg scan, these classes fail to compile and must be removed.
 - Configure test base classes (`TestBase`, `ExtensionsTestBase`, `ScanTestBase`, etc.) to load the Comet Spark
   plugin and shuffle manager
+- Enable the Iceberg write split-operator plan (`spark.comet.write.iceberg.splitOperator.enabled`) alongside the
+  native scan in every Comet-configured session. The flag is off by default for users, so Iceberg's own suites
+  are the only place the split plan (`IcebergCommit -> IcebergWrite`) is exercised against Iceberg's write,
+  commit, and row-level-operation tests. See [#5259]
 
 [#3739]: https://github.com/apache/datafusion-comet/pull/3739
+[#5259]: https://github.com/apache/datafusion-comet/issues/5259
 [apache/iceberg#15674]: https://github.com/apache/iceberg/pull/15674
 
 ## 1. Install Comet
@@ -88,13 +93,18 @@ git add -A
 git diff apache-iceberg-1.8.1 > ../datafusion-comet/dev/diffs/iceberg/1.8.1.diff
 ```
 
-Repeat for each Iceberg version (1.8.1, 1.9.1, 1.10.0). The file contents differ between versions, so each
+Repeat for each Iceberg version (1.8.1, 1.9.1, 1.10.0, 1.11.0). The file contents differ between versions, so each
 diff must be generated against its own tag.
 
 ## Running Tests in CI
 
 The `iceberg_spark_test_<version>.yml` workflows apply these diffs and run the three Gradle targets above
 against each Iceberg version. Iceberg 1.8.1 runs against Spark 3.4.3 with Java 11; Iceberg 1.9.1 and 1.10.0
-run against Spark 3.5.8 with Java 17. The latest Iceberg version (1.10) runs on every pull request and on
-pushes to main; the older versions (1.8, 1.9) run only on pushes to main. All caller workflows delegate to
-`iceberg_spark_test_reusable.yml`, which holds the build and test job logic.
+run against Spark 3.5.9 with Java 17; Iceberg 1.11.0 runs against Spark 4.1.3 with Java 17. Iceberg 1.11
+(the only version testing Spark 4.1) runs on every pull request and on pushes to main; the older versions
+(1.8, 1.9, 1.10) run only on pushes to main, or on a pull request labeled `run-iceberg-tests`. All caller
+workflows delegate to `iceberg_spark_test_reusable.yml`, which holds the build and test job logic.
+
+Apply the `run-iceberg-tests` label to a pull request whenever it touches reflection code
+(`org.apache.comet.iceberg.IcebergReflection`) or other logic whose behavior can differ across Iceberg
+versions, since Iceberg 1.11 alone will not catch a regression that only affects 1.8, 1.9, or 1.10.

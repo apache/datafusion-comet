@@ -27,7 +27,6 @@ Data generation scripts are available in the [DataFusion Benchmarks](https://git
 
 ## Current Benchmark Results
 
-- [Benchmarks derived from TPC-H](benchmark-results/tpc-h)
 - [Benchmarks derived from TPC-DS](benchmark-results/tpc-ds)
 
 ## Benchmarking Guides
@@ -36,16 +35,20 @@ Available benchmarking guides:
 
 - [Benchmarking on macOS](benchmarking_macos.md)
 - [Benchmarking on AWS EC2](benchmarking_aws_ec2)
+- [Micro Benchmarking on AWS EC2](benchmarking_micro_ec2.md)
 - [TPC-DS Benchmarking with spark-sql-perf](benchmarking_spark_sql_perf.md)
 
 We also have many micro benchmarks that can be run from an IDE located [here](https://github.com/apache/datafusion-comet/tree/main/spark/src/test/scala/org/apache/spark/sql/benchmark).
+These can also be run as a suite on a dedicated machine, see
+[Micro Benchmarking on AWS EC2](benchmarking_micro_ec2.md). Published results are in
+[benchmarks/results/micro](https://github.com/apache/datafusion-comet/tree/main/benchmarks/results/micro).
 
 ```{toctree}
 :hidden:
 
-benchmark-results/tpc-h
 benchmark-results/tpc-ds
 benchmarking_macos
 benchmarking_aws_ec2
+benchmarking_micro_ec2
 benchmarking_spark_sql_perf
 ```

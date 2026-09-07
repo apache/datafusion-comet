@@ -35,8 +35,8 @@ import org.apache.comet.shims.CometInternalRowShim
  *
  * `ArrayData` and `InternalRow` are sibling abstract classes, so a base aimed at one cannot serve
  * the other. The shared `get(ordinal, dataType)` dispatch lives in
- * [[CometSpecializedGettersDispatch]]. Mixes in [[CometInternalRowShim]] so Spark 4.x's
- * `getVariant` / `getGeography` / `getGeometry` get throwing defaults.
+ * [[CometSpecializedGettersDispatch]]. Mixes in [[CometInternalRowShim]] so the getters Spark 4.x
+ * adds to `SpecializedGetters` get throwing defaults.
  */
 abstract class CometArrayData extends ArrayData with CometInternalRowShim {
 

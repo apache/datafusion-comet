@@ -31,7 +31,13 @@ import org.apache.arrow.vector.ValueVector;
  */
 public abstract class CometBatchKernel extends CometInternalRow {
 
-  protected final Object[] references;
+  // `public` (not `protected`) so that the nested helper classes Spark's codegen emits when it
+  // splits a large expression (e.g. a folded map rebuilt as a big `CreateMap`) can read it. Those
+  // helpers are separate classes in the generated package, not subclasses of this one, so a
+  // `protected` field would raise `IllegalAccessError` at runtime under cross-package protected
+  // access rules. Spark's own generated classes avoid this by declaring `references` on the
+  // generated class itself; Comet inherits it here instead, so it must be public.
+  public final Object[] references;
 
   protected CometBatchKernel(Object[] references) {
     this.references = references;

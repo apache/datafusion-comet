@@ -44,7 +44,8 @@ object CometHashJoinBenchmark extends CometBenchmarkBase {
         "spark.shuffle.manager",
         "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
 
-    val sparkSession = SparkSession.builder
+    val sparkSession = SparkSession
+      .builder()
       .config(conf)
       .withExtensions(new CometSparkSessionExtensions)
       .getOrCreate()

@@ -22,10 +22,13 @@ package org.apache.comet.vector
 import scala.collection.mutable
 
 import org.apache.arrow.c.{ArrowArray, ArrowImporter, ArrowSchema, CDataDictionaryProvider, Data}
+import org.apache.arrow.util.AutoCloseables
 import org.apache.arrow.vector.VectorSchemaRoot
 import org.apache.arrow.vector.dictionary.DictionaryProvider
 import org.apache.spark.SparkException
+import org.apache.spark.sql.comet.execution.arrow.ConstantColumnVectors
 import org.apache.spark.sql.comet.util.Utils
+import org.apache.spark.sql.execution.vectorized.ConstantColumnVector
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import org.apache.comet.CometArrowAllocator
@@ -41,7 +44,7 @@ import org.apache.comet.CometArrowAllocator
  *
  * NativeUtil must be closed after use to release resources in the dictionary provider.
  */
-class NativeUtil {
+class NativeUtil extends AutoCloseable {
   import Utils._
 
   /** Use the global allocator */
@@ -68,11 +71,16 @@ class NativeUtil {
     val arrays = new Array[ArrowArray](numCols)
     val schemas = new Array[ArrowSchema](numCols)
 
-    (0 until numCols).foreach { index =>
-      val arrowSchema = ArrowSchema.allocateNew(allocator)
-      val arrowArray = ArrowArray.allocateNew(allocator)
-      arrays(index) = arrowArray
-      schemas(index) = arrowSchema
+    try {
+      (0 until numCols).foreach { index =>
+        // Publish each allocation before the next one, so partial allocation failures can free it.
+        schemas(index) = ArrowSchema.allocateNew(allocator)
+        arrays(index) = ArrowArray.allocateNew(allocator)
+      }
+    } catch {
+      case failure: Throwable =>
+        releaseArrowStructs(arrays, schemas, failure)
+        throw failure
     }
 
     (arrays, schemas)
@@ -137,6 +145,20 @@ class NativeUtil {
             provider,
             arrowArray,
             arrowSchema)
+        case cv: ConstantColumnVector =>
+          // Spark uses ConstantColumnVector for partition columns / per-batch constants (e.g.
+          // partition values, synthetic columns). Materialise to a fresh Arrow vector so Comet's
+          // native side -- which expects Arrow Arrays only -- can ingest the batch. Without this,
+          // queries that pull constants through a Comet operator fail with "Comet execution only
+          // takes Arrow Arrays". "UTC" is intentional -- see `ConstantColumnVectors`.
+          val materialised = ConstantColumnVectors
+            .materialize(cv, cv.dataType(), batch.numRows(), s"_const_$index", allocator, "UTC")
+
+          numRows += materialised.getValueCount
+
+          val arrowSchema = ArrowSchema.wrap(schemaAddrs(index))
+          val arrowArray = ArrowArray.wrap(arrayAddrs(index))
+          Data.exportVector(allocator, materialised, null, arrowArray, arrowSchema)
         case c =>
           throw new SparkException(
             "Comet execution only takes Arrow Arrays, but got " +
@@ -167,14 +189,23 @@ class NativeUtil {
       func: (Array[Long], Array[Long]) => Long): Option[ColumnarBatch] = {
     val (arrays, schemas) = allocateArrowStructs(numOutputCols)
 
-    val arrayAddrs = arrays.map(_.memoryAddress())
-    val schemaAddrs = schemas.map(_.memoryAddress())
-
-    val result = func(arrayAddrs, schemaAddrs)
+    val result =
+      try {
+        val arrayAddrs = arrays.map(_.memoryAddress())
+        val schemaAddrs = schemas.map(_.memoryAddress())
+        func(arrayAddrs, schemaAddrs)
+      } catch {
+        case failure: Throwable =>
+          // Native may have populated some fields before failing. Their C release callbacks own
+          // native buffers; closing the Arrow struct wrappers alone would leave those buffers live.
+          releaseArrowStructs(arrays, schemas, failure)
+          throw failure
+      }
 
     result match {
       case -1 =>
-        // EOF
+        // EOF has no importer to consume the allocated structs.
+        releaseArrowStructs(arrays, schemas)
         None
       case numRows =>
         val cometVectors = importVector(arrays, schemas)
@@ -182,8 +213,41 @@ class NativeUtil {
     }
   }
 
+  private def releaseArrowStructs(
+      arrays: Array[ArrowArray],
+      schemas: Array[ArrowSchema],
+      originalFailure: Throwable = null): Unit = {
+    var failure = originalFailure
+    def release(resource: => Unit): Unit = {
+      try resource
+      catch {
+        case caught: Throwable =>
+          if (failure == null) failure = caught
+          else if (caught ne failure) failure.addSuppressed(caught)
+      }
+    }
+
+    arrays.foreach { array =>
+      if (array != null) {
+        release(array.release())
+        release(array.close())
+      }
+    }
+    schemas.foreach { schema =>
+      if (schema != null) {
+        release(schema.release())
+        release(schema.close())
+      }
+    }
+    if (originalFailure == null && failure != null) throw failure
+  }
+
   /**
    * Imports a list of Arrow addresses from native execution, and return a list of Comet vectors.
+   *
+   * On failure this releases everything it was given, both the arrays and schemas it has not
+   * imported yet and the vectors it has already imported, so callers must not add cleanup of
+   * their own.
    *
    * @param arrays
    *   a list of Arrow array
@@ -194,16 +258,38 @@ class NativeUtil {
    */
   def importVector(arrays: Array[ArrowArray], schemas: Array[ArrowSchema]): Seq[CometVector] = {
     val arrayVectors = mutable.ArrayBuffer.empty[CometVector]
+    var firstUnconsumed = 0
 
-    (0 until arrays.length).foreach { i =>
-      val arrowSchema = schemas(i)
-      val arrowArray = arrays(i)
+    try {
+      (0 until arrays.length).foreach { i =>
+        val arrowSchema = schemas(i)
+        val arrowArray = arrays(i)
 
-      arrayVectors += CometVector.getVector(
-        importer.importVector(arrowArray, arrowSchema, dictionaryProvider),
-        dictionaryProvider)
+        // importField's finally consumes the schema. ArrayImporter takes the array normally, while
+        // ArrowImporter's catch releases it if the import fails before that transfer.
+        firstUnconsumed = i + 1
+        val arrowVector = importer.importVector(arrowArray, arrowSchema, dictionaryProvider)
+        val cometVector =
+          try CometVector.getVector(arrowVector, dictionaryProvider)
+          catch {
+            case failure: Throwable =>
+              // Nothing took ownership of the column, so release both halves: the vector and the
+              // dictionary values the import left in the provider. Read the field before closing,
+              // so the walk never depends on metadata read back from a closed vector.
+              val field = arrowVector.getField
+              AutoCloseables.close(failure, arrowVector: AutoCloseable)
+              ArrowImporter.closeDictionaries(field, dictionaryProvider, failure)
+              throw failure
+          }
+        arrayVectors += cometVector
+      }
+      arrayVectors.toSeq
+    } catch {
+      case failure: Throwable =>
+        AutoCloseables.close(failure, arrayVectors.toSeq: _*)
+        releaseArrowStructs(arrays.drop(firstUnconsumed), schemas.drop(firstUnconsumed), failure)
+        throw failure
     }
-    arrayVectors.toSeq
   }
 
   /**
@@ -229,7 +315,7 @@ class NativeUtil {
     new ColumnarBatch(arrayVectors.toArray, maxNumRows)
   }
 
-  def close(): Unit = {
+  override def close(): Unit = {
     // closing the dictionary provider also closes the dictionary arrays
     dictionaryProvider.close()
   }
