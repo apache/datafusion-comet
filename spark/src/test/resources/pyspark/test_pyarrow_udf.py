@@ -653,6 +653,59 @@ def test_map_in_batch_union_with_compatible_nested_fields(
 
 
 @pytest.mark.parametrize("api", ["mapInArrow", "mapInPandas"])
+@pytest.mark.parametrize("timezone", ["UTC", "Etc/UTC"])
+@pytest.mark.parametrize(
+    "truncated_first", [False, True], ids=["scan-first", "truncation-first"]
+)
+def test_map_in_batch_union_with_utc_timezone_alias(
+    spark, tmp_path, accelerated, api, timezone, truncated_first
+):
+    """Native scans use UTC, while date_trunc preserves the equivalent Etc/UTC alias."""
+    previous_timezone = spark.conf.get("spark.sql.session.timeZone")
+    spark.conf.set("spark.sql.session.timeZone", timezone)
+    try:
+        schema = T.StructType(
+            [
+                T.StructField("id", T.LongType()),
+                T.StructField("ts", T.TimestampType()),
+            ]
+        )
+        rows = [
+            (0, None),
+            (1, dt.datetime(2024, 1, 2, 3, 4, 5, 123456)),
+            (2, dt.datetime(2024, 1, 2, 23, 59, 59, 999999)),
+            (3, dt.datetime(2024, 1, 3)),
+        ]
+        src = str(tmp_path / "union_timestamp_timezones.parquet")
+        spark.createDataFrame(rows, schema).coalesce(1).write.parquet(src)
+        source = spark.read.parquet(src)
+        truncated = source.selectExpr("id", "date_trunc('day', ts) AS ts")
+        left, right = (truncated, source) if truncated_first else (source, truncated)
+        # Put both source schemas in one worker's input stream, in either order.
+        combined = left.union(right).coalesce(1)
+        expected = Counter(tuple(row) for row in combined.collect())
+        assert sum(expected.values()) == 2 * len(rows)
+        assert expected[(0, None)] == 2
+
+        def passthrough(iterator):
+            yield from iterator
+
+        result = getattr(combined, api)(passthrough, combined.schema)
+        plan = _executed_plan(result)
+        _assert_plan_matches_mode(
+            plan,
+            accelerated,
+            vanilla_node="MapInArrow" if api == "mapInArrow" else "MapInPandas",
+        )
+        assert "CometUnion" in plan
+        assert "CometCoalesce" in plan
+        assert "CometProject" in plan
+        assert Counter(tuple(row) for row in result.collect()) == expected
+    finally:
+        spark.conf.set("spark.sql.session.timeZone", previous_timezone)
+
+
+@pytest.mark.parametrize("api", ["mapInArrow", "mapInPandas"])
 def test_map_in_batch_union_with_different_field_metadata(
     spark, tmp_path, accelerated, api
 ):

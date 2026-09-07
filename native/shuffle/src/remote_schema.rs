@@ -15,19 +15,182 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::array::RecordBatch;
-use arrow::datatypes::DataType;
+use arrow::array::{
+    Array, ArrayRef, AsArray, FixedSizeListArray, GenericListArray, MapArray, OffsetSizeTrait,
+    RecordBatch, StructArray,
+};
+use arrow::datatypes::{DataType, FieldRef, Schema};
 use datafusion::common::DataFusionError;
 use datafusion::error::Result;
+use datafusion_comet_common::cast_and_stamp_schema;
+use std::sync::Arc;
+
+/// Decode a remote shuffle batch and reconcile its encoding with Spark's declared logical types.
+/// Validate buffers and logical types before casting, so a corrupt frame cannot be made to look
+/// compatible by a value-changing cast. Dictionary keys are an encoding detail, including inside
+/// containers: decode them here before either native execution or the JVM Arrow importer sees them.
+pub fn decode_remote_shuffle_batch(
+    bytes: &[u8],
+    expected_types: &[DataType],
+) -> Result<RecordBatch> {
+    let batch = crate::read_ipc_compressed_validated(bytes)?;
+    validate_remote_schema(&batch, expected_types)?;
+    if batch
+        .columns()
+        .iter()
+        .zip(expected_types)
+        .all(|(column, expected)| column.data_type() == expected)
+    {
+        return Ok(batch);
+    }
+
+    let fields: Vec<_> = batch
+        .schema()
+        .fields()
+        .iter()
+        .zip(expected_types)
+        .map(|(field, expected)| {
+            // Non-null dictionary keys can reference null values. The declared types do not
+            // constrain top-level nullability; match ShuffleScanExec's nullable output fields.
+            field
+                .as_ref()
+                .clone()
+                .with_data_type(expected.clone())
+                .with_nullable(true)
+        })
+        .collect();
+    let schema = Arc::new(Schema::new_with_metadata(
+        fields,
+        batch.schema().metadata().clone(),
+    ));
+    // Select dictionary values at every nesting level before narrowing nullability. Unused
+    // values may contain nulls even when every referenced value satisfies the expected schema.
+    let columns = batch
+        .columns()
+        .iter()
+        .map(unpack_dictionaries)
+        .collect::<Result<Vec<_>>>()?;
+    cast_and_stamp_schema("Remote shuffle reader", &schema, columns, batch.num_rows())
+}
+
+/// Decode dictionary rows before visiting their children or reconciling field nullability.
+/// Casting to a dictionary's value type is not equivalent: Arrow can cast the entire values
+/// table before selecting keys, or reinterpret the outer keys as a nested dictionary's key type.
+fn unpack_dictionaries(array: &ArrayRef) -> Result<ArrayRef> {
+    if let Some(dictionary) = array.as_any_dictionary_opt() {
+        let values = arrow::compute::take(dictionary.values().as_ref(), dictionary.keys(), None)?;
+        return unpack_dictionaries(&values);
+    }
+
+    match array.data_type() {
+        DataType::List(field) => unpack_list_dictionaries::<i32>(array, field),
+        DataType::LargeList(field) => unpack_list_dictionaries::<i64>(array, field),
+        DataType::FixedSizeList(field, size) => {
+            let list = array.as_fixed_size_list();
+            let values = unpack_dictionaries(list.values())?;
+            if Arc::ptr_eq(&values, list.values()) {
+                return Ok(Arc::clone(array));
+            }
+            let field = Arc::new(
+                field
+                    .as_ref()
+                    .clone()
+                    .with_data_type(values.data_type().clone()),
+            );
+            Ok(Arc::new(FixedSizeListArray::try_new_with_length(
+                field,
+                *size,
+                values,
+                list.nulls().cloned(),
+                list.len(),
+            )?))
+        }
+        DataType::Struct(fields) => {
+            let structure = array.as_struct();
+            let columns = structure
+                .columns()
+                .iter()
+                .map(unpack_dictionaries)
+                .collect::<Result<Vec<_>>>()?;
+            if columns
+                .iter()
+                .zip(structure.columns())
+                .all(|(decoded, original)| Arc::ptr_eq(decoded, original))
+            {
+                return Ok(Arc::clone(array));
+            }
+            let fields = fields
+                .iter()
+                .zip(&columns)
+                .map(|(field, column)| {
+                    field
+                        .as_ref()
+                        .clone()
+                        .with_data_type(column.data_type().clone())
+                })
+                .collect();
+            Ok(Arc::new(StructArray::try_new_with_length(
+                fields,
+                columns,
+                structure.nulls().cloned(),
+                structure.len(),
+            )?))
+        }
+        DataType::Map(field, ordered) => {
+            let map = array.as_map();
+            let original_entries: ArrayRef = Arc::new(map.entries().clone());
+            let entries = unpack_dictionaries(&original_entries)?;
+            if Arc::ptr_eq(&entries, &original_entries) {
+                return Ok(Arc::clone(array));
+            }
+            let field = Arc::new(
+                field
+                    .as_ref()
+                    .clone()
+                    .with_data_type(entries.data_type().clone()),
+            );
+            Ok(Arc::new(MapArray::try_new(
+                field,
+                map.offsets().clone(),
+                entries.as_struct().clone(),
+                map.nulls().cloned(),
+                *ordered,
+            )?))
+        }
+        _ => Ok(Arc::clone(array)),
+    }
+}
+
+fn unpack_list_dictionaries<O: OffsetSizeTrait>(
+    array: &ArrayRef,
+    field: &FieldRef,
+) -> Result<ArrayRef> {
+    let list = array.as_list::<O>();
+    let values = unpack_dictionaries(list.values())?;
+    if Arc::ptr_eq(&values, list.values()) {
+        return Ok(Arc::clone(array));
+    }
+    let field = Arc::new(
+        field
+            .as_ref()
+            .clone()
+            .with_data_type(values.data_type().clone()),
+    );
+    Ok(Arc::new(GenericListArray::<O>::try_new(
+        field,
+        list.offsets().clone(),
+        values,
+        list.nulls().cloned(),
+    )?))
+}
 
 /// Check a remotely fetched batch against the logical types declared by Spark before any cast
 /// or JVM Arrow import. Arrow buffer validation alone cannot detect a valid but incorrect IPC
 /// type, and a general cast can silently change values or turn them into nulls.
 ///
-/// Native shuffle writers align their input with Spark's types before partitioning; row writers
-/// build those types directly. Row writers may use top-level Int32-keyed string/binary
-/// dictionaries, but disable dictionaries inside containers. Do not accept other dictionary
-/// layouts just because Arrow can cast them: the JVM importer does not support all of them.
+/// Dictionary encoding does not change the logical value type, regardless of key width or nesting.
+/// Callers must decode accepted dictionaries before JVM import; use [`decode_remote_shuffle_batch`]
+/// to keep buffer validation, logical validation, and normalization in that order.
 ///
 /// Nested nullability and metadata are normalized separately. List element and map entries names
 /// are synthetic (for example, Rust uses `item` while the JVM uses `element`), but struct member
@@ -44,16 +207,7 @@ pub fn validate_remote_schema(batch: &RecordBatch, expected_types: &[DataType]) 
 
     for (index, (column, expected)) in batch.columns().iter().zip(expected_types).enumerate() {
         let actual = column.data_type();
-        let value_type = match actual {
-            DataType::Dictionary(keys, values)
-                if keys.as_ref() == &DataType::Int32
-                    && matches!(values.as_ref(), DataType::Utf8 | DataType::Binary) =>
-            {
-                values.as_ref()
-            }
-            _ => actual,
-        };
-        if !same_logical_type(value_type, expected) {
+        if !same_logical_type(actual, expected) {
             return Err(DataFusionError::Execution(format!(
                 "Shuffle block type mismatch at column {index}: got {actual} but expected {expected}"
             )));
@@ -64,6 +218,7 @@ pub fn validate_remote_schema(batch: &RecordBatch, expected_types: &[DataType]) 
 
 fn same_logical_type(actual: &DataType, expected: &DataType) -> bool {
     match (actual, expected) {
+        (DataType::Dictionary(_, values), _) => same_logical_type(values, expected),
         (DataType::List(a), DataType::List(e))
         | (DataType::LargeList(a), DataType::LargeList(e)) => {
             same_logical_type(a.data_type(), e.data_type())
@@ -92,7 +247,7 @@ fn same_logical_type(actual: &DataType, expected: &DataType) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::validate_remote_schema;
+    use super::{unpack_dictionaries, validate_remote_schema};
     use crate::read_ipc_compressed_validated;
     use arrow::array::{
         Array, ArrayRef, BinaryArray, BinaryDictionaryBuilder, Decimal128Array, Int32Array,
@@ -100,10 +255,41 @@ mod tests {
         TimestampMicrosecondArray,
     };
     use arrow::buffer::OffsetBuffer;
-    use arrow::datatypes::{DataType, Field, Fields, Int32Type, IntervalUnit, Schema, TimeUnit};
+    use arrow::datatypes::{DataType, Field, Fields, Int32Type, Schema, TimeUnit};
     use arrow::ipc::writer::StreamWriter;
     use std::collections::HashMap;
     use std::sync::Arc;
+
+    #[test]
+    fn unpacking_nested_dictionaries_preserves_each_key_type() {
+        use arrow::array::{DictionaryArray, Int8Array, UInt16Array};
+        use arrow::datatypes::{Int8Type, UInt16Type};
+
+        // IPC has only one dictionary encoding per field. Exercise the array-level helper
+        // directly to ensure it gathers outer keys rather than casting them to the inner type.
+        let mut inner_keys = vec![Some(0); 129];
+        inner_keys[1] = None;
+        inner_keys[128] = Some(1);
+        let inner = Arc::new(
+            DictionaryArray::<Int8Type>::try_new(
+                Int8Array::from(inner_keys),
+                Arc::new(Int32Array::from(vec![7, 42])),
+            )
+            .unwrap(),
+        );
+        let outer: ArrayRef = Arc::new(
+            DictionaryArray::<UInt16Type>::try_new(
+                UInt16Array::from(vec![Some(128), None, Some(1), Some(0)]),
+                inner,
+            )
+            .unwrap(),
+        );
+        let decoded = unpack_dictionaries(&outer).unwrap();
+        assert_eq!(
+            decoded.to_data(),
+            Int32Array::from(vec![Some(42), None, None, Some(7)]).to_data()
+        );
+    }
 
     fn batch_of_type(data_type: DataType) -> RecordBatch {
         RecordBatch::new_empty(Arc::new(Schema::new(vec![Field::new(
@@ -263,22 +449,16 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_or_wrongly_typed_dictionaries_are_rejected() {
+    fn dictionaries_with_wrong_logical_types_are_rejected() {
         use DataType::*;
         for (actual, expected) in [
             (dictionary(Int32, UInt32), Int32),
             (dictionary(Int32, Utf8), Int32),
-            (dictionary(Int32, Int32), Int32),
-            (dictionary(Int32, Null), Null),
-            (
-                dictionary(Int32, Interval(IntervalUnit::MonthDayNano)),
-                Interval(IntervalUnit::MonthDayNano),
-            ),
-            (dictionary(Int8, Utf8), Utf8),
-            (dictionary(UInt32, Utf8), Utf8),
-            (dictionary(Int32, list(Utf8)), list(Utf8)),
-            (dictionary(Int32, dictionary(Int32, Utf8)), Utf8),
-            (list(dictionary(Int32, Utf8)), list(Utf8)),
+            (dictionary(Int8, Utf8), Binary),
+            (dictionary(UInt32, Int64), Int32),
+            (dictionary(Int32, list(Utf8)), list(Binary)),
+            (dictionary(Int32, dictionary(Int8, UInt32)), Int32),
+            (list(dictionary(Int32, Utf8)), list(Binary)),
         ] {
             let error = validate_remote_schema(&batch_of_type(actual), &[expected])
                 .unwrap_err()
