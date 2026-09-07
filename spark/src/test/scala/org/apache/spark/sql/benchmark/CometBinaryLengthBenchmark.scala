@@ -20,8 +20,11 @@
 package org.apache.spark.sql.benchmark
 
 import org.apache.spark.benchmark.Benchmark
+import org.apache.spark.sql.DataFrame
 import org.apache.spark.sql.catalyst.optimizer.ConstantFolding
+import org.apache.spark.sql.execution.{QueryExecution, SparkPlan}
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.util.QueryExecutionListener
 
 import org.apache.comet.CometConf
 
@@ -91,7 +94,9 @@ case class BinaryLengthShape(name: String, column: String, width: Int, nullPerce
  *     does not close: the dispatch arm stays the slower of the two Comet arms at every shape here.
  *
  * Keeping the projection inside the Comet pipeline is therefore not automatically a win for these
- * roots; on wide binary it is a regression against the Spark fallback it replaces.
+ * roots; on wide binary it is a regression against the Spark fallback it replaces. Given these
+ * results, the three serdes no longer mix in `CodegenDispatchFallback` for `BinaryType`; both
+ * Comet arms below now take the Spark-fallback path until a narrower implementation lands.
  *
  * Each case prints its physical plan and a digest of its result set before the timings, so the
  * report shows which operators each arm actually ran and that all three arms agree on the output.
@@ -151,6 +156,31 @@ object CometBinaryLengthBenchmark extends CometBenchmarkBase {
               runBinaryLengthModes(name, v, query)
             }
           }
+
+          // Width shapes only: null fraction is orthogonal to what these two extra scenarios test.
+          val widthShapes = shapes.take(3) // 8B / 64B / 1KB
+
+          // A native downstream consumer (aggregation) so an arm that leaves the Comet pipeline
+          // for the projection also pays a transition back in for the sum.
+          for (shape <- widthShapes) {
+            val name = s"length downstream-sum ${shape.name}"
+            val query =
+              s"select sum(cast(length(${shape.column}) as bigint)) as v from parquetV1Table"
+            runBenchmark(name) {
+              runBinaryLengthModes(name, v, query)
+            }
+          }
+
+          // All three roots in one projection, to amortize the dispatcher's per-expression cost.
+          for (shape <- widthShapes) {
+            val name = s"combined roots ${shape.name}"
+            val c = shape.column
+            val query =
+              s"select (length($c) + bit_length($c) + octet_length($c)) as v from parquetV1Table"
+            runBenchmark(name) {
+              runBinaryLengthModes(name, v, query)
+            }
+          }
         }
       }
     }
@@ -196,23 +226,46 @@ object CometBinaryLengthBenchmark extends CometBenchmarkBase {
   }
 
   /**
-   * Runs `query` under `configs`, writes its physical plan and a digest of its output to the
-   * results file, and returns the digest so the caller can compare arms.
+   * Runs `query` under `configs`, writes the actually-timed plan and a digest of its output to
+   * the results file, and returns the digest so the caller can compare arms. `withSQLConf`
+   * returns `Unit` on Spark 3.4/3.5, so the result is captured inside the block and returned
+   * after it.
    */
   private def describe(
       benchmark: Benchmark,
       label: String,
       query: String,
-      configs: Seq[(String, String)]): String = withSQLConf(configs: _*) {
-    val df = spark.sql(query)
-    // Execute the benchmarked query itself rather than the digest query below, so the plan
-    // reported is the one the timings measure. `noop()` runs it without collecting. Execute
-    // before reading the plan: AQE only settles the final plan once the query has run.
-    df.noop()
-    val plan = stripAQEPlan(df.queryExecution.executedPlan)
-    val summary = digest(query)
-    report(benchmark, s"$label plan:\n${plan.treeString}$summary")
+      configs: Seq[(String, String)]): String = {
+    var summary: String = null
+    withSQLConf(configs: _*) {
+      val plan = stripAQEPlan(timedPlan(spark.sql(query)))
+      summary = digest(query)
+      report(benchmark, s"$label plan:\n${plan.treeString}$summary")
+    }
     summary
+  }
+
+  /**
+   * Runs `df.noop()` and returns the executed plan of the write command it actually times.
+   * `noop()` runs a separate command `QueryExecution` from `df`'s own, so `df.queryExecution` is
+   * the pre-write SELECT plan, not what the timings measure; a listener captures the command's.
+   */
+  private def timedPlan(df: DataFrame): SparkPlan = {
+    @volatile var captured: SparkPlan = null
+    val listener = new QueryExecutionListener {
+      override def onSuccess(funcName: String, qe: QueryExecution, durationNs: Long): Unit =
+        captured = qe.executedPlan
+      override def onFailure(funcName: String, qe: QueryExecution, exception: Exception): Unit =
+        ()
+    }
+    spark.listenerManager.register(listener)
+    try {
+      df.noop()
+    } finally {
+      spark.listenerManager.unregister(listener)
+    }
+    require(captured != null, "no QueryExecution captured for noop() write command")
+    captured
   }
 
   /**

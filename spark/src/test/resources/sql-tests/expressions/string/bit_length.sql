@@ -15,10 +15,6 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- BinaryType has no native path, so it routes through the codegen dispatcher (Spark's own
--- `doGenCode`, i.e. `numBytes() * 8`) instead of falling back to Spark.
--- Config: spark.comet.exec.scalaUDF.codegen.enabled=true
-
 statement
 CREATE TABLE test_bit_length(s string) USING parquet
 
@@ -32,15 +28,15 @@ SELECT bit_length(s) FROM test_bit_length
 query
 SELECT bit_length('hello'), bit_length(''), bit_length(NULL)
 
--- BinaryType input routes through the codegen dispatcher and stays inside Comet
+-- BinaryType input falls back to Spark; benchmarked slower via the codegen dispatcher.
 statement
 CREATE TABLE test_bit_length_binary(b binary) USING parquet
 
 statement
 INSERT INTO test_bit_length_binary VALUES (X'48656c6c6f'), (X''), (NULL), (X'FF')
 
-query
+query expect_fallback(bit_length on BinaryType is not supported)
 SELECT bit_length(b) FROM test_bit_length_binary
 
-query
+query expect_fallback(bit_length on BinaryType is not supported)
 SELECT bit_length(X'48656c6c6f'), bit_length(CAST(NULL AS BINARY))
