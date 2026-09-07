@@ -218,12 +218,18 @@ SELECT arrays_zip(array(struct(1, 2, 3), struct(2, 3, 4)));
 -- query
 -- SELECT arrays_zip(array(struct(1, 2, 3), struct(2, 3, 4), struct(null, null, null)));
 
--- Arrays of maps
--- FIXME: COMET: map is not supported, unsupported arguments for CreateArray, unsupported arguments for ArraysZip
--- +------------------------------------------------------------------+
--- |arrays_zip(array(map(1.0, 2, 3.0, 4)), array(map(1.0, 2, 3.0, 4)))|
--- +------------------------------------------------------------------+
--- |[{{1.0 -> 2, 3.0 -> 4}, {1.0 -> 2, 3.0 -> 4}}]                    |
--- +------------------------------------------------------------------+
--- query
--- SELECT arrays_zip(array(map(1.0, '2', 3.0, '4')), array(map(1.0, '2', 3.0, '4')));
+-- arrays_zip over arrays of maps: MapType elements have no native impl; the projection stays
+-- in Comet via the JVM codegen dispatcher. Input is built from a table column so the
+-- expression is not constant-folded before reaching Comet.
+statement
+CREATE TABLE arrays_zip_map_tbl using parquet AS SELECT 1 AS k1, 2 AS v1, 3 AS k2, 4 AS v2;
+
+-- positive: arrays of maps must execute via dispatch, not whole-projection Spark fallback
+query
+SELECT arrays_zip(array(map(k1, v1), map(k2, v2)), array(map('x', v2), map('y', v1)))
+FROM arrays_zip_map_tbl
+
+-- mixed projection: map-element dispatch + scalar native path in the same projection
+query
+SELECT arrays_zip(array(map(k1, v1)), array(k1, k2)), v1 + v2
+FROM arrays_zip_map_tbl
