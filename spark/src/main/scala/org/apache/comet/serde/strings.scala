@@ -297,43 +297,31 @@ object CometConcat
 }
 
 object CometConcatWs extends CometExpressionSerde[ConcatWs] with CodegenDispatchFallback {
-
-  // Spark's ConcatWs accepts `array<string>` arguments after the separator and flattens their
-  // elements into the list of strings to join (null elements are skipped, like null strings).
-  // DataFusion's `concat_ws` accepts only string arguments and fails at execution time when it is
-  // handed a list, so these calls have no native path. Because this serde mixes in
-  // `CodegenDispatchFallback`, they run through the JVM codegen dispatcher (Spark's own
-  // `ConcatWs.doGenCode` inside the Comet pipeline) instead, and fall back to Spark only when the
-  // dispatcher is disabled. See https://github.com/apache/datafusion-comet/issues/5675.
-  private val arrayArgumentReason =
-    "`concat_ws` with `array<string>` arguments: Spark flattens the array elements into the " +
-      "strings to join, which DataFusion's `concat_ws` does not support " +
-      "(https://github.com/apache/datafusion-comet/issues/5675)"
-
-  override def getUnsupportedReasons(): Seq[String] = Seq(arrayArgumentReason)
+  override def getUnsupportedReasons(): Seq[String] = Seq("all arguments are foldable")
 
   override def getSupportLevel(expr: ConcatWs): SupportLevel = expr.children.headOption match {
-    // A NULL separator converts directly to a NULL result, so it stays supported.
     case Some(Literal(null, _)) => Compatible()
-    case _ if expr.children.exists(_.dataType.isInstanceOf[ArrayType]) =>
-      Unsupported(Some(arrayArgumentReason))
-    // Decline all-literal args so that Spark's ConstantFolding handles them (it normally folds
-    // them before they reach Comet). With the dispatcher enabled they run through Spark's own
-    // generated code in-pipeline; otherwise the projection falls back to Spark.
     case _ if expr.children.forall(_.foldable) =>
+      // Preserve the existing ConstantFolding/codegen behavior for foldable expressions.
+      // Non-foldable runtime scalars are handled by the native adapter.
       Unsupported(Some("all arguments are foldable"))
     case _ => Compatible()
   }
 
   override def convert(expr: ConcatWs, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
     expr.children.headOption match {
-      // Match Spark behavior: when the separator is NULL, the result of concat_ws is NULL.
       case Some(Literal(null, _)) =>
-        val nullLiteral = Literal.create(null, expr.dataType)
-        exprToProtoInternal(nullLiteral, inputs, binding)
-
+        exprToProtoInternal(Literal.create(null, expr.dataType), inputs, binding)
+      case _
+          if expr.children.length == 1 ||
+            expr.children.exists(_.dataType.isInstanceOf[ArrayType]) =>
+        val childExprs = expr.children.map(exprToProtoInternal(_, inputs, binding))
+        scalarFunctionExprToProtoWithReturnType(
+          "spark_concat_ws",
+          expr.dataType,
+          false,
+          childExprs: _*)
       case _ =>
-        // For all other cases, use the generic scalar function implementation.
         CometScalarFunction[ConcatWs]("concat_ws").convert(expr, inputs, binding)
     }
   }

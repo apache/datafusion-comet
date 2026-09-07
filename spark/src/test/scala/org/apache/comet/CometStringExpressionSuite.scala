@@ -726,18 +726,34 @@ class CometStringExpressionSuite extends CometTestBase with CometCodegenAssertio
     // scalastyle:on
   }
 
+  test("concat_ws with scalar subqueries over a multi-row batch") {
+    withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
+      withParquetTable((1 to 32).map(i => (i, "row")), "fact") {
+        withParquetTable(Seq(Tuple1("a"), Tuple1("b")), "lookup") {
+          for (subquery <- Seq(
+              "(SELECT max(_1) FROM lookup)",
+              "(SELECT max(_1) FROM lookup WHERE _1 = 'missing')")) {
+            checkSparkAnswerAndOperator(s"SELECT _1, concat_ws($subquery) FROM fact")
+            checkSparkAnswerAndOperator(s"SELECT _1, concat_ws(',', $subquery) FROM fact")
+            checkSparkAnswerAndOperator(
+              s"SELECT _1, concat_ws(',', array('x', NULL, ''), $subquery) FROM fact")
+          }
+        }
+      }
+    }
+  }
+
   test("concat_ws with array<string> arguments") {
-    // https://github.com/apache/datafusion-comet/issues/5675
-    // Spark flattens array<string> arguments into the strings to join (skipping null elements).
-    // DataFusion's concat_ws rejects list arguments, so these calls run through the JVM codegen
-    // dispatcher (Spark's own doGenCode inside the Comet pipeline) instead of the native path.
     val data: Seq[(Seq[String], String)] = Seq(
       (Seq("a", "b"), "c d"),
       (Seq("x", null, "y"), "z"),
       (Seq("only"), ""),
       (Seq.empty[String], "w"),
       (null, "v"),
-      (Seq("p", "q"), null))
+      (Seq("p", "q"), null),
+      (Seq(null, "", "\u00e9"), "|"),
+      (Seq(null, null), ""),
+      (null, null))
     withParquetTable(data, "tbl") {
       val arrayArgQueries = Seq(
         "SELECT concat_ws(',', _1, _2) FROM tbl",
@@ -745,18 +761,16 @@ class CometStringExpressionSuite extends CometTestBase with CometCodegenAssertio
         "SELECT concat_ws(',', _1) FROM tbl",
         "SELECT concat_ws('-', _1, _2, _1) FROM tbl",
         "SELECT concat_ws(',', split(_2, ' ')) FROM tbl",
-        "SELECT concat_ws(',', split(_2, ' '), _1) FROM tbl")
-      for (query <- arrayArgQueries) {
-        // Spark's answer, the whole plan stays in Comet, and the codegen dispatcher actually ran.
-        assertCodegenRan {
-          checkSparkAnswerAndOperator(query)
-        }
-      }
-      // With the dispatcher disabled there is no in-pipeline path, so the projection falls back
-      // to Spark with the serde's reason instead of failing at native execution.
-      withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
+        "SELECT concat_ws(',', split(_2, ' '), _1) FROM tbl",
+        "SELECT concat_ws(_2, _1, 'tail', _1) FROM tbl",
+        "SELECT concat_ws('', _1, _2, array('x', NULL, 'y')) FROM tbl",
+        "SELECT concat_ws(NULL, _1, _2) FROM tbl",
+        "SELECT concat_ws(_2) FROM tbl")
+      withSQLConf(
+        CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false",
+        "spark.comet.expression.StringSplit.allowIncompatible" -> "true") {
         for (query <- arrayArgQueries) {
-          checkSparkAnswerAndFallbackReason(query, "`concat_ws` with `array<string>` arguments")
+          checkSparkAnswerAndOperator(query)
         }
       }
       // A NULL separator produces NULL regardless of the argument types and stays native.
