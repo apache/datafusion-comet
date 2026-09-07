@@ -15,4 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
+pub mod azure;
 pub mod s3;
+pub mod s3_blob_fs_support;

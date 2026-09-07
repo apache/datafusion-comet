@@ -19,7 +19,7 @@
 
 use arrow::array::{Array, ArrayRef, AsArray, BooleanArray, StructArray};
 use arrow::datatypes::{DataType, Field, FieldRef, Fields, Int64Type};
-use datafusion::common::{internal_datafusion_err, Result, ScalarValue};
+use datafusion::common::{internal_datafusion_err, not_impl_err, Result, ScalarValue};
 use datafusion::logical_expr::function::{AccumulatorArgs, StateFieldsArgs};
 use datafusion::logical_expr::{
     Accumulator, AggregateUDFImpl, EmitTo, GroupsAccumulator, Signature, Volatility,
@@ -383,7 +383,6 @@ impl GroupsAccumulator for ModeGroupsAccumulator {
         &mut self,
         values: &[ArrayRef],
         group_indices: &[usize],
-        _opt_filter: Option<&BooleanArray>,
         total_num_groups: usize,
     ) -> Result<()> {
         self.resize(total_num_groups);
@@ -422,6 +421,14 @@ impl GroupsAccumulator for ModeGroupsAccumulator {
         debug_assert!(!emitted.is_empty(), "mode: state called with no groups");
         let refs: Vec<&HashMap<ScalarValue, i64>> = emitted.iter().collect();
         Ok(vec![Arc::new(build_state(&self.data_type, &refs)?)])
+    }
+
+    fn convert_to_state(
+        &self,
+        _values: &[ArrayRef],
+        _opt_filter: Option<&BooleanArray>,
+    ) -> Result<Vec<ArrayRef>> {
+        not_impl_err!("Input batch conversion to state not implemented")
     }
 
     fn size(&self) -> usize {
@@ -630,7 +637,7 @@ mod tests {
         let state = partial.state(EmitTo::All).unwrap();
 
         let mut final_acc = ModeGroupsAccumulator::new(DataType::Int32, false);
-        final_acc.merge_batch(&state, &[0, 1], None, 2).unwrap();
+        final_acc.merge_batch(&state, &[0, 1], 2).unwrap();
         let result = final_acc.evaluate(EmitTo::All).unwrap();
         let result = result.as_primitive::<Int32Type>();
         assert_eq!(result.value(0), 5);
