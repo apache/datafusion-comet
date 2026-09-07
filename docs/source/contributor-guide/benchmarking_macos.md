@@ -36,7 +36,7 @@ cargo install tpchgen-cli
 mkdir benchmark_data
 cd benchmark_data
 tpchgen-cli -s 100 --format=parquet
-export $BENCH_DATA=`pwd`
+export BENCH_DATA=`pwd`
 ```
 
 Create a temp folder for spark events emitted during benchmarking
@@ -55,13 +55,13 @@ export DF_BENCH=`pwd`
 
 ## Install Spark
 
-Install Apache Spark. This example refers to 4.1.2 version.
+Install Apache Spark. This example refers to 4.1.3 version.
 
 ```shell
-wget https://archive.apache.org/dist/spark/spark-4.1.2/spark-4.1.2-bin-hadoop3.tgz
-tar xzf spark-4.1.2-bin-hadoop3.tgz
-sudo mv spark-4.1.2-bin-hadoop3 /opt
-export SPARK_HOME=/opt/spark-4.1.2-bin-hadoop3/
+wget https://archive.apache.org/dist/spark/spark-4.1.3/spark-4.1.3-bin-hadoop3.tgz
+tar xzf spark-4.1.3-bin-hadoop3.tgz
+sudo mv spark-4.1.3-bin-hadoop3 /opt
+export SPARK_HOME=/opt/spark-4.1.3-bin-hadoop3/
 ```
 
 Start Spark in standalone mode:
@@ -112,7 +112,7 @@ $SPARK_HOME/bin/spark-submit \
     --conf spark.eventLog.enabled=true \
     $DF_BENCH/runners/datafusion-comet/tpcbench.py \
     --benchmark tpch \
-    --data $BENCH_DATA/tpch-data/ \
+    --data $BENCH_DATA/ \
     --queries $DF_BENCH/tpch/queries \
     --output . \
     --iterations 1
@@ -156,7 +156,7 @@ $SPARK_HOME/bin/spark-submit \
     --conf spark.comet.exec.forceShuffledHashJoin=true \
     $DF_BENCH/runners/datafusion-comet/tpcbench.py \
     --benchmark tpch \
-    --data $BENCH_DATA/tpch-data/ \
+    --data $BENCH_DATA/ \
     --queries $DF_BENCH/tpch/queries \
     --output . \
     --iterations 1

@@ -220,11 +220,15 @@ case class CometIcebergNativeScanExec(
   override def doExecuteColumnar(): RDD[ColumnarBatch] = {
     val nativeMetrics = CometMetricNode.fromCometPlan(this)
     val serializedPlan = CometExec.serializeNativePlan(nativeOp)
+    // Key by the same (metadata_location, scan_hash_code) pair PlanDataInjector.injectPlanData
+    // looks up via IcebergPlanDataInjector.getKey (see the scan_hash_code field comment in
+    // operator.proto for why metadata_location alone cannot identify a scan).
+    val injectorKey = IcebergPlanDataInjector.getKey(nativeOp).getOrElse(metadataLocation)
     new CometExecRDD(
       sparkContext,
       inputRDDs = Seq.empty,
-      commonByKey = Map(metadataLocation -> commonData),
-      perPartitionByKey = Map(metadataLocation -> perPartitionData),
+      commonByKey = Map(injectorKey -> commonData),
+      perPartitionByKey = Map(injectorKey -> perPartitionData),
       serializedPlan = serializedPlan,
       defaultNumPartitions = perPartitionData.length,
       numOutputCols = output.length,

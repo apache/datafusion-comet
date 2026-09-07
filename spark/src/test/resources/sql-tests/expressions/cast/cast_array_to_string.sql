@@ -39,8 +39,8 @@ INSERT INTO test_cast_array_to_string VALUES
   ),
   (
     3,
-    array(cast(null as float), cast(-0.0 as float), cast(0.0 as float)),
-    array(cast(null as double), cast(-0.0 as double), cast(0.0 as double)),
+    array(cast(null as float), float('-0.0'), cast(0.0 as float)),
+    array(cast(null as double), double('-0.0'), cast(0.0 as double)),
     null
   ),
   (

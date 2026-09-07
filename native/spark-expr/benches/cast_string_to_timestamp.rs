@@ -15,193 +15,229 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::array::{builder::StringBuilder, RecordBatch};
-use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
+use arrow::array::RecordBatch;
+use arrow::datatypes::{DataType, TimeUnit};
 use criterion::{criterion_group, criterion_main, Criterion};
 use datafusion::physical_expr::{expressions::Column, PhysicalExpr};
 use datafusion_comet_spark_expr::{Cast, EvalMode, SparkCastOptions};
 use std::sync::Arc;
 
+#[path = "common/mod.rs"]
+mod common;
+
 const BATCH_SIZE: usize = 8192;
 
-/// Builds the cast expression for `STRING -> TIMESTAMP` in the given session timezone.
-fn cast_to_timestamp(timezone: &str) -> Cast {
-    Cast::new(
-        Arc::new(Column::new("a", 0)),
-        DataType::Timestamp(TimeUnit::Microsecond, Some(timezone.into())),
-        SparkCastOptions::new(EvalMode::Legacy, timezone, false),
-        None,
-        None,
-    )
-}
-
-/// Builds the cast expression for `STRING -> TIMESTAMP_NTZ`.
-fn cast_to_timestamp_ntz() -> Cast {
-    Cast::new(
-        Arc::new(Column::new("a", 0)),
-        DataType::Timestamp(TimeUnit::Microsecond, None),
-        SparkCastOptions::new(EvalMode::Legacy, "UTC", false),
-        None,
-        None,
-    )
-}
-
 fn criterion_benchmark(c: &mut Criterion) {
-    // Shapes that all take the "direct pattern match" path.
-    let canonical = batch(Nulls::None, |i| {
-        format!(
-            "{:04}-{:02}-{:02} 12:34:56",
-            1970 + i % 60,
-            i % 12 + 1,
-            i % 28 + 1
-        )
-    });
-    let micros = batch(Nulls::None, |i| {
-        format!(
-            "{:04}-{:02}-{:02}T12:34:56.{:06}",
-            1970 + i % 60,
-            i % 12 + 1,
-            i % 28 + 1,
-            i % 1_000_000
-        )
-    });
-    let date_only = batch(Nulls::None, |i| {
-        format!("{:04}-{:02}-{:02}", 1970 + i % 60, i % 12 + 1, i % 28 + 1)
-    });
-    let time_only = batch(Nulls::None, |i| {
-        format!("T{:02}:{:02}:{:02}", i % 24, i % 60, i % 60)
-    });
+    let expr = Arc::new(Column::new("a", 0)) as Arc<dyn PhysicalExpr>;
 
-    // Shapes that fall through the direct-match check into timezone-suffix extraction.
-    let iso_z = batch(Nulls::None, |i| {
-        format!(
-            "{:04}-{:02}-{:02}T12:34:56Z",
-            1970 + i % 60,
-            i % 12 + 1,
-            i % 28 + 1
-        )
-    });
-    let named_tz = batch(Nulls::None, |i| {
-        format!(
-            "{:04}-{:02}-{:02}T12:34:56 Europe/Moscow",
-            1970 + i % 60,
-            i % 12 + 1,
-            i % 28 + 1
-        )
-    });
-    let invalid = batch(Nulls::None, |_| "not a timestamp".to_string());
+    // Input shapes, chosen to cover each branch `timestamp_parser` can take: the canonical
+    // form, the fractional-second form, an offset suffix (which takes the extract-offset
+    // path), a date-only string, whitespace padding (the trim), and a mix that includes
+    // invalid values so the null path is measured too.
+    let batches = [
+        (
+            "canonical",
+            create_batch(|i| {
+                format!(
+                    "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+                    1970 + i % 60,
+                    i % 12 + 1,
+                    i % 28 + 1,
+                    i % 24,
+                    i % 60,
+                    i % 60
+                )
+            }),
+        ),
+        (
+            "microseconds",
+            create_batch(|i| {
+                format!(
+                    "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:06}",
+                    1970 + i % 60,
+                    i % 12 + 1,
+                    i % 28 + 1,
+                    i % 24,
+                    i % 60,
+                    i % 60,
+                    i % 1_000_000
+                )
+            }),
+        ),
+        (
+            "offset_suffix",
+            create_batch(|i| {
+                format!(
+                    "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}+05:30",
+                    1970 + i % 60,
+                    i % 12 + 1,
+                    i % 28 + 1,
+                    i % 24,
+                    i % 60,
+                    i % 60
+                )
+            }),
+        ),
+        (
+            "date_only",
+            create_batch(|i| format!("{:04}-{:02}-{:02}", 1970 + i % 60, i % 12 + 1, i % 28 + 1)),
+        ),
+        (
+            "time_only",
+            create_batch(|i| format!("T{:02}:{:02}:{:02}", i % 24, i % 60, i % 60)),
+        ),
+        (
+            "iso_z_suffix",
+            create_batch(|i| {
+                format!(
+                    "{:04}-{:02}-{:02}T12:34:56Z",
+                    1970 + i % 60,
+                    i % 12 + 1,
+                    i % 28 + 1
+                )
+            }),
+        ),
+        (
+            "named_tz_suffix",
+            create_batch(|i| {
+                format!(
+                    "{:04}-{:02}-{:02}T12:34:56 Europe/Moscow",
+                    1970 + i % 60,
+                    i % 12 + 1,
+                    i % 28 + 1
+                )
+            }),
+        ),
+        // The shape classifier declines non-ASCII input, so these take the Unicode-aware
+        // `RegexSet` fallback where `\d` still matches the digits.
+        (
+            "non_ascii_digits",
+            create_batch(|_| "٢٠٢٠-٠١-٠١".to_string()),
+        ),
+        ("invalid", create_batch(|_| "not a timestamp".to_string())),
+        // The parser only runs for non-null slots, so a mostly-null batch must not get slower.
+        (
+            "dense_nulls",
+            common::string_batch(BATCH_SIZE, 2, |i| {
+                format!(
+                    "{:04}-{:02}-{:02} 12:34:56",
+                    1970 + i % 60,
+                    i % 12 + 1,
+                    i % 28 + 1
+                )
+            }),
+        ),
+        (
+            "padded",
+            create_batch(|i| {
+                format!(
+                    "  {:04}-{:02}-{:02} {:02}:00:00  ",
+                    1970 + i % 60,
+                    i % 12 + 1,
+                    i % 28 + 1,
+                    i % 24
+                )
+            }),
+        ),
+        (
+            "mixed",
+            create_batch(|i| match i % 5 {
+                0 => format!(
+                    "{:04}-{:02}-{:02} 12:34:56",
+                    1970 + i % 60,
+                    i % 12 + 1,
+                    i % 28 + 1
+                ),
+                1 => format!(
+                    "{:04}-{:02}-{:02}T12:34:56.123456Z",
+                    1970 + i % 60,
+                    i % 12 + 1,
+                    i % 28 + 1
+                ),
+                2 => format!(
+                    "  {:04}-{:02}-{:02}  ",
+                    1900 + i % 200,
+                    i % 12 + 1,
+                    i % 28 + 1
+                ),
+                3 => "T12:34:56".to_string(),
+                _ => "not a timestamp".to_string(),
+            }),
+        ),
+    ];
 
-    // Null density: the parser is only called for non-null slots, so a dense-null batch
-    // must not get slower.
-    let sparse_nulls = batch(Nulls::Sparse, |i| {
-        format!(
-            "{:04}-{:02}-{:02} 12:34:56",
-            1970 + i % 60,
-            i % 12 + 1,
-            i % 28 + 1
-        )
-    });
-    let dense_nulls = batch(Nulls::Dense, |i| {
-        format!(
-            "{:04}-{:02}-{:02} 12:34:56",
-            1970 + i % 60,
-            i % 12 + 1,
-            i % 28 + 1
-        )
-    });
-
-    // Non-ASCII digits: matched by the Unicode-aware `\d` in the regex patterns.
-    let non_ascii = batch(Nulls::None, |_| "٢٠٢٠-٠١-٠١".to_string());
-
-    let mixed = batch(Nulls::Sparse, |i| match i % 6 {
-        0 => format!("{:04}-{:02}-{:02} 12:34:56", 1970 + i % 60, i % 12 + 1, 1),
-        1 => format!("{:04}-{:02}-{:02}T12:34:56.123456Z", 1970 + i % 60, 1, 1),
-        2 => format!("{:04}-{:02}-{:02}", 1970 + i % 60, i % 12 + 1, 1),
-        3 => format!("  {:04}-{:02}-{:02} 01:02:03  ", 1970 + i % 60, 1, 1),
-        4 => format!("{:04}", 1970 + i % 60),
-        _ => "garbage".to_string(),
-    });
-
-    let utc = cast_to_timestamp("UTC");
-    let mut group = c.benchmark_group("cast_string_to_timestamp");
-    for (name, batch) in [
-        ("canonical", &canonical),
-        ("microseconds", &micros),
-        ("date_only", &date_only),
-        ("time_only", &time_only),
-        ("iso_z_suffix", &iso_z),
-        ("named_tz_suffix", &named_tz),
-        ("invalid", &invalid),
-        ("sparse_nulls", &sparse_nulls),
-        ("dense_nulls", &dense_nulls),
-        ("non_ascii_digits", &non_ascii),
-        ("mixed", &mixed),
+    // Timezone-aware and NTZ go through different parsers (`timestamp_parser` vs
+    // `timestamp_ntz_parser`), and a non-UTC session timezone exercises the offset lookup that
+    // UTC short-circuits, so all three are measured.
+    for (target_name, to_type, timezone) in [
+        (
+            "timestamp",
+            DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+            "UTC",
+        ),
+        (
+            "timestamp_non_utc",
+            DataType::Timestamp(TimeUnit::Microsecond, Some("America/Los_Angeles".into())),
+            "America/Los_Angeles",
+        ),
+        (
+            "timestamp_ntz",
+            DataType::Timestamp(TimeUnit::Microsecond, None),
+            "UTC",
+        ),
     ] {
+        for (mode, mode_name) in [
+            (EvalMode::Legacy, "legacy"),
+            (EvalMode::Ansi, "ansi"),
+            (EvalMode::Try, "try"),
+        ] {
+            let mut group =
+                c.benchmark_group(format!("cast_string_to_{}/{}", target_name, mode_name));
+            for (name, batch) in &batches {
+                // ANSI raises on the first value the parser rejects, so timing it against a
+                // batch that holds one would measure the error path rather than the parser.
+                // `timestamp_ntz_parser` additionally rejects time-only strings.
+                let ansi_raises = matches!(*name, "mixed" | "invalid" | "non_ascii_digits")
+                    || (*name == "time_only" && target_name == "timestamp_ntz");
+                if mode == EvalMode::Ansi && ansi_raises {
+                    continue;
+                }
+                let cast = Cast::new(
+                    Arc::clone(&expr),
+                    to_type.clone(),
+                    SparkCastOptions::new(mode, timezone, false),
+                    None,
+                    None,
+                );
+                group.bench_function(*name, |b| {
+                    b.iter(|| cast.evaluate(batch).unwrap());
+                });
+            }
+            group.finish();
+        }
+    }
+
+    // The Spark 4 path adds a leading-whitespace check for T-prefixed time-only strings, so it
+    // is measured separately on the inputs where that check can fire.
+    let mut group = c.benchmark_group("cast_string_to_timestamp/spark4_legacy");
+    for name in ["padded", "mixed"] {
+        let batch = &batches.iter().find(|(n, _)| *n == name).unwrap().1;
+        let cast = Cast::new(
+            Arc::clone(&expr),
+            DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+            SparkCastOptions::new_with_version(EvalMode::Legacy, "UTC", false, true),
+            None,
+            None,
+        );
         group.bench_function(name, |b| {
-            b.iter(|| utc.evaluate(batch).unwrap());
+            b.iter(|| cast.evaluate(batch).unwrap());
         });
     }
     group.finish();
-
-    // A named zone exercises the DST-aware local-time resolution path.
-    let named_zone = cast_to_timestamp("America/New_York");
-    let mut group = c.benchmark_group("cast_string_to_timestamp_named_zone");
-    group.bench_function("canonical", |b| {
-        b.iter(|| named_zone.evaluate(&canonical).unwrap());
-    });
-    group.finish();
-
-    let ntz = cast_to_timestamp_ntz();
-    let mut group = c.benchmark_group("cast_string_to_timestamp_ntz");
-    for (name, batch) in [
-        ("canonical", &canonical),
-        ("microseconds", &micros),
-        ("date_only", &date_only),
-        ("iso_z_suffix", &iso_z),
-        ("invalid", &invalid),
-        ("dense_nulls", &dense_nulls),
-        ("mixed", &mixed),
-    ] {
-        group.bench_function(name, |b| {
-            b.iter(|| ntz.evaluate(batch).unwrap());
-        });
-    }
-    group.finish();
 }
 
-/// Null densities used by the benchmark shapes.
-#[derive(Copy, Clone)]
-enum Nulls {
-    /// Every slot is valid.
-    None,
-    /// Roughly 1 null in 17 slots.
-    Sparse,
-    /// Roughly 9 nulls in 10 slots.
-    Dense,
-}
-
-impl Nulls {
-    fn is_null(self, i: usize) -> bool {
-        match self {
-            Nulls::None => false,
-            Nulls::Sparse => i.is_multiple_of(17),
-            Nulls::Dense => !i.is_multiple_of(10),
-        }
-    }
-}
-
-/// Builds a batch of `BATCH_SIZE` strings from `f` at the requested null density.
-fn batch(nulls: Nulls, f: impl Fn(usize) -> String) -> RecordBatch {
-    let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Utf8, true)]));
-    let mut builder = StringBuilder::new();
-    for i in 0..BATCH_SIZE {
-        if nulls.is_null(i) {
-            builder.append_null();
-        } else {
-            builder.append_value(f(i));
-        }
-    }
-    RecordBatch::try_new(schema, vec![Arc::new(builder.finish())]).unwrap()
+fn create_batch(f: impl Fn(usize) -> String) -> RecordBatch {
+    common::string_batch(BATCH_SIZE, 17, f)
 }
 
 fn config() -> Criterion {

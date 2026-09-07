@@ -62,7 +62,8 @@ existing profile (for example `spark-4.1`) and update the version
 properties:
 
 - `spark.version`: the full upstream version, including any qualifier
-  (for example `4.2.0-preview4`).
+  (for example `4.3.0` for a final release, or `4.3.0-preview1` while only a
+  preview has been published).
 - `spark.version.short`: the major.minor (for example `4.2`).
 - `parquet.version`, `slf4j.version`, `scala.version`,
   `scala.binary.version`, `java.version`: align with what the new Spark
@@ -317,7 +318,7 @@ issue keeps the diff small and makes regressions easy to bisect.
 The user guide currently uses two tiers, "Supported" and "Experimental".
 Comet uses "Experimental" to describe its confidence in its own
 integration with a Spark version, distinct from Spark's "preview" tag
-(which refers to upstream release qualifiers like `4.2.0-preview4`). The
+(which refers to upstream release qualifiers like `4.3.0-preview1`). The
 term is already established in `installation.md`, `operators.md`, and
 `datasources.md`, so keep using it rather than introducing a new label.
 

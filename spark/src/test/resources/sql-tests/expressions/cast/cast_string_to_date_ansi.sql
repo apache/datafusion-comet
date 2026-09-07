@@ -19,7 +19,7 @@
 -- shape of a date but names no real calendar date, rather than returning NULL.
 -- See https://github.com/apache/datafusion-comet/issues/5012.
 --
--- Per-string parity with Spark is covered by CometCastSuite "cast StringType to DateType";
+-- Per-string parity with Spark is covered by CometNativeCastSuite "cast StringType to DateType";
 -- this fixture covers the plan shapes that suite does not exercise.
 
 -- Config: spark.sql.ansi.enabled=true

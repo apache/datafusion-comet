@@ -22,7 +22,7 @@ package org.apache.comet.serde
 import org.apache.spark.sql.catalyst.expressions.{Attribute, MakeDecimal, UnscaledValue}
 import org.apache.spark.sql.types.{DecimalType, LongType}
 
-import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithFallbackReason, scalarFunctionExprToProtoWithReturnType}
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, scalarFunctionExprToProtoWithReturnType}
 
 object CometUnscaledValue extends CometExpressionSerde[UnscaledValue] {
   override def convert(
@@ -32,7 +32,7 @@ object CometUnscaledValue extends CometExpressionSerde[UnscaledValue] {
     val childExpr = exprToProtoInternal(expr.child, inputs, binding)
     val optExpr =
       scalarFunctionExprToProtoWithReturnType("unscaled_value", LongType, false, childExpr)
-    optExprWithFallbackReason(optExpr, expr, expr.child)
+    optExpr
 
   }
 }
@@ -40,14 +40,6 @@ object CometUnscaledValue extends CometExpressionSerde[UnscaledValue] {
 object CometMakeDecimal extends CometExpressionSerde[MakeDecimal] {
 
   override def getUnsupportedReasons(): Seq[String] = Seq("Only `LongType` input is supported")
-
-  override def getCompatibleNotes(): Seq[String] = Seq(
-    "The native implementation silently returns `NULL` on overflow regardless of the" +
-      " `nullOnOverflow` flag, so under ANSI mode Comet returns `NULL` where Spark raises" +
-      " `NUMERIC_VALUE_OUT_OF_RANGE`. `MakeDecimal` is inserted by the `DecimalAggregates`" +
-      " optimizer rule, so this affects `sum`/`avg` over low-precision decimals when the" +
-      " unscaled long overflows the target precision" +
-      " ([#5066](https://github.com/apache/datafusion-comet/issues/5066)).")
 
   override def getSupportLevel(expr: MakeDecimal): SupportLevel = {
     expr.child.dataType match {
@@ -66,7 +58,7 @@ object CometMakeDecimal extends CometExpressionSerde[MakeDecimal] {
       DecimalType(expr.precision, expr.scale),
       failOnError = !expr.nullOnOverflow,
       childExpr)
-    optExprWithFallbackReason(optExpr, expr, expr.child)
+    optExpr
 
   }
 }

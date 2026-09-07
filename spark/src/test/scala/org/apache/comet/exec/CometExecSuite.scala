@@ -38,6 +38,7 @@ import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, Comet
 import org.apache.spark.sql.connector.catalog.InMemoryTableCatalog
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, BroadcastQueryStageExec}
+import org.apache.spark.sql.execution.columnar.CometInMemoryRelationHelper
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, BroadcastExchangeLike, ReusedExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, CartesianProductExec, SortMergeJoinExec}
@@ -83,6 +84,92 @@ class CometExecSuite extends CometTestBase {
         val deserialized: ConfigMap = roundtrip
         assert(
           value == deserialized.getEntriesMap.get(CometConf.COMET_EXPLAIN_NATIVE_ENABLED.key))
+      }
+    }
+  }
+
+  test("sample without replacement") {
+    withParquetTable((0 until 1000).map(i => (i, i + 1)), "tbl") {
+      val df = sql("SELECT * FROM tbl").sample(withReplacement = false, fraction = 0.3, seed = 42)
+      checkSparkAnswerAndOperator(df, Seq(classOf[CometSampleExec]))
+    }
+  }
+
+  // The sampler is seeded per partition with `seed + partitionIndex`, so a multi-partition input
+  // is what catches a native side that ignores the partition index.
+  test("sample without replacement over multiple partitions") {
+    withTempPath { dir =>
+      spark.range(0, 4000).repartition(4).write.parquet(dir.getCanonicalPath)
+      withParquetTable(dir.getCanonicalPath, "tbl") {
+        val df =
+          sql("SELECT * FROM tbl").sample(withReplacement = false, fraction = 0.2, seed = 7)
+        assert(df.rdd.getNumPartitions > 1)
+        checkSparkAnswerAndOperator(df, Seq(classOf[CometSampleExec]))
+      }
+    }
+  }
+
+  test("sample without replacement with non-zero lower bound (randomSplit)") {
+    withParquetTable((0 until 1000).map(i => (i, i + 1)), "tbl") {
+      val splits = sql("SELECT * FROM tbl").randomSplit(Array(0.3, 0.7), seed = 42)
+      splits.foreach(checkSparkAnswerAndOperator(_, Seq(classOf[CometSampleExec])))
+    }
+  }
+
+  test("sample via SQL TABLESAMPLE") {
+    withParquetTable((0 until 1000).map(i => (i, i + 1)), "tbl") {
+      val df = sql("SELECT * FROM tbl TABLESAMPLE (30 PERCENT) REPEATABLE (42)")
+      checkSparkAnswerAndOperator(df, Seq(classOf[CometSampleExec]))
+    }
+  }
+
+  // Sampling only drops rows, so above an order-preserving input the output must stay sorted and
+  // match Spark row-for-row. The logical plan contains a Sort, so checkSparkAnswerAndOperator
+  // compares results in order rather than sorting both sides first.
+  test("sample preserves ordering of sorted input") {
+    withParquetTable((0 until 1000).reverse.map(i => (i, i + 1)), "tbl") {
+      val df = sql("SELECT * FROM tbl")
+        .orderBy("_1")
+        .sample(withReplacement = false, fraction = 0.3, seed = 42)
+      checkSparkAnswerAndOperator(df, Seq(classOf[CometSampleExec]))
+      val ids = df.collect().map(_.getInt(0))
+      assert(ids.nonEmpty && ids.sameElements(ids.sorted))
+    }
+  }
+
+  // Above an operator where Comet may emit rows in a different order than Spark, such as an
+  // aggregate, the sampler sees a different row sequence and can select different rows, but the
+  // result must still be a valid sample of the same expected size.
+  test("sample above aggregate produces a valid sample of the expected size") {
+    withParquetTable((0 until 10000).map(i => (i % 1000, i)), "tbl") {
+      val agg = sql("SELECT _1, SUM(_2) FROM tbl GROUP BY _1")
+      val df = agg.sample(withReplacement = false, fraction = 0.5, seed = 42)
+      val sampled = df.collect()
+      val plan = stripAQEPlan(df.queryExecution.executedPlan)
+      assert(plan.collect { case s: CometSampleExec => s }.nonEmpty)
+      // Every sampled row must be a distinct row of the aggregate output.
+      val full = agg.collect().toSet
+      assert(sampled.length == sampled.distinct.length)
+      assert(sampled.forall(full.contains))
+      // 1000 Bernoulli(0.5) draws have a standard deviation of ~15.8, so a tolerance of 100
+      // is a ~6-sigma bound.
+      assert(math.abs(sampled.length - 500) < 100)
+    }
+  }
+
+  test("sample with replacement falls back to Spark") {
+    withParquetTable((0 until 1000).map(i => (i, i + 1)), "tbl") {
+      val df = sql("SELECT * FROM tbl").sample(withReplacement = true, fraction = 0.3, seed = 42)
+      checkSparkAnswerAndFallbackReason(df, "Sampling with replacement is not supported")
+    }
+  }
+
+  test("sample falls back to Spark when disabled") {
+    withSQLConf(CometConf.COMET_EXEC_SAMPLE_ENABLED.key -> "false") {
+      withParquetTable((0 until 1000).map(i => (i, i + 1)), "tbl") {
+        val df =
+          sql("SELECT * FROM tbl").sample(withReplacement = false, fraction = 0.3, seed = 42)
+        checkSparkAnswerAndFallbackReason(df, "spark.comet.exec.sample.enabled=true")
       }
     }
   }
@@ -3700,6 +3787,34 @@ class CometExecSuite extends CometTestBase {
     })
   }
 
+  test("SparkToColumnar over InMemoryTableScanExec with a non-Comet cache serializer") {
+    // Enabling the native in-memory cache must never leave a cached scan worse off than having
+    // the feature disabled. When the relation was cached by a serializer Comet cannot decode, the
+    // native scan is unavailable, but the scan should still take the SparkToColumnar fallback
+    // rather than staying entirely on Spark.
+    //
+    // This session does not configure spark.sql.cache.serializer, so it uses Spark's default.
+    // The reset makes that deterministic regardless of which suite ran first in this JVM, since
+    // InMemoryRelation memoizes the serializer per JVM.
+    CometInMemoryRelationHelper.clearSerializer()
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
+      CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true") {
+      spark
+        .range(1000)
+        .selectExpr("id as key", "id % 8 as value")
+        .createOrReplaceTempView("foreign_cache_serializer")
+      spark.catalog.cacheTable("foreign_cache_serializer")
+      try {
+        val df = spark.sql("SELECT * FROM foreign_cache_serializer").groupBy("key").count()
+        checkSparkAnswerAndOperator(df, includeClasses = Seq(classOf[CometSparkToColumnarExec]))
+      } finally {
+        spark.catalog.uncacheTable("foreign_cache_serializer")
+      }
+    }
+  }
+
   test("SparkToColumnar eliminate redundant in AQE") {
     withSQLConf(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
@@ -4114,11 +4229,7 @@ class CometExecSuite extends CometTestBase {
         }
         // Spark reports its own per-file read failures as FAILED_READ_FILE carrying the path.
         // Comet's native scan must do the same instead of leaking a raw CometNativeException.
-        val messages = Iterator
-          .iterate(e: Throwable)(_.getCause)
-          .takeWhile(_ != null)
-          .map(t => s"${t.getClass.getName}: ${t.getMessage}")
-          .toList
+        val messages = causeChain(e).map(t => s"${t.getClass.getName}: ${t.getMessage}")
         val chain = messages.mkString("\n  ")
         // `cannotReadFilesError` is the FAILED_READ_FILE path. Its message is version-stable
         // ("Encountered error while reading file ..."); only Spark 4.x prepends the
@@ -4153,11 +4264,7 @@ class CometExecSuite extends CometTestBase {
         val e = intercept[Throwable] {
           df.collect()
         }
-        val messages = Iterator
-          .iterate(e: Throwable)(_.getCause)
-          .takeWhile(_ != null)
-          .map(t => s"${t.getClass.getName}: ${t.getMessage}")
-          .toList
+        val messages = causeChain(e).map(t => s"${t.getClass.getName}: ${t.getMessage}")
         val chain = messages.mkString("\n  ")
         assert(
           messages.exists(m =>

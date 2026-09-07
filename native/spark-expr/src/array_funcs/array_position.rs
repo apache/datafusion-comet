@@ -16,9 +16,11 @@
 // under the License.
 
 use arrow::array::{
-    Array, ArrayRef, AsArray, BooleanArray, GenericListArray, Int64Array, OffsetSizeTrait,
+    make_comparator, Array, ArrayRef, AsArray, BooleanArray, GenericListArray, Int64Array,
+    OffsetSizeTrait,
 };
 use arrow::buffer::{NullBuffer, ScalarBuffer};
+use arrow::compute::SortOptions;
 use arrow::datatypes::{
     ArrowPrimitiveType, DataType, Date32Type, Decimal128Type, Float32Type, Float64Type, Int16Type,
     Int32Type, Int64Type, Int8Type, TimestampMicrosecondType,
@@ -28,6 +30,7 @@ use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, TypeSignature, Volatility,
 };
 use num::Float;
+use std::cmp::Ordering;
 use std::sync::Arc;
 
 /// Spark array_position() function that returns the 1-based position of an element in an array.
@@ -102,7 +105,7 @@ fn generic_array_position<O: OffsetSizeTrait>(
         }
         DataType::Utf8 => position_string::<O, i32>(list_array, offsets, values, element),
         DataType::LargeUtf8 => position_string::<O, i64>(list_array, offsets, values, element),
-        // Fallback to ScalarValue for complex types (nested arrays, etc.)
+        // Fallback to Arrow's comparator for complex types (nested arrays, etc.)
         _ => position_fallback::<O>(list_array, offsets, values, element),
     }
 }
@@ -260,7 +263,7 @@ fn position_string<O: OffsetSizeTrait, S: OffsetSizeTrait>(
     Ok(Arc::new(Int64Array::new(ScalarBuffer::from(result), nulls)))
 }
 
-/// Fallback for complex types (nested arrays, structs, etc.) using ScalarValue comparison.
+/// Fallback for complex types (nested arrays, structs, etc.) using Arrow's comparator.
 fn position_fallback<O: OffsetSizeTrait>(
     list_array: &GenericListArray<O>,
     offsets: &arrow::buffer::OffsetBuffer<O>,
@@ -270,6 +273,7 @@ fn position_fallback<O: OffsetSizeTrait>(
     let num_rows = list_array.len();
     let nulls = combined_nulls(list_array.nulls(), element.nulls());
     let mut result = vec![0i64; num_rows];
+    let comparator = make_comparator(values.as_ref(), element.as_ref(), SortOptions::default())?;
 
     for (row_index, w) in offsets.windows(2).enumerate() {
         if nulls.as_ref().is_some_and(|n| n.is_null(row_index)) {
@@ -277,19 +281,52 @@ fn position_fallback<O: OffsetSizeTrait>(
         }
         let start = w[0].as_usize();
         let end = w[1].as_usize();
-        let search_scalar = ScalarValue::try_from_array(element, row_index)?;
         for i in start..end {
-            if !values.is_null(i) {
-                let item_scalar = ScalarValue::try_from_array(values, i)?;
-                if search_scalar == item_scalar {
-                    result[row_index] = (i - start + 1) as i64;
-                    break;
-                }
+            if !values.is_null(i) && comparator(i, row_index) == Ordering::Equal {
+                result[row_index] = (i - start + 1) as i64;
+                break;
             }
         }
     }
 
     Ok(Arc::new(Int64Array::new(ScalarBuffer::from(result), nulls)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow::array::ListArray;
+    use arrow::buffer::OffsetBuffer;
+    use arrow::datatypes::{Field, Float64Type};
+
+    #[test]
+    fn test_nested_float_and_null_position() -> DataFusionResult<()> {
+        // Arrow and the previous ScalarValue fallback distinguish signed zeros, so the second
+        // row matches at position 2 rather than position 1.
+        let values = ListArray::from_iter_primitive::<Float64Type, _, _>([
+            Some(vec![Some(1.0)]),
+            Some(vec![Some(f64::NAN)]),
+            Some(vec![Some(-0.0)]),
+            Some(vec![Some(0.0)]),
+            Some(vec![Some(1.0), None]),
+        ]);
+        let array = ListArray::new(
+            Arc::new(Field::new("item", values.data_type().clone(), true)),
+            OffsetBuffer::new(vec![0, 2, 4, 5].into()),
+            Arc::new(values),
+            None,
+        );
+        let element = ListArray::from_iter_primitive::<Float64Type, _, _>([
+            Some(vec![Some(f64::NAN)]),
+            Some(vec![Some(0.0)]),
+            Some(vec![Some(1.0), None]),
+        ]);
+
+        let result = array_position_inner(&[Arc::new(array), Arc::new(element)])?;
+        let result = result.as_any().downcast_ref::<Int64Array>().unwrap();
+        assert_eq!(result, &Int64Array::from(vec![2, 2, 1]));
+        Ok(())
+    }
 }
 
 #[derive(Debug, Hash, Eq, PartialEq)]

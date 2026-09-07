@@ -53,18 +53,18 @@ We recommend moving to JDK 17 or later and Spark 3.5 or later.
 | Spark Version | Java Version | Scala Version | Comet Tests in CI | Spark SQL Tests in CI |
 | ------------- | ------------ | ------------- | ----------------- | --------------------- |
 | 3.4.3         | 11/17        | 2.12/2.13     | Yes               | Yes                   |
-| 3.5.8         | 11/17        | 2.12/2.13     | Yes               | Yes                   |
-| 4.0.2         | 17/21        | 2.13          | Yes               | Yes                   |
-| 4.1.2         | 17/21        | 2.13          | Yes               | Yes                   |
+| 3.5.9         | 11/17        | 2.12/2.13     | Yes               | Yes                   |
+| 4.0.4         | 17/21        | 2.13          | Yes               | Yes                   |
+| 4.1.3         | 17/21        | 2.13          | Yes               | Yes                   |
 
 Note that we do not test the full matrix of supported Java and Scala versions in CI for every Spark version.
 
 Experimental support is provided for the following versions of Apache Spark and is intended for development/testing
 use only and should not be used in production yet.
 
-| Spark Version  | Java Version | Scala Version | Comet Tests in CI | Spark SQL Tests in CI |
-| -------------- | ------------ | ------------- | ----------------- | --------------------- |
-| 4.2.0-preview4 | 17           | 2.13          | No                | No                    |
+| Spark Version | Java Version | Scala Version | Comet Tests in CI | Spark SQL Tests in CI |
+| ------------- | ------------ | ------------- | ----------------- | --------------------- |
+| 4.2.0         | 17           | 2.13          | Yes               | No                    |
 
 Note that Comet may not fully work with proprietary forks of Apache Spark such as the Spark versions offered by
 Cloud Service Providers.
@@ -161,9 +161,36 @@ Comet will log output similar to:
 
 ```shell
 == Physical Plan ==
-CometNativeColumnarToRow
+CometColumnarToRow
 +- CometFilter [a#6], (isnotnull(a#6) AND (a#6 > 5))
    +- CometNativeScan parquet [a#6] Batched: true, DataFilters: [isnotnull(a#6), (a#6 > 5)], Format: CometParquet, Location: InMemoryFileIndex(1 paths)[file:/tmp/test], PartitionFilters: [], PushedFilters: [IsNotNull(a), GreaterThan(a,5)], ReadSchema: struct<a:int>
+```
+
+## Checking the Comet Version
+
+When the Comet plugin is loaded, it exposes its build version as the Spark config
+`spark.comet.version`. This can be queried at runtime from any supported language, for example:
+
+```scala
+scala> spark.conf.get("spark.comet.version")
+```
+
+```sql
+SET spark.comet.version;
+```
+
+The same value is available programmatically on the JVM classpath, along with additional build
+metadata that is useful when reporting issues:
+
+```scala
+scala> import org.apache.comet.{COMET_VERSION, COMET_BRANCH, COMET_REVISION}
+scala> println(COMET_VERSION)
+```
+
+Comet also logs its version when the native library is initialized:
+
+```shell
+INFO core/src/lib.rs: Comet native library version <version> initialized
 ```
 
 ## Additional Configuration

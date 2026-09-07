@@ -138,7 +138,7 @@ For reference, see existing operators like `Filter` (simple), `HashAggregate` (c
 
 ### Step 2: Create a CometOperatorSerde Implementation
 
-Create a new Scala file in `spark/src/main/scala/org/apache/comet/serde/operator/` (e.g., `CometYourOperator.scala`) that extends `CometOperatorSerde[T]` where `T` is the Spark operator type.
+Create a new Scala file in `spark/src/main/scala/org/apache/spark/sql/comet/` (e.g., `CometYourOperatorExec.scala`) holding both the `CometOperatorSerde[T]` object, where `T` is the Spark operator type, and the `CometNativeExec` case class it creates. Scan and sink serdes live in `spark/src/main/scala/org/apache/comet/serde/operator/` instead.
 
 The `CometOperatorSerde` trait provides several key methods:
 

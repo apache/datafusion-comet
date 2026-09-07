@@ -19,11 +19,10 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Abs, Add, Atan2, Attribute, BRound, Ceil, CheckOverflow, Conv, Expression, Floor, Hex, Hypot, If, LessThanOrEqual, Literal, Log, Log10, Log1p, Log2, Logarithm, NaNvl, Pmod, Pow, UnaryPositive, Unhex, WidthBucket}
+import org.apache.spark.sql.catalyst.expressions.{Abs, Add, Atan2, Attribute, BRound, Ceil, CheckOverflow, Conv, Expression, Floor, Hex, Hypot, If, LessThanOrEqual, Literal, Log, Log10, Log1p, Log2, Logarithm, NaNvl, Pmod, Pow, Sqrt, UnaryPositive, Unhex, WidthBucket}
 import org.apache.spark.sql.types.{DecimalType, DoubleType, NumericType}
 
-import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
-import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithFallbackReason, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType, serializeDataType}
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType, serializeDataType}
 
 object CometAtan2 extends CometExpressionSerde[Atan2] {
   override def convert(
@@ -36,7 +35,7 @@ object CometAtan2 extends CometExpressionSerde[Atan2] {
     val leftExpr = exprToProtoInternal(left, inputs, binding)
     val rightExpr = exprToProtoInternal(right, inputs, binding)
     val optExpr = scalarFunctionExprToProto("atan2", leftExpr, rightExpr)
-    optExprWithFallbackReason(optExpr, expr, expr.left, expr.right)
+    optExpr
   }
 }
 
@@ -59,7 +58,7 @@ object CometCeil extends CometExpressionSerde[Ceil] {
       case _ =>
         val optExpr =
           scalarFunctionExprToProtoWithReturnType("ceil", expr.dataType, false, childExpr)
-        optExprWithFallbackReason(optExpr, expr, expr.child)
+        optExpr
     }
   }
 }
@@ -83,7 +82,7 @@ object CometFloor extends CometExpressionSerde[Floor] {
       case _ =>
         val optExpr =
           scalarFunctionExprToProtoWithReturnType("floor", expr.dataType, false, childExpr)
-        optExprWithFallbackReason(optExpr, expr, expr.child)
+        optExpr
     }
   }
 }
@@ -98,7 +97,7 @@ object CometLog extends CometExpressionSerde[Log] with MathExprBase {
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val childExpr = exprToProtoInternal(nullIfNegative(expr.child), inputs, binding)
     val optExpr = scalarFunctionExprToProto("ln", childExpr)
-    optExprWithFallbackReason(optExpr, expr, expr.child)
+    optExpr
   }
 }
 
@@ -109,7 +108,7 @@ object CometLog10 extends CometExpressionSerde[Log10] with MathExprBase {
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val childExpr = exprToProtoInternal(nullIfNegative(expr.child), inputs, binding)
     val optExpr = scalarFunctionExprToProto("log10", childExpr)
-    optExprWithFallbackReason(optExpr, expr, expr.child)
+    optExpr
   }
 }
 
@@ -120,7 +119,7 @@ object CometLog2 extends CometExpressionSerde[Log2] with MathExprBase {
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val childExpr = exprToProtoInternal(nullIfNegative(expr.child), inputs, binding)
     val optExpr = scalarFunctionExprToProto("log2", childExpr)
-    optExprWithFallbackReason(optExpr, expr, expr.child)
+    optExpr
 
   }
 }
@@ -136,7 +135,7 @@ object CometLogarithm extends CometExpressionSerde[Logarithm] {
     val rightExpr = exprToProtoInternal(expr.right, inputs, binding)
     val optExpr =
       scalarFunctionExprToProtoWithReturnType("spark_log", DoubleType, false, leftExpr, rightExpr)
-    optExprWithFallbackReason(optExpr, expr, expr.left, expr.right)
+    optExpr
   }
 }
 
@@ -147,7 +146,7 @@ object CometHex extends CometExpressionSerde[Hex] with MathExprBase {
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val childExpr = exprToProtoInternal(expr.child, inputs, binding)
     val optExpr = scalarFunctionExprToProtoWithReturnType("hex", expr.dataType, false, childExpr)
-    optExprWithFallbackReason(optExpr, expr, expr.child)
+    optExpr
   }
 }
 
@@ -166,7 +165,7 @@ object CometUnhex extends CometExpressionSerde[Unhex] with MathExprBase {
         false,
         childExpr,
         failOnErrorExpr)
-    optExprWithFallbackReason(optExpr, expr, expr.child)
+    optExpr
   }
 }
 
@@ -200,7 +199,7 @@ object CometAbs extends CometExpressionSerde[Abs] with MathExprBase {
         false,
         childExpr,
         failOnErrorExpr)
-    optExprWithFallbackReason(optExpr, expr, expr.child)
+    optExpr
   }
 }
 
@@ -213,7 +212,24 @@ object CometPow extends CometExpressionSerde[Pow] {
     val leftExpr = exprToProtoInternal(expr.left, inputs, binding)
     val rightExpr = exprToProtoInternal(expr.right, inputs, binding)
     val optExpr = scalarFunctionExprToProto("pow", leftExpr, rightExpr)
-    optExprWithFallbackReason(optExpr, expr, expr.left, expr.right)
+    optExpr
+  }
+}
+
+// Uses a custom spark_sqrt UDF because DataFusion's own `sqrt` errors on negative
+// input, while Spark's Sqrt (a plain wrapper around java.lang.Math.sqrt) returns NaN.
+// spark_sqrt is a Comet-only name with no DataFusion builtin counterpart, so the
+// return type must be set explicitly here to skip the session registry lookup that
+// scalarFunctionExprToProto would otherwise trigger (see CometLogarithm/spark_log).
+object CometSqrt extends CometExpressionSerde[Sqrt] {
+  override def convert(
+      expr: Sqrt,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val childExpr = exprToProtoInternal(expr.child, inputs, binding)
+    val optExpr =
+      scalarFunctionExprToProtoWithReturnType("spark_sqrt", DoubleType, false, childExpr)
+    optExpr
   }
 }
 
@@ -258,7 +274,6 @@ object CometCheckOverflow extends CometExpressionSerde[CheckOverflow] {
           .setCheckOverflow(builder)
           .build())
     } else {
-      withFallbackReason(expr, expr.child)
       None
     }
   }

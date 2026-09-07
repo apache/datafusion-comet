@@ -25,6 +25,8 @@ use datafusion::logical_expr::{
 };
 use std::sync::Arc;
 
+use crate::SparkError;
+
 /// Spark-compatible `next_day(start_date, day_of_week)` function.
 ///
 /// Returns the first date which is later than `start_date` and named as `day_of_week`. Unlike the
@@ -146,9 +148,10 @@ impl ScalarUDFImpl for SparkNextDay {
                 },
                 None => {
                     if self.fail_on_error {
-                        return Err(DataFusionError::Execution(format!(
-                            "Illegal input for day of week: {day_of_week}"
-                        )));
+                        return Err(SparkError::IllegalDayOfWeek {
+                            input: day_of_week.to_string(),
+                        }
+                        .into());
                     }
                     builder.append_null();
                 }

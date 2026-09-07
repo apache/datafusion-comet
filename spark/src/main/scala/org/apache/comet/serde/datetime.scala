@@ -21,13 +21,12 @@ package org.apache.comet.serde
 
 import java.util.Locale
 
-import org.apache.spark.sql.catalyst.expressions.{AddMonths, Attribute, ConvertTimezone, DateAdd, DateDiff, DateFormatClass, DateFromUnixDate, DateSub, DayOfMonth, DayOfWeek, DayOfYear, Days, Expression, FromUTCTimestamp, GetDateField, GetTimestamp, Hour, Hours, LastDay, Literal, MakeDate, MakeDTInterval, MakeTimestamp, MakeYMInterval, MicrosToTimestamp, MillisToTimestamp, Minute, Month, MonthsBetween, MultiplyDTInterval, NextDay, PreciseTimestampConversion, Quarter, Second, SecondsToTimestamp, ToUnixTimestamp, ToUTCTimestamp, TruncDate, TruncTimestamp, UnixDate, UnixMicros, UnixMillis, UnixSeconds, UnixTimestamp, WeekDay, WeekOfYear, Year}
+import org.apache.spark.sql.catalyst.expressions.{AddMonths, Attribute, Cast, ConvertTimezone, DateAdd, DateDiff, DateFormatClass, DateFromUnixDate, DateSub, DayOfMonth, DayOfWeek, DayOfYear, Days, Expression, FromUTCTimestamp, GetDateField, GetTimestamp, Hour, Hours, LastDay, Literal, MakeDate, MakeDTInterval, MakeInterval, MakeTimestamp, MakeYMInterval, MicrosToTimestamp, MillisToTimestamp, Minute, Month, MonthsBetween, MultiplyDTInterval, NextDay, PreciseTimestampConversion, Quarter, Second, SecondsToTimestamp, TimestampAdd, TimestampDiff, ToUnixTimestamp, ToUTCTimestamp, TruncDate, TruncTimestamp, UnixDate, UnixMicros, UnixMillis, UnixSeconds, UnixTimestamp, WeekDay, WeekOfYear, Year}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{DataType, DateType, DoubleType, FloatType, IntegerType, LongType, StringType, TimestampNTZType, TimestampType}
+import org.apache.spark.sql.types.{CalendarIntervalType, DataType, DateType, DoubleType, FloatType, IntegerType, LongType, StringType, TimestampNTZType, TimestampType}
 import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
 import org.apache.comet.serde.CometGetDateField.CometGetDateField
 import org.apache.comet.serde.ExprOuterClass.Expr
@@ -79,7 +78,7 @@ trait CometExprGetDateField[T <: GetDateField] {
               .build())
           .build()
       })
-    optExprWithFallbackReason(optExpr, expr, expr.child)
+    optExpr
   }
 }
 
@@ -137,7 +136,7 @@ object CometDayOfWeek
           .build()
       }
       .headOption
-    optExprWithFallbackReason(optExpr, expr, expr.child)
+    optExpr
   }
 }
 
@@ -166,7 +165,7 @@ object CometWeekDay extends CometExpressionSerde[WeekDay] with CometExprGetDateF
           .build()
       }
       .headOption
-    optExprWithFallbackReason(optExpr, expr, expr.child)
+    optExpr
   }
 }
 
@@ -222,7 +221,6 @@ object CometHour extends CometExpressionSerde[Hour] {
           .setHour(builder)
           .build())
     } else {
-      withFallbackReason(expr, expr.child)
       None
     }
   }
@@ -249,7 +247,6 @@ object CometMinute extends CometExpressionSerde[Minute] {
           .setMinute(builder)
           .build())
     } else {
-      withFallbackReason(expr, expr.child)
       None
     }
   }
@@ -276,7 +273,6 @@ object CometSecond extends CometExpressionSerde[Second] {
           .setSecond(builder)
           .build())
     } else {
-      withFallbackReason(expr, expr.child)
       None
     }
   }
@@ -313,13 +309,18 @@ object CometUnixTimestamp extends CometExpressionSerde[UnixTimestamp] {
   }
 
   override def getSupportLevel(expr: UnixTimestamp): SupportLevel = {
-    if (DatetimeCollation.hasNonDefaultCollation(expr)) {
-      Incompatible(Some(collationReason))
-    } else if (isSupportedInputType(expr)) {
-      Compatible()
-    } else {
+    // The input type is screened ahead of the collation check on purpose. A non-date/timestamp
+    // input has no native path at all, so it must report `Unsupported` rather than
+    // `Incompatible`: the latter is waved straight through to `convert` when
+    // `spark.comet.expression.UnixTimestamp.allowIncompatible=true`, and the native kernel then
+    // raises an execution error on the string child instead of falling back to Spark.
+    if (!isSupportedInputType(expr)) {
       val inputType = expr.children.head.dataType
       Unsupported(Some(s"unix_timestamp does not support input type: $inputType"))
+    } else if (DatetimeCollation.hasNonDefaultCollation(expr)) {
+      Incompatible(Some(collationReason))
+    } else {
+      Compatible()
     }
   }
 
@@ -327,12 +328,7 @@ object CometUnixTimestamp extends CometExpressionSerde[UnixTimestamp] {
       expr: UnixTimestamp,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    if (!isSupportedInputType(expr)) {
-      val inputType = expr.children.head.dataType
-      withFallbackReason(expr, s"unix_timestamp does not support input type: $inputType")
-      return None
-    }
-
+    // getSupportLevel reports an unsupported input type before reaching here, so no re-check.
     val childExpr = exprToProtoInternal(expr.children.head, inputs, binding)
 
     if (childExpr.isDefined) {
@@ -348,7 +344,6 @@ object CometUnixTimestamp extends CometExpressionSerde[UnixTimestamp] {
           .setUnixTimestamp(builder)
           .build())
     } else {
-      withFallbackReason(expr, expr.children.head)
       None
     }
   }
@@ -383,7 +378,7 @@ object CometFromUTCTimestamp
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val childExprs = expr.children.map(exprToProtoInternal(_, inputs, binding))
     val optExpr = scalarFunctionExprToProto("from_utc_timestamp", childExprs: _*)
-    optExprWithFallbackReason(optExpr, expr, expr.children: _*)
+    optExpr
   }
 }
 
@@ -403,7 +398,7 @@ object CometToUTCTimestamp
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val childExprs = expr.children.map(exprToProtoInternal(_, inputs, binding))
     val optExpr = scalarFunctionExprToProto("to_utc_timestamp", childExprs: _*)
-    optExprWithFallbackReason(optExpr, expr, expr.children: _*)
+    optExpr
   }
 }
 
@@ -434,27 +429,24 @@ object CometConvertTimezone
     val ts = exprToProtoInternal(expr.sourceTs, inputs, binding)
     val toUtc = scalarFunctionExprToProto("to_utc_timestamp", ts, srcTz)
     val fromUtc = scalarFunctionExprToProto("from_utc_timestamp", toUtc, tgtTz)
-    optExprWithFallbackReason(fromUtc, expr, expr.children: _*)
+    fromUtc
   }
 }
 
-object CometNextDay extends CometExpressionSerde[NextDay] {
+/**
+ * The native `next_day` kernel reads its `dayOfWeek` argument as raw bytes, so a non-UTF8_BINARY
+ * collation is reported as `Incompatible` and `CodegenDispatchFallback` routes it through the JVM
+ * codegen dispatcher instead of failing the projection back to Spark. Dispatching is not only the
+ * compatible answer here, it is also the faster one: over 1M rows a collated `next_day` measured
+ * 70ms dispatched against 89ms for Spark. See
+ * https://github.com/apache/datafusion-comet/issues/5591.
+ */
+object CometNextDay extends CometExpressionSerde[NextDay] with CodegenDispatchFallback {
 
-  /**
-   * `failOnError` mirrors `spark.sql.ansi.enabled`: under ANSI, Spark throws on a malformed
-   * `dayOfWeek` rather than returning NULL. The resolved flag is passed to native via the
-   * `ScalarFunc.fail_on_error` field.
-   */
   private val collationReason = DatetimeCollation.reason("next_day")
 
   override def getIncompatibleReasons(): Seq[String] =
     DatetimeCollation.incompatibleReasons("next_day")
-
-  override def getCompatibleNotes(): Seq[String] = Seq(
-    "Under ANSI mode, an invalid `dayOfWeek` surfaces as `CometNativeException` rather than" +
-      " Spark's `SparkIllegalArgumentException` with error class `ILLEGAL_DAY_OF_WEEK`. The" +
-      " throw/NULL decision is correct; only the exception class and error class differ" +
-      " ([#5073](https://github.com/apache/datafusion-comet/issues/5073)).")
 
   override def getSupportLevel(expr: NextDay): SupportLevel = {
     if (DatetimeCollation.hasNonDefaultCollation(expr)) {
@@ -463,6 +455,12 @@ object CometNextDay extends CometExpressionSerde[NextDay] {
       Compatible()
     }
   }
+
+  /**
+   * `failOnError` mirrors `spark.sql.ansi.enabled`: under ANSI, Spark throws on a malformed
+   * `dayOfWeek` rather than returning NULL. The resolved flag is passed to native via the
+   * `ScalarFunc.fail_on_error` field.
+   */
   override def convert(expr: NextDay, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
     val childExpr = expr.children.map(exprToProtoInternal(_, inputs, binding))
     val optExpr = scalarFunctionExprToProtoWithReturnType(
@@ -470,7 +468,7 @@ object CometNextDay extends CometExpressionSerde[NextDay] {
       DateType,
       expr.failOnError,
       childExpr: _*)
-    optExprWithFallbackReason(optExpr, expr, expr.children: _*)
+    optExpr
   }
 }
 
@@ -482,13 +480,6 @@ object CometMakeDate extends CometExpressionSerde[MakeDate] {
    * via the `ScalarFunc.fail_on_error` field.
    */
 
-  override def getCompatibleNotes(): Seq[String] = Seq(
-    "Under ANSI mode, an out-of-range `(year, month, day)` triple surfaces as" +
-      " `CometNativeException` rather than Spark's `SparkDateTimeException` with error class" +
-      " `DATETIME_FIELD_OUT_OF_BOUNDS.WITH_SUGGESTION`. The throw/NULL decision is correct;" +
-      " only the exception class and error class differ" +
-      " ([#5073](https://github.com/apache/datafusion-comet/issues/5073)).")
-
   override def convert(expr: MakeDate, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
     val childExpr = expr.children.map(exprToProtoInternal(_, inputs, binding))
     val optExpr = scalarFunctionExprToProtoWithReturnType(
@@ -496,7 +487,7 @@ object CometMakeDate extends CometExpressionSerde[MakeDate] {
       DateType,
       expr.failOnError,
       childExpr: _*)
-    optExprWithFallbackReason(optExpr, expr, expr.children: _*)
+    optExpr
   }
 }
 
@@ -543,7 +534,7 @@ object CometUnixDate extends CometExpressionSerde[UnixDate] {
             .build())
         .build()
     }
-    optExprWithFallbackReason(optExpr, expr, expr.child)
+    optExpr
   }
 }
 
@@ -597,7 +588,7 @@ object CometTruncDate extends CometExpressionSerde[TruncDate] with CodegenDispat
         false,
         childExpr,
         formatExpr)
-    optExprWithFallbackReason(optExpr, expr, expr.date, expr.format)
+    optExpr
   }
 }
 
@@ -687,7 +678,6 @@ object CometTruncTimestamp
           .setTruncTimestamp(builder)
           .build())
     } else {
-      withFallbackReason(expr, expr.timestamp, expr.format)
       None
     }
   }
@@ -811,7 +801,7 @@ object CometDateFormat
         false,
         childExpr,
         formatExpr)
-      optExprWithFallbackReason(optExpr, expr, expr.left, expr.right)
+      optExpr
     } else {
       // Hand the full `DateFormatClass` (with `timeZoneId` already stamped by `ResolveTimeZone`)
       // to the codegen dispatcher. It closure-serializes the bound tree, so non-UTC timezones
@@ -851,7 +841,7 @@ object CometHours extends CometExpressionSerde[Hours] {
         .setHoursTransform(builder)
         .build()
     }
-    optExprWithFallbackReason(optExpr, expr, expr.child)
+    optExpr
   }
 }
 
@@ -908,7 +898,7 @@ object CometDays extends CometExpressionSerde[Days] {
         .build()
     }
 
-    optExprWithFallbackReason(optExpr, expr, expr.child)
+    optExpr
   }
 }
 
@@ -968,7 +958,44 @@ object CometMakeYMInterval extends CometCodegenDispatch[MakeYMInterval]
 
 object CometMakeDTInterval extends CometCodegenDispatch[MakeDTInterval]
 
+object CometMakeInterval extends CometExpressionSerde[MakeInterval] with CodegenDispatchFallback {
+  private val incompatReason =
+    "The native implementation converts seconds to `Float64`, which can lose microsecond" +
+      " precision, and stores time in nanoseconds, which overflows for large time components" +
+      " (hours, minutes, seconds) that Spark can represent."
+
+  override def getCompatibleNotes(): Seq[String] = Seq(
+    "Both the default JVM codegen-dispatch path and the native path currently limit the" +
+      " elapsed-time component to about 292 years in either direction. This only affects" +
+      " extreme intervals and is tracked in" +
+      " [#5279](https://github.com/apache/datafusion-comet/issues/5279).")
+
+  override def getIncompatibleReasons(): Seq[String] = Seq(incompatReason)
+
+  override def getSupportLevel(expr: MakeInterval): SupportLevel =
+    Incompatible(Some(incompatReason))
+
+  override def convert(
+      expr: MakeInterval,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] = {
+    // The explicit return type skips DataFusion's registry coercion, but its kernel needs Float64.
+    val children = expr.children.updated(6, Cast(expr.secs, DoubleType))
+    val childExprs = children.map(exprToProtoInternal(_, inputs, binding))
+    val optExpr = scalarFunctionExprToProtoWithReturnType(
+      "make_interval",
+      CalendarIntervalType,
+      expr.failOnError,
+      childExprs: _*)
+    optExpr
+  }
+}
+
 object CometMultiplyDTInterval extends CometCodegenDispatch[MultiplyDTInterval]
+
+object CometTimestampAdd extends CometCodegenDispatch[TimestampAdd]
+
+object CometTimestampDiff extends CometCodegenDispatch[TimestampDiff]
 
 /**
  * Spark's internal `PreciseTimestampConversion` reinterprets a value between the timestamp types
@@ -1017,6 +1044,6 @@ object CometPreciseTimestampConversion extends CometExpressionSerde[PreciseTimes
         .setDatatype(dataType)
       ExprOuterClass.Expr.newBuilder().setPreciseTimestampConversion(builder).build()
     }
-    optExprWithFallbackReason(optExpr, expr, expr.child)
+    optExpr
   }
 }

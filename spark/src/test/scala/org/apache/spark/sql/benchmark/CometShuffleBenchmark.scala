@@ -21,6 +21,7 @@ package org.apache.spark.sql.benchmark
 
 import java.text.SimpleDateFormat
 
+import scala.concurrent.duration._
 import scala.util.Random
 
 import org.apache.spark.SparkConf
@@ -42,6 +43,38 @@ import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, SchemaGenOpt
 // spotless:on
 object CometShuffleBenchmark extends CometBenchmarkBase {
 
+  /**
+   * Types covered by the shuffle groups. A representative spread of fixed-width, variable-width,
+   * and decimal encodings; the shuffle paths do not branch per numeric width, so covering every
+   * integer and float size multiplies runtime without distinguishing implementations.
+   */
+  private val benchmarkTypes: Seq[DataType] =
+    Seq(IntegerType, LongType, DoubleType, StringType, DecimalType(10, 0))
+
+  /**
+   * High partition count for the groups that measure both a low and a high fan-out. This must
+   * stay above Spark's `spark.shuffle.sort.bypassMergeThreshold` (200). Below that threshold the
+   * write path switches to `CometBypassMergeSortShuffleWriter`, which holds a page per partition
+   * from a JVM-wide pool, so a lower value both raises the shuffle memory requirement several
+   * fold and hides the JVM shuffle's degradation at high fan-out.
+   */
+  private val manyPartitions = 201
+
+  /**
+   * Spark's `Benchmark` defaults spend two seconds warming up and two seconds measuring every
+   * case. At the row counts used here a single iteration takes tens of milliseconds, so those
+   * floors, not the work, set the suite's runtime. Shorter budgets with a slightly higher
+   * iteration minimum keep the comparison stable while cutting the floor by 4x.
+   */
+  private def microBenchmark(name: String, valuesPerIteration: Long): Benchmark =
+    new Benchmark(
+      name,
+      valuesPerIteration,
+      minNumIters = 5,
+      warmupTime = 500.millis,
+      minTime = 500.millis,
+      output = output)
+
   override def getSparkSession: SparkSession = {
     val conf = new SparkConf()
       .setAppName("CometShuffleBenchmark")
@@ -55,7 +88,8 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
         "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
       .set("spark.comet.shuffle.jvm.spillThreshold", "30000")
 
-    val sparkSession = SparkSession.builder
+    val sparkSession = SparkSession
+      .builder()
       .config(conf)
       .withExtensions(new CometSparkSessionExtensions)
       .getOrCreate()
@@ -73,10 +107,7 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
 
   def shuffleArrayBenchmark(values: Int, dataType: DataType, partitionNum: Int): Unit = {
     val benchmark =
-      new Benchmark(
-        s"SQL ${dataType.sql} shuffle on array ($partitionNum Partition)",
-        values,
-        output = output)
+      microBenchmark(s"SQL ${dataType.sql} shuffle on array ($partitionNum Partition)", values)
 
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
@@ -124,10 +155,7 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
 
   def shuffleStructBenchmark(values: Int, dataType: DataType, partitionNum: Int): Unit = {
     val benchmark =
-      new Benchmark(
-        s"SQL ${dataType.sql} shuffle on struct ($partitionNum Partition)",
-        values,
-        output = output)
+      microBenchmark(s"SQL ${dataType.sql} shuffle on struct ($partitionNum Partition)", values)
 
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
@@ -182,16 +210,16 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
 
   def shuffleDictionaryBenchmark(values: Int, dataType: DataType, partitionNum: Int): Unit = {
     val benchmark =
-      new Benchmark(
-        s"SQL ${dataType.sql} Dictionary Shuffle($partitionNum Partition)",
-        values,
-        output = output)
+      microBenchmark(s"SQL ${dataType.sql} Dictionary Shuffle($partitionNum Partition)", values)
 
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
+        // Build the repeated value as a string and cast to the target type. ANSI mode, the
+        // default on Spark 4.x, rejects a direct INT to BINARY cast.
         prepareTable(
           dir,
-          spark.sql(s"SELECT REPEAT(CAST(1 AS ${dataType.sql}), 100) AS c1 FROM $tbl"))
+          spark.sql(
+            s"SELECT CAST(REPEAT(CAST(1 AS STRING), 100) AS ${dataType.sql}) AS c1 FROM $tbl"))
 
         benchmark.addCase("SQL Parquet - Spark") { _ =>
           spark
@@ -259,92 +287,15 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
     }
   }
 
-  def shuffleBenchmark(
-      values: Int,
-      dataType: DataType,
-      random: Boolean,
-      partitionNum: Int): Unit = {
-    val randomTitle = if (random) {
-      "With Random"
-    } else {
-      ""
-    }
-    val benchmark =
-      new Benchmark(
-        s"SQL Single ${dataType.sql} Shuffle($partitionNum Partition) $randomTitle",
-        values,
-        output = output)
-
-    withTempPath { dir =>
-      withTempTable("parquetV1Table") {
-        if (random) {
-          prepareTable(
-            dir,
-            spark.sql(
-              s"SELECT CAST(CAST(RAND(1) * 100 AS INTEGER) AS ${dataType.sql}) AS c1 FROM $tbl"))
-        } else {
-          prepareTable(dir, spark.sql(s"SELECT CAST(1 AS ${dataType.sql}) AS c1 FROM $tbl"))
-        }
-
-        benchmark.addCase("SQL Parquet - Spark") { _ =>
-          spark
-            .sql("select c1 from parquetV1Table")
-            .repartition(partitionNum, Column("c1"))
-            .noop()
-        }
-
-        benchmark.addCase("SQL Parquet - Comet (Spark Shuffle)") { _ =>
-          withSQLConf(
-            CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_SHUFFLE_ENABLED.key -> "false") {
-            spark
-              .sql("select c1 from parquetV1Table")
-              .repartition(partitionNum, Column("c1"))
-              .noop()
-          }
-        }
-
-        benchmark.addCase("SQL Parquet - Comet (Comet JVM Shuffle)") { _ =>
-          withSQLConf(
-            CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
-            CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
-            spark
-              .sql("select c1 from parquetV1Table")
-              .repartition(partitionNum, Column("c1"))
-              .noop()
-          }
-        }
-
-        benchmark.addCase("SQL Parquet - Comet (Comet Shuffle)") { _ =>
-          withSQLConf(
-            CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_SHUFFLE_ENABLED.key -> "true") {
-            spark
-              .sql("select c1 from parquetV1Table")
-              .repartition(partitionNum, Column("c1"))
-              .noop()
-          }
-        }
-
-        benchmark.run()
-      }
-    }
-  }
-
   def shuffleWideBenchmark(
       values: Int,
       dataType: DataType,
       width: Int,
       partitionNum: Int): Unit = {
     val benchmark =
-      new Benchmark(
+      microBenchmark(
         s"SQL Wide ($width cols) ${dataType.sql} Shuffle($partitionNum Partition)",
-        values,
-        output = output)
+        values)
 
     val projection = (1 to width)
       .map(i => s"CAST(CAST(RAND(1) * 100 AS INTEGER) AS ${dataType.sql}) AS c$i")
@@ -411,10 +362,9 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
       width: Int,
       partitionNum: Int): Unit = {
     val benchmark =
-      new Benchmark(
+      microBenchmark(
         s"SQL Wide ($width cols) ${dataType.sql} Range Partition Shuffle($partitionNum Partition)",
-        values,
-        output = output)
+        values)
 
     val projection = (1 to width)
       .map(i => s"CAST(CAST(RAND(1) * 100 AS INTEGER) AS ${dataType.sql}) AS c$i")
@@ -481,7 +431,7 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
       numRows: Int,
       partitionNum: Int): Unit = {
     val benchmark =
-      new Benchmark(s"Shuffle with nested schema ($name)", numRows, output = output)
+      microBenchmark(s"Shuffle with nested schema ($name)", numRows)
     val df = spark.read.parquet(filename)
     withTempTable("deeplyNestedTable") {
       df.createOrReplaceTempView("deeplyNestedTable")
@@ -533,7 +483,7 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
       val filename =
         createDeeplyNestedParquetFile(numRows, maxDepth)
       try {
-        for (partitionNum <- Seq(5, 201)) {
+        for (partitionNum <- Seq(5, manyPartitions)) {
           val name = s"maxDepth=$maxDepth, partitionNum=$partitionNum"
           shuffleDeeplyNestedBenchmark(name, filename, numRows, partitionNum)
         }
@@ -543,236 +493,82 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
     }
 
     runBenchmarkWithTable("Shuffle on array", 1024 * 1024 * 1) { v =>
-      Seq(
-        BooleanType,
-        ByteType,
-        ShortType,
-        IntegerType,
-        LongType,
-        FloatType,
-        DoubleType,
-        StringType,
-        DecimalType(10, 0)).foreach { dataType =>
-        Seq(5, 201).foreach { partitionNum =>
+      benchmarkTypes.foreach { dataType =>
+        Seq(5, manyPartitions).foreach { partitionNum =>
           shuffleArrayBenchmark(v, dataType, partitionNum)
         }
       }
     }
 
-    runBenchmarkWithTable("Shuffle on struct", 1024 * 1024 * 100) { v =>
-      Seq(
-        BooleanType,
-        ByteType,
-        ShortType,
-        IntegerType,
-        LongType,
-        FloatType,
-        DoubleType,
-        StringType,
-        DecimalType(10, 0)).foreach { dataType =>
-        Seq(5, 201).foreach { partitionNum =>
+    runBenchmarkWithTable("Shuffle on struct", 1024 * 1024 * 1) { v =>
+      benchmarkTypes.foreach { dataType =>
+        Seq(5, manyPartitions).foreach { partitionNum =>
           shuffleStructBenchmark(v, dataType, partitionNum)
         }
       }
     }
 
-    runBenchmarkWithTable("Dictionary Shuffle", 1024 * 1024 * 100) { v =>
+    runBenchmarkWithTable("Dictionary Shuffle", 1024 * 1024 * 1) { v =>
       Seq(BinaryType, StringType).foreach { dataType =>
-        Seq(5, 201).foreach { partitionNum =>
+        Seq(5, manyPartitions).foreach { partitionNum =>
           shuffleDictionaryBenchmark(v, dataType, partitionNum)
         }
       }
     }
 
-    runBenchmarkWithTable("Shuffle", 1024 * 1024 * 10) { v =>
-      Seq(
-        BooleanType,
-        ByteType,
-        ShortType,
-        IntegerType,
-        LongType,
-        FloatType,
-        DoubleType,
-        StringType,
-        DecimalType(10, 0))
-        .foreach { dataType =>
-          shuffleBenchmark(v, dataType, false, 5)
-        }
-    }
-
-    runBenchmarkWithTable("Shuffle", 1024 * 1024 * 10) { v =>
-      Seq(
-        BooleanType,
-        ByteType,
-        ShortType,
-        IntegerType,
-        LongType,
-        FloatType,
-        DoubleType,
-        StringType,
-        DecimalType(10, 0))
-        .foreach { dataType =>
-          shuffleBenchmark(v, dataType, false, 201)
-        }
-    }
-
-    runBenchmarkWithTable("Shuffle with random values", 1024 * 1024 * 10) { v =>
-      Seq(
-        BooleanType,
-        ByteType,
-        ShortType,
-        IntegerType,
-        LongType,
-        FloatType,
-        DoubleType,
-        StringType,
-        DecimalType(10, 0))
-        .foreach { dataType =>
-          shuffleBenchmark(v, dataType, true, 5)
-        }
-    }
-
-    runBenchmarkWithTable("Shuffle with random values", 1024 * 1024 * 10) { v =>
-      Seq(
-        BooleanType,
-        ByteType,
-        ShortType,
-        IntegerType,
-        LongType,
-        FloatType,
-        DoubleType,
-        StringType,
-        DecimalType(10, 0))
-        .foreach { dataType =>
-          shuffleBenchmark(v, dataType, true, 201)
-        }
-    }
-
-    runBenchmarkWithTable("Wide Shuffle (10 cols)", 1024 * 1024 * 10) { v =>
-      Seq(
-        BooleanType,
-        ByteType,
-        ShortType,
-        IntegerType,
-        LongType,
-        FloatType,
-        DoubleType,
-        StringType,
-        DecimalType(10, 0))
+    runBenchmarkWithTable("Wide Shuffle (10 cols)", 1024 * 1024 * 1) { v =>
+      benchmarkTypes
         .foreach { dataType =>
           shuffleWideBenchmark(v, dataType, 10, 5)
         }
     }
 
-    runBenchmarkWithTable("Wide Shuffle (20 cols)", 1024 * 1024 * 10) { v =>
-      Seq(
-        BooleanType,
-        ByteType,
-        ShortType,
-        IntegerType,
-        LongType,
-        FloatType,
-        DoubleType,
-        StringType,
-        DecimalType(10, 0))
+    runBenchmarkWithTable("Wide Shuffle (20 cols)", 1024 * 1024 * 1) { v =>
+      benchmarkTypes
         .foreach { dataType =>
           shuffleWideBenchmark(v, dataType, 20, 5)
         }
     }
 
-    runBenchmarkWithTable("Wide Shuffle (10 cols)", 1024 * 1024 * 10) { v =>
-      Seq(
-        BooleanType,
-        ByteType,
-        ShortType,
-        IntegerType,
-        LongType,
-        FloatType,
-        DoubleType,
-        StringType,
-        DecimalType(10, 0))
+    runBenchmarkWithTable("Wide Shuffle (10 cols)", 1024 * 1024 * 1) { v =>
+      benchmarkTypes
         .foreach { dataType =>
-          shuffleWideBenchmark(v, dataType, 10, 201)
+          shuffleWideBenchmark(v, dataType, 10, manyPartitions)
         }
     }
 
-    runBenchmarkWithTable("Wide Shuffle (20 cols)", 1024 * 1024 * 10) { v =>
-      Seq(
-        BooleanType,
-        ByteType,
-        ShortType,
-        IntegerType,
-        LongType,
-        FloatType,
-        DoubleType,
-        StringType,
-        DecimalType(10, 0))
+    runBenchmarkWithTable("Wide Shuffle (20 cols)", 1024 * 1024 * 1) { v =>
+      benchmarkTypes
         .foreach { dataType =>
-          shuffleWideBenchmark(v, dataType, 20, 201)
+          shuffleWideBenchmark(v, dataType, 20, manyPartitions)
         }
     }
 
-    runBenchmarkWithTable("Wide Range Partition Shuffle (10 cols)", 1024 * 1024 * 10) { v =>
-      Seq(
-        BooleanType,
-        ByteType,
-        ShortType,
-        IntegerType,
-        LongType,
-        FloatType,
-        DoubleType,
-        StringType,
-        DecimalType(10, 0))
+    runBenchmarkWithTable("Wide Range Partition Shuffle (10 cols)", 1024 * 1024 * 1) { v =>
+      benchmarkTypes
         .foreach { dataType =>
           shuffleRangePartitionBenchmark(v, dataType, 10, 5)
         }
     }
 
-    runBenchmarkWithTable("Wide Range Partition Shuffle (20 cols)", 1024 * 1024 * 10) { v =>
-      Seq(
-        BooleanType,
-        ByteType,
-        ShortType,
-        IntegerType,
-        LongType,
-        FloatType,
-        DoubleType,
-        StringType,
-        DecimalType(10, 0))
+    runBenchmarkWithTable("Wide Range Partition Shuffle (20 cols)", 1024 * 1024 * 1) { v =>
+      benchmarkTypes
         .foreach { dataType =>
           shuffleRangePartitionBenchmark(v, dataType, 20, 5)
         }
     }
 
-    runBenchmarkWithTable("Wide Range Partition Shuffle (10 cols)", 1024 * 1024 * 10) { v =>
-      Seq(
-        BooleanType,
-        ByteType,
-        ShortType,
-        IntegerType,
-        LongType,
-        FloatType,
-        DoubleType,
-        StringType,
-        DecimalType(10, 0))
+    runBenchmarkWithTable("Wide Range Partition Shuffle (10 cols)", 1024 * 1024 * 1) { v =>
+      benchmarkTypes
         .foreach { dataType =>
-          shuffleRangePartitionBenchmark(v, dataType, 10, 201)
+          shuffleRangePartitionBenchmark(v, dataType, 10, manyPartitions)
         }
     }
 
-    runBenchmarkWithTable("Wide Range Partition Shuffle (20 cols)", 1024 * 1024 * 10) { v =>
-      Seq(
-        BooleanType,
-        ByteType,
-        ShortType,
-        IntegerType,
-        LongType,
-        FloatType,
-        DoubleType,
-        StringType,
-        DecimalType(10, 0))
+    runBenchmarkWithTable("Wide Range Partition Shuffle (20 cols)", 1024 * 1024 * 1) { v =>
+      benchmarkTypes
         .foreach { dataType =>
-          shuffleRangePartitionBenchmark(v, dataType, 20, 201)
+          shuffleRangePartitionBenchmark(v, dataType, 20, manyPartitions)
         }
     }
   }

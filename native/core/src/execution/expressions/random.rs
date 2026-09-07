@@ -22,7 +22,7 @@ use crate::extract_expr;
 use arrow::datatypes::SchemaRef;
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion_comet_proto::spark_expression::Expr;
-use datafusion_comet_spark_expr::{RandExpr, RandStrExpr, RandnExpr, ShuffleExpr};
+use datafusion_comet_spark_expr::{RandExpr, RandStrExpr, RandnExpr, ShuffleExpr, UuidExpr};
 use std::sync::Arc;
 
 pub struct RandBuilder;
@@ -54,6 +54,22 @@ impl ExpressionBuilder for ShuffleBuilder {
         // Spark seeds a fresh generator per partition with `randomSeed + partitionIndex`.
         let seed = expr.seed.wrapping_add(planner.partition().into());
         Ok(Arc::new(ShuffleExpr::new(child, seed)))
+    }
+}
+
+pub struct UuidBuilder;
+
+impl ExpressionBuilder for UuidBuilder {
+    fn build(
+        &self,
+        spark_expr: &Expr,
+        _input_schema: SchemaRef,
+        planner: &PhysicalPlanner,
+    ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
+        let expr = extract_expr!(spark_expr, Uuid);
+        // Spark seeds a fresh generator per partition with `randomSeed + partitionIndex`.
+        let seed = expr.seed.wrapping_add(planner.partition().into());
+        Ok(Arc::new(UuidExpr::new(seed)))
     }
 }
 

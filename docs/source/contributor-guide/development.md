@@ -269,10 +269,10 @@ and `-Dtest=none`:
 ./mvnw test -Dtest=none -Dsuites="org.apache.comet.CometArrayExpressionSuite"
 
 # Run multiple suites (comma-separated, fully qualified)
-./mvnw test -Dtest=none -Dsuites="org.apache.comet.CometCastSuite,org.apache.comet.CometArrayExpressionSuite"
+./mvnw test -Dtest=none -Dsuites="org.apache.comet.CometNativeCastSuite,org.apache.comet.CometArrayExpressionSuite"
 
 # Run only tests whose name contains "valid" inside one suite
-./mvnw test -Dtest=none -Dsuites="org.apache.comet.CometCastSuite valid"
+./mvnw test -Dtest=none -Dsuites="org.apache.comet.CometNativeCastSuite valid"
 ```
 
 `-Dtest=none` tells the Surefire (JUnit) plugin to skip its tests; without it, Surefire still
@@ -474,10 +474,10 @@ However if the tests is related to the native side. Please make sure to run `mak
 
 Specify which ScalaTest suites to run with the `suites` argument and disable Surefire's JUnit
 discovery with `-Dtest=none`. For example, to run only the test cases containing _valid_ in
-their name from `org.apache.comet.CometCastSuite`:
+their name from `org.apache.comet.CometNativeCastSuite`:
 
 ```sh
-./mvnw test -Dtest=none -Dsuites="org.apache.comet.CometCastSuite valid"
+./mvnw test -Dtest=none -Dsuites="org.apache.comet.CometNativeCastSuite valid"
 ```
 
 See [Running a Specific ScalaTest Suite](#running-a-specific-scalatest-suite) above for the full

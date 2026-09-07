@@ -23,6 +23,7 @@ mod regexp_extract;
 mod regexp_extract_all;
 mod regexp_extract_common;
 mod split;
+mod unbase64;
 
 pub use base64::spark_base64;
 pub use contains::SparkContains;
@@ -31,3 +32,4 @@ pub use levenshtein::spark_levenshtein;
 pub use regexp_extract::spark_regexp_extract;
 pub use regexp_extract_all::spark_regexp_extract_all;
 pub use split::{spark_split, spark_split_sql};
+pub use unbase64::spark_unbase64;

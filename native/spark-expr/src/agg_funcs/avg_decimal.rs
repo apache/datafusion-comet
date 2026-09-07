@@ -361,7 +361,14 @@ impl Accumulator for AvgDecimalAccumulator {
     fn evaluate(&mut self) -> Result<ScalarValue> {
         // Check for overflow during sum accumulation in ANSI mode.
         // This matches Spark's DecimalDivideWithOverflowCheck behavior.
-        if self.sum.is_none() && !self.is_empty && self.eval_mode == EvalMode::Ansi {
+        // `count` guards against reporting an overflow when there was nothing to sum: an
+        // empty or all-null input also leaves `sum` as None, and `is_empty` cannot
+        // distinguish those cases because the counts merged in `merge_batch` are never null.
+        if self.sum.is_none()
+            && !self.is_empty
+            && self.count > 0
+            && self.eval_mode == EvalMode::Ansi
+        {
             let error = decimal_sum_overflow_error("avg");
             return Err(self.wrap_error_with_context(error));
         }
@@ -536,7 +543,6 @@ impl GroupsAccumulator for AvgDecimalGroupsAccumulator {
         &mut self,
         values: &[ArrayRef],
         group_indices: &[usize],
-        _opt_filter: Option<&arrow::array::BooleanArray>,
         total_num_groups: usize,
     ) -> Result<()> {
         assert_eq!(values.len(), 2, "two arguments to merge_batch");
@@ -643,6 +649,14 @@ impl GroupsAccumulator for AvgDecimalGroupsAccumulator {
             Arc::new(sums) as ArrayRef,
             Arc::new(counts) as ArrayRef,
         ])
+    }
+
+    fn convert_to_state(
+        &self,
+        _values: &[ArrayRef],
+        _opt_filter: Option<&arrow::array::BooleanArray>,
+    ) -> Result<Vec<ArrayRef>> {
+        not_impl_err!("Input batch conversion to state not implemented")
     }
 
     fn size(&self) -> usize {

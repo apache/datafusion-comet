@@ -69,20 +69,7 @@ fn criterion_benchmark(c: &mut Criterion) {
         None,
         None,
     );
-    let cast_to_str = Cast::new(
-        expr.clone(),
-        DataType::Utf8,
-        spark_cast_options.clone(),
-        None,
-        None,
-    );
-    let cast_to_decimal = Cast::new(
-        expr,
-        DataType::Decimal128(10, 4),
-        spark_cast_options,
-        None,
-        None,
-    );
+    let cast_to_str = Cast::new(expr, DataType::Utf8, spark_cast_options, None, None);
 
     let mut group = c.benchmark_group("cast_bool".to_string());
     group.bench_function("i8", |b| {
@@ -105,9 +92,6 @@ fn criterion_benchmark(c: &mut Criterion) {
     });
     group.bench_function("str", |b| {
         b.iter(|| cast_to_str.evaluate(&boolean_batch).unwrap());
-    });
-    group.bench_function("decimal", |b| {
-        b.iter(|| cast_to_decimal.evaluate(&boolean_batch).unwrap());
     });
 }
 

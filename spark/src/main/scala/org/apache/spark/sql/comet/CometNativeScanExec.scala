@@ -40,6 +40,7 @@ import com.google.common.base.Objects
 import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde.exprToProto
+import org.apache.comet.shims.ShimFileFormat
 
 /**
  * Native scan operator for DataSource V1 Parquet files using DataFusion's ParquetExec.
@@ -199,6 +200,7 @@ case class CometNativeScanExec(
         })
       if (resolvedFilters.nonEmpty) {
         val commonBuilder = base.toBuilder
+        commonBuilder.setHasDataFilters(true)
         for (filter <- resolvedFilters) {
           exprToProto(filter, output) match {
             case Some(proto) => commonBuilder.addDataFilters(proto)
@@ -218,7 +220,11 @@ case class CometNativeScanExec(
     // Serialize each partition's files
     import org.apache.comet.serde.operator.partition2Proto
     val perPartitionBytes = filePartitions.map { filePartition =>
-      val partitionProto = partition2Proto(filePartition, relation.partitionSchema)
+      val partitionProto = partition2Proto(
+        filePartition,
+        relation.partitionSchema,
+        originalPlan.fileConstantMetadataColumns,
+        ShimFileFormat.fileConstantMetadataExtractors(relation.fileFormat))
       val partitionNativeScan = org.apache.comet.serde.OperatorOuterClass.NativeScan
         .newBuilder()
         .setFilePartition(partitionProto)
@@ -360,15 +366,8 @@ object CometNativeScanExec {
       scan: CometScanExec): CometNativeScanExec = {
     // Generate unique key for this scan so PlanDataInjector can match common+partition data.
     // Multiple scans of same table with different projections/filters get different keys.
-    val common = nativeOp.getNativeScan.getCommon
-    val source = common.getSource
-    val keyComponents = Seq(
-      common.getRequiredSchemaList.toString,
-      common.getDataFiltersList.toString,
-      common.getProjectionVectorList.toString,
-      common.getFieldsList.toString)
-    val hashCode = keyComponents.mkString("|").hashCode
-    val sourceKey = s"${source}_${hashCode}"
+    // Derived by the injector that will look it up, so the two sides cannot drift apart.
+    val sourceKey = NativeScanPlanDataInjector.sourceKey(nativeOp.getNativeScan.getCommon)
 
     val batchScanExec = CometNativeScanExec(
       nativeOp,
