@@ -1,0 +1,23 @@
+================================================================================================
+Partitioned Column Scan
+================================================================================================
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+Partitioned Scan with 1 partition column(s):  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+---------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark                                    176            205          20         89.2          11.2       1.0X
+SQL Parquet - Comet                                    145            151           5        108.6           9.2       1.2X
+SQL Parquet - Spark (partition cols)                    72             78           3        219.6           4.6       2.5X
+SQL Parquet - Comet (partition cols)                    47             52           3        336.7           3.0       3.8X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+Partitioned Scan with 5 partition column(s):  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+---------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark                                    158            161           2         99.4          10.1       1.0X
+SQL Parquet - Comet                                    152            157           3        103.4           9.7       1.0X
+SQL Parquet - Spark (partition cols)                   160            165           4         98.4          10.2       1.0X
+SQL Parquet - Comet (partition cols)                    97            101           2        161.6           6.2       1.6X
+
+

@@ -1,0 +1,54 @@
+================================================================================================
+SQL Single Numeric Iceberg Column Scan
+================================================================================================
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+SQL Single BOOLEAN Iceberg Column Scan:   Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+SQL Iceberg - Spark                                 509            544          38        263.9           3.8       1.0X
+SQL Iceberg - Comet Iceberg-Rust                    803            811           8        167.2           6.0       0.6X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+SQL Single TINYINT Iceberg Column Scan:   Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+SQL Iceberg - Spark                                 554            578          46        242.5           4.1       1.0X
+SQL Iceberg - Comet Iceberg-Rust                    283            294          10        473.8           2.1       2.0X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+SQL Single SMALLINT Iceberg Column Scan:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+SQL Iceberg - Spark                                 639            645           4        210.1           4.8       1.0X
+SQL Iceberg - Comet Iceberg-Rust                    690            721          31        194.4           5.1       0.9X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+SQL Single INT Iceberg Column Scan:       Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+SQL Iceberg - Spark                                 641            642           2        209.5           4.8       1.0X
+SQL Iceberg - Comet Iceberg-Rust                    703            741          33        190.9           5.2       0.9X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+SQL Single BIGINT Iceberg Column Scan:    Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+SQL Iceberg - Spark                                1071           1090          26        125.3           8.0       1.0X
+SQL Iceberg - Comet Iceberg-Rust                   1437           1442           7         93.4          10.7       0.7X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+SQL Single FLOAT Iceberg Column Scan:     Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+SQL Iceberg - Spark                                 713            734          33        188.2           5.3       1.0X
+SQL Iceberg - Comet Iceberg-Rust                    778            798          18        172.6           5.8       0.9X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+SQL Single DOUBLE Iceberg Column Scan:    Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+SQL Iceberg - Spark                                1049           1055           8        127.9           7.8       1.0X
+SQL Iceberg - Comet Iceberg-Rust                   1426           1430           5         94.1          10.6       0.7X
+
+
