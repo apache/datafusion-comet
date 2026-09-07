@@ -26,6 +26,7 @@ import org.apache.spark.sql.{CometTestBase, DataFrame}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
 
+import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 import org.apache.comet.udf.codegen.CometScalaUDFCodegen
 
@@ -766,6 +767,27 @@ class CometStringExpressionSuite extends CometTestBase with CometCodegenAssertio
       assert(
         CometScalaUDFCodegen.stats().totalLookups == 0,
         "expected the native concat_ws path for string arguments, not codegen dispatch")
+    }
+  }
+
+  test("levenshtein routes collated strings through the codegen dispatcher (issue #5591)") {
+    assume(isSpark40Plus, "COLLATE requires Spark 4.0")
+    // The native levenshtein kernel compares raw bytes, so CometLevenshtein reports a collated
+    // argument as Unsupported and CodegenDispatchFallback runs Spark's own doGenCode inside the
+    // Comet pipeline. checkSparkAnswerAndOperator alone would also pass if the projection fell
+    // back to Spark on a shape this test did not intend, so assertCodegenRan pins that the
+    // dispatcher is what kept it native. Answer coverage, including the three-argument form and
+    // RTRIM collations, lives in sql-tests/expressions/string/levenshtein_collation.sql.
+    val data = Seq(("kitten", "sitting"), ("HELLO", "hello"), ("frog", "fog"), (null, "test"))
+    withParquetTable(data, "tbl") {
+      assertCodegenRan {
+        checkSparkAnswerAndOperator(
+          "SELECT levenshtein(_1 COLLATE utf8_lcase, _2 COLLATE utf8_lcase) FROM tbl")
+        checkSparkAnswerAndOperator(
+          "SELECT levenshtein(_1 COLLATE unicode_ci, _2 COLLATE unicode_ci) FROM tbl")
+        checkSparkAnswerAndOperator(
+          "SELECT levenshtein(_1 COLLATE utf8_lcase, _2 COLLATE utf8_lcase, 2) FROM tbl")
+      }
     }
   }
 
