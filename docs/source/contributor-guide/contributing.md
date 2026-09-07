@@ -48,6 +48,9 @@ The Comet project uses the same Slack and Discord channels as the main Apache Da
 The Comet contributors hold regular video calls where new and current contributors are welcome to ask questions and
 coordinate on issues that they are working on.
 
+The call is held weekly on Fridays from 10:30 AM to 11:00 AM PST (America/Los_Angeles). Join via the
+[Google Meet video call link](https://meet.google.com/nrz-otvr-kjj).
+
 See the [Apache DataFusion Comet community meeting] Google document for more information.
 
 [Apache DataFusion Communications]: https://datafusion.apache.org/contributor-guide/communication.html

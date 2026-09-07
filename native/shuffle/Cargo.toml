@@ -30,6 +30,7 @@ publish = false
 
 [dependencies]
 arrow = { workspace = true }
+arrow-select = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
 clap = { version = "4", features = ["derive"], optional = true }
@@ -49,7 +50,7 @@ parquet = { workspace = true, optional = true }
 simd-adler32 = "0.3.9"
 snap = "1.1"
 tokio = { version = "1", features = ["rt-multi-thread"] }
-zstd = "0.13.3"
+zstd = { version = "0.13.3", features = ["experimental"] }
 
 [dev-dependencies]
 criterion = { version = "0.7", features = ["async", "async_tokio", "async_std"] }

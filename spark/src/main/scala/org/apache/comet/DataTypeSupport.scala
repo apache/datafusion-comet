@@ -80,6 +80,21 @@ object DataTypeSupport {
     case _ => false
   }
 
+  /**
+   * `dt` with every array/map/struct nullability flag forced to `true` at all nesting levels (map
+   * key fields stay non-null per Arrow's map invariant). Re-derives Spark's `private[spark]`
+   * `DataType.asNullable`, used as a common cast target to unify types whose Comet runtime
+   * nullability exceeds Spark's Catalyst nullability.
+   */
+  def deepNullable(dt: DataType): DataType = dt match {
+    case ArrayType(et, _) => ArrayType(deepNullable(et), containsNull = true)
+    case MapType(kt, vt, _) =>
+      MapType(deepNullable(kt), deepNullable(vt), valueContainsNull = true)
+    case StructType(fields) =>
+      StructType(fields.map(f => f.copy(dataType = deepNullable(f.dataType), nullable = true)))
+    case other => other
+  }
+
   def hasTemporalType(t: DataType): Boolean = t match {
     case DataTypes.DateType | DataTypes.TimestampType | DataTypes.TimestampNTZType =>
       true
