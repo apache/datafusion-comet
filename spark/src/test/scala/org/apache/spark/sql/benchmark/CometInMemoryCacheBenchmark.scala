@@ -73,6 +73,13 @@ object CometInMemoryCacheBenchmark extends CometBenchmarkBase {
           "concat('str_c_', cast(id as string)) AS s3")
         .createOrReplaceTempView(sourceTable)
 
+      val buildBenchmark =
+        new Benchmark("in-memory cache materialization", numRows, output = output)
+      buildBenchmark.addCase("Comet cache writer") { _ =>
+        withCachedTable {}
+      }
+      buildBenchmark.run()
+
       runCacheBenchmark(
         "in-memory cache repeated scan",
         s"SELECT sum(id), sum(k), sum(v) FROM $cacheTable")
