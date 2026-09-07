@@ -19,10 +19,10 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, KnownFloatingPointNormalized, KnownNullable}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, KnownFloatingPointNormalized, KnownNotNull, KnownNullable, TaggingExpression}
 import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
 
-import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithFallbackReason, serializeDataType}
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, serializeDataType}
 
 object CometKnownFloatingPointNormalized
     extends CometExpressionSerde[KnownFloatingPointNormalized] {
@@ -63,7 +63,7 @@ object CometKnownFloatingPointNormalized
             .setDatatype(dataType)
           ExprOuterClass.Expr.newBuilder().setNormalizeNanAndZero(builder).build()
         }
-        optExprWithFallbackReason(optExpr, expr, wrapped)
+        optExpr
 
       case child =>
         // Nested normalization (array / struct / map). Spark 4.2 normalizes the inputs to
@@ -72,23 +72,46 @@ object CometKnownFloatingPointNormalized
         // `KnownFloatingPointNormalized` is a runtime no-op tag, so serialize the child directly
         // and let its serde (e.g. the ArrayTransform codegen dispatcher) carry the normalization.
         val optExpr = exprToProtoInternal(child, inputs, binding)
-        optExprWithFallbackReason(optExpr, expr, child)
+        optExpr
     }
   }
 }
 
 /**
- * `KnownNullable` is a tagging expression that only marks its child as nullable; it is a runtime
- * no-op (`eval` returns the child's value unchanged). Spark's time-window resolution wraps window
- * bounds in `KnownNullable`, so supporting it lets those grouping queries run natively. We simply
- * serialize the child and drop the tag.
+ * `KnownNullable` and `KnownNotNull` (below) are Spark `TaggingExpression`s that only annotate a
+ * child's nullability; both are runtime no-ops whose `eval` returns the child's value unchanged.
+ * We serialize the child directly and drop the tag.
+ */
+private object CometTaggingExpression {
+  def convert(
+      expr: TaggingExpression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val optExpr = exprToProtoInternal(expr.child, inputs, binding)
+    optExpr
+  }
+}
+
+/**
+ * Spark's time-window resolution wraps window bounds in `KnownNullable`, so supporting it lets
+ * those grouping queries run natively.
  */
 object CometKnownNullable extends CometExpressionSerde[KnownNullable] {
   override def convert(
       expr: KnownNullable,
       inputs: Seq[Attribute],
-      binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val optExpr = exprToProtoInternal(expr.child, inputs, binding)
-    optExprWithFallbackReason(optExpr, expr, expr.child)
-  }
+      binding: Boolean): Option[ExprOuterClass.Expr] =
+    CometTaggingExpression.convert(expr, inputs, binding)
+}
+
+/**
+ * Spark's `FileSourceStrategy` wraps the `_metadata` struct in `KnownNotNull` so the schema
+ * advertises it as non-nullable without relying on `CreateStruct`'s own nullability inference.
+ */
+object CometKnownNotNull extends CometExpressionSerde[KnownNotNull] {
+  override def convert(
+      expr: KnownNotNull,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] =
+    CometTaggingExpression.convert(expr, inputs, binding)
 }

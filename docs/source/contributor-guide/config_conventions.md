@@ -34,9 +34,9 @@ broadest (the prefix) to narrowest (the specific setting).
   prefix like `spark.sql.comet.`.
 - **Category segment.** The first segment after the prefix names a broad area:
   `exec` (execution and expressions), `scan` (source readers), `parquet` (Parquet-specific
-  settings), `shuffle` (shuffle behavior), `columnar` (columnar shuffle), `explain` (plan
-  explain/logging), `metrics`, `tracing`, `testing`, `convert` (Spark → Comet source
-  conversion), or `expression` / `operator` (per-expression / per-operator flags).
+  settings), `shuffle` (shuffle behavior), `explain` (plan explain/logging), `metrics`,
+  `tracing`, `debug`, `testing`, `convert` (Spark → Comet source conversion), or
+  `expression` / `operator` (per-expression / per-operator flags).
 - **Segment casing.** Multi-word segments use `camelCase`, not dot- or kebab-separated.
   Prefer `spark.comet.foo.maxThreadNum` over `spark.comet.foo.max.thread.num` or
   `spark.comet.foo.max-thread-num`.
@@ -46,8 +46,8 @@ broadest (the prefix) to narrowest (the specific setting).
   a verb (`force...`, `allow...`) can omit `.enabled` because the verb already encodes
   the action — for example `spark.comet.exec.forceShuffledHashJoin`.
 - **Acronyms.** Treat acronyms consistently as `UDF`, `SHJ`, `SMJ`, `IO` — either all-caps
-  or camelCase, but do not mix within one key (`pyarrowUdf` and `scalaUDF` in the same
-  cluster is a red flag).
+  or camelCase, but do not mix within one cluster (`pyarrowUdf` alongside `scalaUDF` would
+  be a red flag; both spell it `UDF`).
 
 ## Symbol Naming (Scala)
 
@@ -56,11 +56,11 @@ Every config declares a Scala `val` in `CometConf.scala`. The symbol name is the
 
 Examples:
 
-| Key                                             | Symbol                      |
-| ----------------------------------------------- | --------------------------- |
-| `spark.comet.enabled`                           | `COMET_ENABLED`             |
-| `spark.comet.exec.forceShuffledHashJoin`        | `COMET_FORCE_SHJ`           |
-| `spark.comet.parquet.rowFilterPushdown.enabled` | `COMET_ROW_FILTER_PUSHDOWN` |
+| Key                                             | Symbol                                      |
+| ----------------------------------------------- | ------------------------------------------- |
+| `spark.comet.enabled`                           | `COMET_ENABLED`                             |
+| `spark.comet.exec.forceShuffledHashJoin`        | `COMET_FORCE_SHJ`                           |
+| `spark.comet.parquet.rowFilterPushdown.enabled` | `COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED` |
 
 The symbol name is what appears in code; the key is what appears in user configuration.
 The two do not have to match segment-for-segment — brevity in the symbol is fine as long
@@ -137,9 +137,10 @@ val COMET_LEGACY_FOO_BEHAVIOR: ConfigEntry[Boolean] =
 ```
 
 Naming follows the usual conventions: `spark.comet.legacy.` prefix, `camelCase` final segment, and
-a `COMET_LEGACY_*` Scala symbol. The doc string must state which release changed the behavior and
-what the old behavior was, so that `configs.md` is self-explanatory without cross-referencing the
-upgrade guide.
+a `COMET_LEGACY_*` Scala symbol. No legacy config exists yet, so the first one to land must also add
+the `CATEGORY_LEGACY` constant to `CometConf.scala` and a corresponding section to `configs.md`. The
+doc string must state which release changed the behavior and what the old behavior was, so that
+`configs.md` is self-explanatory without cross-referencing the upgrade guide.
 
 The checklist for a behavior change:
 

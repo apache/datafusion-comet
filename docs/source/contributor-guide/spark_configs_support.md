@@ -104,7 +104,7 @@ across Spark 3.4, 3.5, 4.0, and 4.1. Three expression classes mix in
   `to_date`, and Spark 4's `try_to_timestamp`)
 
 `Cast` between strings and date / timestamp also reads the policy via the default
-formatters but is tested separately by `CometCastSuite` and is out of scope here.
+formatters but is tested separately by `CometNativeCastSuite` and is out of scope here.
 
 **Comet status.** None of the native implementations consult
 `legacyTimeParserPolicy` directly. Comet instead uses native implementations only for

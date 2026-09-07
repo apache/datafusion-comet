@@ -148,6 +148,8 @@ impl SparkMersenneTwister {
 
     /// Port of `BitsStreamGenerator.nextInt(int n)`. The caller always passes a
     /// strictly positive `n`, matching Spark's `random.nextInt(i + 1)`.
+    // `isolate_lowest_one` requires Rust 1.97, newer than Comet's Rust 1.88 MSRV.
+    #[allow(unknown_lints, clippy::manual_isolate_lowest_one)]
     pub(crate) fn next_int(&mut self, n: i32) -> i32 {
         if (n & n.wrapping_neg()) == n {
             // n is a power of two.

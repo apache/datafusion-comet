@@ -22,7 +22,7 @@
 -- and NBSP / U+3000 are trimmed for nothing. See conversion_funcs::trim in the native crate and
 -- https://github.com/apache/datafusion-comet/issues/5149.
 --
--- Per-codepoint parity across all three eval modes is covered by the CometCastSuite
+-- Per-codepoint parity across all three eval modes is covered by the CometNativeCastSuite
 -- "whitespace trim parity" tests; this fixture covers the same regimes over a Parquet column.
 
 statement

@@ -20,5 +20,7 @@ pub mod cast;
 mod numeric;
 mod string;
 mod temporal;
-mod trim;
+pub(crate) mod trim;
 mod utils;
+
+pub(crate) use string::ymd_to_epoch_day;
