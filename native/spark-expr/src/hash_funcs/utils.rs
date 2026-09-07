@@ -576,6 +576,15 @@ macro_rules! create_hashes_internal {
         use arrow::array::{types::*, *};
 
         for (i, col) in $arrays.iter().enumerate() {
+            // The dictionary fast path hashes each distinct dictionary value once and reuses that
+            // result for every key, which is only valid while every row carries the same incoming
+            // hash. Position in the column list is not a sufficient test: this macro also runs on
+            // recursion, where a nested dictionary arrives as the only column of its call even
+            // though the buffer already holds the hash accumulated for that row -- a
+            // dictionary-encoded list element, for instance. So confirm the buffer is uniform,
+            // which keeps the optimisation for a genuine first column (every row seeded alike,
+            // whatever the seed) and unpacks otherwise. Only dictionaries need this, and the scan
+            // is measurable on the hot path, so it is deferred into the dictionary arm below.
             let first_col = i == 0;
             match col.data_type() {
                 DataType::Boolean => {
@@ -729,7 +738,13 @@ macro_rules! create_hashes_internal {
                 DataType::Decimal128(_, _) => {
                     $crate::hash_array_decimal!(Decimal128Array, col, $hashes_buffer, $hash_method);
                 }
-                DataType::Dictionary(index_type, _) => match **index_type {
+                DataType::Dictionary(index_type, _) => {
+                    let first_col = first_col
+                        && match $hashes_buffer.first() {
+                            None => true,
+                            Some(first) => $hashes_buffer.iter().all(|h| h == first),
+                        };
+                    match **index_type {
                     DataType::Int8 => {
                         $create_dictionary_hash_method::<Int8Type>(col, $hashes_buffer, first_col)?;
                     }
@@ -788,7 +803,8 @@ macro_rules! create_hashes_internal {
                             col.data_type(),
                         )))
                     }
-                },
+                    }
+                }
                 DataType::List(field) => {
                     let list_array = col.as_any().downcast_ref::<ListArray>().unwrap();
                     let values = list_array.values();
