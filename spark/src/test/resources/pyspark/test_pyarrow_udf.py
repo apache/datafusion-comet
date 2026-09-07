@@ -89,6 +89,26 @@ def accelerated(request, spark) -> bool:
     return request.param
 
 
+@pytest.fixture
+def large_var_types(spark):
+    settings = {
+        "spark.sql.execution.arrow.useLargeVarTypes": "true",
+        "spark.comet.batchSize": "7",
+        "spark.sql.execution.arrow.maxRecordsPerBatch": "7",
+    }
+    previous = {key: spark.conf.get(key, None) for key in settings}
+    for key, value in settings.items():
+        spark.conf.set(key, value)
+    try:
+        yield
+    finally:
+        for key, value in previous.items():
+            if value is None:
+                spark.conf.unset(key)
+            else:
+                spark.conf.set(key, value)
+
+
 def _executed_plan(df) -> str:
     return df._jdf.queryExecution().executedPlan().toString()
 
@@ -1211,50 +1231,132 @@ def test_map_in_arrow_deeply_nested(spark, tmp_path, accelerated):
     assert out == expected
 
 
-def test_map_in_arrow_falls_back_when_use_large_var_types(spark, tmp_path):
-    """
-    `spark.sql.execution.arrow.useLargeVarTypes=true` widens StringType / BinaryType to
-    LargeUtf8 / LargeBinary in Spark's input IPC schema (8-byte offsets). Native Comet
-    vectors use 4-byte offsets; direct serialization advertises their matching types,
-    producing a valid stream but not the large input types requested by the configuration.
-    EliminateRedundantTransitions must skip the rewrite in that case so vanilla Spark
-    handles the operation. This test does not use the `accelerated` fixture: it sets
-    pyarrowUDF.enabled=true AND useLargeVarTypes=true and asserts the plan still falls
-    back to vanilla MapInArrow.
-    """
-    schema_in = T.StructType(
-        [
-            T.StructField("id", T.LongType()),
-            T.StructField("name", T.StringType()),
-        ]
+@pytest.mark.parametrize("api", ["mapInArrow", "mapInPandas"])
+@pytest.mark.parametrize("union_input", [False, True])
+def test_large_var_types_nested_batches_and_chained_udfs(
+    spark, tmp_path, accelerated, large_var_types, api, union_input
+):
+    """Widen native offsets, then reuse already-large output in the next Python runner."""
+    schema = (
+        "id int, text string, data binary, nested struct<text:string,data:binary>, "
+        "texts array<string>, binaries array<binary>, "
+        "mapping map<string,struct<text:string,data:binary>>"
     )
-    rows = [(i, f"name_{i}") for i in range(20)]
-    src = str(tmp_path / "src.parquet")
-    spark.createDataFrame(rows, schema_in).write.parquet(src)
+    rows = []
+    for index in range(37):
+        text = None if index % 4 == 0 else f"λ中文-{index}"
+        data = None if index % 5 == 0 else bytearray([0, index, 255])
+        rows.append(
+            (
+                index,
+                text,
+                data,
+                None if index % 3 == 0 else (text, data),
+                [text, "", None],
+                [data, bytearray(), None],
+                {f"key-{index}": (text, data), "missing": None},
+            )
+        )
+    path = str(tmp_path / "large_types.parquet")
+    spark.createDataFrame(rows, schema).coalesce(1).write.parquet(path)
+    source = spark.read.parquet(path)
+    if union_input:
+        other = source.selectExpr(
+            "id + 37 AS id",
+            "text",
+            "data",
+            "named_struct('renamed_text', nested.text, 'renamed_data', nested.data) AS nested",
+            "texts",
+            "binaries",
+            "mapping",
+        )
+        source = source.union(other).coalesce(1)
+    expected = sorted(source.collect(), key=lambda row: row.id)
 
-    def passthrough(iterator):
+    def check_arrow_batch(batch):
+        assert batch.num_rows <= 7
+        fields = batch.schema
+        assert pa.types.is_large_string(fields.field("text").type)
+        assert pa.types.is_large_binary(fields.field("data").type)
+        nested = fields.field("nested").type
+        assert pa.types.is_large_string(nested.field("text").type)
+        assert pa.types.is_large_binary(nested.field("data").type)
+        assert pa.types.is_large_string(fields.field("texts").type.value_type)
+        assert pa.types.is_large_binary(fields.field("binaries").type.value_type)
+        mapping = fields.field("mapping").type
+        assert pa.types.is_large_string(mapping.key_type)
+        assert not mapping.key_field.nullable
+        assert pa.types.is_large_string(mapping.item_type.field("text").type)
+        assert pa.types.is_large_binary(mapping.item_type.field("data").type)
+
+    def first(iterator):
         for batch in iterator:
+            if api == "mapInArrow":
+                check_arrow_batch(batch)
+                yield batch.slice(0, 0)
+            else:
+                yield batch.iloc[:0]
             yield batch
 
-    prev_pyarrow = spark.conf.get("spark.comet.exec.pyarrowUDF.enabled", "false")
-    prev_large = spark.conf.get("spark.sql.execution.arrow.useLargeVarTypes", "false")
-    spark.conf.set("spark.comet.exec.pyarrowUDF.enabled", "true")
-    spark.conf.set("spark.sql.execution.arrow.useLargeVarTypes", "true")
-    try:
-        result_df = spark.read.parquet(src).mapInArrow(passthrough, schema_in)
-        plan = _executed_plan(result_df)
-        assert "CometMapInBatch" not in plan, (
-            f"useLargeVarTypes=true should force fallback, but plan has "
-            f"CometMapInBatch:\n{plan}"
+    def second(iterator):
+        for batch in iterator:
+            check_arrow_batch(batch)
+            yield batch
+
+    result = getattr(source, api)(first, source.schema).mapInArrow(
+        second, source.schema
+    )
+    plan = _executed_plan(result)
+    _assert_plan_matches_mode(plan, accelerated)
+    if accelerated:
+        assert plan.count("CometMapInBatch") == 2
+        if union_input:
+            assert "CometUnion" in plan
+    assert sorted(result.collect(), key=lambda row: row.id) == expected
+
+
+@pytest.mark.parametrize("api", ["mapInArrow", "mapInPandas"])
+def test_large_var_types_with_no_input_batches(
+    spark, tmp_path, accelerated, large_var_types, api
+):
+    path = str(tmp_path / "empty_large_types.parquet")
+    spark.createDataFrame(
+        [(1, "a", bytearray(b"x"))], "id int, text string, data binary"
+    ).coalesce(1).write.parquet(path)
+    source = spark.read.parquet(path).where("id < 0")
+
+    def emit_without_input(iterator):
+        assert (
+            sum(
+                batch.num_rows if api == "mapInArrow" else len(batch)
+                for batch in iterator
+            )
+            == 0
         )
-        assert "MapInArrow" in plan, (
-            f"expected vanilla MapInArrow in fallback plan, got:\n{plan}"
-        )
-        out = sorted((r["id"], r["name"]) for r in result_df.collect())
-        assert out == sorted(rows)
-    finally:
-        spark.conf.set("spark.comet.exec.pyarrowUDF.enabled", prev_pyarrow)
-        spark.conf.set("spark.sql.execution.arrow.useLargeVarTypes", prev_large)
+        if api == "mapInArrow":
+            yield pa.RecordBatch.from_arrays(
+                [
+                    pa.array(["empty"], type=pa.large_string()),
+                    pa.array([b""], type=pa.large_binary()),
+                ],
+                names=["text", "data"],
+            )
+        else:
+            import pandas as pd
+
+            yield pd.DataFrame(
+                {"text": pd.Series(["empty"], dtype=object), "data": [b""]}
+            )
+
+    result = getattr(source, api)(emit_without_input, "text string, data binary")
+    _assert_plan_matches_mode(
+        _executed_plan(result),
+        accelerated,
+        vanilla_node="MapInArrow" if api == "mapInArrow" else "MapInPandas",
+    )
+    assert [(row.text, row.data) for row in result.collect()] == [
+        ("empty", bytearray())
+    ]
 
 
 def test_map_in_arrow_after_shuffle(spark, tmp_path, accelerated):

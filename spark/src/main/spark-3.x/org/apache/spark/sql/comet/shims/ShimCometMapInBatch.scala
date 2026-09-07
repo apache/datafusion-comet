@@ -36,10 +36,9 @@ import org.apache.spark.sql.vectorized.ColumnarBatch
  * always return `None`. 3.x support can be added later if there is user demand.
  *
  * Shared across spark-3.4 and spark-3.5 because both are identical: 3.4 lacks the modern
- * `ArrowPythonRunner` constructor and `arrowUseLargeVarTypes`, and 3.5's `PythonArrowInput` trait
- * has a different contract (`writeIteratorToArrowStream` one-shot vs 4.x's
- * `writeNextBatchToArrowStream` batch-at-a-time), so neither version can host the columnar input
- * implementation without a separate rewrite.
+ * `ArrowPythonRunner` constructor, and 3.5's `PythonArrowInput` trait has a different contract
+ * (`writeIteratorToArrowStream` one-shot vs 4.x's `writeNextBatchToArrowStream` batch-at-a-time),
+ * so neither version can host the columnar input implementation without a separate rewrite.
  */
 trait ShimCometMapInBatch {
 
