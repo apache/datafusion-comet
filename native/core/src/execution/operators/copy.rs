@@ -31,15 +31,13 @@ pub enum CopyMode {
 }
 
 /// Copy an Arrow Array
-pub(crate) fn copy_array(array: &dyn Array) -> ArrayRef {
+pub(crate) fn copy_array(array: &dyn Array) -> Result<ArrayRef, ArrowError> {
     let capacity = array.len();
     let data = array.to_data();
 
     let mut mutable = MutableArrayData::new(vec![&data], false, capacity);
 
-    mutable
-        .try_extend(0, 0, capacity)
-        .expect("extend failed due to offset overflow");
+    mutable.try_extend(0, 0, capacity)?;
 
     if matches!(array.data_type(), DataType::Dictionary(_, _)) {
         let copied_dict = make_array(mutable.freeze());
@@ -52,17 +50,15 @@ pub(crate) fn copy_array(array: &dyn Array) -> ArrayRef {
                 let data = values.to_data();
 
                 let mut mutable = MutableArrayData::new(vec![&data], false, values.len());
-                mutable
-                    .try_extend(0, 0, values.len())
-                    .expect("extend failed due to offset overflow");
+                mutable.try_extend(0, 0, values.len())?;
 
                 let copied_dict = ref_copied_dict.with_values(make_array(mutable.freeze()));
-                Arc::new(copied_dict)
+                Ok(Arc::new(copied_dict))
             }
             t => unreachable!("Should not reach here: {}", t)
         )
     } else {
-        make_array(mutable.freeze())
+        Ok(make_array(mutable.freeze()))
     }
 }
 
@@ -80,18 +76,100 @@ pub(crate) fn copy_or_unpack_array(
             let options = CastOptions::default();
             // We need to copy the array after `cast` because arrow-rs `take` kernel which is used
             // to unpack dictionary array might reuse the input array's null buffer.
-            Ok(copy_array(&cast_with_options(
-                array,
-                value_type.as_ref(),
-                &options,
-            )?))
+            copy_array(&cast_with_options(array, value_type.as_ref(), &options)?)
         }
         _ => {
             if mode == &CopyMode::UnpackOrDeepCopy {
-                Ok(copy_array(array))
+                copy_array(array)
             } else {
                 Ok(Arc::clone(array))
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow::array::{DictionaryArray, Int32Array, Int8Array, ListViewArray, NullArray};
+    use arrow::datatypes::{Field, Int8Type};
+
+    fn overflowing_list_view() -> ArrayRef {
+        // Overlapping views expand past i32::MAX when copied. NullArray stores only
+        // a length, so the large logical child does not require a large allocation.
+        Arc::new(ListViewArray::new(
+            Arc::new(Field::new("item", DataType::Null, true)),
+            vec![0_i32, 0].into(),
+            vec![i32::MAX, 1].into(),
+            Arc::new(NullArray::new(i32::MAX as usize)),
+            None,
+        ))
+    }
+
+    #[test]
+    fn copy_array_propagates_offset_overflow() {
+        let array = overflowing_list_view();
+        assert!(matches!(
+            copy_array(array.as_ref()),
+            Err(ArrowError::InvalidArgumentError(_))
+        ));
+        assert!(matches!(
+            copy_or_unpack_array(&array, &CopyMode::UnpackOrDeepCopy),
+            Err(ArrowError::InvalidArgumentError(_))
+        ));
+        let cloned = copy_or_unpack_array(&array, &CopyMode::UnpackOrClone).unwrap();
+        assert!(Arc::ptr_eq(&array, &cloned));
+    }
+
+    #[test]
+    fn copy_dictionary_values_propagates_offset_overflow() {
+        let array =
+            DictionaryArray::<Int8Type>::new(Int8Array::from(vec![0, 1]), overflowing_list_view());
+        assert!(matches!(
+            copy_array(&array),
+            Err(ArrowError::InvalidArgumentError(_))
+        ));
+    }
+
+    #[test]
+    fn copy_array_preserves_sliced_nullable_values() {
+        let source = Int32Array::from(vec![Some(0), Some(1), None, Some(3)]);
+        let array = source.slice(1, 3);
+        let copied = copy_array(&array).unwrap();
+        assert_eq!(copied.to_data(), array.to_data());
+        let copied = copied.as_any().downcast_ref::<Int32Array>().unwrap();
+        assert_ne!(copied.values().as_ptr(), array.values().as_ptr());
+    }
+
+    #[test]
+    fn copy_dictionary_preserves_values_and_unpacks() {
+        let values = Arc::new(Int32Array::from(vec![Some(10), None, Some(30)]));
+        let dictionary = DictionaryArray::<Int8Type>::new(
+            Int8Array::from(vec![Some(2), None, Some(0), Some(1)]),
+            Arc::clone(&values) as ArrayRef,
+        );
+        let copied = copy_array(&dictionary).unwrap();
+        assert_eq!(copied.to_data(), dictionary.to_data());
+        let copied = copied
+            .as_any()
+            .downcast_ref::<DictionaryArray<Int8Type>>()
+            .unwrap();
+        assert_ne!(
+            copied.keys().values().as_ptr(),
+            dictionary.keys().values().as_ptr()
+        );
+        let copied_values = copied
+            .values()
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap();
+        assert_ne!(copied_values.values().as_ptr(), values.values().as_ptr());
+
+        let array: ArrayRef = Arc::new(dictionary);
+        for mode in [CopyMode::UnpackOrDeepCopy, CopyMode::UnpackOrClone] {
+            let unpacked = copy_or_unpack_array(&array, &mode).unwrap();
+            let expected = Int32Array::from(vec![Some(30), None, Some(10), None]);
+            assert_eq!(unpacked.to_data(), expected.to_data());
         }
     }
 }
