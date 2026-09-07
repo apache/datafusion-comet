@@ -193,6 +193,9 @@ FILTERS = {
         ".github/workflows/iceberg_spark_test_reusable.yml",
         ".github/actions/setup-builder/**",
         ".github/actions/setup-iceberg-builder/**",
+        "dev/ci/iceberg-test-shards.gradle",
+        "dev/ci/check-iceberg-shards.py",
+        "dev/ci/test-iceberg-shards.py",
     ],
     "iceberg_1_9": [
         "native/**/src/**",
@@ -210,6 +213,9 @@ FILTERS = {
         ".github/workflows/iceberg_spark_test_reusable.yml",
         ".github/actions/setup-builder/**",
         ".github/actions/setup-iceberg-builder/**",
+        "dev/ci/iceberg-test-shards.gradle",
+        "dev/ci/check-iceberg-shards.py",
+        "dev/ci/test-iceberg-shards.py",
     ],
     "iceberg_1_10": [
         "native/**/src/**",
@@ -227,6 +233,9 @@ FILTERS = {
         ".github/workflows/iceberg_spark_test_reusable.yml",
         ".github/actions/setup-builder/**",
         ".github/actions/setup-iceberg-builder/**",
+        "dev/ci/iceberg-test-shards.gradle",
+        "dev/ci/check-iceberg-shards.py",
+        "dev/ci/test-iceberg-shards.py",
     ],
     "iceberg_1_11": [
         "native/**/src/**",
@@ -244,6 +253,9 @@ FILTERS = {
         ".github/workflows/iceberg_spark_test_reusable.yml",
         ".github/actions/setup-builder/**",
         ".github/actions/setup-iceberg-builder/**",
+        "dev/ci/iceberg-test-shards.gradle",
+        "dev/ci/check-iceberg-shards.py",
+        "dev/ci/test-iceberg-shards.py",
     ],
 }
 
