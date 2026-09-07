@@ -33,10 +33,12 @@ object CometPaddingExpressionBenchmark extends CometBenchmarkBase {
       withTempTable("parquetV1Table") {
         prepareTable(
           dir,
-          spark.range(rows).selectExpr(
-            "CAST(id AS STRING) AS s",
-            "CAST(id % 32 + 8 AS INT) AS len",
-            "CASE WHEN id % 2 = 0 THEN 'xy' ELSE 'z' END AS pad"))
+          spark
+            .range(rows)
+            .selectExpr(
+              "CAST(id AS STRING) AS s",
+              "CAST(id % 32 + 8 AS INT) AS len",
+              "CASE WHEN id % 2 = 0 THEN 'xy' ELSE 'z' END AS pad"))
         for (function <- Seq("lpad", "rpad")) {
           for ((shape, arguments) <- Seq(
               "column padding" -> "s, len, pad",
