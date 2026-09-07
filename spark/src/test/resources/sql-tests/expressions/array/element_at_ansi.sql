@@ -72,3 +72,53 @@ SELECT element_at(arr, -10) FROM ansi_element_at_oob
 -- literal with negative out of bounds
 query ignore(https://github.com/apache/datafusion-comet/issues/3375)
 SELECT element_at(array(1, 2, 3), -5)
+
+-- ============================================================================
+-- Stateful array operand: the ANSI NULL guard must not apply
+-- ============================================================================
+
+statement
+CREATE TABLE ansi_element_at_stateful(id int) USING parquet
+
+statement
+INSERT INTO ansi_element_at_stateful VALUES
+  (1), (2), (3), (4), (5), (6), (7), (8), (9), (10), (11), (12), (13), (14), (15), (16)
+
+-- Under ANSI, CometElementAt reproduces Spark's NULL short-circuit with a
+-- `CASE WHEN <array> IS NOT NULL` guard, which serializes the operand a second time and runs the
+-- THEN branch over a different row selection, so a stateful operand would drift between the two
+-- copies. The guard is restricted to deterministic operands, and this must keep every value Spark
+-- returns. https://github.com/apache/datafusion-comet/issues/5544
+query
+SELECT id,
+       element_at(IF(monotonically_increasing_id() % 2 = 0, array(1), CAST(NULL AS ARRAY<INT>)), 1) AS v1,
+       element_at(IF(rand(7L) < 0.5, array(1), CAST(NULL AS ARRAY<INT>)), 1) AS v2
+FROM ansi_element_at_stateful
+
+-- ============================================================================
+-- ANSI short-circuit over a NULL array
+-- ============================================================================
+
+statement
+CREATE TABLE ansi_element_at_null(id int) USING parquet
+
+statement
+INSERT INTO ansi_element_at_null VALUES (1), (2), (3)
+
+-- Spark's ElementAt is a BinaryExpression that returns NULL for a NULL array WITHOUT evaluating the
+-- index, so the ANSI remainder-by-zero at id = 2 must not fire. CometElementAt reproduces that with
+-- a `CASE WHEN <array> IS NOT NULL` guard, which runs the index only on the selected rows, so this
+-- executes natively and returns 1, NULL, 1. The map counterpart lives in
+-- map/element_at_map_ansi.sql.
+query
+SELECT id, element_at(IF(id <> 2, array(1), CAST(NULL AS ARRAY<INT>)), 1 + (id % (id - 2))) AS v
+FROM ansi_element_at_null
+
+-- Same guard over a `CASE WHEN` operand with no ELSE, which reaches the serde with an implicit NULL
+-- branch. The index is a plain literal on purpose: with a throwing index, plain Spark 3.5 and 4.0
+-- raise DIVIDE_BY_ZERO from this spelling on the very row whose array is NULL, contradicting their
+-- own `BinaryExpression.eval` and Spark 4.1, so no single expected result covers every supported
+-- version. The throwing-index case is covered by the `IF(...)` spelling above. Returns 1, NULL, 1.
+query
+SELECT id, element_at(CASE WHEN id <> 2 THEN array(1) END, 1) AS v
+FROM ansi_element_at_null

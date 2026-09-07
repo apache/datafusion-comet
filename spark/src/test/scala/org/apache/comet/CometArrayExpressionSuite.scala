@@ -1280,19 +1280,92 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     }
   }
 
-  // An empty container has no children to recover the element type from, and a NULL literal
-  // serializes as a typed null without expansion, so only the empty cases fall back.
+  // An empty container has no children to recover its element type from, so expansion rebuilds it
+  // from a childless `CreateArray` cast to the declared type (and `map_from_arrays` over two such
+  // arrays for a map). A NULL literal serializes as a typed null without expansion.
   test("folded empty and NULL complex literals") {
     withParquetTable((0 until 3).map(i => (i, i.toLong)), "tbl") {
-      checkSparkAnswerAndFallbackReason(
-        "SELECT _1 AS id, CAST(map() AS MAP<INT,INT>) AS m FROM tbl",
-        "Unsupported data type MapType")
-      checkSparkAnswerAndFallbackReason(
-        "SELECT _1 AS id, CAST(array() AS ARRAY<MAP<INT,INT>>) AS a FROM tbl",
-        "Unsupported data type ArrayType")
+      checkSparkAnswerAndOperator("SELECT _1 AS id, CAST(map() AS MAP<INT,INT>) AS m FROM tbl")
+      checkSparkAnswerAndOperator(
+        "SELECT _1 AS id, CAST(array() AS ARRAY<MAP<INT,INT>>) AS a FROM tbl")
       checkSparkAnswerAndOperator("SELECT _1 AS id, CAST(NULL AS MAP<INT,INT>) AS m FROM tbl")
       checkSparkAnswerAndOperator(
         "SELECT _1 AS id, CAST(NULL AS ARRAY<MAP<INT,INT>>) AS a FROM tbl")
+    }
+  }
+
+  // https://github.com/apache/datafusion-comet/issues/5544: an empty map literal whose value type
+  // is itself complex. `typedLit(Map.empty[Int, List[Int]])` is already a Literal (no folding
+  // needed), and the lookup consumes it, so the rebuilt empty map has to keep
+  // `MapType(IntegerType, ArrayType(IntegerType, false), true)` for `map_extract` to type-check.
+  test("empty map literal with an array value type runs natively (multirow)") {
+    withParquetTable((0 until 3).map(i => (i, i.toLong)), "tbl") {
+      val emptyMapping = typedLit(Map.empty[Int, List[Int]])
+      checkSparkAnswerAndOperator(
+        spark.table("tbl").select(array(emptyMapping(col("_1"))).as("a")))
+    }
+  }
+
+  // https://github.com/apache/datafusion-comet/issues/5544: Arrow's IntervalMonthDayNano holds
+  // elapsed time in nanoseconds, so the dispatcher's `Math.multiplyExact(microseconds, 1000L)`
+  // overflows past about 292 years, where Spark accepts the value (#5279). Expansion has to
+  // decline the value, not just the type: the calendar-interval restriction in
+  // `mapKeyTypesExpandable` only covers map keys.
+  test("folded map value with an out-of-range calendar interval falls back (multirow)") {
+    withParquetTable((0 until 3).map(i => (i, i.toLong)), "tbl") {
+      Seq(
+        "array(map(1, make_interval(0, 0, 0, 0, 3000000, 0, 0)))" -> "ArrayType",
+        "map(1, make_interval(0, 0, 0, 0, 3000000, 0, 0))" -> "MapType",
+        "map(1, make_interval(0, 0, 0, 0, -3000000, 0, 0))" -> "MapType").foreach {
+        case (value, declaredType) =>
+          checkSparkAnswerAndFallbackReason(
+            s"SELECT _1 AS id, $value AS v FROM tbl",
+            s"Unsupported data type $declaredType")
+      }
+      // An interval inside the nanosecond range still runs natively.
+      checkSparkAnswerAndOperator(
+        "SELECT _1 AS id, array(map(1, make_interval(0, 0, 0, 0, 24, 0, 0))) AS a FROM tbl")
+    }
+  }
+
+  // https://github.com/apache/datafusion-comet/issues/5544: the dispatcher copies a UTF8String's
+  // raw bytes into a VarCharVector and the native bridge imports them through unchecked Arrow FFI,
+  // so malformed UTF-8 aborts the JVM on `hint::unreachable_unchecked` (X'FF') or silently
+  // mis-counts characters (the overlong X'C080'). Spark preserves the raw bytes, so normalizing
+  // them would not be equivalent either; expansion declines and Spark evaluates the projection.
+  test("folded map value with malformed UTF-8 falls back (multirow)") {
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "false") {
+      withParquetTable((1 until 4).map(i => (i, i.toLong)), "tbl") {
+        Seq(
+          "levenshtein(element_at(map(1, CAST(X'FF' AS STRING)), _1), 'a')" -> "MapType",
+          "length(element_at(map(1, CAST(X'C080' AS STRING)), _1))" -> "MapType",
+          // Exercises the struct arm of the value walk.
+          "element_at(map(1, named_struct('s', CAST(X'FF' AS STRING))), _1)" -> "MapType",
+          "array(map(1, CAST(X'FF' AS STRING)))" -> "ArrayType").foreach {
+          case (value, declaredType) =>
+            checkSparkAnswerAndFallbackReason(
+              s"SELECT _1 AS id, $value AS v FROM tbl",
+              s"Unsupported data type $declaredType")
+        }
+        // Well-formed multi-byte text is unaffected.
+        checkSparkAnswerAndOperator(
+          "SELECT _1 AS id, length(element_at(map(1, CAST(X'C3A9' AS STRING)), _1)) AS v FROM tbl")
+      }
+    }
+  }
+
+  // `makeListLiteral` has no branch for a calendar-interval, struct, or map element, and a folded
+  // literal reaches it whenever expansion declines (or never applied). Each of these used to raise
+  // a `MatchError` mid-planning instead of falling back; the element-type gate in `getSupportLevel`
+  // keeps them out of the list-literal encoder.
+  test("folded array literals whose element type the list encoder cannot carry fall back") {
+    withParquetTable((0 until 3).map(i => (i, i.toLong)), "tbl") {
+      Seq(
+        "SELECT _1 AS id, array(make_interval(1)) AS a FROM tbl",
+        "SELECT _1 AS id, array(array(named_struct('a', 1))) AS a FROM tbl",
+        "SELECT _1 AS id, array(array(map(CAST(1 AS DOUBLE), 2))) AS a FROM tbl").foreach {
+        query => checkSparkAnswerAndFallbackReason(query, "Unsupported data type ArrayType")
+      }
     }
   }
 
