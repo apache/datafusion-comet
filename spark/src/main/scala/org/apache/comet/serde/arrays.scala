@@ -741,7 +741,9 @@ object CometFlatten extends CometExpressionSerde[Flatten] with ArraysBase {
   }
 }
 
-object CometArrayFilter extends CometHighOrderFunction[ArrayFilter]("array_filter") {
+object CometArrayFilter
+    extends CometHighOrderFunction[ArrayFilter]("array_filter")
+    with CodegenDispatchFallback {
 
   private val UNARY_FUNCTION_EXPECTED =
     "The array_filter function in DataFusion is limited to one lambda parameter"
@@ -759,13 +761,9 @@ object CometArrayFilter extends CometHighOrderFunction[ArrayFilter]("array_filte
 
   override def getSupportLevel(expr: ArrayFilter): SupportLevel = {
     if (!isUnaryLambdaFunction(expr)) {
-      if (CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.get()) {
-        return Compatible()
-      } else {
-        return Unsupported(Some(UNARY_FUNCTION_EXPECTED))
-      }
+      return Unsupported(Some(UNARY_FUNCTION_EXPECTED))
     }
-    super.getSupportLevel(expr)
+    Compatible()
   }
 
   override def convert(

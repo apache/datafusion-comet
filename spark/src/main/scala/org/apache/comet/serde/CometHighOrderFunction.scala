@@ -24,8 +24,7 @@ import scala.jdk.CollectionConverters._
 import org.apache.spark.sql.catalyst.expressions.{Attribute, HigherOrderFunction, LambdaFunction => SparkLambdaFunction, NamedLambdaVariable => SparkNamedLambdaVariable}
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
-import org.apache.comet.serde.CometHighOrderFunction.namedLambdaVariable2Proto
+import org.apache.comet.serde.CometHighOrderFunction.{containsJvmDispatch, namedLambdaVariable2Proto}
 import org.apache.comet.serde.ExprOuterClass.{HigherOrderFunc, LambdaFunction, NamedLambdaVariable}
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, serializeDataType}
 
@@ -33,65 +32,35 @@ import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, serializeData
  * Serializer that converts Spark higher-order functions (e.g. `filter`, `transform`, `exists`)
  * into Comet's protobuf representation.
  *
- * Depending on the available configuration and on whether the expression satisfies the native
- * constraints, [[convert]] produces one of two representations:
- *   - a native higher-order function proto (executed by the DataFusion engine), used when
- *     `COMET_EXEC_HIGHER_ORDER_FUNCTION_NATIVE_ENABLED` is set and the expression is natively
- *     supported (see [[nativeUnsupportedReason]] / [[getSupportLevel]]); or
- *   - a JVM codegen dispatch (Scala UDF fallback via `CometScalaUDF.emitJvmCodegenDispatch`),
- *     used when the native path is unavailable but `COMET_SCALA_UDF_CODEGEN_ENABLED` is enabled.
+ * Path selection happens in [[convert]] and has exactly two outcomes, chosen in order:
+ *
+ * Native HOF proto - when `spark.comet.exec.higherOrderFunction.native.enabled` is set and
+ * [[highOrderFunction2Proto]] serializes the whole expression natively. The method returns `None`
+ * (and the HOF falls to the next path) if the HOF is structurally invalid (lambda functions must
+ * be `LambdaFunction`, lambda arguments must be `NamedLambdaVariable`) or if a lambda body
+ * contains a dispatch-only subexpression (regex, JSON, ...). Such subexpressions are serialized
+ * as JVM codegen dispatch nodes, which cannot bind `NamedLambdaVariable`s, so the lambda cannot
+ * be executed natively. A dispatch-only expression among the *value* arguments is fine and stays
+ * native. JVM codegen dispatch - `CometScalaUDF.emitJvmCodegenDispatch` runs the whole HOF
+ * (lambda included) on the JVM; `NamedLambdaVariable`s never cross this boundary because the
+ * lambda is evaluated by Spark's own implementation. Returns `None` when the dispatcher cannot
+ * handle the expression, which falls back to Spark entirely.
+ *
+ * Whether a lambda body requires dispatch is decided from the already-built body proto by
+ * [[CometHighOrderFunction.containsJvmDispatch]] - the body is serialized exactly once, and the
+ * verdict comes from the same proto that native execution would use.
  */
 case class CometHighOrderFunction[T <: HigherOrderFunction](name: String)
     extends CometExpressionSerde[T] {
-  private val nativeHofEnabled = CometConf.COMET_EXEC_HIGHER_ORDER_FUNCTION_NATIVE_ENABLED.get()
-  private val codegenEnabled = CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.get()
-
-  private val UNSUPPORTED_LAMBDA_TYPE = "lambda functions must be LambdaFunction"
-  private val UNSUPPORTED_LAMBDA_PARAM_TYPE = "lambda arguments must be NamedLambdaVariables"
-  private val UNSUPPORTED_JVM_CODEGEN_IN_LAMBDA_REASON =
-    "Lambda body contains expressions requiring JVM codegen dispatch, " +
-      "which cannot bind NamedLambdaVariables"
-
-  override def getUnsupportedReasons(): Seq[String] =
-    Seq(UNSUPPORTED_LAMBDA_TYPE, UNSUPPORTED_LAMBDA_PARAM_TYPE)
-
-  private def nativeUnsupportedReason(expr: T): Option[String] = {
-    if (!expr.functions.forall(_.isInstanceOf[SparkLambdaFunction])) {
-      return Some(UNSUPPORTED_LAMBDA_TYPE)
-    }
-    val sparkLambdaFunctions = expr.functions.map(_.asInstanceOf[SparkLambdaFunction])
-    if (!sparkLambdaFunctions
-        .flatMap(_.arguments)
-        .forall(_.isInstanceOf[SparkNamedLambdaVariable])) {
-      return Some(UNSUPPORTED_LAMBDA_PARAM_TYPE)
-    }
-    val hasJvmScalarUdf = sparkLambdaFunctions
-      .exists(
-        _.exists(exprToProtoInternal(_, Seq.empty, binding = false).exists(_.hasJvmScalarUdf)))
-    if (hasJvmScalarUdf) {
-      return Some(UNSUPPORTED_JVM_CODEGEN_IN_LAMBDA_REASON)
-    }
-    None
-  }
-
-  override def getSupportLevel(expr: T): SupportLevel = {
-    val unsupportedReason = nativeUnsupportedReason(expr)
-    val nativeAvailable = unsupportedReason.isEmpty && nativeHofEnabled
-    if (nativeAvailable || codegenEnabled) {
-      Compatible()
-    } else {
-      Unsupported(unsupportedReason)
-    }
-  }
 
   def convert(expr: T, inputs: Seq[Attribute], binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val nativeAvailable = nativeUnsupportedReason(expr).isEmpty && nativeHofEnabled
-    val hofProto = highOrderFunction2Proto(expr, inputs, binding)
-    if (nativeAvailable && hofProto.isDefined) {
-      hofProto
-    } else {
-      CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
+    if (!CometConf.COMET_EXEC_HIGHER_ORDER_FUNCTION_NATIVE_ENABLED.get()) {
+      return CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
     }
+    highOrderFunction2Proto(expr, inputs, binding)
+      .orElse {
+        CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
+      }
   }
 
   private def highOrderFunction2Proto(
@@ -100,26 +69,31 @@ case class CometHighOrderFunction[T <: HigherOrderFunction](name: String)
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val argumentsProto = expr.arguments.map(exprToProtoInternal(_, inputs, binding))
     val functionsProto = expr.functions
-      .map { func =>
-        val sparkLambdaFunction = func.asInstanceOf[SparkLambdaFunction]
-        exprToProtoInternal(sparkLambdaFunction.function, inputs, binding)
-          .flatMap { bodyProto =>
-            val namedLambdaVariablesProto = sparkLambdaFunction.arguments
-              .map { arg =>
-                val sparkNamedLambdaVariable = arg.asInstanceOf[SparkNamedLambdaVariable]
-                namedLambdaVariable2Proto(sparkNamedLambdaVariable)
+      .map {
+        case slf: SparkLambdaFunction =>
+          exprToProtoInternal(slf.function, inputs, binding)
+            .flatMap { bodyProto =>
+              if (containsJvmDispatch(bodyProto)) {
+                return None
               }
-            if (namedLambdaVariablesProto.forall(_.isDefined)) {
-              Some(
-                LambdaFunction
-                  .newBuilder()
-                  .addAllArgs(namedLambdaVariablesProto.map(_.get).asJava)
-                  .setBody(bodyProto)
-                  .build())
-            } else {
-              None
+              val namedLambdaVariablesProto = slf.arguments
+                .map {
+                  case arg: SparkNamedLambdaVariable =>
+                    namedLambdaVariable2Proto(arg)
+                  case _ => None
+                }
+              if (namedLambdaVariablesProto.forall(_.isDefined)) {
+                Some(
+                  LambdaFunction
+                    .newBuilder()
+                    .addAllArgs(namedLambdaVariablesProto.map(_.get).asJava)
+                    .setBody(bodyProto)
+                    .build())
+              } else {
+                None
+              }
             }
-          }
+        case _ => None
       }
     if (functionsProto.forall(_.isDefined) && argumentsProto.forall(_.isDefined)) {
       val hof = HigherOrderFunc
@@ -136,10 +110,27 @@ case class CometHighOrderFunction[T <: HigherOrderFunction](name: String)
 }
 
 object CometHighOrderFunction {
+  private def containsJvmDispatch(e: ExprOuterClass.Expr): Boolean =
+    containsJvmDispatch(e.asInstanceOf[com.google.protobuf.Message])
+
+  private def containsJvmDispatch(m: com.google.protobuf.Message): Boolean =
+    m match {
+      case e: ExprOuterClass.Expr if e.hasJvmScalarUdf => true
+      case _ =>
+        m.getAllFields.values().asScala.exists {
+          case v: com.google.protobuf.Message => containsJvmDispatch(v)
+          case vs: java.util.List[_] =>
+            vs.asScala.exists {
+              case v: com.google.protobuf.Message => containsJvmDispatch(v)
+              case _ => false
+            }
+          case _ => false
+        }
+    }
+
   def namedLambdaVariable2Proto(nlv: SparkNamedLambdaVariable): Option[NamedLambdaVariable] = {
     val dataTypeProto = serializeDataType(nlv.dataType)
     if (dataTypeProto.isEmpty) {
-      withFallbackReason(nlv, s"Unsupported datatype: ${nlv.dataType}")
       return None
     }
     Some(

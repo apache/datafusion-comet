@@ -23,6 +23,15 @@ import org.apache.spark.benchmark.Benchmark
 
 import org.apache.comet.CometConf
 
+// spotless:off
+/**
+ * Benchmark to measure performance of Comet array expressions. To run this benchmark:
+ * {{{
+ *   SPARK_GENERATE_BENCHMARK_FILES=1 make benchmark-org.apache.spark.sql.benchmark.CometArrayFilterBenchmark
+ * }}}
+ * Results will be written to "spark/benchmarks/CometArrayFilterBenchmark-**results.txt".
+ */
+// spotless:on
 object CometArrayFilterBenchmark extends CometBenchmarkBase {
 
   def runExprBenchmark(config: ArrayFilterExprConfig, values: Int, arraySize: Int): Unit = {
@@ -112,13 +121,13 @@ object CometArrayFilterBenchmark extends CometBenchmarkBase {
         "nested array (size check)",
         "SELECT filter(nested_arr, inner_arr -> size(inner_arr) > 2) FROM parquetV1Table"),
       ArrayFilterExprConfig(
-        "chained filters (pipeline)",
+        "chained filters",
         "SELECT size(filter(filter(arr, x -> x > 20), x -> x < 80)) FROM parquetV1Table"),
       ArrayFilterExprConfig(
-        "short arrays (JNI overhead)",
+        "short arrays",
         "SELECT filter(short_arr, x -> x > 2) FROM parquetV1Table"),
       ArrayFilterExprConfig(
-        "large arrays (SIMD)",
+        "large arrays",
         "SELECT filter(large_arr, x -> x > 500) FROM parquetV1Table"))
 
     configs.foreach(config => runExprBenchmark(config, values, arraySize))
