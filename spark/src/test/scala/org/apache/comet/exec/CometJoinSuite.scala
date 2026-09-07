@@ -26,7 +26,9 @@ import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.analysis.UnresolvedRelation
 import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometBroadcastNestedLoopJoinExec, CometSortMergeJoinExec, CometUnionExec}
-import org.apache.spark.sql.execution.adaptive.AQEShuffleReadExec
+import org.apache.spark.sql.execution.SparkPlan
+import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, QueryStageExec}
+import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, IntegerType, MapType, MetadataBuilder, NullType, StructField, StructType}
 
@@ -1024,8 +1026,9 @@ class CometJoinSuite extends CometTestBase {
   test("Broadcast HashJoin with NullType map columns on the build side") {
     // map(k, NULL) and transform_values(map(), ...) leave NullType children in the map type
     // (a bare map() would be constant-folded into a literal the optimizer hoists above the
-    // join). The build side goes through CometBroadcastExchangeExec's batch coalescing and an
-    // Arrow IPC round trip on the JVM (see #5525).
+    // join). Such a build side cannot be coalesced for a Comet broadcast (see #5525 and
+    // `Utils.hasNullTypeUnderStruct`), so the exchange and the join stay on Spark with a
+    // reason that names the columns.
     Seq(true, false).foreach { aqe =>
       withSQLConf(
         CometConf.COMET_BATCH_SIZE.key -> "100",
@@ -1047,9 +1050,19 @@ class CometJoinSuite extends CometTestBase {
             // covering nothing.
             assert(df.schema("m1").dataType.asInstanceOf[MapType].valueType === NullType)
             assert(df.schema("m2").dataType.asInstanceOf[MapType].keyType === NullType)
-            checkSparkAnswerAndOperator(
+            val (_, cometPlan) = checkSparkAnswerAndFallbackReason(
               df,
-              Seq(classOf[CometBroadcastExchangeExec], classOf[CometBroadcastHashJoinExec]))
+              "NullType directly under a struct or map entry in the broadcast build side " +
+                "(m1: map<int,void>, m2: map<void,int>) cannot be coalesced for broadcast")
+            def operators(p: SparkPlan): Seq[SparkPlan] = p +: (p match {
+              case a: AdaptiveSparkPlanExec => operators(a.executedPlan)
+              case s: QueryStageExec => operators(s.plan)
+              case r: ReusedExchangeExec => operators(r.child)
+              case _ => p.children.flatMap(operators)
+            })
+            val all = operators(cometPlan)
+            assert(all.exists(_.isInstanceOf[BroadcastExchangeExec]), cometPlan.treeString)
+            assert(!all.exists(_.isInstanceOf[CometBroadcastExchangeExec]), cometPlan.treeString)
           }
         }
       }

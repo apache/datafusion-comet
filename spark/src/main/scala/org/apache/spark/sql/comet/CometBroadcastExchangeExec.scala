@@ -45,7 +45,7 @@ import org.apache.spark.util.io.ChunkedByteBuffer
 import com.google.common.base.Objects
 
 import org.apache.comet.{CometConf, ConfigEntry}
-import org.apache.comet.serde.OperatorOuterClass
+import org.apache.comet.serde.{Compatible, OperatorOuterClass, SupportLevel, Unsupported}
 import org.apache.comet.serde.operator.CometSink
 import org.apache.comet.shims.ShimCometBroadcastExchangeExec
 
@@ -263,6 +263,26 @@ object CometBroadcastExchangeExec extends CometSink[BroadcastExchangeExec] {
 
   override def enabledConfig: Option[ConfigEntry[Boolean]] = Some(
     CometConf.COMET_EXEC_BROADCAST_EXCHANGE_ENABLED)
+
+  /**
+   * A build side with a `NullType` directly under a struct or map entry stays on Spark's
+   * broadcast. `Utils.coalesceBroadcastBatches` cannot merge such batches (Arrow's appender
+   * cannot grow a `NullVector` under a struct) and would ship them uncoalesced, which costs every
+   * consuming task one IPC stream per broadcast buffer: measurably slower than Spark's broadcast
+   * once the build side spans many batches. See `Utils.hasNullTypeUnderStruct` for lifting this
+   * when Arrow is fixed.
+   */
+  override def getSupportLevel(b: BroadcastExchangeExec): SupportLevel = {
+    val uncoalescable = b.child.output.filter(a => Utils.hasNullTypeUnderStruct(a.dataType))
+    if (uncoalescable.isEmpty) {
+      Compatible(None)
+    } else {
+      Unsupported(
+        Some("NullType directly under a struct or map entry in the broadcast build side " +
+          s"(${uncoalescable.map(a => s"${a.name}: ${a.dataType.simpleString}").mkString(", ")}) " +
+          "cannot be coalesced for broadcast"))
+    }
+  }
 
   override def createExec(
       nativeOp: OperatorOuterClass.Operator,

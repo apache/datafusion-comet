@@ -344,6 +344,30 @@ object Utils extends CometTypeShim with Logging {
   }
 
   /**
+   * Whether a `NullType` is a direct child of a struct (map keys and values included, as the
+   * entries struct's children) anywhere in `dataType`. This is the Spark-side twin of
+   * [[hasNullDirectlyUnderStruct]], for deciding at planning time what the broadcast coalescer
+   * would refuse: `CometBroadcastExchangeExec` keeps such build sides on Spark's broadcast, since
+   * shipping them uncoalesced costs every consuming task one IPC stream per broadcast buffer.
+   *
+   * When Comet moves to an Arrow Java release whose `VectorAppender` can grow a `NullVector`
+   * under a struct, drop this gate from `CometBroadcastExchangeExec.getSupportLevel` and the
+   * bypass in [[coalesceBroadcastBatches]]; `UtilsSuite` runs the real appender over every shape
+   * and will show which ones no longer need it.
+   */
+  def hasNullTypeUnderStruct(dataType: DataType): Boolean = {
+    // A list insulates whatever is below it, so `inStruct` resets when descending into one.
+    def check(dt: DataType, inStruct: Boolean): Boolean = dt match {
+      case NullType => inStruct
+      case ArrayType(element, _) => check(element, inStruct = false)
+      case StructType(fields) => fields.exists(f => check(f.dataType, inStruct = true))
+      case MapType(key, value, _) => check(key, inStruct = true) || check(value, inStruct = true)
+      case _ => false
+    }
+    check(dataType, inStruct = false)
+  }
+
+  /**
    * Whether an Arrow `Null` field is a direct child of a struct (map entries included) anywhere
    * in `schema`. Arrow's `VectorAppender` cannot grow such a column: a struct's capacity is the
    * minimum over its *direct* children, a `NullVector`'s capacity equals its value count and its
@@ -354,6 +378,9 @@ object Utils extends CometTypeShim with Logging {
    * validity buffers. So a `Null` under a list appends fine (`array(NULL)`), and so does a list
    * under a struct even when the list holds nulls (`map(k, array(NULL))`) - the struct only sees
    * the list's own, growable capacity. Top-level `NullVector`s are fine too.
+   *
+   * The planner refuses these schemas before they reach a Comet broadcast (see
+   * [[hasNullTypeUnderStruct]]); this check keeps the coalescer safe should one arrive anyway.
    */
   private def hasNullDirectlyUnderStruct(schema: Schema): Boolean = {
     def check(field: Field): Boolean = {
