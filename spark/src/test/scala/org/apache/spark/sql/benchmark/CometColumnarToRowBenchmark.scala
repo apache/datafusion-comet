@@ -19,10 +19,15 @@
 
 package org.apache.spark.sql.benchmark
 
+import scala.collection.mutable.ArrayBuffer
+
 import org.apache.spark.SparkConf
 import org.apache.spark.benchmark.Benchmark
 import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometNativeColumnarToRowExec}
+import org.apache.spark.sql.execution.{ColumnarToRowExec, QueryExecution, SparkPlan}
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.util.QueryExecutionListener
 
 import org.apache.comet.{CometConf, CometSparkSessionExtensions}
 
@@ -46,19 +51,26 @@ object CometColumnarToRowBenchmark extends CometBenchmarkBase {
       .set("spark.master", "local[1]")
       .setIfMissing("spark.driver.memory", "3g")
       .setIfMissing("spark.executor.memory", "3g")
+      .set(
+        "spark.shuffle.manager",
+        "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
       .set("spark.memory.offHeap.enabled", "true")
       .set("spark.memory.offHeap.size", "2g")
 
-    val sparkSession = SparkSession.builder
+    val sparkSession = SparkSession
+      .builder()
       .config(conf)
       .withExtensions(new CometSparkSessionExtensions)
       .getOrCreate()
 
     // Set default configs
+    sparkSession.conf.set(SQLConf.ANSI_ENABLED.key, "false")
     sparkSession.conf.set(SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key, "true")
     sparkSession.conf.set(SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key, "true")
     sparkSession.conf.set(CometConf.COMET_ENABLED.key, "false")
     sparkSession.conf.set(CometConf.COMET_EXEC_ENABLED.key, "false")
+    // These fixtures are written by Spark and contain no unsigned small integers.
+    sparkSession.conf.set(CometConf.COMET_PARQUET_UNSIGNED_SMALL_INT_CHECK.key, "false")
     // Disable dictionary encoding to ensure consistent data representation
     sparkSession.conf.set("parquet.enable.dictionary", "false")
 
@@ -70,29 +82,67 @@ object CometColumnarToRowBenchmark extends CometBenchmarkBase {
    * code duplication across benchmark methods.
    */
   private def addC2RBenchmarkCases(benchmark: Benchmark, query: String): Unit = {
-    benchmark.addCase("Spark (ColumnarToRowExec)") { _ =>
-      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-        spark.sql(query).noop()
+    def addCase(name: String, expected: Class[_ <: SparkPlan], conf: (String, String)*): Unit = {
+      withSQLConf(conf: _*) {
+        // Validate the actual noop write, whose plan can differ from the SELECT's plan.
+        // Keep execution and listener synchronization outside the timed benchmark cases.
+        val plans = ArrayBuffer.empty[SparkPlan]
+        val listener = new QueryExecutionListener {
+          override def onSuccess(funcName: String, qe: QueryExecution, durationNs: Long): Unit = {
+            plans += qe.executedPlan
+          }
+
+          override def onFailure(
+              funcName: String,
+              qe: QueryExecution,
+              exception: Exception): Unit = ()
+        }
+        spark.sparkContext.listenerBus.waitUntilEmpty()
+        spark.listenerManager.register(listener)
+        try {
+          spark.sql(query).noop()
+          spark.sparkContext.listenerBus.waitUntilEmpty()
+        } finally {
+          spark.listenerManager.unregister(listener)
+        }
+        val conversions = plans.flatMap { plan =>
+          collect(plan) {
+            case c: ColumnarToRowExec => c
+            case c: CometColumnarToRowExec => c
+            case c: CometNativeColumnarToRowExec => c
+          }
+        }
+        require(
+          conversions.nonEmpty && conversions.forall(expected.isInstance),
+          s"$name did not execute the expected columnar-to-row conversion.\n" +
+            plans.mkString("\n"))
+        benchmark.out.println(s"Verified $name")
+      }
+      benchmark.addCase(name) { _ =>
+        withSQLConf(conf: _*) {
+          spark.sql(query).noop()
+        }
       }
     }
 
-    benchmark.addCase("Comet JVM (CometColumnarToRowExec)") { _ =>
-      withSQLConf(
-        CometConf.COMET_ENABLED.key -> "true",
-        CometConf.COMET_EXEC_ENABLED.key -> "true",
-        CometConf.COMET_NATIVE_COLUMNAR_TO_ROW_ENABLED.key -> "false") {
-        spark.sql(query).noop()
-      }
-    }
+    addCase(
+      "Spark (ColumnarToRowExec)",
+      classOf[ColumnarToRowExec],
+      CometConf.COMET_ENABLED.key -> "false")
 
-    benchmark.addCase("Comet Native (CometNativeColumnarToRowExec)") { _ =>
-      withSQLConf(
-        CometConf.COMET_ENABLED.key -> "true",
-        CometConf.COMET_EXEC_ENABLED.key -> "true",
-        CometConf.COMET_NATIVE_COLUMNAR_TO_ROW_ENABLED.key -> "true") {
-        spark.sql(query).noop()
-      }
-    }
+    addCase(
+      "Comet JVM (CometColumnarToRowExec)",
+      classOf[CometColumnarToRowExec],
+      CometConf.COMET_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_ENABLED.key -> "true",
+      CometConf.COMET_NATIVE_COLUMNAR_TO_ROW_ENABLED.key -> "false")
+
+    addCase(
+      "Comet Native (CometNativeColumnarToRowExec)",
+      classOf[CometNativeColumnarToRowExec],
+      CometConf.COMET_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_ENABLED.key -> "true",
+      CometConf.COMET_NATIVE_COLUMNAR_TO_ROW_ENABLED.key -> "true")
   }
 
   /**
@@ -355,6 +405,70 @@ object CometColumnarToRowBenchmark extends CometBenchmarkBase {
     }
   }
 
+  /**
+   * Benchmark with dictionary-encoded parquet data (the session default disables dictionary
+   * encoding, but real-world parquet data is usually dictionary-encoded).
+   */
+  def dictionaryEncodedBenchmark(values: Int): Unit = {
+    val benchmark =
+      new Benchmark("Columnar to Row - Dictionary-encoded strings", values, output = output)
+
+    withTempPath { dir =>
+      withTempTable("parquetV1Table") {
+        val df = spark
+          .range(values)
+          .selectExpr(
+            "id",
+            "concat('val_', cast(id % 1000 as string)) as low_card_str",
+            "concat('city_', cast(id % 100 as string)) as city",
+            "concat('cat_', cast(id % 10 as string)) as category")
+
+        // Force dictionary encoding ON for this table only
+        df.write
+          .option("parquet.enable.dictionary", "true")
+          .option("compression", "snappy")
+          .parquet(dir.getCanonicalPath + "/parquetV1")
+        spark.read
+          .parquet(dir.getCanonicalPath + "/parquetV1")
+          .createOrReplaceTempView("parquetV1Table")
+
+        val query = "SELECT * FROM parquetV1Table"
+        addC2RBenchmarkCases(benchmark, query)
+        benchmark.run()
+      }
+    }
+  }
+
+  /**
+   * Benchmark where a JVM operator (Scala UDF projection + aggregate) consumes the rows. Unlike
+   * the noop() sink, this defeats escape analysis and exercises the WholeStageCodegen fusion
+   * asymmetry between the CodegenSupport JVM C2R and the iterator-based native C2R.
+   */
+  def jvmConsumerBenchmark(values: Int): Unit = {
+    val benchmark =
+      new Benchmark("Columnar to Row - JVM UDF consumer", values, output = output)
+
+    spark.udf.register("plus_one", (x: Long) => x + 1)
+
+    withTempPath { dir =>
+      withTempTable("parquetV1Table") {
+        val df = spark
+          .range(values)
+          .selectExpr(
+            "id as long_col",
+            "cast(id as int) as int_col",
+            "cast(id as double) as double_col",
+            "cast(id as string) as string_col")
+
+        prepareTable(dir, df)
+        val query =
+          "SELECT sum(plus_one(long_col)), min(string_col), sum(double_col) FROM parquetV1Table"
+        addC2RBenchmarkCases(benchmark, query)
+        benchmark.run()
+      }
+    }
+  }
+
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
     val numRows = 1024 * 1024 // 1M rows
 
@@ -388,6 +502,14 @@ object CometColumnarToRowBenchmark extends CometBenchmarkBase {
 
     runBenchmark("Columnar to Row Conversion - Wide Rows") {
       wideRowsBenchmark(numRows)
+    }
+
+    runBenchmark("Columnar to Row Conversion - Dictionary Encoded") {
+      dictionaryEncodedBenchmark(numRows)
+    }
+
+    runBenchmark("Columnar to Row Conversion - JVM UDF Consumer") {
+      jvmConsumerBenchmark(numRows)
     }
   }
 }

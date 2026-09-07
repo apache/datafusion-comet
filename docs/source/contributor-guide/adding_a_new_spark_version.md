@@ -62,7 +62,8 @@ existing profile (for example `spark-4.1`) and update the version
 properties:
 
 - `spark.version`: the full upstream version, including any qualifier
-  (for example `4.2.0-preview4`).
+  (for example `4.3.0` for a final release, or `4.3.0-preview1` while only a
+  preview has been published).
 - `spark.version.short`: the major.minor (for example `4.2`).
 - `parquet.version`, `slf4j.version`, `scala.version`,
   `scala.binary.version`, `java.version`: align with what the new Spark
@@ -116,7 +117,7 @@ version from blocking unrelated PRs.
 
 When CI capacity is constrained (the macOS runners in particular), it is
 acceptable to drop an older minor version from the macOS PR matrix while a
-preview version is being stabilized. PR #4104 ("ci: reduce macOS PR matrix
+preview version is being stabilized. PR [#4104](https://github.com/apache/datafusion-comet/pull/4104) ("ci: reduce macOS PR matrix
 to single Spark 4.0 profile") is a precedent for this kind of trim.
 
 ### What to Avoid in Stage 1
@@ -317,7 +318,7 @@ issue keeps the diff small and makes regressions easy to bisect.
 The user guide currently uses two tiers, "Supported" and "Experimental".
 Comet uses "Experimental" to describe its confidence in its own
 integration with a Spark version, distinct from Spark's "preview" tag
-(which refers to upstream release qualifiers like `4.2.0-preview4`). The
+(which refers to upstream release qualifiers like `4.3.0-preview1`). The
 term is already established in `installation.md`, `operators.md`, and
 `datasources.md`, so keep using it rather than introducing a new label.
 

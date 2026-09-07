@@ -27,7 +27,7 @@
 
 ## explode_outer
 
-- Same `CometExplodeExec` path as `explode`, but the `outer=true` case is `Incompatible` (empty arrays are not preserved as null outputs) and falls back unless `spark.comet.expr.allowIncompatible=true` ([datafusion#19053](https://github.com/apache/datafusion/issues/19053)).
+- Same `CometExplodeExec` path as `explode`. Compatible for array inputs; empty and NULL arrays both emit one null-valued row per Spark's `outer` semantics via the `ListEmptyToNullExpr` planner bridge (works around [datafusion#19053](https://github.com/apache/datafusion/issues/19053)). Map inputs fall back.
 
 ## posexplode
 
@@ -35,6 +35,6 @@
 
 ## posexplode_outer
 
-- Same `CometExplodeExec` path as `posexplode`, but the `outer=true` case is `Incompatible` and falls back unless `spark.comet.expr.allowIncompatible=true` ([datafusion#19053](https://github.com/apache/datafusion/issues/19053)).
+- Same `CometExplodeExec` path as `posexplode`. Compatible for array inputs; empty and NULL arrays both emit one row with null `pos` and null `value` per Spark's `outer` semantics via the `ListEmptyToNullExpr` planner bridge (works around [datafusion#19053](https://github.com/apache/datafusion/issues/19053)).
 
 [Spark Expression Support]: ../../user-guide/latest/expressions.md

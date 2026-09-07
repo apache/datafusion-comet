@@ -19,12 +19,15 @@
 
 package org.apache.comet.serde
 
+import scala.util.control.NonFatal
+
 import org.apache.spark.SparkEnv
 import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, AttributeSeq, BindReferences, Expression, Literal, RuntimeReplaceable, ScalaUDF}
 import org.apache.spark.sql.types.BinaryType
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
+import org.apache.comet.CometExplainInfo
+import org.apache.comet.CometSparkSessionExtensions.{withCodegenDispatchExpr, withFallbackReason}
 import org.apache.comet.codegen.CometBatchKernelCodegen
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, serializeDataType}
@@ -62,19 +65,20 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
    * batch kernel on first invocation per task.
    *
    * Returns `None` (with `withFallbackReason` tagging the reason) when the dispatcher is disabled
-   * via [[CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED]] or when
-   * [[CometBatchKernelCodegen.canHandle]] refuses the expression tree. Callers should treat
-   * `None` as a clean Spark-fallback signal.
+   * via [[CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED]], when [[CometBatchKernelCodegen.canHandle]]
+   * refuses the expression tree, or when the bound tree cannot be closure-serialized. Callers
+   * should treat `None` as a clean Spark-fallback signal; this method never throws.
    */
   def emitJvmCodegenDispatch(
       expr: Expression,
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
+    val exprName = CometExplainInfo.exprDisplayName(expr)
     if (!CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.get()) {
       withFallbackReason(
         expr,
-        s"${CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key}=false; expression has no native " +
-          "path so the plan falls back to Spark")
+        s"$exprName: ${CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key}=false; expression has " +
+          "no native path so the plan falls back to Spark")
       return None
     }
 
@@ -97,7 +101,7 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
     // at execute.
     CometBatchKernelCodegen.canHandle(boundExpr) match {
       case Some(reason) =>
-        withFallbackReason(expr, reason)
+        withFallbackReason(expr, s"$exprName: $reason")
         return None
       case None =>
     }
@@ -106,16 +110,51 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
     // UDF jars are visible) and matches Spark's wire format. The bytes become arg 0 of the
     // JvmScalarUdf proto and self-describe the expression so this works in cluster mode without
     // executor-side driver registry state.
-    val serializer = SparkEnv.get.closureSerializer.newInstance()
-    val buffer = serializer.serialize(boundExpr)
-    val bytes = new Array[Byte](buffer.remaining())
-    buffer.get(bytes)
-    val exprArg = exprToProtoInternal(Literal(bytes, BinaryType), inputs, binding)
-      .getOrElse(return None)
+    //
+    // Guarded because this is the one step in this method that can throw rather than degrade: a
+    // tree can hold a reference the closure serializer refuses, such as a `Literal` wrapping a
+    // non-serializable evaluator or a UDF closure capturing an open resource. An escape here
+    // fails planning, which is a much worse outcome than falling the operator back to Spark.
+    // `CometStaticInvoke` / `CometInvoke` route unrecognized nodes here as a catch-all, so the
+    // trees reaching this point are arbitrary.
+    val bytes =
+      try {
+        val serializer = SparkEnv.get.closureSerializer.newInstance()
+        val buffer = serializer.serialize(boundExpr)
+        val serialized = new Array[Byte](buffer.remaining())
+        buffer.get(serialized)
+        serialized
+      } catch {
+        // `NonFatal` rather than `NotSerializableException`: Java serialization reports an
+        // unserializable object graph as one of several exception types depending on where in
+        // the graph it trips, and a custom `writeObject` can throw anything.
+        case NonFatal(e) =>
+          withFallbackReason(
+            expr,
+            s"$exprName: codegen dispatch: expression could not be closure-serialized " +
+              s"(${e.getClass.getSimpleName}: ${e.getMessage})")
+          return None
+      }
+    val exprArg = exprToProtoInternal(Literal(bytes, BinaryType), inputs, binding).getOrElse {
+      withFallbackReason(
+        expr,
+        s"$exprName: codegen dispatch: could not serialize closure-serialized bound " +
+          "expression payload")
+      return None
+    }
 
-    val dataArgs =
-      attrs.map(a => exprToProtoInternal(a, inputs, binding).getOrElse(return None))
-    val returnTypeProto = serializeDataType(expr.dataType).getOrElse(return None)
+    val dataArgs = attrs.map { a =>
+      exprToProtoInternal(a, inputs, binding).getOrElse {
+        withFallbackReason(expr, s"$exprName: codegen dispatch: could not serialize data arg $a")
+        return None
+      }
+    }
+    val returnTypeProto = serializeDataType(expr.dataType).getOrElse {
+      withFallbackReason(
+        expr,
+        s"$exprName: codegen dispatch: unsupported return type ${expr.dataType}")
+      return None
+    }
 
     val udfBuilder = ExprOuterClass.JvmScalarUdf
       .newBuilder()
@@ -125,6 +164,14 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
     udfBuilder
       .setReturnType(returnTypeProto)
       .setReturnNullable(expr.nullable)
+    // Dispatch annotation for extended explain. Rolled up per operator by
+    // `CometExecRule.rollUpInfoMessages`, which feeds the expression coverage stats and, when
+    // `spark.comet.explain.codegen.enabled` is set, a single `[COMET-INFO: JVM codegen dispatcher:
+    // ...]` line. Informational only - does not trigger fallback. The marker records that this
+    // node itself was dispatched, which the name set alone cannot say once ancestors accumulate
+    // their descendants' names.
+    expr.setTagValue(CometExplainInfo.DISPATCHED_SELF, ())
+    withCodegenDispatchExpr(expr, exprName)
     Some(
       ExprOuterClass.Expr
         .newBuilder()

@@ -15,10 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::{
-    array::{AsArray, Int64Builder},
-    datatypes::Decimal128Type,
-};
+use arrow::array::AsArray;
+use arrow::datatypes::{Decimal128Type, Int64Type};
 use datafusion::common::{internal_err, Result as DataFusionResult, ScalarValue};
 use datafusion::physical_plan::ColumnarValue;
 use std::sync::Arc;
@@ -34,11 +32,58 @@ pub fn spark_unscaled_value(args: &[ColumnarValue]) -> DataFusionResult<Columnar
         },
         ColumnarValue::Array(a) => {
             let arr = a.as_primitive::<Decimal128Type>();
-            let mut result = Int64Builder::new();
-            for v in arr.into_iter() {
-                result.append_option(v.map(|v| v as i64));
-            }
-            Ok(ColumnarValue::Array(Arc::new(result.finish())))
+            Ok(ColumnarValue::Array(Arc::new(
+                arr.unary::<_, Int64Type>(|v| v as i64),
+            )))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow::array::{Array, Decimal128Array, Int64Array};
+
+    #[test]
+    fn test_unscaled_value_array_with_nulls() -> DataFusionResult<()> {
+        let arr: Decimal128Array =
+            vec![Some(12345), None, Some(-678), None, Some(i64::MAX as i128)]
+                .into_iter()
+                .collect::<Decimal128Array>()
+                .with_precision_and_scale(20, 2)
+                .unwrap();
+        let args = vec![ColumnarValue::Array(Arc::new(arr))];
+        let result = spark_unscaled_value(&args)?;
+
+        let ColumnarValue::Array(result) = result else {
+            panic!("Expected array result");
+        };
+        let result = result.as_primitive::<arrow::datatypes::Int64Type>();
+        let expected = Int64Array::from(vec![Some(12345), None, Some(-678), None, Some(i64::MAX)]);
+        assert_eq!(result, &expected);
+        assert_eq!(result.null_count(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn test_unscaled_value_scalar() -> DataFusionResult<()> {
+        let args = vec![ColumnarValue::Scalar(ScalarValue::Decimal128(
+            Some(12345),
+            20,
+            2,
+        ))];
+        let result = spark_unscaled_value(&args)?;
+        assert!(matches!(
+            result,
+            ColumnarValue::Scalar(ScalarValue::Int64(Some(12345)))
+        ));
+
+        let args = vec![ColumnarValue::Scalar(ScalarValue::Decimal128(None, 20, 2))];
+        let result = spark_unscaled_value(&args)?;
+        assert!(matches!(
+            result,
+            ColumnarValue::Scalar(ScalarValue::Int64(None))
+        ));
+        Ok(())
     }
 }

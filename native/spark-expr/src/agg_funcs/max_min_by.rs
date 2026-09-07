@@ -19,7 +19,7 @@ use arrow::array::{new_null_array, Array, ArrayRef, AsArray, BooleanArray};
 use arrow::compute::SortOptions;
 use arrow::datatypes::{DataType, Field, FieldRef, Float32Type, Float64Type};
 use arrow::row::{OwnedRow, RowConverter, SortField};
-use datafusion::common::{Result, ScalarValue};
+use datafusion::common::{not_impl_err, Result, ScalarValue};
 use datafusion::logical_expr::function::{AccumulatorArgs, StateFieldsArgs};
 use datafusion::logical_expr::{
     Accumulator, AggregateUDFImpl, EmitTo, GroupsAccumulator, Signature, Volatility,
@@ -431,11 +431,10 @@ impl GroupsAccumulator for MaxMinByGroupsAccumulator {
         &mut self,
         values: &[ArrayRef],
         group_indices: &[usize],
-        opt_filter: Option<&BooleanArray>,
         total_num_groups: usize,
     ) -> Result<()> {
         // State columns mirror the input columns: [value, ordering].
-        self.update_groups(values, group_indices, opt_filter, total_num_groups)
+        self.update_groups(values, group_indices, None, total_num_groups)
     }
 
     fn evaluate(&mut self, emit_to: EmitTo) -> Result<ArrayRef> {
@@ -462,6 +461,14 @@ impl GroupsAccumulator for MaxMinByGroupsAccumulator {
             Arc::clone(&value_arrays[0]),
             Arc::clone(&ordering_arrays[0]),
         ])
+    }
+
+    fn convert_to_state(
+        &self,
+        _values: &[ArrayRef],
+        _opt_filter: Option<&BooleanArray>,
+    ) -> Result<Vec<ArrayRef>> {
+        not_impl_err!("Input batch conversion to state not implemented")
     }
 
     fn size(&self) -> usize {
@@ -793,7 +800,7 @@ mod tests {
         let mut merged = max_by_groups(DataType::Int32, DataType::Int32);
         for acc in [&mut left, &mut right] {
             let state = acc.state(EmitTo::All).unwrap();
-            merged.merge_batch(&state, &[0], None, 1).unwrap();
+            merged.merge_batch(&state, &[0], 1).unwrap();
         }
         assert_eq!(eval_int(&mut merged), single);
     }

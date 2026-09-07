@@ -27,6 +27,8 @@ import org.apache.arrow.c.CDataDictionaryProvider;
 import org.apache.arrow.vector.*;
 import org.apache.arrow.vector.util.TransferPair;
 import org.apache.parquet.Preconditions;
+import org.apache.spark.sql.types.DataTypes;
+import org.apache.spark.sql.vectorized.ColumnVector;
 import org.apache.spark.unsafe.Platform;
 import org.apache.spark.unsafe.types.UTF8String;
 
@@ -41,6 +43,10 @@ public class CometPlainVector extends CometDecodedVector {
   private final long valueBufferAddress;
   private final long offsetBufferAddress;
   private final boolean isBaseFixedWidthVector;
+  private final ColumnVector[] intervalChildren;
+  // True when the variable-width offsets are 64-bit (LargeVarChar / LargeVarBinary) rather than
+  // the usual 32-bit. PyArrow UDFs can hand back large_string / large_binary columns.
+  private final boolean isLargeVarWidth;
 
   private byte booleanByteCache;
   private int booleanByteCacheIndex = -1;
@@ -61,8 +67,24 @@ public class CometPlainVector extends CometDecodedVector {
     if (vector instanceof BaseVariableWidthVector) {
       this.offsetBufferAddress =
           ((BaseVariableWidthVector) vector).getOffsetBuffer().memoryAddress();
+      this.isLargeVarWidth = false;
+    } else if (vector instanceof BaseLargeVariableWidthVector) {
+      this.offsetBufferAddress =
+          ((BaseLargeVariableWidthVector) vector).getOffsetBuffer().memoryAddress();
+      this.isLargeVarWidth = true;
     } else {
       this.offsetBufferAddress = -1;
+      this.isLargeVarWidth = false;
+    }
+    if (vector instanceof IntervalMonthDayNanoVector) {
+      this.intervalChildren =
+          new ColumnVector[] {
+            new IntervalChildVector(this, 0),
+            new IntervalChildVector(this, 1),
+            new IntervalChildVector(this, 2)
+          };
+    } else {
+      this.intervalChildren = null;
     }
   }
 
@@ -115,8 +137,15 @@ public class CometPlainVector extends CometDecodedVector {
   public UTF8String getUTF8String(int rowId) {
     if (isNullAt(rowId)) return null;
     if (offsetBufferAddress != -1) {
-      int offset = Platform.getInt(null, offsetBufferAddress + rowId * 4L);
-      int length = Platform.getInt(null, offsetBufferAddress + (rowId + 1L) * 4L) - offset;
+      long offset;
+      int length;
+      if (isLargeVarWidth) {
+        offset = Platform.getLong(null, offsetBufferAddress + rowId * 8L);
+        length = (int) (Platform.getLong(null, offsetBufferAddress + (rowId + 1L) * 8L) - offset);
+      } else {
+        offset = Platform.getInt(null, offsetBufferAddress + rowId * 4L);
+        length = Platform.getInt(null, offsetBufferAddress + (rowId + 1L) * 4L) - (int) offset;
+      }
       return UTF8String.fromAddress(null, valueBufferAddress + offset, length);
     } else if (isBaseFixedWidthVector) {
       BaseFixedWidthVector fixedWidthVector = (BaseFixedWidthVector) valueVector;
@@ -139,11 +168,16 @@ public class CometPlainVector extends CometDecodedVector {
   @Override
   public byte[] getBinary(int rowId) {
     if (isNullAt(rowId)) return null;
-    int offset;
+    long offset;
     int length;
     if (offsetBufferAddress != -1) {
-      offset = Platform.getInt(null, offsetBufferAddress + rowId * 4L);
-      length = Platform.getInt(null, offsetBufferAddress + (rowId + 1L) * 4L) - offset;
+      if (isLargeVarWidth) {
+        offset = Platform.getLong(null, offsetBufferAddress + rowId * 8L);
+        length = (int) (Platform.getLong(null, offsetBufferAddress + (rowId + 1L) * 8L) - offset);
+      } else {
+        offset = Platform.getInt(null, offsetBufferAddress + rowId * 4L);
+        length = Platform.getInt(null, offsetBufferAddress + (rowId + 1L) * 4L) - (int) offset;
+      }
     } else if (valueVector instanceof BaseFixedWidthVector) {
       BaseFixedWidthVector fixedWidthVector = (BaseFixedWidthVector) valueVector;
       length = fixedWidthVector.getTypeWidth();
@@ -155,6 +189,14 @@ public class CometPlainVector extends CometDecodedVector {
     Platform.copyMemory(
         null, valueBufferAddress + offset, result, Platform.BYTE_ARRAY_OFFSET, length);
     return result;
+  }
+
+  @Override
+  public ColumnVector getChild(int ordinal) {
+    if (intervalChildren == null || ordinal < 0 || ordinal >= intervalChildren.length) {
+      return super.getChild(ordinal);
+    }
+    return intervalChildren[ordinal];
   }
 
   @Override
@@ -182,5 +224,59 @@ public class CometPlainVector extends CometDecodedVector {
     long mostSigBits = bb.getLong();
     long leastSigBits = bb.getLong();
     return new UUID(mostSigBits, leastSigBits);
+  }
+
+  private static final class IntervalChildVector extends CometVector {
+    private final CometPlainVector parent;
+    private final int ordinal;
+
+    private IntervalChildVector(CometPlainVector parent, int ordinal) {
+      super(ordinal == 2 ? DataTypes.LongType : DataTypes.IntegerType);
+      this.parent = parent;
+      this.ordinal = ordinal;
+    }
+
+    @Override
+    public int getInt(int rowId) {
+      return Platform.getInt(null, parent.valueBufferAddress + rowId * 16L + ordinal * 4L);
+    }
+
+    @Override
+    public long getLong(int rowId) {
+      return Platform.getLong(null, parent.valueBufferAddress + rowId * 16L + 8L) / 1000L;
+    }
+
+    @Override
+    public boolean isNullAt(int rowId) {
+      return parent.isNullAt(rowId);
+    }
+
+    @Override
+    public boolean hasNull() {
+      return parent.hasNull();
+    }
+
+    @Override
+    public int numNulls() {
+      return parent.numNulls();
+    }
+
+    @Override
+    public int numValues() {
+      return parent.numValues();
+    }
+
+    @Override
+    public ValueVector getValueVector() {
+      return parent.getValueVector();
+    }
+
+    @Override
+    public CometVector slice(int offset, int length) {
+      throw new UnsupportedOperationException("Interval child vectors cannot be sliced");
+    }
+
+    @Override
+    public void close() {}
   }
 }

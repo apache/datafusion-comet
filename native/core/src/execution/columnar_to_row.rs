@@ -37,10 +37,11 @@
 
 use crate::errors::{CometError, CometResult};
 use arrow::array::types::{
-    ArrowDictionaryKeyType, Int16Type, Int32Type, Int64Type, Int8Type, UInt16Type, UInt32Type,
-    UInt64Type, UInt8Type,
+    ArrowDictionaryKeyType, Decimal128Type, Int16Type, Int32Type, Int64Type, Int8Type, UInt16Type,
+    UInt32Type, UInt64Type, UInt8Type,
 };
 use arrow::array::*;
+use arrow::compute::kernels::arity::unary;
 use arrow::compute::{cast_with_options, CastOptions};
 use arrow::datatypes::{ArrowNativeType, DataType, TimeUnit};
 use std::sync::Arc;
@@ -1055,14 +1056,10 @@ impl ColumnarToRowContext {
                 // Parquet stores small-precision decimals as Int32 for efficiency, and the
                 // reader may surface them as the physical Int32 type. The value is already
                 // scaled (e.g., -1 means -0.01 for scale 2). Reinterpret (not cast) to
-                // Decimal128 preserving the value.
-                let int_array = array.as_any().downcast_ref::<Int32Array>().ok_or_else(|| {
-                    CometError::Internal("Failed to downcast to Int32Array".to_string())
-                })?;
-                let decimal_array: Decimal128Array = int_array
-                    .iter()
-                    .map(|v| v.map(|x| x as i128))
-                    .collect::<Decimal128Array>()
+                // Decimal128 preserving the value. `arity::unary` widens the value and reuses
+                // the input null buffer zero-copy (an Arrow cast would rescale the value).
+                let int_array = array.as_primitive::<Int32Type>();
+                let decimal_array = unary::<_, _, Decimal128Type>(int_array, |x| x as i128)
                     .with_precision_and_scale(*precision, *scale)
                     .map_err(|e| {
                         CometError::Internal(format!("Invalid decimal precision/scale: {}", e))
@@ -1071,13 +1068,8 @@ impl ColumnarToRowContext {
             }
             (DataType::Int64, DataType::Decimal128(precision, scale)) => {
                 // Same as Int32 but for medium-precision decimals stored as Int64.
-                let int_array = array.as_any().downcast_ref::<Int64Array>().ok_or_else(|| {
-                    CometError::Internal("Failed to downcast to Int64Array".to_string())
-                })?;
-                let decimal_array: Decimal128Array = int_array
-                    .iter()
-                    .map(|v| v.map(|x| x as i128))
-                    .collect::<Decimal128Array>()
+                let int_array = array.as_primitive::<Int64Type>();
+                let decimal_array = unary::<_, _, Decimal128Type>(int_array, |x| x as i128)
                     .with_precision_and_scale(*precision, *scale)
                     .map_err(|e| {
                         CometError::Internal(format!("Invalid decimal precision/scale: {}", e))
@@ -2499,11 +2491,14 @@ mod tests {
         let schema = vec![DataType::FixedSizeBinary(3)];
         let mut ctx = ColumnarToRowContext::new(schema, 100);
 
-        let array: ArrayRef = Arc::new(FixedSizeBinaryArray::from(vec![
-            Some(&[1u8, 2, 3][..]),
-            Some(&[4u8, 5, 6][..]),
-            None, // Test null handling
-        ]));
+        let array: ArrayRef = Arc::new(
+            FixedSizeBinaryArray::try_from(vec![
+                Some(&[1u8, 2, 3][..]),
+                Some(&[4u8, 5, 6][..]),
+                None, // Test null handling
+            ])
+            .unwrap(),
+        );
         let arrays = vec![array];
 
         let (ptr, offsets, lengths) = ctx.convert(&arrays, 3).unwrap();
@@ -2580,14 +2575,10 @@ mod tests {
 
     #[test]
     fn test_convert_int32_to_decimal128() {
-        // Test that Int32 arrays are correctly cast to Decimal128 when schema expects Decimal128.
-        // This can happen when the parquet reader surfaces small-precision decimals as Int32.
+        // Int32 → Decimal128 reinterpret. Values [-1, null, -3] at scale 2 mean
+        // [-0.01, null, -0.03]. The null covers the arity::unary null-buffer path.
+        let int_array: ArrayRef = Arc::new(Int32Array::from(vec![Some(-1i32), None, Some(-3)]));
 
-        // Create an Int32 array representing decimals: [-1, -2, -3] which at scale 2 means
-        // [-0.01, -0.02, -0.03]
-        let int_array: ArrayRef = Arc::new(Int32Array::from(vec![-1i32, -2, -3]));
-
-        // Schema expects Decimal128(5, 2)
         let schema = vec![DataType::Decimal128(5, 2)];
         let mut ctx = ColumnarToRowContext::new(schema, 100);
 
@@ -2598,32 +2589,74 @@ mod tests {
         assert_eq!(offsets.len(), 3);
         assert_eq!(lengths.len(), 3);
 
-        // Verify the decimal values are correct after casting
-        // Fixed-width decimal is stored directly in the 8-byte field slot
+        // Row layout: [8-byte null bitset][8-byte field slot]. Column 0's null bit
+        // is bit 0 of the bitset.
         unsafe {
-            for (i, expected) in [-1i64, -2, -3].iter().enumerate() {
-                let row =
-                    std::slice::from_raw_parts(ptr.add(offsets[i] as usize), lengths[i] as usize);
-                // Field value starts at offset 8 (after null bitset)
-                let value = i64::from_le_bytes(row[8..16].try_into().unwrap());
-                assert_eq!(
-                    value, *expected,
-                    "Row {} should have value {}, got {}",
-                    i, expected, value
-                );
-            }
+            let row0 =
+                std::slice::from_raw_parts(ptr.add(offsets[0] as usize), lengths[0] as usize);
+            let null_bitset_0 = i64::from_le_bytes(row0[0..8].try_into().unwrap());
+            assert_eq!(null_bitset_0 & 1, 0, "row 0 should not be null");
+            assert_eq!(i64::from_le_bytes(row0[8..16].try_into().unwrap()), -1);
+
+            let row1 =
+                std::slice::from_raw_parts(ptr.add(offsets[1] as usize), lengths[1] as usize);
+            let null_bitset_1 = i64::from_le_bytes(row1[0..8].try_into().unwrap());
+            assert_eq!(null_bitset_1 & 1, 1, "row 1 should be null");
+
+            let row2 =
+                std::slice::from_raw_parts(ptr.add(offsets[2] as usize), lengths[2] as usize);
+            let null_bitset_2 = i64::from_le_bytes(row2[0..8].try_into().unwrap());
+            assert_eq!(null_bitset_2 & 1, 0, "row 2 should not be null");
+            assert_eq!(i64::from_le_bytes(row2[8..16].try_into().unwrap()), -3);
+        }
+    }
+
+    #[test]
+    fn test_convert_int32_to_decimal128_sliced() {
+        // Sliced input must reinterpret correctly. Arrays imported over FFI often
+        // carry a non-zero offset; both the value widening and the null buffer
+        // traversal must honor it.
+        let full = Int32Array::from(vec![
+            Some(-99i32), // discarded prefix
+            Some(-98),
+            Some(-1), // start of sliced portion
+            None,
+            Some(-3),
+            Some(-97), // discarded suffix
+        ]);
+        let sliced: ArrayRef = Arc::new(full.slice(2, 3));
+
+        let schema = vec![DataType::Decimal128(5, 2)];
+        let mut ctx = ColumnarToRowContext::new(schema, 100);
+        let arrays = vec![sliced];
+        let (ptr, offsets, lengths) = ctx.convert(&arrays, 3).unwrap();
+
+        assert!(!ptr.is_null());
+        assert_eq!(offsets.len(), 3);
+
+        unsafe {
+            let row0 =
+                std::slice::from_raw_parts(ptr.add(offsets[0] as usize), lengths[0] as usize);
+            assert_eq!(i64::from_le_bytes(row0[0..8].try_into().unwrap()) & 1, 0);
+            assert_eq!(i64::from_le_bytes(row0[8..16].try_into().unwrap()), -1);
+
+            let row1 =
+                std::slice::from_raw_parts(ptr.add(offsets[1] as usize), lengths[1] as usize);
+            assert_eq!(i64::from_le_bytes(row1[0..8].try_into().unwrap()) & 1, 1);
+
+            let row2 =
+                std::slice::from_raw_parts(ptr.add(offsets[2] as usize), lengths[2] as usize);
+            assert_eq!(i64::from_le_bytes(row2[0..8].try_into().unwrap()) & 1, 0);
+            assert_eq!(i64::from_le_bytes(row2[8..16].try_into().unwrap()), -3);
         }
     }
 
     #[test]
     fn test_convert_int64_to_decimal128() {
-        // Test that Int64 arrays are correctly cast to Decimal128 when schema expects Decimal128.
-        // This can happen when the parquet reader surfaces medium-precision decimals as Int64.
+        // Int64 → Decimal128 reinterpret. Values [-100, null, -300] with a null in
+        // the middle to exercise the arity::unary null-buffer path.
+        let int_array: ArrayRef = Arc::new(Int64Array::from(vec![Some(-100i64), None, Some(-300)]));
 
-        // Create an Int64 array representing decimals
-        let int_array: ArrayRef = Arc::new(Int64Array::from(vec![-100i64, -200, -300]));
-
-        // Schema expects Decimal128(10, 2)
         let schema = vec![DataType::Decimal128(10, 2)];
         let mut ctx = ColumnarToRowContext::new(schema, 100);
 
@@ -2634,19 +2667,60 @@ mod tests {
         assert_eq!(offsets.len(), 3);
         assert_eq!(lengths.len(), 3);
 
-        // Verify the decimal values are correct after casting
         unsafe {
-            for (i, expected) in [-100i64, -200, -300].iter().enumerate() {
-                let row =
-                    std::slice::from_raw_parts(ptr.add(offsets[i] as usize), lengths[i] as usize);
-                // Field value starts at offset 8 (after null bitset)
-                let value = i64::from_le_bytes(row[8..16].try_into().unwrap());
-                assert_eq!(
-                    value, *expected,
-                    "Row {} should have value {}, got {}",
-                    i, expected, value
-                );
-            }
+            let row0 =
+                std::slice::from_raw_parts(ptr.add(offsets[0] as usize), lengths[0] as usize);
+            let null_bitset_0 = i64::from_le_bytes(row0[0..8].try_into().unwrap());
+            assert_eq!(null_bitset_0 & 1, 0, "row 0 should not be null");
+            assert_eq!(i64::from_le_bytes(row0[8..16].try_into().unwrap()), -100);
+
+            let row1 =
+                std::slice::from_raw_parts(ptr.add(offsets[1] as usize), lengths[1] as usize);
+            let null_bitset_1 = i64::from_le_bytes(row1[0..8].try_into().unwrap());
+            assert_eq!(null_bitset_1 & 1, 1, "row 1 should be null");
+
+            let row2 =
+                std::slice::from_raw_parts(ptr.add(offsets[2] as usize), lengths[2] as usize);
+            let null_bitset_2 = i64::from_le_bytes(row2[0..8].try_into().unwrap());
+            assert_eq!(null_bitset_2 & 1, 0, "row 2 should not be null");
+            assert_eq!(i64::from_le_bytes(row2[8..16].try_into().unwrap()), -300);
+        }
+    }
+
+    #[test]
+    fn test_convert_int64_to_decimal128_sliced() {
+        let full = Int64Array::from(vec![
+            Some(-9999i64),
+            Some(-9998),
+            Some(-100),
+            None,
+            Some(-300),
+            Some(-9997),
+        ]);
+        let sliced: ArrayRef = Arc::new(full.slice(2, 3));
+
+        let schema = vec![DataType::Decimal128(10, 2)];
+        let mut ctx = ColumnarToRowContext::new(schema, 100);
+        let arrays = vec![sliced];
+        let (ptr, offsets, lengths) = ctx.convert(&arrays, 3).unwrap();
+
+        assert!(!ptr.is_null());
+        assert_eq!(offsets.len(), 3);
+
+        unsafe {
+            let row0 =
+                std::slice::from_raw_parts(ptr.add(offsets[0] as usize), lengths[0] as usize);
+            assert_eq!(i64::from_le_bytes(row0[0..8].try_into().unwrap()) & 1, 0);
+            assert_eq!(i64::from_le_bytes(row0[8..16].try_into().unwrap()), -100);
+
+            let row1 =
+                std::slice::from_raw_parts(ptr.add(offsets[1] as usize), lengths[1] as usize);
+            assert_eq!(i64::from_le_bytes(row1[0..8].try_into().unwrap()) & 1, 1);
+
+            let row2 =
+                std::slice::from_raw_parts(ptr.add(offsets[2] as usize), lengths[2] as usize);
+            assert_eq!(i64::from_le_bytes(row2[0..8].try_into().unwrap()) & 1, 0);
+            assert_eq!(i64::from_le_bytes(row2[8..16].try_into().unwrap()), -300);
         }
     }
 }

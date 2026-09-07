@@ -24,8 +24,8 @@ import org.apache.spark.unsafe.types.VariantVal
 /**
  * Throwing defaults for Spark 4.0 `SpecializedGetters` additions: `getVariant`. Mixed into
  * `CometInternalRow` and `CometArrayData` so the codegen kernel's subclasses satisfy the
- * abstract-method check at class-load time. 4.1 also adds `getGeography` / `getGeometry` (see the
- * spark-4.1 shim).
+ * abstract-method check at class-load time. 4.1 also adds `getGeography` / `getGeometry`, and 4.2
+ * replaces those with `getBinaryView` (see the spark-4.1 and spark-4.2 shims).
  */
 trait CometInternalRowShim {
   def getVariant(ordinal: Int): VariantVal =
