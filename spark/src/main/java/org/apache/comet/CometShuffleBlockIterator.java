@@ -27,6 +27,7 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.channels.Channels;
 import java.nio.channels.ReadableByteChannel;
+import java.util.function.LongConsumer;
 
 /**
  * Provides raw compressed shuffle blocks to native code via JNI.
@@ -45,14 +46,20 @@ public class CometShuffleBlockIterator implements Closeable {
 
   private final ReadableByteChannel channel;
   private final InputStream inputStream;
+  private final LongConsumer recordsReadUpdater;
   private final ByteBuffer headerBuf = ByteBuffer.allocate(16).order(ByteOrder.LITTLE_ENDIAN);
   private ByteBuffer dataBuf = ByteBuffer.allocateDirect(INITIAL_BUFFER_SIZE);
   private boolean closed = false;
   private int currentBlockLength = 0;
 
   public CometShuffleBlockIterator(InputStream in) {
+    this(in, records -> {});
+  }
+
+  public CometShuffleBlockIterator(InputStream in, LongConsumer recordsReadUpdater) {
     this.inputStream = in;
     this.channel = Channels.newChannel(in);
+    this.recordsReadUpdater = recordsReadUpdater;
   }
 
   /**
@@ -152,6 +159,11 @@ public class CometShuffleBlockIterator implements Closeable {
   /** Returns the length of the current block in bytes. Called by native code via JNI. */
   public int getCurrentBlockLength() {
     return currentBlockLength;
+  }
+
+  /** Updates Spark's shuffle records-read metric after native code decodes a batch. */
+  public void incRecordsRead(long records) {
+    recordsReadUpdater.accept(records);
   }
 
   @Override

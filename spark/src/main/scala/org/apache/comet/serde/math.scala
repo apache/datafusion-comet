@@ -19,7 +19,7 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Abs, Add, Atan2, Attribute, BRound, Ceil, CheckOverflow, Conv, Expression, Floor, Hex, Hypot, If, LessThanOrEqual, Literal, Log, Log10, Log1p, Log2, Logarithm, NaNvl, Pmod, Pow, UnaryPositive, Unhex, WidthBucket}
+import org.apache.spark.sql.catalyst.expressions.{Abs, Add, Atan2, Attribute, BRound, Ceil, CheckOverflow, Conv, Expression, Floor, Hex, Hypot, If, LessThanOrEqual, Literal, Log, Log10, Log1p, Log2, Logarithm, NaNvl, Pmod, Pow, Sqrt, UnaryPositive, Unhex, WidthBucket}
 import org.apache.spark.sql.types.{DecimalType, DoubleType, NumericType}
 
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType, serializeDataType}
@@ -212,6 +212,23 @@ object CometPow extends CometExpressionSerde[Pow] {
     val leftExpr = exprToProtoInternal(expr.left, inputs, binding)
     val rightExpr = exprToProtoInternal(expr.right, inputs, binding)
     val optExpr = scalarFunctionExprToProto("pow", leftExpr, rightExpr)
+    optExpr
+  }
+}
+
+// Uses a custom spark_sqrt UDF because DataFusion's own `sqrt` errors on negative
+// input, while Spark's Sqrt (a plain wrapper around java.lang.Math.sqrt) returns NaN.
+// spark_sqrt is a Comet-only name with no DataFusion builtin counterpart, so the
+// return type must be set explicitly here to skip the session registry lookup that
+// scalarFunctionExprToProto would otherwise trigger (see CometLogarithm/spark_log).
+object CometSqrt extends CometExpressionSerde[Sqrt] {
+  override def convert(
+      expr: Sqrt,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val childExpr = exprToProtoInternal(expr.child, inputs, binding)
+    val optExpr =
+      scalarFunctionExprToProtoWithReturnType("spark_sqrt", DoubleType, false, childExpr)
     optExpr
   }
 }

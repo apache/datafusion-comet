@@ -41,7 +41,7 @@ Function names must match: the string passed to `CometScalarFunction("xyz")` equ
 
 ### 1. Study the Spark contract
 
-Find the `case class $ARGUMENTS` (PascalCase). Prefer the user's local Spark clone (`CLAUDE.md` / project memory); fall back to `git clone --depth 1 https://github.com/apache/spark.git /tmp/spark-master`. If the clone is sandbox-blocked and no local clone is found, **stop and ask** — Spark is the ground truth.
+Find the `case class $ARGUMENTS` (PascalCase). Prefer the user's local Spark clone (agent instructions / project memory); fall back to `git clone --depth 1 https://github.com/apache/spark.git /tmp/spark-master`. If the clone is sandbox-blocked and no local clone is found, **stop and ask** — Spark is the ground truth.
 
 Note `inputTypes`, `dataType`, `eval` / `nullSafeEval`, `require` guards, ANSI mode branches, and foldable-only arguments. These define what Comet must reproduce.
 
@@ -68,7 +68,7 @@ grep -rin "fn name" "$DF_SPARK/src/function/" 2>/dev/null | grep -i "$EXPR"
 grep -rin "fn name" "$DF_FUNCS/src/"          2>/dev/null | grep -i "$EXPR"
 ```
 
-**Option B — local DataFusion clone** (only if `CLAUDE.md` / memory points at one). Grep at the pinned tag — DataFusion uses lightweight tags (`<version>`, no `v` prefix), so use `tag -l` not `rev-parse --verify ^{tag}`:
+**Option B — local DataFusion clone** (only if agent instructions / memory point at one). Grep at the pinned tag — DataFusion uses lightweight tags (`<version>`, no `v` prefix), so use `tag -l` not `rev-parse --verify ^{tag}`:
 
 ```bash
 DF_CLONE=<path from memory>
