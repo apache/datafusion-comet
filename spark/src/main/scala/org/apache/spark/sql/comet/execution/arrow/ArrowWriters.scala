@@ -19,6 +19,8 @@
 
 package org.apache.spark.sql.comet.execution.arrow
 
+import java.nio.ByteOrder
+
 import scala.jdk.CollectionConverters._
 
 import org.apache.arrow.memory.BufferAllocator
@@ -28,22 +30,27 @@ import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.SpecializedGetters
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.errors.QueryExecutionErrors
-import org.apache.spark.sql.execution.vectorized.ConstantColumnVector
+import org.apache.spark.sql.execution.vectorized.{ConstantColumnVector, OffHeapColumnVector, OnHeapColumnVector}
 import org.apache.spark.sql.types._
-import org.apache.spark.sql.vectorized.ColumnarArray
+import org.apache.spark.sql.vectorized.{ColumnarArray, ColumnarBatch, ColumnVector}
+import org.apache.spark.unsafe.Platform
 
 /**
  * This file is mostly copied from Spark SQL's
  * org.apache.spark.sql.execution.arrow.ArrowWriter.scala. Comet shadows Arrow classes to avoid
  * potential conflicts with Spark's Arrow dependencies, hence we cannot reuse Spark's ArrowWriter
  * directly.
- *
- * Performance enhancement: https://github.com/apache/datafusion-comet/issues/888
  */
 private[arrow] object ArrowWriter {
-  def create(root: VectorSchemaRoot): ArrowWriter = {
+  def create(root: VectorSchemaRoot, fixedWidthCapacity: Int): ArrowWriter = {
+    require(fixedWidthCapacity >= 0, "Fixed-width capacity must be non-negative")
     val children = root.getFieldVectors().asScala.map { vector =>
-      vector.allocateNew()
+      vector match {
+        case fixedWidth: BaseFixedWidthVector =>
+          fixedWidth.allocateNew(fixedWidthCapacity)
+        case _ =>
+          vector.allocateNew()
+      }
       createFieldWriter(vector)
     }
     new ArrowWriter(root, children.toArray)
@@ -142,7 +149,7 @@ class ArrowWriter(val root: VectorSchemaRoot, fields: Array[ArrowFieldWriter]) {
   def write(row: InternalRow): Unit = {
     var i = 0
     while (i < fields.length) {
-      fields(i).write(row, i)
+      fields(i).writeUnsafe(row, i)
       i += 1
     }
     count += 1
@@ -156,6 +163,15 @@ class ArrowWriter(val root: VectorSchemaRoot, fields: Array[ArrowFieldWriter]) {
   def writeColNoNull(input: ColumnarArray, columnIndex: Int): Unit = {
     fields(columnIndex).writeColNoNull(input)
     count = input.numElements()
+  }
+
+  def writeColumns(input: ColumnarBatch, startRow: Int, numRows: Int): Unit = {
+    var columnIndex = 0
+    while (columnIndex < input.numCols()) {
+      fields(columnIndex).writeColumnSlice(input.column(columnIndex), startRow, numRows)
+      columnIndex += 1
+    }
+    count = numRows
   }
 
   def finish(): Unit = {
@@ -192,6 +208,10 @@ private[arrow] abstract class ArrowFieldWriter {
     count += 1
   }
 
+  def writeUnsafe(input: SpecializedGetters, ordinal: Int): Unit = {
+    write(input, ordinal)
+  }
+
   def writeCol(input: ColumnarArray): Unit = {
     val inputNumElements = input.numElements()
     valueVector.setInitialCapacity(inputNumElements)
@@ -214,6 +234,15 @@ private[arrow] abstract class ArrowFieldWriter {
     }
   }
 
+  def writeColumnSlice(input: ColumnVector, startRow: Int, numRows: Int): Unit = {
+    val slice = new ColumnarArray(input, startRow, numRows)
+    if (input.hasNull) {
+      writeCol(slice)
+    } else {
+      writeColNoNull(slice)
+    }
+  }
+
   def finish(): Unit = {
     valueVector.setValueCount(count)
   }
@@ -224,89 +253,198 @@ private[arrow] abstract class ArrowFieldWriter {
   }
 }
 
-private[arrow] class BooleanWriter(val valueVector: BitVector) extends ArrowFieldWriter {
+private[arrow] abstract class FixedWidthArrowFieldWriter extends ArrowFieldWriter {
+
+  override def valueVector: BaseFixedWidthVector
+
+  protected def setValueUnsafe(input: SpecializedGetters, ordinal: Int): Unit
+
+  private def ensureCapacity(inputNumElements: Int): Unit = {
+    while (valueVector.getValueCapacity < inputNumElements) {
+      valueVector.reAlloc()
+    }
+  }
+
+  private def tryBulkCopyNoNull(input: ColumnVector, startRow: Int, numRows: Int): Boolean = {
+    // Spark's bulk getters allocate and fill a temporary array before the copy into Arrow. Keep
+    // slices below 32 on the scalar path to avoid the observed tiny-slice regression.
+    if (count != 0 || numRows < 32 || ByteOrder.nativeOrder() != ByteOrder.LITTLE_ENDIAN) {
+      return false
+    }
+
+    val supportedInput = input match {
+      case vector: OnHeapColumnVector => !vector.hasDictionary
+      case vector: OffHeapColumnVector => !vector.hasDictionary
+      case _ => false
+    }
+    if (!supportedInput) {
+      return false
+    }
+
+    // Spark has no stable direct access to on-heap backing arrays. Its public bulk getters are
+    // the portable path for both on-heap and off-heap vectors.
+    val (sourceArray, sourceOffset): (AnyRef, Long) = valueVector match {
+      case _: TinyIntVector =>
+        (input.getBytes(startRow, numRows), Platform.BYTE_ARRAY_OFFSET.toLong)
+      case _: SmallIntVector =>
+        (input.getShorts(startRow, numRows), Platform.SHORT_ARRAY_OFFSET.toLong)
+      case _: IntVector | _: DateDayVector | _: IntervalYearVector =>
+        (input.getInts(startRow, numRows), Platform.INT_ARRAY_OFFSET.toLong)
+      case _: BigIntVector | _: TimeStampMicroTZVector | _: TimeStampMicroVector |
+          _: DurationVector =>
+        (input.getLongs(startRow, numRows), Platform.LONG_ARRAY_OFFSET.toLong)
+      case _: Float4Vector =>
+        (input.getFloats(startRow, numRows), Platform.FLOAT_ARRAY_OFFSET.toLong)
+      case _: Float8Vector =>
+        (input.getDoubles(startRow, numRows), Platform.DOUBLE_ARRAY_OFFSET.toLong)
+      case _ => return false
+    }
+
+    ensureCapacity(numRows)
+    Platform.copyMemory(
+      sourceArray,
+      sourceOffset,
+      null,
+      valueVector.getDataBufferAddress,
+      numRows.toLong * valueVector.getTypeWidth)
+    valueVector.getValidityBuffer
+      .setOne(0L, BitVectorHelper.getValidityBufferSize(numRows).toLong)
+    count = numRows
+    true
+  }
 
   override def setNull(): Unit = {
     valueVector.setNull(count)
   }
+
+  protected def setNullUnsafe(): Unit = {
+    BitVectorHelper.unsetBit(valueVector.getValidityBuffer, count)
+  }
+
+  override def writeUnsafe(input: SpecializedGetters, ordinal: Int): Unit = {
+    if (input.isNullAt(ordinal)) {
+      setNullUnsafe()
+    } else {
+      setValueUnsafe(input, ordinal)
+    }
+    count += 1
+  }
+
+  override def writeColumnSlice(input: ColumnVector, startRow: Int, numRows: Int): Unit = {
+    if (input.hasNull || !tryBulkCopyNoNull(input, startRow, numRows)) {
+      super.writeColumnSlice(input, startRow, numRows)
+    }
+  }
+
+  override def writeCol(input: ColumnarArray): Unit = {
+    val inputNumElements = input.numElements()
+    ensureCapacity(inputNumElements)
+    while (count < inputNumElements) {
+      if (input.isNullAt(count)) {
+        setNullUnsafe()
+      } else {
+        setValueUnsafe(input, count)
+      }
+      count += 1
+    }
+  }
+
+  override def writeColNoNull(input: ColumnarArray): Unit = {
+    val inputNumElements = input.numElements()
+    ensureCapacity(inputNumElements)
+    while (count < inputNumElements) {
+      setValueUnsafe(input, count)
+      count += 1
+    }
+  }
+}
+
+private[arrow] class BooleanWriter(val valueVector: BitVector)
+    extends FixedWidthArrowFieldWriter {
 
   override def setValue(input: SpecializedGetters, ordinal: Int): Unit = {
     valueVector.setSafe(count, if (input.getBoolean(ordinal)) 1 else 0)
   }
+
+  override protected def setValueUnsafe(input: SpecializedGetters, ordinal: Int): Unit = {
+    valueVector.set(count, if (input.getBoolean(ordinal)) 1 else 0)
+  }
 }
 
-private[arrow] class ByteWriter(val valueVector: TinyIntVector) extends ArrowFieldWriter {
-
-  override def setNull(): Unit = {
-    valueVector.setNull(count)
-  }
+private[arrow] class ByteWriter(val valueVector: TinyIntVector)
+    extends FixedWidthArrowFieldWriter {
 
   override def setValue(input: SpecializedGetters, ordinal: Int): Unit = {
     valueVector.setSafe(count, input.getByte(ordinal))
   }
+
+  override protected def setValueUnsafe(input: SpecializedGetters, ordinal: Int): Unit = {
+    valueVector.set(count, input.getByte(ordinal))
+  }
 }
 
-private[arrow] class ShortWriter(val valueVector: SmallIntVector) extends ArrowFieldWriter {
-
-  override def setNull(): Unit = {
-    valueVector.setNull(count)
-  }
+private[arrow] class ShortWriter(val valueVector: SmallIntVector)
+    extends FixedWidthArrowFieldWriter {
 
   override def setValue(input: SpecializedGetters, ordinal: Int): Unit = {
     valueVector.setSafe(count, input.getShort(ordinal))
   }
+
+  override protected def setValueUnsafe(input: SpecializedGetters, ordinal: Int): Unit = {
+    valueVector.set(count, input.getShort(ordinal))
+  }
 }
 
-private[arrow] class IntegerWriter(val valueVector: IntVector) extends ArrowFieldWriter {
-
-  override def setNull(): Unit = {
-    valueVector.setNull(count)
-  }
+private[arrow] class IntegerWriter(val valueVector: IntVector)
+    extends FixedWidthArrowFieldWriter {
 
   override def setValue(input: SpecializedGetters, ordinal: Int): Unit = {
     valueVector.setSafe(count, input.getInt(ordinal))
   }
+
+  override protected def setValueUnsafe(input: SpecializedGetters, ordinal: Int): Unit = {
+    valueVector.set(count, input.getInt(ordinal))
+  }
 }
 
-private[arrow] class LongWriter(val valueVector: BigIntVector) extends ArrowFieldWriter {
-
-  override def setNull(): Unit = {
-    valueVector.setNull(count)
-  }
+private[arrow] class LongWriter(val valueVector: BigIntVector)
+    extends FixedWidthArrowFieldWriter {
 
   override def setValue(input: SpecializedGetters, ordinal: Int): Unit = {
     valueVector.setSafe(count, input.getLong(ordinal))
   }
+
+  override protected def setValueUnsafe(input: SpecializedGetters, ordinal: Int): Unit = {
+    valueVector.set(count, input.getLong(ordinal))
+  }
 }
 
-private[arrow] class FloatWriter(val valueVector: Float4Vector) extends ArrowFieldWriter {
-
-  override def setNull(): Unit = {
-    valueVector.setNull(count)
-  }
+private[arrow] class FloatWriter(val valueVector: Float4Vector)
+    extends FixedWidthArrowFieldWriter {
 
   override def setValue(input: SpecializedGetters, ordinal: Int): Unit = {
     valueVector.setSafe(count, input.getFloat(ordinal))
   }
+
+  override protected def setValueUnsafe(input: SpecializedGetters, ordinal: Int): Unit = {
+    valueVector.set(count, input.getFloat(ordinal))
+  }
 }
 
-private[arrow] class DoubleWriter(val valueVector: Float8Vector) extends ArrowFieldWriter {
-
-  override def setNull(): Unit = {
-    valueVector.setNull(count)
-  }
+private[arrow] class DoubleWriter(val valueVector: Float8Vector)
+    extends FixedWidthArrowFieldWriter {
 
   override def setValue(input: SpecializedGetters, ordinal: Int): Unit = {
     valueVector.setSafe(count, input.getDouble(ordinal))
   }
+
+  override protected def setValueUnsafe(input: SpecializedGetters, ordinal: Int): Unit = {
+    valueVector.set(count, input.getDouble(ordinal))
+  }
 }
 
 private[arrow] class DecimalWriter(val valueVector: DecimalVector, precision: Int, scale: Int)
-    extends ArrowFieldWriter {
-
-  override def setNull(): Unit = {
-    valueVector.setNull(count)
-  }
+    extends FixedWidthArrowFieldWriter {
 
   override def setValue(input: SpecializedGetters, ordinal: Int): Unit = {
     val decimal = input.getDecimal(ordinal, precision, scale)
@@ -314,6 +452,15 @@ private[arrow] class DecimalWriter(val valueVector: DecimalVector, precision: In
       valueVector.setSafe(count, decimal.toJavaBigDecimal)
     } else {
       setNull()
+    }
+  }
+
+  override protected def setValueUnsafe(input: SpecializedGetters, ordinal: Int): Unit = {
+    val decimal = input.getDecimal(ordinal, precision, scale)
+    if (decimal.changePrecision(precision, scale)) {
+      valueVector.set(count, decimal.toJavaBigDecimal)
+    } else {
+      setNullUnsafe()
     }
   }
 }
@@ -372,38 +519,39 @@ private[arrow] class LargeBinaryWriter(val valueVector: LargeVarBinaryVector)
   }
 }
 
-private[arrow] class DateWriter(val valueVector: DateDayVector) extends ArrowFieldWriter {
-
-  override def setNull(): Unit = {
-    valueVector.setNull(count)
-  }
+private[arrow] class DateWriter(val valueVector: DateDayVector)
+    extends FixedWidthArrowFieldWriter {
 
   override def setValue(input: SpecializedGetters, ordinal: Int): Unit = {
     valueVector.setSafe(count, input.getInt(ordinal))
   }
+
+  override protected def setValueUnsafe(input: SpecializedGetters, ordinal: Int): Unit = {
+    valueVector.set(count, input.getInt(ordinal))
+  }
 }
 
 private[arrow] class TimestampWriter(val valueVector: TimeStampMicroTZVector)
-    extends ArrowFieldWriter {
-
-  override def setNull(): Unit = {
-    valueVector.setNull(count)
-  }
+    extends FixedWidthArrowFieldWriter {
 
   override def setValue(input: SpecializedGetters, ordinal: Int): Unit = {
     valueVector.setSafe(count, input.getLong(ordinal))
+  }
+
+  override protected def setValueUnsafe(input: SpecializedGetters, ordinal: Int): Unit = {
+    valueVector.set(count, input.getLong(ordinal))
   }
 }
 
 private[arrow] class TimestampNTZWriter(val valueVector: TimeStampMicroVector)
-    extends ArrowFieldWriter {
-
-  override def setNull(): Unit = {
-    valueVector.setNull(count)
-  }
+    extends FixedWidthArrowFieldWriter {
 
   override def setValue(input: SpecializedGetters, ordinal: Int): Unit = {
     valueVector.setSafe(count, input.getLong(ordinal))
+  }
+
+  override protected def setValueUnsafe(input: SpecializedGetters, ordinal: Int): Unit = {
+    valueVector.set(count, input.getLong(ordinal))
   }
 }
 
@@ -516,34 +664,39 @@ private[arrow] class NullWriter(val valueVector: NullVector) extends ArrowFieldW
 }
 
 private[arrow] class IntervalYearWriter(val valueVector: IntervalYearVector)
-    extends ArrowFieldWriter {
-  override def setNull(): Unit = {
-    valueVector.setNull(count)
-  }
+    extends FixedWidthArrowFieldWriter {
 
   override def setValue(input: SpecializedGetters, ordinal: Int): Unit = {
-    valueVector.setSafe(count, input.getInt(ordinal));
+    valueVector.setSafe(count, input.getInt(ordinal))
+  }
+
+  override protected def setValueUnsafe(input: SpecializedGetters, ordinal: Int): Unit = {
+    valueVector.set(count, input.getInt(ordinal))
   }
 }
 
-private[arrow] class DurationWriter(val valueVector: DurationVector) extends ArrowFieldWriter {
-  override def setNull(): Unit = {
-    valueVector.setNull(count)
-  }
+private[arrow] class DurationWriter(val valueVector: DurationVector)
+    extends FixedWidthArrowFieldWriter {
 
   override def setValue(input: SpecializedGetters, ordinal: Int): Unit = {
     valueVector.setSafe(count, input.getLong(ordinal))
   }
+
+  override protected def setValueUnsafe(input: SpecializedGetters, ordinal: Int): Unit = {
+    valueVector.set(count, input.getLong(ordinal))
+  }
 }
 
 private[arrow] class IntervalMonthDayNanoWriter(val valueVector: IntervalMonthDayNanoVector)
-    extends ArrowFieldWriter {
-  override def setNull(): Unit = {
-    valueVector.setNull(count)
-  }
+    extends FixedWidthArrowFieldWriter {
 
   override def setValue(input: SpecializedGetters, ordinal: Int): Unit = {
     val ci = input.getInterval(ordinal)
     valueVector.setSafe(count, ci.months, ci.days, Math.multiplyExact(ci.microseconds, 1000L))
+  }
+
+  override protected def setValueUnsafe(input: SpecializedGetters, ordinal: Int): Unit = {
+    val ci = input.getInterval(ordinal)
+    valueVector.set(count, ci.months, ci.days, Math.multiplyExact(ci.microseconds, 1000L))
   }
 }

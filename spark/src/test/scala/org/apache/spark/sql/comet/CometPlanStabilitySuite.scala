@@ -277,6 +277,10 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
 
     withSQLConf(
       CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "true",
+      // Annotate each Comet operator with the expressions it routed through the JVM codegen
+      // dispatcher, so the goldens record which expressions took that path rather than only how
+      // many did. Complements the expression coverage counts in the summary line.
+      CometConf.COMET_EXPLAIN_CODEGEN_ENABLED.key -> "true",
       CometConf.COMET_ENABLED.key -> "true",
       CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "true",
       CometConf.COMET_EXEC_ENABLED.key -> "true",

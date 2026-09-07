@@ -117,10 +117,61 @@ statement
 CREATE TABLE test_overlap_dbl(a array<double>, b array<double>) USING parquet
 
 statement
-INSERT INTO test_overlap_dbl VALUES (array(1.0, 2.0), array(2.0, 3.0)), (array(1.0, double('NaN')), array(double('NaN'), 2.0)), (array(double('Infinity'), 1.0), array(double('Infinity'))), (array(double('-Infinity')), array(double('Infinity'))), (array(0.0), array(-0.0)), (array(1.0, NULL), array(2.0, NULL))
+INSERT INTO test_overlap_dbl VALUES (array(1.0, 2.0), array(2.0, 3.0)), (array(1.0, double('NaN')), array(double('NaN'), 2.0)), (array(double('Infinity'), 1.0), array(double('Infinity'))), (array(double('-Infinity')), array(double('Infinity'))), (array(0.0), array(double('-0.0'))), (array(1.0, NULL), array(2.0, NULL))
 
 query
 SELECT a, b, arrays_overlap(a, b) FROM test_overlap_dbl
+
+-- Flat FLOAT/DOUBLE NaNs must compare equal regardless of their sign or payload.
+-- Parquet canonicalizes NaNs, so negate a scanned column to produce a noncanonical
+-- NaN at execution time. String casts preserve the sign of the zero controls.
+statement
+CREATE TABLE test_overlap_floating_point(
+  id int, fl float, fr float, dl double, dr double
+) USING parquet
+
+statement
+INSERT INTO test_overlap_floating_point VALUES
+  (0, CAST('NaN' AS FLOAT), CAST('NaN' AS FLOAT), CAST('NaN' AS DOUBLE), CAST('NaN' AS DOUBLE)),
+  (1, CAST('0.0' AS FLOAT), CAST('-0.0' AS FLOAT), CAST('0.0' AS DOUBLE), CAST('-0.0' AS DOUBLE)),
+  (2, CAST('-0.0' AS FLOAT), CAST('0.0' AS FLOAT), CAST('-0.0' AS DOUBLE), CAST('0.0' AS DOUBLE)),
+  (3, CAST('0.0' AS FLOAT), CAST('0.0' AS FLOAT), CAST('0.0' AS DOUBLE), CAST('0.0' AS DOUBLE)),
+  (4, CAST('-0.0' AS FLOAT), CAST('-0.0' AS FLOAT), CAST('-0.0' AS DOUBLE), CAST('-0.0' AS DOUBLE)),
+  (5, CAST(1 AS FLOAT), CAST(2 AS FLOAT), CAST(1 AS DOUBLE), CAST(2 AS DOUBLE)),
+  (6, CAST('NaN' AS FLOAT), CAST(1 AS FLOAT), CAST('NaN' AS DOUBLE), CAST(1 AS DOUBLE)),
+  (7, CAST(1 AS FLOAT), CAST('NaN' AS FLOAT), CAST(1 AS DOUBLE), CAST('NaN' AS DOUBLE))
+
+-- Short arrays, reversed operands, and direct signed-zero controls. Spark 4.2+
+-- normalizes signed zeros before arrays_overlap (SPARK-54918); comparing with the
+-- running Spark version checks the appropriate behavior without fixed expectations.
+query
+SELECT id,
+  arrays_overlap(array(fl), array(-fr)) AS float_short,
+  arrays_overlap(array(dl), array(-dr)) AS double_short,
+  arrays_overlap(array(-fr), array(fl)) AS float_reversed,
+  arrays_overlap(array(-dr), array(dl)) AS double_reversed,
+  arrays_overlap(array(fl), array(fr)) AS float_direct,
+  arrays_overlap(array(dl), array(dr)) AS double_direct
+FROM test_overlap_floating_point
+
+-- Seventeen elements on each side exceed the native budget of 256 comparisons
+-- and exercise the hash-probe path, including signed-zero and nonmatching rows.
+query
+SELECT id,
+  arrays_overlap(array_repeat(fl, 17), array_repeat(-fr, 17)) AS float_long,
+  arrays_overlap(array_repeat(dl, 17), array_repeat(-dr, 17)) AS double_long,
+  arrays_overlap(array_repeat(-fr, 17), array_repeat(fl, 17)) AS float_long_reversed,
+  arrays_overlap(array_repeat(-dr, 17), array_repeat(dl, 17)) AS double_long_reversed
+FROM test_overlap_floating_point
+
+-- A definite NaN match wins over NULL; a nonmatch with NULL remains unknown.
+query
+SELECT id,
+  arrays_overlap(array(fl, CAST(NULL AS FLOAT)), array(-fr)),
+  arrays_overlap(array(dl, CAST(NULL AS DOUBLE)), array(-dr)),
+  arrays_overlap(array(-fr), array(fl, CAST(NULL AS FLOAT))),
+  arrays_overlap(array(-dr), array(dl, CAST(NULL AS DOUBLE)))
+FROM test_overlap_floating_point
 
 -- boolean arrays
 query

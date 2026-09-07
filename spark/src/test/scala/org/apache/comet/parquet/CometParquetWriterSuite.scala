@@ -28,12 +28,14 @@ import org.apache.hadoop.fs.{FileSystem, Path}
 import org.apache.parquet.hadoop.ParquetFileReader
 import org.apache.parquet.hadoop.metadata.CompressionCodecName
 import org.apache.parquet.hadoop.util.HadoopInputFile
+import org.apache.parquet.schema.{MessageType, Type}
 import org.apache.spark.sql.{AnalysisException, CometTestBase, DataFrame, Row, SaveMode}
 import org.apache.spark.sql.comet.{CometBatchScanExec, CometNativeScanExec, CometNativeWriteExec, CometScanExec}
 import org.apache.spark.sql.execution.{FileSourceScanExec, QueryExecution, SparkPlan}
 import org.apache.spark.sql.execution.command.DataWritingCommandExec
+import org.apache.spark.sql.functions.{array, map, struct, when}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.StructType
+import org.apache.spark.sql.types.{ArrayType, LongType, MapType, Metadata, MetadataBuilder, StringType, StructField, StructType}
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.isSpark35Plus
@@ -139,6 +141,216 @@ class CometParquetWriterSuite extends CometTestBase {
             verifyWrittenFile(outputPath)
           }
         })
+      }
+    }
+  }
+
+  test(
+    "native parquet writer preserves Catalyst nullability and honors field ID write settings") {
+    val requiredMetadata = parquetFieldMetadata(11)
+    val optionalMetadata = parquetFieldMetadata(22)
+    val data = spark
+      .range(0, 3)
+      .select(
+        $"id".as("required_number", requiredMetadata),
+        when($"id" === 1L, $"id".cast(StringType)).as("optional_text", optionalMetadata),
+        $"id".as("unmapped_number"))
+
+    assert(!data.schema("required_number").nullable)
+    assert(data.schema("optional_text").nullable)
+
+    Seq(None, Some(true), Some(false)).foreach { configuredValue =>
+      withTempPath { dir =>
+        val outputPath = new File(dir, "output.parquet").getAbsolutePath
+
+        withNativeWriter {
+          def writeAndVerify(): Unit = {
+            val plan = captureWritePlan(path => data.write.parquet(path), outputPath)
+            assertHasCometNativeWriteExec(plan)
+
+            val expectedIds = configuredValue.getOrElse(true)
+            assertParquetSchemas(outputPath) { schema =>
+              val root = schema.asGroupType()
+              val required = root.getType("required_number")
+              val optional = root.getType("optional_text")
+              val unmapped = root.getType("unmapped_number")
+
+              assert(required.getRepetition == Type.Repetition.REQUIRED)
+              assert(optional.getRepetition == Type.Repetition.OPTIONAL)
+              assert(
+                Option(required.getId).map(_.intValue()) ==
+                  (if (expectedIds) Some(11) else None))
+              assert(
+                Option(optional.getId).map(_.intValue()) ==
+                  (if (expectedIds) Some(22) else None))
+              assert(unmapped.getId == null)
+            }
+          }
+
+          configuredValue match {
+            case Some(enabled) =>
+              withSQLConf(SQLConf.PARQUET_FIELD_ID_WRITE_ENABLED.key -> enabled.toString) {
+                writeAndVerify()
+              }
+            case None =>
+              assert(spark.conf.get(SQLConf.PARQUET_FIELD_ID_WRITE_ENABLED.key).toBoolean)
+              writeAndVerify()
+          }
+        }
+      }
+    }
+  }
+
+  test("native parquet writer preserves nested and Delta collection field IDs") {
+    val detailsMetadata = parquetFieldMetadata(100)
+    val requiredChildMetadata = parquetFieldMetadata(101)
+    val optionalChildMetadata = parquetFieldMetadata(102)
+    val innerMetadata = parquetFieldMetadata(130, "inner.element" -> 131L)
+    val tagsMetadata = parquetFieldMetadata(200, "tags.element" -> 201L)
+    val attrsMetadata =
+      parquetFieldMetadata(300, "attrs.key" -> 301L, "attrs.value" -> 302L)
+
+    val data = spark
+      .range(0, 2)
+      .select(
+        struct(
+          $"id".as("required_child", requiredChildMetadata),
+          when($"id" === 1L, $"id").as("optional_child", optionalChildMetadata),
+          array($"id").as("inner", innerMetadata)).as("details", detailsMetadata),
+        array(when($"id" === 1L, $"id")).as("tags", tagsMetadata),
+        map($"id".cast(StringType), when($"id" === 1L, $"id")).as("attrs", attrsMetadata))
+
+    Seq(true, false).foreach { writeFieldIds =>
+      withTempPath { dir =>
+        val outputPath = new File(dir, "output.parquet").getAbsolutePath
+
+        withNativeWriter {
+          withSQLConf(SQLConf.PARQUET_FIELD_ID_WRITE_ENABLED.key -> writeFieldIds.toString) {
+            val plan = captureWritePlan(path => data.write.parquet(path), outputPath)
+            assertHasCometNativeWriteExec(plan)
+
+            assertParquetSchemas(outputPath) { schema =>
+              val root = schema.asGroupType()
+
+              def assertField(field: Type, id: Int, nullable: Boolean): Unit = {
+                val expectedRepetition =
+                  if (nullable) Type.Repetition.OPTIONAL else Type.Repetition.REQUIRED
+                assert(field.getRepetition == expectedRepetition)
+                assert(Option(field.getId).map(_.intValue()) ==
+                  (if (writeFieldIds) Some(id) else None))
+              }
+
+              val details = root.getType("details")
+              assertField(details, 100, nullable = false)
+              val detailsGroup = details.asGroupType()
+              assertField(detailsGroup.getType("required_child"), 101, nullable = false)
+              assertField(detailsGroup.getType("optional_child"), 102, nullable = true)
+
+              val inner = detailsGroup.getType("inner")
+              assertField(inner, 130, nullable = false)
+              val innerList = inner.asGroupType().getType(0)
+              assert(innerList.getRepetition == Type.Repetition.REPEATED)
+              assertField(innerList.asGroupType().getType(0), 131, nullable = false)
+
+              val tags = root.getType("tags")
+              assertField(tags, 200, nullable = false)
+              val tagsList = tags.asGroupType().getType(0)
+              assert(tagsList.getRepetition == Type.Repetition.REPEATED)
+              assertField(tagsList.asGroupType().getType(0), 201, nullable = true)
+
+              val attrs = root.getType("attrs")
+              assertField(attrs, 300, nullable = false)
+              val entries = attrs.asGroupType().getType(0)
+              assert(entries.getRepetition == Type.Repetition.REPEATED)
+              val entriesGroup = entries.asGroupType()
+              assertField(entriesGroup.getType("key"), 301, nullable = false)
+              assertField(entriesGroup.getType("value"), 302, nullable = true)
+            }
+          }
+        }
+
+        checkAnswer(spark.read.parquet(outputPath), data)
+      }
+    }
+  }
+
+  test("Spark reads native parquet output by field ID after nested columns are renamed") {
+    withTempPath { dir =>
+      val outputPath = new File(dir, "output.parquet").getAbsolutePath
+      val numberMetadata = parquetFieldMetadata(11)
+      val textMetadata = parquetFieldMetadata(22)
+      val structMetadata = parquetFieldMetadata(100)
+      val structChildMetadata = parquetFieldMetadata(101)
+      val itemsMetadata = parquetFieldMetadata(200, "original_items.element" -> 201L)
+      val itemChildMetadata = parquetFieldMetadata(202)
+      val lookupMetadata =
+        parquetFieldMetadata(300, "original_lookup.key" -> 301L, "original_lookup.value" -> 302L)
+      val data = spark
+        .range(1, 3)
+        .select(
+          $"id".as("original_number", numberMetadata),
+          $"id".cast(StringType).as("original_text", textMetadata),
+          struct($"id".as("original_child", structChildMetadata))
+            .as("original_struct", structMetadata),
+          array(struct($"id".as("original_item_child", itemChildMetadata)))
+            .as("original_items", itemsMetadata),
+          map($"id".cast(StringType), $"id")
+            .as("original_lookup", lookupMetadata))
+
+      withNativeWriter {
+        withSQLConf(SQLConf.PARQUET_FIELD_ID_WRITE_ENABLED.key -> "true") {
+          val plan = captureWritePlan(path => data.write.parquet(path), outputPath)
+          assertHasCometNativeWriteExec(plan)
+        }
+      }
+
+      val renamedSchema = StructType(
+        Seq(
+          StructField(
+            "renamed_lookup",
+            MapType(StringType, LongType, valueContainsNull = true),
+            nullable = true,
+            metadata = parquetFieldMetadata(
+              300,
+              "renamed_lookup.key" -> 301L,
+              "renamed_lookup.value" -> 302L)),
+          StructField(
+            "renamed_items",
+            ArrayType(
+              StructType(
+                Seq(
+                  StructField(
+                    "renamed_item_child",
+                    LongType,
+                    nullable = true,
+                    metadata = itemChildMetadata))),
+              containsNull = true),
+            nullable = true,
+            metadata = parquetFieldMetadata(200, "renamed_items.element" -> 201L)),
+          StructField(
+            "renamed_struct",
+            StructType(
+              Seq(
+                StructField(
+                  "renamed_child",
+                  LongType,
+                  nullable = true,
+                  metadata = structChildMetadata))),
+            nullable = true,
+            metadata = structMetadata),
+          StructField("renamed_text", StringType, nullable = true, metadata = textMetadata),
+          StructField("renamed_number", LongType, nullable = true, metadata = numberMetadata)))
+
+      // Array element and map key/value names are structural in Spark, so rename the
+      // collection fields and the struct field inside the array element instead.
+      withSQLConf(
+        CometConf.COMET_ENABLED.key -> "false",
+        SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "true") {
+        checkAnswer(
+          spark.read.schema(renamedSchema).parquet(outputPath),
+          Seq(
+            Row(Map("1" -> 1L), Seq(Row(1L)), Row(1L), "1", 1L),
+            Row(Map("2" -> 2L), Seq(Row(2L)), Row(2L), "2", 2L)))
       }
     }
   }
@@ -826,6 +1038,29 @@ class CometParquetWriterSuite extends CometTestBase {
     case "zstd" => CompressionCodecName.ZSTD
     case "gzip" => CompressionCodecName.GZIP
     case other => fail(s"unexpected codec: $other")
+  }
+
+  private def parquetFieldMetadata(id: Long, nestedIds: (String, Long)*): Metadata = {
+    val metadata = new MetadataBuilder().putLong("parquet.field.id", id)
+    if (nestedIds.nonEmpty) {
+      val nestedMetadata = new MetadataBuilder()
+      nestedIds.foreach { case (name, nestedId) => nestedMetadata.putLong(name, nestedId) }
+      metadata.putMetadata("parquet.field.nested.ids", nestedMetadata.build())
+    }
+    metadata.build()
+  }
+
+  private def assertParquetSchemas(outputPath: String)(verify: MessageType => Unit): Unit = {
+    val conf = spark.sparkContext.hadoopConfiguration
+    val partFiles = new File(outputPath).listFiles().filter(_.getName.startsWith("part-"))
+    assert(partFiles.nonEmpty, s"No part files found under $outputPath")
+
+    partFiles.foreach { partFile =>
+      val inputFile = HadoopInputFile.fromPath(new Path(partFile.getAbsolutePath), conf)
+      Using.resource(ParquetFileReader.open(inputFile)) { reader =>
+        verify(reader.getFooter.getFileMetaData.getSchema)
+      }
+    }
   }
 
   /**
