@@ -475,6 +475,81 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
     }
   }
 
+  /**
+   * Nested hash partitioning keys, which native shuffle admits only when
+   * `spark.comet.shuffle.native.partitioning.hash.nested.enabled` is on.
+   *
+   * The shapes are chosen to separate the two code paths in the native Murmur3 kernel.
+   * `hash_list_with_primitive_elements!` vectorizes a list whose elements are primitives, but a
+   * list whose elements are themselves nested falls through to `hash_list_array!`, which slices a
+   * one-element array and re-enters `create_murmur3_hashes` per element; a struct additionally
+   * copies its column vector per call. `array<struct<..>>` is the shape that pays that, and it is
+   * the one where native hashing loses to letting Spark do the whole shuffle. A map nested in a
+   * struct does not: `hash_funcs/utils.rs` specializes common scalar key/value pairs, so it stays
+   * on a batched path.
+   *
+   * Each case is compared against Spark doing the whole shuffle, which is what the config's
+   * default trades against: if the native path is slower, falling back is the better default.
+   */
+  def shuffleNestedHashKeyBenchmark(
+      name: String,
+      keyExpr: String,
+      values: Int,
+      partitionNum: Int): Unit = {
+    val benchmark =
+      microBenchmark(s"Nested hash key: $name ($partitionNum Partition)", values)
+
+    withTempPath { dir =>
+      withTempTable("parquetV1Table") {
+        // `tbl`'s `value` spans the full Long range, so a direct cast to INT overflows under ANSI
+        // mode. `pmod` keeps the key varied (a constant would hash every row alike, which would
+        // not measure partitioning at all) while staying in range.
+        prepareTable(dir, spark.sql(s"SELECT CAST(pmod(value, 1000000) AS INT) AS c1 FROM $tbl"))
+        val query = s"SELECT $keyExpr AS k, c1 FROM parquetV1Table"
+
+        benchmark.addCase("Spark") { _ =>
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            spark.sql(query).repartition(partitionNum, Column("k")).noop()
+          }
+        }
+
+        benchmark.addCase("Comet (Spark Shuffle)") { _ =>
+          withSQLConf(
+            CometConf.COMET_ENABLED.key -> "true",
+            CometConf.COMET_EXEC_ENABLED.key -> "true",
+            CometConf.COMET_SHUFFLE_ENABLED.key -> "false") {
+            spark.sql(query).repartition(partitionNum, Column("k")).noop()
+          }
+        }
+
+        benchmark.addCase("Comet (JVM Shuffle)") { _ =>
+          withSQLConf(
+            CometConf.COMET_ENABLED.key -> "true",
+            CometConf.COMET_EXEC_ENABLED.key -> "true",
+            CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+            CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
+            spark.sql(query).repartition(partitionNum, Column("k")).noop()
+          }
+        }
+
+        // Nested keys are rejected by the native gate unless the config is on, so without it this
+        // case would silently measure a fallback rather than the native hashing path.
+        benchmark.addCase("Comet (Native Shuffle)") { _ =>
+          withSQLConf(
+            CometConf.COMET_ENABLED.key -> "true",
+            CometConf.COMET_EXEC_ENABLED.key -> "true",
+            CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+            CometConf.COMET_SHUFFLE_MODE.key -> "native",
+            CometConf.COMET_SHUFFLE_NATIVE_HASH_PARTITIONING_NESTED_ENABLED.key -> "true") {
+            spark.sql(query).repartition(partitionNum, Column("k")).noop()
+          }
+        }
+
+        benchmark.run()
+      }
+    }
+  }
+
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
 
     // nested type shuffle
@@ -489,6 +564,25 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
         }
       } finally {
         new java.io.File(filename).delete()
+      }
+    }
+
+    runBenchmarkWithTable("Nested hash partitioning key", 1024 * 1024 * 1) { v =>
+      // Shapes whose leaves are primitives take the vectorized element path; the last two force
+      // the per-element path in the native kernel.
+      val shapes = Seq(
+        "struct<int, string>" -> "named_struct('a', c1, 'b', CAST(c1 AS STRING))",
+        "array<int>" -> "ARRAY_REPEAT(c1, 10)",
+        "struct<array<int>, string>" ->
+          "named_struct('a', ARRAY_REPEAT(c1, 10), 'b', CAST(c1 AS STRING))",
+        "array<struct<int, string>>" ->
+          "ARRAY_REPEAT(named_struct('a', c1, 'b', CAST(c1 AS STRING)), 10)",
+        "struct<map<string, int>, int>" ->
+          "named_struct('m', MAP(CAST(c1 AS STRING), c1), 'i', c1)")
+      shapes.foreach { case (name, keyExpr) =>
+        Seq(5, manyPartitions).foreach { partitionNum =>
+          shuffleNestedHashKeyBenchmark(name, keyExpr, v, partitionNum)
+        }
       }
     }
 
