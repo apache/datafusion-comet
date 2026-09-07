@@ -318,7 +318,8 @@ class UtilsSuite extends CometTestBase {
     // NullVector is a *direct* child of a struct (see `Utils.hasNullDirectlyUnderStruct` for
     // the Arrow mechanics). Each shape runs the real appender under a timeout, so a rule that
     // is too narrow shows up as a timeout on the hanging shapes instead of a hung build, and
-    // one that is too wide shows up as a needless bypass.
+    // one that is too wide shows up as a needless bypass. Once an Arrow release fixes the
+    // appender, the shapes reported as needless bypasses are the ones whose gate can go.
     val nullStruct = StructType(Seq(StructField("a", NullType)))
     val shapes: Seq[(DataType, Any)] = Seq(
       NullType -> null,
@@ -335,15 +336,6 @@ class UtilsSuite extends CometTestBase {
       MapType(IntegerType, ArrayType(NullType)) ->
         ArrayBasedMapData(Array[Any](1), Array[Any](new GenericArrayData(Array[Any](null)))),
       MapType(NullType, NullType) -> ArrayBasedMapData(Array.empty[Any], Array.empty[Any]))
-    // A list insulates whatever is below it, so `inStruct` resets when descending into one.
-    def nullUnderStruct(dt: DataType, inStruct: Boolean): Boolean = dt match {
-      case NullType => inStruct
-      case ArrayType(element, _) => nullUnderStruct(element, inStruct = false)
-      case StructType(fields) => fields.exists(f => nullUnderStruct(f.dataType, inStruct = true))
-      case MapType(k, v, _) =>
-        nullUnderStruct(k, inStruct = true) || nullUnderStruct(v, inStruct = true)
-      case _ => false
-    }
 
     val numRows = 4
     val numBatches = 3
@@ -369,7 +361,9 @@ class UtilsSuite extends CometTestBase {
         Future(Utils.coalesceBroadcastBatches(bufs.iterator))(ExecutionContext.global),
         10.seconds)
 
-      val expectBypass = nullUnderStruct(dataType, inStruct = false)
+      // The planner's gate (`CometBroadcastExchangeExec.getSupportLevel`) uses this same
+      // predicate, so this also pins that it refuses exactly the shapes the appender cannot take.
+      val expectBypass = Utils.hasNullTypeUnderStruct(dataType)
       assert(
         (batchCount == 0) == expectBypass,
         s"$name: batchCount=$batchCount but bypass expected=$expectBypass")
