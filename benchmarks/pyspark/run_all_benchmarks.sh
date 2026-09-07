@@ -25,10 +25,17 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DATA_PATH="${1:-/tmp/shuffle-benchmark-data}"
-COMET_JAR="${COMET_JAR:-$SCRIPT_DIR/../../spark/target/comet-spark-spark3.5_2.12-0.14.0-SNAPSHOT.jar}"
+# Resolve the built jar without hardcoding the version, which changes every
+# development cycle and drops the `-SNAPSHOT` qualifier on release branches.
+COMET_JAR="${COMET_JAR:-$(ls "$SCRIPT_DIR"/../../spark/target/comet-spark-spark3.5_2.12-*.jar 2>/dev/null | grep -v -e sources -e tests | tail -1)}"
 SPARK_MASTER="${SPARK_MASTER:-local[*]}"
 EXECUTOR_MEMORY="${EXECUTOR_MEMORY:-16g}"
 EVENT_LOG_DIR="${EVENT_LOG_DIR:-/tmp/spark-events}"
+
+if [ ! -f "$COMET_JAR" ]; then
+  echo "Comet jar not found. Set COMET_JAR or run 'make release'." >&2
+  exit 1
+fi
 
 # Create event log directory
 mkdir -p "$EVENT_LOG_DIR"
@@ -52,7 +59,7 @@ $SPARK_HOME/bin/spark-submit \
   --conf spark.eventLog.enabled=true \
   --conf spark.eventLog.dir="$EVENT_LOG_DIR" \
   --conf spark.comet.enabled=false \
-  --conf spark.comet.exec.shuffle.enabled=false \
+  --conf spark.comet.shuffle.enabled=false \
   "$SCRIPT_DIR/run_benchmark.py" \
   --data "$DATA_PATH" \
   --mode spark
@@ -73,10 +80,10 @@ $SPARK_HOME/bin/spark-submit \
   --conf spark.comet.enabled=true \
   --conf spark.comet.operator.DataWritingCommandExec.allowIncompatible=true \
   --conf spark.comet.parquet.write.enabled=true \
-  --conf spark.comet.logFallbackReasons.enabled=true \
-  --conf spark.comet.explainFallback.enabled=true \
+  --conf spark.comet.explain.fallback.log.enabled=true \
+  --conf spark.comet.explain.fallback.enabled=true \
   --conf spark.comet.shuffle.mode=jvm \
-  --conf spark.comet.exec.shuffle.mode=jvm \
+  --conf spark.comet.shuffle.mode=jvm \
   --conf spark.comet.exec.replaceSortMergeJoin=true \
   --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
   --conf spark.sql.extensions=org.apache.comet.CometSparkSessionExtensions \
@@ -101,9 +108,9 @@ $SPARK_HOME/bin/spark-submit \
   --conf spark.comet.enabled=true \
   --conf spark.comet.operator.DataWritingCommandExec.allowIncompatible=true \
   --conf spark.comet.parquet.write.enabled=true \
-  --conf spark.comet.logFallbackReasons.enabled=true \
-  --conf spark.comet.explainFallback.enabled=true \
-  --conf spark.comet.exec.shuffle.mode=native \
+  --conf spark.comet.explain.fallback.log.enabled=true \
+  --conf spark.comet.explain.fallback.enabled=true \
+  --conf spark.comet.shuffle.mode=native \
   --conf spark.comet.exec.replaceSortMergeJoin=true \
   --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
   --conf spark.sql.extensions=org.apache.comet.CometSparkSessionExtensions \

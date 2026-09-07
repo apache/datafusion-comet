@@ -88,7 +88,7 @@ spark-submit --master spark://master:7077 \
 spark-submit --master spark://master:7077 \
   --jars /path/to/comet.jar \
   --conf spark.comet.enabled=true \
-  --conf spark.comet.exec.shuffle.enabled=true \
+  --conf spark.comet.shuffle.enabled=true \
   --conf spark.comet.shuffle.mode=jvm \
   --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
   run_benchmark.py --data /tmp/shuffle-benchmark-data --mode jvm --benchmark shuffle-hash
@@ -97,8 +97,8 @@ spark-submit --master spark://master:7077 \
 spark-submit --master spark://master:7077 \
   --jars /path/to/comet.jar \
   --conf spark.comet.enabled=true \
-  --conf spark.comet.exec.shuffle.enabled=true \
-  --conf spark.comet.exec.shuffle.mode=native \
+  --conf spark.comet.shuffle.enabled=true \
+  --conf spark.comet.shuffle.mode=native \
   --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
   run_benchmark.py --data /tmp/shuffle-benchmark-data --mode native --benchmark shuffle-roundrobin
 ```

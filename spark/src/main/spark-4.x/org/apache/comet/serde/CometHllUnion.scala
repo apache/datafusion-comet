@@ -22,7 +22,7 @@ package org.apache.comet.serde
 import org.apache.spark.sql.catalyst.expressions.{Attribute, HllUnion}
 import org.apache.spark.sql.types.BinaryType
 
-import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithFallbackReason, scalarFunctionExprToProtoWithReturnType}
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, scalarFunctionExprToProtoWithReturnType}
 
 // Spark 4.0 HllUnion is a TernaryExpression: `first`, `second` (binary sketches),
 // `third` (allowDifferentLgConfigK boolean, default Literal(false)). All three are
@@ -54,6 +54,6 @@ object CometHllUnion extends CometExpressionSerde[HllUnion] {
       first,
       second,
       third)
-    optExprWithFallbackReason(unionExpr, expr, expr.first, expr.second, expr.third)
+    unionExpr
   }
 }

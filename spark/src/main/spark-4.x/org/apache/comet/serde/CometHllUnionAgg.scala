@@ -55,10 +55,7 @@ object CometHllUnionAgg extends CometAggregateExpressionSerde[HllUnionAgg] {
     val allow = expr.right.eval() match {
       case b: Boolean => b
       case other =>
-        withFallbackReason(
-          aggExpr,
-          s"Unsupported allowDifferentLgConfigK literal: $other",
-          expr.left)
+        withFallbackReason(aggExpr, s"Unsupported allowDifferentLgConfigK literal: $other")
         return None
     }
     if (childExpr.isDefined) {
@@ -67,7 +64,7 @@ object CometHllUnionAgg extends CometAggregateExpressionSerde[HllUnionAgg] {
       builder.setAllowDifferentLgConfigK(allow)
       Some(ExprOuterClass.AggExpr.newBuilder().setHllUnionAgg(builder).build())
     } else {
-      withFallbackReason(aggExpr, expr.left)
+      withFallbackReason(aggExpr, "Child expression or data type not supported")
       None
     }
   }

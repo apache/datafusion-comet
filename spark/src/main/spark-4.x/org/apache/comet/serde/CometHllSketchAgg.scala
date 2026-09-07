@@ -80,7 +80,7 @@ object CometHllSketchAgg extends CometAggregateExpressionSerde[HllSketchAgg] {
       case i: Int => i
       case l: Long => l.toInt
       case other =>
-        withFallbackReason(aggExpr, s"Unsupported lgConfigK literal: $other", expr.left)
+        withFallbackReason(aggExpr, s"Unsupported lgConfigK literal: $other")
         return None
     }
     if (childExpr.isDefined) {
@@ -89,7 +89,7 @@ object CometHllSketchAgg extends CometAggregateExpressionSerde[HllSketchAgg] {
       builder.setLgConfigK(lgConfigK)
       Some(ExprOuterClass.AggExpr.newBuilder().setHllSketchAgg(builder).build())
     } else {
-      withFallbackReason(aggExpr, expr.left)
+      withFallbackReason(aggExpr, "Child expression or data type not supported")
       None
     }
   }

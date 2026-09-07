@@ -22,7 +22,7 @@ package org.apache.comet.serde
 import org.apache.spark.sql.catalyst.expressions.{Attribute, HllSketchEstimate}
 import org.apache.spark.sql.types.LongType
 
-import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithFallbackReason, scalarFunctionExprToProtoWithReturnType}
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, scalarFunctionExprToProtoWithReturnType}
 
 object CometHllSketchEstimate extends CometExpressionSerde[HllSketchEstimate] {
   private val incompatReason =
@@ -43,6 +43,6 @@ object CometHllSketchEstimate extends CometExpressionSerde[HllSketchEstimate] {
       LongType,
       failOnError = false,
       childExpr)
-    optExprWithFallbackReason(estimateExpr, expr, expr.child)
+    estimateExpr
   }
 }
