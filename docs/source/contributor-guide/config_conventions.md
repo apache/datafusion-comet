@@ -34,9 +34,9 @@ broadest (the prefix) to narrowest (the specific setting).
   prefix like `spark.sql.comet.`.
 - **Category segment.** The first segment after the prefix names a broad area:
   `exec` (execution and expressions), `scan` (source readers), `parquet` (Parquet-specific
-  settings), `shuffle` (shuffle behavior), `columnar` (columnar shuffle), `explain` (plan
-  explain/logging), `metrics`, `tracing`, `testing`, `convert` (Spark → Comet source
-  conversion), or `expression` / `operator` (per-expression / per-operator flags).
+  settings), `shuffle` (shuffle behavior), `explain` (plan explain/logging), `metrics`,
+  `tracing`, `debug`, `testing`, `convert` (Spark → Comet source conversion), or
+  `expression` / `operator` (per-expression / per-operator flags).
 - **Segment casing.** Multi-word segments use `camelCase`, not dot- or kebab-separated.
   Prefer `spark.comet.foo.maxThreadNum` over `spark.comet.foo.max.thread.num` or
   `spark.comet.foo.max-thread-num`.
@@ -46,8 +46,8 @@ broadest (the prefix) to narrowest (the specific setting).
   a verb (`force...`, `allow...`) can omit `.enabled` because the verb already encodes
   the action — for example `spark.comet.exec.forceShuffledHashJoin`.
 - **Acronyms.** Treat acronyms consistently as `UDF`, `SHJ`, `SMJ`, `IO` — either all-caps
-  or camelCase, but do not mix within one key (`pyarrowUdf` and `scalaUDF` in the same
-  cluster is a red flag).
+  or camelCase, but do not mix within one cluster (`pyarrowUdf` alongside `scalaUDF` would
+  be a red flag; both spell it `UDF`).
 
 ## Symbol Naming (Scala)
 
@@ -56,11 +56,11 @@ Every config declares a Scala `val` in `CometConf.scala`. The symbol name is the
 
 Examples:
 
-| Key                                             | Symbol                      |
-| ----------------------------------------------- | --------------------------- |
-| `spark.comet.enabled`                           | `COMET_ENABLED`             |
-| `spark.comet.exec.forceShuffledHashJoin`        | `COMET_FORCE_SHJ`           |
-| `spark.comet.parquet.rowFilterPushdown.enabled` | `COMET_ROW_FILTER_PUSHDOWN` |
+| Key                                             | Symbol                                      |
+| ----------------------------------------------- | ------------------------------------------- |
+| `spark.comet.enabled`                           | `COMET_ENABLED`                             |
+| `spark.comet.exec.forceShuffledHashJoin`        | `COMET_FORCE_SHJ`                           |
+| `spark.comet.parquet.rowFilterPushdown.enabled` | `COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED` |
 
 The symbol name is what appears in code; the key is what appears in user configuration.
 The two do not have to match segment-for-segment — brevity in the symbol is fine as long
@@ -113,3 +113,51 @@ The rename checklist for a single config:
 Removing a deprecated alias is a follow-up step that belongs to a later major release —
 typically the next Comet major after the rename first ships. See the
 [versioning policy](../about/versioning_policy.md) for the timing rules.
+
+## Changing the Behavior of an Existing Config
+
+A rename keeps behavior identical and only moves the key. A **behavior change** is different: the
+same query, over the same data, with the same explicitly set configuration, starts producing a
+different result or a different error. Changing a config's default value, or changing what its
+existing values mean, is a behavior change.
+
+Comet's [versioning policy](../about/versioning_policy.md) allows a behavior change to ship in a
+minor release, but only when users have a documented way to opt back out. That escape hatch is a
+boolean config under `spark.comet.legacy.*`, defaulting to `false`, whose only job is to restore
+the previous behavior:
+
+```scala
+val COMET_LEGACY_FOO_BEHAVIOR: ConfigEntry[Boolean] =
+  conf("spark.comet.legacy.fooBehavior")
+    .category(CATEGORY_LEGACY)
+    .doc("When true, restores the pre-1.1.0 behavior of <config>, which <describe old " +
+      "behavior>. This config is deprecated and will be removed in a future major release.")
+    .booleanConf
+    .createWithDefault(false)
+```
+
+Naming follows the usual conventions: `spark.comet.legacy.` prefix, `camelCase` final segment, and
+a `COMET_LEGACY_*` Scala symbol. No legacy config exists yet, so the first one to land must also add
+the `CATEGORY_LEGACY` constant to `CometConf.scala` and a corresponding section to `configs.md`. The
+doc string must state which release changed the behavior and what the old behavior was, so that
+`configs.md` is self-explanatory without cross-referencing the upgrade guide.
+
+The checklist for a behavior change:
+
+1. Make the behavior change itself, gated on the new legacy config.
+2. Declare the legacy config in `CometConf.scala` under `CATEGORY_LEGACY`, defaulting to `false`.
+3. Add a section to the [upgrade guide](../user-guide/latest/migration-guide.md) under the
+   upcoming release, describing the change and naming the config that reverts it.
+4. Add a test covering both branches: the new behavior by default, and the old behavior with the
+   legacy config set.
+
+Two cases do **not** need a legacy config:
+
+- **Correctness fixes.** When a `Compatible` expression or operator does not match Spark, that is a
+  bug. Fixing it is a bug fix and may ship in any release, including a patch release. Add a legacy
+  config only if the fix has an unusually wide blast radius, and say so in the PR description.
+- **Changes to which expressions and operators run natively.** Falling back to Spark, or ceasing
+  to, changes performance rather than results.
+
+Removing a legacy config is a major-release change, handled the same way as removing a deprecated
+alias.

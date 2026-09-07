@@ -20,10 +20,10 @@ statement
 CREATE TABLE test(col1 boolean, col2 float) USING parquet
 
 statement
-INSERT INTO test VALUES(true, -0.0)
+INSERT INTO test VALUES(true, float('-0.0'))
 
 statement
-INSERT INTO test VALUES(false, -0.0)
+INSERT INTO test VALUES(false, float('-0.0'))
 
 query
 SELECT col1, negative(col2), cast(col1 as float), col1 = negative(col2) FROM test

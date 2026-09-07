@@ -23,23 +23,24 @@ import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, AttributeRef
 
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, serializeDataType}
+import org.apache.comet.shims.CometTypeShim
 
 object CometAlias extends CometExpressionSerde[Alias] {
   override def convert(
       a: Alias,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val r = exprToProtoInternal(a.child, inputs, binding)
-    if (r.isEmpty) {
-      withFallbackReason(a, a.child)
-    }
-    r
+    exprToProtoInternal(a.child, inputs, binding)
   }
 }
 
-object CometAttributeReference extends CometExpressionSerde[AttributeReference] {
+object CometAttributeReference
+    extends CometExpressionSerde[AttributeReference]
+    with CometTypeShim {
   override def getSupportLevel(attr: AttributeReference): SupportLevel = {
-    if (serializeDataType(attr.dataType).isDefined) {
+    if (containsVariantType(attr.dataType)) {
+      Unsupported(Some(s"unsupported expression input of type ${attr.dataType}"))
+    } else if (serializeDataType(attr.dataType).isDefined) {
       Compatible()
     } else {
       Unsupported(Some(s"unsupported datatype: ${attr.dataType}"))

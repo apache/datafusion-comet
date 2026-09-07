@@ -42,7 +42,7 @@
 - Spark 3.4.3 (audited 2026-05-12): identical to 3.5.8.
 - Spark 3.5.8 (audited 2026-05-12): baseline.
 - Spark 4.0.1 (audited 2026-05-12): `inputTypes` widened to `StringTypeWithCollation`; behaviour unchanged for ASCII timezone strings.
-- Marked `Incompatible`: Comet's native timezone parser only accepts IANA zone IDs (e.g. `America/Los_Angeles`) and fixed `+HH:MM` offsets, while Spark also accepts legacy forms (`GMT+1`, `UTC+1`, three-letter abbreviations like `PST`). By default it runs through the codegen dispatcher (Spark-correct) and uses the native path only when incompatible expressions are explicitly allowed, where legacy zone forms throw a native parse error at execution (https://github.com/apache/datafusion-comet/issues/2013).
+- Marked `Incompatible`: Comet's native timezone parser only accepts IANA zone IDs (e.g. `America/Los_Angeles`) and fixed `+HH:MM` offsets, while Spark also accepts legacy forms (`GMT+1`, `UTC+1`, three-letter abbreviations like `PST`). By default it runs through the codegen dispatcher (Spark-correct) and uses the native path only when incompatible expressions are explicitly allowed, where legacy zone forms throw a native parse error at execution.
 
 ## make_timestamp_ltz
 
@@ -81,7 +81,7 @@
 - Spark 3.4.3 (audited 2026-05-12): identical to 3.5.8.
 - Spark 3.5.8 (audited 2026-05-12): baseline.
 - Spark 4.0.1 (audited 2026-05-12): `inputTypes` widened to `StringTypeWithCollation`; behaviour unchanged for ASCII timezone strings.
-- Marked `Incompatible`: Comet's native timezone parser only accepts IANA zone IDs (e.g. `America/Los_Angeles`) and fixed `+HH:MM` offsets, while Spark also accepts legacy forms (`GMT+1`, `UTC+1`, three-letter abbreviations like `PST`). By default it runs through the codegen dispatcher (Spark-correct) and uses the native path only when incompatible expressions are explicitly allowed, where legacy zone forms throw a native parse error at execution (https://github.com/apache/datafusion-comet/issues/2013).
+- Marked `Incompatible`: Comet's native timezone parser only accepts IANA zone IDs (e.g. `America/Los_Angeles`) and fixed `+HH:MM` offsets, while Spark also accepts legacy forms (`GMT+1`, `UTC+1`, three-letter abbreviations like `PST`). By default it runs through the codegen dispatcher (Spark-correct) and uses the native path only when incompatible expressions are explicitly allowed, where legacy zone forms throw a native parse error at execution.
 
 ## try_make_timestamp
 

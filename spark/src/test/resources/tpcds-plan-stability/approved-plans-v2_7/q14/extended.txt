@@ -1,9 +1,9 @@
-CometNativeColumnarToRow
+CometColumnarToRow
 +- CometTakeOrderedAndProject
    +- CometBroadcastHashJoin
       :- CometFilter
       :  :  +- Subquery
-      :  :     +- CometNativeColumnarToRow
+      :  :     +- CometColumnarToRow
       :  :        +- CometHashAggregate
       :  :           +- CometExchange
       :  :              +- CometHashAggregate
@@ -47,7 +47,7 @@ CometNativeColumnarToRow
       :                 :     :  :              +- CometProject
       :                 :     :  :                 +- CometFilter
       :                 :     :  :                    :  +- Subquery
-      :                 :     :  :                    :     +- CometNativeColumnarToRow
+      :                 :     :  :                    :     +- CometColumnarToRow
       :                 :     :  :                    :        +- CometProject
       :                 :     :  :                    :           +- CometFilter
       :                 :     :  :                    :              +- CometNativeScan parquet spark_catalog.default.date_dim
@@ -178,7 +178,7 @@ CometNativeColumnarToRow
       :                    +- CometProject
       :                       +- CometFilter
       :                          :  +- Subquery
-      :                          :     +- CometNativeColumnarToRow
+      :                          :     +- CometColumnarToRow
       :                          :        +- CometProject
       :                          :           +- CometFilter
       :                          :              +- CometNativeScan parquet spark_catalog.default.date_dim
@@ -201,7 +201,7 @@ CometNativeColumnarToRow
                            :     :  :              +- CometProject
                            :     :  :                 +- CometFilter
                            :     :  :                    :  +- Subquery
-                           :     :  :                    :     +- CometNativeColumnarToRow
+                           :     :  :                    :     +- CometColumnarToRow
                            :     :  :                    :        +- CometProject
                            :     :  :                    :           +- CometFilter
                            :     :  :                    :              +- CometNativeScan parquet spark_catalog.default.date_dim
@@ -332,10 +332,10 @@ CometNativeColumnarToRow
                               +- CometProject
                                  +- CometFilter
                                     :  +- Subquery
-                                    :     +- CometNativeColumnarToRow
+                                    :     +- CometColumnarToRow
                                     :        +- CometProject
                                     :           +- CometFilter
                                     :              +- CometNativeScan parquet spark_catalog.default.date_dim
                                     +- CometNativeScan parquet spark_catalog.default.date_dim
 
-Comet accelerated 310 out of 333 eligible operators (93%). Final plan contains 6 transitions between Spark and Comet.
+Comet accelerated 316 out of 321 eligible operators (98%). Final plan contains 6 transitions between Spark and Comet. Accelerated expressions: 16 native, 0 codegen dispatch.

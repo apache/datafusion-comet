@@ -39,6 +39,7 @@ to read more.
 
    Installing Comet <installation>
    Configuration Settings <configs>
+   Upgrading Comet <migration-guide>
 
 .. toctree::
    :maxdepth: 1
@@ -81,6 +82,7 @@ to read more.
    :hidden:
 
    Iceberg Guide <iceberg>
+   Iceberg Writes <iceberg-writes>
    S3 Credential Providers <s3-credential-providers>
    Kubernetes Guide <kubernetes>
 

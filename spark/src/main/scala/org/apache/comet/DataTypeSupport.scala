@@ -50,8 +50,8 @@ trait DataTypeSupport {
 
     dt match {
       case BooleanType | ByteType | ShortType | IntegerType | LongType | FloatType | DoubleType |
-          BinaryType | StringType | _: DecimalType | DateType | TimestampType |
-          TimestampNTZType =>
+          BinaryType | StringType | _: DecimalType | DateType | TimestampType | TimestampNTZType |
+          CalendarIntervalType =>
         true
       case StructType(fields) =>
         fields.nonEmpty && fields.forall(f =>
@@ -78,6 +78,21 @@ object DataTypeSupport {
   def isComplexType(dt: DataType): Boolean = dt match {
     case _: StructType | _: ArrayType | _: MapType => true
     case _ => false
+  }
+
+  /**
+   * `dt` with every array/map/struct nullability flag forced to `true` at all nesting levels (map
+   * key fields stay non-null per Arrow's map invariant). Re-derives Spark's `private[spark]`
+   * `DataType.asNullable`, used as a common cast target to unify types whose Comet runtime
+   * nullability exceeds Spark's Catalyst nullability.
+   */
+  def deepNullable(dt: DataType): DataType = dt match {
+    case ArrayType(et, _) => ArrayType(deepNullable(et), containsNull = true)
+    case MapType(kt, vt, _) =>
+      MapType(deepNullable(kt), deepNullable(vt), valueContainsNull = true)
+    case StructType(fields) =>
+      StructType(fields.map(f => f.copy(dataType = deepNullable(f.dataType), nullable = true)))
+    case other => other
   }
 
   def hasTemporalType(t: DataType): Boolean = t match {

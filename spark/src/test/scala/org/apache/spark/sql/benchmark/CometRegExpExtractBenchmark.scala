@@ -74,7 +74,7 @@ object CometRegExpExtractBenchmark extends CometBenchmarkBase {
         "spark.shuffle.manager",
         "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
 
-    val sparkSession = SparkSession.builder.config(conf).getOrCreate()
+    val sparkSession = SparkSession.builder().config(conf).getOrCreate()
     sparkSession.conf.set(SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key, "true")
     sparkSession.conf.set(SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key, "true")
     sparkSession.conf.set(CometConf.COMET_ENABLED.key, "false")

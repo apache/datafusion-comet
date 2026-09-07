@@ -56,14 +56,20 @@ def resolve_comet_jar() -> str:
     major_minor = ".".join(pyspark.__version__.split(".")[:2])
     spark_tag = f"spark{major_minor}"
     scala_tag = "_2.12" if major_minor.startswith("3.") else "_2.13"
+    # Match any version suffix, not just `-SNAPSHOT`: on a release branch the
+    # Maven version is the final release version (e.g. `1.0.0`) with no
+    # `-SNAPSHOT` qualifier.
     pattern = os.path.join(
         REPO_ROOT,
-        f"spark/target/comet-spark-{spark_tag}{scala_tag}-*-SNAPSHOT.jar",
+        f"spark/target/comet-spark-{spark_tag}{scala_tag}-*.jar",
     )
     candidates = [
         m
         for m in sorted(glob.glob(pattern))
-        if "sources" not in os.path.basename(m) and "tests" not in os.path.basename(m)
+        if not any(
+            tag in os.path.basename(m)
+            for tag in ("sources", "tests", "javadoc", "shaded")
+        )
     ]
     if not candidates:
         raise FileNotFoundError(

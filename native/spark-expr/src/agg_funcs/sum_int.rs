@@ -23,7 +23,7 @@ use arrow::array::{
 use arrow::datatypes::{
     ArrowNativeType, DataType, Field, FieldRef, Int16Type, Int32Type, Int64Type, Int8Type,
 };
-use datafusion::common::{DataFusionError, Result as DFResult, ScalarValue};
+use datafusion::common::{not_impl_err, DataFusionError, Result as DFResult, ScalarValue};
 use datafusion::logical_expr::function::{AccumulatorArgs, StateFieldsArgs};
 use datafusion::logical_expr::Volatility::Immutable;
 use datafusion::logical_expr::{
@@ -495,14 +495,8 @@ impl GroupsAccumulator for SumIntGroupsAccumulatorLegacy {
         &mut self,
         values: &[ArrayRef],
         group_indices: &[usize],
-        opt_filter: Option<&BooleanArray>,
         total_num_groups: usize,
     ) -> DFResult<()> {
-        debug_assert!(
-            opt_filter.is_none(),
-            "opt_filter is not supported in merge_batch"
-        );
-
         if values.len() != 1 {
             return Err(DataFusionError::Internal(format!(
                 "Invalid state while merging batch. Expected 1 element but found {}",
@@ -527,6 +521,14 @@ impl GroupsAccumulator for SumIntGroupsAccumulatorLegacy {
             }
         }
         Ok(())
+    }
+
+    fn convert_to_state(
+        &self,
+        _values: &[ArrayRef],
+        _opt_filter: Option<&BooleanArray>,
+    ) -> DFResult<Vec<ArrayRef>> {
+        not_impl_err!("Input batch conversion to state not implemented")
     }
 
     fn size(&self) -> usize {
@@ -642,14 +644,8 @@ impl GroupsAccumulator for SumIntGroupsAccumulatorAnsi {
         &mut self,
         values: &[ArrayRef],
         group_indices: &[usize],
-        opt_filter: Option<&BooleanArray>,
         total_num_groups: usize,
     ) -> DFResult<()> {
-        debug_assert!(
-            opt_filter.is_none(),
-            "opt_filter is not supported in merge_batch"
-        );
-
         if values.len() != 1 {
             return Err(DataFusionError::Internal(format!(
                 "Invalid state while merging batch. Expected 1 element but found {}",
@@ -678,6 +674,14 @@ impl GroupsAccumulator for SumIntGroupsAccumulatorAnsi {
             }
         }
         Ok(())
+    }
+
+    fn convert_to_state(
+        &self,
+        _values: &[ArrayRef],
+        _opt_filter: Option<&BooleanArray>,
+    ) -> DFResult<Vec<ArrayRef>> {
+        not_impl_err!("Input batch conversion to state not implemented")
     }
 
     fn size(&self) -> usize {
@@ -826,14 +830,8 @@ impl GroupsAccumulator for SumIntGroupsAccumulatorTry {
         &mut self,
         values: &[ArrayRef],
         group_indices: &[usize],
-        opt_filter: Option<&BooleanArray>,
         total_num_groups: usize,
     ) -> DFResult<()> {
-        debug_assert!(
-            opt_filter.is_none(),
-            "opt_filter is not supported in merge_batch"
-        );
-
         if values.len() != 2 {
             return Err(DataFusionError::Internal(format!(
                 "Invalid state while merging batch. Expected 2 elements but found {}",
@@ -884,6 +882,14 @@ impl GroupsAccumulator for SumIntGroupsAccumulatorTry {
             }
         }
         Ok(())
+    }
+
+    fn convert_to_state(
+        &self,
+        _values: &[ArrayRef],
+        _opt_filter: Option<&BooleanArray>,
+    ) -> DFResult<Vec<ArrayRef>> {
+        not_impl_err!("Input batch conversion to state not implemented")
     }
 
     fn size(&self) -> usize {

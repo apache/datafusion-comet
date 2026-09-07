@@ -59,6 +59,7 @@ fn criterion_benchmark(c: &mut Criterion) {
                 black_box(&args),
                 black_box(&DataType::Decimal128(10, 4)),
                 EvalMode::Legacy,
+                false,
             ))
         })
     });

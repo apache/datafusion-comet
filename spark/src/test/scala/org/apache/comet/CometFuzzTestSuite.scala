@@ -74,13 +74,13 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
           case "TINYINT" | "SMALLINT" =>
             s"$defaultValueType(${defaultValueRow.get(0)})"
           case "FLOAT" =>
-            if (Float.NaN.equals(defaultValueRow.get(0))) {
+            if (defaultValueRow.getFloat(0).isNaN) {
               floatNaNLiteral
             } else {
               s"$defaultValueType(${defaultValueRow.get(0)})"
             }
           case "DOUBLE" =>
-            if (Double.NaN.equals(defaultValueRow.get(0))) {
+            if (defaultValueRow.getDouble(0).isNaN) {
               doubleNaNLiteral
             } else {
               s"$defaultValueType(${defaultValueRow.get(0)})"
@@ -109,7 +109,12 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
                 .asInstanceOf[Array[Byte]]
                 .sameElements(spark.sql(sql).collect()(0).get(0).asInstanceOf[Array[Byte]]))
           } else {
-            assert(defaultValueRow.get(0).equals(spark.sql(sql).collect()(0).get(0)))
+            // Compare as boxed values with `equals` rather than `==`: for a NaN default
+            // value, boxed Float/Double equality treats NaN as equal to itself, whereas
+            // primitive `==` would not.
+            val expectedValue = defaultValueRow.get(0).asInstanceOf[AnyRef]
+            val actualValue = spark.sql(sql).collect()(0).get(0).asInstanceOf[AnyRef]
+            assert(expectedValue.equals(actualValue))
           }
         }
       }
@@ -170,10 +175,21 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
         case "jvm" =>
           1
         case "native" =>
-          // native shuffle does not support complex types as partitioning keys
+          // Nested hash partitioning keys are off by default, so native shuffle falls back here.
           0
       }
       assert(cometShuffleExchanges.length == expectedNumCometShuffles)
+
+      // With the config enabled these keys do run through native shuffle. This is the widest
+      // nested-type coverage in the repo, so it is worth asserting that they are admitted rather
+      // than only that they fall back.
+      withSQLConf(CometConf.COMET_SHUFFLE_NATIVE_HASH_PARTITIONING_NESTED_ENABLED.key -> "true") {
+        val enabledDf = spark.sql(sql)
+        enabledDf.collect()
+        val enabledPlan =
+          enabledDf.queryExecution.executedPlan.asInstanceOf[AdaptiveSparkPlanExec].executedPlan
+        assert(collectCometShuffleExchanges(enabledPlan).length == 1)
+      }
     }
   }
 
