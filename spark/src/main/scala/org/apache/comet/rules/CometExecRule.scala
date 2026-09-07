@@ -660,8 +660,8 @@ case class CometExecRule(session: SparkSession)
   private def normalizeNaNAndZero(expr: Expression): Expression = {
     expr match {
       case _: KnownFloatingPointNormalized => expr
-      case FloatLiteral(f) if !f.equals(-0.0f) => expr
-      case DoubleLiteral(d) if !d.equals(-0.0d) => expr
+      case FloatLiteral(f) if !f.isNaN && !f.equals(-0.0f) => expr
+      case DoubleLiteral(d) if !d.isNaN && !d.equals(-0.0d) => expr
       case _ =>
         expr.dataType match {
           case _: FloatType | _: DoubleType =>
