@@ -428,6 +428,23 @@ object CometMetricNode {
       "join_time" -> SQLMetrics.createNanoTimingMetric(sc, "Total time for joining"))
   }
 
+  /** Join runtime filtering and reader attachment. These never replace join or scan metrics. */
+  def joinDynamicFilterMetrics(sc: SparkContext): Map[String, SQLMetric] = {
+    Map(
+      "dynamic_filter_rows_evaluated" ->
+        SQLMetrics.createMetric(sc, "Probe rows evaluated by the join runtime filter"),
+      "dynamic_filter_rows_pruned" ->
+        SQLMetrics.createMetric(sc, "Probe rows rejected before the hash probe"),
+      "dynamic_filter_rows_bypassed" ->
+        SQLMetrics.createMetric(sc, "Probe rows bypassing an inactive join runtime filter"),
+      "dynamic_filter_eval_time" ->
+        SQLMetrics.createNanoTimingMetric(sc, "Time evaluating the join runtime filter"),
+      "dynamic_filter_reader_filters_attached" ->
+        SQLMetrics.createMetric(sc, "Join runtime filters attached to native readers"),
+      "dynamic_filter_reader_filters_skipped" ->
+        SQLMetrics.createMetric(sc, "Join runtime filters not eligible for native readers"))
+  }
+
   /**
    * SQL Metrics for DataFusion SortMergeJoin
    */
@@ -462,10 +479,28 @@ object CometMetricNode {
 
   /**
    * Creates a [[CometMetricNode]] from a [[CometPlan]].
+   *
+   * The `metrics` access on foreign (non-Comet) nodes is guarded against the one way it can fail:
+   * forcing an unmaterialised `metrics` lazy val on a node whose `@transient session` is `null`
+   * NPEs inside `SQLMetrics.createMetric(sparkContext, ...)`. That happens for a JVM-side exec
+   * constructed off the planning thread (e.g. `AQEShuffleReadExec` built by AQE's
+   * stage-finalisation rules when `SparkSession.getActiveSession` was `None`). It must NOT be
+   * pre-checked via `session`: this method also runs inside task closures on executors, where
+   * `session` is always `null` after deserialisation but `metrics` was materialised on the driver
+   * and shipped with the plan. Comet operators are exempt from the guard -- they reach here on
+   * the driver with a live session or on executors with `metrics` already materialised, so a
+   * genuine NPE inside a Comet operator's metric construction still fails loudly instead of
+   * silently reporting nothing. A foreign node whose metrics are unreachable contributes an empty
+   * map, but its subtree is still walked so every other operator keeps reporting.
    */
   def fromCometPlan(cometPlan: SparkPlan): CometMetricNode = {
-    val children = cometPlan.children.map(fromCometPlan)
-    CometMetricNode(cometPlan.metrics, children)
+    val nodeMetrics = cometPlan match {
+      case _: CometPlan => cometPlan.metrics
+      case _ =>
+        try cometPlan.metrics
+        catch { case _: NullPointerException => Map.empty[String, SQLMetric] }
+    }
+    CometMetricNode(nodeMetrics, cometPlan.children.map(fromCometPlan))
   }
 
   /**

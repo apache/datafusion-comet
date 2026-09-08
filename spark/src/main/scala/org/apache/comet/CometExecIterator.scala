@@ -274,24 +274,54 @@ class CometExecIterator(
 
   def close(): Unit = synchronized {
     if (!closed) {
-      if (currentBatch != null) {
-        currentBatch.close()
-        currentBatch = null
-      }
-      nativeUtil.close()
-      shuffleBlockIterators.values.foreach(_.close())
-      nativeLib.releasePlan(plan)
-
-      if (tracingEnabled) {
-        traceMemoryUsage()
-      }
-
-      val memInUse = cometTaskMemoryManager.getUsed
-      if (memInUse != 0) {
-        logWarning(s"CometExecIterator closed with non-zero memory usage : $memInUse")
-      }
-
       closed = true
+
+      // Attempt every resource's cleanup independently, so that one failure does not skip the
+      // remaining resources: this close() is the only chance to release them, since `closed` is
+      // already set and the task-completion retry is a no-op. The first failure is rethrown with
+      // any later ones attached as suppressed exceptions.
+      var failure: Throwable = null
+      def attempt(cleanup: => Unit): Unit = {
+        try {
+          cleanup
+        } catch {
+          case t: Throwable =>
+            if (failure == null) failure = t else failure.addSuppressed(t)
+        }
+      }
+
+      attempt {
+        if (currentBatch != null) {
+          currentBatch.close()
+          currentBatch = null
+        }
+      }
+      attempt(nativeUtil.close())
+      shuffleBlockIterators.values.foreach(it => attempt(it.close()))
+
+      // Released last and exactly once, even if the teardown above failed: dropping the native
+      // execution context frees this plan's task-shared memory pool reference and several JNI
+      // global refs.
+      attempt(nativeLib.releasePlan(plan))
+
+      // Run the diagnostics even when teardown failed: a failed teardown is exactly when the
+      // non-zero memory usage warning below is most informative.
+      attempt {
+        if (tracingEnabled) {
+          traceMemoryUsage()
+        }
+      }
+
+      attempt {
+        val memInUse = cometTaskMemoryManager.getUsed
+        if (memInUse != 0) {
+          logWarning(s"CometExecIterator closed with non-zero memory usage : $memInUse")
+        }
+      }
+
+      if (failure != null) {
+        throw failure
+      }
     }
   }
 
