@@ -254,13 +254,33 @@ new-version bring-up are:
 
 ### CI for the Spark SQL Tests
 
-Spark SQL tests do not run from the main PR build workflows. They have
-their own dedicated workflow file:
+Spark SQL tests do not run from the main PR build workflows. They are driven
+by the umbrella workflow, which calls a reusable workflow once per Spark
+version:
 
-- `.github/workflows/spark_sql_test.yml`
+- `.github/workflows/ci.yml` holds one `spark_X_Y` job per version.
+- `.github/workflows/spark_sql_test_reusable.yml` holds the job logic.
 
-Add the new version to the matrix (`spark-short`, `spark-full`, `java`).
-Use the closest existing entry as a template.
+Add a `spark_X_Y` job to `ci.yml` passing `spark-short`, `spark-full`, and
+`java`, using the closest existing job as a template. A brand-new version
+starts out on demand only, gated on `github.event_name == 'workflow_dispatch'`
+so it runs neither on PRs nor on pushes to main. It then graduates in two
+steps as the version settles: first to a `run-spark-X.Y-tests` label gate
+(runs on pushes to main, stays off the default PR path), and finally to the
+unconditional PR path that the well-established versions use.
+
+Three more registrations are needed, and the job is silently skipped if any is
+missed. In `dev/ci/compute-changes.py`, add a matching `spark_X_Y` entry to
+`FILTERS`. In `ci.yml`:
+
+- expose `spark_X_Y` as an output of the `changes` job, otherwise the `if:`
+  gate reads an empty string on every event;
+- add `spark_X_Y` to the `workflow_dispatch` key list in that job's compute
+  step, otherwise a manual run leaves the output unset even though the job's
+  own `if:` accepts `workflow_dispatch`;
+- when you move to the label gate, add `run-spark-X.Y-tests` to the label
+  allowlist in the `preflight` job's `if:`, otherwise the whole workflow is
+  skipped for the `labeled` event and the label never triggers anything.
 
 Before merging, run `make format`, run clippy
 (`cd native && cargo clippy --all-targets --workspace -- -D warnings`), and

@@ -145,7 +145,7 @@ class CometExec3_4PlusSuite extends CometTestBase {
   }
 
   test("test BloomFilterMightContain can take a constant value input") {
-    assume(!isSpark42Plus, "https://github.com/apache/datafusion-comet/issues/4142")
+    assume(!isSpark42Plus, "https://github.com/apache/datafusion-comet/issues/4968")
     val table = "test"
 
     withTable(table) {
@@ -159,7 +159,7 @@ class CometExec3_4PlusSuite extends CometTestBase {
   }
 
   test("test NULL inputs for BloomFilterMightContain") {
-    assume(!isSpark42Plus, "https://github.com/apache/datafusion-comet/issues/4142")
+    assume(!isSpark42Plus, "https://github.com/apache/datafusion-comet/issues/4968")
     val table = "test"
 
     withTable(table) {
@@ -176,7 +176,7 @@ class CometExec3_4PlusSuite extends CometTestBase {
   }
 
   test("test BloomFilterMightContain from random input") {
-    assume(!isSpark42Plus, "https://github.com/apache/datafusion-comet/issues/4142")
+    assume(!isSpark42Plus, "https://github.com/apache/datafusion-comet/issues/4968")
     val (longs, bfBytes) = bloomFilterFromRandomInput(10000, 10000)
     val table = "test"
 
@@ -199,7 +199,7 @@ class CometExec3_4PlusSuite extends CometTestBase {
   }
 
   test("bloom_filter_agg caps oversized numItems / numBits like Spark") {
-    assume(!isSpark42Plus, "https://github.com/apache/datafusion-comet/issues/4142")
+    assume(!isSpark42Plus, "https://github.com/apache/datafusion-comet/issues/4968")
     val table = "test"
     withTable(table) {
       sql(s"create table $table(col1 long) using parquet")
