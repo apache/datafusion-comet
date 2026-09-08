@@ -125,6 +125,9 @@ harness = false
 
 [[bench]]
 name = "seconds_to_timestamp"
+harness = false
+
+[[bench]]
 name = "array_position"
 harness = false
 

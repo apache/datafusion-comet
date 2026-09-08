@@ -21,8 +21,9 @@
 #![allow(dead_code)]
 
 use arrow::array::{
-    builder::StringBuilder, ArrayRef, Date32Array, Float32Array, Float64Array, Int32Array,
-    Int64Array, RecordBatch, StringArray, TimestampMicrosecondArray,
+    builder::StringBuilder, ArrayRef, BooleanBuilder, Date32Array, Float32Array, Float64Array,
+    Int32Array, Int64Array, ListArray, ListBuilder, RecordBatch, StringArray,
+    TimestampMicrosecondArray,
 };
 use arrow::datatypes::{
     ArrowPrimitiveType, DataType, Date32Type, Decimal128Type, Field, Float32Type, Float64Type,
