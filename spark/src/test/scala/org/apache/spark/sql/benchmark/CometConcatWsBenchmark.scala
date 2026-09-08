@@ -23,25 +23,31 @@ import org.apache.spark.sql.execution.WholeStageCodegenExec
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf
+import org.apache.comet.udf.codegen.CometScalaUDFCodegen
 
 /**
  * Matched Parquet inputs for native concat_ws versus Spark whole-stage codegen. Pass `strings` to
- * run only the previously supported string cases against an older native library.
+ * run only the previously supported string cases against an older native library. `long-arrays`
+ * selects width 128 and lengths up to 32. `dispatch` requires the pre-native concat_ws serde on
+ * the classpath and verifies that the old default dispatcher actually ran.
  */
 object CometConcatWsBenchmark extends CometBenchmarkBase {
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
     val rows = 65536
     val stringsOnly = mainArgs.contains("strings")
-    val nativeConfigs = Map(
+    val longArraysOnly = mainArgs.contains("long-arrays")
+    val dispatch = mainArgs.contains("dispatch")
+    val cometConfigs = Map(
       CometConf.COMET_ENABLED.key -> "true",
       CometConf.COMET_EXEC_ENABLED.key -> "true",
-      CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false")
+      CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> dispatch.toString)
     withSQLConf(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
       SQLConf.PARQUET_VECTORIZED_READER_BATCH_SIZE.key -> "8192",
       CometConf.COMET_BATCH_SIZE.key -> "8192") {
       for (width <- Seq(8, 128); arrayLength <- Seq(2, 8, 32)
-        if !stringsOnly || arrayLength == 8) {
+        if (!stringsOnly || arrayLength == 8) &&
+          (!longArraysOnly || (width == 128 && arrayLength == 32))) {
         withTempPath { dir =>
           withTempTable("concat_inputs") {
             withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
@@ -77,17 +83,22 @@ object CometConcatWsBenchmark extends CometBenchmarkBase {
                 println(s"$name Spark plan:\n$plan")
                 // scalastyle:on println
               }
-              withSQLConf(nativeConfigs.toSeq: _*) {
+              withSQLConf(cometConfigs.toSeq: _*) {
+                CometScalaUDFCodegen.resetStats()
                 val df = spark.sql(query)
                 df.noop()
+                val stats = CometScalaUDFCodegen.stats()
+                require(
+                  (stats.compileCount + stats.cacheHitCount > 0) == dispatch,
+                  stats.toString)
                 val plan = df.queryExecution.executedPlan
                 require(findFirstNonCometOperator(plan).isEmpty, plan.toString)
                 // scalastyle:off println
-                println(s"$name Comet plan (codegen dispatch disabled):\n$plan")
+                println(s"$name Comet plan (dispatch=$dispatch, stats=$stats):\n$plan")
                 // scalastyle:on println
               }
               runBenchmark(name) {
-                runExpressionBenchmark(name, rows, query, nativeConfigs)
+                runExpressionBenchmark(name, rows, query, cometConfigs)
               }
             }
           }
