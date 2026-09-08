@@ -28,15 +28,39 @@ SELECT abs(i), abs(l), abs(f), abs(d) FROM test_abs
 query
 SELECT abs(-5), abs(-1.5), abs(0), abs(NULL)
 
--- abs() on intervals has no native impl; routed through the JVM codegen dispatcher.
--- Interval values are built inline: native Parquet scan of interval columns is unsupported
--- (https://github.com/apache/datafusion-comet/issues/5060), and a top-level YearMonthIntervalType projection column is still rejected by the
--- projection type gate (https://github.com/apache/datafusion-comet/issues/5061), so the ym result is wrapped in a struct.
 query
 SELECT abs(make_dt_interval(1, 2, 3, 4.5)) AS dt_pos,
        abs(make_dt_interval(-1, -2, -3, -4.5)) AS dt_neg,
        abs(make_dt_interval(0, 0, 0, 0)) AS dt_zero,
        abs(CAST(NULL AS INTERVAL DAY TO SECOND)) AS dt_null
+
+-- intervals derived from numeric Parquet columns: exercises per-row dispatch, the null mask,
+-- and mixed-sign components (#5060 blocks reading interval columns directly)
+statement
+CREATE TABLE test_abs_iv(d int, h int, m int, s decimal(8,6)) USING parquet
+
+statement
+INSERT INTO test_abs_iv VALUES (1, 2, 3, 4.5), (-1, -2, -3, -4.5), (0, 0, 0, 0), (NULL, 0, 0, 0), (5, -1, 30, -0.000001)
+
+query
+SELECT abs(make_dt_interval(d, h, m, s)) FROM test_abs_iv ORDER BY d
+
+-- mid-batch overflow: one Long.MinValue-microseconds row among valid rows must throw the same
+-- error Spark does, not silently produce a value
+statement
+CREATE TABLE test_abs_iv_overflow(d int, h int, m int, s decimal(8,6)) USING parquet
+
+statement
+INSERT INTO test_abs_iv_overflow VALUES (1, 2, 3, 4.5), (-106751991, -4, 0, -54.775808), (2, 0, 0, 0)
+
+query expect_error(overflow)
+SELECT abs(make_dt_interval(d, h, m, s)) FROM test_abs_iv_overflow
+
+-- pinned fallback: NullPropagation folds the ym null into a bare typed literal that CometLiteral
+-- does not admit (it special-cases only DayTimeIntervalType, literals.scala:63), so the whole
+-- projection falls back. Pre-existing gap (#5061); this flips to a failure when it is fixed.
+query expect_fallback(Unsupported data type YearMonthIntervalType)
+SELECT abs(CAST(NULL AS INTERVAL YEAR TO MONTH))
 
 query
 SELECT abs(make_ym_interval(1, 6)),
