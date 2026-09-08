@@ -383,6 +383,19 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_EXEC_JOIN_DYNAMIC_FILTER_ENABLED: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.join.dynamicFilter.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Experimental opt-in: use a completed native hash join build's key domain to prune " +
+          "eligible native Parquet row groups and filter probe batches before the hash probe. " +
+          "Supports inner joins with one direct signed integer key and one native partition " +
+          "per input, including both Spark build sides. The probe filter remains active " +
+          "when reader pruning is unavailable. Unsupported joins retain their existing " +
+          "execution path. Filters do not cross Spark exchanges or JVM/Arrow boundaries.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_SCALA_UDF_CODEGEN_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.scalaUDF.codegen.enabled")
       .category(CATEGORY_EXEC)
@@ -403,6 +416,22 @@ object CometConf extends ShimCometConf {
       .doc("Whether to enable hash partitioning for Comet native shuffle.")
       .booleanConf
       .createWithDefault(true)
+
+  val COMET_SHUFFLE_NATIVE_HASH_PARTITIONING_NESTED_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.shuffle.native.partitioning.hash.nested.enabled")
+      .category(CATEGORY_SHUFFLE)
+      .doc(
+        "Whether to allow nested types (struct, array, map) as hash partitioning keys in " +
+          "Comet native shuffle. Comet's native Murmur3 kernel hashes nested types " +
+          "recursively and shares that kernel, and Spark's seed, with the `hash` expression, " +
+          "so partition assignment matches Spark. A map key additionally requires the " +
+          "`mapsort` normalization that Spark 4.0 and later insert, so maps are rejected on " +
+          "earlier versions. Disabled by default until the performance of the nested hashing " +
+          "paths has been measured: shapes whose leaves are not primitives, such as " +
+          "`array<struct<...>>`, fall back to a per-element code path in the native hasher " +
+          "rather than a vectorized one.")
+      .booleanConf
+      .createWithDefault(false)
 
   val COMET_SHUFFLE_NATIVE_RANGE_PARTITIONING_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.shuffle.native.partitioning.range.enabled")

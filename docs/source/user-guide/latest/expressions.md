@@ -287,7 +287,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `month` | ✅ | Native |  |
 | `monthname` | ✅ | — | Abbreviated month name (Spark 4.0+) |
 | `months_between` | ✅ | Codegen dispatch |  |
-| `next_day` | ✅ | Native |  |
+| `next_day` | ✅ | Hybrid | Non-UTF8_BINARY collated `dayOfWeek` routes through the JVM codegen dispatcher; other input runs natively |
 | `now` | ✅ | — | Constant-folded to a literal (alias of `current_timestamp`) |
 | `quarter` | ✅ | Native |  |
 | `second` | ✅ | Native |  |
@@ -561,7 +561,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `chr` | ✅ | Native |  |
 | `collate` | 🔜 | — | Spark collation (umbrella [#2190](https://github.com/apache/datafusion-comet/issues/2190)) |
 | `collation` | ✅ | — | Constant-folded to a literal (Spark 4.0+) |
-| `concat_ws` | ✅ | Hybrid | Array arguments route through the JVM codegen dispatcher; string arguments run natively ([details](compatibility/expressions/string.md)) |
+| `concat_ws` | ✅ | Hybrid | Mixed string and array arguments run natively; all-foldable arguments use codegen dispatch |
 | `contains` | ✅ | — |  |
 | `decode` | ✅ | — |  |
 | `elt` | ✅ | Codegen dispatch |  |
@@ -576,7 +576,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `left` | ✅ | Native |  |
 | `len` | ✅ | Native |  |
 | `length` | ✅ | Native |  |
-| `levenshtein` | ✅ | Native |  |
+| `levenshtein` | ✅ | Hybrid | Non-UTF8_BINARY collated input routes through the JVM codegen dispatcher; other input runs natively |
 | `locate` | ✅ | Codegen dispatch |  |
 | `lower` | ✅ | Hybrid |  |
 | `lpad` | ✅ | — |  |
