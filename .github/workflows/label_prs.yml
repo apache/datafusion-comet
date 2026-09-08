@@ -40,50 +40,44 @@ jobs:
   label:
     runs-on: ubuntu-slim
     steps:
+      # Checks out the base branch, never the pull request's code: under pull_request_target the
+      # default ref is the base commit, and only dev/ci/pr-type-label.mjs is read from it.
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
       # The type label follows the conventional commit prefix in the title, matching how
-      # maintainers label by hand. It is added only while the pull request carries no type
-      # label at all, so a hand-picked replacement stays, and a run cut short by a newer push
-      # is completed by that push. Dependabot pull requests already carry their label.
+      # maintainers label by hand. The decision reads the pull request's current labels, not the
+      # event payload, so a type label a maintainer applied before this run started stays and
+      # a run cut short by a newer push is completed by that push. Dependabot pull requests
+      # already carry their label.
       - name: Label by title prefix
         if: github.actor != 'dependabot[bot]'
         uses: actions/github-script@v9
         with:
           script: |
-            const title = context.payload.pull_request.title.trim();
-            const match = /^(feat|fix|perf|test|docs?|chore|refactor|ci|build|deps)(\([^)]*\))?!?:/i.exec(title);
-            if (!match) {
-              core.info(`No conventional prefix in "${title}", skipping the type label`);
-              return;
-            }
-            const byPrefix = {
-              feat: ['enhancement'],
-              refactor: ['enhancement'],
-              chore: ['enhancement'],
-              fix: ['bug'],
-              perf: ['enhancement', 'performance'],
-              test: ['enhancement', 'test'],
-              doc: ['documentation'],
-              docs: ['documentation'],
-              ci: ['enhancement', 'build'],
-              build: ['enhancement', 'build'],
-              deps: ['dependencies'],
-            };
-            const labels = byPrefix[match[1].toLowerCase()];
-            const typeLabels = new Set(Object.values(byPrefix).flat());
-            const present = new Set(context.payload.pull_request.labels.map((l) => l.name));
-            if ([...present].some((l) => typeLabels.has(l))) {
-              core.info('A type label is already present, leaving it as is');
-              return;
-            }
-            const missing = labels.filter((l) => !present.has(l));
-            if (missing.length === 0) {
+            const { typeLabelsToAdd } = await import(
+              `${process.env.GITHUB_WORKSPACE}/dev/ci/pr-type-label.mjs`
+            );
+            const { data: current } = await github.rest.issues.listLabelsOnIssue({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              per_page: 100,
+            });
+            const labels = typeLabelsToAdd(
+              context.payload.pull_request.title,
+              current.map((label) => label.name),
+            );
+            if (labels.length === 0) {
+              core.info('No type label to add');
               return;
             }
             await github.rest.issues.addLabels({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.issue.number,
-              labels: missing,
+              labels,
             });
 
       - name: Label by changed paths
