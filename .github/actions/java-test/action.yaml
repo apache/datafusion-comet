@@ -136,6 +136,9 @@ runs:
         MAVEN_OPTS="-Xmx4G -Xms2G -DwildcardSuites=$MAVEN_SUITES -XX:+UnlockDiagnosticVMOptions -XX:+ShowMessageBoxOnError -XX:+HeapDumpOnOutOfMemoryError -XX:ErrorFile=./hs_err_pid%p.log" SPARK_HOME=`pwd` ./mvnw -B -Prelease install ${{ inputs.maven_opts }}
     - name: Upload crash logs
       if: failure()
+      # These three stay on the plain action rather than
+      # ../upload-artifact-retry: a local action calling another local action
+      # is untested in this repo, and these only run on already-failing jobs.
       uses: actions/upload-artifact@v6
       with:
         name: crash-logs-${{ inputs.artifact_name }}

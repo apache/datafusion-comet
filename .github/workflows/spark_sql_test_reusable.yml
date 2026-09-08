@@ -161,10 +161,8 @@ jobs:
           name: jvm-compiled-spark-${{ inputs.spark-full }}-jdk${{ inputs.java }}
           path: apache-spark.tar.gz
           retention-days: 1
-          # The payload is already gzipped, so re-deflating it at the default
-          # level 6 costs minutes of CPU on a ~1 GB file for no size win. Store
-          # it instead: a shorter upload is also a smaller window for the
-          # FinalizeArtifact flake the retry wrapper exists to absorb.
+          # Already gzipped: re-deflating ~1 GB at level 6 costs minutes for no
+          # size win, and a shorter upload is a smaller window for the flake.
           compression-level: 0
 
   spark-sql-test:
@@ -289,10 +287,8 @@ jobs:
         run: |
           find ./fallback-logs/ -type f -name "fallback.log" -print0 | xargs -0 cat | sort -u > all_fallback.log
       - name: Upload merged fallback log
-        # Not wrapped in ./.github/actions/upload-artifact-retry: a local
-        # composite action needs the repository checked out, and this job
-        # deliberately skips checkout. The payload is a small diagnostic log,
-        # so a rare upload flake here costs nothing downstream.
+        # Not wrapped in upload-artifact-retry: that local action needs a
+        # checkout, which this job deliberately skips.
         uses: actions/upload-artifact@v7
         with:
           name: all-fallback-log-spark-${{ inputs.spark-full }}-jdk${{ inputs.java }}

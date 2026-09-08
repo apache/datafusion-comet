@@ -17,24 +17,17 @@
 
 name: "Upload Artifact (with retry)"
 description: >
-  Drop-in replacement for actions/upload-artifact that retries the upload up to
-  three times.
+  Drop-in replacement for actions/upload-artifact that retries the upload three
+  times. The artifact client only retries 429/500/502/503/504, so a
+  FinalizeArtifact answered "(403) Forbidden: Error from intermediary" fails the
+  step even though the content uploaded fine. There is no input to widen that
+  list, Actions has no built-in step retry, and third-party retry wrappers are
+  not on the Apache allowed-actions list. See .github/workflows/README.md.
 
-  The artifact client (@actions/artifact) already retries its own HTTP calls,
-  but only for 429/500/502/503/504. A FinalizeArtifact call that comes back
-  "(403) Forbidden: Error from intermediary" is classified as non-retryable and
-  fails the step outright, even though the blob content uploaded fine and a
-  fresh attempt normally succeeds. There is no input or environment variable to
-  widen that list, and GitHub Actions has no built-in step-level retry, so the
-  retry has to live outside the action.
-
-  Third-party retry wrappers (Wandalen/wretry.action and friends) are not on
-  the Apache org's allowed-actions list, hence this local composite.
-
+# Inputs mirror actions/upload-artifact@v7 one for one. The boolean defaults
+# have to be real 'true'/'false' strings because core.getBooleanInput() throws
+# on an empty value; the numeric ones default to '' so "unset" round-trips.
 inputs:
-  # Mirrors of actions/upload-artifact@v7's inputs. Defaults match that action
-  # so pass-through is transparent; the boolean ones must carry a real
-  # 'true'/'false' because core.getBooleanInput() throws on an empty string.
   name:
     description: 'Artifact name'
     required: false
@@ -67,9 +60,10 @@ inputs:
     required: false
     default: 'true'
 
+# `||` yields the first non-empty operand, so this picks whichever attempt ran.
 outputs:
   artifact-id:
-    description: 'ID of the uploaded artifact, from whichever attempt succeeded'
+    description: 'ID of the uploaded artifact'
     value: ${{ steps.attempt-1.outputs.artifact-id || steps.attempt-2.outputs.artifact-id || steps.attempt-3.outputs.artifact-id }}
   artifact-url:
     description: 'Download URL of the uploaded artifact'
@@ -82,9 +76,8 @@ runs:
   using: "composite"
   steps:
     # continue-on-error keeps a failed attempt from failing the job while still
-    # recording outcome == 'failure', which is what the later attempts gate on.
-    # The last attempt deliberately omits it so a genuinely broken upload still
-    # fails loudly.
+    # recording outcome == 'failure', which the later attempts gate on. The last
+    # attempt omits it so a genuinely broken upload still fails loudly.
     - name: Upload ${{ inputs.name }} (attempt 1 of 3)
       id: attempt-1
       uses: actions/upload-artifact@v7
@@ -106,10 +99,9 @@ runs:
         echo "::warning::Upload of '${{ inputs.name }}' failed; retrying in 15s (attempt 2 of 3)."
         sleep 15
 
-    # Retries force overwrite: attempt 1 may have created a server-side artifact
-    # record before failing, and CreateArtifact rejects a duplicate name. The
-    # delete is best effort inside upload-artifact, so it is a no-op when
-    # nothing exists.
+    # Retries force overwrite: attempt 1 may have created the server-side record
+    # before failing, and CreateArtifact rejects a duplicate name. The delete is
+    # best effort inside upload-artifact, so it no-ops when nothing exists.
     - name: Upload ${{ inputs.name }} (attempt 2 of 3)
       id: attempt-2
       if: ${{ steps.attempt-1.outcome == 'failure' }}
