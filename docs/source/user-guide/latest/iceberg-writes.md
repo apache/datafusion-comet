@@ -260,13 +260,13 @@ a data file but not what any reader computes from it:
   distinct directories in all cases, and no reader parses these names — files are resolved through
   committed manifests. Iceberg deprecated float and double partitioning in 1.3.
 - File rolling lands on the same row grid as iceberg-java but not necessarily on the same row.
-  Both writers re-check the current file's size against `write.target-file-size-bytes` once
-  every 1000 rows of that file (iceberg-java's `RollingFileWriter.ROWS_DIVISOR`; Comet hands the
-  iceberg-rust writer rows in 1000-row units, per partition file, to get the same grid), so a
-  file overshoots the target by less than 1000 rows on either path and rolls only on a 1000-row
-  boundary. What each writer compares against the target still differs — flushed bytes plus
-  parquet-rs's estimate of the open row group, versus parquet-mr's file position plus its
-  buffered size — so the same data and target can still roll one 1000-row step earlier or later.
+  On both paths a data file only ever rolls on a 1000-row boundary of that file and so overshoots
+  `write.target-file-size-bytes` by less than 1000 rows: iceberg-java re-checks the size every
+  1000 rows (`RollingFileWriter.ROWS_DIVISOR`), and Comet hands the iceberg-rust writer rows in
+  1000-row units, counted per partition file, so its per-`write` check falls on the same
+  boundaries. What each writer compares against the target still differs — flushed bytes plus
+  parquet-rs's estimate of the open row group, versus parquet-mr's file position plus its buffered
+  size — so the same data and target can still roll one 1000-row step earlier or later.
 - Compressed page bytes are implementation-defined: the codec and any explicit level are
   translated, but parquet-rs and parquet-mr embed different encoder implementations and
   defaults (zstd default levels, LZ4 framing), so byte-identical output is not achievable even

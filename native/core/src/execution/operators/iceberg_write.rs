@@ -340,10 +340,11 @@ async fn run_write_task(
         None,
         DataFileFormat::Parquet,
     );
+    let target_file_size_bytes = common.target_file_size_bytes as usize;
     let parquet_builder = ParquetWriterBuilder::new(writer_properties, Arc::clone(&iceberg_schema));
     let rolling_builder = RollingFileWriterBuilder::new(
         parquet_builder,
-        common.target_file_size_bytes as usize,
+        target_file_size_bytes,
         file_io,
         location_generator,
         file_name_generator,
@@ -353,14 +354,16 @@ async fn run_write_task(
     // Build the field-id-decorated target schema once per task; every batch is cast against it.
     let target_schema =
         Arc::new(iceberg::arrow::schema_to_arrow_schema(&iceberg_schema).map_err(iceberg_err)?);
-    let slicer = RowSlicer::for_schema(&target_schema);
+    let policy = PacingPolicy {
+        slicer: RowSlicer::for_schema(&target_schema),
+        target_file_size_bytes,
+    };
 
     let unpartitioned = partition_spec.is_unpartitioned();
     let mut writer = match (unpartitioned, writer_mode) {
-        (true, ProtoIcebergWriterMode::IcebergWriterUnpartitioned) => InnerWriter::Unpartitioned(
-            UnpartitionedWriter::new(data_file_builder),
-            RowPacer::new(slicer),
-        ),
+        (true, ProtoIcebergWriterMode::IcebergWriterUnpartitioned) => {
+            InnerWriter::Unpartitioned(UnpartitionedWriter::new(data_file_builder), policy.pacer())
+        }
         (false, ProtoIcebergWriterMode::IcebergWriterFanout) => {
             InnerWriter::Fanout(FanoutWriter::new(data_file_builder), HashMap::new())
         }
@@ -379,7 +382,7 @@ async fn run_write_task(
         InnerWriter::Clustered(..) => Some(ClusteredBatchSplitter::try_new(
             Arc::clone(&partition_spec),
             Arc::clone(&iceberg_schema),
-            slicer,
+            policy.slicer,
         )?),
         _ => None,
     };
@@ -400,7 +403,7 @@ async fn run_write_task(
         writer
             .write(
                 decorated,
-                slicer,
+                policy,
                 fanout_splitter.as_ref(),
                 clustered_splitter.as_ref(),
             )
@@ -437,7 +440,7 @@ impl InnerWriter {
     async fn write(
         &mut self,
         batch: RecordBatch,
-        slicer: RowSlicer,
+        policy: PacingPolicy,
         fanout_splitter: Option<&RecordBatchPartitionSplitter>,
         clustered_splitter: Option<&ClusteredBatchSplitter>,
     ) -> DFResult<()> {
@@ -457,7 +460,7 @@ impl InnerWriter {
                 for (key, part) in parts {
                     let (_, pacer) = pacers
                         .entry(key.data().clone())
-                        .or_insert_with(|| (key.clone(), RowPacer::new(slicer)));
+                        .or_insert_with(|| (key.clone(), policy.pacer()));
                     for unit in pacer.push(part)? {
                         w.write(key.clone(), unit).await.map_err(iceberg_err)?;
                     }
@@ -482,8 +485,7 @@ impl InnerWriter {
                                 .map_err(|e| clustered_write_err(e, &key_for_error, splitter))?;
                         }
                     }
-                    let (_, pacer) =
-                        live.get_or_insert_with(|| (key.clone(), RowPacer::new(slicer)));
+                    let (_, pacer) = live.get_or_insert_with(|| (key.clone(), policy.pacer()));
                     for unit in pacer.push(part)? {
                         w.write(key.clone(), unit)
                             .await
@@ -808,27 +810,65 @@ fn gather_rows(batch: &RecordBatch, offset: usize, len: usize) -> DFResult<Recor
     arrow::compute::take_record_batch(batch, &indices).map_err(DataFusionError::from)
 }
 
+/// How this task cuts rows and when the rolling writer's size check can matter: everything needed
+/// to open a [`RowPacer`] for one more file.
+#[derive(Clone, Copy)]
+struct PacingPolicy {
+    slicer: RowSlicer,
+    target_file_size_bytes: usize,
+}
+
+impl PacingPolicy {
+    fn pacer(&self) -> RowPacer {
+        RowPacer::new(*self)
+    }
+}
+
 /// Hands one iceberg-rust writer exactly [`ROWS_DIVISOR`] rows at a time, so the rolling writer
-/// underneath re-checks the target file size on the same row boundaries iceberg-java's
-/// `RollingFileWriter` checks on -- multiples of 1000 rows since the current file opened -- however
-/// Spark happened to batch the rows.
+/// underneath only ever gets to roll on the row boundaries iceberg-java's `RollingFileWriter` rolls
+/// on -- multiples of 1000 rows since the current file opened -- however Spark happened to batch
+/// the rows.
 ///
 /// Pacing, rather than just cutting each batch up, is what makes the roll point independent of the
 /// batch shape: a task fed 800-row batches would otherwise be offered a boundary every 800 rows
 /// and roll into 800-row files where the JVM writer produces 1000-row ones. Rows left over from a
 /// batch wait here for the rows that complete their unit, so at most `ROWS_DIVISOR - 1` rows per
 /// open file are held back.
+///
+/// Pacing costs one writer call per 1000 rows instead of one per batch, which is measurable on a
+/// wide schema, so it stays off until it can change an outcome: see `pacing`.
 struct RowPacer {
-    slicer: RowSlicer,
-    /// Rows handed in but not yet handed over; fewer than [`ROWS_DIVISOR`] in total.
+    policy: PacingPolicy,
+    /// Whether rows are being paced yet. While off, batches go over whole, because a batch
+    /// boundary the writer sees can only matter if its size check might fire there -- and it cannot
+    /// while the file is still smaller than the target.
+    ///
+    /// It never goes back off. A roll starts the file's size over, but the pacer cannot see rolls,
+    /// so from the first file that reaches the target it paces for the rest of the task.
+    pacing: bool,
+    /// What has been handed over so far, as an upper bound on what the open file holds: Arrow's
+    /// in-memory footprint of a batch (allocated capacity, so it over-counts if anything) bounds
+    /// what parquet writes for the same rows, since the writer encodes and compresses them. If that
+    /// ever failed to hold for some schema, the only consequence is a roll up to `ROWS_DIVISOR`
+    /// rows late -- the same order as the divergence the two size estimates already allow.
+    handed_bytes: usize,
+    /// Rows of the current 1000-row block already handed over. Non-zero only for the first block
+    /// after pacing turns on, where it is what the whole batches before it left in the open file --
+    /// which is all of them, since nothing could have rolled yet. Carrying it over is what keeps
+    /// the blocks aligned to the file's own row count rather than to where pacing started.
+    block_rows: usize,
+    /// Rows handed in but not yet handed over; `block_rows + pending_rows < ROWS_DIVISOR`.
     pending: Vec<RecordBatch>,
     pending_rows: usize,
 }
 
 impl RowPacer {
-    fn new(slicer: RowSlicer) -> Self {
+    fn new(policy: PacingPolicy) -> Self {
         Self {
-            slicer,
+            policy,
+            pacing: false,
+            handed_bytes: 0,
+            block_rows: 0,
             pending: Vec::new(),
             pending_rows: 0,
         }
@@ -838,20 +878,29 @@ impl RowPacer {
     /// held for the next call.
     fn push(&mut self, batch: RecordBatch) -> DFResult<Vec<RecordBatch>> {
         debug_assert!(
-            self.pending_rows < ROWS_DIVISOR,
+            self.block_rows + self.pending_rows < ROWS_DIVISOR,
             "a complete unit was left pending"
         );
         let rows = batch.num_rows();
+        if !self.pacing {
+            self.handed_bytes += batch.get_array_memory_size();
+            if self.handed_bytes < self.policy.target_file_size_bytes {
+                self.block_rows = (self.block_rows + rows) % ROWS_DIVISOR;
+                return Ok(vec![batch]);
+            }
+            self.pacing = true;
+        }
         let mut units = Vec::with_capacity((self.pending_rows + rows) / ROWS_DIVISOR);
         let mut offset = 0;
-        while self.pending_rows + (rows - offset) >= ROWS_DIVISOR {
-            let len = ROWS_DIVISOR - self.pending_rows;
-            let piece = self.slicer.slice(&batch, offset, len)?;
+        while self.block_rows + self.pending_rows + (rows - offset) >= ROWS_DIVISOR {
+            let len = ROWS_DIVISOR - self.block_rows - self.pending_rows;
+            let piece = self.policy.slicer.slice(&batch, offset, len)?;
             offset += len;
             units.push(self.drain_pending_into(piece)?);
+            self.block_rows = 0;
         }
         if offset < rows {
-            let rest = self.slicer.detach(&batch, offset, rows - offset)?;
+            let rest = self.policy.slicer.detach(&batch, offset, rows - offset)?;
             self.pending_rows += rest.num_rows();
             self.pending.push(rest);
         }
@@ -866,8 +915,7 @@ impl RowPacer {
         self.concat_pending().map(Some)
     }
 
-    /// Completes a unit from the held rows plus `piece`, which together are exactly
-    /// [`ROWS_DIVISOR`] rows.
+    /// Completes a unit from the held rows plus `piece`, which together fill the current block.
     fn drain_pending_into(&mut self, piece: RecordBatch) -> DFResult<RecordBatch> {
         if self.pending.is_empty() {
             debug_assert_eq!(self.pending_rows, 0, "no held rows but a non-zero count");
@@ -1299,10 +1347,18 @@ mod tests {
         int_batch_from(0, rows)
     }
 
-    /// Paces `batches` and returns the row count of every unit handed over, the trailing flush
-    /// included.
-    fn paced_rows(gather: bool, batches: &[usize]) -> Vec<usize> {
-        let mut pacer = RowPacer::new(RowSlicer { gather });
+    /// A policy that paces from the first row: any batch reaches a one-byte target.
+    fn always_pacing(gather: bool) -> PacingPolicy {
+        PacingPolicy {
+            slicer: RowSlicer { gather },
+            target_file_size_bytes: 1,
+        }
+    }
+
+    /// Hands `batches` to a pacer and returns the row count of every unit handed over, the
+    /// trailing flush included.
+    fn units_of(policy: PacingPolicy, batches: &[usize]) -> Vec<usize> {
+        let mut pacer = policy.pacer();
         let mut rows = Vec::new();
         let mut first = 0;
         for &batch_rows in batches {
@@ -1313,6 +1369,10 @@ mod tests {
         }
         rows.extend(pacer.flush().unwrap().map(|rest| rest.num_rows()));
         rows
+    }
+
+    fn paced_rows(gather: bool, batches: &[usize]) -> Vec<usize> {
+        units_of(always_pacing(gather), batches)
     }
 
     #[test]
@@ -1355,11 +1415,40 @@ mod tests {
         }
     }
 
+    /// Pacing is skipped while the open file cannot have reached the target, because a boundary the
+    /// writer sees there can never roll. Batches then go over exactly as they arrive.
+    #[test]
+    fn pacer_hands_over_whole_batches_below_the_target() {
+        let policy = PacingPolicy {
+            slicer: RowSlicer { gather: false },
+            target_file_size_bytes: usize::MAX,
+        };
+        assert_eq!(units_of(policy, &[800; 5]), vec![800; 5]);
+        assert_eq!(units_of(policy, &[8192, 1808]), vec![8192, 1808]);
+    }
+
+    /// Once the target is in reach, the blocks are aligned to the open file's row count -- not to
+    /// where pacing happened to start -- so the writer still only rolls on a 1000-row boundary of
+    /// the file. Here two 800-row batches go over whole and the third turns pacing on with 1600
+    /// rows already in the file, so the first unit is the 400 rows that complete that block.
+    #[test]
+    fn pacer_aligns_the_first_paced_block_to_the_rows_already_written() {
+        let per_batch = int_batch(800).get_array_memory_size();
+        let policy = PacingPolicy {
+            slicer: RowSlicer { gather: false },
+            target_file_size_bytes: 2 * per_batch + 1,
+        };
+        assert_eq!(
+            units_of(policy, &[800; 5]),
+            vec![800, 800, 400, ROWS_DIVISOR, ROWS_DIVISOR]
+        );
+    }
+
     #[test]
     fn pacer_preserves_every_row_in_order() {
         for gather in [false, true] {
             let batches: Vec<usize> = vec![800, 0, 1, 2500, 999];
-            let mut pacer = RowPacer::new(RowSlicer { gather });
+            let mut pacer = always_pacing(gather).pacer();
             let mut units = Vec::new();
             let mut first = 0;
             for batch_rows in &batches {
@@ -2011,13 +2100,14 @@ mod tests {
             assert_eq!(rows, vec![1000, 500, 1000, 500]);
         }
 
-        /// Cutting a batch into pieces must not disturb the NaN counts the JVM carries into the
-        /// manifest. iceberg-rust's visitor reads list children through `values()`, which ignores
-        /// a slice's offset window, so a zero-copy slice would report every NaN in the batch once
-        /// per piece -- three pieces here, and a `nan_value_count` that reaches `record_count`
-        /// makes Iceberg's metrics evaluator prune the file from ordinary comparisons.
+        /// Cutting a batch into units must not disturb the NaN counts the JVM carries into the
+        /// manifest. iceberg-rust's visitor reads list children through `values()`, which ignores a
+        /// slice's offset window, so a zero-copy slice would report every NaN in the whole batch for
+        /// each unit cut from it -- and a `nan_value_count` that reaches `record_count` makes
+        /// Iceberg's metrics evaluator prune the file from ordinary comparisons. The one-byte target
+        /// is what puts the cutting in play at all: below the target the batch goes over whole.
         #[tokio::test]
-        async fn nan_counts_stay_exact_when_a_list_of_double_is_cut_into_pieces() {
+        async fn nan_counts_stay_exact_when_a_list_of_double_is_cut_into_units() {
             use arrow::array::{Array, ListArray};
             use arrow::datatypes::Float64Type;
             use iceberg::spec::ListType;
@@ -2047,14 +2137,17 @@ mod tests {
             let spec = PartitionSpec::builder(Arc::new(schema.clone()))
                 .build()
                 .unwrap();
-            let common = common(
-                data_location,
-                serde_json::to_string(&spec).unwrap(),
-                serde_json::to_string(&schema).unwrap(),
-                ProtoIcebergWriterMode::IcebergWriterUnpartitioned,
+            let common = with_target_file_size(
+                common(
+                    data_location,
+                    serde_json::to_string(&spec).unwrap(),
+                    serde_json::to_string(&schema).unwrap(),
+                    ProtoIcebergWriterMode::IcebergWriterUnpartitioned,
+                ),
+                1,
             );
 
-            // 2500 rows -> three pieces; one NaN in each piece.
+            // 2500 rows -> three units, one NaN in each.
             let rows = 2 * ROWS_DIVISOR + 500;
             let nan_rows = [7usize, ROWS_DIVISOR + 7, 2 * ROWS_DIVISOR + 7];
             let vals = ListArray::from_iter_primitive::<Float64Type, _, _>((0..rows).map(|row| {
@@ -2090,13 +2183,13 @@ mod tests {
             .await
             .unwrap();
 
-            assert_eq!(record_counts(&data_files), vec![rows as u64]);
-            assert_eq!(
-                data_files[0].nan_value_counts().get(&3),
-                Some(&(nan_rows.len() as u64)),
-                "nan counts: {:?}",
-                data_files[0].nan_value_counts()
-            );
+            // A unit per file, since the one-byte target rolls on every check.
+            assert_eq!(record_counts(&data_files), vec![1000, 1000, 500]);
+            let counted: Vec<u64> = data_files
+                .iter()
+                .map(|file| file.nan_value_counts().get(&3).copied().unwrap_or(0))
+                .collect();
+            assert_eq!(counted, vec![1; nan_rows.len()], "per-file NaN counts");
         }
 
         #[tokio::test]
