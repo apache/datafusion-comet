@@ -125,6 +125,31 @@ harness = false
 
 [[bench]]
 name = "seconds_to_timestamp"
+name = "array_position"
+harness = false
+
+[[bench]]
+name = "array_slice"
+harness = false
+
+[[bench]]
+name = "array_insert"
+harness = false
+
+[[bench]]
+name = "list_extract"
+harness = false
+
+[[bench]]
+name = "arrays_zip"
+harness = false
+
+[[bench]]
+name = "flatten"
+harness = false
+
+[[bench]]
+name = "get_array_struct_fields"
 harness = false
 
 [[bench]]
@@ -281,6 +306,14 @@ harness = false
 
 [[bench]]
 name = "abs"
+harness = false
+
+[[bench]]
+name = "murmur3"
+harness = false
+
+[[bench]]
+name = "xxhash64"
 harness = false
 
 [[bench]]
