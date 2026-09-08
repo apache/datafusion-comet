@@ -309,11 +309,7 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
           "'write.parquet.bloom-filter-enabled.column.id'='true', " +
             s"'write.parquet.bloom-filter-ndv.column.id'='$naturallyMinimumNdv', " +
             s"'write.parquet.bloom-filter-max-bytes'='$minimumBytes'"))
-      if (icebergSupportsBloomNdv) {
-        assertSupportLevelIs[Compatible]("natural_minimum")
-      } else {
-        assertUnsupportedContains("natural_minimum", "is not interpreted")
-      }
+      assertSupportLevelIs[Compatible]("natural_minimum")
 
       createTable(
         dir,
@@ -329,7 +325,7 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
           "ignored_minimum_cap",
           "write.parquet.bloom-filter-max-bytes")
       } else {
-        assertUnsupportedContainsAllowingWriteFailure("ignored_minimum_cap", "is not interpreted")
+        assertSupportLevelIs[Compatible]("ignored_minimum_cap")
       }
     }
   }
@@ -352,19 +348,18 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
           properties = Some(
             "'write.parquet.bloom-filter-enabled.column.id'='true', " +
               s"'write.parquet.bloom-filter-ndv.column.id'='$ndv'"))
-        if (compatible && icebergSupportsBloomNdv) {
+        if (compatible || !icebergSupportsBloomNdv) {
           assertSupportLevelIs[Compatible](table)
         } else {
           assertUnsupportedContainsAllowingWriteFailure(
             table,
-            if (icebergSupportsBloomNdv) "write.parquet.bloom-filter-ndv.column.id"
-            else "is not interpreted")
+            "write.parquet.bloom-filter-ndv.column.id")
         }
       }
     }
   }
 
-  test("bloom-filter enabled=false with NDV remains enabled and validates NDV") {
+  test("bloom-filter enabled=false with NDV follows runtime support and validates NDV") {
     withDetectionCatalog { dir =>
       val configuredNdv = 1000
       createTable(
@@ -374,11 +369,7 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
         properties = Some(
           "'write.parquet.bloom-filter-enabled.column.id'='false', " +
             s"'write.parquet.bloom-filter-ndv.column.id'='$configuredNdv'"))
-      if (icebergSupportsBloomNdv) {
-        assertSupportLevelIs[Compatible]("false_with_ndv")
-      } else {
-        assertUnsupportedContains("false_with_ndv", "is not interpreted")
-      }
+      assertSupportLevelIs[Compatible]("false_with_ndv")
 
       createTable(
         dir,
@@ -387,10 +378,13 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
         properties = Some(
           "'write.parquet.bloom-filter-enabled.column.id'='false', " +
             "'write.parquet.bloom-filter-ndv.column.id'='garbage'"))
-      assertUnsupportedContainsAllowingWriteFailure(
-        "false_with_bad_ndv",
-        if (icebergSupportsBloomNdv) "write.parquet.bloom-filter-ndv"
-        else "is not interpreted")
+      if (icebergSupportsBloomNdv) {
+        assertUnsupportedContainsAllowingWriteFailure(
+          "false_with_bad_ndv",
+          "write.parquet.bloom-filter-ndv")
+      } else {
+        assertSupportLevelIs[Compatible]("false_with_bad_ndv")
+      }
     }
   }
 
@@ -403,25 +397,30 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
         properties = Some(
           "'write.parquet.bloom-filter-enabled.column.id'='false', " +
             "'write.parquet.bloom-filter-fpp.column.id'='garbage'"))
-      assertUnsupportedContainsAllowingWriteFailure(
-        "false_with_bad_fpp",
-        if (icebergSupportsBloomFpp) "write.parquet.bloom-filter-fpp"
-        else "is not interpreted")
+      if (icebergSupportsBloomFpp) {
+        assertUnsupportedContainsAllowingWriteFailure(
+          "false_with_bad_fpp",
+          "write.parquet.bloom-filter-fpp")
+      } else {
+        assertSupportLevelIs[Compatible]("false_with_bad_fpp")
+      }
     }
   }
 
   test("fall-back: invalid enabled-column FPP and NDV") {
     withDetectionCatalog { dir =>
       Seq(
-        "'write.parquet.bloom-filter-fpp.column.id'='0'",
-        "'write.parquet.bloom-filter-fpp.column.id'='1'",
-        "'write.parquet.bloom-filter-fpp.column.id'='NaN'",
+        ("'write.parquet.bloom-filter-fpp.column.id'='0'", icebergSupportsBloomFpp),
+        ("'write.parquet.bloom-filter-fpp.column.id'='1'", icebergSupportsBloomFpp),
+        ("'write.parquet.bloom-filter-fpp.column.id'='NaN'", icebergSupportsBloomFpp),
         // Positive and below one, but too small for any integer NDV to encode the requested
         // power-of-two allocation through parquet-rs's NDV/FPP API.
-        "'write.parquet.bloom-filter-fpp.column.id'='4.9E-324'",
-        "'write.parquet.bloom-filter-ndv.column.id'='0'",
-        "'write.parquet.bloom-filter-ndv.column.id'='garbage'").zipWithIndex.foreach {
-        case (property, index) =>
+        ("'write.parquet.bloom-filter-fpp.column.id'='4.9E-324'", icebergSupportsBloomFpp),
+        ("'write.parquet.bloom-filter-ndv.column.id'='0'", icebergSupportsBloomNdv),
+        (
+          "'write.parquet.bloom-filter-ndv.column.id'='garbage'",
+          icebergSupportsBloomNdv)).zipWithIndex
+        .foreach { case ((property, interpreted), index) =>
           val table = s"bloom_shape_bad_$index"
           createTable(
             dir,
@@ -429,8 +428,12 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
             partitionSpec = "",
             properties =
               Some(s"'write.parquet.bloom-filter-enabled.column.id'='true', $property"))
-          assertUnsupportedContainsAllowingWriteFailure(table, "write.parquet.bloom-filter")
-      }
+          if (interpreted) {
+            assertUnsupportedContainsAllowingWriteFailure(table, "write.parquet.bloom-filter")
+          } else {
+            assertSupportLevelIs[Compatible](table)
+          }
+        }
     }
   }
 

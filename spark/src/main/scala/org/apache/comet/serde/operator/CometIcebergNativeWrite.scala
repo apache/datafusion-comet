@@ -295,26 +295,33 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
   private val MaxNonOverflowingBloomFilterNdv = Long.MaxValue / BloomFilterHashProbes
 
   /**
+   * Keep only Bloom shape properties interpreted by the Iceberg runtime on the classpath. Older
+   * Iceberg releases leave these table properties untouched but do not pass them to parquet-mr.
+   * Ignoring them here preserves that version's JVM-writer behavior while allowing the remaining
+   * supported Bloom configuration to execute natively.
+   */
+  private def interpretedBloomFilterProperties(
+      properties: Map[String, String]): Map[String, String] = {
+    val unsupportedPrefixes = Seq(
+      PropertyKeys.ParquetBloomFilterColumnFppPrefix ->
+        "PARQUET_BLOOM_FILTER_COLUMN_FPP_PREFIX",
+      PropertyKeys.ParquetBloomFilterColumnNdvPrefix ->
+        "PARQUET_BLOOM_FILTER_COLUMN_NDV_PREFIX").collect {
+      case (prefix, constant) if IcebergReflection.tablePropertyConstantOpt(constant).isEmpty =>
+        prefix
+    }
+    properties.filterNot { case (key, _) => unsupportedPrefixes.exists(key.startsWith) }
+  }
+
+  /**
    * parquet-rs 58.x represents Bloom filters as a power-of-two number of bytes. parquet-mr
    * accepts arbitrary caps and, when one binds, serializes that exact length. Keep those writes
    * on the classic path instead of silently changing the number of usable Bloom blocks.
    */
   private val requireNativeSupportedBloomFilterProperties: TriggerRule = ctx => {
-    // The FPP constant is absent from Iceberg 1.5.2, and the NDV constant is absent through
-    // 1.10. Use the literal prefixes to detect the properties, then optional reflection to check
-    // capability: an older runtime ignores an explicit property, so that write must fall back.
-    val unavailableRuntimeProperty = Seq(
-      PropertyKeys.ParquetBloomFilterColumnFppPrefix ->
-        "PARQUET_BLOOM_FILTER_COLUMN_FPP_PREFIX",
-      PropertyKeys.ParquetBloomFilterColumnNdvPrefix ->
-        "PARQUET_BLOOM_FILTER_COLUMN_NDV_PREFIX").collectFirst {
-      case (prefix, constant)
-          if ctx.properties.keys.exists(_.startsWith(prefix)) &&
-            IcebergReflection.tablePropertyConstantOpt(constant).isEmpty =>
-        s"$prefix* is not interpreted by the Iceberg version on the classpath"
-    }
+    val properties = interpretedBloomFilterProperties(ctx.properties)
     val maxRejection =
-      ctx.properties.get(PropertyKeys.ParquetBloomFilterMaxBytes).flatMap { raw =>
+      properties.get(PropertyKeys.ParquetBloomFilterMaxBytes).flatMap { raw =>
         scala.util.Try(java.lang.Integer.parseInt(raw)).toOption match {
           case None => Some(s"${PropertyKeys.ParquetBloomFilterMaxBytes}=$raw is not a Java int")
           case Some(value)
@@ -327,15 +334,15 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
         }
       }
 
-    maxRejection.orElse(unavailableRuntimeProperty).orElse {
-      val maxBytes = ctx.properties
+    maxRejection.orElse {
+      val maxBytes = properties
         .get(PropertyKeys.ParquetBloomFilterMaxBytes)
         .flatMap(raw => scala.util.Try(java.lang.Integer.parseInt(raw)).toOption)
         .getOrElse(IcebergWriteProtoTranslation.Defaults.BloomFilterMaxBytes)
       // Iceberg visits every enabled-prefix entry and applies enabled, FPP, then NDV. Validate
       // the associated shape properties even for enabled=false; a valid NDV also re-enables the
       // filter in parquet-mr.
-      val configured = ctx.properties.iterator.collect {
+      val configured = properties.iterator.collect {
         case (key, _) if key.startsWith(PropertyKeys.BloomFilterColumnEnabledPrefix) =>
           key.substring(PropertyKeys.BloomFilterColumnEnabledPrefix.length)
       }.toSeq
@@ -343,14 +350,14 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
         .flatMap { column =>
           val fppKey = PropertyKeys.ParquetBloomFilterColumnFppPrefix + column
           val ndvKey = PropertyKeys.ParquetBloomFilterColumnNdvPrefix + column
-          val parsedFpp = ctx.properties.get(fppKey) match {
+          val parsedFpp = properties.get(fppKey) match {
             case Some(raw) => scala.util.Try(java.lang.Double.parseDouble(raw)).toOption
             case None => Some(IcebergWriteProtoTranslation.Defaults.BloomFilterFpp)
           }
-          val parsedNdv = ctx.properties
+          val parsedNdv = properties
             .get(ndvKey)
             .flatMap(raw => scala.util.Try(java.lang.Long.parseLong(raw)).toOption)
-          val fppError = ctx.properties.get(fppKey).flatMap { raw =>
+          val fppError = properties.get(fppKey).flatMap { raw =>
             parsedFpp match {
               case Some(value)
                   if value > 0.0d && value < 1.0d && java.lang.Double.isFinite(value) &&
@@ -362,7 +369,7 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
               case _ => Some(s"$fppKey=$raw must be a finite double strictly between 0 and 1")
             }
           }
-          val ndvError = ctx.properties.get(ndvKey).flatMap { raw =>
+          val ndvError = properties.get(ndvKey).flatMap { raw =>
             parsedNdv match {
               case Some(value) if value > 0L && value <= MaxNonOverflowingBloomFilterNdv => None
               case Some(value) if value > MaxNonOverflowingBloomFilterNdv =>
@@ -770,7 +777,8 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
     // `option("write-parquet-compression-codec", "gzip")`) survive into the native writer.
     val resolvedWriteProperties =
       IcebergReflection.getWritePropertiesFromSparkWrite(sparkWrite).getOrElse(Map.empty)
-    val effectiveProperties = properties ++ resolvedWriteProperties
+    val effectiveProperties =
+      interpretedBloomFilterProperties(properties ++ resolvedWriteProperties)
     val parquetPathByIcebergColumnName =
       if (IcebergWriteProtoTranslation.hasEnabledBloomFilters(effectiveProperties)) {
         val resolution = IcebergReflection.getParquetPathResolution(writeSchema).getOrElse {
