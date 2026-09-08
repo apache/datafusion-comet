@@ -568,9 +568,7 @@ object CometShuffleExchangeExec
       case dt if isTimeType(dt) =>
         true
       case StructType(fields) =>
-        fields.nonEmpty && fields.forall(f => supportedSerializableDataType(f.dataType)) &&
-        // Java Arrow stream reader cannot work on duplicate field name
-        fields.map(f => f.name).distinct.length == fields.length
+        fields.nonEmpty && fields.forall(f => supportedSerializableDataType(f.dataType))
       case ArrayType(elementType, _) =>
         supportedSerializableDataType(elementType)
       case MapType(keyType, valueType, _) =>
