@@ -31,16 +31,17 @@ import org.scalatest.Tag
 
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
-import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Expression, Literal}
+import org.apache.spark.sql.catalyst.expressions.{ApplyFunctionExpression, AttributeReference, Expression, Literal}
 import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
 import org.apache.spark.sql.comet.{CometIcebergWriteExec, CometSortExec}
 import org.apache.spark.sql.comet.execution.shuffle.{CometNativeShuffle, CometShuffleExchangeExec}
+import org.apache.spark.sql.connector.catalog.functions.ScalarFunction
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.execution.exchange.ShuffleExchangeExec
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
-import org.apache.comet.serde.{CometExpressionSerde, CometIcebergBucket, CometIcebergTruncate, CometStaticInvoke, Compatible, SupportLevel, Unsupported}
+import org.apache.comet.serde.{CometApplyFunctionExpression, CometExpressionSerde, CometIcebergBucket, CometIcebergSystemFunctions, CometIcebergTruncate, CometStaticInvoke, Compatible, SupportLevel, Unsupported}
 
 /**
  * Native support for Iceberg's system functions (`bucket`, `truncate`, `years`, `months`, `days`,
@@ -283,7 +284,7 @@ class CometIcebergSystemFunctionSuite
     val float = AttributeReference("f", FloatType)()
     val date = AttributeReference("d", DateType)()
     def level(
-        serde: CometExpressionSerde[StaticInvoke],
+        serde: CometExpressionSerde[_ >: StaticInvoke <: Expression],
         cls: Class[_],
         args: Expression*): SupportLevel =
       serde.getSupportLevel(StaticInvoke(cls, IntegerType, "invoke", args, propagateNull = false))
@@ -333,6 +334,57 @@ class CometIcebergSystemFunctionSuite
     assert(
       level(CometStaticInvoke, truncateInt, Literal(10), decimal) ==
         Unsupported(Some(CometIcebergTruncate.DecimalNote)))
+  }
+
+  test("ApplyFunctionExpression reaches the same handlers as StaticInvoke") {
+    // Spark's `V2ExpressionUtils.resolveScalarFunction` wraps a DSv2 catalog scalar function as
+    // `ApplyFunctionExpression` when the implementation class does not expose a static `invoke`
+    // magic method. Iceberg's per-type functions carry the same class as their identity on both
+    // paths, so a single set of handlers keyed by class name must cover both.
+    val value = AttributeReference("v", IntegerType)()
+    val bucketIntCls =
+      Class.forName("org.apache.iceberg.spark.functions.BucketFunction$BucketInt")
+    val bucketInt =
+      bucketIntCls.getDeclaredConstructor().newInstance().asInstanceOf[ScalarFunction[_]]
+    val expr = ApplyFunctionExpression(bucketInt, Seq(Literal(4), value))
+    assert(CometApplyFunctionExpression.getSupportLevel(expr) == Compatible())
+
+    // The same argument-shape checks that gate the StaticInvoke path have to gate this one, or a
+    // zero-bucket call would land natively and diverge from Iceberg's own ArithmeticException.
+    val zeroBuckets = ApplyFunctionExpression(bucketInt, Seq(Literal(0), value))
+    assert(CometApplyFunctionExpression.getSupportLevel(zeroBuckets).isInstanceOf[Unsupported])
+  }
+
+  test("Iceberg handler map is keyed by Iceberg implementation class names") {
+    // Guards against a rename of one of Iceberg's per-type implementation classes silently
+    // dropping the native path: if any of these classes is on the classpath, its name has to be
+    // in the handler map.
+    val expected = Seq(
+      "org.apache.iceberg.spark.functions.BucketFunction$BucketInt" -> CometIcebergBucket,
+      "org.apache.iceberg.spark.functions.BucketFunction$BucketLong" -> CometIcebergBucket,
+      "org.apache.iceberg.spark.functions.TruncateFunction$TruncateInt" -> CometIcebergTruncate,
+      "org.apache.iceberg.spark.functions.TruncateFunction$TruncateString" -> CometIcebergTruncate)
+    expected.foreach { case (className, expectedHandler) =>
+      assert(
+        CometIcebergSystemFunctions.handlers.get(className).contains(expectedHandler),
+        s"missing handler for $className")
+    }
+  }
+
+  test("Iceberg handler map is keyed by Iceberg implementation class names") {
+    // Guards against a rename of one of Iceberg's per-type implementation classes silently
+    // dropping the native path: if any of these classes is on the classpath, its name has to be
+    // in the handler map.
+    val expected = Seq(
+      "org.apache.iceberg.spark.functions.BucketFunction$BucketInt" -> CometIcebergBucket,
+      "org.apache.iceberg.spark.functions.BucketFunction$BucketLong" -> CometIcebergBucket,
+      "org.apache.iceberg.spark.functions.TruncateFunction$TruncateInt" -> CometIcebergTruncate,
+      "org.apache.iceberg.spark.functions.TruncateFunction$TruncateString" -> CometIcebergTruncate)
+    expected.foreach { case (className, expectedHandler) =>
+      assert(
+        CometIcebergSystemFunctions.handlers.get(className).contains(expectedHandler),
+        s"missing handler for $className")
+    }
   }
 
   test("an unlisted static invoke routes through the codegen dispatcher") {
