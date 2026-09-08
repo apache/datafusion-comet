@@ -574,6 +574,7 @@ macro_rules! create_hashes_internal {
     ($arrays: ident, $hashes_buffer: ident, $hash_method: ident, $create_dictionary_hash_method: ident, $recursive_hash_method: ident) => {
         use arrow::datatypes::{DataType, TimeUnit};
         use arrow::array::{types::*, *};
+        use datafusion_comet_common::children_with_parent_nulls;
 
         for (i, col) in $arrays.iter().enumerate() {
             // The dictionary fast path hashes each distinct dictionary value once and reuses that
@@ -828,30 +829,10 @@ macro_rules! create_hashes_internal {
                 }
                 DataType::Struct(_) => {
                     let struct_array = col.as_any().downcast_ref::<StructArray>().unwrap();
-                    // Hash each field of the struct - Spark hashes all fields recursively.
-                    //
-                    // Arrow keeps a struct's children validity independent of the parent's, so at a
-                    // row where the struct is null a child buffer can still hold a value. Spark
-                    // hashes a null struct as the seed, so the parent's nulls have to be pushed
-                    // into each child before recursing, the same way #4432 fixed `GetStructField`.
-                    // Without it a null struct hashes whatever happens to sit in the child slot.
-                    // `flatten` does exactly this union, and skips revalidating the child data
-                    // buffers: it only ever adds nulls, so the buffers themselves are unchanged.
-                    // Rebuilding them through the checked builder would rescan every child buffer
-                    // (for a string child, the whole UTF-8 values buffer) on each call, and this
-                    // branch is reached once per element when hashing a list of structs.
-                    //
-                    // Only call it when there is actually a null to push down. `flatten` returns
-                    // early when there is no null buffer at all, but with a buffer present it
-                    // builds a fresh `Fields` with every non-nullable field re-marked nullable,
-                    // which this call site discards. So the case worth skipping is a buffer that
-                    // is present and all-valid -- what slicing leaves behind -- which would
-                    // otherwise pay a `Vec` and an `Arc<[FieldRef]>` for nothing. `NullBuffer`
-                    // caches its null count, so the test itself is O(1).
-                    let columns: Vec<ArrayRef> = match struct_array.nulls() {
-                        Some(nulls) if nulls.null_count() > 0 => struct_array.flatten().1,
-                        _ => struct_array.columns().to_vec(),
-                    };
+                    // Hash each field of the struct - Spark hashes all fields recursively, and a
+                    // null struct hashes as the seed, so the parent's nulls have to reach the
+                    // children first. See `datafusion_comet_common::struct_nulls`.
+                    let columns = children_with_parent_nulls(struct_array)?;
                     if !columns.is_empty() {
                         $recursive_hash_method(&columns, $hashes_buffer)?;
                     }
