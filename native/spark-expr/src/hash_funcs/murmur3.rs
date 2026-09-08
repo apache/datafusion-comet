@@ -139,20 +139,23 @@ pub fn spark_compatible_murmur3_hash<T: AsRef<[u8]>>(data: T, seed: u32) -> u32 
 fn create_hashes_dictionary<K: ArrowDictionaryKeyType>(
     array: &ArrayRef,
     hashes_buffer: &mut [u32],
-    first_col: bool,
+    seeds_are_pristine: bool,
 ) -> datafusion::common::Result<()> {
     let dict_array = array.as_any().downcast_ref::<DictionaryArray<K>>().unwrap();
-    if !first_col {
+    if !seeds_are_pristine {
         // unpack the dictionary array as each row may have a different hash input
         let unpacked = take(dict_array.values().as_ref(), dict_array.keys(), None)?;
         create_murmur3_hashes(&[unpacked], hashes_buffer)?;
     } else {
-        // For the first column, hash each dictionary value once, and then use
-        // that computed hash for each key value to avoid a potentially
-        // expensive redundant hashing for large dictionary elements (e.g. strings)
+        // Every row still carries the untouched seed, so each distinct dictionary value hashes to
+        // the same result no matter which row it appears in. Hash each value once and reuse it per
+        // key, which avoids redundant hashing of large dictionary elements (e.g. strings).
         let dict_values = Arc::clone(dict_array.values());
-        // same initial seed as Spark
-        let mut dict_hashes = vec![42; dict_values.len()];
+        // Seed from the buffer rather than assuming Spark's 42: `hash(col, seed)` lets the caller
+        // choose, and the reuse is only sound if the per-value hashes start from the same seed the
+        // rows carry. The caller guarantees the buffer is uniform, so any row's value will do.
+        let seed = hashes_buffer.first().copied().unwrap_or(42);
+        let mut dict_hashes = vec![seed; dict_values.len()];
         create_murmur3_hashes(&[dict_values], &mut dict_hashes)?;
         for (hash, key) in hashes_buffer.iter_mut().zip(dict_array.keys().iter()) {
             if let Some(key) = key {
@@ -203,6 +206,100 @@ mod tests {
         expected: Vec<u32>,
     ) {
         test_hashes_with_nulls!(create_murmur3_hashes, T, values, expected, u32);
+    }
+
+    /// A dictionary array reached through a nested type arrives as the only column of its recursive
+    /// call, so deciding the dictionary fast path from column position alone treated it as a first
+    /// column and restarted from the seed, discarding the hash accumulated for earlier elements of
+    /// the same row. The result differed from the identical decoded data.
+    #[test]
+    fn test_dictionary_element_in_list_matches_decoded() {
+        use arrow::array::{DictionaryArray, Int32Array, ListArray};
+        use arrow::buffer::OffsetBuffer;
+        use arrow::datatypes::{Field, Int8Type};
+
+        let values: ArrayRef = Arc::new(Int32Array::from(vec![10, 20]));
+        let keys = arrow::array::Int8Array::from(vec![0i8, 1]);
+        let dict: ArrayRef = Arc::new(DictionaryArray::<Int8Type>::try_new(keys, values).unwrap());
+        let decoded: ArrayRef = Arc::new(Int32Array::from(vec![10, 20]));
+
+        // One row holding both elements, so the second element's hash chains onto the first.
+        let as_list = |elems: ArrayRef| -> ArrayRef {
+            Arc::new(ListArray::new(
+                Arc::new(Field::new("item", elems.data_type().clone(), true)),
+                OffsetBuffer::new(vec![0i32, 2].into()),
+                elems,
+                None,
+            ))
+        };
+
+        let mut from_dict = vec![42u32; 1];
+        create_murmur3_hashes(&[as_list(dict)], &mut from_dict).unwrap();
+        let mut from_decoded = vec![42u32; 1];
+        create_murmur3_hashes(&[as_list(decoded)], &mut from_decoded).unwrap();
+
+        assert_eq!(
+            from_dict, from_decoded,
+            "a dictionary-encoded list element must hash like the decoded value"
+        );
+    }
+
+    /// The fast path must survive for a genuine first column, including one with a caller-supplied
+    /// seed that is not Spark's 42, since the test for it is that every row is seeded alike.
+    #[test]
+    fn test_top_level_dictionary_matches_decoded() {
+        use arrow::array::{DictionaryArray, Int32Array};
+        use arrow::datatypes::Int8Type;
+
+        let values: ArrayRef = Arc::new(Int32Array::from(vec![10, 20]));
+        let keys = arrow::array::Int8Array::from(vec![0i8, 1, 0]);
+        let dict: ArrayRef = Arc::new(DictionaryArray::<Int8Type>::try_new(keys, values).unwrap());
+        let decoded: ArrayRef = Arc::new(Int32Array::from(vec![10, 20, 10]));
+
+        for seed in [42u32, 7u32] {
+            let mut a = vec![seed; 3];
+            create_murmur3_hashes(&[Arc::clone(&dict)], &mut a).unwrap();
+            let mut b = vec![seed; 3];
+            create_murmur3_hashes(&[Arc::clone(&decoded)], &mut b).unwrap();
+            assert_eq!(
+                a, b,
+                "top-level dictionary must match decoded for seed {seed}"
+            );
+        }
+    }
+
+    /// The uniformity check is what makes the fast path safe, and a single-row case cannot pin it:
+    /// one row is trivially uniform. This hashes several rows whose incoming seeds all differ, so a
+    /// dictionary first column has to take the unpacking fallback. It also covers a null key and a
+    /// key pointing at a null dictionary value, since both skip the hash update.
+    #[test]
+    fn test_dictionary_with_nonuniform_seeds_matches_decoded() {
+        use arrow::array::{DictionaryArray, Int32Array};
+        use arrow::datatypes::Int8Type;
+
+        // values[2] is null, and one key is itself null
+        let values: ArrayRef = Arc::new(Int32Array::from(vec![Some(10), Some(20), None]));
+        let keys = arrow::array::Int8Array::from(vec![Some(0), Some(1), Some(2), None, Some(0)]);
+        let dict: ArrayRef = Arc::new(DictionaryArray::<Int8Type>::try_new(keys, values).unwrap());
+        // The same logical data with the dictionary resolved.
+        let decoded: ArrayRef = Arc::new(Int32Array::from(vec![
+            Some(10),
+            Some(20),
+            None,
+            None,
+            Some(10),
+        ]));
+
+        let seeds: Vec<u32> = vec![7, 38, 69, 100, 131];
+        let mut from_dict = seeds.clone();
+        create_murmur3_hashes(&[dict], &mut from_dict).unwrap();
+        let mut from_decoded = seeds;
+        create_murmur3_hashes(&[decoded], &mut from_decoded).unwrap();
+
+        assert_eq!(
+            from_dict, from_decoded,
+            "with per-row seeds a dictionary must hash like the decoded array"
+        );
     }
 
     #[test]
