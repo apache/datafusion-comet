@@ -19,9 +19,9 @@
 
 package org.apache.comet.serde.operator
 
-import java.net.URI
 import java.util.Locale
 
+import org.apache.hadoop.fs.Path
 import org.apache.parquet.hadoop.ParquetOutputFormat
 import org.apache.spark.sql.catalyst.util.CaseInsensitiveMap
 import org.apache.spark.sql.comet.{CometNativeExec, CometWriteFilesExec}
@@ -141,8 +141,12 @@ object CometWriteFiles extends CometOperatorSerde[WriteFilesExec] {
     // getSupportLevel already declined the write if the tag is absent, so this cannot be empty.
     outputPathOf(op).foreach { outputPath =>
       val hadoopConf = op.session.sessionState.newHadoopConfWithOptions(op.options)
+      // The tag holds `Path.toString`, which is not a valid URI string: it leaves spaces and
+      // literal `%` unescaped, so `URI.create` would throw. Round-tripping through `Path` escapes
+      // them again. Only the scheme and authority matter to `extractObjectStoreOptions`, but
+      // parsing has to succeed to get at them.
       NativeConfig
-        .extractObjectStoreOptions(hadoopConf, URI.create(outputPath))
+        .extractObjectStoreOptions(hadoopConf, new Path(outputPath).toUri)
         .foreach { case (key, value) => writerOpBuilder.putObjectStoreOptions(key, value) }
     }
 

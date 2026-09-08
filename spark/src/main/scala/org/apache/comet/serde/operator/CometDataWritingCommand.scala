@@ -19,7 +19,6 @@
 
 package org.apache.comet.serde.operator
 
-import java.net.URI
 import java.util.Locale
 
 import scala.jdk.CollectionConverters._
@@ -129,8 +128,11 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
       // Collect S3/cloud storage configurations
       val session = op.session
       val hadoopConf = session.sessionState.newHadoopConfWithOptions(cmd.options)
+      // `outputPath` is `Path.toString`, which is not a valid URI string: it leaves spaces and
+      // literal `%` unescaped, so `URI.create` would throw (and the catch below would silently
+      // give the write back to Spark). Going through `Path` escapes them again.
       val objectStoreOptions =
-        NativeConfig.extractObjectStoreOptions(hadoopConf, URI.create(outputPath))
+        NativeConfig.extractObjectStoreOptions(hadoopConf, cmd.outputPath.toUri)
       objectStoreOptions.foreach { case (key, value) =>
         writerOpBuilder.putObjectStoreOptions(key, value)
       }

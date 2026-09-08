@@ -865,6 +865,27 @@ class CometParquetWriterSuite extends CometTestBase {
     }
   }
 
+  test("output path needing URI escaping still writes natively") {
+    // The output path reaches the serde as `Path.toString`, which leaves characters that are
+    // illegal in a URI unescaped. `URI.create` then throws for a space or a literal `%`, costing
+    // the write its native path - silently on Spark 3.x, where the serde catches the failure and
+    // hands the write back to Spark.
+    Seq("dir with space", "dir%with%percent", "dir with space and %25").foreach { dirName =>
+      withTempPath { dir =>
+        val outputPath = new File(new File(dir, dirName), "output.parquet").getAbsolutePath
+        val sourcePath = new File(dir, "source.parquet").getAbsolutePath
+        withNativeWriter {
+          val df = materializeAsCometSource(
+            (1 to 100).map(i => (i, s"str_$i")).toDF("id", "name"),
+            sourcePath)
+          val plan = captureWritePlan(p => df.write.parquet(p), outputPath)
+          assertHasCometNativeWriteExec(plan)
+          checkAnswer(spark.read.parquet(outputPath), df)
+        }
+      }
+    }
+  }
+
   // ---------------------------------------------------------------------------------------------
   // Spark 4.0+ only. These cover behavior that comes from leaving Spark's write framework in
   // place, which is only possible where `V1WritesUtils.getWriteFilesOpt` matches the
@@ -937,7 +958,11 @@ class CometParquetWriterSuite extends CometTestBase {
         sql("INSERT INTO comet_write_source VALUES (1, 'a'), (2, 'b')")
       }
       withNativeWriter {
-        sql("INSERT INTO comet_write_target SELECT id, name FROM comet_write_source")
+        // Assert the write itself went native: a fallback to Spark's writer would make the
+        // read-back pass for the wrong reason.
+        assertHasCometNativeWriteExec(
+          captureWritePlan(
+            sql("INSERT INTO comet_write_target SELECT id, name FROM comet_write_source")))
       }
       checkAnswer(spark.table("comet_write_target"), Row(1L, "a") :: Row(2L, "b") :: Nil)
     }
@@ -1172,7 +1197,11 @@ class CometParquetWriterSuite extends CometTestBase {
    * @return
    *   The captured execution plan
    */
-  private def captureWritePlan(writeOp: String => Unit, outputPath: String): SparkPlan = {
+  private def captureWritePlan(writeOp: String => Unit, outputPath: String): SparkPlan =
+    captureWritePlan(writeOp(outputPath))
+
+  /** As above, for a write that names its own target (an `INSERT INTO`, for example). */
+  private def captureWritePlan(writeOp: => Unit): SparkPlan = {
     var capturedPlan: Option[QueryExecution] = None
 
     val listener = new org.apache.spark.sql.util.QueryExecutionListener {
@@ -1191,7 +1220,7 @@ class CometParquetWriterSuite extends CometTestBase {
     spark.listenerManager.register(listener)
 
     try {
-      writeOp(outputPath)
+      writeOp
 
       // Wait for listener to be called with timeout
       val maxWaitTimeMs = 15000
