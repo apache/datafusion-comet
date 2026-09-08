@@ -28,6 +28,20 @@ class CometGenerateExecSuite extends CometTestBase {
 
   import testImplicits._
 
+  test("posexplode with a computed array from Parquet") {
+    withSQLConf(CometConf.COMET_EXEC_EXPLODE_ENABLED.key -> "true") {
+      val input = Seq((1, "axb"), (2, ""), (3, null), (4, "xxc"))
+      withParquetDataFrame(input) { parquet =>
+        withParquetTable(parquet.toDF("id", "s"), "t") {
+          for (generator <- Seq("posexplode", "posexplode_outer")) {
+            val df = sql(s"SELECT id, $generator(split(s, 'x')) AS (pos, value) FROM t")
+            checkSparkAnswerAndOperator(df)
+          }
+        }
+      }
+    }
+  }
+
   test("explode with simple array") {
     withSQLConf(
       CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
