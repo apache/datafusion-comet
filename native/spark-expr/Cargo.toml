@@ -346,3 +346,7 @@ harness = false
 [[bench]]
 name = "iceberg_transforms"
 harness = false
+
+[[bench]]
+name = "utf8_decode"
+harness = false
