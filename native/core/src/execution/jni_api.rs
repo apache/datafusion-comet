@@ -100,7 +100,7 @@ use tokio::sync::mpsc;
 use crate::execution::memory_pools::{create_memory_pool, parse_memory_pool_config};
 use crate::execution::operators::{ScanExec, ShuffleScanExec};
 use crate::execution::shuffle::{
-    read_ipc_compressed, read_ipc_compressed_validated, validate_remote_schema, CompressionCodec,
+    decode_remote_shuffle_batch, read_ipc_compressed, CompressionCodec,
 };
 use crate::execution::spark_plan::SparkPlan;
 
@@ -300,6 +300,7 @@ fn op_name(op: &OpStruct) -> &'static str {
         OpStruct::Window(_) => "Window",
         OpStruct::NativeScan(_) => "NativeScan",
         OpStruct::IcebergScan(_) => "IcebergScan",
+        OpStruct::IcebergWrite(_) => "IcebergWrite",
         OpStruct::ParquetWriter(_) => "ParquetWriter",
         OpStruct::Explode(_) => "Explode",
         OpStruct::CsvScan(_) => "CsvScan",
@@ -1296,11 +1297,9 @@ fn decode_shuffle_block(
     let length = length as usize;
     let slice: &[u8] = unsafe { std::slice::from_raw_parts(raw_pointer, length) };
     let batch = if let Some(expected_types) = expected_types {
-        let batch = read_ipc_compressed_validated(slice)?;
-        // Reject incompatible remote schemas before exporting arrays to the JVM. Casting or
-        // importing first can silently change values or bypass remote fetch-failure reporting.
-        validate_remote_schema(&batch, expected_types)?;
-        batch
+        // Reject incompatible logical types, then decode dictionaries before JVM import. The
+        // JVM importer supports fewer dictionary key/value layouts than the shuffle writer.
+        decode_remote_shuffle_batch(slice, expected_types)?
     } else {
         read_ipc_compressed(slice)?
     };
