@@ -1,3 +1,20 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
 7c127e5ab7945c10b679d9c2665718adc040ad082e0d4fbf773f2d22ee438c30  /home/ubuntu/oss/comet-nested-results/baseline/libcomet.so
 e8c2a1ef7db65836dfe935008083e518fdb2d6258498554854b79b666eee40f9  /home/ubuntu/oss/comet-nested-results/candidate/libcomet.so
 ace52025f280edeb5f9723235392054ae45b8e0a914120f260e71ec701909f8d  /home/ubuntu/oss/comet-nested-data/shuffled.parquet

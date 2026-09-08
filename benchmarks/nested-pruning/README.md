@@ -44,12 +44,12 @@ it does not imply equivalent improvements for arrays, maps, Variant, or unfilter
 On `chia-ping-aws1` (AMD EPYC 7282, 16 vCPUs, 31 GiB RAM), using Rust 1.98.0,
 OpenJDK 17.0.20, Spark 4.1.3, NumPy 2.5.3, PyArrow 25.0.1, and the settings below:
 
-| Query | Baseline median | Candidate median | Baseline / candidate |
-| --- | ---: | ---: | ---: |
-| Nested filter, sorted keys | 642.3 ms | 182.6 ms | 3.52x |
-| Top-level filter, sorted keys | 138.8 ms | 138.3 ms | 1.00x |
-| Projection only | 530.2 ms | 537.4 ms | 0.99x |
-| Nested filter, shuffled keys | 585.4 ms | 577.1 ms | 1.01x |
+| Query                         | Baseline median | Candidate median | Baseline / candidate |
+| ----------------------------- | --------------: | ---------------: | -------------------: |
+| Nested filter, sorted keys    |        642.3 ms |         182.6 ms |                3.52x |
+| Top-level filter, sorted keys |        138.8 ms |         138.3 ms |                1.00x |
+| Projection only               |        530.2 ms |         537.4 ms |                0.99x |
+| Nested filter, shuffled keys  |        585.4 ms |         577.1 ms |                1.01x |
 
 The selective nested query skips **63 of 64 row groups**. Reader bytes decrease from
 **182,481,422 to 2,851,301 (98.4% less)**, and scan output decreases from 4,194,304 to
