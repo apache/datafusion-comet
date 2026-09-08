@@ -1541,6 +1541,16 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  Seq(DataTypes.TimestampType, DataTypes.TimestampNTZType).foreach { toType =>
+    test(s"cast StringType to $toType - out-of-range years") {
+      withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC") {
+        Seq("294249-01-01", "294249-01-01 00:00:00", "-290310-01-01").foreach { value =>
+          castTimestampTest(Seq(value).toDF("a"), toType, assertNative = true)
+        }
+      }
+    }
+  }
+
   test("cast StringType to TimestampNTZType") {
     representativeTimezones.foreach { tz =>
       withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz) {

@@ -1825,20 +1825,12 @@ fn timestamp_ntz_parser_inner(value: &str, eval_mode: EvalMode) -> SparkResult<O
 
     for (re, ts_type) in patterns {
         if re.is_match(value) {
-            return match parse_to_timestamp_info(value, ts_type)? {
-                Some(info) => match local_datetime_to_micros(&info)? {
-                    some @ Some(_) => Ok(some),
-                    None if eval_mode == EvalMode::Ansi => {
-                        Err(SparkError::InvalidInputInCastToDatetime {
-                            value: value.to_string(),
-                            from_type: "STRING".to_string(),
-                            to_type: "TIMESTAMP_NTZ".to_string(),
-                        })
-                    }
-                    None => Ok(None),
-                },
-                None => Ok(None),
-            };
+            if let Some(info) = parse_to_timestamp_info(value, ts_type)? {
+                if let Some(timestamp) = local_datetime_to_micros(&info)? {
+                    return Ok(Some(timestamp));
+                }
+            }
+            break;
         }
     }
 
@@ -2476,6 +2468,29 @@ mod tests {
         // In Legacy mode, same input should return None (null).
         let result = timestamp_ntz_parser("2023-02-29", EvalMode::Legacy, false, false);
         assert_eq!(result.unwrap(), None);
+    }
+
+    #[test]
+    fn test_cast_string_to_timestamp_ntz_out_of_range_year() {
+        for value in ["294249-01-01", "294249-01-01 00:00:00", "-290310-01-01"] {
+            let array: ArrayRef = Arc::new(StringArray::from(vec![value]));
+            match cast_string_to_timestamp_ntz(&array, EvalMode::Ansi, true, false) {
+                Err(SparkError::InvalidInputInCastToDatetime {
+                    value: actual,
+                    from_type,
+                    to_type,
+                }) => {
+                    assert_eq!(actual, value);
+                    assert_eq!(from_type, "STRING");
+                    assert_eq!(to_type, "TIMESTAMP_NTZ");
+                }
+                other => panic!("Expected ANSI cast error for {value}, got {other:?}"),
+            }
+            for mode in [EvalMode::Legacy, EvalMode::Try] {
+                let result = cast_string_to_timestamp_ntz(&array, mode, true, false).unwrap();
+                assert!(result.is_null(0), "Expected NULL for {value} in {mode:?}");
+            }
+        }
     }
 
     #[test]
