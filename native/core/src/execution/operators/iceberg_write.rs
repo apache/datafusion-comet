@@ -72,7 +72,9 @@ use datafusion_comet_proto::spark_operator::{
 use crate::cloud::s3::credential_bridge::AccessMode;
 use crate::errors::CometError;
 use crate::execution::operators::iceberg_common::load_file_io;
-use crate::execution::operators::iceberg_partition_path::CometLocationGenerator;
+use crate::execution::operators::iceberg_partition_path::{
+    partition_to_path, CometLocationGenerator,
+};
 
 /// Builder chain instantiated once per task and handed to the partitioning wrapper.
 type IcebergDataFileWriterBuilder =
@@ -419,17 +421,16 @@ impl InnerWriter {
                 Ok(())
             }
             InnerWriter::Clustered(w) => {
-                let parts = clustered_splitter
-                    .expect("clustered splitter must be Some for clustered writes")
-                    .split(&batch)?;
-                for (key, part) in parts {
+                let splitter = clustered_splitter
+                    .expect("clustered splitter must be Some for clustered writes");
+                for (key, part) in splitter.split(&batch)? {
                     // `write` consumes the key, but the unclustered-input error needs it for the
                     // partition path. One extra spec clone per run on top of the one
                     // `ClusteredBatchSplitter::partition_key` already pays.
                     let key_for_error = key.clone();
                     w.write(key, part)
                         .await
-                        .map_err(|e| clustered_write_err(e, &key_for_error))?;
+                        .map_err(|e| clustered_write_err(e, &key_for_error, splitter))?;
                 }
                 Ok(())
             }
@@ -488,9 +489,13 @@ const UNSORTED_INPUT_MESSAGE_PREFIX: &str = "The input is not sorted!";
 /// copy would fire first, no test could catch it drifting from the original. A wording change
 /// upstream instead makes `clustered_write_rejects_unclustered_input_like_iceberg_java` fail, since
 /// that test drives the real writer.
-fn clustered_write_err(e: iceberg::Error, key: &PartitionKey) -> DataFusionError {
+fn clustered_write_err(
+    e: iceberg::Error,
+    key: &PartitionKey,
+    splitter: &ClusteredBatchSplitter,
+) -> DataFusionError {
     if e.kind() == ErrorKind::Unexpected && e.message().starts_with(UNSORTED_INPUT_MESSAGE_PREFIX) {
-        not_clustered_error(key)
+        not_clustered_error(key, &splitter.partition_type)
     } else {
         iceberg_err(e)
     }
@@ -500,10 +505,14 @@ fn clustered_write_err(e: iceberg::Error, key: &PartitionKey) -> DataFusionError
 /// down to the `partition '<path>' in spec <spec>` context. Only the partition branch of that
 /// check is reachable here: a task writes through a single output spec, so the spec can never
 /// change mid-stream.
-fn not_clustered_error(key: &PartitionKey) -> DataFusionError {
+///
+/// The path comes from the same Java-compatible renderer that names the data directories, not from
+/// `PartitionKey::to_path`: iceberg-rust hex-encodes binary where iceberg-java base64-encodes it,
+/// and panics outright on a pre-epoch `timestamptz` with a sub-second part.
+fn not_clustered_error(key: &PartitionKey, partition_type: &StructType) -> DataFusionError {
     DataFusionError::from(CometError::IllegalState(format!(
         "{NOT_CLUSTERED_ROWS_ERROR_MSG_TEMPLATE}partition '{}' in spec {}",
-        key.to_path(),
+        partition_to_path(partition_type, key),
         format_partition_spec(key.spec())
     )))
 }
@@ -950,7 +959,8 @@ mod tests {
 
     mod integration {
         use super::super::*;
-        use arrow::array::{Int32Array, StringArray};
+        use arrow::array::{BinaryArray, Int32Array, StringArray, TimestampMicrosecondArray};
+        use arrow::datatypes::TimeUnit;
         use datafusion::common::Result as DFResult;
         use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
         use datafusion_comet_proto::spark_operator::{
@@ -995,8 +1005,13 @@ mod tests {
             .unwrap()
         }
 
+        /// Streams `batches` under their own schema, so a test can use a column layout other than
+        /// [`user_schema`].
         fn input_stream(batches: Vec<RecordBatch>) -> SendableRecordBatchStream {
-            let schema = user_schema();
+            let schema = batches
+                .first()
+                .map(RecordBatch::schema)
+                .unwrap_or_else(user_schema);
             Box::pin(RecordBatchStreamAdapter::new(
                 schema,
                 futures::stream::iter(batches.into_iter().map(Ok::<_, DataFusionError>)),
@@ -1195,57 +1210,179 @@ mod tests {
             assert_eq!(total, 5);
         }
 
-        /// Unclustered input must be rejected with iceberg-java's `ClusteredWriter` error rather
-        /// than iceberg-rust's "The input is not sorted!", and it has to reach the JVM as an
-        /// `IllegalStateException`. Iceberg's own `TestRequiredDistributionAndOrdering` asserts
-        /// both. See https://github.com/apache/datafusion-comet/issues/5698.
+        /// Runs a clustered write over input that revisits a closed partition, and returns the
+        /// `CometError::IllegalState` message it has to fail with.
         ///
-        /// This drives the real iceberg-rust writer, so it is also the tripwire for
+        /// Driving the real iceberg-rust writer is what makes these tests the tripwire for
         /// [`UNSORTED_INPUT_MESSAGE_PREFIX`] going stale on an iceberg-rust bump: the translation
         /// stops matching and the error arrives as a plain `iceberg::Error` instead.
-        #[tokio::test]
-        async fn clustered_write_rejects_unclustered_input_like_iceberg_java() {
+        async fn unclustered_write_message(
+            schema: Schema,
+            spec: PartitionSpec,
+            batches: Vec<RecordBatch>,
+        ) -> String {
             let temp_dir = TempDir::new().unwrap();
-            let data_location = format!("file://{}", temp_dir.path().display());
-            let schema = iceberg_user_schema();
-            let spec = PartitionSpec::builder(Arc::new(schema.clone()))
-                .with_spec_id(1)
-                .add_partition_field("region", "region", Transform::Identity)
-                .unwrap()
-                .build()
-                .unwrap();
             let common = common(
-                data_location,
+                format!("file://{}", temp_dir.path().display()),
                 serde_json::to_string(&spec).unwrap(),
                 serde_json::to_string(&schema).unwrap(),
                 ProtoIcebergWriterMode::IcebergWriterClustered,
             );
-
-            // "eu" is revisited after the writer has moved on to "us" and closed it.
             let err = run(
                 common,
                 schema,
                 spec,
                 ProtoIcebergWriterMode::IcebergWriterClustered,
-                vec![batch(&[1, 2], &["eu", "us"]), batch(&[3], &["eu"])],
+                batches,
             )
             .await
             .unwrap_err();
-
             let comet_error = match &err {
                 DataFusionError::External(external) => external.downcast_ref::<CometError>(),
                 _ => None,
             };
+            match comet_error {
+                Some(CometError::IllegalState(message)) => message.clone(),
+                _ => panic!("expected CometError::IllegalState, got {err:?}"),
+            }
+        }
+
+        /// Builds an identity-partitioned single-column spec over `schema`.
+        fn identity_spec(schema: &Schema, column: &str) -> PartitionSpec {
+            PartitionSpec::builder(Arc::new(schema.clone()))
+                .with_spec_id(1)
+                .add_partition_field(column, column, Transform::Identity)
+                .unwrap()
+                .build()
+                .unwrap()
+        }
+
+        /// Unclustered input must be rejected with iceberg-java's `ClusteredWriter` error rather
+        /// than iceberg-rust's "The input is not sorted!", and it has to reach the JVM as an
+        /// `IllegalStateException`. Iceberg's own `TestRequiredDistributionAndOrdering` asserts
+        /// both. See https://github.com/apache/datafusion-comet/issues/5698.
+        #[tokio::test]
+        async fn clustered_write_rejects_unclustered_input_like_iceberg_java() {
+            let schema = iceberg_user_schema();
+            let spec = identity_spec(&schema, "region");
+            // "eu" is revisited after the writer has moved on to "us" and closed it.
+            let message = unclustered_write_message(
+                schema,
+                spec,
+                vec![batch(&[1, 2], &["eu", "us"]), batch(&[3], &["eu"])],
+            )
+            .await;
+
             // The wording itself is pinned against the real JVM writer by
-            // CometIcebergWriteActionSuite; here it only has to carry the right context and
-            // classification.
-            let expected = format!(
-                "{NOT_CLUSTERED_ROWS_ERROR_MSG_TEMPLATE}\
-                 partition 'region=eu' in spec [\n  1000: region: identity(2)\n]"
+            // CometIcebergWriteActionSuite; here it only has to carry the right context.
+            assert_eq!(
+                message,
+                format!(
+                    "{NOT_CLUSTERED_ROWS_ERROR_MSG_TEMPLATE}\
+                     partition 'region=eu' in spec [\n  1000: region: identity(2)\n]"
+                )
             );
+        }
+
+        /// iceberg-java base64-encodes a binary partition value where iceberg-rust's
+        /// `PartitionKey::to_path` writes uppercase hex, so the error has to go through the same
+        /// Java-compatible renderer that names the data directories.
+        #[tokio::test]
+        async fn unclustered_binary_partition_renders_like_iceberg_java() {
+            let schema = Schema::builder()
+                .with_schema_id(1)
+                .with_fields(vec![
+                    NestedField::required(1, "id", Type::Primitive(PrimitiveType::Int)).into(),
+                    NestedField::required(2, "part", Type::Primitive(PrimitiveType::Binary)).into(),
+                ])
+                .build()
+                .unwrap();
+            let spec = identity_spec(&schema, "part");
+            let arrow_schema = Arc::new(ArrowSchema::new(vec![
+                Field::new("id", DataType::Int32, false),
+                Field::new("part", DataType::Binary, false),
+            ]));
+            let batch = |ids: &[i32], parts: Vec<&[u8]>| {
+                RecordBatch::try_new(
+                    Arc::clone(&arrow_schema),
+                    vec![
+                        Arc::new(Int32Array::from(ids.to_vec())),
+                        Arc::new(BinaryArray::from(parts)),
+                    ],
+                )
+                .unwrap()
+            };
+
+            let message = unclustered_write_message(
+                schema,
+                spec,
+                vec![
+                    batch(&[1, 2], vec![&[0x00, 0x01, 0xFF], &[0x00]]),
+                    batch(&[3], vec![&[0x00, 0x01, 0xFF]]),
+                ],
+            )
+            .await;
+
+            // base64(00 01 FF) = "AAH/", form-urlencoded to "AAH%2F". iceberg-rust would have
+            // rendered the same bytes as "0001FF".
             assert!(
-                matches!(comet_error, Some(CometError::IllegalState(m)) if *m == expected),
-                "expected CometError::IllegalState({expected:?}), got {err:?}"
+                message
+                    .ends_with("partition 'part=AAH%2F' in spec [\n  1000: part: identity(2)\n]"),
+                "{message}"
+            );
+        }
+
+        /// iceberg-rust's `Transform::to_human_string` panics on a pre-epoch `timestamptz` with a
+        /// sub-second part, so routing the error through `PartitionKey::to_path` would crash the
+        /// task instead of raising `IllegalStateException`.
+        #[tokio::test]
+        async fn unclustered_negative_timestamptz_partition_renders_like_iceberg_java() {
+            let schema = Schema::builder()
+                .with_schema_id(1)
+                .with_fields(vec![
+                    NestedField::required(1, "id", Type::Primitive(PrimitiveType::Int)).into(),
+                    NestedField::required(2, "ts", Type::Primitive(PrimitiveType::Timestamptz))
+                        .into(),
+                ])
+                .build()
+                .unwrap();
+            let spec = identity_spec(&schema, "ts");
+            let arrow_schema = Arc::new(ArrowSchema::new(vec![
+                Field::new("id", DataType::Int32, false),
+                Field::new(
+                    "ts",
+                    DataType::Timestamp(TimeUnit::Microsecond, Some("+00:00".into())),
+                    false,
+                ),
+            ]));
+            let batch = |ids: &[i32], micros: &[i64]| {
+                RecordBatch::try_new(
+                    Arc::clone(&arrow_schema),
+                    vec![
+                        Arc::new(Int32Array::from(ids.to_vec())),
+                        Arc::new(
+                            TimestampMicrosecondArray::from(micros.to_vec())
+                                .with_timezone("+00:00"),
+                        ),
+                    ],
+                )
+                .unwrap()
+            };
+
+            // -1_500_000 micros is 1969-12-31T23:59:58.5Z -- negative with a sub-second part.
+            let message = unclustered_write_message(
+                schema,
+                spec,
+                vec![batch(&[1, 2], &[-1_500_000, 0]), batch(&[3], &[-1_500_000])],
+            )
+            .await;
+
+            assert!(
+                message.ends_with(
+                    "partition 'ts=1969-12-31T23%3A59%3A58.5%2B00%3A00' in spec \
+                     [\n  1000: ts: identity(2)\n]"
+                ),
+                "{message}"
             );
         }
 
