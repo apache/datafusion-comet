@@ -576,6 +576,15 @@ macro_rules! create_hashes_internal {
         use arrow::array::{types::*, *};
 
         for (i, col) in $arrays.iter().enumerate() {
+            // The dictionary fast path hashes each distinct dictionary value once and reuses that
+            // result for every key, which is only valid while every row carries the same incoming
+            // hash. Position in the column list is not a sufficient test: this macro also runs on
+            // recursion, where a nested dictionary arrives as the only column of its call even
+            // though the buffer already holds the hash accumulated for that row -- a
+            // dictionary-encoded list element, for instance. So confirm the buffer is uniform,
+            // which keeps the optimisation for a genuine first column (every row seeded alike,
+            // whatever the seed) and unpacks otherwise. Only dictionaries need this, and the scan
+            // is measurable on the hot path, so it is deferred into the dictionary arm below.
             let first_col = i == 0;
             match col.data_type() {
                 DataType::Boolean => {
@@ -729,7 +738,13 @@ macro_rules! create_hashes_internal {
                 DataType::Decimal128(_, _) => {
                     $crate::hash_array_decimal!(Decimal128Array, col, $hashes_buffer, $hash_method);
                 }
-                DataType::Dictionary(index_type, _) => match **index_type {
+                DataType::Dictionary(index_type, _) => {
+                    let first_col = first_col
+                        && match $hashes_buffer.first() {
+                            None => true,
+                            Some(first) => $hashes_buffer.iter().all(|h| h == first),
+                        };
+                    match **index_type {
                     DataType::Int8 => {
                         $create_dictionary_hash_method::<Int8Type>(col, $hashes_buffer, first_col)?;
                     }
@@ -788,7 +803,8 @@ macro_rules! create_hashes_internal {
                             col.data_type(),
                         )))
                     }
-                },
+                    }
+                }
                 DataType::List(field) => {
                     let list_array = col.as_any().downcast_ref::<ListArray>().unwrap();
                     let values = list_array.values();
@@ -812,8 +828,30 @@ macro_rules! create_hashes_internal {
                 }
                 DataType::Struct(_) => {
                     let struct_array = col.as_any().downcast_ref::<StructArray>().unwrap();
-                    // Hash each field of the struct - Spark hashes all fields recursively
-                    let columns: Vec<ArrayRef> = struct_array.columns().to_vec();
+                    // Hash each field of the struct - Spark hashes all fields recursively.
+                    //
+                    // Arrow keeps a struct's children validity independent of the parent's, so at a
+                    // row where the struct is null a child buffer can still hold a value. Spark
+                    // hashes a null struct as the seed, so the parent's nulls have to be pushed
+                    // into each child before recursing, the same way #4432 fixed `GetStructField`.
+                    // Without it a null struct hashes whatever happens to sit in the child slot.
+                    // `flatten` does exactly this union, and skips revalidating the child data
+                    // buffers: it only ever adds nulls, so the buffers themselves are unchanged.
+                    // Rebuilding them through the checked builder would rescan every child buffer
+                    // (for a string child, the whole UTF-8 values buffer) on each call, and this
+                    // branch is reached once per element when hashing a list of structs.
+                    //
+                    // Only call it when there is actually a null to push down. `flatten` returns
+                    // early when there is no null buffer at all, but with a buffer present it
+                    // builds a fresh `Fields` with every non-nullable field re-marked nullable,
+                    // which this call site discards. So the case worth skipping is a buffer that
+                    // is present and all-valid -- what slicing leaves behind -- which would
+                    // otherwise pay a `Vec` and an `Arc<[FieldRef]>` for nothing. `NullBuffer`
+                    // caches its null count, so the test itself is O(1).
+                    let columns: Vec<ArrayRef> = match struct_array.nulls() {
+                        Some(nulls) if nulls.null_count() > 0 => struct_array.flatten().1,
+                        _ => struct_array.columns().to_vec(),
+                    };
                     if !columns.is_empty() {
                         $recursive_hash_method(&columns, $hashes_buffer)?;
                     }
