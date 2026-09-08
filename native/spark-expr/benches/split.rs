@@ -15,100 +15,53 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::array::StringArray;
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use datafusion::common::ScalarValue;
-use datafusion::logical_expr::ColumnarValue;
-use datafusion_comet_spark_expr::spark_split;
+use datafusion::physical_plan::ColumnarValue;
+use datafusion_comet_spark_expr::{spark_split, spark_split_sql};
 use std::hint::black_box;
 
-use std::sync::Arc;
+#[path = "common/mod.rs"]
+mod common;
+use common::{string_array, NULL_RATIOS, ROW_COUNTS};
 
-fn generate_string_array(num_rows: usize, pattern_type: &str) -> Arc<StringArray> {
-    let mut builder = arrow::array::StringBuilder::with_capacity(num_rows, num_rows * 64);
+const INPUT: &str = "apple,banana,cherry";
 
-    for i in 0..num_rows {
-        if i % 20 == 0 {
-            builder.append_null();
-            continue;
-        }
+fn criterion_benchmark(c: &mut Criterion) {
+    let sep = ColumnarValue::Scalar(ScalarValue::Utf8(Some(",".to_string())));
 
-        match pattern_type {
-            "csv" => builder.append_value(format!(
-                "field1_{i},field2_{i},field3_{i},field4_{i},field5_{i}"
-            )),
-            "whitespace_regex" => {
-                builder.append_value(format!("word1_{i}   word2_{i} \t  word3_{i}    word4_{i}"))
-            }
-            "trailing_delimiters" => builder.append_value(format!("data_{i},,,,")),
-            _ => unreachable!(),
-        }
-    }
-
-    Arc::new(builder.finish())
-}
-
-fn bench_spark_split(c: &mut Criterion) {
-    let mut group = c.benchmark_group("spark_split");
-    let batch_sizes = [1024, 8192];
-
-    for &size in &batch_sizes {
-        group.throughput(Throughput::Elements(size as u64));
-
-        {
-            let array = generate_string_array(size, "csv");
+    let mut split_group = c.benchmark_group("spark_split");
+    for rows in ROW_COUNTS {
+        for (null_ratio, tag) in NULL_RATIOS {
             let args = vec![
-                ColumnarValue::Array(array),
-                ColumnarValue::Scalar(ScalarValue::Utf8(Some(",".to_string()))),
+                ColumnarValue::Array(string_array(rows, null_ratio, |_| INPUT.to_string())),
+                sep.clone(),
             ];
-
-            group.bench_with_input(
-                BenchmarkId::new("literal_char_default_limit", size),
+            split_group.bench_with_input(
+                BenchmarkId::from_parameter(format!("{rows}/{tag}")),
                 &args,
-                |b, args| {
-                    b.iter(|| {
-                        black_box(spark_split(black_box(args)).unwrap());
-                    });
-                },
-            );
-        }
-
-        {
-            let array = generate_string_array(size, "whitespace_regex");
-            let args = vec![
-                ColumnarValue::Array(array),
-                ColumnarValue::Scalar(ScalarValue::Utf8(Some(r"\s".to_string()))),
-            ];
-
-            group.bench_with_input(BenchmarkId::new("regex_pattern", size), &args, |b, args| {
-                b.iter(|| {
-                    black_box(spark_split(black_box(args)).unwrap());
-                });
-            });
-        }
-
-        {
-            let array = generate_string_array(size, "trailing_delimiters");
-            let args = vec![
-                ColumnarValue::Array(array),
-                ColumnarValue::Scalar(ScalarValue::Utf8(Some(",".to_string()))),
-                ColumnarValue::Scalar(ScalarValue::Int32(Some(0))),
-            ];
-
-            group.bench_with_input(
-                BenchmarkId::new("literal_char_limit_0", size),
-                &args,
-                |b, args| {
-                    b.iter(|| {
-                        black_box(spark_split(black_box(args)).unwrap());
-                    });
-                },
+                |b, args| b.iter(|| black_box(spark_split(black_box(args)).unwrap())),
             );
         }
     }
+    split_group.finish();
 
-    group.finish();
+    let mut split_sql_group = c.benchmark_group("spark_split_sql");
+    for rows in ROW_COUNTS {
+        for (null_ratio, tag) in NULL_RATIOS {
+            let args = vec![
+                ColumnarValue::Array(string_array(rows, null_ratio, |_| INPUT.to_string())),
+                sep.clone(),
+            ];
+            split_sql_group.bench_with_input(
+                BenchmarkId::from_parameter(format!("{rows}/{tag}")),
+                &args,
+                |b, args| b.iter(|| black_box(spark_split_sql(black_box(args)).unwrap())),
+            );
+        }
+    }
+    split_sql_group.finish();
 }
 
-criterion_group!(benches, bench_spark_split);
+criterion_group!(benches, criterion_benchmark);
 criterion_main!(benches);

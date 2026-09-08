@@ -71,8 +71,19 @@ incorrect result. When any single window expression in a `WindowExec` falls back
   window are not supported by Spark either.
 - Any `PARTITION BY` or `ORDER BY` expression that Comet cannot serialize.
 
-`WindowGroupLimitExec` (window-based limit pushdown) is not yet supported and falls back to Spark
-([#4837](https://github.com/apache/datafusion-comet/issues/4837)).
+`WindowGroupLimitExec` (window-based limit pushdown for `ROW_NUMBER`, `RANK`, and `DENSE_RANK`)
+runs natively; it is controlled by `spark.comet.exec.windowGroupLimit.enabled` (default: true).
+
+**Falls back to Spark:**
+
+- Any `PARTITION BY` or `ORDER BY` key whose type carries a non-default `StringType` collation
+  (e.g. `UTF8_LCASE`). The native operator detects partitions and order-key peer groups by
+  comparing Arrow row-encoded keys for byte equality, which splits peers that Spark ties.
+
+**Known incompatibilities:**
+
+- Signed-zero ordering (`-0.0` vs `+0.0`) diverges from Spark's `RankLimitIterator`; see
+  [floating-point ordering](./floating-point.md#ordering-signed-zero-00-vs-00).
 
 ## Round-Robin Partitioning
 

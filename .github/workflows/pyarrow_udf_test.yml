@@ -38,11 +38,16 @@ on:
       - "spark/src/main/spark-4.0/org/apache/spark/sql/comet/shims/ShimCometMapInBatch.scala"
       - "spark/src/main/spark-4.1/org/apache/spark/sql/comet/shims/ShimCometMapInBatch.scala"
       - "spark/src/main/spark-4.2/org/apache/spark/sql/comet/shims/ShimCometMapInBatch.scala"
+      - "spark/src/main/spark-4.0/org/apache/spark/sql/execution/python/CometArrowPythonRunner.scala"
+      - "spark/src/main/spark-4.1/org/apache/spark/sql/execution/python/CometArrowPythonRunner.scala"
+      - "spark/src/main/spark-4.2/org/apache/spark/sql/execution/python/CometArrowPythonRunner.scala"
       - "spark/src/main/spark-4.x/org/apache/spark/sql/comet/shims/Spark4xMapInBatchSupport.scala"
+      - "spark/src/main/spark-4.x/org/apache/spark/sql/execution/python/CometArrowPythonRunnerBase.scala"
       - "spark/src/test/resources/pyspark/conftest.py"
       - "spark/src/test/resources/pyspark/test_pyarrow_udf.py"
       - "spark/src/test/spark-3.5/org/apache/spark/sql/comet/CometMapInBatchSuite.scala"
       - "spark/src/test/spark-4.x/org/apache/spark/sql/comet/CometMapInBatchSuite.scala"
+      - "spark/src/test/spark-4.x/org/apache/spark/sql/execution/python/CometArrowPythonRunnerSuite.scala"
       - ".github/workflows/pyarrow_udf_test.yml"
   pull_request:
     paths: *feature-paths
@@ -64,16 +69,17 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Run a real Python worker against each 4.x runner. The 4.0 and 4.1 subclasses differ in
-          # constructor shape and `writeUDF` arity, so both need worker-level coverage; a wiring
-          # divergence in one would otherwise slip through. (4.2 is a preview with no released
-          # pyspark, so it stays compile-only via the pr_build matrix.)
+          # Run a real Python worker against each 4.x runner. Their constructor, command framing,
+          # and `writeUDF` shapes differ, so a wiring divergence would otherwise slip through.
           - name: Spark 4.0
             maven_profiles: "-Pspark-4.0 -Pscala-2.13"
             pyspark: "4.0.4"
           - name: Spark 4.1
             maven_profiles: "-Pspark-4.1"
             pyspark: "4.1.3"
+          - name: Spark 4.2
+            maven_profiles: "-Pspark-4.2"
+            pyspark: "4.2.0"
     container:
       # Pinned to the Debian 12 (bookworm) base so the system `python3` is 3.11. The default
       # `amd64/rust` image is Debian 13 (trixie) which ships Python 3.13 and no python3.11 apt

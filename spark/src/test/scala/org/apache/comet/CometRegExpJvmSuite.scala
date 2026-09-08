@@ -305,7 +305,7 @@ class CometRegExpJvmSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       val df =
         sql("SELECT regexp_replace(s, '(?<first>[a-zA-Z]+) (?<last>[a-zA-Z]+)', '$3 $1') FROM t")
       val e = intercept[Throwable](df.collect())
-      val chain = Iterator.iterate(e)(_.getCause).takeWhile(_ != null).toList
+      val chain = causeChain(e)
       val names = chain.map(_.getClass.getName)
       // The original Spark exception must survive: re-thrown unwrapped, not flattened into a
       // CometNativeException at the JNI boundary.
