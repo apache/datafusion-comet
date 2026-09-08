@@ -28,28 +28,24 @@ permissions:
   contents: read
   pull-requests: write
 
-# One group per pull request, queued rather than cancelled: the labeler action reads the label
-# set and writes it back whole, so two runs writing at once can drop a label the other just
-# added, and the opened run must always complete because the title step runs on open only.
+# One group per pull request with cancellation, so at most one run writes labels at a time:
+# the labeler action reads the label set and writes it back whole, and two runs writing at
+# once can drop a label the other just added. A cancelled or replaced run loses nothing
+# because every step below is safe to repeat on the next event.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
-  queue: max
+  cancel-in-progress: true
 
 jobs:
   label:
     runs-on: ubuntu-slim
     steps:
-      - name: Label by changed paths
-        uses: actions/labeler@v7
-        with:
-          configuration-path: .github/labeler.yml
-          sync-labels: false
-
       # The type label follows the conventional commit prefix in the title, matching how
-      # maintainers label by hand. Only on open, so later hand edits are not overwritten, and
-      # not for dependabot, whose PRs already carry the dependencies label.
+      # maintainers label by hand. It is added only while the pull request carries no type
+      # label at all, so a hand-picked replacement stays, and a run cut short by a newer push
+      # is completed by that push. Dependabot pull requests already carry their label.
       - name: Label by title prefix
-        if: github.event.action == 'opened' && github.actor != 'dependabot[bot]'
+        if: github.actor != 'dependabot[bot]'
         uses: actions/github-script@v9
         with:
           script: |
@@ -73,7 +69,12 @@ jobs:
               deps: ['dependencies'],
             };
             const labels = byPrefix[match[1].toLowerCase()];
+            const typeLabels = new Set(Object.values(byPrefix).flat());
             const present = new Set(context.payload.pull_request.labels.map((l) => l.name));
+            if ([...present].some((l) => typeLabels.has(l))) {
+              core.info('A type label is already present, leaving it as is');
+              return;
+            }
             const missing = labels.filter((l) => !present.has(l));
             if (missing.length === 0) {
               return;
@@ -84,3 +85,9 @@ jobs:
               issue_number: context.issue.number,
               labels: missing,
             });
+
+      - name: Label by changed paths
+        uses: actions/labeler@v7
+        with:
+          configuration-path: .github/labeler.yml
+          sync-labels: false
