@@ -682,7 +682,7 @@ fn build_writer_properties(settings: &IcebergParquetWriteSettings) -> DFResult<W
         builder = builder
             .set_column_bloom_filter_enabled(path.clone(), true)
             .set_column_bloom_filter_fpp(path.clone(), fpp)
-            .set_column_bloom_filter_ndv(path, synthetic_ndv);
+            .set_column_bloom_filter_max_ndv(path, synthetic_ndv);
     }
     Ok(builder.build())
 }
@@ -978,9 +978,9 @@ mod tests {
         settings.bloom_filter_enabled_columns = vec!["id".to_string()];
         let props = build_writer_properties(&settings).unwrap();
         let bloom = props.bloom_filter_properties(&"id".into()).unwrap();
-        assert_eq!(bloom.fpp, ICEBERG_DEFAULT_BLOOM_FILTER_FPP);
+        assert_eq!(bloom.fpp(), ICEBERG_DEFAULT_BLOOM_FILTER_FPP);
         assert_eq!(
-            parquet_rs_bloom_filter_bytes(bloom.ndv, bloom.fpp),
+            parquet_rs_bloom_filter_bytes(bloom.ndv(), bloom.fpp()),
             ICEBERG_DEFAULT_BLOOM_FILTER_MAX_BYTES
         );
     }
