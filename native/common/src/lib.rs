@@ -18,10 +18,12 @@
 mod error;
 mod query_context;
 mod schema;
+pub mod struct_nulls;
 pub mod tracing;
 mod utils;
 
 pub use error::{decimal_overflow_error, SparkError, SparkErrorWithContext, SparkResult};
 pub use query_context::{create_query_context_map, QueryContext, QueryContextMap};
 pub use schema::{cast_and_stamp_schema, widen_nested_nullability};
+pub use struct_nulls::{child_with_parent_nulls, children_with_parent_nulls};
 pub use utils::{bytes_to_i128, decode_utf8_spark_lossy};
