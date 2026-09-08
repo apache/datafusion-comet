@@ -201,9 +201,17 @@ class Native extends NativeBase {
       tracingEnabled: Boolean): Long
 
   /**
-   * Decode a remote shuffle block with Arrow buffer/offset and logical type validation. The
-   * expected schema is serialized as a ShuffleScan protobuf. Keep the existing local decoder
-   * entry point unchanged so trusted local shuffle reads retain their fast path.
+   * Create a remote shuffle decoder that retains the expected Spark types for one iterator. The
+   * expected schema is serialized as a ShuffleScan protobuf.
+   */
+  @native def createRemoteShuffleDecoder(expectedSchema: Array[Byte]): Long
+
+  /** Release a remote shuffle decoder after its iterator finishes reading or closes early. */
+  @native def releaseRemoteShuffleDecoder(decoderHandle: Long): Unit
+
+  /**
+   * Decode a remote shuffle block with Arrow buffer/offset and logical type validation, using the
+   * expected Spark types retained by the decoder.
    */
   @native def decodeShuffleBlockWithValidation(
       shuffleBlock: ByteBuffer,
@@ -211,7 +219,7 @@ class Native extends NativeBase {
       arrayAddrs: Array[Long],
       schemaAddrs: Array[Long],
       tracingEnabled: Boolean,
-      expectedSchema: Array[Byte]): Long
+      decoderHandle: Long): Long
 
   /**
    * Log the beginning of an event.
