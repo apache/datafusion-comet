@@ -74,28 +74,6 @@ query ignore(https://github.com/apache/datafusion-comet/issues/3375)
 SELECT element_at(array(1, 2, 3), -5)
 
 -- ============================================================================
--- Stateful array operand: the ANSI NULL guard must not apply
--- ============================================================================
-
-statement
-CREATE TABLE ansi_element_at_stateful(id int) USING parquet
-
-statement
-INSERT INTO ansi_element_at_stateful VALUES
-  (1), (2), (3), (4), (5), (6), (7), (8), (9), (10), (11), (12), (13), (14), (15), (16)
-
--- Under ANSI, CometElementAt reproduces Spark's NULL short-circuit with a
--- `CASE WHEN <array> IS NOT NULL` guard, which serializes the operand a second time and runs the
--- THEN branch over a different row selection, so a stateful operand would drift between the two
--- copies. The guard is restricted to deterministic operands, and this must keep every value Spark
--- returns. https://github.com/apache/datafusion-comet/issues/5544
-query
-SELECT id,
-       element_at(IF(monotonically_increasing_id() % 2 = 0, array(1), CAST(NULL AS ARRAY<INT>)), 1) AS v1,
-       element_at(IF(rand(7L) < 0.5, array(1), CAST(NULL AS ARRAY<INT>)), 1) AS v2
-FROM ansi_element_at_stateful
-
--- ============================================================================
 -- ANSI short-circuit over a NULL array
 -- ============================================================================
 
@@ -121,4 +99,17 @@ FROM ansi_element_at_null
 -- version. The throwing-index case is covered by the `IF(...)` spelling above. Returns 1, NULL, 1.
 query
 SELECT id, element_at(CASE WHEN id <> 2 THEN array(1) END, 1) AS v
+FROM ansi_element_at_null
+
+-- A nondeterministic operand is declined outright. Neither native shape reproduces Spark: the
+-- `CASE WHEN <array> IS NOT NULL` guard serializes the operand twice, so a stateful operand's two
+-- copies drift, and the unguarded lookup evaluates the index over the whole batch, raising
+-- DIVIDE_BY_ZERO at id = 2 on the very row whose array is NULL. `rand(7L) < 2` is always true, so
+-- both operands are NULL on every row and Spark returns NULL without evaluating either index.
+-- The non-ANSI spelling stays native and is covered in element_at.sql.
+-- https://github.com/apache/datafusion-comet/issues/5544
+query expect_fallback(nullable nondeterministic array or map operand)
+SELECT id,
+       element_at(IF(monotonically_increasing_id() % 2 = 0, CAST(NULL AS ARRAY<INT>), array(1)), 1) AS v1,
+       element_at(IF(rand(7L) < 2, CAST(NULL AS ARRAY<INT>), array(1)), 1 + (id % (id - 2))) AS v2
 FROM ansi_element_at_null

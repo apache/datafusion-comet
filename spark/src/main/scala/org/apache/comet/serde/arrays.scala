@@ -615,11 +615,34 @@ object CometArrayReverse extends CometExpressionSerde[Reverse] with ArraysBase {
 
 object CometElementAt extends CometExpressionSerde[ElementAt] {
 
+  /**
+   * Under ANSI, neither native shape reproduces Spark for a nullable nondeterministic operand.
+   * Spark's `ElementAt` is a `BinaryExpression`: for a NULL map/array it returns NULL without
+   * evaluating the key/index child at all. A native lookup evaluates every argument over the
+   * whole batch first, so a throwing index fires on rows whose operand is NULL. `convert`
+   * reproduces the short-circuit with a `CASE WHEN <operand> IS NOT NULL` guard, but that guard
+   * serializes the operand twice, which a stateful operand cannot survive: the two copies advance
+   * its state independently and silently move values and NULLs. Declining leaves the lookup on
+   * Spark. Lifting this needs a native lookup that evaluates the operand once and masks the index
+   * evaluation with the result, at which point the guard becomes unnecessary for every operand.
+   */
+  private val eagerIndexReason: String =
+    "ANSI mode with a nullable nondeterministic array or map operand: a native lookup evaluates " +
+      "the index over the whole batch, where Spark skips it on the rows whose operand is NULL"
+
+  /** True when `convert` has to wrap the lookup to reproduce Spark's NULL short-circuit. */
+  private def needsNullGuard(expr: ElementAt): Boolean =
+    expr.failOnError && expr.left.nullable
+
   override def getSupportLevel(expr: ElementAt): SupportLevel = {
-    expr.left.dataType match {
-      case _: ArrayType => Compatible()
-      case MapType(keyType, _, _) => MapKeySupport.keySupport(keyType)
-      case _ => Unsupported(Some("Input must be an array or map"))
+    if (needsNullGuard(expr) && !expr.left.deterministic) {
+      Unsupported(Some(eagerIndexReason))
+    } else {
+      expr.left.dataType match {
+        case _: ArrayType => Compatible()
+        case MapType(keyType, _, _) => MapKeySupport.keySupport(keyType)
+        case _ => Unsupported(Some("Input must be an array or map"))
+      }
     }
   }
 
@@ -659,20 +682,12 @@ object CometElementAt extends CometExpressionSerde[ElementAt] {
         }
     }
 
-    // Spark's ElementAt is a BinaryExpression: for a NULL map/array it returns NULL WITHOUT
-    // evaluating the key/index child. Native scalar functions evaluate the key eagerly over the
-    // whole batch, so under ANSI (failOnError) a throwing key (e.g. a divide-by-zero) fires even on
-    // rows whose map/array is NULL, where Spark short-circuits. When the left can actually be NULL,
-    // guard the lookup with CASE WHEN left IS NOT NULL THEN <lookup> ELSE null so the key is only
-    // evaluated on the selected rows (DataFusion's CaseExpr filters the batch before the THEN
-    // branch), reproducing the short-circuit. Mirrors the CASE-WHEN idiom in CometArrayAppend /
-    // CometSize; the ELSE null literal carries the result type, as in CometArraysZip.
-    //
-    // The guard serializes `left` a second time and runs the THEN branch over a different row
-    // selection, so a stateful operand (`rand()`, `monotonically_increasing_id()`) would advance
-    // its state twice and silently move values and NULLs. Restrict it to deterministic operands;
-    // the rest keep the pre-existing eager-key behaviour.
-    if (expr.failOnError && expr.left.nullable && expr.left.deterministic) {
+    // Evaluate the key only on the rows the guard selects (DataFusion's CaseExpr filters the batch
+    // before the THEN branch), reproducing Spark's short-circuit. See `eagerIndexReason` for why
+    // this shape is restricted to deterministic operands. Mirrors the CASE-WHEN idiom in
+    // CometArrayAppend / CometSize; the ELSE null literal carries the result type, as in
+    // CometArraysZip.
+    if (needsNullGuard(expr)) {
       val isNotNullExpr = createUnaryExpr(
         expr,
         expr.left,

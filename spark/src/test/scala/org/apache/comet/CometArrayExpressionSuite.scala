@@ -1291,18 +1291,11 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
       checkSparkAnswerAndOperator("SELECT _1 AS id, CAST(NULL AS MAP<INT,INT>) AS m FROM tbl")
       checkSparkAnswerAndOperator(
         "SELECT _1 AS id, CAST(NULL AS ARRAY<MAP<INT,INT>>) AS a FROM tbl")
-    }
-  }
-
-  // https://github.com/apache/datafusion-comet/issues/5544: an empty map literal whose value type
-  // is itself complex. `typedLit(Map.empty[Int, List[Int]])` is already a Literal (no folding
-  // needed), and the lookup consumes it, so the rebuilt empty map has to keep
-  // `MapType(IntegerType, ArrayType(IntegerType, false), true)` for `map_extract` to type-check.
-  test("empty map literal with an array value type runs natively (multirow)") {
-    withParquetTable((0 until 3).map(i => (i, i.toLong)), "tbl") {
+      // A complex value type has to survive the rebuild too: `typedLit(Map.empty[Int, List[Int]])`
+      // is already a Literal, and `map_extract` only type-checks if the rebuilt empty map keeps
+      // `MapType(IntegerType, ArrayType(IntegerType, false), true)`.
       val emptyMapping = typedLit(Map.empty[Int, List[Int]])
-      checkSparkAnswerAndOperator(
-        spark.table("tbl").select(array(emptyMapping(col("_1"))).as("a")))
+      checkSparkAnswerAndOperator(spark.table("tbl").select(emptyMapping(col("_1")).as("v")))
     }
   }
 
@@ -1310,7 +1303,8 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
   // elapsed time in nanoseconds, so the dispatcher's `Math.multiplyExact(microseconds, 1000L)`
   // overflows past about 292 years, where Spark accepts the value (#5279). Expansion has to
   // decline the value, not just the type: the calendar-interval restriction in
-  // `mapKeyTypesExpandable` only covers map keys.
+  // `mapKeyTypesExpandable` only covers map keys. The `array(map(...))` spelling also covers the
+  // outer `ArrayType` recursion of the value walk.
   test("folded map value with an out-of-range calendar interval falls back (multirow)") {
     withParquetTable((0 until 3).map(i => (i, i.toLong)), "tbl") {
       Seq(
@@ -1337,16 +1331,14 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     withSQLConf(SQLConf.ANSI_ENABLED.key -> "false") {
       withParquetTable((1 until 4).map(i => (i, i.toLong)), "tbl") {
         Seq(
-          "levenshtein(element_at(map(1, CAST(X'FF' AS STRING)), _1), 'a')" -> "MapType",
-          "length(element_at(map(1, CAST(X'C080' AS STRING)), _1))" -> "MapType",
+          "length(element_at(map(1, CAST(X'FF' AS STRING)), _1))" -> "MapType",
           // Exercises the struct arm of the value walk.
-          "element_at(map(1, named_struct('s', CAST(X'FF' AS STRING))), _1)" -> "MapType",
-          "array(map(1, CAST(X'FF' AS STRING)))" -> "ArrayType").foreach {
-          case (value, declaredType) =>
+          "element_at(map(1, named_struct('s', CAST(X'FF' AS STRING))), _1)" -> "MapType")
+          .foreach { case (value, declaredType) =>
             checkSparkAnswerAndFallbackReason(
               s"SELECT _1 AS id, $value AS v FROM tbl",
               s"Unsupported data type $declaredType")
-        }
+          }
         // Well-formed multi-byte text is unaffected.
         checkSparkAnswerAndOperator(
           "SELECT _1 AS id, length(element_at(map(1, CAST(X'C3A9' AS STRING)), _1)) AS v FROM tbl")
@@ -1354,18 +1346,65 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     }
   }
 
-  // `makeListLiteral` has no branch for a calendar-interval, struct, or map element, and a folded
-  // literal reaches it whenever expansion declines (or never applied). Each of these used to raise
-  // a `MatchError` mid-planning instead of falling back; the element-type gate in `getSupportLevel`
-  // keeps them out of the list-literal encoder.
-  test("folded array literals whose element type the list encoder cannot carry fall back") {
-    withParquetTable((0 until 3).map(i => (i, i.toLong)), "tbl") {
-      Seq(
-        "SELECT _1 AS id, array(make_interval(1)) AS a FROM tbl",
-        "SELECT _1 AS id, array(array(named_struct('a', 1))) AS a FROM tbl",
-        "SELECT _1 AS id, array(array(map(CAST(1 AS DOUBLE), 2))) AS a FROM tbl").foreach {
-        query => checkSparkAnswerAndFallbackReason(query, "Unsupported data type ArrayType")
+  // https://github.com/apache/datafusion-comet/issues/5544: the two paths that serialize a
+  // string literal directly, `convert`'s scalar `StringType` arm and `makeListLiteral`'s, both
+  // go through `UTF8String.toString`, which substitutes U+FFFD for malformed input where Spark
+  // keeps the raw bytes. Declining is the only option, because `string_val` and `string_values`
+  // are proto `string` fields that cannot carry those bytes at all. Comparing the answers calls
+  // the two sides equal, since both render as the replacement character, so the failing cases
+  // go through `hex`. Every expression here keeps a column child to stay out of ConstantFolding,
+  // which would otherwise fold the projection into one literal the encoder never sees.
+  test("string literal holding malformed UTF-8 falls back (multirow)") {
+    withParquetTable((1 until 4).map(i => (i, i.toLong)), "tbl") {
+      // The list-literal encoder: `array(...)` is all-literal, so it folds.
+      checkSparkAnswerAndFallbackReason(
+        "SELECT _1 AS id, hex(element_at(array(CAST(X'FF' AS STRING), 'b', 'c'), _1)) AS v " +
+          "FROM tbl",
+        "Unsupported literal value for data type ArrayType")
+      // The scalar arm, which has nothing to do with complex literals. The overlong form of
+      // U+0000 is the same hazard: Spark accepts it, Rust's `str::from_utf8` does not.
+      Seq("X'FF'", "X'C080'").foreach { bytes =>
+        checkSparkAnswerAndFallbackReason(
+          s"SELECT _1 AS id, hex(concat(CAST($bytes AS STRING), CAST(_1 AS STRING))) AS v " +
+            "FROM tbl",
+          "Unsupported literal value for data type StringType")
       }
+      // Well-formed multi-byte text still serializes, on both paths.
+      checkSparkAnswerAndOperator(
+        "SELECT _1 AS id, length(concat(CAST(X'C3A9' AS STRING), CAST(_1 AS STRING))) AS v " +
+          "FROM tbl")
+      checkSparkAnswerAndOperator(
+        "SELECT _1 AS id, length(element_at(array(CAST(X'C3A9' AS STRING), 'b', 'c'), _1)) " +
+          "AS v FROM tbl")
+    }
+  }
+
+  // `CometLiteralSuite` pins the element-type gate against `makeListLiteral`'s arms exhaustively.
+  // This is the end-to-end half: an element type with no arm produces a fallback rather than the
+  // `MatchError` it used to raise mid-planning.
+  test("folded array literal whose element type the list encoder cannot carry falls back") {
+    withParquetTable((0 until 3).map(i => (i, i.toLong)), "tbl") {
+      checkSparkAnswerAndFallbackReason(
+        "SELECT _1 AS id, array(make_interval(1)) AS a FROM tbl",
+        "Unsupported data type ArrayType")
+    }
+  }
+
+  // https://github.com/apache/datafusion-comet/issues/5544: Arrow addresses a `StructVector`'s
+  // children by name, so the two `x` fields collapse into one child and the dispatcher's
+  // generated writer NPEs on the missing ordinal. `CometCreateNamedStruct` declines duplicates
+  // on the native path, but a struct that is only a map value is handed to the dispatcher whole
+  // and never reaches that check. The SQL fixture covers the unfolded spelling, and the harness
+  // excludes `ConstantFolding`, so the folded spelling the issue reports only runs here.
+  test("folded map value with duplicate struct field names falls back (multirow)") {
+    withParquetTable((0 until 3).map(i => (i, i.toLong)), "tbl") {
+      checkSparkAnswerAndFallbackReason(
+        "SELECT _1 AS id, map(1, named_struct('x', 10, 'x', 20)) AS v FROM tbl",
+        "Unsupported data type MapType")
+      // Names differing only in case are distinct children in Arrow, so the exact-name check
+      // leaves these on the native path.
+      checkSparkAnswerAndOperator(
+        "SELECT _1 AS id, map(1, named_struct('x', 10, 'X', 20)) AS v FROM tbl")
     }
   }
 
