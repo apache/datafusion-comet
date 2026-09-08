@@ -773,10 +773,25 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
     val effectiveProperties = properties ++ resolvedWriteProperties
     val parquetPathByIcebergColumnName =
       if (IcebergWriteProtoTranslation.hasEnabledBloomFilters(effectiveProperties)) {
-        IcebergReflection.getParquetPathByIcebergColumnName(writeSchema).getOrElse {
+        val resolution = IcebergReflection.getParquetPathResolution(writeSchema).getOrElse {
           withFallbackReason(op, "Could not resolve physical Parquet paths for Bloom filters")
           return None
         }
+        val renamedColumns =
+          IcebergWriteProtoTranslation
+            .enabledBloomFilterColumnNames(effectiveProperties)
+            .filter(resolution.renamedIcebergColumnNames)
+        if (renamedColumns.nonEmpty) {
+          // Iceberg Java sanitizes these Parquet names, while the pinned iceberg-rust Arrow
+          // conversion preserves them. Passing the Java path to parquet-rs would silently miss
+          // the native writer column, so retain the JVM writer until paths travel structurally.
+          withFallbackReason(
+            op,
+            s"Bloom-filter columns are renamed in Iceberg Java's Parquet schema: " +
+              renamedColumns.mkString(", "))
+          return None
+        }
+        resolution.pathByIcebergColumnName
       } else {
         Map.empty[String, String]
       }

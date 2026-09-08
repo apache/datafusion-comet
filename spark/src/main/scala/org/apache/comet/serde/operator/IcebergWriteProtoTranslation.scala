@@ -125,7 +125,7 @@ object IcebergWriteProtoTranslation {
       .toSeq
       .sorted
 
-  private def enabledBloomFilterColumnNames(props: Map[String, String]): Seq[String] =
+  private[operator] def enabledBloomFilterColumnNames(props: Map[String, String]): Seq[String] =
     configuredBloomFilterColumnNames(props).filter { column =>
       val enabled =
         java.lang.Boolean.valueOf(props(Keys.ParquetBloomFilterColumnEnabledPrefix + column))

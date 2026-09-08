@@ -37,6 +37,10 @@ import org.apache.comet.util.ClassLoaders
  */
 object IcebergReflection extends Logging {
 
+  case class ParquetPathResolution(
+      pathByIcebergColumnName: Map[String, String],
+      renamedIcebergColumnNames: Set[String])
+
   /**
    * Iceberg class names used throughout Comet.
    */
@@ -594,7 +598,7 @@ object IcebergReflection extends Logging {
    * https://github.com/apache/iceberg/blob/apache-iceberg-1.11.0/parquet/src/main/java/org/apache/iceberg/parquet/Parquet.java#L411-L421
    */
   // scalastyle:on line.size.limit
-  def getParquetPathByIcebergColumnName(schema: Any): Option[Map[String, String]] = {
+  def getParquetPathResolution(schema: Any): Option[ParquetPathResolution] = {
     import scala.jdk.CollectionConverters._
     try {
       val parquetSchemaUtil = loadClass(ClassNames.PARQUET_SCHEMA_UTIL)
@@ -605,21 +609,43 @@ object IcebergReflection extends Logging {
         .invoke(parquetSchema)
         .asInstanceOf[java.util.List[AnyRef]]
       val findColumnName = getMethod(schema.getClass, "findColumnName", classOf[Int])
+      val findField = getMethod(schema.getClass, "findField", classOf[Int])
 
-      Some(columns.asScala.flatMap { column =>
+      val resolved = columns.asScala.flatMap { column =>
         val primitiveType = getMethod(column.getClass, "getPrimitiveType").invoke(column)
         val parquetId = getMethod(primitiveType.getClass, "getId").invoke(primitiveType)
         Option(parquetId).flatMap { id =>
           val fieldId = getMethod(id.getClass, "intValue").invoke(id).asInstanceOf[Int]
           Option(findColumnName.invoke(schema, Int.box(fieldId))).map { icebergName =>
-            val parquetPath = getMethod(column.getClass, "getPath")
+            val parquetPathParts = getMethod(column.getClass, "getPath")
               .invoke(column)
               .asInstanceOf[Array[String]]
-              .mkString(".")
-            icebergName.asInstanceOf[String] -> parquetPath
+            var parquetType = parquetSchema.asInstanceOf[AnyRef]
+            val renamed = parquetPathParts.exists { pathPart =>
+              parquetType = getMethod(parquetType.getClass, "getType", classOf[String])
+                .invoke(parquetType, pathPart)
+                .asInstanceOf[AnyRef]
+              Option(getMethod(parquetType.getClass, "getId").invoke(parquetType)).exists {
+                parquetFieldId =>
+                  val idValue = getMethod(parquetFieldId.getClass, "intValue")
+                    .invoke(parquetFieldId)
+                    .asInstanceOf[Int]
+                  Option(findField.invoke(schema, Int.box(idValue))).exists { icebergField =>
+                    val icebergFieldName = getMethod(icebergField.getClass, "name")
+                      .invoke(icebergField)
+                      .asInstanceOf[String]
+                    icebergFieldName != pathPart
+                  }
+              }
+            }
+            (icebergName.asInstanceOf[String], parquetPathParts.mkString("."), renamed)
           }
         }
-      }.toMap)
+      }.toSeq
+      Some(
+        ParquetPathResolution(
+          resolved.map { case (name, path, _) => name -> path }.toMap,
+          resolved.collect { case (name, _, true) => name }.toSet))
     } catch {
       case e: Exception =>
         logError(s"Iceberg reflection failure: Parquet column paths: ${e.getMessage}")

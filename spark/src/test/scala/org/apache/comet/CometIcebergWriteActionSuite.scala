@@ -763,6 +763,36 @@ class CometIcebergWriteActionSuite
     }
   }
 
+  test("quoted bloom-filter columns renamed by Iceberg fall back with a written filter") {
+    assumeNativeAcceleration()
+    withIcebergCatalog { _ =>
+      spark.sql(s"""
+        CREATE TABLE $catalog.$ns.bloom_quoted_name (
+          `order id` INT
+        ) USING iceberg
+        TBLPROPERTIES (
+          'write.parquet.bloom-filter-enabled.column.order id'='true'
+        )
+      """)
+
+      val snapshot = withNativeEnabled {
+        captureWrite("bloom_quoted_name") {
+          spark.sql(s"INSERT INTO $catalog.$ns.bloom_quoted_name VALUES (1), (2)")
+        }
+      }
+      assertExactlyOneCommit(snapshot)
+      val nativeExecs = snapshot.plans.flatMap { plan =>
+        collectWithSubqueries(plan) { case exec: CometIcebergWriteExec => exec }
+      }
+      assert(
+        nativeExecs.isEmpty,
+        s"expected the sanitized Bloom-filter path to fall back, plans:\n${snapshot.plans.mkString("\n--\n")}")
+      assert(
+        parquetBloomFilterBytes("bloom_quoted_name", "order_x20id").nonEmpty,
+        "expected the fallback Parquet Java writer to emit the requested Bloom filter")
+    }
+  }
+
   test("native bloom filter is byte-identical to parquet-mr when max-bytes binds") {
     assumeNativeAcceleration()
     assumeIcebergBloomShapeProperties()
