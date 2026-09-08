@@ -42,10 +42,7 @@ private object CometGetDateField extends Enumeration {
   val DayOfMonth: Value = Value("day")
   // Datafusion: day of the week where Sunday is 0, but spark sunday is 1 (1 = Sunday,
   // 2 = Monday, ..., 7 = Saturday).
-  val DayOfWeek: Value = Value("dow")
   val DayOfYear: Value = Value("doy")
-  // Datafusion `isodow` is 1..=7 with Monday=1; Spark `WeekDay` is 0..=6 with Monday=0.
-  val WeekDay: Value = Value("isodow")
   val WeekOfYear: Value = Value("week")
   val Quarter: Value = Value("quarter")
 }
@@ -111,61 +108,33 @@ object CometDayOfMonth
   }
 }
 
-object CometDayOfWeek
-    extends CometExpressionSerde[DayOfWeek]
-    with CometExprGetDateField[DayOfWeek] {
+/**
+ * Spark `dayofweek` numbers Sunday = 1 through Saturday = 7. The native `spark_dayofweek` kernel
+ * derives that from the epoch day with a single modulo, replacing a `datepart('dow', ..)` call
+ * (which builds a calendar datetime per row) plus a separate `+ 1` arithmetic node.
+ */
+object CometDayOfWeek extends CometExpressionSerde[DayOfWeek] {
   override def convert(
       expr: DayOfWeek,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    // Datafusion: day of the week where Sunday is 0, but spark sunday is 1 (1 = Sunday,
-    // 2 = Monday, ..., 7 = Saturday). So we need to add 1 to the result of datepart(dow, ...)
-    val optExpr = getDateField(expr, CometGetDateField.DayOfWeek, inputs, binding)
-      .zip(exprToProtoInternal(Literal(1), inputs, binding))
-      .map { case (left, right) =>
-        Expr
-          .newBuilder()
-          .setAdd(
-            ExprOuterClass.MathExpr
-              .newBuilder()
-              .setLeft(left)
-              .setRight(right)
-              .setEvalMode(ExprOuterClass.EvalMode.LEGACY)
-              .setReturnType(serializeDataType(IntegerType).get)
-              .build())
-          .build()
-      }
-      .headOption
-    optExpr
+    val childExpr = exprToProtoInternal(expr.child, inputs, binding)
+    scalarFunctionExprToProto("spark_dayofweek", childExpr)
   }
 }
 
-object CometWeekDay extends CometExpressionSerde[WeekDay] with CometExprGetDateField[WeekDay] {
+/**
+ * Spark `weekday` numbers Monday = 0 through Sunday = 6, a different convention from
+ * [[CometDayOfWeek]]. The native `spark_weekday` kernel derives it from the epoch day directly,
+ * replacing `datepart('isodow', ..)` plus a `- 1` arithmetic node.
+ */
+object CometWeekDay extends CometExpressionSerde[WeekDay] {
   override def convert(
       expr: WeekDay,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    // Datafusion `isodow` is 1..=7 with Monday=1, but Spark `WeekDay` is 0..=6 with Monday=0,
-    // so subtract 1 from the result of datepart(isodow, ...).
-    // TODO: fix upstream to avoid substraction
-    // https://github.com/apache/datafusion/issues/22599
-    val optExpr = getDateField(expr, CometGetDateField.WeekDay, inputs, binding)
-      .zip(exprToProtoInternal(Literal(1), inputs, binding))
-      .map { case (left, right) =>
-        Expr
-          .newBuilder()
-          .setSubtract(
-            ExprOuterClass.MathExpr
-              .newBuilder()
-              .setLeft(left)
-              .setRight(right)
-              .setEvalMode(ExprOuterClass.EvalMode.LEGACY)
-              .setReturnType(serializeDataType(IntegerType).get)
-              .build())
-          .build()
-      }
-      .headOption
-    optExpr
+    val childExpr = exprToProtoInternal(expr.child, inputs, binding)
+    scalarFunctionExprToProto("spark_weekday", childExpr)
   }
 }
 

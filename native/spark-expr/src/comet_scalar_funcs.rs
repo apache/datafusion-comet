@@ -29,9 +29,10 @@ use crate::{
     spark_isnan, spark_lpad, spark_make_decimal, spark_month_name, spark_read_side_padding,
     spark_round, spark_rpad, spark_sequence, spark_to_time, spark_unhex, spark_unscaled_value,
     EvalMode, SparkArrayPositionFunc, SparkArraySlice, SparkArraysOverlap, SparkContains,
-    SparkDateDiff, SparkDateFromUnixDate, SparkDateTrunc, SparkFlatten, SparkIcebergBucket,
-    SparkIcebergTemporalTransform, SparkIcebergTruncate, SparkMakeDate, SparkMakeInterval,
-    SparkMakeTime, SparkNextDay, SparkSecondsToTimestamp, SparkSizeFunc,
+    SparkDateDiff, SparkDateFromUnixDate, SparkDateTrunc, SparkDayOfWeek, SparkFlatten,
+    SparkIcebergBucket, SparkIcebergTemporalTransform, SparkIcebergTruncate, SparkMakeDate,
+    SparkMakeInterval, SparkMakeTime, SparkNextDay, SparkSecondsToTimestamp, SparkSizeFunc,
+    SparkWeekDay,
 };
 use arrow::datatypes::DataType;
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
@@ -301,6 +302,8 @@ fn all_scalar_functions() -> Vec<Arc<ScalarUDF>> {
         Arc::new(ScalarUDF::new_from_impl(SparkDateDiff::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkDateFromUnixDate::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkDateTrunc::default())),
+        Arc::new(ScalarUDF::new_from_impl(SparkDayOfWeek::default())),
+        Arc::new(ScalarUDF::new_from_impl(SparkWeekDay::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkFlatten::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkIcebergBucket::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkIcebergTruncate::default())),

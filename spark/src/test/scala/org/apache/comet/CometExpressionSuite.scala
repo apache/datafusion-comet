@@ -1854,6 +1854,26 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("dayofweek/weekday over a date column, including dates outside chrono's range") {
+    Seq(false, true).foreach { dictionary =>
+      withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
+        val table = "test"
+        withTable(table) {
+          sql(s"create table $table(col date) using parquet")
+          // The week around the epoch pins both numbering conventions (1970-01-01 is a
+          // Thursday); the rest cover a leap day, the Gregorian century rules, and dates far
+          // enough out that the previous datepart path relied on chrono's range.
+          sql(s"""insert into $table values
+                 | (date('1969-12-28')), (date('1970-01-01')), (date('1970-01-04')),
+                 | (date('1900-01-01')), (date('2000-02-29')), (date('2024-02-29')),
+                 | (date('0001-01-01')), (date('9999-12-31')), (null)""".stripMargin)
+          checkSparkAnswerAndOperator(
+            s"SELECT col, dayofweek(col), weekday(col) FROM $table ORDER BY col")
+        }
+      }
+    }
+  }
+
   test("from_unixtime") {
     Seq(false, true).foreach { dictionary =>
       withSQLConf(
