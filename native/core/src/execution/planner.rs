@@ -4397,11 +4397,12 @@ fn parse_file_scan_tasks_from_common(
                         ))
                     })?;
                 // Recover spec_id from the index-aligned spec JSON's "spec-id" field directly,
-                // rather than from partition_spec_cache: a spec that uses a transform iceberg-rust
-                // doesn't recognize (e.g. forward-compatibility tests) fails to deserialize into a
-                // PartitionSpec, but its "spec-id" is still present in the JSON and its partition
-                // type entry has no usable fields anyway. Falling back to idx keeps ordering
-                // deterministic if the field is somehow absent.
+                // rather than from partition_spec_cache: a spec that fails to deserialize into a
+                // PartitionSpec still has its "spec-id" in the JSON, so the merge below stays
+                // correctly ordered. The JVM serializer maps a transform name iceberg-rust cannot
+                // parse to "unknown" (see IcebergReflection.Transforms.forNative), so this is
+                // defensive rather than a path a supported table reaches. Falling back to idx keeps
+                // ordering deterministic if the field is somehow absent.
                 let spec_id = proto_common
                     .partition_spec_pool
                     .get(idx)
@@ -7191,11 +7192,11 @@ mod tests {
 
     #[test]
     fn test_unified_partition_type_tolerates_unparseable_spec() {
-        // Regression for TestForwardCompatibility.testSparkCanReadUnknownTransform: a spec that
-        // uses a transform iceberg-rust doesn't recognize fails to deserialize into a
-        // PartitionSpec, but its partition field is filtered out on the Scala side (unknown type),
-        // so its partition_type_pool entry is an empty struct. Recovering spec_id must not require
-        // the full spec to parse -- the merge must succeed (with no fields) rather than erroring.
+        // A spec whose transform iceberg-rust cannot deserialize still has to yield a spec_id for
+        // the unified-type merge, so recovering it must not require the full spec to parse. The JVM
+        // serializer no longer emits such a spec (see
+        // test_unknown_transform_spec_builds_task_with_partition_data), so this pins the defensive
+        // path: the merge succeeds rather than erroring.
         let schema_json = serde_json::to_string(
             &iceberg::spec::Schema::builder()
                 .with_schema_id(0)
@@ -7211,7 +7212,8 @@ mod tests {
         .expect("serialize schema");
 
         // A spec JSON whose transform iceberg-rust cannot deserialize, paired with an empty type
-        // entry (as Scala produces once the unknown-type field is filtered).
+        // entry. No partition data: `FileScanTask` validation rejects partition values without a
+        // spec, and the unparseable spec deserializes to None.
         let unparseable_spec_json = r#"{"spec-id":7,"fields":[{"source-id":1,"field-id":1000,"name":"x","transform":"totally_unknown[9]"}]}"#;
         let empty_type_json = r#"{"type":"struct","fields":[]}"#;
 
@@ -7243,6 +7245,123 @@ mod tests {
                 .map(|t| t.fields().is_empty())
                 .unwrap_or(true),
             "unified partition type should have no fields for an all-unknown-transform spec"
+        );
+    }
+
+    /// Regression for TestForwardCompatibility.testSparkCanReadUnknownTransform. Iceberg Java
+    /// reports a transform it doesn't know (written by a newer Iceberg) under its original name,
+    /// e.g. `zero`, and the field's partition type as `string` -- so the field is NOT dropped from
+    /// the spec, and the task carries a real partition value for it. If that name reached
+    /// iceberg-rust verbatim the spec would fail to deserialize, leaving partition values with no
+    /// spec, which `FileScanTask::build()` rejects with "Non-empty FileScanTask partition requires
+    /// a partition spec". `IcebergReflection.Transforms.forNative` maps it to `unknown`, which
+    /// iceberg-rust parses; this pins that the resulting task builds and keeps its spec.
+    #[test]
+    fn test_unknown_transform_spec_builds_task_with_partition_data() {
+        let schema_json = serde_json::to_string(
+            &iceberg::spec::Schema::builder()
+                .with_schema_id(0)
+                .with_fields(vec![
+                    iceberg::spec::NestedField::optional(
+                        1,
+                        "id",
+                        iceberg::spec::Type::Primitive(iceberg::spec::PrimitiveType::Long),
+                    )
+                    .into(),
+                    iceberg::spec::NestedField::optional(
+                        2,
+                        "data",
+                        iceberg::spec::Type::Primitive(iceberg::spec::PrimitiveType::String),
+                    )
+                    .into(),
+                ])
+                .build()
+                .expect("schema"),
+        )
+        .expect("serialize schema");
+
+        // What the JVM serializer emits for TestForwardCompatibility's UNKNOWN_SPEC: the `zero`
+        // transform normalized to `unknown`, and the partition type Iceberg Java resolved for it
+        // (string, from UnknownTransform.getResultType).
+        let spec_json = r#"{"spec-id":0,"fields":[{"source-id":1,"field-id":1000,"name":"id_zero","transform":"unknown"}]}"#;
+        let type_json = r#"{"type":"struct","fields":[{"id":1000,"name":"id_zero","required":false,"type":"string"}]}"#;
+
+        let proto_common = spark_operator::IcebergScanCommon {
+            schema_pool: vec![schema_json],
+            partition_type_pool: vec![type_json.to_string()],
+            partition_spec_pool: vec![spec_json.to_string()],
+            partition_data_pool: vec![spark_operator::PartitionData {
+                values: vec![spark_operator::PartitionValue {
+                    field_id: 1000,
+                    literal: Some(spark_operator::IcebergLiteral {
+                        value: Some(spark_operator::iceberg_literal::Value::StringVal(
+                            "0".to_string(),
+                        )),
+                        ..Default::default()
+                    }),
+                }],
+            }],
+            project_field_ids_pool: vec![spark_operator::ProjectFieldIdList {
+                field_ids: vec![1, 2, iceberg::metadata_columns::RESERVED_FIELD_ID_PARTITION],
+            }],
+            ..Default::default()
+        };
+
+        let proto_task = spark_operator::IcebergFileScanTask {
+            data_file_path: "file:///tmp/data.parquet".to_string(),
+            file_size_in_bytes: 100,
+            schema_idx: 0,
+            partition_spec_idx: Some(0),
+            partition_data_idx: Some(0),
+            project_field_ids_idx: 0,
+            ..Default::default()
+        };
+
+        let tasks =
+            parse_file_scan_tasks_from_common(&proto_common, std::slice::from_ref(&proto_task))
+                .expect("an unknown-transform spec must still build a scan task");
+        assert_eq!(tasks.len(), 1);
+
+        let spec = tasks[0]
+            .partition_spec()
+            .expect("partition spec must survive an unknown transform");
+        assert_eq!(spec.spec_id(), 0);
+        assert_eq!(spec.fields().len(), 1);
+        assert_eq!(
+            spec.fields()[0].transform,
+            iceberg::spec::Transform::Unknown
+        );
+        assert_eq!(
+            tasks[0].partition().map(|p| p.fields().len()),
+            Some(1),
+            "the partition value must be carried alongside the spec"
+        );
+
+        // The `_partition` column reads its field types from the JVM-supplied partition type, which
+        // agrees with Transform::Unknown's own result type (string).
+        let unified = tasks[0]
+            .unified_partition_type()
+            .expect("unified_partition_type must be set when _partition is projected");
+        assert_eq!(unified.fields().len(), 1);
+        assert_eq!(unified.fields()[0].id, 1000);
+        assert_eq!(
+            *unified.fields()[0].field_type,
+            iceberg::spec::Type::Primitive(iceberg::spec::PrimitiveType::String)
+        );
+
+        // Pin the failure the normalization avoids: the raw Iceberg Java transform name is the same
+        // input in every other respect and does not survive `FileScanTask` validation.
+        let raw_spec_json = spec_json.replace(r#""transform":"unknown""#, r#""transform":"zero""#);
+        assert_ne!(raw_spec_json, spec_json, "the replace must have matched");
+        let raw_common = spark_operator::IcebergScanCommon {
+            partition_spec_pool: vec![raw_spec_json],
+            ..proto_common
+        };
+        let err = parse_file_scan_tasks_from_common(&raw_common, &[proto_task])
+            .expect_err("an unnormalized transform name must not build a task");
+        assert!(
+            err.to_string().contains("Non-empty FileScanTask partition"),
+            "unexpected error: {err}"
         );
     }
 }
