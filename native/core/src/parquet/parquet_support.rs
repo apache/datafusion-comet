@@ -226,12 +226,10 @@ fn parquet_convert_array_impl(
             // `millisToMicros` uses `Math.multiplyExact`:
             // https://github.com/apache/spark/blob/v4.2.0/sql/api/src/main/scala/org/apache/spark/sql/catalyst/util/SparkDateTimeUtils.scala#L103-L108
             //
-            // The checked conversion is limited to TOP-LEVEL columns. Spark only avoids the
-            // error for filtered-out values through row-group statistics pruning, and
-            // DataFusion's PruningPredicate does not support nested fields yet, so a checked
-            // conversion on a nested field would fail queries whose predicates Spark prunes
-            // (e.g. `WHERE s.ts < X` over an all-overflowing file). Nested fields keep the
-            // pre-existing safe-cast behavior below (overflow -> NULL).
+            // The checked conversion remains limited to top-level columns. Nested statistics
+            // pruning alone does not establish Spark parity for conversion-aware predicates,
+            // dictionary filters, and row filters (see #5739). Nested fields retain the
+            // existing safe cast below (overflow -> NULL).
             let micros = array
                 .as_primitive::<TimestampMillisecondType>()
                 .try_unary::<_, TimestampMicrosecondType, _>(|value| value.mul_checked(1_000))?
@@ -764,10 +762,8 @@ mod tests {
         assert!(converted.is_null(0), "overflow must become NULL");
         assert!(converted.is_null(1));
 
-        // Nested: DataFusion's PruningPredicate cannot prune nested fields, so a
-        // checked conversion would fail queries whose predicates Spark satisfies via
-        // row-group statistics pruning. The nested field keeps the safe-cast behavior:
-        // overflow becomes NULL.
+        // Nested statistics pruning does not by itself establish checked-conversion parity
+        // with Spark (#5739). Preserve the existing nested overflow-to-NULL behavior.
         let child_field = Arc::new(Field::new(
             "ts",
             DataType::Timestamp(TimeUnit::Millisecond, None),

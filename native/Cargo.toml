@@ -82,3 +82,38 @@ codegen-units = 16   # Parallel codegen (faster compile, slightly larger binary)
 debug-assertions = true
 panic = "unwind"     # Allow panics to be caught and logged across FFI boundary
 # overflow-checks inherited as false from release
+
+# Struct-field capability and row-group statistics pruning (peterxcli/datafusion#2).
+[patch.crates-io]
+datafusion = { git = "https://github.com/peterxcli/datafusion.git", rev = "0b0506a9acab9d5892ecf7e89243c3b34664bcc6" }
+datafusion-catalog = { git = "https://github.com/peterxcli/datafusion.git", rev = "0b0506a9acab9d5892ecf7e89243c3b34664bcc6" }
+datafusion-catalog-listing = { git = "https://github.com/peterxcli/datafusion.git", rev = "0b0506a9acab9d5892ecf7e89243c3b34664bcc6" }
+datafusion-common = { git = "https://github.com/peterxcli/datafusion.git", rev = "0b0506a9acab9d5892ecf7e89243c3b34664bcc6" }
+datafusion-common-runtime = { git = "https://github.com/peterxcli/datafusion.git", rev = "0b0506a9acab9d5892ecf7e89243c3b34664bcc6" }
+datafusion-datasource = { git = "https://github.com/peterxcli/datafusion.git", rev = "0b0506a9acab9d5892ecf7e89243c3b34664bcc6" }
+datafusion-datasource-arrow = { git = "https://github.com/peterxcli/datafusion.git", rev = "0b0506a9acab9d5892ecf7e89243c3b34664bcc6" }
+datafusion-datasource-csv = { git = "https://github.com/peterxcli/datafusion.git", rev = "0b0506a9acab9d5892ecf7e89243c3b34664bcc6" }
+datafusion-datasource-json = { git = "https://github.com/peterxcli/datafusion.git", rev = "0b0506a9acab9d5892ecf7e89243c3b34664bcc6" }
+datafusion-datasource-parquet = { git = "https://github.com/peterxcli/datafusion.git", rev = "0b0506a9acab9d5892ecf7e89243c3b34664bcc6" }
+datafusion-doc = { git = "https://github.com/peterxcli/datafusion.git", rev = "0b0506a9acab9d5892ecf7e89243c3b34664bcc6" }
+datafusion-execution = { git = "https://github.com/peterxcli/datafusion.git", rev = "0b0506a9acab9d5892ecf7e89243c3b34664bcc6" }
+datafusion-expr = { git = "https://github.com/peterxcli/datafusion.git", rev = "0b0506a9acab9d5892ecf7e89243c3b34664bcc6" }
+datafusion-expr-common = { git = "https://github.com/peterxcli/datafusion.git", rev = "0b0506a9acab9d5892ecf7e89243c3b34664bcc6" }
+datafusion-functions = { git = "https://github.com/peterxcli/datafusion.git", rev = "0b0506a9acab9d5892ecf7e89243c3b34664bcc6" }
+datafusion-functions-aggregate = { git = "https://github.com/peterxcli/datafusion.git", rev = "0b0506a9acab9d5892ecf7e89243c3b34664bcc6" }
+datafusion-functions-aggregate-common = { git = "https://github.com/peterxcli/datafusion.git", rev = "0b0506a9acab9d5892ecf7e89243c3b34664bcc6" }
+datafusion-functions-nested = { git = "https://github.com/peterxcli/datafusion.git", rev = "0b0506a9acab9d5892ecf7e89243c3b34664bcc6" }
+datafusion-functions-table = { git = "https://github.com/peterxcli/datafusion.git", rev = "0b0506a9acab9d5892ecf7e89243c3b34664bcc6" }
+datafusion-functions-window = { git = "https://github.com/peterxcli/datafusion.git", rev = "0b0506a9acab9d5892ecf7e89243c3b34664bcc6" }
+datafusion-functions-window-common = { git = "https://github.com/peterxcli/datafusion.git", rev = "0b0506a9acab9d5892ecf7e89243c3b34664bcc6" }
+datafusion-macros = { git = "https://github.com/peterxcli/datafusion.git", rev = "0b0506a9acab9d5892ecf7e89243c3b34664bcc6" }
+datafusion-optimizer = { git = "https://github.com/peterxcli/datafusion.git", rev = "0b0506a9acab9d5892ecf7e89243c3b34664bcc6" }
+datafusion-physical-expr = { git = "https://github.com/peterxcli/datafusion.git", rev = "0b0506a9acab9d5892ecf7e89243c3b34664bcc6" }
+datafusion-physical-expr-adapter = { git = "https://github.com/peterxcli/datafusion.git", rev = "0b0506a9acab9d5892ecf7e89243c3b34664bcc6" }
+datafusion-physical-expr-common = { git = "https://github.com/peterxcli/datafusion.git", rev = "0b0506a9acab9d5892ecf7e89243c3b34664bcc6" }
+datafusion-physical-optimizer = { git = "https://github.com/peterxcli/datafusion.git", rev = "0b0506a9acab9d5892ecf7e89243c3b34664bcc6" }
+datafusion-physical-plan = { git = "https://github.com/peterxcli/datafusion.git", rev = "0b0506a9acab9d5892ecf7e89243c3b34664bcc6" }
+datafusion-pruning = { git = "https://github.com/peterxcli/datafusion.git", rev = "0b0506a9acab9d5892ecf7e89243c3b34664bcc6" }
+datafusion-session = { git = "https://github.com/peterxcli/datafusion.git", rev = "0b0506a9acab9d5892ecf7e89243c3b34664bcc6" }
+datafusion-spark = { git = "https://github.com/peterxcli/datafusion.git", rev = "0b0506a9acab9d5892ecf7e89243c3b34664bcc6" }
+datafusion-sql = { git = "https://github.com/peterxcli/datafusion.git", rev = "0b0506a9acab9d5892ecf7e89243c3b34664bcc6" }

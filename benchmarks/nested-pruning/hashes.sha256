@@ -1,0 +1,5 @@
+7c127e5ab7945c10b679d9c2665718adc040ad082e0d4fbf773f2d22ee438c30  /home/ubuntu/oss/comet-nested-results/baseline/libcomet.so
+e8c2a1ef7db65836dfe935008083e518fdb2d6258498554854b79b666eee40f9  /home/ubuntu/oss/comet-nested-results/candidate/libcomet.so
+ace52025f280edeb5f9723235392054ae45b8e0a914120f260e71ec701909f8d  /home/ubuntu/oss/comet-nested-data/shuffled.parquet
+c10d2c19f517e62f496a8a02da4c8491b9c4fff712ea7d893c986821727ca0af  /home/ubuntu/oss/comet-nested-data/sorted.parquet
+12877fbd1f236c8755f2209aafb87961e0f39333f6345ee1b93f00c59d404e39  /home/ubuntu/oss/comet-nested-pruning/spark/target/comet-spark-spark4.1_2.13-1.1.0-SNAPSHOT.jar
