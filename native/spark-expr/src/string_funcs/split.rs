@@ -234,7 +234,7 @@ pub fn spark_split_sql(args: &[ColumnarValue]) -> DataFusionResult<ColumnarValue
             let offsets_buffer = offsets_builder.finish();
             let values_buffer = values_builder.finish();
 
-            let list_field = Arc::new(Field::new("item", DataType::Utf8, true));
+            let list_field = Arc::new(Field::new("item", DataType::Utf8, false));
             let values_array = Arc::new(StringArray::try_new(
                 OffsetBuffer::new(offsets_buffer.into()),
                 values_buffer,
@@ -994,6 +994,239 @@ mod tests {
 
         assert_eq!(str_array.len(), 1);
         assert_eq!(str_array.value(0), "");
+    }
+
+    #[test]
+    fn test_split_sql_scalar_empty_delimiter_keeps_whole_string() {
+        // Spark semantics: an empty delimiter must NOT split into characters.
+        let args = vec![
+            ColumnarValue::Scalar(ScalarValue::Utf8(Some("abc".to_string()))),
+            ColumnarValue::Scalar(ScalarValue::Utf8(Some("".to_string()))),
+        ];
+        let result = spark_split_sql(&args).unwrap();
+
+        let list = match result {
+            ColumnarValue::Array(arr) => arr
+                .as_any()
+                .downcast_ref::<GenericListArray<i32>>()
+                .expect("expected ListArray")
+                .clone(),
+            ColumnarValue::Scalar(ScalarValue::List(list)) => (*list).clone(),
+            other => panic!("unexpected result: {:?}", other.data_type()),
+        };
+
+        let first = list.value(0);
+        let items = first
+            .as_any()
+            .downcast_ref::<GenericStringArray<i32>>()
+            .expect("expected Utf8 items");
+
+        assert_eq!(items.len(), 1, "empty delimiter must not split into chars");
+        assert_eq!(items.value(0), "abc");
+    }
+
+    #[test]
+    fn test_split_sql_scalar_empty_delimiter_empty_string() {
+        // Empty input with an empty delimiter -> [""], matching the array path.
+        let args = vec![
+            ColumnarValue::Scalar(ScalarValue::Utf8(Some("".to_string()))),
+            ColumnarValue::Scalar(ScalarValue::Utf8(Some("".to_string()))),
+        ];
+        let result = spark_split_sql(&args).unwrap();
+
+        let list = match result {
+            ColumnarValue::Array(arr) => arr
+                .as_any()
+                .downcast_ref::<GenericListArray<i32>>()
+                .expect("expected ListArray")
+                .clone(),
+            ColumnarValue::Scalar(ScalarValue::List(list)) => (*list).clone(),
+            other => panic!("unexpected result: {:?}", other.data_type()),
+        };
+
+        let first = list.value(0);
+        let items = first
+            .as_any()
+            .downcast_ref::<GenericStringArray<i32>>()
+            .expect("expected Utf8 items");
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items.value(0), "");
+    }
+
+    #[test]
+    fn test_split_sql_empty_delimiter_scalar_array_parity() {
+        // Scalar and array inputs must give identical results for the
+        // empty-delimiter case: the whole string as a single element.
+        let strings = vec!["abc", "", "hello world"];
+
+        let array_args = vec![
+            ColumnarValue::Array(Arc::new(StringArray::from(strings.clone()))),
+            ColumnarValue::Scalar(ScalarValue::Utf8(Some("".to_string()))),
+        ];
+        let array_result = spark_split_sql(&array_args).unwrap();
+        let array_list = match array_result {
+            ColumnarValue::Array(arr) => arr
+                .as_any()
+                .downcast_ref::<GenericListArray<i32>>()
+                .expect("expected ListArray")
+                .clone(),
+            other => panic!("unexpected result: {:?}", other.data_type()),
+        };
+
+        for (row, s) in strings.iter().enumerate() {
+            let item = array_list.value(row);
+            let items = item
+                .as_any()
+                .downcast_ref::<GenericStringArray<i32>>()
+                .expect("expected Utf8 items");
+            assert_eq!(items.len(), 1, "row {}: expected single element", row);
+            assert_eq!(items.value(0), *s, "row {}", row);
+        }
+
+        let scalar_args = vec![
+            ColumnarValue::Scalar(ScalarValue::Utf8(Some("abc".to_string()))),
+            ColumnarValue::Scalar(ScalarValue::Utf8(Some("".to_string()))),
+        ];
+        let scalar_result = spark_split_sql(&scalar_args).unwrap();
+        let scalar_list = match scalar_result {
+            ColumnarValue::Array(arr) => arr
+                .as_any()
+                .downcast_ref::<GenericListArray<i32>>()
+                .expect("expected ListArray")
+                .clone(),
+            ColumnarValue::Scalar(ScalarValue::List(list)) => (*list).clone(),
+            other => panic!("unexpected result: {:?}", other.data_type()),
+        };
+
+        let first = scalar_list.value(0);
+        let items = first
+            .as_any()
+            .downcast_ref::<GenericStringArray<i32>>()
+            .expect("expected Utf8 items");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items.value(0), "abc");
+    }
+
+    #[test]
+    fn test_split_sql_scalar_delimiter_still_splits_normally() {
+        // Guard: the empty-delimiter handling must not affect normal delimiters.
+        let args = vec![
+            ColumnarValue::Scalar(ScalarValue::Utf8(Some("a,b,c".to_string()))),
+            ColumnarValue::Scalar(ScalarValue::Utf8(Some(",".to_string()))),
+        ];
+        let result = spark_split_sql(&args).unwrap();
+
+        let list = match result {
+            ColumnarValue::Array(arr) => arr
+                .as_any()
+                .downcast_ref::<GenericListArray<i32>>()
+                .expect("expected ListArray")
+                .clone(),
+            ColumnarValue::Scalar(ScalarValue::List(list)) => (*list).clone(),
+            other => panic!("unexpected result: {:?}", other.data_type()),
+        };
+
+        let first = list.value(0);
+        let items = first
+            .as_any()
+            .downcast_ref::<GenericStringArray<i32>>()
+            .expect("expected Utf8 items");
+
+        assert_eq!(items.len(), 3);
+        assert_eq!(items.value(0), "a");
+        assert_eq!(items.value(1), "b");
+        assert_eq!(items.value(2), "c");
+    }
+
+    #[test]
+    fn test_split_sql_scalar_string_array_delimiter_with_empty_element() {
+        // (Scalar string, Array delimiter): an empty delimiter element must
+        // keep the whole string as one element, like the other branches.
+        let delimiters = StringArray::from(vec![Some(""), Some(",")]);
+        let args = vec![
+            ColumnarValue::Scalar(ScalarValue::Utf8(Some("abc".to_string()))),
+            ColumnarValue::Array(Arc::new(delimiters)),
+        ];
+        let result = spark_split_sql(&args).unwrap();
+
+        let list = match result {
+            ColumnarValue::Array(arr) => arr
+                .as_any()
+                .downcast_ref::<GenericListArray<i32>>()
+                .expect("expected ListArray")
+                .clone(),
+            other => panic!("unexpected result: {:?}", other.data_type()),
+        };
+
+        assert_eq!(list.len(), 2);
+
+        let first = list.value(0);
+        let row0 = first
+            .as_any()
+            .downcast_ref::<GenericStringArray<i32>>()
+            .expect("expected Utf8 items");
+        assert_eq!(row0.len(), 1, "empty delimiter must not split into chars");
+        assert_eq!(row0.value(0), "abc");
+
+        let second = list.value(1);
+        let row1 = second
+            .as_any()
+            .downcast_ref::<GenericStringArray<i32>>()
+            .expect("expected Utf8 items");
+        assert_eq!(row1.len(), 1);
+        assert_eq!(row1.value(0), "abc");
+    }
+
+    #[test]
+    fn test_split_sql_scalar_item_field_non_nullable() {
+        // The scalar branch must produce the same List type as the array
+        // branches: a non-nullable "item" field.
+        let args = vec![
+            ColumnarValue::Scalar(ScalarValue::Utf8(Some("abc".to_string()))),
+            ColumnarValue::Scalar(ScalarValue::Utf8(Some(",".to_string()))),
+        ];
+        let result = spark_split_sql(&args).unwrap();
+
+        let list = match result {
+            ColumnarValue::Array(arr) => arr
+                .as_any()
+                .downcast_ref::<GenericListArray<i32>>()
+                .expect("expected ListArray")
+                .clone(),
+            ColumnarValue::Scalar(ScalarValue::List(list)) => (*list).clone(),
+            other => panic!("unexpected result: {:?}", other.data_type()),
+        };
+
+        let item_field = match list.data_type() {
+            DataType::List(field) | DataType::LargeList(field) => field.clone(),
+            other => panic!("expected List type, got {:?}", other),
+        };
+        assert!(
+            !item_field.is_nullable(),
+            "scalar split_sql must keep the non-nullable item field"
+        );
+
+        // parity with the array path
+        let array_args = vec![
+            ColumnarValue::Array(Arc::new(StringArray::from(vec!["abc"]))),
+            ColumnarValue::Scalar(ScalarValue::Utf8(Some(",".to_string()))),
+        ];
+        let array_result = spark_split_sql(&array_args).unwrap();
+        let array_list = match array_result {
+            ColumnarValue::Array(arr) => arr
+                .as_any()
+                .downcast_ref::<GenericListArray<i32>>()
+                .expect("expected ListArray")
+                .clone(),
+            other => panic!("unexpected result: {:?}", other.data_type()),
+        };
+
+        assert_eq!(
+            list.data_type(),
+            array_list.data_type(),
+            "scalar and array split_sql must return the same List type"
+        );
     }
 
     fn assert_list_value(list_array: &ListArray, row: usize, expected: &[&str]) {
