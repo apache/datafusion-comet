@@ -375,7 +375,11 @@ fn spark_catalog_name(dt: &DataType) -> String {
         }
         // Spark's `catalogString` for the complex types (e.g. `array<int>`), so a
         // scalar-vs-complex rejection reads like Spark's.
-        DataType::List(item) | DataType::LargeList(item) | DataType::FixedSizeList(item, _) => {
+        DataType::List(item)
+        | DataType::LargeList(item)
+        | DataType::FixedSizeList(item, _)
+        | DataType::ListView(item)
+        | DataType::LargeListView(item) => {
             format!("array<{}>", spark_catalog_name(item.data_type()))
         }
         DataType::Map(entries, _) => match entries.data_type() {
@@ -689,6 +693,8 @@ fn check_leaf_conversion(
                 | DataType::List(_)
                 | DataType::LargeList(_)
                 | DataType::FixedSizeList(_, _)
+                | DataType::ListView(_)
+                | DataType::LargeListView(_)
                 | DataType::Map(_, _)
         )
     };
@@ -743,10 +749,14 @@ fn check_conversion(
         (
             DataType::List(physical_item)
             | DataType::LargeList(physical_item)
-            | DataType::FixedSizeList(physical_item, _),
+            | DataType::FixedSizeList(physical_item, _)
+            | DataType::ListView(physical_item)
+            | DataType::LargeListView(physical_item),
             DataType::List(target_item)
             | DataType::LargeList(target_item)
-            | DataType::FixedSizeList(target_item, _),
+            | DataType::FixedSizeList(target_item, _)
+            | DataType::ListView(target_item)
+            | DataType::LargeListView(target_item),
         ) => check_conversion(
             physical_item.data_type(),
             target_item.data_type(),
@@ -2355,6 +2365,55 @@ mod test {
                 assert_eq!(result.schema(), schema);
                 let expected = arrow::compute::cast(batch.column(0), schema.field(0).data_type())?;
                 assert_eq!(result.column(0).to_data(), expected.to_data());
+            }
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn nested_list_view_conversion() -> Result<(), DataFusionError> {
+        let values = ListArray::from_iter_primitive::<Int64Type, _, _>(vec![
+            Some(vec![Some(1), Some(2)]),
+            Some(vec![Some(5_000_000_000), None]),
+            None,
+            Some(vec![]),
+        ]);
+        let item = Arc::new(Field::new("item", DataType::Int64, true));
+        for physical_type in [
+            DataType::ListView(Arc::clone(&item)),
+            DataType::LargeListView(Arc::clone(&item)),
+        ] {
+            let array = arrow::compute::cast(&values, &physical_type)?;
+            let batch = struct_batch(Field::new("a", physical_type, true), array)?;
+            let schema = struct_schema(vec![Field::new(
+                "a",
+                DataType::List(Arc::clone(&item)),
+                true,
+            )]);
+            let result = roundtrip(&batch, Arc::clone(&schema)).await?;
+            assert_eq!(result.schema(), schema);
+            assert_eq!(
+                result.column(0).as_struct().column(0).to_data(),
+                values.to_data()
+            );
+
+            let narrow_item = Arc::new(Field::new("item", DataType::Int32, true));
+            for target in [
+                DataType::List(Arc::clone(&narrow_item)),
+                DataType::ListView(Arc::clone(&narrow_item)),
+                DataType::LargeListView(narrow_item),
+            ] {
+                let msg = nested_rejection_message(
+                    &batch,
+                    struct_schema(vec![Field::new("a", target, true)]),
+                )
+                .await;
+                assert!(
+                    msg.contains("Column: [[s, a, list, item]]")
+                        && msg.contains("Expected: int")
+                        && msg.contains("Found: INT64"),
+                    "{msg}"
+                );
             }
         }
         Ok(())
