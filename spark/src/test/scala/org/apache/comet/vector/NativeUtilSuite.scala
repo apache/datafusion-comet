@@ -515,6 +515,5 @@ class NativeUtilSuite extends CometTestBase {
         assert(vector.getField.getChildren.get(0).getName === "$data$")
       }
     }
-    }
   }
 }
