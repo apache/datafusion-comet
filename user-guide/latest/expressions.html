@@ -3027,8 +3027,8 @@ expressions. The following function families are <strong>not currently planned</
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">lpad</span></code></p></td>
 <td><p>✅</p></td>
-<td><p>—</p></td>
-<td><p></p></td>
+<td><p>Hybrid</p></td>
+<td><p>String inputs use the native kernel with a column string and literal padding; literal strings and column padding use codegen dispatch. Binary inputs use codegen dispatch.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ltrim</span></code></p></td>
 <td><p>✅</p></td>
@@ -3112,8 +3112,8 @@ expressions. The following function families are <strong>not currently planned</
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">rpad</span></code></p></td>
 <td><p>✅</p></td>
-<td><p>—</p></td>
-<td><p></p></td>
+<td><p>Hybrid</p></td>
+<td><p>String inputs use the native kernel with a column string and literal padding; literal strings and column padding use codegen dispatch. Binary inputs use codegen dispatch.</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">rtrim</span></code></p></td>
 <td><p>✅</p></td>

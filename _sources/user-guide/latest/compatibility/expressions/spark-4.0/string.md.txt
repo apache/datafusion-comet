@@ -134,14 +134,14 @@ The following cases have no native implementation and always run in the JVM usin
 
 ## StringLPad
 
-The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
+The following cases have no native implementation and always run in the JVM using Spark's code-generated implementation (inside the Comet pipeline):
 
 - Scalar values are not supported for the `str` argument.
 - Only scalar values are supported for the `pad` argument.
 
 ## StringRPad
 
-The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
+The following cases have no native implementation and always run in the JVM using Spark's code-generated implementation (inside the Comet pipeline):
 
 - Scalar values are not supported for the `str` argument.
 - Only scalar values are supported for the `pad` argument.
