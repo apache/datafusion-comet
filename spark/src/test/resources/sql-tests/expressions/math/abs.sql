@@ -38,11 +38,9 @@ SELECT abs(make_dt_interval(1, 2, 3, 4.5)) AS dt_pos,
        abs(make_dt_interval(0, 0, 0, 0)) AS dt_zero,
        abs(CAST(NULL AS INTERVAL DAY TO SECOND)) AS dt_null
 
--- interval year to month: dispatched the same way; wrapped in a struct because a top-level
--- YearMonthIntervalType column is rejected by the projection output type gate (https://github.com/apache/datafusion-comet/issues/5061)
 query
-SELECT named_struct('v', abs(make_ym_interval(1, 6))) AS ym_pos,
-       named_struct('v', abs(make_ym_interval(-1, -6))) AS ym_neg
+SELECT abs(make_ym_interval(1, 6)),
+       abs(make_ym_interval(-1, -6))
 
 query expect_error(overflow)
 SELECT abs(make_dt_interval(-106751991, -4, 0, -54.775808))
