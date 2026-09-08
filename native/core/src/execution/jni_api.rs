@@ -1253,9 +1253,55 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_decodeShuffleBlock(
 }
 
 #[no_mangle]
+/// Parse the expected schema once for a remote shuffle iterator.
+///
+/// The iterator owns the returned decoder and releases it when the input is closed.
+pub extern "system" fn Java_org_apache_comet_Native_createRemoteShuffleDecoder(
+    e: EnvUnowned,
+    _class: JClass,
+    expected_schema: JByteArray,
+) -> jlong {
+    try_unwrap_or_throw(&e, |env| {
+        let bytes = env.convert_byte_array(expected_schema)?;
+        let schema = ShuffleScan::decode(bytes.as_slice()).map_err(|error| {
+            CometError::Internal(format!("Invalid expected remote shuffle schema: {error}"))
+        })?;
+        let decoder = RemoteShuffleDecoder {
+            expected_types: schema.fields.iter().map(to_arrow_datatype).collect(),
+        };
+        Ok(Box::into_raw(Box::new(decoder)) as jlong)
+    })
+}
+
+/// Immutable decoding state owned by one JVM remote shuffle iterator, not shared across tasks.
+struct RemoteShuffleDecoder {
+    expected_types: Vec<ArrowDataType>,
+}
+
+#[no_mangle]
+/// Release a remote shuffle iterator's decoder.
+///
+/// # Safety
+/// A nonzero handle must have been returned by `createRemoteShuffleDecoder`, must not have
+/// been released, and must not be in use by a concurrent decode call.
+pub unsafe extern "system" fn Java_org_apache_comet_Native_releaseRemoteShuffleDecoder(
+    e: EnvUnowned,
+    _class: JClass,
+    decoder_handle: jlong,
+) {
+    try_unwrap_or_throw(&e, |_| {
+        if decoder_handle != 0 {
+            drop(unsafe { Box::from_raw(decoder_handle as *mut RemoteShuffleDecoder) });
+        }
+        Ok(())
+    })
+}
+
+#[no_mangle]
 /// Decode a remote native shuffle block with Arrow array and logical type validation enabled.
 /// # Safety
-/// This function is inherently unsafe since it deals with raw pointers passed from JNI.
+/// Buffer and output pointers must be valid. The decoder handle must have been returned by
+/// `createRemoteShuffleDecoder` and must remain alive for the duration of this call.
 pub unsafe extern "system" fn Java_org_apache_comet_Native_decodeShuffleBlockWithValidation(
     e: EnvUnowned,
     _class: JClass,
@@ -1264,22 +1310,21 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_decodeShuffleBlockWit
     array_addrs: JLongArray,
     schema_addrs: JLongArray,
     tracing_enabled: jboolean,
-    expected_schema: JByteArray,
+    decoder_handle: jlong,
 ) -> jlong {
     try_unwrap_or_throw(&e, |env| {
         with_trace("decodeShuffleBlock", tracing_enabled != JNI_FALSE, || {
-            let bytes = env.convert_byte_array(expected_schema)?;
-            let schema = ShuffleScan::decode(bytes.as_slice()).map_err(|error| {
-                CometError::Internal(format!("Invalid expected remote shuffle schema: {error}"))
-            })?;
-            let expected_types: Vec<_> = schema.fields.iter().map(to_arrow_datatype).collect();
+            let decoder = unsafe { (decoder_handle as *const RemoteShuffleDecoder).as_ref() }
+                .ok_or_else(|| {
+                    CometError::Internal("Remote shuffle decoder is not initialized".to_owned())
+                })?;
             decode_shuffle_block(
                 env,
                 byte_buffer,
                 length,
                 array_addrs,
                 schema_addrs,
-                Some(&expected_types),
+                Some(&decoder.expected_types),
             )
         })
     })
