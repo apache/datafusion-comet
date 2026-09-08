@@ -130,7 +130,9 @@ object CometDriverPlugin extends Logging {
   private[apache] def maybeSetCacheSerializer(
       conf: SparkConf,
       extraConfs: ju.HashMap[String, String]): Unit = {
-    if (conf.getBoolean(CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key, false)) {
+    if (conf.getBoolean(
+        CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key,
+        CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.defaultValue.get)) {
       val serializerKey = StaticSQLConf.SPARK_CACHE_SERIALIZER.key
       val serializerValue =
         "org.apache.spark.sql.comet.execution.arrow.ArrowCachedBatchSerializer"

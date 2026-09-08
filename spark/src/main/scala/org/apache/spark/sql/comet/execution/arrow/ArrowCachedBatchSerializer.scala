@@ -20,12 +20,12 @@
 package org.apache.spark.sql.comet.execution.arrow
 
 import scala.collection.JavaConverters._
-import scala.util.control.NonFatal
 
 import org.apache.spark.TaskContext
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, GenericInternalRow, IsNotNull, IsNull, UnsafeProjection}
+import org.apache.spark.sql.catalyst.util.TypeUtils
 import org.apache.spark.sql.columnar.{CachedBatch, SimpleMetricsCachedBatch, SimpleMetricsCachedBatchSerializer}
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.columnar.{DefaultCachedBatch, DefaultCachedBatchSerializer}
@@ -33,25 +33,26 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 import org.apache.spark.storage.StorageLevel
-import org.apache.spark.unsafe.types.{ByteArray, UTF8String}
-import org.apache.spark.util.io.ChunkedByteBuffer
+import org.apache.spark.unsafe.types.UTF8String
 
-import org.apache.comet.CometArrowAllocator
+import org.apache.comet.{CometArrowAllocator, CometConf}
+import org.apache.comet.vector.NativeUtil
 
 /**
  * Cached batch format used when Comet writes Spark in-memory cache data.
  *
- * `columns` holds one compressed Arrow stream per cached column, in cache-schema order, produced
- * by `Utils.serializeBatchColumns`. Storing columns separately is what lets a scan decode only
- * the ones it projected; a single stream covering the whole batch would have to be inflated in
- * full before any projection could be applied. The cache manager still owns storage and eviction;
- * this class only changes the cached payload.
+ * `bytes` is one encapsulated Arrow IPC RecordBatch message and its body, with no Schema message
+ * and no end-of-stream marker, produced by `CachedBatchIpc.serialize`. Compression is applied per
+ * Arrow buffer rather than over the payload as a whole, which is what lets a scan decompress only
+ * the columns it projected: the message records every buffer's offset and length, so
+ * `CachedBatchIpc.readProjected` copies out just the selected columns' byte ranges. The cache
+ * manager still owns storage and eviction; this class only changes the cached payload.
  */
 private case class CometCachedBatch(
     override val numRows: Int,
     override val sizeInBytes: Long,
     override val stats: InternalRow,
-    columns: Array[ChunkedByteBuffer])
+    bytes: Array[Byte])
     extends SimpleMetricsCachedBatch
 
 /**
@@ -75,12 +76,29 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
 
   private val fallback = new DefaultCachedBatchSerializer()
 
+  /**
+   * How each cached column's bounds are compared, or null for a column that records none.
+   *
+   * Spark's own interpreted ordering for the type, which is the comparison its expressions use,
+   * so bounds recorded with it order the same way a predicate over the column does. That matters
+   * for collated strings, where it resolves to the collation's comparator rather than byte order,
+   * and it is why this needs no per-Spark-version shim: the collation awareness comes from Spark.
+   *
+   * Resolved once per partition rather than per row -- `getInterpretedOrdering` walks the type
+   * and, for a collated string, looks the collation up by id.
+   */
+  private def boundsOrderings(attrs: Seq[Attribute]): Array[Ordering[Any]] =
+    attrs.map { attr =>
+      if (tracksBounds(attr.dataType)) TypeUtils.getInterpretedOrdering(attr.dataType) else null
+    }.toArray
+
   // Bounds and null counts per column, gathered before the batch is serialized: serializing
   // clears the batch's vectors, and the per-column byte sizes that complete the statistics row
   // are only known afterwards. See statsRow.
   private def gatherColumnStats(
       batch: ColumnarBatch,
-      attrs: Seq[Attribute]): (Array[Any], Array[Any], Array[Int]) = {
+      attrs: Seq[Attribute],
+      orderings: Array[Ordering[Any]]): (Array[Any], Array[Any], Array[Int]) = {
     val numCols = attrs.length
     val lower = new Array[Any](numCols)
     val upper = new Array[Any](numCols)
@@ -91,16 +109,17 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
     while (c < numCols) {
       val dt = attrs(c).dataType
       val col = batch.column(c)
+      val ordering = orderings(c)
       var r = 0
       while (r < numRows) {
         if (col.isNullAt(r)) {
           nulls(c) += 1
-        } else if (tracksBounds(dt)) {
+        } else if (ordering != null) {
           val value = readValue(col, dt, r)
-          if (lower(c) == null || compare(dt, value, lower(c)) < 0) {
+          if (lower(c) == null || ordering.compare(value, lower(c)) < 0) {
             lower(c) = value
           }
-          if (upper(c) == null || compare(dt, value, upper(c)) > 0) {
+          if (upper(c) == null || ordering.compare(value, upper(c)) > 0) {
             upper(c) = value
           }
         }
@@ -130,9 +149,11 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
       values(base + 1) = upper(c)
       values(base + 2) = nulls(c)
       values(base + 3) = numRows
-      // Each column is its own compressed stream, so its size is known exactly. Cache pruning
-      // uses bounds/null-count/row-count rather than this field, but Spark reserves it and
-      // reports it, so record the real value.
+      // The stored size of the column's own Arrow buffers, taken from the message's buffer
+      // layout, so it is exact rather than an estimate. Cache pruning uses
+      // bounds/null-count/row-count rather than this field, but Spark reserves it and reports it,
+      // so record the real value. The per-batch message framing is not attributed to any column,
+      // so these sum to slightly less than sizeInBytes.
       values(base + 4) = columnSizes(c)
       c += 1
     }
@@ -142,9 +163,14 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
 
   // Spark can prune cache batches only for types whose bounds can be compared.
   // Other types still report null count and row count but leave bounds as null.
+  //
+  // Every StringType qualifies, collated ones included. Matching the bare `StringType` object
+  // instead would exclude them, since a collated StringType is not equal to the default one, and
+  // they would then get null bounds and no pruning at all. See boundsOrderings for how a collated
+  // column's bounds are compared.
   private def tracksBounds(dt: DataType): Boolean = dt match {
     case BooleanType | ByteType | ShortType | IntegerType | LongType | FloatType | DoubleType |
-        _: DecimalType | StringType | DateType | TimestampType | TimestampNTZType =>
+        _: DecimalType | _: StringType | DateType | TimestampType | TimestampNTZType =>
       true
     case _ => false
   }
@@ -160,34 +186,8 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
     case FloatType => col.getFloat(rowId)
     case DoubleType => col.getDouble(rowId)
     case d: DecimalType => col.getDecimal(rowId, d.precision, d.scale)
-    case StringType => col.getUTF8String(rowId).copy()
+    case _: StringType => col.getUTF8String(rowId).copy()
     case _ => null
-  }
-
-  // Compare values using the same physical representation used in the stats row.
-  private def compare(dt: DataType, left: Any, right: Any): Int = dt match {
-    case BooleanType =>
-      java.lang.Boolean.compare(left.asInstanceOf[Boolean], right.asInstanceOf[Boolean])
-    case ByteType =>
-      java.lang.Byte.compare(left.asInstanceOf[Byte], right.asInstanceOf[Byte])
-    case ShortType =>
-      java.lang.Short.compare(left.asInstanceOf[Short], right.asInstanceOf[Short])
-    case IntegerType | DateType =>
-      java.lang.Integer.compare(left.asInstanceOf[Int], right.asInstanceOf[Int])
-    case LongType | TimestampType | TimestampNTZType =>
-      java.lang.Long.compare(left.asInstanceOf[Long], right.asInstanceOf[Long])
-    case FloatType =>
-      java.lang.Float.compare(left.asInstanceOf[Float], right.asInstanceOf[Float])
-    case DoubleType =>
-      java.lang.Double.compare(left.asInstanceOf[Double], right.asInstanceOf[Double])
-    case _: DecimalType =>
-      left.asInstanceOf[Decimal].compare(right.asInstanceOf[Decimal])
-    case StringType =>
-      ByteArray.compareBinary(
-        left.asInstanceOf[UTF8String].getBytes,
-        right.asInstanceOf[UTF8String].getBytes)
-    case other =>
-      throw new IllegalStateException(s"compare called for unsupported type $other")
   }
 
   // Compute Spark-compatible cache stats before serializing each batch to Arrow.
@@ -197,34 +197,47 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
   // A columnar input batch is not guaranteed to be Arrow-backed; see supportsColumnarInput for
   // why. Batches that are not get copied into Arrow first, since Utils.serializeBatches only
   // writes CometVector columns.
+  /**
+   * The configured write codec, read on the driver.
+   *
+   * Both write paths resolve this here rather than inside their `mapPartitions` closure: the
+   * closure ships to the executors, where `CometConf` would resolve against whatever `SQLConf`
+   * happens to be current on that thread rather than against this session's.
+   */
+  private def codecSettings(conf: SQLConf): (String, Int) =
+    (
+      CometConf.COMET_EXEC_IN_MEMORY_CACHE_COMPRESSION_CODEC.get(conf),
+      CometConf.COMET_EXEC_IN_MEMORY_CACHE_COMPRESSION_ZSTD_LEVEL.get(conf))
+
   private def encodeBatches(
       batches: Iterator[ColumnarBatch],
-      attrs: Seq[Attribute]): Iterator[CachedBatch] = {
+      attrs: Seq[Attribute],
+      codecSetting: (String, Int)): Iterator[CachedBatch] = {
     val arrowSchema =
       Utils.toArrowSchema(Utils.fromAttributes(attrs), CometArrowStream.NATIVE_TIMEZONE)
+    val codec = CachedBatchIpc.compressionCodec(codecSetting._1, codecSetting._2)
+    val orderings = boundsOrderings(attrs)
 
     batches.map { batch =>
-      // Bounds and null counts are read from the input batch, which serializing then clears, so
-      // they have to be gathered first. The row is only assembled once the per-column sizes are
-      // known.
-      val (lower, upper, nulls) = gatherColumnStats(batch, attrs)
+      // Bounds and null counts are read from the input batch before it is serialized, and the row
+      // is only assembled once the per-column sizes the message reports are known.
+      val (lower, upper, nulls) = gatherColumnStats(batch, attrs, orderings)
       val numRows = batch.numRows()
 
-      val columns = if (Utils.isArrowBacked(batch)) {
-        Utils.serializeBatchColumns(batch)
+      val (bytes, columnSizes) = if (Utils.isArrowBacked(batch)) {
+        CachedBatchIpc.serialize(batch, codec, CometArrowAllocator)
       } else {
         val arrowBatch =
           CometArrowConverters.columnarBatchToArrowBatch(batch, arrowSchema, CometArrowAllocator)
-        try Utils.serializeBatchColumns(arrowBatch)
+        try CachedBatchIpc.serialize(arrowBatch, codec, CometArrowAllocator)
         finally arrowBatch.close()
       }
 
-      val columnSizes = columns.map(_.size)
       CometCachedBatch(
         numRows = numRows,
-        sizeInBytes = columnSizes.sum,
+        sizeInBytes = bytes.length.toLong,
         stats = statsRow(lower, upper, nulls, numRows, columnSizes),
-        columns = columns)
+        bytes = bytes)
     }
   }
 
@@ -293,16 +306,19 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
     }
   }
 
-  // Columnar Comet output is stored as compressed Arrow stream bytes. Spark only calls this when
-  // supportsColumnarInput returned true, so the schema is known to be Comet-writable here.
+  // Columnar Comet output is stored as one Arrow IPC record batch message per cached batch. Spark
+  // only calls this when supportsColumnarInput returned true, so the schema is known to be
+  // Comet-writable here.
   override def convertColumnarBatchToCachedBatch(
       input: RDD[ColumnarBatch],
       schema: Seq[Attribute],
       storageLevel: StorageLevel,
       conf: SQLConf): RDD[CachedBatch] = {
 
+    val codec = codecSettings(conf)
+
     input.mapPartitions { batches =>
-      encodeBatches(batches, schema)
+      encodeBatches(batches, schema, codec)
     }
   }
 
@@ -320,24 +336,36 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
     }
 
     val indices = selectedIndices(cacheAttributes, selectedAttributes)
+    // Captured as a StructType rather than the attributes themselves: this closure ships to the
+    // executors, and the Arrow schema is rebuilt there from the same mapping the writer used.
+    val cacheSchema = Utils.fromAttributes(cacheAttributes)
 
     input.mapPartitions { it =>
-      // A ColumnReaders closes its readers (releasing the vectors they are holding) only when the
-      // batch it produced has been consumed. A consumer that stops early -- LIMIT, take(), or a
-      // cancelled task -- leaves the readers for the batch in flight open, so close them on task
-      // completion. Spark's own ArrowCachedBatchSerializer registers a listener for the same
-      // reason.
+      // Built once per partition: resolving the Arrow schema and the projection's buffer layout
+      // walks every field of the cached relation, which would otherwise be paid per batch.
+      val projection = new CachedBatchIpc.Projection(
+        Utils
+          .toArrowSchema(cacheSchema, CometArrowStream.NATIVE_TIMEZONE)
+          .getFields
+          .asScala
+          .toIndexedSeq,
+        indices)
+
+      // A ProjectedBatch owns the vectors of the batch it produced, and releases them only when
+      // that batch has been consumed. A consumer that stops early -- LIMIT, take(), or a
+      // cancelled task -- leaves the batch in flight open, so close it on task completion.
+      // Spark's own ArrowCachedBatchSerializer registers a listener for the same reason.
       //
       // flatMap consumes each inner iterator fully before building the next, so at most one batch
       // is open at a time and tracking the current one is enough. close() is idempotent, so
       // closing one that already released itself is a no-op.
-      @volatile var current: ColumnReaders = null
+      @volatile var current: ProjectedBatch = null
       Option(TaskContext.get()).foreach { tc =>
         tc.addTaskCompletionListener[Unit] { _ =>
-          val readers = current
+          val open = current
           current = null
-          if (readers != null) {
-            readers.close()
+          if (open != null) {
+            open.close()
           }
         }
       }
@@ -348,9 +376,9 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
             // Nothing to decode: the row count is the whole answer, and it is already here.
             Iterator.single(new ColumnarBatch(Array.empty[ColumnVector], cb.numRows))
           } else {
-            val readers = new ColumnReaders(indices.map(i => cb.columns(i)), cb.numRows)
-            current = readers
-            readers.batches
+            val projected = new ProjectedBatch(cb, projection)
+            current = projected
+            projected.batches
           }
 
         case other =>
@@ -360,78 +388,36 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
     }
   }
 
-  // Decodes one selected column stream apiece and stitches the results back into a single batch.
-  //
-  // Each stream is self-contained, so the columns a scan did not select are never inflated. The
-  // decoded vectors stay owned by their readers: closing them releases the batch, which is why
-  // this yields a single-element iterator that closes on exhaustion, matching what
-  // ArrowReaderIterator did when the payload was one stream.
-  private class ColumnReaders(buffers: Array[ChunkedByteBuffer], numRows: Int) {
-    // decodeBatches opens a reader and eagerly decodes its first batch, so it allocates. If a
-    // later column throws, the readers already opened here are unreachable: the task-completion
-    // listener cannot release them because `current` is only assigned once this constructor
-    // returns, so they would leak off-heap for the life of the executor.
-    private val readers: Array[Iterator[ColumnarBatch]] = {
-      val opened = new Array[Iterator[ColumnarBatch]](buffers.length)
-      var i = 0
-      try {
-        while (i < buffers.length) {
-          opened(i) = Utils.decodeBatches(buffers(i), "CometCache")
-          i += 1
-        }
-      } catch {
-        case NonFatal(e) =>
-          var j = 0
-          while (j < i) {
-            opened(j) match {
-              case reader: ArrowReaderIterator =>
-                try reader.close()
-                catch { case NonFatal(closeError) => e.addSuppressed(closeError) }
-              case _ => ()
-            }
-            j += 1
-          }
-          throw e
-      }
-      opened
-    }
+  /**
+   * Owns the Arrow vectors decoded for one cached batch.
+   *
+   * The decode itself belongs to `CachedBatchIpc.Projection`, which is where knowledge of the
+   * payload format lives; what is left here is ownership. The vectors stay owned by this object
+   * -- closing it releases them -- which is why this yields a single-element iterator that closes
+   * on exhaustion.
+   */
+  private class ProjectedBatch(cached: CometCachedBatch, projection: CachedBatchIpc.Projection) {
+
+    // Decoding happens during construction, so `batches` below can hand out the root directly.
+    // `load` releases everything it allocated if it throws, so there is nothing to unwind here.
+    private val root = projection.load(cached.bytes, CometArrowAllocator)
     private var closed = false
+
+    // A cached batch's columns all cover the same rows. Check rather than trust: a mismatch would
+    // otherwise build a batch whose columns disagree with the row count recorded beside them,
+    // which reads as corrupt data far from here.
+    if (root.getRowCount != cached.numRows) {
+      val decoded = root.getRowCount
+      close()
+      throw new IllegalStateException(
+        s"Cached batch decoded $decoded rows, expected ${cached.numRows}")
+    }
 
     def close(): Unit = synchronized {
       if (!closed) {
         closed = true
-        readers.foreach {
-          case reader: ArrowReaderIterator => reader.close()
-          case _ => ()
-        }
+        root.close()
       }
-    }
-
-    private def assemble(): ColumnarBatch = {
-      val columns = new Array[ColumnVector](readers.length)
-      var i = 0
-      while (i < readers.length) {
-        val reader = readers(i)
-        if (!reader.hasNext) {
-          throw new IllegalStateException(
-            s"Cached column stream $i of ${readers.length} decoded to no batch")
-        }
-        val decoded = reader.next()
-        // Each stream holds exactly one single-column record batch, and every column of a cached
-        // batch covers the same rows. Check rather than trust: a mismatch would otherwise build a
-        // batch whose columns disagree on length, which reads as corrupt data far from here.
-        if (decoded.numCols() != 1) {
-          throw new IllegalStateException(
-            s"Cached column stream $i decoded to ${decoded.numCols()} columns, expected 1")
-        }
-        if (decoded.numRows() != numRows) {
-          throw new IllegalStateException(
-            s"Cached column stream $i decoded ${decoded.numRows()} rows, expected $numRows")
-        }
-        columns(i) = decoded.column(0)
-        i += 1
-      }
-      new ColumnarBatch(columns, numRows)
     }
 
     def batches: Iterator[ColumnarBatch] = new Iterator[ColumnarBatch] {
@@ -451,7 +437,7 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
           throw new NoSuchElementException
         }
         emitted = true
-        assemble()
+        NativeUtil.rootAsBatch(root)
       }
     }
   }
@@ -467,24 +453,25 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
       fallback.convertInternalRowToCachedBatch(input, schema, storageLevel, conf)
     } else {
       val batchSize = conf.columnBatchSize
+      val codec = codecSettings(conf)
 
       input.mapPartitions { rows =>
         val iter = CometArrowConverters.rowToArrowBatchIter(
           rows,
           Utils.fromAttributes(schema),
           batchSize,
-          // NATIVE_TIMEZONE ("UTC"), not conf.sessionLocalTimeZone, so both write paths produce
-          // the same physical format: the columnar path above already encodes with
-          // NATIVE_TIMEZONE. Unlike Spark's Arrow cache, whose RecordBatch is deliberately
-          // schema-less, CometCachedBatch stores a full IPC stream including the schema, so a
-          // session-local label would persist the writing session's mutable timezone into cached
-          // data. This is a label only: Spark's internal timestamp representation is micros since
-          // the Unix epoch regardless of session timezone, so no values are converted. It also
-          // matches Comet's native schema, avoiding a cast at the native boundary.
+          // NATIVE_TIMEZONE ("UTC"), not conf.sessionLocalTimeZone. The payload stores no schema,
+          // so the read path rebuilds one with toArrowSchema(cacheSchema, NATIVE_TIMEZONE); a
+          // write that labelled its timestamps with the writing session's timezone would be read
+          // back under a different label. Both write paths therefore have to agree on this, and
+          // the columnar path above encodes with NATIVE_TIMEZONE too. This is a label only:
+          // Spark's internal timestamp representation is micros since the Unix epoch regardless
+          // of session timezone, so no values are converted. It also matches Comet's native
+          // schema, avoiding a cast at the native boundary.
           CometArrowStream.NATIVE_TIMEZONE,
           CometArrowAllocator)
 
-        encodeBatches(iter, schema)
+        encodeBatches(iter, schema, codec)
       }
     }
   }
@@ -551,6 +538,9 @@ object ArrowCachedBatchSerializer {
    */
   def kryoClasses: Seq[Class[_]] = Seq(
     classOf[CometCachedBatch],
+    // The payload itself. Kryo registers Array[Byte] by default, but registering it here is what
+    // keeps that true if the payload type ever changes again.
+    classOf[Array[Byte]],
     // The statistics row, whose values are bounds in Spark's internal representation: boxed
     // primitives, which Kryo registers by default, plus UTF8String and Decimal, which it does not.
     // A Decimal above Long precision holds a scala.math.BigDecimal, which Chill's Scala registrar

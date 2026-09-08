@@ -227,6 +227,32 @@ under the License.
         <artifactId>arrow-c-data</artifactId>
         <version>${arrow.version}</version>
       </dependency>
+      <dependency>
+        <groupId>org.apache.arrow</groupId>
+        <artifactId>arrow-compression</artifactId>
+        <version>${arrow.version}</version>
+        <!-- Arrow's per-buffer IPC compression codecs. Their backing libraries ship with Spark,
+             so take them from there rather than bundling a second copy: commons-compress (LZ4
+             frame) and zstd-jni are both on every Spark version Comet supports. -->
+        <exclusions>
+          <exclusion>
+            <groupId>org.apache.commons</groupId>
+            <artifactId>commons-compress</artifactId>
+          </exclusion>
+          <exclusion>
+            <groupId>com.github.luben</groupId>
+            <artifactId>zstd-jni</artifactId>
+          </exclusion>
+          <exclusion>
+            <groupId>io.netty</groupId>
+            <artifactId>netty-common</artifactId>
+          </exclusion>
+          <exclusion>
+            <groupId>com.google.code.findbugs</groupId>
+            <artifactId>jsr305</artifactId>
+          </exclusion>
+        </exclusions>
+      </dependency>
 
       <!-- Parquet dependencies -->
       <dependency>
