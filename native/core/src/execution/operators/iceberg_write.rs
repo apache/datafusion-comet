@@ -24,7 +24,6 @@
 //! data manifest via iceberg-rust's `ManifestWriter` against an in-memory `FileIO`. The JVM
 //! decodes the bytes with `ManifestFiles.read(...)` to recover the `DataFile`s for commit.
 
-use std::collections::HashSet;
 use std::fmt;
 use std::sync::Arc;
 
@@ -59,6 +58,7 @@ use iceberg::writer::file_writer::ParquetWriterBuilder;
 use iceberg::writer::partitioning::clustered_writer::ClusteredWriter;
 use iceberg::writer::partitioning::fanout_writer::FanoutWriter;
 use iceberg::writer::partitioning::unpartitioned_writer::UnpartitionedWriter;
+use iceberg::ErrorKind;
 #[cfg(test)]
 use parquet::arrow::PARQUET_FIELD_ID_META_KEY;
 use parquet::basic::{BrotliLevel, Compression, GzipLevel, ZstdLevel};
@@ -343,11 +343,9 @@ async fn run_write_task(
         (false, ProtoIcebergWriterMode::IcebergWriterFanout) => {
             InnerWriter::Fanout(FanoutWriter::new(data_file_builder))
         }
-        (false, ProtoIcebergWriterMode::IcebergWriterClustered) => InnerWriter::Clustered {
-            writer: ClusteredWriter::new(data_file_builder),
-            current: None,
-            closed: HashSet::new(),
-        },
+        (false, ProtoIcebergWriterMode::IcebergWriterClustered) => {
+            InnerWriter::Clustered(ClusteredWriter::new(data_file_builder))
+        }
         (actual, mode) => {
             return Err(DataFusionError::Internal(format!(
                 "IcebergWrite writer_mode {mode:?} is inconsistent with the partition spec \
@@ -357,7 +355,7 @@ async fn run_write_task(
     };
 
     let clustered_splitter = match &writer {
-        InnerWriter::Clustered { .. } => Some(ClusteredBatchSplitter::try_new(
+        InnerWriter::Clustered(_) => Some(ClusteredBatchSplitter::try_new(
             Arc::clone(&partition_spec),
             Arc::clone(&iceberg_schema),
         )?),
@@ -397,15 +395,7 @@ async fn run_write_task(
 enum InnerWriter {
     Unpartitioned(UnpartitionedWriter<IcebergDataFileWriterBuilder>),
     Fanout(FanoutWriter<IcebergDataFileWriterBuilder>),
-    /// `ClusteredWriter` plus a mirror of its closed-partition bookkeeping: `current` is the
-    /// partition the writer has open, `closed` the ones it has already finished. Tracking them
-    /// here lets Comet reject unclustered input with iceberg-java's error (see
-    /// [`not_clustered_error`]) instead of letting iceberg-rust raise its own.
-    Clustered {
-        writer: ClusteredWriter<IcebergDataFileWriterBuilder>,
-        current: Option<IcebergStruct>,
-        closed: HashSet<IcebergStruct>,
-    },
+    Clustered(ClusteredWriter<IcebergDataFileWriterBuilder>),
 }
 
 impl InnerWriter {
@@ -428,28 +418,18 @@ impl InnerWriter {
                 }
                 Ok(())
             }
-            InnerWriter::Clustered {
-                writer,
-                current,
-                closed,
-            } => {
+            InnerWriter::Clustered(w) => {
                 let parts = clustered_splitter
                     .expect("clustered splitter must be Some for clustered writes")
                     .split(&batch)?;
                 for (key, part) in parts {
-                    // `ClusteredWriter` closes the open partition whenever the key changes, so a
-                    // key we have already moved on from can never be written again. Detect that
-                    // here to raise iceberg-java's exception rather than iceberg-rust's; both
-                    // reject the write, but only one of them is the documented contract.
-                    if current.as_ref() != Some(key.data()) {
-                        if closed.contains(key.data()) {
-                            return Err(not_clustered_error(&key));
-                        }
-                        if let Some(previous) = current.replace(key.data().clone()) {
-                            closed.insert(previous);
-                        }
-                    }
-                    writer.write(key, part).await.map_err(iceberg_err)?;
+                    // `write` consumes the key, but the unclustered-input error needs it for the
+                    // partition path. One extra spec clone per run on top of the one
+                    // `ClusteredBatchSplitter::partition_key` already pays.
+                    let key_for_error = key.clone();
+                    w.write(key, part)
+                        .await
+                        .map_err(|e| clustered_write_err(e, &key_for_error))?;
                 }
                 Ok(())
             }
@@ -461,7 +441,7 @@ impl InnerWriter {
         match self {
             InnerWriter::Unpartitioned(w) => w.close().await.map_err(iceberg_err),
             InnerWriter::Fanout(w) => w.close().await.map_err(iceberg_err),
-            InnerWriter::Clustered { writer, .. } => writer.close().await.map_err(iceberg_err),
+            InnerWriter::Clustered(w) => w.close().await.map_err(iceberg_err),
         }
     }
 }
@@ -491,12 +471,30 @@ fn iceberg_err(e: iceberg::Error) -> DataFusionError {
 /// writer's `IllegalStateException` and match on this text -- Iceberg's own
 /// `TestRequiredDistributionAndOrdering` does both -- so the native writer reproduces it instead
 /// of surfacing iceberg-rust's differently worded error.
-const NOT_CLUSTERED_ROWS_ERROR_MSG_TEMPLATE: &str = concat!(
-    "Incoming records violate the writer assumption that records are clustered by spec and ",
-    "by partition within each spec. Either cluster the incoming records or switch to fanout ",
-    "writers.\n",
-    "Encountered records that belong to already closed files:\n"
-);
+const NOT_CLUSTERED_ROWS_ERROR_MSG_TEMPLATE: &str = "Incoming records violate the writer \
+     assumption that records are clustered by spec and by partition within each spec. Either \
+     cluster the incoming records or switch to fanout writers.\n\
+     Encountered records that belong to already closed files:\n";
+
+/// The message iceberg-rust's `ClusteredWriter` raises for the same condition.
+const UNSORTED_INPUT_MESSAGE_PREFIX: &str = "The input is not sorted!";
+
+/// Restates iceberg-rust's unclustered-input failure as iceberg-java's, passing every other
+/// failure through unchanged.
+///
+/// Leaving `ClusteredWriter` as the sole judge of whether the input is clustered means coupling to
+/// its message text, which is the cheaper of the two couplings available: re-deriving the
+/// condition here would need a copy of the writer's closed-partition bookkeeping, and because that
+/// copy would fire first, no test could catch it drifting from the original. A wording change
+/// upstream instead makes `clustered_write_rejects_unclustered_input_like_iceberg_java` fail, since
+/// that test drives the real writer.
+fn clustered_write_err(e: iceberg::Error, key: &PartitionKey) -> DataFusionError {
+    if e.kind() == ErrorKind::Unexpected && e.message().starts_with(UNSORTED_INPUT_MESSAGE_PREFIX) {
+        not_clustered_error(key)
+    } else {
+        iceberg_err(e)
+    }
+}
 
 /// The error iceberg-java's `ClusteredWriter.write` raises when a closed partition is revisited,
 /// down to the `partition '<path>' in spec <spec>` context. Only the partition branch of that
@@ -513,9 +511,6 @@ fn not_clustered_error(key: &PartitionKey) -> DataFusionError {
 /// Renders a partition spec the way iceberg-java's `PartitionSpec.toString` and
 /// `PartitionField.toString` do, so the error context matches character for character.
 fn format_partition_spec(spec: &PartitionSpec) -> String {
-    if spec.fields().is_empty() {
-        return "[]".to_string();
-    }
     let fields: String = spec
         .fields()
         .iter()
@@ -526,7 +521,11 @@ fn format_partition_spec(spec: &PartitionSpec) -> String {
             )
         })
         .collect();
-    format!("[{fields}\n]")
+    if fields.is_empty() {
+        "[]".to_string()
+    } else {
+        format!("[{fields}\n]")
+    }
 }
 
 fn build_output_schema() -> SchemaRef {
@@ -1200,13 +1199,17 @@ mod tests {
         /// than iceberg-rust's "The input is not sorted!", and it has to reach the JVM as an
         /// `IllegalStateException`. Iceberg's own `TestRequiredDistributionAndOrdering` asserts
         /// both. See https://github.com/apache/datafusion-comet/issues/5698.
+        ///
+        /// This drives the real iceberg-rust writer, so it is also the tripwire for
+        /// [`UNSORTED_INPUT_MESSAGE_PREFIX`] going stale on an iceberg-rust bump: the translation
+        /// stops matching and the error arrives as a plain `iceberg::Error` instead.
         #[tokio::test]
         async fn clustered_write_rejects_unclustered_input_like_iceberg_java() {
             let temp_dir = TempDir::new().unwrap();
             let data_location = format!("file://{}", temp_dir.path().display());
             let schema = iceberg_user_schema();
             let spec = PartitionSpec::builder(Arc::new(schema.clone()))
-                .with_spec_id(0)
+                .with_spec_id(1)
                 .add_partition_field("region", "region", Transform::Identity)
                 .unwrap()
                 .build()
@@ -1229,21 +1232,20 @@ mod tests {
             .await
             .unwrap_err();
 
-            let DataFusionError::External(external) = &err else {
-                panic!("expected an External error carrying a CometError, got {err:?}");
+            let comet_error = match &err {
+                DataFusionError::External(external) => external.downcast_ref::<CometError>(),
+                _ => None,
             };
-            let Some(CometError::IllegalState(message)) = external.downcast_ref::<CometError>()
-            else {
-                panic!("expected CometError::IllegalState, got {external:?}");
-            };
-            // Byte-for-byte what iceberg-java's ClusteredWriter would have raised.
-            assert_eq!(
-                message,
-                "Incoming records violate the writer assumption that records are clustered by \
-                 spec and by partition within each spec. Either cluster the incoming records or \
-                 switch to fanout writers.\n\
-                 Encountered records that belong to already closed files:\n\
+            // The wording itself is pinned against the real JVM writer by
+            // CometIcebergWriteActionSuite; here it only has to carry the right context and
+            // classification.
+            let expected = format!(
+                "{NOT_CLUSTERED_ROWS_ERROR_MSG_TEMPLATE}\
                  partition 'region=eu' in spec [\n  1000: region: identity(2)\n]"
+            );
+            assert!(
+                matches!(comet_error, Some(CometError::IllegalState(m)) if *m == expected),
+                "expected CometError::IllegalState({expected:?}), got {err:?}"
             );
         }
 

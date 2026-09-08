@@ -27,17 +27,15 @@ import scala.concurrent.{Await, Future}
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.duration.DurationInt
 
-import org.apache.spark.CometListenerBusUtils
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.Row
 import org.apache.spark.sql.comet.{CometIcebergWriteExec, IcebergCommitExec, IcebergWriteExec}
 import org.apache.spark.sql.connector.catalog.InMemoryTableCatalog
-import org.apache.spark.sql.execution.{ColumnarToRowTransition, QueryExecution, SparkPlan}
+import org.apache.spark.sql.execution.{ColumnarToRowTransition, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DoubleType, IntegerType, StringType, StructField, StructType}
-import org.apache.spark.sql.util.QueryExecutionListener
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark41Plus}
 
@@ -1232,59 +1230,50 @@ class CometIcebergWriteActionSuite
   test("native acceleration: clustered writer rejects unclustered input like the JVM writer") {
     assumeNativeAcceleration()
     withIcebergCatalog { warehouseDir =>
-      Seq("unclustered_native", "unclustered_jvm").foreach { t =>
-        createTable(warehouseDir, t, partitionSpec = "PARTITIONED BY (region)")
-      }
+      val (nativeTable, jvmTable) = ("unclustered_native", "unclustered_jvm")
+      val tables = Seq(nativeTable, jvmTable)
+      tables.foreach(createTable(warehouseDir, _, partitionSpec = "PARTITIONED BY (region)"))
       // `use-table-distribution-and-ordering=false` drops the partition-local sort Iceberg would
       // otherwise request, so the interleaved region values reach the writer as they are;
       // `fanout-enabled=false` picks the clustered writer, which cannot accept them.
-      def unclusteredAppend(t: String): Unit = {
-        val session = spark
-        import session.implicits._
-        Seq((1, "us-east", 1.0), (2, "eu", 2.0), (3, "us-east", 3.0))
-          .toDF("id", "region", "amount")
-          .coalesce(1)
-          .writeTo(s"$catalog.$ns.$t")
-          .option("use-table-distribution-and-ordering", "false")
-          .option("fanout-enabled", "false")
-          .append()
-      }
+      def unclusteredAppend(t: String): Unit = coalesceInsert(
+        t,
+        Seq((1, "us-east", 1.0), (2, "eu", 2.0), (3, "us-east", 3.0)),
+        Seq("use-table-distribution-and-ordering" -> "false", "fanout-enabled" -> "false"))
 
-      val jvmFailure = intercept[Exception](unclusteredAppend("unclustered_jvm"))
-      val (nativeFailure, nativePlans) = withNativeEnabled {
-        captureFailedWrite(unclusteredAppend("unclustered_native"))
+      var nativeFailure: Throwable = null
+      val nativePlans = withNativeEnabled {
+        capturePlans(spark, includeFailures = true) {
+          nativeFailure = intercept[Exception](unclusteredAppend(nativeTable))
+        }
       }
+      val jvmFailure = intercept[Exception](unclusteredAppend(jvmTable))
       assert(
         nativePlans.exists(p =>
           collectWithSubqueries(p) { case e: CometIcebergWriteExec => e }.nonEmpty),
         "expected the aborted write to have gone through CometIcebergWriteExec. Plans:\n" +
           nativePlans.mkString("\n--\n"))
-      // Same shape: the writer's exception sits at the same depth under Spark's job-abort
-      // wrappers, so `assertThatThrownBy(...).cause()` finds it in the same place either way.
-      assert(
-        causeChain(nativeFailure).map(_.getClass.getName) ==
-          causeChain(jvmFailure).map(_.getClass.getName),
-        s"cause chains differ.\nnative: ${causeChain(nativeFailure).map(_.getClass.getName)}\n" +
-          s"jvm:    ${causeChain(jvmFailure).map(_.getClass.getName)}")
-      // Same exception, message included. Stage ids and driver stack traces make the outer
-      // SparkException messages differ between runs, so compare the writer's own.
-      def clusteredWriterError(t: Throwable): String = {
-        val message = causeChain(t)
-          .collectFirst { case e: IllegalStateException => e.getMessage }
-          .getOrElse(fail("no IllegalStateException in the cause chain", t))
-        assert(
-          message.startsWith(
-            "Incoming records violate the writer assumption that records are clustered by spec"),
-          s"unexpected IllegalStateException: $message")
-        message
+
+      // Where the writer's exception sits in the cause chain, and what it says. Stage ids and
+      // driver stack traces make the enclosing SparkException messages differ between runs, so
+      // only the writer's own exception can be compared.
+      def clusteredWriterError(t: Throwable): (Int, String) = {
+        val chain = causeChain(t)
+        val depth = chain.indexWhere(_.isInstanceOf[IllegalStateException])
+        assert(depth >= 0, s"no IllegalStateException in the cause chain of $t")
+        (depth, chain(depth).getMessage)
       }
+      val nativeError = clusteredWriterError(nativeFailure)
+      val jvmError = clusteredWriterError(jvmFailure)
+      // Equal depth is what makes `assertThatThrownBy(...).cause()` find it in the same place.
+      assert(nativeError == jvmError, s"native $nativeError != jvm $jvmError")
+      val (_, message) = jvmError
       assert(
-        clusteredWriterError(nativeFailure) == clusteredWriterError(jvmFailure),
-        s"native writer error differs from the JVM writer's.\n" +
-          s"native: ${clusteredWriterError(nativeFailure)}\n" +
-          s"jvm:    ${clusteredWriterError(jvmFailure)}")
+        message.startsWith(
+          "Incoming records violate the writer assumption that records are clustered by spec"),
+        s"unexpected IllegalStateException from the JVM writer: $message")
       // Neither write may have committed.
-      Seq("unclustered_native", "unclustered_jvm").foreach(t => assertRows(t, Seq.empty))
+      tables.foreach(assertRows(_, Seq.empty))
     }
   }
 
@@ -1954,14 +1943,17 @@ class CometIcebergWriteActionSuite
     """)
   }
 
-  private def coalesceInsert(tableName: String, rows: Seq[(Int, String, Double)]): Unit = {
+  private def coalesceInsert(
+      tableName: String,
+      rows: Seq[(Int, String, Double)],
+      options: Seq[(String, String)] = Nil): Unit = {
     val session = spark
     import session.implicits._
-    rows
+    val writer = rows
       .toDF("id", "region", "amount")
       .coalesce(1)
       .writeTo(s"$catalog.$ns.$tableName")
-      .append()
+    options.foldLeft(writer) { case (w, (k, v)) => w.option(k, v) }.append()
   }
 
   private def captureWrite(tableName: String)(action: => Unit): WriteSnapshot = {
@@ -2042,31 +2034,6 @@ class CometIcebergWriteActionSuite
   /** Native acceleration shared assumption -- currently just the Iceberg-on-classpath check. */
   private def assumeNativeAcceleration(): Unit = {
     assume(icebergAvailable, "Iceberg not available in classpath")
-  }
-
-  /**
-   * Runs `action`, expecting it to fail, and returns the thrown exception together with the
-   * executed plans of the queries it ran. [[capturePlans]] records successes only, which is no
-   * use for a write that is meant to abort.
-   */
-  private def captureFailedWrite(action: => Unit): (Throwable, Seq[SparkPlan]) = {
-    val captured = mutable.Buffer.empty[SparkPlan]
-    val listener = new QueryExecutionListener {
-      override def onSuccess(funcName: String, qe: QueryExecution, durationNs: Long): Unit =
-        captured += qe.executedPlan
-      override def onFailure(funcName: String, qe: QueryExecution, exception: Exception): Unit =
-        captured += qe.executedPlan
-    }
-    spark.listenerManager.register(listener)
-    val failure =
-      try {
-        val thrown = intercept[Exception](action)
-        CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
-        thrown
-      } finally {
-        spark.listenerManager.unregister(listener)
-      }
-    (failure, captured.toSeq)
   }
 
   /**
