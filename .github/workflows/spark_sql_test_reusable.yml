@@ -104,7 +104,7 @@ jobs:
           key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs') }}
 
       - name: Upload native library
-        uses: actions/upload-artifact@v7
+        uses: ./.github/actions/upload-artifact-retry
         with:
           name: native-lib-linux
           path: native/target/ci/libcomet.so
@@ -156,11 +156,16 @@ jobs:
             apache-spark
 
       - name: Upload JVM compile artifact
-        uses: actions/upload-artifact@v7
+        uses: ./.github/actions/upload-artifact-retry
         with:
           name: jvm-compiled-spark-${{ inputs.spark-full }}-jdk${{ inputs.java }}
           path: apache-spark.tar.gz
           retention-days: 1
+          # The payload is already gzipped, so re-deflating it at the default
+          # level 6 costs minutes of CPU on a ~1 GB file for no size win. Store
+          # it instead: a shorter upload is also a smaller window for the
+          # FinalizeArtifact flake the retry wrapper exists to absorb.
+          compression-level: 0
 
   spark-sql-test:
     needs: build
@@ -265,7 +270,7 @@ jobs:
           DEDICATED_JVM_SBT_TESTS: ${{ inputs.spark-short == '4.0' && 'org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormatV1Suite,org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormatV2Suite,org.apache.spark.sql.execution.datasources.orc.OrcSourceV1Suite,org.apache.spark.sql.execution.datasources.orc.OrcSourceV2Suite' || '' }}
       - name: Upload fallback log
         if: ${{ inputs.collect-fallback-logs }}
-        uses: actions/upload-artifact@v7
+        uses: ./.github/actions/upload-artifact-retry
         with:
           name: fallback-log-spark-sql-${{ matrix.module.name }}-spark-${{ inputs.spark-full }}-jdk${{ inputs.java }}
           path: "**/fallback.log"
@@ -284,6 +289,10 @@ jobs:
         run: |
           find ./fallback-logs/ -type f -name "fallback.log" -print0 | xargs -0 cat | sort -u > all_fallback.log
       - name: Upload merged fallback log
+        # Not wrapped in ./.github/actions/upload-artifact-retry: a local
+        # composite action needs the repository checked out, and this job
+        # deliberately skips checkout. The payload is a small diagnostic log,
+        # so a rare upload flake here costs nothing downstream.
         uses: actions/upload-artifact@v7
         with:
           name: all-fallback-log-spark-${{ inputs.spark-full }}-jdk${{ inputs.java }}

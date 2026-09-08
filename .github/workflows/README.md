@@ -130,6 +130,57 @@ dict at the top of `dev/ci/compute-changes.py`. The `changes` job in
 `needs.changes.outputs.<name>`. When adding a new test suite or moving
 sources, update the relevant filter entry there.
 
+## Retrying flaky network operations
+
+### Maven artifact resolution
+
+`.mvn/maven.config` tunes the Maven Resolver HTTP transport: six retries
+instead of three, `408/429/500/502/503/504` treated as retryable instead of
+only `429/503`, a 30s connect timeout, and a 10 minute socket read timeout.
+The file lives at the repository root and the wrapper pins
+`maven.multiModuleProjectDirectory` there, so it covers every `mvnw`
+invocation in CI (including `cd spark && ../mvnw ...`) without touching a
+single workflow. Each setting is commented in the file.
+
+The Wagon transport (`-Dmaven.resolver.transport=wagon`,
+`maven.wagon.http.*`) was evaluated for this and rejected:
+
+- It is deprecated in Maven Resolver 1.9 and removed in Maven 4, so bumping
+  `.mvn/wrapper/maven-wrapper.properties` past 3.9.x would break the build.
+- Its retry knobs mirror the native transport's almost one for one, and its
+  service-unavailable retry strategy defaults to `none`, so adopting it would
+  first have to buy back the `429/503` retry we already get.
+- It reads configuration from JVM system properties in a static initializer,
+  so it cannot be scoped per repository the way `aether.connector.*.<repoId>`
+  can.
+
+The one thing Wagon can still do that the native transport cannot is shrink
+HttpClient's non-retryable exception list, via
+`maven.wagon.http.retryHandler.class=default` plus
+`maven.wagon.http.retryHandler.nonRetryableClasses=...`. That is the only way
+to retry a connect or read timeout, since HttpClient classifies both as
+non-retryable. We avoid needing it by giving those timeouts a budget large
+enough not to fire on a busy runner.
+
+### Artifact upload
+
+`actions/upload-artifact` fails the job when `FinalizeArtifact` returns
+`(403) Forbidden: Error from intermediary`, even though the blob content
+already uploaded successfully. The artifact client only retries
+`429/500/502/503/504`, exposes no input to widen that list, and GitHub
+Actions has no built-in step-level retry.
+
+Use `./.github/actions/upload-artifact-retry` in place of
+`actions/upload-artifact` for any artifact a later job depends on. It accepts
+the same inputs, produces the same outputs, and retries up to three times
+with a 15s then 45s backoff.
+
+### Maven wrapper bootstrap
+
+`./.github/actions/java-test` retries `./mvnw --version` with exponential
+backoff before running anything, so a failed download of the Maven
+distribution does not surface as a test failure.
+
 ## Branch protection
 
 Required-check names changed when these workflows were consolidated. The

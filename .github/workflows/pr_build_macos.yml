@@ -79,7 +79,7 @@ jobs:
           RUSTFLAGS: "-Ctarget-cpu=apple-m1"
 
       - name: Upload native library
-        uses: actions/upload-artifact@v7
+        uses: ./.github/actions/upload-artifact-retry
         with:
           name: native-lib-macos
           path: native/target/ci/libcomet.dylib
