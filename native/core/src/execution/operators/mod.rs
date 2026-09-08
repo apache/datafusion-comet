@@ -26,6 +26,10 @@ pub use scan::*;
 
 mod aligned_stream_reader;
 mod copy;
+mod dynamic_filter;
+pub(crate) use dynamic_filter::DynamicFilterJoinExec;
+mod filter;
+pub(crate) use filter::CometFilterExec;
 mod expand;
 pub use expand::ExpandExec;
 mod explode;
