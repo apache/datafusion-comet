@@ -2090,6 +2090,56 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("nested struct filters prune row groups using leaf statistics") {
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "nested.parquet")
+      val schema = MessageTypeParser.parseMessageType("""message root {
+          | optional group s {
+          |   optional group inner { optional int32 k; }
+          |   optional int32 payload;
+          | }
+          |}""".stripMargin)
+      val writer = ExampleParquetWriter
+        .builder(path)
+        .withType(schema)
+        .withDictionaryEncoding(false)
+        .withRowGroupSize(4096L)
+        .withConf(spark.sessionState.newHadoopConf())
+        .build()
+      try {
+        (0 until 8192).foreach { i =>
+          val row = new SimpleGroup(schema)
+          if (i % 16 != 0) {
+            val s = row.addGroup(0)
+            val inner = s.addGroup(0)
+            if (i % 17 != 0) inner.add(0, i)
+            s.add(1, i)
+          }
+          writer.write(row)
+        }
+      } finally {
+        writer.close()
+      }
+      Seq(false, true).foreach { pruning =>
+        withSQLConf(
+          CometConf.COMET_RESPECT_DATAFUSION_CONFIGS.key -> "true",
+          "spark.comet.datafusion.execution.parquet.pruning" -> pruning.toString,
+          "spark.comet.datafusion.execution.parquet.enable_page_index" -> "false",
+          CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED.key -> "false") {
+          val query = spark.read
+            .parquet(path.toString)
+            .where("s.inner.k >= 7000")
+            .select("s.inner.k", "s.payload")
+          val (_, plan) = checkSparkAnswer(query)
+          val scans = collect(plan) { case scan: CometNativeScanExec => scan }
+          assert(scans.size == 1)
+          val pruned = scans.head.metrics("row_groups_pruned_statistics").value
+          assert(if (pruning) pruned > 0 else pruned == 0)
+        }
+      }
+    }
+  }
+
   test("test V1 parquet scan filter pushdown of primitive types") {
     withTempPath { dir =>
       val path = new Path(dir.toURI.toString, "test1.parquet")

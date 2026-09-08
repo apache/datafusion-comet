@@ -833,7 +833,11 @@ impl PhysicalPlanner {
             ExprStruct::GetStructField(expr) => {
                 let child =
                     self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                Ok(Arc::new(GetStructField::new(child, expr.ordinal as usize)))
+                Ok(GetStructField::with_field_access(
+                    child,
+                    expr.ordinal as usize,
+                    &input_schema,
+                )?)
             }
             ExprStruct::ToJson(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
