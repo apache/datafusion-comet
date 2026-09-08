@@ -95,6 +95,14 @@ pub enum CometError {
     #[error("{0}")]
     ShuffleSizeLimit(String),
 
+    /// A failure that must reach the JVM as `java.lang.IllegalStateException` carrying this exact
+    /// message. Reserved for runtime checks where Comet reimplements a JVM library's own guard and
+    /// has to raise the exception that library raises -- callers catch or match on it, so a
+    /// `CometNativeException` would be a visible behaviour change. Not for internal invariants:
+    /// use [`CometError::Internal`] for those.
+    #[error("{0}")]
+    IllegalState(String),
+
     #[error(transparent)]
     Arrow {
         #[from]
@@ -219,9 +227,10 @@ impl From<CometError> for DataFusionError {
             // own codegen inside the JVM UDF kernel) as an `External` error so it survives the trip
             // back through DataFusion and can be re-thrown with its exact type at the JNI boundary.
             // Flattening it to a string here would surface it as a generic CometNativeException.
-            value @ (CometError::JavaException { .. } | CometError::ShuffleSizeLimit(_)) => {
-                DataFusionError::External(Box::new(value))
-            }
+            // The same applies to the classifications that must keep their JVM exception class.
+            value @ (CometError::JavaException { .. }
+            | CometError::ShuffleSizeLimit(_)
+            | CometError::IllegalState(_)) => DataFusionError::External(Box::new(value)),
             _ => DataFusionError::Execution(value.to_string()),
         }
     }
@@ -347,6 +356,10 @@ impl jni::errors::ToException for CometError {
             },
             CometError::ShuffleSizeLimit(message) => Exception {
                 class: "org/apache/comet/CometShuffleSizeLimitException".to_string(),
+                msg: message.clone(),
+            },
+            CometError::IllegalState(message) => Exception {
+                class: "java/lang/IllegalStateException".to_string(),
                 msg: message.clone(),
             },
             _other => Exception {
@@ -485,12 +498,10 @@ fn throw_exception(env: &mut Env, error: &CometError, backtrace: Option<String>)
     // If there isn't already an exception?
     if !env.exception_check() {
         // DataFusion operators can wrap the original failure in Context, Shared, or External
-        // errors. Keep capacity failures typed across those wrappers and the JNI boundary.
-        if let Some(message) = shuffle_size_limit_message(error) {
-            let _ = env.throw_new(
-                jni::jni_str!("org/apache/comet/CometShuffleSizeLimitException"),
-                JNIString::new(message),
-            );
+        // errors. Keep the classifications that own their JVM exception class typed across those
+        // wrappers and the JNI boundary.
+        if let Some((class, message)) = typed_jvm_exception(error) {
+            let _ = env.throw_new(JNIString::new(class), JNIString::new(message));
             return;
         }
         // ... then throw new exception
@@ -574,11 +585,23 @@ fn throw_exception(env: &mut Env, error: &CometError, backtrace: Option<String>)
     }
 }
 
-fn shuffle_size_limit_message<'a>(error: &'a (dyn std::error::Error + 'static)) -> Option<&'a str> {
+/// Walks the cause chain for a `CometError` variant that carries its own JVM exception class, and
+/// returns that class plus the untouched message. These must never be inferred from error text --
+/// only the variant counts -- so a failure that merely mentions the same words keeps its normal
+/// classification.
+fn typed_jvm_exception<'a>(
+    error: &'a (dyn std::error::Error + 'static),
+) -> Option<(&'static str, &'a str)> {
     let mut cause = Some(error);
     while let Some(error) = cause {
-        if let Some(CometError::ShuffleSizeLimit(message)) = error.downcast_ref::<CometError>() {
-            return Some(message);
+        match error.downcast_ref::<CometError>() {
+            Some(CometError::ShuffleSizeLimit(message)) => {
+                return Some(("org/apache/comet/CometShuffleSizeLimitException", message))
+            }
+            Some(CometError::IllegalState(message)) => {
+                return Some(("java/lang/IllegalStateException", message))
+            }
+            _ => {}
         }
         cause = error.source();
     }
@@ -970,7 +993,31 @@ mod tests {
         let error = CometError::from(DataFusionError::Execution(
             "Remote shuffle exceeds spark.comet.shuffle.rss.maxInFlightBytes".to_string(),
         ));
-        assert!(shuffle_size_limit_message(&error).is_none());
+        assert!(typed_jvm_exception(&error).is_none());
+    }
+
+    /// The native Iceberg writer rejects unclustered input with iceberg-java's own
+    /// `IllegalStateException`, so it has to survive the same wrappers.
+    #[test]
+    #[cfg_attr(miri, ignore)] // miri cannot create a JVM.
+    fn illegal_state_survives_datafusion_wrappers_and_jni() {
+        let message = "Incoming records violate the writer assumption that records are clustered";
+        let error = DataFusionError::from(CometError::IllegalState(message.to_string()));
+        let error = DataFusionError::Shared(Arc::new(DataFusionError::Context(
+            "executing IcebergWriteExec".to_string(),
+            Box::new(error),
+        )));
+        jvm()
+            .attach_current_thread(|env| -> jni::errors::Result<()> {
+                unwrap_or_throw_default::<()>(env, Err(CometError::from(error)));
+                assert_pending_java_exception_detailed(
+                    env,
+                    Some("java/lang/IllegalStateException"),
+                    Some(message),
+                );
+                Ok(())
+            })
+            .unwrap();
     }
 
     #[test]

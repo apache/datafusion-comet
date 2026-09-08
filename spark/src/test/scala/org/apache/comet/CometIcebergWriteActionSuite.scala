@@ -27,15 +27,17 @@ import scala.concurrent.{Await, Future}
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.duration.DurationInt
 
+import org.apache.spark.CometListenerBusUtils
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.Row
 import org.apache.spark.sql.comet.{CometIcebergWriteExec, IcebergCommitExec, IcebergWriteExec}
 import org.apache.spark.sql.connector.catalog.InMemoryTableCatalog
-import org.apache.spark.sql.execution.{ColumnarToRowTransition, SparkPlan}
+import org.apache.spark.sql.execution.{ColumnarToRowTransition, QueryExecution, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DoubleType, IntegerType, StringType, StructField, StructType}
+import org.apache.spark.sql.util.QueryExecutionListener
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark41Plus}
 
@@ -1222,6 +1224,70 @@ class CometIcebergWriteActionSuite
     }
   }
 
+  // https://github.com/apache/datafusion-comet/issues/5698. iceberg-java's `ClusteredWriter`
+  // rejects unclustered input with a documented `IllegalStateException`, and callers match on both
+  // the type and the message -- Iceberg's own `TestRequiredDistributionAndOrdering` does exactly
+  // that. Pin the native writer against the JVM writer on the same runtime rather than against a
+  // literal, so an iceberg-java wording change surfaces here as a parity failure.
+  test("native acceleration: clustered writer rejects unclustered input like the JVM writer") {
+    assumeNativeAcceleration()
+    withIcebergCatalog { warehouseDir =>
+      Seq("unclustered_native", "unclustered_jvm").foreach { t =>
+        createTable(warehouseDir, t, partitionSpec = "PARTITIONED BY (region)")
+      }
+      // `use-table-distribution-and-ordering=false` drops the partition-local sort Iceberg would
+      // otherwise request, so the interleaved region values reach the writer as they are;
+      // `fanout-enabled=false` picks the clustered writer, which cannot accept them.
+      def unclusteredAppend(t: String): Unit = {
+        val session = spark
+        import session.implicits._
+        Seq((1, "us-east", 1.0), (2, "eu", 2.0), (3, "us-east", 3.0))
+          .toDF("id", "region", "amount")
+          .coalesce(1)
+          .writeTo(s"$catalog.$ns.$t")
+          .option("use-table-distribution-and-ordering", "false")
+          .option("fanout-enabled", "false")
+          .append()
+      }
+
+      val jvmFailure = intercept[Exception](unclusteredAppend("unclustered_jvm"))
+      val (nativeFailure, nativePlans) = withNativeEnabled {
+        captureFailedWrite(unclusteredAppend("unclustered_native"))
+      }
+      assert(
+        nativePlans.exists(p =>
+          collectWithSubqueries(p) { case e: CometIcebergWriteExec => e }.nonEmpty),
+        "expected the aborted write to have gone through CometIcebergWriteExec. Plans:\n" +
+          nativePlans.mkString("\n--\n"))
+      // Same shape: the writer's exception sits at the same depth under Spark's job-abort
+      // wrappers, so `assertThatThrownBy(...).cause()` finds it in the same place either way.
+      assert(
+        causeChain(nativeFailure).map(_.getClass.getName) ==
+          causeChain(jvmFailure).map(_.getClass.getName),
+        s"cause chains differ.\nnative: ${causeChain(nativeFailure).map(_.getClass.getName)}\n" +
+          s"jvm:    ${causeChain(jvmFailure).map(_.getClass.getName)}")
+      // Same exception, message included. Stage ids and driver stack traces make the outer
+      // SparkException messages differ between runs, so compare the writer's own.
+      def clusteredWriterError(t: Throwable): String = {
+        val message = causeChain(t)
+          .collectFirst { case e: IllegalStateException => e.getMessage }
+          .getOrElse(fail("no IllegalStateException in the cause chain", t))
+        assert(
+          message.startsWith(
+            "Incoming records violate the writer assumption that records are clustered by spec"),
+          s"unexpected IllegalStateException: $message")
+        message
+      }
+      assert(
+        clusteredWriterError(nativeFailure) == clusteredWriterError(jvmFailure),
+        s"native writer error differs from the JVM writer's.\n" +
+          s"native: ${clusteredWriterError(nativeFailure)}\n" +
+          s"jvm:    ${clusteredWriterError(jvmFailure)}")
+      // Neither write may have committed.
+      Seq("unclustered_native", "unclustered_jvm").foreach(t => assertRows(t, Seq.empty))
+    }
+  }
+
   test("native acceleration: target-file-size rolls one task across multiple files") {
     assumeNativeAcceleration()
     withIcebergCatalog { warehouseDir =>
@@ -1976,6 +2042,31 @@ class CometIcebergWriteActionSuite
   /** Native acceleration shared assumption -- currently just the Iceberg-on-classpath check. */
   private def assumeNativeAcceleration(): Unit = {
     assume(icebergAvailable, "Iceberg not available in classpath")
+  }
+
+  /**
+   * Runs `action`, expecting it to fail, and returns the thrown exception together with the
+   * executed plans of the queries it ran. [[capturePlans]] records successes only, which is no
+   * use for a write that is meant to abort.
+   */
+  private def captureFailedWrite(action: => Unit): (Throwable, Seq[SparkPlan]) = {
+    val captured = mutable.Buffer.empty[SparkPlan]
+    val listener = new QueryExecutionListener {
+      override def onSuccess(funcName: String, qe: QueryExecution, durationNs: Long): Unit =
+        captured += qe.executedPlan
+      override def onFailure(funcName: String, qe: QueryExecution, exception: Exception): Unit =
+        captured += qe.executedPlan
+    }
+    spark.listenerManager.register(listener)
+    val failure =
+      try {
+        val thrown = intercept[Exception](action)
+        CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
+        thrown
+      } finally {
+        spark.listenerManager.unregister(listener)
+      }
+    (failure, captured.toSeq)
   }
 
   /**
