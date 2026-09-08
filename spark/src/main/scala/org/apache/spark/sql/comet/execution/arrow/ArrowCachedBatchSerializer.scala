@@ -81,187 +81,218 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
   // Bounds and null counts per column, gathered before the batch is serialized: serializing
   // clears the batch's vectors, and the per-column byte sizes that complete the statistics row
   // are only known afterwards. See statsRow.
-  private def gatherColumnStats(
+  private[sql] def gatherColumnStats(
       batch: ColumnarBatch,
       attrs: Seq[Attribute]): (Array[Any], Array[Any], Array[Int]) = {
     val numCols = attrs.length
     val lower = new Array[Any](numCols)
     val upper = new Array[Any](numCols)
-    val nulls = Array.fill[Int](numCols)(0)
+    val nulls = new Array[Int](numCols)
     val numRows = batch.numRows()
 
     var c = 0
     while (c < numCols) {
-      val dt = attrs(c).dataType
       val col = batch.column(c)
-      var r = 0
-      var nullCount = 0
-      // Dispatch once per column and box only the final bounds. r == nullCount identifies
-      // the first non-null value, including when a column starts with nulls.
-      dt match {
-        case BooleanType =>
-          var min = false
-          var max = false
-          while (r < numRows) {
-            if (col.isNullAt(r)) {
-              nullCount += 1
-            } else {
-              val value = col.getBoolean(r)
-              if (r == nullCount || JBoolean.compare(value, min) < 0) min = value
-              if (r == nullCount || JBoolean.compare(value, max) > 0) max = value
-            }
-            r += 1
-          }
-          if (nullCount < numRows) {
-            lower(c) = min
-            upper(c) = max
-          }
-        case ByteType =>
-          var min = 0.toByte
-          var max = 0.toByte
-          while (r < numRows) {
-            if (col.isNullAt(r)) {
-              nullCount += 1
-            } else {
-              val value = col.getByte(r)
-              if (r == nullCount || JByte.compare(value, min) < 0) min = value
-              if (r == nullCount || JByte.compare(value, max) > 0) max = value
-            }
-            r += 1
-          }
-          if (nullCount < numRows) {
-            lower(c) = min
-            upper(c) = max
-          }
-        case ShortType =>
-          var min = 0.toShort
-          var max = 0.toShort
-          while (r < numRows) {
-            if (col.isNullAt(r)) {
-              nullCount += 1
-            } else {
-              val value = col.getShort(r)
-              if (r == nullCount || JShort.compare(value, min) < 0) min = value
-              if (r == nullCount || JShort.compare(value, max) > 0) max = value
-            }
-            r += 1
-          }
-          if (nullCount < numRows) {
-            lower(c) = min
-            upper(c) = max
-          }
-        case IntegerType | DateType =>
-          var min = 0
-          var max = 0
-          while (r < numRows) {
-            if (col.isNullAt(r)) {
-              nullCount += 1
-            } else {
-              val value = col.getInt(r)
-              if (r == nullCount || JInteger.compare(value, min) < 0) min = value
-              if (r == nullCount || JInteger.compare(value, max) > 0) max = value
-            }
-            r += 1
-          }
-          if (nullCount < numRows) {
-            lower(c) = min
-            upper(c) = max
-          }
-        case LongType | TimestampType | TimestampNTZType =>
-          var min = 0L
-          var max = 0L
-          while (r < numRows) {
-            if (col.isNullAt(r)) {
-              nullCount += 1
-            } else {
-              val value = col.getLong(r)
-              if (r == nullCount || JLong.compare(value, min) < 0) min = value
-              if (r == nullCount || JLong.compare(value, max) > 0) max = value
-            }
-            r += 1
-          }
-          if (nullCount < numRows) {
-            lower(c) = min
-            upper(c) = max
-          }
-        case FloatType =>
-          var min = 0.0f
-          var max = 0.0f
-          while (r < numRows) {
-            if (col.isNullAt(r)) {
-              nullCount += 1
-            } else {
-              val value = col.getFloat(r)
-              if (r == nullCount || JFloat.compare(value, min) < 0) min = value
-              if (r == nullCount || JFloat.compare(value, max) > 0) max = value
-            }
-            r += 1
-          }
-          if (nullCount < numRows) {
-            lower(c) = min
-            upper(c) = max
-          }
-        case DoubleType =>
-          var min = 0.0d
-          var max = 0.0d
-          while (r < numRows) {
-            if (col.isNullAt(r)) {
-              nullCount += 1
-            } else {
-              val value = col.getDouble(r)
-              if (r == nullCount || JDouble.compare(value, min) < 0) min = value
-              if (r == nullCount || JDouble.compare(value, max) > 0) max = value
-            }
-            r += 1
-          }
-          if (nullCount < numRows) {
-            lower(c) = min
-            upper(c) = max
-          }
-        case d: DecimalType =>
-          var min: Decimal = null
-          var max: Decimal = null
-          while (r < numRows) {
-            if (col.isNullAt(r)) {
-              nullCount += 1
-            } else {
-              val value = col.getDecimal(r, d.precision, d.scale)
-              if (min == null || value.compare(min) < 0) min = value
-              if (max == null || value.compare(max) > 0) max = value
-            }
-            r += 1
-          }
-          lower(c) = min
-          upper(c) = max
-        case StringType =>
-          val ordering = TypeUtils.getInterpretedOrdering(dt)
-          var min: UTF8String = null
-          var max: UTF8String = null
-          while (r < numRows) {
-            if (col.isNullAt(r)) {
-              nullCount += 1
-            } else {
-              val value = col.getUTF8String(r)
-              // Compare the UTF-8 bytes directly, without allocating getBytes arrays.
-              // Borrow the value for comparison, but retain owned copies of the bounds.
-              if (min == null || ordering.compare(value, min) < 0) min = value.copy()
-              if (max == null || ordering.compare(value, max) > 0) max = value.copy()
-            }
-            r += 1
-          }
-          lower(c) = min
-          upper(c) = max
-        case _ =>
+      val (min, max, nullCount) = attrs(c).dataType match {
+        case BooleanType => gatherBooleanStats(col, numRows)
+        case ByteType => gatherByteStats(col, numRows)
+        case ShortType => gatherShortStats(col, numRows)
+        case IntegerType | DateType => gatherIntStats(col, numRows)
+        case LongType | TimestampType | TimestampNTZType => gatherLongStats(col, numRows)
+        case FloatType => gatherFloatStats(col, numRows)
+        case DoubleType => gatherDoubleStats(col, numRows)
+        case d: DecimalType => gatherDecimalStats(col, numRows, d)
+        case StringType => gatherStringStats(col, numRows)
+        case other =>
+          assert(!tracksBounds(other), s"Missing cache bounds implementation for $other")
+          var nullCount = 0
+          var r = 0
           while (r < numRows) {
             if (col.isNullAt(r)) nullCount += 1
             r += 1
           }
+          (null, null, nullCount)
+      }
+      if (nullCount < numRows) {
+        lower(c) = min
+        upper(c) = max
       }
       nulls(c) = nullCount
       c += 1
     }
 
     (lower, upper, nulls)
+  }
+
+  // Keep each loop specialized and box only its final bounds. r == nullCount identifies
+  // the first non-null value, including when a column starts with nulls.
+  private def gatherBooleanStats(col: ColumnVector, numRows: Int): (Boolean, Boolean, Int) = {
+    var min = false
+    var max = false
+    var nullCount = 0
+    var r = 0
+    while (r < numRows) {
+      if (col.isNullAt(r)) {
+        nullCount += 1
+      } else {
+        val value = col.getBoolean(r)
+        if (r == nullCount || JBoolean.compare(value, min) < 0) min = value
+        if (r == nullCount || JBoolean.compare(value, max) > 0) max = value
+      }
+      r += 1
+    }
+    (min, max, nullCount)
+  }
+
+  private def gatherByteStats(col: ColumnVector, numRows: Int): (Byte, Byte, Int) = {
+    var min = 0.toByte
+    var max = 0.toByte
+    var nullCount = 0
+    var r = 0
+    while (r < numRows) {
+      if (col.isNullAt(r)) {
+        nullCount += 1
+      } else {
+        val value = col.getByte(r)
+        if (r == nullCount || JByte.compare(value, min) < 0) min = value
+        if (r == nullCount || JByte.compare(value, max) > 0) max = value
+      }
+      r += 1
+    }
+    (min, max, nullCount)
+  }
+
+  private def gatherShortStats(col: ColumnVector, numRows: Int): (Short, Short, Int) = {
+    var min = 0.toShort
+    var max = 0.toShort
+    var nullCount = 0
+    var r = 0
+    while (r < numRows) {
+      if (col.isNullAt(r)) {
+        nullCount += 1
+      } else {
+        val value = col.getShort(r)
+        if (r == nullCount || JShort.compare(value, min) < 0) min = value
+        if (r == nullCount || JShort.compare(value, max) > 0) max = value
+      }
+      r += 1
+    }
+    (min, max, nullCount)
+  }
+
+  private def gatherIntStats(col: ColumnVector, numRows: Int): (Int, Int, Int) = {
+    var min = 0
+    var max = 0
+    var nullCount = 0
+    var r = 0
+    while (r < numRows) {
+      if (col.isNullAt(r)) {
+        nullCount += 1
+      } else {
+        val value = col.getInt(r)
+        if (r == nullCount || JInteger.compare(value, min) < 0) min = value
+        if (r == nullCount || JInteger.compare(value, max) > 0) max = value
+      }
+      r += 1
+    }
+    (min, max, nullCount)
+  }
+
+  private def gatherLongStats(col: ColumnVector, numRows: Int): (Long, Long, Int) = {
+    var min = 0L
+    var max = 0L
+    var nullCount = 0
+    var r = 0
+    while (r < numRows) {
+      if (col.isNullAt(r)) {
+        nullCount += 1
+      } else {
+        val value = col.getLong(r)
+        if (r == nullCount || JLong.compare(value, min) < 0) min = value
+        if (r == nullCount || JLong.compare(value, max) > 0) max = value
+      }
+      r += 1
+    }
+    (min, max, nullCount)
+  }
+
+  private def gatherFloatStats(col: ColumnVector, numRows: Int): (Float, Float, Int) = {
+    var min = 0.0f
+    var max = 0.0f
+    var nullCount = 0
+    var r = 0
+    while (r < numRows) {
+      if (col.isNullAt(r)) {
+        nullCount += 1
+      } else {
+        val value = col.getFloat(r)
+        if (r == nullCount || JFloat.compare(value, min) < 0) min = value
+        if (r == nullCount || JFloat.compare(value, max) > 0) max = value
+      }
+      r += 1
+    }
+    (min, max, nullCount)
+  }
+
+  private def gatherDoubleStats(col: ColumnVector, numRows: Int): (Double, Double, Int) = {
+    var min = 0.0d
+    var max = 0.0d
+    var nullCount = 0
+    var r = 0
+    while (r < numRows) {
+      if (col.isNullAt(r)) {
+        nullCount += 1
+      } else {
+        val value = col.getDouble(r)
+        if (r == nullCount || JDouble.compare(value, min) < 0) min = value
+        if (r == nullCount || JDouble.compare(value, max) > 0) max = value
+      }
+      r += 1
+    }
+    (min, max, nullCount)
+  }
+
+  private def gatherDecimalStats(
+      col: ColumnVector,
+      numRows: Int,
+      dt: DecimalType): (Decimal, Decimal, Int) = {
+    var min: Decimal = null
+    var max: Decimal = null
+    var nullCount = 0
+    var r = 0
+    while (r < numRows) {
+      if (col.isNullAt(r)) {
+        nullCount += 1
+      } else {
+        val value = col.getDecimal(r, dt.precision, dt.scale)
+        if (r == nullCount || value.compare(min) < 0) min = value
+        if (r == nullCount || value.compare(max) > 0) max = value
+      }
+      r += 1
+    }
+    (min, max, nullCount)
+  }
+
+  private def gatherStringStats(
+      col: ColumnVector,
+      numRows: Int): (UTF8String, UTF8String, Int) = {
+    val ordering = TypeUtils.getInterpretedOrdering(StringType)
+    var min: UTF8String = null
+    var max: UTF8String = null
+    var nullCount = 0
+    var r = 0
+    while (r < numRows) {
+      if (col.isNullAt(r)) {
+        nullCount += 1
+      } else {
+        val value = col.getUTF8String(r)
+        // Borrow the value for comparison, but retain owned copies of the bounds.
+        if (r == nullCount || ordering.compare(value, min) < 0) min = value.copy()
+        if (r == nullCount || ordering.compare(value, max) > 0) max = value.copy()
+      }
+      r += 1
+    }
+    (min, max, nullCount)
   }
 
   // Build the statistics row expected by SimpleMetricsCachedBatchSerializer.
