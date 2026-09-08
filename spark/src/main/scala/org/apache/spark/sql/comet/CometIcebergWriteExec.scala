@@ -27,7 +27,7 @@ import org.apache.spark.sql.catalyst.expressions.UnsafeProjection
 import org.apache.spark.sql.comet.execution.arrow.CometArrowStream
 import org.apache.spark.sql.comet.util.{Utils => CometUtils}
 import org.apache.spark.sql.connector.write.{BatchWrite, WriterCommitMessage}
-import org.apache.spark.sql.execution.{ColumnarToRowTransition, SparkPlan, UnaryExecNode}
+import org.apache.spark.sql.execution.{SparkPlan, UnaryExecNode}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.types.BinaryType
 import org.apache.spark.sql.vectorized.ColumnarBatch
@@ -68,13 +68,7 @@ case class CometIcebergWriteExec(
     @transient table: AnyRef,
     partitionSpecId: Int)
     extends CometNativeExec
-    with UnaryExecNode
-    // We consume Arrow batches (via FFI) and emit row-shaped commit messages, so we are a
-    // columnar-to-row transition. Without this trait Spark's
-    // `ApplyColumnarRulesAndInsertTransitions` wedges a `CometNativeColumnarToRowExec` between
-    // us and the Comet-native child, which would then fail `child.executeColumnar()` in
-    // `doExecuteColumnar`.
-    with ColumnarToRowTransition {
+    with UnaryExecNode {
 
   override def originalPlan: SparkPlan = child
 
@@ -86,6 +80,16 @@ case class CometIcebergWriteExec(
   // Native exec emits a single Binary column; the surrounding command framework expects rows, so
   // the outer commit exec calls executeCollect on us. supportsColumnar = false keeps Spark from
   // inserting a ColumnarToRow that would clash with our (Nil-output-like) row contract.
+  //
+  // We do consume Arrow batches from `child` over FFI, so Spark's
+  // `ApplyColumnarRulesAndInsertTransitions` inserts a columnar-to-row transition *below* us
+  // (our child is columnar-only, we are row-based). `EliminateRedundantTransitions` strips that
+  // transition back off so `doExecuteColumnar` sees the Comet-native child directly.
+  //
+  // Tagging this node as a `ColumnarToRowTransition` would also stop Spark inserting it, but at
+  // the cost of correctness: `ensureOutputsRowBased` returns such a node untouched, so nothing
+  // below the write is visited and the transitions the rest of that subtree needs are never
+  // inserted. See https://github.com/apache/datafusion-comet/issues/5689.
   override def supportsColumnar: Boolean = false
 
   override def executeCollect(): Array[InternalRow] = {

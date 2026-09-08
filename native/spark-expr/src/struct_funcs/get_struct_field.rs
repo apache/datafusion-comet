@@ -15,13 +15,13 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::array::{make_array, Array, ArrayRef, StructArray};
-use arrow::buffer::NullBuffer;
+use arrow::array::{Array, StructArray};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 use datafusion::common::{DataFusionError, Result as DataFusionResult, ScalarValue};
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::physical_expr::PhysicalExpr;
+use datafusion_comet_common::child_with_parent_nulls;
 use std::{
     fmt::{Display, Formatter},
     hash::Hash,
@@ -59,27 +59,6 @@ impl GetStructField {
             ))),
         }
     }
-
-    /// Extract field `ordinal` from a struct array, propagating the parent struct's null mask.
-    ///
-    /// Spark semantics: a field of a NULL struct is NULL. Arrow stores a StructArray's child
-    /// arrays with their own validity, INDEPENDENT of the parent struct's null buffer -- so the
-    /// raw child value at a row where the struct itself is null can be non-null (e.g. parquet
-    /// files where a logically-null struct column still has a populated child buffer). Returning
-    /// the child column verbatim then makes `isnotnull(struct.field)` wrongly true for a null
-    /// struct. Union the struct's null mask into the child's (null where the struct is null OR
-    /// the child is null).
-    fn project_field(struct_array: &StructArray, ordinal: usize) -> DataFusionResult<ArrayRef> {
-        let child = struct_array.column(ordinal);
-        match struct_array.nulls() {
-            Some(_) => {
-                let combined = NullBuffer::union(struct_array.nulls(), child.nulls());
-                let data = child.to_data().into_builder().nulls(combined).build()?;
-                Ok(make_array(data))
-            }
-            None => Ok(Arc::clone(child)),
-        }
-    }
 }
 
 impl PhysicalExpr for GetStructField {
@@ -94,7 +73,7 @@ impl PhysicalExpr for GetStructField {
     fn nullable(&self, input_schema: &Schema) -> DataFusionResult<bool> {
         // A field extracted from a struct is nullable if EITHER the field itself is declared
         // nullable OR the parent struct can be null -- a field of a null struct is null (Spark
-        // semantics, enforced by `project_field` unioning the parent null mask). Reporting only
+        // semantics, enforced by unioning the parent null mask into the child). Reporting only
         // the field's own nullability under-declares: a non-nullable field of a nullable struct
         // then carries the parent's nulls while claiming non-nullable, which fails Arrow's
         // RecordBatch validation downstream with "declared as non-nullable but contains null
@@ -113,13 +92,15 @@ impl PhysicalExpr for GetStructField {
                     .downcast_ref::<StructArray>()
                     .expect("A struct is expected");
 
-                Ok(ColumnarValue::Array(Self::project_field(
+                // A field of a null struct is null, so the parent's null mask has to be unioned
+                // into the child; see `datafusion_comet_common::struct_nulls`.
+                Ok(ColumnarValue::Array(child_with_parent_nulls(
                     struct_array,
                     self.ordinal,
                 )?))
             }
             ColumnarValue::Scalar(ScalarValue::Struct(struct_array)) => Ok(ColumnarValue::Array(
-                Self::project_field(&struct_array, self.ordinal)?,
+                child_with_parent_nulls(&struct_array, self.ordinal)?,
             )),
             value => Err(DataFusionError::Execution(format!(
                 "Expected a struct array, got {value:?}"
@@ -155,7 +136,8 @@ impl Display for GetStructField {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::Int64Array;
+    use arrow::array::{ArrayRef, Int64Array};
+    use arrow::buffer::NullBuffer;
     use arrow::datatypes::Fields;
     use datafusion::physical_expr::expressions::Column;
 
@@ -188,7 +170,7 @@ mod tests {
         assert!(out.is_null(3), "field of a null struct must be null");
     }
 
-    // A NON-nullable field of a NULLABLE struct must report `nullable() == true`: `project_field`
+    // A NON-nullable field of a NULLABLE struct must report `nullable() == true`: the parent mask
     // unions the parent struct's null mask, so the projected column carries nulls wherever the
     // struct is null. Reporting the field's own (non-nullable) flag would make the output schema
     // lie, failing Arrow RecordBatch validation downstream with "declared as non-nullable but

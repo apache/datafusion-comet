@@ -856,7 +856,7 @@ mod test {
             .partition_writer()
             .get_spill_writers()
             .iter()
-            .filter_map(|writer| writer.path())
+            .filter_map(|writer| writer.path().unwrap())
             .map(|path| usize::try_from(std::fs::metadata(path).unwrap().len()).unwrap())
             .sum();
         assert_eq!(
