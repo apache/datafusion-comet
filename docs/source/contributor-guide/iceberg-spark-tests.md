@@ -31,8 +31,13 @@ Here is an overview of the changes that the diffs make to Iceberg:
   uses a native Iceberg scan, these classes fail to compile and must be removed.
 - Configure test base classes (`TestBase`, `ExtensionsTestBase`, `ScanTestBase`, etc.) to load the Comet Spark
   plugin and shuffle manager
+- Enable the Iceberg write split-operator plan (`spark.comet.write.iceberg.splitOperator.enabled`) alongside the
+  native scan in every Comet-configured session. The flag is off by default for users, so Iceberg's own suites
+  are the only place the split plan (`IcebergCommit -> IcebergWrite`) is exercised against Iceberg's write,
+  commit, and row-level-operation tests. See [#5259]
 
 [#3739]: https://github.com/apache/datafusion-comet/pull/3739
+[#5259]: https://github.com/apache/datafusion-comet/issues/5259
 [apache/iceberg#15674]: https://github.com/apache/iceberg/pull/15674
 
 ## 1. Install Comet

@@ -22,14 +22,13 @@ package org.apache.spark.sql.comet.execution.arrow
 import org.apache.arrow.memory.BufferAllocator
 import org.apache.arrow.vector.ipc.ArrowReader
 import org.apache.arrow.vector.types.pojo.Schema
-import org.apache.spark.sql.vectorized.{ColumnarArray, ColumnarBatch}
+import org.apache.spark.sql.vectorized.ColumnarBatch
 
 /**
  * `ArrowReader` over an iterator of Spark-side `ColumnarBatch`es (not Arrow-backed). Slices up to
  * `maxRecordsPerBatch` rows per `loadNextBatch` from the current Spark batch into the reader's
- * stable VSR via `ArrowWriter.writeCol` and `ArrowWriter.writeColNoNull`. Spark's `ColumnVector`
- * implementations aren't Arrow buffers, so this reader necessarily copies element values into
- * Arrow format.
+ * stable VSR via `ArrowWriter.writeColumns`. Spark's `ColumnVector` implementations aren't Arrow
+ * buffers, so this reader necessarily copies element values into Arrow format.
  */
 private[comet] class SparkColumnarArrowReader(
     allocator: BufferAllocator,
@@ -78,25 +77,10 @@ private[comet] class SparkColumnarArrowReader(
       else math.min(maxRecordsPerBatch, rowsRemaining)
 
     val writer = ArrowWriter.create(getVectorSchemaRoot, rowsToProduce)
-    var col = 0
-    while (col < current.numCols()) {
-      val column = current.column(col)
-      val columnArray = new ColumnarArray(column, rowsConsumedInCurrent, rowsToProduce)
-      if (column.hasNull) {
-        writer.writeCol(columnArray, col)
-      } else {
-        writer.writeColNoNull(columnArray, col)
-      }
-      col += 1
-    }
+    writer.writeColumns(current, rowsConsumedInCurrent, rowsToProduce)
     rowsConsumedInCurrent += rowsToProduce
 
     writer.finish()
-    // ArrowWriter derives the root row count from its per-column writes, so a zero-column
-    // input batch (Spark's count-from-metadata scan: numRows > 0, numCols == 0) would otherwise
-    // produce a root with rowCount == 0 and silently drop the rows. Set rowCount explicitly so
-    // downstream aggregations (e.g. df.count()) see the correct value.
-    getVectorSchemaRoot.setRowCount(rowsToProduce)
     onConversionNs(System.nanoTime() - startNs)
     true
   }

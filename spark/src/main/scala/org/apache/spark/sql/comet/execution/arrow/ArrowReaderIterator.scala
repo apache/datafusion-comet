@@ -21,6 +21,8 @@ package org.apache.spark.sql.comet.execution.arrow
 
 import java.nio.channels.ReadableByteChannel
 
+import scala.util.control.NonFatal
+
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import org.apache.comet.vector._
@@ -29,7 +31,19 @@ class ArrowReaderIterator(channel: ReadableByteChannel, source: String)
     extends Iterator[ColumnarBatch] {
 
   private val reader = StreamReader(channel, source)
-  private var batch = nextBatch()
+
+  // Decoding eagerly here is what makes hasNext cheap, but it allocates: loading a batch first
+  // loads the dictionaries it references. A failure part way through leaves those allocations
+  // owned by the reader, and nothing else can release them -- this constructor never returns, so
+  // no caller ever holds the iterator it would close. Close the reader on the way out instead.
+  private var batch =
+    try nextBatch()
+    catch {
+      case NonFatal(e) =>
+        try reader.close()
+        catch { case NonFatal(closeError) => e.addSuppressed(closeError) }
+        throw e
+    }
   private var currentBatch: ColumnarBatch = null
   private var isClosed: Boolean = false
 

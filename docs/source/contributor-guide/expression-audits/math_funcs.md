@@ -121,9 +121,7 @@ Internal decimal wrapper emitted around every decimal `+ - * /`, `sum`, and `avg
 
 ## DecimalRescaleCheckOverflow (internal)
 
-Internal fused expression that rescales a Decimal128 value (changing scale) and checks output precision in one pass, replacing the `CheckOverflow(Cast(expr, Decimal128(p, s)))` pattern used by decimal-to-decimal casts. Native impl: `math_funcs/internal/decimal_rescale_check.rs`.
-
-- Performance (tuned 2026-07-15, PR [#4938](https://github.com/apache/datafusion-comet/pull/4938)): the legacy path ran `null_if_overflow_precision` (a second full pass that allocates a new array) on every batch to turn overflow sentinels into nulls, even when nothing overflowed. Now that pass runs only when a sentinel is present (`contains(&i128::MAX)`, short-circuiting), so the common no-overflow case skips the allocation. 8 to 26% faster on no-overflow shapes; overflow and ANSI shapes unchanged. Benchmark: `benches/decimal_rescale.rs`.
+Internal fused expression that replaces the `CheckOverflow(Cast(expr, Decimal128(p, s)))` pattern used by decimal-to-decimal casts. It delegates rescaling, HALF_UP rounding, and output-precision validation to Arrow's single-pass decimal cast kernel. Arrow writes nulls directly in legacy mode and returns an error in ANSI mode. Native impl: `math_funcs/internal/decimal_rescale_check.rs`; benchmark: `benches/decimal_rescale.rs`.
 
 ## e
 

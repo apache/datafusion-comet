@@ -39,7 +39,7 @@ index 6df8bc85b51..dabb75e2b75 100644
        withSpark(sc) { sc =>
          TestUtils.waitUntilExecutorsUp(sc, 2, 60000)
 diff --git a/pom.xml b/pom.xml
-index 370bfa4397f..8447b5c375e 100644
+index 370bfa4397f..54ded05544c 100644
 --- a/pom.xml
 +++ b/pom.xml
 @@ -152,6 +152,8 @@
@@ -199,18 +199,6 @@ index 96dddafd82a..efedbbb3c0e 100644
  
  -- Test tables
  CREATE table  explain_temp1 (key int, val int) USING PARQUET;
-diff --git a/sql/core/src/test/resources/sql-tests/inputs/having-and-order-by-recursive-type-name-resolution.sql b/sql/core/src/test/resources/sql-tests/inputs/having-and-order-by-recursive-type-name-resolution.sql
-index 1f53ca359fe..0f572f7c6ce 100644
---- a/sql/core/src/test/resources/sql-tests/inputs/having-and-order-by-recursive-type-name-resolution.sql
-+++ b/sql/core/src/test/resources/sql-tests/inputs/having-and-order-by-recursive-type-name-resolution.sql
-@@ -1,3 +1,7 @@
-+-- TODO(https://github.com/apache/datafusion-comet/issues/4123)
-+-- Comet native sort lacks row-format support for Struct(Map(...)) sort keys
-+--SET spark.comet.enabled = false
-+
- -- This test file contains queries that test recursive types name resolution in ORDER BY and HAVING clauses.
- 
- -- Alias type: String, Table column type: Struct
 diff --git a/sql/core/src/test/resources/sql-tests/inputs/hll.sql b/sql/core/src/test/resources/sql-tests/inputs/hll.sql
 index 35128da97fd..25b873ae859 100644
 --- a/sql/core/src/test/resources/sql-tests/inputs/hll.sql
@@ -1985,6 +1973,30 @@ index 005e764cc30..92ec088efab 100644
    }
  
    private def checkSorts(query: String, enabledCount: Int, disabledCount: Int): Unit = {
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/RemoveRedundantWindowGroupLimitsSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/RemoveRedundantWindowGroupLimitsSuite.scala
+index 46ed8fdfd21..4585dbab5b8 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/execution/RemoveRedundantWindowGroupLimitsSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/RemoveRedundantWindowGroupLimitsSuite.scala
+@@ -18,6 +18,7 @@
+ package org.apache.spark.sql.execution
+ 
+ import org.apache.spark.sql.{DataFrame, QueryTest}
++import org.apache.spark.sql.comet.CometWindowGroupLimitExec
+ import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanHelper, DisableAdaptiveExecutionSuite, EnableAdaptiveExecutionSuite}
+ import org.apache.spark.sql.execution.window.WindowGroupLimitExec
+ import org.apache.spark.sql.functions.lit
+@@ -30,7 +31,10 @@ abstract class RemoveRedundantWindowGroupLimitsSuiteBase
+ 
+   private def checkNumWindowGroupLimits(df: DataFrame, count: Int): Unit = {
+     val plan = df.queryExecution.executedPlan
+-    assert(collectWithSubqueries(plan) { case exec: WindowGroupLimitExec => exec }.length == count)
++    assert(collectWithSubqueries(plan) {
++      case exec: WindowGroupLimitExec => exec
++      case exec: CometWindowGroupLimitExec => exec
++    }.length == count)
+   }
+ 
+   private def checkWindowGroupLimits(query: String, count: Int): Unit = {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/ReplaceHashWithSortAggSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/ReplaceHashWithSortAggSuite.scala
 index 47679ed7865..9ffbaecb98e 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/ReplaceHashWithSortAggSuite.scala
@@ -3028,7 +3040,7 @@ index 6b73cc8618d..e67aaeff9df 100644
          case _ => assert(false, "Can not match ParquetTable in the query.")
        }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
-index 6ba790deddf..34b2f424c8f 100644
+index 6ba790deddf..486056c1c75 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
 @@ -40,6 +40,7 @@ import org.apache.parquet.schema.{MessageType, MessageTypeParser}
@@ -3049,16 +3061,6 @@ index 6ba790deddf..34b2f424c8f 100644
      val data = Seq(
        Tuple1((null, null)),
        Tuple1((null, null)),
-@@ -1585,7 +1587,8 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession
-     }
-   }
- 
--  test("SPARK-40128 read DELTA_LENGTH_BYTE_ARRAY encoded strings") {
-+  test("SPARK-40128 read DELTA_LENGTH_BYTE_ARRAY encoded strings",
-+      IgnoreComet("Comet doesn't support DELTA encoding yet")) {
-     withAllParquetReaders {
-       checkAnswer(
-         // "fruit" column in this file is encoded using DELTA_LENGTH_BYTE_ARRAY.
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala
 index 97aad5b30ea..77de969b80b 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala
@@ -3212,30 +3214,10 @@ index 56076175d60..a3d47b24634 100644
        val e = testSchemaMismatch(dir.getCanonicalPath, vectorizedReaderEnabled = true)
        assert(e.getCause.isInstanceOf[SchemaColumnConvertNotSupportedException])
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetTypeWideningSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetTypeWideningSuite.scala
-index 09ed6955a51..236a4e99824 100644
+index 09ed6955a51..52d998aab46 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetTypeWideningSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetTypeWideningSuite.scala
-@@ -65,7 +65,9 @@ class ParquetTypeWideningSuite
-     withClue(
-       s"with dictionary encoding '$dictionaryEnabled' with timestamp rebase mode " +
-         s"'$timestampRebaseMode''") {
--      withAllParquetWriters {
-+      // TODO: Comet cannot read DELTA_BINARY_PACKED created by V2 writer
-+      // https://github.com/apache/datafusion-comet/issues/574
-+      // withAllParquetWriters {
-         withTempDir { dir =>
-           val expected =
-             writeParquetFiles(dir, values, fromType, dictionaryEnabled, timestampRebaseMode)
-@@ -86,7 +88,7 @@ class ParquetTypeWideningSuite
-             }
-           }
-         }
--      }
-+      // }
-     }
-   }
- 
-@@ -190,7 +192,8 @@ class ParquetTypeWideningSuite
+@@ -190,7 +190,8 @@ class ParquetTypeWideningSuite
        (Seq("1", "2", Short.MinValue.toString), ShortType, DoubleType),
        (Seq("1", "2", Int.MinValue.toString), IntegerType, DoubleType),
        (Seq("1.23", "10.34"), FloatType, DoubleType),

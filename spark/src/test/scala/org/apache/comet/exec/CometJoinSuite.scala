@@ -25,9 +25,10 @@ import org.scalatest.Tag
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.analysis.UnresolvedRelation
-import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometBroadcastNestedLoopJoinExec, CometSortMergeJoinExec}
+import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometBroadcastNestedLoopJoinExec, CometSortMergeJoinExec, CometUnionExec}
 import org.apache.spark.sql.execution.adaptive.AQEShuffleReadExec
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.types.{ArrayType, IntegerType, MetadataBuilder, StructField, StructType}
 
 import org.apache.comet.CometConf
 
@@ -652,6 +653,80 @@ class CometJoinSuite extends CometTestBase {
             coalescedBatches >= numPartitions,
             s"Expected at least $numPartitions coalesced batches, got $coalescedBatches")
           assert(coalescedRows == 10000, s"Expected 10000 coalesced rows, got $coalescedRows")
+        }
+      }
+    }
+  }
+
+  test("Broadcast coalescing handles union children with different nullability") {
+    withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+      withParquetTable(Seq((1, 10), (2, 20), (3, 30)), "t") {
+        val (_, cometPlan) = checkSparkAnswerAndOperator(
+          sql("""
+              |SELECT /*+ BROADCAST(b) */ p._1, b.v
+              |FROM t p JOIN (
+              |  SELECT _1 AS k, 99 AS v FROM t
+              |  UNION ALL
+              |  SELECT _1 AS k, _2 + 1 AS v FROM t
+              |) b ON p._1 = b.k
+              |""".stripMargin),
+          Seq(
+            classOf[CometBroadcastExchangeExec],
+            classOf[CometBroadcastHashJoinExec],
+            classOf[CometUnionExec]))
+
+        val broadcast = collect(cometPlan) { case b: CometBroadcastExchangeExec => b }.head
+        assert(broadcast.metrics("numCoalescedBatches").value > 0L)
+        assert(broadcast.metrics("numCoalescedRows").value == 6L)
+      }
+    }
+  }
+
+  test("Broadcast coalescing falls back for array field metadata mismatch") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "false",
+      SQLConf.IGNORE_MISSING_PARQUET_FIELD_ID.key -> "true") {
+      withTempPath { dir =>
+        val path = dir.getCanonicalPath
+        Seq((1, Seq(10)), (2, Seq(20))).toDF("k", "v").coalesce(1).write.parquet(path)
+
+        def readWithFieldId(fieldId: Long) = {
+          val metadata = new MetadataBuilder()
+            .putLong("parquet.field.id", fieldId)
+            .build()
+          val schema = StructType(
+            Seq(
+              StructField("k", IntegerType, nullable = true),
+              StructField(
+                "v",
+                ArrayType(IntegerType, containsNull = true),
+                nullable = true,
+                metadata)))
+          spark.read.schema(schema).parquet(path)
+        }
+
+        withTempView("metadata_left", "metadata_right") {
+          readWithFieldId(1).createOrReplaceTempView("metadata_left")
+          readWithFieldId(2).createOrReplaceTempView("metadata_right")
+
+          val (_, cometPlan) = checkSparkAnswerAndOperator(
+            sql("""
+                |SELECT /*+ BROADCAST(u) */ p.k, u.v
+                |FROM metadata_left p JOIN (
+                |  SELECT k, v FROM metadata_left
+                |  UNION ALL
+                |  SELECT k, v FROM metadata_right
+                |) u ON p.k = u.k
+                |""".stripMargin),
+            Seq(
+              classOf[CometBroadcastExchangeExec],
+              classOf[CometBroadcastHashJoinExec],
+              classOf[CometUnionExec]))
+
+          val broadcast = collect(cometPlan) { case b: CometBroadcastExchangeExec => b }.head
+          assert(broadcast.metrics("numCoalescedBatches").value == 0L)
+          assert(broadcast.metrics("numCoalescedRows").value == 0L)
         }
       }
     }
