@@ -598,8 +598,10 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                 .sortBy(_.getSeq[Long](0).head)
             }
 
-            val expected = withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-              normalizedRows(sql(query))
+            // Spark 3's withSQLConf returns Unit, so capture the baseline inside its body.
+            var expected: Seq[Row] = Seq.empty
+            withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+              expected = normalizedRows(sql(query))
             }
             val df = sql(query)
             val initialPlan = stripAQEPlan(df.queryExecution.executedPlan)
