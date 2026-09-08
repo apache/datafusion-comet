@@ -795,6 +795,44 @@ under the License.
 </table>
 </div>
 </section>
+<section id="hash-joins">
+<h3>Hash Joins<a class="headerlink" href="#hash-joins" title="Link to this heading">#</a></h3>
+<p>With <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.join.dynamicFilter.enabled=true</span></code>, native broadcast and shuffled hash joins
+report these additional metric keys. See <a class="reference internal" href="tuning.html#join-runtime-filters"><span class="std std-ref">Join Runtime Filters</span></a> for
+eligibility and reader restrictions.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Metric</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">dynamic_filter_rows_evaluated</span></code></p></td>
+<td><p>Probe rows evaluated by the runtime filter.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">dynamic_filter_rows_pruned</span></code></p></td>
+<td><p>Probe rows rejected by that filter before the hash probe.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">dynamic_filter_rows_bypassed</span></code></p></td>
+<td><p>Probe rows passed through while the runtime filter is inactive.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">dynamic_filter_eval_time</span></code></p></td>
+<td><p>Time evaluating the runtime filter.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">dynamic_filter_reader_filters_attached</span></code></p></td>
+<td><p>Executions that attach their runtime filter to a native reader.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">dynamic_filter_reader_filters_skipped</span></code></p></td>
+<td><p>Executions whose probe input is ineligible for reader attachment.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>The row counters measure residual filtering of decoded probe batches. They exclude rows skipped
+by the reader. An attached filter does not guarantee that any row groups are pruned: compare the
+probe scan’s <code class="docutils literal notranslate"><span class="pre">bytes_scanned</span></code> and <code class="docutils literal notranslate"><span class="pre">row_groups_pruned_statistics</span></code> with filtering disabled to assess
+reader savings. Existing join, scan, and intervening filter metrics retain their own meanings.</p>
+</section>
 <section id="exchange">
 <h3>Exchange<a class="headerlink" href="#exchange" title="Link to this heading">#</a></h3>
 <p>Comet adds some additional metrics:</p>
@@ -983,6 +1021,7 @@ Spark’s for large files. Comet’s value reflects what the storage layer actua
     <ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#spark-sql-metrics">Spark SQL Metrics</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#cometscanexec">CometScanExec</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#hash-joins">Hash Joins</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#exchange">Exchange</a></li>
 </ul>
 </li>

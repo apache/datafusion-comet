@@ -926,6 +926,24 @@ to configure Comet to convert <code class="docutils literal notranslate"><span c
 <code class="docutils literal notranslate"><span class="pre">ShuffledHashJoin</span></code> so this could result in OOM. Also, <code class="docutils literal notranslate"><span class="pre">SortMergeJoin</span></code> may still be faster in some cases. It is best
 to test with both for your specific workloads.</p>
 <p>To configure Comet to convert <code class="docutils literal notranslate"><span class="pre">SortMergeJoin</span></code> to <code class="docutils literal notranslate"><span class="pre">ShuffledHashJoin</span></code>, set <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.forceShuffledHashJoin=true</span></code>.</p>
+<section id="join-runtime-filters">
+<h3>Join Runtime Filters<a class="headerlink" href="#join-runtime-filters" title="Link to this heading">#</a></h3>
+<p>Set <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.join.dynamicFilter.enabled=true</span></code> to try experimental native hash join runtime
+filtering. It is disabled by default. Eligible joins are inner joins with one direct signed integer
+key (<code class="docutils literal notranslate"><span class="pre">TINYINT</span></code>, <code class="docutils literal notranslate"><span class="pre">SMALLINT</span></code>, <code class="docutils literal notranslate"><span class="pre">INT</span></code>, or <code class="docutils literal notranslate"><span class="pre">BIGINT</span></code>) and one native partition per input within each task.
+Both broadcast and shuffled hash joins support either Spark build side. Unsupported joins keep
+their existing execution path.</p>
+<p>Once the build completes, its key domain filters probe batches before the hash probe. Eligible
+native Parquet readers also use the domain to prune row groups. Reader attachment can pass through
+direct-column <code class="docutils literal notranslate"><span class="pre">IS</span> <span class="pre">NOT</span> <span class="pre">NULL</span></code> checks, including conjunctions, and remaps columns when the scan itself
+projects the file schema. The original null checks and residual runtime filter remain in place.
+The original join still verifies matches, including any hash collisions admitted by the filter.
+Standalone projections, other filter expressions, and limits prevent reader attachment.</p>
+<p>Filters stay within the task’s native plan and do not propagate across Spark exchanges or JVM/Arrow
+boundaries. A shuffled hash join can still filter probe batches after shuffle, but it cannot send
+its filter back to an earlier scan stage. Compare the <a class="reference internal" href="metrics.html#hash-joins"><span class="std std-ref">runtime-filter and scan metrics</span></a>
+with the setting disabled to distinguish reduced hash-probe work from reader I/O savings.</p>
+</section>
 </section>
 <section id="shuffle">
 <h2>Shuffle<a class="headerlink" href="#shuffle" title="Link to this heading">#</a></h2>
@@ -1156,7 +1174,10 @@ fallback to Spark works, see <a class="reference internal" href="understanding-c
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#iceberg-scan-tuning">Iceberg Scan Tuning</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#optimizing-sorting-on-floating-point-values">Optimizing Sorting on Floating-Point Values</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#optimizing-joins">Optimizing Joins</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#optimizing-joins">Optimizing Joins</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#join-runtime-filters">Join Runtime Filters</a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#shuffle">Shuffle</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#shuffle-implementations">Shuffle Implementations</a><ul class="nav section-nav flex-column">
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#native-shuffle">Native Shuffle</a></li>

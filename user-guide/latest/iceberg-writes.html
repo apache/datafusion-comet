@@ -1031,6 +1031,15 @@ parquet-rs buffers by row count. File rolling and file naming follow the same ca
 differences (iceberg-java checks the target file size every 1000 rows and names files
 <code class="docutils literal notranslate"><span class="pre">&lt;partition&gt;-&lt;task&gt;-&lt;operation&gt;-&lt;count&gt;</span></code>; iceberg-rust checks per batch and uses a
 process-local counter).</p></li>
+<li><p>Partition directory names match iceberg-java 1.8+’s <code class="docutils literal notranslate"><span class="pre">PartitionSpec.partitionToPath</span></code> for every
+partition type except <code class="docutils literal notranslate"><span class="pre">float</span></code> and <code class="docutils literal notranslate"><span class="pre">double</span></code>, where the value is rendered with Rust’s shortest
+representation instead of <code class="docutils literal notranslate"><span class="pre">Float.toString</span></code> / <code class="docutils literal notranslate"><span class="pre">Double.toString</span></code> (<code class="docutils literal notranslate"><span class="pre">f=1</span></code> where iceberg-java writes
+<code class="docutils literal notranslate"><span class="pre">f=1.0</span></code>). On Iceberg 1.5.x, which the Spark 3.4 profile pins, iceberg-java itself spelled
+<code class="docutils literal notranslate"><span class="pre">timestamp</span></code> and <code class="docutils literal notranslate"><span class="pre">timestamptz</span></code> directories with <code class="docutils literal notranslate"><span class="pre">LocalDateTime.toString()</span></code> /
+<code class="docutils literal notranslate"><span class="pre">OffsetDateTime.toString()</span></code> (<code class="docutils literal notranslate"><span class="pre">ts=1969-12-31T23:59:58.500Z</span></code>) and left the partition field name
+unescaped; Comet uses the 1.8+ spelling on every profile. Distinct partition values still get
+distinct directories in all cases, and no reader parses these names — files are resolved through
+committed manifests. Iceberg deprecated float and double partitioning in 1.3.</p></li>
 <li><p>Compressed page bytes are implementation-defined: the codec and any explicit level are
 translated, but parquet-rs and parquet-mr embed different encoder implementations and
 defaults (zstd default levels, LZ4 framing), so byte-identical output is not achievable even
