@@ -1598,17 +1598,28 @@ abstract class ParquetReadSuite extends CometTestBase {
         withTempPath { dir =>
           val path = dir.getCanonicalPath
           spark.sql(s"select $writeExpr as s").write.parquet(path)
-          val (sparkErr, cometErr) =
-            checkSparkAnswerMaybeThrows(spark.read.schema(readSchema).parquet(path))
           withClue(s"$writeExpr read as $readSchema: ") {
-            assert(sparkErr.isDefined, "Spark accepted the conversion")
-            assert(cometErr.isDefined, "Comet accepted the conversion")
-            val chain = causeChain(cometErr.get)
+            withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+              intercept[SparkException] {
+                spark.read.schema(readSchema).parquet(path).collect()
+              }
+            }
+            val df = spark.read.schema(readSchema).parquet(path)
+            val plan = df.queryExecution.executedPlan
+            assert(
+              collect(plan) { case scan: CometNativeScanExec => scan }.nonEmpty,
+              s"Expected a native Comet scan before collecting:\n$plan")
+            val cometErr = intercept[SparkException](df.collect())
+            val chain = causeChain(cometErr)
             assert(
               chain.exists(
                 _.isInstanceOf[org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException]),
               "expected SchemaColumnConvertNotSupportedException; chain was:\n" +
                 chain.map(t => s"  ${t.getClass.getName}: ${t.getMessage}").mkString("\n"))
+            if (readSchema == "s array<struct<x:int>>") {
+              assert(chain.exists(t =>
+                Option(t.getMessage).exists(_.contains("[s, list, element, x]"))))
+            }
           }
         }
       }

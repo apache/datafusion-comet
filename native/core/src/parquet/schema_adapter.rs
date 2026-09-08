@@ -501,12 +501,6 @@ fn check_leaf_conversion(
     column: &str,
     options: &SparkParquetOptions,
 ) -> ConversionCheck {
-    // arrow-rs surfaces a column whose file carries an `ARROW:schema` with a dictionary
-    // encoding as `Dictionary(_, value)`; Spark only ever sees the value's Parquet type.
-    let physical_type = match physical_type {
-        DataType::Dictionary(_, value_type) => value_type.as_ref(),
-        other => other,
-    };
     if physical_type == target_type {
         return ConversionCheck::Accept;
     }
@@ -691,7 +685,7 @@ fn check_leaf_conversion(
     let is_complex = |t: &DataType| {
         matches!(
             t,
-            DataType::Struct(_) | DataType::List(_) | DataType::Map(_, _)
+            DataType::Struct(_) | DataType::List(_) | DataType::LargeList(_) | DataType::Map(_, _)
         )
     };
     if is_complex(physical_type) || is_complex(target_type) {
@@ -705,8 +699,10 @@ fn check_leaf_conversion(
 /// `getUpdater` on every *leaf* column regardless of nesting, so same-shape complex pairs
 /// (struct / list / map, at any depth) are walked and [`check_leaf_conversion`] is applied to
 /// each leaf, extending the column path the way `descriptor.getPath()` does (struct field
-/// names, the map entries field plus its `key` / `value`, the list element field). Requested
-/// struct fields resolve to file fields with the same field-id / case-fold rules the runtime
+/// names, the map entries field plus its `key` / `value`, and `list` plus the element field).
+/// Arrow omits the repeated list group name, so `list` assumes the standard three-level
+/// encoding used by Spark. Legacy or custom group names cannot be recovered from this schema.
+/// Requested struct fields resolve to file fields with the same field-id / case-fold rules the runtime
 /// convert uses ([`match_struct_fields`]); requested fields missing from the file are skipped
 /// (they read as null / default, as before). The first non-`Accept` verdict in leaf order
 /// wins, like Spark, which raises for the first offending column it initializes.
@@ -716,6 +712,10 @@ fn check_conversion(
     column: &str,
     options: &SparkParquetOptions,
 ) -> DataFusionResult<ConversionCheck> {
+    // Normalize before dispatching on shape, including dictionary-wrapped containers.
+    if let DataType::Dictionary(_, value_type) = physical_type {
+        return check_conversion(value_type, target_type, column, options);
+    }
     match (physical_type, target_type) {
         (DataType::Struct(physical_fields), DataType::Struct(target_fields)) => {
             let physical_indices = match_struct_fields(physical_fields, target_fields, options)?;
@@ -736,18 +736,31 @@ fn check_conversion(
             }
             Ok(ConversionCheck::Accept)
         }
-        (DataType::List(physical_item), DataType::List(target_item)) => check_conversion(
+        (
+            DataType::List(physical_item) | DataType::LargeList(physical_item),
+            DataType::List(target_item) | DataType::LargeList(target_item),
+        ) => check_conversion(
             physical_item.data_type(),
             target_item.data_type(),
-            &format!("{column}, {}", physical_item.name()),
+            &format!("{column}, list, {}", physical_item.name()),
             options,
         ),
-        (DataType::Map(physical_entries, _), DataType::Map(target_entries, _)) => {
+        (
+            DataType::Map(physical_entries, physical_sorted),
+            DataType::Map(target_entries, target_sorted),
+        ) if physical_sorted == target_sorted => {
             // Map entries are `key` / `value` structs that the runtime convert pairs
             // positionally (`parquet_convert_map_to_map`), so do the same here.
             if let (DataType::Struct(physical_kv), DataType::Struct(target_kv)) =
                 (physical_entries.data_type(), target_entries.data_type())
             {
+                if physical_kv.len() != 2 || target_kv.len() != 2 {
+                    return Ok(ConversionCheck::Reject(parquet_schema_convert_err(
+                        column,
+                        physical_type,
+                        target_type,
+                    )));
+                }
                 for (physical_field, target_field) in physical_kv.iter().zip(target_kv.iter()) {
                     let check = check_conversion(
                         physical_field.data_type(),
@@ -763,8 +776,13 @@ fn check_conversion(
                         return Ok(check);
                     }
                 }
+                return Ok(ConversionCheck::Accept);
             }
-            Ok(ConversionCheck::Accept)
+            Ok(ConversionCheck::Reject(parquet_schema_convert_err(
+                column,
+                physical_type,
+                target_type,
+            )))
         }
         _ => Ok(check_leaf_conversion(
             physical_type,
@@ -1448,13 +1466,14 @@ impl PhysicalExpr for RejectOnNonEmpty {
 mod test {
     use crate::parquet::parquet_support::SparkParquetOptions;
     use crate::parquet::schema_adapter::{
-        is_pure_structural_narrowing, SparkPhysicalExprAdapterFactory,
+        check_conversion, is_pure_structural_narrowing, ConversionCheck,
+        SparkPhysicalExprAdapterFactory,
     };
     use arrow::array::cast::AsArray;
     use arrow::array::UInt32Array;
     use arrow::array::{
         Array, ArrayRef, BinaryArray, Date32Array, Decimal128Array, Float32Array, Float64Array,
-        Int32Array, Int64Array, ListArray, MapArray, StringArray, StructArray,
+        Int32Array, Int64Array, LargeListArray, ListArray, MapArray, StringArray, StructArray,
         TimestampMicrosecondArray, TimestampMillisecondArray,
     };
     use arrow::buffer::OffsetBuffer;
@@ -2295,11 +2314,140 @@ mod test {
         )]));
         let msg = nested_rejection_message(&batch, required_schema).await;
         assert!(
-            msg.contains("Column: [[a, element, x]]")
+            // The synthetic `list` segment assumes standard encoding; Arrow omits custom names.
+            msg.contains("Column: [[a, list, element, x]]")
                 && msg.contains("Expected: int")
                 && msg.contains("Found: INT64"),
             "unexpected error: {msg}"
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn nested_list_offset_width_preserves_values() -> Result<(), DataFusionError> {
+        for large in [false, true] {
+            let values = vec![Some(vec![Some(5_000_000_000i64), None]), None, Some(vec![])];
+            let array: ArrayRef = if large {
+                Arc::new(LargeListArray::from_iter_primitive::<Int64Type, _, _>(
+                    values,
+                ))
+            } else {
+                Arc::new(ListArray::from_iter_primitive::<Int64Type, _, _>(values))
+            };
+            let batch = struct_batch(Field::new("a", array.data_type().clone(), true), array)?;
+            for large_target in [false, true] {
+                let item = Arc::new(Field::new("item", DataType::Int64, true));
+                let target = if large_target {
+                    DataType::LargeList(item)
+                } else {
+                    DataType::List(item)
+                };
+                let schema = struct_schema(vec![Field::new("a", target, true)]);
+                let result = roundtrip(&batch, Arc::clone(&schema)).await?;
+                assert_eq!(result.schema(), schema);
+                let expected = arrow::compute::cast(batch.column(0), schema.field(0).data_type())?;
+                assert_eq!(result.column(0).to_data(), expected.to_data());
+            }
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn nested_large_list_rejects_narrowing() -> Result<(), DataFusionError> {
+        let values =
+            LargeListArray::from_iter_primitive::<Int64Type, _, _>(vec![Some(vec![Some(
+                5_000_000_000i64,
+            )])]);
+        let batch = struct_batch(
+            Field::new("a", values.data_type().clone(), true),
+            Arc::new(values),
+        )?;
+        for large_target in [false, true] {
+            let item = Arc::new(Field::new("item", DataType::Int32, true));
+            let target = if large_target {
+                DataType::LargeList(item)
+            } else {
+                DataType::List(item)
+            };
+            let msg = nested_rejection_message(
+                &batch,
+                struct_schema(vec![Field::new("a", target, true)]),
+            )
+            .await;
+            assert!(
+                msg.contains("Column: [[s, a, list, item]]")
+                    && msg.contains("Expected: int")
+                    && msg.contains("Found: INT64"),
+                "{msg}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn nested_dictionary_containers_are_checked_by_value_type() -> Result<(), DataFusionError> {
+        let options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        let physical_struct = DataType::Struct(Fields::from(vec![
+            Field::new("x", DataType::Int64, true),
+            Field::new("unused", DataType::Int32, true),
+        ]));
+        let pruned = DataType::Struct(Fields::from(vec![Field::new("x", DataType::Int64, true)]));
+        let narrowed = DataType::Struct(Fields::from(vec![Field::new("x", DataType::Int32, true)]));
+        for (physical, target, invalid_target) in [
+            (physical_struct.clone(), pruned.clone(), narrowed.clone()),
+            (
+                DataType::LargeList(Arc::new(Field::new("item", physical_struct.clone(), true))),
+                DataType::List(Arc::new(Field::new("item", pruned.clone(), true))),
+                DataType::List(Arc::new(Field::new("item", narrowed.clone(), true))),
+            ),
+            (
+                map_type(physical_struct),
+                map_type(pruned),
+                map_type(narrowed),
+            ),
+        ] {
+            let dictionary = DataType::Dictionary(Box::new(DataType::Int32), Box::new(physical));
+            assert!(matches!(
+                check_conversion(&dictionary, &target, "a", &options)?,
+                ConversionCheck::Accept
+            ));
+            assert!(matches!(
+                check_conversion(&dictionary, &invalid_target, "a", &options)?,
+                ConversionCheck::RejectOnNonEmpty { .. }
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn nested_map_shape_mismatch_is_rejected() -> Result<(), DataFusionError> {
+        let options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        let valid = map_type(DataType::Int64);
+        let DataType::Map(entries, _) = &valid else {
+            unreachable!()
+        };
+        for invalid in [
+            DataType::Map(Arc::clone(entries), true),
+            DataType::Map(
+                Arc::new(Field::new("key_value", DataType::Int64, false)),
+                false,
+            ),
+            DataType::Map(
+                Arc::new(Field::new(
+                    "key_value",
+                    DataType::Struct(Fields::from(vec![Field::new("key", DataType::Utf8, false)])),
+                    false,
+                )),
+                false,
+            ),
+        ] {
+            for (physical, target) in [(&valid, &invalid), (&invalid, &valid)] {
+                assert!(matches!(
+                    check_conversion(physical, target, "m", &options)?,
+                    ConversionCheck::Reject(_)
+                ));
+            }
+        }
         Ok(())
     }
 
