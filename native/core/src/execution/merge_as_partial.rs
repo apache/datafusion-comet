@@ -210,20 +210,30 @@ impl GroupsAccumulator for MergeAsPartialGroupsAccumulator {
         opt_filter: Option<&BooleanArray>,
         total_num_groups: usize,
     ) -> Result<()> {
-        // Redirect update to merge — this is the key trick.
+        // Redirect update to merge — this is the key trick. Spark's PartialMerge mode
+        // never applies a filter (filters apply once, at the Partial stage), so there's
+        // nothing to forward into merge_batch, which no longer accepts one.
+        debug_assert!(opt_filter.is_none());
         self.inner
-            .merge_batch(values, group_indices, opt_filter, total_num_groups)
+            .merge_batch(values, group_indices, total_num_groups)
     }
 
     fn merge_batch(
         &mut self,
         values: &[ArrayRef],
         group_indices: &[usize],
-        opt_filter: Option<&BooleanArray>,
         total_num_groups: usize,
     ) -> Result<()> {
         self.inner
-            .merge_batch(values, group_indices, opt_filter, total_num_groups)
+            .merge_batch(values, group_indices, total_num_groups)
+    }
+
+    fn convert_to_state(
+        &self,
+        _values: &[ArrayRef],
+        _opt_filter: Option<&BooleanArray>,
+    ) -> Result<Vec<ArrayRef>> {
+        datafusion::common::not_impl_err!("Input batch conversion to state not implemented")
     }
 
     fn evaluate(&mut self, emit_to: EmitTo) -> Result<ArrayRef> {

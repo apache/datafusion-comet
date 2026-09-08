@@ -176,6 +176,9 @@ message NativeScanCommon {
   // SchemaColumnConvertNotSupportedException (Spark 3.x, SPARK-36182). Set
   // from Comet's per-Spark-version constant in ShimCometConf.
   bool allow_timestamp_ltz_to_ntz = 18;
+  // True when Spark supplied a Parquet data filter, including when Comet could
+  // not serialize any of those filters into data_filters.
+  bool has_data_filters = 19;
 }
 
 message NativeScan {

@@ -29,9 +29,10 @@ use std::sync::Arc;
 
 use arrow::array::{ArrayRef, BinaryArray, RecordBatch, UInt32Array};
 use arrow::datatypes::{DataType, Field, Schema as ArrowSchema, SchemaRef};
+use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::error::{DataFusionError, Result as DFResult};
 use datafusion::execution::TaskContext;
-use datafusion::physical_expr::EquivalenceProperties;
+use datafusion::physical_expr::{EquivalenceProperties, PhysicalExpr};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::metrics::{
     ExecutionPlanMetricsSet, MetricBuilder, MetricsSet, Time,
@@ -160,6 +161,15 @@ impl ExecutionPlan for IcebergWriteExec {
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         vec![&self.input]
+    }
+
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> DFResult<TreeNodeRecursion>,
+    ) -> DFResult<TreeNodeRecursion> {
+        // IcebergWriteExec holds no physical expressions; the write is driven by the input
+        // stream and the table's partition spec, so there is nothing to visit here.
+        Ok(TreeNodeRecursion::Continue)
     }
 
     fn with_new_children(
@@ -1170,5 +1180,364 @@ mod tests {
             let err = decorate_batch_with_field_ids(batch, &target).unwrap_err();
             assert!(format!("{err}").contains("column count mismatch"));
         }
+    }
+}
+
+/// Pins Comet's Iceberg system-function kernels to iceberg-rust's partition transforms.
+///
+/// A partitioned write runs both: the sort in front of [`IcebergWriteExec`] is keyed on the
+/// `datafusion-comet-spark-expr` kernels (Iceberg plans the sort as `bucket(...)`, `days(...)`,
+/// ... system-function calls), while [`ClusteredWriter`] groups the sorted rows by the partition
+/// values that [`PartitionValueCalculator`] computes with iceberg-rust's transforms. The writer
+/// requires the two to agree: when they do not it fails at runtime with "The input is not sorted!
+/// Cannot write to partition that was previously closed". These tests make an iceberg-rust bump
+/// that changes a transform break here first.
+#[cfg(test)]
+mod iceberg_rust_transform_parity {
+    use arrow::array::{
+        ArrayRef, BinaryArray, Date32Array, Decimal128Array, Int32Array, Int64Array, StringArray,
+        TimestampMicrosecondArray,
+    };
+    use arrow::datatypes::{DataType, Field};
+    use datafusion::common::ScalarValue;
+    use datafusion::config::ConfigOptions;
+    use datafusion::logical_expr::{ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl};
+    use datafusion_comet_spark_expr::{
+        SparkIcebergBucket, SparkIcebergTemporalTransform, SparkIcebergTruncate,
+    };
+    use iceberg::spec::Transform;
+    use iceberg::transform::create_transform_function;
+    use std::sync::Arc;
+
+    const MICROS_PER_DAY: i64 = 86_400_000_000;
+
+    /// Runs a Comet kernel over `value`, prepending `parameter` for the two-argument transforms.
+    fn comet(udf: &dyn ScalarUDFImpl, parameter: Option<i32>, value: &ArrayRef) -> ArrayRef {
+        let mut args: Vec<ColumnarValue> = parameter
+            .map(|p| ColumnarValue::Scalar(ScalarValue::Int32(Some(p))))
+            .into_iter()
+            .collect();
+        args.push(ColumnarValue::Array(Arc::clone(value)));
+        let arg_fields: Vec<_> = args
+            .iter()
+            .enumerate()
+            .map(|(i, a)| Arc::new(Field::new(format!("arg{i}"), a.data_type(), true)))
+            .collect();
+        let arg_types: Vec<DataType> = arg_fields.iter().map(|f| f.data_type().clone()).collect();
+        let return_type = udf.return_type(&arg_types).unwrap();
+        udf.invoke_with_args(ScalarFunctionArgs {
+            args,
+            arg_fields,
+            number_rows: value.len(),
+            return_field: Arc::new(Field::new(udf.name(), return_type, true)),
+            config_options: Arc::new(ConfigOptions::default()),
+        })
+        .unwrap()
+        .to_array(value.len())
+        .unwrap()
+    }
+
+    fn iceberg_rust(transform: Transform, value: &ArrayRef) -> ArrayRef {
+        create_transform_function(&transform)
+            .unwrap()
+            .transform(Arc::clone(value))
+            .unwrap()
+    }
+
+    fn assert_agree(label: &str, transform: Transform, udf: &dyn ScalarUDFImpl, value: &ArrayRef) {
+        let parameter = match transform {
+            Transform::Bucket(n) => Some(n as i32),
+            Transform::Truncate(w) => Some(w as i32),
+            _ => None,
+        };
+        assert_eq!(
+            comet(udf, parameter, value).as_ref(),
+            iceberg_rust(transform, value).as_ref(),
+            "{label} disagrees with iceberg-rust's {transform}"
+        );
+    }
+
+    fn timestamps(micros: Vec<Option<i64>>) -> Vec<(&'static str, ArrayRef)> {
+        // The two tags Comet can produce: `TimestampNTZType` is untagged and `TimestampType` is
+        // always tagged UTC.
+        vec![
+            (
+                "timestamp_ntz",
+                Arc::new(TimestampMicrosecondArray::from(micros.clone())) as ArrayRef,
+            ),
+            (
+                "timestamp_utc",
+                Arc::new(TimestampMicrosecondArray::from(micros).with_timezone("UTC")) as ArrayRef,
+            ),
+        ]
+    }
+
+    /// Every type both sides accept. `Int8` and `Int16` are missing on purpose: Iceberg binds
+    /// tinyint and smallint to `BucketInt`, iceberg-rust has no arm for them, and Comet's kernel
+    /// widens them to the same 8 little-endian bytes that the `Int32` case pins here.
+    #[test]
+    fn bucket_agrees_with_iceberg_rust() {
+        let mut inputs: Vec<(&str, ArrayRef)> = vec![
+            (
+                "int",
+                Arc::new(Int32Array::from(vec![
+                    Some(i32::MIN),
+                    Some(-1),
+                    Some(0),
+                    Some(34),
+                    Some(i32::MAX),
+                    None,
+                ])),
+            ),
+            (
+                "long",
+                Arc::new(Int64Array::from(vec![
+                    Some(i64::MIN),
+                    Some(-1),
+                    Some(0),
+                    Some(34),
+                    Some(i64::MAX),
+                    None,
+                ])),
+            ),
+            (
+                "date",
+                Arc::new(Date32Array::from(vec![
+                    Some(i32::MIN),
+                    Some(-1),
+                    Some(0),
+                    Some(17_486),
+                    Some(i32::MAX),
+                    None,
+                ])),
+            ),
+            (
+                "decimal",
+                Arc::new(
+                    Decimal128Array::from(vec![
+                        Some(-(10i128.pow(38) - 1)),
+                        Some(-129),
+                        Some(0),
+                        Some(1420),
+                        Some(10i128.pow(38) - 1),
+                        None,
+                    ])
+                    .with_precision_and_scale(38, 10)
+                    .unwrap(),
+                ),
+            ),
+            (
+                "string",
+                Arc::new(StringArray::from(vec![
+                    Some(""),
+                    Some("a"),
+                    Some("iceberg"),
+                    Some("日本語😀"),
+                    None,
+                ])),
+            ),
+            (
+                "binary",
+                Arc::new(BinaryArray::from(vec![
+                    Some([].as_slice()),
+                    Some([0u8, 1, 2, 3].as_slice()),
+                    Some([0xffu8; 9].as_slice()),
+                    None,
+                ])),
+            ),
+        ];
+        inputs.extend(timestamps(vec![
+            Some(i64::MIN),
+            Some(-1),
+            Some(0),
+            Some(1_510_871_468_000_000),
+            Some(i64::MAX),
+            None,
+        ]));
+
+        let udf = SparkIcebergBucket::new();
+        for num_buckets in [1u32, 7, 16, i32::MAX as u32] {
+            for (label, input) in &inputs {
+                assert_agree(
+                    &format!("bucket({num_buckets}, {label})"),
+                    Transform::Bucket(num_buckets),
+                    &udf,
+                    input,
+                );
+            }
+        }
+    }
+
+    /// `i32::MIN`, `i64::MIN`, and widths above 2^30 are left out: Java's `TruncateUtil` wraps
+    /// there and iceberg-rust does not (`truncate_i32` uses `rem_euclid`, `truncate_i64` and the
+    /// decimal kernel subtract without wrapping and overflow in a debug build). That is an
+    /// iceberg-rust bug affecting the writer's own partition values, independent of these
+    /// kernels -- apache/iceberg-rust#3141. The wrapping cases are pinned against the JVM in the
+    /// kernel's own unit tests; add them here once that issue is fixed.
+    #[test]
+    fn truncate_agrees_with_iceberg_rust() {
+        let inputs: Vec<(&str, ArrayRef)> = vec![
+            (
+                "int",
+                Arc::new(Int32Array::from(vec![
+                    Some(i32::MIN + 1_000_000),
+                    Some(-1),
+                    Some(0),
+                    Some(1),
+                    Some(i32::MAX - 1_000_000),
+                    None,
+                ])),
+            ),
+            (
+                "long",
+                Arc::new(Int64Array::from(vec![
+                    Some(i64::MIN + 1_000_000),
+                    Some(-1),
+                    Some(0),
+                    Some(1),
+                    Some(i64::MAX - 1_000_000),
+                    None,
+                ])),
+            ),
+            (
+                "decimal",
+                Arc::new(
+                    Decimal128Array::from(vec![Some(-1065), Some(0), Some(1065), None])
+                        .with_precision_and_scale(18, 2)
+                        .unwrap(),
+                ),
+            ),
+            (
+                "string",
+                Arc::new(StringArray::from(vec![
+                    Some(""),
+                    Some("ic"),
+                    Some("iceberg"),
+                    Some("日本語テキスト"),
+                    Some("a😀b😀c"),
+                    None,
+                ])),
+            ),
+            (
+                "binary",
+                Arc::new(BinaryArray::from(vec![
+                    Some([].as_slice()),
+                    Some([1u8].as_slice()),
+                    Some([1u8, 2, 3, 4, 5].as_slice()),
+                    None,
+                ])),
+            ),
+        ];
+
+        let udf = SparkIcebergTruncate::new();
+        for width in [1u32, 3, 10, 1000, 1 << 30] {
+            for (label, input) in &inputs {
+                assert_agree(
+                    &format!("truncate({width}, {label})"),
+                    Transform::Truncate(width),
+                    &udf,
+                    input,
+                );
+            }
+        }
+    }
+
+    /// `days` and `hours` are plain floor division on both sides, so the whole domain agrees.
+    #[test]
+    fn days_and_hours_agree_with_iceberg_rust() {
+        let micros = vec![
+            Some(0),
+            Some(-1),
+            Some(-MICROS_PER_DAY),
+            Some(-MICROS_PER_DAY - 1),
+            Some(1_510_871_468_000_000),
+            Some(365 * MICROS_PER_DAY - 1),
+            None,
+        ];
+        let days_udf = SparkIcebergTemporalTransform::days();
+        let hours_udf = SparkIcebergTemporalTransform::hours();
+        for (label, input) in timestamps(micros) {
+            assert_agree(&format!("days({label})"), Transform::Day, &days_udf, &input);
+            assert_agree(
+                &format!("hours({label})"),
+                Transform::Hour,
+                &hours_udf,
+                &input,
+            );
+        }
+        let dates: ArrayRef = Arc::new(Date32Array::from(vec![
+            Some(i32::MIN),
+            Some(-366),
+            Some(0),
+            Some(17_486),
+            Some(i32::MAX),
+            None,
+        ]));
+        assert_agree("days(date)", Transform::Day, &days_udf, &dates);
+    }
+
+    /// `years` and `months` agree over the dates iceberg-rust can represent -- it splits the
+    /// calendar with `chrono`, so anything past year 262143 errors there while Comet and the JVM
+    /// keep going (apache/iceberg-rust#3142; see the kernel's own unit tests for those).
+    #[test]
+    fn years_and_months_agree_with_iceberg_rust_within_its_range() {
+        let years_udf = SparkIcebergTemporalTransform::years();
+        let months_udf = SparkIcebergTemporalTransform::months();
+        let dates: ArrayRef = Arc::new(Date32Array::from(vec![
+            Some(-100_000),
+            Some(-366),
+            Some(-365),
+            Some(-1),
+            Some(0),
+            Some(30),
+            Some(17_486),
+            Some(100_000),
+            None,
+        ]));
+        assert_agree("years(date)", Transform::Year, &years_udf, &dates);
+        assert_agree("months(date)", Transform::Month, &months_udf, &dates);
+        for (label, input) in timestamps(vec![
+            Some(-100_000 * MICROS_PER_DAY),
+            Some(-1),
+            Some(0),
+            Some(1_510_871_468_000_000),
+            None,
+        ]) {
+            assert_agree(
+                &format!("years({label})"),
+                Transform::Year,
+                &years_udf,
+                &input,
+            );
+            assert_agree(
+                &format!("months({label})"),
+                Transform::Month,
+                &months_udf,
+                &input,
+            );
+        }
+    }
+
+    /// Why `years` and `months` are not delegated to iceberg-rust even though `bucket`, `days`,
+    /// and `hours` could be: its kernels go through Arrow's `date_part`, which honours the
+    /// array's timezone tag, while Iceberg's Java `DateTimeUtil` is always UTC. Comet only ever
+    /// produces `UTC` and untagged timestamps today, so the parity above holds; this pins the
+    /// reason the local kernel exists. Reported as apache/iceberg-rust#3142; if this ever fails,
+    /// iceberg-rust dropped the tag dependency and delegating becomes safe.
+    #[test]
+    fn iceberg_rust_years_follow_the_timezone_tag() {
+        // 1969-12-31T23:59:59.999999Z, which is 1970-01-01T05:44:59.999999 in Kathmandu.
+        let tagged: ArrayRef =
+            Arc::new(TimestampMicrosecondArray::from(vec![-1i64]).with_timezone("Asia/Kathmandu"));
+        let comet_years = comet(&SparkIcebergTemporalTransform::years(), None, &tagged);
+        let iceberg_years = iceberg_rust(Transform::Year, &tagged);
+        assert_eq!(
+            comet_years.as_ref(),
+            &Int32Array::from(vec![-1]) as &dyn arrow::array::Array
+        );
+        assert_eq!(
+            iceberg_years.as_ref(),
+            &Int32Array::from(vec![0]) as &dyn arrow::array::Array
+        );
     }
 }

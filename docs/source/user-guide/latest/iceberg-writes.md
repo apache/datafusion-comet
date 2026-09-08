@@ -128,7 +128,10 @@ per-task Parquet write is delegated to [iceberg-rust](https://github.com/apache/
 The native writer must produce the same outcome as iceberg-java — the same Parquet features,
 statistics, and manifest metadata — so a write is only eligible when every table property it
 depends on is one the native path reproduces exactly, and additionally only when the plan
-feeding the write is fully Comet-native. Ineligible writes run through iceberg-java unchanged,
+feeding the write is fully Comet-native. For a partitioned table that plan includes the hash
+distribution and local sort Iceberg requests on its partition transforms; those stay native
+because the transforms themselves have native implementations (see
+[Iceberg system functions](iceberg.md)). Ineligible writes run through iceberg-java unchanged,
 with the reason reported as a fall-back reason in Comet's extended EXPLAIN output.
 
 **Most Iceberg write settings are not supported.** Detection is an allowlist: a write is

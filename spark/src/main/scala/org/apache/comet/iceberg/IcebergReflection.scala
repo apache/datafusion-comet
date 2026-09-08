@@ -52,7 +52,6 @@ object IcebergReflection extends Logging {
     val SCHEMA = "org.apache.iceberg.Schema"
     val PARTITION_SPEC_PARSER = "org.apache.iceberg.PartitionSpecParser"
     val PARTITION_SPEC = "org.apache.iceberg.PartitionSpec"
-    val PARTITION_FIELD = "org.apache.iceberg.PartitionField"
     val UNBOUND_PREDICATE = "org.apache.iceberg.expressions.UnboundPredicate"
     val SPARK_BATCH_QUERY_SCAN = "org.apache.iceberg.spark.source.SparkBatchQueryScan"
     val SPARK_STAGED_SCAN = "org.apache.iceberg.spark.source.SparkStagedScan"
@@ -617,21 +616,25 @@ object IcebergReflection extends Logging {
    * not already present is resolved from the table's schema history (`table.schemas()`) and
    * appended.
    *
-   * This mirrors Iceberg-Java's `DeleteFilter.fileProjection`: an equality delete may be keyed on
-   * a column that has since been dropped from the current schema, and iceberg-rust needs that
-   * column in the task schema to read and apply the delete. Called at serialization time, so it
-   * throws on failure (a required id that cannot be resolved, or any reflection error) rather
-   * than silently degrading; CometScanRule is responsible for falling back before we get here.
+   * Two callers need this: an equality delete may be keyed on a column since dropped from the
+   * current schema (mirroring Iceberg-Java's `DeleteFilter.fileProjection`), and a partition
+   * spec's source columns must be present for iceberg-rust to resolve `partition_type` when the
+   * query projects them out. Called at serialization time, so it throws on failure (a required id
+   * that cannot be resolved, or any reflection error) rather than silently degrading.
+   * CometScanRule is responsible for falling back before we get here.
    */
   def schemaWithRequiredFields(baseSchema: Any, table: Any, requiredFieldIds: Seq[Int]): Any = {
-    val existingIds = buildFieldIdMapping(baseSchema).values.toSet
-    val missingIds = requiredFieldIds.distinct.filterNot(existingIds.contains)
+    // `findFieldObject` searches recursively, so a source column already present as a nested field
+    // (e.g. `s.region`) is not re-appended at the top level, which would create a duplicate field
+    // id. Empty `requiredFieldIds` (the common non-partitioned, no-delete task) does no lookups.
+    val missingIds =
+      requiredFieldIds.distinct.filter(id => findFieldObject(baseSchema, id).isEmpty)
     if (missingIds.isEmpty) {
       baseSchema
     } else {
       logDebug(
-        s"Iceberg equality delete references field id(s) ${missingIds.mkString(",")} absent from " +
-          "the task schema; resolving from table schema history to build the native scan schema")
+        s"Native Iceberg scan schema is missing field id(s) ${missingIds.mkString(",")}; " +
+          "resolving them from table schema history")
       val history = getAllSchemas(table)
       val resolvedFields = missingIds.map { id =>
         history.iterator
@@ -639,7 +642,7 @@ object IcebergReflection extends Logging {
           .toSeq
           .headOption
           .getOrElse(throw new IllegalStateException(
-            s"Cannot resolve equality-delete field id $id in table schema history"))
+            s"Cannot resolve field id $id in table schema history"))
       }
       val existing =
         getMethod(baseSchema.getClass, "columns")
@@ -652,6 +655,55 @@ object IcebergReflection extends Logging {
         .newInstance(newColumns)
         .asInstanceOf[AnyRef]
     }
+  }
+
+  /**
+   * The source column field ids referenced by a task's partition spec.
+   *
+   * iceberg-rust validates a `FileScanTask` by resolving its partition spec against the task
+   * schema (`partition_type(schema)`), so a task carrying a partition spec needs those source
+   * columns present in the schema even when the query projects them out (for example selecting
+   * only `_spec_id` or `_partition`). These ids are unioned into the native task schema via
+   * [[schemaWithRequiredFields]]. project_field_ids still drives the read, so the columns are not
+   * materialized into the scan output. All ids resolve from the table's schema history, including
+   * a source column later dropped by partition evolution.
+   *
+   * Returns an empty sequence when the task has no partition spec.
+   */
+  def partitionSourceFieldIds(task: Any, fileScanTaskClass: Class[_]): Seq[Int] = {
+    val spec =
+      try {
+        getMethod(fileScanTaskClass, "spec").invoke(task)
+      } catch {
+        case _: Exception => null
+      }
+    if (spec == null) Seq.empty else partitionFieldSourceIds(spec)
+  }
+
+  /**
+   * The `sourceId`s of a partition spec's fields, in spec order. Empty for an unpartitioned spec.
+   */
+  private def partitionFieldSourceIds(spec: Any): Seq[Int] = {
+    import scala.jdk.CollectionConverters._
+    // Exclude fields whose source column was dropped (unknown result type): their source is absent
+    // from the current schema and the serialized spec/values omit them too (see
+    // CometIcebergNativeScan.serializePartitionData), so augmenting the schema with them would
+    // resolve a stale id from history and collide with a live column of the same name.
+    val specFields =
+      getMethod(spec.getClass, "fields").invoke(spec).asInstanceOf[java.util.List[_]]
+    val partitionType = getMethod(spec.getClass, "partitionType").invoke(spec)
+    val typeFields = getMethod(partitionType.getClass, "fields")
+      .invoke(partitionType)
+      .asInstanceOf[java.util.List[_]]
+    specFields.asScala
+      .zip(typeFields.asScala)
+      .flatMap { case (partitionField, typeField) =>
+        val fieldType = getMethod(typeField.getClass, "type").invoke(typeField).toString
+        val sourceId =
+          getMethod(partitionField.getClass, "sourceId").invoke(partitionField).asInstanceOf[Int]
+        if (fieldType == TypeNames.UNKNOWN) None else Some(sourceId)
+      }
+      .toSeq
   }
 
   /**
@@ -967,19 +1019,11 @@ object IcebergReflection extends Logging {
    *   typeStr, reason)
    */
   def validatePartitionTypes(partitionSpec: Any, schema: Any): List[(String, String, String)] = {
-    import scala.jdk.CollectionConverters._
-
-    val fieldsMethod = getMethod(partitionSpec.getClass, "fields")
-    val fields = fieldsMethod.invoke(partitionSpec).asInstanceOf[java.util.List[_]]
-
-    val partitionFieldClass = loadClass(ClassNames.PARTITION_FIELD)
-    val sourceIdMethod = getMethod(partitionFieldClass, "sourceId")
     val findFieldMethod = getMethod(schema.getClass, "findField", classOf[Int])
 
     val unsupportedTypes = scala.collection.mutable.ListBuffer[(String, String, String)]()
 
-    fields.asScala.foreach { field =>
-      val sourceId = sourceIdMethod.invoke(field).asInstanceOf[Int]
+    partitionFieldSourceIds(partitionSpec).foreach { sourceId =>
       val column = findFieldMethod.invoke(schema, sourceId.asInstanceOf[Object])
 
       if (column != null) {
@@ -1969,18 +2013,22 @@ object CometIcebergNativeScanMetadata extends Logging {
    *   Path to the table metadata file (already extracted)
    * @param catalogProperties
    *   Catalog properties for FileIO (already extracted)
+   * @param tasks
+   *   The scan's FileScanTasks (already extracted). Passed in rather than re-read via
+   *   [[IcebergReflection.getTasks]], which for a staged scan rebuilds a flattened list of every
+   *   task on each call.
    * @return
    *   Some(metadata) if all reflection succeeds, None to trigger fallback
    */
   def extract(
       scan: Any,
       metadataLocation: String,
-      catalogProperties: Map[String, String]): Option[CometIcebergNativeScanMetadata] = {
+      catalogProperties: Map[String, String],
+      tasks: java.util.List[_]): Option[CometIcebergNativeScanMetadata] = {
     import org.apache.comet.iceberg.IcebergReflection._
 
     for {
       table <- getTable(scan)
-      tasks <- getTasks(scan)
       scanSchema <- getExpectedSchema(scan)
       tableSchema <- getSchema(table)
     } yield {

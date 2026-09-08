@@ -90,6 +90,11 @@ pub enum CometError {
     #[error("Comet Internal Error: {0}")]
     Internal(String),
 
+    /// A remote shuffle frame or its encoding workspace cannot fit the configured limits.
+    /// Preserve this classification so Spark can restart the shuffle with a local writer.
+    #[error("{0}")]
+    ShuffleSizeLimit(String),
+
     #[error(transparent)]
     Arrow {
         #[from]
@@ -214,7 +219,9 @@ impl From<CometError> for DataFusionError {
             // own codegen inside the JVM UDF kernel) as an `External` error so it survives the trip
             // back through DataFusion and can be re-thrown with its exact type at the JNI boundary.
             // Flattening it to a string here would surface it as a generic CometNativeException.
-            value @ CometError::JavaException { .. } => DataFusionError::External(Box::new(value)),
+            value @ (CometError::JavaException { .. } | CometError::ShuffleSizeLimit(_)) => {
+                DataFusionError::External(Box::new(value))
+            }
             _ => DataFusionError::Execution(value.to_string()),
         }
     }
@@ -337,6 +344,10 @@ impl jni::errors::ToException for CometError {
             CometError::Spark(spark_err) => Exception {
                 class: spark_err.exception_class().to_string(),
                 msg: spark_err.to_string(),
+            },
+            CometError::ShuffleSizeLimit(message) => Exception {
+                class: "org/apache/comet/CometShuffleSizeLimitException".to_string(),
+                msg: message.clone(),
             },
             _other => Exception {
                 class: "org/apache/comet/CometNativeException".to_string(),
@@ -473,6 +484,15 @@ pub fn unwrap_or_throw_default<T: JNIDefault>(
 fn throw_exception(env: &mut Env, error: &CometError, backtrace: Option<String>) {
     // If there isn't already an exception?
     if !env.exception_check() {
+        // DataFusion operators can wrap the original failure in Context, Shared, or External
+        // errors. Keep capacity failures typed across those wrappers and the JNI boundary.
+        if let Some(message) = shuffle_size_limit_message(error) {
+            let _ = env.throw_new(
+                jni::jni_str!("org/apache/comet/CometShuffleSizeLimitException"),
+                JNIString::new(message),
+            );
+            return;
+        }
         // ... then throw new exception
         // Note: in jni 0.22.x, throw/throw_new return Err(JavaException) on success
         // (to signal the pending exception to Rust callers via `?`). We discard the
@@ -552,6 +572,17 @@ fn throw_exception(env: &mut Env, error: &CometError, backtrace: Option<String>)
             _ => throw_generic_exception(env, error, backtrace),
         };
     }
+}
+
+fn shuffle_size_limit_message<'a>(error: &'a (dyn std::error::Error + 'static)) -> Option<&'a str> {
+    let mut cause = Some(error);
+    while let Some(error) = cause {
+        if let Some(CometError::ShuffleSizeLimit(message)) = error.downcast_ref::<CometError>() {
+            return Some(message);
+        }
+        cause = error.source();
+    }
+    None
 }
 
 /// Generic fallback throw for an error that isn't a structured `SparkError`. Recognises a
@@ -910,6 +941,36 @@ mod tests {
         unsafe {
             JVM.as_ref().unwrap()
         }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)] // miri cannot create a JVM.
+    fn shuffle_size_limit_survives_datafusion_wrappers_and_jni() {
+        let message = "Remote shuffle exceeds spark.comet.shuffle.rss.maxInFlightBytes";
+        let error = DataFusionError::from(CometError::ShuffleSizeLimit(message.to_string()));
+        let error = DataFusionError::Shared(Arc::new(DataFusionError::Context(
+            "executing shuffle writer".to_string(),
+            Box::new(error),
+        )));
+        jvm()
+            .attach_current_thread(|env| -> jni::errors::Result<()> {
+                unwrap_or_throw_default::<()>(env, Err(CometError::from(error)));
+                assert_pending_java_exception_detailed(
+                    env,
+                    Some("org/apache/comet/CometShuffleSizeLimitException"),
+                    Some(message),
+                );
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn shuffle_size_limit_is_not_inferred_from_error_text() {
+        let error = CometError::from(DataFusionError::Execution(
+            "Remote shuffle exceeds spark.comet.shuffle.rss.maxInFlightBytes".to_string(),
+        ));
+        assert!(shuffle_size_limit_message(&error).is_none());
     }
 
     #[test]

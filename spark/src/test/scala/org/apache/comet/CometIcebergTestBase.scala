@@ -22,8 +22,13 @@ package org.apache.comet
 import java.io.File
 import java.nio.file.Files
 
+import scala.collection.mutable
+
+import org.apache.spark.CometListenerBusUtils
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.connector.catalog.{Identifier, TableCatalog}
+import org.apache.spark.sql.execution.{QueryExecution, SparkPlan}
+import org.apache.spark.sql.util.QueryExecutionListener
 
 import org.apache.comet.CometSparkSessionExtensions.isSpark42Plus
 import org.apache.comet.iceberg.IcebergReflection
@@ -130,5 +135,25 @@ trait CometIcebergTestBase {
   protected def deleteRecursively(file: File): Unit = {
     if (file.isDirectory) file.listFiles().foreach(deleteRecursively)
     file.delete()
+  }
+
+  /** The executed plan of every query that completes successfully while `action` runs. */
+  protected def capturePlans(spark: SparkSession)(action: => Unit): Seq[SparkPlan] = {
+    val captured = mutable.Buffer.empty[SparkPlan]
+    val listener = new QueryExecutionListener {
+      override def onSuccess(funcName: String, qe: QueryExecution, durationNs: Long): Unit = {
+        captured += qe.executedPlan
+      }
+      override def onFailure(funcName: String, qe: QueryExecution, exception: Exception): Unit =
+        ()
+    }
+    spark.listenerManager.register(listener)
+    try {
+      action
+      CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
+    } finally {
+      spark.listenerManager.unregister(listener)
+    }
+    captured.toSeq
   }
 }
