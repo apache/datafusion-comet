@@ -375,7 +375,7 @@ fn spark_catalog_name(dt: &DataType) -> String {
         }
         // Spark's `catalogString` for the complex types (e.g. `array<int>`), so a
         // scalar-vs-complex rejection reads like Spark's.
-        DataType::List(item) | DataType::LargeList(item) => {
+        DataType::List(item) | DataType::LargeList(item) | DataType::FixedSizeList(item, _) => {
             format!("array<{}>", spark_catalog_name(item.data_type()))
         }
         DataType::Map(entries, _) => match entries.data_type() {
@@ -685,7 +685,11 @@ fn check_leaf_conversion(
     let is_complex = |t: &DataType| {
         matches!(
             t,
-            DataType::Struct(_) | DataType::List(_) | DataType::LargeList(_) | DataType::Map(_, _)
+            DataType::Struct(_)
+                | DataType::List(_)
+                | DataType::LargeList(_)
+                | DataType::FixedSizeList(_, _)
+                | DataType::Map(_, _)
         )
     };
     if is_complex(physical_type) || is_complex(target_type) {
@@ -737,8 +741,12 @@ fn check_conversion(
             Ok(ConversionCheck::Accept)
         }
         (
-            DataType::List(physical_item) | DataType::LargeList(physical_item),
-            DataType::List(target_item) | DataType::LargeList(target_item),
+            DataType::List(physical_item)
+            | DataType::LargeList(physical_item)
+            | DataType::FixedSizeList(physical_item, _),
+            DataType::List(target_item)
+            | DataType::LargeList(target_item)
+            | DataType::FixedSizeList(target_item, _),
         ) => check_conversion(
             physical_item.data_type(),
             target_item.data_type(),
@@ -1472,9 +1480,9 @@ mod test {
     use arrow::array::cast::AsArray;
     use arrow::array::UInt32Array;
     use arrow::array::{
-        Array, ArrayRef, BinaryArray, Date32Array, Decimal128Array, Float32Array, Float64Array,
-        Int32Array, Int64Array, LargeListArray, ListArray, MapArray, StringArray, StructArray,
-        TimestampMicrosecondArray, TimestampMillisecondArray,
+        Array, ArrayRef, BinaryArray, Date32Array, Decimal128Array, FixedSizeListArray,
+        Float32Array, Float64Array, Int32Array, Int64Array, LargeListArray, ListArray, MapArray,
+        StringArray, StructArray, TimestampMicrosecondArray, TimestampMillisecondArray,
     };
     use arrow::buffer::OffsetBuffer;
     use arrow::datatypes::SchemaRef;
@@ -2348,6 +2356,66 @@ mod test {
                 let expected = arrow::compute::cast(batch.column(0), schema.field(0).data_type())?;
                 assert_eq!(result.column(0).to_data(), expected.to_data());
             }
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn nested_fixed_size_list_preserves_values() -> Result<(), DataFusionError> {
+        let values = FixedSizeListArray::from_iter_primitive::<Int64Type, _, _>(
+            vec![
+                Some(vec![Some(1), Some(2)]),
+                None,
+                Some(vec![Some(5_000_000_000), None]),
+            ],
+            2,
+        );
+        let batch = struct_batch(
+            Field::new("a", values.data_type().clone(), true),
+            Arc::new(values),
+        )?;
+        let item = Arc::new(Field::new("item", DataType::Int64, true));
+        for target in [
+            DataType::List(Arc::clone(&item)),
+            DataType::LargeList(Arc::clone(&item)),
+            DataType::FixedSizeList(item, 2),
+        ] {
+            let schema = struct_schema(vec![Field::new("a", target, true)]);
+            let result = roundtrip(&batch, Arc::clone(&schema)).await?;
+            assert_eq!(result.schema(), schema);
+            let expected = arrow::compute::cast(batch.column(0), schema.field(0).data_type())?;
+            assert_eq!(result.column(0).to_data(), expected.to_data());
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn nested_fixed_size_list_rejects_narrowing() -> Result<(), DataFusionError> {
+        let values = FixedSizeListArray::from_iter_primitive::<Int64Type, _, _>(
+            vec![Some(vec![Some(5_000_000_000), Some(1)])],
+            2,
+        );
+        let batch = struct_batch(
+            Field::new("a", values.data_type().clone(), true),
+            Arc::new(values),
+        )?;
+        let item = Arc::new(Field::new("item", DataType::Int32, true));
+        for target in [
+            DataType::List(Arc::clone(&item)),
+            DataType::LargeList(Arc::clone(&item)),
+            DataType::FixedSizeList(item, 2),
+        ] {
+            let msg = nested_rejection_message(
+                &batch,
+                struct_schema(vec![Field::new("a", target, true)]),
+            )
+            .await;
+            assert!(
+                msg.contains("Column: [[s, a, list, item]]")
+                    && msg.contains("Expected: int")
+                    && msg.contains("Found: INT64"),
+                "{msg}"
+            );
         }
         Ok(())
     }
