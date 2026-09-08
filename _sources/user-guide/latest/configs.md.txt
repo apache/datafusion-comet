@@ -221,6 +221,7 @@ shuffle, including applications that rely only on remote reliable storage or dec
 | `spark.comet.expression.AddMonths.enabled` | Enable Comet acceleration for `AddMonths` | true |
 | `spark.comet.expression.Alias.enabled` | Enable Comet acceleration for `Alias` | true |
 | `spark.comet.expression.And.enabled` | Enable Comet acceleration for `And` | true |
+| `spark.comet.expression.ApplyFunctionExpression.enabled` | Enable Comet acceleration for `ApplyFunctionExpression` | true |
 | `spark.comet.expression.ArrayAggregate.enabled` | Enable Comet acceleration for `ArrayAggregate` | true |
 | `spark.comet.expression.ArrayAppend.enabled` | Enable Comet acceleration for `ArrayAppend` | true |
 | `spark.comet.expression.ArrayContains.enabled` | Enable Comet acceleration for `ArrayContains` | true |
