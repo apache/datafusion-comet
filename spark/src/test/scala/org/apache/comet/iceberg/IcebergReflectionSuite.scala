@@ -198,6 +198,48 @@ class IcebergReflectionSuite extends AnyFunSuite {
     assert(method.get.invoke(file).toString == "/tmp/data/f.parquet")
   }
 
+  /** Mimics a table whose operations installed the stock plaintext manager. */
+  class PlaintextEncryptionTable {
+    def encryption(): AnyRef =
+      org.apache.iceberg.encryption.PlaintextEncryptionManager.instance()
+  }
+
+  /** Mimics a table whose (possibly custom) operations installed a real encryption manager. */
+  class CustomEncryptionTable {
+    def encryption(): AnyRef = new Object
+  }
+
+  class NoEncryptionMethodTable
+
+  test("getEncryptionManager resolves the manager the table actually installed") {
+    val plaintext = IcebergReflection.getEncryptionManager(new PlaintextEncryptionTable)
+    assert(
+      plaintext.exists(
+        _.getClass.getName == "org.apache.iceberg.encryption.PlaintextEncryptionManager"))
+
+    val custom = IcebergReflection.getEncryptionManager(new CustomEncryptionTable)
+    assert(custom.isDefined)
+    assert(
+      custom.get.getClass.getName != "org.apache.iceberg.encryption.PlaintextEncryptionManager")
+  }
+
+  test("getEncryptionManager returns None when encryption() cannot be resolved") {
+    // The write gate treats None as fail-closed, so a table type without the accessor (or a
+    // future rename) declines the native write rather than assuming plaintext.
+    assert(IcebergReflection.getEncryptionManager(new NoEncryptionMethodTable).isEmpty)
+  }
+
+  test("executor-side reflection surface resolves against the linked Iceberg") {
+    // The eligibility gate declines a native write when any class, method, or constructor used
+    // by the executor-side commit-message assembly fails to resolve (it would otherwise be a
+    // task failure after data files were already written). Asserting the probe is green here
+    // means an Iceberg version bump that moves part of that surface fails this test loudly
+    // instead of silently falling every native write back to the JVM writer.
+    assert(
+      IcebergReflection.executorReflectionUnresolved.isEmpty,
+      IcebergReflection.executorReflectionUnresolved)
+  }
+
   /** Mimics a newer Iceberg ContentFile, which exposes location(). */
   class LocationFile(loc: String) {
     def location(): String = loc

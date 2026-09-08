@@ -20,7 +20,7 @@
 package org.apache.comet.serde
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Base64, BitLength, Cast, Concat, ConcatWs, Contains, Elt, Empty2Null, EndsWith, Expression, FindInSet, FormatNumber, FormatString, GetJsonObject, InitCap, Left, Length, Levenshtein, Like, Literal, Lower, Mask, OctetLength, Overlay, RegExpExtract, RegExpExtractAll, RegExpInStr, RegExpReplace, Right, RLike, SoundEx, StartsWith, StringLocate, StringLPad, StringRepeat, StringReplace, StringRPad, StringSplit, StringTranslate, Substring, SubstringIndex, ToCharacter, ToNumber, TryToNumber, UnBase64, Upper}
-import org.apache.spark.sql.types.{BinaryType, DataTypes, IntegerType, LongType, StringType}
+import org.apache.spark.sql.types.{ArrayType, BinaryType, DataTypes, IntegerType, LongType, StringType}
 
 import org.apache.comet.CometConf
 import org.apache.comet.serde.ExprOuterClass.Expr
@@ -286,12 +286,30 @@ object CometConcat
   }
 }
 
-object CometConcatWs extends CometExpressionSerde[ConcatWs] {
+object CometConcatWs extends CometExpressionSerde[ConcatWs] with CodegenDispatchFallback {
+
+  // Spark's ConcatWs accepts `array<string>` arguments after the separator and flattens their
+  // elements into the list of strings to join (null elements are skipped, like null strings).
+  // DataFusion's `concat_ws` accepts only string arguments and fails at execution time when it is
+  // handed a list, so these calls have no native path. Because this serde mixes in
+  // `CodegenDispatchFallback`, they run through the JVM codegen dispatcher (Spark's own
+  // `ConcatWs.doGenCode` inside the Comet pipeline) instead, and fall back to Spark only when the
+  // dispatcher is disabled. See https://github.com/apache/datafusion-comet/issues/5675.
+  private val arrayArgumentReason =
+    "`concat_ws` with `array<string>` arguments: Spark flattens the array elements into the " +
+      "strings to join, which DataFusion's `concat_ws` does not support " +
+      "(https://github.com/apache/datafusion-comet/issues/5675)"
+
+  override def getUnsupportedReasons(): Seq[String] = Seq(arrayArgumentReason)
 
   override def getSupportLevel(expr: ConcatWs): SupportLevel = expr.children.headOption match {
     // A NULL separator converts directly to a NULL result, so it stays supported.
     case Some(Literal(null, _)) => Compatible()
-    // Fall back to Spark for all-literal args so ConstantFolding can handle it.
+    case _ if expr.children.exists(_.dataType.isInstanceOf[ArrayType]) =>
+      Unsupported(Some(arrayArgumentReason))
+    // Decline all-literal args so that Spark's ConstantFolding handles them (it normally folds
+    // them before they reach Comet). With the dispatcher enabled they run through Spark's own
+    // generated code in-pipeline; otherwise the projection falls back to Spark.
     case _ if expr.children.forall(_.foldable) =>
       Unsupported(Some("all arguments are foldable"))
     case _ => Compatible()
