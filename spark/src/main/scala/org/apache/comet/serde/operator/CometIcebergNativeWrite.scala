@@ -795,7 +795,7 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
           // the native writer column, so retain the JVM writer until paths travel structurally.
           withFallbackReason(
             op,
-            s"Bloom-filter columns are renamed in Iceberg Java's Parquet schema: " +
+            "Bloom-filter columns are renamed in Iceberg Java's Parquet schema: " +
               renamedColumns.mkString(", "))
           return None
         }
