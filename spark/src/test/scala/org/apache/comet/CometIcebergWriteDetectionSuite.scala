@@ -289,22 +289,30 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
   }
 
   test("bloom-filter max-bytes=32 falls back only when parquet-mr ignores the cap") {
-    assumeIcebergBloomShapeProperties()
     withDetectionCatalog { dir =>
       val minimumBytes = 32
       val naturallyMinimumNdv = 1
       val bindingFpp = 0.0001
       val bindingNdv = 1000000
-      Seq(
-        ("without_ndv", s"'write.parquet.bloom-filter-max-bytes'='$minimumBytes'"),
-        (
-          "natural_minimum",
+      createTable(
+        dir,
+        "without_ndv",
+        partitionSpec = "",
+        properties = Some(s"'write.parquet.bloom-filter-max-bytes'='$minimumBytes'"))
+      assertSupportLevelIs[Compatible]("without_ndv")
+
+      createTable(
+        dir,
+        "natural_minimum",
+        partitionSpec = "",
+        properties = Some(
           "'write.parquet.bloom-filter-enabled.column.id'='true', " +
             s"'write.parquet.bloom-filter-ndv.column.id'='$naturallyMinimumNdv', " +
-            s"'write.parquet.bloom-filter-max-bytes'='$minimumBytes'")).foreach {
-        case (table, properties) =>
-          createTable(dir, table, partitionSpec = "", properties = Some(properties))
-          assertSupportLevelIs[Compatible](table)
+            s"'write.parquet.bloom-filter-max-bytes'='$minimumBytes'"))
+      if (icebergSupportsBloomNdv) {
+        assertSupportLevelIs[Compatible]("natural_minimum")
+      } else {
+        assertUnsupportedContains("natural_minimum", "is not interpreted")
       }
 
       createTable(
@@ -316,14 +324,17 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
             s"'write.parquet.bloom-filter-fpp.column.id'='$bindingFpp', " +
             s"'write.parquet.bloom-filter-ndv.column.id'='$bindingNdv', " +
             s"'write.parquet.bloom-filter-max-bytes'='$minimumBytes'"))
-      assertUnsupportedContainsAllowingWriteFailure(
-        "ignored_minimum_cap",
-        "write.parquet.bloom-filter-max-bytes")
+      if (icebergSupportsBloomFpp && icebergSupportsBloomNdv) {
+        assertUnsupportedContainsAllowingWriteFailure(
+          "ignored_minimum_cap",
+          "write.parquet.bloom-filter-max-bytes")
+      } else {
+        assertUnsupportedContainsAllowingWriteFailure("ignored_minimum_cap", "is not interpreted")
+      }
     }
   }
 
   test("fall-back: bloom-filter NDV values that overflow parquet-mr sizing arithmetic") {
-    assumeIcebergBloomShapeProperties()
     withDetectionCatalog { dir =>
       val largestNonOverflowingNdv = Long.MaxValue / 8L
       val cases = Seq(
@@ -341,19 +352,19 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
           properties = Some(
             "'write.parquet.bloom-filter-enabled.column.id'='true', " +
               s"'write.parquet.bloom-filter-ndv.column.id'='$ndv'"))
-        if (compatible) {
+        if (compatible && icebergSupportsBloomNdv) {
           assertSupportLevelIs[Compatible](table)
         } else {
           assertUnsupportedContainsAllowingWriteFailure(
             table,
-            "write.parquet.bloom-filter-ndv.column.id")
+            if (icebergSupportsBloomNdv) "write.parquet.bloom-filter-ndv.column.id"
+            else "is not interpreted")
         }
       }
     }
   }
 
-  test("bloom-filter enabled=false still applies and validates FPP and NDV") {
-    assumeIcebergBloomShapeProperties()
+  test("bloom-filter enabled=false with NDV remains enabled and validates NDV") {
     withDetectionCatalog { dir =>
       val configuredNdv = 1000
       createTable(
@@ -363,21 +374,39 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
         properties = Some(
           "'write.parquet.bloom-filter-enabled.column.id'='false', " +
             s"'write.parquet.bloom-filter-ndv.column.id'='$configuredNdv'"))
-      assertSupportLevelIs[Compatible]("false_with_ndv")
-
-      Seq(
-        "'write.parquet.bloom-filter-fpp.column.id'='garbage'",
-        "'write.parquet.bloom-filter-ndv.column.id'='garbage'").zipWithIndex.foreach {
-        case (property, index) =>
-          val table = s"false_with_bad_shape_$index"
-          createTable(
-            dir,
-            table,
-            partitionSpec = "",
-            properties =
-              Some(s"'write.parquet.bloom-filter-enabled.column.id'='false', $property"))
-          assertUnsupportedContainsAllowingWriteFailure(table, "write.parquet.bloom-filter")
+      if (icebergSupportsBloomNdv) {
+        assertSupportLevelIs[Compatible]("false_with_ndv")
+      } else {
+        assertUnsupportedContains("false_with_ndv", "is not interpreted")
       }
+
+      createTable(
+        dir,
+        "false_with_bad_ndv",
+        partitionSpec = "",
+        properties = Some(
+          "'write.parquet.bloom-filter-enabled.column.id'='false', " +
+            "'write.parquet.bloom-filter-ndv.column.id'='garbage'"))
+      assertUnsupportedContainsAllowingWriteFailure(
+        "false_with_bad_ndv",
+        if (icebergSupportsBloomNdv) "write.parquet.bloom-filter-ndv"
+        else "is not interpreted")
+    }
+  }
+
+  test("bloom-filter enabled=false still validates FPP") {
+    withDetectionCatalog { dir =>
+      createTable(
+        dir,
+        "false_with_bad_fpp",
+        partitionSpec = "",
+        properties = Some(
+          "'write.parquet.bloom-filter-enabled.column.id'='false', " +
+            "'write.parquet.bloom-filter-fpp.column.id'='garbage'"))
+      assertUnsupportedContainsAllowingWriteFailure(
+        "false_with_bad_fpp",
+        if (icebergSupportsBloomFpp) "write.parquet.bloom-filter-fpp"
+        else "is not interpreted")
     }
   }
 
@@ -1020,13 +1049,15 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     }
   }
 
-  private def assumeIcebergBloomShapeProperties(): Unit = {
-    assume(
-      IcebergReflection
-        .tablePropertyConstantOpt("PARQUET_BLOOM_FILTER_COLUMN_FPP_PREFIX")
-        .isDefined,
-      "Iceberg runtime does not interpret per-column Bloom FPP/NDV properties")
-  }
+  private def icebergSupportsBloomFpp: Boolean =
+    IcebergReflection
+      .tablePropertyConstantOpt("PARQUET_BLOOM_FILTER_COLUMN_FPP_PREFIX")
+      .isDefined
+
+  private def icebergSupportsBloomNdv: Boolean =
+    IcebergReflection
+      .tablePropertyConstantOpt("PARQUET_BLOOM_FILTER_COLUMN_NDV_PREFIX")
+      .isDefined
 
   /**
    * Runs Spark's transition insertion followed by [[EliminateRedundantTransitions]] over a
@@ -1092,6 +1123,8 @@ case class TransitionProbeLeaf(columnar: Boolean) extends LeafExecNode {
     throw new UnsupportedOperationException("planning-only node")
   override protected def doExecuteColumnar(): RDD[ColumnarBatch] =
     throw new UnsupportedOperationException("planning-only node")
+}
+
 /**
  * A FileIO that works normally (delegating to HadoopFileIO) but whose class is not on Comet's
  * recognized-FileIO allowlist. Composition rather than inheritance is the point: a HadoopFileIO
