@@ -28,8 +28,11 @@ permissions:
   contents: read
   pull-requests: write
 
+# Pushes replace each other's path-labeling run, but the opened run stays in its own group:
+# the title step runs on open only, and a synchronize run that cancelled it would leave the
+# type label missing with no later event to add it.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}-${{ github.event.action }}
   cancel-in-progress: true
 
 jobs:
