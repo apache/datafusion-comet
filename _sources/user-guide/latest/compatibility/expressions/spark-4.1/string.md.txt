@@ -41,7 +41,7 @@ The following cases have no native implementation and always run in the JVM usin
 
 The following cases have no native implementation and always run in the JVM using Spark's code-generated implementation (inside the Comet pipeline):
 
-- `concat_ws` with `array<string>` arguments: Spark flattens the array elements into the strings to join, which DataFusion's `concat_ws` does not support (https://github.com/apache/datafusion-comet/issues/5675)
+- all arguments are foldable
 
 ## Contains
 

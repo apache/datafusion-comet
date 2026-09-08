@@ -805,7 +805,7 @@ under the License.
 <h2>ConcatWs<a class="headerlink" href="#concatws" title="Link to this heading">#</a></h2>
 <p>The following cases have no native implementation and always run in the JVM using Spark’s code-generated implementation (inside the Comet pipeline):</p>
 <ul class="simple">
-<li><p><code class="docutils literal notranslate"><span class="pre">concat_ws</span></code> with <code class="docutils literal notranslate"><span class="pre">array&lt;string&gt;</span></code> arguments: Spark flattens the array elements into the strings to join, which DataFusion’s <code class="docutils literal notranslate"><span class="pre">concat_ws</span></code> does not support (https://github.com/apache/datafusion-comet/issues/5675)</p></li>
+<li><p>all arguments are foldable</p></li>
 </ul>
 </section>
 <section id="contains">
