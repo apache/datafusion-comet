@@ -16,10 +16,10 @@
 // under the License.
 
 use crate::utils::resolve_local_datetime;
-use crate::{SparkCastOptions, SparkResult};
+use crate::{EvalMode, SparkCastOptions, SparkResult};
 use arrow::array::timezone::Tz;
 use arrow::array::{ArrayRef, AsArray, TimestampMicrosecondBuilder};
-use arrow::compute::cast_with_options;
+use arrow::compute::{cast_with_options, CastOptions};
 use arrow::datatypes::{DataType, Date32Type, TimeUnit};
 use chrono::NaiveDate;
 use datafusion::common::format::DEFAULT_CAST_OPTIONS;
@@ -43,11 +43,14 @@ pub(crate) fn cast_date_to_timestamp(
     target_tz: &Option<Arc<str>>,
 ) -> SparkResult<ArrayRef> {
     if target_tz.is_none() {
-        // TIMESTAMP_NTZ ignores session TZ. Like Spark's daysToMicros, reject overflow.
+        // TIMESTAMP_NTZ ignores session TZ. Only TRY_CAST turns overflow into null.
         return Ok(cast_with_options(
             array_ref.as_ref(),
             &DataType::Timestamp(TimeUnit::Microsecond, None),
-            &DEFAULT_CAST_OPTIONS,
+            &CastOptions {
+                safe: cast_options.eval_mode == EvalMode::Try,
+                ..DEFAULT_CAST_OPTIONS
+            },
         )?);
     }
 
@@ -218,6 +221,63 @@ mod tests {
                 .is_err(),
                 "day={day}"
             );
+        }
+    }
+
+    #[test]
+    fn test_spark_cast_date_to_timestamp_ntz_modes() {
+        use crate::spark_cast;
+        use arrow::array::{Date32Array, TimestampMicrosecondArray};
+        use datafusion::common::ScalarValue;
+        use datafusion::logical_expr::ColumnarValue;
+
+        let target = DataType::Timestamp(TimeUnit::Microsecond, None);
+        let days = vec![
+            Some(0),
+            Some(106_751_992),
+            None,
+            Some(-1),
+            Some(-106_751_992),
+        ];
+        for mode in [EvalMode::Legacy, EvalMode::Ansi, EvalMode::Try] {
+            let options = SparkCastOptions::new(mode, "America/Los_Angeles", false);
+            let result = spark_cast(
+                ColumnarValue::Array(Arc::new(Date32Array::from(days.clone()))),
+                &target,
+                &options,
+            );
+            if mode == EvalMode::Try {
+                let ColumnarValue::Array(actual) = result.unwrap() else {
+                    panic!("expected array");
+                };
+                let expected = TimestampMicrosecondArray::from(vec![
+                    Some(0),
+                    None,
+                    None,
+                    Some(-86_400_000_000),
+                    None,
+                ]);
+                assert_eq!(actual.as_ref(), &expected);
+            } else {
+                assert!(result.is_err(), "mode={mode:?}");
+            }
+
+            for day in &days {
+                let result = spark_cast(
+                    ColumnarValue::Scalar(ScalarValue::Date32(*day)),
+                    &target,
+                    &options,
+                );
+                let micros = day.and_then(|d| i64::from(d).checked_mul(86_400_000_000));
+                if day.is_some() && micros.is_none() && mode != EvalMode::Try {
+                    assert!(result.is_err(), "mode={mode:?}, day={day:?}");
+                } else {
+                    let ColumnarValue::Scalar(actual) = result.unwrap() else {
+                        panic!("expected scalar");
+                    };
+                    assert_eq!(actual, ScalarValue::TimestampMicrosecond(micros, None));
+                }
+            }
         }
     }
 }
