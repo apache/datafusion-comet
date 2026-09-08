@@ -524,6 +524,51 @@ class CometHashExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
     }
   }
 
+  test("hash - array of struct") {
+    // `array<struct<..>>` is the shape the batched nested-element path handles, so this is the
+    // Spark oracle for it: the rows differ in length, and cover an empty array, a null array, null
+    // struct elements and null fields, which are the cases where the element scheduling could
+    // assign a seed to the wrong row without changing the row count. `checkSparkAnswerAndOperator`
+    // also asserts Comet actually ran it natively, so a fallback on both sides cannot hide a
+    // mismatch.
+    withTable("t") {
+      sql("CREATE TABLE t(id INT, c ARRAY<STRUCT<a: INT, b: STRING>>) USING parquet")
+      sql("""INSERT INTO t VALUES
+            (1, array(named_struct('a', 1, 'b', 'x'))),
+            (2, array(named_struct('a', 1, 'b', 'x'), named_struct('a', 2, 'b', 'yy'))),
+            (3, array(named_struct('a', -1, 'b', ''), named_struct('a', 0, 'b', 'z'),
+                      named_struct('a', 7, 'b', 'w'))),
+            (4, array()),
+            (5, null),
+            (6, array(named_struct('a', null, 'b', 'nullfield'))),
+            (7, array(cast(null as struct<a: INT, b: STRING>))),
+            (8, array(named_struct('a', 9, 'b', null), named_struct('a', 9, 'b', null))),
+            (9, array(named_struct('a', 1, 'b', 'x'), named_struct('a', 1, 'b', 'x')))""")
+      checkSparkAnswerAndOperator("SELECT id, hash(c), xxhash64(c) FROM t ORDER BY id")
+    }
+  }
+
+  test("hash - array of struct not eligible for batching") {
+    // The same expression on element types the batched path deliberately leaves alone: a nested
+    // element and a dictionary-backed one. Both must still match Spark, since the eligibility rule
+    // only picks an implementation.
+    withTable("t") {
+      sql("""CREATE TABLE t(
+              id INT,
+              nested ARRAY<STRUCT<l: ARRAY<INT>>>,
+              plain ARRAY<STRUCT<a: INT, b: STRING>>)
+            USING parquet""")
+      sql("""INSERT INTO t VALUES
+            (1, array(named_struct('l', array(1, 2))), array(named_struct('a', 1, 'b', 'x'))),
+            (2, array(named_struct('l', array()), named_struct('l', array(3))),
+                array(named_struct('a', 2, 'b', 'y'))),
+            (3, array(named_struct('l', cast(null as array<int>))), null),
+            (4, null, array(named_struct('a', 3, 'b', 'z')))""")
+      checkSparkAnswerAndOperator(
+        "SELECT id, hash(nested), xxhash64(nested), hash(plain, nested) FROM t ORDER BY id")
+    }
+  }
+
   test("hash - fuzz test") {
     val r = new Random(42)
     val options = SchemaGenOptions(generateStruct = true)
