@@ -319,8 +319,9 @@ SELECT to_time(concat('1:00:00 PM', pad))
 FROM test_to_time_trim
 WHERE name = 'd_tab_0x09'
 
--- to_time with format pattern falls back to Spark (not supported natively)
-query expect_fallback(invoke is not supported)
+-- to_time with a format pattern has no native path; Spark 4.1 lowers it to an evaluator-backed
+-- Invoke, which runs in the Comet pipeline through the JVM codegen dispatcher.
+query
 SELECT to_time('12:30:45', 'HH:mm:ss')
 
 statement
@@ -331,7 +332,6 @@ INSERT INTO test_to_time_col_fmt VALUES
   ('14.30.00', 'HH.mm.ss'),
   ('1230', 'HHmm')
 
--- A non-foldable format column should fall back to Spark because Comet does
--- not implement the format-pattern variant of to_time.
-query expect_fallback(invoke is not supported)
+-- A non-foldable format column takes the same codegen-dispatch path as the literal form above.
+query
 SELECT to_time(s, f) FROM test_to_time_col_fmt

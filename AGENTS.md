@@ -33,3 +33,13 @@ Relevant entry points:
 
 When opening a pull request, use the [PR template](.github/pull_request_template.md) and fill
 in every section.
+
+## Skills
+
+Repository-specific agent skills live under `.ai/skills/`. Each subdirectory is a single skill
+with a `SKILL.md` (YAML frontmatter + body). Check that directory for an applicable skill before
+starting a task; new skills go in `.ai/skills/<skill-name>/SKILL.md`.
+
+For compatibility with agents that look in vendor-specific locations, `.claude/skills` is a
+symlink to `.ai/skills` and `CLAUDE.md` is a symlink to this file. Add new content here rather
+than to the symlinks.

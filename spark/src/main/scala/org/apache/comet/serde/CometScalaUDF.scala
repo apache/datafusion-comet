@@ -19,6 +19,8 @@
 
 package org.apache.comet.serde
 
+import scala.util.control.NonFatal
+
 import org.apache.spark.SparkEnv
 import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, AttributeSeq, BindReferences, Expression, Literal, RuntimeReplaceable, ScalaUDF}
 import org.apache.spark.sql.types.BinaryType
@@ -63,9 +65,9 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
    * batch kernel on first invocation per task.
    *
    * Returns `None` (with `withFallbackReason` tagging the reason) when the dispatcher is disabled
-   * via [[CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED]] or when
-   * [[CometBatchKernelCodegen.canHandle]] refuses the expression tree. Callers should treat
-   * `None` as a clean Spark-fallback signal.
+   * via [[CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED]], when [[CometBatchKernelCodegen.canHandle]]
+   * refuses the expression tree, or when the bound tree cannot be closure-serialized. Callers
+   * should treat `None` as a clean Spark-fallback signal; this method never throws.
    */
   def emitJvmCodegenDispatch(
       expr: Expression,
@@ -108,10 +110,31 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
     // UDF jars are visible) and matches Spark's wire format. The bytes become arg 0 of the
     // JvmScalarUdf proto and self-describe the expression so this works in cluster mode without
     // executor-side driver registry state.
-    val serializer = SparkEnv.get.closureSerializer.newInstance()
-    val buffer = serializer.serialize(boundExpr)
-    val bytes = new Array[Byte](buffer.remaining())
-    buffer.get(bytes)
+    //
+    // Guarded because this is the one step in this method that can throw rather than degrade: a
+    // tree can hold a reference the closure serializer refuses, such as a `Literal` wrapping a
+    // non-serializable evaluator or a UDF closure capturing an open resource. An escape here
+    // fails planning, which is a much worse outcome than falling the operator back to Spark.
+    // `CometStaticInvoke` / `CometInvoke` route unrecognized nodes here as a catch-all, so the
+    // trees reaching this point are arbitrary.
+    val bytes =
+      try {
+        val serializer = SparkEnv.get.closureSerializer.newInstance()
+        val buffer = serializer.serialize(boundExpr)
+        val serialized = new Array[Byte](buffer.remaining())
+        buffer.get(serialized)
+        serialized
+      } catch {
+        // `NonFatal` rather than `NotSerializableException`: Java serialization reports an
+        // unserializable object graph as one of several exception types depending on where in
+        // the graph it trips, and a custom `writeObject` can throw anything.
+        case NonFatal(e) =>
+          withFallbackReason(
+            expr,
+            s"$exprName: codegen dispatch: expression could not be closure-serialized " +
+              s"(${e.getClass.getSimpleName}: ${e.getMessage})")
+          return None
+      }
     val exprArg = exprToProtoInternal(Literal(bytes, BinaryType), inputs, binding).getOrElse {
       withFallbackReason(
         expr,

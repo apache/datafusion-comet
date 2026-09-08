@@ -68,9 +68,11 @@ pub(crate) fn is_df_cast_from_decimal_spark_compatible(to_type: &DataType) -> bo
             | DataType::Int16
             | DataType::Int32
             | DataType::Int64
-            | DataType::Float32 // DataFusion divides i128 by 10^scale in f64, then narrows to
-            | DataType::Float64 // f32 if needed; empirically matches Spark's BigDecimal.doubleValue
-                                // / floatValue for all tested values
+            // Float32 / Float64 are intentionally absent: DataFusion computes
+            // `(unscaled as f64) / 10^scale`, which rounds twice (three times for f32, via the
+            // f64 intermediate) and can differ from Spark's correctly rounded
+            // BigDecimal.doubleValue() / floatValue() by one ulp once |unscaled| > 2^53.
+            // cast.rs routes Decimal128 sources to cast_decimal128_to_float64 / _float32.
             | DataType::Decimal128(_, _)
             | DataType::Decimal256(_, _)
             // DataFusion's Decimal128→Utf8 cast uses plain notation (toPlainString semantics),
@@ -305,6 +307,20 @@ macro_rules! cast_int_to_int_macro {
     }};
 }
 
+/// Spark's ANSI range check for casting a floating point value to a 32-bit or 64-bit integer,
+/// from `FloatExactNumeric`/`DoubleExactNumeric.toInt`/`toLong` in Spark's `numerics.scala`:
+/// `Math.floor(x) <= MaxValue && Math.ceil(x) >= MinValue`. The JVM widens a float source to
+/// double for `Math.floor`/`Math.ceil` and converts the integer bounds to double for the
+/// comparison, so the check is evaluated in `f64` here as well. A value that passes it is then
+/// truncated towards zero with saturation by `as`, exactly like the JVM's `d2i`/`d2l`, so the
+/// exactly representable bounds are valid inputs; note that `i64::MAX as f64 == 2^63`, so `±2^63`
+/// passes the check and saturates to `i64::MAX`/`i64::MIN`, as it does in Spark. NaN fails both
+/// comparisons and the infinities fail one of them.
+fn spark_float_fits_integral<F: Into<f64>>(value: F, min: f64, max: f64) -> bool {
+    let value: f64 = value.into();
+    value.floor() <= max && value.ceil() >= min
+}
+
 // When Spark casts to Byte/Short Types, it does not cast directly to Byte/Short.
 // It casts to Int first and then to Byte/Short. Because of potential overflows in the Int cast,
 // this can cause unexpected Short/Byte cast results. Replicate this behavior.
@@ -330,8 +346,10 @@ macro_rules! cast_float_to_int16_down {
                 .iter()
                 .map(|value| match value {
                     Some(value) => {
-                        let is_overflow = value.is_nan() || value.abs() as i32 == i32::MAX;
-                        if is_overflow {
+                        // Spark's ANSI cast converts to Int with the exact 32-bit range check
+                        // first and then requires the truncated Int to round-trip through the
+                        // narrower type.
+                        if !spark_float_fits_integral(value, i32::MIN as f64, i32::MAX as f64) {
                             return Err(cast_overflow(
                                 &format!($format_str, value).replace("e", "E"),
                                 $src_type_str,
@@ -379,7 +397,6 @@ macro_rules! cast_float_to_int32_up {
         $rust_dest_type:ty,
         $src_type_str:expr,
         $dest_type_str:expr,
-        $max_dest_val:expr,
         $format_str:expr
     ) => {{
         let cast_array = $array
@@ -392,15 +409,18 @@ macro_rules! cast_float_to_int32_up {
                 .iter()
                 .map(|value| match value {
                     Some(value) => {
-                        let is_overflow =
-                            value.is_nan() || value.abs() as $rust_dest_type == $max_dest_val;
-                        if is_overflow {
+                        if !spark_float_fits_integral(
+                            value,
+                            <$rust_dest_type>::MIN as f64,
+                            <$rust_dest_type>::MAX as f64,
+                        ) {
                             return Err(cast_overflow(
                                 &format!($format_str, value).replace("e", "E"),
                                 $src_type_str,
                                 $dest_type_str,
                             ));
                         }
+                        // `as` truncates towards zero and saturates like the JVM's d2i/d2l
                         Ok(Some(value as $rust_dest_type))
                     }
                     None => Ok(None),
@@ -863,6 +883,109 @@ pub(crate) fn spark_cast_decimal_to_boolean(array: &dyn Array) -> SparkResult<Ar
     Ok(Arc::new(result.finish()))
 }
 
+/// Powers of ten that are exactly representable as `f64` (`10^n = 2^n * 5^n` and `5^22 < 2^53`);
+/// the same table as Java's `BigDecimal.DOUBLE_10_POW`.
+const F64_EXACT_POW10: [f64; 23] = [
+    1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10, 1e11, 1e12, 1e13, 1e14, 1e15, 1e16,
+    1e17, 1e18, 1e19, 1e20, 1e21, 1e22,
+];
+
+/// Powers of ten that are exactly representable as `f32` (`5^10 < 2^24`); the same table as
+/// Java's `BigDecimal.FLOAT_10_POW`.
+const F32_EXACT_POW10: [f32; 11] = [1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10];
+
+/// Largest integer magnitude that converts to `f64` without rounding.
+const F64_EXACT_INT_LIMIT: u128 = 1 << 53;
+
+/// Largest integer magnitude that converts to `f32` without rounding.
+const F32_EXACT_INT_LIMIT: u128 = 1 << 24;
+
+/// Converts a Decimal128 value to the `f64` nearest to its exact decimal value (ties to even),
+/// matching Spark's `Decimal.toDouble`, i.e. `java.math.BigDecimal.doubleValue()`.
+///
+/// DataFusion's kernel computes `(unscaled as f64) / 10^scale`, which rounds the unscaled value
+/// first and the quotient second; once `|unscaled| > 2^53` (any `DECIMAL(38,18)` value of
+/// magnitude `>= 0.01`) the two roundings can land one ulp away from the correctly rounded
+/// result, e.g. `12345.6789` becomes `12345.678899999999`.
+pub(crate) fn decimal128_to_f64(unscaled: i128, scale: i8) -> f64 {
+    if scale == 0 {
+        return unscaled as f64;
+    }
+
+    // Fast path (also Java's): when the unscaled value and the power of ten are both exact
+    // doubles, a single IEEE division or multiplication is correctly rounded.
+    if unscaled.unsigned_abs() <= F64_EXACT_INT_LIMIT {
+        let m = unscaled as f64;
+        match scale {
+            1..=22 => return m / F64_EXACT_POW10[scale as usize],
+            -22..=-1 => return m * F64_EXACT_POW10[scale.unsigned_abs() as usize],
+            _ => {}
+        }
+    }
+    parse_exact_decimal(unscaled, scale)
+}
+
+/// Converts a Decimal128 value to the `f32` nearest to its exact decimal value (ties to even),
+/// matching Spark's `Decimal.toFloat`, i.e. `java.math.BigDecimal.floatValue()`.
+///
+/// The exact value is rounded straight to `f32`, never through an `f64` intermediate, because
+/// rounding twice is observable: `16777217.0000000001` is `16777218` as a float, but narrowing
+/// the nearest `f64` (`16777217.0`, a tie) gives `16777216`.
+pub(crate) fn decimal128_to_f32(unscaled: i128, scale: i8) -> f32 {
+    if scale == 0 {
+        return unscaled as f32;
+    }
+
+    if unscaled.unsigned_abs() <= F32_EXACT_INT_LIMIT {
+        let m = unscaled as f32;
+        match scale {
+            1..=10 => return m / F32_EXACT_POW10[scale as usize],
+            -10..=-1 => return m * F32_EXACT_POW10[scale.unsigned_abs() as usize],
+            _ => {}
+        }
+    }
+    parse_exact_decimal(unscaled, scale)
+}
+
+/// Rounds the exact value `unscaled * 10^-scale` once, by formatting it as `<unscaled>e<-scale>`
+/// into a stack buffer and parsing it with Rust's correctly rounded float parser. This mirrors
+/// Java's fallback of `Double.parseDouble(BigDecimal.toString())` /
+/// `Float.parseFloat(BigDecimal.toString())`, which likewise round the exact decimal directly to
+/// the target width; a value beyond the target's range parses to an infinity, as in Java.
+fn parse_exact_decimal<F>(unscaled: i128, scale: i8) -> F
+where
+    F: std::str::FromStr,
+    F::Err: std::fmt::Debug,
+{
+    use std::io::Write;
+    // Sign and up to 39 digits, 'e', and an exponent of up to 4 characters (`-127`).
+    let mut buf = [0u8; 48];
+    let mut cursor = &mut buf[..];
+    write!(cursor, "{unscaled}e{}", -i32::from(scale)).expect("buffer holds any i128 and i8");
+    let remaining = cursor.len();
+    let text = std::str::from_utf8(&buf[..buf.len() - remaining]).expect("ascii");
+    text.parse::<F>().expect("well-formed float literal")
+}
+
+/// Casts a Decimal128 array to Float64 with `BigDecimal.doubleValue()` semantics; see
+/// [`decimal128_to_f64`]. The conversion is total and cannot overflow, so every eval mode
+/// behaves alike and the input null buffer carries over unchanged.
+pub(crate) fn cast_decimal128_to_float64(array: &dyn Array, scale: i8) -> SparkResult<ArrayRef> {
+    let input = array.as_primitive::<Decimal128Type>();
+    let result: Float64Array = input.unary(|v| decimal128_to_f64(v, scale));
+    Ok(Arc::new(result))
+}
+
+/// Casts a Decimal128 array to Float32 with `BigDecimal.floatValue()` semantics; see
+/// [`decimal128_to_f32`]. Every Decimal128 magnitude (`< 2^127`) is below `f32::MAX`, so for
+/// the non-negative scales Spark produces the conversion cannot overflow and every eval mode
+/// behaves alike.
+pub(crate) fn cast_decimal128_to_float32(array: &dyn Array, scale: i8) -> SparkResult<ArrayRef> {
+    let input = array.as_primitive::<Decimal128Type>();
+    let result: Float32Array = input.unary(|v| decimal128_to_f32(v, scale));
+    Ok(Arc::new(result))
+}
+
 pub(crate) fn cast_float64_to_decimal128(
     array: &dyn Array,
     precision: u8,
@@ -1056,7 +1179,6 @@ pub(crate) fn spark_cast_nonintegral_numeric_to_integral(
             i32,
             "FLOAT",
             "INT",
-            i32::MAX,
             "{:e}"
         ),
         (DataType::Float32, DataType::Int64) => cast_float_to_int32_up!(
@@ -1068,7 +1190,6 @@ pub(crate) fn spark_cast_nonintegral_numeric_to_integral(
             i64,
             "FLOAT",
             "BIGINT",
-            i64::MAX,
             "{:e}"
         ),
         (DataType::Float64, DataType::Int8) => cast_float_to_int16_down!(
@@ -1102,7 +1223,6 @@ pub(crate) fn spark_cast_nonintegral_numeric_to_integral(
             i32,
             "DOUBLE",
             "INT",
-            i32::MAX,
             "{:e}D"
         ),
         (DataType::Float64, DataType::Int64) => cast_float_to_int32_up!(
@@ -1114,7 +1234,6 @@ pub(crate) fn spark_cast_nonintegral_numeric_to_integral(
             i64,
             "DOUBLE",
             "BIGINT",
-            i64::MAX,
             "{:e}D"
         ),
         (DataType::Decimal128(precision, scale), DataType::Int8) => {
@@ -1259,6 +1378,333 @@ mod tests {
         let result =
             spark_cast_int_to_int(&array, EvalMode::Ansi, &DataType::Int64, &DataType::Int32);
         assert!(result.is_err());
+    }
+
+    /// Casts `values` from the floating point type `S` to the integral type `D` with
+    /// `spark_cast_nonintegral_numeric_to_integral` and returns the resulting values.
+    fn cast_float_to_integral<S: ArrowPrimitiveType, D: ArrowPrimitiveType>(
+        values: Vec<S::Native>,
+        eval_mode: EvalMode,
+    ) -> SparkResult<Vec<D::Native>> {
+        let array = PrimitiveArray::<S>::from_iter_values(values);
+        let result = spark_cast_nonintegral_numeric_to_integral(
+            &array,
+            eval_mode,
+            &S::DATA_TYPE,
+            &D::DATA_TYPE,
+        )?;
+        Ok(result.as_primitive::<D>().values().to_vec())
+    }
+
+    /// Asserts that each value overflows on its own in ANSI mode with Spark's `CAST_OVERFLOW`
+    /// error naming the source and target types.
+    fn assert_ansi_cast_overflow<S: ArrowPrimitiveType, D: ArrowPrimitiveType>(
+        values: &[S::Native],
+        from_type: &str,
+        to_type: &str,
+    ) {
+        for value in values {
+            match cast_float_to_integral::<S, D>(vec![*value], EvalMode::Ansi) {
+                Err(SparkError::CastOverFlow {
+                    from_type: from,
+                    to_type: to,
+                    ..
+                }) => assert_eq!(
+                    (from.as_str(), to.as_str()),
+                    (from_type, to_type),
+                    "unexpected types in the overflow error for {value:?}"
+                ),
+                other => panic!("expected CAST_OVERFLOW for {value:?}, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_cast_double_to_int_ansi_boundaries() {
+        // Spark accepts x when floor(x) <= i32::MAX && ceil(x) >= i32::MIN and truncates it
+        // towards zero, so the exactly representable bounds and the fractional values inside
+        // them are valid inputs
+        assert_eq!(
+            cast_float_to_integral::<Float64Type, Int32Type>(
+                vec![
+                    2147483647.0,
+                    -2147483648.0,
+                    2147483647.5,
+                    -2147483648.5,
+                    2147483648.0f64.next_down(),
+                    (-2147483649.0f64).next_up(),
+                ],
+                EvalMode::Ansi,
+            )
+            .unwrap(),
+            vec![i32::MAX, i32::MIN, i32::MAX, i32::MIN, i32::MAX, i32::MIN]
+        );
+        assert_ansi_cast_overflow::<Float64Type, Int32Type>(
+            &[
+                2147483648.0,
+                -2147483649.0,
+                2147483648.5,
+                -2147483649.5,
+                1e10,
+                f64::MAX,
+                f64::MIN,
+                f64::NAN,
+                f64::INFINITY,
+                f64::NEG_INFINITY,
+            ],
+            "DOUBLE",
+            "INT",
+        );
+        // the offending value is rendered like Spark's Double.toString plus the D suffix
+        match cast_float_to_integral::<Float64Type, Int32Type>(vec![2147483648.0], EvalMode::Ansi) {
+            Err(SparkError::CastOverFlow { value, .. }) => assert_eq!(value, "2.147483648E9D"),
+            other => panic!("expected CAST_OVERFLOW, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_cast_double_to_long_ansi_boundaries() {
+        // i64::MAX converted to f64 rounds up to 2^63, which Spark therefore accepts and
+        // saturates to i64::MAX, exactly like the JVM's d2l
+        let two_pow_63 = 9223372036854775808.0f64;
+        assert_eq!(i64::MAX as f64, two_pow_63);
+        assert_eq!(
+            cast_float_to_integral::<Float64Type, Int64Type>(
+                vec![
+                    two_pow_63,
+                    -two_pow_63,
+                    two_pow_63.next_down(),
+                    (-two_pow_63).next_up(),
+                ],
+                EvalMode::Ansi,
+            )
+            .unwrap(),
+            vec![
+                i64::MAX,
+                i64::MIN,
+                9223372036854774784,
+                -9223372036854774784
+            ]
+        );
+        assert_ansi_cast_overflow::<Float64Type, Int64Type>(
+            &[
+                two_pow_63.next_up(),
+                (-two_pow_63).next_down(),
+                1e19,
+                -1e19,
+                f64::MAX,
+                f64::NAN,
+                f64::INFINITY,
+                f64::NEG_INFINITY,
+            ],
+            "DOUBLE",
+            "BIGINT",
+        );
+    }
+
+    #[test]
+    fn test_cast_float_to_int_ansi_boundaries() {
+        // The bounds are compared in double precision, as in Spark: i32::MAX is not
+        // representable as f32 and rounds up to 2^31, which must overflow, while the largest
+        // f32 below 2^31 (2147483520) and -2^31 itself are accepted
+        let two_pow_31 = 2147483648.0f32;
+        assert_eq!(i32::MAX as f32, two_pow_31);
+        assert_eq!(
+            cast_float_to_integral::<Float32Type, Int32Type>(
+                vec![two_pow_31.next_down(), -two_pow_31, (-two_pow_31).next_up()],
+                EvalMode::Ansi,
+            )
+            .unwrap(),
+            vec![2147483520, i32::MIN, -2147483520]
+        );
+        assert_ansi_cast_overflow::<Float32Type, Int32Type>(
+            &[
+                two_pow_31,
+                (-two_pow_31).next_down(),
+                1e10,
+                f32::MAX,
+                f32::MIN,
+                f32::NAN,
+                f32::INFINITY,
+                f32::NEG_INFINITY,
+            ],
+            "FLOAT",
+            "INT",
+        );
+    }
+
+    #[test]
+    fn test_cast_float_to_long_ansi_boundaries() {
+        let two_pow_63 = 9223372036854775808.0f32;
+        assert_eq!(i64::MAX as f32, two_pow_63);
+        assert_eq!(
+            cast_float_to_integral::<Float32Type, Int64Type>(
+                vec![
+                    two_pow_63,
+                    -two_pow_63,
+                    two_pow_63.next_down(),
+                    (-two_pow_63).next_up(),
+                ],
+                EvalMode::Ansi,
+            )
+            .unwrap(),
+            vec![
+                i64::MAX,
+                i64::MIN,
+                9223371487098961920,
+                -9223371487098961920
+            ]
+        );
+        assert_ansi_cast_overflow::<Float32Type, Int64Type>(
+            &[
+                two_pow_63.next_up(),
+                (-two_pow_63).next_down(),
+                1e19,
+                f32::MAX,
+                f32::NAN,
+                f32::INFINITY,
+                f32::NEG_INFINITY,
+            ],
+            "FLOAT",
+            "BIGINT",
+        );
+    }
+
+    #[test]
+    fn test_cast_float_to_short_and_byte_ansi_boundaries() {
+        // Spark converts to INT first and then requires the truncated INT to round-trip through
+        // the narrower type, so 127.9 is a valid TINYINT while 128.0 is not, and a value that
+        // passes the INT range check can still overflow the narrower type
+        assert_eq!(
+            cast_float_to_integral::<Float64Type, Int8Type>(
+                vec![127.0, -128.0, 127.9, -128.9],
+                EvalMode::Ansi
+            )
+            .unwrap(),
+            vec![i8::MAX, i8::MIN, i8::MAX, i8::MIN]
+        );
+        assert_ansi_cast_overflow::<Float64Type, Int8Type>(
+            &[
+                128.0,
+                -129.0,
+                2147483647.5,
+                2147483648.0,
+                f64::NAN,
+                f64::INFINITY,
+                f64::NEG_INFINITY,
+            ],
+            "DOUBLE",
+            "TINYINT",
+        );
+        assert_eq!(
+            cast_float_to_integral::<Float64Type, Int16Type>(
+                vec![32767.0, -32768.0, 32767.9, -32768.9],
+                EvalMode::Ansi
+            )
+            .unwrap(),
+            vec![i16::MAX, i16::MIN, i16::MAX, i16::MIN]
+        );
+        assert_ansi_cast_overflow::<Float64Type, Int16Type>(
+            &[
+                32768.0,
+                -32769.0,
+                2147483647.5,
+                2147483648.0,
+                f64::NAN,
+                f64::INFINITY,
+                f64::NEG_INFINITY,
+            ],
+            "DOUBLE",
+            "SMALLINT",
+        );
+        assert_eq!(
+            cast_float_to_integral::<Float32Type, Int8Type>(
+                vec![127.0, -128.0, 127.9, -128.9],
+                EvalMode::Ansi
+            )
+            .unwrap(),
+            vec![i8::MAX, i8::MIN, i8::MAX, i8::MIN]
+        );
+        assert_ansi_cast_overflow::<Float32Type, Int8Type>(
+            &[
+                128.0,
+                -129.0,
+                2147483520.0,
+                2147483648.0,
+                f32::NAN,
+                f32::INFINITY,
+                f32::NEG_INFINITY,
+            ],
+            "FLOAT",
+            "TINYINT",
+        );
+        assert_eq!(
+            cast_float_to_integral::<Float32Type, Int16Type>(
+                vec![32767.0, -32768.0, 32767.9, -32768.9],
+                EvalMode::Ansi
+            )
+            .unwrap(),
+            vec![i16::MAX, i16::MIN, i16::MAX, i16::MIN]
+        );
+        assert_ansi_cast_overflow::<Float32Type, Int16Type>(
+            &[
+                32768.0,
+                -32769.0,
+                2147483520.0,
+                2147483648.0,
+                f32::NAN,
+                f32::INFINITY,
+                f32::NEG_INFINITY,
+            ],
+            "FLOAT",
+            "SMALLINT",
+        );
+    }
+
+    #[test]
+    fn test_cast_float_to_integral_legacy_saturates() {
+        // LEGACY mode keeps truncating towards zero with saturation and mapping NaN to 0
+        assert_eq!(
+            cast_float_to_integral::<Float64Type, Int32Type>(
+                vec![
+                    2147483648.0,
+                    -2147483649.0,
+                    1e19,
+                    -1e19,
+                    f64::NAN,
+                    f64::INFINITY,
+                    f64::NEG_INFINITY,
+                ],
+                EvalMode::Legacy,
+            )
+            .unwrap(),
+            vec![
+                i32::MAX,
+                i32::MIN,
+                i32::MAX,
+                i32::MIN,
+                0,
+                i32::MAX,
+                i32::MIN
+            ]
+        );
+        assert_eq!(
+            cast_float_to_integral::<Float32Type, Int64Type>(
+                vec![f32::MAX, f32::MIN, f32::NAN],
+                EvalMode::Legacy
+            )
+            .unwrap(),
+            vec![i64::MAX, i64::MIN, 0]
+        );
+        // narrowing casts go through INT first, so the INT result wraps like Spark's toShort
+        assert_eq!(
+            cast_float_to_integral::<Float64Type, Int16Type>(
+                vec![32768.0, 2147483648.0],
+                EvalMode::Legacy
+            )
+            .unwrap(),
+            vec![i16::MIN, -1]
+        );
     }
 
     #[test]
@@ -1492,6 +1938,242 @@ mod tests {
             assert_eq!(ts_array.timezone(), tz.as_ref().map(|s| s.as_ref()));
         }
     }
+
+    #[test]
+    fn test_decimal128_to_f64_matches_bigdecimal_double_value() {
+        // Expected values were checked against Java's
+        // `new BigDecimal(BigInteger(unscaled), scale).doubleValue()`.
+        let cases: Vec<(i128, i8, f64)> = vec![
+            // https://github.com/apache/datafusion-comet/issues/5670
+            (12345678900000000000000, 18, 12345.6789),
+            (123456789012000000000000, 18, 123456.789012),
+            (76543210000000000000000, 18, 76543.21),
+            (577312285583388355022308, 18, 577312.2855833884),
+            (-12345678900000000000000, 18, -12345.6789),
+            (-577312285583388355022308, 18, -577312.2855833884),
+            // zero and the smallest magnitudes
+            (0, 18, 0.0),
+            (0, 38, 0.0),
+            (1, 38, 1e-38),
+            (-1, 38, -1e-38),
+            // 38-digit extremes
+            (99999999999999999999999999999999999999, 0, 1e38),
+            (-99999999999999999999999999999999999999, 0, -1e38),
+            (99999999999999999999999999999999999999, 38, 1.0),
+            (-99999999999999999999999999999999999999, 38, -1.0),
+            (i128::MAX, 0, 2f64.powi(127)),
+            (i128::MIN, 0, -(2f64.powi(127))),
+            // 2^53 + 1 is halfway between two doubles and rounds to even
+            (9007199254740993, 0, 9007199254740992.0),
+            // exact-operand fast path
+            (1, 18, 1e-18),
+            (-15, 1, -1.5),
+            (123456789, 3, 123456.789),
+            (9007199254740992, 22, 9007199254740992e-22),
+            // negative scales, which arrow permits but Spark never produces
+            (123456789, -3, 123456789e3),
+            (9007199254740992, -22, 9007199254740992e22),
+            (9007199254740993, -22, 9007199254740993e22),
+        ];
+        for (unscaled, scale, expected) in cases {
+            let actual = decimal128_to_f64(unscaled, scale);
+            assert_eq!(
+                actual.to_bits(),
+                expected.to_bits(),
+                "{unscaled}e{}: got {actual:?}, expected {expected:?}",
+                -i32::from(scale)
+            );
+        }
+        // The double-rounding formula the kernel replaces gets the issue's example wrong.
+        assert_ne!((12345678900000000000000_i128 as f64) / 1e18, 12345.6789);
+    }
+
+    #[test]
+    fn test_decimal128_to_f32_matches_bigdecimal_float_value() {
+        // Expected values were checked against Java's
+        // `new BigDecimal(BigInteger(unscaled), scale).floatValue()`.
+        let cases: Vec<(i128, i8, f32)> = vec![
+            // https://github.com/apache/datafusion-comet/issues/5670: 16777217.0000000001 lies
+            // above the midpoint of the floats 16777216 and 16777218, but its nearest double
+            // (16777217.0) is exactly that midpoint and would narrow to 16777216.
+            (167772170000000001, 10, 16777218.0),
+            (-167772170000000001, 10, -16777218.0),
+            (12345678900000000000000, 18, 12345.679),
+            (76543210000000000000000, 18, 76543.21),
+            (-12345678900000000000000, 18, -12345.679),
+            // zero and the smallest magnitudes (1e-38 is subnormal in f32)
+            (0, 18, 0.0),
+            (0, 38, 0.0),
+            (1, 38, 1e-38),
+            (-1, 38, -1e-38),
+            // 38-digit extremes
+            (99999999999999999999999999999999999999, 0, 1e38),
+            (-99999999999999999999999999999999999999, 0, -1e38),
+            (99999999999999999999999999999999999999, 38, 1.0),
+            (-99999999999999999999999999999999999999, 38, -1.0),
+            (i128::MAX, 0, 2f32.powi(127)),
+            (i128::MIN, 0, -(2f32.powi(127))),
+            // 2^24 + 1 is halfway between two floats and rounds to even
+            (16777217, 0, 16777216.0),
+            // exact-operand fast path
+            (1, 10, 1e-10),
+            (-15, 1, -1.5),
+            (123456789, 3, 123456.79),
+            (16777216, 10, 16777216e-10),
+            // negative scales, which arrow permits but Spark never produces; beyond the f32
+            // range the result is an infinity, like Float.parseFloat
+            (123456789, -3, 1.2345679e11),
+            (16777216, -10, 16777216e10),
+            (1, -39, f32::INFINITY),
+            (-1, -39, f32::NEG_INFINITY),
+        ];
+        for (unscaled, scale, expected) in cases {
+            let actual = decimal128_to_f32(unscaled, scale);
+            assert_eq!(
+                actual.to_bits(),
+                expected.to_bits(),
+                "{unscaled}e{}: got {actual:?}, expected {expected:?}",
+                -i32::from(scale)
+            );
+        }
+        // Narrowing the (already correctly rounded) double gets the issue's example wrong.
+        assert_ne!(
+            decimal128_to_f64(167772170000000001, 10) as f32,
+            16777218.0_f32
+        );
+    }
+
+    #[test]
+    fn test_decimal128_to_float_fast_path_matches_exact_path() {
+        use rand::rngs::StdRng;
+        use rand::{RngExt, SeedableRng};
+        let mut rng = StdRng::seed_from_u64(5670);
+
+        let mut cases: Vec<(i128, i8)> = Vec::new();
+        // Magnitudes spread over the whole i128 range, so both the exact-operand fast paths
+        // (|unscaled| <= 2^24 for f32, <= 2^53 for f64) and the parse fallback are exercised.
+        for _ in 0..10_000 {
+            let bits = rng.random_range(0_u32..=127);
+            let magnitude = if bits == 0 {
+                0
+            } else {
+                rng.random::<u128>() >> (128 - bits)
+            };
+            let unscaled = if rng.random::<bool>() {
+                magnitude as i128
+            } else {
+                -(magnitude as i128)
+            };
+            cases.push((unscaled, rng.random_range(-30_i8..=38)));
+        }
+        // Values around the fast-path limits, where a wrong bound would show up.
+        for _ in 0..10_000 {
+            let limit = if rng.random::<bool>() {
+                1_i128 << 53
+            } else {
+                1 << 24
+            };
+            let unscaled = limit + rng.random_range(-1000_i128..=1000);
+            let unscaled = if rng.random::<bool>() {
+                unscaled
+            } else {
+                -unscaled
+            };
+            cases.push((unscaled, rng.random_range(-23_i8..=23)));
+        }
+        // Decimal-looking values with few digits, all on the fast paths.
+        for _ in 0..10_000 {
+            let unscaled = rng.random_range(-10_000_000_i128..=10_000_000);
+            cases.push((unscaled, rng.random_range(0_i8..=10)));
+        }
+
+        for (unscaled, scale) in cases {
+            // Rust's float parser rounds the exact decimal value once, like BigDecimal does.
+            let text = format!("{unscaled}e{}", -i32::from(scale));
+            let expected_f64: f64 = text.parse().unwrap();
+            let expected_f32: f32 = text.parse().unwrap();
+            let actual_f64 = decimal128_to_f64(unscaled, scale);
+            let actual_f32 = decimal128_to_f32(unscaled, scale);
+            assert_eq!(
+                actual_f64.to_bits(),
+                expected_f64.to_bits(),
+                "{text}: got {actual_f64:?}, expected {expected_f64:?}"
+            );
+            assert_eq!(
+                actual_f32.to_bits(),
+                expected_f32.to_bits(),
+                "{text}: got {actual_f32:?}, expected {expected_f32:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_cast_decimal128_to_float_arrays_keep_nulls_in_every_eval_mode() {
+        use crate::conversion_funcs::cast::cast_array;
+        use crate::SparkCastOptions;
+
+        let decimals_38_18: ArrayRef = Arc::new(
+            Decimal128Array::from(vec![
+                Some(12345678900000000000000_i128),
+                None,
+                Some(-76543210000000000000000),
+                Some(0),
+                Some(577312285583388355022308),
+                None,
+            ])
+            .with_precision_and_scale(38, 18)
+            .unwrap(),
+        );
+        let decimals_38_10: ArrayRef = Arc::new(
+            Decimal128Array::from(vec![Some(167772170000000001_i128), None, Some(-123456789)])
+                .with_precision_and_scale(38, 10)
+                .unwrap(),
+        );
+
+        for eval_mode in [EvalMode::Legacy, EvalMode::Ansi, EvalMode::Try] {
+            let options = SparkCastOptions::new(eval_mode, "UTC", false);
+
+            let doubles =
+                cast_array(Arc::clone(&decimals_38_18), &DataType::Float64, &options).unwrap();
+            let doubles = doubles.as_primitive::<Float64Type>();
+            assert_eq!(doubles.len(), 6);
+            assert_eq!(doubles.null_count(), 2);
+            assert_eq!(doubles.value(0), 12345.6789);
+            assert!(doubles.is_null(1));
+            assert_eq!(doubles.value(2), -76543.21);
+            assert_eq!(doubles.value(3).to_bits(), 0.0_f64.to_bits());
+            assert_eq!(doubles.value(4), 577312.2855833884);
+            assert!(doubles.is_null(5));
+
+            let floats =
+                cast_array(Arc::clone(&decimals_38_18), &DataType::Float32, &options).unwrap();
+            let floats = floats.as_primitive::<Float32Type>();
+            assert_eq!(floats.len(), 6);
+            assert_eq!(floats.null_count(), 2);
+            assert_eq!(floats.value(0), 12345.679_f32);
+            assert!(floats.is_null(1));
+            assert_eq!(floats.value(2), -76543.21_f32);
+            assert_eq!(floats.value(3).to_bits(), 0.0_f32.to_bits());
+            assert_eq!(floats.value(4), 577312.3_f32);
+            assert!(floats.is_null(5));
+
+            let floats =
+                cast_array(Arc::clone(&decimals_38_10), &DataType::Float32, &options).unwrap();
+            let floats = floats.as_primitive::<Float32Type>();
+            assert_eq!(floats.value(0), 16777218.0_f32);
+            assert!(floats.is_null(1));
+            assert_eq!(floats.value(2), -0.012345679_f32);
+
+            let doubles =
+                cast_array(Arc::clone(&decimals_38_10), &DataType::Float64, &options).unwrap();
+            let doubles = doubles.as_primitive::<Float64Type>();
+            // 16777217.0000000001 rounds to the double 16777217.0
+            assert_eq!(doubles.value(0), 16777217.0);
+            assert!(doubles.is_null(1));
+            assert_eq!(doubles.value(2), -0.0123456789);
+        }
+    }
+
     #[test]
     fn test_cast_float_to_decimal() {
         let a: ArrayRef = Arc::new(Float64Array::from(vec![

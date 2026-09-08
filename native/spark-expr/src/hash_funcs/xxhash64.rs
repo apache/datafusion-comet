@@ -85,10 +85,10 @@ fn spark_compatible_xxhash64<T: AsRef<[u8]>>(data: T, seed: u64) -> u64 {
 fn create_xxhash64_hashes_dictionary<K: ArrowDictionaryKeyType>(
     array: &ArrayRef,
     hashes_buffer: &mut [u64],
-    first_col: bool,
+    seeds_are_pristine: bool,
 ) -> Result<()> {
     let dict_array = array.as_any().downcast_ref::<DictionaryArray<K>>().unwrap();
-    if !first_col {
+    if !seeds_are_pristine {
         let unpacked = take(dict_array.values().as_ref(), dict_array.keys(), None)?;
         create_xxhash64_hashes(&[unpacked], hashes_buffer)?;
     } else {
@@ -96,8 +96,11 @@ fn create_xxhash64_hashes_dictionary<K: ArrowDictionaryKeyType>(
         // hash for each key value to avoid a potentially expensive
         // redundant hashing for large dictionary elements (e.g. strings)
         let dict_values = Arc::clone(dict_array.values());
-        // same initial seed as Spark
-        let mut dict_hashes = vec![42u64; dict_values.len()];
+        // Seed from the buffer rather than assuming Spark's 42: `xxhash64(col, seed)` lets the
+        // caller choose, and the reuse is only sound if the per-value hashes start from the same
+        // seed the rows carry. The caller guarantees the buffer is uniform.
+        let seed = hashes_buffer.first().copied().unwrap_or(42u64);
+        let mut dict_hashes = vec![seed; dict_values.len()];
         create_xxhash64_hashes(&[dict_values], &mut dict_hashes)?;
 
         for (hash, key) in hashes_buffer.iter_mut().zip(dict_array.keys().iter()) {
@@ -149,6 +152,126 @@ mod tests {
         expected: Vec<u64>,
     ) {
         test_hashes_with_nulls!(create_xxhash64_hashes, T, values, expected, u64);
+    }
+
+    /// The dictionary fast path is shared in shape with murmur3, so it has the same requirement:
+    /// a dictionary reached through a nested type must not restart from the seed.
+    #[test]
+    fn test_dictionary_element_in_list_matches_decoded() {
+        use arrow::array::{DictionaryArray, ListArray};
+        use arrow::buffer::OffsetBuffer;
+        use arrow::datatypes::{Field, Int8Type};
+
+        let values: ArrayRef = Arc::new(Int32Array::from(vec![10, 20]));
+        let keys = arrow::array::Int8Array::from(vec![0i8, 1]);
+        let dict: ArrayRef = Arc::new(DictionaryArray::<Int8Type>::try_new(keys, values).unwrap());
+        let decoded: ArrayRef = Arc::new(Int32Array::from(vec![10, 20]));
+
+        let as_list = |elems: ArrayRef| -> ArrayRef {
+            Arc::new(ListArray::new(
+                Arc::new(Field::new("item", elems.data_type().clone(), true)),
+                OffsetBuffer::new(vec![0i32, 2].into()),
+                elems,
+                None,
+            ))
+        };
+
+        let mut from_dict = vec![42u64; 1];
+        create_xxhash64_hashes(&[as_list(dict)], &mut from_dict).unwrap();
+        let mut from_decoded = vec![42u64; 1];
+        create_xxhash64_hashes(&[as_list(decoded)], &mut from_decoded).unwrap();
+        assert_eq!(from_dict, from_decoded);
+    }
+
+    /// Companion to the murmur3 test: per-row seeds force the unpacking fallback here too.
+    #[test]
+    fn test_dictionary_with_nonuniform_seeds_matches_decoded() {
+        use arrow::array::DictionaryArray;
+        use arrow::datatypes::Int8Type;
+
+        let values: ArrayRef = Arc::new(Int32Array::from(vec![Some(10), Some(20), None]));
+        let keys = arrow::array::Int8Array::from(vec![Some(0), Some(1), Some(2), None, Some(0)]);
+        let dict: ArrayRef = Arc::new(DictionaryArray::<Int8Type>::try_new(keys, values).unwrap());
+        let decoded: ArrayRef = Arc::new(Int32Array::from(vec![
+            Some(10),
+            Some(20),
+            None,
+            None,
+            Some(10),
+        ]));
+
+        let seeds: Vec<u64> = vec![7, 38, 69, 100, 131];
+        let mut from_dict = seeds.clone();
+        create_xxhash64_hashes(&[dict], &mut from_dict).unwrap();
+        let mut from_decoded = seeds;
+        create_xxhash64_hashes(&[decoded], &mut from_decoded).unwrap();
+        assert_eq!(from_dict, from_decoded);
+    }
+
+    /// The struct branch is shared with murmur3 through `create_hashes_internal!`, so the parent
+    /// null mask has to reach xxhash64's children too. See #4432 for the same problem in
+    /// `GetStructField`.
+    #[test]
+    fn test_null_struct_ignores_hidden_child_values() {
+        use arrow::array::StructArray;
+        use arrow::buffer::NullBuffer;
+        use arrow::datatypes::{DataType, Field, Fields};
+
+        let fields: Fields = vec![Arc::new(Field::new("a", DataType::Int32, true))].into();
+        let nulls = NullBuffer::from(vec![true, false]);
+        let hidden: ArrayRef = Arc::new(StructArray::new(
+            fields.clone(),
+            vec![Arc::new(Int32Array::from(vec![Some(1), Some(999)])) as ArrayRef],
+            Some(nulls.clone()),
+        ));
+        let plain: ArrayRef = Arc::new(StructArray::new(
+            fields,
+            vec![Arc::new(Int32Array::from(vec![Some(1), None])) as ArrayRef],
+            Some(nulls),
+        ));
+
+        let mut a = vec![42u64; 2];
+        create_xxhash64_hashes(&[hidden], &mut a).unwrap();
+        let mut b = vec![42u64; 2];
+        create_xxhash64_hashes(&[plain], &mut b).unwrap();
+        assert_eq!(a, b, "a null struct must hash the same either way");
+        assert_eq!(a[1], 42, "a null struct must leave the seed untouched");
+    }
+
+    /// Companion to the murmur3 case: the struct branch is shared through the macro, so the
+    /// per-element route needs covering here too.
+    #[test]
+    fn test_null_struct_element_of_list_ignores_hidden_child_values() {
+        use arrow::array::{ListArray, StructArray};
+        use arrow::buffer::{NullBuffer, OffsetBuffer};
+        use arrow::datatypes::{DataType, Field, Fields};
+
+        let fields: Fields = vec![Arc::new(Field::new("a", DataType::Int32, true))].into();
+        let element_nulls = NullBuffer::from(vec![true, false, true]);
+        let with_hidden: ArrayRef = Arc::new(StructArray::new(
+            fields.clone(),
+            vec![Arc::new(Int32Array::from(vec![Some(1), Some(999), Some(3)])) as ArrayRef],
+            Some(element_nulls.clone()),
+        ));
+        let without_hidden: ArrayRef = Arc::new(StructArray::new(
+            fields,
+            vec![Arc::new(Int32Array::from(vec![Some(1), None, Some(3)])) as ArrayRef],
+            Some(element_nulls),
+        ));
+        let as_list = |elements: ArrayRef| -> ArrayRef {
+            Arc::new(ListArray::new(
+                Arc::new(Field::new("item", elements.data_type().clone(), true)),
+                OffsetBuffer::new(vec![0i32, 3].into()),
+                elements,
+                None,
+            ))
+        };
+
+        let mut from_hidden = vec![42u64; 1];
+        create_xxhash64_hashes(&[as_list(with_hidden)], &mut from_hidden).unwrap();
+        let mut from_null = vec![42u64; 1];
+        create_xxhash64_hashes(&[as_list(without_hidden)], &mut from_null).unwrap();
+        assert_eq!(from_hidden, from_null);
     }
 
     #[test]

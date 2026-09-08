@@ -28,15 +28,21 @@ to Spark in some cases, especially when the data contains both positive and nega
 case that is not of concern for many users. If it is a concern, setting `spark.comet.exec.strictFloatingPoint=true`
 will make relevant operations fall back to Spark.
 
-## Ordering: signed zero (`-0.0` vs `+0.0`)
+## Ordering: NaN and signed zero (`-0.0` vs `+0.0`)
 
 Spark's `ORDER BY`, `RANK`, `DENSE_RANK`, and window frame comparisons route through
-`SQLOrderingUtil.compareDoubles` / `compareFloats`, which explicitly define `-0.0 == 0.0`. Comet's
-native sort and `WindowGroupLimitExec` use the `arrow-row` row-format encoder for `ORDER BY` keys,
-which applies Rust's total-ordering transform to the raw IEEE-754 bits. Under that encoding `-0.0`
-sorts strictly less than `+0.0`, so a partition that mixes the two zeros can produce a rank
-distribution that differs from Spark. For example, `RANK() OVER (ORDER BY v ASC)` over
-`[-0.0, 0.0, 1.0]` filtered to `rk <= 1` returns two rows in Spark (both zeros tied at rank 1) but
-one row in Comet (`-0.0` at rank 1, `+0.0` at rank 2). If your workload materially mixes `-0.0`
-and `+0.0` in a ranked column, prefer Spark for that stage or normalize the column to `+0.0`
-upstream.
+`SQLOrderingUtil.compareDoubles` / `compareFloats`, which equate all NaN representations and
+define `-0.0 == 0.0`. NaN sorts above every non-NaN value.
+
+For scalar `FLOAT` and `DOUBLE` keys, Comet normalizes NaNs and signed zeros before native
+sorting, window peer comparisons, and `WindowGroupLimitExec` rank comparisons. Native range
+partitioning normalizes its keys and sampled boundaries in the same way. Only comparison keys
+are normalized; returned values retain their original NaN representations and zero signs.
+
+Native sorting of floating-point values nested in arrays or structs still uses Arrow's raw total
+ordering. Nested keys can therefore produce different ordering or rank results from Spark; see
+[#5507](https://github.com/apache/datafusion-comet/issues/5507).
+
+The existing `spark.comet.exec.strictFloatingPoint=true` fallback policy is unchanged, including
+its conservative fallback for scalar floating-point sort keys. Narrowing that scalar-sort
+admission policy is tracked in [#5506](https://github.com/apache/datafusion-comet/issues/5506).

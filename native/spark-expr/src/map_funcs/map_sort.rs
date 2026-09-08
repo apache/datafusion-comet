@@ -16,6 +16,7 @@
 // under the License.
 
 use arrow::array::{Array, ArrayRef, MapArray, StructArray, UInt32Array};
+use arrow::buffer::OffsetBuffer;
 use arrow::compute::{sort_to_indices, take, SortOptions};
 use arrow::datatypes::DataType;
 use datafusion::common::{exec_err, DataFusionError};
@@ -61,20 +62,26 @@ pub fn spark_map_sort(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusio
 
     // Build one global permutation over the full entries struct, respecting per-map boundaries,
     // then issue a single `take`. This avoids per-map struct copies and a final `concat`.
+    //
+    // `take` produces exactly the entries the visible maps refer to, so the result is indexed from
+    // zero. A sliced MapArray keeps its original entry offsets (a slice of two two-entry maps that
+    // drops the first has offsets `[2, 4]`), so the input offsets cannot be reused here -- they
+    // would overrun the taken entries. Rebuild them from the per-map lengths instead.
     let mut global_indices: Vec<u32> = Vec::with_capacity(maps_arg_entries.len());
+    let mut rebased_offsets: Vec<i32> = Vec::with_capacity(maps_arg.len() + 1);
+    rebased_offsets.push(0);
 
     for idx in 0..maps_arg.len() {
         let map_start = maps_arg_offsets[idx] as usize;
         let map_end = maps_arg_offsets[idx + 1] as usize;
-        if map_end == map_start {
-            continue;
+        if map_end > map_start {
+            let map_keys = maps_arg_entries
+                .column(0)
+                .slice(map_start, map_end - map_start);
+            let local_indices = sort_to_indices(&map_keys, Some(sort_options), None)?;
+            global_indices.extend(local_indices.values().iter().map(|i| map_start as u32 + *i));
         }
-
-        let map_keys = maps_arg_entries
-            .column(0)
-            .slice(map_start, map_end - map_start);
-        let local_indices = sort_to_indices(&map_keys, Some(sort_options), None)?;
-        global_indices.extend(local_indices.values().iter().map(|i| map_start as u32 + *i));
+        rebased_offsets.push(global_indices.len() as i32);
     }
 
     let indices = UInt32Array::from(global_indices);
@@ -87,7 +94,7 @@ pub fn spark_map_sort(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusio
     // Preserve the original is_sorted flag to keep schema consistent
     let sorted_map_arr = Arc::new(MapArray::try_new(
         Arc::clone(map_field),
-        maps_arg.offsets().clone(),
+        OffsetBuffer::new(rebased_offsets.into()),
         sorted_map_struct.clone(),
         maps_arg.nulls().cloned(),
         *is_sorted,
@@ -103,6 +110,61 @@ mod tests {
     use arrow::array::{Int32Array, ListArray, ListBuilder, MapFieldNames, StringArray};
     use datafusion::common::ScalarValue;
     use std::sync::Arc;
+
+    #[test]
+    fn test_sliced_map_offsets_are_rebased() {
+        // A native OFFSET below a map repartition reaches `spark_map_sort` via `batch.slice`, and
+        // Arrow keeps the original entry offsets on a sliced MapArray. Reusing them would overrun
+        // the taken entries: two two-entry maps sliced to drop the first leaves offsets [2, 4]
+        // against 2 taken entries. See https://github.com/apache/datafusion-comet/pull/5567.
+        let mut mb = MapBuilder::new(
+            Some(MapFieldNames {
+                entry: "entries".into(),
+                key: "key".into(),
+                value: "value".into(),
+            }),
+            StringBuilder::new(),
+            Int32Builder::new(),
+        );
+        mb.keys().append_value("b");
+        mb.values().append_value(2);
+        mb.keys().append_value("a");
+        mb.values().append_value(1);
+        mb.append(true).unwrap();
+        mb.keys().append_value("d");
+        mb.values().append_value(4);
+        mb.keys().append_value("c");
+        mb.values().append_value(3);
+        mb.append(true).unwrap();
+        let full = mb.finish();
+
+        let sliced = full.slice(1, 1);
+        assert_eq!(
+            sliced.offsets().first().copied(),
+            Some(2),
+            "slice must keep original offsets"
+        );
+
+        let result = spark_map_sort(&[ColumnarValue::Array(Arc::new(sliced))]).unwrap();
+        let sorted = match result {
+            ColumnarValue::Array(a) => a,
+            _ => panic!("expected an array"),
+        };
+        let sorted = sorted.as_any().downcast_ref::<MapArray>().unwrap();
+        assert_eq!(sorted.len(), 1);
+        let keys = sorted
+            .keys()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let values = sorted
+            .values()
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap();
+        assert_eq!(keys.iter().collect::<Vec<_>>(), vec![Some("c"), Some("d")]);
+        assert_eq!(values.iter().collect::<Vec<_>>(), vec![Some(3), Some(4)]);
+    }
 
     macro_rules! build_map {
         (

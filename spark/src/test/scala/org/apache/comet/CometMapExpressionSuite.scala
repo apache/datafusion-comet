@@ -460,4 +460,21 @@ class CometMapExpressionSuite extends CometTestBase {
     }
   }
 
+  test("mapsort on a sliced map does not overrun the sorted entries") {
+    // A native OFFSET slices the batch and Arrow keeps a sliced MapArray's original entry offsets,
+    // so `mapsort` receives a map whose first entry offset is nonzero. `spark_map_sort` takes only
+    // the visible entries, so reusing the input offsets overran them and failed the query with
+    // "Max offset of N exceeds length of entries M".
+    assume(isSpark40Plus, "Spark 4.0 inserts MapSort for group-by and repartition on map keys")
+    withParquetTable(
+      (0 until 20).map(i => (i, Map(s"b${i % 5}" -> i, s"a${i % 5}" -> (i + 1)))),
+      "tbl") {
+      // GROUP BY on a map: InsertMapSortInGroupingExpressions adds the mapsort. Repartition on a
+      // map reaches the same code through InsertMapSortInRepartitionExpressions, but native shuffle
+      // rejects map partitioning keys today, so this is the reachable path.
+      checkSparkAnswer(
+        "SELECT _2, count(*) FROM (SELECT * FROM tbl ORDER BY _1 LIMIT 15 OFFSET 5) GROUP BY _2")
+    }
+  }
+
 }

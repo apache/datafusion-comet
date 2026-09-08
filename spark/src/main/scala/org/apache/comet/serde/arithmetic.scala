@@ -367,11 +367,29 @@ object CometRemainder extends CometExpressionSerde[Remainder] with MathBase {
   }
 }
 
-object CometRound extends CometExpressionSerde[Round] {
+/**
+ * `round` lowers to the native `round` kernel for integral and non-negative-scale decimal inputs.
+ * The cases below have no native implementation; `CodegenDispatchFallback` keeps them in the
+ * Comet pipeline by running Spark's own `RoundBase.doGenCode` in the JVM codegen dispatcher,
+ * which matches Spark exactly.
+ */
+object CometRound extends CometExpressionSerde[Round] with CodegenDispatchFallback {
+
+  private val negativeScaleReason =
+    "Negative-scale decimal inputs, which are only creatable with " +
+      "spark.sql.legacy.allowNegativeScaleOfDecimal=true"
+
+  private val floatingPointReason =
+    "Float and double inputs. Spark rounds them through a BigDecimal built from " +
+      "`java.lang.Double.toString()` rather than from the exact binary value, and that " +
+      "shortened decimal string can round differently than the value it came from"
+
+  override def getUnsupportedReasons(): Seq[String] =
+    Seq(floatingPointReason, negativeScaleReason)
 
   override def getSupportLevel(expr: Round): SupportLevel = expr.child.dataType match {
     case t: DecimalType if t.scale < 0 => // Spark disallows negative scale SPARK-30252
-      Unsupported(Some("Decimal type has negative scale"))
+      Unsupported(Some(negativeScaleReason))
     case _: FloatType | DoubleType =>
       // We cannot properly match with the Spark behavior for floating-point numbers.
       // Spark uses BigDecimal for rounding float/double, and BigDecimal fist converts a
@@ -387,7 +405,7 @@ object CometRound extends CometExpressionSerde[Round] {
       // I.e. 6.13171162472835E18 == 6.1317116247283497E18. However, toString() does not.
       // That results in round(6.1317116247283497E18, -5) == 6.1317116247282995E18 instead
       // of 6.1317116247283999E18.
-      Unsupported(Some("Comet does not support Spark's BigDecimal rounding"))
+      Unsupported(Some(floatingPointReason))
     case _ =>
       Compatible()
   }

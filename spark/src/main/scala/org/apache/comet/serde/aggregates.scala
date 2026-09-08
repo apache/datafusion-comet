@@ -21,14 +21,14 @@ package org.apache.comet.serde
 
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Literal}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, ApproximatePercentile, Average, BitAndAgg, BitOrAgg, BitXorAgg, BloomFilterAggregate, CentralMomentAgg, CollectList, CollectSet, Corr, Count, Covariance, CovPopulation, CovSample, First, HyperLogLogPlusPlus, Last, Max, Min, Percentile, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Expression, Literal}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, ApproximatePercentile, Average, BitAndAgg, BitOrAgg, BitXorAgg, BloomFilterAggregate, CentralMomentAgg, CollectList, CollectSet, Corr, Count, Covariance, CovPopulation, CovSample, First, HyperLogLogPlusPlus, Last, Max, Min, Percentile, RegrIntercept, RegrR2, RegrReplacement, RegrSlope, RegrSXY, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
 import org.apache.spark.sql.catalyst.util.ArrayData
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{BinaryType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, NumericType, ShortType, StringType, TimestampNTZType, TimestampType}
 
 import org.apache.comet.CometConf.COMET_EXEC_STRICT_FLOATING_POINT
-import org.apache.comet.CometSparkSessionExtensions.{isSpark41Plus, withFallbackReason}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark41Plus, withFallbackReason}
 import org.apache.comet.expressions.CometEvalMode
 import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProto, serializeDataType}
 import org.apache.comet.shims.{CometCollectShim, CometEvalModeUtil}
@@ -761,6 +761,131 @@ object CometCorr extends CometAggregateExpressionSerde[Corr] {
       None
     }
   }
+}
+
+/**
+ * Shared serialization for the simple linear regression aggregates. `child1` is the dependent
+ * variable (y) and `child2` is the independent variable (x), matching the native accumulator's
+ * `regr_*(y, x)` convention.
+ */
+trait CometRegrBase {
+  def convertRegr(
+      aggExpr: AggregateExpression,
+      regrType: ExprOuterClass.Regr.RegrType,
+      y: Expression,
+      x: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.AggExpr] = {
+    val child1Expr = exprToProto(y, inputs, binding)
+    val child2Expr = exprToProto(x, inputs, binding)
+    val dataType = serializeDataType(DoubleType)
+
+    if (child1Expr.isDefined && child2Expr.isDefined && dataType.isDefined) {
+      val builder = ExprOuterClass.Regr.newBuilder()
+      builder.setChild1(child1Expr.get)
+      builder.setChild2(child2Expr.get)
+      builder.setRegrType(regrType)
+      builder.setDatatype(dataType.get)
+      // Spark 3.5 fixed regr_slope/regr_intercept so VariancePop(x) only counts
+      // rows where both y and x are non-null. Spark 3.4 counts every row where x
+      // is non-null. The native accumulator only consults this for slope/intercept.
+      builder.setFilterVarByPairNulls(isSpark35Plus)
+      // Spark swapped regr_r2's degenerate-case handling: a constant dependent
+      // variable now yields 1.0 (was null) and a constant independent variable
+      // yields null (was 1.0). The swap is present in the Spark versions Comet
+      // builds against for 3.5 and later (3.5.9, 4.0.3+, 4.1, 4.2) but not in 3.4.
+      // The native accumulator only consults this for R2.
+      builder.setR2ConstantDependentIsPerfectFit(isSpark35Plus)
+
+      Some(
+        ExprOuterClass.AggExpr
+          .newBuilder()
+          .setRegr(builder)
+          .build())
+    } else {
+      withFallbackReason(aggExpr, "Child expression or data type not supported")
+      None
+    }
+  }
+}
+
+object CometRegrSlope extends CometAggregateExpressionSerde[RegrSlope] with CometRegrBase {
+  override def convert(
+      aggExpr: AggregateExpression,
+      expr: RegrSlope,
+      inputs: Seq[Attribute],
+      binding: Boolean,
+      conf: SQLConf): Option[ExprOuterClass.AggExpr] =
+    convertRegr(
+      aggExpr,
+      ExprOuterClass.Regr.RegrType.SLOPE,
+      expr.left,
+      expr.right,
+      inputs,
+      binding)
+}
+
+object CometRegrIntercept
+    extends CometAggregateExpressionSerde[RegrIntercept]
+    with CometRegrBase {
+  override def convert(
+      aggExpr: AggregateExpression,
+      expr: RegrIntercept,
+      inputs: Seq[Attribute],
+      binding: Boolean,
+      conf: SQLConf): Option[ExprOuterClass.AggExpr] =
+    convertRegr(
+      aggExpr,
+      ExprOuterClass.Regr.RegrType.INTERCEPT,
+      expr.left,
+      expr.right,
+      inputs,
+      binding)
+}
+
+object CometRegrR2 extends CometAggregateExpressionSerde[RegrR2] with CometRegrBase {
+  override def convert(
+      aggExpr: AggregateExpression,
+      expr: RegrR2,
+      inputs: Seq[Attribute],
+      binding: Boolean,
+      conf: SQLConf): Option[ExprOuterClass.AggExpr] =
+    convertRegr(aggExpr, ExprOuterClass.Regr.RegrType.R2, expr.y, expr.x, inputs, binding)
+}
+
+object CometRegrSXY extends CometAggregateExpressionSerde[RegrSXY] with CometRegrBase {
+  override def convert(
+      aggExpr: AggregateExpression,
+      expr: RegrSXY,
+      inputs: Seq[Attribute],
+      binding: Boolean,
+      conf: SQLConf): Option[ExprOuterClass.AggExpr] =
+    convertRegr(aggExpr, ExprOuterClass.Regr.RegrType.SXY, expr.y, expr.x, inputs, binding)
+}
+
+/**
+ * Spark rewrites `regr_sxx(y, x)` and `regr_syy(y, x)` into `RegrReplacement(If(y IS NULL OR x IS
+ * NULL, null, col))`, where `col` is the independent (x) variable for `regr_sxx` and the
+ * dependent (y) variable for `regr_syy`. `RegrReplacement` evaluates to `m2` (the sum of squared
+ * deviations) of its single child. We serialize it as the `SXX` regression statistic with the
+ * child duplicated, since `regr_sxx(c, c) = m2(c)`.
+ */
+object CometRegrReplacement
+    extends CometAggregateExpressionSerde[RegrReplacement]
+    with CometRegrBase {
+  override def convert(
+      aggExpr: AggregateExpression,
+      expr: RegrReplacement,
+      inputs: Seq[Attribute],
+      binding: Boolean,
+      conf: SQLConf): Option[ExprOuterClass.AggExpr] =
+    convertRegr(
+      aggExpr,
+      ExprOuterClass.Regr.RegrType.SXX,
+      expr.child,
+      expr.child,
+      inputs,
+      binding)
 }
 
 object CometBloomFilterAggregate extends CometAggregateExpressionSerde[BloomFilterAggregate] {

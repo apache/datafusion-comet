@@ -60,6 +60,17 @@ trait CometTypeShim {
   // Spark 3.x where `VariantType` does not exist.
   def isVariantType(dt: DataType): Boolean = dt.isInstanceOf[VariantType]
 
+  def containsVariantType(dt: DataType): Boolean = dt match {
+    case dt if isVariantType(dt) => true
+    case StructType(fields) => fields.exists(field => containsVariantType(field.dataType))
+    case ArrayType(elementType, _) => containsVariantType(elementType)
+    case MapType(keyType, valueType, _) =>
+      containsVariantType(keyType) || containsVariantType(valueType)
+    case _ => false
+  }
+
+  def variantType: Option[DataType] = Some(VariantType)
+
   def isTimeType(dt: DataType): Boolean =
     dt.getClass.getSimpleName.startsWith("TimeType")
 

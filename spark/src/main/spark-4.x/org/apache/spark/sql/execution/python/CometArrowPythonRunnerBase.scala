@@ -77,6 +77,19 @@ private[python] trait CometArrowPythonRunnerBase
   protected def writeUDF(dataOut: DataOutputStream): Unit
 
   /**
+   * Write the worker configuration where Spark 4.0 and 4.1 workers expect it. Spark 4.2 moved
+   * this map into [[BasePythonRunner.runnerConf]], so its subclass overrides this hook with a
+   * no-op.
+   */
+  protected def writeWorkerConf(dataOut: DataOutputStream): Unit = {
+    dataOut.writeInt(workerConf.size)
+    for ((key, value) <- workerConf) {
+      PythonRDD.writeUTF(key, dataOut)
+      PythonRDD.writeUTF(value, dataOut)
+    }
+  }
+
+  /**
    * Input schema as Comet hands it to the runner: a single non-nullable struct named "struct"
    * whose children are the user's input columns. Comet's FFI-imported vectors carry Arrow
    * `Field`s with null names (Comet uses positional schema), so these names are the source of
@@ -126,11 +139,7 @@ private[python] trait CometArrowPythonRunnerBase
 
       protected override def writeCommand(dataOut: DataOutputStream): Unit = {
         // handleMetadataBeforeExec: write the worker config as key/value string pairs.
-        dataOut.writeInt(workerConf.size)
-        for ((k, v) <- workerConf) {
-          PythonRDD.writeUTF(k, dataOut)
-          PythonRDD.writeUTF(v, dataOut)
-        }
+        writeWorkerConf(dataOut)
         writeUDF(dataOut)
       }
 
@@ -334,10 +343,26 @@ private[python] object CometArrowPythonRunnerBase {
     ArrowType.ExtensionType.EXTENSION_METADATA_KEY_NAME,
     ArrowType.ExtensionType.EXTENSION_METADATA_KEY_METADATA)
 
+  private def areArrowTypesCompatible(expected: ArrowType, actual: ArrowType): Boolean = {
+    if (expected == actual) {
+      true
+    } else {
+      (expected, actual) match {
+        case (left: ArrowType.Timestamp, right: ArrowType.Timestamp) =>
+          // Native scans use UTC, while date_trunc can retain the equivalent Etc/UTC session
+          // zone. Both interpret the same instants, so preserve the stream schema and buffers.
+          left.getUnit == right.getUnit &&
+          ((left.getTimezone == "UTC" && right.getTimezone == "Etc/UTC") ||
+            (left.getTimezone == "Etc/UTC" && right.getTimezone == "UTC"))
+        case _ => false
+      }
+    }
+  }
+
   /** Names, nullability and ordinary field metadata do not change the IPC buffer layout. */
   private[python] def hasCompatibleSchema(expected: Seq[Field], actual: Seq[Field]): Boolean = {
     expected.size == actual.size && expected.zip(actual).forall { case (left, right) =>
-      left.getType == right.getType &&
+      areArrowTypesCompatible(left.getType, right.getType) &&
       left.getDictionary == right.getDictionary &&
       extensionMetadataKeys.forall(key =>
         left.getMetadata.get(key) == right.getMetadata.get(key)) &&

@@ -40,6 +40,48 @@ INSERT INTO names VALUES(1, 'James', 'B', 'Taylor'), (2, 'Smith', 'C', 'Davis'),
 query
 SELECT concat_ws(' ', first_name, middle_initial, last_name) FROM names
 
--- literal + literal + literal (falls back to Spark when all args are foldable)
+-- literal + literal + literal (declined natively when all args are foldable; routed through the
+-- JVM codegen dispatcher, or falls back to Spark when the dispatcher is disabled)
 query spark_answer_only
 SELECT concat_ws(',', 'hello', 'world'), concat_ws(',', '', ''), concat_ws(',', NULL, 'b', 'c'), concat_ws(NULL, 'a', 'b')
+
+-- https://github.com/apache/datafusion-comet/issues/5675
+-- Spark accepts array<string> arguments after the separator and flattens their elements into the
+-- strings to join (skipping null elements). DataFusion's concat_ws rejects list arguments, so
+-- ConcatWs mixes in CodegenDispatchFallback: these calls route through the JVM codegen dispatcher
+-- (Spark's own ConcatWs.doGenCode inside the Comet pipeline) and stay native while matching Spark
+-- exactly.
+statement
+CREATE TABLE test_concat_ws_array(arr array<string>, s string) USING parquet
+
+statement
+INSERT INTO test_concat_ws_array VALUES (array('a', 'b'), 'c d'), (array('x', NULL, 'y'), 'z'), (array('only'), ''), (CAST(array() AS array<string>), 'w'), (NULL, 'v'), (array('p', 'q'), NULL)
+
+query
+SELECT concat_ws(',', arr, s) FROM test_concat_ws_array
+
+query
+SELECT concat_ws(',', s, arr) FROM test_concat_ws_array
+
+-- single array argument
+query
+SELECT concat_ws(',', arr) FROM test_concat_ws_array
+
+-- the same array argument twice
+query
+SELECT concat_ws('-', arr, s, arr) FROM test_concat_ws_array
+
+-- array produced by another expression
+query
+SELECT concat_ws(',', split(s, ' ')) FROM test_concat_ws_array
+
+query
+SELECT concat_ws(',', split(s, ' '), arr) FROM test_concat_ws_array
+
+-- a NULL separator is NULL regardless of the argument types and stays on the native path
+query
+SELECT concat_ws(NULL, arr, s) FROM test_concat_ws_array
+
+-- literal array arguments
+query
+SELECT concat_ws(',', array('a', 'b'), 'c'), concat_ws(',', array('x', NULL, 'y')), concat_ws(',', CAST(array() AS array<string>), 'w')

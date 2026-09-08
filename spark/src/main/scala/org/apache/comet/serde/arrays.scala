@@ -22,7 +22,7 @@ package org.apache.comet.serde
 import scala.annotation.tailrec
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.sql.catalyst.expressions.{And, ArrayAggregate, ArrayAppend, ArrayContains, ArrayExcept, ArrayExists, ArrayFilter, ArrayForAll, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayPosition, ArrayRemove, ArraySort, ArraysOverlap, ArraysZip, ArrayTransform, ArrayUnion, Attribute, Cast, CreateArray, ElementAt, EmptyRow, Expression, Flatten, GetArrayItem, IsNotNull, LambdaFunction, Literal, NamedLambdaVariable, Reverse, Sequence, Size, Slice, SortArray, ZipWith}
+import org.apache.spark.sql.catalyst.expressions.{And, ArrayAggregate, ArrayAppend, ArrayContains, ArrayExcept, ArrayExists, ArrayFilter, ArrayForAll, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayPosition, ArrayRemove, ArraySort, ArraysOverlap, ArraysZip, ArrayTransform, ArrayUnion, Attribute, BoundReference, Cast, CreateArray, ElementAt, EmptyRow, Expression, Flatten, GetArrayItem, IsNotNull, IsNull, LambdaFunction, Literal, NamedLambdaVariable, Reverse, Sequence, Size, Slice, SortArray, ZipWith}
 import org.apache.spark.sql.catalyst.util.GenericArrayData
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
@@ -357,13 +357,29 @@ object CometArrayJoin
     with CometTypeShim
     with CodegenDispatchFallback {
 
-  private val incompatReason = "Null handling may differ from Spark"
-
   private val collationReason =
     "array_join does not propagate non-UTF8_BINARY collations to the output string " +
       "(https://github.com/apache/datafusion-comet/issues/2190)"
 
-  override def getIncompatibleReasons(): Seq[String] = Seq(incompatReason, collationReason)
+  private val eagerEvalReason =
+    "array_join evaluates its delimiter and null replacement eagerly, while Spark short-circuits " +
+      "past them (https://github.com/apache/datafusion-comet/issues/3178)"
+
+  /**
+   * Whether evaluating `expr` earlier than Spark would is unobservable.
+   *
+   * Spark skips ArrayJoin's later arguments once an earlier one is null, and `eval` and
+   * `doGenCode` disagree on that order, while DataFusion evaluates every argument up front. A
+   * literal or column read cannot throw, carry state or have a side effect, so ordering cannot be
+   * observed for it; anything else goes to the codegen dispatcher. `foldable` is not usable here:
+   * ConstantFolding leaves a throwing foldable expression unfolded in a conditional branch.
+   */
+  private def orderInsensitive(expr: Expression): Boolean = expr match {
+    case _: Literal | _: Attribute | _: BoundReference => true
+    case _ => false
+  }
+
+  override def getIncompatibleReasons(): Seq[String] = Seq(collationReason, eagerEvalReason)
 
   override def getSupportLevel(expr: ArrayJoin): SupportLevel = {
     // Spark 4.0 widens ArrayJoin's input to StringTypeWithCollation. Concatenation itself is
@@ -373,8 +389,10 @@ object CometArrayJoin
     // array_join native and matching Spark, consistent with CometReverse's #2190 handling.
     if (hasNonDefaultStringCollation(expr.array.dataType)) {
       Incompatible(Some(collationReason))
+    } else if (!(expr.delimiter +: expr.nullReplacement.toSeq).forall(orderInsensitive)) {
+      Incompatible(Some(eagerEvalReason))
     } else {
-      Incompatible(Some(incompatReason))
+      Compatible()
     }
   }
 
@@ -382,26 +400,38 @@ object CometArrayJoin
       expr: ArrayJoin,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val arrayExpr = expr.asInstanceOf[ArrayJoin]
-    val arrayExprProto = exprToProto(arrayExpr.array, inputs, binding)
-    val delimiterExprProto = exprToProto(arrayExpr.delimiter, inputs, binding)
+    val arrayExprProto = exprToProto(expr.array, inputs, binding)
+    val delimiterExprProto = exprToProto(expr.delimiter, inputs, binding)
 
-    arrayExpr.nullReplacement match {
+    val joined = expr.nullReplacement match {
       case Some(nullReplacementExpr) =>
-        val nullReplacementExprProto = exprToProto(nullReplacementExpr, inputs, binding)
-
-        val arrayJoinScalarExpr = scalarFunctionExprToProto(
+        scalarFunctionExprToProto(
           "array_to_string",
           arrayExprProto,
           delimiterExprProto,
-          nullReplacementExprProto)
-
-        arrayJoinScalarExpr
+          exprToProto(nullReplacementExpr, inputs, binding))
       case None =>
-        val arrayJoinScalarExpr =
-          scalarFunctionExprToProto("array_to_string", arrayExprProto, delimiterExprProto)
+        scalarFunctionExprToProto("array_to_string", arrayExprProto, delimiterExprProto)
+    }
 
-        arrayJoinScalarExpr
+    // Spark returns null as soon as nullReplacement is null, whatever the array holds, while
+    // array_to_string reads a null null_string as "omit nulls" (#3178).
+    expr.nullReplacement.filter(_.nullable) match {
+      case Some(nullReplacementExpr) =>
+        for {
+          innerProto <- joined
+          replacementIsNull <- exprToProto(IsNull(nullReplacementExpr), inputs, binding)
+          nullLiteral <- exprToProto(Literal(null, expr.dataType), inputs, binding)
+        } yield ExprOuterClass.Expr
+          .newBuilder()
+          .setIf(
+            ExprOuterClass.IfExpr
+              .newBuilder()
+              .setIfExpr(replacementIsNull)
+              .setTrueExpr(nullLiteral)
+              .setFalseExpr(innerProto))
+          .build()
+      case None => joined
     }
   }
 }
@@ -924,4 +954,61 @@ object CometArraySort extends CometCodegenDispatch[ArraySort]
 
 object CometZipWith extends CometCodegenDispatch[ZipWith]
 
-object CometSequence extends CometCodegenDispatch[Sequence]
+object CometSequence extends CometExpressionSerde[Sequence] with CodegenDispatchFallback {
+
+  private val temporalUnsupportedReason =
+    "date and timestamp element types run through the JVM codegen dispatcher"
+
+  private val unsafeArgUnsupportedReason =
+    "sequence arguments must be literals or column references; other shapes run through the " +
+      "JVM codegen dispatcher to preserve Spark's per-row null short-circuit"
+
+  override def getSupportLevel(expr: Sequence): SupportLevel = expr.start.dataType match {
+    case ByteType | ShortType | IntegerType | LongType =>
+      // Spark's codegen for `Sequence` short-circuits per row: any null argument returns null
+      // without evaluating the rest. DataFusion evaluates each scalar-UDF argument over the
+      // whole batch before calling the outer kernel, so a sub-expression with side effects
+      // (a nested call, a `CASE WHEN`, even a zero-arg UDF like `boom()`) could fire on rows
+      // Spark's null check would have discarded. A tree-shape "no children" test is not
+      // enough — a zero-arg UDF has empty children but still executes. Only literals and
+      // column references are safe to lower natively; anything else falls back to the
+      // codegen dispatcher, which keeps the whole tree inside Spark's guarded evaluation.
+      if (argsAreLiteralsOrRefs(expr)) Compatible()
+      else Unsupported(Some(unsafeArgUnsupportedReason))
+    case DateType | TimestampType | TimestampNTZType =>
+      // Temporal sequences step through timezone/DST/legacy-calendar arithmetic
+      // (https://github.com/apache/datafusion-comet/issues/5349), so they stay on the JVM
+      // codegen dispatcher.
+      Unsupported(Some(temporalUnsupportedReason))
+    case other =>
+      Unsupported(Some(s"sequence with element type $other is not supported natively"))
+  }
+
+  private def argsAreLiteralsOrRefs(expr: Sequence): Boolean = {
+    val args = Seq(expr.start, expr.stop) ++ expr.stepOpt
+    args.forall {
+      case _: Literal | _: Attribute | _: BoundReference => true
+      case _ => false
+    }
+  }
+
+  override def getUnsupportedReasons(): Seq[String] =
+    Seq(temporalUnsupportedReason, unsafeArgUnsupportedReason)
+
+  override def convert(
+      expr: Sequence,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val startExprProto = exprToProto(expr.start, inputs, binding)
+    val stopExprProto = exprToProto(expr.stop, inputs, binding)
+    // With no step argument the native kernel computes Spark's per-row default,
+    // `start <= stop ? 1 : -1`, which cannot be expressed as a plan-time literal.
+    val argProtos = Seq(startExprProto, stopExprProto) ++
+      expr.stepOpt.map(exprToProto(_, inputs, binding))
+    scalarFunctionExprToProtoWithReturnType(
+      "spark_sequence",
+      expr.dataType,
+      failOnError = false,
+      argProtos: _*)
+  }
+}

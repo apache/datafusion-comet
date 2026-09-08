@@ -50,6 +50,13 @@ class CometArrowPythonRunner(
 
   override protected def workerConf: Map[String, String] = pythonRunnerConf
 
+  // Spark 4.2 writes runnerConf and evalConf before writeCommand. Pass Comet's settings through the
+  // native slot and do not emit the legacy map inside the command, which the worker would interpret
+  // as the number of UDFs.
+  override protected def runnerConf: Map[String, String] = super.runnerConf ++ workerConf
+
+  override protected def writeWorkerConf(dataOut: DataOutputStream): Unit = ()
+
   override protected def writeUDF(dataOut: DataOutputStream): Unit =
     PythonUDFRunner.writeUDFs(dataOut, funcs, argOffsets)
 }
