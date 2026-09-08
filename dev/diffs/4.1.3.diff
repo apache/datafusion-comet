@@ -39,7 +39,7 @@ index 6df8bc85b51..dabb75e2b75 100644
        withSpark(sc) { sc =>
          TestUtils.waitUntilExecutorsUp(sc, 2, 60000)
 diff --git a/pom.xml b/pom.xml
-index 370bfa4397f..8447b5c375e 100644
+index 370bfa4397f..54ded05544c 100644
 --- a/pom.xml
 +++ b/pom.xml
 @@ -152,6 +152,8 @@
@@ -199,18 +199,6 @@ index 96dddafd82a..efedbbb3c0e 100644
  
  -- Test tables
  CREATE table  explain_temp1 (key int, val int) USING PARQUET;
-diff --git a/sql/core/src/test/resources/sql-tests/inputs/having-and-order-by-recursive-type-name-resolution.sql b/sql/core/src/test/resources/sql-tests/inputs/having-and-order-by-recursive-type-name-resolution.sql
-index 1f53ca359fe..0f572f7c6ce 100644
---- a/sql/core/src/test/resources/sql-tests/inputs/having-and-order-by-recursive-type-name-resolution.sql
-+++ b/sql/core/src/test/resources/sql-tests/inputs/having-and-order-by-recursive-type-name-resolution.sql
-@@ -1,3 +1,7 @@
-+-- TODO(https://github.com/apache/datafusion-comet/issues/4123)
-+-- Comet native sort lacks row-format support for Struct(Map(...)) sort keys
-+--SET spark.comet.enabled = false
-+
- -- This test file contains queries that test recursive types name resolution in ORDER BY and HAVING clauses.
- 
- -- Alias type: String, Table column type: Struct
 diff --git a/sql/core/src/test/resources/sql-tests/inputs/hll.sql b/sql/core/src/test/resources/sql-tests/inputs/hll.sql
 index 35128da97fd..25b873ae859 100644
 --- a/sql/core/src/test/resources/sql-tests/inputs/hll.sql
