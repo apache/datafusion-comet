@@ -2080,54 +2080,46 @@ impl PhysicalPlanner {
                 // unnesting. See https://github.com/apache/datafusion/issues/19053. Once
                 // Comet moves to a DataFusion release carrying
                 // https://github.com/apache/datafusion/pull/22100, `ListEmptyToNullExpr`
-                // and the pre-projection below can be removed in favor of
-                // `NullHandling::PreserveAndExpandEmpty`. See
+                // can be removed in favor of `NullHandling::PreserveAndExpandEmpty`. See
                 // https://github.com/apache/datafusion-comet/issues/5210.
-                //
-                // For `posexplode_outer` the wrapped array is materialized in a
-                // pre-projection so `ListPositionsExpr` and the array passthrough share
-                // a single evaluation of `ListEmptyToNullExpr` instead of re-running it
-                // per branch. Plain `explode_outer` references the wrapped array exactly
-                // once, so no pre-projection is needed there.
-                let (child_expr, child_native_plan): (Arc<dyn PhysicalExpr>, _) =
-                    match (explode.outer, explode.position) {
-                        (true, true) => {
-                            let wrapped: Arc<dyn PhysicalExpr> =
-                                Arc::new(ListEmptyToNullExpr::new(raw_child_expr));
-                            let reserved_name =
-                                format!("__comet_explode_outer_{}", child_field_name);
+                let child_expr: Arc<dyn PhysicalExpr> = if explode.outer {
+                    Arc::new(ListEmptyToNullExpr::new(raw_child_expr))
+                } else {
+                    raw_child_expr
+                };
 
-                            let mut pre_exprs: Vec<(Arc<dyn PhysicalExpr>, String)> = child_schema
-                                .fields()
-                                .iter()
-                                .enumerate()
-                                .map(|(i, f)| {
-                                    (
-                                        Arc::new(Column::new(f.name(), i)) as Arc<dyn PhysicalExpr>,
-                                        f.name().to_string(),
-                                    )
-                                })
-                                .collect();
-                            let wrapped_idx = pre_exprs.len();
-                            pre_exprs.push((wrapped, reserved_name.clone()));
-
-                            let pre_exec = Arc::new(ProjectionExec::try_new(
-                                pre_exprs,
-                                Arc::clone(&child.native_plan),
-                            )?);
+                // Both posexplode variants reference the array twice: once for positions
+                // and once for values. Materialize computed arrays so both references
+                // share one evaluation. A plain Column is already materialized.
+                let (child_expr, child_native_plan) = if explode.position
+                    && !child_expr.is::<Column>()
+                {
+                    let reserved_name = format!("__comet_explode_{}", child_field_name);
+                    let mut pre_exprs: Vec<(Arc<dyn PhysicalExpr>, String)> = child_schema
+                        .fields()
+                        .iter()
+                        .enumerate()
+                        .map(|(i, f)| {
                             (
-                                Arc::new(Column::new(&reserved_name, wrapped_idx))
-                                    as Arc<dyn PhysicalExpr>,
-                                pre_exec as Arc<dyn ExecutionPlan>,
+                                Arc::new(Column::new(f.name(), i)) as Arc<dyn PhysicalExpr>,
+                                f.name().to_string(),
                             )
-                        }
-                        (true, false) => (
-                            Arc::new(ListEmptyToNullExpr::new(raw_child_expr))
-                                as Arc<dyn PhysicalExpr>,
-                            Arc::clone(&child.native_plan),
-                        ),
-                        (false, _) => (raw_child_expr, Arc::clone(&child.native_plan)),
-                    };
+                        })
+                        .collect();
+                    let child_idx = pre_exprs.len();
+                    pre_exprs.push((child_expr, reserved_name.clone()));
+
+                    let pre_exec = Arc::new(ProjectionExec::try_new(
+                        pre_exprs,
+                        Arc::clone(&child.native_plan),
+                    )?);
+                    (
+                        Arc::new(Column::new(&reserved_name, child_idx)) as Arc<dyn PhysicalExpr>,
+                        pre_exec as Arc<dyn ExecutionPlan>,
+                    )
+                } else {
+                    (child_expr, Arc::clone(&child.native_plan))
+                };
 
                 // Create projection expressions for other columns
                 let projections: Vec<Arc<dyn PhysicalExpr>> = explode
@@ -4397,11 +4389,12 @@ fn parse_file_scan_tasks_from_common(
                         ))
                     })?;
                 // Recover spec_id from the index-aligned spec JSON's "spec-id" field directly,
-                // rather than from partition_spec_cache: a spec that uses a transform iceberg-rust
-                // doesn't recognize (e.g. forward-compatibility tests) fails to deserialize into a
-                // PartitionSpec, but its "spec-id" is still present in the JSON and its partition
-                // type entry has no usable fields anyway. Falling back to idx keeps ordering
-                // deterministic if the field is somehow absent.
+                // rather than from partition_spec_cache: a spec that fails to deserialize into a
+                // PartitionSpec still has its "spec-id" in the JSON, so the merge below stays
+                // correctly ordered. The JVM serializer maps a transform name iceberg-rust cannot
+                // parse to "unknown" (see IcebergReflection.Transforms.forNative), so this is
+                // defensive rather than a path a supported table reaches. Falling back to idx keeps
+                // ordering deterministic if the field is somehow absent.
                 let spec_id = proto_common
                     .partition_spec_pool
                     .get(idx)
@@ -6146,6 +6139,162 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn explode_evaluates_array_once_per_batch() {
+        use arrow::datatypes::Int32Type;
+        use datafusion::common::tree_node::{Transformed, TreeNode};
+        use datafusion::logical_expr::{create_udf, Volatility};
+        use datafusion::physical_plan::projection::ProjectionExec;
+        use spark_expression::data_type::{data_type_info::DatatypeStruct, DataTypeInfo, ListInfo};
+
+        let array_type = spark_expression::DataType {
+            type_id: 14,
+            type_info: Some(Box::new(DataTypeInfo {
+                datatype_struct: Some(DatatypeStruct::List(Box::new(ListInfo {
+                    element_type: Some(Box::new(create_proto_datatype())),
+                    contains_null: true,
+                    element_field_id: None,
+                }))),
+            })),
+        };
+        let arrays = Arc::new(ListArray::from_iter_primitive::<Int32Type, _, _>(vec![
+            Some(vec![Some(10), None]),
+            Some(vec![]),
+            None,
+            Some(vec![Some(20)]),
+        ])) as ArrayRef;
+
+        for outer in [false, true] {
+            for position in [false, true] {
+                for computed in [false, true] {
+                    let calls = Arc::new(AtomicUsize::new(0));
+                    let counter = Arc::clone(&calls);
+                    let ctx = SessionContext::new();
+                    ctx.register_udf(create_udf(
+                        "counted_array",
+                        vec![arrays.data_type().clone()],
+                        arrays.data_type().clone(),
+                        Volatility::Immutable,
+                        Arc::new(move |args| {
+                            counter.fetch_add(1, Ordering::Relaxed);
+                            Ok(args[0].clone())
+                        }),
+                    ));
+                    let task_ctx = ctx.task_ctx();
+                    let planner = PhysicalPlanner::new(Arc::new(ctx), 0);
+                    let bound = Expr {
+                        expr_struct: Some(Bound(spark_expression::BoundReference {
+                            index: 0,
+                            datatype: Some(array_type.clone()),
+                        })),
+                        ..Default::default()
+                    };
+                    let child_expr = if computed {
+                        Expr {
+                            expr_struct: Some(ScalarFunc(spark_expression::ScalarFunc {
+                                func: "counted_array".to_string(),
+                                args: vec![bound.clone()],
+                                ..Default::default()
+                            })),
+                            ..Default::default()
+                        }
+                    } else {
+                        bound.clone()
+                    };
+                    let op = Operator {
+                        children: vec![Operator {
+                            op_struct: Some(OpStruct::Scan(spark_operator::Scan {
+                                fields: vec![array_type.clone()],
+                                source: String::new(),
+                            })),
+                            ..Default::default()
+                        }],
+                        op_struct: Some(OpStruct::Explode(spark_operator::Explode {
+                            child: Some(child_expr),
+                            outer,
+                            position,
+                            project_list: vec![bound],
+                        })),
+                        ..Default::default()
+                    };
+                    let (_, _, plan) = planner.create_plan(&op, &mut vec![], 1).unwrap();
+                    let schema = plan.children[0].schema();
+                    let batch = RecordBatch::try_new(schema, vec![Arc::clone(&arrays)]).unwrap();
+                    let input: Arc<dyn ExecutionPlan> = MemorySourceConfig::try_new_exec(
+                        &[vec![batch.clone(), batch.clone()]],
+                        batch.schema(),
+                        None,
+                    )
+                    .unwrap();
+                    let mut projections = 0;
+                    // Replace only the JNI-fed scan, keeping the planner's generated operators.
+                    let native_plan = Arc::clone(&plan.native_plan)
+                        .transform_up(|node| {
+                            projections += usize::from(node.is::<ProjectionExec>());
+                            Ok(if node.name() == "ScanExec" {
+                                Transformed::yes(Arc::clone(&input))
+                            } else {
+                                Transformed::no(node)
+                            })
+                        })
+                        .unwrap()
+                        .data;
+                    let results = collect(native_plan.execute(0, task_ctx).unwrap())
+                        .await
+                        .unwrap();
+                    let context =
+                        format!("outer={outer}, position={position}, computed={computed}");
+                    assert_eq!(
+                        calls.load(Ordering::Relaxed),
+                        if computed { 2 } else { 0 },
+                        "{context}"
+                    );
+                    assert_eq!(
+                        projections,
+                        1 + usize::from(position && (outer || computed)),
+                        "{context}"
+                    );
+                    let expected_values = if outer {
+                        vec![Some(10), None, None, None, Some(20)]
+                    } else {
+                        vec![Some(10), None, Some(20)]
+                    };
+                    let values: Vec<_> = results
+                        .iter()
+                        .flat_map(|batch| {
+                            batch
+                                .column(batch.num_columns() - 1)
+                                .as_any()
+                                .downcast_ref::<Int32Array>()
+                                .unwrap()
+                                .iter()
+                        })
+                        .collect();
+                    assert_eq!(values, expected_values.repeat(2), "{context}");
+                    if position {
+                        let expected_positions = if outer {
+                            vec![Some(0), Some(1), None, None, Some(0)]
+                        } else {
+                            vec![Some(0), Some(1), Some(0)]
+                        };
+                        let positions: Vec<_> = results
+                            .iter()
+                            .flat_map(|batch| {
+                                batch
+                                    .column(1)
+                                    .as_any()
+                                    .downcast_ref::<Int32Array>()
+                                    .unwrap()
+                                    .iter()
+                            })
+                            .collect();
+                        assert_eq!(positions, expected_positions.repeat(2), "{context}");
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn test_create_array() {
         let session_ctx = SessionContext::new();
@@ -7191,11 +7340,11 @@ mod tests {
 
     #[test]
     fn test_unified_partition_type_tolerates_unparseable_spec() {
-        // Regression for TestForwardCompatibility.testSparkCanReadUnknownTransform: a spec that
-        // uses a transform iceberg-rust doesn't recognize fails to deserialize into a
-        // PartitionSpec, but its partition field is filtered out on the Scala side (unknown type),
-        // so its partition_type_pool entry is an empty struct. Recovering spec_id must not require
-        // the full spec to parse -- the merge must succeed (with no fields) rather than erroring.
+        // A spec whose transform iceberg-rust cannot deserialize still has to yield a spec_id for
+        // the unified-type merge, so recovering it must not require the full spec to parse. The JVM
+        // serializer no longer emits such a spec (see
+        // test_unknown_transform_spec_builds_task_with_partition_data), so this pins the defensive
+        // path: the merge succeeds rather than erroring.
         let schema_json = serde_json::to_string(
             &iceberg::spec::Schema::builder()
                 .with_schema_id(0)
@@ -7211,7 +7360,8 @@ mod tests {
         .expect("serialize schema");
 
         // A spec JSON whose transform iceberg-rust cannot deserialize, paired with an empty type
-        // entry (as Scala produces once the unknown-type field is filtered).
+        // entry. No partition data: `FileScanTask` validation rejects partition values without a
+        // spec, and the unparseable spec deserializes to None.
         let unparseable_spec_json = r#"{"spec-id":7,"fields":[{"source-id":1,"field-id":1000,"name":"x","transform":"totally_unknown[9]"}]}"#;
         let empty_type_json = r#"{"type":"struct","fields":[]}"#;
 
@@ -7243,6 +7393,123 @@ mod tests {
                 .map(|t| t.fields().is_empty())
                 .unwrap_or(true),
             "unified partition type should have no fields for an all-unknown-transform spec"
+        );
+    }
+
+    /// Regression for TestForwardCompatibility.testSparkCanReadUnknownTransform. Iceberg Java
+    /// reports a transform it doesn't know (written by a newer Iceberg) under its original name,
+    /// e.g. `zero`, and the field's partition type as `string` -- so the field is NOT dropped from
+    /// the spec, and the task carries a real partition value for it. If that name reached
+    /// iceberg-rust verbatim the spec would fail to deserialize, leaving partition values with no
+    /// spec, which `FileScanTask::build()` rejects with "Non-empty FileScanTask partition requires
+    /// a partition spec". `IcebergReflection.Transforms.forNative` maps it to `unknown`, which
+    /// iceberg-rust parses; this pins that the resulting task builds and keeps its spec.
+    #[test]
+    fn test_unknown_transform_spec_builds_task_with_partition_data() {
+        let schema_json = serde_json::to_string(
+            &iceberg::spec::Schema::builder()
+                .with_schema_id(0)
+                .with_fields(vec![
+                    iceberg::spec::NestedField::optional(
+                        1,
+                        "id",
+                        iceberg::spec::Type::Primitive(iceberg::spec::PrimitiveType::Long),
+                    )
+                    .into(),
+                    iceberg::spec::NestedField::optional(
+                        2,
+                        "data",
+                        iceberg::spec::Type::Primitive(iceberg::spec::PrimitiveType::String),
+                    )
+                    .into(),
+                ])
+                .build()
+                .expect("schema"),
+        )
+        .expect("serialize schema");
+
+        // What the JVM serializer emits for TestForwardCompatibility's UNKNOWN_SPEC: the `zero`
+        // transform normalized to `unknown`, and the partition type Iceberg Java resolved for it
+        // (string, from UnknownTransform.getResultType).
+        let spec_json = r#"{"spec-id":0,"fields":[{"source-id":1,"field-id":1000,"name":"id_zero","transform":"unknown"}]}"#;
+        let type_json = r#"{"type":"struct","fields":[{"id":1000,"name":"id_zero","required":false,"type":"string"}]}"#;
+
+        let proto_common = spark_operator::IcebergScanCommon {
+            schema_pool: vec![schema_json],
+            partition_type_pool: vec![type_json.to_string()],
+            partition_spec_pool: vec![spec_json.to_string()],
+            partition_data_pool: vec![spark_operator::PartitionData {
+                values: vec![spark_operator::PartitionValue {
+                    field_id: 1000,
+                    literal: Some(spark_operator::IcebergLiteral {
+                        value: Some(spark_operator::iceberg_literal::Value::StringVal(
+                            "0".to_string(),
+                        )),
+                        ..Default::default()
+                    }),
+                }],
+            }],
+            project_field_ids_pool: vec![spark_operator::ProjectFieldIdList {
+                field_ids: vec![1, 2, iceberg::metadata_columns::RESERVED_FIELD_ID_PARTITION],
+            }],
+            ..Default::default()
+        };
+
+        let proto_task = spark_operator::IcebergFileScanTask {
+            data_file_path: "file:///tmp/data.parquet".to_string(),
+            file_size_in_bytes: 100,
+            schema_idx: 0,
+            partition_spec_idx: Some(0),
+            partition_data_idx: Some(0),
+            project_field_ids_idx: 0,
+            ..Default::default()
+        };
+
+        let tasks =
+            parse_file_scan_tasks_from_common(&proto_common, std::slice::from_ref(&proto_task))
+                .expect("an unknown-transform spec must still build a scan task");
+        assert_eq!(tasks.len(), 1);
+
+        let spec = tasks[0]
+            .partition_spec()
+            .expect("partition spec must survive an unknown transform");
+        assert_eq!(spec.spec_id(), 0);
+        assert_eq!(spec.fields().len(), 1);
+        assert_eq!(
+            spec.fields()[0].transform,
+            iceberg::spec::Transform::Unknown
+        );
+        assert_eq!(
+            tasks[0].partition().map(|p| p.fields().len()),
+            Some(1),
+            "the partition value must be carried alongside the spec"
+        );
+
+        // The `_partition` column reads its field types from the JVM-supplied partition type, which
+        // agrees with Transform::Unknown's own result type (string).
+        let unified = tasks[0]
+            .unified_partition_type()
+            .expect("unified_partition_type must be set when _partition is projected");
+        assert_eq!(unified.fields().len(), 1);
+        assert_eq!(unified.fields()[0].id, 1000);
+        assert_eq!(
+            *unified.fields()[0].field_type,
+            iceberg::spec::Type::Primitive(iceberg::spec::PrimitiveType::String)
+        );
+
+        // Pin the failure the normalization avoids: the raw Iceberg Java transform name is the same
+        // input in every other respect and does not survive `FileScanTask` validation.
+        let raw_spec_json = spec_json.replace(r#""transform":"unknown""#, r#""transform":"zero""#);
+        assert_ne!(raw_spec_json, spec_json, "the replace must have matched");
+        let raw_common = spark_operator::IcebergScanCommon {
+            partition_spec_pool: vec![raw_spec_json],
+            ..proto_common
+        };
+        let err = parse_file_scan_tasks_from_common(&raw_common, &[proto_task])
+            .expect_err("an unnormalized transform name must not build a task");
+        assert!(
+            err.to_string().contains("Non-empty FileScanTask partition"),
+            "unexpected error: {err}"
         );
     }
 }
