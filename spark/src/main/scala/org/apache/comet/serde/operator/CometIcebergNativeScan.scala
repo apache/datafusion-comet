@@ -438,10 +438,11 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                 .getMethod(specField.getClass, "name")
                 .invoke(specField)
                 .asInstanceOf[String]
-              val transform = IcebergReflection
-                .getMethod(specField.getClass, "transform")
-                .invoke(specField)
-                .toString
+              val transform = IcebergReflection.Transforms.forNative(
+                IcebergReflection
+                  .getMethod(specField.getClass, "transform")
+                  .invoke(specField)
+                  .toString)
               ("source-id" -> sourceId) ~
                 ("field-id" -> fieldId) ~
                 ("name" -> name) ~
