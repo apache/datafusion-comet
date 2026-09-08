@@ -302,6 +302,91 @@ mod tests {
         );
     }
 
+    /// Arrow lets a `StructArray`'s children carry their own validity, so at a row where the struct
+    /// itself is null the child buffer can still hold a value. Spark hashes a null struct as the
+    /// seed, so those hidden child values must not reach the hash. This is the same null-mask
+    /// propagation problem that #4432 fixed for `GetStructField`.
+    #[test]
+    fn test_null_struct_ignores_hidden_child_values() {
+        use arrow::array::{Int32Array, StructArray};
+        use arrow::buffer::NullBuffer;
+        use arrow::datatypes::{DataType, Field, Fields};
+
+        let fields: Fields = vec![Arc::new(Field::new("a", DataType::Int32, true))].into();
+        // Row 1 is a null struct whose child still holds 999.
+        let child: ArrayRef = Arc::new(Int32Array::from(vec![Some(1), Some(999)]));
+        let nulls = NullBuffer::from(vec![true, false]);
+        let with_hidden: ArrayRef = Arc::new(StructArray::new(
+            fields.clone(),
+            vec![Arc::clone(&child)],
+            Some(nulls.clone()),
+        ));
+        // Same shape, but the hidden slot is null too.
+        let child_null: ArrayRef = Arc::new(Int32Array::from(vec![Some(1), None]));
+        let without_hidden: ArrayRef =
+            Arc::new(StructArray::new(fields, vec![child_null], Some(nulls)));
+
+        let mut a = vec![42u32; 2];
+        create_murmur3_hashes(&[with_hidden], &mut a).unwrap();
+        let mut b = vec![42u32; 2];
+        create_murmur3_hashes(&[without_hidden], &mut b).unwrap();
+
+        assert_eq!(
+            a, b,
+            "a null struct must hash the same regardless of what its child buffer holds"
+        );
+        assert_eq!(a[1], 42, "a null struct must leave the seed untouched");
+    }
+
+    /// The struct branch is also reached once per element when hashing `array<struct<..>>`, which
+    /// is the path #5567 made usable as a shuffle partitioning key. The test above hashes a struct
+    /// directly, so it does not cover that route.
+    ///
+    /// Here the null is the list *element* itself, with valid elements either side so the chaining
+    /// is exercised. The end-to-end test in `CometHashExpressionSuite` covers the other shape, a
+    /// valid element wrapping a null struct, which is the one a query can produce.
+    #[test]
+    fn test_null_struct_element_of_list_ignores_hidden_child_values() {
+        use arrow::array::{Int32Array, ListArray, StructArray};
+        use arrow::buffer::{NullBuffer, OffsetBuffer};
+        use arrow::datatypes::{DataType, Field, Fields};
+
+        let fields: Fields = vec![Arc::new(Field::new("a", DataType::Int32, true))].into();
+        // Element 1 is a null struct whose child still holds 999; elements 0 and 2 are valid.
+        let element_nulls = NullBuffer::from(vec![true, false, true]);
+        let with_hidden: ArrayRef = Arc::new(StructArray::new(
+            fields.clone(),
+            vec![Arc::new(Int32Array::from(vec![Some(1), Some(999), Some(3)])) as ArrayRef],
+            Some(element_nulls.clone()),
+        ));
+        // The same shape with the hidden slot null as well.
+        let without_hidden: ArrayRef = Arc::new(StructArray::new(
+            fields,
+            vec![Arc::new(Int32Array::from(vec![Some(1), None, Some(3)])) as ArrayRef],
+            Some(element_nulls),
+        ));
+
+        // One row holding all three elements, so element hashes chain in order.
+        let as_list = |elements: ArrayRef| -> ArrayRef {
+            Arc::new(ListArray::new(
+                Arc::new(Field::new("item", elements.data_type().clone(), true)),
+                OffsetBuffer::new(vec![0i32, 3].into()),
+                elements,
+                None,
+            ))
+        };
+
+        let mut from_hidden = vec![42u32; 1];
+        create_murmur3_hashes(&[as_list(with_hidden)], &mut from_hidden).unwrap();
+        let mut from_null = vec![42u32; 1];
+        create_murmur3_hashes(&[as_list(without_hidden)], &mut from_null).unwrap();
+
+        assert_eq!(
+            from_hidden, from_null,
+            "a null struct element must hash the same regardless of its child buffer"
+        );
+    }
+
     #[test]
     fn test_i8() {
         test_murmur3_hash::<i8, Int8Array>(
