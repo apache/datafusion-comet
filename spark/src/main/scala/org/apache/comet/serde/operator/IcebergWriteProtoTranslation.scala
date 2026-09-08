@@ -61,8 +61,9 @@ object IcebergWriteProtoTranslation {
       IcebergReflection.tablePropertyConstant("PARQUET_BLOOM_FILTER_COLUMN_ENABLED_PREFIX")
     lazy val ParquetBloomFilterMaxBytes: String =
       IcebergReflection.tablePropertyConstant("PARQUET_BLOOM_FILTER_MAX_BYTES")
-    // These were added to Iceberg after bloom enablement/max-bytes. Literals let older runtimes
-    // keep using the defaults; detection rejects an explicit property they would ignore.
+    // These were added to Iceberg after bloom enablement/max-bytes. Literals let the translation
+    // support them without a hard binary dependency; the caller removes either prefix when the
+    // Iceberg runtime does not interpret it, matching that runtime's JVM writer.
     val ParquetBloomFilterColumnFppPrefix = "write.parquet.bloom-filter-fpp.column."
     val ParquetBloomFilterColumnNdvPrefix = "write.parquet.bloom-filter-ndv.column."
   }
