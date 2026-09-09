@@ -241,17 +241,19 @@ class CometNativeShuffleWriter[K, V](
         val output = localOutput.get
         val tempDataFilePath = Paths.get(output.dataFile)
 
-        // One offset per output partition plus a trailing total, so lengths are successive
-        // differences. `numParts` is the input partition count and is not this.
-        val numOutputPartitions = effectivePartitionCount
+        // The writer emits one offset per partition it actually wrote plus a trailing total, so
+        // lengths are successive differences and their count comes from the offsets themselves.
+        // It is not `effectivePartitionCount`: `isSinglePartitioning` serializes a range
+        // partitioning whose sampled bounds are empty as SinglePartition, so native writes one
+        // partition while the declared output partitioning still reports more. Sizing this from
+        // the offsets keeps the behaviour the index file gave, which was also sized by what the
+        // writer produced.
         require(
-          partitionOffsets != null && partitionOffsets.length == numOutputPartitions + 1,
-          s"Native shuffle returned ${if (partitionOffsets == null) "no"
-            else partitionOffsets.length.toString} partition offsets " +
-            s"for $numOutputPartitions output partitions")
-        partitionLengths = new Array[Long](numOutputPartitions)
+          partitionOffsets != null && partitionOffsets.length >= 1,
+          "Native shuffle returned no partition offsets")
+        partitionLengths = new Array[Long](partitionOffsets.length - 1)
         var partition = 0
-        while (partition < numOutputPartitions) {
+        while (partition < partitionLengths.length) {
           partitionLengths(partition) =
             partitionOffsets(partition + 1) - partitionOffsets(partition)
           partition += 1
