@@ -166,6 +166,7 @@ jobs:
           - name: "exec"
             value: |
               org.apache.comet.exec.CometAggregateSuite
+              org.apache.comet.serde.CometAggregateExpressionSerdeSuite
               org.apache.comet.exec.CometExec3_4PlusSuite
               org.apache.comet.exec.CometExecSuite
               org.apache.comet.exec.CometInMemoryCacheSuite
@@ -252,7 +253,6 @@ jobs:
               org.apache.comet.CometUuidExpressionSuite
               org.apache.comet.serde.CometScalarFunctionSuite
               org.apache.comet.serde.CometLiteralSuite
-              org.apache.comet.serde.CometAggregateExpressionSerdeSuite
               org.apache.comet.CometFallbackInvarianceSuite
 
       fail-fast: false
