@@ -17,7 +17,7 @@
 
 use crate::execution::operators::ExecutionError;
 use crate::parquet::name_fold::fold_names;
-use arrow::array::{FixedSizeBinaryArray, ListArray, MapArray, StringArray};
+use arrow::array::{make_array, FixedSizeBinaryArray, MapArray, StringArray};
 use arrow::buffer::NullBuffer;
 use arrow::compute::can_cast_types;
 use arrow::datatypes::{FieldRef, Fields};
@@ -199,21 +199,38 @@ fn parquet_convert_array_impl(
             to_type,
             parquet_options,
         )?),
-        (List(_), List(to_inner_type)) => {
-            let list_arr: &ListArray = array.as_list();
+        (
+            List(_) | LargeList(_) | FixedSizeList(_, _) | ListView(_) | LargeListView(_),
+            List(to_inner_type) | LargeList(to_inner_type) | FixedSizeList(to_inner_type, _)
+                | ListView(to_inner_type) | LargeListView(to_inner_type),
+        ) => {
+            let data = array.to_data();
             let cast_field = parquet_convert_array_impl(
-                Arc::clone(list_arr.values()),
+                make_array(data.child_data()[0].clone()),
                 to_inner_type.data_type(),
                 parquet_options,
                 false,
             )?;
-
-            Ok(Arc::new(ListArray::try_new(
-                Arc::clone(to_inner_type),
-                list_arr.offsets().clone(),
-                cast_field,
-                list_arr.nulls().cloned(),
-            )?))
+            // Resolve element fields with Spark's rules before Arrow changes list layout.
+            // Casting the original list directly can match missing struct fields by position.
+            let resolved_type = match from_type {
+                List(_) => List(Arc::clone(to_inner_type)),
+                LargeList(_) => LargeList(Arc::clone(to_inner_type)),
+                FixedSizeList(_, size) => FixedSizeList(Arc::clone(to_inner_type), *size),
+                ListView(_) => ListView(Arc::clone(to_inner_type)),
+                LargeListView(_) => LargeListView(Arc::clone(to_inner_type)),
+                _ => unreachable!(),
+            };
+            // Retain the source offsets, sizes and null buffer while replacing its values.
+            let resolved = make_array(data.into_builder()
+                .data_type(resolved_type)
+                .child_data(vec![cast_field.to_data()])
+                .build()?);
+            if resolved.data_type() == to_type {
+                Ok(resolved)
+            } else {
+                Ok(cast_with_options(&resolved, to_type, &PARQUET_OPTIONS)?)
+            }
         }
         (
             Timestamp(TimeUnit::Millisecond, _),

@@ -1313,15 +1313,27 @@ impl SparkPhysicalExprAdapter {
                 return Ok(Transformed::no(expr));
             }
 
-            // Same-shape complex casts, timestamp tz relabel (e.g. Timestamp(us, None)
-            // -> Timestamp(us, Some("UTC")) for INT96 reads), and Timestamp -> Int64
+            // Complex casts (including changes in list representation), timestamp tz relabel
+            // (e.g. Timestamp(us, None) -> Timestamp(us, Some("UTC")) for INT96 reads), and
+            // Timestamp -> Int64
             // (Spark's `nanosAsLong`) need spark_parquet_convert: it handles nested
             // field selection, metadata-only tz changes, and raw-value reinterpretation
             // that Spark's Cast would otherwise convert incorrectly.
             if matches!(
                 (physical_type, target_type),
                 (DataType::Struct(_), DataType::Struct(_))
-                    | (DataType::List(_), DataType::List(_))
+                    | (
+                        DataType::List(_)
+                            | DataType::LargeList(_)
+                            | DataType::FixedSizeList(_, _)
+                            | DataType::ListView(_)
+                            | DataType::LargeListView(_),
+                        DataType::List(_)
+                            | DataType::LargeList(_)
+                            | DataType::FixedSizeList(_, _)
+                            | DataType::ListView(_)
+                            | DataType::LargeListView(_)
+                    )
                     | (DataType::Map(_, _), DataType::Map(_, _))
                     | (DataType::Timestamp(_, _), DataType::Timestamp(_, _))
                     | (DataType::Timestamp(_, _), DataType::Int64)
@@ -2391,6 +2403,87 @@ mod test {
                 && msg.contains("Found: INT64"),
             "unexpected error: {msg}"
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn list_representations_preserve_missing_struct_fields() -> Result<(), DataFusionError> {
+        let fields = Fields::from(vec![
+            Field::new("old", DataType::Int64, true),
+            Field::new("keep", DataType::Int64, true),
+        ]);
+        let values = StructArray::try_new(
+            fields.clone(),
+            vec![
+                Arc::new(Int64Array::from(vec![Some(7), Some(8), None])),
+                Arc::new(Int64Array::from(vec![Some(2), Some(3), None])),
+            ],
+            Some(arrow::buffer::NullBuffer::from(vec![true, true, false])),
+        )?;
+        let item = Arc::new(Field::new("item", DataType::Struct(fields), true));
+        let list: ArrayRef = Arc::new(ListArray::try_new(
+            Arc::clone(&item),
+            OffsetBuffer::new(vec![0, 1, 2, 3].into()),
+            Arc::new(values),
+            Some(arrow::buffer::NullBuffer::from(vec![true, false, true])),
+        )?);
+        let requested_item = Arc::new(Field::new(
+            "item",
+            DataType::Struct(Fields::from(vec![
+                Field::new("missing", DataType::Int64, true),
+                Field::new("keep", DataType::Int64, true),
+            ])),
+            true,
+        ));
+        let representations = |item: &Arc<Field>| {
+            [
+                DataType::LargeList(Arc::clone(item)),
+                DataType::List(Arc::clone(item)),
+                DataType::FixedSizeList(Arc::clone(item), 1),
+                DataType::ListView(Arc::clone(item)),
+                DataType::LargeListView(Arc::clone(item)),
+            ]
+        };
+        for physical in representations(&item) {
+            let array = arrow::compute::cast(&list, &physical)?;
+            for nested in [false, true] {
+                let batch = if nested {
+                    struct_batch(Field::new("a", physical.clone(), true), Arc::clone(&array))?
+                } else {
+                    RecordBatch::try_new(
+                        Arc::new(Schema::new(vec![Field::new("a", physical.clone(), true)])),
+                        vec![Arc::clone(&array)],
+                    )?
+                };
+                for target in representations(&requested_item) {
+                    let field = Field::new("a", target.clone(), true);
+                    let schema = if nested {
+                        struct_schema(vec![field])
+                    } else {
+                        Arc::new(Schema::new(vec![field]))
+                    };
+                    // Write real Parquet, retaining Arrow's list representation metadata.
+                    // Field IDs are disabled by roundtrip's default options.
+                    let result = roundtrip(&batch, Arc::clone(&schema)).await?;
+                    assert_eq!(result.schema(), schema);
+                    let output = if nested {
+                        result.column(0).as_struct().column(0)
+                    } else {
+                        result.column(0)
+                    };
+                    let output =
+                        arrow::compute::cast(output, &DataType::List(Arc::clone(&requested_item)))?;
+                    let output = output.as_list::<i32>();
+                    assert_eq!(output.len(), 3);
+                    assert!(output.is_null(1));
+                    let first = output.value(0);
+                    let first = first.as_struct();
+                    assert!(first.column(0).is_null(0), "{physical:?} -> {target:?}, nested={nested}: missing field read old's value");
+                    assert_eq!(first.column(1).as_primitive::<Int64Type>().value(0), 2);
+                    assert!(output.value(2).is_null(0));
+                }
+            }
+        }
         Ok(())
     }
 
