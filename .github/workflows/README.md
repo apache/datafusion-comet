@@ -130,6 +130,31 @@ dict at the top of `dev/ci/compute-changes.py`. The `changes` job in
 `needs.changes.outputs.<name>`. When adding a new test suite or moving
 sources, update the relevant filter entry there.
 
+A file that a job reads but that no filter lists is silent: the job skips,
+and the edit merges with only `preflight` having looked at it. The shared
+build inputs (`mvnw`, `.mvn/**`, the local composite actions) are pinned by
+a routing table in `dev/ci/check-ci-config.py`, which `preflight` runs.
+
+## Artifact names must be unique per producer
+
+Artifact names are scoped to the workflow **run**, not to the calling
+workflow. `ci.yml` calls `spark_sql_test_reusable.yml` once per Spark
+version and `iceberg_spark_test_reusable.yml` once per Iceberg version, all
+inside the same run, so an unqualified name like `native-lib-linux` would be
+claimed by several producers at once. That breaks two things:
+
+- `download-artifact` resolves a name to the highest matching artifact ID.
+  Nothing ties it to the producer the consumer declared in `needs`.
+- `upload-artifact` with `overwrite: true` deletes the newest record with
+  that name before uploading, which can be a sibling's finished artifact.
+  The retry wrapper below forces `overwrite` on attempts 2 and 3.
+
+So every artifact published by a reusable workflow that `ci.yml` calls more
+than once carries its version inputs, e.g.
+`native-lib-spark-4.1.3-jdk17`. `dev/ci/check-ci-config.py` enforces this,
+and also that every `download-artifact` name is produced by an upload in the
+same workflow.
+
 ## Retrying flaky network operations
 
 **Maven.** `.mvn/maven.config` tunes the Maven Resolver HTTP transport: six
@@ -155,10 +180,11 @@ though the content already uploaded. Its client only retries
 `429/500/502/503/504`, exposes no input to widen that, and Actions has no
 built-in step retry. Use `./.github/actions/upload-artifact-retry` instead for
 any artifact a later job consumes: same inputs and outputs, three attempts,
-15s then 45s backoff. The diagnostic uploads inside
-`./.github/actions/java-test` stay on the plain action, since a local action
-calling another local action is untested here and those run only on
-already-failing jobs.
+15s then 45s backoff. Attempts 2 and 3 force `overwrite: true`, so the name
+must belong to exactly one producer in the run (see above). The diagnostic
+uploads inside `./.github/actions/java-test` stay on the plain action, since a
+local action calling another local action is untested here and those run only
+on already-failing jobs.
 
 **Maven wrapper bootstrap.** `./.github/actions/java-test` retries
 `./mvnw --version` with exponential backoff, so a failed download of the Maven

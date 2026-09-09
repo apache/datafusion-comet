@@ -54,13 +54,18 @@ jobs:
 
   # Build the native library AND pre-compile Spark sources + Test classes in a
   # single runner, then publish two artifacts the matrix consumes:
-  #   - native-lib-linux:                    libcomet.so (~50 MB)
+  #   - native-lib-spark-<full>-jdk<N>:      libcomet.so (~50 MB)
   #   - jvm-compiled-spark-<full>-jdk<N>:    apache-spark.tar.gz (sources +
   #                                          target/ + Zinc state, ~500 MB-1 GB)
   # Combining them avoids a second runner cold-start and an extra inter-job
   # artifact round-trip for the native lib, since the JVM build already
   # depends on it (the Comet Maven install bundles libcomet.so into the
   # Comet JAR before SBT resolves Spark's classpath).
+  #
+  # Both names carry the Spark/JDK version because ci.yml calls this workflow
+  # once per Spark version inside a single run, and artifact names are scoped
+  # to the run, not to the calling workflow. See "Artifact names must be unique
+  # per producer" in .github/workflows/README.md.
   build:
     name: Build Native + JVM Test Classes
     runs-on: ubuntu-24.04
@@ -106,7 +111,7 @@ jobs:
       - name: Upload native library
         uses: ./.github/actions/upload-artifact-retry
         with:
-          name: native-lib-linux
+          name: native-lib-spark-${{ inputs.spark-full }}-jdk${{ inputs.java }}
           path: native/target/ci/libcomet.so
           retention-days: 1
 
@@ -193,7 +198,7 @@ jobs:
       - name: Download native library
         uses: actions/download-artifact@v8
         with:
-          name: native-lib-linux
+          name: native-lib-spark-${{ inputs.spark-full }}-jdk${{ inputs.java }}
           path: native/target/release/
       - name: Download JVM compile artifact
         uses: actions/download-artifact@v8

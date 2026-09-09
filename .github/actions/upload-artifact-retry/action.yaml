@@ -24,6 +24,11 @@ description: >
   list, Actions has no built-in step retry, and third-party retry wrappers are
   not on the Apache allowed-actions list. See .github/workflows/README.md.
 
+  Retries force overwrite, which deletes the newest artifact carrying the name
+  before re-uploading. `name` must therefore identify exactly one producer in
+  the run: a reusable workflow ci.yml calls more than once has to qualify the
+  name with its version inputs. dev/ci/check-ci-config.py enforces that.
+
 # Inputs mirror actions/upload-artifact@v7 one for one. The boolean defaults
 # have to be real 'true'/'false' strings because core.getBooleanInput() throws
 # on an empty value; the numeric ones default to '' so "unset" round-trips.
@@ -101,7 +106,8 @@ runs:
 
     # Retries force overwrite: attempt 1 may have created the server-side record
     # before failing, and CreateArtifact rejects a duplicate name. The delete is
-    # best effort inside upload-artifact, so it no-ops when nothing exists.
+    # best effort inside upload-artifact, so it no-ops when nothing exists, and
+    # the per-producer naming rule keeps the record it does find our own.
     - name: Upload ${{ inputs.name }} (attempt 2 of 3)
       id: attempt-2
       if: ${{ steps.attempt-1.outcome == 'failure' }}
