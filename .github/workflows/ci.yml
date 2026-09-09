@@ -45,25 +45,25 @@ jobs:
   # pr_rat_check, pr_markdown_format, pr_missing_suites, and validate_workflows.
   # pr_title_check stays a standalone workflow because it needs to fire on PR
   # `edited` events.
+  #
+  # This job deliberately carries no `if:`. A job held back by `if:` still
+  # publishes a check run under its own name with conclusion `skipped`, and the
+  # newest check run for a name is the one the merge box, `gh pr checks` and
+  # required-status-check evaluation read. Guarding this job on the label name
+  # therefore let any non-gating label overwrite the commit run's real
+  # `Preflight` verdict with `skipped` (issue #5007). Running it unconditionally
+  # costs about a minute of ubuntu-slim time per label event and keeps the
+  # reported verdict truthful. Skipping the redundant work is the heavy jobs'
+  # job, and they filter `labeled` events themselves below.
   # ---------------------------------------------------------------------------
   preflight:
     name: Preflight
     runs-on: ubuntu-slim
-    # On a `labeled` event, only proceed for the gating labels. Any other label
-    # (e.g. dependabot's `dependencies`) skips the whole pipeline rather than
-    # spawning a redundant run alongside the opened/synchronize one.
-    if: >-
-      github.event_name != 'pull_request' ||
-      github.event.action != 'labeled' ||
-      github.event.label.name == 'run-spark-3.4-tests' ||
-      github.event.label.name == 'run-spark-4.0-tests' ||
-      github.event.label.name == 'run-spark-4.1-tests' ||
-      github.event.label.name == 'run-iceberg-tests'
     steps:
       - uses: actions/checkout@v7
 
       - name: Set up Java
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: 11
@@ -87,6 +87,9 @@ jobs:
 
       - name: Check micro benchmark runner
         run: python3 dev/ci/check-benchmark-runner.py
+
+      - name: Check pull request type labeling
+        run: node --test dev/ci/pr-type-label.test.mjs
 
       - name: Install actionlint
         run: |
@@ -163,6 +166,11 @@ jobs:
   # Heavy jobs: each is a thin caller of an existing reusable workflow. The
   # `if:` expressions encode the same event/label/path criteria the
   # standalone trigger workflows used to encode in their `on:` blocks.
+  #
+  # On a `labeled` event only the job that the newly added label gates runs.
+  # Every other heavy job already ran on the opened/synchronize event at the
+  # same commit, so letting them through would duplicate an entire pipeline
+  # each time somebody applies a label.
   # ---------------------------------------------------------------------------
 
   pr_build_linux:
@@ -172,7 +180,8 @@ jobs:
       needs.changes.outputs.build_linux == 'true' &&
       (github.event_name == 'push' ||
        github.event_name == 'workflow_dispatch' ||
-       github.event_name == 'pull_request')
+       (github.event_name == 'pull_request' &&
+        github.event.action != 'labeled'))
     uses: ./.github/workflows/pr_build_linux.yml
 
   pr_build_macos:
@@ -182,7 +191,8 @@ jobs:
       needs.changes.outputs.build_macos == 'true' &&
       (github.event_name == 'push' ||
        github.event_name == 'workflow_dispatch' ||
-       github.event_name == 'pull_request')
+       (github.event_name == 'pull_request' &&
+        github.event.action != 'labeled'))
     uses: ./.github/workflows/pr_build_macos.yml
 
   pr_benchmark_check:
@@ -192,7 +202,8 @@ jobs:
       needs.changes.outputs.benchmark == 'true' &&
       (github.event_name == 'push' ||
        github.event_name == 'workflow_dispatch' ||
-       github.event_name == 'pull_request')
+       (github.event_name == 'pull_request' &&
+        github.event.action != 'labeled'))
     uses: ./.github/workflows/pr_benchmark_check.yml
 
   docs:
@@ -213,7 +224,9 @@ jobs:
       (github.event_name == 'push' ||
        github.event_name == 'workflow_dispatch' ||
        (github.event_name == 'pull_request' &&
-        contains(github.event.pull_request.labels.*.name, 'run-spark-3.4-tests')))
+        contains(github.event.pull_request.labels.*.name, 'run-spark-3.4-tests') &&
+        (github.event.action != 'labeled' ||
+         github.event.label.name == 'run-spark-3.4-tests')))
     uses: ./.github/workflows/spark_sql_test_reusable.yml
     with:
       spark-short: '3.4'
@@ -227,7 +240,8 @@ jobs:
       needs.changes.outputs.spark_3_5 == 'true' &&
       (github.event_name == 'push' ||
        github.event_name == 'workflow_dispatch' ||
-       github.event_name == 'pull_request')
+       (github.event_name == 'pull_request' &&
+        github.event.action != 'labeled'))
     uses: ./.github/workflows/spark_sql_test_reusable.yml
     with:
       spark-short: '3.5'
@@ -245,7 +259,9 @@ jobs:
       (github.event_name == 'push' ||
        github.event_name == 'workflow_dispatch' ||
        (github.event_name == 'pull_request' &&
-        contains(github.event.pull_request.labels.*.name, 'run-spark-4.0-tests')))
+        contains(github.event.pull_request.labels.*.name, 'run-spark-4.0-tests') &&
+        (github.event.action != 'labeled' ||
+         github.event.label.name == 'run-spark-4.0-tests')))
     uses: ./.github/workflows/spark_sql_test_reusable.yml
     with:
       spark-short: '4.0'
@@ -259,7 +275,8 @@ jobs:
       needs.changes.outputs.spark_4_1 == 'true' &&
       (github.event_name == 'push' ||
        github.event_name == 'workflow_dispatch' ||
-       github.event_name == 'pull_request')
+       (github.event_name == 'pull_request' &&
+        github.event.action != 'labeled'))
     uses: ./.github/workflows/spark_sql_test_reusable.yml
     with:
       spark-short: '4.1'
@@ -275,7 +292,9 @@ jobs:
       (github.event_name == 'push' ||
        github.event_name == 'workflow_dispatch' ||
        (github.event_name == 'pull_request' &&
-        contains(github.event.pull_request.labels.*.name, 'run-iceberg-tests')))
+        contains(github.event.pull_request.labels.*.name, 'run-iceberg-tests') &&
+        (github.event.action != 'labeled' ||
+         github.event.label.name == 'run-iceberg-tests')))
     uses: ./.github/workflows/iceberg_spark_test_reusable.yml
     with:
       iceberg-short: '1.8'
@@ -293,7 +312,9 @@ jobs:
       (github.event_name == 'push' ||
        github.event_name == 'workflow_dispatch' ||
        (github.event_name == 'pull_request' &&
-        contains(github.event.pull_request.labels.*.name, 'run-iceberg-tests')))
+        contains(github.event.pull_request.labels.*.name, 'run-iceberg-tests') &&
+        (github.event.action != 'labeled' ||
+         github.event.label.name == 'run-iceberg-tests')))
     uses: ./.github/workflows/iceberg_spark_test_reusable.yml
     with:
       iceberg-short: '1.9'
@@ -312,7 +333,9 @@ jobs:
       (github.event_name == 'push' ||
        github.event_name == 'workflow_dispatch' ||
        (github.event_name == 'pull_request' &&
-        contains(github.event.pull_request.labels.*.name, 'run-iceberg-tests')))
+        contains(github.event.pull_request.labels.*.name, 'run-iceberg-tests') &&
+        (github.event.action != 'labeled' ||
+         github.event.label.name == 'run-iceberg-tests')))
     uses: ./.github/workflows/iceberg_spark_test_reusable.yml
     with:
       iceberg-short: '1.10'
@@ -329,7 +352,8 @@ jobs:
       needs.changes.outputs.iceberg_1_11 == 'true' &&
       (github.event_name == 'push' ||
        github.event_name == 'workflow_dispatch' ||
-       github.event_name == 'pull_request')
+       (github.event_name == 'pull_request' &&
+        github.event.action != 'labeled'))
     uses: ./.github/workflows/iceberg_spark_test_reusable.yml
     with:
       iceberg-short: '1.11'

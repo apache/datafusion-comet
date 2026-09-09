@@ -36,8 +36,9 @@
 
 use arrow::array::RecordBatch;
 use arrow::datatypes::{Field, Schema, SchemaRef};
+use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::DataFusionError;
-use datafusion::physical_expr::EquivalenceProperties;
+use datafusion::physical_expr::{EquivalenceProperties, PhysicalExpr};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::{
     execution::TaskContext,
@@ -173,6 +174,15 @@ impl ExecutionPlan for SchemaAlignExec {
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         vec![&self.child]
+    }
+
+    /// The per-column casts are described by `column_actions`, not by `PhysicalExpr`s, so there is
+    /// nothing to visit here.
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> datafusion::common::Result<TreeNodeRecursion>,
+    ) -> datafusion::common::Result<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
     }
 
     fn with_new_children(

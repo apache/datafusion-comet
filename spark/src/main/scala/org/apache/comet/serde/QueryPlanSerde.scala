@@ -28,7 +28,7 @@ import scala.jdk.CollectionConverters._
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.aggregate._
-import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
+import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
 import org.apache.spark.sql.catalyst.expressions.xml.{XPathBoolean, XPathDouble, XPathFloat, XPathInt, XPathList, XPathLong, XPathShort, XPathString}
 import org.apache.spark.sql.comet.DecimalPrecision
 import org.apache.spark.sql.execution.{ScalarSubquery, SparkPlan}
@@ -153,7 +153,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[Signum] -> CometScalarFunction("signum"),
       classOf[Sin] -> CometScalarFunction("sin"),
       classOf[Sinh] -> CometScalarFunction("sinh"),
-      classOf[Sqrt] -> CometScalarFunction("sqrt"),
+      classOf[Sqrt] -> CometSqrt,
       classOf[Subtract] -> CometSubtract,
       classOf[Tan] -> CometScalarFunction("tan"),
       classOf[Tanh] -> CometScalarFunction("tanh"),
@@ -361,10 +361,12 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     // when `++` is applied directly to a `Map(...)` literal.
     val base: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
       classOf[Alias] -> CometAlias,
+      classOf[ApplyFunctionExpression] -> CometApplyFunctionExpression,
       classOf[AttributeReference] -> CometAttributeReference,
       classOf[BloomFilterMightContain] -> CometBloomFilterMightContain,
       classOf[CheckOverflow] -> CometCheckOverflow,
       classOf[Coalesce] -> CometCoalesce,
+      classOf[Invoke] -> CometInvoke,
       classOf[KnownFloatingPointNormalized] -> CometKnownFloatingPointNormalized,
       classOf[KnownNotNull] -> CometKnownNotNull,
       classOf[KnownNullable] -> CometKnownNullable,
@@ -414,6 +416,11 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     classOf[Max] -> CometMax,
     classOf[Min] -> CometMin,
     classOf[Percentile] -> CometPercentile,
+    classOf[RegrIntercept] -> CometRegrIntercept,
+    classOf[RegrR2] -> CometRegrR2,
+    classOf[RegrReplacement] -> CometRegrReplacement,
+    classOf[RegrSlope] -> CometRegrSlope,
+    classOf[RegrSXY] -> CometRegrSXY,
     classOf[StddevPop] -> CometStddevPop,
     classOf[StddevSamp] -> CometStddevSamp,
     classOf[Sum] -> CometSum,
@@ -531,6 +538,22 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     }
   }
 
+  /**
+   * Attach a fresh `expr_id` and, when the expression's origin carries one, its `QueryContext` to
+   * `protoExpr`. Native ANSI errors resolve their context by the `expr_id` of the `Expr` that
+   * throws (see `register_query_context` and `ListExtract` in the native planner), so the
+   * metadata has to sit on that `Expr`. The generic serde path applies this to the top-level
+   * `Expr` it returns; a serde that nests a throwing expression inside a wrapper (e.g.
+   * `CometElementAt`'s CASE-WHEN NULL guard) must also call it on the inner `Expr`, or that
+   * expression's error renders without Spark's `== SQL ... ==` query context.
+   */
+  private[serde] def attachExprIdAndContext(expr: Expression, protoExpr: Expr): Expr = {
+    val builder = protoExpr.toBuilder
+    builder.setExprId(nextExprId())
+    extractQueryContext(expr).foreach(builder.setQueryContext)
+    builder.build()
+  }
+
   def supportedDataType(dt: DataType, allowComplex: Boolean = false): Boolean = dt match {
     case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
         _: DoubleType | _: StringType | _: BinaryType | _: TimestampType | _: TimestampNTZType |
@@ -549,9 +572,9 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
   }
 
   /**
-   * Serializes Spark datatype to protobuf. Note that, a datatype can be serialized by this method
-   * doesn't mean it is supported by Comet native execution, i.e., `supportedDataType` may return
-   * false for it.
+   * Serializes a Spark datatype to protobuf. Successful serialization preserves schema identity;
+   * it does not imply native execution support. Callers must still apply the support gate for
+   * their path, such as `supportedDataType` or `containsVariantType` for native operators.
    */
   def serializeDataType(dt: org.apache.spark.sql.types.DataType): Option[Types.DataType] =
     serializeDataType(dt, None, Seq.empty, includeFieldIds = true)
@@ -588,6 +611,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       case _: YearMonthIntervalType => 18
       case _: DayTimeIntervalType => 19
       case CalendarIntervalType => 20
+      case dt if isVariantType(dt) => 21
       case dt =>
         logWarning(s"Cannot serialize Spark data type: $dt")
         return None
@@ -1004,12 +1028,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
           withNativeExpr(expr, CometExplainInfo.exprDisplayName(expr))
         }
         // Attach QueryContext and expr_id to the expression
-        val builder = protoExpr.toBuilder
-        builder.setExprId(nextExprId())
-        extractQueryContext(expr).foreach { ctx =>
-          builder.setQueryContext(ctx)
-        }
-        builder.build()
+        attachExprIdAndContext(expr, protoExpr)
       }
   }
 

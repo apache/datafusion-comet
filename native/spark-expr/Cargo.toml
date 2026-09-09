@@ -60,6 +60,10 @@ name = "datafusion_comet_spark_expr"
 path = "src/lib.rs"
 
 [[bench]]
+name = "hash"
+harness = false
+
+[[bench]]
 name = "cast_from_string"
 harness = false
 
@@ -88,6 +92,74 @@ name = "aggregate"
 harness = false
 
 [[bench]]
+name = "date_diff"
+harness = false
+
+[[bench]]
+name = "date_from_unix_date"
+harness = false
+
+[[bench]]
+name = "day_month_name"
+harness = false
+
+[[bench]]
+name = "extract_date_part"
+harness = false
+
+[[bench]]
+name = "hours"
+harness = false
+
+[[bench]]
+name = "make_date"
+harness = false
+
+[[bench]]
+name = "make_time"
+harness = false
+
+[[bench]]
+name = "make_interval"
+harness = false
+
+[[bench]]
+name = "next_day"
+harness = false
+
+[[bench]]
+name = "seconds_to_timestamp"
+harness = false
+
+[[bench]]
+name = "array_position"
+harness = false
+
+[[bench]]
+name = "array_slice"
+harness = false
+
+[[bench]]
+name = "array_insert"
+harness = false
+
+[[bench]]
+name = "list_extract"
+harness = false
+
+[[bench]]
+name = "arrays_zip"
+harness = false
+
+[[bench]]
+name = "flatten"
+harness = false
+
+[[bench]]
+name = "get_array_struct_fields"
+harness = false
+
+[[bench]]
 name = "bloom_filter_agg"
 harness = false
 
@@ -109,6 +181,10 @@ harness = false
 
 [[bench]]
 name = "normalize_nan"
+harness = false
+
+[[bench]]
+name = "sort_float_keys"
 harness = false
 
 [[bench]]
@@ -237,4 +313,80 @@ harness = false
 
 [[bench]]
 name = "abs"
+harness = false
+
+[[bench]]
+name = "murmur3"
+harness = false
+
+[[bench]]
+name = "xxhash64"
+harness = false
+
+[[bench]]
+name = "isnan"
+harness = false
+
+[[bench]]
+name = "rlike"
+harness = false
+
+[[bench]]
+name = "create_named_struct"
+harness = false
+
+[[bench]]
+name = "get_struct_field"
+harness = false
+
+[[bench]]
+name = "from_json"
+harness = false
+
+[[bench]]
+name = "modulo"
+harness = false
+
+[[bench]]
+name = "levenshtein"
+harness = false
+
+[[bench]]
+name = "negative"
+harness = false
+
+[[bench]]
+name = "split"
+harness = false
+
+[[bench]]
+name = "regexp_extract_all"
+harness = false
+
+[[bench]]
+name = "contains"
+harness = false
+
+[[bench]]
+name = "sequence"
+harness = false
+
+[[bench]]
+name = "timestamp_trunc"
+harness = false
+
+[[bench]]
+name = "unix_timestamp"
+harness = false
+
+[[bench]]
+name = "from_utc_timestamp"
+harness = false
+
+[[bench]]
+name = "to_utc_timestamp"
+harness = false
+
+[[bench]]
+name = "iceberg_transforms"
 harness = false

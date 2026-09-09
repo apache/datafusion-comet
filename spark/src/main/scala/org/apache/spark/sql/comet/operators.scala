@@ -39,7 +39,7 @@ import org.apache.spark.sql.comet.execution.arrow.{CometArrowStream, CometNative
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution._
-import org.apache.spark.sql.execution.adaptive.{AQEShuffleReadExec, BroadcastQueryStageExec, ShuffleQueryStageExec}
+import org.apache.spark.sql.execution.adaptive.{AQEShuffleReadExec, BroadcastQueryStageExec, QueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec}
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, HashJoin, ShuffledHashJoinExec, SortMergeJoinExec}
@@ -836,7 +836,7 @@ abstract class CometNativeExec extends CometExec {
    *   - CometScanExec - Comet scan node
    *   - CometBatchScanExec - Comet scan node
    *   - CometIcebergNativeScanExec - Native Iceberg scan node
-   *   - ShuffleQueryStageExec - AQE shuffle stage node on top of Comet shuffle
+   *   - QueryStageExec - AQE shuffle, broadcast, or table-cache stage
    *   - AQEShuffleReadExec - AQE shuffle read node on top of Comet shuffle
    *   - CometShuffleExchangeExec - Comet shuffle exchange node
    *   - CometUnionExec, etc. which executes its children native plan and produces ColumnarBatches
@@ -858,11 +858,11 @@ abstract class CometNativeExec extends CometExec {
       // input-boundary concept from "this fixed list" to "any leaf Comet exec".
       case _: CometLeafExec =>
         func(plan)
-      case _: CometScanExec | _: CometBatchScanExec | _: ShuffleQueryStageExec |
-          _: AQEShuffleReadExec | _: CometShuffleExchangeExec | _: CometUnionExec |
-          _: CometTakeOrderedAndProjectExec | _: CometCoalesceExec | _: ReusedExchangeExec |
-          _: CometBroadcastExchangeExec | _: BroadcastQueryStageExec |
-          _: CometSparkToColumnarExec | _: CometLocalTableScanExec =>
+      case _: CometScanExec | _: CometBatchScanExec | _: QueryStageExec | _: AQEShuffleReadExec |
+          _: CometShuffleExchangeExec | _: CometUnionExec | _: CometTakeOrderedAndProjectExec |
+          _: CometCoalesceExec | _: ReusedExchangeExec | _: CometBroadcastExchangeExec |
+          _: CometSparkToColumnarExec | _: CometLocalTableScanExec |
+          _: CometInMemoryTableScanExec =>
         func(plan)
       case _: CometPlan =>
         // Other Comet operators, continue to traverse the tree.
@@ -2194,6 +2194,7 @@ trait CometHashJoin {
         .setBuildSide(if (join.buildSide == BuildLeft) OperatorOuterClass.BuildSide.BuildLeft
         else OperatorOuterClass.BuildSide.BuildRight)
         .setNullAwareAntiJoin(isNullAwareAntiJoin)
+        .setDynamicFilterEnabled(CometConf.COMET_EXEC_JOIN_DYNAMIC_FILTER_ENABLED.get(join.conf))
       condition.foreach(joinBuilder.setCondition)
       Some(builder.setHashJoin(joinBuilder).build())
     } else {
@@ -2463,8 +2464,14 @@ case class CometHashJoinExec(
   override def hashCode(): Int =
     Objects.hashCode(output, leftKeys, rightKeys, condition, buildSide, left, right)
 
-  override lazy val metrics: Map[String, SQLMetric] =
-    CometMetricNode.joinMetrics(sparkContext)
+  override lazy val metrics: Map[String, SQLMetric] = {
+    val joinMetrics = CometMetricNode.joinMetrics(sparkContext)
+    if (nativeOp.getHashJoin.getDynamicFilterEnabled) {
+      joinMetrics ++ CometMetricNode.joinDynamicFilterMetrics(sparkContext)
+    } else {
+      joinMetrics
+    }
+  }
 }
 
 case class CometBroadcastHashJoinExec(
@@ -2604,8 +2611,14 @@ case class CometBroadcastHashJoinExec(
   override def hashCode(): Int =
     Objects.hashCode(output, leftKeys, rightKeys, condition, buildSide, left, right)
 
-  override lazy val metrics: Map[String, SQLMetric] =
-    CometMetricNode.joinMetrics(sparkContext)
+  override lazy val metrics: Map[String, SQLMetric] = {
+    val joinMetrics = CometMetricNode.joinMetrics(sparkContext)
+    if (nativeOp.getHashJoin.getDynamicFilterEnabled) {
+      joinMetrics ++ CometMetricNode.joinDynamicFilterMetrics(sparkContext)
+    } else {
+      joinMetrics
+    }
+  }
 }
 
 object CometSortMergeJoinExec extends CometOperatorSerde[SortMergeJoinExec] {
