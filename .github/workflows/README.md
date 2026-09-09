@@ -30,16 +30,17 @@ is a `workflow_call` reusable invoked from the umbrella.
                                 |  heavy job)           |
                                 +-----------+-----------+
                                             |
-        +-----------+-----------+-----------+-----------+-----------+-----------+
-        |           |           |           |           |           |           |
-        v           v           v           v           v           v           v
-  pr_build_     pr_build_   pr_benchmark_  docs    spark_3_5    spark_4_0   iceberg_1_10
-   linux         macos        check       (push)   (PR+push)   (PR+push)    (PR+push)
-  (PR+push)    (PR+push)    (PR+push)
-                                                       |           |           |
-                                                       v           v           v
-                                            spark_3_4 / spark_4_1   iceberg_1_8 / 1_9
-                                            (push or PR + label)    (push only)
+        +-----------------------------------+-----------------------------------+
+        |                                   |                                   |
+        v                                   v                                   v
+  every PR + push                     push to main only         PR with label, or push
+  ---------------                     -----------------         ----------------------
+  pr_build_linux                      docs                      spark_3_4    run-spark-3.4-tests
+  pr_build_macos                                                spark_4_0    run-spark-4.0-tests
+  pr_benchmark_check                                            iceberg_1_8  run-iceberg-tests
+  spark_3_5                                                     iceberg_1_9  run-iceberg-tests
+  spark_4_1                                                     iceberg_1_10 run-iceberg-tests
+  iceberg_1_11
 
   reusable workflows invoked via `uses:`:
     pr_build_linux.yml         spark_sql_test_reusable.yml
@@ -50,25 +51,50 @@ is a `workflow_call` reusable invoked from the umbrella.
 
 ## What runs when
 
-| Job in `ci.yml`      | Triggered by                                     | Path filter source                  |
-| -------------------- | ------------------------------------------------ | ----------------------------------- |
-| `preflight`          | every PR / push to main / dispatch               | none (always runs)                  |
-| `changes`            | every PR / push to main / dispatch               | runs `dev/ci/compute-changes.py`    |
-| `pr_build_linux`     | PR or push, paths matched                        | `dev/ci/compute-changes.py`         |
-| `pr_build_macos`     | PR or push, paths matched                        | `dev/ci/compute-changes.py`         |
-| `pr_benchmark_check` | PR or push, paths matched                        | benchmark sources only              |
-| `docs`               | push to main, paths matched                      | `.asf.yaml`, `docs/**`, `docs.yaml` |
-| `spark_3_5`          | PR or push, paths matched                        | Spark 3.5 sources                   |
-| `spark_4_0`          | PR or push, paths matched                        | Spark 4.0 sources                   |
-| `spark_3_4`          | push, **or** PR with `run-spark-3.4-tests` label | Spark 3.4 sources                   |
-| `spark_4_1`          | push, **or** PR with `run-spark-4.1-tests` label | Spark 4.1 sources                   |
-| `iceberg_1_10`       | PR or push, paths matched                        | Iceberg sources                     |
-| `iceberg_1_8`        | push only                                        | Iceberg sources                     |
-| `iceberg_1_9`        | push only                                        | Iceberg sources                     |
+| Job in `ci.yml`      | Triggered by                                        | Path filter source                  |
+| -------------------- | --------------------------------------------------- | ----------------------------------- |
+| `preflight`          | every PR / push to main / dispatch / PR label added | none (always runs)                  |
+| `changes`            | every PR / push to main / dispatch / PR label added | runs `dev/ci/compute-changes.py`    |
+| `pr_build_linux`     | PR or push, paths matched                           | `dev/ci/compute-changes.py`         |
+| `pr_build_macos`     | PR or push, paths matched                           | `dev/ci/compute-changes.py`         |
+| `pr_benchmark_check` | PR or push, paths matched                           | benchmark sources only              |
+| `docs`               | push to main, paths matched                         | `.asf.yaml`, `docs/**`, `docs.yaml` |
+| `spark_3_5`          | PR or push, paths matched                           | Spark 3.5 sources                   |
+| `spark_4_1`          | PR or push, paths matched                           | Spark 4.1 sources                   |
+| `spark_3_4`          | push, **or** PR with `run-spark-3.4-tests` label    | Spark 3.4 sources                   |
+| `spark_4_0`          | push, **or** PR with `run-spark-4.0-tests` label    | Spark 4.0 sources                   |
+| `iceberg_1_11`       | PR or push, paths matched                           | Iceberg sources                     |
+| `iceberg_1_8`        | push, **or** PR with `run-iceberg-tests` label      | Iceberg sources                     |
+| `iceberg_1_9`        | push, **or** PR with `run-iceberg-tests` label      | Iceberg sources                     |
+| `iceberg_1_10`       | push, **or** PR with `run-iceberg-tests` label      | Iceberg sources                     |
 
 A heavy job appears in the PR's checks list as a `skipped` entry whenever
 its path filter or event criteria don't match. Skipped checks count as
-passing for branch protection.
+passing for branch protection, so a name that can report `skipped` is not
+safe to make a required check.
+
+### Label events
+
+`ci.yml` also fires on `pull_request.types: [labeled]`, so applying
+`run-spark-3.4-tests`, `run-spark-4.0-tests` or `run-iceberg-tests` starts the
+job that label gates without needing a new push. GitHub cannot filter a
+`pull_request` trigger by label name, so **every** label added to a PR starts a
+run, including labels that gate nothing.
+
+Two rules keep those runs from corrupting the PR's status:
+
+- `preflight` and `changes` carry no event guard and run every time. A job held
+  back by `if:` still publishes a check run under its own name with conclusion
+  `skipped`, and the newest check run for a name is what the merge box,
+  `gh pr checks` and required-status-check evaluation read. Guarding
+  `preflight` on the label name used to let any unrelated label overwrite the
+  commit run's real `Preflight` verdict with `skipped`, see
+  [#5007](https://github.com/apache/datafusion-comet/issues/5007).
+- Every heavy job excludes `labeled` events unless the label just added is the
+  one that gates it. Without that, applying a single label re-ran the entire
+  heavy pipeline at a commit that had already been tested.
+
+`run-spark-4.1-tests` gates nothing: `spark_4_1` already runs on every PR.
 
 ## Standalone workflows (not under the umbrella)
 
@@ -83,17 +109,18 @@ umbrella doesn't watch, or operate independently of the rest of CI:
 | `stale.yml`            | Daily stale-PR closer.                                                                               |
 | `take.yml`             | Issue-comment trigger for `take` / `untake`.                                                         |
 | `label_new_issues.yml` | Issue trigger to apply `requires-triage`.                                                            |
+| `label_prs.yml`        | Runs on `pull_request_target` so it can label pull requests opened from forks.                       |
 
 ## Reusable workflows (called by `ci.yml`)
 
-| File                              | Called from `ci.yml` job(s)                        |
-| --------------------------------- | -------------------------------------------------- |
-| `pr_build_linux.yml`              | `pr_build_linux`                                   |
-| `pr_build_macos.yml`              | `pr_build_macos`                                   |
-| `pr_benchmark_check.yml`          | `pr_benchmark_check`                               |
-| `docs.yaml`                       | `docs`                                             |
-| `spark_sql_test_reusable.yml`     | `spark_3_4`, `spark_3_5`, `spark_4_0`, `spark_4_1` |
-| `iceberg_spark_test_reusable.yml` | `iceberg_1_8`, `iceberg_1_9`, `iceberg_1_10`       |
+| File                              | Called from `ci.yml` job(s)                                  |
+| --------------------------------- | ------------------------------------------------------------ |
+| `pr_build_linux.yml`              | `pr_build_linux`                                             |
+| `pr_build_macos.yml`              | `pr_build_macos`                                             |
+| `pr_benchmark_check.yml`          | `pr_benchmark_check`                                         |
+| `docs.yaml`                       | `docs`                                                       |
+| `spark_sql_test_reusable.yml`     | `spark_3_4`, `spark_3_5`, `spark_4_0`, `spark_4_1`           |
+| `iceberg_spark_test_reusable.yml` | `iceberg_1_8`, `iceberg_1_9`, `iceberg_1_10`, `iceberg_1_11` |
 
 ## Modifying path filters
 
@@ -111,3 +138,11 @@ umbrella exposes per-job names like `CI / pr_build_linux / Lint`,
 protection rules to point at the new names; the old standalone workflow
 names (`Spark SQL Tests (Spark 3.5)`, `PR Build (Linux)`, ...) no longer
 exist as top-level workflows.
+
+`.asf.yaml` currently declares no `required_status_checks` for `main`, only
+`required_approving_review_count: 1`. Anything added there must be a name that
+never legitimately reports `skipped`, because GitHub counts a skipped check as
+passing. The bare caller-job names (`PR Build (Linux)`, `Spark SQL Tests
+(Spark 3.5)`, ...) are not such names: a reusable workflow that actually runs
+publishes only its child jobs, so the bare name shows up solely when the caller
+was skipped.
