@@ -41,7 +41,7 @@ import org.apache.spark.sql.execution.exchange.{ReusedExchangeExec, ShuffleExcha
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{StringType, TimestampType}
 
-import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark42Plus}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark41Plus, isSpark42Plus}
 import org.apache.comet.iceberg.{IcebergReflection, RESTCatalogHelper}
 import org.apache.comet.serde.OperatorOuterClass
 import org.apache.comet.testing.{FuzzDataGenerator, SchemaGenOptions}
@@ -5765,6 +5765,124 @@ class CometIcebergNativeSuite
           assert(
             reason.get.contains("Conflicting partition fields"),
             s"Expected a conflicting-partition-fields reason, got: ${reason.get}")
+        } finally {
+          spark.sql(s"DROP TABLE IF EXISTS $table PURGE")
+        }
+      }
+    }
+  }
+
+  test("forward compatibility - read a table whose spec uses an unknown transform") {
+    // Iceberg's forward-compatibility contract: a reader must be able to read a table partitioned
+    // by a transform it does not know (one a newer writer produced). Iceberg Java parses such a
+    // transform into an UnknownTransform whose toString is the original name, e.g. "zero", and
+    // resolves its partition type as string -- so the field is NOT dropped from the spec and the
+    // scan task carries a real partition value for it. Serializing that name verbatim makes
+    // PartitionSpec deserialization fail in iceberg-rust, leaving the task holding partition values
+    // with no spec, which FileScanTask validation rejects ("Non-empty FileScanTask partition
+    // requires a partition spec") and the whole scan dies.
+    // Upstream coverage is TestForwardCompatibility.testSparkCanReadUnknownTransform, which builds
+    // the table through Iceberg's low-level manifest writers; here the same shape is reached by
+    // writing an identity-partitioned table and then rewriting its spec's transform, which keeps
+    // the test on APIs that are stable across the Iceberg versions Comet builds against.
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    // Spark 4.1 validates a V2 relation's metadata columns on every read, which forces
+    // SparkTable.metadataColumns() -> Partitioning.partitionType() and rejects an unknown transform
+    // in the analyzer, with or without Comet. Upstream disabled its own copy of this test on 4.1 for
+    // the same reason (SPARK-55626), so there is no read left to accelerate there.
+    assume(
+      !isSpark41Plus,
+      "SPARK-55626: Spark 4.1+ cannot read a table with an unknown transform")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.fwd_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.fwd_cat.type" -> "hadoop",
+        "spark.sql.catalog.fwd_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        // The rewrite below edits metadata behind the catalog's back, so don't let it serve the
+        // pre-rewrite TableMetadata from cache.
+        "spark.sql.catalog.fwd_cat.cache-enabled" -> "false",
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        val table = "fwd_cat.db.unknown_transform"
+        try {
+          spark.sql(s"""
+            CREATE TABLE $table (id BIGINT, data STRING)
+            USING iceberg PARTITIONED BY (id)
+          """)
+          spark.sql(s"""
+            INSERT INTO $table
+            VALUES (1, 'a'), (2, 'b'), (2, 'c'), (3, NULL)
+          """)
+
+          import org.apache.iceberg.catalog.TableIdentifier
+          import org.apache.iceberg.spark.SparkCatalog
+
+          val sparkCatalog = spark.sessionState.catalogManager
+            .catalog("fwd_cat")
+            .asInstanceOf[SparkCatalog]
+          val iceTable = sparkCatalog
+            .icebergCatalog()
+            .loadTable(TableIdentifier.of("db", "unknown_transform"))
+
+          val tableLocationUri = iceTable.location()
+          val tableDir =
+            if (tableLocationUri.contains(":")) new File(new java.net.URI(tableLocationUri))
+            else new File(tableLocationUri)
+          val metadataDir = new File(tableDir, "metadata")
+          val versionPattern = "^v(\\d+)\\.metadata\\.json$".r
+          val currentVersion = metadataDir
+            .listFiles()
+            .flatMap(f => versionPattern.findFirstMatchIn(f.getName).map(_.group(1).toInt))
+            .max
+          val currentMetadataFile = new File(metadataDir, s"v$currentVersion.metadata.json")
+          val currentMetadataJson =
+            new String(java.nio.file.Files.readAllBytes(currentMetadataFile.toPath), UTF_8)
+
+          val mapper = new com.fasterxml.jackson.databind.ObjectMapper()
+          val root = mapper
+            .readTree(currentMetadataJson)
+            .asInstanceOf[com.fasterxml.jackson.databind.node.ObjectNode]
+          // Retarget the one spec the data was written under at a transform no Iceberg release
+          // defines. The manifests keep the partition values the identity spec recorded, exactly as
+          // upstream's fake-spec manifest does.
+          val specFields = root
+            .get("partition-specs")
+            .asInstanceOf[com.fasterxml.jackson.databind.node.ArrayNode]
+            .elements()
+            .asScala
+            .flatMap(_.get("fields").elements().asScala)
+            .toSeq
+          assert(specFields.size == 1, s"expected one partition field, got $specFields")
+          specFields.foreach(
+            _.asInstanceOf[com.fasterxml.jackson.databind.node.ObjectNode]
+              .put("transform", "zero"))
+
+          val newMetadataJson = mapper.writeValueAsString(root)
+          // Round-trip through Iceberg's own parser so a malformed edit fails here rather than
+          // producing an unloadable table, and so this test also pins that Iceberg still accepts an
+          // unknown transform at load time (the premise of the whole scenario).
+          val reparsed = org.apache.iceberg.TableMetadataParser.fromJson(newMetadataJson)
+          assert(
+            reparsed.spec().fields().get(0).transform().toString == "zero",
+            "Iceberg no longer preserves an unknown transform's name")
+
+          val newVersion = currentVersion + 1
+          java.nio.file.Files.write(
+            new File(metadataDir, s"v$newVersion.metadata.json").toPath,
+            newMetadataJson.getBytes(UTF_8))
+          java.nio.file.Files.write(
+            new File(metadataDir, "version-hint.text").toPath,
+            newVersion.toString.getBytes(UTF_8))
+
+          // Read by path, with no projection on top, for the same reason upstream's test does:
+          // resolving a Project's metadataOutput forces SparkTable.metadataColumns(), whose
+          // _partition type comes from Partitioning.partitionType() -- which rejects an unknown
+          // transform outright, in Spark's analyzer, with or without Comet. A bare relation scan is
+          // therefore the whole of what any reader can do with such a table.
+          checkIcebergNativeScan(spark.read.format("iceberg").load(tableDir.getAbsolutePath))
         } finally {
           spark.sql(s"DROP TABLE IF EXISTS $table PURGE")
         }
