@@ -54,15 +54,48 @@ object NativeWriteUtils {
   }
 
   /**
-   * A fallback reason when `outputPath` is an HDFS destination whose path needs percent-escaping,
-   * or `None` when the write can proceed.
+   * ASCII characters the native URL parser percent-encodes inside a path. Determined against the
+   * locked `url` 2.5 crate by parsing `hdfs://ns/pre<c>post/output` for every printable ASCII `c`
+   * and comparing `url.path()` with the input: these nine are rewritten and the rest survive,
+   * including `%`, `[`, `\`, `]`, `^` and `|`. Control characters and DEL are handled separately
+   * in [[needsNativeUrlEscaping]] rather than listed here.
+   */
+  private val nativeUrlEscapedAscii: Set[Char] =
+    Set(' ', '"', '#', '<', '>', '?', '`', '{', '}')
+
+  /**
+   * Whether the native URL parser would rewrite `path`, so that the name it creates on HDFS
+   * differs from the Hadoop filename Spark commits.
    *
-   * Comet and Spark disagree about what such a path names. The native side reaches HDFS through
-   * `create_hdfs_object_store`, which hands `url.path()` -- still escaped -- to
-   * `object_store::path::Path::parse`, so the native writer creates a directory literally called
-   * `dir%20with%20space`. Spark's committer, meanwhile, works with the unescaped Hadoop `Path`
-   * and commits `dir with space`. Job commit then succeeds while the data sits somewhere else,
-   * which is worse than not accelerating the write.
+   * `percent_encoding`'s `should_percent_encode` is `!byte.is_ascii() || set.contains(byte)`, so
+   * every non-ASCII byte is escaped regardless of the encode set. That is the case Java's URI
+   * comparison cannot see, because `java.net.URI` leaves non-ASCII path characters alone: a name
+   * holding U+00E9 comes back identically from `getRawPath` and `getPath`, while the native
+   * parser produces `caf%C3%A9`.
+   */
+  private def needsNativeUrlEscaping(path: String): Boolean =
+    path.exists(c => c < ' ' || c > '~' || nativeUrlEscapedAscii.contains(c))
+
+  /**
+   * A fallback reason when `outputPath` is an HDFS destination whose path the native writer and
+   * Spark would spell differently, or `None` when the write can proceed.
+   *
+   * Comet and Spark disagree about what such a path names. The native side receives
+   * `Path.toString`, which is not a URI string, and reaches HDFS through
+   * `create_hdfs_object_store`, which hands `url.path()` -- now escaped by the Rust parser -- to
+   * `object_store::path::Path::parse`. So the native writer creates a directory literally called
+   * `dir%20with%20space`, or `caf%C3%A9` for a name holding U+00E9. Spark's committer, meanwhile,
+   * works with the unescaped Hadoop `Path` and commits `dir with space`, or that same U+00E9 name
+   * unescaped. Job commit then succeeds while the data sits somewhere else, which is worse than
+   * not accelerating the write.
+   *
+   * Two conditions, because neither covers the other:
+   *
+   *   - the native parser escapes a character, which is the direct statement of the divergence
+   *     and the only condition that catches non-ASCII names;
+   *   - `java.net.URI` had to escape something, which catches a literal `%` in the Hadoop name.
+   *     The native parser leaves `%` alone, so `50%off` reaches `Path::parse` as an invalid
+   *     escape rather than as a rewritten name.
    *
    * Local `file:` destinations are unaffected and deliberately not gated here: they go through a
    * different object-store constructor that does not retain the escaping.
@@ -70,14 +103,16 @@ object NativeWriteUtils {
   def escapedHdfsDestination(outputPath: String): Option[String] = {
     if (!outputPath.startsWith("hdfs:")) return None
     val uri = new Path(outputPath).toUri
-    // `getPath` decodes, `getRawPath` does not. They differ exactly when the path contains
-    // something the URI form had to escape.
     val raw = uri.getRawPath
     val decoded = uri.getPath
-    if (raw != null && decoded != null && raw != decoded) {
+    val javaEscaped = raw != null && decoded != null && raw != decoded
+    // Checked against the string handed to the native writer, which is `outputPath` itself.
+    val nativeEscaped = needsNativeUrlEscaping(outputPath)
+    if (javaEscaped || nativeEscaped) {
+      val shown = if (decoded != null) decoded else outputPath
       Some(
         "HDFS output paths needing URI escaping are not supported: the native writer would " +
-          s"write to the escaped path while Spark commits the unescaped one ($decoded)")
+          s"write to the escaped path while Spark commits the unescaped one ($shown)")
     } else {
       None
     }

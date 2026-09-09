@@ -889,24 +889,56 @@ class CometParquetWriterSuite extends CometTestBase {
 
   test("HDFS output paths needing URI escaping are declined at planning") {
     // The local case above writes natively, but HDFS cannot: `create_hdfs_object_store` hands the
-    // still-escaped `url.path()` to `object_store::path::Path::parse`, so the native writer would
+    // now-escaped `url.path()` to `object_store::path::Path::parse`, so the native writer would
     // create `dir%20with%20space` while Spark's committer commits `dir with space`. Job commit
     // would succeed with the data somewhere else, so the write has to stay on Spark until the
     // native path handling preserves Hadoop filenames.
+    //
+    // Non-ASCII names are the case a `getRawPath != getPath` comparison alone cannot see:
+    // `java.net.URI` leaves non-ASCII path characters alone, so both accessors agree, while
+    // `percent_encoding` escapes every non-ASCII byte regardless of the encode set and the native
+    // writer creates `caf%C3%A9`. Built from code points because scalastyle forbids non-ASCII
+    // source characters.
+    def cp(codePoints: Int*): String = codePoints.map(Character.toChars(_).mkString).mkString
+    val eAcute = cp(0x00e9) // precomposed LATIN SMALL LETTER E WITH ACUTE
+    val combiningAcute = cp(0x0301) // COMBINING ACUTE ACCENT, applied to a plain "e"
+    val cjk = cp(0x65e5, 0x672c, 0x8a9e) // "nihongo"
+    val emoji = cp(0x1f642) // astral plane, so a surrogate pair on the JVM
+    val uUmlaut = cp(0x00fc)
+
     Seq(
       "hdfs://ns/dir with space/output.parquet",
       "hdfs://ns/dir%with%percent/output.parquet",
-      "hdfs://ns/nested/dir with space/output.parquet").foreach { path =>
+      "hdfs://ns/nested/dir with space/output.parquet",
+      s"hdfs://ns/caf$eAcute/output.parquet",
+      s"hdfs://ns/cafe$combiningAcute/output.parquet",
+      s"hdfs://ns/$cjk/output.parquet",
+      s"hdfs://ns/$emoji/output.parquet",
+      // Non-ASCII in a nested segment rather than the leaf.
+      s"hdfs://ns/${uUmlaut}ber/nested/output.parquet",
+      // The remaining ASCII characters the native parser escapes.
+      "hdfs://ns/quote\"here/output.parquet",
+      "hdfs://ns/hash#here/output.parquet",
+      "hdfs://ns/angle<here>/output.parquet",
+      "hdfs://ns/question?here/output.parquet",
+      "hdfs://ns/back`tick/output.parquet",
+      "hdfs://ns/brace{here}/output.parquet").foreach { path =>
       assert(
         NativeWriteUtils.escapedHdfsDestination(path).isDefined,
         s"expected $path to be declined")
     }
 
-    // Unescaped HDFS paths, and local paths of any shape, are unaffected.
+    // Ordinary HDFS paths, and local paths of any shape, are unaffected. Keeping these passing is
+    // the point of gating on the exact set the native parser rewrites rather than on "not plain
+    // ASCII alphanumerics", which would decline the partition directories Spark actually writes.
     Seq(
       "hdfs://ns/plain/output.parquet",
+      "hdfs://ns/part-00000-a1b2.c3d4-c000.snappy.parquet",
+      "hdfs://ns/dt=2026-09-09/hour=17/output.parquet",
+      "hdfs://ns/_temporary/0/_temporary/attempt_202609091700_0001_m_000000_0/part-0.parquet",
       "file:///tmp/dir with space/output.parquet",
-      "file:///tmp/dir%with%percent/output.parquet").foreach { path =>
+      "file:///tmp/dir%with%percent/output.parquet",
+      s"file:///tmp/caf$eAcute/output.parquet").foreach { path =>
       assert(
         NativeWriteUtils.escapedHdfsDestination(path).isEmpty,
         s"expected $path to be accepted")
