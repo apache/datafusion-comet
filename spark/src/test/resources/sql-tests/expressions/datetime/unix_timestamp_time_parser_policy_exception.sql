@@ -15,17 +15,28 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- unix_timestamp() under EXCEPTION timeParserPolicy (the default).
+-- unix_timestamp() under EXCEPTION timeParserPolicy.
 -- New parser fails on lenient inputs; legacy parser would have succeeded;
 -- DateTimeFormatterHelper.checkParsedDiff converts the failure to SparkUpgradeException.
 -- Config: spark.sql.legacy.timeParserPolicy=EXCEPTION
 -- Config: spark.sql.session.timeZone=UTC
+-- Config: spark.comet.exec.scalaUDF.codegen.enabled=true
 
 statement
-CREATE TABLE test_unix_ts_exception(s string) USING parquet
+CREATE TABLE test_unix_ts_exception(s string, fmt string) USING parquet
 
 statement
-INSERT INTO test_unix_ts_exception VALUES ('2024-1-1')
+INSERT INTO test_unix_ts_exception VALUES ('2024-1-1', 'yyyy-MM-dd')
 
 query expect_error(INCONSISTENT_BEHAVIOR_CROSS_VERSION)
 SELECT unix_timestamp(s, 'yyyy-MM-dd') FROM test_unix_ts_exception
+
+query expect_error(INCONSISTENT_BEHAVIOR_CROSS_VERSION)
+SELECT unix_timestamp(s, fmt) FROM test_unix_ts_exception
+
+-- Require Comet execution under EXCEPTION as well as checking the errors.
+query
+SELECT unix_timestamp('2024-06-15', 'yyyy-MM-dd')
+
+query
+SELECT unix_timestamp('2024-06-15', fmt) FROM test_unix_ts_exception

@@ -95,4 +95,12 @@
 
 - Rewrites to `Cast(..., EvalMode.LEGACY)` (no format, native) or `GetTimestamp(..., failOnError = false)` (with format, via the codegen dispatcher) before Comet sees the plan. In non-ANSI mode the rewritten tree is identical to `to_timestamp`; invalid inputs return NULL to match Spark.
 
+## unix_timestamp
+
+- Spark 3.4.3 (audited 2026-09-09): string input uses Spark's generated parser through codegen dispatch. Literal and column formats preserve null handling, ANSI errors, parser policy, and session time zone.
+- Spark 3.5.8 (audited 2026-09-09): same dispatch path, with Spark's structured timestamp parsing errors.
+- Spark 4.0.1 (audited 2026-09-09): collated string inputs and formats also use dispatch, including when native incompatibilities are allowed.
+- Spark 4.1.1 (audited 2026-09-09): same input types and parsing behavior as Spark 4.0.1.
+- Date, timestamp, and timestamp without time zone inputs retain native execution. String input stays unsupported by the native serializer so `allowIncompatible=true` cannot send it to the native kernel.
+
 [Spark Expression Support]: ../../user-guide/latest/expressions.md

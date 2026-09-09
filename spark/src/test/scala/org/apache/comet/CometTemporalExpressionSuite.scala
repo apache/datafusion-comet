@@ -34,8 +34,12 @@ import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.serde.{CometDateFormat, CometTruncDate, CometTruncTimestamp}
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
+import org.apache.comet.udf.codegen.CometScalaUDFCodegen
 
-class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
+class CometTemporalExpressionSuite
+    extends CometTestBase
+    with AdaptiveSparkPlanHelper
+    with CometCodegenAssertions {
 
   /** Timezones used to verify that TimestampNTZ operations are timezone-independent. */
   private val crossTimezones =
@@ -381,7 +385,7 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
     }
   }
 
-  test("unix_timestamp - string input falls back to Spark") {
+  test("unix_timestamp - string input uses codegen dispatch") {
     withTempView("string_tbl") {
       // Create test data with timestamp strings
       val schema = StructType(Seq(StructField("ts_str", DataTypes.StringType, true)))
@@ -394,19 +398,27 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
         .createDataFrame(spark.sparkContext.parallelize(data), schema)
         .createOrReplaceTempView("string_tbl")
 
-      // String input should fall back to Spark
-      checkSparkAnswerAndFallbackReason(
-        "SELECT ts_str, unix_timestamp(ts_str) from string_tbl order by ts_str",
-        "unix_timestamp does not support input type: StringType")
-
-      // String input with custom format should also fall back
-      checkSparkAnswerAndFallbackReason(
-        "SELECT ts_str, unix_timestamp(ts_str, 'yyyy-MM-dd HH:mm:ss') from string_tbl",
-        "unix_timestamp does not support input type: StringType")
+      withSQLConf(
+        SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+          "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
+        for (allowIncompatible <- Seq("false", "true")) {
+          withSQLConf(
+            CometConf.getExprAllowIncompatConfigKey("UnixTimestamp") -> allowIncompatible) {
+            for (query <- Seq(
+                "SELECT unix_timestamp(ts_str) FROM string_tbl",
+                "SELECT unix_timestamp(ts_str, 'yyyy-MM-dd HH:mm:ss') FROM string_tbl",
+                "SELECT unix_timestamp('2024-06-15', 'yyyy-MM-dd') FROM string_tbl")) {
+              assertCodegenRan {
+                checkSparkAnswerAndOperator(query)
+              }
+            }
+          }
+        }
+      }
     }
   }
 
-  test("unix_timestamp - string input falls back even when a collated format opts into native") {
+  test("unix_timestamp - collated strings use codegen even when native is opted into") {
     assume(isSpark40Plus, "string collation requires Spark 4.0+")
     withTempView("string_tbl") {
       val schema = StructType(Seq(StructField("ts_str", DataTypes.StringType, true)))
@@ -415,15 +427,40 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
         .createDataFrame(spark.sparkContext.parallelize(data), schema)
         .createOrReplaceTempView("string_tbl")
 
-      // A collated format argument makes the expression `Incompatible`, which
-      // `allowIncompatible=true` waves straight through to `convert`. The input type has to be
-      // rejected ahead of that opt-in: the native kernel accepts only date/timestamp input, so
-      // serializing a string child raises an execution error instead of falling back to Spark.
-      withSQLConf(CometConf.getExprAllowIncompatConfigKey("UnixTimestamp") -> "true") {
-        checkSparkAnswerAndFallbackReason(
-          "SELECT ts_str, unix_timestamp(ts_str, 'yyyy-MM-dd HH:mm:ss' COLLATE UTF8_LCASE) " +
-            "from string_tbl order by ts_str",
-          "unix_timestamp does not support input type: StringType")
+      // Strings have no native path, even when the collation gate is opted out of.
+      for (allowIncompatible <- Seq("false", "true")) {
+        withSQLConf(
+          CometConf.getExprAllowIncompatConfigKey("UnixTimestamp") -> allowIncompatible) {
+          for (query <- Seq(
+              "SELECT unix_timestamp(ts_str, 'yyyy-MM-dd HH:mm:ss' COLLATE UTF8_LCASE) " +
+                "FROM string_tbl",
+              "SELECT unix_timestamp(ts_str COLLATE UTF8_LCASE) FROM string_tbl")) {
+            assertCodegenRan {
+              checkSparkAnswerAndOperator(query)
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("unix_timestamp - collated formats dispatch date and timestamp inputs by default") {
+    assume(isSpark40Plus, "string collation requires Spark 4.0+")
+    val data = Seq(
+      (java.sql.Date.valueOf("2024-06-15"), java.sql.Timestamp.valueOf("2024-06-15 10:30:45")))
+    withParquetTable(data, "tbl") {
+      for (column <- Seq("_1", "_2")) {
+        val query = s"SELECT unix_timestamp($column, 'unused' COLLATE UTF8_LCASE) FROM tbl"
+        withSQLConf(CometConf.getExprAllowIncompatConfigKey("UnixTimestamp") -> "false") {
+          assertCodegenRan {
+            checkSparkAnswerAndOperator(query)
+          }
+        }
+        withSQLConf(CometConf.getExprAllowIncompatConfigKey("UnixTimestamp") -> "true") {
+          CometScalaUDFCodegen.resetStats()
+          checkSparkAnswerAndOperator(query)
+          assert(CometScalaUDFCodegen.stats().totalLookups == 0)
+        }
       }
     }
   }
