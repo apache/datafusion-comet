@@ -218,4 +218,44 @@ class CometRegexSuite extends AnyFunSuite {
     assertCompatible("[a-zA-Z_][a-zA-Z0-9_]*")
     assertCompatible("(foo|bar){1,3}")
   }
+
+  test("rejects uncounted capturing groups that exceed the compile budget") {
+    val q = (1 to 8).foldLeft("a")((p, _) => s"($p)*")
+    val branch = "(" * 24 + q + ")" * 24
+    val pattern = Seq.fill(4096)(branch).mkString("|")
+    assert(pattern.length == 303103)
+    assertIncompatible(pattern)
+  }
+
+  test("capture cost propagates through uncounted repetition and composition") {
+    // Each `(a)` costs one atom plus two capture states
+    // (CaptureStart and CaptureEnd), for a total structural cost of 3.
+    //
+    // Uncounted `*`, `+`, and `?` preserve that complete inner cost.
+    // Concatenation and alternation sum the complete unit costs:
+    // 1365 * 3 = 4095, while 1366 * 3 = 4098.
+    val under = 1365
+    val over = 1366
+    Seq(
+      "bare captures" -> "(a)",
+      "starred captures" -> "(a)*",
+      "plus captures" -> "(a)+",
+      "optional captures" -> "(a)?",
+      "counted {1} captures" -> "(a){1}").foreach { case (description, unit) =>
+      withClue(s"$description concat: ") {
+        assertCompatible(Seq.fill(under)(unit).mkString)
+        assertIncompatible(Seq.fill(over)(unit).mkString)
+      }
+    }
+    withClue("alternated captures: ") {
+      assertCompatible(Seq.fill(under)("(a)").mkString("|"))
+      assertIncompatible(Seq.fill(over)("(a)").mkString("|"))
+    }
+    // Counted {256} copies the full inner cost, including capture states:
+    // (a){256} = 768. 5 * 768 = 3840, 6 * 768 = 4608.
+    withClue("counted {256} captures: ") {
+      assertCompatible(Seq.fill(5)("(a){256}").mkString)
+      assertIncompatible(Seq.fill(6)("(a){256}").mkString)
+    }
+  }
 }

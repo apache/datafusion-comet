@@ -71,9 +71,9 @@ object CometRegex {
   // unbounded `{0,}` of `[^;]{256}` wrapped `{256}`, 251 nested groups, and
   // nested `*` wrappers whose structural expansion stays under MaxExpansion
   // but whose compiled program exceeds 10 MiB, capturing groups copied by
-  // counted repetition, and wide character classes copied by counted
-  // `{256}` under nested non-capturing `*`. The `regex-syntax` default
-  // nesting limit is 250.
+  // counted repetition, uncounted capturing groups in concatenation or
+  // alternation, and wide character classes copied by counted `{256}` under
+  // nested non-capturing `*`. The `regex-syntax` default nesting limit is 250.
   //
   // Raising a cap does not mean the resulting patterns remain below 10 MiB.
   // Re-check `Regex::new` against these pattern classes before changing one.
@@ -88,17 +88,19 @@ object CometRegex {
   // nested quantified expressions can substantially increase Rust regex
   // compilation state without exceeding the structural expansion estimate
   // (nullable-state cost). Keep such patterns on the JVM.
-  // CaptureStateCost counts CaptureStart and CaptureEnd per capturing group.
-  // Counted repetition copies those states with the inner expression; `*`,
-  // `+`, and `?` do not, and `(?:...)` does not add capture states. This is
-  // still a structural heuristic, not a compiled-byte proof.
+  // CaptureStateCost counts CaptureStart and CaptureEnd per capturing group
+  // at group construction. Counted repetition copies the full inner cost,
+  // including those capture states. Uncounted `*`, `+`, and `?` do not copy
+  // capture slots, but cannot drop the capture cost itself. `(?:...)` does
+  // not add capture states. MaxExpansion is still a structural heuristic,
+  // not a compiled-byte proof.
   private val MaxGroupDepth = 32
   private val MaxCountedBound = 256
   private val MaxExpansion = 4096L
   private[expressions] val MaxQuantifierNesting = 8
   private val CaptureStateCost = 2L
 
-  private case class Parsed(size: Long, qNest: Int, captures: Int)
+  private case class Parsed(size: Long, qNest: Int)
 
   private class Scanner(pattern: String) {
     private var i = 0
@@ -137,7 +139,7 @@ object CometRegex {
           case Some(s) =>
             addWithinBudget(total.size, s.size) match {
               case Some(next) =>
-                total = Parsed(next, math.max(total.qNest, s.qNest), total.captures + s.captures)
+                total = Parsed(next, math.max(total.qNest, s.qNest))
               case None => return None
             }
           case None => return None
@@ -149,7 +151,6 @@ object CometRegex {
     private def parseTerm(): Option[Parsed] = {
       var totalSize = 0L
       var qNest = 0
-      var captures = 0
       var any = false
       while (remaining && peek != '|' && peek != ')') {
         parseFactor() match {
@@ -158,7 +159,6 @@ object CometRegex {
               case Some(next) =>
                 totalSize = next
                 qNest = math.max(qNest, s.qNest)
-                captures += s.captures
                 any = true
               case None => return None
             }
@@ -166,7 +166,7 @@ object CometRegex {
             return None
         }
       }
-      Some(if (any) Parsed(totalSize, qNest, captures) else Parsed(1L, 0, 0))
+      Some(if (any) Parsed(totalSize, qNest) else Parsed(1L, 0))
     }
 
     private def parseFactor(): Option[Parsed] = {
@@ -183,15 +183,15 @@ object CometRegex {
       }
       peek match {
         case '\\' =>
-          if (parseEscape(inClass = false).isDefined) Some(Parsed(1L, 0, 0)) else None
+          if (parseEscape(inClass = false).isDefined) Some(Parsed(1L, 0)) else None
         case '[' =>
-          parseClass().map(size => Parsed(size, 0, 0))
+          parseClass().map(size => Parsed(size, 0))
         case '(' => parseGroup()
         case '.' | '^' | '$' | '*' | '+' | '?' | '{' | '}' | ')' | ']' | '|' =>
           None
         case c if isPrintableAscii(c) =>
           consume()
-          Some(Parsed(1L, 0, 0))
+          Some(Parsed(1L, 0))
         case _ => None
       }
     }
@@ -219,10 +219,14 @@ object CometRegex {
       groupDepth -= 1
       if (!closed) {
         None
-      } else if (capturing) {
-        inner.map(p => Parsed(p.size, p.qNest, p.captures + 1))
       } else {
-        inner
+        inner.flatMap { p =>
+          if (capturing) {
+            addWithinBudget(p.size, CaptureStateCost).map(size => Parsed(size, p.qNest))
+          } else {
+            Some(p)
+          }
+        }
       }
     }
 
@@ -249,7 +253,7 @@ object CometRegex {
       if (qNest > MaxQuantifierNesting) {
         None
       } else {
-        Some(Parsed(size, qNest, inner.captures))
+        Some(Parsed(size, qNest))
       }
     }
 
@@ -299,9 +303,7 @@ object CometRegex {
         case _ =>
           return None
       }
-      val copyCost =
-        saturatingAdd(inner.size, saturatingMul(CaptureStateCost, inner.captures.toLong))
-      multiplyWithinBudget(copyCost, bound.toLong).flatMap { size =>
+      multiplyWithinBudget(inner.size, bound.toLong).flatMap { size =>
         applyQuantifier(inner, size)
       }
     }
