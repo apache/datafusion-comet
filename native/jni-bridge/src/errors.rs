@@ -573,7 +573,12 @@ fn throw_exception(env: &mut Env, error: &CometError, backtrace: Option<String>)
             // FAILED_READ_FILE / FileNotFound via the structured SparkError channel. Anything else
             // falls back to generic handling.
             CometError::DataFusion { msg: _, source } => {
-                if let Some(spark_error) = try_classify_file_read_error(source) {
+                if let Some(json_message) = spark_error_json_in_chain(source) {
+                    env.throw_new(
+                        jni::jni_str!("org/apache/comet/exceptions/CometQueryExecutionException"),
+                        JNIString::new(json_message),
+                    )
+                } else if let Some(spark_error) = try_classify_file_read_error(source) {
                     throw_spark_error_as_json(env, &spark_error)
                 } else {
                     throw_generic_exception(env, error, backtrace)
@@ -597,6 +602,24 @@ fn typed_jvm_exception(error: &(dyn std::error::Error + 'static)) -> Option<Exce
             error.downcast_ref::<CometError>()
         {
             return Some(typed.to_exception());
+        }
+        cause = error.source();
+    }
+    None
+}
+
+/// The JSON payload of the first typed `SparkError` or `SparkErrorWithContext` in `error`'s cause
+/// chain. A `SparkError` raised inside the parquet reader, as the reader factory's field id check
+/// does, arrives as `DataFusionError::ParquetError(ParquetError::External(..))` and must keep its
+/// own JVM exception class rather than being relabelled a file-read failure.
+fn spark_error_json_in_chain(error: &(dyn std::error::Error + 'static)) -> Option<String> {
+    let mut cause = Some(error);
+    while let Some(error) = cause {
+        if let Some(spark_error) = error.downcast_ref::<SparkErrorWithContext>() {
+            return Some(spark_error.to_json());
+        }
+        if let Some(spark_error) = error.downcast_ref::<SparkError>() {
+            return Some(spark_error.to_json());
         }
         cause = error.source();
     }
@@ -1368,6 +1391,32 @@ mod tests {
             SparkError::CannotReadFile { file_path, .. } => file_path,
             other => panic!("expected CannotReadFile, got {other:?}"),
         }
+    }
+
+    /// A `SparkError` the reader factory raises from its metadata fetch is wrapped by the parquet
+    /// reader and DataFusion's opener, yet must surface with its own Spark error class.
+    #[test]
+    fn spark_error_inside_parquet_error_keeps_its_class() {
+        let spark_error = SparkError::DuplicateFieldByFieldId {
+            required_id: 1,
+            matched_fields: "x, y".to_string(),
+        };
+        let expected = spark_error.to_json();
+        let e = DataFusionError::Context(
+            "opening file".to_string(),
+            Box::new(DataFusionError::ParquetError(Box::new(
+                parquet::errors::ParquetError::External(Box::new(spark_error)),
+            ))),
+        );
+        assert_eq!(spark_error_json_in_chain(&e), Some(expected));
+    }
+
+    #[test]
+    fn plain_parquet_error_has_no_spark_error_in_chain() {
+        let e = DataFusionError::ParquetError(Box::new(parquet::errors::ParquetError::General(
+            "corrupt footer".to_string(),
+        )));
+        assert_eq!(spark_error_json_in_chain(&e), None);
     }
 
     #[test]

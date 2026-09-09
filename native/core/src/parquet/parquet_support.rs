@@ -22,7 +22,7 @@ use arrow::array::{
 };
 use arrow::buffer::NullBuffer;
 use arrow::compute::can_cast_types;
-use arrow::datatypes::{FieldRef, Fields};
+use arrow::datatypes::{Field, FieldRef, Fields, Schema};
 use arrow::{
     array::{
         cast::AsArray, new_null_array, types::TimestampMicrosecondType,
@@ -304,6 +304,39 @@ impl FieldMapping {
             FieldMapping::Leaf => true,
         }
     }
+}
+
+/// True when a field of `schema`, at any nesting depth, carries a Parquet field id.
+pub(crate) fn schema_holds_field_ids(schema: &Schema) -> bool {
+    schema.fields().iter().any(|f| field_holds_id(f))
+}
+
+fn field_holds_id(field: &Field) -> bool {
+    field_id(field).is_some()
+        || match field.data_type() {
+            DataType::Struct(fields) => fields.iter().any(|f| field_holds_id(f)),
+            DataType::List(f) | DataType::LargeList(f) | DataType::Map(f, _) => field_holds_id(f),
+            _ => false,
+        }
+}
+
+/// Resolve every requested root field against `file_schema` the way the expression adapter
+/// does, keeping only the ambiguity Spark reports. DataFusion's opener creates the adapter
+/// only when a predicate is pushed or the file schema differs from the requested one, so the
+/// reader factory runs this on every footer it loads to cover the files the adapter never sees.
+pub(crate) fn validate_field_mapping(
+    file_schema: &Schema,
+    requested_schema: &Schema,
+    parquet_options: &SparkParquetOptions,
+) -> Result<(), SparkError> {
+    // `ParquetMissingFieldIds` needs no counterpart here: a file with no ids differs from an
+    // id-bearing requested schema in field metadata, so the opener runs the adapter for it.
+    resolve_field_mapping(
+        &DataType::Struct(file_schema.fields().clone()),
+        &DataType::Struct(requested_schema.fields().clone()),
+        parquet_options,
+    )
+    .map(|_| ())
 }
 
 /// Resolve how `to_type` reads from `from_type`, recursing through struct, list, and map

@@ -166,11 +166,16 @@ pub(crate) fn init_datasource_exec(
     // TODO: metadata I/O is invisible in metrics. `fetch_metadata` reads via `ObjectStore::get_ranges`,
     // bypassing the `get_bytes` path where `bytes_scanned` is counted. A byte-counting ObjectStore
     // wrapper would surface it.
+    //
+    // The factory also validates the requested field ids against each file's footer. The
+    // expression adapter below does the same, but DataFusion's opener skips it for a file whose
+    // schema equals the requested one when no predicate is pushed (#5801).
     let runtime_env = session_ctx.runtime_env();
     let store = runtime_env.object_store(&object_store_url)?;
     let metadata_cache = runtime_env.cache_manager.get_file_metadata_cache();
     parquet_source = parquet_source.with_parquet_file_reader_factory(Arc::new(
-        EagerPageIndexReaderFactory::new(store, metadata_cache),
+        EagerPageIndexReaderFactory::new(store, metadata_cache)
+            .with_field_id_check(Arc::clone(&required_schema), &spark_parquet_options),
     ));
 
     // Route data filters through `try_pushdown_filters` rather than calling
@@ -297,13 +302,18 @@ fn get_options(
 mod tests {
     use super::*;
     use arrow::array::Int32Array;
+    use arrow::array::{Array, AsArray, Int64Array, StructArray};
+    use arrow::datatypes::Fields;
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow::record_batch::RecordBatch;
+    use datafusion::common::DataFusionError;
     use datafusion::datasource::physical_plan::parquet::metadata::CachedParquetMetaData;
     use datafusion::physical_plan::ExecutionPlan;
     use datafusion_comet_spark_expr::test_common::file_util::get_temp_filename;
     use futures::StreamExt;
-    use parquet::arrow::ArrowWriter;
+    use parquet::arrow::arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions};
+    use parquet::arrow::arrow_writer::ArrowWriterOptions;
+    use parquet::arrow::{ArrowWriter, PARQUET_FIELD_ID_META_KEY};
     use parquet::file::properties::{EnabledStatistics, WriterProperties};
     use std::fs::File;
 
@@ -436,5 +446,218 @@ mod tests {
             parquet_meta.column_index().is_some() && parquet_meta.offset_index().is_some(),
             "cached metadata must include the page index"
         );
+    }
+
+    /// A nullable Int64 field carrying a Parquet field id.
+    fn field_with_id(name: &str, id: i32) -> Field {
+        Field::new(name, DataType::Int64, true).with_metadata(HashMap::from([(
+            PARQUET_FIELD_ID_META_KEY.to_string(),
+            id.to_string(),
+        )]))
+    }
+
+    /// One row of `s<x: 42 (id x_id), y: 43 (id y_id)>`, with `s` itself carrying id 10.
+    fn struct_batch(x_id: i32, y_id: i32) -> RecordBatch {
+        let children = Fields::from(vec![field_with_id("x", x_id), field_with_id("y", y_id)]);
+        let struct_field = Field::new("s", DataType::Struct(children.clone()), true).with_metadata(
+            HashMap::from([(PARQUET_FIELD_ID_META_KEY.to_string(), "10".to_string())]),
+        );
+        let values: Vec<Arc<dyn Array>> = vec![
+            Arc::new(Int64Array::from(vec![42])),
+            Arc::new(Int64Array::from(vec![43])),
+        ];
+        let column = Arc::new(StructArray::new(children, values, None)) as Arc<dyn Array>;
+        RecordBatch::try_new(Arc::new(Schema::new(vec![struct_field])), vec![column]).unwrap()
+    }
+
+    /// `struct_batch` with a leading `a: 7 (id 20)` column, for projected reads.
+    fn two_column_batch(x_id: i32, y_id: i32) -> RecordBatch {
+        let s = struct_batch(x_id, y_id);
+        let fields = vec![
+            Arc::new(field_with_id("a", 20)),
+            Arc::clone(&s.schema().fields()[0]),
+        ];
+        let a = Arc::new(Int64Array::from(vec![7])) as Arc<dyn Array>;
+        let columns = vec![a, Arc::clone(s.column(0))];
+        RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap()
+    }
+
+    /// The schema holding only column `index` of `batch`.
+    fn column_schema(batch: &RecordBatch, index: usize) -> SchemaRef {
+        Arc::new(Schema::new(vec![Arc::clone(
+            &batch.schema().fields()[index],
+        )]))
+    }
+
+    /// Write `batch` to a Parquet file with no key-value metadata at all. arrow-rs then derives
+    /// a file schema equal to the batch schema, and DataFusion's opener skips the expression
+    /// adapter on a predicate-free scan of it. Both are asserted here so the scan tests below
+    /// exercise that path rather than the adapter.
+    fn write_bare_parquet(batch: &RecordBatch) -> PartitionedFile {
+        let filename = get_temp_filename()
+            .as_path()
+            .as_os_str()
+            .to_str()
+            .unwrap()
+            .to_string();
+        let file = File::create(&filename).unwrap();
+        let options = ArrowWriterOptions::new().with_skip_arrow_metadata(true);
+        let mut writer = ArrowWriter::try_new_with_options(file, batch.schema(), options).unwrap();
+        writer.write(batch).unwrap();
+        writer.close().unwrap();
+
+        let reader_metadata =
+            ArrowReaderMetadata::load(&File::open(&filename).unwrap(), ArrowReaderOptions::new())
+                .unwrap();
+        assert!(
+            reader_metadata
+                .metadata()
+                .file_metadata()
+                .key_value_metadata()
+                .is_none(),
+            "the file must carry no key-value metadata"
+        );
+        assert_eq!(
+            reader_metadata.schema().as_ref(),
+            batch.schema().as_ref(),
+            "the file schema must equal the requested schema so the opener skips the adapter"
+        );
+        PartitionedFile::from_path(filename).unwrap()
+    }
+
+    /// Scan a metadata-free file of `batch` with its own schema requested and no filter.
+    async fn scan_bare_file(
+        batch: &RecordBatch,
+        use_field_id: bool,
+    ) -> Result<Vec<RecordBatch>, DataFusionError> {
+        scan_bare_file_projected(batch, batch.schema(), None, None, use_field_id).await
+    }
+
+    /// Scan a metadata-free file of `batch` with no filter, wired the way the planner wires a
+    /// Spark scan: `data_schema` is the full table schema and `projection` selects the
+    /// `required_schema` columns from it.
+    async fn scan_bare_file_projected(
+        batch: &RecordBatch,
+        required_schema: SchemaRef,
+        data_schema: Option<SchemaRef>,
+        projection: Option<Vec<usize>>,
+        use_field_id: bool,
+    ) -> Result<Vec<RecordBatch>, DataFusionError> {
+        let file = write_bare_parquet(batch);
+        let session_ctx = Arc::new(SessionContext::new());
+        let scan = init_datasource_exec(
+            required_schema,
+            data_schema,
+            None,
+            ObjectStoreUrl::local_filesystem(),
+            vec![vec![file]],
+            projection,
+            None,
+            None,
+            "UTC",
+            true,
+            false,
+            false,
+            false,
+            &session_ctx,
+            false,
+            use_field_id,
+            false,
+        )
+        .map_err(|e| DataFusionError::Execution(e.to_string()))?;
+        let mut stream = scan.execute(0, session_ctx.task_ctx())?;
+        let mut batches = Vec::new();
+        while let Some(batch) = stream.next().await {
+            batches.push(batch?);
+        }
+        Ok(batches)
+    }
+
+    /// The `(x, y)` values of the single struct row in `batches`.
+    fn struct_values(batches: &[RecordBatch]) -> (i64, i64) {
+        assert_eq!(batches.len(), 1);
+        let s = batches[0].column(0).as_struct();
+        (
+            s.column(0)
+                .as_primitive::<arrow::datatypes::Int64Type>()
+                .value(0),
+            s.column(1)
+                .as_primitive::<arrow::datatypes::Int64Type>()
+                .value(0),
+        )
+    }
+
+    /// Regression test for #5801: with no key-value metadata the file schema equals the
+    /// requested schema, so DataFusion's opener never creates the expression adapter that
+    /// validates field ids. The reader factory must reject requested id 1 matching both `x`
+    /// and `y` the way the adapter does, instead of reading the struct positionally.
+    #[tokio::test]
+    async fn duplicate_struct_field_id_rejected_when_opener_skips_adapter() {
+        let err = scan_bare_file(&struct_batch(1, 1), true)
+            .await
+            .expect_err("requested id 1 matches two file fields and must error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("_LEGACY_ERROR_TEMP_2094") && msg.contains("id=1"),
+            "expected duplicate field id error, got: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn unique_struct_field_ids_read_when_opener_skips_adapter() {
+        let batches = scan_bare_file(&struct_batch(1, 2), true).await.unwrap();
+        assert_eq!(struct_values(&batches), (42, 43));
+    }
+
+    /// Without field id matching Spark clips by name, so duplicate ids in the file are not an
+    /// error and the factory must not run the check.
+    #[tokio::test]
+    async fn duplicate_struct_field_ids_ignored_when_field_id_matching_off() {
+        let batches = scan_bare_file(&struct_batch(1, 1), false).await.unwrap();
+        assert_eq!(struct_values(&batches), (42, 43));
+    }
+
+    /// The planner passes the full table schema as `data_schema` and projects the required
+    /// columns from it, so the opener compares the file against `data_schema`. The check must
+    /// still fire for a requested struct under that wiring.
+    #[tokio::test]
+    async fn duplicate_struct_field_id_rejected_under_projected_data_schema() {
+        let batch = two_column_batch(1, 1);
+        let err = scan_bare_file_projected(
+            &batch,
+            column_schema(&batch, 1),
+            Some(batch.schema()),
+            Some(vec![1]),
+            true,
+        )
+        .await
+        .expect_err("requested id 1 matches two file fields and must error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("_LEGACY_ERROR_TEMP_2094") && msg.contains("id=1"),
+            "expected duplicate field id error, got: {msg}"
+        );
+    }
+
+    /// Spark's `clipParquetSchema` validates only the requested columns, so a duplicate id
+    /// inside a struct the read does not project is not an error.
+    #[tokio::test]
+    async fn unrequested_duplicate_struct_field_ids_read_under_projected_data_schema() {
+        let batch = two_column_batch(1, 1);
+        let batches = scan_bare_file_projected(
+            &batch,
+            column_schema(&batch, 0),
+            Some(batch.schema()),
+            Some(vec![0]),
+            true,
+        )
+        .await
+        .unwrap();
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0].num_columns(), 1);
+        let a = batches[0]
+            .column(0)
+            .as_primitive::<arrow::datatypes::Int64Type>();
+        assert_eq!(a.value(0), 7);
     }
 }

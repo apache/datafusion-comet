@@ -45,7 +45,14 @@
 //!
 //! Filed upstream as apache/datafusion#23978. Revert this once the opener merges its deferred
 //! page-index load back into `FileMetadataCache` instead of bypassing it.
+//!
+//! The metadata fetch is also the one per-file hook DataFusion runs unconditionally, so the
+//! factory validates requested Parquet field ids there; see [`FieldIdCheck`].
 
+use crate::parquet::parquet_support::{
+    schema_holds_field_ids, validate_field_mapping, SparkParquetOptions,
+};
+use arrow::datatypes::SchemaRef;
 use bytes::Bytes;
 use datafusion::common::Result as DFResult;
 use datafusion::datasource::physical_plan::parquet::metadata::DFParquetMetadata;
@@ -57,19 +64,23 @@ use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
 use datafusion_datasource::PartitionedFile;
 use futures::future::BoxFuture;
 use futures::{FutureExt, TryFutureExt};
+use object_store::path::Path;
 use object_store::{ObjectStore, ObjectStoreExt};
 use parquet::arrow::arrow_reader::ArrowReaderOptions;
 use parquet::arrow::async_reader::AsyncFileReader;
+use parquet::arrow::parquet_to_arrow_schema;
 use parquet::errors::ParquetError;
 use parquet::file::metadata::{PageIndexPolicy, ParquetMetaData};
+use std::collections::HashMap;
 use std::fmt::Debug;
 use std::ops::Range;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 
 #[derive(Debug)]
 pub struct EagerPageIndexReaderFactory {
     store: Arc<dyn ObjectStore>,
     metadata_cache: Arc<FileMetadataCache>,
+    field_id_check: Option<Arc<FieldIdCheck>>,
 }
 
 impl EagerPageIndexReaderFactory {
@@ -77,7 +88,75 @@ impl EagerPageIndexReaderFactory {
         Self {
             store,
             metadata_cache,
+            field_id_check: None,
         }
+    }
+
+    /// Validate the ids `requested_schema` carries against each file's schema as its footer
+    /// loads. Installs nothing when field id matching is off or the schema carries no id, so
+    /// ordinary reads pay nothing.
+    pub fn with_field_id_check(
+        mut self,
+        requested_schema: SchemaRef,
+        parquet_options: &SparkParquetOptions,
+    ) -> Self {
+        if parquet_options.use_field_id && schema_holds_field_ids(&requested_schema) {
+            self.field_id_check = Some(Arc::new(FieldIdCheck {
+                requested_schema,
+                parquet_options: parquet_options.clone(),
+                validated: Mutex::new(HashMap::new()),
+            }));
+        }
+        self
+    }
+}
+
+/// Validates requested field ids for files the expression adapter never sees: DataFusion's
+/// opener creates the adapter only when a predicate is pushed or the file schema differs from
+/// the requested one, so a metadata-free file whose schema equals it is read positionally
+/// (comet#5801). Resolves the mapping the adapter resolves, so both raise the same error.
+#[derive(Debug)]
+struct FieldIdCheck {
+    requested_schema: SchemaRef,
+    parquet_options: SparkParquetOptions,
+    /// Files already validated, keyed by path to the metadata they were checked against, so a
+    /// footer served from `FileMetadataCache` is not rechecked on every open.
+    validated: Mutex<HashMap<Path, Weak<ParquetMetaData>>>,
+}
+
+impl FieldIdCheck {
+    fn validate(
+        &self,
+        location: &Path,
+        metadata: &Arc<ParquetMetaData>,
+    ) -> parquet::errors::Result<()> {
+        if self.is_validated(location, metadata) {
+            return Ok(());
+        }
+        // The same conversion the opener applies, so field ids land in field metadata under
+        // `PARQUET:field_id` and the mapping resolves against the schema the adapter would see.
+        let file_metadata = metadata.file_metadata();
+        let file_schema = parquet_to_arrow_schema(
+            file_metadata.schema_descr(),
+            file_metadata.key_value_metadata(),
+        )?;
+        validate_field_mapping(&file_schema, &self.requested_schema, &self.parquet_options)
+            .map_err(|e| ParquetError::External(Box::new(e)))?;
+        self.lock()
+            .insert(location.clone(), Arc::downgrade(metadata));
+        Ok(())
+    }
+
+    fn is_validated(&self, location: &Path, metadata: &Arc<ParquetMetaData>) -> bool {
+        self.lock()
+            .get(location)
+            .is_some_and(|seen| std::ptr::eq(Weak::as_ptr(seen), Arc::as_ptr(metadata)))
+    }
+
+    fn lock(&self) -> MutexGuard<'_, HashMap<Path, Weak<ParquetMetaData>>> {
+        self.validated
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 }
 
@@ -101,6 +180,7 @@ impl ParquetFileReaderFactory for EagerPageIndexReaderFactory {
             partitioned_file,
             metadata_cache: Arc::clone(&self.metadata_cache),
             metadata_size_hint,
+            field_id_check: self.field_id_check.clone(),
         }))
     }
 }
@@ -114,6 +194,7 @@ struct EagerPageIndexReader {
     partitioned_file: PartitionedFile,
     metadata_cache: Arc<FileMetadataCache>,
     metadata_size_hint: Option<usize>,
+    field_id_check: Option<Arc<FieldIdCheck>>,
 }
 
 impl AsyncFileReader for EagerPageIndexReader {
@@ -154,6 +235,7 @@ impl AsyncFileReader for EagerPageIndexReader {
         let metadata_cache = Arc::clone(&self.metadata_cache);
         let store = Arc::clone(&self.store);
         let metadata_size_hint = self.metadata_size_hint;
+        let field_id_check = self.field_id_check.clone();
         async move {
             let file_decryption_properties = options
                 .and_then(|o| o.file_decryption_properties())
@@ -164,7 +246,7 @@ impl AsyncFileReader for EagerPageIndexReader {
                 options.map(|o| o.column_index_policy())
             };
 
-            DFParquetMetadata::new(store.as_ref(), &object_meta)
+            let metadata = DFParquetMetadata::new(store.as_ref(), &object_meta)
                 .with_decryption_properties(file_decryption_properties)
                 .with_file_metadata_cache(Some(metadata_cache))
                 .with_metadata_size_hint(metadata_size_hint)
@@ -176,7 +258,11 @@ impl AsyncFileReader for EagerPageIndexReader {
                         "Failed to fetch metadata for file {}: {e}",
                         object_meta.location,
                     ))
-                })
+                })?;
+            if let Some(check) = &field_id_check {
+                check.validate(&object_meta.location, &metadata)?;
+            }
+            Ok(metadata)
         }
         .boxed()
     }
