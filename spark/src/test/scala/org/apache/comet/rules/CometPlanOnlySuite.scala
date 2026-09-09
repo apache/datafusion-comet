@@ -21,7 +21,7 @@ package org.apache.comet.rules
 
 import org.apache.logging.log4j.Level
 import org.apache.spark.CometListenerBusUtils
-import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.{CometTestBase, SparkSession}
 import org.apache.spark.sql.comet.CometPlan
 import org.apache.spark.sql.execution.{FileSourceScanExec, QueryExecution, SparkPlan, SubqueryBroadcastExec}
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
@@ -230,16 +230,18 @@ class CometPlanOnlySuite extends CometTestBase {
     }
   }
 
-  // The report is delivered asynchronously, so a caller can enable plan-only, run the action, and
-  // restore the setting while the callback is still queued. Reading the flag back off the session
-  // at that point drops the report for a query that really did run in plan-only mode.
-  //
-  // The ordering has to be forced or the test proves nothing: normally the bus drains during
-  // `collect()` and the callback sees the flag still on. A fresh session gives a deterministic
-  // registration order - `CometPlanOnly` registers its listener lazily on first use, so on a
-  // session that has never run a plan-only query the gating listener below is registered first
-  // and therefore runs first, holding the bus until the setting has been restored.
-  test("a report survives the setting being restored before the callback runs") {
+  /**
+   * Runs `SELECT id, count(*) FROM range(100) GROUP BY id` on a fresh session with plan-only mode
+   * on, holding the listener bus until `whileParked` has run, and returns the reports.
+   *
+   * The ordering has to be forced or a test using this proves nothing: normally the bus drains
+   * during `collect()` and the callback sees the settings still in place. A fresh session gives a
+   * deterministic registration order - `CometPlanOnly` registers its listener lazily on first
+   * use, so on a session that has never run a plan-only query the gating listener below is
+   * registered first and therefore runs first, holding the bus until `whileParked` has returned.
+   */
+  private def reportsWithSettingsChangedBeforeCallback(
+      whileParked: SparkSession => Unit): Seq[String] = {
     val session = spark.newSession()
     val gate = new java.util.concurrent.CountDownLatch(1)
     val gating = new QueryExecutionListener {
@@ -257,54 +259,103 @@ class CometPlanOnlySuite extends CometTestBase {
           (CometConf.COMET_EXPLAIN_PLAN_ONLY_ENABLED.key -> "true")
         conf.foreach { case (k, v) => session.conf.set(k, v) }
         session.sql("SELECT id, count(*) FROM range(100) GROUP BY id").collect()
-        // The callback is parked in `gating.onSuccess`, so restoring the setting here happens
-        // strictly before `CometPlanOnly` gets to look at it.
-        session.conf.unset(CometConf.COMET_EXPLAIN_PLAN_ONLY_ENABLED.key)
+        // The callback is parked in `gating.onSuccess`, so anything done here happens strictly
+        // before `CometPlanOnly` gets to look at the settings.
+        whileParked(session)
         gate.countDown()
         CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
       }
-      val reports = appender.loggingEvents
+      appender.loggingEvents
         .map(_.getMessage.getFormattedMessage)
         .filter(_.startsWith(PLAN_ONLY_PREFIX))
         .toSeq
-      assert(
-        reports.size == 1,
-        s"expected the query planned under plan-only mode to still be reported, got:\n" +
-          reports.mkString("\n\n"))
     } finally {
       gate.countDown()
       session.listenerManager.unregister(gating)
     }
   }
 
+  // The report is delivered asynchronously, so a caller can enable plan-only, run the action, and
+  // restore the setting while the callback is still queued. Reading the flag back off the session
+  // at that point drops the report for a query that really did run in plan-only mode. The gate
+  // itself is the one setting the snapshot overrides, so restoring it must not cost the report.
+  test("a report survives the setting being restored before the callback runs") {
+    val reports = reportsWithSettingsChangedBeforeCallback { session =>
+      session.conf.unset(CometConf.COMET_EXPLAIN_PLAN_ONLY_ENABLED.key)
+    }
+    assert(
+      reports.size == 1,
+      "expected the query planned under plan-only mode to still be reported, got:\n" +
+        reports.mkString("\n\n"))
+    assert(
+      reports.head.contains("Comet accelerated"),
+      s"expected a coverage report, got:\n${reports.head}")
+  }
+
+  // Every other setting shapes the preview rather than gating it, and the snapshot cannot be
+  // injected into the conversion: `SparkPlan.conf` is the captured session's live conf, so
+  // `op.conf` reads it whatever the listener does with active sessions or thread-locals. Reporting
+  // anyway would describe a configuration the query never ran under, so the report is skipped and
+  // says which settings moved. Compared here against the unchanged-settings control above, rather
+  // than only asserting that some line was logged.
+  test("a report is skipped when a conversion setting changed before the callback runs") {
+    val changed = reportsWithSettingsChangedBeforeCallback { session =>
+      // Not the gate: a setting the preview's conversion actually reads.
+      session.conf.set(CometConf.COMET_EXEC_SORT_ENABLED.key, "false")
+    }
+    assert(changed.size == 1, s"expected one line, got:\n${changed.mkString("\n\n")}")
+    assert(
+      changed.head.contains("settings changed since it was planned"),
+      s"expected the skip diagnostic, got:\n${changed.head}")
+    assert(
+      changed.head.contains(CometConf.COMET_EXEC_SORT_ENABLED.key),
+      s"expected the diagnostic to name the changed setting, got:\n${changed.head}")
+    assert(
+      !changed.head.contains("Comet accelerated"),
+      s"expected no coverage numbers from a configuration the query never ran under, got:\n" +
+        changed.head)
+  }
+
   // `ReusedExchangeExec` re-aliases the shared child's output, so a self-join can expose `k#16`
   // while its child produces `k#3`. Undoing the reuse without carrying those IDs across leaves
   // the parent sort referencing an attribute nothing below it produces, and Comet's binder then
   // declines the sort and the join above it - understating coverage for work Comet would have run.
-  test("a reused exchange keeps its output IDs so consumers still convert") {
-    withSQLConf(
-      planOnlyConf(aqe = false, useV1 = true) ++ Seq(
-        CometConf.COMET_EXPLAIN_PLAN_ONLY_ENABLED.key -> "true",
-        SQLConf.EXCHANGE_REUSE_ENABLED.key -> "true",
-        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1"): _*) {
-      withParquetTable((0 until 100).map(i => (i, i % 5)), "tbl") {
-        val reports = capturePlanOnlyReports {
-          spark
-            .sql("""SELECT a._2, b._2 FROM
-                   |  (SELECT _2, count(*) c FROM tbl GROUP BY _2) a
-                   |  JOIN
-                   |  (SELECT _2, count(*) c FROM tbl GROUP BY _2) b
-                   |  ON a._2 = b._2""".stripMargin)
-            .collect()
+  //
+  // Run with projection both enabled and disabled. Restoring identity with an added `ProjectExec`
+  // passed the first and failed the second: the synthetic node fails
+  // `CometProjectExec.enabledConfig`, so the parent sort loses its native child and the join falls
+  // back, losing a supported sort/join purely because of a bookkeeping node that a real conversion
+  // of those branches would not contain. Rewriting the subtree's attribute IDs instead adds no node
+  // and reads no user setting.
+  Seq(true, false).foreach { projectEnabled =>
+    test(
+      "a reused exchange keeps its output IDs so consumers still convert " +
+        s"(project.enabled=$projectEnabled)") {
+      withSQLConf(
+        planOnlyConf(aqe = false, useV1 = true) ++ Seq(
+          CometConf.COMET_EXPLAIN_PLAN_ONLY_ENABLED.key -> "true",
+          CometConf.COMET_EXEC_PROJECT_ENABLED.key -> projectEnabled.toString,
+          SQLConf.EXCHANGE_REUSE_ENABLED.key -> "true",
+          SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1"): _*) {
+        withParquetTable((0 until 100).map(i => (i, i % 5)), "tbl") {
+          val reports = capturePlanOnlyReports {
+            spark
+              .sql("""SELECT a._2, b._2 FROM
+                     |  (SELECT _2, count(*) c FROM tbl GROUP BY _2) a
+                     |  JOIN
+                     |  (SELECT _2, count(*) c FROM tbl GROUP BY _2) b
+                     |  ON a._2 = b._2""".stripMargin)
+              .collect()
+          }
+          assert(reports.size == 1, s"expected one report, got:\n${reports.mkString("\n\n")}")
+          val report = reports.head
+          assert(
+            report.contains("CometSortMergeJoin") || report.contains("CometHashJoin"),
+            s"the join over a reused exchange should convert in the preview, got:\n$report")
+          assert(
+            !report.contains("\nSort ") && !report.contains("+- Sort "),
+            s"no Sort should be left on Spark by a lost attribute binding, got:\n$report")
         }
-        assert(reports.size == 1, s"expected one report, got:\n${reports.mkString("\n\n")}")
-        val report = reports.head
-        assert(
-          report.contains("CometSortMergeJoin") || report.contains("CometHashJoin"),
-          s"the join over a reused exchange should convert in the preview, got:\n$report")
-        assert(
-          !report.contains("\nSort ") && !report.contains("+- Sort "),
-          s"no Sort should be left on Spark by a lost attribute binding, got:\n$report")
       }
     }
   }

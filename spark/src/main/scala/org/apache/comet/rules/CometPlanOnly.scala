@@ -23,13 +23,14 @@ import scala.util.control.NonFatal
 
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.catalyst.expressions.Alias
+import org.apache.spark.sql.catalyst.expressions.{Attribute, ExprId}
 import org.apache.spark.sql.catalyst.trees.TreeNodeTag
-import org.apache.spark.sql.execution.{ApplyColumnarRulesAndInsertTransitions, BaseSubqueryExec, ColumnarToRowExec, CommandResultExec, ExecSubqueryExpression, InputAdapter, ProjectExec, QueryExecution, ReusedSubqueryExec, RowToColumnarExec, SparkPlan, WholeStageCodegenExec}
+import org.apache.spark.sql.execution.{ApplyColumnarRulesAndInsertTransitions, BaseSubqueryExec, ColumnarToRowExec, CommandResultExec, ExecSubqueryExpression, InputAdapter, QueryExecution, ReusedSubqueryExec, RowToColumnarExec, SparkPlan, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, QueryStageExec}
 import org.apache.spark.sql.execution.command.ExecutedCommandExec
 import org.apache.spark.sql.execution.datasources.v2.V2CommandExec
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec}
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.util.QueryExecutionListener
 
 import org.apache.comet.{CometConf, ExtendedExplainInfo}
@@ -94,11 +95,41 @@ object CometPlanOnly extends Logging {
    * callback is delivered is enough. Reading them back off the session then decides one query's
    * report using another query's settings, which usually means dropping it. Snapshotting at plan
    * time keeps the decision with the query it belongs to.
+   *
+   * `sqlConfs` is every SQL conf that was explicitly set, not just Comet's. The preview reruns
+   * the conversion rules, and those read far more than three flags: `isCometLoaded` and the two
+   * rules take the session conf, `CometExecRule` reads per-operator gates and the strict-fallback
+   * and shuffle settings off `op.conf`, and the serde reads Spark settings such as ANSI mode and
+   * the session time zone. `op.conf` is `session.sessionState.conf` of the session each node
+   * captured when it was constructed (`SparkPlan.conf`), so no thread-local override and no
+   * cloned session can redirect it. The snapshot therefore cannot be *injected* into the preview;
+   * it is used to check that the configuration the preview will read is still the one the query
+   * was planned under, and the report is skipped when it is not. See [[changedSince]].
    */
   private case class PlanOnlySettings(
       enabled: Boolean,
       cometLoaded: Boolean,
-      execEnabled: Boolean)
+      execEnabled: Boolean,
+      sqlConfs: Map[String, String]) {
+
+    /**
+     * The settings that have changed since this snapshot was taken, other than the reporting gate
+     * itself.
+     *
+     * `spark.comet.explain.planOnly.enabled` is deliberately excluded: turning plan-only mode
+     * off, or leaving the `withSQLConf` block that turned it on, must not drop the report for a
+     * query that was planned while it was on. That flag only gates reporting, and the snapshot is
+     * the authority for it. Everything else shapes the preview, so a difference there means the
+     * preview would describe a configuration the query never ran under.
+     */
+    def changedSince(conf: SQLConf): Seq[String] = {
+      val now = conf.getAllConfs
+      val gate = CometConf.COMET_EXPLAIN_PLAN_ONLY_ENABLED.key
+      (sqlConfs.keySet ++ now.keySet).toSeq.sorted
+        .filterNot(_ == gate)
+        .filter(key => sqlConfs.get(key) != now.get(key))
+    }
+  }
 
   /**
    * Set on the plan `CometExecRule` saw while plan-only mode was on. Read back in `report`, which
@@ -106,19 +137,20 @@ object CometPlanOnly extends Logging {
    */
   private val PLAN_ONLY_SETTINGS = new TreeNodeTag[PlanOnlySettings]("CometPlanOnlySettings")
 
+  private def snapshot(conf: SQLConf): PlanOnlySettings =
+    PlanOnlySettings(
+      enabled = CometConf.COMET_EXPLAIN_PLAN_ONLY_ENABLED.get(conf),
+      cometLoaded = isCometLoaded(conf),
+      execEnabled = CometConf.COMET_EXEC_ENABLED.get(conf),
+      sqlConfs = conf.getAllConfs)
+
   /**
    * Record the plan-time settings on `plan` and return it unchanged.
    *
    * Called by `CometExecRule` on the plan it is declining to convert.
    */
   def tagSettings(session: SparkSession, plan: SparkPlan): SparkPlan = {
-    val conf = session.sessionState.conf
-    plan.setTagValue(
-      PLAN_ONLY_SETTINGS,
-      PlanOnlySettings(
-        enabled = CometConf.COMET_EXPLAIN_PLAN_ONLY_ENABLED.get(conf),
-        cometLoaded = isCometLoaded(conf),
-        execEnabled = CometConf.COMET_EXEC_ENABLED.get(conf)))
+    plan.setTagValue(PLAN_ONLY_SETTINGS, snapshot(session.sessionState.conf))
     plan
   }
 
@@ -142,13 +174,7 @@ object CometPlanOnly extends Logging {
         }).flatMap(search).headOption)
         .orElse(plan.children.flatMap(search).headOption)
 
-    search(qe.executedPlan).getOrElse {
-      val conf = qe.sparkSession.sessionState.conf
-      PlanOnlySettings(
-        enabled = CometConf.COMET_EXPLAIN_PLAN_ONLY_ENABLED.get(conf),
-        cometLoaded = isCometLoaded(conf),
-        execEnabled = CometConf.COMET_EXEC_ENABLED.get(conf))
-    }
+    search(qe.executedPlan).getOrElse(snapshot(qe.sparkSession.sessionState.conf))
   }
 
   /**
@@ -169,8 +195,19 @@ object CometPlanOnly extends Logging {
       val settings = settingsFor(qe)
       if (settings.enabled && settings.cometLoaded && settings.execEnabled &&
         !isMetadataOnly(qe.executedPlan)) {
-        val preview = previewOf(session, qe.executedPlan)
-        logWarning(s"$REPORT_PREFIX\n${new ExtendedExplainInfo().generateExtendedInfo(preview)}")
+        val changed = settings.changedSince(session.sessionState.conf)
+        if (changed.nonEmpty) {
+          // Better no report than one describing a configuration the query never ran under. The
+          // preview cannot be built under the snapshot, so the only honest options are to report
+          // what the query was planned with or to say why nothing is being reported.
+          logWarning(
+            s"$REPORT_PREFIX not reporting this query: settings changed since it was planned, " +
+              s"so a preview would describe a different configuration (${changed.mkString(", ")})")
+        } else {
+          val preview = previewOf(session, qe.executedPlan)
+          logWarning(
+            s"$REPORT_PREFIX\n${new ExtendedExplainInfo().generateExtendedInfo(preview)}")
+        }
       }
     } catch {
       case NonFatal(e) =>
@@ -267,11 +304,30 @@ object CometPlanOnly extends Logging {
    * output attributes instead of its own.
    *
    * A no-op when the IDs already agree, which is the common case: reuse only re-aliases when the
-   * two copies were planned with different attribute IDs. Otherwise a `ProjectExec` of aliases
-   * carries the wrapper's `exprId`s, which is the cheapest node that can re-label an output
-   * without disturbing the subtree the preview is trying to measure. It does add one operator to
-   * the report, but a projection of aliases is one Comet converts, so the coverage percentage is
-   * not skewed the way losing the parent sort and its join was.
+   * two copies were planned with different attribute IDs.
+   *
+   * Otherwise the subtree's own attributes are rewritten to the wrapper's, everywhere they appear
+   * beneath it, rather than re-labelled by an added `ProjectExec`. Two reasons, and both of them
+   * are about the added node changing the thing being measured:
+   *
+   *   - a projection participates in `spark.comet.exec.project.enabled`. With that off, the
+   *     synthetic node fails `CometProjectExec.enabledConfig`, the parent sort then has no native
+   *     child, and the consuming join falls back too - so the preview would lose a supported
+   *     sort/join purely because of a bookkeeping node, which is the failure this method exists
+   *     to avoid. A real conversion of those branches has no such node in it.
+   *   - it counts as an eligible operator, so it moves the coverage percentage the report exists
+   *     to state.
+   *
+   * The rewrite runs on the whole subtree, not just its root, because almost every operator
+   * derives `output` from its children: the producing leaf has to be rewritten for the root to
+   * present the new IDs. That is safe because attribute IDs are globally unique, so an ID in the
+   * root's output means the same attribute wherever it appears below, and intermediate attributes
+   * that are not in the root's output are left alone. It is also safe to do at all only because
+   * this plan is a throwaway preview that is never executed.
+   *
+   * The direction matters. Rewriting the consumers instead, to reference the shared subtree's
+   * IDs, would merge the two copies of a self-join onto one set of attributes, which is exactly
+   * what `ReusedExchangeExec`'s re-aliasing exists to prevent.
    */
   private def restoreReusedOutput(reused: ReusedExchangeExec, stripped: SparkPlan): SparkPlan = {
     val target = reused.output
@@ -281,11 +337,16 @@ object CometPlanOnly extends Logging {
       }) {
       return stripped
     }
-    val aliases = target.zip(source).map { case (t, s) =>
-      if (t.exprId == s.exprId) s
-      else Alias(s, t.name)(exprId = t.exprId, qualifier = t.qualifier)
+    val rewrites: Map[ExprId, Attribute] = source
+      .zip(target)
+      .collect { case (s, t) if s.exprId != t.exprId => s.exprId -> t }
+      .toMap
+    stripped.transformUp { case node =>
+      node.transformExpressions {
+        case a: Attribute if rewrites.contains(a.exprId) =>
+          rewrites(a.exprId)
+      }
     }
-    ProjectExec(aliases, stripped)
   }
 
   /**
