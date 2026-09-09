@@ -39,7 +39,7 @@ use datafusion_comet_common::SparkError;
 use datafusion_comet_spark_expr::EvalMode;
 use log::debug;
 use object_store::path::Path;
-use object_store::{parse_url, ObjectStore};
+use object_store::{parse_url, ObjectStore, ObjectStoreScheme};
 use parquet::arrow::PARQUET_FIELD_ID_META_KEY;
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -667,13 +667,46 @@ fn hash_object_store_configs(configs: &HashMap<String, String>) -> u64 {
     hasher.finish()
 }
 
-/// Parses the url, registers the object store with configurations, and returns a tuple of the object store url
-/// and object store path
+/// The selected backend, independent of the URL used to register it in DataFusion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ObjectStoreBackend {
+    Local,
+    Remote,
+    Other,
+}
+
+/// Classifies a normalized URL using the same parser as backend construction. `is_hdfs` records
+/// the configured libhdfs routing decision, which takes precedence over cloud-like schemes.
+/// This does not create a store or perform I/O; unsupported native URLs return a parsing error.
+fn object_store_backend(url: &Url, is_hdfs: bool) -> Result<ObjectStoreBackend, ExecutionError> {
+    if is_hdfs {
+        // Custom libhdfs schemes may look like cloud URLs but retain their own range-read API.
+        return Ok(ObjectStoreBackend::Other);
+    }
+    let (scheme, _) =
+        ObjectStoreScheme::parse(url).map_err(|e| ExecutionError::GeneralError(e.to_string()))?;
+    Ok(match scheme {
+        ObjectStoreScheme::Local => ObjectStoreBackend::Local,
+        ObjectStoreScheme::AmazonS3
+        | ObjectStoreScheme::GoogleCloudStorage
+        | ObjectStoreScheme::MicrosoftAzure
+        | ObjectStoreScheme::Http => ObjectStoreBackend::Remote,
+        // Memory and future backends are not implicitly classified as remote network traffic.
+        _ => ObjectStoreBackend::Other,
+    })
+}
+
+/// Normalizes the owned URL using the borrowed configuration, selects and registers the backend
+/// in `runtime_env`, and returns its registry URL, object path, and I/O classification. Stores are
+/// reused from the process-wide cache when their normalized physical URL, configuration, and
+/// selected backend match. URL, configuration, and store-construction failures propagate to the
+/// caller. Callers must use the returned backend classification rather than infer it from an
+/// original alias or the synthetic registration scheme.
 pub(crate) fn prepare_object_store_with_configs(
     runtime_env: Arc<RuntimeEnv>,
     url: String,
     object_store_configs: &HashMap<String, String>,
-) -> Result<(ObjectStoreUrl, Path), ExecutionError> {
+) -> Result<(ObjectStoreUrl, Path, ObjectStoreBackend), ExecutionError> {
     // `is_hdfs` comes back from normalization because it must be decided on the URL as written.
     // Re-deriving it from the normalized URL would let an `s3a`/alias rewrite land on an `s3`
     // entry in `fs.comet.libhdfs.schemes` and route an S3 read through libhdfs.
@@ -681,6 +714,9 @@ pub(crate) fn prepare_object_store_with_configs(
         url,
         is_hdfs: is_hdfs_scheme,
     } = normalize_object_store_url(url.as_str(), object_store_configs)?;
+    // Configured S3 aliases must be normalized before the object-store parser classifies them.
+    // HDFS routing still wins, including when its configured schemes resemble remote stores.
+    let backend = object_store_backend(&url, is_hdfs_scheme)?;
     let scheme = url.scheme();
     let url_key = format!(
         "{}://{}",
@@ -749,12 +785,120 @@ pub(crate) fn prepare_object_store_with_configs(
         ))?
     };
     runtime_env.register_object_store(object_store_url.as_ref(), object_store);
-    Ok((object_store_url, object_store_path))
+    Ok((object_store_url, object_store_path, backend))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{hash_object_store_configs, object_store_cache, prepare_object_store_with_configs};
+    /// Checks parser-backed I/O labels without constructing stores, including libhdfs overrides
+    /// and rejection of unknown native schemes. Configured S3 aliases follow URL normalization.
+    #[test]
+    fn classifies_the_selected_backend_using_object_store_parser() {
+        use super::{
+            is_hdfs_scheme, normalize_object_store_url, object_store_backend, ObjectStoreBackend,
+        };
+        let configs = std::collections::HashMap::from([(
+            "fs.comet.libhdfs.schemes".to_string(),
+            "s3,abfs".to_string(),
+        )]);
+        for address in [
+            "s3://bucket/path",
+            "s3a://bucket/path",
+            "gs://bucket/path",
+            "az://container/path",
+            "adl://container/path",
+            "azure://container/path",
+            "abfs://container/path",
+            "abfss://container/path",
+            "http://example.com/path",
+            "https://example.com/path",
+            "https://account.blob.core.windows.net/container/path",
+        ] {
+            let url = url::Url::parse(address).unwrap();
+            assert_eq!(
+                object_store_backend(&url, false).unwrap(),
+                ObjectStoreBackend::Remote,
+                "{address}"
+            );
+            if is_hdfs_scheme(&url, &configs) {
+                assert_eq!(
+                    object_store_backend(&url, true).unwrap(),
+                    ObjectStoreBackend::Other
+                );
+            }
+        }
+        assert_eq!(
+            object_store_backend(&url::Url::parse("file:///tmp/a").unwrap(), false).unwrap(),
+            ObjectStoreBackend::Local
+        );
+        assert_eq!(
+            object_store_backend(&url::Url::parse("memory:///a").unwrap(), false).unwrap(),
+            ObjectStoreBackend::Other
+        );
+        // These spellings are not accepted native backends in pinned object_store 0.13.2.
+        for scheme in ["gcs", "wasb", "wasbs", "s3n"] {
+            let url = url::Url::parse(&format!("{scheme}://bucket/path")).unwrap();
+            assert!(object_store_backend(&url, false).is_err());
+            assert_eq!(
+                object_store_backend(&url, true).unwrap(),
+                ObjectStoreBackend::Other
+            );
+        }
+
+        // An alias selected for libhdfs must keep its original scheme and I/O classification,
+        // even when the same alias is also configured as S3-compatible.
+        let configs = std::collections::HashMap::from([
+            (
+                "fs.comet.s3Compliant.schemes".to_string(),
+                "blob".to_string(),
+            ),
+            ("fs.comet.libhdfs.schemes".to_string(), "blob".to_string()),
+        ]);
+        let normalized = normalize_object_store_url("blob://bucket/path", &configs).unwrap();
+        assert_eq!(normalized.url.scheme(), "blob");
+        assert_eq!(
+            object_store_backend(&normalized.url, normalized.is_hdfs).unwrap(),
+            ObjectStoreBackend::Other
+        );
+    }
+
+    /// Normalizes original URL spellings and classifies their carried routing decisions without
+    /// creating stores or performing I/O. Aliases remain remote unless explicitly routed to
+    /// libhdfs, even when normalization rewrites their scheme to a configured libhdfs scheme.
+    #[test]
+    fn classifies_s3_aliases_using_original_libhdfs_routing() {
+        use super::{normalize_object_store_url, object_store_backend, ObjectStoreBackend};
+
+        for (input, libhdfs_schemes, expected) in [
+            ("s3a://bucket/path", "s3", ObjectStoreBackend::Remote),
+            ("blob://bucket/path", "s3", ObjectStoreBackend::Remote),
+            ("s3://bucket/path", "s3", ObjectStoreBackend::Other),
+            ("s3a://bucket/path", "s3a", ObjectStoreBackend::Other),
+            ("blob://bucket/path", "blob", ObjectStoreBackend::Other),
+        ] {
+            let configs = std::collections::HashMap::from([
+                (
+                    "fs.comet.s3Compliant.schemes".to_string(),
+                    "blob".to_string(),
+                ),
+                (
+                    "fs.comet.libhdfs.schemes".to_string(),
+                    libhdfs_schemes.to_string(),
+                ),
+            ]);
+            let normalized = normalize_object_store_url(input, &configs).unwrap();
+            assert_eq!(
+                object_store_backend(&normalized.url, normalized.is_hdfs).unwrap(),
+                expected,
+                "{input} with libhdfs.schemes={libhdfs_schemes}"
+            );
+        }
+    }
+
+    use super::{
+        hash_object_store_configs, object_store_cache, prepare_object_store_with_configs,
+        ObjectStoreBackend,
+    };
     use bytes::Bytes;
     use datafusion::execution::object_store::ObjectStoreUrl;
     use datafusion::execution::runtime_env::RuntimeEnv;
@@ -776,8 +920,10 @@ mod tests {
         options: HashMap<String, String>,
     }
 
-    // Seed distinct stores so these tests exercise cache lookup, registration and
-    // actual reads without needing cloud credentials or a running Hadoop cluster.
+    /// Seeds two distinct in-memory stores under the expected cache identities for `cases`,
+    /// using a unique `bucket` to isolate concurrent tests. Checks registration, returned I/O
+    /// classification, and actual reads in both planning orders without cloud/Hadoop access.
+    /// Removes the seeded entries on success; assertion failures panic with test evidence.
     async fn check_isolated_stores(bucket: &str, cases: [StoreConfig; 2]) {
         let path = Path::from("directory/part one.parquet");
         let stores: [Arc<dyn ObjectStore>; 2] =
@@ -821,7 +967,7 @@ mod tests {
                 );
             }
             let prepared = prepared.map(Option::unwrap);
-            let urls = prepared.each_ref().map(|(url, _)| url.clone());
+            let urls = prepared.each_ref().map(|(url, _, _)| url.clone());
             assert_ne!(urls[0], urls[1]);
             if let Some(previous) = &previous_urls {
                 assert_eq!(
@@ -830,8 +976,18 @@ mod tests {
                 );
             }
             previous_urls = Some(urls);
-            for (index, (url, actual_path)) in prepared.iter().enumerate() {
+            for (index, (url, actual_path, backend)) in prepared.iter().enumerate() {
                 assert_eq!(actual_path, &path);
+                // The label must follow the selected backend even when both original URLs
+                // normalize to s3 with identical configuration and reuse cached stores.
+                assert_eq!(
+                    *backend,
+                    if cases[index].hdfs_backend {
+                        ObjectStoreBackend::Other
+                    } else {
+                        ObjectStoreBackend::Remote
+                    },
+                );
                 let store = runtime.object_store(url).unwrap();
                 assert!(Arc::ptr_eq(&store, &stores[index]));
                 assert_eq!(
@@ -856,6 +1012,8 @@ mod tests {
         }
     }
 
+    /// Verifies that `s3a` stays Remote while explicitly Hadoop-routed `s3` stays Other
+    /// under the same options, with distinct cached contents in either planning order.
     #[tokio::test]
     async fn isolates_backends_even_when_s3_alias_and_configs_match() {
         let options = HashMap::from([("fs.comet.libhdfs.schemes".into(), "s3".into())]);
@@ -915,6 +1073,8 @@ mod tests {
         .await;
     }
 
+    /// Checks native alias cache reuse in both planning orders, including the returned Remote
+    /// label. Seeds and removes one in-memory cache entry; no remote requests are performed.
     #[test]
     fn native_s3_aliases_share_cache_and_registration_identity() {
         let options = HashMap::new();
@@ -932,12 +1092,13 @@ mod tests {
         for schemes in [["s3", "s3a"], ["s3a", "s3"]] {
             let runtime = Arc::new(RuntimeEnv::default());
             for scheme in schemes {
-                let (url, _) = prepare_object_store_with_configs(
+                let (url, _, backend) = prepare_object_store_with_configs(
                     Arc::clone(&runtime),
                     format!("{scheme}://comet-isolation-native-aliases/file.parquet"),
                     &options,
                 )
                 .unwrap();
+                assert_eq!(backend, ObjectStoreBackend::Remote);
                 assert!(Arc::ptr_eq(&runtime.object_store(&url).unwrap(), &store));
                 assert!(url.as_str().starts_with("s3+comet-"));
                 if let Some(previous) = &previous {
@@ -949,6 +1110,8 @@ mod tests {
         object_store_cache().write().unwrap().remove(&key);
     }
 
+    /// Checks that native file construction returns Local and cached Hadoop file routing returns
+    /// Other, with distinct registered stores. Removes its synthetic Hadoop cache entry on success.
     #[test]
     fn keeps_native_file_url_separate_from_explicit_hadoop_file_routing() {
         let runtime = Arc::new(RuntimeEnv::default());
@@ -963,18 +1126,20 @@ mod tests {
             .write()
             .unwrap()
             .insert(key.clone(), Arc::clone(&hdfs_store));
-        let (hdfs_url, _) = prepare_object_store_with_configs(
+        let (hdfs_url, _, hdfs_backend) = prepare_object_store_with_configs(
             Arc::clone(&runtime),
             "file:///comet-isolation-file-routing.parquet".into(),
             &options,
         )
         .unwrap();
-        let (native_url, _) = prepare_object_store_with_configs(
+        let (native_url, _, native_backend) = prepare_object_store_with_configs(
             Arc::clone(&runtime),
             "file:///comet-isolation-file-routing.parquet".into(),
             &HashMap::new(),
         )
         .unwrap();
+        assert_eq!(native_backend, ObjectStoreBackend::Local);
+        assert_eq!(hdfs_backend, ObjectStoreBackend::Other);
         assert_eq!(native_url, ObjectStoreUrl::local_filesystem());
         assert_ne!(native_url, hdfs_url);
         assert!(Arc::ptr_eq(
@@ -996,6 +1161,7 @@ mod tests {
     ) -> Result<(ObjectStoreUrl, Path), ExecutionError> {
         use crate::parquet::parquet_support::prepare_object_store_with_configs;
         prepare_object_store_with_configs(runtime_env, url, &HashMap::new())
+            .map(|(url, path, _)| (url, path))
     }
 
     #[cfg(not(feature = "hdfs-opendal"))]
@@ -1346,6 +1512,8 @@ mod tests {
         }
     }
 
+    /// Constructs S3 stores using anonymous credentials, without reading remote objects, and
+    /// checks that both alias URL forms return the normalized bucket, key, and remote I/O label.
     #[cfg(not(feature = "hdfs-opendal"))]
     #[test]
     #[cfg_attr(miri, ignore)] // AWS credential providers and object_store call foreign functions
@@ -1383,7 +1551,7 @@ mod tests {
                 "warehouse/data/part-0.snappy.parquet",
             ),
         ] {
-            let (object_store_url, path) = prepare_object_store_with_configs(
+            let (object_store_url, path, backend) = prepare_object_store_with_configs(
                 Arc::new(RuntimeEnv::default()),
                 input.to_string(),
                 &configs,
@@ -1398,6 +1566,7 @@ mod tests {
                 .unwrap()
             );
             assert_eq!(path, Path::from(expected_path));
+            assert_eq!(backend, super::ObjectStoreBackend::Remote);
         }
     }
 
@@ -1431,7 +1600,7 @@ mod tests {
             "s3a://test_bucket/comet/part-00000.snappy.parquet",
             "blob://test_bucket/comet/part-00000.snappy.parquet",
         ] {
-            let (object_store_url, path) = prepare_object_store_with_configs(
+            let (object_store_url, path, backend) = prepare_object_store_with_configs(
                 Arc::new(RuntimeEnv::default()),
                 input.to_string(),
                 &configs,
@@ -1446,6 +1615,7 @@ mod tests {
                 .unwrap()
             );
             assert_eq!(path, Path::from("/comet/part-00000.snappy.parquet"));
+            assert_eq!(backend, super::ObjectStoreBackend::Remote);
         }
 
         // Listing `s3a` is the supported way to route it through libhdfs, and still does.
