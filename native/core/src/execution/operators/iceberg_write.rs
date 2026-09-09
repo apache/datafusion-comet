@@ -152,9 +152,16 @@ impl AbortOnDrop {
     /// Delete the tracked files, awaiting completion, and give up ownership. Preferred over the
     /// `Drop` path wherever the failure is observed inside the task's own future, so the deletes
     /// finish before the task reports its error rather than racing the runtime's shutdown.
+    ///
+    /// Ownership is given up only after the deletes have finished. Clearing `armed` first would
+    /// remove the cancellation fallback while deletion is still in progress: if this future is
+    /// dropped after one delete has yielded, `Drop` would see a disarmed guard, return
+    /// immediately, and leave the remaining files with no owner. Re-deleting a file that the
+    /// cancelled run already removed is harmless, since `delete_task_files` is best effort and
+    /// logs rather than fails.
     async fn abort(&mut self) {
-        self.armed = false;
         delete_task_files(&self.file_io, self.generator.locations()).await;
+        self.armed = false;
     }
 }
 
@@ -2128,6 +2135,83 @@ mod tests {
                 data_files[0].file_path()
             );
         }
+    }
+
+    /// Cancelling `abort()` part way through must leave the guard armed, so `Drop` still owns
+    /// the files the cancelled run did not reach. Clearing `armed` before the await made `Drop`
+    /// return immediately and orphaned the remainder.
+    ///
+    /// This uses the filesystem `FileIO` rather than the in-memory one on purpose: the memory
+    /// backend completes every delete inside a single poll (measured: one poll, zero pendings),
+    /// so a mid-deletion cancellation cannot be constructed against it.
+    #[tokio::test]
+    async fn cancelling_abort_keeps_the_guard_armed() {
+        use std::future::Future;
+        use std::task::Context;
+
+        let dir = tempfile::tempdir().unwrap();
+        let file_io = FileIOBuilder::new(Arc::new(OpenDalStorageFactory::Fs)).build();
+        let generator = tracking_generator(&format!("file://{}", dir.path().display()));
+        let mut locations = Vec::new();
+        for i in 0..4 {
+            let location = generator.generate_location(None, &format!("{i}.parquet"));
+            file_io
+                .new_output(&location)
+                .unwrap()
+                .write(bytes::Bytes::from_static(b"parquet"))
+                .await
+                .unwrap();
+            locations.push(location);
+        }
+
+        let mut guard = AbortOnDrop {
+            file_io: file_io.clone(),
+            generator,
+            armed: true,
+        };
+        {
+            // A no-op waker means nothing ever wakes the future, so the first delete that yields
+            // strands it. Dropping it there is the cancellation.
+            let waker = futures::task::noop_waker();
+            let mut cx = Context::from_waker(&waker);
+            let mut fut = Box::pin(guard.abort());
+            assert!(
+                fut.as_mut().poll(&mut cx).is_pending(),
+                "expected the deletes to yield so the abort can be cancelled mid-flight"
+            );
+        }
+
+        assert!(
+            guard.armed,
+            "a cancelled abort must not have given up ownership of the remaining files"
+        );
+        let mut survived = Vec::new();
+        for location in &locations {
+            if file_io.exists(location).await.unwrap() {
+                survived.push(location.clone());
+            }
+        }
+        assert!(
+            !survived.is_empty(),
+            "the cancellation left nothing behind, so this test would pass either way"
+        );
+
+        // The guard is still the owner, so its `Drop` has to finish the job. Inside a runtime it
+        // spawns the delete, hence the bounded wait rather than an immediate assertion.
+        drop(guard);
+        for _ in 0..200 {
+            let mut remaining = 0;
+            for location in &locations {
+                if file_io.exists(location).await.unwrap() {
+                    remaining += 1;
+                }
+            }
+            if remaining == 0 {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("dropping the still-armed guard did not delete {survived:?}");
     }
 }
 
