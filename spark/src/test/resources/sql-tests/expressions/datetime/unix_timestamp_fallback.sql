@@ -22,7 +22,7 @@ CREATE TABLE test_unix_ts_fallback(s string, fmt string, d date, ts timestamp, n
 
 statement
 INSERT INTO test_unix_ts_fallback VALUES
-  ('2024-06-15', 'yyyy-MM-dd', date('2024-06-15'), timestamp('2024-06-15 10:30:45'), timestamp_ntz('2024-06-15 10:30:45')),
+  ('2024-06-15', 'yyyy-MM-dd', date('2024-06-15'), timestamp('2024-06-15 10:30:45'), CAST('2024-06-15 10:30:45' AS TIMESTAMP_NTZ)),
   (NULL, NULL, NULL, NULL, NULL)
 
 query expect_fallback(spark.comet.exec.scalaUDF.codegen.enabled)

@@ -20,8 +20,8 @@
 package org.apache.spark.sql.benchmark
 
 /**
- * Compares string parsing through codegen dispatch with Spark and native timestamp input.
- * Run with:
+ * Compares string parsing through codegen dispatch with Spark and native timestamp input. Run
+ * with:
  * {{{
  * make benchmark-org.apache.spark.sql.benchmark.CometUnixTimestampBenchmark
  * }}}
