@@ -809,9 +809,6 @@ message PartitionWriter {
 // Local shuffle output consists of a data file. The partition offsets are returned to the JVM
 // in memory rather than through an index file, so no index path travels in the plan.
 message LocalPartitionWriter {
-  reserved 2;
-  reserved "output_index_file";
-
   string output_data_file = 1;
 }
 
@@ -821,9 +818,6 @@ message RssPartitionWriter {}
 
 message ShuffleWriter {
   spark.spark_partitioning.Partitioning partitioning = 1;
-  reserved 4;
-  reserved "output_index_file";
-
   // Retained for compatibility with native binaries that predate partition_writer.
   // Local plans also carry this path in partition_writer.local.
   string output_data_file = 3;

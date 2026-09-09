@@ -121,9 +121,8 @@ mod tests {
         assert!(decoded.output_index_file.is_empty());
     }
 
-    /// A plan still carrying the retired index path decodes cleanly: tag 4 is reserved rather
-    /// than reused, so it is skipped as an unknown field instead of being misread as something
-    /// else.
+    /// A plan still carrying the retired index path decodes cleanly, since tag 4 is no longer
+    /// declared and is skipped as an unknown field.
     #[test]
     fn new_shuffle_writer_decodes_legacy_plan_without_destination() {
         let legacy = LegacyShuffleWriter {
