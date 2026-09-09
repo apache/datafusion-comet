@@ -1891,7 +1891,18 @@ fn parse_timestamp_pattern<T: TimeZone>(
         Some(TimestampPattern::Minute) => get_timestamp_values(value, "minute", tz)?,
         Some(TimestampPattern::Second) => get_timestamp_values(value, "second", tz)?,
         Some(TimestampPattern::Microsecond) => get_timestamp_values(value, "microsecond", tz)?,
-        Some(_) => parse_str_to_time_only_timestamp(value, tz)?,
+        // Listed out rather than caught by a `Some(_)` arm on purpose: a catch-all would route
+        // any future non-time-only shape into the time-only parser and produce a wrong value
+        // silently. Spelling out the variants makes adding one a compile error here.
+        Some(
+            TimestampPattern::TimeOnlyH
+            | TimestampPattern::TimeOnlyHm
+            | TimestampPattern::TimeOnlyHms
+            | TimestampPattern::TimeOnlyHmsu
+            | TimestampPattern::BareHm
+            | TimestampPattern::BareHms
+            | TimestampPattern::BareHmsu,
+        ) => parse_str_to_time_only_timestamp(value, tz)?,
         None => None,
     };
 
@@ -3404,9 +3415,14 @@ mod tests {
 
         // Time-only strings are anchored to the current date, so assert against a
         // today-relative expectation rather than a fixed instant.
-        let today = chrono::Utc::now().date_naive();
+        //
+        // "Today" here is the current date *in the string's own zone*, not in UTC: the parser
+        // resolves the anchor with `tz.from_utc_datetime(Utc::now())`, and for a string carrying
+        // its own offset that `tz` is the offset from the string. Using the UTC date instead
+        // makes every `+07:30` case fail by 24 hours after 16:30 UTC, i.e. for part of each day.
         let today_micros = |hour: i64, min: i64, sec: i64, micros: i64, offset: i64| {
             use chrono::Datelike;
+            let today = (chrono::Utc::now() + chrono::Duration::seconds(offset)).date_naive();
             Some(at_offset(
                 utc_micros(
                     today.year() as i64,
@@ -3421,6 +3437,13 @@ mod tests {
             ))
         };
         check("18:12:15", today_micros(18, 12, 15, 0, 0));
+
+        // Extreme offsets in both directions, so that the zone date differs from the UTC date
+        // whatever hour CI runs at: +14:00 crosses from 10:00 UTC onward, -12:00 crosses before
+        // 12:00 UTC, and together they cover every hour. Anchoring the expectation to the UTC
+        // date instead of the string's own zone fails one of these by exactly 24 hours.
+        check("T18:12:15+14:00", today_micros(18, 12, 15, 0, 14 * 3600));
+        check("T18:12:15-12:00", today_micros(18, 12, 15, 0, -12 * 3600));
         let expected = today_micros(18, 12, 15, 123_120, plus_730);
         check("T18:12:15.12312+7:30", expected);
         check("T18:12:15.12312 UTC+07:30", expected);
