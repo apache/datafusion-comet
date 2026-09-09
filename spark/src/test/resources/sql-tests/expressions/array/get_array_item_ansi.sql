@@ -25,34 +25,36 @@
 -- ============================================================================
 
 statement
-CREATE TABLE ansi_array_oob(arr array<int>) USING parquet
+CREATE TABLE ansi_array_oob(arr array<int>, positive_idx int, negative_idx int) USING parquet
 
 statement
-INSERT INTO ansi_array_oob VALUES (array(1, 2, 3))
+INSERT INTO ansi_array_oob VALUES (array(1, 2, 3), 5, -1)
+
+-- Valid boundary indices must run natively as well as match Spark.
+query
+SELECT arr[0], arr[2] FROM ansi_array_oob
 
 -- ============================================================================
 -- Array index out of bounds (positive index)
--- Spark throws: [INVALID_ARRAY_INDEX] The index X is out of bounds
--- Comet throws: Index out of bounds for array
--- See https://github.com/apache/datafusion-comet/issues/3375
+-- Spark and Comet throw INVALID_ARRAY_INDEX in ANSI mode.
 -- ============================================================================
 
 -- index beyond array length should throw (0-based indexing)
-query ignore(https://github.com/apache/datafusion-comet/issues/3375)
+query expect_error(INVALID_ARRAY_INDEX)
 SELECT arr[10] FROM ansi_array_oob
 
--- literal array with out of bounds access
-query ignore(https://github.com/apache/datafusion-comet/issues/3375)
-SELECT array(1, 2, 3)[5]
+-- Use a column index so SimplifyExtractValueOps cannot replace the lookup with NULL.
+query expect_error(INVALID_ARRAY_INDEX)
+SELECT array(1, 2, 3)[positive_idx] FROM ansi_array_oob
 
 -- ============================================================================
 -- Array index out of bounds (negative index)
 -- ============================================================================
 
 -- negative index should throw
-query ignore(https://github.com/apache/datafusion-comet/issues/3375)
+query expect_error(INVALID_ARRAY_INDEX)
 SELECT arr[-1] FROM ansi_array_oob
 
--- literal with negative index
-query ignore(https://github.com/apache/datafusion-comet/issues/3375)
-SELECT array(1, 2, 3)[-1]
+-- literal array with a negative column index
+query expect_error(INVALID_ARRAY_INDEX)
+SELECT array(1, 2, 3)[negative_idx] FROM ansi_array_oob
