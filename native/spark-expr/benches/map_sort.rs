@@ -25,6 +25,9 @@ use datafusion_comet_spark_expr::spark_map_sort;
 use std::hint::black_box;
 use std::sync::Arc;
 
+#[path = "common/matched_maps.rs"]
+mod matched_maps_data;
+
 const BATCH_SIZE: usize = 8192;
 
 fn map_field_names() -> MapFieldNames {
@@ -103,5 +106,9 @@ fn bench_map_sort(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_map_sort);
+fn matched_maps(c: &mut Criterion) {
+    matched_maps_data::bench_maps(c, "normalize_only");
+}
+
+criterion_group!(benches, bench_map_sort, matched_maps);
 criterion_main!(benches);

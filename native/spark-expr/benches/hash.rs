@@ -13,7 +13,7 @@
 // "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
-// under the License.use arrow::array::{ArrayRef, BooleanBuilder, Int32Builder, RecordBatch, StringBuilder};
+// under the License.
 
 //! Benchmarks for the Spark-compatible hash kernels, which back the `hash` and `xxhash64`
 //! expressions and, since #5567, native shuffle hash partitioning.
@@ -35,6 +35,9 @@ use criterion::{criterion_group, criterion_main, Criterion};
 use datafusion_comet_spark_expr::murmur3::create_murmur3_hashes;
 use std::hint::black_box;
 use std::sync::Arc;
+
+#[path = "common/matched_maps.rs"]
+mod matched_maps_data;
 
 const NUM_ROWS: usize = 8192;
 
@@ -268,5 +271,17 @@ fn bench(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench);
+fn matched_maps(c: &mut Criterion) {
+    matched_maps_data::bench_maps(c, "hash_only");
+    matched_maps_data::bench_maps(c, "normalize_hash");
+    c.bench_function("matched_maps/hash_buffer_seed_reset", |b| {
+        let mut hashes = vec![42u32; matched_maps_data::ROWS];
+        b.iter(|| {
+            hashes.fill(42);
+            black_box(&hashes);
+        });
+    });
+}
+
+criterion_group!(benches, bench, matched_maps);
 criterion_main!(benches);
