@@ -1266,11 +1266,13 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
    * is still worth having there -- an unresolvable attribute is a planning anomaly worth
    * surfacing.
    *
-   * The warning is silent under the default configuration. Turning the codegen dispatcher off
-   * with `spark.comet.exec.scalaUDF.codegen.enabled=false` makes it fire for every serde that
-   * reports `Compatible` and then routes to `emitJvmCodegenDispatch`, since the disabled-config
-   * check lives in the dispatcher rather than in `getSupportLevel`. Those are genuine instances
-   * of this invariant violation; moving that check up is tracked on the issue above.
+   * The other recurring source is a real violation, just not one to fix here:
+   * `CometCodegenDispatch` reports `Compatible` without inspecting the expression at all and
+   * delegates `convert` straight to `emitJvmCodegenDispatch`. Every check the dispatcher makes
+   * therefore runs too late to be reported as `Unsupported`, so each one surfaces here: both the
+   * global `spark.comet.exec.scalaUDF.codegen.enabled=false` switch and, under the default
+   * configuration, per-expression declines such as an output type the dispatcher cannot write.
+   * Moving those checks up is tracked on the issue above.
    */
   private[serde] def warnCompatibleButDeclined(
       expr: Expression,
