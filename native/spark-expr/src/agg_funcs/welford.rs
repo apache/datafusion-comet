@@ -156,3 +156,63 @@ pub(crate) fn covariance_merge(
     let new_c = c_a + c_b + delta1 * delta2 * count_a * count_b / new_count;
     (new_count, new_mean1, new_mean2, new_c)
 }
+
+/// Online update for the first four central moments `[n, avg, m2, m3, m4]`. Direct port of
+/// Spark's `CentralMomentAgg.updateExpressionsDef` for `momentOrder = 4`.
+///
+/// The order-4 recurrence subsumes the order-2 one above, so `skewness` (`momentOrder = 3`)
+/// is an `evaluate` on top of this same state rather than another copy of the algebra.
+#[inline]
+pub(crate) fn moments4_update(
+    n: f64,
+    avg: f64,
+    m2: f64,
+    m3: f64,
+    m4: f64,
+    value: f64,
+) -> (f64, f64, f64, f64, f64) {
+    let new_n = n + 1.0;
+    let delta = value - avg;
+    let delta_n = delta / new_n;
+    let new_avg = avg + delta_n;
+    let new_m2 = m2 + delta * (delta - delta_n);
+    let delta2 = delta * delta;
+    let delta_n2 = delta_n * delta_n;
+    let new_m3 = m3 - 3.0 * delta_n * new_m2 + delta * (delta2 - delta_n2);
+    let new_m4 = m4 - 4.0 * delta_n * new_m3 - 6.0 * delta_n2 * new_m2
+        + delta * (delta * delta2 - delta_n * delta_n2);
+    (new_n, new_avg, new_m2, new_m3, new_m4)
+}
+
+/// Merge two partial `[n, avg, m2, m3, m4]` states. Direct port of Spark's
+/// `CentralMomentAgg.mergeExpressions` for `momentOrder = 4`.
+#[inline]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn moments4_merge(
+    n1: f64,
+    avg1: f64,
+    m2_1: f64,
+    m3_1: f64,
+    m4_1: f64,
+    n2: f64,
+    avg2: f64,
+    m2_2: f64,
+    m3_2: f64,
+    m4_2: f64,
+) -> (f64, f64, f64, f64, f64) {
+    let new_n = n1 + n2;
+    let delta = avg2 - avg1;
+    let delta_n = if new_n == 0.0 { 0.0 } else { delta / new_n };
+    let new_avg = avg1 + delta_n * n2;
+    let new_m2 = m2_1 + m2_2 + delta * delta_n * n1 * n2;
+    let new_m3 = m3_1
+        + m3_2
+        + delta_n * delta_n * delta * n1 * n2 * (n1 - n2)
+        + 3.0 * delta_n * (n1 * m2_2 - n2 * m2_1);
+    let new_m4 = m4_1
+        + m4_2
+        + delta_n * delta_n * delta_n * delta * n1 * n2 * (n1 * n1 - n1 * n2 + n2 * n2)
+        + 6.0 * delta_n * delta_n * (n1 * n1 * m2_2 + n2 * n2 * m2_1)
+        + 4.0 * delta_n * (n1 * m3_2 - n2 * m3_1);
+    (new_n, new_avg, new_m2, new_m3, new_m4)
+}

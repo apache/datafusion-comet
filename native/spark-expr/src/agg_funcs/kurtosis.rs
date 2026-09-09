@@ -41,11 +41,15 @@ use datafusion::logical_expr::Volatility::Immutable;
 use datafusion::logical_expr::{Accumulator, AggregateUDFImpl, Signature};
 use datafusion::physical_expr::expressions::format_state_name;
 
+use crate::agg_funcs::welford::{moments4_merge, moments4_update};
+use crate::divide_by_zero_error;
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct Kurtosis {
     name: String,
     signature: Signature,
     null_on_divide_by_zero: bool,
+    ansi_enabled: bool,
 }
 
 impl std::hash::Hash for Kurtosis {
@@ -53,15 +57,17 @@ impl std::hash::Hash for Kurtosis {
         self.name.hash(state);
         self.signature.hash(state);
         self.null_on_divide_by_zero.hash(state);
+        self.ansi_enabled.hash(state);
     }
 }
 
 impl Kurtosis {
-    pub fn new(name: impl Into<String>, null_on_divide_by_zero: bool) -> Self {
+    pub fn new(name: impl Into<String>, null_on_divide_by_zero: bool, ansi_enabled: bool) -> Self {
         Self {
             name: name.into(),
             signature: Signature::numeric(1, Immutable),
             null_on_divide_by_zero,
+            ansi_enabled,
         }
     }
 }
@@ -82,8 +88,18 @@ impl AggregateUDFImpl for Kurtosis {
     fn accumulator(&self, _acc_args: AccumulatorArgs) -> Result<Box<dyn Accumulator>> {
         Ok(Box::new(KurtosisAccumulator::new(
             self.null_on_divide_by_zero,
+            self.ansi_enabled,
         )))
     }
+
+    // No `GroupsAccumulator`: grouped `kurtosis` deliberately runs through DataFusion's generic
+    // `GroupsAccumulatorAdapter`, which costs one boxed `Accumulator` and a `ScalarValue` round
+    // trip per group per batch. This is a gap relative to the neighbouring central-moment
+    // aggregates - `VarianceGroupsAccumulator` keeps flat `Vec<f64>` state and
+    // `StddevGroupsAccumulator` reuses it - and it is recorded here as a decision rather than an
+    // oversight. The vectorized version wants to land with `skewness`, since both are an
+    // `evaluate` over the same `[n, avg, m2, m3, m4]` state that `moments4_update` already
+    // maintains, and one flat-state accumulator should then serve all three.
 
     // Fields ordered to match Spark's `[n, avg, m2, m3, m4]` buffer so that a
     // Spark-produced Partial state can be merged into a Comet-produced Final
@@ -117,67 +133,6 @@ impl AggregateUDFImpl for Kurtosis {
             )),
         ])
     }
-
-    fn default_value(&self, _data_type: &DataType) -> Result<ScalarValue> {
-        Ok(ScalarValue::Float64(None))
-    }
-}
-
-/// Online update for the first four central moments. Direct port of Spark's
-/// `CentralMomentAgg.updateExpressionsDef` for `momentOrder = 4`.
-#[inline]
-fn kurtosis_update(
-    n: f64,
-    avg: f64,
-    m2: f64,
-    m3: f64,
-    m4: f64,
-    value: f64,
-) -> (f64, f64, f64, f64, f64) {
-    let new_n = n + 1.0;
-    let delta = value - avg;
-    let delta_n = delta / new_n;
-    let new_avg = avg + delta_n;
-    let new_m2 = m2 + delta * (delta - delta_n);
-    let delta2 = delta * delta;
-    let delta_n2 = delta_n * delta_n;
-    let new_m3 = m3 - 3.0 * delta_n * new_m2 + delta * (delta2 - delta_n2);
-    let new_m4 = m4 - 4.0 * delta_n * new_m3 - 6.0 * delta_n2 * new_m2
-        + delta * (delta * delta2 - delta_n * delta_n2);
-    (new_n, new_avg, new_m2, new_m3, new_m4)
-}
-
-/// Merge two partial states. Direct port of Spark's
-/// `CentralMomentAgg.mergeExpressions` for `momentOrder = 4`.
-#[inline]
-#[allow(clippy::too_many_arguments)]
-fn kurtosis_merge(
-    n1: f64,
-    avg1: f64,
-    m2_1: f64,
-    m3_1: f64,
-    m4_1: f64,
-    n2: f64,
-    avg2: f64,
-    m2_2: f64,
-    m3_2: f64,
-    m4_2: f64,
-) -> (f64, f64, f64, f64, f64) {
-    let new_n = n1 + n2;
-    let delta = avg2 - avg1;
-    let delta_n = if new_n == 0.0 { 0.0 } else { delta / new_n };
-    let new_avg = avg1 + delta_n * n2;
-    let new_m2 = m2_1 + m2_2 + delta * delta_n * n1 * n2;
-    let new_m3 = m3_1
-        + m3_2
-        + delta_n * delta_n * delta * n1 * n2 * (n1 - n2)
-        + 3.0 * delta_n * (n1 * m2_2 - n2 * m2_1);
-    let new_m4 = m4_1
-        + m4_2
-        + delta_n * delta_n * delta_n * delta * n1 * n2 * (n1 * n1 - n1 * n2 + n2 * n2)
-        + 6.0 * delta_n * delta_n * (n1 * n1 * m2_2 + n2 * n2 * m2_1)
-        + 4.0 * delta_n * (n1 * m3_2 - n2 * m3_1);
-    (new_n, new_avg, new_m2, new_m3, new_m4)
 }
 
 #[derive(Debug)]
@@ -188,10 +143,11 @@ pub struct KurtosisAccumulator {
     m3: f64,
     m4: f64,
     null_on_divide_by_zero: bool,
+    ansi_enabled: bool,
 }
 
 impl KurtosisAccumulator {
-    pub fn new(null_on_divide_by_zero: bool) -> Self {
+    pub fn new(null_on_divide_by_zero: bool, ansi_enabled: bool) -> Self {
         Self {
             n: 0.0,
             avg: 0.0,
@@ -199,6 +155,7 @@ impl KurtosisAccumulator {
             m3: 0.0,
             m4: 0.0,
             null_on_divide_by_zero,
+            ansi_enabled,
         }
     }
 }
@@ -218,7 +175,7 @@ impl Accumulator for KurtosisAccumulator {
         let arr = downcast_value!(&values[0], Float64Array).iter().flatten();
         for value in arr {
             let (n, avg, m2, m3, m4) =
-                kurtosis_update(self.n, self.avg, self.m2, self.m3, self.m4, value);
+                moments4_update(self.n, self.avg, self.m2, self.m3, self.m4, value);
             self.n = n;
             self.avg = avg;
             self.m2 = m2;
@@ -242,7 +199,7 @@ impl Accumulator for KurtosisAccumulator {
                 // divide-by-zero garbage in `delta_n`; skip it.
                 continue;
             }
-            let (n, avg, m2, m3, m4) = kurtosis_merge(
+            let (n, avg, m2, m3, m4) = moments4_merge(
                 self.n,
                 self.avg,
                 self.m2,
@@ -264,17 +221,30 @@ impl Accumulator for KurtosisAccumulator {
     }
 
     fn evaluate(&mut self) -> Result<ScalarValue> {
-        Ok(ScalarValue::Float64(if self.n == 0.0 {
-            None
-        } else if self.m2 == 0.0 {
-            if self.null_on_divide_by_zero {
+        if self.n == 0.0 {
+            return Ok(ScalarValue::Float64(None));
+        }
+        if self.m2 == 0.0 {
+            return Ok(ScalarValue::Float64(if self.null_on_divide_by_zero {
                 None
             } else {
                 Some(f64::NAN)
-            }
-        } else {
-            Some(self.n * self.m4 / (self.m2 * self.m2) - 3.0)
-        }))
+            }));
+        }
+        // Spark's guard above is on `m2`, but the division is by `m2 * m2`, and that product can
+        // underflow to zero while `m2` itself is finite and non-zero (`1e-100` and `2e-100` give
+        // an `m2` of 5e-201, whose square is 0). Spark's `Divide` then sees a zero divisor and
+        // applies its own rule, which is the session's ANSI setting rather than
+        // `null_on_divide_by_zero`. Plain IEEE division here would return NaN instead.
+        let divisor = self.m2 * self.m2;
+        if divisor == 0.0 {
+            return if self.ansi_enabled {
+                Err(divide_by_zero_error().into())
+            } else {
+                Ok(ScalarValue::Float64(None))
+            };
+        }
+        Ok(ScalarValue::Float64(Some(self.n * self.m4 / divisor - 3.0)))
     }
 
     fn size(&self) -> usize {
@@ -287,7 +257,7 @@ mod tests {
     use super::*;
 
     fn eval(values: &[f64], null_on_divide_by_zero: bool) -> Option<f64> {
-        let mut acc = KurtosisAccumulator::new(null_on_divide_by_zero);
+        let mut acc = KurtosisAccumulator::new(null_on_divide_by_zero, false);
         let arr: ArrayRef = Arc::new(Float64Array::from(values.to_vec()));
         acc.update_batch(&[arr]).unwrap();
         match acc.evaluate().unwrap() {
@@ -335,11 +305,11 @@ mod tests {
         let arr_a: ArrayRef = Arc::new(Float64Array::from(values[..2].to_vec()));
         let arr_b: ArrayRef = Arc::new(Float64Array::from(values[2..].to_vec()));
 
-        let mut a = KurtosisAccumulator::new(true);
+        let mut a = KurtosisAccumulator::new(true, false);
         a.update_batch(&[arr_a]).unwrap();
         let state_a = a.state().unwrap();
 
-        let mut b = KurtosisAccumulator::new(true);
+        let mut b = KurtosisAccumulator::new(true, false);
         b.update_batch(&[arr_b]).unwrap();
 
         // Represent partition-A state as five single-row Float64 arrays and merge.
@@ -359,5 +329,37 @@ mod tests {
             other => panic!("expected Float64(Some(_)), got {other:?}"),
         };
         assert!((merged - full).abs() < 1e-9, "merged={merged}, full={full}");
+    }
+
+    /// `m2` is finite and non-zero here, so Spark's `m2 === 0` guard does not fire, but
+    /// `m2 * m2` underflows to zero and Spark's `Divide` takes over. That means the session's
+    /// ANSI setting decides, not `null_on_divide_by_zero`. Plain IEEE division returned NaN.
+    #[test]
+    fn divisor_underflow_follows_spark_division_semantics() {
+        let values = [1e-100, 2e-100];
+
+        // Confirm the premise rather than assuming it: m2 != 0 but m2 * m2 == 0.
+        let mut probe = KurtosisAccumulator::new(true, false);
+        probe
+            .update_batch(&[Arc::new(Float64Array::from(values.to_vec())) as ArrayRef])
+            .unwrap();
+        assert_ne!(probe.m2, 0.0, "m2 must be non-zero for this case to bite");
+        assert_eq!(probe.m2 * probe.m2, 0.0, "m2 * m2 must underflow to zero");
+
+        // ANSI off: NULL, for either value of null_on_divide_by_zero, because this path is
+        // governed by the Divide and not by the m2 == 0 branch.
+        for null_on_divide_by_zero in [true, false] {
+            assert_eq!(eval(&values, null_on_divide_by_zero), None);
+        }
+
+        // ANSI on: DIVIDE_BY_ZERO.
+        let mut ansi = KurtosisAccumulator::new(true, true);
+        ansi.update_batch(&[Arc::new(Float64Array::from(values.to_vec())) as ArrayRef])
+            .unwrap();
+        let err = ansi.evaluate().unwrap_err().to_string();
+        assert!(
+            err.contains("DIVIDE_BY_ZERO"),
+            "expected a DIVIDE_BY_ZERO error, got {err}"
+        );
     }
 }

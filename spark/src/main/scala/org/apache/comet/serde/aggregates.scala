@@ -1136,6 +1136,11 @@ object CometKurtosis extends CometAggregateExpressionSerde[Kurtosis] {
       val builder = ExprOuterClass.Kurtosis.newBuilder()
       builder.setChild(childExpr.get)
       builder.setNullOnDivideByZero(kurtosis.nullOnDivideByZero)
+      // Spark's evaluate expression divides by `m2 * m2`, and that `Divide` picks up its eval
+      // mode from the session. `m2` can be non-zero while `m2 * m2` underflows to zero, which
+      // the `m2 === 0` guard above it does not catch, so the native side needs to know whether
+      // that divisor should raise or return null.
+      builder.setAnsiEnabled(conf.ansiEnabled)
 
       Some(
         ExprOuterClass.AggExpr

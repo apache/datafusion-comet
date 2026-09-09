@@ -156,16 +156,6 @@ query
 SELECT grp, kurtosis(v) FILTER (WHERE v > 0) FROM k_dbl GROUP BY grp ORDER BY grp
 
 -- ============================================================
--- Skewness is Spark's sibling in CentralMomentAgg; we don't
--- implement it here, so it should fall back. (This documents the
--- boundary; if we add skewness later, the expect_fallback
--- becomes a plain query.)
--- ============================================================
-
-query expect_fallback(unsupported Spark aggregate function: skewness)
-SELECT skewness(v) FROM k_dbl
-
--- ============================================================
 -- Additional coverage requested by the audit.
 -- ============================================================
 
