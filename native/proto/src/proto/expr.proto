@@ -163,6 +163,7 @@ message AggExpr {
     HllPlusPlus hllpp = 20;
     CollectList collectList = 21;
     Regr regr = 22;
+    PivotFirst pivotFirst = 23;
   }
 
   // Optional filter expression for SQL FILTER (WHERE ...) clause.
@@ -350,6 +351,21 @@ message HllPlusPlus {
   Expr child = 1;
   // Number of addressing bits, computed from relativeSD to match Spark.
   int32 precision = 2;
+}
+
+// Optimized Pivot second-phase aggregate. Given a `pivot_column` and a
+// pre-computed list of `pivot_values`, buckets the incoming `value_column`
+// into an array whose length is `pivot_values.size()`. Rows whose pivot
+// value is not in `pivot_values` are ignored; if multiple rows in the same
+// group map to the same bucket, the last non-null value wins (matches
+// Spark's `PivotFirst.update`/`merge`). Output type is
+// ArrayType(value_datatype). The pivot_values are serialized as Literal
+// Exprs so the value bytes and data type reach native code faithfully.
+message PivotFirst {
+  Expr pivot_column = 1;
+  Expr value_column = 2;
+  repeated Expr pivot_values = 3;
+  DataType value_datatype = 4;
 }
 
 enum EvalMode {

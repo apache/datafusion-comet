@@ -2449,4 +2449,87 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  // Optimized-pivot fast path: Spark's PivotTransformer emits a two-phase aggregate whose
+  // second phase uses PivotFirst whenever every aggregate output type is in
+  // PivotFirst.supportsDataType. We assert:
+  //   1. The physical plan actually contains a PivotFirst (Spark still picked the fast path).
+  //   2. Comet converted the second-phase aggregate to CometHashAggregateExec (i.e. our
+  //      CometPivotFirst serde accepted the aggregate).
+  //   3. Results match Spark exactly.
+  // If any of the three fails, the test surfaces the specific breakage.
+  test("PivotFirst runs natively on the optimized pivot fast path") {
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "sales")
+      spark
+        .sql("""SELECT * FROM VALUES
+               |  (2012, 'dotNET', 15000),
+               |  (2012, 'Java',   20000),
+               |  (2013, 'dotNET', 48000),
+               |  (2013, 'Java',   30000)
+               |AS t(year, course, earnings)""".stripMargin)
+        .write
+        .parquet(path.toUri.toString)
+      withParquetTable(path.toUri.toString, "sales") {
+        val pivotSql =
+          """SELECT * FROM sales
+            |  PIVOT (sum(earnings) FOR course IN ('dotNET', 'Java'))
+            |  ORDER BY year""".stripMargin
+        val df = spark.sql(pivotSql)
+        val plan = df.queryExecution.executedPlan
+        val pivotFirstAggs = collectWithSubqueries(plan) {
+          case a: CometHashAggregateExec
+              if a.aggregateExpressions.exists(_.aggregateFunction
+                .isInstanceOf[org.apache.spark.sql.catalyst.expressions.aggregate.PivotFirst]) =>
+            a
+        }
+        assert(
+          pivotFirstAggs.nonEmpty,
+          s"Expected a CometHashAggregateExec containing PivotFirst in:\n$plan")
+        checkSparkAnswer(df)
+      }
+    }
+  }
+
+  // A double pivot column exercises the one place where Spark's key matching is neither
+  // IEEE nor `ScalarValue`'s: the pivot list is a Scala `HashMap[Any, Int]`, so `-0.0` and
+  // `0.0` are the same key while NaN matches nothing, not even another NaN. Both directions
+  // have to hold on the native path, and it has to be the native path that produced them.
+  test("PivotFirst matches Spark's float key semantics natively") {
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "fkeys")
+      spark
+        .sql("""SELECT * FROM VALUES
+               |  ('NA', 0.0D,          15000),
+               |  ('NA', -0.0D,         48000),
+               |  ('NA', double('NaN'), 11000),
+               |  ('NA', 1.5D,          20000),
+               |  ('EU', -0.0D,         30000),
+               |  ('EU', double('NaN'), 12000)
+               |AS t(region, k, earnings)""".stripMargin)
+        .write
+        .parquet(path.toUri.toString)
+      withParquetTable(path.toUri.toString, "fkeys") {
+        // `-0.0D` rather than `CAST(-0.0 AS DOUBLE)`: the cast constant-folds to +0.0, which
+        // would make the signed-zero half of this test vacuous.
+        Seq("-0.0D", "0.0D").foreach { zero =>
+          val df = spark.sql(s"""SELECT * FROM fkeys
+                                |  PIVOT (sum(earnings) FOR k IN ($zero, double('NaN'), 1.5D))
+                                |  ORDER BY region""".stripMargin)
+          val plan = df.queryExecution.executedPlan
+          val pivotFirstAggs = collectWithSubqueries(plan) {
+            case a: CometHashAggregateExec
+                if a.aggregateExpressions.exists(_.aggregateFunction
+                  .isInstanceOf[
+                    org.apache.spark.sql.catalyst.expressions.aggregate.PivotFirst]) =>
+              a
+          }
+          assert(
+            pivotFirstAggs.nonEmpty,
+            s"Expected a CometHashAggregateExec containing PivotFirst for $zero in:\n$plan")
+          checkSparkAnswer(df)
+        }
+      }
+    }
+  }
+
 }
