@@ -319,3 +319,62 @@ SELECT * FROM pf_sales_datepivot
   PIVOT (sum(earnings)
     FOR d IN (DATE '2024-01-01', DATE '2024-06-15'))
   ORDER BY region
+
+-- ============================================================
+-- Non-string pivot column: double, including the two values whose
+-- key matching differs between Spark and a plain hash of the native
+-- scalar. Spark keys the pivot list on the boxed Catalyst value, so
+-- -0.0 and 0.0 are the same key while NaN matches nothing at all.
+--
+-- The zero rows are written as -0.0D / 0.0D rather than
+-- CAST(-0.0 AS DOUBLE), because the cast constant-folds to +0.0 and
+-- would make the case vacuous.
+-- ============================================================
+
+statement
+CREATE TABLE pf_sales_dblpivot (region string, k double, earnings int) USING parquet
+
+statement
+INSERT INTO pf_sales_dblpivot VALUES
+  ('NA', 0.0D,             15000),
+  ('NA', -0.0D,            48000),
+  ('NA', double('NaN'),    11000),
+  ('NA', 1.5D,             20000),
+  ('EU', 0.0D,             30000),
+  ('EU', double('NaN'),    12000),
+  ('EU', 1.5D,             40000)
+
+-- -0.0 in the pivot list has to collect both signs of zero (63000 / 30000),
+-- and the NaN column has to stay NULL for every group.
+query spark_answer_only
+SELECT * FROM pf_sales_dblpivot
+  PIVOT (sum(earnings)
+    FOR k IN (-0.0D, double('NaN'), 1.5D))
+  ORDER BY region
+
+-- The mirror: a 0.0 entry in the pivot list must also catch the -0.0 rows.
+query spark_answer_only
+SELECT * FROM pf_sales_dblpivot
+  PIVOT (sum(earnings)
+    FOR k IN (0.0D, 1.5D))
+  ORDER BY region
+
+-- ============================================================
+-- Non-string pivot column: float. Same two rules.
+-- ============================================================
+
+statement
+CREATE TABLE pf_sales_fltpivot (region string, k float, earnings int) USING parquet
+
+statement
+INSERT INTO pf_sales_fltpivot VALUES
+  ('NA', 0.0F,          15000),
+  ('NA', -0.0F,         48000),
+  ('NA', float('NaN'),  11000),
+  ('EU', -0.0F,         30000)
+
+query spark_answer_only
+SELECT * FROM pf_sales_fltpivot
+  PIVOT (sum(earnings)
+    FOR k IN (-0.0F, float('NaN')))
+  ORDER BY region

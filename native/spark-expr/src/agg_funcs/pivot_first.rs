@@ -77,8 +77,13 @@ impl SparkPivotFirst {
         let mut pivot_index = HashMap::with_capacity(pivot_values.len());
         // Spark's PivotFirst uses the FIRST occurrence's index (HashMap/TreeMap semantics), so
         // when duplicates are somehow present we mirror that by only inserting the first one.
+        // `pivot_key` can fold two distinct pivot values (`0.0` and `-0.0`) onto one key, and can
+        // drop one entirely (NaN), so the index is not necessarily the same length as the slot
+        // vector - the slot count is always `pivot_values.len()`.
         for (i, v) in pivot_values.iter().enumerate() {
-            pivot_index.entry(v.clone()).or_insert(i);
+            if let Some(key) = pivot_key(v.clone()) {
+                pivot_index.entry(key).or_insert(i);
+            }
         }
         Self {
             signature: Signature::user_defined(Immutable),
@@ -86,6 +91,44 @@ impl SparkPivotFirst {
             pivot_values: Arc::new(pivot_values),
             pivot_index: Arc::new(pivot_index),
         }
+    }
+}
+
+/// Rewrite a pivot column value into the key Spark would match it on, or `None` when Spark can
+/// never match it.
+///
+/// Spark's `PivotFirst` looks pivot values up in a Scala `HashMap[Any, Int]`, so matching goes
+/// through `BoxesRunTime.equals` / `Statics.anyHash` on the boxed Catalyst value rather than
+/// through `ScalarValue`'s own equality. The two disagree on floats in opposite directions:
+///
+/// * `-0.0` and `0.0` are one key for Spark (`-0.0 == 0.0` numerically, and `doubleHash` folds
+///   both onto the hash of `0L`), while `ScalarValue` keeps them apart.
+/// * `NaN` matches nothing for Spark, not even another `NaN`, because Scala's `==` on `Double`
+///   is IEEE. `ScalarValue` treats `NaN` as equal to itself.
+///
+/// Nulls are left alone: a null pivot column value does match a null entry in the pivot list,
+/// which is what Spark's `pivotIndex.getOrElse(null, -1)` does.
+fn pivot_key(v: ScalarValue) -> Option<ScalarValue> {
+    match v {
+        ScalarValue::Float32(Some(f)) => {
+            if f.is_nan() {
+                None
+            } else if f == 0.0 {
+                Some(ScalarValue::Float32(Some(0.0)))
+            } else {
+                Some(ScalarValue::Float32(Some(f)))
+            }
+        }
+        ScalarValue::Float64(Some(f)) => {
+            if f.is_nan() {
+                None
+            } else if f == 0.0 {
+                Some(ScalarValue::Float64(Some(0.0)))
+            } else {
+                Some(ScalarValue::Float64(Some(f)))
+            }
+        }
+        other => Some(other),
     }
 }
 
@@ -124,6 +167,7 @@ impl AggregateUDFImpl for SparkPivotFirst {
         Ok(Box::new(PivotFirstAccumulator::new(
             self.value_type.clone(),
             Arc::clone(&self.pivot_index),
+            self.pivot_values.len(),
         )))
     }
 }
@@ -138,8 +182,15 @@ struct PivotFirstAccumulator {
 }
 
 impl PivotFirstAccumulator {
-    fn new(value_type: DataType, pivot_index: Arc<HashMap<ScalarValue, usize>>) -> Self {
-        let slots = vec![None; pivot_index.len()];
+    /// `num_slots` is the pivot list's length, which is what `state_fields` declares. It can
+    /// exceed `pivot_index.len()` when pivot values collide under `pivot_key` or are unmatchable
+    /// (NaN); those slots exist in the output and stay null.
+    fn new(
+        value_type: DataType,
+        pivot_index: Arc<HashMap<ScalarValue, usize>>,
+        num_slots: usize,
+    ) -> Self {
+        let slots = vec![None; num_slots];
         Self {
             value_type,
             pivot_index,
@@ -177,7 +228,11 @@ impl Accumulator for PivotFirstAccumulator {
             // `PivotFirst.update` never writes for a null value, so a mid-batch null does not
             // clobber an earlier non-null.
             let pivot_scalar = ScalarValue::try_from_array(pivot_arr, row)?;
-            if let Some(&slot_idx) = self.pivot_index.get(&pivot_scalar) {
+            let Some(key) = pivot_key(pivot_scalar) else {
+                // A NaN pivot value matches no slot in Spark, so the row is ignored.
+                continue;
+            };
+            if let Some(&slot_idx) = self.pivot_index.get(&key) {
                 if !value_arr.is_null(row) {
                     self.slots[slot_idx] = Some(ScalarValue::try_from_array(value_arr, row)?);
                 }
@@ -236,7 +291,7 @@ impl Accumulator for PivotFirstAccumulator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{Int32Array, StringArray};
+    use arrow::array::{Float32Array, Float64Array, Int32Array, StringArray};
 
     fn scalar(v: i32) -> ScalarValue {
         ScalarValue::Int32(Some(v))
@@ -252,7 +307,18 @@ mod tests {
             .enumerate()
             .map(|(i, v)| (v.clone(), i))
             .collect();
-        PivotFirstAccumulator::new(DataType::Int32, Arc::new(pivot_index))
+        PivotFirstAccumulator::new(DataType::Int32, Arc::new(pivot_index), pivot_values.len())
+    }
+
+    /// Build an accumulator the way the UDAF does, so the tests exercise `pivot_key` on both the
+    /// index-building and the per-row lookup side.
+    fn acc_for(value_type: DataType, pivot_values: Vec<ScalarValue>) -> PivotFirstAccumulator {
+        let udaf = SparkPivotFirst::new(value_type.clone(), pivot_values.clone());
+        PivotFirstAccumulator::new(
+            value_type,
+            Arc::clone(&udaf.pivot_index),
+            pivot_values.len(),
+        )
     }
 
     #[test]
@@ -345,5 +411,87 @@ mod tests {
             acc.slots,
             vec![Some(scalar(1)), Some(scalar(2)), Some(scalar(3))]
         );
+    }
+
+    #[test]
+    fn signed_zero_pivot_values_are_one_key() {
+        // Spark keys the pivot list on the boxed Catalyst value, where `-0.0 == 0.0`, so a
+        // `-0.0` pivot column matches rows carrying either sign of zero. `ScalarValue` alone
+        // keeps them distinct, which returned NULL for the whole column.
+        //
+        // Only positive zero appears on the input side on purpose: adding a `-0.0` row would
+        // make the assertion hold either way, because the later write wins the slot regardless
+        // of whether the `0.0` row matched.
+        let mut acc = acc_for(
+            DataType::Int32,
+            vec![
+                ScalarValue::Float64(Some(-0.0)),
+                ScalarValue::Float64(Some(1.0)),
+            ],
+        );
+        let pivots: ArrayRef = Arc::new(Float64Array::from(vec![0.0, 1.0]));
+        let values: ArrayRef = Arc::new(Int32Array::from(vec![10, 30]));
+        acc.update_batch(&[pivots, values]).unwrap();
+        assert_eq!(acc.slots, vec![Some(scalar(10)), Some(scalar(30))]);
+    }
+
+    #[test]
+    fn signed_zero_matches_in_both_directions() {
+        // The mirror of the above: a `0.0` entry in the pivot list has to catch a `-0.0` row.
+        let mut acc = acc_for(DataType::Int32, vec![ScalarValue::Float64(Some(0.0))]);
+        let pivots: ArrayRef = Arc::new(Float64Array::from(vec![-0.0]));
+        let values: ArrayRef = Arc::new(Int32Array::from(vec![42]));
+        acc.update_batch(&[pivots, values]).unwrap();
+        assert_eq!(acc.slots, vec![Some(scalar(42))]);
+    }
+
+    #[test]
+    fn nan_pivot_value_matches_nothing() {
+        // Scala's `==` on Double is IEEE, so `pivotIndex.getOrElse(NaN, -1)` never hits even
+        // when NaN is in the pivot list. `ScalarValue` treats NaN as equal to itself, which
+        // populated the column instead of leaving it NULL.
+        let mut acc = acc_for(
+            DataType::Int32,
+            vec![
+                ScalarValue::Float64(Some(f64::NAN)),
+                ScalarValue::Float64(Some(2.0)),
+            ],
+        );
+        let pivots: ArrayRef = Arc::new(Float64Array::from(vec![f64::NAN, 2.0]));
+        let values: ArrayRef = Arc::new(Int32Array::from(vec![10, 20]));
+        acc.update_batch(&[pivots, values]).unwrap();
+        // The NaN slot still exists (the output column is declared) but stays null.
+        assert_eq!(acc.slots, vec![None, Some(scalar(20))]);
+    }
+
+    #[test]
+    fn unmatchable_pivot_value_keeps_its_state_slot() {
+        // A NaN entry is dropped from the index, so the slot vector must be sized from the pivot
+        // list rather than from the index, or `state()` would return fewer columns than
+        // `state_fields` declares and the shuffle exchange would reject the batch.
+        let mut acc = acc_for(
+            DataType::Int32,
+            vec![
+                ScalarValue::Float64(Some(f64::NAN)),
+                ScalarValue::Float64(Some(0.0)),
+                ScalarValue::Float64(Some(-0.0)),
+            ],
+        );
+        assert_eq!(acc.state().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn float32_signed_zero_and_nan_follow_the_same_rules() {
+        let mut acc = acc_for(
+            DataType::Int32,
+            vec![
+                ScalarValue::Float32(Some(-0.0)),
+                ScalarValue::Float32(Some(f32::NAN)),
+            ],
+        );
+        let pivots: ArrayRef = Arc::new(Float32Array::from(vec![0.0, f32::NAN]));
+        let values: ArrayRef = Arc::new(Int32Array::from(vec![10, 20]));
+        acc.update_batch(&[pivots, values]).unwrap();
+        assert_eq!(acc.slots, vec![Some(scalar(10)), None]);
     }
 }
