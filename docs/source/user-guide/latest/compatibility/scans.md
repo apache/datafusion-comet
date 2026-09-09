@@ -62,6 +62,12 @@ The following limitation may produce incorrect results without falling back to S
 
 The following limitations raise an error at scan time rather than falling back to Spark:
 
+- Byte-identical sibling field names, including inside structs, arrays, and maps. Comet rejects
+  the entire file before decoding, even when the duplicate fields are not projected or the read
+  schema uses field IDs. This prevents row multiplication and decoder synchronization errors
+  ([#5783](https://github.com/apache/datafusion-comet/issues/5783)). The check applies in both
+  case-sensitivity modes; names in separate groups do not collide. Disable Comet for the query
+  to use Spark's duplicate-name resolution with an explicit read schema.
 - Invalid UTF-8 bytes in `STRING` columns. Spark permits arbitrary byte sequences in a `STRING`
   column (for example from `CAST(X'C1' AS STRING)`), but Comet's native execution path is built on
   Arrow, whose string type is strictly UTF-8. Reading a Parquet file whose `STRING` column contains

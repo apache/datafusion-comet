@@ -44,7 +44,8 @@
 //! the caller's requested policy, unchanged from stock behavior.
 //!
 //! Filed upstream as apache/datafusion#23978. Revert this once the opener merges its deferred
-//! page-index load back into `FileMetadataCache` instead of bypassing it.
+//! page-index load back into `FileMetadataCache` instead of bypassing it. Preserve the
+//! duplicate-field validation when replacing this factory.
 
 use arrow::datatypes::{DataType, FieldRef, Schema};
 use async_trait::async_trait;
@@ -77,7 +78,8 @@ use parquet::file::metadata::{FileMetaData, KeyValue, ParquetMetaDataBuilder};
 use parquet::file::metadata::{
     FooterTail, PageIndexPolicy, ParquetMetaData, ParquetMetaDataReader,
 };
-use parquet::schema::types::{ColumnDescPtr, SchemaDescriptor};
+use parquet::schema::types::{ColumnDescPtr, SchemaDescriptor, Type};
+use std::collections::HashSet;
 use std::fmt::{Debug, Display, Formatter};
 use std::ops::Range;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -372,6 +374,27 @@ fn with_spark_arrow_schema(metadata: Arc<ParquetMetaData>) -> ParquetResult<Arc<
     ))
 }
 
+// Duplicate sibling names can make the decoder combine distinct leaves into one column,
+// multiplying rows before schema adaptation can reject or resolve the duplicate (#5783).
+// Reject the entire file, including unprojected fields, until the decoder can safely
+// resolve duplicate siblings. Names in separate groups do not collide.
+fn validate_field_names(schema: &Type) -> parquet::errors::Result<()> {
+    if let Type::GroupType { fields, .. } = schema {
+        let mut names = HashSet::with_capacity(fields.len());
+        for field in fields {
+            if !names.insert(field.name()) {
+                return Err(ParquetError::General(format!(
+                    "Comet native scan does not support duplicate Parquet field name '{}' in group '{}'",
+                    field.name(),
+                    schema.name()
+                )));
+            }
+            validate_field_names(field)?;
+        }
+    }
+    Ok(())
+}
+
 impl AsyncFileReader for EagerPageIndexReader {
     /// Reads a metadata range, counting its requested size before I/O and its returned
     /// bytes only on success. The returned future borrows this reader; store errors retain
@@ -498,6 +521,8 @@ impl AsyncFileReader for EagerPageIndexReader {
             }
 
             let metadata = metadata?;
+            // Validate cache hits too, before Arrow constructs a decoder for any projection.
+            validate_field_names(metadata.file_metadata().schema_descr().root_schema())?;
             if spark_variant_schema {
                 with_spark_arrow_schema(metadata)
             } else {
