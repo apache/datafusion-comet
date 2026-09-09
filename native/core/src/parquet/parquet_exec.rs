@@ -1245,7 +1245,7 @@ mod tests {
             .to_string();
         let props = WriterProperties::builder()
             .set_statistics_enabled(EnabledStatistics::Page)
-            .set_bloom_filter_ndv(500)
+            .set_bloom_filter_max_ndv(500)
             .set_bloom_filter_fpp(0.0001)
             .build();
         let file = File::create(&filename).unwrap();
