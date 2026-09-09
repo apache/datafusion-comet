@@ -1711,6 +1711,26 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("cast StringType to TimestampType/TimestampNTZType - numeric offset validation") {
+    val malformed = Seq(
+      "2020-1\u0967",
+      "2020-\u09671",
+      "2020-01-1\u0967",
+      "2020-01-\u09671") ++ Seq("+08:000", "+008:00", "+18:01", "-18:01", "+1:+1", "+1\u0967")
+      .flatMap(offset => Seq(s"2020-01-01 12:34:56 $offset", s"2020-01-01 12:34:56$offset"))
+    val valid = Seq("+08:00", "+8:0", "+0800", "+17:59", "+18:00", "-18:00")
+      .map(offset => s"2020-01-01 12:34:56 $offset")
+    for (tz <- Seq("UTC", "America/Los_Angeles")) {
+      withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz) {
+        // Each Parquet-backed value is checked separately in legacy, TRY and ANSI modes.
+        for (value <- malformed ++ valid;
+          dataType <- Seq(DataTypes.TimestampType, DataTypes.TimestampNTZType)) {
+          castTimestampTest(Seq(value).toDF("a"), dataType, assertNative = true)
+        }
+      }
+    }
+  }
+
   // CAST from BinaryType
 
   test("cast BinaryType to StringType") {

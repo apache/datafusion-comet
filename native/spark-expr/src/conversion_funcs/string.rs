@@ -1495,7 +1495,8 @@ fn timestamp_parser<T: TimeZone>(
 ///   "+HH:MM"  -> same
 ///   (negative with '-' analogously)
 ///
-/// Hours must be 0–18 and minutes 0–59.  A trailing colon ("+8:") is rejected.
+/// Hours must be 0–18 and minutes 0–59, with a maximum absolute offset of 18:00.
+/// A trailing colon ("+8:") is rejected.
 fn parse_sign_offset(s: &str) -> Option<i32> {
     if s.is_empty() {
         return Some(0);
@@ -1505,14 +1506,16 @@ fn parse_sign_offset(s: &str) -> Option<i32> {
         Some(&b'-') => (-1i32, &s[1..]),
         _ => return None,
     };
-    if rest.is_empty() {
-        return None; // lone '+' or '-'
+    // Validate before slicing: malformed date segments can reach this helper, and a
+    // byte range such as rest[..2] must not split a non-ASCII digit's UTF-8 encoding.
+    if rest.is_empty() || !rest.bytes().all(|b| b.is_ascii_digit() || b == b':') {
+        return None;
     }
     let (h, m) = if let Some(colon_pos) = rest.find(':') {
         let h_str = &rest[..colon_pos];
         let m_str = &rest[colon_pos + 1..];
-        if m_str.is_empty() {
-            return None; // trailing colon: "+8:"
+        if !(1..=2).contains(&h_str.len()) || !(1..=2).contains(&m_str.len()) {
+            return None;
         }
         let h: i32 = h_str.parse().ok()?;
         // Note: "+HH:MM:SS" (with seconds) is not handled; Spark accepts it but it is rare.
@@ -1528,7 +1531,7 @@ fn parse_sign_offset(s: &str) -> Option<i32> {
             _ => return None,
         }
     };
-    if !(0..=18).contains(&h) || !(0..=59).contains(&m) {
+    if !(0..=18).contains(&h) || !(0..=59).contains(&m) || (h == 18 && m != 0) {
         return None;
     }
     Some(sign * (h * 3600 + m * 60))
@@ -3036,6 +3039,20 @@ mod tests {
         "٢020-1-1",
         "2020-٢",
         "2020-01-٢",
+        "2020-1\u{967}",
+        "2020-\u{967}1",
+        "2020-01-1\u{967}",
+        "2020-01-\u{967}1",
+        "2020-01-01 12:34:56 +08:000",
+        "2020-01-01 12:34:56 +008:00",
+        "2020-01-01 12:34:56 +18:01",
+        "2020-01-01 12:34:56 -18:01",
+        "2020-01-01 12:34:56+08:000",
+        "2020-01-01 12:34:56+008:00",
+        "2020-01-01 12:34:56+18:01",
+        "2020-01-01 12:34:56 UTC+08:000",
+        "2020-01-01 12:34:56 GMT+008:00",
+        "2020-01-01 12:34:56 UT+18:01",
         "2020-01-01T1:٢",
         "2020-01-01T1:2:٣",
         "2020-1-1T1:2:3.٢Z",
@@ -3117,6 +3134,46 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn timestamp_numeric_offset_validation() {
+        for (input, seconds) in [
+            ("", 0),
+            ("+0", 0),
+            ("-00", 0),
+            ("+8", 28_800),
+            ("+08", 28_800),
+            ("+0800", 28_800),
+            ("+8:0", 28_800),
+            ("+08:0", 28_800),
+            ("+8:00", 28_800),
+            ("+17:59", 64_740),
+            ("+18:00", 64_800),
+            ("-18:00", -64_800),
+            ("+1800", 64_800),
+            ("-1800", -64_800),
+        ] {
+            assert_eq!(parse_sign_offset(input), Some(seconds), "{input:?}");
+        }
+        for input in [
+            "+08:000",
+            "+008:00",
+            "+18:01",
+            "-18:01",
+            "+18:59",
+            "+19",
+            "-1900",
+            "+8:",
+            "+1:+1",
+            "-1:-1",
+            "+1\u{967}",
+            "+\u{967}1",
+            "+1٢",
+            "++1",
+        ] {
+            assert_eq!(parse_sign_offset(input), None, "{input:?}");
         }
     }
 
