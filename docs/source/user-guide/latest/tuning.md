@@ -60,8 +60,9 @@ The valid pool types are:
 
 - `fair_unified` (default when `spark.memory.offHeap.enabled=true` is set)
 - `greedy_unified`
+- `unbounded`
 
-Both pool types are shared across all native execution contexts within the same Spark task. When
+The two `unified` pool types are shared across all native execution contexts within the same Spark task. When
 Comet executes a shuffle, it runs two native execution contexts concurrently (e.g. one for
 pre-shuffle operators and one for the shuffle writer). The shared pool ensures that the combined
 memory usage stays within the per-task limit.
@@ -73,6 +74,12 @@ when there is sufficient memory in order to leave enough memory for other operat
 
 The `greedy_unified` pool type implements a greedy first-come first-serve limit. This pool works well for queries that do not
 need to spill or have a single spillable operator.
+
+The `unbounded` pool does no accounting of its own and imposes no limit, so Comet's native memory is capped only by
+the experimental `spark.comet.exec.memoryGuard.enabled`. Enabling that guard in off-heap mode selects `unbounded`
+automatically and ignores this setting: growth is then gated on real allocator usage against the off-heap budget
+rather than on Spark's per-task reservations. Note that Spark's `TaskMemoryManager` no longer sees Comet's off-heap
+usage in that mode, so Spark cannot ask Comet to spill on behalf of its own operators.
 
 [shuffle]: #shuffle
 [Advanced Memory Tuning]: #advanced-memory-tuning

@@ -28,23 +28,15 @@ pub(crate) enum MemoryPoolType {
     GreedyGlobal,
     FairSpillGlobal,
     Unbounded,
-    #[cfg(feature = "oom-guard")]
-    RealUsage,
 }
 
+#[cfg(feature = "oom-guard")]
 impl MemoryPoolType {
     /// True when this pool's `reserved()` reflects a single task's usage, so a per-task
     /// fair-share comparison is meaningful (false for process-wide pools). The non-shared
     /// per-task pools (`Greedy`/`FairSpill`) return true but keep no task registry, so the
     /// fair-share divisor falls back to `executor_cores` rather than the active-task count.
-    #[cfg_attr(not(feature = "oom-guard"), allow(dead_code))]
     pub(crate) fn has_per_task_budget(&self) -> bool {
-        // The dedicated `real_usage` pool gates on process-wide real usage
-        // (first-come), not a per-task reservation, so it has no per-task budget.
-        #[cfg(feature = "oom-guard")]
-        if matches!(self, MemoryPoolType::RealUsage) {
-            return false;
-        }
         !matches!(
             self,
             MemoryPoolType::GreedyGlobal
@@ -70,13 +62,13 @@ impl MemoryPoolConfig {
 
 pub(crate) fn parse_memory_pool_config(
     off_heap_mode: bool,
-    memory_pool_type: String,
+    memory_pool_type: &str,
     memory_limit: i64,
     memory_limit_per_task: i64,
 ) -> CometResult<MemoryPoolConfig> {
     let pool_size = memory_limit as usize;
     let memory_pool_config = if off_heap_mode {
-        match memory_pool_type.as_str() {
+        match memory_pool_type {
             "fair_unified" => MemoryPoolConfig::new(MemoryPoolType::FairUnified, pool_size),
             "greedy_unified" => {
                 // the `unified` memory pool interacts with Spark's memory pool to allocate
@@ -84,20 +76,12 @@ pub(crate) fn parse_memory_pool_config(
                 // shared with Spark is set by `spark.memory.offHeap.size`.
                 MemoryPoolConfig::new(MemoryPoolType::GreedyUnified, 0)
             }
-            #[cfg(feature = "oom-guard")]
-            "real_usage" => {
-                // Gate growth on real allocator usage against the off-heap budget
-                // (`pool_size`) instead of delegating per-task accounting to Spark's
-                // TaskMemoryManager. See `RealUsagePool`.
-                MemoryPoolConfig::new(MemoryPoolType::RealUsage, pool_size)
-            }
-            #[cfg(not(feature = "oom-guard"))]
-            "real_usage" => {
-                return Err(CometError::Config(
-                    "Memory pool type 'real_usage' requires a Comet build with the \
-                     'oom-guard' native feature"
-                        .to_string(),
-                ))
+            "unbounded" => {
+                // No accounting of its own. In off-heap mode this is what
+                // `spark.comet.exec.memoryGuard.enabled` forces, so the real-usage gate
+                // wrapped around it is the only thing rejecting growth, instead of
+                // delegating per-task accounting to Spark's TaskMemoryManager.
+                MemoryPoolConfig::new(MemoryPoolType::Unbounded, 0)
             }
             _ => {
                 return Err(CometError::Config(format!(
@@ -108,7 +92,7 @@ pub(crate) fn parse_memory_pool_config(
     } else {
         // Use the memory pool from DF
         let pool_size_per_task = memory_limit_per_task as usize;
-        match memory_pool_type.as_str() {
+        match memory_pool_type {
             "fair_spill_task_shared" => {
                 MemoryPoolConfig::new(MemoryPoolType::FairSpillTaskShared, pool_size_per_task)
             }

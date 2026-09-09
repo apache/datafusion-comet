@@ -34,7 +34,7 @@ static TASK_SHARED_MEMORY_POOLS: Lazy<Mutex<HashMap<i64, Weak<TaskSharedMemoryPo
 /// the registry so there is no separate counter to keep in sync. The real-usage fair-share
 /// guard uses this as the divisor for each task's share of the budget; it returns 0 when no
 /// task-shared pool is active, in which case the guard falls back to a fixed divisor.
-#[cfg_attr(not(feature = "oom-guard"), allow(dead_code))]
+#[cfg(feature = "oom-guard")]
 pub(crate) fn active_task_count() -> usize {
     TASK_SHARED_MEMORY_POOLS.lock().len()
 }

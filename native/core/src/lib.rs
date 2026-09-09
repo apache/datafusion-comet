@@ -41,18 +41,35 @@ use log4rs::{
     Config,
 };
 
+// The allocator to install, named once so the `oom-guard` wrap below does not have to
+// repeat the selection matrix. All three are unit structs, so the alias binds the value
+// as well as the type. The final arm is `not(any(..))` of the other two, which also
+// covers "both jemalloc and mimalloc enabled" -- neither is selected, as before.
 #[cfg(all(
     not(target_env = "msvc"),
     feature = "jemalloc",
     not(feature = "mimalloc")
 ))]
-use tikv_jemallocator::Jemalloc;
+use tikv_jemallocator::Jemalloc as InnerAllocator;
 
 #[cfg(all(
     feature = "mimalloc",
     not(all(not(target_env = "msvc"), feature = "jemalloc"))
 ))]
-use mimalloc::MiMalloc;
+use mimalloc::MiMalloc as InnerAllocator;
+
+#[cfg(not(any(
+    all(
+        not(target_env = "msvc"),
+        feature = "jemalloc",
+        not(feature = "mimalloc")
+    ),
+    all(
+        feature = "mimalloc",
+        not(all(not(target_env = "msvc"), feature = "jemalloc"))
+    )
+)))]
+use std::alloc::System as InnerAllocator;
 
 // Re-export from jvm-bridge crate for internal use
 pub use datafusion_comet_jni_bridge::errors;
@@ -65,6 +82,9 @@ pub mod jvm_bridge {
 
 use errors::{try_unwrap_or_throw, CometError, CometResult};
 
+#[cfg(feature = "oom-guard")]
+use crate::execution::memory_pools::oom_guard;
+
 pub mod cloud;
 pub mod execution;
 pub mod parquet;
@@ -72,51 +92,14 @@ pub mod parquet;
 #[cfg(debug_assertions)]
 pub mod debug;
 
-#[cfg(all(
-    not(target_env = "msvc"),
-    feature = "jemalloc",
-    not(feature = "mimalloc"),
-    not(feature = "oom-guard")
-))]
+#[cfg(feature = "oom-guard")]
 #[global_allocator]
-static GLOBAL: Jemalloc = Jemalloc;
+static GLOBAL: oom_guard::AccountingAllocator<InnerAllocator> =
+    oom_guard::AccountingAllocator::new(InnerAllocator);
 
-#[cfg(all(
-    feature = "mimalloc",
-    not(all(not(target_env = "msvc"), feature = "jemalloc")),
-    not(feature = "oom-guard")
-))]
+#[cfg(not(feature = "oom-guard"))]
 #[global_allocator]
-static GLOBAL: MiMalloc = MiMalloc;
-
-#[cfg(all(
-    not(target_env = "msvc"),
-    feature = "jemalloc",
-    not(feature = "mimalloc"),
-    feature = "oom-guard"
-))]
-#[global_allocator]
-static GLOBAL: crate::execution::memory_pools::oom_guard::AccountingAllocator<Jemalloc> =
-    crate::execution::memory_pools::oom_guard::AccountingAllocator::new(Jemalloc);
-
-#[cfg(all(
-    feature = "mimalloc",
-    not(all(not(target_env = "msvc"), feature = "jemalloc")),
-    feature = "oom-guard"
-))]
-#[global_allocator]
-static GLOBAL: crate::execution::memory_pools::oom_guard::AccountingAllocator<MiMalloc> =
-    crate::execution::memory_pools::oom_guard::AccountingAllocator::new(MiMalloc);
-
-// oom-guard enabled with system allocator (no mimalloc, and no jemalloc or on MSVC).
-#[cfg(all(
-    feature = "oom-guard",
-    not(feature = "mimalloc"),
-    any(target_env = "msvc", not(feature = "jemalloc"))
-))]
-#[global_allocator]
-static GLOBAL: crate::execution::memory_pools::oom_guard::AccountingAllocator<std::alloc::System> =
-    crate::execution::memory_pools::oom_guard::AccountingAllocator::new(std::alloc::System);
+static GLOBAL: InnerAllocator = InnerAllocator;
 
 #[no_mangle]
 pub extern "system" fn Java_org_apache_comet_NativeBase_init(

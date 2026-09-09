@@ -19,7 +19,7 @@ mod config;
 mod fair_pool;
 pub mod logging_pool;
 #[cfg(feature = "oom-guard")]
-pub mod oom_guard;
+pub(crate) mod oom_guard;
 #[cfg(feature = "oom-guard")]
 mod real_usage_pool;
 mod task_shared;
@@ -37,7 +37,7 @@ use unified_pool::CometUnifiedMemoryPool;
 
 pub(crate) use config::*;
 #[cfg(feature = "oom-guard")]
-pub(crate) use real_usage_pool::RealUsagePool;
+pub(crate) use real_usage_pool::RealUsageMemoryPool;
 pub(crate) use task_shared::*;
 
 /// Creates the memory pool for a native plan.
@@ -95,20 +95,5 @@ pub(crate) fn create_memory_pool(
             Arc::clone(memory_pool)
         }
         MemoryPoolType::Unbounded => Arc::new(UnboundedMemoryPool::default()),
-        #[cfg(feature = "oom-guard")]
-        MemoryPoolType::RealUsage => {
-            // Dedicated off-heap pool: `RealUsagePool` is the sole gate, comparing
-            // process-wide real usage against `pool_size` (first-come across tasks, so
-            // `fair_share` is `None`) instead of Spark's per-task TaskMemoryManager
-            // division. The inner `UnboundedMemoryPool` never rejects; `TrackConsumersPool`
-            // still reports top consumers on rejection. `enable_tracking()` because the
-            // gate reads the allocator balance even when the hard breaker is unarmed.
-            oom_guard::enable_tracking();
-            tracked(RealUsagePool::new(
-                Arc::new(UnboundedMemoryPool::default()),
-                pool_size,
-                None,
-            ))
-        }
     }
 }

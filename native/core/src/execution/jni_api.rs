@@ -110,7 +110,9 @@ use crate::execution::tracing::{
 
 use crate::execution::memory_pools::logging_pool::LoggingMemoryPool;
 #[cfg(feature = "oom-guard")]
-use crate::execution::memory_pools::{oom_guard, MemoryPoolType, RealUsagePool};
+use crate::execution::memory_pools::{
+    oom_guard, MemoryPoolConfig, MemoryPoolType, RealUsageMemoryPool,
+};
 use crate::execution::spark_config::{
     SparkConfig, COMET_DEBUG_ENABLED, COMET_DEBUG_MEMORY, COMET_EXPLAIN_NATIVE_ENABLED,
     COMET_MAX_TEMP_DIRECTORY_SIZE, COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED,
@@ -228,8 +230,6 @@ fn parse_usize_env_var(name: &str) -> Option<usize> {
 
 fn build_runtime(default_worker_threads: Option<usize>) -> Runtime {
     let mut builder = tokio::runtime::Builder::new_multi_thread();
-    #[cfg(feature = "oom-guard")]
-    builder.on_thread_start(oom_guard::stamp_current_thread);
     if let Some(n) = parse_usize_env_var("COMET_WORKER_THREADS") {
         info!("Comet tokio runtime: using COMET_WORKER_THREADS={n}");
         builder.worker_threads(n);
@@ -244,10 +244,21 @@ fn build_runtime(default_worker_threads: Option<usize>) -> Runtime {
     }
     builder
         .enable_all()
-        .on_thread_start(attach_thread_as_daemon)
+        .on_thread_start(on_worker_thread_start)
         .on_thread_stop(detach_thread)
         .build()
         .expect("Failed to create Tokio runtime")
+}
+
+/// Everything that has to run on a freshly spawned runtime thread.
+///
+/// Tokio's `on_thread_start` is a setter, not a list: a second call silently replaces the
+/// first. Register this one hook and add to it rather than calling `on_thread_start` again.
+fn on_worker_thread_start() {
+    // Marks the thread as a query worker, which is what makes it eligible for the breaker.
+    #[cfg(feature = "oom-guard")]
+    oom_guard::stamp_current_thread();
+    attach_thread_as_daemon();
 }
 
 /// Attaches a runtime thread to the JVM as a daemon thread.
@@ -517,34 +528,34 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
             let memory_pool_type = memory_pool_type.try_to_string(env)?;
             let memory_pool_config = parse_memory_pool_config(
                 off_heap_mode != JNI_FALSE,
-                memory_pool_type,
+                &memory_pool_type,
                 memory_limit,
                 memory_limit_per_task,
             )?;
 
-            // Arm the hard breaker when the guard is enabled or the `real_usage` pool is
-            // selected (it carries the guard itself). It trips on *actual* over-budget
-            // usage; the cooperative gate below trips on *projected* usage and spills
-            // first. `spark.comet.exec.memoryGuard.size` gives the breaker headroom above
-            // the off-heap budget (e.g. up to the container RSS limit).
+            // In off-heap mode the guard *replaces* Spark's per-task accounting rather than
+            // layering over it. Both the gate ceiling and the unified pools' budget are the
+            // off-heap size, so an inner unified pool would always reject first and the gate
+            // would never fire.
             #[cfg(feature = "oom-guard")]
-            let (guard_enabled, is_real_usage) = (
-                spark_config.get_bool(COMET_MEMORY_GUARD_ENABLED),
-                memory_pool_config.pool_type == MemoryPoolType::RealUsage,
-            );
+            let guard_enabled = spark_config.get_bool(COMET_MEMORY_GUARD_ENABLED);
             #[cfg(feature = "oom-guard")]
-            if guard_enabled || is_real_usage {
-                let default_limit = memory_limit.max(0) as u64;
-                let limit = spark_config.get_u64(COMET_MEMORY_GUARD_SIZE, default_limit);
-                if limit == 0 {
-                    warn!(
-                        "Comet memory guard is active but the effective limit is 0 \
-                         (memory_limit={memory_limit}); the guard will not trip. Set \
-                         spark.comet.exec.memoryGuard.size explicitly."
-                    );
+            let memory_pool_config = if guard_enabled && off_heap_mode != JNI_FALSE {
+                if memory_pool_type != "unbounded" {
+                    // Once per executor: this runs on every plan creation.
+                    static WARNED: std::sync::Once = std::sync::Once::new();
+                    WARNED.call_once(|| {
+                        warn!(
+                            "{COMET_MEMORY_GUARD_ENABLED}=true overrides \
+                             spark.comet.exec.memoryPool={memory_pool_type}; using `unbounded` \
+                             so that real allocator usage is the sole limit."
+                        )
+                    });
                 }
-                oom_guard::arm(limit as usize);
-            }
+                MemoryPoolConfig::new(MemoryPoolType::Unbounded, 0)
+            } else {
+                memory_pool_config
+            };
 
             let memory_pool =
                 create_memory_pool(&memory_pool_config, task_memory_manager, task_attempt_id);
@@ -556,22 +567,38 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 ThreadMemoryPoolRegistration::new(rust_thread_id, id, Arc::clone(&memory_pool))
             });
 
-            // Cooperative real-usage gate: reject growth (triggering a spill) once real
-            // allocator usage plus the request would exceed the off-heap budget. This is the
-            // first line of defense and fires before the hard breaker armed above, so
-            // over-budget work spills and retries rather than failing the task. The dedicated
-            // `real_usage` pool already gates internally, so it is not wrapped again.
+            // Two layers of defense against a native OOM kill, both driven by
+            // `spark.comet.exec.memoryGuard.enabled`:
+            //
+            // 1. The cooperative gate (`RealUsageMemoryPool`) rejects growth once *projected*
+            //    real allocator usage would exceed the off-heap budget, so over-budget work
+            //    spills and retries rather than failing the task.
+            // 2. The hard breaker (`oom_guard`) is the last resort and trips on *actual*
+            //    over-budget usage. `spark.comet.exec.memoryGuard.size` gives it headroom
+            //    above the off-heap budget (e.g. up to the container RSS limit).
+            //
+            // In off-heap mode the pool underneath is always `unbounded` (forced above), so
+            // the gate is the only thing rejecting growth.
             #[cfg(feature = "oom-guard")]
-            let memory_pool = if guard_enabled && !is_real_usage {
+            let memory_pool = if guard_enabled {
                 let ceiling = memory_limit.max(0) as usize;
+                let limit = spark_config.get_u64(COMET_MEMORY_GUARD_SIZE, ceiling as u64);
+                if limit == 0 {
+                    warn!(
+                        "Comet memory guard is active but the effective limit is 0 \
+                         (memory_limit={memory_limit}); the guard will not trip. Set \
+                         spark.comet.exec.memoryGuard.size explicitly."
+                    );
+                }
+                oom_guard::arm(limit as usize);
                 // Enable the fair-share guard for pools whose `reserved()` is per-task;
                 // `executor_cores` is the fallback divisor when no task count is known.
                 let fair_share = memory_pool_config
                     .pool_type
                     .has_per_task_budget()
                     .then_some(executor_cores);
-                Arc::new(RealUsagePool::new(memory_pool, ceiling, fair_share))
-                    as Arc<dyn datafusion::execution::memory_pool::MemoryPool>
+                Arc::new(RealUsageMemoryPool::new(memory_pool, ceiling, fair_share))
+                    as Arc<dyn MemoryPool>
             } else {
                 memory_pool
             };

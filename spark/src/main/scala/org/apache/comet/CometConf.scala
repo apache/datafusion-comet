@@ -825,11 +825,9 @@ object CometConf extends ShimCometConf {
       .doc(
         "The type of memory pool to be used for Comet native execution when running Spark in " +
           "off-heap mode. Available pool types are `greedy_unified`, `fair_unified`, and " +
-          "`real_usage`. The experimental `real_usage` pool gates growth on real allocator " +
-          "usage against the off-heap budget rather than delegating per-task accounting to " +
-          "Spark, and arms the last-resort OOM breaker on its own, so it needs no separate " +
-          "`spark.comet.exec.memoryGuard.enabled`. It relies on the `oom-guard` native " +
-          "feature, which is enabled by default. " +
+          "`unbounded`. `unbounded` does no accounting of its own, leaving Comet's native " +
+          "memory unlimited unless `spark.comet.exec.memoryGuard.enabled` is set. That " +
+          "setting overrides this one in off-heap mode. " +
           s"$TUNING_GUIDE.")
       .stringConf
       .createWithDefault("fair_unified")
@@ -1010,11 +1008,13 @@ object CometConf extends ShimCometConf {
     conf(s"$COMET_EXEC_CONFIG_PREFIX.memoryGuard.enabled")
       .category(CATEGORY_EXEC)
       .doc(
-        "Experimental. When enabled, Comet tracks real native memory allocations and aborts " +
-          "an over-budget task with a retriable error instead of risking an executor-wide OOM " +
-          "kill. The `real_usage` memory pool arms this automatically, so this flag is only " +
-          "needed to add the guard on top of another pool type. Uses the 'oom-guard' native " +
-          "feature, which is enabled by default. Has no effect if that feature is compiled out.")
+        "Experimental. When enabled, Comet tracks real native memory allocations and gates " +
+          "growth against the off-heap budget, spilling rather than risking an executor-wide " +
+          "OOM kill, and aborts an over-budget task with a retriable error as a last resort. " +
+          "In off-heap mode this replaces Spark's per-task accounting rather than layering " +
+          "over it, so `spark.comet.exec.memoryPool` is ignored. Uses the 'oom-guard' " +
+          "native feature, which is enabled by default. Has no effect if that feature is " +
+          "compiled out.")
       .booleanConf
       .createWithDefault(false)
 
