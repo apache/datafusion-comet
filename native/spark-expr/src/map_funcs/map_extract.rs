@@ -178,9 +178,21 @@ pub fn spark_map_extract(
 
     // Gather the first matching entry of each row. Map offsets are `i32`, so an entry index always
     // fits in `u32`.
+    //
+    // A NULL map row reads NULL whatever its entries hold. Arrow does not require a null row's
+    // offset range to be empty, and neither Comet's struct-field helper (which adds a parent null
+    // mask while preserving the child buffers) nor the UDF execution layer clears those entries, so
+    // a null row can carry a live `a -> 7` that would otherwise match. Spark returns NULL for a
+    // NULL map under both ANSI modes, for `element_at` and for `GetMapValue` alike, and only
+    // `element_at` has a nullable-input guard upstream of this kernel.
+    let map_nulls = map_array.nulls();
     let mut indices = vec![0u32; num_rows];
     let mut nulls = NullBufferBuilder::new(num_rows);
     for row in 0..num_rows {
+        if map_nulls.is_some_and(|n| n.is_null(row)) {
+            nulls.append(false);
+            continue;
+        }
         let start = offsets[row] as usize - entries_start;
         let end = offsets[row + 1] as usize - entries_start;
         let found = (start..end).find(|&i| matched.value(i));
@@ -256,7 +268,7 @@ fn elementwise_match_mask(
 mod tests {
     use super::*;
     use arrow::array::{Int32Array, StringArray, StructArray};
-    use arrow::buffer::OffsetBuffer;
+    use arrow::buffer::{NullBuffer, OffsetBuffer};
     use arrow::datatypes::{Field, Fields};
     use datafusion::common::ScalarValue;
 
@@ -362,6 +374,60 @@ mod tests {
         assert_eq!(
             extract(test_map(), ColumnarValue::Scalar(ScalarValue::Utf8(None))),
             vec![None; 5]
+        );
+    }
+
+    /// A NULL row whose entries were retained rather than dropped. `map_from` gives a NULL row an
+    /// empty offset range, which is the shape Arrow's builders produce, but nothing in the format
+    /// requires it: adding a parent null mask over intact child buffers leaves the entries in
+    /// place. Such a row must still read NULL, not the value its live entry holds.
+    fn null_row_with_retained_entries() -> MapArray {
+        let key_field = Arc::new(Field::new("key", DataType::Utf8, false));
+        let value_field = Arc::new(Field::new("value", DataType::Int32, true));
+        let entries = StructArray::new(
+            Fields::from(vec![Arc::clone(&key_field), Arc::clone(&value_field)]),
+            vec![
+                Arc::new(StringArray::from(vec!["a", "a", "b"])) as ArrayRef,
+                Arc::new(Int32Array::from(vec![Some(7), Some(1), Some(2)])) as ArrayRef,
+            ],
+            None,
+        );
+        let entries_field = Arc::new(Field::new(
+            "entries",
+            DataType::Struct(Fields::from(vec![key_field, value_field])),
+            false,
+        ));
+        MapArray::try_new(
+            entries_field,
+            // Row 0 is NULL but still spans entry 0 (`a -> 7`); row 1 is a live `{a: 1, b: 2}`.
+            OffsetBuffer::new(vec![0i32, 1, 3].into()),
+            entries,
+            Some(NullBuffer::from(vec![false, true])),
+            false,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn null_map_row_reads_null_even_with_live_entries() {
+        assert_eq!(
+            extract(null_row_with_retained_entries(), key("a")),
+            vec![None, Some(1)]
+        );
+        assert_eq!(
+            extract(null_row_with_retained_entries(), key("b")),
+            vec![None, Some(2)]
+        );
+    }
+
+    #[test]
+    fn null_map_row_reads_null_with_a_per_row_lookup_key() {
+        // The per-row key path gathers a key per entry, so the NULL row's entry is compared
+        // against that row's own key. It must still be masked out.
+        let keys: ArrayRef = Arc::new(StringArray::from(vec![Some("a"), Some("b")]));
+        assert_eq!(
+            extract(null_row_with_retained_entries(), ColumnarValue::Array(keys)),
+            vec![None, Some(2)]
         );
     }
 
