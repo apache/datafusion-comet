@@ -40,8 +40,11 @@ import org.apache.spark.sql.types.DecimalType
  */
 object DecimalPrecision {
   def promote(expr: Expression): Expression = {
-    // `transformUp` walks and rebuilds every node even when no case matches, and the serde calls
-    // this once per expression it converts, so skip it when there is nothing to rewrite.
+    // `transformUp` walks the whole tree and calls `mapChildren` at every node, which allocates
+    // through `children.map` / `mapProductIterator` even when no case matches (the specialized
+    // `mapChildren` overrides do skip the node copy via `fastEquals`, so the cost is the traversal
+    // and its allocations, not a rebuild). The serde calls this once per expression it converts,
+    // so skip it when there is nothing to rewrite.
     if (containsDecimalArithmetic(expr)) rewrite(expr) else expr
   }
 
