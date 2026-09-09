@@ -303,7 +303,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("unsupported PartialMerge preserves percentile buffers with local Comet shuffle") {
+  test("disabled FIRST/LAST preserves percentile buffers with local Comet shuffle") {
     for {
       adaptive <- Seq(false, true)
       percentile <- Seq("percentile", "percentile_approx")
@@ -312,6 +312,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       withSQLConf(
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
         SQLConf.SHUFFLE_PARTITIONS.key -> "4",
+        s"spark.comet.expression.${mergeFunction.capitalize}.enabled" -> "false",
         CometConf.COMET_SHUFFLE_MODE.key -> "native") {
         val query = spark
           .range(0, 18, 1, 4)
@@ -952,34 +953,6 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                     " COUNT(DISTINCT _1), AVG(_1)" +
                     " FROM v GROUP BY _2 ORDER BY _2")
               }
-            }
-          }
-        }
-      }
-    }
-  }
-
-  // FIRST/LAST are order-dependent aggregates whose merge result depends on hash table
-  // processing order. In PartialMerge mode, DataFusion's hash table may process rows
-  // in a different order than Spark's, so we fall back to Spark for correctness.
-  // https://github.com/apache/datafusion-comet/issues/4131
-  test("partialMerge - FIRST/LAST with distinct aggregates falls back") {
-    val numValues = 10000
-    Seq(100).foreach { numGroups =>
-      Seq(128).foreach { batchSize =>
-        withSQLConf(
-          SQLConf.COALESCE_PARTITIONS_ENABLED.key -> "true",
-          CometConf.COMET_BATCH_SIZE.key -> batchSize.toString) {
-          withParquetTable(
-            (0 until numValues).map(i => (i, Random.nextInt() % numGroups)),
-            "tbl",
-            false) {
-            withView("v") {
-              sql("CREATE TEMP VIEW v AS SELECT _1, _2 FROM tbl ORDER BY _1")
-              checkSparkAnswerAndFallbackReason(
-                "SELECT _2, FIRST(_1), LAST(_1), COUNT(DISTINCT _1)" +
-                  " FROM v GROUP BY _2 ORDER BY _2",
-                "PartialMerge not supported for aggregates: first, last")
             }
           }
         }
