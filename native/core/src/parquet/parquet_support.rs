@@ -609,6 +609,10 @@ fn create_hdfs_object_store(
     })
 }
 
+/// Cache identity: `(scheme://host:port, config_hash, hdfs_backend)`.
+/// Native `s3a` is normalized to `s3`; Hadoop-selected schemes keep their spelling.
+/// The hash covers the object-store configuration. The boolean is `true` for the
+/// Hadoop backend (including custom schemes routed through Hadoop), `false` for native.
 type ObjectStoreCacheKey = (String, u64, bool);
 type ObjectStoreCache = RwLock<HashMap<ObjectStoreCacheKey, Arc<dyn ObjectStore>>>;
 
@@ -735,6 +739,10 @@ pub(crate) fn prepare_object_store_with_configs(
         ObjectStoreUrl::parse(url_key)?
     } else {
         let backend = if is_hdfs_scheme { "hdfs" } else { "native" };
+        // DataFusion keys stores only by scheme and authority, so put configuration
+        // and backend identity in the scheme while preserving the physical authority.
+        // `+comet-` marks our internal registration suffix; encryption lookup strips
+        // the complete suffix to recover the physical URI.
         ObjectStoreUrl::parse(format!(
             "{scheme}+comet-{config_hash:016x}-{backend}://{}",
             &url[url::Position::BeforeHost..url::Position::AfterPort],
