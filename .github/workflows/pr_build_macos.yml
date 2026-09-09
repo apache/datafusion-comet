@@ -31,7 +31,7 @@ jobs:
   # Fast lint check - gates all other jobs (runs on Linux for cost efficiency)
   lint:
     name: Lint
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     container:
       image: amd64/rust
     steps:
