@@ -30,13 +30,16 @@ use arrow::buffer::{NullBuffer, OffsetBuffer};
 use arrow::compute::{cast, concat, interleave, take};
 use arrow::datatypes::{DataType, Field, FieldRef};
 use arrow::row::{RowConverter, SortField};
-use datafusion::common::{internal_datafusion_err, internal_err, Result as DFResult, ScalarValue};
+use datafusion::common::{
+    internal_datafusion_err, internal_err, DataFusionError, Result as DFResult, ScalarValue,
+};
 use datafusion::logical_expr::function::{AccumulatorArgs, StateFieldsArgs};
 use datafusion::logical_expr::{
     Accumulator, AggregateUDFImpl, EmitTo, GroupsAccumulator, Signature,
 };
 use datafusion_spark::function::aggregate::collect::{SparkCollectList, SparkCollectSet};
 use std::mem::{size_of, take as take_field};
+use std::ops::Range;
 use std::sync::Arc;
 use twox_hash::XxHash64;
 
@@ -503,12 +506,46 @@ fn single_row_lists(
 /// One distinct `(group, value)` pair. `start` and `len` address the value's row-encoded bytes
 /// in [`CollectSetGroupsAccumulator::arena`], and `hash` is of those bytes alone, so it survives
 /// the group renumbering [`CollectSetGroupsAccumulator::compact`] does.
+///
+/// `start` is 64-bit because the arena holds every group's bytes: a large execution-memory
+/// budget can push it past 4 GiB while every group's own result, and the combined `List<i32>`
+/// element count, stay valid, since that limit counts elements rather than encoded bytes. `len`
+/// stays 32-bit and is range-checked on insert, which keeps the struct at three machine words.
+/// Field order is chosen so the wider `start` costs nothing: `size_of::<SetEntry>()` is pinned
+/// by [`tests::set_entry_stays_three_words`].
 #[derive(Debug, Clone, Copy)]
 struct SetEntry {
-    group: u32,
-    start: u32,
-    len: u32,
     hash: u64,
+    start: u64,
+    group: u32,
+    len: u32,
+}
+
+/// Largest row-encoded value a [`SetEntry`] can address. A single Spark value cannot approach
+/// this, but the conversion is checked rather than truncating.
+const MAX_ENTRY_LEN: usize = u32::MAX as usize;
+
+/// Narrows an encoded value's length to the 32 bits a [`SetEntry`] stores, erroring rather than
+/// truncating a length whose low bits would address a shorter, wrong slice.
+fn checked_entry_len(len: usize) -> DFResult<u32> {
+    u32::try_from(len).map_err(|_| {
+        DataFusionError::Execution(format!(
+            "collect_set value of {len} encoded bytes exceeds the {MAX_ENTRY_LEN} byte limit"
+        ))
+    })
+}
+
+/// Byte range of `entry` within the arena, computed in 64-bit and widened once.
+///
+/// Split out from [`CollectSetGroupsAccumulator::entry_bytes`] so the arithmetic can be tested at
+/// the 4 GiB boundary without allocating an arena that large.
+#[inline]
+fn entry_range(start: u64, len: u32) -> Range<usize> {
+    let start = usize::try_from(start).expect("arena offset exceeds the address space");
+    let end = start
+        .checked_add(len as usize)
+        .expect("arena entry end exceeds the address space");
+    start..end
 }
 
 /// `GroupsAccumulator` for Spark's `collect_set`.
@@ -545,7 +582,8 @@ impl CollectSetGroupsAccumulator {
 
     /// Records `(group, encoded)` unless the group already holds that value. `hash` is of
     /// `encoded` alone, so a caller that already has it (`compact`) need not recompute it.
-    fn insert(&mut self, group: u32, hash: u64, encoded: &[u8]) {
+    fn insert(&mut self, group: u32, hash: u64, encoded: &[u8]) -> DFResult<()> {
+        let len = checked_entry_len(encoded.len())?;
         let Self {
             arena,
             entries,
@@ -557,30 +595,31 @@ impl CollectSetGroupsAccumulator {
             let entry = &entries[entry_idx as usize];
             entry.group == group
                 && entry.hash == hash
-                && &arena[entry.start as usize..(entry.start + entry.len) as usize] == encoded
+                && &arena[entry_range(entry.start, entry.len)] == encoded
         }) else {
-            return;
+            return Ok(());
         };
         let entry_idx = entries.len() as u32;
         entries.push(SetEntry {
-            group,
-            start: arena.len() as u32,
-            len: encoded.len() as u32,
             hash,
+            start: arena.len() as u64,
+            group,
+            len,
         });
         arena.extend_from_slice(encoded);
         index.fill(slot, entry_idx);
         if index.is_full(entries.len()) {
             index.grow(entries.iter().map(|e| key_hash(e.group, e.hash)));
         }
+        Ok(())
     }
 
     fn entry_bytes(&self, entry: &SetEntry) -> &[u8] {
-        &self.arena[entry.start as usize..(entry.start + entry.len) as usize]
+        &self.arena[entry_range(entry.start, entry.len)]
     }
 
     /// Drops the entries of groups `0..emit_groups` and renumbers what is left to start at 0.
-    fn compact(&mut self, emit_groups: u32) {
+    fn compact(&mut self, emit_groups: u32) -> DFResult<()> {
         let old_entries = take_field(&mut self.entries);
         let old_arena = take_field(&mut self.arena);
         self.index = RowIndex::default();
@@ -589,9 +628,10 @@ impl CollectSetGroupsAccumulator {
             if entry.group < emit_groups {
                 continue;
             }
-            let bytes = &old_arena[entry.start as usize..(entry.start + entry.len) as usize];
-            self.insert(entry.group - emit_groups, entry.hash, bytes);
+            let bytes = &old_arena[entry_range(entry.start, entry.len)];
+            self.insert(entry.group - emit_groups, entry.hash, bytes)?;
         }
+        Ok(())
     }
 
     fn clear(&mut self) {
@@ -626,7 +666,7 @@ impl GroupsAccumulator for CollectSetGroupsAccumulator {
                 continue;
             }
             let row = rows.row(row_idx);
-            self.insert(group_idx as u32, value_hash(row.as_ref()), row.as_ref());
+            self.insert(group_idx as u32, value_hash(row.as_ref()), row.as_ref())?;
         }
         Ok(())
     }
@@ -653,7 +693,7 @@ impl GroupsAccumulator for CollectSetGroupsAccumulator {
             }
             for pos in offsets[row_idx] as usize..offsets[row_idx + 1] as usize {
                 let row = rows.row(pos);
-                self.insert(group_idx as u32, value_hash(row.as_ref()), row.as_ref());
+                self.insert(group_idx as u32, value_hash(row.as_ref()), row.as_ref())?;
             }
         }
         Ok(())
@@ -705,7 +745,7 @@ impl GroupsAccumulator for CollectSetGroupsAccumulator {
 
         match emit_to {
             EmitTo::All => self.clear(),
-            EmitTo::First(n) => self.compact(n as u32),
+            EmitTo::First(n) => self.compact(n as u32)?,
         }
 
         Ok(Arc::new(ListArray::new(
@@ -1138,6 +1178,66 @@ mod tests {
 
     /// The two UDFs forward the rest of `AggregateUDFImpl` to `datafusion_spark`, and the
     /// planner and the `GroupsAccumulator` both depend on what those forwards report.
+    /// The arena addresses every group's bytes at once, so its offsets have to stay valid past
+    /// 4 GiB. The old 32-bit `start`/`len` pair wrapped there: `0xFFFF_FFFB + 8` came back as 3,
+    /// and the resulting slice either panicked or read another entry's bytes. Nothing about a
+    /// group's own result or the combined `List<i32>` element count bounds the arena, because that
+    /// limit counts elements rather than encoded bytes.
+    ///
+    /// Checked here on the range arithmetic rather than through a real accumulator, so the
+    /// boundary is covered without allocating a 4 GiB arena.
+    #[test]
+    fn entry_range_stays_valid_past_four_gibibytes() {
+        const FOUR_GIB: u64 = u32::MAX as u64 + 1;
+
+        // Straddling the boundary: the wrapping version produced 3..3 for this pair.
+        assert_eq!(
+            entry_range(u32::MAX as u64 - 4, 8),
+            4_294_967_291..4_294_967_299
+        );
+        // Wholly above it.
+        assert_eq!(entry_range(FOUR_GIB, 8), 4_294_967_296..4_294_967_304);
+        // A later start is no longer truncated back into the first 4 GiB.
+        assert_eq!(entry_range(FOUR_GIB + 16, 0).start, 4_294_967_312);
+        // Ordinary offsets are unaffected.
+        assert_eq!(entry_range(0, 0), 0..0);
+        assert_eq!(entry_range(24, 8), 24..32);
+    }
+
+    /// Widening `start` to 64 bits is only free because of the field order. If someone reorders
+    /// `SetEntry`, padding appears and every distinct value in the aggregate pays 8 more bytes,
+    /// which `size()` reports to the memory pool.
+    #[test]
+    fn set_entry_stays_three_words() {
+        assert_eq!(size_of::<SetEntry>(), 3 * size_of::<u64>());
+    }
+
+    /// `len` stays 32-bit, so it is the one narrowing conversion left. Reaching it through the
+    /// accumulator would need a single row-encoded value over 4 GiB, so the conversion is checked
+    /// on its own: it must error rather than truncate a length into a shorter slice that would
+    /// silently return part of a value.
+    #[test]
+    fn oversized_entry_len_is_rejected_rather_than_truncated() {
+        assert_eq!(checked_entry_len(0).unwrap(), 0);
+        assert_eq!(checked_entry_len(24).unwrap(), 24);
+        assert_eq!(checked_entry_len(MAX_ENTRY_LEN).unwrap(), u32::MAX);
+        let err = checked_entry_len(MAX_ENTRY_LEN + 1).unwrap_err();
+        assert!(err.to_string().contains("exceeds"), "{err}");
+    }
+
+    /// The ordinary path still round-trips through the widened representation.
+    #[test]
+    fn entry_bytes_round_trip_through_the_arena() {
+        let mut acc = CollectSetGroupsAccumulator::try_new(DataType::Int32).unwrap();
+        acc.insert(0, 1, &[1, 2, 3]).unwrap();
+        acc.insert(1, 2, &[4, 5]).unwrap();
+        acc.insert(0, 1, &[1, 2, 3]).unwrap(); // duplicate, not stored again
+        assert_eq!(acc.entries.len(), 2);
+        assert_eq!(acc.entry_bytes(&acc.entries[0]), &[1, 2, 3]);
+        assert_eq!(acc.entry_bytes(&acc.entries[1]), &[4, 5]);
+        assert_eq!(acc.entries[1].start, 3);
+    }
+
     #[test]
     fn collect_functions_forward_their_shape_to_datafusion_spark() {
         for udf in [
