@@ -25,6 +25,7 @@ import java.nio.file.{Files, Paths}
 import scala.util.{Failure, Success, Try}
 
 import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.internal.SQLConf
 
 /**
@@ -101,6 +102,9 @@ class CometExpressionCoverageSuite extends CometTestBase {
             case Some(projection) =>
               val query = s"$projection FROM $probe"
               val outcome = Try {
+                // `withSQLConf` returns Unit on Spark 3.4/3.5 and is only generic on 4.x, so the
+                // probe result has to be captured inside the callback rather than returned by it.
+                var probed: (Option[SparkPlan], Seq[String]) = null
                 withSQLConf(
                   CometConf.COMET_ENABLED.key -> "true",
                   CometConf.COMET_EXEC_ENABLED.key -> "true",
@@ -110,8 +114,9 @@ class CometExpressionCoverageSuite extends CometTestBase {
                   SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
                     "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
                   val plan = spark.sql(query).queryExecution.executedPlan
-                  (findFirstNonCometOperator(plan), explain.getFallbackReasons(plan))
+                  probed = (findFirstNonCometOperator(plan), explain.getFallbackReasons(plan))
                 }
+                probed
               }
               outcome match {
                 case Success((None, _)) =>
