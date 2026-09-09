@@ -15,6 +15,9 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
+-- No negative zeros in this fixture; signed-zero compatibility is tested in array_set_signed_zero*.
+-- Config: spark.comet.expression.ArrayDistinct.allowIncompatible=true
+
 -- ===== INT arrays =====
 
 statement
@@ -121,35 +124,20 @@ INSERT INTO test_array_distinct_double VALUES
   (array(CAST('NaN' AS DOUBLE), NULL, CAST('NaN' AS DOUBLE), NULL, 1.0)),
   (array(CAST('Infinity' AS DOUBLE), CAST('-Infinity' AS DOUBLE), CAST('Infinity' AS DOUBLE), 0.0))
 
-query spark_answer_only
+query
 SELECT array_distinct(arr) FROM test_array_distinct_double
 
 -- NaN deduplication
-query spark_answer_only
+query
 SELECT array_distinct(array(CAST('NaN' AS DOUBLE), CAST('NaN' AS DOUBLE), 1.0, 1.0))
 
 -- NaN with NULL
-query spark_answer_only
+query
 SELECT array_distinct(array(CAST('NaN' AS DOUBLE), NULL, CAST('NaN' AS DOUBLE), NULL, 1.0))
 
 -- Infinity
-query spark_answer_only
+query
 SELECT array_distinct(array(CAST('Infinity' AS DOUBLE), CAST('-Infinity' AS DOUBLE), CAST('Infinity' AS DOUBLE), 0.0))
-
--- Signed zeros use Spark fallback on versions without SPARK-54918.
-query spark_answer_only
-SELECT array_distinct(array(0.0, double('-0.0'), 1.0))
-
--- Signed zeros use Spark fallback on versions without SPARK-54918.
-statement
-CREATE TABLE test_array_distinct_dbl_negzero(arr array<double>) USING parquet
-
-statement
-INSERT INTO test_array_distinct_dbl_negzero VALUES
-  (array(0.0, double('-0.0'), 1.0))
-
-query spark_answer_only
-SELECT array_distinct(arr) FROM test_array_distinct_dbl_negzero
 
 -- ===== FLOAT arrays =====
 
@@ -166,23 +154,12 @@ INSERT INTO test_array_distinct_float VALUES
   (array(CAST('NaN' AS FLOAT), NULL, CAST('NaN' AS FLOAT), NULL, CAST(1.0 AS FLOAT))),
   (array(CAST('Infinity' AS FLOAT), CAST('-Infinity' AS FLOAT), CAST('Infinity' AS FLOAT), CAST(0.0 AS FLOAT)))
 
-query spark_answer_only
+query
 SELECT array_distinct(arr) FROM test_array_distinct_float
 
 -- Float NaN deduplication
-query spark_answer_only
+query
 SELECT array_distinct(array(CAST('NaN' AS FLOAT), CAST('NaN' AS FLOAT), CAST(1.0 AS FLOAT)))
-
--- Signed zeros use Spark fallback on versions without SPARK-54918.
-statement
-CREATE TABLE test_array_distinct_flt_negzero(arr array<float>) USING parquet
-
-statement
-INSERT INTO test_array_distinct_flt_negzero VALUES
-  (array(CAST(0.0 AS FLOAT), float('-0.0'), CAST(1.0 AS FLOAT)))
-
-query spark_answer_only
-SELECT array_distinct(arr) FROM test_array_distinct_flt_negzero
 
 -- ===== DECIMAL arrays =====
 

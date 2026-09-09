@@ -121,7 +121,7 @@ query
 SELECT a, b, array_intersect(a, b) FROM test_intersect_long
 
 -- Float arrays with NaN, Infinity, and -Infinity. Signed-zero membership cases are
--- isolated below (see the SPARK-54918 note).
+-- covered in array_set_signed_zero*.sql.
 statement
 CREATE TABLE test_intersect_float(a array<float>, b array<float>) USING parquet
 
@@ -138,7 +138,7 @@ INSERT INTO test_intersect_float VALUES
 query
 SELECT a, b, array_intersect(a, b) FROM test_intersect_float
 
--- Double arrays with NaN, Infinity, and -Infinity. Signed-zero cases isolated below.
+-- Double arrays with NaN, Infinity, and -Infinity. Signed-zero cases are in array_set_signed_zero*.sql.
 statement
 CREATE TABLE test_intersect_dbl(a array<double>, b array<double>) USING parquet
 
@@ -155,39 +155,6 @@ INSERT INTO test_intersect_dbl VALUES
 
 query
 SELECT a, b, array_intersect(a, b) FROM test_intersect_dbl
-
-statement
-SET spark.comet.expression.ArrayIntersect.allowIncompatible=false
-
--- Signed zeros exercise the default Spark-compatible dispatch.
-statement
-CREATE TABLE test_intersect_flt_negzero(a array<float>, b array<float>) USING parquet
-
-statement
-INSERT INTO test_intersect_flt_negzero VALUES
-  (array(cast(0.0 as float), float('-0.0')), array(cast(0.0 as float))),
-  (array(float('-0.0')), array(float('0.0'))),
-  (array(float('0.0')), array(float('-0.0'))),
-  (array(float('-0.0')), array(float('-0.0')))
-
-query spark_answer_only
-SELECT a, b, array_intersect(a, b) FROM test_intersect_flt_negzero
-
-statement
-CREATE TABLE test_intersect_dbl_negzero(a array<double>, b array<double>) USING parquet
-
-statement
-INSERT INTO test_intersect_dbl_negzero VALUES
-  (array(0.0, double('-0.0')), array(0.0)),
-  (array(double('-0.0')), array(double('0.0'))),
-  (array(double('0.0')), array(double('-0.0'))),
-  (array(double('-0.0')), array(double('-0.0')))
-
-query spark_answer_only
-SELECT a, b, array_intersect(a, b) FROM test_intersect_dbl_negzero
-
-statement
-SET spark.comet.expression.ArrayIntersect.allowIncompatible=true
 
 -- decimal arrays
 statement
