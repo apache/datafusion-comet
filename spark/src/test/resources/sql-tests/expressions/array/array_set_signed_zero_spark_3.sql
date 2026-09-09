@@ -43,10 +43,10 @@ SELECT a, b, array_distinct(a) FROM test_array_set_signed_zero_float
 query expect_fallback(SPARK-54918)
 SELECT a, b, array_union(a, b) FROM test_array_set_signed_zero_float
 
-query spark_answer_only
+query
 SELECT a, b, array_except(a, b) FROM test_array_set_signed_zero_float
 
-query spark_answer_only
+query
 SELECT a, b, array_intersect(a, b) FROM test_array_set_signed_zero_float
 
 statement
@@ -73,8 +73,8 @@ SELECT a, b, array_distinct(a) FROM test_array_set_signed_zero_double
 query expect_fallback(SPARK-54918)
 SELECT a, b, array_union(a, b) FROM test_array_set_signed_zero_double
 
-query spark_answer_only
+query
 SELECT a, b, array_except(a, b) FROM test_array_set_signed_zero_double
 
-query spark_answer_only
+query
 SELECT a, b, array_intersect(a, b) FROM test_array_set_signed_zero_double

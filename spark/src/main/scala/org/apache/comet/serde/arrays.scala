@@ -523,6 +523,8 @@ private[comet] object ArraySetSupport {
     "Floating-point array elements require Spark with SPARK-54918 " +
       "(4.0.5+, 4.1.4+, or 4.2+) for matching signed-zero semantics"
 
+  // A top-level KnownFloatingPointNormalized marker is insufficient: Spark also normalizes
+  // CreateArray, If, CaseWhen, and Coalesce recursively without wrapping the resulting array.
   def normalizesSignedZero(version: String): Boolean = {
     Utils.majorMinorPatchVersion(version).exists {
       case (4, 0, patch) => patch >= 5
@@ -541,6 +543,9 @@ private[comet] object ArraySetSupport {
   }
 }
 
+// Distinct and union use Spark projection fallback instead of CodegenDispatchFallback.
+// PR #5750's measurements found codegen dispatch slower than projection fallback for these
+// array-valued results. The native implementation remains available through opt-in.
 object CometArrayDistinct extends CometScalarFunction[ArrayDistinct]("array_distinct") {
   override def getIncompatibleReasons(): Seq[String] = Seq(ArraySetSupport.signedZeroReason)
 

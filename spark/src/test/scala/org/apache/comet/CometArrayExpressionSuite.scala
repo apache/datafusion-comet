@@ -49,6 +49,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
   }
 
   test("array set signed-zero support levels") {
+    // This test covers element-type detection; the preceding test pins the version boundaries.
     val fixed = ArraySetSupport.normalizesSignedZero(org.apache.spark.SPARK_VERSION)
     Seq(FloatType, DoubleType, ArrayType(FloatType), new StructType().add("x", DoubleType))
       .foreach { elementType =>
