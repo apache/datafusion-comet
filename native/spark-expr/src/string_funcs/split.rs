@@ -36,7 +36,7 @@ use std::sync::Arc;
 /// - pattern: The regex pattern to split on
 /// - limit (optional): Controls the number of splits
 ///   - limit > 0: At most limit-1 splits, array length <= limit
-///   - limit = 0: As many splits as possible, trailing empty strings removed
+///   - limit = 0: treated as -1 (Spark remaps 0 to -1, so trailing empty strings are kept, unlike Java's String.split default)
 ///   - limit < 0: As many splits as possible, trailing empty strings kept
 pub fn spark_split(args: &[ColumnarValue]) -> DataFusionResult<ColumnarValue> {
     if args.len() < 2 || args.len() > 3 {
@@ -61,6 +61,11 @@ pub fn spark_split(args: &[ColumnarValue]) -> DataFusionResult<ColumnarValue> {
     } else {
         -1
     };
+
+    // Spark's UTF8String.split remaps limit == 0 to -1 before calling Java's
+    // String.split, specifically to avoid Java's "drop trailing empty strings"
+    // behavior. Normalize here so every helper below shares Spark semantics.
+    let limit = if limit == 0 { -1 } else { limit };
 
     match (&args[0], &args[1]) {
         (ColumnarValue::Array(string_array), ColumnarValue::Scalar(ScalarValue::Utf8(pattern)))
@@ -144,6 +149,12 @@ pub fn spark_split(args: &[ColumnarValue]) -> DataFusionResult<ColumnarValue> {
             let item_offsets_buffer = OffsetBuffer::new(str_offsets.finish().into());
             let item_values_buffer = str_values.finish();
 
+            // SAFETY: every byte appended to `values` comes from a `&str` of the input
+            // (via `append_str`), so the value buffer is valid UTF-8. Offsets start at 0
+            // and only ever advance by the byte length of the appended part, so they are
+            // monotonically non-decreasing, which satisfies the invariants checked by
+            // `OffsetBuffer::new` / `GenericStringArray::new_unchecked`. Nullability is
+            // `None`: nullability of rows is carried by the wrapping list array.
             let string_array_values = unsafe {
                 GenericStringArray::<i32>::new_unchecked(
                     item_offsets_buffer,
@@ -269,20 +280,7 @@ fn push_split_literal<'a, O: OffsetSizeTrait>(
     values: &mut BufferBuilder<u8>,
     scratch: &mut Vec<&'a str>,
 ) {
-    if limit == 0 {
-        scratch.clear();
-        scratch.extend(string.split(delimiter));
-        while scratch.last().is_some_and(|s| s.is_empty()) {
-            scratch.pop();
-        }
-        if scratch.is_empty() {
-            append_str("", offsets, values);
-        } else {
-            for &p in scratch.iter() {
-                append_str(p, offsets, values);
-            }
-        }
-    } else if limit > 0 {
+    if limit > 0 {
         let cap = (limit - 1) as usize;
         let mut last_end = 0;
         for (count, (start, _)) in string.match_indices(delimiter).enumerate() {
@@ -309,20 +307,7 @@ fn push_split_char<'a, O: OffsetSizeTrait>(
     values: &mut BufferBuilder<u8>,
     scratch: &mut Vec<&'a str>,
 ) {
-    if limit == 0 {
-        scratch.clear();
-        scratch.extend(string.split(delimiter));
-        while scratch.last().is_some_and(|s| s.is_empty()) {
-            scratch.pop();
-        }
-        if scratch.is_empty() {
-            append_str("", offsets, values);
-        } else {
-            for &p in scratch.iter() {
-                append_str(p, offsets, values);
-            }
-        }
-    } else if limit > 0 {
+    if limit > 0 {
         let cap = (limit - 1) as usize;
         let mut last_end = 0;
         for (count, (start, _)) in string.match_indices(delimiter).enumerate() {
@@ -400,6 +385,12 @@ fn split_generic_literal<O: OffsetSizeTrait>(
     let item_offsets_buffer = OffsetBuffer::new(str_offsets.finish().into());
     let item_values_buffer = str_values.finish();
 
+    // SAFETY: every byte appended to `values` comes from a `&str` of the input
+    // (via `append_str`), so the value buffer is valid UTF-8. Offsets start at 0
+    // and only ever advance by the byte length of the appended part, so they are
+    // monotonically non-decreasing, which satisfies the invariants checked by
+    // `OffsetBuffer::new` / `GenericStringArray::new_unchecked`. Nullability is
+    // `None`: nullability of rows is carried by the wrapping list array.
     let string_array_values = unsafe {
         GenericStringArray::<O>::new_unchecked(item_offsets_buffer, item_values_buffer, None)
     };
@@ -582,6 +573,12 @@ fn split_generic<O: OffsetSizeTrait>(
     let item_offsets_buffer = OffsetBuffer::new(str_offsets.finish().into());
     let item_values_buffer = str_values.finish();
 
+    // SAFETY: every byte appended to `values` comes from a `&str` of the input
+    // (via `append_str`), so the value buffer is valid UTF-8. Offsets start at 0
+    // and only ever advance by the byte length of the appended part, so they are
+    // monotonically non-decreasing, which satisfies the invariants checked by
+    // `OffsetBuffer::new` / `GenericStringArray::new_unchecked`. Nullability is
+    // `None`: nullability of rows is carried by the wrapping list array.
     let string_array_values = unsafe {
         GenericStringArray::<O>::new_unchecked(item_offsets_buffer, item_values_buffer, None)
     };
@@ -748,20 +745,7 @@ fn push_split_parts<'a, O: OffsetSizeTrait>(
     values: &mut BufferBuilder<u8>,
     scratch: &mut Vec<&'a str>,
 ) {
-    if limit == 0 {
-        scratch.clear();
-        scratch.extend(regex.split(string));
-        while scratch.last().is_some_and(|s| s.is_empty()) {
-            scratch.pop();
-        }
-        if scratch.is_empty() {
-            append_str("", offsets, values);
-        } else {
-            for &p in scratch.iter() {
-                append_str(p, offsets, values);
-            }
-        }
-    } else if limit > 0 {
+    if limit > 0 {
         let mut last_end = 0;
         let cap = (limit - 1) as usize;
         for (count, mat) in regex.find_iter(string).enumerate() {
@@ -1227,6 +1211,91 @@ mod tests {
             array_list.data_type(),
             "scalar and array split_sql must return the same List type"
         );
+    }
+
+    fn scalar_split_to_vec(s: &str, pattern: &str, limit: i32) -> Vec<String> {
+        let args = vec![
+            ColumnarValue::Scalar(ScalarValue::Utf8(Some(s.to_string()))),
+            ColumnarValue::Scalar(ScalarValue::Utf8(Some(pattern.to_string()))),
+            ColumnarValue::Scalar(ScalarValue::Int32(Some(limit))),
+        ];
+        match spark_split(&args).unwrap() {
+            ColumnarValue::Scalar(ScalarValue::List(list)) => {
+                let items = list.values();
+                let items = items
+                    .as_any()
+                    .downcast_ref::<GenericStringArray<i32>>()
+                    .expect("expected Utf8 items");
+                (0..items.len())
+                    .map(|i| items.value(i).to_string())
+                    .collect()
+            }
+            other => panic!("unexpected result: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_split_regex_values() {
+        assert_eq!(
+            scalar_split_to_vec("foo123bar456baz", r"\d+", -1),
+            vec!["foo", "bar", "baz"]
+        );
+    }
+
+    #[test]
+    fn test_split_limit_positive_values() {
+        assert_eq!(
+            scalar_split_to_vec("a,b,c,d,e", ",", 3),
+            vec!["a", "b", "c,d,e"]
+        );
+    }
+
+    #[test]
+    fn test_split_limit_zero_keeps_trailing_empties_like_spark() {
+        // Spark remaps limit == 0 to -1: trailing empty strings are kept.
+        assert_eq!(
+            scalar_split_to_vec("a,b,c,,", ",", 0),
+            vec!["a", "b", "c", "", ""]
+        );
+    }
+
+    #[test]
+    fn test_split_limit_negative_values() {
+        assert_eq!(
+            scalar_split_to_vec("a,b,c,,", ",", -1),
+            vec!["a", "b", "c", "", ""]
+        );
+    }
+
+    #[test]
+    fn test_split_empty_string_values() {
+        assert_eq!(scalar_split_to_vec("", ",", -1), vec![""]);
+    }
+
+    #[test]
+    fn test_split_multibyte_delimiter_values() {
+        assert_eq!(scalar_split_to_vec("a→b→c", "→", -1), vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn test_literal_and_regex_helpers_agree() {
+        let regex = Regex::new(",").unwrap();
+        for s in ["a,b,c,,", "", ",,,", "abc", "привет,мир"] {
+            for limit in [-1i32, 0, 2] {
+                let mut lit_off = BufferBuilder::<i32>::new(16);
+                let mut lit_val = BufferBuilder::<u8>::new(64);
+                let mut rx_off = BufferBuilder::<i32>::new(16);
+                let mut rx_val = BufferBuilder::<u8>::new(64);
+                let mut scratch: Vec<&str> = Vec::new();
+
+                push_split_literal(s, ",", limit, &mut lit_off, &mut lit_val, &mut scratch);
+                push_split_parts(s, &regex, limit, &mut rx_off, &mut rx_val, &mut scratch);
+
+                // Same input must produce byte-identical Arrow buffers.
+                assert_eq!(lit_off.finish().as_slice(), rx_off.finish().as_slice());
+                assert_eq!(lit_val.finish().as_slice(), rx_val.finish().as_slice());
+            }
+        }
     }
 
     fn assert_list_value(list_array: &ListArray, row: usize, expected: &[&str]) {
