@@ -39,6 +39,7 @@ rust-version = "1.94.0"
 
 [workspace.dependencies]
 arrow = { version = "59.2.0", features = ["prettyprint", "ffi", "chrono-tz"] }
+arrow-data = { version = "59.2.0" }
 arrow-select = { version = "59.2.0" }
 async-trait = { version = "0.1" }
 bytes = { version = "1.11.1" }

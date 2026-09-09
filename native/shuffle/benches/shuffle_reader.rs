@@ -28,7 +28,9 @@ use arrow::ipc::reader::StreamReader;
 use arrow::ipc::writer::IpcWriteContext;
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use datafusion::physical_plan::metrics::Time;
-use datafusion_comet_shuffle::{read_ipc_compressed, CompressionCodec, ShuffleBlockWriter};
+use datafusion_comet_shuffle::{
+    read_ipc_compressed, reset_schema_cache, CompressionCodec, ShuffleBlockWriter,
+};
 use std::hint::black_box;
 use std::io::Cursor;
 use std::sync::Arc;
@@ -105,6 +107,20 @@ fn criterion_benchmark(c: &mut Criterion) {
                 BenchmarkId::new("decode_block", &id),
                 &uncompressed,
                 |b, block| b.iter(|| black_box(read_ipc_compressed(black_box(block)).unwrap())),
+            );
+
+            // The same decode with the schema cache cleared first, so every iteration re-parses
+            // the schema. Measured in the same run as `decode_block` so machine drift moves both
+            // together and the difference between them is the cache's effect.
+            group.bench_with_input(
+                BenchmarkId::new("decode_block_uncached", &id),
+                &uncompressed,
+                |b, block| {
+                    b.iter(|| {
+                        reset_schema_cache();
+                        black_box(read_ipc_compressed(black_box(block)).unwrap())
+                    })
+                },
             );
 
             // Schema parse alone. `StreamReader::try_new` reads and parses the schema message and
