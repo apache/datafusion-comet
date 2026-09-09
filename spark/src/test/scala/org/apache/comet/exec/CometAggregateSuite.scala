@@ -1313,7 +1313,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     ("CAST(SIZE(COLLECT_SET(_2)) AS BIGINT)", 2L, false),
     ("COUNT(*)", 2L, true)).foreach { case (function, expected, adaptive) =>
     test(
-      s"aggregate canonicalization preserves result expressions and equivalent reuse: " +
+      "aggregate canonicalization preserves result expressions and equivalent reuse: " +
         s"$function, AQE=$adaptive") {
       withSQLConf(
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
