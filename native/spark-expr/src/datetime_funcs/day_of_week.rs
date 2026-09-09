@@ -22,9 +22,9 @@
 //! `+ 1` / `- 1` arithmetic node; `date_part` reconstructs a `NaiveDateTime` for every row and the
 //! arithmetic node walks the result a second time.
 
-use arrow::array::{Array, ArrayRef, Date32Array, Int32Array};
+use arrow::array::{Array, ArrayRef, AsArray, Date32Array, Int32Array};
 use arrow::compute::cast;
-use arrow::datatypes::{DataType, Int32Type};
+use arrow::datatypes::{DataType, Date32Type, Int32Type};
 use datafusion::common::{utils::take_function_args, DataFusionError, Result};
 use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
@@ -44,6 +44,25 @@ fn day_of_week(days: i32) -> i32 {
 #[inline]
 fn week_day(days: i32) -> i32 {
     (i64::from(days) + 3).rem_euclid(7) as i32
+}
+
+/// Applies `kernel` to the dates.
+///
+/// `unary` evaluates every slot and vectorizes; `unary_opt` visits only valid indices but costs
+/// more per element. The path this replaces used `unary_opt`, so an almost entirely null batch
+/// was nearly free there and `unary` would regress it. Skipping only pays off once most of the
+/// batch is null -- at 87.5% nulls `unary` was still ahead -- so switch on density rather than on
+/// the mere presence of a null, which would give up most of the win on a lightly-null column.
+///
+/// `kernel` is generic rather than a `fn` pointer on purpose: a pointer forces an indirect call
+/// per element inside `unary`, which blocks inlining and vectorization and costs roughly 2.5x.
+#[inline]
+fn map_dates<F: Fn(i32) -> i32 + Copy>(dates: &Date32Array, kernel: F) -> Int32Array {
+    if dates.null_count() * 2 <= dates.len() {
+        dates.unary::<_, Int32Type>(kernel)
+    } else {
+        dates.unary_opt::<_, Int32Type>(|d| Some(kernel(d)))
+    }
 }
 
 macro_rules! epoch_day_extractor {
@@ -87,14 +106,27 @@ macro_rules! epoch_day_extractor {
                 let [date] = take_function_args(self.name(), args.args)?;
                 let array = date.into_array(args.number_rows)?;
 
-                // A date partition column arrives dictionary-encoded from the Parquet scan. The
-                // previous `datepart` chain ended in a cast to Int32, which unpacked it, so
-                // unpacking here keeps the output type identical.
-                let array: ArrayRef = if matches!(array.data_type(), DataType::Dictionary(_, _)) {
-                    cast(&array, &DataType::Date32)?
-                } else {
-                    array
-                };
+                // A date partition column arrives dictionary-encoded from the Parquet scan. Map
+                // the dictionary *values* and rewrap the keys, then unpack, which is what the
+                // previous `Add(Cast(datepart(..), Int32), 1)` chain did: the calendar work is
+                // proportional to the cardinality, not the row count. Decoding to Date32 first
+                // would make a low-cardinality column markedly more expensive than before.
+                if matches!(array.data_type(), DataType::Dictionary(_, _)) {
+                    let dict = array.as_any_dictionary();
+                    let values =
+                        dict.values()
+                            .as_primitive_opt::<Date32Type>()
+                            .ok_or_else(|| {
+                                DataFusionError::Execution(format!(
+                                    "{} expects a date, got {}",
+                                    $fn_name,
+                                    array.data_type()
+                                ))
+                            })?;
+                    let mapped = Arc::new(map_dates(values, $kernel)) as ArrayRef;
+                    let rewrapped = dict.with_values(mapped);
+                    return Ok(ColumnarValue::Array(cast(&rewrapped, &DataType::Int32)?));
+                }
 
                 let dates = array
                     .as_any()
@@ -107,9 +139,7 @@ macro_rules! epoch_day_extractor {
                         ))
                     })?;
 
-                // `unary` carries the null buffer over untouched.
-                let result: Int32Array = dates.unary::<_, Int32Type>($kernel);
-                Ok(ColumnarValue::Array(Arc::new(result)))
+                Ok(ColumnarValue::Array(Arc::new(map_dates(dates, $kernel))))
             }
         }
     };

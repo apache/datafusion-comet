@@ -138,7 +138,17 @@ macro_rules! extract_date_part {
                         // microseconds, so no calendar datetime is built per row. `unary` carries
                         // the null buffer over untouched.
                         if let Some(micros) = micros_without_offset(&array, &self.timezone) {
-                            let result: Int32Array = micros.unary::<_, Int32Type>($kernel);
+                            // `unary` evaluates every slot and vectorizes; `unary_opt` visits
+                            // only valid indices but costs more per element. The `date_part`
+                            // path this replaces uses `unary_opt`, so an almost entirely null
+                            // batch was nearly free there. Skipping only pays off once most of
+                            // the batch is null, so switch on density rather than on the mere
+                            // presence of a null.
+                            let result: Int32Array = if micros.null_count() * 2 <= micros.len() {
+                                micros.unary::<_, Int32Type>($kernel)
+                            } else {
+                                micros.unary_opt::<_, Int32Type>(|v| Some($kernel(v)))
+                            };
                             return Ok(ColumnarValue::Array(Arc::new(result)));
                         }
 

@@ -26,11 +26,10 @@
 //! `Date32` runs `unary_opt(|d| date32_to_datetime(d).map(..))` -- a `NaiveDateTime` per row plus
 //! a recomputed null mask -- and the `+ 1` / `- 1` is a second pass over the result.
 
-use arrow::array::{Array, ArrayRef, Date32Array, Int32Array, Scalar};
+use arrow::array::{Array, ArrayRef, Date32Array, DictionaryArray, Int32Array, Scalar};
 use arrow::compute::kernels::numeric::{add_wrapping, sub_wrapping};
-use arrow::compute::{date_part, DatePart};
-use arrow::datatypes::DataType;
-use arrow::datatypes::Field;
+use arrow::compute::{cast, date_part, DatePart};
+use arrow::datatypes::{DataType, Field, Int32Type};
 use criterion::{criterion_group, criterion_main, Criterion, Throughput};
 use datafusion::config::ConfigOptions;
 use datafusion::logical_expr::{ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl};
@@ -39,13 +38,43 @@ use std::hint::black_box;
 use std::sync::Arc;
 
 const ROWS: usize = 8_192;
-const NULL_STRIDE: usize = 8;
+
+/// Null density of an input shape. The old path's `unary_opt` only visits valid slots while the
+/// kernel's `unary` visits every slot, so the dense and all-null shapes are where a replacement
+/// like this is most likely to backfire.
+#[derive(Clone, Copy)]
+enum Nulls {
+    None,
+    Sparse,
+    Dense,
+    All,
+}
+
+impl Nulls {
+    fn tag(self) -> &'static str {
+        match self {
+            Nulls::None => "no_nulls",
+            Nulls::Sparse => "sparse_nulls",
+            Nulls::Dense => "dense_nulls",
+            Nulls::All => "all_nulls",
+        }
+    }
+
+    fn is_null(self, i: usize) -> bool {
+        match self {
+            Nulls::None => false,
+            Nulls::Sparse => i.is_multiple_of(8), // 12.5%
+            Nulls::Dense => !i.is_multiple_of(8), // 87.5%
+            Nulls::All => true,
+        }
+    }
+}
 
 /// Epoch days spread over roughly 1970..2050, the range a date column actually holds.
-fn dates(nulls: bool) -> Date32Array {
+fn dates(nulls: Nulls) -> Date32Array {
     (0..ROWS)
         .map(|i| {
-            if nulls && i.is_multiple_of(NULL_STRIDE) {
+            if nulls.is_null(i) {
                 None
             } else {
                 Some((i as i32).wrapping_mul(3) % 29_220)
@@ -54,19 +83,45 @@ fn dates(nulls: bool) -> Date32Array {
         .collect()
 }
 
-// ---- current path -------------------------------------------------------------------------
+/// A dictionary-encoded date column, the shape a partition column arrives in from a Parquet
+/// scan. Cardinality matters: the old path ran the calendar conversion over the dictionary
+/// *values* only and rewrapped the keys, so a low-cardinality column did very little work.
+fn dict_dates(cardinality: usize, nulls: Nulls) -> DictionaryArray<Int32Type> {
+    let values = Arc::new(Date32Array::from(
+        (0..cardinality)
+            .map(|i| (i as i32).wrapping_mul(37) % 29_220)
+            .collect::<Vec<_>>(),
+    )) as ArrayRef;
+    let keys: Int32Array = (0..ROWS)
+        .map(|i| {
+            if nulls.is_null(i) {
+                None
+            } else {
+                Some((i % cardinality) as i32)
+            }
+        })
+        .collect();
+    DictionaryArray::<Int32Type>::new(keys, values)
+}
 
+// ---- the chain the serde emitted before this change ------------------------------------------
+
+/// The serde emitted `Add(Cast(datepart('dow', child), Int32), 1)`. The cast came *first*: it was
+/// an identity no-op for a plain array, but it is what unpacked a dictionary result, and arrow's
+/// arithmetic kernels reject `Dictionary(Int32, Int32) + Int32` outright, so the order matters.
 fn current_dayofweek(array: &ArrayRef) -> ArrayRef {
     let part = date_part(array.as_ref(), DatePart::DayOfWeekSunday0).unwrap();
-    add_wrapping(&part, &Scalar::new(Int32Array::from(vec![1]))).unwrap()
+    let unpacked = cast(&part, &DataType::Int32).unwrap();
+    add_wrapping(&unpacked, &Scalar::new(Int32Array::from(vec![1]))).unwrap()
 }
 
 fn current_weekday(array: &ArrayRef) -> ArrayRef {
     let part = date_part(array.as_ref(), DatePart::DayOfWeekMonday1).unwrap();
-    sub_wrapping(&part, &Scalar::new(Int32Array::from(vec![1]))).unwrap()
+    let unpacked = cast(&part, &DataType::Int32).unwrap();
+    sub_wrapping(&unpacked, &Scalar::new(Int32Array::from(vec![1]))).unwrap()
 }
 
-// ---- native kernels, as the serde now emits them --------------------------------------------
+// ---- native kernels, as the serde emits them now ---------------------------------------------
 
 fn invoke(udf: &dyn ScalarUDFImpl, array: &ArrayRef) -> ArrayRef {
     udf.invoke_with_args(ScalarFunctionArgs {
@@ -81,53 +136,67 @@ fn invoke(udf: &dyn ScalarUDFImpl, array: &ArrayRef) -> ArrayRef {
     .unwrap()
 }
 
-/// The benchmark is only meaningful if both arms agree, so check before timing.
-fn assert_equivalent(array: &Date32Array) {
-    let dyn_array: ArrayRef = Arc::new(array.clone());
+/// Both arms must agree, values *and* null buffer, before any timing is meaningful.
+fn assert_equivalent(array: &ArrayRef) {
     for (current, native) in [
         (
-            current_dayofweek(&dyn_array),
-            invoke(&SparkDayOfWeek::new(), &dyn_array),
+            current_dayofweek(array),
+            invoke(&SparkDayOfWeek::new(), array),
         ),
-        (
-            current_weekday(&dyn_array),
-            invoke(&SparkWeekDay::new(), &dyn_array),
-        ),
+        (current_weekday(array), invoke(&SparkWeekDay::new(), array)),
     ] {
-        assert_eq!(
-            current.as_any().downcast_ref::<Int32Array>().unwrap(),
-            native.as_any().downcast_ref::<Int32Array>().unwrap(),
-        );
+        let a = current.as_any().downcast_ref::<Int32Array>().unwrap();
+        let b = native.as_any().downcast_ref::<Int32Array>().unwrap();
+        // Compare nullability logically: the old path materialises an all-valid null buffer
+        // where the kernel leaves `None`, which is the same thing to every consumer.
+        assert_eq!(a.null_count(), b.null_count(), "null counts differ");
+        for i in 0..a.len() {
+            assert_eq!(a.is_null(i), b.is_null(i), "null flag differs at row {i}");
+        }
+        assert_eq!(a, b, "values differ");
     }
 }
 
+fn bench_shape(c: &mut Criterion, shape: &str, array: ArrayRef) {
+    assert_equivalent(&array);
+
+    let mut group = c.benchmark_group(format!("dayofweek/{shape}"));
+    group.throughput(Throughput::Elements(ROWS as u64));
+    group.bench_function("datepart_dow_plus_one", |b| {
+        b.iter(|| black_box(current_dayofweek(black_box(&array))))
+    });
+    let dow = SparkDayOfWeek::new();
+    group.bench_function("native_spark_dayofweek", |b| {
+        b.iter(|| black_box(invoke(black_box(&dow), black_box(&array))))
+    });
+    group.finish();
+
+    let mut group = c.benchmark_group(format!("weekday/{shape}"));
+    group.throughput(Throughput::Elements(ROWS as u64));
+    group.bench_function("datepart_isodow_minus_one", |b| {
+        b.iter(|| black_box(current_weekday(black_box(&array))))
+    });
+    let wd = SparkWeekDay::new();
+    group.bench_function("native_spark_weekday", |b| {
+        b.iter(|| black_box(invoke(black_box(&wd), black_box(&array))))
+    });
+    group.finish();
+}
+
 fn criterion_benchmark(c: &mut Criterion) {
-    for (nulls, null_tag) in [(false, "no_nulls"), (true, "sparse_nulls")] {
-        let array = dates(nulls);
-        assert_equivalent(&array);
-        let dyn_array: ArrayRef = Arc::new(array);
-
-        let mut group = c.benchmark_group(format!("dayofweek/{null_tag}"));
-        group.throughput(Throughput::Elements(ROWS as u64));
-        group.bench_function("datepart_dow_plus_one", |b| {
-            b.iter(|| black_box(current_dayofweek(black_box(&dyn_array))))
-        });
-        let dow = SparkDayOfWeek::new();
-        group.bench_function("native_spark_dayofweek", |b| {
-            b.iter(|| black_box(invoke(black_box(&dow), black_box(&dyn_array))))
-        });
-        group.finish();
-
-        let mut group = c.benchmark_group(format!("weekday/{null_tag}"));
-        group.throughput(Throughput::Elements(ROWS as u64));
-        group.bench_function("datepart_isodow_minus_one", |b| {
-            b.iter(|| black_box(current_weekday(black_box(&dyn_array))))
-        });
-        let wd = SparkWeekDay::new();
-        group.bench_function("native_spark_weekday", |b| {
-            b.iter(|| black_box(invoke(black_box(&wd), black_box(&dyn_array))))
-        });
-        group.finish();
+    for nulls in [Nulls::None, Nulls::Sparse, Nulls::Dense, Nulls::All] {
+        bench_shape(c, &format!("flat/{}", nulls.tag()), Arc::new(dates(nulls)));
+    }
+    // Low cardinality is the case the old path handled cheaply: it converted 8 distinct dates
+    // and rewrapped the keys. High cardinality approaches one conversion per row.
+    for cardinality in [8usize, 1024] {
+        for nulls in [Nulls::None, Nulls::Sparse, Nulls::Dense] {
+            bench_shape(
+                c,
+                &format!("dict{cardinality}/{}", nulls.tag()),
+                Arc::new(dict_dates(cardinality, nulls)),
+            );
+        }
     }
 }
 

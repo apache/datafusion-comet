@@ -22,7 +22,7 @@
 //! pure function of the stored microseconds. The `America/Los_Angeles` arm is the case such a
 //! fast path could not serve, and is here as a reference point, not as an A/B pair.
 
-use arrow::array::{Array, ArrayRef, Int32Array, TimestampMicrosecondArray};
+use arrow::array::{Array, ArrayRef, DictionaryArray, Int32Array, TimestampMicrosecondArray};
 use arrow::datatypes::{DataType, Field, Int32Type, TimeUnit};
 use criterion::{criterion_group, criterion_main, Criterion, Throughput};
 use datafusion::config::ConfigOptions;
@@ -32,24 +32,80 @@ use std::hint::black_box;
 use std::sync::Arc;
 
 const ROWS: usize = 8_192;
-const NULL_STRIDE: usize = 8;
 const MICROS_PER_DAY: i64 = 86_400_000_000;
 
-/// Microsecond timestamps spread over about a decade either side of the epoch, so that the
-/// negative-instant path (where truncation toward zero would give the wrong answer) is covered.
-fn timestamps(nulls: bool) -> TimestampMicrosecondArray {
+/// Null density of an input shape. The general path's `unary_opt` only visits valid slots while
+/// the fast path's `unary` visits every slot, so the dense and all-null shapes are where a
+/// replacement like this is most likely to backfire.
+#[derive(Clone, Copy)]
+enum Nulls {
+    None,
+    Sparse,
+    Dense,
+    All,
+}
+
+impl Nulls {
+    fn tag(self) -> &'static str {
+        match self {
+            Nulls::None => "no_nulls",
+            Nulls::Sparse => "sparse_nulls",
+            Nulls::Dense => "dense_nulls",
+            Nulls::All => "all_nulls",
+        }
+    }
+
+    fn is_null(self, i: usize) -> bool {
+        match self {
+            Nulls::None => false,
+            Nulls::Sparse => i.is_multiple_of(8), // 12.5%
+            Nulls::Dense => !i.is_multiple_of(8), // 87.5%
+            Nulls::All => true,
+        }
+    }
+}
+
+/// A microsecond instant for row `i`, walking from roughly 1875 to 2065 so that both negative
+/// and positive instants are covered. Negative instants are the ones that matter: truncation
+/// toward zero would give the wrong field there, and `-1` us is 1969-12-31 23:59:59.999999.
+/// The odd offset keeps values off exact second and hour boundaries.
+fn instant(i: usize) -> i64 {
+    (i as i64 - (ROWS as i64) / 2) * 730_000_000_000 + 12_345_678
+}
+
+fn timestamps(nulls: Nulls) -> TimestampMicrosecondArray {
     (0..ROWS)
         .map(|i| {
-            if nulls && i.is_multiple_of(NULL_STRIDE) {
+            if nulls.is_null(i) {
                 None
             } else {
-                Some((i as i64).wrapping_mul(2_923_477_211) - 150_000_000_000_000)
+                Some(instant(i))
             }
         })
         .collect()
 }
 
-// ---- proposed integer kernels -------------------------------------------------------------
+/// A dictionary-encoded timestamp column. The fast path deliberately does not cover dictionaries,
+/// so this shape exercises the retained general path and acts as an untouched-code control.
+fn dict_timestamps(cardinality: usize, nulls: Nulls) -> DictionaryArray<Int32Type> {
+    let values = Arc::new(TimestampMicrosecondArray::from(
+        (0..cardinality)
+            .map(|i| instant(i * 97))
+            .collect::<Vec<_>>(),
+    )) as ArrayRef;
+    let keys: Int32Array = (0..ROWS)
+        .map(|i| {
+            if nulls.is_null(i) {
+                None
+            } else {
+                Some((i % cardinality) as i32)
+            }
+        })
+        .collect();
+    DictionaryArray::<Int32Type>::new(keys, values)
+}
+
+// ---- the arithmetic the fast path uses ------------------------------------------------------
 
 #[inline]
 fn hour_of_day(micros: i64) -> i32 {
@@ -67,22 +123,23 @@ fn second_of_minute(micros: i64) -> i32 {
 }
 
 fn invoke(udf: &dyn ScalarUDFImpl, array: &ArrayRef) -> ArrayRef {
-    let arg_fields = vec![Arc::new(Field::new("ts", array.data_type().clone(), true))];
-    let return_type = udf.return_type(&[array.data_type().clone()]).unwrap();
+    let rows = array.len();
     udf.invoke_with_args(ScalarFunctionArgs {
         args: vec![ColumnarValue::Array(Arc::clone(array))],
-        arg_fields,
-        number_rows: ROWS,
-        return_field: Arc::new(Field::new(udf.name(), return_type, true)),
+        arg_fields: vec![Arc::new(Field::new("ts", array.data_type().clone(), true))],
+        number_rows: rows,
+        return_field: Arc::new(Field::new(udf.name(), DataType::Int32, true)),
         config_options: Arc::new(ConfigOptions::default()),
     })
     .unwrap()
-    .to_array(ROWS)
+    .to_array(rows)
     .unwrap()
 }
 
-/// Confirms the integer kernel reproduces `date_part` exactly for the shapes it would replace.
-fn assert_equivalent(array: &TimestampMicrosecondArray, dyn_array: &ArrayRef, tz: &str) {
+/// Checks the UDF against the plain arithmetic for a shape where no offset applies. This holds
+/// on both sides of the change -- before it the UDF reached the same answer through `date_part`
+/// -- so it validates the baseline run as well as the head run.
+fn assert_matches_arithmetic(base: &TimestampMicrosecondArray, array: &ArrayRef, tz: &str) {
     for (udf, f) in [
         (
             Box::new(SparkHour::new(tz.to_string())) as Box<dyn ScalarUDFImpl>,
@@ -91,102 +148,80 @@ fn assert_equivalent(array: &TimestampMicrosecondArray, dyn_array: &ArrayRef, tz
         (Box::new(SparkMinute::new(tz.to_string())), minute_of_hour),
         (Box::new(SparkSecond::new(tz.to_string())), second_of_minute),
     ] {
-        let current = invoke(udf.as_ref(), dyn_array);
-        let kernel: Int32Array = array.unary::<_, Int32Type>(f);
+        let got = invoke(udf.as_ref(), array);
+        let got = got.as_any().downcast_ref::<Int32Array>().unwrap();
+        let want: Int32Array = base.unary(f);
         assert_eq!(
-            current.as_any().downcast_ref::<Int32Array>().unwrap(),
-            &kernel,
-            "{} mismatch for tz {tz} on {:?}",
-            udf.name(),
-            dyn_array.data_type()
+            got.null_count(),
+            want.null_count(),
+            "{} null count",
+            udf.name()
         );
+        for i in 0..got.len() {
+            assert_eq!(
+                got.is_null(i),
+                want.is_null(i),
+                "{} null at {i}",
+                udf.name()
+            );
+        }
+        assert_eq!(got, &want, "{} values", udf.name());
     }
 }
 
-/// Benches one field for one input shape. The kernel is passed as a generic `F` and called
-/// directly, so it inlines and vectorizes the way a real kernel would; routing it through a
-/// `black_box`ed function pointer instead would measure an indirect call per element.
-fn bench_field<F>(
-    c: &mut Criterion,
-    group: String,
-    udf: &dyn ScalarUDFImpl,
-    dyn_array: &ArrayRef,
-    base: &TimestampMicrosecondArray,
-    kernel: Option<F>,
-) where
-    F: Fn(i64) -> i32 + Copy,
-{
-    let mut g = c.benchmark_group(group);
-    g.throughput(Throughput::Elements(ROWS as u64));
-    g.bench_function("date_part", |b| {
-        b.iter(|| black_box(invoke(udf, black_box(dyn_array))))
-    });
-    if let Some(k) = kernel {
-        g.bench_function("integer_kernel", |b| {
-            b.iter(|| {
-                let out: Int32Array = black_box(base).unary::<_, Int32Type>(k);
-                black_box(out)
-            })
+fn bench_shape(c: &mut Criterion, shape: &str, tz: &str, array: ArrayRef) {
+    for (name, udf) in [
+        (
+            "hour",
+            Box::new(SparkHour::new(tz.to_string())) as Box<dyn ScalarUDFImpl>,
+        ),
+        ("minute", Box::new(SparkMinute::new(tz.to_string()))),
+        ("second", Box::new(SparkSecond::new(tz.to_string()))),
+    ] {
+        let mut g = c.benchmark_group(format!("{name}/{shape}"));
+        g.throughput(Throughput::Elements(ROWS as u64));
+        g.bench_function("udf", |b| {
+            b.iter(|| black_box(invoke(black_box(udf.as_ref()), black_box(&array))))
         });
+        g.finish();
     }
-    g.finish();
 }
 
 fn criterion_benchmark(c: &mut Criterion) {
-    for (nulls, null_tag) in [(false, "no_nulls"), (true, "sparse_nulls")] {
+    for nulls in [Nulls::None, Nulls::Sparse, Nulls::Dense, Nulls::All] {
         let base = timestamps(nulls);
+        let tag = nulls.tag();
 
-        // (shape tag, session timezone, array, replaceable by the integer kernel)
-        let shapes: Vec<(&str, &str, ArrayRef, bool)> = vec![
-            ("ntz", "America/Los_Angeles", Arc::new(base.clone()), true),
-            (
-                "utc_session",
+        // TimestampNTZ: eligible for the fast path whatever the session zone.
+        let ntz: ArrayRef = Arc::new(base.clone());
+        assert_matches_arithmetic(&base, &ntz, "America/Los_Angeles");
+        bench_shape(c, &format!("ntz/{tag}"), "America/Los_Angeles", ntz);
+
+        // Timezone-aware in a UTC session: eligible, since the stored value is the UTC instant.
+        let utc: ArrayRef = Arc::new(base.clone().with_timezone("UTC"));
+        assert_matches_arithmetic(&base, &utc, "UTC");
+        bench_shape(c, &format!("utc_session/{tag}"), "UTC", utc);
+
+        // An offset session zone keeps the general path: untouched-code control.
+        let la: ArrayRef = Arc::new(base.clone().with_timezone("UTC"));
+        bench_shape(c, &format!("la_session/{tag}"), "America/Los_Angeles", la);
+    }
+
+    // Dictionaries are deliberately outside the fast path: another untouched-code control.
+    for cardinality in [8usize, 1024] {
+        for nulls in [Nulls::None, Nulls::Sparse, Nulls::Dense] {
+            bench_shape(
+                c,
+                &format!("dict{cardinality}/{}", nulls.tag()),
                 "UTC",
-                Arc::new(base.clone().with_timezone("UTC")),
-                true,
-            ),
-            (
-                "la_session",
-                "America/Los_Angeles",
-                Arc::new(base.clone().with_timezone("UTC")),
-                false,
-            ),
-        ];
-
-        for (shape, tz, dyn_array, comparable) in shapes {
-            if comparable {
-                assert_equivalent(&base, &dyn_array, tz);
-            }
-            bench_field(
-                c,
-                format!("hour/{shape}/{null_tag}"),
-                &SparkHour::new(tz.to_string()),
-                &dyn_array,
-                &base,
-                comparable.then_some(hour_of_day),
-            );
-            bench_field(
-                c,
-                format!("minute/{shape}/{null_tag}"),
-                &SparkMinute::new(tz.to_string()),
-                &dyn_array,
-                &base,
-                comparable.then_some(minute_of_hour),
-            );
-            bench_field(
-                c,
-                format!("second/{shape}/{null_tag}"),
-                &SparkSecond::new(tz.to_string()),
-                &dyn_array,
-                &base,
-                comparable.then_some(second_of_minute),
+                Arc::new(dict_timestamps(cardinality, nulls)),
             );
         }
     }
 
     // Sanity: the type the fast path keys off is still what we think it is.
     assert_eq!(
-        timestamps(false).data_type(),
+        timestamps(Nulls::None).data_type(),
         &DataType::Timestamp(TimeUnit::Microsecond, None)
     );
 }
