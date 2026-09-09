@@ -549,9 +549,8 @@ class CometHashExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
   }
 
   test("hash - array of struct not eligible for batching") {
-    // The same expression on element types the batched path deliberately leaves alone: a nested
-    // element and a dictionary-backed one. Both must still match Spark, since the eligibility rule
-    // only picks an implementation.
+    // Nested elements retain the per-element path. Compare with Spark and also cover chaining
+    // a flat-struct column with a nested column in one hash call.
     withTable("t") {
       sql("""CREATE TABLE t(
               id INT,
