@@ -64,7 +64,7 @@ The Implementation column is auto-generated from the serde definitions in `Query
 Comet focuses acceleration on mainstream relational, string, datetime, math, and collection
 expressions. The following function families are **not currently planned** for native acceleration (they are not on the 1.0 roadmap): specialized functionality with narrow real-world analytics use and high implementation cost. They fall back to Spark and may be reconsidered based on demand:
 
-- **Probabilistic sketches and approximate top-k** (`kll_sketch_*`, `hll_*`, `theta_*`, `count_min_sketch`, `bitmap_*`, `approx_top_k*`): specialized data structures with exact-correctness traps.
+- **Probabilistic sketches and approximate top-k** (`kll_sketch_*`, `theta_*`, `count_min_sketch`, `bitmap_*`, `approx_top_k*`): specialized data structures with exact-correctness traps.
 - **Geospatial** (`st_*`): brand-new Spark 4.1 functionality, specialized.
 - **Avro / Protobuf codecs** (`from_avro`, `to_avro`, `from_protobuf`, `to_protobuf`, `schema_of_avro`): format conversion belongs at the IO layer, not expression evaluation.
 - **JVM reflection** (`java_method`, `reflect`): niche, and they invoke arbitrary JVM methods (a security concern).
@@ -74,6 +74,8 @@ expressions. The following function families are **not currently planned** for n
 The file-metadata functions `input_file_name`, `input_file_block_start`, and `input_file_block_length` depend on scan-internal per-row file information rather than the expression layer; their support status is covered in the [scan compatibility guide](compatibility/scans.md).
 
 Note that `median` and `mode` are planned: they are mainstream exact aggregates. `approx_count_distinct` is supported because Comet ports Spark's `HyperLogLogPlusPlus` exactly, so its result is bit-identical to Spark.
+
+The Apache DataSketches HLL functions (`hll_sketch_agg`, `hll_union_agg`, `hll_sketch_estimate`, `hll_union`) are the one sketch family Comet does accelerate, on Spark 4.0+. The sketches are mutually readable with Spark's, but the point estimate can differ slightly after a merge, so the native path is off by default and opt-in per expression via `allowIncompatible` — see the rows below.
 
 The tables below list every Spark built-in expression with its current status.
 
@@ -104,6 +106,8 @@ The tables below list every Spark built-in expression with its current status.
 | `first_value` | ✅ | Native |  |
 | `grouping` | ✅ | — | Grouping indicator for ROLLUP/CUBE/GROUPING SETS |
 | `grouping_id` | ✅ | — | Grouping indicator for ROLLUP/CUBE/GROUPING SETS |
+| `hll_sketch_agg` | ✅ | Native | Spark 4.0+ only; falls back by default, the native path is opt-in via allowIncompatible ([details](compatibility/expressions/aggregate.md)) |
+| `hll_union_agg` | ✅ | Native | Spark 4.0+ only; falls back by default, the native path is opt-in via allowIncompatible ([details](compatibility/expressions/aggregate.md)) |
 | `kurtosis` | 🔜 | — | Not yet implemented natively |
 | `last` | ✅ | Native |  |
 | `last_value` | ✅ | Native |  |
@@ -498,6 +502,8 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `current_schema` | ✅ | — | Alias of `current_database`; resolved to a literal by the analyzer |
 | `current_user` | ✅ | — | Resolved to a literal by the analyzer; same as `user` |
 | `equal_null` | ✅ | — | Lowers to `<=>` (`EqualNullSafe`) |
+| `hll_sketch_estimate` | ✅ | Native | Spark 4.0+ only; falls back by default, the native path is opt-in via allowIncompatible ([details](compatibility/expressions/misc.md)) |
+| `hll_union` | ✅ | Native | Spark 4.0+ only; falls back by default, the native path is opt-in via allowIncompatible ([details](compatibility/expressions/misc.md)) |
 | `is_variant_null` | 🔜 | — | Requires `VariantType` support |
 | `monotonically_increasing_id` | ✅ | Native |  |
 | `parse_json` | 🔜 | — | Requires `VariantType` support |

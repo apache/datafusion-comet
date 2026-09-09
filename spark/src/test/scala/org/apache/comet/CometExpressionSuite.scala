@@ -3628,6 +3628,49 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("hll_union with a NULL allowDifferentLgConfigK returns NULL") {
+    assume(isSpark40Plus)
+    // HllUnion is a TernaryExpression evaluated through nullSafeEval, so a NULL in *any* of the
+    // three arguments - the allowDifferentLgConfigK flag included - makes the whole call NULL.
+    // Returning a sketch would be a categorically wrong answer rather than an approximation,
+    // which is not something the Incompatible opt-in covers.
+    //
+    // The serde only accepts a foldable third argument, and Spark marks HllUnion
+    // `nullIntolerant`, so with the default optimizer NullPropagation rewrites a foldable NULL
+    // flag to a NULL literal before Comet ever sees the expression. Excluding that rule is what
+    // makes the native kernel responsible for the NULL, which is the behaviour under test; a
+    // user who excludes NullPropagation must still get Spark's answer.
+    //
+    // (HllUnionAgg needs no equivalent guard: its `convert` falls back when `right.eval()` is
+    // not a Boolean, and Spark's `null.asInstanceOf[Boolean]` coerces to false, so the two agree
+    // whichever way the flag arrives.)
+    withSQLConf(
+      "spark.sql.optimizer.excludedRules" ->
+        "org.apache.spark.sql.catalyst.optimizer.NullPropagation",
+      "spark.comet.expression.HllSketchAgg.allowIncompatible" -> "true",
+      "spark.comet.expression.HllSketchEstimate.allowIncompatible" -> "true",
+      "spark.comet.expression.HllUnion.allowIncompatible" -> "true") {
+      withParquetTable((0 until 300).map(i => (i % 2, i)), "tbl") {
+        val query =
+          "SELECT hll_sketch_estimate(hll_union(a.s, b.s, cast(null as boolean))) FROM " +
+            "(SELECT hll_sketch_agg(_2) AS s FROM tbl WHERE _1 = 0) a, " +
+            "(SELECT hll_sketch_agg(_2) AS s FROM tbl WHERE _1 = 1) b"
+        val df = sql(query)
+        val plan = stripAQEPlan(df.queryExecution.executedPlan)
+        // Without these the test would pass on a plan where hll_union was folded away or fell
+        // back to Spark, neither of which exercises the native null check.
+        checkCometOperators(plan)
+        assert(
+          plan.toString().contains("hll_union"),
+          s"expected hll_union to survive into the native plan, got:\n$plan")
+        assert(
+          df.collect().head.isNullAt(0),
+          "a NULL allowDifferentLgConfigK must make hll_union return NULL")
+        checkSparkAnswer(query)
+      }
+    }
+  }
+
   test("hll_sketch_agg over all-null input estimates to 0, not NULL") {
     assume(isSpark40Plus)
     // Spark's HllSketchAgg/HllSketchEstimate are declared non-nullable: an empty or

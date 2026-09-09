@@ -19,7 +19,11 @@ use crate::agg_funcs::hll_sketch::SparkHllSketch;
 use arrow::array::Array;
 use arrow::array::ArrayRef;
 use arrow::array::BinaryArray;
-use arrow::datatypes::{DataType, Field, FieldRef};
+use arrow::array::{as_primitive_array, GenericByteArray, PrimitiveArray, StringArray};
+use arrow::datatypes::{
+    ArrowPrimitiveType, ByteArrayType, DataType, Field, FieldRef, Int16Type, Int32Type, Int64Type,
+    Int8Type,
+};
 use datafusion::common::{downcast_value, ScalarValue};
 use datafusion::error::{DataFusionError, Result};
 use datafusion::logical_expr::function::{AccumulatorArgs, StateFieldsArgs};
@@ -85,6 +89,34 @@ impl HllSketchAccumulator {
             sketch: SparkHllSketch::new(lg_config_k),
         }
     }
+
+    /// Spark widens every accepted integral to `long` before hashing, so all four widths
+    /// funnel through the same `i64` update. Nulls are ignored, matching `HllSketchAgg`.
+    fn update_ints<T>(&mut self, arr: &PrimitiveArray<T>)
+    where
+        T: ArrowPrimitiveType,
+        T::Native: Into<i64>,
+    {
+        for i in 0..arr.len() {
+            if !arr.is_null(i) {
+                self.sketch.update_i64(arr.value(i).into());
+            }
+        }
+    }
+
+    /// StringType hashes its UTF-8 bytes and BinaryType its bytes directly, so both share
+    /// this loop.
+    fn update_byte_slices<T>(&mut self, arr: &GenericByteArray<T>)
+    where
+        T: ByteArrayType,
+        for<'a> &'a T::Native: AsRef<[u8]>,
+    {
+        for i in 0..arr.len() {
+            if !arr.is_null(i) {
+                self.sketch.update_bytes(arr.value(i).as_ref());
+            }
+        }
+    }
 }
 
 impl Accumulator for HllSketchAccumulator {
@@ -93,41 +125,23 @@ impl Accumulator for HllSketchAccumulator {
             return Ok(());
         }
         let arr = &values[0];
-        (0..arr.len()).try_for_each(|i| {
-            match ScalarValue::try_from_array(arr, i)? {
-                ScalarValue::Int8(Some(v)) => {
-                    self.sketch.update_i64(v as i64);
-                }
-                ScalarValue::Int16(Some(v)) => {
-                    self.sketch.update_i64(v as i64);
-                }
-                ScalarValue::Int32(Some(v)) => {
-                    self.sketch.update_i64(v as i64);
-                }
-                ScalarValue::Int64(Some(v)) => {
-                    self.sketch.update_i64(v);
-                }
-                ScalarValue::Utf8(Some(v)) => {
-                    self.sketch.update_bytes(v.as_bytes());
-                }
-                ScalarValue::Binary(Some(v)) => {
-                    self.sketch.update_bytes(&v);
-                }
-                // Spark's HllSketchAgg ignores null inputs.
-                ScalarValue::Int8(None)
-                | ScalarValue::Int16(None)
-                | ScalarValue::Int32(None)
-                | ScalarValue::Int64(None)
-                | ScalarValue::Utf8(None)
-                | ScalarValue::Binary(None) => {}
-                other => {
-                    return Err(DataFusionError::Internal(format!(
-                        "hll_sketch_agg received an unsupported input type: {other:?}"
-                    )))
-                }
+        // Downcast once per batch rather than going through `ScalarValue::try_from_array` per
+        // row: for the string and binary cases that copies every value onto the heap only to
+        // hash it and drop it again.
+        match arr.data_type() {
+            DataType::Int8 => self.update_ints(as_primitive_array::<Int8Type>(arr)),
+            DataType::Int16 => self.update_ints(as_primitive_array::<Int16Type>(arr)),
+            DataType::Int32 => self.update_ints(as_primitive_array::<Int32Type>(arr)),
+            DataType::Int64 => self.update_ints(as_primitive_array::<Int64Type>(arr)),
+            DataType::Utf8 => self.update_byte_slices(downcast_value!(arr, StringArray)),
+            DataType::Binary => self.update_byte_slices(downcast_value!(arr, BinaryArray)),
+            other => {
+                return Err(DataFusionError::Internal(format!(
+                    "hll_sketch_agg received an unsupported input type: {other:?}"
+                )))
             }
-            Ok(())
-        })
+        }
+        Ok(())
     }
 
     fn evaluate(&mut self) -> Result<ScalarValue> {
@@ -165,20 +179,89 @@ impl Accumulator for HllSketchAccumulator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::Int64Array;
+    use arrow::array::{Int32Array, Int64Array, Int8Array};
     use datafusion::physical_plan::Accumulator;
     use std::sync::Arc;
+
+    fn sketch_bytes(acc: &mut HllSketchAccumulator) -> Vec<u8> {
+        let ScalarValue::Binary(Some(bytes)) = acc.evaluate().unwrap() else {
+            panic!("expected binary")
+        };
+        bytes
+    }
 
     #[test]
     fn accumulates_and_estimates() {
         let mut acc = HllSketchAccumulator::new(12);
         let arr = Arc::new(Int64Array::from((0..1000i64).collect::<Vec<_>>()));
         acc.update_batch(&[arr]).unwrap();
-        let ScalarValue::Binary(Some(bytes)) = acc.evaluate().unwrap() else {
-            panic!("expected binary")
-        };
+        let bytes = sketch_bytes(&mut acc);
         let est = crate::agg_funcs::estimate_from_bytes(&bytes).unwrap();
         assert!((est - 1000).abs() <= 30, "estimate {est}");
+    }
+
+    /// `update_batch` downcasts the whole array once instead of building a `ScalarValue` per
+    /// row. Every accepted input type has to keep hashing exactly as before, so compare the
+    /// accumulator's bytes against a sketch fed the same values directly - byte equality, not
+    /// an error bound, since any change in the hashed bytes would move registers.
+    #[test]
+    fn every_input_type_hashes_the_same_as_a_direct_update() {
+        // Narrow integrals are widened to i64 (sign-extending), so negatives matter here.
+        let mut acc = HllSketchAccumulator::new(12);
+        acc.update_batch(&[Arc::new(Int8Array::from(vec![
+            Some(-128),
+            None,
+            Some(0),
+            Some(127),
+        ]))])
+        .unwrap();
+        let mut direct = SparkHllSketch::new(12);
+        for v in [-128i64, 0, 127] {
+            direct.update_i64(v);
+        }
+        assert_eq!(sketch_bytes(&mut acc), direct.to_sketch_bytes());
+
+        let mut acc = HllSketchAccumulator::new(12);
+        acc.update_batch(&[Arc::new(Int32Array::from(vec![
+            Some(i32::MIN),
+            None,
+            Some(i32::MAX),
+        ]))])
+        .unwrap();
+        let mut direct = SparkHllSketch::new(12);
+        for v in [i32::MIN as i64, i32::MAX as i64] {
+            direct.update_i64(v);
+        }
+        assert_eq!(sketch_bytes(&mut acc), direct.to_sketch_bytes());
+
+        // Strings hash their UTF-8 bytes; the empty string is skipped by both paths.
+        let mut acc = HllSketchAccumulator::new(12);
+        acc.update_batch(&[Arc::new(StringArray::from(vec![
+            Some("a"),
+            None,
+            Some(""),
+            Some("héllo"),
+        ]))])
+        .unwrap();
+        let mut direct = SparkHllSketch::new(12);
+        for v in ["a", "", "héllo"] {
+            direct.update_bytes(v.as_bytes());
+        }
+        assert_eq!(sketch_bytes(&mut acc), direct.to_sketch_bytes());
+
+        let mut acc = HllSketchAccumulator::new(12);
+        acc.update_batch(&[Arc::new(BinaryArray::from(vec![
+            Some(&b"\x00\xff"[..]),
+            None,
+            Some(&b""[..]),
+            Some(&b"xyz"[..]),
+        ]))])
+        .unwrap();
+        let mut direct = SparkHllSketch::new(12);
+        for v in [&b"\x00\xff"[..], &b""[..], &b"xyz"[..]] {
+            direct.update_bytes(v);
+        }
+        assert_eq!(sketch_bytes(&mut acc), direct.to_sketch_bytes());
     }
 
     /// Spark's `HllSketchAgg` is non-nullable: an empty/all-null group still

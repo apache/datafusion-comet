@@ -34,7 +34,7 @@
 //! ever read back by Comet.
 
 use datafusion::error::DataFusionError;
-use datasketches::hash_value::{raw_bytes, sign_extend};
+use datasketches::hash_value::raw_bytes;
 use datasketches::hll::{HllSketch, HllType, HllUnion};
 
 /// A DataSketches HLL_8 sketch configured to match Spark's `HllSketchAgg`.
@@ -155,23 +155,11 @@ impl SparkHllSketch {
     }
 
     /// Update with a 64-bit integer. Spark widens narrower integrals to `long`
-    /// before hashing; callers should pass the already-widened value here.
-    /// Rust's `Hash` for `i64` writes 8 little-endian bytes with no prefix,
-    /// matching DataSketches-Java `update(long)`.
+    /// before hashing, so callers pass the already-widened value; Rust's `as i64`
+    /// sign-extends, matching Spark's `toLong`. Rust's `Hash` for `i64` writes 8
+    /// little-endian bytes with no prefix, matching DataSketches-Java `update(long)`.
     pub fn update_i64(&mut self, v: i64) {
         self.inner.update(v);
-    }
-
-    /// Update with a narrow signed integer, sign-extending to 64 bits exactly as
-    /// Spark's `toLong` does before hashing.
-    pub fn update_i32(&mut self, v: i32) {
-        self.inner.update(sign_extend::from_i32(v));
-    }
-    pub fn update_i16(&mut self, v: i16) {
-        self.inner.update(sign_extend::from_i16(v));
-    }
-    pub fn update_i8(&mut self, v: i8) {
-        self.inner.update(sign_extend::from_i8(v));
     }
 
     /// Update with raw bytes (used for both StringType UTF-8 bytes and
@@ -196,7 +184,7 @@ impl SparkHllSketch {
         let normalized = normalize_compact_hll_array(bytes);
         HllSketch::deserialize(normalized.as_deref().unwrap_or(bytes))
             .map(|inner| Self { inner })
-            .map_err(|e| DataFusionError::Internal(format!("invalid HLL sketch bytes: {e}")))
+            .map_err(|e| DataFusionError::Execution(format!("invalid HLL sketch bytes: {e}")))
     }
 
     /// The configured `lgConfigK`.

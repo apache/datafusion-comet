@@ -51,9 +51,12 @@ pub fn spark_hll_union(args: &[ColumnarValue]) -> Result<ColumnarValue> {
     for i in 0..a.len() {
         // Spark's `HllUnion` is a `TernaryExpression` evaluated through `nullSafeEval`, and
         // `TernaryExpression.eval` returns NULL when *any* of the three inputs is NULL - the
-        // `allowDifferentLgConfigK` flag included. `Literal(null, BooleanType)` is foldable, so
-        // the serde's `third.foldable` check lets it through and this loop is the only thing
-        // standing between a NULL flag and a non-null sketch.
+        // `allowDifferentLgConfigK` flag included. Spark also marks `HllUnion` null-intolerant,
+        // so with the default optimizer `NullPropagation` folds a foldable NULL flag away before
+        // Comet sees the expression; a user who excludes that rule reaches this loop instead, and
+        // it has to give the same answer. Note the flag is *not* coerced to false here: that
+        // coercion is what makes `HllUnionAgg` correct (Spark's `null.asInstanceOf[Boolean]`),
+        // and it does not apply to a `TernaryExpression`, where the NULL has to propagate.
         if a.is_null(i) || b.is_null(i) || allow.is_null(i) {
             out.append_null();
             continue;
@@ -139,8 +142,8 @@ mod union_tests {
     }
 
     /// Spark's `HllUnion` is a `TernaryExpression`, so a NULL `allowDifferentLgConfigK` makes the
-    /// whole call NULL. `Literal(null, BooleanType)` is foldable and therefore passes the serde's
-    /// `third.foldable` gate, so this loop is what has to honour it.
+    /// whole call NULL. `NullPropagation` normally removes that shape before Comet sees it, so
+    /// this pins the kernel for the case where the rule is excluded.
     #[test]
     fn a_null_allow_flag_yields_null() {
         let mut a = SparkHllSketch::new(12);

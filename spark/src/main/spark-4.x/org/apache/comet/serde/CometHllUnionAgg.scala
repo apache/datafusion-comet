@@ -35,16 +35,28 @@ object CometHllUnionAgg extends CometAggregateExpressionSerde[HllUnionAgg] {
     "Comet uses a Rust DataSketches port; HLL sketch bytes and estimates may differ slightly " +
       "from Spark."
 
+  private val nonLiteralAllowReason =
+    "The allowDifferentLgConfigK argument must be a foldable literal."
+
   private val errorReason =
     "Errors surface as plain Comet execution errors rather than Spark's SparkRuntimeException " +
       "with condition HLL_UNION_DIFFERENT_LG_K / HLL_INVALID_INPUT_SKETCH_BUFFER (sqlState " +
       "22000), so the message and error class differ even though both engines fail."
 
-  override def getIncompatibleReasons(): Seq[String] = Seq(incompatReason, errorReason)
+  private val hll4AuxReason =
+    "An input sketch in the updatable HLL_4 form carrying auxiliary-map entries is rejected " +
+      "with an error, where Spark reads it: the bundled Rust decoder reads the compact " +
+      "auxiliary layout in both forms and would otherwise return a silently wrong estimate. " +
+      "Comet only ever writes HLL_8, so this affects sketch columns produced elsewhere."
+
+  override def getUnsupportedReasons(): Seq[String] = Seq(nonLiteralAllowReason)
+
+  override def getIncompatibleReasons(): Seq[String] =
+    Seq(incompatReason, errorReason, hll4AuxReason)
 
   override def getSupportLevel(expr: HllUnionAgg): SupportLevel = {
     if (!expr.right.foldable) {
-      Unsupported(Some("The allowDifferentLgConfigK argument must be a foldable literal."))
+      Unsupported(Some(nonLiteralAllowReason))
     } else {
       Incompatible(Some(incompatReason))
     }

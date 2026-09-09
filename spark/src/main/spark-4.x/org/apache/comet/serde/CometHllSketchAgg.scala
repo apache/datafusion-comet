@@ -39,6 +39,8 @@ object CometHllSketchAgg extends CometAggregateExpressionSerde[HllSketchAgg] {
 
   private val nonLiteralLgConfigKReason =
     "The lgConfigK argument must be a foldable literal."
+  private val lgConfigKRangeReason =
+    s"The lgConfigK argument must be in the range [$MinLgConfigK, $MaxLgConfigK]."
   private val inputTypeReason =
     "Only int, long, string, and binary input types are supported."
   private val incompatReason =
@@ -46,7 +48,7 @@ object CometHllSketchAgg extends CometAggregateExpressionSerde[HllSketchAgg] {
       "slightly from Spark."
 
   override def getUnsupportedReasons(): Seq[String] =
-    Seq(nonLiteralLgConfigKReason, inputTypeReason)
+    Seq(nonLiteralLgConfigKReason, lgConfigKRangeReason, inputTypeReason)
 
   override def getIncompatibleReasons(): Seq[String] = Seq(incompatReason)
 
@@ -60,7 +62,7 @@ object CometHllSketchAgg extends CometAggregateExpressionSerde[HllSketchAgg] {
       case _ => return Unsupported(Some(nonLiteralLgConfigKReason))
     }
     if (lgConfigK < MinLgConfigK || lgConfigK > MaxLgConfigK) {
-      return Unsupported(Some(s"lgConfigK must be in [$MinLgConfigK, $MaxLgConfigK]"))
+      return Unsupported(Some(lgConfigKRangeReason))
     }
     expr.left.dataType match {
       case IntegerType | LongType | StringType | BinaryType =>
