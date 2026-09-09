@@ -26,10 +26,13 @@ import scala.jdk.CollectionConverters._
 
 import org.apache.parquet.hadoop.ParquetOutputFormat
 import org.apache.spark.SparkException
-import org.apache.spark.sql.comet.{CometNativeExec, CometNativeWriteExec}
+import org.apache.spark.sql.comet.{CometEmptyRelationExec, CometNativeExec, CometNativeWriteExec, CometScanWrapper}
+import org.apache.spark.sql.execution.SparkPlan
+import org.apache.spark.sql.execution.adaptive.QueryStageExec
 import org.apache.spark.sql.execution.command.DataWritingCommandExec
 import org.apache.spark.sql.execution.datasources.{InsertIntoHadoopFsRelationCommand, WriteFilesExec}
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
+import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.{CometConf, ConfigEntry}
@@ -59,6 +62,14 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
       case cmd: InsertIntoHadoopFsRelationCommand =>
         cmd.fileFormat match {
           case _: ParquetFileFormat =>
+            // AQE can replace the write input with a zero-partition empty relation. Keep
+            // Spark's writer, which creates an empty task to preserve the output file schema.
+            // The native writer only maps existing partitions and cannot do that yet.
+            if (hasEmptyRelationInput(op.child)) {
+              return Unsupported(Some(
+                "Parquet writes with empty-relation inputs require Spark's empty-file handling"))
+            }
+
             if (!cmd.outputPath.toString.startsWith("file:") && !cmd.outputPath.toString
                 .startsWith("hdfs:")) {
               return Unsupported(Some("Supported output filesystems: local, HDFS"))
@@ -84,6 +95,14 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
       case other =>
         Unsupported(Some(s"Unsupported write command: ${other.getClass}"))
     }
+  }
+
+  private def hasEmptyRelationInput(plan: SparkPlan): Boolean = plan match {
+    case _: CometEmptyRelationExec => true
+    case wrapper: CometScanWrapper => hasEmptyRelationInput(wrapper.originalPlan)
+    case stage: QueryStageExec => hasEmptyRelationInput(stage.plan)
+    case reused: ReusedExchangeExec => hasEmptyRelationInput(reused.child)
+    case _ => plan.children.exists(hasEmptyRelationInput)
   }
 
   override def convert(
