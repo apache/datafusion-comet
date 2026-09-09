@@ -26,7 +26,7 @@
 use arrow::array::{
     new_empty_array, Array, ArrayRef, AsArray, BooleanArray, ListArray, UInt32Array,
 };
-use arrow::buffer::{OffsetBuffer, ScalarBuffer};
+use arrow::buffer::{NullBuffer, OffsetBuffer};
 use arrow::compute::{cast, concat, interleave, take};
 use arrow::datatypes::{DataType, Field, FieldRef};
 use arrow::row::{RowConverter, SortField};
@@ -134,9 +134,7 @@ impl AggregateUDFImpl for CometCollectSet {
     }
 
     fn groups_accumulator_supported(&self, args: AccumulatorArgs) -> bool {
-        !args.is_distinct
-            && args.order_bys.is_empty()
-            && row_encodable(args.expr_fields[0].data_type())
+        !args.is_distinct && args.order_bys.is_empty()
     }
 
     fn create_groups_accumulator(
@@ -147,12 +145,6 @@ impl AggregateUDFImpl for CometCollectSet {
             args.expr_fields[0].data_type().clone(),
         )?))
     }
-}
-
-/// Whether `RowConverter` can encode `data_type`, which decides whether
-/// [`CollectSetGroupsAccumulator`] can be used.
-fn row_encodable(data_type: &DataType) -> bool {
-    RowConverter::new(vec![SortField::new(data_type.clone())]).is_ok()
 }
 
 /// Casts `array` to `datatype` when the two have drifted apart, which a dictionary-encoded input
@@ -186,8 +178,9 @@ struct CollectListGroupsAccumulator {
     batches: Vec<ArrayRef>,
     /// Contributions of each retained batch, in the order they were seen.
     ranges: Vec<Vec<RowRange>>,
-    num_ranges: usize,
-    num_rows: usize,
+    /// Running total of what `batches` and `ranges` hold. `size()` is called once per input
+    /// batch, so it cannot afford to walk the retained batches to work this out.
+    retained_bytes: usize,
     num_groups: usize,
 }
 
@@ -216,8 +209,7 @@ impl CollectListGroupsAccumulator {
             datatype,
             batches: Vec::new(),
             ranges: Vec::new(),
-            num_ranges: 0,
-            num_rows: 0,
+            retained_bytes: 0,
             num_groups: 0,
         }
     }
@@ -235,12 +227,17 @@ impl CollectListGroupsAccumulator {
         }
     }
 
-    fn retain(&mut self, batch: ArrayRef, ranges: Vec<RowRange>) {
+    fn retain(&mut self, batch: ArrayRef, mut ranges: Vec<RowRange>) {
         if ranges.is_empty() {
             return;
         }
-        self.num_ranges += ranges.len();
-        self.num_rows += ranges.iter().map(|r| r.len as usize).sum::<usize>();
+        // `ranges` is sized for one range per row; run coalescing can leave most of that unused,
+        // and the excess would be retained for as long as the batch is.
+        if ranges.len() * 2 <= ranges.capacity() {
+            ranges.shrink_to_fit();
+        }
+        self.retained_bytes +=
+            batch.get_array_memory_size() + ranges.capacity() * size_of::<RowRange>();
         self.batches.push(batch);
         self.ranges.push(ranges);
     }
@@ -249,8 +246,7 @@ impl CollectListGroupsAccumulator {
         // `size()` reports capacity rather than length, so release the buffers outright.
         self.batches = Vec::new();
         self.ranges = Vec::new();
-        self.num_ranges = 0;
-        self.num_rows = 0;
+        self.retained_bytes = 0;
         self.num_groups = 0;
     }
 
@@ -260,11 +256,20 @@ impl CollectListGroupsAccumulator {
     fn compact(&mut self, emit_groups: u32) -> DFResult<()> {
         let batches = take_field(&mut self.batches);
         let ranges = take_field(&mut self.ranges);
-        self.num_ranges = 0;
-        self.num_rows = 0;
+        self.retained_bytes = 0;
         self.num_groups -= emit_groups as usize;
 
         for (batch, ranges) in batches.into_iter().zip(ranges) {
+            if ranges.iter().all(|r| r.group >= emit_groups) {
+                // Nothing was emitted from this batch, so only the group numbering changes and
+                // the batch itself can be kept as it is.
+                let mut ranges = ranges;
+                for range in &mut ranges {
+                    range.group -= emit_groups;
+                }
+                self.retain(batch, ranges);
+                continue;
+            }
             let mut retained: Vec<RowRange> = Vec::new();
             let mut retained_rows: Vec<u32> = Vec::new();
             for range in ranges {
@@ -281,11 +286,8 @@ impl CollectListGroupsAccumulator {
             if retained.is_empty() {
                 continue;
             }
-            let batch = if retained_rows.len() == batch.len() {
-                batch
-            } else {
-                take(batch.as_ref(), &UInt32Array::from(retained_rows), None)?
-            };
+            // Compact the batch so the rows this emit released stop being pinned.
+            let batch = take(batch.as_ref(), &UInt32Array::from(retained_rows), None)?;
             self.retain(batch, retained);
         }
         Ok(())
@@ -362,24 +364,19 @@ impl GroupsAccumulator for CollectListGroupsAccumulator {
         // decide how the values are gathered.
         let mut range_counts = vec![0u32; emit_groups];
         let mut row_counts = vec![0u32; emit_groups];
+        let mut num_ranges = 0usize;
+        let mut num_rows = 0usize;
         for ranges in &self.ranges {
             for range in ranges {
                 if (range.group as usize) < emit_groups {
                     range_counts[range.group as usize] += 1;
                     row_counts[range.group as usize] += range.len;
+                    num_ranges += 1;
+                    num_rows += range.len as usize;
                 }
             }
         }
-
-        let mut offsets = Vec::with_capacity(emit_groups + 1);
-        offsets.push(0i32);
-        let mut num_rows = 0i32;
-        for count in &row_counts {
-            num_rows += *count as i32;
-            offsets.push(num_rows);
-        }
-        let num_rows = num_rows as usize;
-        let num_ranges: usize = range_counts.iter().map(|c| *c as usize).sum();
+        let offsets = OffsetBuffer::<i32>::from_lengths(row_counts.iter().map(|c| *c as usize));
 
         let values = if num_rows == 0 {
             new_empty_array(&self.datatype)
@@ -436,7 +433,7 @@ impl GroupsAccumulator for CollectListGroupsAccumulator {
         // A group that collected nothing gets an empty list, not a null one, matching Spark.
         Ok(Arc::new(ListArray::new(
             list_field(&self.datatype),
-            OffsetBuffer::new(ScalarBuffer::from(offsets)),
+            offsets,
             values,
             None,
         )))
@@ -455,16 +452,8 @@ impl GroupsAccumulator for CollectListGroupsAccumulator {
     }
 
     fn size(&self) -> usize {
-        self.batches
-            .iter()
-            .map(|b| b.get_array_memory_size())
-            .sum::<usize>()
+        self.retained_bytes
             + self.batches.capacity() * size_of::<ArrayRef>()
-            + self
-                .ranges
-                .iter()
-                .map(|r| r.capacity() * size_of::<RowRange>())
-                .sum::<usize>()
             + self.ranges.capacity() * size_of::<Vec<RowRange>>()
             + self.datatype.size()
     }
@@ -481,38 +470,39 @@ fn prefix_sum(counts: &[u32]) -> Vec<u32> {
     cursors
 }
 
+/// A `NullBuffer` that is null wherever `filter` does not select the row, so that a filtered row
+/// can be represented as a null list entry. Mirrors DataFusion's `filter_to_nulls`, which lives
+/// in `datafusion-functions-aggregate-common` and is not re-exported by the `datafusion` facade.
+fn filter_to_nulls(filter: &BooleanArray) -> NullBuffer {
+    let selected = match filter.nulls() {
+        Some(nulls) => filter.values() & nulls.inner(),
+        None => filter.values().clone(),
+    };
+    NullBuffer::new(selected)
+}
+
 /// Turns every row of `input` into its own single-element list, which is what
 /// `GroupsAccumulator::convert_to_state` has to produce for both collect functions. Null and
-/// filtered-out rows become null list entries, which `merge_batch` skips.
+/// filtered-out rows become null list entries, which `merge_batch` skips, so the input array
+/// itself can back the lists without being copied.
 fn single_row_lists(
     input: &ArrayRef,
     opt_filter: Option<&BooleanArray>,
     datatype: &DataType,
 ) -> DFResult<Vec<ArrayRef>> {
-    let mut offsets = Vec::with_capacity(input.len() + 1);
-    offsets.push(0i32);
-    let mut kept = Vec::with_capacity(input.len());
-    let mut nulls = Vec::with_capacity(input.len());
-    for row_idx in 0..input.len() {
-        let dropped = opt_filter.is_some_and(|f| f.is_null(row_idx) || !f.value(row_idx))
-            || input.is_null(row_idx);
-        if !dropped {
-            kept.push(row_idx as u32);
-        }
-        nulls.push(!dropped);
-        offsets.push(kept.len() as i32);
-    }
-    let elements = take(input.as_ref(), &UInt32Array::from(kept), None)?;
+    let filter_nulls = opt_filter.map(filter_to_nulls);
+    let nulls = NullBuffer::union(filter_nulls.as_ref(), input.logical_nulls().as_ref());
     Ok(vec![Arc::new(ListArray::new(
         list_field(datatype),
-        OffsetBuffer::new(ScalarBuffer::from(offsets)),
-        elements,
-        Some(nulls.into()),
+        OffsetBuffer::from_repeated_length(1, input.len()),
+        Arc::clone(input),
+        nulls,
     ))])
 }
 
 /// One distinct `(group, value)` pair. `start` and `len` address the value's row-encoded bytes
-/// in [`CollectSetGroupsAccumulator::arena`].
+/// in [`CollectSetGroupsAccumulator::arena`], and `hash` is of those bytes alone, so it survives
+/// the group renumbering [`CollectSetGroupsAccumulator::compact`] does.
 #[derive(Debug, Clone, Copy)]
 struct SetEntry {
     group: u32,
@@ -553,22 +543,22 @@ impl CollectSetGroupsAccumulator {
         })
     }
 
-    /// Records `(group, encoded)` unless the group already holds that value.
-    fn insert(&mut self, group: u32, encoded: &[u8]) {
-        let hash = XxHash64::oneshot(group as u64, encoded);
+    /// Records `(group, encoded)` unless the group already holds that value. `hash` is of
+    /// `encoded` alone, so a caller that already has it (`compact`) need not recompute it.
+    fn insert(&mut self, group: u32, hash: u64, encoded: &[u8]) {
         let Self {
             arena,
             entries,
             index,
             ..
         } = self;
-        let slot = index.probe(hash, |entry_idx| {
+        let key = key_hash(group, hash);
+        let Some(slot) = index.vacant_slot(key, |entry_idx| {
             let entry = &entries[entry_idx as usize];
             entry.group == group
                 && entry.hash == hash
                 && &arena[entry.start as usize..(entry.start + entry.len) as usize] == encoded
-        });
-        let RowSlot::Vacant(slot) = slot else {
+        }) else {
             return;
         };
         let entry_idx = entries.len() as u32;
@@ -581,7 +571,7 @@ impl CollectSetGroupsAccumulator {
         arena.extend_from_slice(encoded);
         index.fill(slot, entry_idx);
         if index.is_full(entries.len()) {
-            index.grow(entries.iter().map(|e| e.hash));
+            index.grow(entries.iter().map(|e| key_hash(e.group, e.hash)));
         }
     }
 
@@ -600,7 +590,7 @@ impl CollectSetGroupsAccumulator {
                 continue;
             }
             let bytes = &old_arena[entry.start as usize..(entry.start + entry.len) as usize];
-            self.insert(entry.group - emit_groups, bytes);
+            self.insert(entry.group - emit_groups, entry.hash, bytes);
         }
     }
 
@@ -635,7 +625,8 @@ impl GroupsAccumulator for CollectSetGroupsAccumulator {
             if nulls.as_ref().is_some_and(|n| n.is_null(row_idx)) {
                 continue;
             }
-            self.insert(group_idx as u32, rows.row(row_idx).as_ref());
+            let row = rows.row(row_idx);
+            self.insert(group_idx as u32, value_hash(row.as_ref()), row.as_ref());
         }
         Ok(())
     }
@@ -661,7 +652,8 @@ impl GroupsAccumulator for CollectSetGroupsAccumulator {
                 continue;
             }
             for pos in offsets[row_idx] as usize..offsets[row_idx + 1] as usize {
-                self.insert(group_idx as u32, rows.row(pos).as_ref());
+                let row = rows.row(pos);
+                self.insert(group_idx as u32, value_hash(row.as_ref()), row.as_ref());
             }
         }
         Ok(())
@@ -674,21 +666,16 @@ impl GroupsAccumulator for CollectSetGroupsAccumulator {
         };
 
         // Counting sort of the entries into group order: count, prefix sum, scatter.
-        let mut offsets = Vec::with_capacity(emit_groups + 1);
-        offsets.push(0i32);
         let mut counts = vec![0u32; emit_groups];
+        let mut total = 0u32;
         for entry in &self.entries {
             if (entry.group as usize) < emit_groups {
                 counts[entry.group as usize] += 1;
+                total += 1;
             }
         }
-        let mut cursors = Vec::with_capacity(emit_groups);
-        let mut total = 0u32;
-        for count in counts {
-            cursors.push(total);
-            total += count;
-            offsets.push(total as i32);
-        }
+        let offsets = OffsetBuffer::<i32>::from_lengths(counts.iter().map(|c| *c as usize));
+        let mut cursors = prefix_sum(&counts);
 
         let values = if total == 0 {
             new_empty_array(&self.datatype)
@@ -713,11 +700,7 @@ impl GroupsAccumulator for CollectSetGroupsAccumulator {
                 .ok_or_else(|| internal_datafusion_err!("collect_set decoded no columns"))?;
             // `RowConverter` always decodes to the physical type, so a dictionary element type
             // has to be restored.
-            if decoded.data_type() == &self.datatype {
-                decoded
-            } else {
-                cast(decoded.as_ref(), &self.datatype)?
-            }
+            coerce(&decoded, &self.datatype)?
         };
 
         match emit_to {
@@ -727,7 +710,7 @@ impl GroupsAccumulator for CollectSetGroupsAccumulator {
 
         Ok(Arc::new(ListArray::new(
             list_field(&self.datatype),
-            OffsetBuffer::new(ScalarBuffer::from(offsets)),
+            offsets,
             values,
             None,
         )))
@@ -754,6 +737,17 @@ impl GroupsAccumulator for CollectSetGroupsAccumulator {
     }
 }
 
+/// Hash of a row-encoded value, independent of the group that holds it.
+fn value_hash(encoded: &[u8]) -> u64 {
+    XxHash64::oneshot(0, encoded)
+}
+
+/// Mixes a group index into a value hash. Keeping the two separate lets an entry's value hash be
+/// reused when [`CollectSetGroupsAccumulator::compact`] renumbers its group.
+fn key_hash(group: u32, value_hash: u64) -> u64 {
+    value_hash ^ (group as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+}
+
 /// Open-addressed index from a hash to an entry position in
 /// [`CollectSetGroupsAccumulator::entries`], with linear probing and a load factor of 0.5.
 ///
@@ -761,30 +755,23 @@ impl GroupsAccumulator for CollectSetGroupsAccumulator {
 #[derive(Debug, Default)]
 struct RowIndex {
     slots: Vec<u32>,
-    mask: usize,
-}
-
-enum RowSlot {
-    /// The value is already indexed.
-    Occupied,
-    /// The value is absent; this is the slot it belongs in.
-    Vacant(usize),
 }
 
 impl RowIndex {
     const INITIAL_SLOTS: usize = 1024;
 
-    fn probe(&mut self, hash: u64, eq: impl Fn(u32) -> bool) -> RowSlot {
+    /// The slot `hash` belongs in, or `None` when `eq` matched an entry already indexed there.
+    fn vacant_slot(&mut self, hash: u64, eq: impl Fn(u32) -> bool) -> Option<usize> {
         if self.slots.is_empty() {
             self.slots = vec![0; Self::INITIAL_SLOTS];
-            self.mask = Self::INITIAL_SLOTS - 1;
         }
-        let mut slot = hash as usize & self.mask;
+        let mask = self.slots.len() - 1;
+        let mut slot = hash as usize & mask;
         loop {
             match self.slots[slot] {
-                0 => return RowSlot::Vacant(slot),
-                v if eq(v - 1) => return RowSlot::Occupied,
-                _ => slot = (slot + 1) & self.mask,
+                0 => return Some(slot),
+                v if eq(v - 1) => return None,
+                _ => slot = (slot + 1) & mask,
             }
         }
     }
@@ -808,7 +795,6 @@ impl RowIndex {
             slots[slot] = entry_idx as u32 + 1;
         }
         self.slots = slots;
-        self.mask = mask;
     }
 
     fn size(&self) -> usize {
@@ -946,30 +932,37 @@ mod tests {
         );
     }
 
-    /// Long runs take the `concat` gather path, scattered rows the `interleave` one. Both have to
-    /// produce the same lists.
+    /// `evaluate` picks its gather by average run length: two runs of 32 take the `concat`
+    /// path, 64 alternating rows the `interleave` one. Both have to collect the right values.
     #[test]
     fn collect_list_gathers_runs_and_scattered_rows_alike() {
-        let clustered: Vec<usize> = (0..64).map(|i| i / 32).collect();
-        let scattered: Vec<usize> = (0..64).map(|i| i % 2).collect();
-        let mut expected = vec![Vec::new(), Vec::new()];
-        for (groups, run_lengths) in [(&clustered, true), (&scattered, false)] {
-            let values = ints((0..64).map(Some).collect());
-            let mut acc = collect_list();
-            acc.update_batch(&[values], groups, None, 2).unwrap();
-            assert_eq!(acc.num_ranges == 2, run_lengths);
-            let emitted = int_groups(&acc.evaluate(EmitTo::All).unwrap());
-            if run_lengths {
-                expected = emitted;
-            } else {
-                // The two groupings differ, so compare the multiset of collected values.
-                let mut left: Vec<Option<i32>> = expected.concat();
-                let mut right: Vec<Option<i32>> = emitted.concat();
-                left.sort();
-                right.sort();
-                assert_eq!(left, right);
-            }
-        }
+        let values = || ints((0..64).map(Some).collect());
+
+        let mut clustered = collect_list();
+        let groups: Vec<usize> = (0..64).map(|i| i / 32).collect();
+        clustered
+            .update_batch(&[values()], &groups, None, 2)
+            .unwrap();
+        assert_eq!(
+            int_groups(&clustered.evaluate(EmitTo::All).unwrap()),
+            vec![
+                (0..32).map(Some).collect::<Vec<_>>(),
+                (32..64).map(Some).collect::<Vec<_>>(),
+            ]
+        );
+
+        let mut scattered = collect_list();
+        let groups: Vec<usize> = (0..64).map(|i| i % 2).collect();
+        scattered
+            .update_batch(&[values()], &groups, None, 2)
+            .unwrap();
+        assert_eq!(
+            int_groups(&scattered.evaluate(EmitTo::All).unwrap()),
+            vec![
+                (0..64).step_by(2).map(Some).collect::<Vec<_>>(),
+                (1..64).step_by(2).map(Some).collect::<Vec<_>>(),
+            ]
+        );
     }
 
     #[test]
@@ -1143,10 +1136,20 @@ mod tests {
         assert_eq!(list.value(0).data_type(), &DataType::Struct(fields));
     }
 
+    /// The two UDFs forward the rest of `AggregateUDFImpl` to `datafusion_spark`, and the
+    /// planner and the `GroupsAccumulator` both depend on what those forwards report.
     #[test]
-    fn collect_functions_declare_groups_accumulator_support() {
-        assert_eq!(CometCollectList::new().name(), "collect_list");
-        assert_eq!(CometCollectSet::new().name(), "collect_set");
-        assert!(row_encodable(&DataType::Utf8));
+    fn collect_functions_forward_their_shape_to_datafusion_spark() {
+        for udf in [
+            Box::new(CometCollectList::new()) as Box<dyn AggregateUDFImpl>,
+            Box::new(CometCollectSet::new()),
+        ] {
+            let name = udf.name().to_string();
+            assert!(name == "collect_list" || name == "collect_set", "{name}");
+            assert_eq!(
+                udf.return_type(&[DataType::Int32]).unwrap(),
+                DataType::List(list_field(&DataType::Int32))
+            );
+        }
     }
 }
