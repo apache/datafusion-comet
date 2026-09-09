@@ -136,6 +136,44 @@ object IcebergReflection extends Logging {
    */
   object Transforms {
     val IDENTITY = "identity"
+
+    /**
+     * iceberg-rust's placeholder for a transform it does not recognize. Conservative by
+     * construction: it contributes no partition constants and no pruning.
+     */
+    val UNKNOWN = "unknown"
+
+    /** Transforms whose `toString` iceberg-rust's `Transform::from_str` matches exactly. */
+    private val ExactNativeTransforms =
+      Set(IDENTITY, UNKNOWN, "void", "year", "month", "day", "hour")
+
+    /** `bucket[N]` / `truncate[W]`, the two parameterized spellings that parser also accepts. */
+    private val ParameterizedNativeTransform = """^(?:bucket|truncate)\[\d+\]$""".r
+
+    /**
+     * Maps an Iceberg Java transform name onto one iceberg-rust can deserialize.
+     *
+     * Iceberg Java parses a transform it doesn't know (one written by a newer Iceberg) into an
+     * `UnknownTransform` whose `toString` is the original name, e.g. `zero`. Serializing that
+     * name verbatim makes `PartitionSpec` deserialization fail native-side, which leaves the scan
+     * task holding partition values with no spec -- rejected by `FileScanTask`'s validation, so
+     * the whole scan dies instead of reading a table Iceberg considers forward-compatible.
+     * `Transform::Unknown` is iceberg-rust's model of the same thing, and its result type
+     * (string) is what Iceberg Java's `UnknownTransform.getResultType` reports, so the partition
+     * type serialized alongside the spec still agrees with it.
+     *
+     * Rewriting is only safe because the transform name reaches nothing in the native read but
+     * the identity test that builds the partition constants map (`_spec_id` uses the spec id,
+     * `_partition` matches partition values by field id). `IDENTITY` is matched exactly and so is
+     * never rewritten; every other transform yields no constants either way.
+     */
+    def forNative(transform: String): String =
+      if (ExactNativeTransforms.contains(transform) ||
+        ParameterizedNativeTransform.pattern.matcher(transform).matches()) {
+        transform
+      } else {
+        UNKNOWN
+      }
   }
 
   /**
