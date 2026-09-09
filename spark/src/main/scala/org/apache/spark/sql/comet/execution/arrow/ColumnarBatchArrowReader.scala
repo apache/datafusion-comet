@@ -19,18 +19,13 @@
 
 package org.apache.spark.sql.comet.execution.arrow
 
-import java.util.{ArrayList => JArrayList}
-
 import scala.collection.mutable.ListBuffer
 
 import org.apache.arrow.memory.BufferAllocator
 import org.apache.arrow.vector.{FieldVector, VectorSchemaRoot, VectorUnloader}
-import org.apache.arrow.vector.dictionary.DictionaryEncoder
 import org.apache.arrow.vector.ipc.ArrowReader
 import org.apache.arrow.vector.types.pojo.Schema
 import org.apache.spark.sql.vectorized.ColumnarBatch
-
-import org.apache.comet.vector.{CometDictionaryVector, CometVector}
 
 /**
  * `ArrowReader` over an iterator of Arrow-backed `ColumnarBatch`es. The unload/load step
@@ -59,30 +54,12 @@ private[comet] class ColumnarBatchArrowReader(
 
     val src = source.next()
     // Plain vectors we decode from dictionary-encoded columns; we own these and close them below.
+    // The stable VSR was built from the logical (non-dict) schema, so a dict-encoded source's
+    // indices layout would mismatch the dest buffer count on load. Native unpacks downstream
+    // anyway via copy_or_unpack_array.
     val materialized = ListBuffer.empty[FieldVector]
     try {
-      val sourceVectors = new JArrayList[FieldVector](src.numCols())
-      var i = 0
-      while (i < src.numCols()) {
-        val col = src.column(i).asInstanceOf[CometVector]
-        val fv = col match {
-          case d: CometDictionaryVector =>
-            // Stable VSR was built from the logical (non-dict) schema, so a dict-encoded
-            // source's indices layout would mismatch the dest buffer count on load. Native
-            // unpacks downstream anyway via copy_or_unpack_array.
-            val indices = d.getValueVector
-            val dictionary = d.provider.lookup(indices.getField.getDictionary.getId)
-            val plain = DictionaryEncoder
-              .decode(indices, dictionary, allocator)
-              .asInstanceOf[FieldVector]
-            materialized += plain
-            plain
-          case _ =>
-            col.getValueVector.asInstanceOf[FieldVector]
-        }
-        sourceVectors.add(fv)
-        i += 1
-      }
+      val sourceVectors = CometArrowVectors.materialize(src, allocator, materialized)
       val transient = new VectorSchemaRoot(sourceVectors)
       transient.setRowCount(src.numRows())
 

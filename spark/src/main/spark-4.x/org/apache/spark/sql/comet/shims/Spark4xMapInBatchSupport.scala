@@ -19,19 +19,16 @@
 
 package org.apache.spark.sql.comet.shims
 
-import org.apache.spark.JobArtifactSet
-import org.apache.spark.api.python.{ChainedPythonFunctions, PythonEvalType}
-import org.apache.spark.sql.catalyst.expressions.PythonUDF
+import org.apache.spark.api.python.PythonEvalType
 import org.apache.spark.sql.execution.SparkPlan
-import org.apache.spark.sql.execution.python.{ArrowPythonRunner, MapInArrowExec, MapInPandasExec}
-import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.execution.python.{MapInArrowExec, MapInPandasExec}
 
 /**
- * Shared 4.x bits for `ShimCometMapInBatch`. The matchers and `runnerInputs` helper are identical
- * across 4.0/4.1/4.2; only the `ArrowPythonRunner` constructor parameter list differs per minor,
- * so each minor's `ShimCometMapInBatch` provides only `computeArrowPython`.
+ * Shared 4.x bits for `ShimCometMapInBatch`. The matchers are identical across 4.0/4.1/4.2; only
+ * the `ArrowPythonRunner` constructor parameter list differs per minor, so each minor's
+ * `ShimCometMapInBatch` provides only `computeArrowPython`.
  */
-trait Spark4xMapInBatchSupport {
+trait Spark4xMapInBatchSupport extends ShimPythonRunnerInputs {
 
   protected def matchMapInArrow(plan: SparkPlan): Option[MapInBatchInfo] =
     plan match {
@@ -58,21 +55,4 @@ trait Spark4xMapInBatchSupport {
             PythonEvalType.SQL_MAP_PANDAS_ITER_UDF))
       case _ => None
     }
-
-  /** Inputs every 4.x `ArrowPythonRunner` constructor needs in the same shape. */
-  protected case class RunnerInputs(
-      chainedFunc: Seq[(ChainedPythonFunctions, Long)],
-      pythonRunnerConf: Map[String, String],
-      jobArtifactUUID: Option[String])
-
-  /**
-   * Resolves the `SQLConf`-derived inputs the `ArrowPythonRunner` needs. Must be called on the
-   * driver: `SQLConf.get` reads from a thread-local `ConfigReader` that only exists on the
-   * driver, so dereferencing `conf` from a task closure NPEs.
-   */
-  protected def runnerInputs(pythonUDF: PythonUDF, conf: SQLConf): RunnerInputs =
-    RunnerInputs(
-      chainedFunc = Seq((ChainedPythonFunctions(Seq(pythonUDF.func)), pythonUDF.resultId.id)),
-      pythonRunnerConf = ArrowPythonRunner.getPythonRunnerConfMap(conf),
-      jobArtifactUUID = JobArtifactSet.getCurrentJobArtifactState.map(_.uuid))
 }

@@ -17,15 +17,17 @@ specific language governing permissions and limitations
 under the License.
 -->
 
-# PyArrow UDF Acceleration
+# Python UDF Acceleration
 
-Comet can accelerate Python UDFs that use PyArrow-backed batch processing, such as `mapInArrow` and `mapInPandas`.
-These APIs are commonly used for ML inference, feature engineering, and data transformation workloads.
+Comet can accelerate Python UDFs that exchange Arrow batches with the Python worker: the batch APIs
+`mapInArrow` and `mapInPandas`, and scalar UDFs (an Arrow-optimized `udf()`, a `@pandas_udf`, or a
+`@arrow_udf`). These APIs are commonly used for ML inference, feature engineering, and data
+transformation workloads.
 
 ## Background
 
-Spark's `mapInArrow` and `mapInPandas` APIs allow users to apply Python functions that operate on Arrow
-RecordBatches or Pandas DataFrames. Under the hood, Spark communicates with the Python worker process
+These APIs let users apply Python functions that operate on Arrow RecordBatches, Pandas
+DataFrames, or Pandas Series. Under the hood, Spark communicates with the Python worker process
 using the Arrow IPC format.
 
 Without Comet, the execution path for these UDFs involves unnecessary data conversions:
@@ -40,6 +42,8 @@ Steps 2 and 3 are redundant since the data starts and ends in Arrow format.
 
 ## How Comet Optimizes This
 
+### Batch APIs: `mapInArrow` and `mapInPandas`
+
 When enabled, Comet detects `PythonMapInArrowExec` / `MapInArrowExec` and `MapInPandasExec`
 operators in the physical plan and replaces them with `CometMapInBatchExec`, which:
 
@@ -52,6 +56,25 @@ and memory allocations. The row-to-Arrow re-encoding that Spark's `ArrowPythonRu
 the input side is also gone: `CometArrowPythonRunner` consumes `ColumnarBatch` directly, so batches
 are written straight from Comet's vectors into the IPC root. See [Limitations](#limitations) for the
 copies that remain.
+
+### Scalar UDFs
+
+Scalar Python UDFs are planned as `ArrowEvalPythonExec`, which Comet replaces with
+`CometArrowEvalPythonExec`. Spark's operator is considerably more row-bound than the batch APIs:
+for every input row it copies the row into a `HybridRowQueue` (which spills to disk under memory
+pressure), runs a `MutableProjection` to materialize the UDF arguments, and on the way back joins
+the queued row with the worker's output through a `JoinedRow` and an `UnsafeProjection`.
+
+Comet's operator instead sends the UDF argument columns straight from the input batch to the
+worker, and appends the columns the worker returns to the input batch's own columns. No row is
+materialized, and the row queue and its spill path are gone.
+
+One operator covers three user-facing UDF families, because Spark routes all of them to
+`ArrowEvalPythonExec`:
+
+- a plain `udf()` when `spark.sql.execution.pythonUDF.arrow.enabled=true`
+- `@pandas_udf` (scalar)
+- `@arrow_udf` (Spark 4.1+)
 
 ### Plan flow
 
@@ -68,6 +91,23 @@ With the optimization enabled:
 
 ```
 CometMapInBatch          <- Arrow batch in/out, Python runner attached
++- CometNativeExec
+   +- CometScan
+```
+
+For a scalar UDF, without the optimization:
+
+```
+ArrowEvalPython          <- row queue, projections, JoinedRow
++- ColumnarToRow         <- Arrow -> Row copy
+   +- CometNativeExec    <- Arrow batch
+      +- CometScan
+```
+
+and with it:
+
+```
+CometArrowEvalPython     <- argument columns out, result columns appended
 +- CometNativeExec
    +- CometScan
 ```
@@ -91,14 +131,29 @@ That conf controls whether Spark uses Arrow when materializing a DataFrame to a 
 `mapInArrow` / `mapInPandas`, and only affects how Comet's columnar batches feed the Python
 worker. Both confs can be set independently.
 
+### Enabling Arrow-optimized `udf()`
+
+A plain `udf()` is a pickled, row-at-a-time UDF (`BatchEvalPythonExec`) unless
+[`spark.sql.execution.pythonUDF.arrow.enabled`](https://spark.apache.org/docs/latest/api/python/user_guide/sql/arrow_pandas.html)
+is set, which is off by default in Spark. Only with it enabled does a plain `udf()` become an
+`ArrowEvalPythonExec` that Comet can accelerate.
+
+Comet does not set that conf on your behalf. It changes Spark's own type coercion and error
+semantics, not just the transport, so turning it on is a decision about UDF behaviour rather than
+about performance.
+
 ## Supported APIs
 
-| PySpark API                      | Spark Plan Node             | Supported |
-| -------------------------------- | --------------------------- | --------- |
-| `df.mapInArrow(func, schema)`    | `PythonMapInArrowExec`      | Yes       |
-| `df.mapInPandas(func, schema)`   | `MapInPandasExec`           | Yes       |
-| `@pandas_udf` (scalar)           | `ArrowEvalPythonExec`       | Not yet   |
-| `df.applyInPandas(func, schema)` | `FlatMapGroupsInPandasExec` | Not yet   |
+| PySpark API                                    | Spark Plan Node             | Supported |
+| ---------------------------------------------- | --------------------------- | --------- |
+| `df.mapInArrow(func, schema)`                  | `PythonMapInArrowExec`      | Yes       |
+| `df.mapInPandas(func, schema)`                 | `MapInPandasExec`           | Yes       |
+| `udf()` with `pythonUDF.arrow.enabled`         | `ArrowEvalPythonExec`       | Yes       |
+| `@pandas_udf` (scalar)                         | `ArrowEvalPythonExec`       | Yes       |
+| `@arrow_udf` (scalar, Spark 4.1+)              | `ArrowEvalPythonExec`       | Yes       |
+| `@pandas_udf` / `@arrow_udf` (scalar iterator) | `ArrowEvalPythonExec`       | Not yet   |
+| `udf()` without `pythonUDF.arrow.enabled`      | `BatchEvalPythonExec`       | No        |
+| `df.applyInPandas(func, schema)`               | `FlatMapGroupsInPandasExec` | Not yet   |
 
 ## Example
 
@@ -131,9 +186,28 @@ output_schema = T.StructType([
 result = df.mapInArrow(transform, output_schema)
 ```
 
+And for a scalar UDF:
+
+```python
+import pandas as pd
+from pyspark.sql import functions as F, types as T
+
+# Required for a plain `udf()` to be planned as ArrowEvalPythonExec.
+spark.conf.set("spark.sql.execution.pythonUDF.arrow.enabled", "true")
+
+df = spark.read.parquet("data.parquet")
+
+@F.pandas_udf(T.DoubleType())
+def scale(values: pd.Series) -> pd.Series:
+    return values * 2
+
+result = df.withColumn("scaled", scale("value"))
+```
+
 ## Verifying the Optimization
 
-Use `explain()` to verify that `CometMapInBatch` appears in your plan:
+Use `explain()` to verify that `CometMapInBatch` (or `CometArrowEvalPython`, for a scalar UDF)
+appears in your plan:
 
 ```python
 result.explain(mode="extended")
@@ -180,8 +254,20 @@ on the unoptimized path.
 
 ## Limitations
 
-- The optimization currently applies only to `mapInArrow` and `mapInPandas`. Scalar pandas UDFs
-  (`@pandas_udf`) and grouped operations (`applyInPandas`) are not yet supported.
+- Grouped operations (`applyInPandas`, `applyInArrow`, grouped-aggregate and window pandas UDFs,
+  cogroup, Arrow UDTFs) are not yet supported.
+- Scalar _iterator_ UDFs (`@pandas_udf` / `@arrow_udf` over an `Iterator`) are not accelerated.
+  They guarantee only that the worker returns the same total number of rows, not the same
+  batching, and Comet pairs each output batch with the input batch that produced it.
+- A scalar UDF is accelerated only when every one of its arguments is a plain column of the
+  operator's child. `udf(col("a"))` qualifies; `udf(col("a") + 1)` does not, because Spark does
+  not project the expression below the operator. Chained UDFs (`f(g(x))`, which Spark folds into
+  one operator) and keyword arguments are excluded for the same reason. These shapes fall back to
+  vanilla Spark rather than failing.
+- Pickled row-at-a-time UDFs (`BatchEvalPythonExec`, what a plain `udf()` produces by default)
+  are out of scope. There is no columnar boundary to preserve: per-row boxing, pickling, and
+  interpreter cost dominate. See
+  [Enabling Arrow-optimized `udf()`](#enabling-arrow-optimized-udf).
 - The optimization requires Arrow data on the input side. If a shuffle sits between the upstream
   Comet operator and the Python UDF, you need Comet's native shuffle for the optimization to
   apply. Set `spark.shuffle.manager` to
@@ -209,8 +295,12 @@ on the unoptimized path.
   requested by the configuration. `EliminateRedundantTransitions` therefore skips the rewrite
   and vanilla Spark handles the operation. Comet can read `large_string` and `large_binary`
   columns returned by a Python worker; that output support does not widen the input vectors.
-- Comet writes input Arrow IPC record batches directly from its existing vector buffers. The
-  only additional Arrow buffer is the validity bitmap for the non-null struct that wraps the
-  input columns. Writing the IPC bytes to the Python worker's pipe still requires one copy;
-  that copy is inherent to Spark's process-based Python transport. This path does not transfer
-  buffers between Arrow allocators or change their ownership.
+- Comet writes input Arrow IPC record batches directly from its existing vector buffers. For
+  `mapInArrow` / `mapInPandas` the only additional Arrow buffer is the validity bitmap for the
+  non-null struct that wraps the input columns. Writing the IPC bytes to the Python worker's pipe
+  still requires one copy; that copy is inherent to Spark's process-based Python transport.
+- The scalar UDF path additionally copies each input batch once. Its output batch is the input
+  batch's columns plus the worker's result columns, so the input has to stay valid until the
+  worker replies, while Comet's native operators recycle the buffers behind consecutive batches.
+  That bulk `memcpy` per batch replaces Spark's per-row `UnsafeRow` copy into a spillable row
+  queue, so it remains well ahead of the unoptimized path.

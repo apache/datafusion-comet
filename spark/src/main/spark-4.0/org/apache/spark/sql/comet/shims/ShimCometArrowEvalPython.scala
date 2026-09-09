@@ -20,32 +20,19 @@
 package org.apache.spark.sql.comet.shims
 
 import org.apache.spark.TaskContext
-import org.apache.spark.sql.execution.SparkPlan
+import org.apache.spark.api.python.PythonEvalType
 import org.apache.spark.sql.execution.metric.SQLMetric
+import org.apache.spark.sql.execution.python.CometArrowEvalPythonRunner
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
-/**
- * Spark 3.x stub for the PyArrow UDF acceleration support.
- *
- * The columnar runner introduced in #4234 only targets Spark 4.0+. On Spark 3.4 / 3.5 the
- * matchers return `None`, the rewrite does not fire, and vanilla Spark handles `mapInArrow` /
- * `mapInPandas` unchanged. The runner factory throws; it is never called because the matchers
- * always return `None`. 3.x support can be added later if there is user demand.
- *
- * Shared across spark-3.4 and spark-3.5 because both are identical: 3.4 lacks the modern
- * `ArrowPythonRunner` constructor and `arrowUseLargeVarTypes`, and 3.5's `PythonArrowInput` trait
- * has a different contract (`writeIteratorToArrowStream` one-shot vs 4.x's
- * `writeNextBatchToArrowStream` batch-at-a-time), so neither version can host the columnar input
- * implementation without a separate rewrite.
- */
-trait ShimCometMapInBatch extends ShimPythonRunnerInputs {
+trait ShimCometArrowEvalPython extends Spark4xArrowEvalPythonSupport {
 
-  protected def matchMapInArrow(plan: SparkPlan): Option[MapInBatchInfo] = None
+  // `SQL_SCALAR_ARROW_UDF` (the `@arrow_udf` decorator) arrives in Spark 4.1.
+  protected def supportedEvalTypes: Set[Int] =
+    Set(PythonEvalType.SQL_ARROW_BATCHED_UDF, PythonEvalType.SQL_SCALAR_PANDAS_UDF)
 
-  protected def matchMapInPandas(plan: SparkPlan): Option[MapInBatchInfo] = None
-
-  protected def computeArrowPython(
+  protected def computeArrowEvalPython(
       runnerInputs: RunnerInputs,
       evalType: Int,
       argOffsets: Array[Array[Int]],
@@ -54,5 +41,12 @@ trait ShimCometMapInBatch extends ShimPythonRunnerInputs {
       batchIter: Iterator[Iterator[ColumnarBatch]],
       partitionId: Int,
       context: TaskContext): Iterator[ColumnarBatch] =
-    throw new UnsupportedOperationException("CometMapInBatchExec is not supported on Spark 3.x")
+    new CometArrowEvalPythonRunner(
+      runnerInputs.chainedFunc,
+      evalType,
+      argOffsets,
+      schema,
+      runnerInputs.pythonRunnerConf,
+      pythonMetrics,
+      runnerInputs.jobArtifactUUID).compute(batchIter, partitionId, context)
 }

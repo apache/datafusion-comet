@@ -301,8 +301,9 @@ object CometConf extends ShimCometConf {
     conf("spark.comet.exec.pyarrowUDF.enabled")
       .category(CATEGORY_EXEC)
       .doc(
-        "Experimental: whether to enable optimized execution of PyArrow UDFs " +
-          "(mapInArrow/mapInPandas). When enabled, Comet passes Arrow columnar data " +
+        "Experimental: whether to enable optimized execution of Arrow-based Python UDFs " +
+          "(mapInArrow/mapInPandas, and scalar UDFs: an Arrow-optimized udf(), a pandas_udf, " +
+          "or an arrow_udf). When enabled, Comet passes Arrow columnar data " +
           "directly to Python UDFs without the intermediate Arrow-to-Row-to-Arrow " +
           "conversion that Spark normally performs. Disabled by default while the " +
           "feature stabilizes.")

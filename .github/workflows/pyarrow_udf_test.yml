@@ -31,21 +31,36 @@ on:
       - "common/src/main/scala/org/apache/comet/CometConf.scala"
       - "spark/pom.xml"
       - "spark/src/main/scala/org/apache/comet/rules/EliminateRedundantTransitions.scala"
+      - "spark/src/main/scala/org/apache/spark/sql/comet/CometArrowEvalPythonExec.scala"
       - "spark/src/main/scala/org/apache/spark/sql/comet/CometMapInBatchExec.scala"
+      - "spark/src/main/scala/org/apache/spark/sql/comet/execution/arrow/CometBatchDeepCopy.scala"
+      - "spark/src/main/scala/org/apache/spark/sql/comet/shims/ArrowEvalPythonInfo.scala"
       - "spark/src/main/scala/org/apache/spark/sql/comet/shims/MapInBatchInfo.scala"
       - "spark/src/main/spark-3.4/org/apache/spark/sql/comet/shims/ShimCometMapInBatch.scala"
       - "spark/src/main/spark-3.5/org/apache/spark/sql/comet/shims/ShimCometMapInBatch.scala"
+      - "spark/src/main/spark-3.x/org/apache/spark/sql/comet/shims/ShimCometArrowEvalPython.scala"
+      - "spark/src/main/spark-3.x/org/apache/spark/sql/comet/shims/ShimCometMapInBatch.scala"
+      - "spark/src/main/spark-3.x/org/apache/spark/sql/comet/shims/ShimPythonRunnerInputs.scala"
+      - "spark/src/main/spark-4.0/org/apache/spark/sql/comet/shims/ShimCometArrowEvalPython.scala"
+      - "spark/src/main/spark-4.1+/org/apache/spark/sql/comet/shims/ShimCometArrowEvalPython.scala"
       - "spark/src/main/spark-4.0/org/apache/spark/sql/comet/shims/ShimCometMapInBatch.scala"
       - "spark/src/main/spark-4.1/org/apache/spark/sql/comet/shims/ShimCometMapInBatch.scala"
       - "spark/src/main/spark-4.2/org/apache/spark/sql/comet/shims/ShimCometMapInBatch.scala"
+      - "spark/src/main/spark-4.0/org/apache/spark/sql/execution/python/CometArrowEvalPythonRunner.scala"
+      - "spark/src/main/spark-4.1/org/apache/spark/sql/execution/python/CometArrowEvalPythonRunner.scala"
+      - "spark/src/main/spark-4.2/org/apache/spark/sql/execution/python/CometArrowEvalPythonRunner.scala"
       - "spark/src/main/spark-4.0/org/apache/spark/sql/execution/python/CometArrowPythonRunner.scala"
       - "spark/src/main/spark-4.1/org/apache/spark/sql/execution/python/CometArrowPythonRunner.scala"
       - "spark/src/main/spark-4.2/org/apache/spark/sql/execution/python/CometArrowPythonRunner.scala"
+      - "spark/src/main/spark-4.x/org/apache/spark/sql/comet/shims/Spark4xArrowEvalPythonSupport.scala"
       - "spark/src/main/spark-4.x/org/apache/spark/sql/comet/shims/Spark4xMapInBatchSupport.scala"
+      - "spark/src/main/spark-4.x/org/apache/spark/sql/comet/shims/ShimPythonRunnerInputs.scala"
       - "spark/src/main/spark-4.x/org/apache/spark/sql/execution/python/CometArrowPythonRunnerBase.scala"
       - "spark/src/test/resources/pyspark/conftest.py"
       - "spark/src/test/resources/pyspark/test_pyarrow_udf.py"
+      - "spark/src/test/resources/pyspark/test_scalar_python_udf.py"
       - "spark/src/test/spark-3.5/org/apache/spark/sql/comet/CometMapInBatchSuite.scala"
+      - "spark/src/test/spark-4.x/org/apache/spark/sql/comet/CometArrowEvalPythonSuite.scala"
       - "spark/src/test/spark-4.x/org/apache/spark/sql/comet/CometMapInBatchSuite.scala"
       - "spark/src/test/spark-4.x/org/apache/spark/sql/execution/python/CometArrowPythonRunnerSuite.scala"
       - ".github/workflows/pyarrow_udf_test.yml"
@@ -65,6 +80,9 @@ jobs:
   pyarrow-udf:
     name: PyArrow UDF (${{ matrix.name }}, JDK 17, Python 3.11)
     runs-on: ubuntu-latest
+    # A Python worker protocol mismatch blocks the worker forever rather than failing, so without
+    # a cap the job would sit until GitHub's 6-hour default. The build plus tests take ~17 min.
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -119,7 +137,7 @@ jobs:
           /tmp/venv/bin/pip install --upgrade pip
           /tmp/venv/bin/pip install "pyspark==${{ matrix.pyspark }}" "pyarrow>=14" pandas pytest
 
-      - name: Run PyArrow UDF pytest
+      - name: Run Python UDF pytest
         env:
           # Spark launches Python workers in a fresh subprocess and looks up `python3`
           # on PATH unless PYSPARK_PYTHON is set. Without this, workers use the system
@@ -129,4 +147,5 @@ jobs:
           PYSPARK_DRIVER_PYTHON: /tmp/venv/bin/python
         run: |
           /tmp/venv/bin/python -m pytest -v \
-            spark/src/test/resources/pyspark/test_pyarrow_udf.py
+            spark/src/test/resources/pyspark/test_pyarrow_udf.py \
+            spark/src/test/resources/pyspark/test_scalar_python_udf.py

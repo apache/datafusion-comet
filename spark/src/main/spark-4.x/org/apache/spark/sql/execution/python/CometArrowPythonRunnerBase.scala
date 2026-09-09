@@ -90,12 +90,23 @@ private[python] trait CometArrowPythonRunnerBase
   }
 
   /**
-   * Input schema as Comet hands it to the runner: a single non-nullable struct named "struct"
-   * whose children are the user's input columns. Comet's FFI-imported vectors carry Arrow
+   * Input schema as Comet hands it to the runner. Comet's FFI-imported vectors carry Arrow
    * `Field`s with null names (Comet uses positional schema), so these names are the source of
    * truth for the field names written into the IPC stream that the Python worker reads by name.
+   *
+   * The shape depends on [[wrapInputInStruct]]: a single non-nullable struct named "struct" whose
+   * children are the user's input columns when wrapping, otherwise the input columns themselves.
    */
   protected def schema: StructType
+
+  /**
+   * Whether the input columns are exchanged beneath a single struct column.
+   *
+   * `mapInArrow` / `mapInPandas` wrap them, because the worker presents the batch to the UDF as a
+   * DataFrame. Scalar UDF eval types instead send one top-level column per UDF argument, matching
+   * the flat `_0`, `_1`, ... schema Spark's `EvalPythonEvaluatorFactory` builds.
+   */
+  protected def wrapInputInStruct: Boolean = true
 
   override val pythonExec: String =
     SQLConf.get.pysparkWorkerPythonExecutable.getOrElse(funcs.head.funcs.head.pythonExec)
@@ -126,9 +137,10 @@ private[python] trait CometArrowPythonRunnerBase
       private var writeRoot: VectorSchemaRoot = _
       private var streamFields: Seq[Field] = _
 
-      // The runner's input schema is a single struct column ("struct") whose children are the
-      // user's input columns (see `schema` above). Cast once here rather than at each use site.
-      private lazy val inputStructType = schema.head.dataType.asInstanceOf[StructType]
+      // The columns the worker receives, whether or not they travel under a struct wrapper (see
+      // `schema` above). Resolved once here rather than at each use site.
+      private lazy val inputStructType =
+        if (wrapInputInStruct) schema.head.dataType.asInstanceOf[StructType] else schema
 
       context.addTaskCompletionListener[Unit] { _ =>
         if (writeRoot != null) {
@@ -143,15 +155,20 @@ private[python] trait CometArrowPythonRunnerBase
         writeUDF(dataOut)
       }
 
-      /** Build the schema-only struct root and start the writer from the given child fields. */
+      /** Build the schema-only root and start the writer from the given child fields. */
       private def startWriter(childFields: Seq[Field], dataOut: DataOutputStream): Unit = {
-        val structField =
-          new Field(
-            "struct",
-            new FieldType(false, ArrowType.Struct.INSTANCE, null),
-            childFields.asJava)
-        val structVec = structField.createVector(allocator).asInstanceOf[StructVector]
-        writeRoot = new VectorSchemaRoot(Seq[FieldVector](structVec).asJava)
+        val rootVectors: Seq[FieldVector] =
+          if (wrapInputInStruct) {
+            val structField =
+              new Field(
+                "struct",
+                new FieldType(false, ArrowType.Struct.INSTANCE, null),
+                childFields.asJava)
+            Seq(structField.createVector(allocator).asInstanceOf[StructVector])
+          } else {
+            childFields.map(_.createVector(allocator))
+          }
+        writeRoot = new VectorSchemaRoot(rootVectors.asJava)
         arrowWriter = new ArrowStreamWriter(writeRoot, null, Channels.newChannel(dataOut))
         arrowWriter.start()
       }
@@ -188,8 +205,7 @@ private[python] trait CometArrowPythonRunnerBase
         val batchFields = sourceVectors.map(_.getField)
 
         if (arrowWriter == null) {
-          // Build the schema-only struct root once from the first batch's child fields.
-          // mapInArrow/mapInPandas exchange the columns under a single non-nullable struct.
+          // Build the schema-only root once from the first batch's child fields.
           // Comet's FFI-imported vectors leave the Arrow Field name null, so restore the real
           // column names from the input schema (the worker reads columns by name, and shaded
           // Arrow rejects a null field name). Keep the field types and child structure as-is so
@@ -215,7 +231,8 @@ private[python] trait CometArrowPythonRunnerBase
           new WriteChannel(Channels.newChannel(dataOut)),
           sourceVectors,
           cometBatch.numRows(),
-          allocator)
+          allocator,
+          wrapInputInStruct)
 
         pythonMetrics("pythonDataSent") += dataOut.size() - startData
         true
@@ -371,7 +388,8 @@ private[python] object CometArrowPythonRunnerBase {
   }
 
   /**
-   * Serialize source vectors directly beneath the non-null struct advertised in the IPC stream.
+   * Serialize source vectors into the IPC stream, either directly or beneath the non-null struct
+   * advertised in the stream schema.
    *
    * VectorUnloader recursively retains the source buffers without moving them between allocators.
    * The wrapping record batch takes its own references, so closing both temporary batches
@@ -383,11 +401,18 @@ private[python] object CometArrowPythonRunnerBase {
       writeChannel: WriteChannel,
       sourceVectors: Seq[FieldVector],
       numRows: Int,
-      allocator: BufferAllocator): Unit = {
+      allocator: BufferAllocator,
+      wrapInStruct: Boolean): Unit = {
     val sourceRoot =
       new VectorSchemaRoot(sourceVectors.map(_.getField).asJava, sourceVectors.asJava, numRows)
     val sourceBatch = new VectorUnloader(sourceRoot).getRecordBatch
     try {
+      if (!wrapInStruct) {
+        // The stream schema is the columns themselves, so the unloaded batch already has the
+        // advertised layout.
+        MessageSerializer.serialize(writeChannel, sourceBatch)
+        return
+      }
       val validityBytes = (numRows.toLong + 7L) / 8L
       val structValidity = allocator.buffer(validityBytes)
       try {

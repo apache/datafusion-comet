@@ -60,6 +60,23 @@ class CometArrowPythonRunnerSuite extends AnyFunSuite with Matchers {
     }
   }
 
+  /** Flat variant of [[withWriter]]: the stream schema is the columns themselves. */
+  private def withFlatWriter(
+      fields: Seq[Field],
+      allocator: BufferAllocator,
+      channel: WritableByteChannel)(f: WritableByteChannel => Unit): Unit = {
+    val root = VectorSchemaRoot.create(new Schema(fields.asJava), allocator)
+    val writer = new ArrowStreamWriter(root, null, channel)
+    try {
+      writer.start()
+      f(channel)
+      writer.end()
+    } finally {
+      writer.close()
+      root.close()
+    }
+  }
+
   private def withReader(bytes: Array[Byte])(f: ArrowStreamReader => Unit): Unit = {
     val allocator = new RootAllocator(Long.MaxValue)
     val reader = new ArrowStreamReader(new ByteArrayInputStream(bytes), allocator)
@@ -214,7 +231,12 @@ class CometArrowPythonRunnerSuite extends AnyFunSuite with Matchers {
 
       withWriter(Seq(field), writerAllocator, Channels.newChannel(output)) { channel =>
         val originalWriterAllocation = writerAllocator.getAllocatedMemory
-        serializeBatch(new WriteChannel(channel), Seq(vector), 2, writerAllocator)
+        serializeBatch(
+          new WriteChannel(channel),
+          Seq(vector),
+          2,
+          writerAllocator,
+          wrapInStruct = true)
 
         writerAllocator.getAllocatedMemory shouldBe originalWriterAllocation
         buffers.map(_.refCnt()) shouldBe originalReferenceCounts
@@ -287,11 +309,21 @@ class CometArrowPythonRunnerSuite extends AnyFunSuite with Matchers {
             try {
               if (failSerialization) {
                 val error = intercept[IOException] {
-                  serializeBatch(new WriteChannel(channel), Seq(imported), 2, writerAllocator)
+                  serializeBatch(
+                    new WriteChannel(channel),
+                    Seq(imported),
+                    2,
+                    writerAllocator,
+                    wrapInStruct = true)
                 }
                 error.getMessage shouldBe "injected Arrow IPC write failure"
               } else {
-                serializeBatch(new WriteChannel(channel), Seq(imported), 2, writerAllocator)
+                serializeBatch(
+                  new WriteChannel(channel),
+                  Seq(imported),
+                  2,
+                  writerAllocator,
+                  wrapInStruct = true)
               }
             } finally {
               failWrites = false
@@ -394,7 +426,12 @@ class CometArrowPythonRunnerSuite extends AnyFunSuite with Matchers {
       val vectors = Seq[FieldVector](list, struct, map, nulls)
       withWriter(vectors.map(_.getField), writerAllocator, Channels.newChannel(output)) {
         channel =>
-          serializeBatch(new WriteChannel(channel), vectors, 3, writerAllocator)
+          serializeBatch(
+            new WriteChannel(channel),
+            vectors,
+            3,
+            writerAllocator,
+            wrapInStruct = true)
       }
 
       withReader(output.toByteArray) { reader =>
@@ -453,9 +490,24 @@ class CometArrowPythonRunnerSuite extends AnyFunSuite with Matchers {
       last.setValueCount(1)
 
       withWriter(Seq(first.getField), writerAllocator, Channels.newChannel(output)) { channel =>
-        serializeBatch(new WriteChannel(channel), Seq(first), 2, writerAllocator)
-        serializeBatch(new WriteChannel(channel), Seq(empty), 0, writerAllocator)
-        serializeBatch(new WriteChannel(channel), Seq(last), 1, writerAllocator)
+        serializeBatch(
+          new WriteChannel(channel),
+          Seq(first),
+          2,
+          writerAllocator,
+          wrapInStruct = true)
+        serializeBatch(
+          new WriteChannel(channel),
+          Seq(empty),
+          0,
+          writerAllocator,
+          wrapInStruct = true)
+        serializeBatch(
+          new WriteChannel(channel),
+          Seq(last),
+          1,
+          writerAllocator,
+          wrapInStruct = true)
       }
 
       withReader(output.toByteArray) { reader =>
@@ -483,7 +535,7 @@ class CometArrowPythonRunnerSuite extends AnyFunSuite with Matchers {
     val output = new ByteArrayOutputStream()
     try {
       withWriter(Seq.empty, allocator, Channels.newChannel(output)) { channel =>
-        serializeBatch(new WriteChannel(channel), Seq.empty, 3, allocator)
+        serializeBatch(new WriteChannel(channel), Seq.empty, 3, allocator, wrapInStruct = true)
       }
 
       withReader(output.toByteArray) { reader =>
@@ -533,7 +585,12 @@ class CometArrowPythonRunnerSuite extends AnyFunSuite with Matchers {
         failWrites = true
         try {
           val error = intercept[IOException] {
-            serializeBatch(new WriteChannel(channel), Seq(source), 1, writerAllocator)
+            serializeBatch(
+              new WriteChannel(channel),
+              Seq(source),
+              1,
+              writerAllocator,
+              wrapInStruct = true)
           }
           error.getMessage shouldBe "injected Arrow IPC write failure"
         } finally {
@@ -549,4 +606,71 @@ class CometArrowPythonRunnerSuite extends AnyFunSuite with Matchers {
       sourceAllocator.close()
     }
   }
+
+  test("flat serialization writes the columns as top-level fields") {
+    // Scalar Python UDFs exchange one top-level column per argument rather than a single struct,
+    // so `serializeBatch` must emit the unloaded batch as-is, with no struct field node or
+    // validity buffer prepended.
+    val sourceAllocator = new RootAllocator(Long.MaxValue)
+    val writerAllocator = new RootAllocator(Long.MaxValue)
+    val output = new ByteArrayOutputStream()
+
+    val first = new IntVector("_0", sourceAllocator)
+    val second = new VarCharVector("_1", sourceAllocator)
+    try {
+      first.allocateNew(2)
+      first.setSafe(0, 7)
+      first.setNull(1)
+      first.setValueCount(2)
+
+      second.allocateNew(2)
+      second.setSafe(0, "hello".getBytes("UTF-8"))
+      second.setSafe(1, "world".getBytes("UTF-8"))
+      second.setValueCount(2)
+
+      val vectors = Seq[FieldVector](first, second)
+      val buffers = vectors.flatMap(_.getFieldBuffers.asScala)
+      val originalReferenceCounts = buffers.map(_.refCnt())
+
+      withFlatWriter(vectors.map(_.getField), writerAllocator, Channels.newChannel(output)) {
+        channel =>
+          val originalWriterAllocation = writerAllocator.getAllocatedMemory
+          serializeBatch(
+            new WriteChannel(channel),
+            vectors,
+            2,
+            writerAllocator,
+            wrapInStruct = false)
+
+          // The flat path allocates nothing of its own: there is no struct validity buffer.
+          writerAllocator.getAllocatedMemory shouldBe originalWriterAllocation
+          buffers.map(_.refCnt()) shouldBe originalReferenceCounts
+      }
+
+      withReader(output.toByteArray) { reader =>
+        reader.loadNextBatch() shouldBe true
+        val root = reader.getVectorSchemaRoot
+        root.getFieldVectors.size() shouldBe 2
+        root.getRowCount shouldBe 2
+
+        val resultFirst = root.getVector(0).asInstanceOf[IntVector]
+        resultFirst.getField.getName shouldBe "_0"
+        resultFirst.get(0) shouldBe 7
+        resultFirst.isNull(1) shouldBe true
+
+        val resultSecond = root.getVector(1).asInstanceOf[VarCharVector]
+        resultSecond.getField.getName shouldBe "_1"
+        new String(resultSecond.get(0), "UTF-8") shouldBe "hello"
+        new String(resultSecond.get(1), "UTF-8") shouldBe "world"
+
+        reader.loadNextBatch() shouldBe false
+      }
+    } finally {
+      first.close()
+      second.close()
+      writerAllocator.close()
+      sourceAllocator.close()
+    }
+  }
+
 }
