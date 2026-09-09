@@ -52,6 +52,9 @@ pub mod jvm_bridge {
 
 use errors::{try_unwrap_or_throw, CometError, CometResult};
 
+#[cfg(feature = "oom-guard")]
+use crate::execution::memory_pools::oom_guard;
+
 pub mod alloc_accounting;
 pub mod cloud;
 pub mod execution;
@@ -127,11 +130,11 @@ static GLOBAL: alloc_accounting::AccountingAllocator<backend::Backend> =
 // wrapper's safety argument assumes nothing beneath it does.
 #[cfg(feature = "oom-guard")]
 #[global_allocator]
-static GLOBAL: crate::execution::memory_pools::oom_guard::AccountingAllocator<
+static GLOBAL: oom_guard::AccountingAllocator<
     alloc_accounting::AccountingAllocator<backend::Backend>,
-> = crate::execution::memory_pools::oom_guard::AccountingAllocator::new(
-    alloc_accounting::AccountingAllocator::new(backend::BACKEND),
-);
+> = oom_guard::AccountingAllocator::new(alloc_accounting::AccountingAllocator::new(
+    backend::BACKEND,
+));
 
 #[no_mangle]
 pub extern "system" fn Java_org_apache_comet_NativeBase_init(

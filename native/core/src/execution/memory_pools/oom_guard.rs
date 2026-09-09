@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use datafusion::common::DataFusionError;
+use datafusion::common::{resources_datafusion_err, DataFusionError};
 use std::alloc::{GlobalAlloc, Layout};
 use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicUsize, Ordering};
@@ -64,10 +64,9 @@ fn disarm() {
     ARMED.store(false, Ordering::Relaxed);
 }
 
-/// Turn on real-usage balance tracking. Called when the guard is armed or the
-/// `real_usage` memory pool is created, so the process-wide balance is live for
-/// the cooperative gate even when the hard breaker is not armed. Idempotent, and
-/// tracking is never turned back off in production.
+/// Turn on real-usage balance tracking. Called when the guard is armed, so the
+/// process-wide balance is live for the cooperative gate. Idempotent, and tracking
+/// is never turned back off in production.
 pub fn enable_tracking() {
     TRACKING_ENABLED.store(true, Ordering::Relaxed);
 }
@@ -90,11 +89,12 @@ fn clear_unwinding() {
 pub fn map_panic_to_error(panic: &(dyn std::any::Any + Send)) -> Option<DataFusionError> {
     let g = panic.downcast_ref::<OomGuardPanic>()?;
     clear_unwinding();
-    Some(DataFusionError::ResourcesExhausted(format!(
+    Some(resources_datafusion_err!(
         "Comet OomGuard: native allocation pushed usage to {} bytes, over the limit of {} \
          bytes; failing this task",
-        g.balance, g.limit
-    )))
+        g.balance,
+        g.limit
+    ))
 }
 
 /// Handle a panic caught by `catch_unwind` on a JNI caller thread. If it is an
@@ -119,25 +119,12 @@ pub fn current_balance() -> usize {
     BALANCE.load(Ordering::Relaxed).max(0) as usize
 }
 
-/// Record an allocation of `size` bytes; may trip the breaker.
-#[inline]
-fn record_alloc(size: usize) {
-    track(size as isize);
-}
-
-/// Record a deallocation of `size` bytes; never trips (credit only).
-#[inline]
-fn record_dealloc(size: usize) {
-    track(-(size as isize));
-}
-
 /// Core tracking + enforcement. Flushes drift; on a debit flush that crosses the
 /// limit on an armed, stamped, non-unwinding thread, panics with `OomGuardPanic`.
 #[inline]
 fn track(delta: isize) {
     // Runtime gate: skip all balance bookkeeping until a task enables tracking.
-    // Keeps the always-linked accounting allocator near-free when the guard and
-    // the `real_usage` pool are both unused.
+    // Keeps the always-linked accounting allocator near-free when the guard is unused.
     if !TRACKING_ENABLED.load(Ordering::Relaxed) {
         return;
     }
@@ -165,7 +152,7 @@ fn track(delta: isize) {
     if should_trip(balance, limit) {
         // At most one thread may fire the guard panic per arm cycle. CAS the
         // master gate true->false; threads that lose the race bail before
-        // panic_any. The relaxed load above (line ~121) is not a serialization
+        // panic_any. The relaxed `ARMED` load above is not a serialization
         // point: several threads can all read ARMED=true and reach here in the
         // same tight window. If each then dispatches a panic, Rust's unwind ABI
         // can abort the process with "failed to initiate panic" instead of
@@ -226,20 +213,20 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for AccountingAllocator<A> {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let ptr = self.inner.alloc(layout);
         if !ptr.is_null() {
-            record_alloc(layout.size());
+            track(layout.size() as isize);
         }
         ptr
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         self.inner.dealloc(ptr, layout);
-        record_dealloc(layout.size());
+        track(-(layout.size() as isize));
     }
 
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
         let ptr = self.inner.alloc_zeroed(layout);
         if !ptr.is_null() {
-            record_alloc(layout.size());
+            track(layout.size() as isize);
         }
         ptr
     }
@@ -331,9 +318,9 @@ mod tests {
         let _g = GUARD.lock().unwrap_or_else(|e| e.into_inner());
         reset_for_test();
         stamp_current_thread();
-        // not armed -> record_alloc must never panic regardless of size
-        record_alloc(usize::MAX / 2);
-        record_alloc(usize::MAX / 2);
+        // not armed -> track must never panic regardless of size
+        track((usize::MAX / 2) as isize);
+        track((usize::MAX / 2) as isize);
     }
 
     #[test]
@@ -343,7 +330,7 @@ mod tests {
         // arm with a tiny limit relative to current balance, but DO NOT stamp
         let limit = current_balance() + 1;
         arm(limit);
-        record_alloc(SETTLE_THRESHOLD as usize * 4); // big enough to flush
+        track(SETTLE_THRESHOLD * 4); // big enough to flush
         disarm();
     }
 
@@ -356,7 +343,7 @@ mod tests {
         arm(limit);
         let result = std::panic::catch_unwind(|| {
             // exceed the headroom in one flush
-            record_alloc(SETTLE_THRESHOLD as usize * 4);
+            track(SETTLE_THRESHOLD * 4);
         });
         disarm();
         clear_unwinding();

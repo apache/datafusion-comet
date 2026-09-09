@@ -24,6 +24,7 @@ use std::sync::Arc;
 
 /// Source of the current process-wide real allocator usage in bytes. Production reads the
 /// live `oom_guard` balance; tests inject a fixed value without touching global state.
+#[derive(Debug)]
 enum BalanceSource {
     Live,
     #[cfg(test)]
@@ -45,7 +46,8 @@ impl BalanceSource {
 /// accounting, rejects growth when *real* allocator usage (untracked Arrow / join /
 /// kernel bytes included) plus the requested amount would exceed a process-global
 /// ceiling. Returning `ResourcesExhausted` lets DataFusion spill and retry.
-pub(crate) struct RealUsagePool {
+#[derive(Debug)]
+pub(crate) struct RealUsageMemoryPool {
     inner: Arc<dyn MemoryPool>,
     /// Process-global real-usage ceiling in bytes; 0 means unset (no gating).
     ceiling: usize,
@@ -56,27 +58,17 @@ pub(crate) struct RealUsagePool {
     balance_source: BalanceSource,
 }
 
-impl std::fmt::Debug for RealUsagePool {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RealUsagePool")
-            .field("inner", &self.inner)
-            .field("ceiling", &self.ceiling)
-            .field("fair_share", &self.fair_share)
-            .finish_non_exhaustive()
-    }
-}
-
-impl std::fmt::Display for RealUsagePool {
+impl std::fmt::Display for RealUsageMemoryPool {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "RealUsagePool(ceiling={}, inner={})",
+            "RealUsageMemoryPool(ceiling={}, inner={})",
             self.ceiling, self.inner
         )
     }
 }
 
-impl RealUsagePool {
+impl RealUsageMemoryPool {
     /// Wrap `inner` with the real-usage gate using the live OomGuard balance.
     pub(crate) fn new(
         inner: Arc<dyn MemoryPool>,
@@ -88,22 +80,6 @@ impl RealUsagePool {
             ceiling,
             fair_share,
             balance_source: BalanceSource::Live,
-        }
-    }
-
-    /// Wrap `inner` with an explicit balance source (test seam).
-    #[cfg(test)]
-    fn with_balance_source(
-        inner: Arc<dyn MemoryPool>,
-        ceiling: usize,
-        fair_share: Option<usize>,
-        balance_source: BalanceSource,
-    ) -> Self {
-        Self {
-            inner,
-            ceiling,
-            fair_share,
-            balance_source,
         }
     }
 }
@@ -120,21 +96,9 @@ fn fair_share_limit(ceiling: usize, active_tasks: usize, cores_fallback: usize) 
     ceiling / n.max(1)
 }
 
-/// Given the process is already over the real-usage ceiling, decide whether to
-/// reject this task's grow. `None` is first-come (reject whoever hit the ceiling);
-/// `Some(s)` rejects only a task whose tracked reservation would exceed its fair
-/// share `s`, sparing under-share tasks (the OomGuard breaker backstops runaway
-/// cases).
-fn should_reject_over_ceiling(reserved: usize, additional: usize, share: Option<usize>) -> bool {
-    match share {
-        None => true,
-        Some(s) => reserved.saturating_add(additional) > s,
-    }
-}
-
-impl MemoryPool for RealUsagePool {
+impl MemoryPool for RealUsageMemoryPool {
     fn name(&self) -> &str {
-        "RealUsagePool"
+        "RealUsageMemoryPool"
     }
 
     fn register(&self, consumer: &MemoryConsumer) {
@@ -159,18 +123,20 @@ impl MemoryPool for RealUsagePool {
         additional: usize,
     ) -> Result<(), DataFusionError> {
         // Check the real-usage ceiling before delegating, so an over-budget request is
-        // rejected without speculatively reserving the inner pool. When the process is
-        // over the ceiling, the fair-share guard rejects only a task whose own tracked
-        // reservation exceeds its fair share, sparing innocent small tasks; the OomGuard
-        // breaker backstops runaway cases. Returning `ResourcesExhausted` lets DataFusion
-        // spill and retry.
+        // rejected without speculatively reserving the inner pool.
         if self.ceiling != 0 && additional != 0 {
             let real = self.balance_source.current();
             if real.saturating_add(additional) > self.ceiling {
-                let share = self
-                    .fair_share
-                    .map(|cores| fair_share_limit(self.ceiling, active_task_count(), cores));
-                if should_reject_over_ceiling(self.inner.reserved(), additional, share) {
+                // `None` is first-come. `Some` spares a task still under its fair share so
+                // one runaway task cannot starve small ones; the breaker backstops it.
+                let reject = match self.fair_share {
+                    None => true,
+                    Some(cores) => {
+                        let share = fair_share_limit(self.ceiling, active_task_count(), cores);
+                        self.inner.reserved().saturating_add(additional) > share
+                    }
+                };
+                if reject {
                     return Err(resources_datafusion_err!(
                         "Comet real-usage gate: native usage {real} bytes + requested \
                          {additional} bytes exceeds the off-heap budget of {} bytes; \
@@ -197,66 +163,69 @@ mod tests {
     use super::*;
     use datafusion::execution::memory_pool::{GreedyMemoryPool, UnboundedMemoryPool};
 
-    #[test]
-    fn under_ceiling_succeeds_and_delegates() {
+    /// Pool with an injected real-usage balance, returned alongside its inner pool and a
+    /// registered reservation so tests can assert on what was delegated.
+    fn fixed_balance_pool(
+        ceiling: usize,
+        fair_share: Option<usize>,
+        real: usize,
+    ) -> (Arc<dyn MemoryPool>, Arc<dyn MemoryPool>, MemoryReservation) {
         let inner: Arc<dyn MemoryPool> = Arc::new(GreedyMemoryPool::new(1024 * 1024));
-        let pool: Arc<dyn MemoryPool> = Arc::new(RealUsagePool::with_balance_source(
-            Arc::clone(&inner),
-            1000,
-            None,
-            BalanceSource::Fixed(100),
-        ));
+        let pool: Arc<dyn MemoryPool> = Arc::new(RealUsageMemoryPool {
+            inner: Arc::clone(&inner),
+            ceiling,
+            fair_share,
+            balance_source: BalanceSource::Fixed(real),
+        });
         let reservation = MemoryConsumer::new("test").register(&pool);
+        (inner, pool, reservation)
+    }
+
+    #[test]
+    fn under_ceiling_delegates_grow_and_shrink() {
         // real usage 100 + request 100 = 200 <= ceiling 1000
+        let (inner, pool, reservation) = fixed_balance_pool(1000, None, 100);
         assert!(pool.try_grow(&reservation, 100).is_ok());
         assert_eq!(inner.reserved(), 100);
+        pool.shrink(&reservation, 40);
+        assert_eq!(inner.reserved(), 60);
     }
 
     #[test]
     fn over_ceiling_rejects_without_reserving_inner() {
-        let inner: Arc<dyn MemoryPool> = Arc::new(GreedyMemoryPool::new(1024 * 1024));
-        let pool: Arc<dyn MemoryPool> = Arc::new(RealUsagePool::with_balance_source(
-            Arc::clone(&inner),
-            1000,
-            None,
-            BalanceSource::Fixed(900),
-        ));
-        let reservation = MemoryConsumer::new("test").register(&pool);
-        // real usage 900 + request 200 = 1100 > ceiling 1000 -> reject
-        let result = pool.try_grow(&reservation, 200);
-        assert!(result.is_err(), "over-ceiling grow should be rejected");
+        // real usage 900 + request 200 = 1100 > ceiling 1000
+        let (inner, pool, reservation) = fixed_balance_pool(1000, None, 900);
+        assert!(pool.try_grow(&reservation, 200).is_err());
         // inner pool is never touched on rejection, so there is nothing to roll back
         assert_eq!(inner.reserved(), 0);
     }
 
     #[test]
     fn zero_ceiling_never_gates() {
-        let inner: Arc<dyn MemoryPool> = Arc::new(GreedyMemoryPool::new(1024 * 1024));
-        let pool: Arc<dyn MemoryPool> = Arc::new(RealUsagePool::with_balance_source(
-            Arc::clone(&inner),
-            0,
-            None,
-            BalanceSource::Fixed(usize::MAX / 2),
-        ));
-        let reservation = MemoryConsumer::new("test").register(&pool);
+        let (inner, pool, reservation) = fixed_balance_pool(0, None, usize::MAX / 2);
         assert!(pool.try_grow(&reservation, 1024).is_ok());
         assert_eq!(inner.reserved(), 1024);
     }
 
+    // The two fair-share cases below use ceiling 1000 and fallback divisor 2. No
+    // task-shared pool is registered in tests, so the active count is 0 and the divisor
+    // falls back to 2, giving a fair share of 500.
+
     #[test]
-    fn shrink_delegates() {
-        let inner: Arc<dyn MemoryPool> = Arc::new(UnboundedMemoryPool::default());
-        let pool: Arc<dyn MemoryPool> = Arc::new(RealUsagePool::with_balance_source(
-            Arc::clone(&inner),
-            1_000_000,
-            None,
-            BalanceSource::Fixed(0),
-        ));
-        let reservation = MemoryConsumer::new("test").register(&pool);
-        pool.try_grow(&reservation, 500).unwrap();
-        assert_eq!(pool.reserved(), 500);
-        pool.shrink(&reservation, 200);
-        assert_eq!(pool.reserved(), 300);
+    fn over_ceiling_rejects_task_over_fair_share() {
+        let (inner, pool, reservation) = fixed_balance_pool(1000, Some(2), 900);
+        inner.grow(&reservation, 600);
+        // over ceiling (900 + 200 > 1000) and over share (600 + 200 > 500) -> reject
+        assert!(pool.try_grow(&reservation, 200).is_err());
+    }
+
+    #[test]
+    fn over_ceiling_spares_task_at_or_under_fair_share() {
+        let (inner, pool, reservation) = fixed_balance_pool(1000, Some(2), 1000);
+        inner.grow(&reservation, 300);
+        // over ceiling, but exactly at the share boundary (300 + 200 == 500) -> allowed
+        assert!(pool.try_grow(&reservation, 200).is_ok());
+        assert_eq!(inner.reserved(), 500);
     }
 
     // Drives a real heap allocation through the installed AccountingAllocator (only
@@ -272,7 +241,7 @@ mod tests {
         // 4 MiB headroom over the (noisy) baseline.
         let ceiling = base + 4 * 1024 * 1024;
         let pool: Arc<dyn MemoryPool> =
-            Arc::new(RealUsagePool::new(Arc::clone(&inner), ceiling, None));
+            Arc::new(RealUsageMemoryPool::new(Arc::clone(&inner), ceiling, None));
         let reservation = MemoryConsumer::new("test").register(&pool);
 
         // Push real usage ~8 MiB above the baseline, held alive across the check so the
@@ -282,87 +251,19 @@ mod tests {
             oom_guard::current_balance() > ceiling,
             "allocation should push balance over ceiling"
         );
-
-        let result = pool.try_grow(&reservation, 1);
         assert!(
-            result.is_err(),
+            pool.try_grow(&reservation, 1).is_err(),
             "real usage over the ceiling should reject the grow"
         );
-        // Keep `held` alive until after the assertion above.
+        // Keep `held` alive until after the assertions above.
         drop(held);
     }
 
     #[test]
-    fn fair_share_limit_uses_active_count_when_positive() {
-        // active count wins over the fallback divisor
-        assert_eq!(fair_share_limit(1000, 4, 8), 250);
-    }
-
-    #[test]
-    fn fair_share_limit_falls_back_when_no_active_tasks() {
-        assert_eq!(fair_share_limit(1000, 0, 5), 200);
-    }
-
-    #[test]
-    fn fair_share_limit_floors_divisor_at_one() {
-        // active and fallback both zero -> divide by 1, no panic
-        assert_eq!(fair_share_limit(1000, 0, 0), 1000);
-    }
-
-    #[test]
-    fn fair_share_limit_zero_when_ceiling_below_n() {
-        assert_eq!(fair_share_limit(3, 4, 8), 0);
-    }
-
-    #[test]
-    fn should_reject_none_is_first_come() {
-        assert!(should_reject_over_ceiling(0, 1, None));
-        assert!(should_reject_over_ceiling(1000, 0, None));
-    }
-
-    #[test]
-    fn should_reject_some_only_above_share() {
-        // strictly above share -> reject
-        assert!(should_reject_over_ceiling(400, 200, Some(500)));
-        // exactly at share -> allow
-        assert!(!should_reject_over_ceiling(300, 200, Some(500)));
-        // below share -> allow
-        assert!(!should_reject_over_ceiling(100, 100, Some(500)));
-    }
-
-    #[test]
-    fn over_ceiling_rejects_task_over_fair_share() {
-        // ceiling 1000, fallback divisor 2, active count 0 in tests -> fair share 500
-        let inner: Arc<dyn MemoryPool> = Arc::new(GreedyMemoryPool::new(1024 * 1024));
-        let pool: Arc<dyn MemoryPool> = Arc::new(RealUsagePool::with_balance_source(
-            Arc::clone(&inner),
-            1000,
-            Some(2),
-            BalanceSource::Fixed(900),
-        ));
-        let reservation = MemoryConsumer::new("test").register(&pool);
-        // Put this task above its 500-byte fair share.
-        inner.grow(&reservation, 600);
-        // Over ceiling (900 + 200 > 1000) AND over fair share (600 + 200 > 500) -> reject.
-        assert!(pool.try_grow(&reservation, 200).is_err());
-    }
-
-    #[test]
-    fn over_ceiling_spares_task_under_fair_share() {
-        // ceiling 1000, fallback divisor 2, active count 0 in tests -> fair share 500
-        let inner: Arc<dyn MemoryPool> = Arc::new(GreedyMemoryPool::new(1024 * 1024));
-        let pool: Arc<dyn MemoryPool> = Arc::new(RealUsagePool::with_balance_source(
-            Arc::clone(&inner),
-            1000,
-            Some(2),
-            BalanceSource::Fixed(1000),
-        ));
-        let reservation = MemoryConsumer::new("test").register(&pool);
-        // This task holds only 100, under its 500 fair share.
-        inner.grow(&reservation, 100);
-        // Over ceiling (1000 + 50 > 1000) but under fair share (100 + 50 <= 500) -> allowed.
-        assert!(pool.try_grow(&reservation, 50).is_ok());
-        // The grow was delegated to the inner pool.
-        assert_eq!(inner.reserved(), 150);
+    fn test_fair_share_limit() {
+        assert_eq!(fair_share_limit(1000, 4, 8), 250); // active count wins
+        assert_eq!(fair_share_limit(1000, 0, 5), 200); // falls back to cores
+        assert_eq!(fair_share_limit(1000, 0, 0), 1000); // divisor floored at 1
+        assert_eq!(fair_share_limit(3, 4, 8), 0); // ceiling below the divisor
     }
 }
