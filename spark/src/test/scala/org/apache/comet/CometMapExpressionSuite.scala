@@ -460,6 +460,34 @@ class CometMapExpressionSuite extends CometTestBase {
     }
   }
 
+  // The native lookup compares a whole batch of map entries in one pass and then reads each row's
+  // window out of the resulting mask. A native OFFSET slices the batch, and Arrow keeps a sliced
+  // MapArray's original entry offsets, so the visible entries start part way into the keys child --
+  // the same trap `mapsort` hit below. Reading the mask from index 0 would answer every row with
+  // some other row's entries.
+  test("element_at on a sliced map reads the visible entries") {
+    withParquetTable(
+      (0 until 20).map(i => (i, Map(s"a${i % 5}" -> i, "shared" -> (i * 10)))),
+      "t") {
+      checkSparkAnswerAndOperator(
+        "SELECT _1, element_at(_2, 'a3'), element_at(_2, 'shared') " +
+          "FROM (SELECT * FROM t ORDER BY _1 LIMIT 15 OFFSET 5)")
+    }
+  }
+
+  // A lookup key that varies per row takes a different path than a constant key: the key has to be
+  // lined up against every entry of its own row. Rows whose key is missing, whose map is NULL, and
+  // whose key is NULL all have to come back NULL.
+  test("element_at on a map column with a per-row lookup key") {
+    val rows = (0 until 20).map { i =>
+      val map = if (i % 7 == 0) null else Map(s"a${i % 5}" -> i, s"b${i % 3}" -> (i * 10))
+      (if (i % 11 == 0) null else s"a${i % 6}", map)
+    }
+    withParquetTable(rows, "t") {
+      checkSparkAnswerAndOperator("SELECT _1, element_at(_2, _1), _2[_1] FROM t")
+    }
+  }
+
   test("mapsort on a sliced map does not overrun the sorted entries") {
     // A native OFFSET slices the batch and Arrow keeps a sliced MapArray's original entry offsets,
     // so `mapsort` receives a map whose first entry offset is nonzero. `spark_map_sort` takes only

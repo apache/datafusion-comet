@@ -708,17 +708,6 @@ impl PhysicalPlanner {
             ExprStruct::ScalarFunc(expr) => {
                 let func = self.create_scalar_function_expr(expr, input_schema);
                 match expr.func.as_ref() {
-                    // DataFusion map_extract returns array of struct entries even if lookup by key
-                    // Apache Spark wants a single value, so wrap the result into additional list extraction
-                    "map_extract" => Ok(Arc::new(ListExtract::new(
-                        func?,
-                        Arc::new(Literal::new(ScalarValue::Int32(Some(1)))),
-                        None,
-                        true,
-                        false,
-                        None, // No expr_id for internal map_extract wrapper
-                        Arc::clone(&self.query_context_registry),
-                    ))),
                     // DataFusion 49 hardcodes return type for MD5 built in function as UTF8View
                     // which is not yet supported in Comet
                     // Converting forcibly to UTF8. To be removed after UTF8View supported
