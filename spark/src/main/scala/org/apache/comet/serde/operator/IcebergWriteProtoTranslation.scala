@@ -57,6 +57,15 @@ object IcebergWriteProtoTranslation {
       IcebergReflection.tablePropertyConstant("PARQUET_PAGE_ROW_LIMIT")
     lazy val ParquetDictSizeBytes: String =
       IcebergReflection.tablePropertyConstant("PARQUET_DICT_SIZE_BYTES")
+    lazy val ParquetBloomFilterColumnEnabledPrefix: String =
+      IcebergReflection.tablePropertyConstant("PARQUET_BLOOM_FILTER_COLUMN_ENABLED_PREFIX")
+    lazy val ParquetBloomFilterMaxBytes: String =
+      IcebergReflection.tablePropertyConstant("PARQUET_BLOOM_FILTER_MAX_BYTES")
+    // These were added to Iceberg after bloom enablement/max-bytes. Literals let the translation
+    // support them without a hard binary dependency; the caller removes either prefix when the
+    // Iceberg runtime does not interpret it, matching that runtime's JVM writer.
+    val ParquetBloomFilterColumnFppPrefix = "write.parquet.bloom-filter-fpp.column."
+    val ParquetBloomFilterColumnNdvPrefix = "write.parquet.bloom-filter-ndv.column."
   }
 
   /** Iceberg's numeric defaults, pulled at runtime so they stay in lock-step with the runtime. */
@@ -69,6 +78,14 @@ object IcebergWriteProtoTranslation {
       IcebergReflection.tablePropertyIntConstant("PARQUET_DICT_SIZE_BYTES_DEFAULT").toLong
     lazy val PageRowLimit: Int =
       IcebergReflection.tablePropertyIntConstant("PARQUET_PAGE_ROW_LIMIT_DEFAULT")
+    lazy val BloomFilterMaxBytes: Int =
+      IcebergReflection.tablePropertyIntConstant("PARQUET_BLOOM_FILTER_MAX_BYTES_DEFAULT")
+    // Iceberg introduced the public constant together with the FPP property. Keep the literal
+    // fallback for runtimes old enough not to expose it; 0.01 is also parquet-mr's default.
+    lazy val BloomFilterFpp: Double =
+      IcebergReflection
+        .tablePropertyDoubleConstantOpt("PARQUET_BLOOM_FILTER_COLUMN_FPP_DEFAULT")
+        .getOrElse(0.01d)
   }
 
   /**
@@ -100,10 +117,43 @@ object IcebergWriteProtoTranslation {
       }
     }
 
+  private def configuredBloomFilterColumnNames(props: Map[String, String]): Seq[String] =
+    props.iterator
+      .collect {
+        case (key, _) if key.startsWith(Keys.ParquetBloomFilterColumnEnabledPrefix) =>
+          key.substring(Keys.ParquetBloomFilterColumnEnabledPrefix.length)
+      }
+      .toSeq
+      .sorted
+
+  private[operator] def enabledBloomFilterColumnNames(props: Map[String, String]): Seq[String] =
+    configuredBloomFilterColumnNames(props).filter { column =>
+      val enabled =
+        java.lang.Boolean.valueOf(props(Keys.ParquetBloomFilterColumnEnabledPrefix + column))
+      // Iceberg applies enabled, FPP, and NDV in that order. parquet-mr's NDV setter enables the
+      // column, so an explicit NDV wins over enabled=false.
+      enabled || props.contains(Keys.ParquetBloomFilterColumnNdvPrefix + column)
+    }
+
+  def hasEnabledBloomFilters(props: Map[String, String]): Boolean =
+    enabledBloomFilterColumnNames(props).nonEmpty
+
+  /**
+   * Test convenience for schemas where Iceberg logical names and physical Parquet paths are
+   * identical. Production translation must supply Iceberg Java's logical-to-physical path map.
+   */
+  private[operator] def buildParquetSettings(
+      props: Map[String, String],
+      createdBy: String): IcebergParquetWriteSettings = {
+    val identityPaths = enabledBloomFilterColumnNames(props).map(name => name -> name).toMap
+    buildParquetSettings(props, createdBy, identityPaths)
+  }
+
   /** Builds the parquet settings message. Pure: no SparkWrite or Iceberg `Table` access. */
   def buildParquetSettings(
       props: Map[String, String],
-      createdBy: String): IcebergParquetWriteSettings = {
+      createdBy: String,
+      parquetPathByIcebergColumnName: Map[String, String]): IcebergParquetWriteSettings = {
     val rowGroupSize =
       parseJavaInt(props, Keys.ParquetRowGroupSizeBytes, Defaults.RowGroupSizeBytes.toInt).toLong
     val pageSize =
@@ -112,6 +162,28 @@ object IcebergWriteProtoTranslation {
       parseJavaInt(props, Keys.ParquetDictSizeBytes, Defaults.DictSizeBytes.toInt).toLong
     val pageRowLimit = parseJavaInt(props, Keys.ParquetPageRowLimit, Defaults.PageRowLimit)
     val compression = resolveCompression(props)
+    // Iceberg properties use logical schema paths, while Parquet writer properties require the
+    // physical leaf path. Missing fields are skipped, matching Iceberg Java's writer behavior.
+    val bloomFilterColumns = enabledBloomFilterColumnNames(props)
+      .flatMap { icebergName =>
+        parquetPathByIcebergColumnName.get(icebergName).map(icebergName -> _)
+      }
+      .sortBy(_._2)
+    val bloomFilterEnabledColumns = bloomFilterColumns.map(_._2)
+    val bloomFilterMaxBytes =
+      parseJavaInt(props, Keys.ParquetBloomFilterMaxBytes, Defaults.BloomFilterMaxBytes).toLong
+    val bloomFilterFppByColumn = bloomFilterColumns.map { case (icebergName, parquetPath) =>
+      val value = props
+        .get(Keys.ParquetBloomFilterColumnFppPrefix + icebergName)
+        .map(java.lang.Double.parseDouble)
+        .getOrElse(Defaults.BloomFilterFpp)
+      parquetPath -> value
+    }.toMap
+    val bloomFilterNdvByColumn = bloomFilterColumns.flatMap { case (icebergName, parquetPath) =>
+      props
+        .get(Keys.ParquetBloomFilterColumnNdvPrefix + icebergName)
+        .map(value => parquetPath -> java.lang.Long.parseLong(value))
+    }.toMap
     val builder = IcebergParquetWriteSettings
       .newBuilder()
       .setCompression(compression)
@@ -120,6 +192,14 @@ object IcebergWriteProtoTranslation {
       .setDictSizeBytes(dictSize)
       .setPageRowLimit(pageRowLimit)
       .setCreatedBy(createdBy)
+      .addAllBloomFilterEnabledColumns(bloomFilterEnabledColumns.asJava)
+      .setBloomFilterMaxBytes(bloomFilterMaxBytes)
+      .putAllBloomFilterFppByColumn(bloomFilterFppByColumn.map { case (k, v) =>
+        k -> Double.box(v)
+      }.asJava)
+      .putAllBloomFilterNdvByColumn(bloomFilterNdvByColumn.map { case (k, v) =>
+        k -> Long.box(v)
+      }.asJava)
 
     resolveCompressionLevel(props, compression).foreach(builder.setCompressionLevel)
 

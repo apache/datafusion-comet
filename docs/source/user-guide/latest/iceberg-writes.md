@@ -154,7 +154,9 @@ A write is eligible only when ALL of the following hold:
 | `write.parquet.page-version`                                                                                                                | unset or `v1`                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | `write.parquet.shred-variants`                                                                                                              | unset or `false` (Spark 4.x / Iceberg 1.11 resolve this into every parquet write)                                                                                                                                                                                                                                                                                                                                                                                               |
 | `write.parquet.variant-inference-buffer-size`                                                                                               | any value (only meaningful when shredding, which is gated)                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `write.parquet.bloom-filter-enabled.column.<col>`                                                                                           | unset or `false`                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `write.parquet.bloom-filter-enabled.column.<col>`                                                                                           | `true` or `false`; an explicit NDV enables the column even when this value is `false`, matching Iceberg's property application order                                                                                                                                                                                                                                                                                                                                            |
+| `write.parquet.bloom-filter-fpp.column.<col>` / `write.parquet.bloom-filter-ndv.column.<col>`                                               | For every column named by an `enabled` property, FPP must be a finite double strictly between 0 and 1 and NDV must be a positive Java long no greater than `Long.MAX_VALUE / 8`; the Iceberg FPP default is `0.01`                                                                                                                                                                                                                                                              |
+| `write.parquet.bloom-filter-max-bytes`                                                                                                      | unset (Iceberg default: 1 MiB), or a power of two from 32 bytes through 128 MiB inclusive; every other value falls back to iceberg-java. A 32-byte value also falls back when explicit NDV/FPP would request a larger filter, because Parquet Java ignores that boundary as a maximum.                                                                                                                                                                                          |
 | `write.metadata.metrics.*`                                                                                                                  | any value (manifest metrics are re-derived on the JVM with Iceberg's own logic)                                                                                                                                                                                                                                                                                                                                                                                                 |
 | `write.spark.fanout.enabled`                                                                                                                | any value (the native writer implements both clustered and fanout modes)                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `write.target-file-size-bytes`                                                                                                              | any value (file rolling cadence differs; see accepted divergences)                                                                                                                                                                                                                                                                                                                                                                                                              |
@@ -164,7 +166,7 @@ A write is eligible only when ALL of the following hold:
 
 Within the namespaces that shape data-file bytes — `write.parquet.*` and `parquet.*` —
 everything not listed above must be absent: unvetted `write.parquet.*` keys (e.g.
-`bloom-filter-max-bytes`, `stats-enabled.column.*`, keys added by future Iceberg versions),
+`stats-enabled.column.*`, keys added by future Iceberg versions),
 any `parquet.*` table property (including `parquet.enable.dictionary`), and any `parquet.*`
 key in the session Hadoop configuration (with `HadoopFileIO`-backed output those reach
 iceberg-java's writer but not the native one). Also gated explicitly: any `encryption.*` key,
@@ -230,6 +232,42 @@ different blast radius: differences confined to the physical bytes of a data fil
 no reader decision is based on them), differences visible in manifest metadata (these outlive
 the write and feed later readers' pruning decisions, so each one is analyzed individually
 below), and one operational path-layout caveat.
+
+### Parquet Bloom-filter sizing
+
+[Iceberg's documented write properties](https://iceberg.apache.org/docs/latest/configuration/#write-properties)
+describe three related inputs. FPP is the requested false-positive probability (default `0.01`),
+NDV is the expected number of distinct values when explicitly set, and `max-bytes` is an upper
+bound (default 1 MiB).
+
+Apache Parquet Java permits arbitrary integer caps. When such a cap binds, it serializes exactly
+that many bytes, although only complete 32-byte SBBF blocks are used and any trailing partial
+block remains zero. The Apache Arrow Rust `parquet` crate requires a power-of-two block count so
+its post-write folding remains valid. A non-power-of-two cap can therefore change the
+hash-to-block mapping, making a filter that may have worse reader pruning than Parquet Java's
+filter.
+
+Comet uses its native Iceberg writer only when the effective `max-bytes` value is a power of two
+from 32 bytes through 128 MiB inclusive. If an explicit value is not a power of two or is outside
+that range, `CometIcebergWriteExec` is not used for the write; Spark's default Iceberg Java writer
+writes the table instead. The same fallback applies when `max-bytes=32` would bind an explicit
+NDV/FPP request, because Parquet Java ignores exactly 32 bytes as a maximum, and when NDV is above
+`Long.MAX_VALUE / 8`, where Parquet Java's sizing multiplication can overflow.
+
+For supported values, Apache Parquet Java applies the sizing properties as follows:
+
+- with no NDV, allocate the full `max-bytes` value;
+- with an NDV, calculate a requested size from NDV and FPP, then cap it at `max-bytes`;
+- when the cap binds, it takes precedence, so the requested FPP is not guaranteed;
+- a large maximum never enlarges the allocation selected by an explicit, smaller NDV.
+
+For every write that is eligible for the native path, Comet applies exactly the same allocation
+decision algorithm.
+
+After values are inserted, the Apache Arrow Rust `parquet` crate may fold a sparsely populated
+filter to a smaller power-of-two filter while preserving the requested FPP. Parquet Java's
+non-adaptive Iceberg path keeps its initial allocation. The native result can consequently use
+less file space while remaining safe for every Parquet reader.
 
 ### Physical file layout only (cosmetic)
 

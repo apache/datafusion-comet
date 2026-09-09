@@ -49,6 +49,10 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
       IcebergReflection.tablePropertyConstant("WRITE_LOCATION_PROVIDER_IMPL")
     lazy val BloomFilterColumnEnabledPrefix: String =
       IcebergReflection.tablePropertyConstant("PARQUET_BLOOM_FILTER_COLUMN_ENABLED_PREFIX")
+    lazy val ParquetBloomFilterMaxBytes: String =
+      IcebergReflection.tablePropertyConstant("PARQUET_BLOOM_FILTER_MAX_BYTES")
+    val ParquetBloomFilterColumnFppPrefix = "write.parquet.bloom-filter-fpp.column."
+    val ParquetBloomFilterColumnNdvPrefix = "write.parquet.bloom-filter-ndv.column."
     lazy val ParquetRowGroupCheckMinRecordCount: String =
       IcebergReflection.tablePropertyConstant("PARQUET_ROW_GROUP_CHECK_MIN_RECORD_COUNT")
     lazy val ParquetRowGroupCheckMinRecordCountDefault: Int =
@@ -111,10 +115,14 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
     PropertyKeys.ParquetRowGroupCheckMaxRecordCount,
     PropertyKeys.ParquetPageVersion,
     PropertyKeys.ParquetShredVariants,
-    PropertyKeys.ParquetVariantBufferSize)
+    PropertyKeys.ParquetVariantBufferSize,
+    PropertyKeys.ParquetBloomFilterMaxBytes)
 
   private lazy val vettedParquetWritePrefixes: Seq[String] =
-    Seq(PropertyKeys.BloomFilterColumnEnabledPrefix)
+    Seq(
+      PropertyKeys.BloomFilterColumnEnabledPrefix,
+      PropertyKeys.ParquetBloomFilterColumnFppPrefix,
+      PropertyKeys.ParquetBloomFilterColumnNdvPrefix)
 
   override def getSupportLevel(op: IcebergWriteExec): SupportLevel =
     try {
@@ -175,12 +183,12 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
     requireFormatVersionAtMostTwo,
     requireNoUuidColumns,
     requireNoEncryptionPrefix,
-    requireNoBloomFilterColumnsEnabled,
     requireRowGroupCheckMinRecordCountAtDefault,
     requireRowGroupCheckMaxRecordCountAtDefault,
     requireParquetPageVersionDefault,
     requireShredVariantsDisabled,
     requireNativeSupportedCompressionLevel,
+    requireNativeSupportedBloomFilterProperties,
     requireOnlyVettedParquetWriteProperties,
     requirePropertyAbsent(
       PropertyKeys.ParquetEnableDictionary,
@@ -252,13 +260,6 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
   // `CometIcebergWriteExec`), so every `write.metadata.metrics.*` value behaves exactly as it
   // does on the iceberg-java path.
 
-  private val requireNoBloomFilterColumnsEnabled: TriggerRule = ctx => {
-    val prefix = PropertyKeys.BloomFilterColumnEnabledPrefix
-    ctx.properties
-      .find { case (k, v) => k.startsWith(prefix) && v.equalsIgnoreCase("true") }
-      .map { case (k, _) => s"$k=true: bloom filters unsupported" }
-  }
-
   private val requireParquetPageVersionDefault: TriggerRule = ctx => {
     val key = PropertyKeys.ParquetPageVersion
     ctx.properties
@@ -282,6 +283,156 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
   // fall back. Range logic lives beside the codec resolution in IcebergWriteProtoTranslation.
   private val requireNativeSupportedCompressionLevel: TriggerRule = ctx =>
     IcebergWriteProtoTranslation.compressionLevelRejection(ctx.properties)
+
+  // These are Apache Parquet Java BlockSplitBloomFilter implementation bounds, not Iceberg
+  // TableProperties constants, so they cannot be obtained through IcebergReflection:
+  // scalastyle:off line.size.limit
+  // https://github.com/apache/parquet-java/blob/78a8d3230eb4769db93de5f2f2e18363c04cae81/parquet-column/src/main/java/org/apache/parquet/column/values/bloomfilter/BlockSplitBloomFilter.java#L40-L50
+  // scalastyle:on line.size.limit
+  private val MinBloomFilterBytes = 32
+  private val MaxBloomFilterBytes = 128 * 1024 * 1024
+  private val BloomFilterHashProbes = 8
+  private val MaxNonOverflowingBloomFilterNdv = Long.MaxValue / BloomFilterHashProbes
+
+  /**
+   * Keep only Bloom shape properties interpreted by the Iceberg runtime on the classpath. Older
+   * Iceberg releases leave these table properties untouched but do not pass them to parquet-mr.
+   * Ignoring them here preserves that version's JVM-writer behavior while allowing the remaining
+   * supported Bloom configuration to execute natively.
+   */
+  private def interpretedBloomFilterProperties(
+      properties: Map[String, String]): Map[String, String] = {
+    val unsupportedPrefixes = Seq(
+      PropertyKeys.ParquetBloomFilterColumnFppPrefix ->
+        "PARQUET_BLOOM_FILTER_COLUMN_FPP_PREFIX",
+      PropertyKeys.ParquetBloomFilterColumnNdvPrefix ->
+        "PARQUET_BLOOM_FILTER_COLUMN_NDV_PREFIX").collect {
+      case (prefix, constant) if IcebergReflection.tablePropertyConstantOpt(constant).isEmpty =>
+        prefix
+    }
+    properties.filterNot { case (key, _) => unsupportedPrefixes.exists(key.startsWith) }
+  }
+
+  /**
+   * parquet-rs 58.x represents Bloom filters as a power-of-two number of bytes. parquet-mr
+   * accepts arbitrary caps and, when one binds, serializes that exact length. Keep those writes
+   * on the classic path instead of silently changing the number of usable Bloom blocks.
+   */
+  private val requireNativeSupportedBloomFilterProperties: TriggerRule = ctx => {
+    val properties = interpretedBloomFilterProperties(ctx.properties)
+    val maxRejection =
+      properties.get(PropertyKeys.ParquetBloomFilterMaxBytes).flatMap { raw =>
+        scala.util.Try(java.lang.Integer.parseInt(raw)).toOption match {
+          case None => Some(s"${PropertyKeys.ParquetBloomFilterMaxBytes}=$raw is not a Java int")
+          case Some(value)
+              if value < MinBloomFilterBytes || value > MaxBloomFilterBytes ||
+                (value & (value - 1)) != 0 =>
+            Some(
+              s"${PropertyKeys.ParquetBloomFilterMaxBytes}=$value must be a power of two " +
+                s"in [$MinBloomFilterBytes, $MaxBloomFilterBytes] for native writes")
+          case Some(_) => None
+        }
+      }
+
+    maxRejection.orElse {
+      val maxBytes = properties
+        .get(PropertyKeys.ParquetBloomFilterMaxBytes)
+        .flatMap(raw => scala.util.Try(java.lang.Integer.parseInt(raw)).toOption)
+        .getOrElse(IcebergWriteProtoTranslation.Defaults.BloomFilterMaxBytes)
+      // Iceberg visits every enabled-prefix entry and applies enabled, FPP, then NDV. Validate
+      // the associated shape properties even for enabled=false; a valid NDV also re-enables the
+      // filter in parquet-mr.
+      val configured = properties.iterator.collect {
+        case (key, _) if key.startsWith(PropertyKeys.BloomFilterColumnEnabledPrefix) =>
+          key.substring(PropertyKeys.BloomFilterColumnEnabledPrefix.length)
+      }.toSeq
+      configured.iterator
+        .flatMap { column =>
+          val fppKey = PropertyKeys.ParquetBloomFilterColumnFppPrefix + column
+          val ndvKey = PropertyKeys.ParquetBloomFilterColumnNdvPrefix + column
+          val parsedFpp = properties.get(fppKey) match {
+            case Some(raw) => scala.util.Try(java.lang.Double.parseDouble(raw)).toOption
+            case None => Some(IcebergWriteProtoTranslation.Defaults.BloomFilterFpp)
+          }
+          val parsedNdv = properties
+            .get(ndvKey)
+            .flatMap(raw => scala.util.Try(java.lang.Long.parseLong(raw)).toOption)
+          val fppError = properties.get(fppKey).flatMap { raw =>
+            parsedFpp match {
+              case Some(value)
+                  if value > 0.0d && value < 1.0d && java.lang.Double.isFinite(value) &&
+                    bloomFilterSizesRepresentable(maxBytes, value) =>
+                None
+              case Some(value)
+                  if value > 0.0d && value < 1.0d && java.lang.Double.isFinite(value) =>
+                Some(s"$fppKey=$raw cannot represent the configured native Bloom sizes")
+              case _ => Some(s"$fppKey=$raw must be a finite double strictly between 0 and 1")
+            }
+          }
+          val ndvError = properties.get(ndvKey).flatMap { raw =>
+            parsedNdv match {
+              case Some(value) if value > 0L && value <= MaxNonOverflowingBloomFilterNdv => None
+              case Some(value) if value > MaxNonOverflowingBloomFilterNdv =>
+                Some(s"$ndvKey=$raw exceeds $MaxNonOverflowingBloomFilterNdv; " +
+                  "parquet-mr Bloom sizing may overflow")
+              case _ => Some(s"$ndvKey=$raw must be a positive Java long")
+            }
+          }
+          val ignoredMinimumCapError = parsedNdv.collect {
+            case ndv
+                if maxBytes == MinBloomFilterBytes && ndv > 0L &&
+                  ndv <= MaxNonOverflowingBloomFilterNdv &&
+                  parsedFpp.exists(
+                    parquetMrRequestedBloomFilterBytes(ndv, _) > MinBloomFilterBytes) =>
+              s"${PropertyKeys.ParquetBloomFilterMaxBytes}=$MinBloomFilterBytes is ignored by " +
+                s"parquet-mr for $ndvKey=$ndv"
+          }
+          Seq(fppError, ndvError, ignoredMinimumCapError).flatten
+        }
+        .toSeq
+        .headOption
+    }
+  }
+
+  // Planning-time counterpart of the native inverse-NDV check. A target B is safely encoded by
+  // aiming at 3B/4, in the interior of parquet-rs's (B/2, B] round-up interval. Requiring every
+  // power-of-two through the configured cap is conservative and keeps pathological-but-valid
+  // floating-point FPPs on the JVM path rather than discovering them after task launch.
+  private def bloomFilterSizesRepresentable(maxBytes: Int, fpp: Double): Boolean = {
+    val denominator =
+      -Math.log(1.0d - Math.pow(fpp, 1.0d / BloomFilterHashProbes.toDouble))
+    if (!java.lang.Double.isFinite(denominator) || denominator <= 0.0d) return false
+
+    Iterator
+      .iterate(MinBloomFilterBytes)(_ * 2)
+      .takeWhile(_ <= maxBytes)
+      .forall { target =>
+        val ndv = Math.max(1L, Math.round(target.toDouble * 0.75d * denominator))
+        val calculatedBits = (-BloomFilterHashProbes.toDouble * ndv.toDouble /
+          Math.log(1.0d - Math.pow(fpp, 1.0d / BloomFilterHashProbes.toDouble))).toLong
+        val rawBytes = Math.max(
+          MinBloomFilterBytes.toLong,
+          Math.min(MaxBloomFilterBytes.toLong, calculatedBits / 8L))
+        val allocated = java.lang.Long.highestOneBit(rawBytes - 1L) << 1
+        allocated == target.toLong
+      }
+  }
+
+  /** The uncapped byte count parquet-mr passes to its explicit-NDV constructor path. */
+  private def parquetMrRequestedBloomFilterBytes(ndv: Long, fpp: Double): Int = {
+    // Keep the long multiplication before floating-point conversion to match parquet-mr:
+    // scalastyle:off line.size.limit
+    // https://github.com/apache/parquet-java/blob/78a8d3230eb4769db93de5f2f2e18363c04cae81/parquet-column/src/main/java/org/apache/parquet/column/values/bloomfilter/BlockSplitBloomFilter.java#L277-L301
+    // scalastyle:on line.size.limit
+    val calculated = (-BloomFilterHashProbes.toLong * ndv).toDouble /
+      Math.log(1.0d - Math.pow(fpp, 1.0d / BloomFilterHashProbes.toDouble))
+    val maxBits = MaxBloomFilterBytes << 3
+    var bits = calculated.toInt
+    if (bits > maxBits || calculated < 0.0d) bits = maxBits
+    val bitsPerBlock = MinBloomFilterBytes << 3
+    bits = (bits + bitsPerBlock - 1) & ~bitsPerBlock
+    Math.max(bits, bitsPerBlock) / 8
+  }
 
   private val requireOnlyVettedParquetWriteProperties: TriggerRule = ctx =>
     ctx.properties
@@ -626,9 +777,36 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
     // `option("write-parquet-compression-codec", "gzip")`) survive into the native writer.
     val resolvedWriteProperties =
       IcebergReflection.getWritePropertiesFromSparkWrite(sparkWrite).getOrElse(Map.empty)
-    val effectiveProperties = properties ++ resolvedWriteProperties
-    val parquetSettings =
-      IcebergWriteProtoTranslation.buildParquetSettings(effectiveProperties, createdBy)
+    val effectiveProperties =
+      interpretedBloomFilterProperties(properties ++ resolvedWriteProperties)
+    val parquetPathByIcebergColumnName =
+      if (IcebergWriteProtoTranslation.hasEnabledBloomFilters(effectiveProperties)) {
+        val resolution = IcebergReflection.getParquetPathResolution(writeSchema).getOrElse {
+          withFallbackReason(op, "Could not resolve physical Parquet paths for Bloom filters")
+          return None
+        }
+        val renamedColumns =
+          IcebergWriteProtoTranslation
+            .enabledBloomFilterColumnNames(effectiveProperties)
+            .filter(resolution.renamedIcebergColumnNames)
+        if (renamedColumns.nonEmpty) {
+          // Iceberg Java sanitizes these Parquet names, while the pinned iceberg-rust Arrow
+          // conversion preserves them. Passing the Java path to parquet-rs would silently miss
+          // the native writer column, so retain the JVM writer until paths travel structurally.
+          withFallbackReason(
+            op,
+            "Bloom-filter columns are renamed in Iceberg Java's Parquet schema: " +
+              renamedColumns.mkString(", "))
+          return None
+        }
+        resolution.pathByIcebergColumnName
+      } else {
+        Map.empty[String, String]
+      }
+    val parquetSettings = IcebergWriteProtoTranslation.buildParquetSettings(
+      effectiveProperties,
+      createdBy,
+      parquetPathByIcebergColumnName)
 
     // `FileIO.properties()` misses configuration a HadoopFileIO carries through the Hadoop
     // Configuration instead (fs.s3a.* credentials, custom endpoint, path-style access), which
