@@ -184,6 +184,29 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       classOf[LocalTableScanExec])
   }
 
+  test("grouped collect_list/collect_set over nulls, duplicates and several batches") {
+    // Grouped collect_list/collect_set are served by a native GroupsAccumulator rather than one
+    // boxed accumulator per group, so the group's identity travels with each row instead of being
+    // implied by which accumulator was called. This covers the cases where that bookkeeping shows:
+    // a group whose every input is NULL (Spark returns an empty array, not NULL), repeated values
+    // (collect_list keeps every copy, collect_set one), and enough rows that a group is fed by
+    // several batches and, after the exchange, by several partial states.
+    withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "128") {
+      val data = (0 until 2000).map { i =>
+        val group = i % 37
+        (group, if (group == 5) None else Some(i % 11))
+      }
+      withParquetTable(data, "tbl") {
+        checkSparkAnswerAndOperator(sql("""
+          SELECT _1,
+                 sort_array(collect_list(_2)),
+                 sort_array(collect_set(_2)),
+                 size(collect_list(_2))
+          FROM tbl GROUP BY _1"""))
+      }
+    }
+  }
+
   test("collect_list/collect_set combined with distinct aggregate falls back safely") {
     // SPARK-17616: a distinct aggregate combined with collect_list/collect_set produces a
     // multi-stage plan where the buffer-producing Partial may run in Spark (e.g. over a
