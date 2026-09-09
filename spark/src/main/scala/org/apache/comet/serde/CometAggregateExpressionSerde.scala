@@ -91,14 +91,11 @@ trait CometAggregateExpressionSerde[T <: AggregateFunction] {
   def supportsSparkPartialToNativeFinal(fn: T): Boolean = false
 
   /**
-   * Whether Spark can consume this function's Comet intermediate buffer. Keep this separate from
-   * the reverse direction: planner restrictions on a Comet Final do not necessarily prohibit a
-   * Comet Partial feeding a Spark Final. Existing bidirectional implementations share the
-   * default; handlers may admit an additional forward direction only after validating it
-   * independently.
+   * Whether Spark can consume this function's Comet intermediate buffer. Opt in independently
+   * from the reverse direction: consuming Spark state does not establish that Comet emits state
+   * Spark can merge, especially from a never-updated or all-null partial accumulator.
    */
-  def supportsNativePartialToSparkFinal(fn: T): Boolean =
-    supportsSparkPartialToNativeFinal(fn)
+  def supportsNativePartialToSparkFinal(fn: T): Boolean = false
 
   /**
    * Convert a Spark expression into a protocol buffer representation that can be passed into
