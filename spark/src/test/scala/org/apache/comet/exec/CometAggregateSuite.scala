@@ -34,7 +34,7 @@ import org.apache.spark.sql.catalyst.plans.physical.RangePartitioning
 import org.apache.spark.sql.comet.CometHashAggregateExec
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution.SQLExecution
-import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AdaptiveSparkPlanHelper}
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.functions.{avg, col, count_distinct, expr, sum}
 import org.apache.spark.sql.internal.SQLConf
@@ -1307,29 +1307,31 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   Seq(
-    ("COUNT(*)", 2L),
-    ("COUNT(DISTINCT _2)", 2L),
-    ("COUNT(DISTINCT _2) + SUM(_2)", 7L),
-    ("CAST(SIZE(COLLECT_SET(_2)) AS BIGINT)", 2L)).foreach { case (function, expected) =>
+    ("COUNT(*)", 2L, false),
+    ("COUNT(DISTINCT _2)", 2L, false),
+    ("COUNT(DISTINCT _2) + SUM(_2)", 7L, false),
+    ("CAST(SIZE(COLLECT_SET(_2)) AS BIGINT)", 2L, false),
+    ("COUNT(*)", 2L, true)).foreach { case (function, expected, adaptive) =>
     test(
-      s"aggregate canonicalization preserves result expressions and equivalent reuse: $function") {
+      s"aggregate canonicalization preserves result expressions and equivalent reuse: " +
+        s"$function, AQE=$adaptive") {
       withSQLConf(
-        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
         SQLConf.EXCHANGE_REUSE_ENABLED.key -> "true",
         SQLConf.SHUFFLE_PARTITIONS.key -> "2",
         CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
         CometConf.COMET_SHUFFLE_MODE.key -> "native") {
         withParquetTable(Seq((0, 2), (0, 3)), "tbl") {
+          // Build independent branches with an exchange above Final and the requested output alias.
           def aggregate(result: String, alias: String = "c"): DataFrame =
             sql(s"SELECT $result AS $alias, _1 FROM tbl GROUP BY _1")
               .repartition(2, col(alias), col("_1"))
 
+          // Traverse adaptive/query-stage wrappers and fail if the native Final fell back to Spark.
           def finalAggregate(df: DataFrame): CometHashAggregateExec =
-            df.queryExecution.executedPlan
-              .collectFirst {
-                case agg: CometHashAggregateExec if agg.modes.contains(Final) => agg
-              }
-              .getOrElse(fail("Expected a native final aggregate"))
+            collectFirst(df.queryExecution.executedPlan) {
+              case agg: CometHashAggregateExec if agg.modes.contains(Final) => agg
+            }.getOrElse(fail("Expected a native final aggregate"))
 
           val plus = aggregate(s"($function) + 1")
           val minus = aggregate(s"($function) - 1")
@@ -1346,11 +1348,14 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           assert(finalAggregate(plus).semanticHash() == finalAggregate(same).semanticHash())
           val (_, reusedPlan) =
             checkSparkAnswerAndOperator(plus.unionAll(same), classOf[ReusedExchangeExec])
-          val reusedFinalAggregates = reusedPlan.collect {
-            case reused: ReusedExchangeExec if reused.child.exists {
-                  case agg: CometHashAggregateExec => agg.modes.contains(Final)
-                  case _ => false
-                } =>
+          if (adaptive) {
+            assert(reusedPlan.isInstanceOf[AdaptiveSparkPlanExec])
+          }
+          // Adaptive-aware traversal must find reuse above Final, not just a shared Partial stage.
+          val reusedFinalAggregates = collect(reusedPlan) {
+            case reused: ReusedExchangeExec if collect(reused.child) {
+                  case agg: CometHashAggregateExec if agg.modes.contains(Final) => agg
+                }.nonEmpty =>
               reused
           }
           assert(
