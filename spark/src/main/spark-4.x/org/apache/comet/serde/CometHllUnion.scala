@@ -31,7 +31,12 @@ object CometHllUnion extends CometExpressionSerde[HllUnion] {
   private val incompatReason =
     "Comet uses a Rust DataSketches port; HLL sketch bytes and estimates may differ slightly from Spark."
 
-  override def getIncompatibleReasons(): Seq[String] = Seq(incompatReason)
+  private val errorReason =
+    "Errors surface as plain Comet execution errors rather than Spark's SparkRuntimeException " +
+      "with condition HLL_UNION_DIFFERENT_LG_K / HLL_INVALID_INPUT_SKETCH_BUFFER (sqlState " +
+      "22000), so the message and error class differ even though both engines fail."
+
+  override def getIncompatibleReasons(): Seq[String] = Seq(incompatReason, errorReason)
 
   override def getSupportLevel(expr: HllUnion): SupportLevel = {
     if (!expr.third.foldable) {

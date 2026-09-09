@@ -3617,6 +3617,13 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         val (sparkErr, cometErr) = checkSparkAnswerMaybeThrows(df)
         assert(sparkErr.isDefined, "expected Spark to throw on different lgConfigK")
         assert(cometErr.isDefined, "expected Comet to throw on different lgConfigK")
+        // Both arms raising is not enough: if Comet had fallen back for the whole plan, the
+        // second run would raise Spark's exception too and this test would pass without the
+        // native check ever running. The two messages differ - Spark raises
+        // HLL_UNION_DIFFERENT_LG_K - so asserting on Comet's own wording pins the native path.
+        assert(
+          cometErr.get.getMessage.contains("to enable unions of different lgConfigK"),
+          s"expected Comet's native lgConfigK error, got: ${cometErr.get.getMessage}")
       }
     }
   }

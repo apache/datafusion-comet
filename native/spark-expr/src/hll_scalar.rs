@@ -49,13 +49,18 @@ pub fn spark_hll_union(args: &[ColumnarValue]) -> Result<ColumnarValue> {
     let allow = arrays[2].as_any().downcast_ref::<BooleanArray>().unwrap();
     let mut out = arrow::array::BinaryBuilder::new();
     for i in 0..a.len() {
-        if a.is_null(i) || b.is_null(i) {
+        // Spark's `HllUnion` is a `TernaryExpression` evaluated through `nullSafeEval`, and
+        // `TernaryExpression.eval` returns NULL when *any* of the three inputs is NULL - the
+        // `allowDifferentLgConfigK` flag included. `Literal(null, BooleanType)` is foldable, so
+        // the serde's `third.foldable` check lets it through and this loop is the only thing
+        // standing between a NULL flag and a non-null sketch.
+        if a.is_null(i) || b.is_null(i) || allow.is_null(i) {
             out.append_null();
             continue;
         }
         let sa = SparkHllSketch::from_bytes(a.value(i))?;
         let sb = SparkHllSketch::from_bytes(b.value(i))?;
-        let allow_i = !allow.is_null(i) && allow.value(i);
+        let allow_i = allow.value(i);
         if !allow_i && sa.lg_config_k() != sb.lg_config_k() {
             return Err(DataFusionError::Execution(format!(
                 "Sketches have different lgConfigK values: {} and {}. \
@@ -131,5 +136,44 @@ mod union_tests {
         let est = estimate_from_bytes(arr.as_any().downcast_ref::<BinaryArray>().unwrap().value(0))
             .unwrap();
         assert!((est - 1500).abs() <= 45, "estimate {est}");
+    }
+
+    /// Spark's `HllUnion` is a `TernaryExpression`, so a NULL `allowDifferentLgConfigK` makes the
+    /// whole call NULL. `Literal(null, BooleanType)` is foldable and therefore passes the serde's
+    /// `third.foldable` gate, so this loop is what has to honour it.
+    #[test]
+    fn a_null_allow_flag_yields_null() {
+        let mut a = SparkHllSketch::new(12);
+        for i in 0..1000i64 {
+            a.update_i64(i);
+        }
+        let bytes = a.to_sketch_bytes();
+        let column = || {
+            Arc::new(BinaryArray::from(vec![
+                Some(bytes.as_slice()),
+                Some(bytes.as_slice()),
+            ]))
+        };
+        // Row 0 has a NULL flag, row 1 a real one, so the non-null row proves the NULL is not
+        // just nulling the whole column.
+        let allow = Arc::new(BooleanArray::from(vec![None, Some(true)]));
+        let out = spark_hll_union(&[
+            ColumnarValue::Array(column()),
+            ColumnarValue::Array(column()),
+            ColumnarValue::Array(allow),
+        ])
+        .unwrap();
+        let ColumnarValue::Array(arr) = out else {
+            panic!()
+        };
+        let arr = arr.as_any().downcast_ref::<BinaryArray>().unwrap();
+        assert!(
+            arr.is_null(0),
+            "a NULL allowDifferentLgConfigK must produce NULL"
+        );
+        assert!(
+            !arr.is_null(1),
+            "a non-NULL flag must still produce a sketch"
+        );
     }
 }

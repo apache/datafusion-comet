@@ -49,9 +49,60 @@ mod preamble {
     pub const FLAGS: usize = 5;
     /// Mode byte. Low two bits are the current mode (0 LIST, 1 SET, 2 HLL).
     pub const MODE: usize = 7;
+    /// Number of auxiliary-map exceptions, for a sketch in an HLL array mode.
+    pub const AUX_COUNT: usize = 36;
+    /// Total preamble length for an HLL array mode, i.e. where the register block starts.
+    pub const HLL_SIZE: usize = 40;
     pub const COMPACT_FLAG: u8 = 8;
     pub const CUR_MODE_MASK: u8 = 0x3;
     pub const CUR_MODE_HLL: u8 = 2;
+    /// Target type lives in bits 2-3 of the mode byte: 0 HLL_4, 1 HLL_6, 2 HLL_8.
+    pub const TGT_HLL4: u8 = 0;
+
+    pub fn tgt_type(mode_byte: u8) -> u8 {
+        (mode_byte >> 2) & 0x3
+    }
+}
+
+/// An error for the one input shape `datasketches` 0.3.0 decodes to silently wrong values:
+/// an updatable HLL_4 sketch carrying auxiliary-map exceptions.
+///
+/// `Array4::deserialize` reads exactly `aux_count` coupons from the aux region regardless of the
+/// COMPACT flag. That is the *compact* aux layout. DataSketches-Java's *updatable* HLL_4 form
+/// writes `1 << lgAuxArrInts` ints including the empty slots, so reading the first `aux_count` of
+/// those pulls empty slots in as zero coupons and drops the real exceptions. Nothing errors, and
+/// the estimate is quietly wrong.
+///
+/// The exposure is real rather than theoretical: Comet always *writes* HLL_8, but
+/// `hll_sketch_estimate` / `hll_union` / `hll_union_agg` accept any binary column, and
+/// DataSketches-Java's default target type is HLL_4. So a sketch column produced elsewhere can
+/// land here. An exception map only appears once some register exceeds `curMin + 15`, so ordinary
+/// low-cardinality HLL_4 input still reads correctly and is deliberately still accepted - the
+/// check is narrowed to the shape that is actually mis-decoded rather than rejecting HLL_4
+/// outright, which would refuse most third-party sketches for no reason.
+fn reject_undecodable_hll4(bytes: &[u8]) -> Result<(), DataFusionError> {
+    if bytes.len() < preamble::HLL_SIZE
+        || bytes[preamble::MODE] & preamble::CUR_MODE_MASK != preamble::CUR_MODE_HLL
+        || preamble::tgt_type(bytes[preamble::MODE]) != preamble::TGT_HLL4
+        || bytes[preamble::FLAGS] & preamble::COMPACT_FLAG != 0
+    {
+        return Ok(());
+    }
+    let aux_count = u32::from_le_bytes([
+        bytes[preamble::AUX_COUNT],
+        bytes[preamble::AUX_COUNT + 1],
+        bytes[preamble::AUX_COUNT + 2],
+        bytes[preamble::AUX_COUNT + 3],
+    ]);
+    if aux_count == 0 {
+        return Ok(());
+    }
+    Err(DataFusionError::Execution(format!(
+        "Cannot read an updatable HLL_4 sketch with {aux_count} auxiliary-map entries: the \
+         bundled datasketches decoder reads the compact auxiliary layout in both forms, so this \
+         sketch would decode to a silently wrong estimate. Convert it to HLL_8, or to the compact \
+         HLL_4 form, before reading it with Comet."
+    )))
 }
 
 /// Work around a decoding bug in `datasketches` 0.3.0 for compact sketches in an HLL array mode.
@@ -141,6 +192,7 @@ impl SparkHllSketch {
 
     /// Deserialize a DataSketches sketch (either compact or updatable form).
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, DataFusionError> {
+        reject_undecodable_hll4(bytes)?;
         let normalized = normalize_compact_hll_array(bytes);
         HllSketch::deserialize(normalized.as_deref().unwrap_or(bytes))
             .map(|inner| Self { inner })
@@ -266,6 +318,68 @@ mod tests {
         assert!(
             (est - 1000).abs() <= 30,
             "estimate {est} of Spark-produced sketch not within 3% of 1000"
+        );
+    }
+
+    /// An HLL_4 sketch with auxiliary-map exceptions must be refused rather than silently
+    /// mis-decoded. At lgK=12 the exceptions appear somewhere above ~100k distinct values.
+    #[test]
+    fn updatable_hll4_with_aux_entries_is_rejected() {
+        use datasketches::hll::{HllSketch, HllType};
+        let mut sketch = HllSketch::new(12, HllType::Hll4);
+        for i in 0..100_000i64 {
+            sketch.update(i);
+        }
+        let bytes = sketch.serialize();
+        // Confirm the premise rather than assuming it: HLL array mode, HLL_4, not compact, and
+        // carrying at least one exception.
+        assert_eq!(
+            bytes[preamble::MODE] & preamble::CUR_MODE_MASK,
+            preamble::CUR_MODE_HLL
+        );
+        assert_eq!(
+            preamble::tgt_type(bytes[preamble::MODE]),
+            preamble::TGT_HLL4
+        );
+        assert_eq!(bytes[preamble::FLAGS] & preamble::COMPACT_FLAG, 0);
+        let aux_count = u32::from_le_bytes([
+            bytes[preamble::AUX_COUNT],
+            bytes[preamble::AUX_COUNT + 1],
+            bytes[preamble::AUX_COUNT + 2],
+            bytes[preamble::AUX_COUNT + 3],
+        ]);
+        assert!(aux_count > 0, "expected the sketch to carry aux entries");
+
+        let err = SparkHllSketch::from_bytes(&bytes).unwrap_err().to_string();
+        assert!(
+            err.contains("auxiliary-map"),
+            "expected a clear rejection, got {err}"
+        );
+    }
+
+    /// The guard is narrowed to the shape that is actually mis-decoded, so ordinary HLL_4 input
+    /// with no exceptions still reads. Rejecting HLL_4 outright would refuse most third-party
+    /// sketches for no reason.
+    #[test]
+    fn hll4_without_aux_entries_still_reads() {
+        use datasketches::hll::{HllSketch, HllType};
+        let mut sketch = HllSketch::new(12, HllType::Hll4);
+        for i in 0..1_000i64 {
+            sketch.update(i);
+        }
+        let bytes = sketch.serialize();
+        let aux_count = u32::from_le_bytes([
+            bytes[preamble::AUX_COUNT],
+            bytes[preamble::AUX_COUNT + 1],
+            bytes[preamble::AUX_COUNT + 2],
+            bytes[preamble::AUX_COUNT + 3],
+        ]);
+        assert_eq!(aux_count, 0, "this cardinality should need no exceptions");
+        let read = SparkHllSketch::from_bytes(&bytes).unwrap();
+        assert!(
+            (read.estimate() - 1000.0).abs() < 40.0,
+            "estimate {}",
+            read.estimate()
         );
     }
 }
