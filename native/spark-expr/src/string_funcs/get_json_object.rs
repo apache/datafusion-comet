@@ -44,6 +44,8 @@ fn scalar_to_str(scalar: &ScalarValue, arg_name: &str) -> DataFusionResult<Optio
 /// - `.name` or `['name']` — named child
 /// - `[n]` — array index (0-based)
 /// - `[*]` — array wildcard (iterates over array elements)
+/// - `[*][*]` — double wildcard (flattens one array level, then applies the
+///   rest of the path to the outer elements themselves, matching Spark)
 pub fn spark_get_json_object(args: &[ColumnarValue]) -> DataFusionResult<ColumnarValue> {
     if args.len() != 2 {
         return exec_err!(
@@ -144,6 +146,10 @@ enum PathSegment {
     Index(usize),
     /// Wildcard: `[*]` (iterates over array elements)
     Wildcard,
+    /// Double wildcard: `[*][*]`. Spark consumes both subscript wildcards as a
+    /// single non-structure-preserving step: the remaining path is applied to
+    /// the outer array's elements in flatten style, not to their children.
+    DoubleWildcard,
 }
 
 /// A parsed JSONPath expression with precomputed metadata.
@@ -164,6 +170,11 @@ fn parse_json_path(path: &str) -> Option<ParsedPath> {
 
     let mut segments = Vec::new();
     let mut has_wildcard = false;
+    // Spark's parser emits `Subscript :: Wildcard` pairs, and its evaluator
+    // special-cases two consecutive subscript wildcards (`[*][*]`) as a single
+    // flattening step. Wildcards written as `.*` or `['*']` do not combine
+    // this way, so only the `[*]` form merges here.
+    let mut prev_subscript_wildcard = false;
 
     while chars.peek().is_some() {
         match chars.peek()? {
@@ -192,6 +203,7 @@ fn parse_json_path(path: &str) -> Option<ParsedPath> {
                     }
                     segments.push(PathSegment::Field(name));
                 }
+                prev_subscript_wildcard = false;
             }
             '[' => {
                 chars.next();
@@ -220,8 +232,16 @@ fn parse_json_path(path: &str) -> Option<ParsedPath> {
                     if chars.next()? != ']' {
                         return None;
                     }
-                    segments.push(PathSegment::Wildcard);
+                    if prev_subscript_wildcard {
+                        segments.pop();
+                        segments.push(PathSegment::DoubleWildcard);
+                        prev_subscript_wildcard = false;
+                    } else {
+                        segments.push(PathSegment::Wildcard);
+                        prev_subscript_wildcard = true;
+                    }
                     has_wildcard = true;
+                    continue;
                 } else {
                     // [n] — numeric index
                     let mut num_str = String::new();
@@ -238,6 +258,7 @@ fn parse_json_path(path: &str) -> Option<ParsedPath> {
                     let idx: usize = num_str.parse().ok()?;
                     segments.push(PathSegment::Index(idx));
                 }
+                prev_subscript_wildcard = false;
             }
             _ => {
                 // Unexpected character
@@ -282,6 +303,7 @@ fn extract_path(json_str: &str, segments: &[PathSegment]) -> Option<PathResult> 
     let found = PathSeed {
         segments,
         reject_direct_null: false,
+        flatten: false,
     }
     .deserialize(&mut de)
     .ok()?;
@@ -295,6 +317,9 @@ struct PathSeed<'a> {
     /// A JSON null directly below a named field is not a match in Spark. Nulls
     /// reached through array traversal are matches and serialize as `null`.
     reject_direct_null: bool,
+    /// Spark's flatten style, entered under a double wildcard: an array leaf
+    /// is spliced into the output element-wise instead of copied verbatim.
+    flatten: bool,
 }
 
 #[derive(Default)]
@@ -319,14 +344,29 @@ impl<'de> DeserializeSeed<'de> for PathSeed<'_> {
         if self.segments.is_empty() {
             return Value::deserialize(deserializer).map(|value| {
                 if self.reject_direct_null && value.is_null() {
-                    PathResult::default()
-                } else {
-                    PathResult::matched(value)
+                    return PathResult::default();
+                }
+                match value {
+                    // Flatten style splices an array leaf into the output
+                    // recursively; an array that flattens to nothing writes no
+                    // leaf nodes, so it is not a match (Spark's dirty flag).
+                    Value::Array(arr) if self.flatten => {
+                        let mut values = Vec::new();
+                        for element in arr {
+                            flatten_into(element, &mut values);
+                        }
+                        PathResult {
+                            matched: !values.is_empty(),
+                            values,
+                        }
+                    }
+                    value => PathResult::matched(value),
                 }
             });
         }
         deserializer.deserialize_any(SegmentVisitor {
             segments: self.segments,
+            flatten: self.flatten,
         })
     }
 }
@@ -336,6 +376,7 @@ impl<'de> DeserializeSeed<'de> for PathSeed<'_> {
 /// as no match rather than as an error, matching a lookup on a parsed document.
 struct SegmentVisitor<'a> {
     segments: &'a [PathSegment],
+    flatten: bool,
 }
 
 impl<'de> Visitor<'de> for SegmentVisitor<'_> {
@@ -381,6 +422,7 @@ impl<'de> Visitor<'de> for SegmentVisitor<'_> {
                 let candidate = map.next_value_seed(PathSeed {
                     segments: &self.segments[1..],
                     reject_direct_null: true,
+                    flatten: self.flatten,
                 })?;
                 if candidate.matched {
                     found = candidate;
@@ -404,6 +446,7 @@ impl<'de> Visitor<'de> for SegmentVisitor<'_> {
                     .next_element_seed(PathSeed {
                         segments: &self.segments[1..],
                         reject_direct_null: false,
+                        flatten: self.flatten,
                     })?
                     .unwrap_or_default();
                 // The remaining elements are still visited, so that a malformed element
@@ -416,6 +459,7 @@ impl<'de> Visitor<'de> for SegmentVisitor<'_> {
                 while let Some(mut result) = seq.next_element_seed(PathSeed {
                     segments: &self.segments[1..],
                     reject_direct_null: false,
+                    flatten: self.flatten,
                 })? {
                     if result.matched {
                         found.matched = true;
@@ -423,6 +467,27 @@ impl<'de> Visitor<'de> for SegmentVisitor<'_> {
                     }
                 }
                 Ok(found)
+            }
+            PathSegment::DoubleWildcard => {
+                // Spark consumes both wildcards of `[*][*]` at once: the
+                // remaining path applies to the outer elements in flatten
+                // style, and the collected matches always form a single array,
+                // even when there is only one.
+                let mut collected = Vec::new();
+                while let Some(mut result) = seq.next_element_seed(PathSeed {
+                    segments: &self.segments[1..],
+                    reject_direct_null: false,
+                    flatten: true,
+                })? {
+                    if result.matched {
+                        collected.append(&mut result.values);
+                    }
+                }
+                if collected.is_empty() {
+                    Ok(PathResult::default())
+                } else {
+                    Ok(PathResult::matched(Value::Array(collected)))
+                }
             }
             PathSegment::Field(_) => {
                 IgnoredAny.visit_seq(seq)?;
@@ -452,6 +517,20 @@ impl<'de> Visitor<'de> for KeySeed<'_> {
 
     fn visit_str<E>(self, key: &str) -> Result<bool, E> {
         Ok(key == self.0)
+    }
+}
+
+/// Recursively splices array elements into `out`, matching Spark's
+/// `(START_ARRAY, Nil) if style == FlattenStyle` case, which re-applies itself
+/// to each child.
+fn flatten_into(value: Value, out: &mut Vec<Value>) {
+    match value {
+        Value::Array(arr) => {
+            for element in arr {
+                flatten_into(element, out);
+            }
+        }
+        value => out.push(value),
     }
 }
 
@@ -498,6 +577,23 @@ mod tests {
         let path = parse_json_path("$.*").unwrap();
         assert!(matches!(&path.segments[0], PathSegment::Wildcard));
         assert!(path.has_wildcard);
+
+        // Two consecutive subscript wildcards merge into a double wildcard
+        let path = parse_json_path("$[*][*]").unwrap();
+        assert!(matches!(&path.segments[0], PathSegment::DoubleWildcard));
+        assert_eq!(path.segments.len(), 1);
+        assert!(path.has_wildcard);
+
+        let path = parse_json_path("$[*][*][*]").unwrap();
+        assert!(matches!(&path.segments[0], PathSegment::DoubleWildcard));
+        assert!(matches!(&path.segments[1], PathSegment::Wildcard));
+        assert_eq!(path.segments.len(), 2);
+
+        // `.*` and `['*']` wildcards do not combine with a subscript wildcard
+        let path = parse_json_path("$.*[*]").unwrap();
+        assert!(matches!(&path.segments[0], PathSegment::Wildcard));
+        assert!(matches!(&path.segments[1], PathSegment::Wildcard));
+        assert_eq!(path.segments.len(), 2);
 
         // Recursive descent not supported
         assert!(parse_json_path("$..name").is_none());
@@ -687,6 +783,96 @@ mod tests {
         assert_eq!(
             evaluate_path(r#"{"a":[null,1]}"#, &path),
             Some("[null,1]".to_string())
+        );
+    }
+
+    #[test]
+    fn test_double_wildcard_flattens_one_level() {
+        // Mirrors Spark's own suite ($.store.basket[*][*]): the elements of
+        // the outer array are spliced into the output.
+        let json = r#"{"b":[[1,2,{"c":"y"}],[3,4],[5,6]]}"#;
+        let path = parse_json_path("$.b[*][*]").unwrap();
+        assert_eq!(
+            evaluate_path(json, &path),
+            Some(r#"[1,2,{"c":"y"},3,4,5,6]"#.to_string())
+        );
+    }
+
+    #[test]
+    fn test_double_wildcard_flattens_recursively() {
+        let path = parse_json_path("$[*][*]").unwrap();
+        assert_eq!(
+            evaluate_path(r#"[[[1],[2]],[3]]"#, &path),
+            Some("[1,2,3]".to_string())
+        );
+
+        // Scalars pass through; string leaves keep their JSON quotes.
+        assert_eq!(
+            evaluate_path(r#"[1,"a"]"#, &path),
+            Some(r#"[1,"a"]"#.to_string())
+        );
+    }
+
+    #[test]
+    fn test_double_wildcard_applies_rest_to_outer_elements() {
+        // The remaining path applies to the outer elements themselves, not
+        // their children: the inner arrays have no field `c`, so nothing
+        // matches (Spark's `$.store.basket[*][*].non_exist_key` is null).
+        let json = r#"{"b":[[1,2,{"c":"y"}],[3,4],[5,6]]}"#;
+        let path = parse_json_path("$.b[*][*].c").unwrap();
+        assert_eq!(evaluate_path(json, &path), None);
+
+        // Objects directly in the outer array do match the remaining path.
+        let path = parse_json_path("$[*][*].b").unwrap();
+        assert_eq!(
+            evaluate_path(r#"[{"b":1},{"b":2}]"#, &path),
+            Some("[1,2]".to_string())
+        );
+    }
+
+    #[test]
+    fn test_double_wildcard_single_match_stays_wrapped() {
+        // A single wildcard unwraps a single match; a double wildcard always
+        // wraps its matches in an array.
+        let path = parse_json_path("$[*]").unwrap();
+        assert_eq!(evaluate_path(r#"[5]"#, &path), Some("5".to_string()));
+
+        let path = parse_json_path("$[*][*]").unwrap();
+        assert_eq!(evaluate_path(r#"[5]"#, &path), Some("[5]".to_string()));
+        assert_eq!(evaluate_path(r#"[[5]]"#, &path), Some("[5]".to_string()));
+
+        // A null element reached through the double wildcard serializes as
+        // JSON text, as it does through a single wildcard.
+        let path = parse_json_path("$.a[*][*]").unwrap();
+        assert_eq!(
+            evaluate_path(r#"{"a":[null]}"#, &path),
+            Some("[null]".to_string())
+        );
+    }
+
+    #[test]
+    fn test_double_wildcard_empty_flatten_is_no_match() {
+        // An element that flattens to nothing writes no leaf nodes, so the
+        // double wildcard misses.
+        let path = parse_json_path("$[*][*]").unwrap();
+        assert_eq!(evaluate_path(r#"[]"#, &path), None);
+        assert_eq!(evaluate_path(r#"[[]]"#, &path), None);
+    }
+
+    #[test]
+    fn test_duplicate_key_double_wildcard_match_decision() {
+        // Regression test for the PR review: `[*][*]` is one flattening step,
+        // so the remaining `.b` applies to the outer element `[{"b":1}]`
+        // itself, which is an array and has no fields. The first `a` misses,
+        // the second `a` is null, and Spark returns NULL.
+        let path = parse_json_path("$.a[*][*].b").unwrap();
+        assert_eq!(evaluate_path(r#"{"a":[[{"b":1}]],"a":null}"#, &path), None);
+        assert_eq!(evaluate_path(r#"{"a":[[{"b":1}]]}"#, &path), None);
+
+        // The miss still falls through to a later occurrence that matches.
+        assert_eq!(
+            evaluate_path(r#"{"a":[[{"b":1}]],"a":[{"b":2}]}"#, &path),
+            Some("[2]".to_string())
         );
     }
 
