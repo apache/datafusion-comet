@@ -102,7 +102,7 @@ pub struct SparkParquetOptions {
     /// (Spark 3.x, SPARK-36182). Mirrors Comet's per-Spark-version constant
     /// in ShimCometConf.
     pub allow_timestamp_ltz_to_ntz: bool,
-    /// When true (the default), a top-level TIMESTAMP_MILLIS column that overflows during
+    /// When true (the default), a TIMESTAMP_MILLIS field that overflows during
     /// the millis->micros upscale raises an error, matching Spark's checked
     /// `millisToMicros`. Filtered scans set this to false and retain the safe cast
     /// (overflow -> NULL), because Spark may discard values through pruning paths that
@@ -179,17 +179,27 @@ fn parquet_convert_array(
     to_type: &DataType,
     parquet_options: &SparkParquetOptions,
 ) -> DataFusionResult<ArrayRef> {
-    parquet_convert_array_impl(array, to_type, parquet_options, true)
+    parquet_convert_array_impl(array, to_type, parquet_options, None)
 }
 
 fn parquet_convert_array_impl(
     array: ArrayRef,
     to_type: &DataType,
     parquet_options: &SparkParquetOptions,
-    top_level: bool,
+    parent_nulls: Option<&NullBuffer>,
 ) -> DataFusionResult<ArrayRef> {
     use DataType::*;
     let from_type = array.data_type();
+    // Only checked millis-to-micros casts consume ancestor visibility. In particular,
+    // unchanged array/map siblings must not expand a mask over their backing values.
+    let checked_timestamp_overflow = parquet_options.checked_timestamp_overflow
+        && has_timestamp_unit(from_type, TimeUnit::Millisecond)
+        && has_timestamp_unit(to_type, TimeUnit::Microsecond);
+    let visible = if checked_timestamp_overflow {
+        NullBuffer::union(array.nulls(), parent_nulls)
+    } else {
+        None
+    };
 
     // Try Comet specific handlers first, then arrow-rs cast if supported,
     // return uncasted data otherwise
@@ -199,14 +209,21 @@ fn parquet_convert_array_impl(
             from_type,
             to_type,
             parquet_options,
+            visible.as_ref(),
         )?),
         (List(_), List(to_inner_type)) => {
             let list_arr: &ListArray = array.as_list();
+            let child_visibility = if checked_timestamp_overflow {
+                repeated_visibility(
+                    list_arr.value_offsets(), list_arr.values().len(), visible.as_ref())
+            } else {
+                None
+            };
             let cast_field = parquet_convert_array_impl(
                 Arc::clone(list_arr.values()),
                 to_inner_type.data_type(),
                 parquet_options,
-                false,
+                child_visibility.as_ref(),
             )?;
 
             Ok(Arc::new(ListArray::new(
@@ -219,22 +236,23 @@ fn parquet_convert_array_impl(
         (
             Timestamp(TimeUnit::Millisecond, _),
             Timestamp(TimeUnit::Microsecond, target_tz),
-        ) if top_level && parquet_options.checked_timestamp_overflow => {
+        ) if checked_timestamp_overflow => {
             // Spark's Parquet reader calls the checked `millisToMicros` conversion for both
             // direct and dictionary values, independent of CAST evaluation mode:
             // https://github.com/apache/spark/blob/v4.2.0/sql/core/src/main/java/org/apache/spark/sql/execution/datasources/parquet/ParquetVectorUpdaterFactory.java#L817-L833
             // `millisToMicros` uses `Math.multiplyExact`:
             // https://github.com/apache/spark/blob/v4.2.0/sql/api/src/main/scala/org/apache/spark/sql/catalyst/util/SparkDateTimeUtils.scala#L103-L108
             //
-            // The checked conversion is limited to TOP-LEVEL columns. Spark only avoids the
-            // error for filtered-out values through row-group statistics pruning, and
-            // DataFusion's PruningPredicate does not support nested fields yet, so a checked
-            // conversion on a nested field would fail queries whose predicates Spark prunes
-            // (e.g. `WHERE s.ts < X` over an all-overflowing file). Nested fields keep the
-            // pre-existing safe-cast behavior below (overflow -> NULL).
-            let micros = array
-                .as_primitive::<TimestampMillisecondType>()
-                .try_unary::<_, TimestampMicrosecondType, _>(|value| value.mul_checked(1_000))?
+            // Filtered scans retain safe conversion until DataFusion can mirror Spark's
+            // pruning paths, including nested predicates.
+            let millis = array.as_primitive::<TimestampMillisecondType>();
+            // Ignore values hidden by null ancestors or by sliced list/map offsets.
+            // Restore the original child validity: required fields must remain non-null.
+            let micros = arrow::array::TimestampMillisecondArray::new(
+                millis.values().clone(), visible)
+                .try_unary::<_, TimestampMicrosecondType, _>(|value| value.mul_checked(1_000))?;
+            let micros = arrow::array::TimestampMicrosecondArray::new(
+                micros.values().clone(), millis.nulls().cloned())
                 .with_timezone_opt(target_tz.clone());
             Ok(Arc::new(micros))
         }
@@ -247,7 +265,7 @@ fn parquet_convert_array_impl(
             ))
         }
         (Map(_, ordered_from), Map(_, ordered_to)) if ordered_from == ordered_to =>
-            parquet_convert_map_to_map(array.as_map(), to_type, parquet_options, *ordered_to)
+            parquet_convert_map_to_map(array.as_map(), to_type, parquet_options, *ordered_to, visible.as_ref(), checked_timestamp_overflow)
             ,
         // Iceberg stores UUIDs as 16-byte fixed binary but Spark expects string representation.
         // Arrow doesn't support casting FixedSizeBinary to Utf8, so we handle it manually.
@@ -279,6 +297,39 @@ fn parquet_convert_array_impl(
     }
 }
 
+// Struct fields are matched by name/field ID later. This type-only check is conservative
+// until that matching occurs; each selected child is checked again before conversion.
+fn has_timestamp_unit(data_type: &DataType, unit: TimeUnit) -> bool {
+    match data_type {
+        DataType::Timestamp(timestamp_unit, _) => *timestamp_unit == unit,
+        DataType::Struct(fields) => fields
+            .iter()
+            .any(|field| has_timestamp_unit(field.data_type(), unit)),
+        DataType::List(field) | DataType::Map(field, _) => {
+            has_timestamp_unit(field.data_type(), unit)
+        }
+        _ => false,
+    }
+}
+
+// List/map values can include entries outside a slice or beneath a null parent.
+fn repeated_visibility(
+    offsets: &[i32],
+    len: usize,
+    nulls: Option<&NullBuffer>,
+) -> Option<NullBuffer> {
+    if nulls.is_none() && offsets[0] == 0 && *offsets.last().unwrap() as usize == len {
+        return None;
+    }
+    let mut valid = vec![false; len];
+    for (row, range) in offsets.windows(2).enumerate() {
+        if nulls.is_none_or(|nulls| nulls.is_valid(row)) {
+            valid[range[0] as usize..range[1] as usize].fill(true);
+        }
+    }
+    Some(NullBuffer::from(valid))
+}
+
 /// Read the Parquet field id stored under arrow-rs's `PARQUET_FIELD_ID_META_KEY`.
 fn field_id(field: &arrow::datatypes::Field) -> Option<i32> {
     field
@@ -294,6 +345,7 @@ fn parquet_convert_struct_to_struct(
     from_type: &DataType,
     to_type: &DataType,
     parquet_options: &SparkParquetOptions,
+    parent_nulls: Option<&NullBuffer>,
 ) -> DataFusionResult<ArrayRef> {
     match (from_type, to_type) {
         (DataType::Struct(from_fields), DataType::Struct(to_fields)) => {
@@ -373,7 +425,7 @@ fn parquet_convert_struct_to_struct(
                         Arc::clone(array.column(from_index)),
                         to_field.data_type(),
                         parquet_options,
-                        false,
+                        parent_nulls,
                     )?);
                     field_overlap = true;
                 } else {
@@ -411,6 +463,8 @@ fn parquet_convert_map_to_map(
     to_data_type: &DataType,
     parquet_options: &SparkParquetOptions,
     to_ordered: bool,
+    parent_nulls: Option<&NullBuffer>,
+    checked_timestamp_overflow: bool,
 ) -> Result<ArrayRef, DataFusionError> {
     match to_data_type {
         DataType::Map(entries_field, _) => {
@@ -421,17 +475,22 @@ fn parquet_convert_map_to_map(
                 "map is missing value field".to_string(),
             ))?;
 
+            let child_visibility = if checked_timestamp_overflow {
+                repeated_visibility(from.value_offsets(), from.keys().len(), parent_nulls)
+            } else {
+                None
+            };
             let key_array = parquet_convert_array_impl(
                 Arc::clone(from.keys()),
                 key_field.data_type(),
                 parquet_options,
-                false,
+                child_visibility.as_ref(),
             )?;
             let value_array = parquet_convert_array_impl(
                 Arc::clone(from.values()),
                 value_field.data_type(),
                 parquet_options,
-                false,
+                child_visibility.as_ref(),
             )?;
 
             Ok(Arc::new(MapArray::new(
@@ -731,7 +790,7 @@ mod tests {
     }
 
     #[test]
-    fn test_millis_to_micros_overflow_checked_only_at_top_level() {
+    fn test_millis_to_micros_overflow_checked_in_nested_fields() {
         use crate::parquet::parquet_support::{parquet_convert_array, SparkParquetOptions};
         use arrow::array::{Array, ArrayRef, StructArray, TimestampMillisecondArray};
         use arrow::datatypes::{DataType, Field, Fields, TimeUnit};
@@ -764,10 +823,7 @@ mod tests {
         assert!(converted.is_null(0), "overflow must become NULL");
         assert!(converted.is_null(1));
 
-        // Nested: DataFusion's PruningPredicate cannot prune nested fields, so a
-        // checked conversion would fail queries whose predicates Spark satisfies via
-        // row-group statistics pruning. The nested field keeps the safe-cast behavior:
-        // overflow becomes NULL.
+        // Unfiltered nested reads must also report overflow.
         let child_field = Arc::new(Field::new(
             "ts",
             DataType::Timestamp(TimeUnit::Millisecond, None),
@@ -783,8 +839,9 @@ mod tests {
             micros_type.clone(),
             true,
         ))]));
-        let converted = parquet_convert_array(strukt, &target, &options)
-            .expect("nested overflow must not error");
+        assert!(parquet_convert_array(Arc::clone(&strukt), &target, &options).is_err());
+        let converted = parquet_convert_array(strukt, &target, &unchecked_options)
+            .expect("filtered nested overflow must not error");
         let converted_child = Arc::clone(
             converted
                 .as_any()
@@ -795,6 +852,246 @@ mod tests {
         assert_eq!(converted_child.data_type(), &micros_type);
         assert!(converted_child.is_null(0), "overflow must become NULL");
         assert!(converted_child.is_null(1));
+    }
+
+    #[test]
+    fn test_millis_to_micros_preserves_unchanged_siblings() {
+        use super::{parquet_convert_array, SparkParquetOptions};
+        use arrow::array::{
+            cast::AsArray, Array, ArrayRef, Int32Array, ListArray, MapArray, StructArray,
+            TimestampMicrosecondArray, TimestampMillisecondArray,
+        };
+        use arrow::buffer::{NullBuffer, OffsetBuffer};
+        use arrow::datatypes::{DataType, Field, TimeUnit};
+        use datafusion_comet_spark_expr::EvalMode;
+        use std::sync::Arc;
+
+        let values: ArrayRef = Arc::new(Int32Array::from_iter_values(0..16));
+        let offsets = OffsetBuffer::new(vec![0, 0, 16].into());
+        let nulls = NullBuffer::from(vec![false, true]);
+        let ints: ArrayRef = Arc::new(ListArray::new(
+            Arc::new(Field::new("item", DataType::Int32, false)),
+            offsets.clone(),
+            Arc::clone(&values),
+            Some(nulls.clone()),
+        ));
+        let entries = StructArray::new(
+            vec![
+                Arc::new(Field::new("key", DataType::Int32, false)),
+                Arc::new(Field::new("value", DataType::Int32, false)),
+            ]
+            .into(),
+            vec![Arc::clone(&values), Arc::clone(&values)],
+            None,
+        );
+        let map: ArrayRef = Arc::new(MapArray::new(
+            Arc::new(Field::new("entries", entries.data_type().clone(), false)),
+            offsets,
+            entries,
+            Some(nulls.clone()),
+            false,
+        ));
+        let input = StructArray::new(
+            vec![
+                Arc::new(Field::new(
+                    "ts",
+                    DataType::Timestamp(TimeUnit::Millisecond, None),
+                    true,
+                )),
+                Arc::new(Field::new("ints", ints.data_type().clone(), true)),
+                Arc::new(Field::new("map", map.data_type().clone(), true)),
+            ]
+            .into(),
+            vec![
+                Arc::new(TimestampMillisecondArray::from(vec![i64::MAX, 7])),
+                ints,
+                map,
+            ],
+            Some(nulls),
+        );
+        let mut target_fields = input.fields().to_vec();
+        target_fields[0] = Arc::new(Field::new(
+            "ts",
+            DataType::Timestamp(TimeUnit::Microsecond, None),
+            true,
+        ));
+        let target = DataType::Struct(target_fields.into());
+        let input: ArrayRef = Arc::new(input);
+        let options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        let output = parquet_convert_array(Arc::clone(&input), &target, &options).unwrap();
+        assert_eq!(output.data_type(), &target);
+        assert!(output.is_null(0));
+        let output = output.as_struct();
+        assert_eq!(
+            output
+                .column(0)
+                .as_any()
+                .downcast_ref::<TimestampMicrosecondArray>()
+                .unwrap()
+                .value(1),
+            7000
+        );
+        // Unchanged siblings keep their value buffers, offsets, and parent validity.
+        assert_eq!(
+            output.column(1).to_data(),
+            input.as_struct().column(1).to_data()
+        );
+        assert_eq!(
+            output.column(2).to_data(),
+            input.as_struct().column(2).to_data()
+        );
+        for child in [
+            output.column(1).as_list::<i32>().values(),
+            output.column(2).as_map().keys(),
+            output.column(2).as_map().values(),
+        ] {
+            assert_eq!(
+                child.to_data().buffers()[0].as_ptr(),
+                values.to_data().buffers()[0].as_ptr()
+            );
+        }
+    }
+
+    #[test]
+    fn test_millis_to_micros_nested_visibility() {
+        use super::{parquet_convert_array, SparkParquetOptions};
+        use arrow::array::{
+            Array, ArrayRef, ListArray, MapArray, StructArray, TimestampMicrosecondArray,
+            TimestampMillisecondArray,
+        };
+        use arrow::buffer::{NullBuffer, OffsetBuffer};
+        use arrow::datatypes::{DataType, Field, TimeUnit};
+        use datafusion_comet_spark_expr::EvalMode;
+        use std::sync::Arc;
+
+        for timezone in [None::<Arc<str>>, Some(Arc::from("UTC"))] {
+            for overflow in [i64::MAX, i64::MIN] {
+                let options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+                let millis: ArrayRef = Arc::new(
+                    TimestampMillisecondArray::from(vec![overflow, 7, overflow])
+                        .with_timezone_opt(timezone.clone()),
+                );
+                let field = Arc::new(Field::new("ts", millis.data_type().clone(), false));
+                let target_field = Arc::new(Field::new(
+                    "ts",
+                    DataType::Timestamp(TimeUnit::Microsecond, timezone.clone()),
+                    false,
+                ));
+                let validity = Some(NullBuffer::from(vec![false, true, false]));
+                let strukt: ArrayRef = Arc::new(StructArray::new(
+                    vec![Arc::clone(&field)].into(),
+                    vec![Arc::clone(&millis)],
+                    validity.clone(),
+                ));
+                let list: ArrayRef = Arc::new(ListArray::new(
+                    Arc::clone(&field),
+                    OffsetBuffer::new(vec![0, 1, 2, 3].into()),
+                    Arc::clone(&millis),
+                    validity.clone(),
+                ));
+                let entries = StructArray::new(
+                    vec![
+                        Arc::clone(&field),
+                        Arc::new(Field::new("value", millis.data_type().clone(), false)),
+                    ]
+                    .into(),
+                    vec![Arc::clone(&millis), Arc::clone(&millis)],
+                    None,
+                );
+                let map: ArrayRef = Arc::new(MapArray::new(
+                    Arc::new(Field::new("entries", entries.data_type().clone(), false)),
+                    OffsetBuffer::new(vec![0, 1, 2, 3].into()),
+                    entries,
+                    validity,
+                    false,
+                ));
+                let target_map = DataType::Map(
+                    Arc::new(Field::new(
+                        "entries",
+                        DataType::Struct(
+                            vec![
+                                Arc::clone(&target_field),
+                                Arc::new(Field::new(
+                                    "value",
+                                    target_field.data_type().clone(),
+                                    false,
+                                )),
+                            ]
+                            .into(),
+                        ),
+                        false,
+                    )),
+                    false,
+                );
+                for (array, target) in [
+                    (
+                        strukt,
+                        DataType::Struct(vec![Arc::clone(&target_field)].into()),
+                    ),
+                    (list, DataType::List(Arc::clone(&target_field))),
+                    (map, target_map),
+                ] {
+                    // Overflow beneath null parents is not a value Spark reads. Required
+                    // children remain non-null, and slicing must not expose hidden entries.
+                    for input in [Arc::clone(&array), array.slice(1, 1)] {
+                        let converted = parquet_convert_array(input, &target, &options).unwrap();
+                        let values = match converted.data_type() {
+                            DataType::Struct(_) => Arc::clone(
+                                converted
+                                    .as_any()
+                                    .downcast_ref::<StructArray>()
+                                    .unwrap()
+                                    .column(0),
+                            ),
+                            DataType::List(_) => converted
+                                .as_any()
+                                .downcast_ref::<ListArray>()
+                                .unwrap()
+                                .value(if converted.len() == 1 { 0 } else { 1 }),
+                            DataType::Map(_, _) => Arc::clone(
+                                converted
+                                    .as_any()
+                                    .downcast_ref::<MapArray>()
+                                    .unwrap()
+                                    .value(if converted.len() == 1 { 0 } else { 1 })
+                                    .column(0),
+                            ),
+                            _ => unreachable!(),
+                        };
+                        let values = values
+                            .as_any()
+                            .downcast_ref::<TimestampMicrosecondArray>()
+                            .unwrap();
+                        assert_eq!(values.value(if values.len() == 3 { 1 } else { 0 }), 7000);
+                        assert_eq!(values.null_count(), 0);
+                    }
+                    // Removing parent nulls makes the overflow visible and must fail.
+                    let visible = arrow::array::make_array(
+                        array.to_data().into_builder().nulls(None).build().unwrap(),
+                    );
+                    assert!(
+                        parquet_convert_array(Arc::clone(&visible), &target, &options).is_err()
+                    );
+                    // Propagate nullness through more than one level of nesting.
+                    let outer: ArrayRef = Arc::new(StructArray::new(
+                        vec![Arc::new(Field::new(
+                            "nested",
+                            visible.data_type().clone(),
+                            false,
+                        ))]
+                        .into(),
+                        vec![Arc::clone(&visible)],
+                        array.nulls().cloned(),
+                    ));
+                    let outer_target = DataType::Struct(
+                        vec![Arc::new(Field::new("nested", target.clone(), false))].into(),
+                    );
+                    parquet_convert_array(outer, &outer_target, &options).unwrap();
+                    // A slice of a non-null list/map also hides its backing prefix/suffix.
+                    parquet_convert_array(visible.slice(1, 1), &target, &options).unwrap();
+                }
+            }
+        }
     }
 
     #[cfg(not(feature = "hdfs-opendal"))]
