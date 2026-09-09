@@ -178,8 +178,9 @@ mod tests {
     use super::*;
     use arrow::array::{
         DictionaryArray, Int32Array, Int8Array, LargeStringArray, StringArray, StringViewArray,
+        UInt64Array,
     };
-    use arrow::datatypes::{Field, Int32Type, Int8Type};
+    use arrow::datatypes::{Field, Int32Type, Int8Type, UInt64Type};
     use datafusion::physical_expr::expressions::{Column, Literal};
 
     fn assert_bool_results(result: ColumnarValue, expected: &[Option<bool>]) {
@@ -265,7 +266,7 @@ mod tests {
             (
                 DataType::Utf8View,
                 Arc::new(StringViewArray::from(vec![
-                    Some("Rose"),
+                    Some("Rhododendrons"),
                     None,
                     Some("Daisy"),
                 ])),
@@ -296,7 +297,8 @@ mod tests {
         let ColumnarValue::Array(arr) = expr.evaluate(&batch).unwrap() else {
             panic!("expected array result");
         };
-        // All-valid input must not allocate a null buffer (filter fast path).
+        // Preserve a null-buffer-free output shape for all-valid input, avoiding an
+        // unnecessary len / 8-byte validity allocation.
         assert!(arr.nulls().is_none());
         assert_bool_results(ColumnarValue::Array(arr), &[Some(true), Some(false)]);
     }
@@ -307,10 +309,16 @@ mod tests {
         let expected = [Some(true), None, Some(false)];
 
         let utf8_values: ArrayRef = Arc::new(StringArray::from(vec!["Rose", "Daisy"]));
-        let utf8_view_values: ArrayRef = Arc::new(StringViewArray::from(vec!["Rose", "Daisy"]));
+        let utf8_view_values: ArrayRef =
+            Arc::new(StringViewArray::from(vec!["Rhododendrons", "Daisy"]));
         // Null in dictionary values (keys all valid): is_match emits null, take carries it.
         let utf8_values_with_null: ArrayRef =
             Arc::new(StringArray::from(vec![Some("Rose"), None, Some("Daisy")]));
+        let sliced_dictionary = DictionaryArray::<Int32Type>::new(
+            Int32Array::from(vec![Some(1), Some(0), None, Some(1), Some(0)]),
+            Arc::clone(&utf8_values),
+        );
+        let sliced_dictionary: ArrayRef = Arc::new(sliced_dictionary.slice(1, 3));
 
         let cases: Vec<(DataType, ArrayRef)> = vec![
             (
@@ -335,11 +343,22 @@ mod tests {
                 )),
             ),
             (
+                DataType::Dictionary(Box::new(DataType::UInt64), Box::new(DataType::Utf8)),
+                Arc::new(DictionaryArray::<UInt64Type>::new(
+                    UInt64Array::from(vec![Some(0), None, Some(1)]),
+                    Arc::clone(&utf8_values),
+                )),
+            ),
+            (
                 DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8)),
                 Arc::new(DictionaryArray::<Int32Type>::new(
                     Int32Array::from(vec![Some(0), Some(1), Some(2)]),
                     utf8_values_with_null,
                 )),
+            ),
+            (
+                DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8)),
+                sliced_dictionary,
             ),
         ];
 
