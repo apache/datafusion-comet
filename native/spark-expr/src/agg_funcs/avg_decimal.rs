@@ -971,7 +971,7 @@ mod tests {
             assert_eq!(counts.value(2), 0);
 
             let mut final_acc = new_acc();
-            final_acc.merge_batch(&[Arc::new(sums), Arc::new(counts)], &[0, 1, 2], None, 3)?;
+            final_acc.merge_batch(&[Arc::new(sums), Arc::new(counts)], &[0, 1, 2], 3)?;
             let empty = final_acc.evaluate(EmitTo::First(2))?;
             assert_eq!(empty.len(), 2);
             assert_eq!(empty.null_count(), 2);

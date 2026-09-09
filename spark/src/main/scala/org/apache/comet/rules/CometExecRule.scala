@@ -223,7 +223,7 @@ case class CometExecRule(session: SparkSession)
       case _: QueryStageExec | _: ShuffleExchangeLike | _: BroadcastExchangeLike => plan
       case agg: CometHashAggregateExec
           if agg.modes == Seq(Partial) &&
-            !QueryPlanSerde.allAggsSupportMixedExecution(agg.aggregateExpressions) =>
+            !QueryPlanSerde.allAggsSupportNativePartialToSparkFinal(agg.aggregateExpressions) =>
         val sparkAggregate = agg.originalPlan.withNewChildren(agg.children)
         sparkAggregate.setTagValue(CometExecRule.COMET_UNSAFE_PARTIAL, reason)
         withFallbackReason(sparkAggregate, reason)
