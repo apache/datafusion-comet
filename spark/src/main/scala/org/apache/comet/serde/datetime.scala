@@ -433,13 +433,16 @@ object CometConvertTimezone
   }
 }
 
-object CometNextDay extends CometExpressionSerde[NextDay] {
+/**
+ * The native `next_day` kernel reads its `dayOfWeek` argument as raw bytes, so a non-UTF8_BINARY
+ * collation is reported as `Incompatible` and `CodegenDispatchFallback` routes it through the JVM
+ * codegen dispatcher instead of failing the projection back to Spark. Dispatching is not only the
+ * compatible answer here, it is also the faster one: over 1M rows a collated `next_day` measured
+ * 70ms dispatched against 89ms for Spark. See
+ * https://github.com/apache/datafusion-comet/issues/5591.
+ */
+object CometNextDay extends CometExpressionSerde[NextDay] with CodegenDispatchFallback {
 
-  /**
-   * `failOnError` mirrors `spark.sql.ansi.enabled`: under ANSI, Spark throws on a malformed
-   * `dayOfWeek` rather than returning NULL. The resolved flag is passed to native via the
-   * `ScalarFunc.fail_on_error` field.
-   */
   private val collationReason = DatetimeCollation.reason("next_day")
 
   override def getIncompatibleReasons(): Seq[String] =
@@ -452,6 +455,12 @@ object CometNextDay extends CometExpressionSerde[NextDay] {
       Compatible()
     }
   }
+
+  /**
+   * `failOnError` mirrors `spark.sql.ansi.enabled`: under ANSI, Spark throws on a malformed
+   * `dayOfWeek` rather than returning NULL. The resolved flag is passed to native via the
+   * `ScalarFunc.fail_on_error` field.
+   */
   override def convert(expr: NextDay, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
     val childExpr = expr.children.map(exprToProtoInternal(_, inputs, binding))
     val optExpr = scalarFunctionExprToProtoWithReturnType(

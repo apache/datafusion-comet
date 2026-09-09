@@ -23,6 +23,7 @@ use crate::math_funcs::checked_arithmetic::{checked_add, checked_div, checked_mu
 use crate::math_funcs::log::spark_log;
 use crate::math_funcs::modulo_expr::spark_modulo;
 use crate::math_funcs::pow::spark_pow;
+use crate::math_funcs::sqrt::spark_sqrt;
 use crate::{
     spark_ceil, spark_day_name, spark_decimal_div, spark_decimal_integral_div, spark_floor,
     spark_isnan, spark_lpad, spark_make_decimal, spark_month_name, spark_read_side_padding,
@@ -117,6 +118,9 @@ pub fn create_comet_physical_fun_with_eval_mode(
 ) -> Result<Arc<ScalarUDF>, DataFusionError> {
     let fail_on_error = fail_on_error.unwrap_or(false);
     match fun_name {
+        "spark_concat_ws" => Ok(Arc::new(ScalarUDF::new_from_impl(
+            crate::string_funcs::CometConcatWs::default(),
+        ))),
         "ceil" => {
             make_comet_scalar_udf!("ceil", spark_ceil, data_type)
         }
@@ -216,6 +220,10 @@ pub fn create_comet_physical_fun_with_eval_mode(
         "pow" => {
             let func = Arc::new(spark_pow);
             make_comet_scalar_udf!("pow", func, without data_type)
+        }
+        "spark_sqrt" => {
+            let func = Arc::new(spark_sqrt);
+            make_comet_scalar_udf!("spark_sqrt", func, without data_type)
         }
         "base64" => {
             let func = Arc::new(crate::string_funcs::spark_base64);

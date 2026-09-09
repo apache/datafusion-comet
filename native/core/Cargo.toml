@@ -36,6 +36,7 @@ publish = false
 
 [dependencies]
 arrow = { workspace = true }
+base64 = "0.23.0"
 bytes = { workspace = true }
 parquet = { workspace = true, default-features = false, features = ["experimental", "arrow", "snap", "lz4", "zstd", "flate2-zlib-rs"] }
 futures = { workspace = true }
@@ -98,7 +99,7 @@ jni = { version = "0.22.4", features = ["invocation"] }
 lazy_static = "1.4"
 assertables = "10"
 hex = "0.4.3"
-datafusion-functions-nested = { version = "54.1.0" }
+datafusion-functions-nested = { version = "55.0.0" }
 
 [features]
 backtrace = ["datafusion/backtrace"]
@@ -121,4 +122,12 @@ crate-type = ["cdylib", "rlib"]
 
 [[bench]]
 name = "array_element_append"
+harness = false
+
+[[bench]]
+name = "explode"
+harness = false
+
+[[bench]]
+name = "parquet_timestamp_conversion"
 harness = false
