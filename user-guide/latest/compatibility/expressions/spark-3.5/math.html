@@ -785,9 +785,9 @@ under the License.
 <!--BEGIN:EXPR_COMPAT[math]-->
 <section id="abs">
 <h2>Abs<a class="headerlink" href="#abs" title="Link to this heading">#</a></h2>
-<p>The following cases are not supported by Comet and always fall back to Spark, regardless of any <code class="docutils literal notranslate"><span class="pre">allowIncompatible</span></code> setting:</p>
+<p>The following cases have no native implementation and always run in the JVM using Spark’s code-generated implementation (inside the Comet pipeline):</p>
 <ul class="simple">
-<li><p>Only integral, floating-point, and decimal types are supported</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">INTERVAL</span> <span class="pre">YEAR</span> <span class="pre">TO</span> <span class="pre">MONTH</span></code> and <code class="docutils literal notranslate"><span class="pre">INTERVAL</span> <span class="pre">DAY</span> <span class="pre">TO</span> <span class="pre">SECOND</span></code> inputs</p></li>
 </ul>
 </section>
 <section id="rand">
