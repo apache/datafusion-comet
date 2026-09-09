@@ -328,6 +328,64 @@ class PlanDataInjectorSuite extends AnyFunSuite {
     }
   }
 
+  /**
+   * Races `threads` callers through `run` on a cold scan key per trial, 200 trials, and returns
+   * the trials whose threads observed more than one prepared common instance.
+   */
+  private def raceColdScanKey(threads: Int)(run: (Int, Operator, Int) => Operator): Seq[Int] = {
+    import java.util.concurrent.{CyclicBarrier, Executors}
+    import scala.concurrent.{Await, ExecutionContext, Future}
+    import scala.concurrent.duration._
+
+    val pool = Executors.newFixedThreadPool(threads)
+    implicit val ec: ExecutionContext = ExecutionContext.fromExecutor(pool)
+    try {
+      (0 until 200).filter { trial =>
+        val scanOp =
+          nativeScanOp(s"file:///race-common-tbl-$trial", (0 until 64).map(i => s"c$i"))
+        val barrier = new CyclicBarrier(threads)
+        val commons = (0 until threads)
+          .map { i =>
+            Future {
+              barrier.await()
+              run(trial, scanOp, i).getNativeScan.getCommon
+            }
+          }
+          .map(Await.result(_, 30.seconds))
+        commons.exists(_ ne commons.head)
+      }
+    } finally {
+      pool.shutdown()
+    }
+  }
+
+  test("injectPlanData gives racing tasks on a cold scan key the same prepared common") {
+    // Every task of a stage races the first access to its scan's common; whoever memoizes first
+    // wins and the others must adopt that instance, not keep the one they prepared themselves.
+    val split = raceColdScanKey(4) { (_, scanOp, i) =>
+      val key = NativeScanPlanDataInjector.getKey(scanOp).get
+      PlanDataInjector.injectPlanData(
+        parseBasePlan(scanOp.toByteArray),
+        Map(key -> scanOp.getNativeScan.getCommon.toByteArray),
+        Map(key -> nativeScanPartitionBytes(s"part-$i.parquet")))
+    }
+    assert(split.isEmpty, s"${split.size} of 200 trials prepared more than one common: $split")
+  }
+
+  test(
+    "injectPlanDataForShuffle gives racing map tasks on a cold scan key the same prepared " +
+      "common") {
+    val split = raceColdScanKey(4) { (trial, scanOp, i) =>
+      val key = NativeScanPlanDataInjector.getKey(scanOp).get
+      PlanDataInjector.injectPlanDataForShuffle(
+        7000 + trial,
+        scanOp,
+        Map(key -> scanOp.getNativeScan.getCommon.toByteArray),
+        Map(key -> nativeScanPartitionBytes(s"map-$i.parquet")))
+    }
+    assert(split.isEmpty, s"${split.size} of 200 trials prepared more than one common: $split")
+  }
+
   test("NativeScan inject shares one parsed common across a stage's partitions") {
     val scanOp = nativeScanOp("file:///shared-common-tbl", Seq("id", "v"))
     val commonProto = nativeScanCommon("file:///shared-common-tbl", Seq("id", "v"))

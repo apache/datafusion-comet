@@ -373,7 +373,9 @@ private[comet] object PlanDataInjector extends Logging {
    * finalized common that changed under the same key -- scalar-subquery data filters resolve per
    * execution -- so a stale entry is replaced, never served. Two overlapping executions
    * alternating different finalized bytes under one key just alternate the slot: correct, only
-   * losing reuse for the overlap.
+   * losing reuse for the overlap. A miss prepares outside the map's lock, and tasks racing the
+   * same cold key all adopt whichever equal-bytes entry lands first, so a stage shares one
+   * prepared instance per scan on this path exactly as it shares one parsed plan.
    */
   private[comet] def prepareShared(
       injector: PlanDataInjector,
@@ -382,14 +384,21 @@ private[comet] object PlanDataInjector extends Logging {
       preparedCommons: ConcurrentHashMap[String, PreparedCommon]): injector.Prepared = {
     val memoKey = preparedKey(injector, key)
     val hit = preparedCommons.get(memoKey)
-    if (hit != null && java.util.Arrays.equals(hit.bytes, commonBytes)) {
-      // The memo key carries the injector class, so this slot only ever holds its own type.
-      hit.message.asInstanceOf[injector.Prepared]
-    } else {
-      val prepared = injector.prepareCommon(commonBytes)
-      preparedCommons.put(memoKey, new PreparedCommon(commonBytes, prepared))
-      prepared
-    }
+    val winner =
+      if (hit != null && java.util.Arrays.equals(hit.bytes, commonBytes)) {
+        hit
+      } else {
+        val fresh = new PreparedCommon(commonBytes, injector.prepareCommon(commonBytes))
+        // merge is atomic per key: keep an equal-bytes entry that landed meanwhile and discard
+        // the fresh one, otherwise install fresh over the stale or absent slot.
+        preparedCommons.merge(
+          memoKey,
+          fresh,
+          (current: PreparedCommon, _: PreparedCommon) =>
+            if (java.util.Arrays.equals(current.bytes, commonBytes)) current else fresh)
+      }
+    // The memo key carries the injector class, so this slot only ever holds its own type.
+    winner.message.asInstanceOf[injector.Prepared]
   }
 
   def serializeOperator(op: Operator): Array[Byte] = {
