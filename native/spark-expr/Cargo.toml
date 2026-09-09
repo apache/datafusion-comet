@@ -394,7 +394,3 @@ harness = false
 [[bench]]
 name = "dayofweek_weekday"
 harness = false
-
-[[bench]]
-name = "extract_clock_fields"
-harness = false
