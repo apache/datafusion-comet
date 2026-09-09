@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::errors::CometResult;
 use datafusion::execution::memory_pool::{
     MemoryConsumer, MemoryLimit, MemoryPool, MemoryReservation,
 };
@@ -96,25 +97,44 @@ impl Drop for TaskSharedMemoryPool {
 
 /// Returns the memory pool shared by every native plan in `task_attempt_id`, creating it with
 /// `create` if no live pool exists for the task. The returned `Arc` is the RAII handle: the pool
-/// stays registered until the last reference to it drops.
+/// stays registered until the last reference to it drops. `create` runs without the registry
+/// lock, since it can block inside Spark; concurrent creates for one task keep the first to land.
 pub(crate) fn acquire_task_shared_pool(
     task_attempt_id: i64,
-    create: impl FnOnce() -> Arc<dyn MemoryPool>,
-) -> Arc<dyn MemoryPool> {
-    let mut memory_pool_map = TASK_SHARED_MEMORY_POOLS.lock();
-    if let Some(memory_pool) = memory_pool_map
-        .get(&task_attempt_id)
-        .and_then(Weak::upgrade)
-    {
-        return memory_pool;
+    create: impl FnOnce() -> CometResult<Arc<dyn MemoryPool>>,
+) -> CometResult<Arc<dyn MemoryPool>> {
+    if let Some(memory_pool) = lookup(task_attempt_id) {
+        return Ok(memory_pool);
     }
 
     let memory_pool = Arc::new(TaskSharedMemoryPool {
         task_attempt_id,
-        inner: create(),
+        inner: create()?,
     });
-    memory_pool_map.insert(task_attempt_id, Arc::downgrade(&memory_pool));
-    memory_pool
+    let existing = {
+        let mut memory_pool_map = TASK_SHARED_MEMORY_POOLS.lock();
+        match memory_pool_map
+            .get(&task_attempt_id)
+            .and_then(Weak::upgrade)
+        {
+            Some(existing) => Some(existing),
+            None => {
+                memory_pool_map.insert(task_attempt_id, Arc::downgrade(&memory_pool));
+                None
+            }
+        }
+    };
+    // The registry lock is gone by now, so a losing pool dropped here releases its Spark-side
+    // memory without holding it.
+    Ok(existing.unwrap_or(memory_pool))
+}
+
+fn lookup(task_attempt_id: i64) -> Option<Arc<dyn MemoryPool>> {
+    TASK_SHARED_MEMORY_POOLS
+        .lock()
+        .get(&task_attempt_id)
+        .and_then(Weak::upgrade)
+        .map(|memory_pool| memory_pool as Arc<dyn MemoryPool>)
 }
 
 #[cfg(test)]
@@ -124,7 +144,10 @@ mod tests {
 
     /// Tests share the process-wide pool map, so each uses its own task attempt id.
     fn acquire(task_attempt_id: i64) -> Arc<dyn MemoryPool> {
-        acquire_task_shared_pool(task_attempt_id, || Arc::new(UnboundedMemoryPool::default()))
+        acquire_task_shared_pool(task_attempt_id, || {
+            Ok(Arc::new(UnboundedMemoryPool::default()))
+        })
+        .unwrap()
     }
 
     fn is_registered(task_attempt_id: i64) -> bool {
@@ -214,5 +237,77 @@ mod tests {
         // The registry must still work for the task after the churn.
         let _pool = acquire(-1007);
         assert!(is_registered(-1007));
+    }
+
+    /// `create` can block inside Spark while it takes the pool's anchor, so it must run without
+    /// the registry lock, or every other task's plan creation on the executor waits behind it.
+    #[test]
+    fn create_runs_without_the_registry_lock_held() {
+        use std::sync::mpsc::channel;
+        use std::thread;
+        use std::time::Duration;
+
+        let pool = acquire_task_shared_pool(-1008, || {
+            // A helper thread probes the registry; it can only answer if `create` does not hold
+            // the lock. Other tests hold it briefly, so the probe waits generously.
+            let (tx, rx) = channel();
+            thread::spawn(move || {
+                let _ = tx.send(is_registered(-1008));
+            });
+            let registered = rx
+                .recv_timeout(Duration::from_secs(10))
+                .expect("create ran under the registry lock");
+            assert!(!registered, "pool was registered before create finished");
+            Ok(Arc::new(UnboundedMemoryPool::default()))
+        })
+        .unwrap();
+        drop(pool);
+        assert!(!is_registered(-1008));
+    }
+
+    /// A failed `create` registers nothing, so the next plan of the task tries again.
+    #[test]
+    fn failed_create_registers_nothing() {
+        let result = acquire_task_shared_pool(-1009, || {
+            Err(crate::errors::CometError::Internal("declined".to_string()))
+        });
+        assert!(result.is_err());
+        assert!(!is_registered(-1009));
+
+        let _pool = acquire(-1009);
+        assert!(is_registered(-1009));
+    }
+
+    /// Two plans of one task that both miss the registry create two pools; both must end up
+    /// sharing the one that registered first, and only one pool survives.
+    #[test]
+    fn concurrent_creates_for_one_task_share_a_single_pool() {
+        use std::sync::Barrier;
+        use std::thread;
+
+        let barrier = Arc::new(Barrier::new(2));
+        let threads: Vec<_> = (0..2)
+            .map(|_| {
+                let barrier = Arc::clone(&barrier);
+                thread::spawn(move || {
+                    acquire_task_shared_pool(-1010, || {
+                        // Both creates run at once, so neither can see the other's registration.
+                        barrier.wait();
+                        Ok(Arc::new(UnboundedMemoryPool::default()) as Arc<dyn MemoryPool>)
+                    })
+                    .unwrap()
+                })
+            })
+            .collect();
+        let pools: Vec<_> = threads.into_iter().map(|t| t.join().unwrap()).collect();
+
+        assert!(Arc::ptr_eq(&pools[0], &pools[1]));
+        assert_eq!(
+            Arc::strong_count(&pools[0]),
+            2,
+            "the losing pool must be dropped"
+        );
+        drop(pools);
+        assert!(!is_registered(-1010));
     }
 }

@@ -23,7 +23,10 @@ use std::{
 use jni::objects::{Global, JObject};
 use log::warn;
 
-use crate::{errors::CometResult, jvm_bridge::JVMClasses};
+use crate::{
+    errors::{CometError, CometResult},
+    jvm_bridge::JVMClasses,
+};
 use datafusion::common::resources_err;
 use datafusion::execution::memory_pool::MemoryConsumer;
 use datafusion::{
@@ -62,51 +65,20 @@ impl TaskMemoryBridge for JniTaskMemoryBridge {
     }
 }
 
-/// Size of the anchor, the extra byte the pool keeps on the JVM side for its whole life.
+/// Size of the anchor, the byte the pool keeps on the JVM side for its whole life.
 const ANCHOR_BYTES: usize = 1;
 
 /// A DataFusion fair `MemoryPool` implementation for Comet. Internally this is
 /// implemented via delegating calls to [`crate::jvm_bridge::CometTaskMemoryManager`].
 ///
-/// Spark's `ExecutionMemoryPool` removes a task's accounting entry the moment its balance hits
-/// zero, and an acquire parked inside Spark indexes that entry when it wakes. So this pool asks
-/// for one extra byte with its first acquire and keeps it until the pool drops: the balance
-/// never returns to zero mid task, and no release can pull the entry out from under a waiter.
-/// The task therefore stays in Spark's active-task set, and one byte per task is retained, for
-/// the pool's lifetime. Holding a byte back from releases instead would starve Spark's
-/// minimum-share check, which grants a parked request only when the freed bytes cover it in
-/// full, so every release here goes to the JVM whole.
-///
-/// The pool never holds reservation bytes without the anchor. Every acquire that starts before
-/// the anchor lands asks for the extra byte; the first full grant keeps it and later ones hand
-/// theirs straight back. A grant that covers the request but not the extra byte is handed back
-/// as a short grant, so the caller spills instead of running on a balance that a full release
-/// could zero. That spill is one the plain request would not have needed, although the plain
-/// grant leaves the task at the edge of the pool where later requests come back short anyway.
-/// The extra byte matters to Spark only when the request exactly meets its limit, whether that
-/// is the pool's free memory or the task's own share. The grant then comes back short and the
-/// caller spills, or, below the task's minimum share, Spark parks the request until any task
-/// releases memory, where a plain request would have been granted at once. Until the anchor
-/// lands, carriers run one at a time, so a short grant handed back whole can never land while
-/// a sibling of this task is parked; Spark serializes a task's acquires anyway.
+/// Spark drops a task's `memoryForTask` entry when its balance hits zero, and an acquire parked
+/// inside Spark indexes that entry on wake. The pool takes one byte at setup and keeps it until
+/// it drops, so no release, this pool's or a sibling consumer's, can zero the balance under a
+/// waiter. Releases go to the JVM whole: Spark grants a parked request only when they cover it.
 pub struct CometFairMemoryPool {
     bridge: Box<dyn TaskMemoryBridge>,
     pool_size: usize,
     state: Mutex<CometFairPoolState>,
-    /// Held by a carrier from its bridge acquire through its rollback release. Releases never
-    /// take it, so a parked carrier can never hold up the release it is waiting for.
-    bootstrap: Mutex<()>,
-}
-
-/// Whether the pool holds its anchor byte on the JVM side.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Anchor {
-    /// No anchor yet; the next acquire asks for one.
-    Absent,
-    /// This many acquires carrying the anchor request are in flight; none has landed yet.
-    Requested(usize),
-    /// Spark granted the anchor; it is part of `jvm_held` until the pool drops.
-    Held,
 }
 
 struct CometFairPoolState {
@@ -114,7 +86,6 @@ struct CometFairPoolState {
     num: usize,
     /// Bytes the JVM side has granted us and not yet been handed back, anchor included.
     jvm_held: usize,
-    anchor: Anchor,
 }
 
 impl Debug for CometFairMemoryPool {
@@ -129,10 +100,14 @@ impl Debug for CometFairMemoryPool {
 }
 
 impl CometFairMemoryPool {
-    pub fn new(
+    /// Takes the anchor byte from Spark before the pool is usable. A starved task parks here
+    /// like any acquire, so plan creation waits until memory frees, and a task already at its
+    /// share gets an error instead of a pool. A sibling consumer zeroing the balance while this
+    /// is parked makes Spark fail the acquire, and construction fails with it, holding nothing.
+    pub fn try_new(
         task_memory_manager_handle: Arc<Global<JObject<'static>>>,
         pool_size: usize,
-    ) -> CometFairMemoryPool {
+    ) -> CometResult<CometFairMemoryPool> {
         Self::with_bridge(
             Box::new(JniTaskMemoryBridge {
                 task_memory_manager_handle,
@@ -141,18 +116,29 @@ impl CometFairMemoryPool {
         )
     }
 
-    fn with_bridge(bridge: Box<dyn TaskMemoryBridge>, pool_size: usize) -> CometFairMemoryPool {
-        Self {
+    fn with_bridge(
+        bridge: Box<dyn TaskMemoryBridge>,
+        pool_size: usize,
+    ) -> CometResult<CometFairMemoryPool> {
+        let granted = usize::try_from(bridge.acquire(ANCHOR_BYTES)?).unwrap_or(0);
+        if granted < ANCHOR_BYTES {
+            return Err(CometError::Internal(format!(
+                "Failed to acquire the memory pool's {ANCHOR_BYTES} byte anchor, the task \
+                 memory manager granted {granted} bytes"
+            )));
+        }
+        if granted > ANCHOR_BYTES {
+            warn!("Requested {ANCHOR_BYTES} bytes from the JVM but it reports {granted} granted");
+        }
+        Ok(Self {
             bridge,
             pool_size,
             state: Mutex::new(CometFairPoolState {
                 used: 0,
                 num: 0,
-                jvm_held: 0,
-                anchor: Anchor::Absent,
+                jvm_held: ANCHOR_BYTES,
             }),
-            bootstrap: Mutex::new(()),
-        }
+        })
     }
 
     fn acquire(&self, additional: usize) -> CometResult<i64> {
@@ -171,40 +157,18 @@ impl CometFairMemoryPool {
             .expect("released more bytes than the JVM side holds");
     }
 
-    /// Settles a finished bridge acquire: rolls back the bytes the JVM did not back, records
-    /// the bytes the pool keeps, and resolves an anchor request that rode along with it.
-    /// `anchor_granted` is `None` when the acquire carried no anchor request. Returns the bytes
-    /// the caller must hand back at once: the extra byte of a full grant that found the anchor
-    /// already held by another acquire.
-    fn finish_acquire(&self, kept: usize, unbacked: usize, anchor_granted: Option<bool>) -> usize {
+    /// Settles a finished bridge acquire: rolls back the bytes the JVM did not back and records
+    /// the bytes the pool keeps.
+    fn finish_acquire(&self, kept: usize, unbacked: usize) {
         let mut state = self.state.lock();
         state.used = state
             .used
             .checked_sub(unbacked)
             .expect("rolled back more bytes than the pool tracks");
-        let mut surplus = 0;
-        if let Some(anchor_granted) = anchor_granted {
-            state.anchor = match (state.anchor, anchor_granted) {
-                (Anchor::Held, true) => {
-                    surplus = ANCHOR_BYTES;
-                    Anchor::Held
-                }
-                (Anchor::Held, false) => Anchor::Held,
-                (_, true) => Anchor::Held,
-                (Anchor::Requested(in_flight), false) if in_flight > 1 => {
-                    Anchor::Requested(in_flight - 1)
-                }
-                (_, false) => Anchor::Absent,
-            };
-        }
-        let kept = kept
-            .checked_sub(surplus)
-            .expect("surplus exceeds the granted bytes");
         state.jvm_held = state
             .jvm_held
             .checked_add(kept)
             .expect("overflow in checked_add");
-        surplus
     }
 }
 
@@ -215,10 +179,6 @@ impl Drop for CometFairMemoryPool {
     /// whole balance when the task ends anyway.
     fn drop(&mut self) {
         let state = self.state.get_mut();
-        if state.anchor != Anchor::Held {
-            return;
-        }
-        state.anchor = Anchor::Absent;
         match state.jvm_held.checked_sub(ANCHOR_BYTES) {
             Some(rest) => state.jvm_held = rest,
             None => {
@@ -307,7 +267,7 @@ impl MemoryPool for CometFairMemoryPool {
             // Checking the fair limit and reserving the bytes is one atomic step, so concurrent
             // grows can never jointly exceed pool_size / num. The blocking JVM acquire then runs
             // without any lock held, and the reservation rolls back if the JVM does not back it.
-            let carries_anchor = {
+            {
                 let mut state = self.state.lock();
                 let num = state.num;
                 let limit = self
@@ -326,61 +286,37 @@ impl MemoryPool for CometFairMemoryPool {
                 state.used = used
                     .checked_add(additional)
                     .expect("overflow in checked_add");
-                // Until the anchor lands, every acquire asks for it: an acquire that took a
-                // plain grant meanwhile could otherwise free it in full under a parked carrier.
-                match state.anchor {
-                    Anchor::Held => false,
-                    Anchor::Absent => {
-                        state.anchor = Anchor::Requested(1);
-                        true
-                    }
-                    Anchor::Requested(in_flight) => {
-                        state.anchor = Anchor::Requested(in_flight + 1);
-                        true
-                    }
-                }
-            };
-            // Taken after the state lock is released, and only by carriers, so no lock is ever
-            // held while waiting for it and non-carriers never queue behind a parked one.
-            let _bootstrap = carries_anchor.then(|| self.bootstrap.lock());
-            let requested = if carries_anchor {
-                additional + ANCHOR_BYTES
-            } else {
-                additional
-            };
-            let anchor_granted = |granted: usize| carries_anchor.then_some(granted == requested);
+            }
 
             // The bridge can panic inside its JNI frame; the optimistic reservation must not
             // outlive the call, or the leaked bytes poison the task-shared pool for every
             // other consumer.
             let acquired = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                self.acquire(requested)
+                self.acquire(additional)
             })) {
                 Ok(Ok(acquired)) => acquired,
                 Ok(Err(e)) => {
-                    self.finish_acquire(0, additional, anchor_granted(0));
+                    self.finish_acquire(0, additional);
                     return Err(e.into());
                 }
                 Err(panic) => {
-                    self.finish_acquire(0, additional, anchor_granted(0));
+                    self.finish_acquire(0, additional);
                     std::panic::resume_unwind(panic);
                 }
             };
             let granted = usize::try_from(acquired).unwrap_or(0);
-            if granted > requested {
+            if granted > additional {
                 // Spark never grants more than it is asked for. Clamp so a misbehaving bridge
                 // cannot push jvm_held past what the pool later releases.
-                warn!("Requested {requested} bytes from the JVM but it reports {granted} granted");
+                warn!("Requested {additional} bytes from the JVM but it reports {granted} granted");
             }
-            let granted = granted.min(requested);
-            // A grant that falls short of the request, anchor included, is handed back whole and
-            // reported so the caller can spill. The anchor cannot be retried on top of a live
-            // reservation, so a first grant that covers the bytes but not the anchor counts as
-            // short too.
-            if granted < requested {
+            let granted = granted.min(additional);
+            // A grant that falls short of the request is handed back whole and reported so the
+            // caller can spill.
+            if granted < additional {
                 // Return the headroom before handing the grant back to the JVM, so other
                 // threads can use it even if the release itself fails.
-                self.finish_acquire(0, additional, anchor_granted(granted));
+                self.finish_acquire(0, additional);
                 if granted > 0 {
                     // The bytes are already off the books, so a failed return only leaves Spark
                     // holding them until the task ends.
@@ -388,26 +324,13 @@ impl MemoryPool for CometFairMemoryPool {
                 }
 
                 return resources_err!(
-                    "Failed to acquire {} bytes{}, only got {} bytes. Reserved: {} bytes",
-                    requested,
-                    if carries_anchor {
-                        " (including the pool's one byte anchor)"
-                    } else {
-                        ""
-                    },
+                    "Failed to acquire {} bytes, only got {} bytes. Reserved: {} bytes",
+                    additional,
                     acquired,
                     self.reserved()
                 );
             }
-            let surplus = self.finish_acquire(granted, 0, anchor_granted(granted));
-            if surplus > 0 {
-                // Another acquire landed the anchor first; that byte keeps the balance above
-                // zero, so this one goes back now. A failed return only leaves Spark holding a
-                // byte more than the pool tracks until the task ends.
-                if let Err(e) = self.release(surplus) {
-                    warn!("Failed to return the surplus memory pool anchor byte: {e:?}");
-                }
-            }
+            self.finish_acquire(granted, 0);
         }
         Ok(())
     }
@@ -587,6 +510,11 @@ mod tests {
             self.task_holds(OTHER_TASK, bytes);
         }
 
+        /// Another consumer of this task, such as the shuffle allocator, takes `bytes`.
+        fn sibling_consumer_holds(&self, bytes: i64) {
+            self.task_holds(THIS_TASK, bytes);
+        }
+
         /// A neighbour hands `bytes` back, dropping out of the active set at zero, which wakes
         /// every parked acquire like Spark's notifyAll.
         fn task_releases(&self, task: i64, bytes: i64) {
@@ -607,18 +535,18 @@ mod tests {
             self.task_releases(OTHER_TASK, bytes);
         }
 
+        /// The sibling consumer hands `bytes` of this task back, which removes the task's entry
+        /// if that empties it.
+        fn sibling_consumer_releases(&self, bytes: i64) {
+            self.task_releases(THIS_TASK, bytes);
+        }
+
         fn wait_parked(&self, what: &str) {
             self.parked
                 .1
                 .lock()
                 .recv_timeout(TEST_TIMEOUT)
                 .unwrap_or_else(|_| panic!("{what} never parked inside Spark"));
-        }
-
-        /// Whether some acquire parks within `timeout`, for scenarios where parking is the
-        /// failure and the fixed code never reaches Spark at all.
-        fn parked_within(&self, timeout: Duration) -> bool {
-            self.parked.1.lock().recv_timeout(timeout).is_ok()
         }
     }
 
@@ -695,11 +623,15 @@ mod tests {
         }
     }
 
+    fn try_pool_with(
+        stub: &Arc<StubTaskMemory>,
+        pool_size: usize,
+    ) -> CometResult<CometFairMemoryPool> {
+        CometFairMemoryPool::with_bridge(Box::new(Arc::clone(stub)), pool_size)
+    }
+
     fn pool_with(stub: &Arc<StubTaskMemory>, pool_size: usize) -> Arc<dyn MemoryPool> {
-        Arc::new(CometFairMemoryPool::with_bridge(
-            Box::new(Arc::clone(stub)),
-            pool_size,
-        ))
+        Arc::new(try_pool_with(stub, pool_size).expect("anchor acquire failed"))
     }
 
     #[test]
@@ -710,7 +642,7 @@ mod tests {
 
         res.try_grow(600).unwrap();
         assert_eq!(pool.reserved(), 600);
-        assert_eq!(stub.outstanding(), 601, "first grant carries the anchor");
+        assert_eq!(stub.outstanding(), 601, "anchor plus the grant");
 
         res.shrink(200);
         assert_eq!(pool.reserved(), 400);
@@ -740,12 +672,13 @@ mod tests {
         let res = MemoryConsumer::new("consumer").register(&pool);
 
         res.try_grow(600).unwrap();
+        let acquires_before = stub.acquires.load(SeqCst);
         let err = res.try_grow(500).unwrap_err();
         assert!(err.to_string().contains("fair limit"), "{err}");
         assert_eq!(pool.reserved(), 600);
         assert_eq!(
             stub.acquires.load(SeqCst),
-            1,
+            acquires_before,
             "over-limit grow must be rejected before reaching Spark"
         );
         res.free();
@@ -778,19 +711,19 @@ mod tests {
         let err = res.try_grow(100).unwrap_err();
         assert!(err.to_string().contains("only got"), "{err}");
         assert_eq!(pool.reserved(), 0);
-        assert_eq!(stub.outstanding(), 0, "partial grant must be handed back");
+        assert_eq!(stub.outstanding(), 1, "partial grant must be handed back");
     }
 
     #[test]
     fn acquire_failure_leaves_accounting_unchanged() {
         let stub = Arc::new(StubTaskMemory::new(GIB));
-        stub.fail_acquire.store(true, SeqCst);
         let pool = pool_with(&stub, 1_000);
         let res = MemoryConsumer::new("consumer").register(&pool);
 
+        stub.fail_acquire.store(true, SeqCst);
         assert!(res.try_grow(100).is_err());
         assert_eq!(pool.reserved(), 0);
-        assert_eq!(stub.outstanding(), 0);
+        assert_eq!(stub.outstanding(), 1, "only the anchor may remain");
     }
 
     #[test]
@@ -799,10 +732,11 @@ mod tests {
         let pool = pool_with(&stub, 1_000);
         let res = MemoryConsumer::new("consumer").register(&pool);
 
+        let acquires_before = stub.acquires.load(SeqCst);
         pool.try_grow(&res, 0).unwrap();
         pool.shrink(&res, 0);
-        assert_eq!(stub.acquires.load(SeqCst), 0);
-        assert_eq!(stub.outstanding(), 0);
+        assert_eq!(stub.acquires.load(SeqCst), acquires_before);
+        assert_eq!(stub.outstanding(), 1, "only the anchor may remain");
     }
 
     #[test]
@@ -841,68 +775,34 @@ mod tests {
         assert_eq!(stub.outstanding(), 1);
     }
 
-    /// The anchor rides on the first acquire; if that acquire fails the next one asks again,
-    /// and the failure must not leave a phantom anchor behind.
+    /// The bridge fails the anchor acquire outright: construction fails and the task memory
+    /// manager is left exactly as it was.
     #[test]
-    fn anchor_is_retried_after_a_failed_first_acquire() {
+    fn construction_fails_when_the_bridge_errors_on_the_anchor() {
         let stub = Arc::new(StubTaskMemory::new(GIB));
         stub.fail_acquire.store(true, SeqCst);
-        let pool = pool_with(&stub, 1_000);
-        let res = MemoryConsumer::new("consumer").register(&pool);
 
-        assert!(res.try_grow(100).is_err());
-        assert_eq!(
-            stub.outstanding(),
-            0,
-            "failed acquire must not count an anchor"
+        let err = try_pool_with(&stub, 1_000).expect_err("anchor was declined");
+        assert!(
+            err.to_string().contains("injected acquire failure"),
+            "{err}"
         );
-
-        stub.fail_acquire.store(false, SeqCst);
-        res.try_grow(100).unwrap();
-        assert_eq!(
-            stub.outstanding(),
-            101,
-            "anchor is taken on the first grant that lands"
-        );
-        res.free();
-        assert_eq!(stub.outstanding(), 1);
-        drop(res);
-        drop(pool);
-        assert_eq!(stub.outstanding(), 0);
+        assert_eq!(stub.outstanding(), 0, "a failed anchor holds nothing");
+        assert_eq!(stub.releases.load(SeqCst), 0, "nothing to hand back");
     }
 
-    /// When Spark backs the request but has no room for the extra byte, the grant is handed
-    /// back and reported as short: the pool never runs a live reservation without its anchor,
-    /// since a later full release could then zero the balance under a parked acquire.
+    /// Spark declines the anchor with a zero grant when the task is already at its share, here
+    /// because a sibling consumer holds all of it. Construction fails and nothing is released,
+    /// so the sibling's bytes are untouched.
     #[test]
-    fn exact_fit_grant_without_the_anchor_is_rejected_as_short() {
+    fn construction_fails_when_spark_grants_no_anchor() {
         let stub = Arc::new(StubTaskMemory::new(100));
-        let pool = pool_with(&stub, 1_000);
-        let res = MemoryConsumer::new("consumer").register(&pool);
-        // 75 held elsewhere leaves 25 free with this task's minimum share at 25, so Spark
-        // grants exactly 25 of the 26 asked for instead of parking.
-        stub.other_task_holds(75);
+        stub.sibling_consumer_holds(100);
 
-        let err = res.try_grow(25).unwrap_err();
-        assert!(err.to_string().contains("only got"), "{err}");
-        assert_eq!(pool.reserved(), 0);
-        assert_eq!(
-            stub.outstanding(),
-            0,
-            "exact-fit grant must be handed back whole"
-        );
-
-        res.try_grow(24).unwrap();
-        assert_eq!(
-            stub.outstanding(),
-            25,
-            "anchor rides on the first grant with headroom"
-        );
-        res.free();
-        assert_eq!(stub.outstanding(), 1);
-        drop(res);
-        drop(pool);
-        assert_eq!(stub.outstanding(), 0);
+        let err = try_pool_with(&stub, 1_000).expect_err("anchor was declined");
+        assert!(err.to_string().contains("granted 0 bytes"), "{err}");
+        assert_eq!(stub.outstanding(), 100, "sibling's bytes must be untouched");
+        assert_eq!(stub.releases.load(SeqCst), 0, "nothing to hand back");
     }
 
     /// Dropping the pool is the only path that hands the anchor back, and it must do so
@@ -921,16 +821,6 @@ mod tests {
         drop(pool);
         assert_eq!(stub.outstanding(), 0);
         assert_eq!(stub.releases.load(SeqCst), releases_before_drop + 1);
-    }
-
-    /// A pool that never got its anchor has nothing to hand back at drop.
-    #[test]
-    fn unanchored_pool_releases_nothing_at_drop() {
-        let stub = Arc::new(StubTaskMemory::new(GIB));
-        let pool = pool_with(&stub, 1_000);
-        drop(pool);
-        assert_eq!(stub.releases.load(SeqCst), 0);
-        assert_eq!(stub.outstanding(), 0);
     }
 
     /// Many threads hammering grow/shrink must keep the pool's accounting and the Spark-side
@@ -1155,68 +1045,26 @@ mod tests {
         assert_eq!(stub.outstanding(), 1, "only the anchor may remain");
     }
 
-    /// The pool's very first acquire parks inside Spark with the anchor still only requested.
-    /// A second consumer's acquire that starts meanwhile carries the extra byte too and waits
-    /// for the first carrier to settle; once the anchor is held it hands its own byte back. A
-    /// plain grant here, freed in full, would take the task's entry to zero under the waiter.
+    /// A short grant is handed back whole, and that release can land while a sibling of this
+    /// task is parked inside Spark. Here the first consumer's rollback is held at the JNI hop, a
+    /// third task then leaves the pool (which raises this task's minimum share), and a second
+    /// consumer's acquire arrives and parks. The rollback must wake it, not drop the entry.
     #[test]
-    fn acquire_started_while_the_anchor_is_in_flight_keeps_the_entry_alive() {
+    fn short_grant_rollback_landing_under_a_parked_sibling_keeps_the_entry_alive() {
         let stub = Arc::new(StubTaskMemory::new(100));
         let pool = pool_with(&stub, 1_000_000);
 
         let first = MemoryConsumer::new("first").register(&pool);
         let second = MemoryConsumer::new("second").register(&pool);
-        // 5 bytes free with a 25 byte minimum share: a 20 byte request parks.
-        stub.other_task_holds(95);
-
-        let first_thread = thread::spawn(move || {
-            let result = first.try_grow(20);
-            first.free();
-            result
-        });
-        stub.wait_parked("first acquire");
-
-        let second_thread = thread::spawn(move || {
-            let result = second.try_grow(4);
-            second.free();
-            result
-        });
-
-        // Room for the parked request; the second acquire follows once the first has settled.
-        stub.other_task_releases(50);
-        let first_result = first_thread
-            .join()
-            .expect("parked first acquire crashed after the second consumer's release");
-        first_result.expect("parked first acquire was not granted once memory was freed");
-        let second_result = second_thread
-            .join()
-            .expect("second acquire crashed while the anchor was in flight");
-        second_result.expect("second acquire was not granted");
-        assert_eq!(pool.reserved(), 0);
-        assert_eq!(stub.outstanding(), 1, "only the anchor may remain");
-    }
-
-    /// While the anchor has not landed, a short grant is handed back whole, and that release
-    /// must never land while a sibling of this task is parked inside Spark. Here the first
-    /// consumer's short grant is held at the JNI hop, a third task then leaves the pool (which
-    /// raises this task's minimum share), and a second consumer's acquire arrives. If it reaches
-    /// Spark it parks, and the pending release then removes the task's entry under it.
-    #[test]
-    fn short_grant_rollback_cannot_land_under_a_sibling_parked_in_spark() {
-        let stub = Arc::new(StubTaskMemory::new(100));
-        let pool = pool_with(&stub, 1_000_000);
-
-        let first = MemoryConsumer::new("first").register(&pool);
-        let second = MemoryConsumer::new("second").register(&pool);
-        // Three active tasks: 17 free with a 16 byte minimum share, so a 30 byte request gets
-        // a short grant of 17 rather than parking.
+        // Three active tasks: 16 free with a 16 byte minimum share, so a 30 byte request gets
+        // a short grant of 16 rather than parking.
         stub.task_holds(OTHER_TASK, 82);
         stub.task_holds(THIRD_TASK, 1);
 
         stub.release_gate.arm();
         let first_thread = thread::spawn(move || {
             let result = first.try_grow(30);
-            assert!(result.is_err(), "30 bytes cannot fit into 17 free bytes");
+            assert!(result.is_err(), "30 bytes cannot fit into 16 free bytes");
             first.free();
         });
         stub.release_gate
@@ -1228,9 +1076,7 @@ mod tests {
             second.try_grow(10).unwrap();
             second.free();
         });
-        // The pool holds the second acquire back until the rollback lands, so this probe only
-        // fires if an acquire slips into Spark; the margin covers a slow CI scheduler.
-        let parked = stub.parked_within(Duration::from_secs(2));
+        stub.wait_parked("second acquire");
 
         stub.release_gate.disarm();
         stub.release_gate.open();
@@ -1238,11 +1084,172 @@ mod tests {
         second_thread
             .join()
             .expect("second acquire crashed when the rollback release landed");
-        assert!(
-            !parked,
-            "an acquire entered Spark while a short grant was being rolled back"
-        );
         assert_eq!(pool.reserved(), 0);
         assert_eq!(stub.outstanding(), 1, "only the anchor may remain");
+    }
+
+    /// The anchor is taken once when the pool is set up, before any consumer grows, and
+    /// handed back once when the pool drops.
+    #[test]
+    fn pool_takes_its_anchor_at_setup_and_returns_it_at_drop() {
+        let stub = Arc::new(StubTaskMemory::new(GIB));
+        let pool = pool_with(&stub, 1_000);
+        assert_eq!(stub.outstanding(), 1, "anchor is taken at setup");
+        assert_eq!(pool.reserved(), 0, "anchor is not part of the reservation");
+
+        drop(pool);
+        assert_eq!(stub.outstanding(), 0, "anchor is returned at drop");
+        assert_eq!(stub.releases.load(SeqCst), 1);
+    }
+
+    /// Spark's shuffle allocator is another off-heap consumer of the same task. When it frees
+    /// its last page while an acquire of this pool is parked, Spark drops the task's entry
+    /// unless this pool already holds its anchor byte.
+    #[test]
+    fn sibling_consumer_freeing_its_last_page_does_not_drop_the_task_entry() {
+        let stub = Arc::new(StubTaskMemory::new(100));
+        let pool = pool_with(&stub, 1_000_000);
+        let grower = MemoryConsumer::new("grower").register(&pool);
+
+        // A sibling consumer holds 10 bytes of this task and a neighbour fills the rest, so a
+        // 10 byte request parks below the 25 byte minimum share.
+        stub.sibling_consumer_holds(10);
+        stub.other_task_holds(stub.memory_free());
+        let grower_thread = thread::spawn(move || {
+            grower.try_grow(10).unwrap();
+            grower.free();
+        });
+        stub.wait_parked("grower");
+
+        stub.sibling_consumer_releases(10);
+        grower_thread
+            .join()
+            .expect("parked acquire crashed when a sibling consumer freed its last page");
+        assert_eq!(pool.reserved(), 0);
+        assert_eq!(stub.outstanding(), 1, "only the anchor may remain");
+    }
+
+    /// One consumer's acquire is parked inside Spark. A second consumer's acquire that Spark can
+    /// grant at once must not queue behind it inside the pool.
+    #[test]
+    fn second_acquire_does_not_queue_behind_a_parked_one() {
+        let stub = Arc::new(StubTaskMemory::new(100));
+        let pool = pool_with(&stub, 1_000_000);
+
+        let first = MemoryConsumer::new("first").register(&pool);
+        let second = MemoryConsumer::new("second").register(&pool);
+        // 4 bytes free with a 25 byte minimum share: a 20 byte request parks, a 4 byte one
+        // is granted outright.
+        stub.other_task_holds(stub.memory_free() - 4);
+
+        let first_thread = thread::spawn(move || {
+            let result = first.try_grow(20);
+            first.free();
+            result
+        });
+        stub.wait_parked("first acquire");
+
+        let (second_done_tx, second_done_rx) = channel();
+        let second_thread = thread::spawn(move || {
+            let result = second.try_grow(4);
+            second.free();
+            let _ = second_done_tx.send(result);
+        });
+        let second_result = second_done_rx.recv_timeout(Duration::from_secs(2));
+
+        // Room for the parked request, released before asserting so no thread stays parked.
+        stub.other_task_releases(50);
+        let first_result = first_thread.join().expect("parked first acquire crashed");
+        first_result.expect("parked first acquire was not granted once memory was freed");
+        second_thread.join().unwrap();
+        second_result
+            .expect("second acquire queued behind the parked first acquire")
+            .expect("second acquire was not granted");
+        assert_eq!(pool.reserved(), 0);
+        assert_eq!(stub.outstanding(), 1, "only the anchor may remain");
+    }
+
+    /// A request for exactly the bytes Spark has free is a grant Spark satisfies in full, and
+    /// the pool must accept it.
+    #[test]
+    fn first_grow_of_exactly_the_free_bytes_is_accepted() {
+        let stub = Arc::new(StubTaskMemory::new(100));
+        let pool = pool_with(&stub, 1_000);
+        let res = MemoryConsumer::new("consumer").register(&pool);
+        stub.other_task_holds(stub.memory_free() - 25);
+
+        res.try_grow(25)
+            .expect("an exact-fit grant must be accepted");
+        assert_eq!(pool.reserved(), 25);
+        assert_eq!(stub.outstanding(), 26, "anchor plus the grant");
+        res.free();
+        assert_eq!(stub.outstanding(), 1);
+        drop(res);
+        drop(pool);
+        assert_eq!(stub.outstanding(), 0);
+    }
+
+    /// The anchor acquire itself can park, and a sibling consumer can zero the task's balance
+    /// under it; Spark then fails that acquire (the stub panics like the JVM exception) and the
+    /// pool must not exist, with nothing held or released.
+    #[test]
+    fn anchor_acquire_failing_under_a_vanished_entry_leaves_nothing_behind() {
+        let stub = Arc::new(StubTaskMemory::new(100));
+        // The sibling holds this task's whole share, the neighbour fills the rest: the anchor
+        // request parks below the minimum share with nothing free.
+        stub.sibling_consumer_holds(10);
+        stub.other_task_holds(90);
+
+        let construction = {
+            let stub = Arc::clone(&stub);
+            thread::spawn(move || try_pool_with(&stub, 1_000).map(drop))
+        };
+        stub.wait_parked("anchor acquire");
+        stub.sibling_consumer_releases(10);
+
+        assert!(
+            construction.join().is_err(),
+            "the parked anchor acquire must fail once its task entry is gone"
+        );
+        assert_eq!(stub.outstanding(), 0);
+        assert_eq!(stub.releases.load(SeqCst), 0, "nothing to hand back");
+    }
+
+    /// Two plans of one task create their pools at once: both take an anchor, the registry keeps
+    /// the first, and the loser's drop hands its anchor back exactly once.
+    #[test]
+    fn concurrent_creates_through_the_registry_keep_one_anchor() {
+        use crate::execution::memory_pools::acquire_task_shared_pool;
+
+        let stub = Arc::new(StubTaskMemory::new(GIB));
+        let barrier = Arc::new(Barrier::new(2));
+        let threads: Vec<_> = (0..2)
+            .map(|_| {
+                let stub = Arc::clone(&stub);
+                let barrier = Arc::clone(&barrier);
+                thread::spawn(move || {
+                    acquire_task_shared_pool(-2001, || {
+                        let pool = try_pool_with(&stub, 1_000)?;
+                        // Both anchors are taken before either pool reaches the registry.
+                        barrier.wait();
+                        Ok(Arc::new(pool) as Arc<dyn MemoryPool>)
+                    })
+                    .unwrap()
+                })
+            })
+            .collect();
+        let pools: Vec<_> = threads.into_iter().map(|t| t.join().unwrap()).collect();
+
+        assert!(Arc::ptr_eq(&pools[0], &pools[1]));
+        assert_eq!(stub.acquires.load(SeqCst), 2, "each create takes an anchor");
+        assert_eq!(
+            stub.releases.load(SeqCst),
+            1,
+            "the loser returns its anchor once"
+        );
+        assert_eq!(stub.outstanding(), 1, "the surviving pool keeps its anchor");
+        drop(pools);
+        assert_eq!(stub.outstanding(), 0);
+        assert_eq!(stub.releases.load(SeqCst), 2);
     }
 }
