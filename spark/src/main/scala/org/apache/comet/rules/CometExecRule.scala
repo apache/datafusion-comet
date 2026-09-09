@@ -207,6 +207,18 @@ case class CometExecRule(session: SparkSession)
   private def isCometNative(op: SparkPlan): Boolean = op.isInstanceOf[CometNativeExec]
 
   /**
+   * Restore a native Partial's original Spark operator with its current children. Both repair
+   * paths use this to preserve native work below the Partial, prevent reconversion, and record
+   * the explanation immediately, even if a non-native child prevents another serde attempt. The
+   * caller establishes buffer incompatibility; this does not traverse or rewrite children.
+   */
+  private def restoreSparkPartial(agg: CometHashAggregateExec, reason: String): SparkPlan = {
+    val partial = agg.originalPlan.withNewChildren(agg.children)
+    partial.setTagValue(CometExecRule.COMET_UNSAFE_PARTIAL, reason)
+    withFallbackReason(partial, reason)
+  }
+
+  /**
    * A Celeborn exchange can fall back after its child has been converted, for example because of
    * the partition threshold or an unsupported hash key. Keep incompatible partial aggregate
    * buffers on Spark too: an ordinary shuffle cannot connect a native partial to a native final.
@@ -224,9 +236,7 @@ case class CometExecRule(session: SparkSession)
       case agg: CometHashAggregateExec
           if agg.modes == Seq(Partial) &&
             !QueryPlanSerde.allAggsSupportNativePartialToSparkFinal(agg.aggregateExpressions) =>
-        val sparkAggregate = agg.originalPlan.withNewChildren(agg.children)
-        sparkAggregate.setTagValue(CometExecRule.COMET_UNSAFE_PARTIAL, reason)
-        withFallbackReason(sparkAggregate, reason)
+        restoreSparkPartial(agg, reason)
       // Final output is ordinary SQL data; any partial below it belongs to another aggregate.
       case agg: CometHashAggregateExec if agg.modes.contains(Final) => agg
       case agg: BaseAggregateExec if agg.aggregateExpressions.exists(_.mode == Final) => agg
@@ -1129,19 +1139,50 @@ case class CometExecRule(session: SparkSession)
   }
 
   /**
+   * Inspect an unrepaired buffer path without modifying it, including already-created stages.
+   * Unlike a descendant search, stop at Spark producers and completed aggregates so an unrelated
+   * inner native Partial cannot trigger a warning. Merge stages still consume intermediate
+   * buffers. Unknown unary wrappers are inspected only when they preserve all output attributes;
+   * changed-output and branching nodes are not assumed to forward the same buffers.
+   */
+  private def hasUnrepairedNativePartial(plan: SparkPlan): Boolean = plan match {
+    case agg: CometHashAggregateExec if agg.aggregateExpressions.isEmpty =>
+      hasUnrepairedNativePartial(agg.child)
+    case agg: CometHashAggregateExec =>
+      agg.modes.forall(m => m == Partial || m == PartialMerge) &&
+      !QueryPlanSerde.allAggsSupportNativePartialToSparkFinal(agg.aggregateExpressions)
+    case agg: BaseAggregateExec
+        if agg.aggregateExpressions.nonEmpty &&
+          agg.aggregateExpressions.forall(_.mode == Partial) =>
+      false
+    case agg: BaseAggregateExec =>
+      agg.aggregateExpressions.forall(e => e.mode == Partial || e.mode == PartialMerge) &&
+      hasUnrepairedNativePartial(agg.child)
+    case stage: QueryStageExec => hasUnrepairedNativePartial(stage.plan)
+    case reused: ReusedExchangeExec => hasUnrepairedNativePartial(reused.child)
+    case read: AQEShuffleReadExec => hasUnrepairedNativePartial(read.child)
+    case placeholder: CometSinkPlaceHolder => hasUnrepairedNativePartial(placeholder.child)
+    case shuffle: CometShuffleExchangeExec => hasUnrepairedNativePartial(shuffle.child)
+    case other if other.children.size == 1 && other.output == other.children.head.output =>
+      hasUnrepairedNativePartial(other.children.head)
+    case _ => false
+  }
+
+  /**
    * The early tagging pass cannot know whether a Final's child will become native. Check the
    * actual conversion result as well, before native blocks are serialized or AQE launches stages.
-   * Restore only the feeding aggregate/exchange chain; keep native work below its Partial.
+   * Restore only the feeding aggregate/exchange chain; keep native work below its Partial. If a
+   * remaining native buffer producer cannot be restored, warn and annotate the Spark Final; do
+   * not rewrite materialized stages or assume unknown operators can safely be reconstructed.
    */
-  private def revertUnsafePartialAggregates(plan: SparkPlan): SparkPlan = {
+  private[rules] def revertUnsafePartialAggregates(plan: SparkPlan): SparkPlan = {
     def revertChain(node: SparkPlan): Option[SparkPlan] = node match {
       case agg: CometHashAggregateExec if agg.modes == Seq(Partial) =>
-        val partial = agg.originalPlan.withNewChildren(Seq(agg.child))
-        partial.setTagValue(
-          CometExecRule.COMET_UNSAFE_PARTIAL,
-          "Partial aggregate disabled: corresponding final aggregate " +
-            "cannot be converted to Comet and intermediate buffer formats are incompatible")
-        Some(partial)
+        Some(
+          restoreSparkPartial(
+            agg,
+            "Partial aggregate disabled: corresponding final aggregate " +
+              "cannot be converted to Comet and intermediate buffer formats are incompatible"))
 
       case agg: CometHashAggregateExec
           if agg.modes.forall(m => m == Partial || m == PartialMerge) =>
@@ -1181,7 +1222,25 @@ case class CometExecRule(session: SparkSession)
           // Rebuild native consumers and shuffles from their original Spark operators. Merely
           // replacing their children would leave a native protobuf reading the old buffers.
           .map(child => transform(agg.withNewChildren(Seq(child))))
-          .getOrElse(agg)
+          .getOrElse {
+            if (hasUnrepairedNativePartial(agg.child)) {
+              val reason = "Comet could not restore a native intermediate buffer producer " +
+                s"below Spark final aggregate (${agg.child.nodeName}); " +
+                "the remaining aggregate boundary may have incompatible buffer formats"
+              // AQE may reapply this rule to the same consumer. Keep the explanation, but do
+              // not repeat a warning that has already been attached to this plan node.
+              if (!agg
+                  .getTagValue(CometExplainInfo.FALLBACK_REASONS)
+                  .exists(_.contains(reason))) {
+                if (!CometConf.COMET_EXPLAIN_FALLBACK_LOG_ENABLED.get()) logWarning(reason)
+                withFallbackReason(agg, reason)
+              } else {
+                agg
+              }
+            } else {
+              agg
+            }
+          }
     }
   }
 
