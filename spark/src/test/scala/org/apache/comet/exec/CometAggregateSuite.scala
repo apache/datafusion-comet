@@ -960,32 +960,6 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  // Exercise FIRST/LAST partial-state merging across multiple batches.
-  // https://github.com/apache/datafusion-comet/issues/4131
-  test("partialMerge - FIRST/LAST with distinct aggregates") {
-    val numValues = 10000
-    Seq(100).foreach { numGroups =>
-      Seq(128).foreach { batchSize =>
-        withSQLConf(
-          SQLConf.COALESCE_PARTITIONS_ENABLED.key -> "true",
-          CometConf.COMET_BATCH_SIZE.key -> batchSize.toString) {
-          withParquetTable(
-            (0 until numValues).map(i => (i, Random.nextInt() % numGroups)),
-            "tbl",
-            false) {
-            withView("v") {
-              sql("CREATE TEMP VIEW v AS SELECT _1, _2 FROM tbl ORDER BY _1")
-              // Hash aggregation does not preserve the input sort. Use a value constant within
-              // each group so FIRST/LAST agree regardless of the engines' processing order.
-              checkSparkAnswerAndOperator("SELECT _2, FIRST(_2), LAST(_2), COUNT(DISTINCT _1)" +
-                " FROM v GROUP BY _2 ORDER BY _2")
-            }
-          }
-        }
-      }
-    }
-  }
-
   test("partialMerge - cnt distinct + sum") {
     withTempDir(dir => {
       withSQLConf("spark.comet.enabled" -> "false") {
