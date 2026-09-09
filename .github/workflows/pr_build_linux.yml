@@ -409,6 +409,7 @@ jobs:
               org.apache.comet.CometSetOpWithGroupBySuite
               org.apache.comet.CometSparkSessionExtensionsSuite
               org.apache.spark.CometPluginsSuite
+              org.apache.spark.CometRuntimeShutdownSuite
               org.apache.spark.CometTaskMemoryManagerSuite
               org.apache.spark.CometExecIteratorLifecycleSuite
               org.apache.spark.CometPluginsDefaultSuite
@@ -476,6 +477,7 @@ jobs:
               org.apache.comet.CometWidthBucketSuite
               org.apache.comet.CometUuidExpressionSuite
               org.apache.comet.serde.CometScalarFunctionSuite
+              org.apache.comet.serde.CometLiteralSuite
               org.apache.comet.serde.CometSerdeInvariantSuite
               org.apache.comet.CometFallbackInvarianceSuite
       fail-fast: false

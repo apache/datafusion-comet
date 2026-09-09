@@ -31,7 +31,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSet, Expression, ExpressionSet, Generator, NamedExpression, SortOrder}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode, CollectList, CollectSet, Final, First, Last, Partial, PartialMerge, Percentile}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode, CollectList, CollectSet, Final, Partial, PartialMerge, Percentile}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
 import org.apache.spark.sql.catalyst.plans._
 import org.apache.spark.sql.catalyst.plans.physical._
@@ -39,7 +39,7 @@ import org.apache.spark.sql.comet.execution.arrow.{CometArrowStream, CometNative
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution._
-import org.apache.spark.sql.execution.adaptive.{AQEShuffleReadExec, BroadcastQueryStageExec, ShuffleQueryStageExec}
+import org.apache.spark.sql.execution.adaptive.{AQEShuffleReadExec, BroadcastQueryStageExec, QueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec}
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, HashJoin, ShuffledHashJoinExec, SortMergeJoinExec}
@@ -836,7 +836,7 @@ abstract class CometNativeExec extends CometExec {
    *   - CometScanExec - Comet scan node
    *   - CometBatchScanExec - Comet scan node
    *   - CometIcebergNativeScanExec - Native Iceberg scan node
-   *   - ShuffleQueryStageExec - AQE shuffle stage node on top of Comet shuffle
+   *   - QueryStageExec - AQE shuffle, broadcast, or table-cache stage
    *   - AQEShuffleReadExec - AQE shuffle read node on top of Comet shuffle
    *   - CometShuffleExchangeExec - Comet shuffle exchange node
    *   - CometUnionExec, etc. which executes its children native plan and produces ColumnarBatches
@@ -858,10 +858,9 @@ abstract class CometNativeExec extends CometExec {
       // input-boundary concept from "this fixed list" to "any leaf Comet exec".
       case _: CometLeafExec =>
         func(plan)
-      case _: CometScanExec | _: CometBatchScanExec | _: ShuffleQueryStageExec |
-          _: AQEShuffleReadExec | _: CometShuffleExchangeExec | _: CometUnionExec |
-          _: CometTakeOrderedAndProjectExec | _: CometCoalesceExec | _: ReusedExchangeExec |
-          _: CometBroadcastExchangeExec | _: BroadcastQueryStageExec |
+      case _: CometScanExec | _: CometBatchScanExec | _: QueryStageExec | _: AQEShuffleReadExec |
+          _: CometShuffleExchangeExec | _: CometUnionExec | _: CometTakeOrderedAndProjectExec |
+          _: CometCoalesceExec | _: ReusedExchangeExec | _: CometBroadcastExchangeExec |
           _: CometSparkToColumnarExec | _: CometLocalTableScanExec |
           _: CometInMemoryTableScanExec =>
         func(plan)
@@ -1771,25 +1770,6 @@ trait CometBaseAggregate {
         }
       }
 
-      // FIRST/LAST are order-dependent: in PartialMerge mode, DataFusion's hash
-      // table may process rows in a different order than Spark's. CollectSet is
-      // handled separately (floating-point compat in CometCollectSet; streaming
-      // in ShimCometStreaming.isStreamingPlan).
-      // https://github.com/apache/datafusion-comet/issues/4131
-      if (hasPartialMerge) {
-        val unsupportedAggs = aggregateExpressions.filter { a =>
-          a.mode == PartialMerge && (a.aggregateFunction.isInstanceOf[First] ||
-            a.aggregateFunction.isInstanceOf[Last])
-        }
-        if (unsupportedAggs.nonEmpty) {
-          withFallbackReason(
-            aggregate,
-            "PartialMerge not supported for aggregates: " +
-              unsupportedAggs.map(_.aggregateFunction.prettyName).mkString(", "))
-          return None
-        }
-      }
-
       // Per-expression binding: Partial expressions bind to child output,
       // PartialMerge/Final expressions do not (native planner handles their input).
       val output = child.output
@@ -2195,6 +2175,7 @@ trait CometHashJoin {
         .setBuildSide(if (join.buildSide == BuildLeft) OperatorOuterClass.BuildSide.BuildLeft
         else OperatorOuterClass.BuildSide.BuildRight)
         .setNullAwareAntiJoin(isNullAwareAntiJoin)
+        .setDynamicFilterEnabled(CometConf.COMET_EXEC_JOIN_DYNAMIC_FILTER_ENABLED.get(join.conf))
       condition.foreach(joinBuilder.setCondition)
       Some(builder.setHashJoin(joinBuilder).build())
     } else {
@@ -2464,8 +2445,14 @@ case class CometHashJoinExec(
   override def hashCode(): Int =
     Objects.hashCode(output, leftKeys, rightKeys, condition, buildSide, left, right)
 
-  override lazy val metrics: Map[String, SQLMetric] =
-    CometMetricNode.joinMetrics(sparkContext)
+  override lazy val metrics: Map[String, SQLMetric] = {
+    val joinMetrics = CometMetricNode.joinMetrics(sparkContext)
+    if (nativeOp.getHashJoin.getDynamicFilterEnabled) {
+      joinMetrics ++ CometMetricNode.joinDynamicFilterMetrics(sparkContext)
+    } else {
+      joinMetrics
+    }
+  }
 }
 
 case class CometBroadcastHashJoinExec(
@@ -2605,8 +2592,14 @@ case class CometBroadcastHashJoinExec(
   override def hashCode(): Int =
     Objects.hashCode(output, leftKeys, rightKeys, condition, buildSide, left, right)
 
-  override lazy val metrics: Map[String, SQLMetric] =
-    CometMetricNode.joinMetrics(sparkContext)
+  override lazy val metrics: Map[String, SQLMetric] = {
+    val joinMetrics = CometMetricNode.joinMetrics(sparkContext)
+    if (nativeOp.getHashJoin.getDynamicFilterEnabled) {
+      joinMetrics ++ CometMetricNode.joinDynamicFilterMetrics(sparkContext)
+    } else {
+      joinMetrics
+    }
+  }
 }
 
 object CometSortMergeJoinExec extends CometOperatorSerde[SortMergeJoinExec] {

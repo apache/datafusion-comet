@@ -19,7 +19,7 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Base64, ExpressionImplUtils, Literal, StringDecode, TryEval, UrlCodec}
+import org.apache.spark.sql.catalyst.expressions.{ApplyFunctionExpression, Attribute, Base64, Expression, ExpressionImplUtils, Literal, StringDecode, TryEval, UrlCodec}
 import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
 import org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils
 import org.apache.spark.sql.types.StringType
@@ -53,11 +53,21 @@ object CometStaticInvoke extends CometExpressionSerde[StaticInvoke] {
       // Spark 3.5+ makes `Base64` RuntimeReplaceable, lowering `base64(bin)` to
       // `StaticInvoke(Base64.encode, Seq(child, chunkBase64), ...)`. On Spark 3.4 the `Base64`
       // node survives and is handled directly (see CometBase64).
-      ("encode", classOf[Base64].getName) -> CometBase64StaticInvoke) ++
-      CometIcebergSystemFunctions.staticInvokeHandlers
+      ("encode", classOf[Base64].getName) -> CometBase64StaticInvoke)
 
   private def handlerFor(expr: StaticInvoke): Option[CometExpressionSerde[StaticInvoke]] =
     staticInvokeExpressions.get((expr.functionName, expr.staticObject.getName))
+
+  /**
+   * Iceberg's system functions are keyed by class name only because both the `StaticInvoke` and
+   * `ApplyFunctionExpression` lowerings share the same identity class. Consulted after the
+   * per-`(functionName, class)` allowlist above so the `functionName` filter still applies for
+   * anything not owned by Iceberg.
+   */
+  private def icebergHandlerFor(expr: StaticInvoke): Option[CometExpressionSerde[Expression]] =
+    if (expr.functionName == CometIcebergSystemFunctions.MagicMethod) {
+      CometIcebergSystemFunctions.handlers.get(expr.staticObject.getName)
+    } else None
 
   /** Every Iceberg system function is named `invoke`, so name the declaring class too. */
   private def noNativePathNote(expr: StaticInvoke): String =
@@ -77,42 +87,83 @@ object CometStaticInvoke extends CometExpressionSerde[StaticInvoke] {
    * enrollment stays with the individual handlers.
    */
   override def getSupportLevel(expr: StaticInvoke): SupportLevel =
-    handlerFor(expr).map(_.getSupportLevel(expr)).getOrElse(Compatible())
+    handlerFor(expr)
+      .map(_.getSupportLevel(expr))
+      .orElse(icebergHandlerFor(expr).map(_.getSupportLevel(expr)))
+      .getOrElse(Compatible())
 
   /**
    * `GenerateDocs` only asks the serde registered for the expression class, which is this object,
    * so the per-function handlers' notes have to be collected here or they never reach the
    * compatibility guide.
    */
-  override def getUnsupportedReasons(): Seq[String] =
-    staticInvokeExpressions.values.toSeq.distinct.flatMap(_.getUnsupportedReasons()).distinct
+  override def getUnsupportedReasons(): Seq[String] = {
+    val builtIn: Seq[CometExpressionSerde[_]] = staticInvokeExpressions.values.toSeq
+    val iceberg: Seq[CometExpressionSerde[_]] =
+      CometIcebergSystemFunctions.handlers.values.toSeq
+    (builtIn ++ iceberg).distinct.flatMap(_.getUnsupportedReasons()).distinct
+  }
 
   override def convert(
       expr: StaticInvoke,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     handlerFor(expr) match {
-      case Some(handler) =>
-        handler.convert(expr, inputs, binding)
+      case Some(handler) => handler.convert(expr, inputs, binding)
       case None =>
-        // Nothing in the allowlist covers this lowering, so run Spark's own implementation inside
-        // the Comet pipeline rather than failing the whole operator back to Spark.
-        // `StaticInvoke.doGenCode` emits a static method call, so the kernel matches Spark by
-        // construction. Spark 4.x keeps lowering more `RuntimeReplaceable` functions this way
-        // (`encode`, `is_valid_utf8`, the `TIME` family, ...) and `lpad` / `rpad` on binary has
-        // lowered to `StaticInvoke(ByteArray, ...)` since Spark 3.4.
-        //
-        // The encoder and deserializer trees that make up most `StaticInvoke` usage in typed
-        // Dataset operations are unaffected: their arguments are `ObjectType`, which
-        // `CometBatchKernelCodegen.isSupportedDataType` rejects, so the dispatcher declines them
-        // and they fall back exactly as before.
-        CometStaticInvokeCodegenDispatch.convert(expr, inputs, binding).orElse {
-          // The dispatcher tags its own reason, but not which static invoke it was.
-          withFallbackReason(expr, noNativePathNote(expr))
-          None
+        icebergHandlerFor(expr) match {
+          case Some(handler) => handler.convert(expr, inputs, binding)
+          case None =>
+            // Nothing in the allowlist covers this lowering, so run Spark's own implementation
+            // inside the Comet pipeline rather than failing the whole operator back to Spark.
+            // `StaticInvoke.doGenCode` emits a static method call, so the kernel matches Spark by
+            // construction. Spark 4.x keeps lowering more `RuntimeReplaceable` functions this way
+            // (`encode`, `is_valid_utf8`, the `TIME` family, ...) and `lpad` / `rpad` on binary
+            // has lowered to `StaticInvoke(ByteArray, ...)` since Spark 3.4.
+            //
+            // The encoder and deserializer trees that make up most `StaticInvoke` usage in typed
+            // Dataset operations are unaffected: their arguments are `ObjectType`, which
+            // `CometBatchKernelCodegen.isSupportedDataType` rejects, so the dispatcher declines
+            // them and they fall back exactly as before.
+            CometStaticInvokeCodegenDispatch.convert(expr, inputs, binding).orElse {
+              // The dispatcher tags its own reason, but not which static invoke it was.
+              withFallbackReason(expr, noNativePathNote(expr))
+              None
+            }
         }
     }
   }
+}
+
+/**
+ * `ApplyFunctionExpression` is the second lowering Spark's
+ * `V2ExpressionUtils.resolveScalarFunction` emits for a DataSourceV2 catalog scalar function:
+ * when the implementation class does not expose a static `invoke` "magic method" with a matching
+ * signature, Spark falls back to this form and calls `function.produceResult(row)` reflectively
+ * at runtime. The magic method is an optional performance opt-in in the DSv2 API, so any V2
+ * catalog function can land here -- Iceberg versions that omit the magic method on a per-type
+ * implementation are the concrete case that motivates the dispatch, but this is not
+ * Iceberg-specific.
+ *
+ * Iceberg's per-type implementation class is the identity shared with the `StaticInvoke` path, so
+ * [[CometIcebergSystemFunctions.handlers]] resolves both forms.
+ */
+object CometApplyFunctionExpression extends CometExpressionSerde[ApplyFunctionExpression] {
+
+  private def handlerFor(
+      expr: ApplyFunctionExpression): Option[CometExpressionSerde[Expression]] =
+    CometIcebergSystemFunctions.handlers.get(expr.function.getClass.getName)
+
+  override def getSupportLevel(expr: ApplyFunctionExpression): SupportLevel =
+    handlerFor(expr)
+      .map(_.getSupportLevel(expr))
+      .getOrElse(Unsupported(Some(s"${expr.function.getClass.getName} has no native handler")))
+
+  override def convert(
+      expr: ApplyFunctionExpression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] =
+    handlerFor(expr).flatMap(_.convert(expr, inputs, binding))
 }
 
 /**
