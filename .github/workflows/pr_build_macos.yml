@@ -217,6 +217,7 @@ jobs:
           - name: "expressions"
             value: |
               org.apache.comet.CometExpressionSuite
+              org.apache.comet.GenerateDocsSuite
               org.apache.comet.CometSqlFileTestSuite
               org.apache.comet.CometExpressionCoverageSuite
               org.apache.comet.CometVariantTypeSuite

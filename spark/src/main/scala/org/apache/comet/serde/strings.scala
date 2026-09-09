@@ -403,15 +403,17 @@ object CometRLike
     with NativeOptInAvailable
     with CometTypeShim {
 
+  override def hasConditionalNativeDefault: Boolean = true
+
   override def getCompatibleNotes(): Seq[String] =
     Seq(
-      "When the pattern is a `UTF8_BINARY` literal that uses only constructs the plan-time " +
-        "analyzer proves equivalent to Java regex (ASCII literals, simple character classes, " +
-        "ordinary greedy quantifiers, capturing / non-capturing groups, and alternation), " +
-        "Comet evaluates `rlike` natively by default.")
+      "A `UTF8_BINARY` literal pattern admitted by the plan-time compatibility analyzer is " +
+        "evaluated natively by default.")
 
   override def getIncompatibleReasons(): Seq[String] =
-    Seq("Uses Rust regexp engine, which has different behavior to Java regexp engine")
+    Seq(
+      "For applicable literal patterns outside the automatically admitted subset, the native " +
+        "Rust regex engine may behave differently from Java regex.")
 
   private def literalPattern(expr: RLike): Option[String] = expr.right match {
     case Literal(v: UTF8String, _: StringType) => Some(v.toString)

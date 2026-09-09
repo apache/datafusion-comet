@@ -57,17 +57,21 @@ object GenerateDocs {
    *   Spark-compatible path by default and the user can opt into a native path
    * @param nativeOptInConfigKey
    *   the config key the user sets to opt into the native path
+   * @param conditionalNativeDefault
+   *   whether some compatible instances run natively by default while other applicable instances
+   *   retain the native opt-in behavior
    * @param codegenDispatchFallback
    *   whether the serde mixes in `CodegenDispatchFallback`, meaning `unsupportedReasons` cases
    *   route through the JVM codegen dispatcher instead of falling back to Spark
    */
-  private case class ExprNotes(
+  private[comet] case class ExprNotes(
       name: String,
       compatibleNotes: Seq[String],
       incompatibleReasons: Seq[String],
       unsupportedReasons: Seq[String],
       nativeOptIn: Boolean,
       nativeOptInConfigKey: String,
+      conditionalNativeDefault: Boolean,
       codegenDispatchFallback: Boolean)
 
   private type CategoryNotes = Seq[ExprNotes]
@@ -87,6 +91,10 @@ object GenerateDocs {
       serde.getUnsupportedReasons(),
       optIn,
       key,
+      conditionalNativeDefault = serde match {
+        case n: NativeOptInAvailable => n.hasConditionalNativeDefault
+        case _ => false
+      },
       codegenDispatchFallback = serde.isInstanceOf[CodegenDispatchFallback])
   }
 
@@ -100,6 +108,7 @@ object GenerateDocs {
       // Aggregate serdes do not have a native opt-in path.
       nativeOptIn = false,
       nativeOptInConfigKey = CometConf.getExprAllowIncompatConfigKey(cls),
+      conditionalNativeDefault = false,
       codegenDispatchFallback = false)
 
   /**
@@ -382,22 +391,38 @@ object GenerateDocs {
   }
 
   private def writeExpressionCompatNotes(w: BufferedOutputStream, notes: CategoryNotes): Unit = {
+    w.write(renderExpressionCompatNotes(notes).getBytes)
+  }
+
+  /** Render expression compatibility notes as Markdown. Visible to package tests. */
+  private[comet] def renderExpressionCompatNotes(notes: Seq[ExprNotes]): String = {
+    val output = new StringBuilder
     val sorted = notes.sortBy(_.name).filter { n =>
       n.compatibleNotes.nonEmpty || n.incompatibleReasons.nonEmpty || n.unsupportedReasons.nonEmpty
     }
     for (n <- sorted) {
       val name = n.name
-      w.write(s"\n## $name\n".getBytes)
+      output.append(s"\n## $name\n")
       if (n.compatibleNotes.nonEmpty) {
-        w.write(
-          ("\nThe following differences from Spark are always present and do not require" +
-            " any additional configuration:\n\n").getBytes)
+        val header = if (n.conditionalNativeDefault) {
+          "\nThe following cases use Comet's native implementation by default:\n\n"
+        } else {
+          "\nThe following differences from Spark are always present and do not require" +
+            " any additional configuration:\n\n"
+        }
+        output.append(header)
         for (note <- n.compatibleNotes) {
-          w.write(s"- $note\n".getBytes)
+          output.append(s"- $note\n")
         }
       }
       if (n.incompatibleReasons.nonEmpty) {
-        val header = if (n.nativeOptIn) {
+        val header = if (n.conditionalNativeDefault) {
+          "\nFor applicable cases that are not selected for native execution automatically," +
+            s" `$name` is evaluated in the JVM using Spark's own code-generated implementation" +
+            " (run inside the Comet pipeline) by default." +
+            s" Set `${n.nativeOptInConfigKey}=true` to explicitly select Comet's native" +
+            " implementation, which has the following differences from Spark:\n\n"
+        } else if (n.nativeOptIn) {
           s"\nBy default, `$name` is evaluated in the JVM using Spark's own code-generated" +
             " implementation (run inside the Comet pipeline), which matches Spark exactly." +
             s" Set `${n.nativeOptInConfigKey}=true` to opt into Comet's native implementation" +
@@ -407,9 +432,9 @@ object GenerateDocs {
             s" Set `spark.comet.expression.$name.allowIncompatible=true` to enable Comet" +
             " acceleration despite these differences.\n\n"
         }
-        w.write(header.getBytes)
+        output.append(header)
         for (reason <- n.incompatibleReasons) {
-          w.write(s"- $reason\n".getBytes)
+          output.append(s"- $reason\n")
         }
       }
       if (n.unsupportedReasons.nonEmpty) {
@@ -420,12 +445,13 @@ object GenerateDocs {
           "\nThe following cases are not supported by Comet and always fall back to Spark," +
             " regardless of any `allowIncompatible` setting:\n\n"
         }
-        w.write(header.getBytes)
+        output.append(header)
         for (reason <- n.unsupportedReasons) {
-          w.write(s"- $reason\n".getBytes)
+          output.append(s"- $reason\n")
         }
       }
     }
+    output.result()
   }
 
   private def writeCastMatrixForMode(w: BufferedOutputStream, mode: CometEvalMode.Value): Unit = {
