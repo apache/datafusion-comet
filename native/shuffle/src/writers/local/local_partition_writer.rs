@@ -306,9 +306,9 @@ impl PartitionWriter for LocalPartitionWriter {
         // add one extra offset at last to ease partition length computation
         self.offsets[self.num_output_partitions] = final_offset;
 
-        // The offsets go straight to the Spark task driving this plan, which reads them over
-        // JNI. Writing them to a temporary index file first would cost every map task a create,
-        // write, read and unlink on top of the index file Spark itself commits.
+        // The offsets go straight to whoever is driving this plan. Writing them to a temporary
+        // index file first would cost every task a create, write, read and unlink on top of the
+        // index the caller ultimately commits.
         let offsets = self
             .offsets
             .iter()

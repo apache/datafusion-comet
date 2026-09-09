@@ -48,17 +48,17 @@ use std::{
     sync::{Arc, OnceLock},
 };
 
-/// One-shot slot carrying a local shuffle task's partition offsets from the writer to the JVM.
+/// One-shot slot carrying a local shuffle task's partition offsets out of the writer.
 ///
-/// The writer knows every offset by the time it finishes, and the only consumer is the Spark task
-/// driving the same plan, so the offsets are handed over in memory instead of being serialized to
-/// a temporary index file and read back. `set` is called exactly once, from `finish_all`.
+/// The writer knows every offset by the time it finishes, and the only consumer is whoever is
+/// driving the plan, so the offsets are handed over in memory instead of being serialized to a
+/// temporary index file and read back. `set` is called exactly once, from `finish_all`.
 #[derive(Debug, Default)]
 pub struct PartitionOffsets(OnceLock<Vec<i64>>);
 
 impl PartitionOffsets {
     /// Publishes the finished task's offsets. Returns an error if called more than once, which
-    /// would mean two writers shared one slot and the JVM could read either one's offsets.
+    /// would mean two writers shared one slot and a reader could observe either one's offsets.
     pub fn set(&self, offsets: Vec<i64>) -> Result<()> {
         self.0.set(offsets).map_err(|_| {
             DataFusionError::Execution(
@@ -81,8 +81,8 @@ pub enum ShuffleWriterDestination {
     Local {
         /// Path of the local shuffle data file.
         output_data_file: String,
-        /// Receives the partition offsets once the writer finishes, so the JVM can read them
-        /// over JNI rather than through a temporary index file. Shared with the plan that owns
+        /// Receives the partition offsets once the writer finishes, so the caller can read them
+        /// in memory rather than through a temporary index file. Shared with the plan that owns
         /// this destination, and set exactly once per task.
         partition_offsets: Arc<PartitionOffsets>,
     },
@@ -138,8 +138,9 @@ pub struct ShuffleWriterExec {
 }
 
 impl ShuffleWriterExec {
-    /// Creates a shuffle writer that writes to a local data file, publishing its partition
-    /// offsets through a fresh [`PartitionOffsets`] slot readable via [`Self::partition_offsets`].
+    /// Creates a shuffle writer that writes partition data to a local file and publishes its
+    /// partition offsets in memory, through a fresh [`PartitionOffsets`] slot that
+    /// [`Self::partition_offsets`] hands back to the caller.
     #[allow(clippy::too_many_arguments)]
     pub fn try_new(
         input: Arc<dyn ExecutionPlan>,
