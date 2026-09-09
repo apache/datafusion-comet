@@ -22,7 +22,7 @@ package org.apache.comet.serde
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Expression, Literal}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, ApproximatePercentile, Average, BitAndAgg, BitOrAgg, BitXorAgg, BloomFilterAggregate, CentralMomentAgg, CollectList, CollectSet, Corr, Count, Covariance, CovPopulation, CovSample, First, HyperLogLogPlusPlus, Last, Max, Min, Percentile, RegrIntercept, RegrR2, RegrReplacement, RegrSlope, RegrSXY, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, ApproximatePercentile, Average, BitAndAgg, BitOrAgg, BitXorAgg, BloomFilterAggregate, CentralMomentAgg, CollectList, CollectSet, Corr, Count, Covariance, CovPopulation, CovSample, First, HyperLogLogPlusPlus, Kurtosis, Last, Max, Min, Percentile, RegrIntercept, RegrR2, RegrReplacement, RegrSlope, RegrSXY, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
 import org.apache.spark.sql.catalyst.util.ArrayData
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{BinaryType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, NumericType, ShortType, StringType, TimestampNTZType, TimestampType}
@@ -1111,6 +1111,44 @@ object CometApproxCountDistinct extends CometAggregateExpressionSerde[HyperLogLo
           .setHllpp(builder)
           .build())
     } else {
+      None
+    }
+  }
+}
+
+object CometKurtosis extends CometAggregateExpressionSerde[Kurtosis] {
+
+  // Not marked safe for mixed partial/final: follows the same policy as `Variance` / `Stddev`,
+  // whose complex `[n, avg, m2, ...]` buffer is not certified compatible across engines. The
+  // native accumulator does mirror Spark's `[n, avg, m2, m3, m4]` wire format, so lifting this
+  // to `true` should be considered together with the other `CentralMomentAgg` serdes.
+
+  override def convert(
+      aggExpr: AggregateExpression,
+      kurtosis: Kurtosis,
+      inputs: Seq[Attribute],
+      binding: Boolean,
+      conf: SQLConf): Option[ExprOuterClass.AggExpr] = {
+    val child = kurtosis.child
+    val childExpr = exprToProto(child, inputs, binding)
+
+    if (childExpr.isDefined) {
+      val builder = ExprOuterClass.Kurtosis.newBuilder()
+      builder.setChild(childExpr.get)
+      builder.setNullOnDivideByZero(kurtosis.nullOnDivideByZero)
+      // Spark's evaluate expression divides by `m2 * m2`, and that `Divide` picks up its eval
+      // mode from the session. `m2` can be non-zero while `m2 * m2` underflows to zero, which
+      // the `m2 === 0` guard above it does not catch, so the native side needs to know whether
+      // that divisor should raise or return null.
+      builder.setAnsiEnabled(conf.ansiEnabled)
+
+      Some(
+        ExprOuterClass.AggExpr
+          .newBuilder()
+          .setKurtosis(builder)
+          .build())
+    } else {
+      withFallbackReason(aggExpr, "Child expression or data type not supported")
       None
     }
   }

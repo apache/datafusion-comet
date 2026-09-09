@@ -163,6 +163,7 @@ message AggExpr {
     HllPlusPlus hllpp = 20;
     CollectList collectList = 21;
     Regr regr = 22;
+    Kurtosis kurtosis = 23;
   }
 
   // Optional filter expression for SQL FILTER (WHERE ...) clause.
@@ -255,6 +256,20 @@ message Stddev {
   bool null_on_divide_by_zero = 2;
   DataType datatype = 3;
   StatisticsType stats_type = 4;
+}
+
+// Excess kurtosis (Fisher definition: normal distribution -> 0). Spark's
+// intermediate buffer is `[n, avg, m2, m3, m4]` of Float64 to match the
+// `CentralMomentAgg` DeclarativeAggregate wire format for mixed
+// Partial/Final execution with Spark.
+message Kurtosis {
+  Expr child = 1;
+  bool null_on_divide_by_zero = 2;
+  // Spark builds the final `n * m4 / (m2 * m2) - 3.0` from a `Divide` whose eval mode is
+  // captured from the session at plan time, so a divisor that underflows to zero raises
+  // DIVIDE_BY_ZERO under ANSI and yields NULL otherwise. That is a different switch from
+  // `null_on_divide_by_zero`, which comes from `legacyStatisticalAggregate`.
+  bool ansi_enabled = 3;
 }
 
 message Correlation {

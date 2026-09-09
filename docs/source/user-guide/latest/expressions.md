@@ -104,7 +104,7 @@ The tables below list every Spark built-in expression with its current status.
 | `first_value` | ✅ | Native |  |
 | `grouping` | ✅ | — | Grouping indicator for ROLLUP/CUBE/GROUPING SETS |
 | `grouping_id` | ✅ | — | Grouping indicator for ROLLUP/CUBE/GROUPING SETS |
-| `kurtosis` | 🔜 | — | Not yet implemented natively |
+| `kurtosis` | ✅ | Native | Excess kurtosis (Fisher definition). |
 | `last` | ✅ | Native |  |
 | `last_value` | ✅ | Native |  |
 | `listagg` | 🔜 | — | String aggregation |
