@@ -21,6 +21,7 @@ package org.apache.comet.shims
 
 import org.apache.spark.sql.execution.datasources.VariantMetadata
 import org.apache.spark.sql.types.{ArrayType, DataType, MapType, StringType, StructType, VariantType}
+import org.apache.spark.unsafe.types.UTF8String
 
 trait CometTypeShim {
   // A `StringType` carries collation metadata in Spark 4.0. Only non-default (non-UTF8_BINARY)
@@ -73,6 +74,8 @@ trait CometTypeShim {
 
   def isTimeType(dt: DataType): Boolean =
     dt.getClass.getSimpleName.startsWith("TimeType")
+
+  def isValidUtf8(s: UTF8String): Boolean = s.isValid
 
   def hasCollationSupport: Boolean = true
 }
