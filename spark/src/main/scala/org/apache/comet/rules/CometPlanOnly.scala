@@ -23,7 +23,9 @@ import scala.util.control.NonFatal
 
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.execution.{ApplyColumnarRulesAndInsertTransitions, BaseSubqueryExec, ColumnarToRowExec, CommandResultExec, ExecSubqueryExpression, InputAdapter, QueryExecution, ReusedSubqueryExec, RowToColumnarExec, SparkPlan, WholeStageCodegenExec}
+import org.apache.spark.sql.catalyst.expressions.Alias
+import org.apache.spark.sql.catalyst.trees.TreeNodeTag
+import org.apache.spark.sql.execution.{ApplyColumnarRulesAndInsertTransitions, BaseSubqueryExec, ColumnarToRowExec, CommandResultExec, ExecSubqueryExpression, InputAdapter, ProjectExec, QueryExecution, ReusedSubqueryExec, RowToColumnarExec, SparkPlan, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, QueryStageExec}
 import org.apache.spark.sql.execution.command.ExecutedCommandExec
 import org.apache.spark.sql.execution.datasources.v2.V2CommandExec
@@ -46,7 +48,14 @@ import org.apache.comet.CometSparkSessionExtensions.isCometLoaded
  * simple. Spark applies a planner rule many times for one query - once per query stage and once
  * per adaptive re-optimization under AQE, and separately for every subquery it prepares - and
  * telling those applications apart takes a good deal of bookkeeping. A query execution listener
- * fires once per action, holding the finished plan, so there is nothing to tell apart.
+ * fires once per SQL execution, holding the finished plan, so there is nothing to tell apart.
+ *
+ * Per SQL execution, not per action: Spark drives `QueryExecutionListener` from the Dataset
+ * action path, so work taken through `df.rdd` is outside it. On Spark 4.0+ obtaining `df.rdd`
+ * runs a query of its own and is reported at that point, while the RDD actions that follow are
+ * not; on 3.4/3.5 obtaining it is not reported either. Covering those would mean a second
+ * reporting path keyed on job starts, and reconciling it against this one so an ordinary query is
+ * not reported twice.
  */
 object CometPlanOnly extends Logging {
 
@@ -77,6 +86,72 @@ object CometPlanOnly extends Logging {
   }
 
   /**
+   * The settings that decide whether a query gets a report and how its preview is built, as they
+   * stood while the query was being planned.
+   *
+   * Reporting is asynchronous, so by the time the listener runs the caller may have restored or
+   * changed any of these - a `withSQLConf` block that runs `collect()` and exits before the
+   * callback is delivered is enough. Reading them back off the session then decides one query's
+   * report using another query's settings, which usually means dropping it. Snapshotting at plan
+   * time keeps the decision with the query it belongs to.
+   */
+  private case class PlanOnlySettings(
+      enabled: Boolean,
+      cometLoaded: Boolean,
+      execEnabled: Boolean)
+
+  /**
+   * Set on the plan `CometExecRule` saw while plan-only mode was on. Read back in `report`, which
+   * runs on the listener bus with no access to the planning thread's configuration.
+   */
+  private val PLAN_ONLY_SETTINGS = new TreeNodeTag[PlanOnlySettings]("CometPlanOnlySettings")
+
+  /**
+   * Record the plan-time settings on `plan` and return it unchanged.
+   *
+   * Called by `CometExecRule` on the plan it is declining to convert.
+   */
+  def tagSettings(session: SparkSession, plan: SparkPlan): SparkPlan = {
+    val conf = session.sessionState.conf
+    plan.setTagValue(
+      PLAN_ONLY_SETTINGS,
+      PlanOnlySettings(
+        enabled = CometConf.COMET_EXPLAIN_PLAN_ONLY_ENABLED.get(conf),
+        cometLoaded = isCometLoaded(conf),
+        execEnabled = CometConf.COMET_EXEC_ENABLED.get(conf)))
+    plan
+  }
+
+  /**
+   * The settings recorded for this query, searching the adaptive wrappers' own plans as well:
+   * under AQE the tagged plan is the one AQE was handed, which hangs off `AdaptiveSparkPlanExec`
+   * rather than appearing among its children.
+   *
+   * Falls back to reading the session when no tag is found, which covers a plan that reached the
+   * listener without passing through `CometExecRule`.
+   */
+  private def settingsFor(qe: QueryExecution): PlanOnlySettings = {
+    def search(plan: SparkPlan): Option[PlanOnlySettings] =
+      plan
+        .getTagValue(PLAN_ONLY_SETTINGS)
+        .orElse((plan match {
+          case adaptive: AdaptiveSparkPlanExec =>
+            Seq(adaptive.inputPlan, adaptive.initialPlan, adaptive.executedPlan)
+          case stage: QueryStageExec => Seq(stage.plan)
+          case _ => Seq.empty
+        }).flatMap(search).headOption)
+        .orElse(plan.children.flatMap(search).headOption)
+
+    search(qe.executedPlan).getOrElse {
+      val conf = qe.sparkSession.sessionState.conf
+      PlanOnlySettings(
+        enabled = CometConf.COMET_EXPLAIN_PLAN_ONLY_ENABLED.get(conf),
+        cometLoaded = isCometLoaded(conf),
+        execEnabled = CometConf.COMET_EXEC_ENABLED.get(conf))
+    }
+  }
+
+  /**
    * Logs the Comet plan Comet would have executed for `qe`.
    *
    * Nothing here may fail the query, which has finished by this point but whose action would
@@ -91,9 +166,9 @@ object CometPlanOnly extends Logging {
     val previous = SparkSession.getActiveSession
     SparkSession.setActiveSession(session)
     try {
-      val conf = session.sessionState.conf
-      if (CometConf.COMET_EXPLAIN_PLAN_ONLY_ENABLED.get(conf) && isCometLoaded(conf) &&
-        CometConf.COMET_EXEC_ENABLED.get(conf) && !isMetadataOnly(qe.executedPlan)) {
+      val settings = settingsFor(qe)
+      if (settings.enabled && settings.cometLoaded && settings.execEnabled &&
+        !isMetadataOnly(qe.executedPlan)) {
         val preview = previewOf(session, qe.executedPlan)
         logWarning(s"$REPORT_PREFIX\n${new ExtendedExplainInfo().generateExtendedInfo(preview)}")
       }
@@ -171,12 +246,46 @@ object CometPlanOnly extends Logging {
     // conversion would never reach the subtree while the coverage count - which unwraps the
     // wrapper - still counts every operator in it as Spark. Undo the reuse and let both copies
     // convert, which is what the counts of a real Comet run reflect.
-    case reused: ReusedExchangeExec => stripPreparation(reused.child)
+    //
+    // The wrapper's own output IDs have to survive that, though. `ReusedExchangeExec` re-aliases
+    // the shared child's output, so a self-join can expose `k#16` here while the child produces
+    // `k#3`. Returning the child bare leaves the parent sort referencing an attribute nothing in
+    // its subtree produces; Comet's attribute binder then declines the sort, the join above it
+    // stays on Spark, and the preview understates coverage for work Comet would have accelerated.
+    // Re-alias positionally, the same correspondence `ReusedExchangeExec` itself relies on.
+    case reused: ReusedExchangeExec =>
+      restoreReusedOutput(reused, stripPreparation(reused.child))
     case WholeStageCodegenExec(child) => stripPreparation(child)
     case InputAdapter(child) => stripPreparation(child)
     case ColumnarToRowExec(child) => stripPreparation(child)
     case RowToColumnarExec(child) => stripPreparation(child)
     case other => other.withNewChildren(other.children.map(stripPreparation))
+  }
+
+  /**
+   * `stripped`, the subtree that was behind a `ReusedExchangeExec`, presenting the wrapper's
+   * output attributes instead of its own.
+   *
+   * A no-op when the IDs already agree, which is the common case: reuse only re-aliases when the
+   * two copies were planned with different attribute IDs. Otherwise a `ProjectExec` of aliases
+   * carries the wrapper's `exprId`s, which is the cheapest node that can re-label an output
+   * without disturbing the subtree the preview is trying to measure. It does add one operator to
+   * the report, but a projection of aliases is one Comet converts, so the coverage percentage is
+   * not skewed the way losing the parent sort and its join was.
+   */
+  private def restoreReusedOutput(reused: ReusedExchangeExec, stripped: SparkPlan): SparkPlan = {
+    val target = reused.output
+    val source = stripped.output
+    if (target.length != source.length || target.zip(source).forall { case (t, s) =>
+        t.exprId == s.exprId
+      }) {
+      return stripped
+    }
+    val aliases = target.zip(source).map { case (t, s) =>
+      if (t.exprId == s.exprId) s
+      else Alias(s, t.name)(exprId = t.exprId, qualifier = t.qualifier)
+    }
+    ProjectExec(aliases, stripped)
   }
 
   /**

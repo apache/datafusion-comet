@@ -23,11 +23,13 @@ import org.apache.logging.log4j.Level
 import org.apache.spark.CometListenerBusUtils
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.comet.CometPlan
-import org.apache.spark.sql.execution.{FileSourceScanExec, SparkPlan, SubqueryBroadcastExec}
+import org.apache.spark.sql.execution.{FileSourceScanExec, QueryExecution, SparkPlan, SubqueryBroadcastExec}
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.util.QueryExecutionListener
 
 import org.apache.comet.{CometConf, CometCoverageStats}
+import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 
 /**
  * Tests for plan-only mode: `spark.comet.explain.planOnly.enabled`.
@@ -195,18 +197,114 @@ class CometPlanOnlySuite extends CometTestBase {
     }
   }
 
-  // `df.rdd` - the path PySpark's `df.rdd` takes through `Dataset.javaToPython` - plans a second
-  // query of its own and runs it under its own execution id, so it is reported too, once.
-  test("an RDD action is reported once") {
+  // Reporting is driven by `QueryExecutionListener`, which Spark fires from the Dataset action
+  // path, so RDD actions are outside it. What `df.rdd` itself does differs by version: on 4.0+ it
+  // runs a query of its own under its own execution id and is reported once, on 3.4/3.5 it is not
+  // reported at all. Either way the RDD's own actions add nothing, which is the part that makes
+  // "one report per action" the wrong description of this mode. Asserted rather than skipped so
+  // the version split is pinned instead of rediscovered.
+  test("RDD actions are outside the reported path") {
     withSQLConf(
       planOnlyConf(aqe = true, useV1 = true) :+
         (CometConf.COMET_EXPLAIN_PLAN_ONLY_ENABLED.key -> "true"): _*) {
       withParquetTable((0 until 100).map(i => (i, i % 5)), "tbl") {
         val reports = capturePlanOnlyReports {
-          spark.sql("SELECT _2, count(*) FROM tbl GROUP BY _2").rdd.count()
+          val rdd = spark.sql("SELECT _2, count(*) FROM tbl GROUP BY _2").rdd
+          // Three actions on the same RDD. None of them starts a SQL execution, so between them
+          // they contribute nothing beyond whatever obtaining `rdd` already did.
+          rdd.count()
+          rdd.count()
+          rdd.collect()
+        }
+        if (isSpark40Plus) {
+          assert(
+            reports.size == 1,
+            s"expected obtaining `.rdd` to be reported once, got:\n${reports.mkString("\n\n")}")
+          assert(reports.head.contains("HashAggregate"), s"report:\n${reports.head}")
+        } else {
+          assert(
+            reports.isEmpty,
+            s"expected no report on Spark 3.x, got:\n${reports.mkString("\n\n")}")
+        }
+      }
+    }
+  }
+
+  // The report is delivered asynchronously, so a caller can enable plan-only, run the action, and
+  // restore the setting while the callback is still queued. Reading the flag back off the session
+  // at that point drops the report for a query that really did run in plan-only mode.
+  //
+  // The ordering has to be forced or the test proves nothing: normally the bus drains during
+  // `collect()` and the callback sees the flag still on. A fresh session gives a deterministic
+  // registration order - `CometPlanOnly` registers its listener lazily on first use, so on a
+  // session that has never run a plan-only query the gating listener below is registered first
+  // and therefore runs first, holding the bus until the setting has been restored.
+  test("a report survives the setting being restored before the callback runs") {
+    val session = spark.newSession()
+    val gate = new java.util.concurrent.CountDownLatch(1)
+    val gating = new QueryExecutionListener {
+      override def onSuccess(name: String, qe: QueryExecution, durationNs: Long): Unit = {
+        gate.await(60, java.util.concurrent.TimeUnit.SECONDS)
+      }
+      override def onFailure(name: String, qe: QueryExecution, e: Exception): Unit = ()
+    }
+    session.listenerManager.register(gating)
+    try {
+      CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
+      val appender = new LogAppender("Comet plan-only reports")
+      withLogAppender(appender, loggerNames = Seq(reporterLogger), level = Some(Level.WARN)) {
+        val conf = planOnlyConf(aqe = true, useV1 = true) :+
+          (CometConf.COMET_EXPLAIN_PLAN_ONLY_ENABLED.key -> "true")
+        conf.foreach { case (k, v) => session.conf.set(k, v) }
+        session.sql("SELECT id, count(*) FROM range(100) GROUP BY id").collect()
+        // The callback is parked in `gating.onSuccess`, so restoring the setting here happens
+        // strictly before `CometPlanOnly` gets to look at it.
+        session.conf.unset(CometConf.COMET_EXPLAIN_PLAN_ONLY_ENABLED.key)
+        gate.countDown()
+        CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
+      }
+      val reports = appender.loggingEvents
+        .map(_.getMessage.getFormattedMessage)
+        .filter(_.startsWith(PLAN_ONLY_PREFIX))
+        .toSeq
+      assert(
+        reports.size == 1,
+        s"expected the query planned under plan-only mode to still be reported, got:\n" +
+          reports.mkString("\n\n"))
+    } finally {
+      gate.countDown()
+      session.listenerManager.unregister(gating)
+    }
+  }
+
+  // `ReusedExchangeExec` re-aliases the shared child's output, so a self-join can expose `k#16`
+  // while its child produces `k#3`. Undoing the reuse without carrying those IDs across leaves
+  // the parent sort referencing an attribute nothing below it produces, and Comet's binder then
+  // declines the sort and the join above it - understating coverage for work Comet would have run.
+  test("a reused exchange keeps its output IDs so consumers still convert") {
+    withSQLConf(
+      planOnlyConf(aqe = false, useV1 = true) ++ Seq(
+        CometConf.COMET_EXPLAIN_PLAN_ONLY_ENABLED.key -> "true",
+        SQLConf.EXCHANGE_REUSE_ENABLED.key -> "true",
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1"): _*) {
+      withParquetTable((0 until 100).map(i => (i, i % 5)), "tbl") {
+        val reports = capturePlanOnlyReports {
+          spark
+            .sql("""SELECT a._2, b._2 FROM
+                   |  (SELECT _2, count(*) c FROM tbl GROUP BY _2) a
+                   |  JOIN
+                   |  (SELECT _2, count(*) c FROM tbl GROUP BY _2) b
+                   |  ON a._2 = b._2""".stripMargin)
+            .collect()
         }
         assert(reports.size == 1, s"expected one report, got:\n${reports.mkString("\n\n")}")
-        assert(reports.head.contains("HashAggregate"), s"report:\n${reports.head}")
+        val report = reports.head
+        assert(
+          report.contains("CometSortMergeJoin") || report.contains("CometHashJoin"),
+          s"the join over a reused exchange should convert in the preview, got:\n$report")
+        assert(
+          !report.contains("\nSort ") && !report.contains("+- Sort "),
+          s"no Sort should be left on Spark by a lost attribute binding, got:\n$report")
       }
     }
   }

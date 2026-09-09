@@ -677,7 +677,9 @@ case class CometExecRule(session: SparkSession)
     // `CometPlanOnly` for why the report is not built here.
     if (CometConf.COMET_EXPLAIN_PLAN_ONLY_ENABLED.get()) {
       CometPlanOnly.register(session)
-      return plan
+      // Snapshot the settings with the plan: the report is delivered asynchronously, long after
+      // a `withSQLConf` block around the action may have restored them.
+      return CometPlanOnly.tagSettings(session, plan)
     }
 
     val newPlan = _apply(plan)

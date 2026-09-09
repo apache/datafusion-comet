@@ -212,9 +212,19 @@ report is built afterwards from the plan that ran, and then discarded.
 
 The log line is prefixed with `[Comet plan-only]` and carries the same annotated
 plan and summary that `spark.comet.explain.format=verbose` produces for a real
-Comet plan. It is written once per action, so a plan that is built but never
-executed — `df.explain()`, or reading `queryExecution.executedPlan` — is not
-reported, and a DataFrame collected twice is reported twice.
+Comet plan. It is written once per SQL execution, so a plan that is built but
+never executed — `df.explain()`, or reading `queryExecution.executedPlan` — is
+not reported, and a DataFrame collected twice is reported twice.
+
+"Per SQL execution" rather than "per action" is a real distinction for RDD work.
+The report comes from a `QueryExecutionListener`, which Spark drives from the
+Dataset action path, so actions taken on `df.rdd` are outside it. On Spark 4.0
+and later, obtaining `df.rdd` runs a query of its own and is reported once at
+that point; later actions on the resulting RDD add nothing, because no new SQL
+execution starts. On Spark 3.4 and 3.5 obtaining `df.rdd` is not reported at
+all. Either way the RDD's own actions are never counted individually, so treat
+an RDD-heavy workload's report as covering the plans it built, not the jobs it
+ran.
 
 The preview goes through the whole Comet planning sequence rather than operator
 conversion alone: Spark's columnar transitions are inserted and Comet's
