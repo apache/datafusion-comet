@@ -25,7 +25,8 @@ import org.apache.spark.sql.types.MapType
 import org.apache.comet.CometConf
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, scalarFunctionExprToProtoWithReturnType, supportedScalarSortElementType}
 
-object CometMapSort extends CometExpressionSerde[MapSort] {
+// Key types unsupported by the native kernel can still run Spark's generated code in-pipeline.
+object CometMapSort extends CometExpressionSerde[MapSort] with CodegenDispatchFallback {
 
   override def getIncompatibleReasons(): Seq[String] =
     Seq(
