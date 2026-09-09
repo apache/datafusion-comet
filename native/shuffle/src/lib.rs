@@ -34,5 +34,5 @@ pub use comet_partitioning::CometPartitioning;
 pub use ipc::{read_ipc_compressed, read_ipc_compressed_validated};
 pub use remote_schema::{decode_remote_shuffle_batch, validate_remote_schema};
 pub use schema_align::SchemaAlignExec;
-pub use shuffle_writer::{ShuffleWriterDestination, ShuffleWriterExec};
+pub use shuffle_writer::{PartitionOffsets, ShuffleWriterDestination, ShuffleWriterExec};
 pub use writers::{CompressionCodec, ShuffleBlockWriter};

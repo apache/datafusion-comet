@@ -19,7 +19,6 @@
 
 package org.apache.spark.sql.comet.execution.shuffle
 
-import java.nio.{ByteBuffer, ByteOrder}
 import java.nio.file.{Files, Paths}
 import java.util.concurrent.{ScheduledFuture, TimeUnit}
 import java.util.concurrent.atomic.AtomicBoolean
@@ -69,8 +68,6 @@ class CometNativeShuffleWriter[K, V](
     extends ShuffleWriter[K, V]
     with Logging {
 
-  private val OFFSET_LENGTH = 8
-
   var partitionLengths: Array[Long] = _
   var mapStatus: MapStatus = _
   private var stopped = false
@@ -116,12 +113,7 @@ class CometNativeShuffleWriter[K, V](
       val resolver =
         SparkEnv.get.shuffleManager.shuffleBlockResolver.asInstanceOf[IndexShuffleBlockResolver]
       val dataFile = resolver.getDataFile(shuffleId, mapId)
-      val indexFile = resolver.getIndexFile(shuffleId, mapId)
-      Some(
-        LocalShuffleOutput(
-          resolver,
-          dataFile.getPath.replace(".data", ".data.tmp"),
-          indexFile.getPath.replace(".index", ".index.tmp")))
+      Some(LocalShuffleOutput(resolver, dataFile.getPath.replace(".data", ".data.tmp")))
     } else {
       None
     }
@@ -142,8 +134,8 @@ class CometNativeShuffleWriter[K, V](
     val shuffleBlockIters = shuffleInputIter.shuffleBlockIterators
 
     val unifiedPlan = localOutput match {
-      case Some(output) => buildUnifiedPlan(output.dataFile, output.indexFile)
-      case None => buildUnifiedPlan("", "")
+      case Some(output) => buildUnifiedPlan(output.dataFile)
+      case None => buildUnifiedPlan("")
     }
     val ctx = spec.execContext
     val finalNativePlan = if (ctx.commonByKey.nonEmpty) {
@@ -198,7 +190,10 @@ class CometNativeShuffleWriter[K, V](
       ctx.broadcastedHadoopConfForEncryption,
       ctx.encryptedFilePaths,
       shuffleBlockIters,
-      shufflePartitionPusher = remoteDestination.map(_.callback))
+      shufflePartitionPusher = remoteDestination.map(_.callback),
+      // Only a local destination publishes partition offsets; RSS reports lengths through its
+      // pusher instead.
+      capturePartitionOffsets = localOutput.isDefined)
 
     // Register subqueries against the iterator id so native callbacks resolve them to values.
     ctx.subqueries.foreach { sub =>
@@ -213,6 +208,8 @@ class CometNativeShuffleWriter[K, V](
     }
 
     CometNativeShuffleWriter.drainAndClose(cometIter, () => cometIter.close())
+    // Captured by the iterator at end of stream, before it released the native plan that owns it.
+    val partitionOffsets = cometIter.shufflePartitionOffsets
 
     remoteDestination match {
       case Some(destination) =>
@@ -243,22 +240,22 @@ class CometNativeShuffleWriter[K, V](
       case None =>
         val output = localOutput.get
         val tempDataFilePath = Paths.get(output.dataFile)
-        val tempIndexFilePath = Paths.get(output.indexFile)
 
-        var offset = 0L
-        partitionLengths = Files
-          .readAllBytes(tempIndexFilePath)
-          .grouped(OFFSET_LENGTH)
-          .drop(1)
-          .map(indexBytes => {
-            val partitionOffset =
-              ByteBuffer.wrap(indexBytes).order(ByteOrder.LITTLE_ENDIAN).getLong
-            val partitionLength = partitionOffset - offset
-            offset = partitionOffset
-            partitionLength
-          })
-          .toArray
-        Files.delete(tempIndexFilePath)
+        // One offset per output partition plus a trailing total, so lengths are successive
+        // differences. `numParts` is the input partition count and is not this.
+        val numOutputPartitions = effectivePartitionCount
+        require(
+          partitionOffsets != null && partitionOffsets.length == numOutputPartitions + 1,
+          s"Native shuffle returned ${if (partitionOffsets == null) "no"
+            else partitionOffsets.length.toString} partition offsets " +
+            s"for $numOutputPartitions output partitions")
+        partitionLengths = new Array[Long](numOutputPartitions)
+        var partition = 0
+        while (partition < numOutputPartitions) {
+          partitionLengths(partition) =
+            partitionOffsets(partition + 1) - partitionOffsets(partition)
+          partition += 1
+        }
 
         metricsReporter.incBytesWritten(Files.size(tempDataFilePath))
         output.resolver.writeMetadataFileAndCommit(
@@ -290,7 +287,7 @@ class CometNativeShuffleWriter[K, V](
    * Build the unified `ShuffleWriter(child = childNativeOp)` plan with the partitioning serde,
    * compression settings, and output file paths.
    */
-  private[shuffle] def buildUnifiedPlan(dataFile: String, indexFile: String): Operator = {
+  private[shuffle] def buildUnifiedPlan(dataFile: String): Operator = {
     val shuffleWriterBuilder = OperatorOuterClass.ShuffleWriter.newBuilder()
     remoteDestination match {
       case Some(_) =>
@@ -300,9 +297,9 @@ class CometNativeShuffleWriter[K, V](
             .setRss(OperatorOuterClass.RssPartitionWriter.getDefaultInstance)
             .build())
       case None =>
-        // Keep legacy paths for older native libraries while newer libraries use the destination.
+        // Keep the legacy path for older native libraries while newer libraries use the
+        // destination. Partition offsets come back over JNI, so no index path travels in the plan.
         shuffleWriterBuilder.setOutputDataFile(dataFile)
-        shuffleWriterBuilder.setOutputIndexFile(indexFile)
         shuffleWriterBuilder.setPartitionWriter(
           OperatorOuterClass.PartitionWriter
             .newBuilder()
@@ -310,7 +307,6 @@ class CometNativeShuffleWriter[K, V](
               OperatorOuterClass.LocalPartitionWriter
                 .newBuilder()
                 .setOutputDataFile(dataFile)
-                .setOutputIndexFile(indexFile)
                 .build())
             .build())
     }
@@ -482,8 +478,7 @@ class CometNativeShuffleWriter[K, V](
 
   private final case class LocalShuffleOutput(
       resolver: IndexShuffleBlockResolver,
-      dataFile: String,
-      indexFile: String)
+      dataFile: String)
 }
 
 private[shuffle] object CometNativeShuffleWriter {

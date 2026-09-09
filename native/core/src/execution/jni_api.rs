@@ -100,7 +100,7 @@ use tokio::sync::mpsc;
 use crate::execution::memory_pools::{create_memory_pool, parse_memory_pool_config};
 use crate::execution::operators::{ScanExec, ShuffleScanExec};
 use crate::execution::shuffle::{
-    decode_remote_shuffle_batch, read_ipc_compressed, CompressionCodec,
+    decode_remote_shuffle_batch, read_ipc_compressed, CompressionCodec, ShuffleWriterExec,
 };
 use crate::execution::spark_plan::SparkPlan;
 
@@ -1153,6 +1153,65 @@ fn get_execution_context<'a>(id: i64) -> &'a mut ExecutionContext {
             .as_mut()
             .expect("Comet execution context shouldn't be null!")
     }
+}
+
+/// Returns the partition offsets published by a finished native shuffle write.
+///
+/// The writer knows every offset by the time its plan completes, and the only consumer is the
+/// Spark task driving that plan, so the offsets are handed back in memory rather than serialized
+/// to a temporary index file and read back. Call after the plan has been fully drained; the
+/// offsets are not published until the writer finishes.
+///
+/// The returned array holds `num_output_partitions + 1` offsets, the last being the total data
+/// file length, so partition lengths are successive differences.
+#[no_mangle]
+pub extern "system" fn Java_org_apache_comet_Native_getShufflePartitionOffsets(
+    e: EnvUnowned,
+    _class: JClass,
+    exec_context: jlong,
+) -> jlongArray {
+    try_unwrap_or_throw(&e, |env| {
+        let context = get_execution_context(exec_context);
+
+        let root_op = context.root_op.as_ref().ok_or_else(|| {
+            CometError::Internal(
+                "Cannot read shuffle partition offsets before the plan has been executed"
+                    .to_string(),
+            )
+        })?;
+
+        // `ExecutionPlan` has `Any` as a supertrait but no `as_any` method of its own, so upcast
+        // the trait object before downcasting to the writer.
+        let writer = (root_op.native_plan.as_ref() as &dyn std::any::Any)
+            .downcast_ref::<ShuffleWriterExec>()
+            .ok_or_else(|| {
+                CometError::Internal(
+                    "Shuffle partition offsets are only available on a native shuffle write plan"
+                        .to_string(),
+                )
+            })?;
+
+        let offsets = writer
+            .partition_offsets()
+            .ok_or_else(|| {
+                CometError::Internal(
+                    "Shuffle partition offsets are not published by a remote shuffle destination"
+                        .to_string(),
+                )
+            })?
+            .get()
+            .ok_or_else(|| {
+                CometError::Internal(
+                    "Shuffle writer has not published its partition offsets; the plan was not \
+                     drained to completion"
+                        .to_string(),
+                )
+            })?;
+
+        let long_array = env.new_long_array(offsets.len())?;
+        long_array.set_region(env, 0, offsets)?;
+        Ok(long_array.into_raw())
+    })
 }
 
 /// Used by Comet shuffle external sorter to write sorted records to disk.

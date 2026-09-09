@@ -19,7 +19,7 @@ use crate::metrics::ShufflePartitionerMetrics;
 use crate::writers::local::spill::SpillWriter;
 use crate::writers::partition_writer::PartitionWriter;
 use crate::writers::BufBatchWriter;
-use crate::ShuffleBlockWriter;
+use crate::{PartitionOffsets, ShuffleBlockWriter};
 use arrow::array::RecordBatch;
 use datafusion::common::DataFusionError;
 use datafusion::execution::runtime_env::RuntimeEnv;
@@ -73,7 +73,7 @@ enum DataOutput {
 /// byte offset where each partition begins. See [`DataOutput`] for how the
 /// single- and multi-partition modes differ.
 pub(crate) struct LocalPartitionWriter {
-    output_index_file: String,
+    partition_offsets: Arc<PartitionOffsets>,
     data_output: DataOutput,
     /// Start offset of each partition in the data file, plus a trailing entry
     /// with the total length so partition sizes are simple offset differences.
@@ -90,7 +90,7 @@ pub(crate) struct LocalPartitionWriter {
 impl LocalPartitionWriter {
     pub(crate) fn try_new(
         output_data_file: String,
-        output_index_file: String,
+        partition_offsets: Arc<PartitionOffsets>,
         shuffle_block_writer: ShuffleBlockWriter,
         num_output_partitions: usize,
         batch_size: usize,
@@ -134,7 +134,7 @@ impl LocalPartitionWriter {
             }
         };
         Ok(Self {
-            output_index_file,
+            partition_offsets,
             data_output,
             offsets: vec![0u64; num_output_partitions + 1],
             batch_size,
@@ -306,22 +306,21 @@ impl PartitionWriter for LocalPartitionWriter {
         // add one extra offset at last to ease partition length computation
         self.offsets[self.num_output_partitions] = final_offset;
 
-        let mut write_timer = metrics.write_time.timer();
-        let mut output_index = BufWriter::new(
-            File::create(self.output_index_file.clone())
-                .map_err(|e| DataFusionError::Execution(format!("shuffle write error: {e:?}")))?,
-        );
-
-        for offset in &self.offsets {
-            let offset_i64 = i64::try_from(*offset).map_err(|_| {
-                DataFusionError::Execution(format!(
-                    "shuffle write error: offset overflow ({offset})"
-                ))
-            })?;
-            output_index.write_all(&offset_i64.to_le_bytes())?;
-        }
-        output_index.flush()?;
-        write_timer.stop();
+        // The offsets go straight to the Spark task driving this plan, which reads them over
+        // JNI. Writing them to a temporary index file first would cost every map task a create,
+        // write, read and unlink on top of the index file Spark itself commits.
+        let offsets = self
+            .offsets
+            .iter()
+            .map(|offset| {
+                i64::try_from(*offset).map_err(|_| {
+                    DataFusionError::Execution(format!(
+                        "shuffle write error: offset overflow ({offset})"
+                    ))
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        self.partition_offsets.set(offsets)?;
 
         Ok(())
     }
@@ -355,7 +354,7 @@ mod tests {
                 .unwrap();
         LocalPartitionWriter::try_new(
             dir.path().join("data.out").to_str().unwrap().to_string(),
-            dir.path().join("index.out").to_str().unwrap().to_string(),
+            Arc::new(PartitionOffsets::default()),
             block_writer,
             2,
             // batch_size below the row count so the write serializes into the scratch.

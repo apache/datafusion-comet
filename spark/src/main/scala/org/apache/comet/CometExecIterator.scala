@@ -77,7 +77,8 @@ class CometExecIterator(
     encryptedFilePaths: Seq[String] = Seq.empty,
     shuffleBlockIterators: Map[Int, CometShuffleBlockIterator] = Map.empty,
     taskFilePaths: Seq[String] = Seq.empty,
-    shufflePartitionPusher: Option[ShufflePartitionPusher] = None)
+    shufflePartitionPusher: Option[ShufflePartitionPusher] = None,
+    capturePartitionOffsets: Boolean = false)
     extends Iterator[ColumnarBatch]
     with Logging {
 
@@ -179,6 +180,21 @@ class CometExecIterator(
     }
   }
 
+  /**
+   * Partition offsets published by a native shuffle write, captured when the plan reached the end
+   * of its output and before the native execution context was released.
+   *
+   * Only populated when the iterator was built with `capturePartitionOffsets`, and only after the
+   * iterator has been drained. `null` otherwise.
+   */
+  private var capturedPartitionOffsets: Array[Long] = _
+
+  /**
+   * The partition offsets captured at end of stream, or `null` if the plan has not been drained
+   * or the iterator was not built to capture them.
+   */
+  def shufflePartitionOffsets: Array[Long] = capturedPartitionOffsets
+
   private var nextBatch: Option[ColumnarBatch] = None
   private var prevBatch: ColumnarBatch = null
   private var currentBatch: ColumnarBatch = null
@@ -248,6 +264,11 @@ class CometExecIterator(
     logTrace(s"Task $taskAttemptId memory pool usage is ${cometTaskMemoryManager.getUsed} bytes")
 
     if (nextBatch.isEmpty) {
+      // The offsets live in the native execution context, which `close` releases, so they have
+      // to be read here while the plan is still alive.
+      if (capturePartitionOffsets && capturedPartitionOffsets == null) {
+        capturedPartitionOffsets = nativeLib.getShufflePartitionOffsets(plan)
+      }
       close()
       false
     } else {
