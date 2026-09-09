@@ -21,8 +21,8 @@
 #![allow(dead_code)]
 
 use arrow::array::{
-    builder::{BooleanBuilder, ListBuilder, StringBuilder},
-    ArrayRef, Float64Array, Int64Array, ListArray, RecordBatch, StringArray,
+    builder::StringBuilder, ArrayRef, BooleanBuilder, Date32Array, Float32Array, Float64Array,
+    Int32Array, Int64Array, ListArray, ListBuilder, RecordBatch, StringArray,
     TimestampMicrosecondArray,
 };
 use arrow::datatypes::{
@@ -60,8 +60,48 @@ pub fn f64_array(rows: usize, null_ratio: f64, value: impl Fn(usize) -> f64) -> 
     Arc::new(arr)
 }
 
+pub fn f32_array(rows: usize, null_ratio: f64, value: impl Fn(usize) -> f32) -> ArrayRef {
+    let arr: Float32Array = (0..rows)
+        .map(|i| {
+            if is_null(i, null_ratio) {
+                None
+            } else {
+                Some(value(i))
+            }
+        })
+        .collect();
+    Arc::new(arr)
+}
+
 pub fn i64_array(rows: usize, null_ratio: f64, value: impl Fn(usize) -> i64) -> ArrayRef {
     let arr: Int64Array = (0..rows)
+        .map(|i| {
+            if is_null(i, null_ratio) {
+                None
+            } else {
+                Some(value(i))
+            }
+        })
+        .collect();
+    Arc::new(arr)
+}
+
+pub fn i32_array(rows: usize, null_ratio: f64, value: impl Fn(usize) -> i32) -> ArrayRef {
+    let arr: Int32Array = (0..rows)
+        .map(|i| {
+            if is_null(i, null_ratio) {
+                None
+            } else {
+                Some(value(i))
+            }
+        })
+        .collect();
+    Arc::new(arr)
+}
+
+/// A `Date32` array (days since the Unix epoch) of `rows` rows, rows nulled per `null_ratio`.
+pub fn date32_array(rows: usize, null_ratio: f64, value: impl Fn(usize) -> i32) -> ArrayRef {
+    let arr: Date32Array = (0..rows)
         .map(|i| {
             if is_null(i, null_ratio) {
                 None

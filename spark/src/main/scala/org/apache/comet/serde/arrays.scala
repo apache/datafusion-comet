@@ -51,17 +51,17 @@ object CometArrayRemove
   }
 }
 
-object CometArrayAppend extends CometExpressionSerde[ArrayAppend] {
+object CometArrayAppend extends CometExpressionSerde[ArrayAppend] with ArraysBase {
 
   override def convert(
       expr: ArrayAppend,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val child = expr.children.head
-    val elementType = child.dataType.asInstanceOf[ArrayType].elementType
+    val (srcChild, itemChild) = widenElementInLockstep(expr.children.head, expr.children(1))
+    val elementType = srcChild.dataType.asInstanceOf[ArrayType].elementType
 
-    val arrayExprProto = exprToProto(expr.children.head, inputs, binding)
-    val keyExprProto = exprToProto(expr.children(1), inputs, binding)
+    val arrayExprProto = exprToProto(srcChild, inputs, binding)
+    val keyExprProto = exprToProto(itemChild, inputs, binding)
 
     // DataFusion's array_append always returns a list with nullable elements,
     // so we must promise ArrayType(elementType, containsNull = true) here even if
@@ -74,6 +74,8 @@ object CometArrayAppend extends CometExpressionSerde[ArrayAppend] {
         arrayExprProto,
         keyExprProto)
 
+    // IS NOT NULL does not care about element nullability, so use the un-widened source and skip
+    // serializing a redundant cast.
     val isNotNullExpr = createUnaryExpr(
       expr,
       expr.children.head,
@@ -444,28 +446,7 @@ object CometArrayInsert extends CometExpressionSerde[ArrayInsert] with ArraysBas
       expr: ArrayInsert,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val srcArray = expr.children.head
-    val item = expr.children(2)
-    val srcElementType = srcArray.dataType.asInstanceOf[ArrayType].elementType
-
-    // Native ArrayInsert requires the item's Arrow type to equal the source array's element type
-    // exactly, including nested nullability. For complex element types the two sides can disagree:
-    // a `CreateArray` source is widened to a deeply-nullable element type (see CometCreateArray),
-    // while a standalone item (e.g. `map(2, coalesce(id, 0))`) keeps Spark's Catalyst nullability.
-    // Cast BOTH sides in lockstep to the same deeply-nullable element type so their Arrow types
-    // match; Spark's `ArrayInsert.dataType` is `first.dataType.asNullable`, so this also
-    // matches the declared output element type. Casting only widens metadata and never
-    // changes values. Primitive element types are byte-identical on both sides, so the gate
-    // leaves them untouched.
-    val (srcChild, itemChild) = if (isComplexType(srcElementType)) {
-      val elementType = deepNullable(srcElementType)
-      val arrayType = ArrayType(elementType, containsNull = true)
-      val widenedSrc = if (srcArray.dataType == arrayType) srcArray else Cast(srcArray, arrayType)
-      val widenedItem = if (item.dataType == elementType) item else Cast(item, elementType)
-      (widenedSrc, widenedItem)
-    } else {
-      (srcArray, item)
-    }
+    val (srcChild, itemChild) = widenElementInLockstep(expr.children.head, expr.children(2))
 
     val srcExprProto = exprToProtoInternal(srcChild, inputs, binding)
     val posExprProto = exprToProtoInternal(expr.children(1), inputs, binding)
@@ -497,22 +478,18 @@ object CometSlice extends CometExpressionSerde[Slice] {
       expr: Slice,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val elementType = expr.x.dataType.asInstanceOf[ArrayType].elementType
     val arrayExprProto = exprToProto(expr.x, inputs, binding)
     val startExprProto = exprToProto(Cast(expr.start, LongType), inputs, binding)
     val lengthExprProto = exprToProto(Cast(expr.length, LongType), inputs, binding)
-    // DataFusion list types always have nullable inner elements, so promise
-    // ArrayType(elementType, containsNull = true) here even if Spark's
-    // expr.dataType reports containsNull = false (e.g. for array(1, 2, 3)).
-    val sliceScalarExpr =
-      scalarFunctionExprToProtoWithReturnType(
-        "spark_array_slice",
-        ArrayType(elementType, containsNull = true),
-        false,
-        arrayExprProto,
-        startExprProto,
-        lengthExprProto)
-    sliceScalarExpr
+    // No serialized return type: native `spark_array_slice` reuses its input's list field for the
+    // output, so only `return_field_from_args` is guaranteed to match. Spark's `expr.dataType` is
+    // not: `CometCreateArray` may have widened the input to a deeply-nullable element type, and
+    // DataFusion list elements are nullable where Spark's `containsNull` says otherwise.
+    scalarFunctionExprToProto(
+      "spark_array_slice",
+      arrayExprProto,
+      startExprProto,
+      lengthExprProto)
   }
 }
 
@@ -638,11 +615,34 @@ object CometArrayReverse extends CometExpressionSerde[Reverse] with ArraysBase {
 
 object CometElementAt extends CometExpressionSerde[ElementAt] {
 
+  /**
+   * Under ANSI, neither native shape reproduces Spark for a nullable nondeterministic operand.
+   * Spark's `ElementAt` is a `BinaryExpression`: for a NULL map/array it returns NULL without
+   * evaluating the key/index child at all. A native lookup evaluates every argument over the
+   * whole batch first, so a throwing index fires on rows whose operand is NULL. `convert`
+   * reproduces the short-circuit with a `CASE WHEN <operand> IS NOT NULL` guard, but that guard
+   * serializes the operand twice, which a stateful operand cannot survive: the two copies advance
+   * its state independently and silently move values and NULLs. Declining leaves the lookup on
+   * Spark. Lifting this needs a native lookup that evaluates the operand once and masks the index
+   * evaluation with the result, at which point the guard becomes unnecessary for every operand.
+   */
+  private val eagerIndexReason: String =
+    "ANSI mode with a nullable nondeterministic array or map operand: a native lookup evaluates " +
+      "the index over the whole batch, where Spark skips it on the rows whose operand is NULL"
+
+  /** True when `convert` has to wrap the lookup to reproduce Spark's NULL short-circuit. */
+  private def needsNullGuard(expr: ElementAt): Boolean =
+    expr.failOnError && expr.left.nullable
+
   override def getSupportLevel(expr: ElementAt): SupportLevel = {
-    expr.left.dataType match {
-      case _: ArrayType => Compatible()
-      case MapType(keyType, _, _) => MapKeySupport.keySupport(keyType)
-      case _ => Unsupported(Some("Input must be an array or map"))
+    if (needsNullGuard(expr) && !expr.left.deterministic) {
+      Unsupported(Some(eagerIndexReason))
+    } else {
+      expr.left.dataType match {
+        case _: ArrayType => Compatible()
+        case MapType(keyType, _, _) => MapKeySupport.keySupport(keyType)
+        case _ => Unsupported(Some("Input must be an array or map"))
+      }
     }
   }
 
@@ -682,15 +682,12 @@ object CometElementAt extends CometExpressionSerde[ElementAt] {
         }
     }
 
-    // Spark's ElementAt is a BinaryExpression: for a NULL map/array it returns NULL WITHOUT
-    // evaluating the key/index child. Native scalar functions evaluate the key eagerly over the
-    // whole batch, so under ANSI (failOnError) a throwing key (e.g. a divide-by-zero) fires even on
-    // rows whose map/array is NULL, where Spark short-circuits. When the left can actually be NULL,
-    // guard the lookup with CASE WHEN left IS NOT NULL THEN <lookup> ELSE null so the key is only
-    // evaluated on the selected rows (DataFusion's CaseExpr filters the batch before the THEN
-    // branch), reproducing the short-circuit. Mirrors the CASE-WHEN idiom in CometArrayAppend /
-    // CometSize; the ELSE null literal carries the result type, as in CometArraysZip.
-    if (expr.failOnError && expr.left.nullable) {
+    // Evaluate the key only on the rows the guard selects (DataFusion's CaseExpr filters the batch
+    // before the THEN branch), reproducing Spark's short-circuit. See `eagerIndexReason` for why
+    // this shape is restricted to deterministic operands. Mirrors the CASE-WHEN idiom in
+    // CometArrayAppend / CometSize; the ELSE null literal carries the result type, as in
+    // CometArraysZip.
+    if (needsNullGuard(expr)) {
       val isNotNullExpr = createUnaryExpr(
         expr,
         expr.left,
@@ -940,6 +937,27 @@ trait ArraysBase {
       .collectFirst { case dt if !isTypeSupported(dt) => dt }
       .map(dt => Unsupported(Some(s"data type not supported: $dt")))
       .getOrElse(Compatible())
+
+  /**
+   * Cast `srcArray` and `item` to one deeply-nullable element type, for the native kernels that
+   * require the two Arrow types to be equal (`array_append`, `array_insert`). A `CreateArray`
+   * source is already deeply-nullable (see `CometCreateArray`) while a standalone item keeps
+   * Spark's Catalyst nullability, so for a complex element type the two disagree. Casting only
+   * widens metadata, and lands on both expressions' declared `asNullable` output element type.
+   * Primitive element types already agree, so the gate leaves them untouched.
+   */
+  def widenElementInLockstep(srcArray: Expression, item: Expression): (Expression, Expression) = {
+    val srcType = srcArray.dataType.asInstanceOf[ArrayType]
+    if (isComplexType(srcType.elementType)) {
+      val elementType = deepNullable(srcType.elementType)
+      val arrayType = ArrayType(elementType, containsNull = true)
+      val widenedSrc = if (srcType == arrayType) srcArray else Cast(srcArray, arrayType)
+      val widenedItem = if (item.dataType == elementType) item else Cast(item, elementType)
+      (widenedSrc, widenedItem)
+    } else {
+      (srcArray, item)
+    }
+  }
 }
 
 object CometArrayTransform extends CometCodegenDispatch[ArrayTransform]

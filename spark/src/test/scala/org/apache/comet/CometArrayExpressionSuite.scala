@@ -1280,19 +1280,131 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     }
   }
 
-  // An empty container has no children to recover the element type from, and a NULL literal
-  // serializes as a typed null without expansion, so only the empty cases fall back.
+  // An empty container has no children to recover its element type from, so expansion rebuilds it
+  // from a childless `CreateArray` cast to the declared type (and `map_from_arrays` over two such
+  // arrays for a map). A NULL literal serializes as a typed null without expansion.
   test("folded empty and NULL complex literals") {
     withParquetTable((0 until 3).map(i => (i, i.toLong)), "tbl") {
-      checkSparkAnswerAndFallbackReason(
-        "SELECT _1 AS id, CAST(map() AS MAP<INT,INT>) AS m FROM tbl",
-        "Unsupported data type MapType")
-      checkSparkAnswerAndFallbackReason(
-        "SELECT _1 AS id, CAST(array() AS ARRAY<MAP<INT,INT>>) AS a FROM tbl",
-        "Unsupported data type ArrayType")
+      checkSparkAnswerAndOperator("SELECT _1 AS id, CAST(map() AS MAP<INT,INT>) AS m FROM tbl")
+      checkSparkAnswerAndOperator(
+        "SELECT _1 AS id, CAST(array() AS ARRAY<MAP<INT,INT>>) AS a FROM tbl")
       checkSparkAnswerAndOperator("SELECT _1 AS id, CAST(NULL AS MAP<INT,INT>) AS m FROM tbl")
       checkSparkAnswerAndOperator(
         "SELECT _1 AS id, CAST(NULL AS ARRAY<MAP<INT,INT>>) AS a FROM tbl")
+      // A complex value type has to survive the rebuild too: `typedLit(Map.empty[Int, List[Int]])`
+      // is already a Literal, and `map_extract` only type-checks if the rebuilt empty map keeps
+      // `MapType(IntegerType, ArrayType(IntegerType, false), true)`.
+      val emptyMapping = typedLit(Map.empty[Int, List[Int]])
+      checkSparkAnswerAndOperator(spark.table("tbl").select(emptyMapping(col("_1")).as("v")))
+    }
+  }
+
+  // https://github.com/apache/datafusion-comet/issues/5544: Arrow's IntervalMonthDayNano holds
+  // elapsed time in nanoseconds, so the dispatcher's `Math.multiplyExact(microseconds, 1000L)`
+  // overflows past about 292 years, where Spark accepts the value (#5279). Expansion has to
+  // decline the value, not just the type: the calendar-interval restriction in
+  // `mapKeyTypesExpandable` only covers map keys. The `array(map(...))` spelling also covers the
+  // outer `ArrayType` recursion of the value walk.
+  test("folded map value with an out-of-range calendar interval falls back (multirow)") {
+    withParquetTable((0 until 3).map(i => (i, i.toLong)), "tbl") {
+      Seq(
+        "array(map(1, make_interval(0, 0, 0, 0, 3000000, 0, 0)))" -> "ArrayType",
+        "map(1, make_interval(0, 0, 0, 0, 3000000, 0, 0))" -> "MapType",
+        "map(1, make_interval(0, 0, 0, 0, -3000000, 0, 0))" -> "MapType").foreach {
+        case (value, declaredType) =>
+          checkSparkAnswerAndFallbackReason(
+            s"SELECT _1 AS id, $value AS v FROM tbl",
+            s"Unsupported data type $declaredType")
+      }
+      // An interval inside the nanosecond range still runs natively.
+      checkSparkAnswerAndOperator(
+        "SELECT _1 AS id, array(map(1, make_interval(0, 0, 0, 0, 24, 0, 0))) AS a FROM tbl")
+    }
+  }
+
+  // https://github.com/apache/datafusion-comet/issues/5544: the dispatcher copies a UTF8String's
+  // raw bytes into a VarCharVector and the native bridge imports them through unchecked Arrow FFI,
+  // so malformed UTF-8 aborts the JVM on `hint::unreachable_unchecked` (X'FF') or silently
+  // mis-counts characters (the overlong X'C080'). Spark preserves the raw bytes, so normalizing
+  // them would not be equivalent either; expansion declines and Spark evaluates the projection.
+  test("folded map value with malformed UTF-8 falls back (multirow)") {
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "false") {
+      withParquetTable((1 until 4).map(i => (i, i.toLong)), "tbl") {
+        Seq(
+          "length(element_at(map(1, CAST(X'FF' AS STRING)), _1))" -> "MapType",
+          // Exercises the struct arm of the value walk.
+          "element_at(map(1, named_struct('s', CAST(X'FF' AS STRING))), _1)" -> "MapType")
+          .foreach { case (value, declaredType) =>
+            checkSparkAnswerAndFallbackReason(
+              s"SELECT _1 AS id, $value AS v FROM tbl",
+              s"Unsupported data type $declaredType")
+          }
+        // Well-formed multi-byte text is unaffected.
+        checkSparkAnswerAndOperator(
+          "SELECT _1 AS id, length(element_at(map(1, CAST(X'C3A9' AS STRING)), _1)) AS v FROM tbl")
+      }
+    }
+  }
+
+  // https://github.com/apache/datafusion-comet/issues/5544: the two paths that serialize a
+  // string literal directly, `convert`'s scalar `StringType` arm and `makeListLiteral`'s, both
+  // go through `UTF8String.toString`, which substitutes U+FFFD for malformed input where Spark
+  // keeps the raw bytes. Declining is the only option, because `string_val` and `string_values`
+  // are proto `string` fields that cannot carry those bytes at all. Comparing the answers calls
+  // the two sides equal, since both render as the replacement character, so the failing cases
+  // go through `hex`. Every expression here keeps a column child to stay out of ConstantFolding,
+  // which would otherwise fold the projection into one literal the encoder never sees.
+  test("string literal holding malformed UTF-8 falls back (multirow)") {
+    withParquetTable((1 until 4).map(i => (i, i.toLong)), "tbl") {
+      // The list-literal encoder: `array(...)` is all-literal, so it folds.
+      checkSparkAnswerAndFallbackReason(
+        "SELECT _1 AS id, hex(element_at(array(CAST(X'FF' AS STRING), 'b', 'c'), _1)) AS v " +
+          "FROM tbl",
+        "Unsupported literal value for data type ArrayType")
+      // The scalar arm, which has nothing to do with complex literals. The overlong form of
+      // U+0000 is the same hazard: Spark accepts it, Rust's `str::from_utf8` does not.
+      Seq("X'FF'", "X'C080'").foreach { bytes =>
+        checkSparkAnswerAndFallbackReason(
+          s"SELECT _1 AS id, hex(concat(CAST($bytes AS STRING), CAST(_1 AS STRING))) AS v " +
+            "FROM tbl",
+          "Unsupported literal value for data type StringType")
+      }
+      // Well-formed multi-byte text still serializes, on both paths.
+      checkSparkAnswerAndOperator(
+        "SELECT _1 AS id, length(concat(CAST(X'C3A9' AS STRING), CAST(_1 AS STRING))) AS v " +
+          "FROM tbl")
+      checkSparkAnswerAndOperator(
+        "SELECT _1 AS id, length(element_at(array(CAST(X'C3A9' AS STRING), 'b', 'c'), _1)) " +
+          "AS v FROM tbl")
+    }
+  }
+
+  // `CometLiteralSuite` pins the element-type gate against `makeListLiteral`'s arms exhaustively.
+  // This is the end-to-end half: an element type with no arm produces a fallback rather than the
+  // `MatchError` it used to raise mid-planning.
+  test("folded array literal whose element type the list encoder cannot carry falls back") {
+    withParquetTable((0 until 3).map(i => (i, i.toLong)), "tbl") {
+      checkSparkAnswerAndFallbackReason(
+        "SELECT _1 AS id, array(make_interval(1)) AS a FROM tbl",
+        "Unsupported data type ArrayType")
+    }
+  }
+
+  // https://github.com/apache/datafusion-comet/issues/5544: Arrow addresses a `StructVector`'s
+  // children by name, so the two `x` fields collapse into one child and the dispatcher's
+  // generated writer NPEs on the missing ordinal. `CometCreateNamedStruct` declines duplicates
+  // on the native path, but a struct that is only a map value is handed to the dispatcher whole
+  // and never reaches that check. The SQL fixture covers the unfolded spelling, and the harness
+  // excludes `ConstantFolding`, so the folded spelling the issue reports only runs here.
+  test("folded map value with duplicate struct field names falls back (multirow)") {
+    withParquetTable((0 until 3).map(i => (i, i.toLong)), "tbl") {
+      checkSparkAnswerAndFallbackReason(
+        "SELECT _1 AS id, map(1, named_struct('x', 10, 'x', 20)) AS v FROM tbl",
+        "Unsupported data type MapType")
+      // Names differing only in case are distinct children in Arrow, so the exact-name check
+      // leaves these on the native path.
+      checkSparkAnswerAndOperator(
+        "SELECT _1 AS id, map(1, named_struct('x', 10, 'X', 20)) AS v FROM tbl")
     }
   }
 
