@@ -193,7 +193,7 @@ class CometCodegenSuite
           s"expected a [COMET-INFO: segment, got:\n$explain")
         // Names appear alphabetically via `.distinct.sorted` in rollUpInfoMessages.
         assert(
-          explain.contains("JVM codegen dispatcher: hypot, nanvl"),
+          dispatchedNames(explain).containsSlice(Seq("hypot", "nanvl")),
           s"expected combined codegen-dispatch info, got:\n$explain")
       }
 
@@ -243,6 +243,42 @@ class CometCodegenSuite
     }
   }
 
+  test("an expression nested inside a dispatched subtree is classified as dispatched") {
+    // The whole of `hypot(abs(b), c)` is bound and closure-serialized into one JVM kernel, so the
+    // inner `abs` ran in the JVM even though the `abs(a)` next to it ran natively. Naming only
+    // the dispatched root would let `native = Seq("abs")` pass here while an `abs` was running in
+    // the kernel, which is the one claim this helper exists to make trustworthy.
+    withTable("t") {
+      sql("CREATE TABLE t (a DOUBLE, b DOUBLE, c DOUBLE) USING parquet")
+      sql("INSERT INTO t VALUES (3.0, 4.0, 5.0)")
+      val query = "SELECT abs(a), hypot(abs(b), c) FROM t"
+
+      // `abs` is genuinely on both sides of the fence, so neither claim about it alone holds.
+      intercept[TestFailedException] {
+        checkSparkAnswerAndImpl(sql(query), native = Seq("abs"))
+      }
+      intercept[TestFailedException] {
+        checkSparkAnswerAndImpl(sql(query), dispatched = Seq("abs"))
+      }
+      // `hypot` is unambiguous, and the same query still classifies it correctly.
+      checkSparkAnswerAndImpl(sql(query), dispatched = Seq("hypot"))
+    }
+  }
+
+  /**
+   * The expression names listed in the `[COMET-INFO: JVM codegen dispatcher: ...]` segment.
+   *
+   * Matching the whole segment rather than a `contains` on `"JVM codegen dispatcher: <name>"`,
+   * because the segment lists every dispatched expression in the operator sorted by name -
+   * including expressions nested inside a dispatched subtree - so a substring match pinned to one
+   * name breaks as soon as a query dispatches a second one.
+   */
+  private def dispatchedNames(explain: String): Seq[String] =
+    "JVM codegen dispatcher: ([^\\]]*)".r
+      .findFirstMatchIn(explain)
+      .map(_.group(1).split(",").map(_.trim).filter(_.nonEmpty).toSeq)
+      .getOrElse(Seq.empty)
+
   private def withSequenceTable(f: => Unit): Unit = {
     withTable("t") {
       // `stp` carries a sign-correct step so `sequence(a, b, stp)` is legal on both rows:
@@ -286,7 +322,7 @@ class CometCodegenSuite
       val explain =
         new ExtendedExplainInfo().generateExtendedInfo(df.queryExecution.executedPlan)
       assert(
-        explain.contains("JVM codegen dispatcher: sequence"),
+        dispatchedNames(explain).contains("sequence"),
         s"expected zero-arg-UDF sequence to route through the dispatcher, got:\n$explain")
     }
   }
@@ -302,7 +338,7 @@ class CometCodegenSuite
       val explain =
         new ExtendedExplainInfo().generateExtendedInfo(df.queryExecution.executedPlan)
       assert(
-        explain.contains("JVM codegen dispatcher: sequence"),
+        dispatchedNames(explain).contains("sequence"),
         s"expected composed-arg sequence to route through the dispatcher, got:\n$explain")
     }
   }
@@ -316,7 +352,7 @@ class CometCodegenSuite
       val explain =
         new ExtendedExplainInfo().generateExtendedInfo(df.queryExecution.executedPlan)
       assert(
-        explain.contains("JVM codegen dispatcher: sequence"),
+        dispatchedNames(explain).contains("sequence"),
         s"expected date sequence to route through the dispatcher, got:\n$explain")
     }
   }
