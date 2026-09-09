@@ -2165,6 +2165,50 @@ class CometIcebergWriteActionSuite
    * (same as the JVM-path assertion -- AQE re-planning never duplicates commits) AND at least one
    * [[CometIcebergWriteExec]] appears in some captured plan AND the resulting row set matches.
    */
+  // https://github.com/apache/datafusion-comet/issues/5776. iceberg-rust's `FanoutWriter` keeps
+  // its per-partition writers in a `HashMap` and closes them by iterating it, so the data-file
+  // order a task returned followed Rust's per-process `RandomState`. That order is the manifest
+  // entry order, which is the scan-task order, which is the row order of an unordered
+  // `SELECT *` -- and Iceberg's own
+  // `TestMetadataTablesWithPartitionEvolution.testPartitionColumnNamedPartition` compares such a
+  // `SELECT *` positionally against what iceberg-java wrote.
+  //
+  // What is asserted here is determinism, not parity: iceberg-java's fanout writer iterates its
+  // own `StructLikeMap`, so the two writers only agree where that map order and path order happen
+  // to coincide -- which they do for the ascending partition values the upstream test uses. See
+  // the fanout entry under accepted divergences in `iceberg-writes.md`.
+  //
+  // Eight partitions rather than the two that test uses: an unfixed writer lands in path order by
+  // luck 1 time in 8!, where with two it would pass half the time.
+  test("native acceleration: a fanout write lists its data files in a stable order") {
+    assumeNativeAcceleration()
+    withIcebergCatalog { warehouseDir =>
+      val fanout = Some("'write.spark.fanout.enabled'='true'")
+      createTable(
+        warehouseDir,
+        "fanout_order",
+        partitionSpec = "PARTITIONED BY (region)",
+        properties = fanout)
+      val values = (0 until 8).map(i => s"($i, 'r$i', $i.5)").mkString(", ")
+
+      assertNativeWriteEngages("fanout_order", 0 until 8) {
+        spark.sql(s"INSERT INTO $catalog.$ns.fanout_order VALUES $values")
+      }
+
+      val paths = spark
+        .sql(s"SELECT file_path FROM $catalog.$ns.fanout_order.files")
+        .collect()
+        .toSeq
+        .map(_.getString(0))
+      assert(paths.size == 8, s"expected one file per partition, got $paths")
+      assert(paths == paths.sorted, s"fanout data files are not listed in path order: $paths")
+
+      // The manifest order is what an unordered read comes back in, so it is stable too.
+      val ids = spark.sql(s"SELECT id FROM $catalog.$ns.fanout_order").collect().toSeq
+      assert(ids.map(_.getInt(0)) == (0 until 8), s"unordered read: ${ids.mkString(", ")}")
+    }
+  }
+
   private def assertNativeWriteEngages(tableName: String, expectedIds: Seq[Int])(
       action: => Unit): Unit = {
     val snapshot = withNativeEnabled { captureWrite(tableName)(action) }

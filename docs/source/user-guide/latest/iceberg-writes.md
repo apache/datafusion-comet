@@ -260,6 +260,13 @@ a data file but not what any reader computes from it:
   unescaped; Comet uses the 1.8+ spelling on every profile. Distinct partition values still get
   distinct directories in all cases, and no reader parses these names — files are resolved through
   committed manifests. Iceberg deprecated float and double partitioning in 1.3.
+- A fanout write lists a task's data files in file-path order, where iceberg-java lists them in
+  its own `StructLikeMap` iteration order. Both are stable across runs, and neither is a
+  documented ordering, but the manifest entry order becomes the scan-task order and so the row
+  order of an unordered `SELECT *`. Only the sorted order is reproducible on the native path:
+  iceberg-rust's `FanoutWriter` closes its per-partition writers out of a `HashMap`, which under
+  Rust's per-process `RandomState` would otherwise give a different order on every run. Clustered
+  and unpartitioned writes append in creation order on both paths and are unaffected.
 - Compressed page bytes are implementation-defined: the codec and any explicit level are
   translated, but parquet-rs and parquet-mr embed different encoder implementations and
   defaults (zstd default levels, LZ4 framing), so byte-identical output is not achievable even
