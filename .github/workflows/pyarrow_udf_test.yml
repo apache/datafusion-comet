@@ -33,7 +33,6 @@ on:
       - "spark/src/main/scala/org/apache/comet/rules/EliminateRedundantTransitions.scala"
       - "spark/src/main/scala/org/apache/spark/sql/comet/CometMapInBatchExec.scala"
       - "spark/src/main/scala/org/apache/spark/sql/comet/shims/MapInBatchInfo.scala"
-      - "spark/src/main/spark-3.4/org/apache/spark/sql/comet/shims/ShimCometMapInBatch.scala"
       - "spark/src/main/spark-3.5/org/apache/spark/sql/comet/shims/ShimCometMapInBatch.scala"
       - "spark/src/main/spark-4.0/org/apache/spark/sql/comet/shims/ShimCometMapInBatch.scala"
       - "spark/src/main/spark-4.1/org/apache/spark/sql/comet/shims/ShimCometMapInBatch.scala"

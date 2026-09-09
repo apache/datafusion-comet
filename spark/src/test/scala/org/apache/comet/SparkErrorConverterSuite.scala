@@ -36,7 +36,7 @@ class SparkErrorConverterSuite extends AnyFunSuite {
       .getOrElse(fail("Expected CannotReadFile to be converted to a Spark exception"))
     // `cannotReadFilesError` IS the FAILED_READ_FILE path. Assert on the version-stable message
     // ("Encountered error while reading file ...") rather than the `FAILED_READ_FILE` literal,
-    // which only Spark 4.x prepends to getMessage as the error-class tag (3.4/3.5 do not).
+    // which only Spark 4.x prepends to getMessage as the error-class tag (3.5 does not).
     assert(ex.getMessage.contains("Encountered error while reading file"))
     assert(ex.getMessage.contains("part-0.parquet"))
   }

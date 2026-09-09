@@ -442,7 +442,7 @@ abstract class CometTestBase
     // differs across architectures, so a native kernel and Spark can return NaNs that print
     // identically but compare unequal. Spark fixed this in `compare` itself for 4.1.2 and 4.2.0
     // ("in some hardware NaN can be represented with different bits, so first check for it"), but
-    // 3.4, 3.5, 4.0 and 4.1.1 still compare raw bits. Canonicalize NaN here so every supported
+    // 3.5, 4.0 and 4.1.1 still compare raw bits. Canonicalize NaN here so every supported
     // version asserts NaN-ness without asserting the payload. Signed zero is deliberately left
     // alone: distinguishing it is the reason the raw-bit comparison exists.
     case f: java.lang.Float => if (f.isNaN) Float.NaN else f.floatValue

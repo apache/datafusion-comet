@@ -29,8 +29,7 @@ import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, scalarFunctio
 
 object CometStaticInvoke extends CometExpressionSerde[StaticInvoke] {
 
-  // With Spark 3.4, CharVarcharCodegenUtils.readSidePadding gets called to pad spaces for
-  // char types.
+  // CharVarcharCodegenUtils.readSidePadding gets called to pad spaces for char types.
   // See https://github.com/apache/spark/pull/38151
   /**
    * Handlers keyed by `(functionName, staticObject class name)`. Class names rather than classes
@@ -50,9 +49,8 @@ object CometStaticInvoke extends CometExpressionSerde[StaticInvoke] {
       // carrying the `legacyCharsets` / `legacyErrorAction` flags. Routing through the codegen
       // dispatcher runs Spark's own decoder so both flags are honored. See #4465.
       ("decode", classOf[StringDecode].getName) -> CometStaticInvokeCodegenDispatch,
-      // Spark 3.5+ makes `Base64` RuntimeReplaceable, lowering `base64(bin)` to
-      // `StaticInvoke(Base64.encode, Seq(child, chunkBase64), ...)`. On Spark 3.4 the `Base64`
-      // node survives and is handled directly (see CometBase64).
+      // `Base64` is RuntimeReplaceable, lowering `base64(bin)` to
+      // `StaticInvoke(Base64.encode, Seq(child, chunkBase64), ...)`.
       ("encode", classOf[Base64].getName) -> CometBase64StaticInvoke)
 
   private def handlerFor(expr: StaticInvoke): Option[CometExpressionSerde[StaticInvoke]] =

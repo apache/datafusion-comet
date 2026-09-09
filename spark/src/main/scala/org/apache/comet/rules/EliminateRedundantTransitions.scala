@@ -108,7 +108,7 @@ case class EliminateRedundantTransitions(session: SparkSession)
       // Replace MapInBatchExec (PythonMapInArrowExec / MapInArrowExec / MapInPandasExec) that has
       // a ColumnarToRow child with CometMapInBatchExec, eliminating the input and output
       // UnsafeProjection copies and keeping the stage columnar. The matchers are
-      // version-shimmed: Spark 3.4 / 3.5 return None (they lack the required APIs) and Spark
+      // version-shimmed: Spark 3.5 returns None (it lacks the required APIs) and Spark
       // 4.1+ matches the renamed `MapInArrowExec`.
       //
       // Falls back to vanilla Spark when `spark.sql.execution.arrow.useLargeVarTypes` is enabled:

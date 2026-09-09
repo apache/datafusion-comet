@@ -421,7 +421,7 @@ from a clean IntelliJ configuration:
 
 6. Open the repository root as a new project in IntelliJ IDEA.
 7. In the Maven tool window, enable the `spark-4.0` and `jdk17` profiles. Disable conflicting Spark
-   version profiles such as `spark-3.4` or `spark-3.5` if IntelliJ selected them.
+   version profiles such as `spark-3.5` or `spark-4.1` if IntelliJ selected them.
 8. Re-import or reload the Maven project.
 9. Build the project in IntelliJ.
 
@@ -517,7 +517,6 @@ The tests can be run with:
 
 ```sh
 export SPARK_HOME=`pwd`
-./mvnw -Dsuites="org.apache.spark.sql.comet.CometTPCDSV1_4_PlanStabilitySuite" -Pspark-3.4 -nsu test
 ./mvnw -Dsuites="org.apache.spark.sql.comet.CometTPCDSV1_4_PlanStabilitySuite" -Pspark-3.5 -nsu test
 ./mvnw -Dsuites="org.apache.spark.sql.comet.CometTPCDSV1_4_PlanStabilitySuite" -Pspark-4.0 -nsu test
 ```
@@ -526,7 +525,6 @@ and
 
 ```sh
 export SPARK_HOME=`pwd`
-./mvnw -Dsuites="org.apache.spark.sql.comet.CometTPCDSV2_7_PlanStabilitySuite" -Pspark-3.4 -nsu test
 ./mvnw -Dsuites="org.apache.spark.sql.comet.CometTPCDSV2_7_PlanStabilitySuite" -Pspark-3.5 -nsu test
 ./mvnw -Dsuites="org.apache.spark.sql.comet.CometTPCDSV2_7_PlanStabilitySuite" -Pspark-4.0 -nsu test
 ```
@@ -536,7 +534,6 @@ To regenerate the golden files, you can run the following commands.
 
 ```sh
 export SPARK_HOME=`pwd`
-SPARK_GENERATE_GOLDEN_FILES=1 ./mvnw -Dsuites="org.apache.spark.sql.comet.CometTPCDSV1_4_PlanStabilitySuite" -Pspark-3.4 -nsu test
 SPARK_GENERATE_GOLDEN_FILES=1 ./mvnw -Dsuites="org.apache.spark.sql.comet.CometTPCDSV1_4_PlanStabilitySuite" -Pspark-3.5 -nsu test
 SPARK_GENERATE_GOLDEN_FILES=1 ./mvnw -Dsuites="org.apache.spark.sql.comet.CometTPCDSV1_4_PlanStabilitySuite" -Pspark-4.0 -nsu test
 ```
@@ -545,7 +542,6 @@ and
 
 ```sh
 export SPARK_HOME=`pwd`
-SPARK_GENERATE_GOLDEN_FILES=1 ./mvnw -Dsuites="org.apache.spark.sql.comet.CometTPCDSV2_7_PlanStabilitySuite" -Pspark-3.4 -nsu test
 SPARK_GENERATE_GOLDEN_FILES=1 ./mvnw -Dsuites="org.apache.spark.sql.comet.CometTPCDSV2_7_PlanStabilitySuite" -Pspark-3.5 -nsu test
 SPARK_GENERATE_GOLDEN_FILES=1 ./mvnw -Dsuites="org.apache.spark.sql.comet.CometTPCDSV2_7_PlanStabilitySuite" -Pspark-4.0 -nsu test
 ```

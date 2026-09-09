@@ -40,7 +40,7 @@ import org.apache.spark.sql.types._
 import org.apache.spark.storage.StorageLevel
 
 import org.apache.comet.{CometArrowAllocator, CometConf}
-import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
+import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.vector.CometVector
 
 class CometInMemoryCacheSuite extends CometTestBase {
@@ -112,7 +112,6 @@ class CometInMemoryCacheSuite extends CometTestBase {
 
   // https://github.com/apache/spark/blob/v4.1.2/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala#L3114-L3154
   test("AQE SPARK-42101: cold and warm Comet cache materialization") {
-    assume(isSpark35Plus, "Table-cache query stages require Spark 3.5+")
     withAQECache {
       withSQLConf(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
         val left = spark.range(0, 10, 1, 2).selectExpr("cast(id as string) c1")
@@ -147,7 +146,6 @@ class CometInMemoryCacheSuite extends CometTestBase {
 
   // https://github.com/apache/spark/blob/v4.1.2/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala#L3156-L3176
   test("AQE SPARK-42101: preserve shuffle partitions beside a table cache stage") {
-    assume(isSpark35Plus, "Table-cache query stages require Spark 3.5+")
     withAQECache {
       withSQLConf(
         SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",

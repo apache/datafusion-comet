@@ -139,7 +139,7 @@ make
 cd native && cargo clippy --all-targets --workspace -- -D warnings
 ```
 
-Then run `audit-comet-expression` on `$ARGUMENTS` to compare against Spark 3.4.3 / 3.5.8 / 4.0.1 and surface coverage gaps; iterate on tests.
+Then run `audit-comet-expression` on `$ARGUMENTS` to compare against Spark 3.5.8 / 4.0.1 / 4.1.1 and surface coverage gaps; iterate on tests.
 
 The user generally runs tests themselves. If asked for a smoke test:
 

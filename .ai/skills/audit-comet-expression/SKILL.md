@@ -1,6 +1,6 @@
 ---
 name: audit-comet-expression
-description: Audit an existing Comet expression for correctness and test coverage. Studies the Spark implementation across versions 3.4.3, 3.5.8, 4.0.1, and 4.1.1, reviews the Comet and DataFusion implementations, identifies missing test coverage, and offers to implement additional tests.
+description: Audit an existing Comet expression for correctness and test coverage. Studies the Spark implementation across versions 3.5.8, 4.0.1, and 4.1.1, reviews the Comet and DataFusion implementations, identifies missing test coverage, and offers to implement additional tests.
 argument-hint: <expression-name>
 ---
 
@@ -29,7 +29,7 @@ Audit the Comet implementation of the `$ARGUMENTS` expression for correctness an
 
 This audit covers:
 
-1. Spark implementation across versions 3.4.3, 3.5.8, 4.0.1, and 4.1.1
+1. Spark implementation across versions 3.5.8, 4.0.1, and 4.1.1
 2. Comet Scala serde implementation
 3. Comet Rust / DataFusion implementation
 4. Existing test coverage (Comet SQL Tests and Comet Scala Tests)
@@ -43,7 +43,7 @@ Clone specific Spark version tags (use shallow clones to avoid polluting the wor
 
 ```bash
 set -eu -o pipefail
-for tag in v3.4.3 v3.5.8 v4.0.1 v4.1.1; do
+for tag in v3.5.8 v4.0.1 v4.1.1; do
   dir="/tmp/spark-${tag}"
   if [ ! -d "$dir" ]; then
     git clone --depth 1 --branch "$tag" https://github.com/apache/spark.git "$dir"
@@ -56,7 +56,7 @@ done
 Search the Catalyst SQL expressions source:
 
 ```bash
-for tag in v3.4.3 v3.5.8 v4.0.1 v4.1.1; do
+for tag in v3.5.8 v4.0.1 v4.1.1; do
   dir="/tmp/spark-${tag}"
   echo "=== $tag ==="
   find "$dir/sql/catalyst/src/main/scala" -name "*.scala" | \
@@ -67,7 +67,7 @@ done
 If the expression is not found in catalyst, also check core:
 
 ```bash
-for tag in v3.4.3 v3.5.8 v4.0.1 v4.1.1; do
+for tag in v3.5.8 v4.0.1 v4.1.1; do
   dir="/tmp/spark-${tag}"
   echo "=== $tag ==="
   find "$dir/sql" -name "*.scala" | \
@@ -90,7 +90,6 @@ For each Spark version, read the expression file and note:
 
 Produce a concise diff summary of what changed between:
 
-- 3.4.3 → 3.5.8
 - 3.5.8 → 4.0.1
 - 4.0.1 → 4.1.1
 
@@ -107,7 +106,7 @@ Pay attention to:
 ## Step 2: Locate the Spark Tests
 
 ```bash
-for tag in v3.4.3 v3.5.8 v4.0.1 v4.1.1; do
+for tag in v3.5.8 v4.0.1 v4.1.1; do
   dir="/tmp/spark-${tag}"
   echo "=== $tag ==="
   find "$dir/sql" -name "*.scala" -path "*/test/*" | \
@@ -732,7 +731,7 @@ used for the expression in `docs/source/user-guide/latest/expressions.md`.
   other pages.
 - Add (or update) a `## <function_name>` section, keeping sections alphabetically ordered.
 - Under that heading, add one bullet per Spark version checked, each including:
-  - Spark version (e.g. 3.4.3, 3.5.8, 4.0.1, 4.1.1)
+  - Spark version (e.g. 3.5.8, 4.0.1, 4.1.1)
   - Today's date
   - A brief note for any version-specific finding (behavioral difference, known
     incompatibility); omit the note if nothing notable.
@@ -744,7 +743,7 @@ used for the expression in `docs/source/user-guide/latest/expressions.md`.
 Present the audit as:
 
 1. **Expression Summary** - Brief description of what `$ARGUMENTS` does, its input/output types, and null behavior
-2. **Spark Version Differences** - Summary of any behavioral or API differences across Spark 3.4.3, 3.5.8, 4.0.1, and 4.1.1
+2. **Spark Version Differences** - Summary of any behavioral or API differences across Spark 3.5.8, 4.0.1, and 4.1.1
 3. **Comet Implementation Notes** - Summary of how Comet implements this expression and any concerns
 4. **Coverage Gap Analysis** - The gap table from Step 5, plus implementation gaps
 5. **Recommendations** - Prioritized list from Step 6

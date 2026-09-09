@@ -82,7 +82,7 @@ the community behind each engine alongside the technical differences.
 
 Both projects target a similar set of Spark releases.
 
-Comet supports Spark 3.4, 3.5, 4.0, and 4.1 in production builds, with an experimental build also published for
+Comet supports Spark 3.5, 4.0, and 4.1 in production builds, with an experimental build also published for
 the Spark 4.2 preview. See the [Spark version compatibility guide] for the exact patch versions and
 JDK/Scala combinations.
 

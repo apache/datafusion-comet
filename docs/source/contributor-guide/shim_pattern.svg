@@ -6,7 +6,7 @@
   <text x="450" y="28" text-anchor="middle" fill="#cdd6f4" font-size="16" font-weight="bold">Shim Pattern: Per-Version Spark API Bridging</text>
 
   <!-- Problem statement -->
-  <text x="450" y="55" text-anchor="middle" fill="#6c7086" font-size="12">Spark 3.4, 3.5, and 4.0 all have slightly different QueryExecutionErrors APIs.</text>
+  <text x="450" y="55" text-anchor="middle" fill="#6c7086" font-size="12">Spark 3.5 and the Spark 4.x line have different QueryExecutionErrors APIs.</text>
   <text x="450" y="72" text-anchor="middle" fill="#6c7086" font-size="12">Comet ships a separate ShimSparkErrorConverter implementation for each version.</text>
 
   <!-- === Common code === -->
@@ -17,52 +17,39 @@
 
   <!-- Arrows down to shims -->
   <line x1="330" y1="168" x2="170" y2="230" stroke="#6c7086" stroke-width="1.5" marker-end="url(#shimArr)"/>
-  <line x1="450" y1="168" x2="450" y2="230" stroke="#6c7086" stroke-width="1.5" marker-end="url(#shimArr)"/>
   <line x1="570" y1="168" x2="730" y2="230" stroke="#6c7086" stroke-width="1.5" marker-end="url(#shimArr)"/>
 
-  <text x="225" y="198" text-anchor="middle" fill="#f9e2af" font-size="10">spark-3.4</text>
-  <text x="450" y="198" text-anchor="middle" fill="#f9e2af" font-size="10">spark-3.5</text>
-  <text x="675" y="198" text-anchor="middle" fill="#f9e2af" font-size="10">spark-4.0</text>
+  <text x="225" y="198" text-anchor="middle" fill="#f9e2af" font-size="10">spark-3.5</text>
+  <text x="675" y="198" text-anchor="middle" fill="#f9e2af" font-size="10">spark-4.x</text>
 
   <!-- Shim boxes -->
   <rect x="40" y="232" width="260" height="80" rx="8" fill="#181825" stroke="#f9e2af" stroke-width="1.5"/>
   <text x="170" y="254" text-anchor="middle" fill="#f9e2af" font-weight="bold">ShimSparkErrorConverter</text>
-  <text x="170" y="270" text-anchor="middle" fill="#6c7086" font-size="11">spark-3.4 edition</text>
-  <text x="170" y="290" text-anchor="middle" fill="#cdd6f4" font-size="11">Uses Spark 3.4 API signatures</text>
-  <text x="170" y="306" text-anchor="middle" fill="#cdd6f4" font-size="11">(no SQLQueryContext in some calls)</text>
-
-  <rect x="320" y="232" width="260" height="80" rx="8" fill="#181825" stroke="#f9e2af" stroke-width="1.5"/>
-  <text x="450" y="254" text-anchor="middle" fill="#f9e2af" font-weight="bold">ShimSparkErrorConverter</text>
-  <text x="450" y="270" text-anchor="middle" fill="#6c7086" font-size="11">spark-3.5 edition</text>
-  <text x="450" y="290" text-anchor="middle" fill="#cdd6f4" font-size="11">Uses Spark 3.5 API signatures</text>
-  <text x="450" y="306" text-anchor="middle" fill="#cdd6f4" font-size="11">(takes SQLQueryContext directly)</text>
+  <text x="170" y="270" text-anchor="middle" fill="#6c7086" font-size="11">spark-3.5 edition</text>
+  <text x="170" y="290" text-anchor="middle" fill="#cdd6f4" font-size="11">Uses Spark 3.5 API signatures</text>
+  <text x="170" y="306" text-anchor="middle" fill="#cdd6f4" font-size="11">(takes SQLQueryContext directly)</text>
 
   <rect x="600" y="232" width="260" height="80" rx="8" fill="#181825" stroke="#f9e2af" stroke-width="1.5"/>
   <text x="730" y="254" text-anchor="middle" fill="#f9e2af" font-weight="bold">ShimSparkErrorConverter</text>
-  <text x="730" y="270" text-anchor="middle" fill="#6c7086" font-size="11">spark-4.0 edition</text>
-  <text x="730" y="290" text-anchor="middle" fill="#cdd6f4" font-size="11">Uses Spark 4.0 API signatures</text>
+  <text x="730" y="270" text-anchor="middle" fill="#6c7086" font-size="11">spark-4.x edition</text>
+  <text x="730" y="290" text-anchor="middle" fill="#cdd6f4" font-size="11">Uses Spark 4.x API signatures</text>
   <text x="730" y="306" text-anchor="middle" fill="#cdd6f4" font-size="11">(new functionName param in some)</text>
 
   <!-- Arrows down to QueryExecutionErrors -->
   <line x1="170" y1="312" x2="170" y2="360" stroke="#a6e3a1" stroke-width="1.5" marker-end="url(#shimArrGreen)"/>
-  <line x1="450" y1="312" x2="450" y2="360" stroke="#a6e3a1" stroke-width="1.5" marker-end="url(#shimArrGreen)"/>
   <line x1="730" y1="312" x2="730" y2="360" stroke="#a6e3a1" stroke-width="1.5" marker-end="url(#shimArrGreen)"/>
 
   <!-- QueryExecutionErrors boxes -->
   <rect x="40" y="362" width="260" height="55" rx="6" fill="#313244" stroke="#a6e3a1" stroke-width="1.5"/>
   <text x="170" y="384" text-anchor="middle" fill="#a6e3a1" font-weight="bold">QueryExecutionErrors</text>
-  <text x="170" y="402" text-anchor="middle" fill="#cdd6f4" font-size="11">Spark 3.4 internal API</text>
-
-  <rect x="320" y="362" width="260" height="55" rx="6" fill="#313244" stroke="#a6e3a1" stroke-width="1.5"/>
-  <text x="450" y="384" text-anchor="middle" fill="#a6e3a1" font-weight="bold">QueryExecutionErrors</text>
-  <text x="450" y="402" text-anchor="middle" fill="#cdd6f4" font-size="11">Spark 3.5 internal API</text>
+  <text x="170" y="402" text-anchor="middle" fill="#cdd6f4" font-size="11">Spark 3.5 internal API</text>
 
   <rect x="600" y="362" width="260" height="55" rx="6" fill="#313244" stroke="#a6e3a1" stroke-width="1.5"/>
   <text x="730" y="384" text-anchor="middle" fill="#a6e3a1" font-weight="bold">QueryExecutionErrors</text>
-  <text x="730" y="402" text-anchor="middle" fill="#cdd6f4" font-size="11">Spark 4.0 internal API</text>
+  <text x="730" y="402" text-anchor="middle" fill="#cdd6f4" font-size="11">Spark 4.x internal API</text>
 
   <!-- Example: diff in BinaryArithmeticOverflow -->
-  <text x="450" y="435" text-anchor="middle" fill="#6c7086" font-size="10">Example difference: "BinaryArithmeticOverflow" — Spark 3.x does NOT take functionName param, Spark 4.0 does.</text>
+  <text x="450" y="435" text-anchor="middle" fill="#6c7086" font-size="10">Example difference: "BinaryArithmeticOverflow" — Spark 3.5 does NOT take functionName param, Spark 4.x does.</text>
 
   <defs>
     <marker id="shimArr" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">

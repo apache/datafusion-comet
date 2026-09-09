@@ -1713,7 +1713,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("null IN empty list honours legacy null-in-empty behavior") {
     // Spark returns NULL for a NULL operand against an empty IN list when the legacy behavior is
-    // in effect (SPARK-44550): always on Spark 3.4, on by default on Spark 3.5, and whenever ANSI
+    // in effect (SPARK-44550): on by default on Spark 3.5 and whenever ANSI
     // mode is disabled on Spark 4.0+. Comet's native `in` kernel always returns false, so the
     // legacy case must leave the native path. Empty IN lists are not expressible in SQL and
     // `OptimizeIn` folds them away, so build the expression via the DataFrame API with that rule
@@ -2322,7 +2322,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         CometConf.COMET_EXEC_ENABLED.key -> "true")(f)
     }
 
-    // Spark 3.4/3.5 throw `_LEGACY_ERROR_TEMP_2043` ("- <sqlValue> caused overflow.") for byte and
+    // Spark 3.5 throws `_LEGACY_ERROR_TEMP_2043` ("- <sqlValue> caused overflow.") for byte and
     // short. Spark 4.x routes them through `MathUtils.negateExact` and agrees with Comet, which
     // always renders `SparkError::ArithmeticOverflow` with the Spark type name.
     def sparkOverflowMsg(dtype: String): String =

@@ -70,7 +70,7 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
         val defaultValueType = defaultValueRow.schema.fields(0).dataType.sql
         // Construct the string for the default value based on the column type.
         val defaultValueString = defaultValueType match {
-          // These explicit type definitions for TINYINT, SMALLINT, FLOAT, DOUBLE, and DATE are only needed for 3.4.
+          // Keep explicit type definitions so generated SQL literals retain the source type.
           case "TINYINT" | "SMALLINT" =>
             s"$defaultValueType(${defaultValueRow.get(0)})"
           case "FLOAT" =>
