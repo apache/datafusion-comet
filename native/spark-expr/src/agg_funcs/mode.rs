@@ -432,7 +432,13 @@ impl GroupsAccumulator for ModeGroupsAccumulator {
     }
 
     fn size(&self) -> usize {
-        size_of_val(self) + self.groups.iter().map(map_size).sum::<usize>()
+        // `size_of_val(self)` only covers the `Vec`'s inline pointer/len/capacity, not the slot
+        // array it owns. One empty `HashMap` per group is 48 bytes of slot that `map_size` reports
+        // as 0, so a run with many sparse groups would otherwise be invisible to the memory pool
+        // that drives spill decisions.
+        size_of_val(self)
+            + self.groups.capacity() * size_of::<HashMap<ScalarValue, i64>>()
+            + self.groups.iter().map(map_size).sum::<usize>()
     }
 }
 
@@ -642,5 +648,28 @@ mod tests {
         let result = result.as_primitive::<Int32Type>();
         assert_eq!(result.value(0), 5);
         assert_eq!(result.value(1), 9);
+    }
+
+    #[test]
+    fn groups_accumulator_size_accounts_for_group_slots() {
+        // All-NULL input leaves every per-group map empty, so `map_size` reports 0 for each and the
+        // `Vec` slot array is the only allocation. Reporting only `size_of_val(self)` there hides
+        // the whole thing from the memory pool that drives spill decisions.
+        const GROUPS: usize = 10_000;
+        let mut acc = ModeGroupsAccumulator::new(DataType::Int32, false);
+        acc.update_batch(
+            &[i32_array(vec![None; GROUPS])],
+            &(0..GROUPS).collect::<Vec<_>>(),
+            None,
+            GROUPS,
+        )
+        .unwrap();
+
+        let slot_bytes = GROUPS * size_of::<HashMap<ScalarValue, i64>>();
+        assert!(
+            acc.size() >= size_of_val(&acc) + slot_bytes,
+            "size() = {} does not cover {slot_bytes} bytes of empty group slots",
+            acc.size()
+        );
     }
 }
