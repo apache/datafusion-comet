@@ -43,6 +43,58 @@ pub struct SparkHllSketch {
     inner: HllSketch,
 }
 
+/// Byte offsets into the DataSketches HLL preamble, and the bits we need from it.
+mod preamble {
+    /// Serialization flags. Bit 3 is COMPACT.
+    pub const FLAGS: usize = 5;
+    /// Mode byte. Low two bits are the current mode (0 LIST, 1 SET, 2 HLL).
+    pub const MODE: usize = 7;
+    pub const COMPACT_FLAG: u8 = 8;
+    pub const CUR_MODE_MASK: u8 = 0x3;
+    pub const CUR_MODE_HLL: u8 = 2;
+}
+
+/// Work around a decoding bug in `datasketches` 0.3.0 for compact sketches in an HLL array mode.
+///
+/// `Array4::deserialize` (and the `Array6` / `Array8` equivalents) skip the register block
+/// entirely when the COMPACT flag is set, leaving every register zero:
+///
+/// ```text
+/// let mut data = vec![0u8; num_bytes];
+/// if !compact {
+///     cursor.read_exact(&mut data)?;
+/// } else {
+///     cursor.advance(num_bytes as u64);
+/// }
+/// ```
+///
+/// The damage is quiet, which is what makes it worth guarding: the decoded sketch's own
+/// `estimate()` still looks correct because it comes back from the HIP accumulator in the
+/// preamble, but every union built from it is wrong. Two disjoint 1,000-value sketches union to
+/// ~989 rather than ~1991.
+///
+/// Clearing the flag is a correct parse rather than a guess. The register block is present in
+/// both the compact and updatable forms, and the crate reads the HLL_4 auxiliary map as
+/// `aux_count` coupons regardless of the flag - which is the compact layout. LIST and SET mode
+/// compaction *is* a genuinely different layout, and the crate handles those correctly, so this
+/// only touches HLL array mode.
+///
+/// Returns `None` when the input needs no rewriting, so the common path does not copy.
+///
+/// `compact_input_survives_a_union` pins the behaviour: if a future `datasketches` release fixes
+/// the register read, that test is what tells us this can be deleted.
+fn normalize_compact_hll_array(bytes: &[u8]) -> Option<Vec<u8>> {
+    if bytes.len() <= preamble::MODE
+        || bytes[preamble::MODE] & preamble::CUR_MODE_MASK != preamble::CUR_MODE_HLL
+        || bytes[preamble::FLAGS] & preamble::COMPACT_FLAG == 0
+    {
+        return None;
+    }
+    let mut owned = bytes.to_vec();
+    owned[preamble::FLAGS] &= !preamble::COMPACT_FLAG;
+    Some(owned)
+}
+
 impl SparkHllSketch {
     /// Create an empty HLL_8 sketch with the given `lgConfigK`.
     pub fn new(lg_config_k: u8) -> Self {
@@ -89,7 +141,8 @@ impl SparkHllSketch {
 
     /// Deserialize a DataSketches sketch (either compact or updatable form).
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, DataFusionError> {
-        HllSketch::deserialize(bytes)
+        let normalized = normalize_compact_hll_array(bytes);
+        HllSketch::deserialize(normalized.as_deref().unwrap_or(bytes))
             .map(|inner| Self { inner })
             .map_err(|e| DataFusionError::Internal(format!("invalid HLL sketch bytes: {e}")))
     }

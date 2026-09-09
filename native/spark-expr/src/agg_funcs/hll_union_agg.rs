@@ -143,11 +143,16 @@ impl Accumulator for HllUnionAccumulator {
                 .unwrap_or(0)
     }
     fn state(&mut self) -> Result<Vec<ScalarValue>> {
+        // Unlike `evaluate`, an empty partial emits NULL rather than an empty lgConfigK=12
+        // sketch. `merge_batch` skips nulls, so the Final phase sees nothing at all from a
+        // partition that absorbed nothing - which is the point: emitting a concrete
+        // lgConfigK=12 sketch here would make it the first `lgConfigK` the Final accumulator
+        // sees, and every real sketch at a different k would then fail the "Sketches have
+        // different lgConfigK values" check. A partition with no input must not get a vote on
+        // the union's k.
         match &self.union {
             Some(u) => Ok(vec![ScalarValue::Binary(Some(u.to_sketch_bytes()))]),
-            None => Ok(vec![ScalarValue::Binary(Some(
-                SparkHllUnion::new(DEFAULT_LG_K).to_sketch_bytes(),
-            ))]),
+            None => Ok(vec![ScalarValue::Binary(None)]),
         }
     }
     fn merge_batch(&mut self, states: &[ArrayRef]) -> Result<()> {
@@ -219,6 +224,93 @@ mod tests {
             acc.size() > 1000,
             "size() should account for the sketch heap allocation, got {}",
             acc.size()
+        );
+    }
+
+    /// An empty partial must emit NULL, not an empty lgConfigK=12 sketch. Emitting a concrete
+    /// sketch made the empty partition the first `lgConfigK` the Final accumulator saw, so a
+    /// partition holding only lgConfigK=10 sketches then failed the mismatch check.
+    #[test]
+    fn empty_partial_state_is_null() {
+        let mut acc = HllUnionAccumulator::new(false);
+        assert_eq!(
+            acc.state().unwrap(),
+            vec![ScalarValue::Binary(None)],
+            "an empty partial must not contribute a sketch to the final merge"
+        );
+    }
+
+    #[test]
+    fn empty_partial_does_not_fix_the_final_lg_config_k() {
+        // Partition A saw nothing; partition B saw only lgConfigK=10 sketches. Merging A's
+        // state before B's used to abort with "Sketches have different lgConfigK values:
+        // 12 and 10".
+        let mut empty_partial = HllUnionAccumulator::new(false);
+        let empty_state = empty_partial.state().unwrap();
+
+        let mut k10 = SparkHllSketch::new(10);
+        for i in 0..1000i64 {
+            k10.update_i64(i);
+        }
+        let mut k10_partial = HllUnionAccumulator::new(false);
+        k10_partial
+            .update_batch(&[Arc::new(BinaryArray::from(vec![Some(
+                k10.to_sketch_bytes().as_slice(),
+            )]))])
+            .unwrap();
+        let k10_state = k10_partial.state().unwrap();
+
+        let mut final_acc = HllUnionAccumulator::new(false);
+        for state in [empty_state, k10_state] {
+            let arrays: Vec<ArrayRef> = state
+                .into_iter()
+                .map(|sv| sv.to_array_of_size(1).unwrap())
+                .collect();
+            final_acc.merge_batch(&arrays).unwrap();
+        }
+
+        let ScalarValue::Binary(Some(bytes)) = final_acc.evaluate().unwrap() else {
+            panic!("expected Binary(Some(_))")
+        };
+        let est = crate::agg_funcs::estimate_from_bytes(&bytes).unwrap();
+        assert!((est - 1000).abs() <= 40, "union estimate {est}");
+    }
+
+    /// A compact-form sketch has to survive a union. `datasketches` 0.3.0 drops the register
+    /// block for compact HLL array modes, which leaves the decoded sketch's own estimate intact
+    /// (it is restored from the HIP accumulator) but makes every union built from it wrong.
+    #[test]
+    fn compact_input_survives_a_union() {
+        let mut a = SparkHllSketch::new(12);
+        for i in 0..1000i64 {
+            a.update_i64(i);
+        }
+        let mut b = SparkHllSketch::new(12);
+        for i in 1000..2000i64 {
+            b.update_i64(i);
+        }
+        // Set the COMPACT flag, which is what a DataSketches `toCompactByteArray()` sketch
+        // carries. For an HLL array mode the register block is present either way, so this is
+        // the same bytes with a different flag.
+        let compact = |s: &SparkHllSketch| {
+            let mut v = s.to_sketch_bytes();
+            v[5] |= 8;
+            v
+        };
+        let arr = Arc::new(BinaryArray::from(vec![
+            Some(compact(&a).as_slice()),
+            Some(compact(&b).as_slice()),
+        ]));
+        let mut acc = HllUnionAccumulator::new(false);
+        acc.update_batch(&[arr]).unwrap();
+
+        let ScalarValue::Binary(Some(bytes)) = acc.evaluate().unwrap() else {
+            panic!("expected Binary(Some(_))")
+        };
+        let est = crate::agg_funcs::estimate_from_bytes(&bytes).unwrap();
+        assert!(
+            (est - 2000).abs() <= 80,
+            "union of two disjoint compact sketches estimated {est}, expected ~2000"
         );
     }
 }
