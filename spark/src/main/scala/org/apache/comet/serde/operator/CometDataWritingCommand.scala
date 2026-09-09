@@ -63,6 +63,10 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
               return Unsupported(Some("Supported output filesystems: local, HDFS"))
             }
 
+            NativeWriteUtils
+              .escapedHdfsDestination(cmd.outputPath.toString)
+              .foreach(reason => return Unsupported(Some(reason)))
+
             if (cmd.bucketSpec.isDefined) {
               return Unsupported(Some("Bucketed writes are not supported"))
             }

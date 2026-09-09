@@ -42,6 +42,7 @@ import org.apache.spark.sql.types.{ArrayType, LongType, MapType, Metadata, Metad
 
 import org.apache.comet.{CometConf, CometExplainInfo}
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
+import org.apache.comet.serde.operator.NativeWriteUtils
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, SchemaGenOptions}
 
 class CometParquetWriterSuite extends CometTestBase {
@@ -883,6 +884,32 @@ class CometParquetWriterSuite extends CometTestBase {
           checkAnswer(spark.read.parquet(outputPath), df)
         }
       }
+    }
+  }
+
+  test("HDFS output paths needing URI escaping are declined at planning") {
+    // The local case above writes natively, but HDFS cannot: `create_hdfs_object_store` hands the
+    // still-escaped `url.path()` to `object_store::path::Path::parse`, so the native writer would
+    // create `dir%20with%20space` while Spark's committer commits `dir with space`. Job commit
+    // would succeed with the data somewhere else, so the write has to stay on Spark until the
+    // native path handling preserves Hadoop filenames.
+    Seq(
+      "hdfs://ns/dir with space/output.parquet",
+      "hdfs://ns/dir%with%percent/output.parquet",
+      "hdfs://ns/nested/dir with space/output.parquet").foreach { path =>
+      assert(
+        NativeWriteUtils.escapedHdfsDestination(path).isDefined,
+        s"expected $path to be declined")
+    }
+
+    // Unescaped HDFS paths, and local paths of any shape, are unaffected.
+    Seq(
+      "hdfs://ns/plain/output.parquet",
+      "file:///tmp/dir with space/output.parquet",
+      "file:///tmp/dir%with%percent/output.parquet").foreach { path =>
+      assert(
+        NativeWriteUtils.escapedHdfsDestination(path).isEmpty,
+        s"expected $path to be accepted")
     }
   }
 
