@@ -24,7 +24,7 @@ import org.apache.spark.sql.comet.{CometFilterExec, CometProjectExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.col
 
-import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
+import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, isSpark41Plus}
 
 // Regex expressions other than in-subset `rlike` run through the codegen dispatcher by default
 // (Spark's own code, enabled by default) rather than the native rust path.
@@ -38,6 +38,16 @@ class CometRegExpJvmSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   private val lookbehind = "(?<=foo)bar"
   private val embeddedFlags = "(?i)foo"
   private val namedGroup = "(?<digit>\\\\d)"
+
+  // Same structure as Sunchao's 4096-branch / 131,072-capture reproducer
+  // (PR #5415). CometRegexSuite asserts the full pattern on the analyzer
+  // only. This suite uses a 64-branch shrink that still exceeds MaxExpansion
+  // after capture-state cost is charged at group construction (64 * 65 = 4160).
+  private def uncountedCapturePattern(branches: Int): String = {
+    val q = (1 to 8).foldLeft("a")((p, _) => s"($p)*")
+    val branch = "(" * 24 + q + ")" * 24
+    Seq.fill(branches)(branch).mkString("|")
+  }
 
   private def withSubjects(values: String*)(f: => Unit): Unit = {
     withTable("t") {
@@ -386,6 +396,65 @@ class CometRegExpJvmSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         assert(
           !explainOf(df).contains("JVM codegen dispatcher: rlike"),
           s"expected native path for [^x]{256}, got:\n${explainOf(df)}")
+      }
+    }
+  }
+
+  test("rlike: uncounted capturing groups stay on the dispatcher") {
+    withRLikeExplain {
+      withSubjects("", "a", null) {
+        val pattern = uncountedCapturePattern(branches = 64)
+        val df = spark.table("t").select(col("s"), col("s").rlike(pattern))
+        checkSparkAnswerAndOperator(df)
+        assert(
+          explainOf(df).contains("JVM codegen dispatcher: rlike"),
+          s"expected dispatcher for uncounted capture budget residual, got:\n${explainOf(df)}")
+      }
+    }
+  }
+
+  test("rlike: uncounted capturing groups fall back to Spark when the dispatcher is disabled") {
+    withSubjects("", "a", null) {
+      withSQLConf(
+        CometConf.getExprAllowIncompatConfigKey("RLike") -> "false",
+        CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
+        val pattern = uncountedCapturePattern(branches = 64)
+        val df = spark.table("t").select(col("s"), col("s").rlike(pattern))
+        val (_, cometPlan) = checkSparkAnswerAndFallbackReason(
+          df,
+          CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key + "=false")
+        val explain = new ExtendedExplainInfo().generateExtendedInfo(cometPlan)
+        assert(
+          !explain.toLowerCase.contains("compiledtoobig"),
+          s"native compile must not run for over-budget captures, got:\n$explain")
+        assert(
+          !explain.contains("JVM codegen dispatcher: rlike"),
+          s"dispatcher is disabled; expected Spark fallback, got:\n$explain")
+      }
+    }
+  }
+
+  test(
+    "rlike: full uncounted-capture reproducer falls back to Spark when JVM dispatcher is disabled") {
+    assume(isSpark40Plus && !isSpark41Plus, "full 4096-branch reproducer is Spark 4.0-only")
+    assume(
+      sys.props("java.specification.version") == "21",
+      "full 4096-branch reproducer is JDK 21-only")
+    withSubjects("", "a", null) {
+      withSQLConf(
+        CometConf.getExprAllowIncompatConfigKey("RLike") -> "false",
+        CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
+        val pattern = uncountedCapturePattern(branches = 4096)
+        assert(pattern.length == 303103)
+        val df = spark.table("t").select(col("s"), col("s").rlike(pattern))
+        val (_, cometPlan) = checkSparkAnswerAndFallbackReason(
+          df,
+          CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key + "=false")
+        val explain = new ExtendedExplainInfo().generateExtendedInfo(cometPlan)
+        assert(
+          !explain.toLowerCase.contains("compiledtoobig"),
+          s"native compilation must not run for the full uncounted-capture reproducer, " +
+            s"but the plan contained a compiler-budget failure:\n$explain")
       }
     }
   }
