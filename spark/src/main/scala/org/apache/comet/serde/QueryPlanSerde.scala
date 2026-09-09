@@ -361,6 +361,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     // when `++` is applied directly to a `Map(...)` literal.
     val base: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
       classOf[Alias] -> CometAlias,
+      classOf[ApplyFunctionExpression] -> CometApplyFunctionExpression,
       classOf[AttributeReference] -> CometAttributeReference,
       classOf[BloomFilterMightContain] -> CometBloomFilterMightContain,
       classOf[CheckOverflow] -> CometCheckOverflow,
