@@ -250,8 +250,9 @@ pub(crate) fn field_names_with_id(fields: &Fields, id: i32) -> String {
 
 /// Which file field supplies each requested field, resolved once per file and reused for
 /// every batch. Follows the requested type as Spark's `clipParquetSchema` does: a struct
-/// lists one source per requested field, a list (large or not) or map carries the mapping
-/// of its element or key and value types, and anything else is a leaf converted by type.
+/// lists one source per requested field, a list in any Arrow representation or a map carries
+/// the mapping of its element or key and value types, and anything else is a leaf converted
+/// by type.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum FieldMapping {
     Struct(Vec<StructFieldSource>),
@@ -317,9 +318,23 @@ fn field_holds_id(field: &Field) -> bool {
     field_id(field).is_some()
         || match field.data_type() {
             DataType::Struct(fields) => fields.iter().any(|f| field_holds_id(f)),
-            DataType::List(f) | DataType::LargeList(f) | DataType::Map(f, _) => field_holds_id(f),
-            _ => false,
+            DataType::Map(f, _) => field_holds_id(f),
+            other => list_element_field(other).is_some_and(|f| field_holds_id(f)),
         }
+}
+
+/// The element field of a list in any Arrow representation. One place decides which types
+/// are lists, so the mapping resolver, the struct-holding walk in the schema adapter, and
+/// [`convert_array`] agree.
+pub(crate) fn list_element_field(data_type: &DataType) -> Option<&FieldRef> {
+    match data_type {
+        DataType::List(f)
+        | DataType::LargeList(f)
+        | DataType::FixedSizeList(f, _)
+        | DataType::ListView(f)
+        | DataType::LargeListView(f) => Some(f),
+        _ => None,
+    }
 }
 
 /// Resolve every requested root field against `file_schema` the way the expression adapter
@@ -356,16 +371,19 @@ pub(crate) fn resolve_field_mapping(
     if let Dictionary(_, value_type) = from_type {
         return resolve_field_mapping(value_type, to_type, parquet_options);
     }
+    // The element mapping is the same whichever list representation either side uses.
+    if let (Some(from_item), Some(to_item)) =
+        (list_element_field(from_type), list_element_field(to_type))
+    {
+        return Ok(FieldMapping::List(Box::new(resolve_field_mapping(
+            from_item.data_type(),
+            to_item.data_type(),
+            parquet_options,
+        )?)));
+    }
     match (from_type, to_type) {
         (Struct(from_fields), Struct(to_fields)) => {
             resolve_struct_mapping(from_fields, to_fields, parquet_options)
-        }
-        (List(from_item), List(to_item)) | (LargeList(from_item), LargeList(to_item)) => {
-            Ok(FieldMapping::List(Box::new(resolve_field_mapping(
-                from_item.data_type(),
-                to_item.data_type(),
-                parquet_options,
-            )?)))
         }
         (Map(from_entries, from_ordered), Map(to_entries, to_ordered))
             if from_ordered == to_ordered =>
@@ -495,6 +513,20 @@ fn convert_array(
         None
     };
 
+    // Any pair of list representations converts through the element mapping before the list
+    // layout changes, so requested element fields are never matched by position.
+    if let (Some(_), Some(to_item)) = (list_element_field(from_type), list_element_field(to_type)) {
+        return convert_list(
+            &array,
+            to_type,
+            to_item,
+            mapping,
+            parquet_options,
+            visible.as_ref(),
+            checked_timestamp_overflow,
+        );
+    }
+
     // Try Comet specific handlers first, then arrow-rs cast if supported, and fail otherwise.
     match (from_type, to_type, mapping) {
         (Struct(_), Struct(to_fields), FieldMapping::Struct(sources)) => convert_struct(
@@ -509,47 +541,6 @@ fn convert_array(
         (Struct(_), Struct(_), other) => Err(DataFusionError::Internal(format!(
             "struct column resolved to a non-struct field mapping: {other:?}"
         ))),
-        (
-            List(_) | LargeList(_) | FixedSizeList(_, _) | ListView(_) | LargeListView(_),
-            List(to_inner_type) | LargeList(to_inner_type) | FixedSizeList(to_inner_type, _)
-                | ListView(to_inner_type) | LargeListView(to_inner_type),
-            _,
-        ) => {
-            let inner = mapping.list_element()?;
-            let data = array.to_data();
-            let child_visibility = if checked_timestamp_overflow {
-                list_child_visibility(array.as_ref(), visible.as_ref())
-            } else {
-                None
-            };
-            let cast_field = convert_array(
-                make_array(data.child_data()[0].clone()),
-                to_inner_type.data_type(),
-                inner,
-                parquet_options,
-                child_visibility.as_ref(),
-            )?;
-            // Resolve element fields with Spark's rules before Arrow changes list layout.
-            // Casting the original list directly can match missing struct fields by position.
-            let resolved_type = match from_type {
-                List(_) => List(Arc::clone(to_inner_type)),
-                LargeList(_) => LargeList(Arc::clone(to_inner_type)),
-                FixedSizeList(_, size) => FixedSizeList(Arc::clone(to_inner_type), *size),
-                ListView(_) => ListView(Arc::clone(to_inner_type)),
-                LargeListView(_) => LargeListView(Arc::clone(to_inner_type)),
-                _ => unreachable!(),
-            };
-            // Retain the source offsets, sizes and null buffer while replacing its values.
-            let resolved = make_array(data.into_builder()
-                .data_type(resolved_type)
-                .child_data(vec![cast_field.to_data()])
-                .build()?);
-            if resolved.data_type() == to_type {
-                Ok(resolved)
-            } else {
-                Ok(cast_with_options(&resolved, to_type, &PARQUET_OPTIONS)?)
-            }
-        }
         (Timestamp(TimeUnit::Millisecond, _), Timestamp(TimeUnit::Microsecond, target_tz), _)
             if checked_timestamp_overflow =>
         {
@@ -629,6 +620,61 @@ fn convert_array(
     }
 }
 
+/// Convert a list in any Arrow representation to `to_type`, whose element field is
+/// `to_item`. The element values convert through the mapping first, then the array is
+/// rebuilt in the file's own representation around them, keeping its offsets, sizes and
+/// nulls; only when the requested representation differs does Arrow's cast change the layout,
+/// by which time every element field already reads from its resolved source.
+fn convert_list(
+    array: &ArrayRef,
+    to_type: &DataType,
+    to_item: &FieldRef,
+    mapping: &FieldMapping,
+    parquet_options: &SparkParquetOptions,
+    visible: Option<&NullBuffer>,
+    checked_timestamp_overflow: bool,
+) -> DataFusionResult<ArrayRef> {
+    use DataType::*;
+    let from_type = array.data_type();
+    let child_visibility = if checked_timestamp_overflow {
+        list_child_visibility(array.as_ref(), visible)
+    } else {
+        None
+    };
+    let source_type = match from_type {
+        List(_) => List(Arc::clone(to_item)),
+        LargeList(_) => LargeList(Arc::clone(to_item)),
+        FixedSizeList(_, size) => FixedSizeList(Arc::clone(to_item), *size),
+        ListView(_) => ListView(Arc::clone(to_item)),
+        LargeListView(_) => LargeListView(Arc::clone(to_item)),
+        other => {
+            return Err(DataFusionError::Internal(format!(
+                "convert_list called on a non-list type: {other}"
+            )))
+        }
+    };
+
+    let data = array.to_data();
+    let values = convert_array(
+        make_array(data.child_data()[0].clone()),
+        to_item.data_type(),
+        mapping.list_element()?,
+        parquet_options,
+        child_visibility.as_ref(),
+    )?;
+    let converted = make_array(
+        data.into_builder()
+            .data_type(source_type)
+            .child_data(vec![values.to_data()])
+            .build()?,
+    );
+    if converted.data_type() == to_type {
+        Ok(converted)
+    } else {
+        Ok(cast_with_options(&converted, to_type, &PARQUET_OPTIONS)?)
+    }
+}
+
 // Struct fields are matched by name/field ID later. This type-only check is conservative
 // until that matching occurs; each selected child is checked again before conversion.
 fn has_timestamp_unit(data_type: &DataType, unit: TimeUnit) -> bool {
@@ -637,13 +683,9 @@ fn has_timestamp_unit(data_type: &DataType, unit: TimeUnit) -> bool {
         DataType::Struct(fields) => fields
             .iter()
             .any(|field| has_timestamp_unit(field.data_type(), unit)),
-        DataType::List(field)
-        | DataType::LargeList(field)
-        | DataType::FixedSizeList(field, _)
-        | DataType::ListView(field)
-        | DataType::LargeListView(field)
-        | DataType::Map(field, _) => has_timestamp_unit(field.data_type(), unit),
-        _ => false,
+        DataType::Map(field, _) => has_timestamp_unit(field.data_type(), unit),
+        other => list_element_field(other)
+            .is_some_and(|field| has_timestamp_unit(field.data_type(), unit)),
     }
 }
 
@@ -2551,6 +2593,136 @@ mod tests {
                 msg.contains("y") && msg.contains("1 child"),
                 "unexpected error: {msg}"
             );
+        }
+
+        /// Spark clips a list element by id regardless of how Arrow represents the list, so
+        /// a `List` file column read as a `LargeList` still resolves its element struct by
+        /// id rather than falling back to a positional leaf cast.
+        #[test]
+        fn resolve_mapping_crosses_list_representations() {
+            let (from_type, to_type) = swapped_id_list_types();
+            let mut opts = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+            opts.use_field_id = true;
+
+            let mapping = resolve_field_mapping(&from_type, &to_type, &opts).unwrap();
+            assert!(
+                matches!(&mapping, FieldMapping::List(inner) if matches!(**inner, FieldMapping::Struct(_))),
+                "expected a list-of-struct mapping, got {mapping:?}"
+            );
+            assert!(!mapping.is_positional());
+        }
+
+        /// Converting a `List` into a `LargeList` reads each element field by id before the
+        /// list layout changes, so swapped ids come back swapped, not by position.
+        #[test]
+        fn convert_list_to_large_list_reads_elements_by_id() {
+            use arrow::array::ListArray;
+
+            let (from_type, to_type) = swapped_id_list_types();
+            let DataType::List(from_field) = &from_type else {
+                unreachable!()
+            };
+            let mut opts = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+            opts.use_field_id = true;
+
+            let element = struct_of(
+                vec![field_with_id("x", 1), field_with_id("y", 2)],
+                vec![42, 43],
+            );
+            let list = ListArray::new(
+                Arc::clone(from_field),
+                arrow::buffer::OffsetBuffer::new(vec![0i32, 1].into()),
+                element,
+                None,
+            );
+            let result = parquet_convert_array(Arc::new(list), &to_type, &opts).unwrap();
+            assert_eq!(result.data_type(), &to_type);
+            let (x, y) = large_list_element_values(&result);
+            assert_eq!(x, vec![Some(43)]);
+            assert_eq!(y, vec![Some(42)]);
+        }
+
+        /// A requested element field the file lacks is null-filled, never read from the
+        /// neighbouring file column, even when the list representation changes underneath.
+        #[test]
+        fn convert_list_to_large_list_null_fills_missing_element_field() {
+            use arrow::array::ListArray;
+
+            let from_elem = Fields::from(vec![
+                Field::new("a", DataType::Int32, true),
+                Field::new("b", DataType::Int32, true),
+            ]);
+            let to_elem = Fields::from(vec![
+                Field::new("a", DataType::Int32, true),
+                Field::new("z", DataType::Int32, true),
+            ]);
+            let from_field = Arc::new(Field::new("item", DataType::Struct(from_elem), true));
+            let to_type = DataType::LargeList(Arc::new(Field::new(
+                "item",
+                DataType::Struct(to_elem),
+                true,
+            )));
+            let opts = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+
+            let element = struct_of(
+                vec![
+                    Field::new("a", DataType::Int32, true),
+                    Field::new("b", DataType::Int32, true),
+                ],
+                vec![1, 2],
+            );
+            let list = ListArray::new(
+                from_field,
+                arrow::buffer::OffsetBuffer::new(vec![0i32, 1].into()),
+                element,
+                None,
+            );
+            let result = parquet_convert_array(Arc::new(list), &to_type, &opts).unwrap();
+            assert_eq!(result.data_type(), &to_type);
+            let (a, z) = large_list_element_values(&result);
+            assert_eq!(a, vec![Some(1)]);
+            assert_eq!(z, vec![None]);
+        }
+
+        /// `List<Struct{x(id 1), y(id 2)}>` in the file, `LargeList<Struct{x(id 2), y(id 1)}>`
+        /// requested.
+        fn swapped_id_list_types() -> (DataType, DataType) {
+            let from_elem = Fields::from(vec![field_with_id("x", 1), field_with_id("y", 2)]);
+            let to_elem = Fields::from(vec![field_with_id("x", 2), field_with_id("y", 1)]);
+            let from_type = DataType::List(Arc::new(Field::new(
+                "item",
+                DataType::Struct(from_elem),
+                true,
+            )));
+            let to_type = DataType::LargeList(Arc::new(Field::new(
+                "item",
+                DataType::Struct(to_elem),
+                true,
+            )));
+            (from_type, to_type)
+        }
+
+        /// The two `Int32` columns of a `LargeList<Struct>`'s element struct, as vectors.
+        fn large_list_element_values(array: &ArrayRef) -> (Vec<Option<i32>>, Vec<Option<i32>>) {
+            let values = array
+                .as_any()
+                .downcast_ref::<LargeListArray>()
+                .unwrap()
+                .values()
+                .as_any()
+                .downcast_ref::<StructArray>()
+                .unwrap()
+                .clone();
+            let column = |i: usize| -> Vec<Option<i32>> {
+                values
+                    .column(i)
+                    .as_any()
+                    .downcast_ref::<Int32Array>()
+                    .unwrap()
+                    .iter()
+                    .collect()
+            };
+            (column(0), column(1))
         }
     }
 }

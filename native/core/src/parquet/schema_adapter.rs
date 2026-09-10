@@ -18,8 +18,8 @@
 use crate::parquet::cast_column::CometCastColumnExpr;
 use crate::parquet::name_fold::{fold_name, fold_names, fold_schema_names};
 use crate::parquet::parquet_support::{
-    field_names_with_id, record_field_match, resolve_field_mapping, spark_error,
-    spark_parquet_convert, FieldMapping, FieldMatch, SparkParquetOptions,
+    field_names_with_id, list_element_field, record_field_match, resolve_field_mapping,
+    spark_error, spark_parquet_convert, FieldMapping, FieldMatch, SparkParquetOptions,
 };
 use arrow::array::new_empty_array;
 use arrow::compute::can_cast_types;
@@ -1061,11 +1061,14 @@ type NestedMappings = HashMap<String, Result<Arc<FieldMapping>, SparkError>>;
 type RootIdAmbiguities = HashMap<String, SparkError>;
 
 fn type_holds_struct(data_type: &DataType) -> bool {
+    // The resolver and converter in `parquet_support` decide which types are lists through
+    // the same helper, so this walk descends into exactly the lists they map.
+    if let Some(element) = list_element_field(data_type) {
+        return type_holds_struct(element.data_type());
+    }
     match data_type {
         DataType::Struct(_) => true,
-        DataType::List(f) | DataType::LargeList(f) | DataType::Map(f, _) => {
-            type_holds_struct(f.data_type())
-        }
+        DataType::Map(f, _) => type_holds_struct(f.data_type()),
         _ => false,
     }
 }
