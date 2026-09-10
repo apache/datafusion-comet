@@ -891,6 +891,9 @@ Spark trims only the bytes <code class="docutils literal notranslate"><span clas
 parses in Spark and returns <code class="docutils literal notranslate"><span class="pre">NULL</span></code> in Comet, while a value padded with non-ASCII whitespace such
 as <code class="docutils literal notranslate"><span class="pre">U+3000</span></code> returns <code class="docutils literal notranslate"><span class="pre">NULL</span></code> in Spark and parses in Comet
 (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5149">#5149</a>).</p></li>
+<li><p><strong>Explicit positive timestamp years:</strong> Spark accepts strings such as <code class="docutils literal notranslate"><span class="pre">+7528</span></code> as the start
+of that year, while Comet’s native string-to-timestamp cast returns NULL in non-ANSI mode
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5716">#5716</a>).</p></li>
 <li><p>Native <code class="docutils literal notranslate"><span class="pre">RANGE</span></code> window frames with an explicit <code class="docutils literal notranslate"><span class="pre">PRECEDING</span></code> / <code class="docutils literal notranslate"><span class="pre">FOLLOWING</span></code> offset diverge from
 Spark when the boundary arithmetic overflows for <code class="docutils literal notranslate"><span class="pre">DATE</span></code> or <code class="docutils literal notranslate"><span class="pre">DECIMAL</span></code> <code class="docutils literal notranslate"><span class="pre">ORDER</span> <span class="pre">BY</span></code> columns
 (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5022">#5022</a>).</p></li>
