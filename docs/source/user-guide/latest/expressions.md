@@ -418,7 +418,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `+` | ✅ | Native |  |
 | `-` | ✅ | Native |  |
 | `/` | ✅ | Native |  |
-| `abs` | ✅ | Native | Interval types fall back |
+| `abs` | ✅ | Hybrid | Interval types route through the JVM codegen dispatcher; numeric types run natively |
 | `acos` | ✅ | Native |  |
 | `acosh` | ✅ | Native |  |
 | `asin` | ✅ | Native |  |
@@ -579,7 +579,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `levenshtein` | ✅ | Hybrid | Non-UTF8_BINARY collated input routes through the JVM codegen dispatcher; other input runs natively |
 | `locate` | ✅ | Codegen dispatch |  |
 | `lower` | ✅ | Hybrid |  |
-| `lpad` | ✅ | — |  |
+| `lpad` | ✅ | Hybrid | String inputs use the native kernel with a column string and literal padding; literal strings and column padding use codegen dispatch. Binary inputs use codegen dispatch. |
 | `ltrim` | ✅ | Native |  |
 | `luhn_check` | ✅ | — | Native via `StaticInvoke` (tests: luhn_check.sql) |
 | `mask` | ✅ | — | Routed through the JVM codegen dispatcher |
@@ -596,7 +596,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `repeat` | ✅ | Native |  |
 | `replace` | ✅ | Hybrid |  |
 | `right` | ✅ | Native |  |
-| `rpad` | ✅ | — |  |
+| `rpad` | ✅ | Hybrid | String inputs use the native kernel with a column string and literal padding; literal strings and column padding use codegen dispatch. Binary inputs use codegen dispatch. |
 | `rtrim` | ✅ | Native |  |
 | `soundex` | ✅ | Native |  |
 | `space` | ✅ | Native |  |

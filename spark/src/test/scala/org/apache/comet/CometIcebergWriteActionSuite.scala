@@ -20,6 +20,7 @@
 package org.apache.comet
 
 import java.io.File
+import java.sql.Timestamp
 import java.util.concurrent.{CountDownLatch, TimeUnit}
 
 import scala.collection.mutable
@@ -29,6 +30,7 @@ import scala.concurrent.duration.DurationInt
 
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.DataFrame
 import org.apache.spark.sql.Row
 import org.apache.spark.sql.comet.{CometIcebergWriteExec, IcebergCommitExec, IcebergWriteExec}
 import org.apache.spark.sql.connector.catalog.InMemoryTableCatalog
@@ -1222,7 +1224,111 @@ class CometIcebergWriteActionSuite
     }
   }
 
-  test("native acceleration: target-file-size rolls one task across multiple files") {
+  // https://github.com/apache/datafusion-comet/issues/5698. iceberg-java's `ClusteredWriter`
+  // rejects unclustered input with a documented `IllegalStateException`, and callers match on both
+  // the type and the message -- Iceberg's own `TestRequiredDistributionAndOrdering` does exactly
+  // that. Pin the native writer against the JVM writer on the same runtime rather than against a
+  // literal, so an iceberg-java wording change surfaces here as a parity failure.
+  test("native acceleration: clustered writer rejects unclustered input like the JVM writer") {
+    assumeNativeAcceleration()
+    withIcebergCatalog { warehouseDir =>
+      val (nativeTable, jvmTable) = ("unclustered_native", "unclustered_jvm")
+      val tables = Seq(nativeTable, jvmTable)
+      tables.foreach(createTable(warehouseDir, _, partitionSpec = "PARTITIONED BY (region)"))
+      val session = spark
+      import session.implicits._
+      // "us-east" is revisited after the writer has moved on to "eu" and closed it.
+      val rows =
+        Seq((1, "us-east", 1.0), (2, "eu", 2.0), (3, "us-east", 3.0)).toDF(
+          "id",
+          "region",
+          "amount")
+
+      var nativeFailure: Throwable = null
+      val nativePlans = withNativeEnabled {
+        capturePlans(spark, includeFailures = true) {
+          nativeFailure = intercept[Exception](appendUnclustered(nativeTable, rows))
+        }
+      }
+      val jvmFailure = intercept[Exception](appendUnclustered(jvmTable, rows))
+      assert(
+        nativePlans.exists(p =>
+          collectWithSubqueries(p) { case e: CometIcebergWriteExec => e }.nonEmpty),
+        "expected the aborted write to have gone through CometIcebergWriteExec. Plans:\n" +
+          nativePlans.mkString("\n--\n"))
+
+      val nativeError = clusteredWriterError(nativeFailure)
+      val jvmError = clusteredWriterError(jvmFailure)
+      // Equal depth is what makes `assertThatThrownBy(...).cause()` find it in the same place.
+      assert(nativeError == jvmError, s"native $nativeError != jvm $jvmError")
+      val (_, message) = jvmError
+      assert(
+        message.startsWith(
+          "Incoming records violate the writer assumption that records are clustered by spec"),
+        s"unexpected IllegalStateException from the JVM writer: $message")
+      // Neither write may have committed.
+      tables.foreach(assertRows(_, Seq.empty))
+    }
+  }
+
+  // The error names the offending partition, so it runs into the same rendering divergence the
+  // partition-path test below pins: iceberg-java base64-encodes a binary value where iceberg-rust
+  // writes uppercase hex, and iceberg-rust panics outright on a pre-epoch `timestamptz` with a
+  // sub-second part -- which here would crash the task before the exception was even built. Comet
+  // renders the partition with the same Java-compatible formatter that names the data directories.
+  //
+  // Gated on Iceberg 1.8+ for the reason spelled out on that test: 1.5.x renders a `timestamptz`
+  // partition value as `1969-12-31T23:59:58.500Z`, so the two writers' messages cannot agree.
+  test("native acceleration: unclustered-input error names the partition like iceberg-java") {
+    assumeNativeAcceleration()
+    assume(icebergVersionAtLeast(1, 8), "timestamptz partition path spelling changed in 1.8")
+    withIcebergCatalog { _ =>
+      // A UTC session zone makes the stored micros of each literal exact, so the expected
+      // rendering below is not a function of the machine's zone.
+      withSQLConf("spark.sql.session.timeZone" -> "UTC") {
+        val (nativeTable, jvmTable) = ("unclustered_path_native", "unclustered_path_jvm")
+        Seq(nativeTable, jvmTable).foreach { table =>
+          spark.sql(s"""
+            CREATE TABLE $catalog.$ns.$table (id INT, ts TIMESTAMP, bin BINARY)
+            USING iceberg PARTITIONED BY (ts, bin)
+          """)
+        }
+        val session = spark
+        import session.implicits._
+        // -1500 epoch millis is 1969-12-31T23:59:58.5Z, the value iceberg-rust panics on. Its
+        // partition is revisited after the writer has moved on to the epoch and closed it.
+        val rows = Seq(
+          (1, new Timestamp(-1500L), Array[Byte](0, 1, -1)),
+          (2, new Timestamp(0L), Array[Byte](0)),
+          (3, new Timestamp(-1500L), Array[Byte](0, 1, -1))).toDF("id", "ts", "bin")
+
+        var nativeFailure: Throwable = null
+        val nativePlans = withNativeEnabled {
+          capturePlans(spark, includeFailures = true) {
+            nativeFailure = intercept[Exception](appendUnclustered(nativeTable, rows))
+          }
+        }
+        val jvmFailure = intercept[Exception](appendUnclustered(jvmTable, rows))
+        assert(
+          nativePlans.exists(p =>
+            collectWithSubqueries(p) { case e: CometIcebergWriteExec => e }.nonEmpty),
+          "expected the aborted write to have gone through CometIcebergWriteExec. Plans:\n" +
+            nativePlans.mkString("\n--\n"))
+
+        val (_, nativeMessage) = clusteredWriterError(nativeFailure)
+        assert(
+          clusteredWriterError(nativeFailure) == clusteredWriterError(jvmFailure),
+          s"native message differs from the JVM writer's:\n$nativeMessage")
+        // Pinned explicitly too: base64 rather than hex for the binary value, and the ISO
+        // spelling of the pre-epoch timestamp rather than a panic.
+        assert(
+          nativeMessage.contains("partition 'ts=1969-12-31T23%3A59%3A58.5%2B00%3A00/bin=AAH%2F'"),
+          nativeMessage)
+      }
+    }
+  }
+
+  test("native acceleration: target-file-size rolls on iceberg-java's 1000-row cadence") {
     assumeNativeAcceleration()
     withIcebergCatalog { warehouseDir =>
       createTable(
@@ -1230,22 +1336,22 @@ class CometIcebergWriteActionSuite
         "native_roll",
         partitionSpec = "",
         properties = Some("'write.target-file-size-bytes'='1'"))
-      val values = (1 to 300).map(i => s"($i, 'r', $i.0)").mkString(", ")
-      // One upstream slice + small Comet batches: the rolling writer checks the target size
-      // per batch, so three batches against a 1-byte target must roll into multiple files.
-      withSQLConf(
-        "spark.sql.leafNodeDefaultParallelism" -> "1",
-        CometConf.COMET_BATCH_SIZE.key -> "100") {
-        assertNativeWriteEngages("native_roll", 1 to 300) {
-          spark.sql(s"INSERT INTO cat.db.native_roll VALUES $values")
+      // One upstream slice and a batch big enough to hold every row: with a 1-byte target this
+      // only rolls if the writer re-checks the target size inside the batch, every 1000 rows, the
+      // way iceberg-java's RollingFileWriter does. Iceberg's own
+      // TestSparkDataWrite.testUnpartitionedCreateWithTargetFileSizeViaTableProperties makes the
+      // same 4 x 1000 assertion against the JVM writer.
+      withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "8192") {
+        assertNativeWriteEngages("native_roll", 1 to 4000) {
+          coalesceInsert("native_roll", (1 to 4000).map(i => (i, "r", i.toDouble)))
         }
       }
       val fileRows = spark
         .sql("SELECT record_count FROM cat.db.native_roll.data_files")
         .collect()
         .map(_.getLong(0))
-      assert(fileRows.length >= 2, s"expected a multi-file roll, got ${fileRows.length} file(s)")
-      assert(fileRows.sum == 300L, s"rows across rolled files must sum to 300, got $fileRows")
+        .toSeq
+      assert(fileRows == Seq(1000L, 1000L, 1000L, 1000L), s"unexpected file sizes: $fileRows")
     }
   }
 
@@ -1896,6 +2002,33 @@ class CometIcebergWriteActionSuite
       .coalesce(1)
       .writeTo(s"$catalog.$ns.$tableName")
       .append()
+  }
+
+  /**
+   * Appends `rows` as a single task with the table's distribution and ordering disabled and
+   * fanout off. That is the supported way to hand a clustered writer input it cannot accept, and
+   * what Iceberg's own `TestRequiredDistributionAndOrdering` does: without the first option
+   * Iceberg requests a partition-local sort that would cluster the rows, and without the second
+   * the fanout writer would accept them.
+   */
+  private def appendUnclustered(tableName: String, rows: DataFrame): Unit =
+    rows
+      .coalesce(1)
+      .writeTo(s"$catalog.$ns.$tableName")
+      .option("use-table-distribution-and-ordering", "false")
+      .option("fanout-enabled", "false")
+      .append()
+
+  /**
+   * Where the clustered writer's `IllegalStateException` sits in `t`'s cause chain, and what it
+   * says. Stage ids and driver stack traces make the enclosing `SparkException` messages differ
+   * between runs, so only the writer's own exception can be compared across writers.
+   */
+  private def clusteredWriterError(t: Throwable): (Int, String) = {
+    val chain = causeChain(t)
+    val depth = chain.indexWhere(_.isInstanceOf[IllegalStateException])
+    assert(depth >= 0, s"no IllegalStateException in the cause chain of $t")
+    (depth, chain(depth).getMessage)
   }
 
   private def captureWrite(tableName: String)(action: => Unit): WriteSnapshot = {

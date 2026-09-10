@@ -127,3 +127,7 @@ harness = false
 [[bench]]
 name = "explode"
 harness = false
+
+[[bench]]
+name = "parquet_timestamp_conversion"
+harness = false
