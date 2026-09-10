@@ -366,6 +366,33 @@ abstract class CometTestBase
     }
   }
 
+  /** Checks native execution and Spark exception type, error class and SQLSTATE parity. */
+  protected def checkSparkError(
+      df: DataFrame,
+      errorClass: String): SparkThrowable with Throwable = {
+    checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
+    val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
+
+    def structuredError(
+        error: Option[Throwable],
+        engine: String): SparkThrowable with Throwable = {
+      val failure = error.getOrElse(fail(s"$engine did not fail with $errorClass"))
+      val chain = causeChain(failure)
+      assert(!chain.exists(_.isInstanceOf[CometNativeException]), s"$engine: $failure")
+      chain.collect { case e: SparkThrowable with Throwable => e }.lastOption.getOrElse {
+        fail(s"$engine did not throw a SparkThrowable: $failure")
+      }
+    }
+
+    val expected = structuredError(sparkError, "Spark")
+    val actual = structuredError(cometError, "Comet")
+    assert(expected.getErrorClass == errorClass)
+    assert(actual.getClass == expected.getClass)
+    assert(actual.getErrorClass == errorClass)
+    assert(actual.getSqlState == expected.getSqlState)
+    actual
+  }
+
   /**
    * Compares the Comet DataFrame result against the expected Spark answer, using labels that
    * correctly identify which side is Comet and which is Spark. This avoids the misleading "Spark

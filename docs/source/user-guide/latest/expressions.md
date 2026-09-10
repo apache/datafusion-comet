@@ -418,7 +418,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `+` | ✅ | Native |  |
 | `-` | ✅ | Native |  |
 | `/` | ✅ | Native |  |
-| `abs` | ✅ | Native | Interval types fall back |
+| `abs` | ✅ | Hybrid | Interval types route through the JVM codegen dispatcher; numeric types run natively |
 | `acos` | ✅ | Native |  |
 | `acosh` | ✅ | Native |  |
 | `asin` | ✅ | Native |  |
