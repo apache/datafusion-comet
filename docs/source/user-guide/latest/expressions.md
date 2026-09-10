@@ -565,7 +565,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `contains` | ✅ | — |  |
 | `decode` | ✅ | — |  |
 | `elt` | ✅ | Codegen dispatch |  |
-| `encode` | ✅ | — | Spark 4.0+ lowers to `StaticInvoke(Encode.encode)`, which runs via codegen dispatch; on Spark 3.x it falls back |
+| `encode` | ✅ | — |  |
 | `endswith` | ✅ | — |  |
 | `find_in_set` | ✅ | Codegen dispatch |  |
 | `format_number` | ✅ | Codegen dispatch |  |
