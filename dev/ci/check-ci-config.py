@@ -22,11 +22,8 @@
 #      that job skip, so the edit merges with only preflight having looked at
 #      it. The table below pins the routing for the shared build inputs.
 #
-#   2. Event policy. The same script decides which events may run each job.
-#      That used to be a `${{ }}` expression on every job in ci.yml, where it
-#      could not be tested; POLICY_CASES below is the test it never had. The
-#      expected sets are transcribed from the `if:` expressions ci.yml carried
-#      before the policy moved, so a regression here is a behaviour change.
+#   2. Event policy. The routing script also decides which events may run
+#      each job; POLICY_CASES pins the behavior of the former workflow gates.
 #
 #   3. Required-check coverage. `Required Checks` in ci.yml is the job that
 #      `.asf.yaml` can name in `required_status_checks` for main. A heavy job
@@ -38,8 +35,9 @@
 #      GitHub keeps the most recent check run per name per commit, so a label
 #      run publishing the required name would overwrite the real verdict.
 #
-#   4. Artifact-name uniqueness. Artifact names are scoped to the *run*, not
-#      to the calling workflow, and ci.yml calls the Spark SQL and Iceberg
+#   4. Artifact-name uniqueness and explicit shared-producer wiring. Names
+#      are scoped to the *run*, not the calling workflow. ci.yml calls the
+#      Spark SQL and Iceberg
 #      reusable workflows several times in one run. Two producers sharing a
 #      name make `download-artifact` pick by highest artifact ID rather than
 #      by `needs`, and make the forced `overwrite` on an upload retry delete
@@ -103,6 +101,8 @@ ROUTING_CASES = [
     # to nothing at all and merges having been exercised by no consumer.
     ([".github/actions/upload-artifact-retry/action.yaml"], BUILD_JOBS),
     ([".github/actions/download-artifact-retry/action.yaml"], BUILD_JOBS),
+    # Editing the shared Linux producer must exercise every Linux consumer.
+    ([".github/workflows/build_linux_native.yml"], BUILD_JOBS - {"build_macos"}),
     # Spot checks that the additions above did not widen unrelated routes.
     (["docs/source/user-guide/overview.md"], {"docs"}),
     (["native/core/benches/parquet_read.rs"], {"benchmark"}),
@@ -208,9 +208,7 @@ POLICY_CASES = [
 # `uses:` values that publish an artifact, and the one that consumes it.
 UPLOAD_USES = re.compile(r"uses:\s*(\./\.github/actions/upload-artifact-retry|actions/upload-artifact@)")
 DOWNLOAD_USES = re.compile(r"uses:\s*(\./\.github/actions/download-artifact-retry|actions/download-artifact@)")
-# The artifact name is the first `name:` key of the step's `with:` block. A
-# following step starts with `- `, which distinguishes it from a `with:` key.
-WITH_NAME = re.compile(r"^\s+name:\s*(\S.*?)\s*$")
+# A following step starts with `- `, unlike the current step's `with:` keys.
 NEW_STEP = re.compile(r"^\s*-\s")
 
 # A job id in a workflow file, and the two `uses:` shapes the checkout guard
@@ -220,6 +218,16 @@ NEW_STEP = re.compile(r"^\s*-\s")
 JOB_KEY = re.compile(r"^  ([A-Za-z0-9_-]+):\s*$")
 LOCAL_ACTION_USES = re.compile(r"uses:\s*(\./\.github/actions/\S+)")
 CHECKOUT_USES = re.compile(r"uses:\s*actions/checkout@")
+SHARED_NATIVE_WORKFLOW = "build_linux_native.yml"
+SHARED_NATIVE_JOB = "build_linux_native"
+SHARED_NATIVE_INPUT = "native-library-artifact"
+SHARED_NATIVE_ARTIFACT = "native-lib-linux"
+SHARED_NATIVE_EXPRESSION = "${{ inputs.native-library-artifact }}"
+SHARED_NATIVE_CONSUMERS = {
+    "pr_build_linux.yml",
+    "spark_sql_test_reusable.yml",
+    "iceberg_spark_test_reusable.yml",
+}
 
 
 def load_filters():
@@ -284,50 +292,180 @@ def check_event_policy():
     return not failures
 
 
-def artifact_names(path):
-    """Return ([upload names], [download names]) for one workflow file."""
-    uploads, downloads = [], []
+def artifact_steps(path):
+    """Return artifact steps and their direct `with:` inputs."""
+    artifacts = []
     lines = path.read_text(encoding="utf-8").splitlines()
     for index, line in enumerate(lines):
         if UPLOAD_USES.search(line):
-            bucket = uploads
+            kind = "upload"
         elif DOWNLOAD_USES.search(line):
-            bucket = downloads
+            kind = "download"
         else:
             continue
+        indent = len(line) - len(line.lstrip())
+        body = []
         for following in lines[index + 1:]:
-            if NEW_STEP.match(following):
-                break  # step ended without a `name:`; download-all, or the default
-            match = WITH_NAME.match(following)
-            if match:
-                bucket.append(match.group(1))
-                break
-    return uploads, downloads
+            if following.strip() and not following.lstrip().startswith("#"):
+                if NEW_STEP.match(following) or len(following) - len(following.lstrip()) < indent:
+                    break
+            body.append(following)
+        text = "\n".join(body)
+        with_key = re.search(r"^( +)with:\s*$", text, re.MULTILINE)
+        if with_key:
+            with_indent = len(with_key.group(1))
+            inputs = block_mapping(block_mapping(text, with_indent)["with"][1], with_indent + 2)
+            artifacts.append((kind, {key: scalar(value) for key, (value, _) in inputs.items()}))
+    return artifacts
 
 
-def check_artifact_names():
-    ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
+def artifact_names(path):
+    """Return ([upload names], [download names]) for one workflow file."""
+    steps = artifact_steps(path)
+    return tuple([inputs["name"] for kind, inputs in steps if kind == expected and "name" in inputs]
+                 for expected in ("upload", "download"))
+
+
+def block_mapping(text, indent):
+    """Read block-style keys at the workflow files' conventional indentation.
+
+    This only inspects the small mapping subset needed by the guards below;
+    actionlint remains responsible for validating GitHub Actions YAML syntax.
+    Values are (inline value, indented body), so scalar inputs and nested
+    workflow/job mappings can be checked without a third-party YAML dependency.
+    """
+    pattern = re.compile(r"^" + " " * indent + r"([\w-]+):[^\S\n]*(.*)$", re.MULTILINE)
+    matches = list(pattern.finditer(text))
+    return {
+        match.group(1): (match.group(2).strip(),
+                         text[match.end():matches[index + 1].start()
+                              if index + 1 < len(matches) else len(text)])
+        for index, match in enumerate(matches)
+    }
+
+
+def scalar(value):
+    return value.strip().strip("\"'")
+
+
+def dependencies(job):
+    value, body = block_mapping(job, 4).get("needs", ("", ""))
+    if value.startswith("[") and value.endswith("]"):
+        return {scalar(item) for item in value[1:-1].split(",")}
+    if value:
+        return {scalar(value)}
+    return {scalar(item) for item in re.findall(r"^\s+- (.+)$", body, re.MULTILINE)}
+
+
+def shared_native_failures(workflows, jobs, artifacts):
+    """Validate the sole allowed cross-workflow artifact producer/consumer edge."""
+    failures = []
+    producer_uses = f"./.github/workflows/{SHARED_NATIVE_WORKFLOW}"
+    calls = [job_id for job_id, (_, body) in jobs.items()
+             if scalar(block_mapping(body, 4).get("uses", ("", ""))[0]) == producer_uses]
+    if calls != [SHARED_NATIVE_JOB]:
+        failures.append(f"ci.yml: expected exactly one {SHARED_NATIVE_JOB} call to {producer_uses}")
+
+    if SHARED_NATIVE_JOB in jobs:
+        body = jobs[SHARED_NATIVE_JOB][1]
+        if "changes" not in dependencies(body):
+            failures.append(f"ci.yml: {SHARED_NATIVE_JOB} must need changes")
+        if "strategy" in block_mapping(body, 4):
+            failures.append(f"ci.yml: {SHARED_NATIVE_JOB} must not use a matrix")
+    for filename, (uploads, _) in artifacts.items():
+        if filename != SHARED_NATIVE_WORKFLOW and SHARED_NATIVE_ARTIFACT in uploads:
+            failures.append(f"{filename}: only {SHARED_NATIVE_WORKFLOW} may upload '{SHARED_NATIVE_ARTIFACT}'")
+
+    producer = workflows / SHARED_NATIVE_WORKFLOW
+    if not producer.exists():
+        failures.append(f"{producer}: shared native producer is missing")
+    else:
+        producer_jobs = block_mapping(
+            block_mapping(producer.read_text(encoding="utf-8"), 0).get("jobs", ("", ""))[1], 2)
+        uploads = artifacts[SHARED_NATIVE_WORKFLOW][0]
+        if len(producer_jobs) != 1 or uploads != [SHARED_NATIVE_ARTIFACT]:
+            failures.append(f"{producer}: expected one job uploading '{SHARED_NATIVE_ARTIFACT}' once")
+        for _, body in producer_jobs.values():
+            if "strategy" in block_mapping(body, 4):
+                failures.append(f"{producer}: shared native producer must not use a matrix")
+
+    seen_consumers = set()
+    for job_id, (_, body) in jobs.items():
+        fields = block_mapping(body, 4)
+        called = scalar(fields.get("uses", ("", ""))[0]).removeprefix("./.github/workflows/")
+        if called not in SHARED_NATIVE_CONSUMERS:
+            continue
+        seen_consumers.add(called)
+        if not {"changes", SHARED_NATIVE_JOB}.issubset(dependencies(body)):
+            failures.append(f"ci.yml: {job_id} must need changes and {SHARED_NATIVE_JOB}")
+        inputs = block_mapping(fields.get("with", ("", ""))[1], 6)
+        if scalar(inputs.get(SHARED_NATIVE_INPUT, ("", ""))[0]) != SHARED_NATIVE_ARTIFACT:
+            failures.append(f"ci.yml: {job_id} must pass {SHARED_NATIVE_INPUT}: {SHARED_NATIVE_ARTIFACT}")
+
+    for filename in sorted(SHARED_NATIVE_CONSUMERS):
+        path = workflows / filename
+        if filename not in seen_consumers:
+            failures.append(f"ci.yml: shared native consumer {filename} is not called")
+        if not path.exists():
+            failures.append(f"{path}: shared native consumer is missing")
+            continue
+        text = path.read_text(encoding="utf-8")
+        declaration = text
+        for key, indent in (("on", 0), ("workflow_call", 2), ("inputs", 4),
+                            (SHARED_NATIVE_INPUT, 6)):
+            declaration = block_mapping(declaration, indent).get(key, ("", ""))[1]
+        fields = block_mapping(declaration, 8)
+        if (scalar(fields.get("required", ("", ""))[0]) != "true"
+                or scalar(fields.get("type", ("", ""))[0]) != "string"):
+            failures.append(f"{path}: {SHARED_NATIVE_INPUT} must be a required string input")
+        uploads, downloads = artifacts[filename]
+        if SHARED_NATIVE_EXPRESSION not in downloads:
+            failures.append(f"{path}: must download {SHARED_NATIVE_EXPRESSION}")
+        if any(name.startswith("native-lib") or name == SHARED_NATIVE_EXPRESSION for name in uploads):
+            failures.append(f"{path}: native library must only be uploaded by {SHARED_NATIVE_WORKFLOW}")
+        native_destinations = [inputs.get("name") for kind, inputs in artifact_steps(path)
+                               if kind == "download" and inputs.get("path", "").startswith("native/target")]
+        if (any(name.startswith("native-lib") for name in downloads)
+                or any(name != SHARED_NATIVE_EXPRESSION for name in native_destinations)):
+            failures.append(f"{path}: native downloads must use {SHARED_NATIVE_EXPRESSION}")
+        if re.search(r"^\s*(?:cargo build\b|make (?:release|core)\b)", text, re.MULTILINE):
+            failures.append(f"{path}: must consume the shared native library instead of building it")
+    return failures
+
+
+def artifact_failures(workflows):
+    ci = (workflows / "ci.yml").read_text(encoding="utf-8")
+    jobs = block_mapping(block_mapping(ci, 0).get("jobs", ("", ""))[1], 2)
     call_counts = {}
     for called in re.findall(r"uses:\s*\./\.github/workflows/(\S+)", ci):
         call_counts[called] = call_counts.get(called, 0) + 1
 
-    failures = []
-    for path in sorted(WORKFLOWS.glob("*.y*ml")):
-        uploads, downloads = artifact_names(path)
-        if call_counts.get(path.name, 0) > 1:
+    artifacts = {path.name: artifact_names(path) for path in sorted(workflows.glob("*.y*ml"))}
+    failures = shared_native_failures(workflows, jobs, artifacts)
+    shared_wiring_valid = not failures
+    for filename, (uploads, downloads) in artifacts.items():
+        path = workflows / filename
+        if call_counts.get(filename, 0) > 1:
             for name in uploads:
                 if "inputs." not in name:
                     failures.append(
                         f"{path}: artifact '{name}' is uploaded by a workflow ci.yml calls "
-                        f"{call_counts[path.name]} times; qualify the name with an input "
+                        f"{call_counts[filename]} times; qualify the name with an input "
                         f"(e.g. ${{{{ inputs.spark-full }}}}) so the parallel producers stay distinct"
                     )
         for name in downloads:
-            if name not in uploads:
+            explicitly_shared = (shared_wiring_valid and filename in SHARED_NATIVE_CONSUMERS
+                                 and name == SHARED_NATIVE_EXPRESSION)
+            if name not in uploads and not explicitly_shared:
                 failures.append(
                     f"{path}: artifact '{name}' is downloaded but never uploaded in the same "
                     f"workflow; a producer rename probably missed its consumer"
                 )
+    return failures
+
+
+def check_artifact_names():
+    failures = artifact_failures(WORKFLOWS)
     for failure in failures:
         print(f"artifact name: {failure}")
     return not failures

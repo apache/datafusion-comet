@@ -114,7 +114,10 @@ jobs:
         run: python3 dev/ci/test-iceberg-shards.py
 
       - name: Check CI config invariants
-        run: python3 dev/ci/check-ci-config.py
+        run: |
+          python3 dev/ci/check-ci-config.py
+          python3 dev/ci/test-ci-config.py
+          python3 dev/ci/test-native-build-selection.py
 
       - name: Install actionlint
         # Pure network, and preflight gates every other job, so a single reset
@@ -223,11 +226,30 @@ jobs:
   # can actually test it.
   # ---------------------------------------------------------------------------
 
+  # Build once when any native-library consumer is selected. Each output
+  # already includes the path, event, and label policy from compute-changes.py.
+  build_linux_native:
+    name: Shared Linux Native Library
+    needs: changes
+    if: |
+      needs.changes.outputs.build_linux == 'true' ||
+      needs.changes.outputs.spark_3_4 == 'true' ||
+      needs.changes.outputs.spark_3_5 == 'true' ||
+      needs.changes.outputs.spark_4_0 == 'true' ||
+      needs.changes.outputs.spark_4_1 == 'true' ||
+      needs.changes.outputs.iceberg_1_8 == 'true' ||
+      needs.changes.outputs.iceberg_1_9 == 'true' ||
+      needs.changes.outputs.iceberg_1_10 == 'true' ||
+      needs.changes.outputs.iceberg_1_11 == 'true'
+    uses: ./.github/workflows/build_linux_native.yml
+
   pr_build_linux:
     name: PR Build (Linux)
-    needs: changes
+    needs: [changes, build_linux_native]
     if: needs.changes.outputs.build_linux == 'true'
     uses: ./.github/workflows/pr_build_linux.yml
+    with:
+      native-library-artifact: native-lib-linux
 
   pr_build_macos:
     name: PR Build (macOS)
@@ -252,56 +274,60 @@ jobs:
 
   spark_3_4:
     name: Spark SQL Tests (Spark 3.4)
-    needs: changes
+    needs: [changes, build_linux_native]
     # Queue-only by default; PRs need the `run-spark-3.4-tests` label.
     if: needs.changes.outputs.spark_3_4 == 'true'
     uses: ./.github/workflows/spark_sql_test_reusable.yml
     with:
+      native-library-artifact: native-lib-linux
       spark-short: '3.4'
       spark-full: '3.4.3'
       java: 11
 
   spark_3_5:
     name: Spark SQL Tests (Spark 3.5)
-    needs: changes
-    # Queue-only by default; PRs need the `run-spark-3.5-tests` label.
+    needs: [changes, build_linux_native]
     if: needs.changes.outputs.spark_3_5 == 'true'
     uses: ./.github/workflows/spark_sql_test_reusable.yml
     with:
+      native-library-artifact: native-lib-linux
       spark-short: '3.5'
       spark-full: '3.5.9'
       java: 17
 
   spark_4_0:
     name: Spark SQL Tests (Spark 4.0)
-    needs: changes
+    needs: [changes, build_linux_native]
     # Queue-only by default; PRs need the `run-spark-4.0-tests` label. Swapped
     # with spark_4_1 on the `oom` branch to validate the memory caps against
     # Spark 4.1 by default.
     if: needs.changes.outputs.spark_4_0 == 'true'
     uses: ./.github/workflows/spark_sql_test_reusable.yml
     with:
+      native-library-artifact: native-lib-linux
       spark-short: '4.0'
       spark-full: '4.0.4'
       java: 17
 
   spark_4_1:
     name: Spark SQL Tests (Spark 4.1)
-    needs: changes
+    needs: [changes, build_linux_native]
     if: needs.changes.outputs.spark_4_1 == 'true'
     uses: ./.github/workflows/spark_sql_test_reusable.yml
     with:
+      native-library-artifact: native-lib-linux
       spark-short: '4.1'
       spark-full: '4.1.3'
       java: 17
 
   iceberg_1_8:
     name: Iceberg Spark SQL Tests (Iceberg 1.8)
-    needs: changes
+    needs: [changes, build_linux_native]
     # Queue-only by default; PRs need the `run-iceberg-tests` label.
     if: needs.changes.outputs.iceberg_1_8 == 'true'
     uses: ./.github/workflows/iceberg_spark_test_reusable.yml
     with:
+      native-library-artifact: native-lib-linux
       iceberg-short: '1.8'
       iceberg-full: '1.8.1'
       spark-short: '3.4'
@@ -310,11 +336,12 @@ jobs:
 
   iceberg_1_9:
     name: Iceberg Spark SQL Tests (Iceberg 1.9)
-    needs: changes
+    needs: [changes, build_linux_native]
     # Queue-only by default; PRs need the `run-iceberg-tests` label.
     if: needs.changes.outputs.iceberg_1_9 == 'true'
     uses: ./.github/workflows/iceberg_spark_test_reusable.yml
     with:
+      native-library-artifact: native-lib-linux
       iceberg-short: '1.9'
       iceberg-full: '1.9.1'
       spark-short: '3.5'
@@ -323,12 +350,13 @@ jobs:
 
   iceberg_1_10:
     name: Iceberg Spark SQL Tests (Iceberg 1.10)
-    needs: changes
+    needs: [changes, build_linux_native]
     # Queue-only by default; PRs need the `run-iceberg-tests` label. Iceberg 1.11
     # (Spark 4.1) is the PR-gated Iceberg job; 1.10 covers the Spark 3.5 path.
     if: needs.changes.outputs.iceberg_1_10 == 'true'
     uses: ./.github/workflows/iceberg_spark_test_reusable.yml
     with:
+      native-library-artifact: native-lib-linux
       iceberg-short: '1.10'
       iceberg-full: '1.10.0'
       spark-short: '3.5'
@@ -337,11 +365,12 @@ jobs:
 
   iceberg_1_11:
     name: Iceberg Spark SQL Tests (Iceberg 1.11)
-    needs: changes
+    needs: [changes, build_linux_native]
     # Runs on every PR: Iceberg 1.11 is our only Spark 4.1 Iceberg coverage.
     if: needs.changes.outputs.iceberg_1_11 == 'true'
     uses: ./.github/workflows/iceberg_spark_test_reusable.yml
     with:
+      native-library-artifact: native-lib-linux
       iceberg-short: '1.11'
       iceberg-full: '1.11.0'
       spark-short: '4.1'

@@ -21,6 +21,11 @@ name: PR Build (Linux)
 # live in the umbrella workflow.
 on:
   workflow_call:
+    inputs:
+      native-library-artifact:
+        description: 'Default Linux CI library produced by the calling workflow'
+        required: true
+        type: string
 
 env:
   RUST_VERSION: stable
@@ -238,59 +243,7 @@ jobs:
             -Dsuites=org.apache.comet.shuffle.CelebornReflectionCompatibilitySuite \
             -DfailIfNoTests=false
 
-  # Build native library once and share with all test jobs
-  build-native:
-    needs: lint
-    name: Build Native Library
-    runs-on: ubuntu-24.04
-    container:
-      image: amd64/rust
-    steps:
-      - uses: actions/checkout@v7
-      - name: Setup Rust toolchain
-        uses: ./.github/actions/setup-builder
-        with:
-          rust-version: ${{ env.RUST_VERSION }}
-          jdk-version: 17  # JDK only needed for JVM module proto generation
-
-      - name: Restore Cargo cache
-        uses: actions/cache/restore@v6
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            native/target
-          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-
-
-      - name: Build native library (CI profile)
-        run: |
-          cd native
-          # CI profile: same overflow behavior as release, but faster compilation
-          # (no LTO, parallel codegen)
-          cargo build --profile ci
-        env:
-          RUSTFLAGS: "-Ctarget-cpu=x86-64-v3 -Clink-arg=-fuse-ld=bfd"
-
-      - name: Upload native library
-        uses: ./.github/actions/upload-artifact-retry
-        with:
-          name: native-lib-linux
-          path: native/target/ci/libcomet.so
-          retention-days: 1
-
-      - name: Save Cargo cache
-        uses: actions/cache/save@v6
-        if: github.ref == 'refs/heads/main'
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            native/target
-          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs') }}
-
-  # Run Rust tests (runs in parallel with build-native, uses debug builds)
+  # Rust tests use a separate debug build, not the shared CI library.
   linux-test-rust:
     needs: lint
     name: ubuntu-latest/rust-test
@@ -332,7 +285,7 @@ jobs:
           key: ${{ runner.os }}-cargo-debug-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs') }}
 
   linux-test:
-    needs: build-native
+    needs: lint
     strategy:
       matrix:
         # the goal with these profiles is to get coverage of all Java, Scala, and Spark
@@ -519,7 +472,7 @@ jobs:
       - name: Download native library
         uses: ./.github/actions/download-artifact-retry
         with:
-          name: native-lib-linux
+          name: ${{ inputs.native-library-artifact }}
           # Download to release/ since Maven's -Prelease expects libcomet.so there
           path: native/target/release/
 
@@ -545,7 +498,7 @@ jobs:
 
   # TPC-H correctness test - verifies benchmark queries produce correct results
   verify-benchmark-results-tpch:
-    needs: build-native
+    needs: lint
     name: Verify TPC-H Results
     runs-on: ubuntu-24.04
     container:
@@ -564,7 +517,7 @@ jobs:
       - name: Download native library
         uses: ./.github/actions/download-artifact-retry
         with:
-          name: native-lib-linux
+          name: ${{ inputs.native-library-artifact }}
           path: native/target/release/
 
       - name: Cache Maven dependencies
@@ -600,7 +553,7 @@ jobs:
   # TPC-DS correctness tests - verifies benchmark queries produce correct results.
   # The three join strategies run sequentially in one job so the project is built once.
   verify-benchmark-results-tpcds:
-    needs: build-native
+    needs: lint
     name: Verify TPC-DS Results
     runs-on: ubuntu-24.04
     container:
@@ -619,7 +572,7 @@ jobs:
       - name: Download native library
         uses: ./.github/actions/download-artifact-retry
         with:
-          name: native-lib-linux
+          name: ${{ inputs.native-library-artifact }}
           path: native/target/release/
 
       - name: Cache Maven dependencies

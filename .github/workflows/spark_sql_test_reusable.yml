@@ -24,6 +24,10 @@ name: Spark SQL Tests (reusable)
 on:
   workflow_call:
     inputs:
+      native-library-artifact:
+        description: 'Default Linux CI library produced by the calling workflow'
+        required: true
+        type: string
       spark-short:
         description: 'Spark minor version, e.g. 3.5'
         required: true
@@ -52,22 +56,11 @@ env:
 
 jobs:
 
-  # Build the native library AND pre-compile Spark sources + Test classes in a
-  # single runner, then publish two artifacts the matrix consumes:
-  #   - native-lib-spark-<full>-jdk<N>:      libcomet.so (~50 MB)
-  #   - jvm-compiled-spark-<full>-jdk<N>:    apache-spark.tar.gz (sources +
-  #                                          target/ + Zinc state, ~500 MB-1 GB)
-  # Combining them avoids a second runner cold-start and an extra inter-job
-  # artifact round-trip for the native lib, since the JVM build already
-  # depends on it (the Comet Maven install bundles libcomet.so into the
-  # Comet JAR before SBT resolves Spark's classpath).
-  #
-  # Both names carry the Spark/JDK version because ci.yml calls this workflow
-  # once per Spark version inside a single run, and artifact names are scoped
-  # to the run, not to the calling workflow. See "Artifact names must be unique
-  # per producer" in .github/workflows/README.md.
+  # Pre-compile Spark sources and test classes once per Spark/JDK version.
+  # The native library comes from the umbrella's shared Linux producer; only
+  # the version-specific JVM artifact is published by this workflow.
   build:
-    name: Build Native + JVM Test Classes
+    name: Build JVM Test Classes
     runs-on: ubuntu-24.04
     container:
       image: amd64/rust
@@ -80,49 +73,11 @@ jobs:
           rust-version: ${{ env.RUST_VERSION }}
           jdk-version: ${{ inputs.java }}
 
-      - name: Restore Cargo cache
-        uses: actions/cache/restore@v6
+      - name: Download native library
+        uses: actions/download-artifact@v8
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            native/target
-          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-
-
-      - name: Build native library (CI profile)
-        run: |
-          cd native
-          cargo build --profile ci
-        env:
-          RUSTFLAGS: "-Ctarget-cpu=x86-64-v3 -Clink-arg=-fuse-ld=bfd"
-
-      - name: Save Cargo cache
-        uses: actions/cache/save@v6
-        if: github.ref == 'refs/heads/main'
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            native/target
-          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs') }}
-
-      - name: Upload native library
-        uses: ./.github/actions/upload-artifact-retry
-        with:
-          name: native-lib-spark-${{ inputs.spark-full }}-jdk${{ inputs.java }}
-          path: native/target/ci/libcomet.so
-          retention-days: 1
-
-      - name: Stage native library at release path
-        run: |
-          # setup-spark-builder's `mvnw install -DskipTests` (skip-native-build
-          # path) bundles native/target/release/libcomet.so into the Comet JAR.
-          # We built with --profile ci to avoid LTO, so the file lives at
-          # native/target/ci/. Copy it to where the Maven build expects it.
-          mkdir -p native/target/release
-          cp native/target/ci/libcomet.so native/target/release/libcomet.so
+          name: ${{ inputs.native-library-artifact }}
+          path: native/target/release/
 
       - name: Setup Spark
         uses: ./.github/actions/setup-spark-builder
@@ -198,7 +153,7 @@ jobs:
       - name: Download native library
         uses: ./.github/actions/download-artifact-retry
         with:
-          name: native-lib-spark-${{ inputs.spark-full }}-jdk${{ inputs.java }}
+          name: ${{ inputs.native-library-artifact }}
           path: native/target/release/
       - name: Download JVM compile artifact
         uses: ./.github/actions/download-artifact-retry
