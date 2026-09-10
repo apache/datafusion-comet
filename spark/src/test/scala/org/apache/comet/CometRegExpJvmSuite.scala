@@ -453,7 +453,7 @@ class CometRegExpJvmSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         val explain = new ExtendedExplainInfo().generateExtendedInfo(cometPlan)
         assert(
           !explain.toLowerCase.contains("compiledtoobig"),
-          s"native compilation must not run for the full uncounted-capture reproducer, " +
+          "native compilation must not run for the full uncounted-capture reproducer, " +
             s"but the plan contained a compiler-budget failure:\n$explain")
       }
     }
