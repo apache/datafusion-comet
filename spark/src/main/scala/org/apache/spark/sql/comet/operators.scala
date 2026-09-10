@@ -56,7 +56,7 @@ import org.apache.comet.{CometConf, CometExecIterator, CometRuntimeException, Co
 import org.apache.comet.CometSparkSessionExtensions.{isCometShuffleEnabled, withFallbackReason}
 import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.rules.CometExecRule
-import org.apache.comet.serde.{CometOperatorSerde, Compatible, OperatorOuterClass, QueryContextInterner, SupportLevel, Unsupported}
+import org.apache.comet.serde.{CometOperatorSerde, Compatible, Incompatible, OperatorOuterClass, QueryContextInterner, SupportLevel, Unsupported}
 import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, Operator}
 import org.apache.comet.serde.QueryPlanSerde
 import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto, isStringCollationType, supportedSortType}
@@ -1627,6 +1627,10 @@ case class CometUnionExec(
 
 trait CometBaseAggregate {
 
+  /**
+   * Classify AVG restrictions that depend on the Spark operator's grouping. Conversion and
+   * unsafe-partial tagging share this check, so an operator opt-in cannot bypass buffer checks.
+   */
   protected def aggregateSupportLevel(op: BaseAggregateExec): SupportLevel = {
     val groupedAnsiDecimalAverage = op.groupingExpressions.nonEmpty &&
       op.aggregateExpressions.exists(_.aggregateFunction match {
@@ -1647,9 +1651,11 @@ trait CometBaseAggregate {
     if (groupedAnsiDecimalAverage) {
       // Native aggregation evaluates a batch of groups before its consumer can stop, so an
       // overflow in an unconsumed group can incorrectly fail LIMIT. Any decimal sum precision
-      // can overflow. Keep every mode in Spark: decimal partial buffers cannot cross engines,
-      // and native PartialMerge can throw before emitting its intermediate state as well.
-      Unsupported(Some("Grouped decimal AVG in ANSI mode requires Spark's lazy group evaluation"))
+      // can overflow. Apply the same opt-in to every mode because decimal partial buffers
+      // cannot cross engines. Incompatible preserves fallback by default while allowing the
+      // existing per-operator allowIncompatible setting to accept eager overflow evaluation.
+      Incompatible(
+        Some("Grouped decimal AVG in ANSI mode requires Spark's lazy group evaluation"))
     } else if (unsupportedAverage) {
       // Spark's ungrouped codegen buffers can retain a wider decimal sum until AVG divides
       // by the count, including while merging partials. Comet records overflow immediately.

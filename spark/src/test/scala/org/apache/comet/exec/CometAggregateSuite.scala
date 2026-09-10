@@ -45,7 +45,7 @@ import org.apache.comet.CometConf
 import org.apache.comet.CometConf.COMET_EXEC_STRICT_FLOATING_POINT
 import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
 import org.apache.comet.rules.CometExecRule
-import org.apache.comet.serde.Unsupported
+import org.apache.comet.serde.Incompatible
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, ParquetGenerator, SchemaGenOptions}
 
 /**
@@ -1910,9 +1910,11 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               input.createOrReplaceTempView("grouped_avg_limit")
             }
 
+            // Reuse the ordered fixture while varying the aggregate and its output consumer.
             def query(fn: String, suffix: String = ""): String =
               s"SELECT k, $fn(v) AS a FROM grouped_avg_limit GROUP BY k$suffix"
 
+            // Inspect native AVG stages through AQE wrappers without executing the query.
             def nativeAvgs(df: DataFrame): Seq[CometHashAggregateExec] =
               collect(df.queryExecution.executedPlan) {
                 case agg: CometHashAggregateExec
@@ -1950,6 +1952,41 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               }
             }
 
+            withSQLConf(
+              CometConf.getOperatorAllowIncompatConfigKey(classOf[HashAggregateExec]) -> "true",
+              CometConf.getOperatorAllowIncompatConfigKey(classOf[ObjectHashAggregateExec]) ->
+                "true") {
+              // Opting in restores both native stages for a healthy ordered LIMIT, before and
+              // after AQE. Exclude the overflowing group without changing the decimal type.
+              val healthyQuery = "SELECT k, AVG(v) AS a FROM grouped_avg_limit " +
+                "WHERE k <> 1 GROUP BY k ORDER BY k LIMIT 1"
+              val healthy = sql(healthyQuery)
+              assert(nativeAvgs(healthy).flatMap(_.modes).toSet == Set(Partial, Final))
+              checkAnswer(healthy, firstGroup)
+              assert(nativeAvgs(healthy).flatMap(_.modes).toSet == Set(Partial, Final))
+
+              // Native evaluation still throws on overflow. With this opt-in it may also
+              // evaluate the overflowing group that Spark's LIMIT 1 leaves unread.
+              for (text <- Seq(query("AVG"), query("AVG", " LIMIT 1"))) {
+                val overflowing = sql(text)
+                assert(nativeAvgs(overflowing).flatMap(_.modes).toSet == Set(Partial, Final))
+                val error = intercept[Exception](overflowing.collect())
+                assert(error.getMessage.contains("ARITHMETIC_OVERFLOW"))
+              }
+
+              // An opt-in must not let decimal buffers cross engines when either stage is
+              // unavailable. Check both directions, including AQE's isolated stage planning.
+              for (disabled <- Seq(
+                  CometConf.COMET_ENABLE_PARTIAL_HASH_AGGREGATE,
+                  CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE)) {
+                withSQLConf(disabled.key -> "false") {
+                  val split = sql(healthyQuery)
+                  checkAnswer(split, firstGroup)
+                  assert(nativeAvgs(split).isEmpty)
+                }
+              }
+            }
+
             // The nonthrowing modes still use both native stages, including their NULL state.
             for ((fn, ansi) <- Seq(("TRY_AVG", true), ("AVG", false), ("TRY_AVG", false))) {
               withSQLConf(SQLConf.ANSI_ENABLED.key -> ansi.toString) {
@@ -1971,7 +2008,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("grouped ANSI decimal AVG falls back for every precision and aggregate mode") {
+  test("grouped ANSI decimal AVG requires operator opt-in at every precision and mode") {
     withSQLConf(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
       SQLConf.ANSI_ENABLED.key -> "true",
@@ -2000,7 +2037,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               agg
           }
           assert(sparkAverages.nonEmpty)
-          // The support check must also reject merge-only nodes before AQE can launch them.
+          // Merge-only nodes need the same incompatibility check before AQE can launch them.
           sparkAverages.foreach { agg =>
             for (mode <- Seq(Partial, PartialMerge, Final)) {
               val expressions = agg.aggregateExpressions.map(_.copy(mode = mode))
@@ -2013,8 +2050,35 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                     hash.copy(aggregateExpressions = expressions))
                 case other => fail(s"Unexpected aggregate: $other")
               }
-              assert(support == Unsupported(
+              assert(support == Incompatible(
                 Some("Grouped decimal AVG in ANSI mode requires Spark's lazy group evaluation")))
+            }
+          }
+        }
+
+        val operators = Seq(
+          "HashAggregateExec" -> "",
+          "ObjectHashAggregateExec" ->
+            ", collect_list(_1)")
+        operators.foreach { case (name, _) =>
+          assert(!CometConf.isOperatorAllowIncompat(name, new SQLConf))
+        }
+        // Each config applies only to its named Spark operator. Enabling the other operator
+        // must leave fallback intact, while enabling the matching one restores both stages.
+        for ((enabled, _) <- operators) {
+          withSQLConf(operators.map { case (name, _) =>
+            CometConf.getOperatorAllowIncompatConfigKey(name) -> (name == enabled).toString
+          }: _*) {
+            for ((name, extra) <- operators) {
+              val df = sql(
+                s"SELECT _1 AS k, AVG(CAST(_2 AS DECIMAL(20,2))) AS a$extra " +
+                  "FROM grouped_avg_modes GROUP BY _1 ORDER BY k LIMIT 1")
+              checkSparkAnswer(df)
+              val native = collect(df.queryExecution.executedPlan) {
+                case agg: CometHashAggregateExec => agg
+              }
+              assert(native.size == (if (name == enabled) 2 else 0))
+              assert(native.forall(_.originalPlan.getClass.getSimpleName == name))
             }
           }
         }

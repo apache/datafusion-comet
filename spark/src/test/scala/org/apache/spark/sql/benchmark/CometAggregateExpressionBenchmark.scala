@@ -19,8 +19,10 @@
 
 package org.apache.spark.sql.benchmark
 
+import org.apache.spark.benchmark.Benchmark
 import org.apache.spark.sql.comet.CometHashAggregateExec
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
+import org.apache.spark.sql.execution.aggregate.HashAggregateExec
 import org.apache.spark.sql.execution.exchange.ShuffleExchangeExec
 import org.apache.spark.sql.internal.SQLConf
 
@@ -39,6 +41,86 @@ case class AggExprConfig(
  * Results will be written to "spark/benchmarks/CometAggregateFunctionBenchmark-**results.txt".
  */
 object CometAggregateExpressionBenchmark extends CometBenchmarkBase {
+
+  /**
+   * `--grouped-ansi-avg` measures ANSI decimal AVG's safe fallback against its native opt-in in
+   * one session. Integer keys isolate aggregate fallback from wide-decimal shuffle fallback;
+   * values cannot overflow, so this measures cost, not the opt-in's error semantics. Fixture
+   * creation and Spark result/route checks are untimed. `reverse` swaps the timed case order;
+   * `validateOnly` skips timing. The temporary data and view are removed; SQL settings restored.
+   */
+  private def groupedAnsiAvgBenchmark(reverse: Boolean, validateOnly: Boolean): Unit = {
+    val rows = 1000 * 1000
+    val groups = 10000
+    val partitions = 4
+    val filePartitionBytes = 16 * 1024 * 1024
+    val allowIncompatible = CometConf.getOperatorAllowIncompatConfigKey("HashAggregateExec")
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "true",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.SHUFFLE_PARTITIONS.key -> partitions.toString,
+      // Keep all four input files in separate tasks, without splitting any file.
+      SQLConf.FILES_MAX_PARTITION_BYTES.key -> filePartitionBytes.toString,
+      SQLConf.FILES_OPEN_COST_IN_BYTES.key -> filePartitionBytes.toString,
+      CometConf.COMET_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_ENABLED.key -> "true",
+      CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_MODE.key -> "auto") {
+      withTempPath { dir =>
+        withTempTable("parquetV1Table") {
+          val query = "SELECT k, AVG(v) AS a FROM parquetV1Table " +
+            "GROUP BY k ORDER BY k LIMIT 100"
+          val expected = withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            prepareTable(
+              dir,
+              spark
+                .range(0L, rows.toLong, 1L, partitions)
+                .selectExpr(
+                  s"CAST(id % $groups AS INT) AS k",
+                  "CAST(id % 97 AS DECIMAL(20, 2)) AS v"))
+            val input = spark.table("parquetV1Table")
+            assert(input.inputFiles.length == partitions)
+            assert(input.rdd.getNumPartitions == partitions)
+            assert(input.count() == rows)
+            val result = spark.sql(query).collect().toSeq
+            assert(result.map(_.getInt(0)) == (0 until 100))
+            result
+          }
+          val benchmark = new Benchmark("grouped_ansi_decimal_avg", rows, output = output)
+          val modes = Seq(false, true)
+          for (optIn <- (if (reverse) modes.reverse else modes)) {
+            withSQLConf(allowIncompatible -> optIn.toString) {
+              // Inspect the whole scan, not the one-partition TopK output.
+              val inputPartitions = spark.table("parquetV1Table").rdd.getNumPartitions
+              assert(inputPartitions == partitions)
+              val df = spark.sql(query)
+              assert(df.collect().toSeq == expected)
+              val plan = df.queryExecution.executedPlan
+              val nativeAggregates = plan.collect { case _: CometHashAggregateExec => 1 }.sum
+              val sparkAggregates = plan.collect { case _: HashAggregateExec => 1 }.sum
+              assert(nativeAggregates == (if (optIn) 2 else 0), plan.treeString)
+              assert(sparkAggregates == (if (optIn) 0 else 2), plan.treeString)
+              benchmark.out.println(s"Grouped ANSI AVG allowIncompatible=$optIn, rows=$rows, " +
+                s"groups=$groups, inputPartitions=$inputPartitions, shufflePartitions=$partitions, " +
+                s"filePartitionBytes=$filePartitionBytes, fileOpenCostBytes=$filePartitionBytes, " +
+                s"ansi=true, aqe=false, nativeScan=true, shuffleMode=auto, " +
+                s"master=${spark.sparkContext.master}, " +
+                s"sparkVersion=${spark.version}, resultMatchesSpark=true, " +
+                s"nativeAggregates=$nativeAggregates, sparkAggregates=$sparkAggregates")
+              benchmark.out.println(plan.treeString)
+            }
+            benchmark.addCase(s"Comet allowIncompatible=$optIn") { _ =>
+              withSQLConf(allowIncompatible -> optIn.toString) {
+                spark.sql(query).collect()
+              }
+            }
+          }
+          if (!validateOnly) benchmark.run()
+        }
+      }
+    }
+  }
 
   /**
    * Run with `--wide-decimal-shuffle` on both revisions to measure the cost of routing wide
@@ -257,6 +339,12 @@ object CometAggregateExpressionBenchmark extends CometBenchmarkBase {
       "SELECT approx_percentile(c_double, 0.5) FROM parquetV1Table GROUP BY high_card_grp"))
 
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
+    if (mainArgs.contains("--grouped-ansi-avg")) {
+      groupedAnsiAvgBenchmark(
+        mainArgs.contains("--reverse"),
+        mainArgs.contains("--validate-only"))
+      return
+    }
     if (mainArgs.contains("--wide-decimal-shuffle")) {
       wideDecimalShuffleBenchmark(
         mainArgs.contains("--reverse"),
