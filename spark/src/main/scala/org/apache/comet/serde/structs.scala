@@ -35,20 +35,9 @@ object CometCreateNamedStruct
     extends CometExpressionSerde[CreateNamedStruct]
     with CodegenDispatchFallback {
 
-  private val duplicateNamesReason =
-    "`CreateNamedStruct` with duplicate field names cannot use native execution"
-
   override def getUnsupportedReasons(): Seq[String] = Seq(
-    "Duplicate field names are routed through the JVM codegen dispatcher " +
+    "Unsupported CreateNamedStruct arguments are routed through the JVM codegen dispatcher " +
       "(Spark's own `doGenCode`).")
-
-  override def getSupportLevel(expr: CreateNamedStruct): SupportLevel = {
-    if (expr.names.length != expr.names.distinct.length) {
-      Unsupported(Some(duplicateNamesReason))
-    } else {
-      Compatible()
-    }
-  }
 
   override def convert(
       expr: CreateNamedStruct,

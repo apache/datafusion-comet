@@ -736,7 +736,8 @@ class CometJoinSuite extends CometTestBase {
     withSQLConf(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
       SQLConf.PREFER_SORTMERGEJOIN.key -> "false",
-      CometConf.COMET_EXEC_BROADCAST_FORCE_ENABLED.key -> "true") {
+      CometConf.COMET_EXEC_BROADCAST_FORCE_ENABLED.key -> "true",
+      CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
       withParquetTable(Seq((1, 10), (2, 20)), "build") {
         withParquetTable(Seq(1, 2, 3).map(Tuple1(_)), "probe") {
           val query =

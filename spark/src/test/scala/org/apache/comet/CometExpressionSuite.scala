@@ -123,6 +123,18 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("native CreateNamedStruct preserves duplicate field names") {
+    withParquetTable(Seq((1, "one"), (2, null.asInstanceOf[String])), "duplicate_named_struct") {
+      withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
+        checkSparkAnswerAndOperator("""SELECT named_struct(
+            |  'x', _1 + 1,
+            |  'x', named_struct('y', _2, 'y', 7),
+            |  'x', 3.14D) AS s
+            |FROM duplicate_named_struct""".stripMargin)
+      }
+    }
+  }
+
   test("GetStructField: non-nullable field of a nullable struct (Delta action-frame shape)") {
     // Repro for the under-declared `GetStructField` nullability that crashed Comet's native
     // execution with "Column '...' is declared as non-nullable but contains null values".

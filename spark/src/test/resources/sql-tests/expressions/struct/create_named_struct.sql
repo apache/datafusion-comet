@@ -34,9 +34,12 @@ SELECT named_struct('x', 1, 'y', 'hello', 'z', 3.14)
 query
 SELECT named_struct('x', a, 'y', 'fixed_val', 'z', c) FROM test_named_struct
 
--- duplicate names dispatch through Spark codegen while preserving ordinal values
+-- duplicate names preserve ordinal values through native struct construction
 query
 SELECT named_struct('x', a, 'x', b) FROM test_named_struct
+
+query
+SELECT named_struct('x', a, 'x', 42) FROM test_named_struct
 
 -- struct() lowers to CreateNamedStruct and derives duplicate names from repeated children
 query
