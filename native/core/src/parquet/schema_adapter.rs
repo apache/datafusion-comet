@@ -109,8 +109,8 @@ fn is_pure_structural_narrowing(
     physical_type: &DataType,
     target_type: &DataType,
     parquet_options: &SparkParquetOptions,
-) -> bool {
-    match (physical_type, target_type) {
+) -> DataFusionResult<bool> {
+    Ok(match (physical_type, target_type) {
         (DataType::Struct(source_fields), DataType::Struct(target_fields)) => {
             // Comet matches by Parquet field id first when the target carries one;
             // DataFusion's generic cast has no field-id concept, so any field-id-bearing
@@ -118,15 +118,15 @@ fn is_pure_structural_narrowing(
             if parquet_options.use_field_id
                 && target_fields.iter().any(|f| parse_field_id(f).is_some())
             {
-                return false;
+                return Ok(false);
             }
             // Fold the source field names once (O(sources), not O(targets x sources)), matching
             // this file's bulk-fold convention.
             let source_folded: Vec<String> = source_fields
                 .iter()
                 .map(|f| fold_name(f.name(), parquet_options.case_sensitive))
-                .collect();
-            target_fields.iter().all(|target_field| {
+                .collect::<DataFusionResult<_>>()?;
+            for target_field in target_fields {
                 // DataFusion's retained `CastExpr` resolves struct fields by *exact* name, so
                 // keeping it is only sound when Spark's configured resolver would pick the same
                 // single source field. Two requirements:
@@ -140,23 +140,29 @@ fn is_pure_structural_narrowing(
                 //    resolver. `struct<id,ID>` projecting `id` case-insensitively is ambiguous;
                 //    Spark and Comet's converter reject it, but DataFusion's cast would silently
                 //    return the exact-case field, so the cast must not be retained.
-                let folded_target = fold_name(target_field.name(), parquet_options.case_sensitive);
+                let folded_target = fold_name(target_field.name(), parquet_options.case_sensitive)?;
                 let resolver_matches = source_folded
                     .iter()
                     .filter(|&f| f == &folded_target)
                     .count();
-                resolver_matches == 1
-                    && source_fields
-                        .iter()
-                        .find(|f| f.name() == target_field.name())
-                        .is_some_and(|source_field| {
-                            is_pure_structural_narrowing(
-                                source_field.data_type(),
-                                target_field.data_type(),
-                                parquet_options,
-                            )
-                        })
-            })
+                if resolver_matches != 1 {
+                    return Ok(false);
+                }
+                let Some(source_field) = source_fields
+                    .iter()
+                    .find(|f| f.name() == target_field.name())
+                else {
+                    return Ok(false);
+                };
+                if !is_pure_structural_narrowing(
+                    source_field.data_type(),
+                    target_field.data_type(),
+                    parquet_options,
+                )? {
+                    return Ok(false);
+                }
+            }
+            true
         }
         (DataType::List(source_item), DataType::List(target_item))
         | (DataType::LargeList(source_item), DataType::LargeList(target_item)) => {
@@ -164,7 +170,7 @@ fn is_pure_structural_narrowing(
                 source_item.data_type(),
                 target_item.data_type(),
                 parquet_options,
-            )
+            )?
         }
         // Map is excluded structurally, not by the equality check below: `replace_with_spark_cast`
         // only reaches this predicate after its own top-level `physical_type == target_type`
@@ -177,7 +183,7 @@ fn is_pure_structural_narrowing(
         // value or matching semantics that `nested_struct::cast_column` does not replicate,
         // and none of them arise from pruning alone.
         _ => physical_type == target_type,
-    }
+    })
 }
 
 /// Remap physical schema field names to match logical schema field names. Mirrors Spark's
@@ -251,8 +257,8 @@ fn remap_physical_schema(
     // JVM) so the O(physical x logical) name matching below compares pre-folded strings instead of
     // crossing into the JVM for every pair. Mirrors Spark's `caseInsensitiveParquetFieldMap`, which
     // groups file fields by their folded name a single time.
-    let logical_folded = fold_schema_names(logical_schema, case_sensitive);
-    let physical_folded = fold_schema_names(physical_schema, case_sensitive);
+    let logical_folded = fold_schema_names(logical_schema, case_sensitive)?;
+    let physical_folded = fold_schema_names(physical_schema, case_sensitive)?;
 
     // Folded names of ID-bearing logical fields whose ID is not present in the file. Any physical
     // field that shares one of these names must be renamed to something the
@@ -509,7 +515,7 @@ impl PhysicalExprAdapterFactory for SparkPhysicalExprAdapterFactory {
                 // the `folded_to_indices` map the nested convert builds in `parquet_support`, so
                 // both paths detect ambiguity the same way instead of drifting.
                 let original_physical_dup_check = if !case_sensitive {
-                    let folded = fold_schema_names(&physical_file_schema, false);
+                    let folded = fold_schema_names(&physical_file_schema, false)?;
                     let mut map: HashMap<String, Vec<usize>> = HashMap::new();
                     for (i, folded_name) in folded.into_iter().enumerate() {
                         map.entry(folded_name).or_default().push(i);
@@ -533,8 +539,8 @@ impl PhysicalExprAdapterFactory for SparkPhysicalExprAdapterFactory {
 
         // Fold both schemas once here so the per-column rewrite paths reuse them instead of
         // re-folding on every `rewrite` call. Case-sensitive mode folds to identity.
-        let logical_folded = fold_schema_names(&logical_file_schema, case_sensitive);
-        let physical_folded = fold_schema_names(&adapted_physical_schema, case_sensitive);
+        let logical_folded = fold_schema_names(&logical_file_schema, case_sensitive)?;
+        let physical_folded = fold_schema_names(&adapted_physical_schema, case_sensitive)?;
 
         // Folded names of logical fields that resolve by Parquet field id. Spark's `matchIdField`
         // selects these by id before comparing names, so the case-insensitive duplicate check must
@@ -636,7 +642,7 @@ impl PhysicalExprAdapter for SparkPhysicalExprAdapter {
                 Ok(Transformed::no(e))
             });
             let col_refs: Vec<&str> = col_names.iter().map(|s| s.as_str()).collect();
-            let col_folded = fold_names(&col_refs, false);
+            let col_folded = fold_names(&col_refs, false)?;
             for (name, folded) in col_names.iter().zip(&col_folded) {
                 // Fields resolved by Parquet field id are selected by id before names are
                 // compared, so an id-resolved column must not trip the name-ambiguity check
@@ -755,7 +761,7 @@ impl SparkPhysicalExprAdapter {
         expr.transform(|e| {
             if let Some(column) = e.downcast_ref::<Column>() {
                 let col_name = column.name();
-                let col_folded = fold_name(col_name, case_sensitive);
+                let col_folded = fold_name(col_name, case_sensitive)?;
 
                 // Resolve fields by name because this is the fallback path
                 // that runs on the original expression when the default
@@ -1111,7 +1117,7 @@ impl SparkPhysicalExprAdapter {
             // alongside `test::nested_struct_narrowing_cast_matches_datafusion_generic_cast`
             // for the Struct-pruning shape that always does route through
             // `nested_struct::cast_column`.
-            if is_pure_structural_narrowing(physical_type, target_type, &self.parquet_options) {
+            if is_pure_structural_narrowing(physical_type, target_type, &self.parquet_options)? {
                 // Not an assertion that `nested_struct::cast_column` specifically runs (it may
                 // not, see above), only that *some* DataFusion cast path can actually perform
                 // this pair, so a bug in the predicate surfaces here at plan time instead of
@@ -1176,7 +1182,8 @@ impl SparkPhysicalExprAdapter {
         Ok(Transformed::no(expr))
     }
 
-    /// Replace references to missing columns with default values.
+    /// Replace missing columns with defaults cast to the logical schema, propagating conversion
+    /// errors rather than retaining an unconverted value whose fields could not be matched.
     fn replace_missing_with_defaults(
         &self,
         expr: Arc<dyn PhysicalExpr>,
@@ -1192,45 +1199,33 @@ impl SparkPhysicalExprAdapter {
         // Build owned (column_name, default_value) pairs for columns missing from the physical file.
         // For each default: filter to only columns absent from physical schema, then type-cast
         // the value to match the logical schema's field type if they differ (using Spark cast semantics).
-        let case_sensitive = self.parquet_options.case_sensitive;
-        // Physical schema names were folded once in `create()`; reuse them here.
-        let physical_folded = &self.physical_folded;
-        let missing_column_defaults: Vec<(String, ScalarValue)> = defaults
-            .iter()
-            .filter_map(|(col, val)| {
-                let col_name = col.name();
-                let col_folded = fold_name(col_name, case_sensitive);
+        let mut missing_column_defaults = Vec::new();
+        for (col, val) in defaults {
+            let col_name = col.name();
+            let col_folded = fold_name(col_name, self.parquet_options.case_sensitive)?;
 
-                // Only include defaults for columns missing from the physical file schema
-                let is_missing = !physical_folded.iter().any(|f| f == &col_folded);
+            // Only include defaults for columns missing from the physical file schema.
+            if self.physical_folded.iter().any(|name| name == &col_folded) {
+                continue;
+            }
 
-                if !is_missing {
-                    return None;
+            let mut value = val.clone();
+            if let Some(field) = self
+                .logical_file_schema
+                .field_with_name(col_name)
+                .ok()
+                .filter(|field| val.data_type() != *field.data_type())
+            {
+                if let ColumnarValue::Scalar(converted) = spark_parquet_convert(
+                    ColumnarValue::Scalar(value.clone()),
+                    field.data_type(),
+                    &self.parquet_options,
+                )? {
+                    value = converted;
                 }
-
-                // Cast value to logical schema type if needed (only if types differ)
-                let value = self
-                    .logical_file_schema
-                    .field_with_name(col_name)
-                    .ok()
-                    .filter(|field| val.data_type() != *field.data_type())
-                    .and_then(|field| {
-                        spark_parquet_convert(
-                            ColumnarValue::Scalar(val.clone()),
-                            field.data_type(),
-                            &self.parquet_options,
-                        )
-                        .ok()
-                        .and_then(|cv| match cv {
-                            ColumnarValue::Scalar(s) => Some(s),
-                            _ => None,
-                        })
-                    })
-                    .unwrap_or_else(|| val.clone());
-
-                Some((col_name.to_string(), value))
-            })
-            .collect();
+            }
+            missing_column_defaults.push((col_name.to_string(), value));
+        }
 
         let name_based: HashMap<&str, &ScalarValue> = missing_column_defaults
             .iter()
@@ -1354,13 +1349,13 @@ mod test {
     };
     use arrow::array::UInt32Array;
     use arrow::array::{
-        BinaryArray, Date32Array, Decimal128Array, Float32Array, Float64Array, Int32Array,
-        Int64Array, StringArray, TimestampMicrosecondArray,
+        ArrayRef, BinaryArray, Date32Array, Decimal128Array, Float32Array, Float64Array,
+        Int32Array, Int64Array, StringArray, StructArray, TimestampMicrosecondArray,
     };
     use arrow::datatypes::SchemaRef;
     use arrow::datatypes::{DataType, Field, Fields, Schema};
     use arrow::record_batch::RecordBatch;
-    use datafusion::common::DataFusionError;
+    use datafusion::common::{DataFusionError, ScalarValue};
     use datafusion::datasource::listing::PartitionedFile;
     use datafusion::datasource::physical_plan::{FileGroup, FileScanConfigBuilder, ParquetSource};
     use datafusion::datasource::source::DataSourceExec;
@@ -2035,8 +2030,53 @@ mod test {
         );
     }
 
+    /// Errors while matching nested default fields must abort rewriting instead of inserting the
+    /// original, unconverted struct literal for a missing column.
+    #[test]
+    fn missing_struct_default_propagates_nested_conversion_error() -> Result<(), DataFusionError> {
+        let logical = Arc::new(Schema::new(vec![Field::new(
+            "missing",
+            DataType::Struct(vec![Field::new("résumé", DataType::Int32, true)].into()),
+            true,
+        )]));
+        let physical = Arc::new(Schema::new(vec![Field::new(
+            "present",
+            DataType::Int32,
+            true,
+        )]));
+        let default = ScalarValue::Struct(Arc::new(StructArray::try_new(
+            vec![
+                Field::new("RÉSUMÉ", DataType::Int32, true),
+                Field::new("résumé", DataType::Int32, true),
+            ]
+            .into(),
+            vec![
+                Arc::new(Int32Array::from(vec![10])) as ArrayRef,
+                Arc::new(Int32Array::from(vec![20])) as ArrayRef,
+            ],
+            None,
+        )?));
+        let defaults = HashMap::from([(Column::new("missing", 0), default)]);
+        let mut options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        options.case_sensitive = false;
+        let adapter = SparkPhysicalExprAdapterFactory::new(options, Some(defaults))
+            .create(logical, physical)?;
+
+        let error = adapter
+            .rewrite(Arc::new(Column::new("missing", 0)))
+            .expect_err("ambiguous nested defaults must not become literals");
+        let message = error.to_string();
+        assert!(
+            message.contains("Found duplicate field")
+                && message.contains("RÉSUMÉ")
+                && message.contains("résumé"),
+            "expected nested duplicate-field error, got: {message}"
+        );
+        Ok(())
+    }
+
     /// Crate-level check of the case-insensitive remap. Under `cargo test` there is no attached
-    /// JVM, so `fold_names` uses the ASCII fallback; ASCII casing still distinguishes match from
+    /// JVM, but ASCII names use the inline fast path; ASCII casing still distinguishes match from
     /// no-match, so this documents that `remap_physical_schema` renames the physical field to the
     /// logical name and records the reverse mapping.
     #[test]
@@ -2345,7 +2385,7 @@ mod test {
 
         let physical = struct_type(vec![("id", DataType::Int64), ("payload", DataType::Utf8)]);
         let target = struct_type(vec![("id", DataType::Int64)]);
-        assert!(is_pure_structural_narrowing(&physical, &target, &opts));
+        assert!(is_pure_structural_narrowing(&physical, &target, &opts).unwrap());
 
         let physical = list_type(struct_type(vec![
             ("id", DataType::Int64),
@@ -2358,7 +2398,7 @@ mod test {
             "inner",
             struct_type(vec![("a", DataType::Int64)]),
         )]));
-        assert!(is_pure_structural_narrowing(&physical, &target, &opts));
+        assert!(is_pure_structural_narrowing(&physical, &target, &opts).unwrap());
     }
 
     /// A target field with no exact-name match in the source (here, only a case-insensitive
@@ -2370,7 +2410,7 @@ mod test {
         let opts = default_options();
         let physical = struct_type(vec![("ID", DataType::Int64)]);
         let target = struct_type(vec![("id", DataType::Int64)]);
-        assert!(!is_pure_structural_narrowing(&physical, &target, &opts));
+        assert!(!is_pure_structural_narrowing(&physical, &target, &opts).unwrap());
     }
 
     #[test]
@@ -2394,7 +2434,7 @@ mod test {
                     let mut opts = default_options();
                     opts.case_sensitive = case_sensitive;
                     assert_eq!(
-                        is_pure_structural_narrowing(&physical, &target, &opts),
+                        is_pure_structural_narrowing(&physical, &target, &opts).unwrap(),
                         case_sensitive,
                         "{physical:?} -> {target:?}, case_sensitive={case_sensitive}"
                     );
@@ -2418,7 +2458,7 @@ mod test {
         let opts = default_options();
         let physical = struct_type(vec![("id", DataType::Int64)]);
         let target = struct_type(vec![("id", DataType::Int64), ("payload", DataType::Utf8)]);
-        assert!(!is_pure_structural_narrowing(&physical, &target, &opts));
+        assert!(!is_pure_structural_narrowing(&physical, &target, &opts).unwrap());
     }
 
     /// When `use_field_id` is set and the target struct carries Parquet field ids, Comet
@@ -2430,7 +2470,7 @@ mod test {
         opts.use_field_id = true;
         let physical = struct_type_with_field_id(vec![("id", DataType::Int64, 1)]);
         let target = struct_type_with_field_id(vec![("id", DataType::Int64, 1)]);
-        assert!(!is_pure_structural_narrowing(&physical, &target, &opts));
+        assert!(!is_pure_structural_narrowing(&physical, &target, &opts).unwrap());
     }
 
     /// Map value narrowing has no equivalent in `nested_struct::cast_column` (it has no Map
@@ -2449,7 +2489,7 @@ mod test {
         let target = physical.clone();
         // Even a no-op Map "narrowing" (target == physical) must not be routed through this
         // predicate; Map is excluded structurally, not by an equality shortcut.
-        assert!(!is_pure_structural_narrowing(&physical, &target, &opts));
+        assert!(!is_pure_structural_narrowing(&physical, &target, &opts).unwrap());
     }
 
     /// A leaf-level type change (timestamp tz relabeling, `nanosAsLong`, decimal promotion,
@@ -2461,7 +2501,7 @@ mod test {
         let opts = default_options();
         let physical = struct_type(vec![("id", DataType::Int32)]);
         let target = struct_type(vec![("id", DataType::Int64)]);
-        assert!(!is_pure_structural_narrowing(&physical, &target, &opts));
+        assert!(!is_pure_structural_narrowing(&physical, &target, &opts).unwrap());
     }
 
     /// NTZ -> LTZ timestamp relabeling (INT96 reads) is a metadata-only reinterpretation
@@ -2481,7 +2521,7 @@ mod test {
             "ts",
             DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
         )]);
-        assert!(!is_pure_structural_narrowing(&physical, &target, &opts));
+        assert!(!is_pure_structural_narrowing(&physical, &target, &opts).unwrap());
     }
 
     /// Dictionary-encoded columns get Comet's own dictionary-preserving or
@@ -2499,7 +2539,7 @@ mod test {
             "d",
             DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::LargeUtf8)),
         )]);
-        assert!(!is_pure_structural_narrowing(&physical, &target, &opts));
+        assert!(!is_pure_structural_narrowing(&physical, &target, &opts).unwrap());
     }
 
     /// Build a `SparkPhysicalExprAdapter` over a single "events" column and run the real
@@ -2583,7 +2623,7 @@ mod test {
         opts.use_field_id = true;
         let physical = struct_type(vec![("id", DataType::Int64), ("payload", DataType::Utf8)]);
         let target = struct_type(vec![("id", DataType::Int64)]);
-        assert!(is_pure_structural_narrowing(&physical, &target, &opts));
+        assert!(is_pure_structural_narrowing(&physical, &target, &opts).unwrap());
     }
 
     /// The field-id bail must apply at every nesting level it is reached, not just the
@@ -2601,7 +2641,7 @@ mod test {
             "outer",
             struct_type_with_field_id(vec![("id", DataType::Int64, 1)]),
         )]);
-        assert!(!is_pure_structural_narrowing(&physical, &target, &opts));
+        assert!(!is_pure_structural_narrowing(&physical, &target, &opts).unwrap());
     }
 
     /// A target struct with zero field-name overlap against the source is denied, distinct
@@ -2614,7 +2654,7 @@ mod test {
         let opts = default_options();
         let physical = struct_type(vec![("left", DataType::Int64)]);
         let target = struct_type(vec![("right", DataType::Int64)]);
-        assert!(!is_pure_structural_narrowing(&physical, &target, &opts));
+        assert!(!is_pure_structural_narrowing(&physical, &target, &opts).unwrap());
     }
 
     /// `case_sensitive = true` with an exact-case match must still be allowed: the predicate's
@@ -2626,7 +2666,7 @@ mod test {
         opts.case_sensitive = true;
         let physical = struct_type(vec![("id", DataType::Int64), ("payload", DataType::Utf8)]);
         let target = struct_type(vec![("id", DataType::Int64)]);
-        assert!(is_pure_structural_narrowing(&physical, &target, &opts));
+        assert!(is_pure_structural_narrowing(&physical, &target, &opts).unwrap());
     }
 
     /// `case_sensitive = true` with a case-differing name is denied, same as the
@@ -2641,6 +2681,6 @@ mod test {
         opts.case_sensitive = true;
         let physical = struct_type(vec![("ID", DataType::Int64)]);
         let target = struct_type(vec![("id", DataType::Int64)]);
-        assert!(!is_pure_structural_narrowing(&physical, &target, &opts));
+        assert!(!is_pure_structural_narrowing(&physical, &target, &opts).unwrap());
     }
 }

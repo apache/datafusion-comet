@@ -114,8 +114,8 @@ pub(crate) fn init_datasource_exec(
             // Fold the data and required field names once (the same JVM `toLowerCase(Locale.ROOT)`
             // fold the schema adapter uses), then match on the folded names so this plan-time
             // projection stays consistent with the adapter's case-insensitive remap.
-            let data_folded = fold_schema_names(schema, case_sensitive);
-            let required_folded = fold_schema_names(&required_schema, case_sensitive);
+            let data_folded = fold_schema_names(schema, case_sensitive)?;
+            let required_folded = fold_schema_names(&required_schema, case_sensitive)?;
             let projection: Vec<usize> = required_folded
                 .iter()
                 .filter_map(|req| data_folded.iter().position(|d| d == req))

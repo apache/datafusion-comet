@@ -377,7 +377,7 @@ fn parquet_convert_struct_to_struct(
             let mut all_names: Vec<&str> = Vec::with_capacity(from_fields.len() + to_fields.len());
             all_names.extend(from_fields.iter().map(|f| f.name().as_str()));
             all_names.extend(to_fields.iter().map(|f| f.name().as_str()));
-            let all_folded = fold_names(&all_names, parquet_options.case_sensitive);
+            let all_folded = fold_names(&all_names, parquet_options.case_sensitive)?;
             let (from_folded, to_folded) = all_folded.split_at(from_fields.len());
 
             // Group file field indices by folded name so a case-insensitive collision is detected
