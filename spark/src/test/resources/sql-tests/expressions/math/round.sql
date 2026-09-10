@@ -72,3 +72,18 @@ SELECT round(123.456, 2), round(2.5, 0), round(3.5, 0), round(-2.5, 0), round(NU
 
 query
 SELECT round(2.5D, 0), round(3.5D, 0), round(-2.5D, 0), round(2.5F, 0), round(-2.5F, 0)
+
+-- Legacy negative-scale overflow wraps rather than throwing or returning zero (#5070).
+statement
+CREATE TABLE test_round_long_overflow(l bigint) USING parquet
+
+statement
+INSERT INTO test_round_long_overflow VALUES
+ (-5000000000000000000L), (-4999999999999999999L), (0L),
+ (4999999999999999999L), (5000000000000000000L), (NULL)
+
+query
+SELECT l, round(l, -19), round(l, -20) FROM test_round_long_overflow
+
+query
+SELECT round(5000000000000000000L, -19), round(-5000000000000000000L, -19)

@@ -157,7 +157,7 @@ A write is eligible only when ALL of the following hold:
 | `write.parquet.bloom-filter-enabled.column.<col>`                                                                                           | unset or `false`                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | `write.metadata.metrics.*`                                                                                                                  | any value (manifest metrics are re-derived on the JVM with Iceberg's own logic)                                                                                                                                                                                                                                                                                                                                                                                                 |
 | `write.spark.fanout.enabled`                                                                                                                | any value (the native writer implements both clustered and fanout modes)                                                                                                                                                                                                                                                                                                                                                                                                        |
-| `write.target-file-size-bytes`                                                                                                              | any value (file rolling cadence differs; see accepted divergences)                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `write.target-file-size-bytes`                                                                                                              | any value (the two writers can choose different roll points; see accepted divergences)                                                                                                                                                                                                                                                                                                                                                                                          |
 | data location URI scheme                                                                                                                    | `file`, `memory`, `s3`, `s3a`, `gs`                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | partition spec                                                                                                                              | any                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | column types                                                                                                                                | any except `uuid` (Spark plans it as a string; no Arrow cast reaches `fixed(16)`)                                                                                                                                                                                                                                                                                                                                                                                               |
@@ -247,10 +247,30 @@ a data file but not what any reader computes from it:
 - Fixed-length binary columns (`uuid`, `fixed`, decimals with precision > 18) are not
   dictionary-encoded (parquet-mr dictionary-encodes them).
 - Row-group boundaries: parquet-mr flushes by byte size at a record-count check cadence,
-  parquet-rs buffers by row count. File rolling and file naming follow the same cadence-style
-  differences (iceberg-java checks the target file size every 1000 rows and names files
-  `<partition>-<task>-<operation>-<count>`; iceberg-rust checks per batch and uses a
+  parquet-rs buffers by row count. File naming follows the same cadence-style difference
+  (iceberg-java names files `<partition>-<task>-<operation>-<count>`; iceberg-rust uses a
   process-local counter).
+- Partition directory names match iceberg-java 1.8+'s `PartitionSpec.partitionToPath` for every
+  partition type except `float` and `double`, where the value is rendered with Rust's shortest
+  representation instead of `Float.toString` / `Double.toString` (`f=1` where iceberg-java writes
+  `f=1.0`). On Iceberg 1.5.x, which the Spark 3.4 profile pins, iceberg-java itself spelled
+  `timestamp` and `timestamptz` directories with `LocalDateTime.toString()` /
+  `OffsetDateTime.toString()` (`ts=1969-12-31T23:59:58.500Z`) and left the partition field name
+  unescaped; Comet uses the 1.8+ spelling on every profile. Distinct partition values still get
+  distinct directories in all cases, and no reader parses these names — files are resolved through
+  committed manifests. Iceberg deprecated float and double partitioning in 1.3.
+- File rolling lands on the same row grid as iceberg-java but not necessarily on the same row.
+  Both writers re-check the current file's size against `write.target-file-size-bytes` once
+  every 1000 rows of that file (iceberg-java's `RollingFileWriter.ROWS_DIVISOR`; Comet hands the
+  iceberg-rust writer rows in 1000-row units, per partition file, to get the same grid), so each
+  writer rolls only on a 1000-row boundary of its own file.
+  The shared grid is all that is shared. What each writer compares against the target differs —
+  flushed bytes plus parquet-rs's estimate of the open row group, versus parquet-mr's file
+  position plus its buffered size — and the two use different threshold comparisons. These are
+  independent size estimates, so nothing bounds how far apart the two writers' roll points are:
+  they may cross the target several grid steps apart, and the resulting files can differ in row
+  count by an arbitrary number of 1000-row blocks. Do not rely on file-layout parity between the
+  two writers; rely only on each file rolling on its own 1000-row boundary.
 - Compressed page bytes are implementation-defined: the codec and any explicit level are
   translated, but parquet-rs and parquet-mr embed different encoder implementations and
   defaults (zstd default levels, LZ4 framing), so byte-identical output is not achievable even
