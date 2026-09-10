@@ -107,7 +107,7 @@ The tables below list every Spark built-in expression with its current status.
 | `kurtosis` | 🔜 | — | Not yet implemented natively |
 | `last` | ✅ | Native |  |
 | `last_value` | ✅ | Native |  |
-| `listagg` | 🔜 | — | String aggregation |
+| `listagg` | ✅ | Native | Spark 4.0+. `StringType` input with a literal delimiter; `WITHIN GROUP (ORDER BY ...)` and `BinaryType` inputs fall back to Spark. Without `WITHIN GROUP`, concatenation order is the (non-deterministic) group arrival order, matching Spark. |
 | `max` | ✅ | Native |  |
 | `max_by` | 🔜 | — | [#3841](https://github.com/apache/datafusion-comet/issues/3841) |
 | `mean` | ✅ | Native |  |
@@ -133,7 +133,7 @@ The tables below list every Spark built-in expression with its current status.
 | `stddev` | ✅ | Native |  |
 | `stddev_pop` | ✅ | Native |  |
 | `stddev_samp` | ✅ | Native |  |
-| `string_agg` | 🔜 | — | String aggregation (alias of `listagg`) |
+| `string_agg` | ✅ | Native | Alias of `listagg`; same restrictions apply. |
 | `sum` | ✅ | Native |  |
 | `try_avg` | ✅ | — | Interval types fall back |
 | `try_sum` | ✅ | — |  |

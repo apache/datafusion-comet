@@ -20,13 +20,14 @@
 package org.apache.comet.shims
 
 import org.apache.spark.sql.catalyst.expressions._
+import org.apache.spark.sql.catalyst.expressions.aggregate.ListAgg
 import org.apache.spark.sql.catalyst.expressions.json.{JsonExpressionUtils, StructsToJsonEvaluator}
 import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
 import org.apache.spark.sql.catalyst.expressions.url.ParseUrlEvaluator
 
 import org.apache.comet.CometExplainInfo
 import org.apache.comet.expressions.CometEvalMode
-import org.apache.comet.serde.{CometExpressionSerde, CometMapSort, CometRandStr, CometToPrettyString, CometWidthBucket}
+import org.apache.comet.serde.{CometAggregateExpressionSerde, CometExpressionSerde, CometListAgg, CometMapSort, CometRandStr, CometToPrettyString, CometWidthBucket}
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde.exprToProtoInternal
 
@@ -48,6 +49,8 @@ trait Spark4xCometExprShim extends CometExprShim4x {
     Map(classOf[ToPrettyString] -> CometToPrettyString)
   def sparkVersionSpecificMapExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
     Map(classOf[MapSort] -> CometMapSort)
+  def sparkVersionSpecificAggregates: Map[Class[_], CometAggregateExpressionSerde[_]] =
+    Map(classOf[ListAgg] -> CometListAgg)
 
   def sparkVersionSpecificExprToProtoInternal(
       expr: Expression,

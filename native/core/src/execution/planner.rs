@@ -91,7 +91,7 @@ use datafusion::{
 use datafusion_comet_spark_expr::{
     create_comet_physical_fun, create_comet_physical_fun_with_eval_mode, BinaryOutputStyle,
     BloomFilterAgg, BloomFilterMightContain, CsvWriteOptions, EvalMode, SparkArraysZipFunc,
-    SparkBloomFilterVersion, SparkPercentile, SumInteger, ToCsv,
+    SparkBloomFilterVersion, SparkListAgg, SparkPercentile, SumInteger, ToCsv,
 };
 use datafusion_spark::function::aggregate::collect::{SparkCollectList, SparkCollectSet};
 use iceberg::expr::Bind;
@@ -3185,6 +3185,13 @@ impl PhysicalPlanner {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
                 let func = AggregateUDF::new_from_impl(HllPlusPlus::new(expr.precision));
                 Self::create_aggr_func_expr("approx_count_distinct", schema, vec![child], func)
+            }
+            AggExprStruct::ListAgg(expr) => {
+                let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
+                let delimiter =
+                    self.create_expr(expr.delimiter.as_ref().unwrap(), Arc::clone(&schema))?;
+                let func = AggregateUDF::new_from_impl(SparkListAgg::new());
+                Self::create_aggr_func_expr("listagg", schema, vec![child, delimiter], func)
             }
         }
     }
