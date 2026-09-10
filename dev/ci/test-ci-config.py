@@ -145,5 +145,67 @@ class SharedNativeArtifactTest(unittest.TestCase):
         self.assert_rejected("qualify the name with an input")
 
 
+    def test_independent_checks_cannot_wait_for_native(self):
+        path = self.workflows / "ci.yml"
+        text = path.read_text(encoding="utf-8")
+        start = text.index("\n  pr_build_linux_checks:\n")
+        before, body = text[:start], text[start:]
+        self.assertIn("needs: changes", body)
+        path.write_text(before + body.replace("needs: changes",
+                        "needs: [changes, build_linux_native]", 1), encoding="utf-8")
+        self.assert_rejected("pr_build_linux_checks must need only changes")
+
+    def test_missing_independent_checks_call_is_rejected(self):
+        self.replace("ci.yml", "uses: ./.github/workflows/pr_build_linux_checks.yml",
+                     "uses: ./.github/workflows/pr_build_linux.yml")
+        self.assert_rejected("pr_build_linux_checks must call")
+
+    def test_missing_independent_checks_workflow_is_rejected(self):
+        (self.workflows / CHECK.LINUX_CHECKS_WORKFLOW).unlink()
+        self.assert_rejected("independent Linux checks workflow is missing")
+
+    def test_independent_checks_keep_linux_selection(self):
+        path = self.workflows / "ci.yml"
+        text = path.read_text(encoding="utf-8")
+        start = text.index("\n  pr_build_linux_checks:\n")
+        before, body = text[:start], text[start:]
+        body = body.replace("needs.changes.outputs.build_linux == 'true'",
+                            "needs.changes.outputs.build_linux == 'false'", 1)
+        path.write_text(before + body, encoding="utf-8")
+        self.assert_rejected("pr_build_linux_checks must use the Linux test selection condition")
+
+    def test_each_independent_job_must_remain_available(self):
+        path = self.workflows / CHECK.LINUX_CHECKS_WORKFLOW
+        original = path.read_text(encoding="utf-8")
+        for job_id in sorted(CHECK.INDEPENDENT_LINUX_JOBS):
+            with self.subTest(job=job_id):
+                self.assertIn(f"\n  {job_id}:\n", original)
+                path.write_text(original.replace(f"\n  {job_id}:\n",
+                                f"\n  missing-{job_id}:\n", 1), encoding="utf-8")
+                self.assert_rejected(f"independent jobs are missing: {job_id}")
+        path.write_text(original, encoding="utf-8")
+
+    def test_independent_job_cannot_return_to_native_consumer(self):
+        path = self.workflows / "pr_build_linux.yml"
+        with path.open("a", encoding="utf-8") as stream:
+            stream.write("\n  linux-test-rust:\n    runs-on: ubuntu-24.04\n"
+                         "    steps:\n      - run: true\n")
+        self.assert_rejected("independent jobs must stay in pr_build_linux_checks.yml")
+
+    def test_independent_checks_cannot_require_native_artifact_input(self):
+        self.replace(CHECK.LINUX_CHECKS_WORKFLOW, "  workflow_call:\n",
+                     "  workflow_call:\n    inputs:\n      native-library-artifact:\n"
+                     "        required: true\n        type: string\n")
+        self.assert_rejected("independent Linux checks must not consume the shared native artifact")
+
+    def test_independent_checks_cannot_download_native_artifact(self):
+        path = self.workflows / CHECK.LINUX_CHECKS_WORKFLOW
+        with path.open("a", encoding="utf-8") as stream:
+            stream.write("\n      - uses: actions/download-artifact@v8\n"
+                         "        with:\n          name: native-lib-linux\n"
+                         "          path: native/target/release/\n")
+        self.assert_rejected("independent Linux checks must not consume the shared native artifact")
+
+
 if __name__ == "__main__":
     unittest.main()
