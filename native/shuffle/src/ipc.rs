@@ -40,19 +40,14 @@ pub fn read_ipc_compressed_validated(bytes: &[u8]) -> Result<RecordBatch> {
 /// Arrow IPC continuation marker introducing a message length.
 const CONTINUATION_MARKER: [u8; 4] = [0xff, 0xff, 0xff, 0xff];
 
-/// Distinct schemas cached per thread.
-///
-/// One is enough for a single shuffle, but a reduce task can interleave blocks from more than one
-/// shuffle (a join reading both of its sides, say), and a size-one cache would thrash between
-/// them. The cache is keyed on the raw schema message rather than a parsed schema, so a hit costs
-/// one memcmp.
+/// Distinct schemas cached per thread. More than one because a reduce task can interleave blocks
+/// from several shuffles. Keyed on the raw schema message, so a hit costs one memcmp.
 const SCHEMA_CACHE_CAPACITY: usize = 4;
 
 thread_local! {
     static SCHEMA_CACHE: RefCell<Vec<(Box<[u8]>, SchemaRef)>> =
         const { RefCell::new(Vec::new()) };
-    /// Empty dictionary map handed to the fast path, which only runs for blocks that carry no
-    /// dictionary messages.
+    /// Empty dictionary map; the fast path only runs for blocks with no dictionary messages.
     static NO_DICTIONARIES: HashMap<i64, ArrayRef> = HashMap::new();
 }
 
@@ -62,7 +57,7 @@ fn cached_schema(schema_message: &[u8]) -> Option<SchemaRef> {
         let hit = cache
             .iter()
             .position(|(message, _)| message.as_ref() == schema_message)?;
-        // Keep the most recently used entry first so an alternating pair stays resident.
+        // most recently used first, so an alternating pair stays resident
         if hit != 0 {
             cache.swap(0, hit);
         }
@@ -86,10 +81,8 @@ fn cache_schema(schema_message: &[u8], schema: SchemaRef) {
     });
 }
 
-/// Empties this thread's schema cache, so the next decode re-parses its schema.
-///
-/// Exists so benchmarks can measure the cached and uncached decode paths against each other in a
-/// single run, where machine drift affects both equally. Not part of the decode contract.
+/// Empties this thread's schema cache, so the next decode re-parses its schema. For benchmarks
+/// comparing the cached and uncached paths; not part of the decode contract.
 #[doc(hidden)]
 pub fn reset_schema_cache() {
     SCHEMA_CACHE.with(|cache| cache.borrow_mut().clear());
@@ -105,17 +98,14 @@ struct IpcMessage<'a> {
     end: usize,
 }
 
-/// Reads the message starting at `offset`, or `None` at a clean end of stream (an explicit
-/// end-of-stream marker, or running out of bytes exactly on a message boundary).
-///
-/// Returns `Ok(None)` only for a well-formed end; anything truncated or inconsistent is an error,
-/// so a corrupt block cannot be mistaken for a short one.
+/// Reads the message at `offset`. `Ok(None)` at a well-formed end, an end-of-stream marker or a
+/// clean message boundary; anything truncated or inconsistent is an error.
 fn read_message(block: &[u8], offset: usize) -> Result<Option<IpcMessage<'_>>> {
     fn corrupt(what: &str) -> DataFusionError {
         DataFusionError::Execution(format!("Failed to decode batch: {what}"))
     }
 
-    // Ending exactly on a message boundary is the legacy stream ending, which is valid.
+    // ending on a message boundary is the legacy stream ending, and is valid
     if offset == block.len() {
         return Ok(None);
     }
@@ -171,10 +161,8 @@ fn read_message(block: &[u8], offset: usize) -> Result<Option<IpcMessage<'_>>> {
     }))
 }
 
-/// Confirms nothing follows the record batch but a well-formed end of stream.
-///
-/// `read_message` reports both an end-of-stream marker and a clean boundary as "no more
-/// messages", which on its own would let trailing bytes after the marker pass unnoticed.
+/// Confirms nothing follows the record batch but a well-formed end of stream. `read_message`
+/// alone would not catch trailing bytes after an end-of-stream marker.
 fn expect_end_of_stream(block: &[u8], offset: usize) -> Result<()> {
     let trailing = || {
         DataFusionError::Execution(
@@ -206,12 +194,8 @@ fn expect_end_of_stream(block: &[u8], offset: usize) -> Result<()> {
     Ok(())
 }
 
-/// Decodes a block whose schema is already known, avoiding a second parse of the schema
-/// flatbuffer.
-///
-/// Returns `Ok(None)` when the block is not the simple `[schema][record batch][end]` shape the
-/// fast path handles - a dictionary message, more than one record batch, or anything unexpected -
-/// so the caller can fall back to the general decoder rather than this reimplementing its rules.
+/// Decodes a block whose schema is already known. `Ok(None)` if the block is not the simple
+/// `[schema][record batch][end]` shape, leaving it to the general decoder.
 fn decode_with_known_schema(
     block: &Buffer,
     schema: SchemaRef,
@@ -239,7 +223,7 @@ fn decode_with_known_schema(
         let decoder = if validate {
             decoder
         } else {
-            // Matches the trusted-local fast path taken by the general decoder below.
+            // matches the trusted-local path the general decoder takes
             let mut flag = arrow_data::UnsafeFlag::new();
             unsafe { flag.set(true) };
             decoder.with_skip_validation(flag)
@@ -250,15 +234,13 @@ fn decode_with_known_schema(
     Ok(Some(batch))
 }
 
-/// Decodes one decompressed block, reusing a cached schema when the block's schema message has
-/// been seen before on this thread.
+/// Decodes one decompressed block, reusing a cached schema when its schema message is known.
 fn decode_block(block: Buffer, validate: bool) -> Result<RecordBatch> {
     if let Some(batch) = try_decode_with_cached_schema(&block, validate) {
         return Ok(batch);
     }
 
-    // General path: unchanged behaviour, and the only path that parses a schema. Its parsed
-    // schema is cached so later blocks carrying the same schema message take the fast path.
+    // general path: the only one that parses a schema, and it caches what it parsed
     let (batch, schema, schema_message) = read_single_batch_cached(block.as_slice(), validate)?;
     if let Some(schema_message) = schema_message {
         cache_schema(schema_message, schema);
@@ -268,10 +250,8 @@ fn decode_block(block: Buffer, validate: bool) -> Result<RecordBatch> {
 
 /// Decodes a block against an already-parsed schema, or `None` if it cannot.
 ///
-/// This never reports an error of its own. Anything it does not handle - a cache miss, a
-/// dictionary message, more than one record batch, trailing bytes, or a block that fails to
-/// decode - yields `None` so the general decoder runs instead. Validation behaviour and every
-/// error message therefore stay exactly as they were, and the fast path is always safe to skip.
+/// Never reports an error of its own: anything it does not handle yields `None` and the general
+/// decoder runs instead, so validation and error messages are unchanged.
 fn try_decode_with_cached_schema(block: &Buffer, validate: bool) -> Option<RecordBatch> {
     let bytes = block.as_slice();
 
@@ -285,8 +265,7 @@ fn try_decode_with_cached_schema(block: &Buffer, validate: bool) -> Option<Recor
 
     let schema = cached_schema(schema_message.metadata)?;
 
-    // The record batch must be the message right after the schema, with nothing but an end of
-    // stream behind it. A dictionary message lands here instead and takes the general path.
+    // the record batch must follow the schema directly; a dictionary message lands here instead
     let batch_message = read_message(bytes, schema_message.end).ok()??;
     expect_end_of_stream(bytes, batch_message.end).ok()?;
 
@@ -298,9 +277,7 @@ fn read_ipc_compressed_impl(bytes: &[u8], validate: bool) -> Result<RecordBatch>
         DataFusionError::Execution("Failed to decode batch: truncated compression codec".to_owned())
     })?;
     let mut encoded = &bytes[4..];
-    // The block is materialized before decoding so its messages can be walked in place. The
-    // decoded arrays borrow this buffer, so it is the same allocation the general decoder would
-    // have made for the record batch body rather than an extra copy.
+    // materialized so messages can be walked in place; the decoded arrays borrow this buffer
     let block = match codec {
         b"SNAP" => decompress(snap::read::FrameDecoder::new(&mut encoded))?,
         b"LZ4_" => decompress(lz4_flex::frame::FrameDecoder::new(RequireLz4EndMark(
@@ -358,10 +335,8 @@ impl<R: Read> Read for RequireLz4EndMark<R> {
     }
 }
 
-/// General decoder: the original `StreamReader` path, over the decoded block.
-///
-/// Also returns the parsed schema and the raw schema message it came from, so the caller can
-/// cache them and let later blocks with the same schema skip this parse.
+/// General decoder: the original `StreamReader` path. Also returns the parsed schema and the raw
+/// schema message it came from, for the caller to cache.
 fn read_single_batch_cached(
     block: &[u8],
     validate: bool,
@@ -394,7 +369,7 @@ fn read_single_batch_cached(
         ));
     }
 
-    // Only cache a leading schema message; anything else is not a key the fast path can match.
+    // only a leading schema message is a key the fast path can match
     let schema_message = read_message(block, 0)?.and_then(|message| {
         let is_schema = root_as_message(message.metadata)
             .map(|parsed| parsed.header_type() == MessageHeader::Schema)
@@ -454,8 +429,7 @@ mod tests {
         bytes
     }
 
-    /// Encodes one batch the way a Comet shuffle block carries it, without the outer 16-byte
-    /// Comet header that `read_ipc_compressed` does not see.
+    /// One encoded block, without the 16-byte Comet header.
     fn block_for(batch: &RecordBatch, codec: &[u8; 4]) -> Vec<u8> {
         let mut payload = Vec::new();
         let mut writer = StreamWriter::try_new(&mut payload, batch.schema_ref()).unwrap();
@@ -497,8 +471,7 @@ mod tests {
         RecordBatch::try_new(schema, vec![Arc::new(dictionary)]).unwrap()
     }
 
-    /// The second decode of a block reuses the cached schema. It has to produce exactly what the
-    /// first one did, on every codec and on both the trusted and validated entry points.
+    /// A warm decode must equal a cold one, on every codec and both entry points.
     #[test]
     #[cfg_attr(miri, ignore)] // Miri cannot call Zstd's C FFI.
     fn cached_schema_decode_matches_the_first_decode() {
@@ -521,8 +494,7 @@ mod tests {
         }
     }
 
-    /// A dictionary-carrying block never takes the fast path, but must still decode correctly
-    /// once its schema is cached by an earlier block.
+    /// A dictionary block never takes the fast path, but must decode with a warm cache.
     #[test]
     #[cfg_attr(miri, ignore)] // Miri cannot call Zstd's C FFI.
     fn dictionary_blocks_keep_decoding_with_a_warm_cache() {
@@ -533,8 +505,7 @@ mod tests {
         }
     }
 
-    /// Trailing bytes after the end-of-stream marker must stay an error once the schema is
-    /// cached. A fast path that treated "no further message" as "clean end" would accept them.
+    /// Trailing bytes after the end-of-stream marker must stay an error with a warm cache.
     #[test]
     #[cfg_attr(miri, ignore)] // Miri cannot call Zstd's C FFI.
     fn trailing_data_still_fails_with_a_warm_cache() {
@@ -544,7 +515,7 @@ mod tests {
         writer.write(&batch).unwrap();
         writer.finish().unwrap();
 
-        // Warm the cache with the well-formed block first.
+        // warm the cache with the well-formed block first
         let good = encode(b"NONE", &payload);
         assert_eq!(read_ipc_compressed(&good).unwrap(), batch);
 
@@ -557,24 +528,23 @@ mod tests {
         );
     }
 
-    /// A block truncated inside its record batch body must fail whether or not its schema is
-    /// already cached. Dropping only the end-of-stream marker is not truncation: a stream ending
-    /// on a message boundary is valid, and both paths accept it.
+    /// A block truncated inside its body must fail cold and warm. Dropping only the
+    /// end-of-stream marker is not truncation: a stream ending on a message boundary is valid.
     #[test]
     #[cfg_attr(miri, ignore)] // Miri cannot call Zstd's C FFI.
     fn truncated_block_fails_with_a_warm_cache() {
         let batch = mixed_batch();
         let block = block_for(&batch, b"NONE");
 
-        // Cold, before anything is cached.
+        // cold, before anything is cached
         let cut_into_body = &block[..block.len() - 24];
         assert!(read_ipc_compressed(cut_into_body).is_err());
 
-        // Warm the cache, then the same truncation must still fail.
+        // warm, and the same truncation must still fail
         assert_eq!(read_ipc_compressed(&block).unwrap(), batch);
         assert!(read_ipc_compressed(cut_into_body).is_err());
 
-        // Dropping just the end-of-stream marker stays valid, as it was before.
+        // dropping just the end-of-stream marker stays valid
         assert_eq!(
             read_ipc_compressed(&block[..block.len() - 8]).unwrap(),
             batch
