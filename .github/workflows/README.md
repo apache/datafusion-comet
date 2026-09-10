@@ -141,6 +141,28 @@ tiers partition the list and that the `pr` tier is exactly the default profile.
     docs.yaml                  pyarrow_udf_test.yml
 ```
 
+`build_linux_native.yml` builds the default Linux `libcomet.so` once per run
+with JDK 17, the Cargo `ci` profile, and the existing x86-64-v3/bfd flags.
+Every selected Linux, Spark SQL, and Iceberg caller waits for that producer
+and receives `native-lib-linux` through its required `native-library-artifact`
+input. Consumers keep their own Spark/JDK versions and download the library
+into `native/target/release/`, where Maven expects it. Spark still pre-compiles
+and shares its JVM test classes separately for each Spark/JDK version.
+
+The producer's condition is the union of those callers' existing path and
+event/label conditions. A Spark-patch-only change therefore gets a native
+build when its Spark caller is selected, even if the Linux build is not.
+Documentation-only changes, benchmark-only changes, and unrelated label
+events do not start an unused native build. The event-selection regression
+test checks that the producer and its consumers stay in agreement.
+
+The Linux reusable workflow, including its lint and Rust debug-test jobs,
+now starts after the shared native build. Rust formatting also runs in the
+producer before compilation so formatting failures still stop that build
+early. Rust debug tests, macOS, and feature-specific workflows continue to
+build their own binaries. The shared producer is the only writer of the
+Linux CI-profile Cargo cache, and only writes on `main`.
+
 ## What runs when
 
 | Job in `ci.yml`      | Triggered by                                                                                                                                                                                                                                           | Routing rule                        |
@@ -263,6 +285,7 @@ umbrella doesn't watch, or operate independently of the rest of CI:
 
 | File                              | Called from `ci.yml` job(s)                                  |
 | --------------------------------- | ------------------------------------------------------------ |
+| `build_linux_native.yml`          | `build_linux_native`                                         |
 | `pr_build_linux.yml`              | `pr_build_linux`                                             |
 | `pr_build_macos.yml`              | `pr_build_macos`                                             |
 | `pr_benchmark_check.yml`          | `pr_benchmark_check`                                         |
@@ -320,22 +343,24 @@ a routing table in `dev/ci/check-ci-config.py`, which `preflight` runs.
 ## Artifact names must be unique per producer
 
 Artifact names are scoped to the workflow **run**, not to the calling
-workflow. `ci.yml` calls `spark_sql_test_reusable.yml` once per Spark
-version and `iceberg_spark_test_reusable.yml` once per Iceberg version, all
-inside the same run, so an unqualified name like `native-lib-linux` would be
-claimed by several producers at once. That breaks two things:
+workflow. `build_linux_native.yml` is called exactly once and is the sole
+producer of `native-lib-linux`. Its consumers declare a required
+`native-library-artifact` input; `ci.yml` passes that name and makes every
+consumer depend on the shared producer. They download the existing artifact
+without publishing copies under version-specific names.
 
-- `download-artifact` resolves a name to the highest matching artifact ID.
-  Nothing ties it to the producer the consumer declared in `needs`.
-- `upload-artifact` with `overwrite: true` deletes the newest record with
-  that name before uploading, which can be a sibling's finished artifact.
-  The retry wrapper below forces `overwrite` on attempts 2 and 3.
+Artifacts with multiple producers still carry their version inputs. For
+example, `spark_sql_test_reusable.yml` publishes
+`jvm-compiled-spark-${{ inputs.spark-full }}-jdk${{ inputs.java }}` because
+each Spark version has different compiled classes. Publishing two artifacts
+under the same name can make a download select a sibling's artifact and let
+an upload retry overwrite that sibling's output.
 
-So every artifact published by a reusable workflow that `ci.yml` calls more
-than once carries its version inputs, e.g.
-`native-lib-spark-4.1.3-jdk17`. `dev/ci/check-ci-config.py` enforces this,
-and also that every `download-artifact` name is produced by an upload in the
-same workflow.
+`dev/ci/check-ci-config.py` verifies both contracts: local uploads and
+downloads must match, and shared native-library consumers must be wired to
+the one declared producer. Artifact retention remains one day; a failed-job
+rerun can reuse a successful producer's artifact during that retention
+window. If it has expired, rerun the full workflow to rebuild it.
 
 ## Retrying flaky network operations
 

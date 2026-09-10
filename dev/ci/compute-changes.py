@@ -40,6 +40,7 @@ from pathlib import Path
 
 FILTERS = {
     "build_linux": [
+        ".github/workflows/build_linux_native.yml",
         "native/**",
         "common/**",
         "spark/**",
@@ -179,6 +180,7 @@ FILTERS = {
         "spark/src/main/spark-*/**",
     ],
     "spark_3_4": [
+        ".github/workflows/build_linux_native.yml",
         "native/**/src/**",
         "native/**/Cargo.toml",
         "native/Cargo.lock",
@@ -206,6 +208,7 @@ FILTERS = {
         "mvnw",
     ],
     "spark_3_5": [
+        ".github/workflows/build_linux_native.yml",
         "native/**/src/**",
         "native/**/Cargo.toml",
         "native/Cargo.lock",
@@ -233,6 +236,7 @@ FILTERS = {
         "mvnw",
     ],
     "spark_4_0": [
+        ".github/workflows/build_linux_native.yml",
         "native/**/src/**",
         "native/**/Cargo.toml",
         "native/Cargo.lock",
@@ -260,6 +264,7 @@ FILTERS = {
         "mvnw",
     ],
     "spark_4_1": [
+        ".github/workflows/build_linux_native.yml",
         "native/**/src/**",
         "native/**/Cargo.toml",
         "native/Cargo.lock",
@@ -292,6 +297,7 @@ FILTERS = {
     # input. Populated below, after the dict, so the two lists cannot drift.
     "spark_4_1_hive": [],
     "iceberg_1_8": [
+        ".github/workflows/build_linux_native.yml",
         "native/**/src/**",
         "native/**/Cargo.toml",
         "native/Cargo.lock",
@@ -316,6 +322,7 @@ FILTERS = {
         "mvnw",
     ],
     "iceberg_1_9": [
+        ".github/workflows/build_linux_native.yml",
         "native/**/src/**",
         "native/**/Cargo.toml",
         "native/Cargo.lock",
@@ -340,6 +347,7 @@ FILTERS = {
         "mvnw",
     ],
     "iceberg_1_10": [
+        ".github/workflows/build_linux_native.yml",
         "native/**/src/**",
         "native/**/Cargo.toml",
         "native/Cargo.lock",
@@ -364,6 +372,7 @@ FILTERS = {
         "mvnw",
     ],
     "iceberg_1_11": [
+        ".github/workflows/build_linux_native.yml",
         "native/**/src/**",
         "native/**/Cargo.toml",
         "native/Cargo.lock",
