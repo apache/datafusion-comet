@@ -448,13 +448,27 @@ abstract class CometTestBase
   protected def checkSparkError(
       df: DataFrame,
       errorClass: String): SparkThrowable with Throwable = {
+    val actual = checkSparkErrorParity(df, Some(errorClass))
+    assert(actual.getErrorClass == errorClass)
+    actual
+  }
+
+  /**
+   * Checks native execution and that both engines fail with the same exception type, error class
+   * and SQLSTATE. Use this rather than `checkSparkError` for an error Spark still reports through
+   * a `_LEGACY_ERROR_TEMP_*` condition, whose number moves between Spark versions.
+   */
+  protected def checkSparkErrorParity(
+      df: DataFrame,
+      errorClass: Option[String] = None): SparkThrowable with Throwable = {
     checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
     val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
 
     def structuredError(
         error: Option[Throwable],
         engine: String): SparkThrowable with Throwable = {
-      val failure = error.getOrElse(fail(s"$engine did not fail with $errorClass"))
+      val expectation = errorClass.map(c => s" with $c").getOrElse("")
+      val failure = error.getOrElse(fail(s"$engine did not fail$expectation"))
       val chain = causeChain(failure)
       assert(!chain.exists(_.isInstanceOf[CometNativeException]), s"$engine: $failure")
       chain.collect { case e: SparkThrowable with Throwable => e }.lastOption.getOrElse {
@@ -464,9 +478,9 @@ abstract class CometTestBase
 
     val expected = structuredError(sparkError, "Spark")
     val actual = structuredError(cometError, "Comet")
-    assert(expected.getErrorClass == errorClass)
+    errorClass.foreach(c => assert(expected.getErrorClass == c))
     assert(actual.getClass == expected.getClass)
-    assert(actual.getErrorClass == errorClass)
+    assert(actual.getErrorClass == expected.getErrorClass)
     assert(actual.getSqlState == expected.getSqlState)
     actual
   }

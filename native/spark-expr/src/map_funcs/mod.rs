@@ -15,5 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+mod map_builders;
 mod map_sort;
+pub use map_builders::{SparkMapFromArrays, SparkMapFromEntries, SparkStrToMap};
 pub use map_sort::spark_map_sort;

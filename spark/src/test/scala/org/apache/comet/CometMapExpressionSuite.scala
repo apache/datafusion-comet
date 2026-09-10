@@ -126,6 +126,95 @@ class CometMapExpressionSuite extends CometTestBase {
     }
   }
 
+  // Spark builds both `map_from_arrays` and `map_from_entries` through `ArrayBasedMapBuilder`,
+  // which rejects a NULL key outright and resolves duplicate keys by
+  // `spark.sql.mapKeyDedupPolicy`. Comet forwards that policy to the native builders as
+  // `datafusion.spark.map_key_dedup_policy`, so both engines must agree on the answer and on the
+  // error. Each query reads a column so constant folding cannot evaluate it on the driver, which
+  // would take the native builders out of the picture.
+  // https://github.com/apache/datafusion-comet/issues/4680
+  private def withMapBuilderTable(f: String => Unit): Unit = {
+    val table = "map_builder_input"
+    withTable(table) {
+      sql(s"CREATE TABLE $table(k INT, v STRING) USING parquet")
+      sql(s"INSERT INTO $table VALUES (1, 'a'), (2, 'b'), (3, 'c')")
+      f(table)
+    }
+  }
+
+  test("map_from_arrays - null key is rejected") {
+    withMapBuilderTable { table =>
+      val exception = checkSparkError(
+        sql(s"SELECT map_from_arrays(array(k, CAST(NULL AS INT)), array(v, v)) FROM $table"),
+        "NULL_MAP_KEY")
+      assert(exception.getMessage.contains("Cannot use null as map key"))
+    }
+  }
+
+  test("map_from_arrays - a null input array gives a null map") {
+    withMapBuilderTable { table =>
+      checkSparkAnswerAndOperator(
+        sql(s"""SELECT map_from_arrays(CASE WHEN k > 1 THEN array(k) END, array(v)),
+               |       map_from_arrays(array(k), CASE WHEN k > 2 THEN array(v) END)
+               |FROM $table""".stripMargin))
+    }
+  }
+
+  test("map_from_arrays - key and value arrays of different lengths are rejected") {
+    withMapBuilderTable { table =>
+      // Spark reports this through a `_LEGACY_ERROR_TEMP_*` condition whose number moves between
+      // Spark versions, so hold the two engines to each other rather than naming the condition.
+      checkSparkErrorParity(sql(s"SELECT map_from_arrays(array(k, k + 1), array(v)) FROM $table"))
+    }
+  }
+
+  test("map_from_arrays - duplicate key follows spark.sql.mapKeyDedupPolicy") {
+    withMapBuilderTable { table =>
+      val query = s"SELECT map_from_arrays(array(k, k), array(v, concat(v, 'x'))) FROM $table"
+      withSQLConf(SQLConf.MAP_KEY_DEDUP_POLICY.key -> "EXCEPTION") {
+        // One row, so both engines name the same offending key.
+        val exception = checkSparkError(sql(s"$query WHERE k = 2"), "DUPLICATED_MAP_KEY")
+        assert(exception.getMessage.contains("Duplicate map key 2 was found"))
+      }
+      withSQLConf(SQLConf.MAP_KEY_DEDUP_POLICY.key -> "LAST_WIN") {
+        checkSparkAnswerAndOperator(sql(query))
+      }
+    }
+  }
+
+  test("map_from_entries - null key is rejected") {
+    withMapBuilderTable { table =>
+      val exception = checkSparkError(
+        sql(s"SELECT map_from_entries(array(struct(CAST(NULL AS INT), v))) FROM $table"),
+        "NULL_MAP_KEY")
+      assert(exception.getMessage.contains("Cannot use null as map key"))
+    }
+  }
+
+  test("map_from_entries - a null entry gives a null map") {
+    withMapBuilderTable { table =>
+      checkSparkAnswerAndOperator(
+        sql(s"""SELECT map_from_entries(array(CASE WHEN k > 1 THEN struct(k, v) END))
+               |FROM $table""".stripMargin))
+    }
+  }
+
+  test("map_from_entries - duplicate key follows spark.sql.mapKeyDedupPolicy") {
+    withMapBuilderTable { table =>
+      // `struct` names a column argument after the column, so both entries need explicit field
+      // names for `array` to see one struct type.
+      val query = "SELECT map_from_entries(array(struct(k AS key, v AS value), " +
+        s"struct(k AS key, concat(v, 'x') AS value))) FROM $table"
+      withSQLConf(SQLConf.MAP_KEY_DEDUP_POLICY.key -> "EXCEPTION") {
+        val exception = checkSparkError(sql(s"$query WHERE k = 2"), "DUPLICATED_MAP_KEY")
+        assert(exception.getMessage.contains("Duplicate map key 2 was found"))
+      }
+      withSQLConf(SQLConf.MAP_KEY_DEDUP_POLICY.key -> "LAST_WIN") {
+        checkSparkAnswerAndOperator(sql(query))
+      }
+    }
+  }
+
   test("size with map input") {
     withTempDir { dir =>
       withTempView("t1") {

@@ -59,3 +59,22 @@ SELECT map_from_arrays(array('a'), NULL)
 
 query
 SELECT map_from_arrays(NULL, NULL)
+
+-- Spark's ArrayBasedMapBuilder rejects a NULL key element outright, ahead of the duplicate-key
+-- check, and resolves duplicates by the default `spark.sql.mapKeyDedupPolicy` = `EXCEPTION`.
+-- `map_from_arrays_dedup_policy.sql` covers `LAST_WIN`.
+
+query expect_error(NULL_MAP_KEY)
+SELECT map_from_arrays(array('a', NULL), array(1, 2))
+
+-- a NULL key is reported as such even when it repeats, which a duplicate check would see first
+query expect_error(NULL_MAP_KEY)
+SELECT map_from_arrays(array(CAST(NULL AS STRING), NULL), array(1, 2))
+
+query expect_error(DUPLICATED_MAP_KEY)
+SELECT map_from_arrays(array('a', 'a'), array(1, 2))
+
+-- key and value arrays of different lengths. Spark reports this through a `_LEGACY_ERROR_TEMP_*`
+-- condition whose number moves between Spark versions, so match on the message instead.
+query expect_error(must have the same length)
+SELECT map_from_arrays(array('a', 'b'), array(1))
