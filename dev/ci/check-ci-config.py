@@ -15,14 +15,20 @@
 # specific language governing permissions and limitations
 # under the License.
 
-# Guards two CI invariants that are silent when broken:
+# Guards three CI invariants that are silent when broken:
 #
 #   1. Change-filter routing. dev/ci/compute-changes.py decides which heavy
 #      jobs run. A file that a job depends on but that no filter lists makes
 #      that job skip, so the edit merges with only preflight having looked at
 #      it. The table below pins the routing for the shared build inputs.
 #
-#   2. Artifact-name uniqueness. Artifact names are scoped to the *run*, not
+#   2. Event policy. The same script decides which events may run each job.
+#      That used to be a `${{ }}` expression on every job in ci.yml, where it
+#      could not be tested; POLICY_CASES below is the test it never had. The
+#      expected sets are transcribed from the `if:` expressions ci.yml carried
+#      before the policy moved, so a regression here is a behaviour change.
+#
+#   3. Artifact-name uniqueness. Artifact names are scoped to the *run*, not
 #      to the calling workflow, and ci.yml calls the Spark SQL and Iceberg
 #      reusable workflows several times in one run. Two producers sharing a
 #      name make `download-artifact` pick by highest artifact ID rather than
@@ -67,6 +73,72 @@ ROUTING_CASES = [
     (["native/core/benches/parquet_read.rs"], {"benchmark"}),
 ]
 
+# Event policy. Each case is (event, expected set of jobs allowed to run),
+# where "allowed" ignores path filters. Transcribed from the `if:` expressions
+# ci.yml carried before POLICY moved into compute-changes.py, so these pin the
+# pre-refactor behaviour rather than restating the new code.
+PR_TIER = {"build_linux", "build_macos", "benchmark", "spark_3_5", "spark_4_1", "iceberg_1_11"}
+ICEBERG_OPT_IN = {"iceberg_1_8", "iceberg_1_9", "iceberg_1_10"}
+ALL_JOBS = PR_TIER | ICEBERG_OPT_IN | {"docs", "spark_3_4", "spark_4_0"}
+
+POLICY_CASES = [
+    # A manual run may exercise anything.
+    ({"name": "workflow_dispatch"}, ALL_JOBS),
+    # Push to main runs every job, docs included: it is the only event that
+    # may deploy the site.
+    ({"name": "push"}, ALL_JOBS),
+    # A plain pull request: the PR tier only. docs must never run here, and the
+    # opt-in suites stay off without their label.
+    ({"name": "pull_request", "action": "opened", "labels": []}, PR_TIER),
+    ({"name": "pull_request", "action": "synchronize", "labels": []}, PR_TIER),
+    # An opt-in label present on a pushed commit adds just that suite.
+    (
+        {"name": "pull_request", "action": "synchronize", "labels": ["run-spark-3.4-tests"]},
+        PR_TIER | {"spark_3_4"},
+    ),
+    (
+        {"name": "pull_request", "action": "synchronize", "labels": ["run-iceberg-tests"]},
+        PR_TIER | ICEBERG_OPT_IN,
+    ),
+    # Applying a gating label runs only what that label gates. The PR tier
+    # already ran at this commit on opened/synchronize.
+    (
+        {
+            "name": "pull_request",
+            "action": "labeled",
+            "label": "run-spark-4.0-tests",
+            "labels": ["run-spark-4.0-tests"],
+        },
+        {"spark_4_0"},
+    ),
+    (
+        {
+            "name": "pull_request",
+            "action": "labeled",
+            "label": "run-iceberg-tests",
+            "labels": ["run-iceberg-tests"],
+        },
+        ICEBERG_OPT_IN,
+    ),
+    # A label that gates nothing (dependabot's `dependencies`, a type label)
+    # must not start a second pipeline. This is issue #5007.
+    (
+        {"name": "pull_request", "action": "labeled", "label": "dependencies", "labels": ["dependencies"]},
+        set(),
+    ),
+    # ... not even when a gating label is already on the PR from earlier.
+    (
+        {
+            "name": "pull_request",
+            "action": "labeled",
+            "label": "dependencies",
+            "labels": ["dependencies", "run-spark-3.4-tests"],
+        },
+        set(),
+    ),
+]
+
+
 # `uses:` values that publish an artifact, and the one that consumes it.
 UPLOAD_USES = re.compile(r"uses:\s*(\./\.github/actions/upload-artifact-retry|actions/upload-artifact@)")
 DOWNLOAD_USES = re.compile(r"uses:\s*actions/download-artifact@")
@@ -97,6 +169,44 @@ def check_change_filters():
                 )
     for failure in failures:
         print(f"change filter: {failure}")
+    return not failures
+
+
+def check_event_policy():
+    module = load_filters()
+    failures = []
+    for event, expected in POLICY_CASES:
+        actual = {job for job in module.POLICY if module.event_allows(job, event)}
+        if actual != expected:
+            label = event.get("name")
+            if event.get("action"):
+                label += f"/{event['action']}"
+            if event.get("label"):
+                label += f" +{event['label']}"
+            failures.append(
+                f"{label} labels={event.get('labels', [])}: "
+                f"unexpectedly allowed {sorted(actual - expected) or 'nothing'}, "
+                f"unexpectedly blocked {sorted(expected - actual) or 'nothing'} "
+                f"(see POLICY in dev/ci/compute-changes.py)"
+            )
+    missing = sorted(set(module.FILTERS) - set(module.POLICY))
+    if missing:
+        failures.append(
+            f"jobs in FILTERS with no POLICY entry: {', '.join(missing)}; "
+            f"they would never run on any event"
+        )
+    # "pr" next to a "label:" tier reads as "runs on every PR, and also when
+    # labelled", but the label check wins and the "pr" is dead. Reject the
+    # combination so it cannot be written by accident.
+    for job, tiers in module.POLICY.items():
+        if "pr" in tiers and module.gating_labels(job):
+            failures.append(
+                f"{job}: POLICY lists both 'pr' and a 'label:' tier. Those are "
+                f"mutually exclusive; drop 'pr' if the job is opt-in, or drop "
+                f"the label if it should run on every pull request"
+            )
+    for failure in failures:
+        print(f"event policy: {failure}")
     return not failures
 
 
@@ -151,6 +261,7 @@ def check_artifact_names():
 
 if __name__ == "__main__":
     ok = check_change_filters()
+    ok = check_event_policy() and ok
     ok = check_artifact_names() and ok
     if not ok:
         sys.exit(1)
