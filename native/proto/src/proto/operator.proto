@@ -414,13 +414,17 @@ message IcebergDeleteFile {
   optional int64 content_offset = 6;
   optional int64 content_size_in_bytes = 7;
 
+  // Serialized StandardKeyMetadata for an encrypted delete file, from DeleteFile.keyMetadata().
+  // Absent for unencrypted tables. Decoded directly by iceberg-rust; no KMS unwrap needed.
+  optional bytes key_metadata = 8;
+
   // Delete-file record count. Required by iceberg-rust for deletion vectors, which check it
   // against the cardinality decoded from the blob; unused for Parquet delete files.
   optional int64 record_count = 9;
 
-  // Serialized StandardKeyMetadata for an encrypted delete file, from DeleteFile.keyMetadata().
-  // Absent for unencrypted tables. Decoded directly by iceberg-rust; no KMS unwrap needed.
-  optional bytes key_metadata = 8;
+  // "PARQUET" for a delete file, "PUFFIN" for a deletion vector. iceberg-rust selects its
+  // deletion-vector reader on this.
+  string file_format = 10;
 }
 
 // =====================================================================================
