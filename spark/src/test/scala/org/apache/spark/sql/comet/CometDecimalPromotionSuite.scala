@@ -22,6 +22,7 @@ package org.apache.spark.sql.comet
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.catalyst.expressions.{Add, ArrayContains, AttributeReference, BitwiseNot, Cast, CreateArray, Divide, EvalMode, Multiply, NamedExpression}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Partial, Sum}
+import org.apache.spark.sql.execution.ProjectExec
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DecimalType, IntegerType}
 
@@ -189,9 +190,10 @@ class CometDecimalPromotionSuite extends CometTestBase {
               "array_compact(array($e))",
               "array_except(array($e), array($e))",
               "array_join(array(CAST($e AS STRING)), ',')",
-              // Spark's ArrayJoin codegen needs a nullable array or delimiter to clear isNull
-              // when the replacement is nullable. Use a column-based delimiter for this case.
-              "array_join(array('x', NULL), CAST(a AS STRING), CAST($e AS STRING))",
+              "array_join(array('x', NULL), CAST($e AS STRING), 'replacement')",
+              // Keep decimal arithmetic in the replacement's native serializer path. Coalesce
+              // makes it non-nullable, so ArrayJoin does not need a repeated-evaluation guard.
+              "array_join(array('x', NULL), ',', coalesce(CAST($e AS STRING), 'overflow'))",
               "slice(array($e), 1, 1)",
               "slice(array(1, 2), CAST($e AS INT), 2)",
               "slice(array(1, 2), 1, CAST($e AS INT))",
@@ -219,6 +221,26 @@ class CometDecimalPromotionSuite extends CometTestBase {
                   checkSparkAnswerAndOperator(
                     sql(query),
                     includeClasses = Seq(classOf[CometNativeScanExec]))
+                }
+              }
+            }
+
+            // A nullable compound replacement deliberately keeps the project on Spark, even
+            // with native compatibility opt-in. Preserve result/error coverage for this shape
+            // separately from the native recursive-serialization cases above.
+            Seq("a * b", "c / d").foreach { arithmetic =>
+              val query = "SELECT array_join(array('x', NULL), CAST(a AS STRING), " +
+                s"CAST($arithmetic AS STRING)) FROM decimal_overflow"
+              withClue(query) {
+                val df = sql(query)
+                val plan = df.queryExecution.executedPlan
+                assert(collect(plan) { case p: ProjectExec => p }.nonEmpty)
+                assert(collect(plan) { case p: CometProjectExec => p }.isEmpty)
+                if (ansi) {
+                  val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
+                  assert(sparkError.isDefined && cometError.isDefined)
+                } else {
+                  checkSparkAnswerAndFallbackReason(df, "compound nullable replacement")
                 }
               }
             }
