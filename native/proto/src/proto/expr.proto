@@ -163,8 +163,8 @@ message AggExpr {
     HllPlusPlus hllpp = 20;
     CollectList collectList = 21;
     Regr regr = 22;
-    MaxBy maxBy = 23;
-    MinBy minBy = 24;
+    MaxBy maxBy = 24;
+    MinBy minBy = 25;
   }
 
   // Optional filter expression for SQL FILTER (WHERE ...) clause.

@@ -258,3 +258,27 @@ INSERT INTO mb_signed_zero VALUES
 
 query
 SELECT grp, max_by(v, ord) FROM mb_signed_zero GROUP BY grp ORDER BY grp
+
+-- ============================================================
+-- Variable-length value or ordering falls back to Spark
+--
+-- A plain max_by over a string is planned as SortAggregate, which Comet never converts, so the
+-- serde's type check is not what stops it. Pairing it with a TypedImperativeAggregate switches
+-- Spark to ObjectHashAggregate, which Comet does convert, and then getSupportLevel is the only
+-- thing that keeps the aggregate off the native path. That matters most for a string *ordering*:
+-- Arrow's row format compares raw UTF-8 bytes, while Spark compares collation sort keys, so this
+-- check is load-bearing for correctness and not just an optimisation.
+-- ============================================================
+
+statement
+CREATE TABLE mb_varlen(v int, s string, grp string) USING parquet
+
+statement
+INSERT INTO mb_varlen VALUES
+  (1, 'a', 'g1'), (2, 'b', 'g1'), (3, 'c', 'g2')
+
+query expect_fallback(Unsupported value data type)
+SELECT grp, max_by(s, v), percentile(v, 0.5) FROM mb_varlen GROUP BY grp ORDER BY grp
+
+query expect_fallback(Unsupported ordering data type)
+SELECT grp, max_by(v, s), percentile(v, 0.5) FROM mb_varlen GROUP BY grp ORDER BY grp

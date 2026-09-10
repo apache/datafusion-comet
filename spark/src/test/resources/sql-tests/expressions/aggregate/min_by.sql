@@ -243,3 +243,24 @@ INSERT INTO mnb_signed_zero VALUES
 
 query
 SELECT grp, min_by(v, ord) FROM mnb_signed_zero GROUP BY grp ORDER BY grp
+
+-- ============================================================
+-- Variable-length value or ordering falls back to Spark
+--
+-- See the equivalent section in max_by.sql for why this needs a TypedImperativeAggregate
+-- alongside it: without one, Spark plans SortAggregate and Comet never sees the aggregate at all,
+-- so the serde's type check would go untested.
+-- ============================================================
+
+statement
+CREATE TABLE mnb_varlen(v int, s string, grp string) USING parquet
+
+statement
+INSERT INTO mnb_varlen VALUES
+  (1, 'a', 'g1'), (2, 'b', 'g1'), (3, 'c', 'g2')
+
+query expect_fallback(Unsupported value data type)
+SELECT grp, min_by(s, v), percentile(v, 0.5) FROM mnb_varlen GROUP BY grp ORDER BY grp
+
+query expect_fallback(Unsupported ordering data type)
+SELECT grp, min_by(v, s), percentile(v, 0.5) FROM mnb_varlen GROUP BY grp ORDER BY grp

@@ -472,9 +472,17 @@ impl GroupsAccumulator for MaxMinByGroupsAccumulator {
     }
 
     fn size(&self) -> usize {
+        // `size_of::<OwnedRow>()` only covers the inline `Box<[u8]>` pointer/len, not the row
+        // bytes behind it, so the per-group payloads have to be summed separately. Leaving them
+        // out under-reports to the memory pool that drives spill decisions.
+        let row_bytes = |rows: &Vec<OwnedRow>| -> usize {
+            rows.iter().map(|r| r.row().as_ref().len()).sum::<usize>()
+        };
         size_of_val(self)
             + (self.best_value.capacity() + self.best_ordering.capacity())
                 * std::mem::size_of::<OwnedRow>()
+            + row_bytes(&self.best_value)
+            + row_bytes(&self.best_ordering)
             + self.has_ordering.capacity()
     }
 }
@@ -482,7 +490,7 @@ impl GroupsAccumulator for MaxMinByGroupsAccumulator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{AsArray, Float32Array, Float64Array, Int32Array, StringArray};
+    use arrow::array::{AsArray, Float32Array, Float64Array, Int32Array, Int64Array, StringArray};
 
     fn max_by_acc(value_type: DataType, ordering_type: DataType) -> MaxMinByAccumulator {
         MaxMinByAccumulator::try_new(value_type, ordering_type, true).unwrap()
@@ -815,5 +823,35 @@ mod tests {
         acc.update_batch(&[values, ordering], &[0, 0, 0], Some(&filter), 1)
             .unwrap();
         assert_eq!(eval_int(&mut acc), vec![Some(30)]);
+    }
+
+    #[test]
+    fn groups_accumulator_size_counts_row_bytes() {
+        // Each group owns two `OwnedRow`s, and each one holds its bytes in a separate `Box<[u8]>`.
+        // Counting only `size_of::<OwnedRow>()` per slot leaves that payload invisible to the
+        // memory pool that drives spill decisions.
+        const GROUPS: usize = 1_000;
+        let mut acc = max_by_groups(DataType::Int32, DataType::Int64);
+        let values: ArrayRef = Arc::new(Int32Array::from((0..GROUPS as i32).collect::<Vec<_>>()));
+        let ordering: ArrayRef = Arc::new(Int64Array::from((0..GROUPS as i64).collect::<Vec<_>>()));
+        acc.update_batch(
+            &[values, ordering],
+            &(0..GROUPS).collect::<Vec<_>>(),
+            None,
+            GROUPS,
+        )
+        .unwrap();
+
+        // A row is a one-byte null sentinel plus the fixed-width encoding: 5 bytes for the Int32
+        // value and 9 for the Int64 ordering.
+        let payload = GROUPS * (5 + 9);
+        let headers = (acc.best_value.capacity() + acc.best_ordering.capacity())
+            * std::mem::size_of::<OwnedRow>();
+        assert!(
+            acc.size() >= size_of_val(&acc) + headers + payload,
+            "size() = {} does not cover {payload} bytes of row payload on top of {headers} bytes \
+             of slot headers",
+            acc.size()
+        );
     }
 }
