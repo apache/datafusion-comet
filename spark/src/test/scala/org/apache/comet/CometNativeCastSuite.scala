@@ -1382,15 +1382,9 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         // Create a table with string data using DataFrame API
         Seq("a").toDF("s").write.format("parquet").saveAsTable("cast_error_msg")
         // Try to cast invalid string to date - should throw exception with SQL context
-        val exception = intercept[Exception] {
-          sql("select cast(s as date) from cast_error_msg").collect()
-        }
+        val exception =
+          checkSparkError(sql("select cast(s as date) from cast_error_msg"), "CAST_INVALID_INPUT")
         val errorMessage = exception.getMessage
-        // Verify error message contains the cast invalid input error
-        assert(
-          errorMessage.contains("CAST_INVALID_INPUT") ||
-            errorMessage.contains("cannot be cast to"),
-          s"Error message should contain cast error: $errorMessage")
 
         assert(
           errorMessage.contains("select cast(s as date) from cast_error_msg"),
@@ -2873,6 +2867,7 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               val cometMessage =
                 if (cometException.getCause != null) cometException.getCause.getMessage
                 else cometException.getMessage
+              // https://github.com/apache/datafusion-comet/issues/5072
               // this if branch should only check decimal to decimal cast and errors when output precision, scale causes overflow.
               if (df.schema("a").dataType.typeName.contains("decimal") && toType.typeName
                   .contains("decimal") && sparkMessage.contains("cannot be represented as")) {
