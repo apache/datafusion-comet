@@ -255,7 +255,7 @@ jobs:
           RUSTFLAGS: "-Ctarget-cpu=x86-64-v3 -Clink-arg=-fuse-ld=bfd"
 
       - name: Upload native library
-        uses: actions/upload-artifact@v7
+        uses: ./.github/actions/upload-artifact-retry
         with:
           name: native-lib-linux
           path: native/target/ci/libcomet.so
