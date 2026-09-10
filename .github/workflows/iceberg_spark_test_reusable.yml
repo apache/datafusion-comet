@@ -110,9 +110,13 @@ jobs:
           key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs') }}
 
       - name: Upload native library
-        uses: actions/upload-artifact@v7
+        uses: ./.github/actions/upload-artifact-retry
         with:
-          name: native-lib-iceberg
+          # Version-qualified: ci.yml calls this workflow once per Iceberg
+          # version inside a single run, and artifact names are scoped to the
+          # run, not to the calling workflow. See "Artifact names must be
+          # unique per producer" in .github/workflows/README.md.
+          name: native-lib-iceberg-${{ inputs.iceberg-full }}-spark-${{ inputs.spark-full }}-jdk${{ inputs.java }}
           path: native/target/ci/libcomet.so
           retention-days: 1
 
@@ -137,7 +141,7 @@ jobs:
       - name: Download native library
         uses: actions/download-artifact@v8
         with:
-          name: native-lib-iceberg
+          name: native-lib-iceberg-${{ inputs.iceberg-full }}-spark-${{ inputs.spark-full }}-jdk${{ inputs.java }}
           path: native/target/release/
       - name: Build Comet
         run: |
@@ -203,7 +207,7 @@ jobs:
       - name: Download native library
         uses: actions/download-artifact@v8
         with:
-          name: native-lib-iceberg
+          name: native-lib-iceberg-${{ inputs.iceberg-full }}-spark-${{ inputs.spark-full }}-jdk${{ inputs.java }}
           path: native/target/release/
       - name: Build Comet
         run: |
@@ -238,7 +242,7 @@ jobs:
       - name: Download native library
         uses: actions/download-artifact@v8
         with:
-          name: native-lib-iceberg
+          name: native-lib-iceberg-${{ inputs.iceberg-full }}-spark-${{ inputs.spark-full }}-jdk${{ inputs.java }}
           path: native/target/release/
       - name: Build Comet
         run: |
