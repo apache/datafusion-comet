@@ -439,6 +439,100 @@ class CometCodegenSuite
     }
   }
 
+  test("replace compatibility boundary cases stay on JVM codegen dispatcher") {
+    withSQLConf(
+      CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true",
+      CometConf.COMET_EXPLAIN_CODEGEN_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_PROJECT_ENABLED.key -> "true",
+      CometConf.COMET_EXTENDED_EXPLAIN_FORMAT.key ->
+        CometConf.COMET_EXTENDED_EXPLAIN_FORMAT_VERBOSE) {
+
+      def assertDispatcher(df: org.apache.spark.sql.DataFrame, clue: String): Unit = {
+        checkSparkAnswerAndOperator(df)
+        val explain =
+          new ExtendedExplainInfo().generateExtendedInfo(df.queryExecution.executedPlan)
+        assert(explain.contains("JVM codegen dispatcher: replace"), s"$clue, got:\n$explain")
+      }
+
+      // Malformed search: CometLiteral would normalize 0xFF to U+FFFD, incorrectly matching
+      // a well-formed U+FFFD in the source.
+      withTable("t") {
+        sql("CREATE TABLE t (s STRING) USING parquet")
+        sql("INSERT INTO t VALUES ('\uFFFD'), ('ok')")
+        assertDispatcher(
+          sql("SELECT replace(s, CAST(X'FF' AS STRING), 'x') FROM t"),
+          "expected dispatcher path for malformed search literal")
+      }
+
+      // Malformed replacement has the same serialization hazard.
+      withTable("t") {
+        sql("CREATE TABLE t (s STRING) USING parquet")
+        sql("INSERT INTO t VALUES ('a'), ('b')")
+        assertDispatcher(
+          sql("SELECT replace(s, 'a', CAST(X'FF' AS STRING)) FROM t"),
+          "expected dispatcher path for malformed replacement literal")
+      }
+
+      // Spark skips replacement evaluation when src is NULL; native evaluates every child.
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+        withTable("t") {
+          sql("CREATE TABLE t (s STRING, n INT) USING parquet")
+          sql("INSERT INTO t VALUES (NULL, 0), ('a', 1)")
+          assertDispatcher(
+            sql("SELECT replace(s, 'a', CAST(1 / n AS STRING)) FROM t"),
+            "expected dispatcher path for throwing replacement expression")
+        }
+      }
+
+      // A 256 KiB scalar replacement overflows Arrow Utf8 offsets when broadcast to 8192 rows.
+      withTable("t") {
+        sql("CREATE TABLE t (s STRING) USING parquet")
+        sql("INSERT INTO t VALUES ('hello')")
+        assertDispatcher(
+          sql("SELECT replace(s, 'notfound', repeat('x', 262144)) FROM t"),
+          "expected dispatcher path for oversized replacement literal")
+      }
+
+      // Source is not on the whitelist: Spark short-circuits inside substring when s is NULL.
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+        withTable("t") {
+          sql("CREATE TABLE t (s STRING, n INT) USING parquet")
+          sql("INSERT INTO t VALUES (NULL, 0), ('a', 1)")
+          assertDispatcher(
+            sql("SELECT replace(substring(s, 1, CAST(1 / n AS INT)), 'a', 'x') FROM t"),
+            "expected dispatcher path for throwing expression nested in source")
+        }
+      }
+
+      // Malformed source literal: same CometLiteral byte-normalization as search/replacement.
+      withTable("t") {
+        sql("CREATE TABLE t (r STRING) USING parquet")
+        sql("INSERT INTO t VALUES ('x')")
+        assertDispatcher(
+          sql("SELECT replace(CAST(X'FF' AS STRING), 'a', r) FROM t"),
+          "expected dispatcher path for malformed source literal")
+      }
+
+      // Malformed literal nested under concat is still in the source tree.
+      withTable("t") {
+        sql("CREATE TABLE t (r STRING) USING parquet")
+        sql("INSERT INTO t VALUES ('x')")
+        assertDispatcher(
+          sql("SELECT replace(concat(CAST(X'FF' AS STRING), r), 'a', 'x') FROM t"),
+          "expected dispatcher path for malformed literal nested in source")
+      }
+
+      // Oversized source literal has the same broadcast / offset-overflow hazard.
+      withTable("t") {
+        sql("CREATE TABLE t (r STRING) USING parquet")
+        sql("INSERT INTO t VALUES ('x')")
+        assertDispatcher(
+          sql("SELECT replace(repeat('x', 262144), 'notfound', r) FROM t"),
+          "expected dispatcher path for oversized source literal")
+      }
+    }
+  }
+
   test("codegen dispatch fallback reasons name the expression") {
     // Flag-off short-circuit tags the expression `<name>: <reason>` so distinct expressions
     // don't collapse in the `Set[String]` roll-up.

@@ -19,7 +19,7 @@ statement
 CREATE TABLE test_str_replace(s string, search string, replace string) USING parquet
 
 statement
-INSERT INTO test_str_replace VALUES ('hello world', 'world', 'there'), ('aaa', 'a', 'bb'), ('hello', 'xyz', 'abc'), ('', 'a', 'b'), (NULL, 'a', 'b'), ('hello', '', 'x')
+INSERT INTO test_str_replace VALUES ('hello world', 'world', 'there'), ('aaa', 'a', 'bb'), ('hello', 'xyz', 'abc'), ('', 'a', 'b'), (NULL, 'a', 'b'), ('hello', '', 'x'), ('aaaa', 'aa', 'x'), ('你好你好', '你好', 'X'), ('😀a😀', '😀', 'x')
 
 query
 SELECT replace(s, search, replace) FROM test_str_replace
@@ -40,6 +40,26 @@ SELECT replace(NULL, '', 'x')
 
 query
 SELECT replace('hello', '', NULL)
+
+-- Overlapping candidates: Spark replaces non-overlapping left-to-right
+-- ('aaaa' + 'aa' -> 'xx'). Compatibility coverage for overlapping candidates.
+query
+SELECT replace(s, 'aa', 'x') FROM test_str_replace WHERE s = 'aaaa'
+
+-- Multi-byte UTF-8 values. Compatibility coverage for multi-byte UTF-8 values.
+query
+SELECT replace(s, '你好', 'X') FROM test_str_replace WHERE s = '你好你好'
+
+query
+SELECT replace(s, '😀', 'x') FROM test_str_replace WHERE s = '😀a😀'
+
+-- Multi-byte replacement.
+query
+SELECT replace(s, '你好', '世界') FROM test_str_replace WHERE s = '你好你好'
+
+-- Replacement contains the search string; replacement is not applied recursively.
+query
+SELECT replace(s, 'aa', 'aaa') FROM test_str_replace WHERE s = 'aaaa'
 
 -- column + literal + literal
 query
