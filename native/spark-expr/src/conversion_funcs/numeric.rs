@@ -28,7 +28,7 @@ use arrow::datatypes::{
     i256, is_validate_decimal_precision, ArrowPrimitiveType, DataType, Decimal128Type, Float32Type,
     Float64Type, Int16Type, Int32Type, Int64Type, Int8Type,
 };
-use num::{cast::AsPrimitive, ToPrimitive, Zero};
+use num::{cast::AsPrimitive, Float, ToPrimitive, Zero};
 use std::fmt::{self, Write};
 use std::sync::Arc;
 
@@ -139,59 +139,40 @@ macro_rules! cast_float_to_timestamp_impl {
 
 /// A float width that Java renders through `Float.toString` / `Double.toString`.
 ///
-/// The two differ only in the literal text of the smallest subnormal, which Java's algorithm
+/// `num::Float` supplies the arithmetic predicates; the two widths differ only in the plain-notation
+/// window's endpoints and in the literal text of the smallest subnormal, which Java's algorithm
 /// spells with more digits than a shortest-round-trip formatter produces.
-pub trait JavaFloatString: Copy + PartialOrd + fmt::Display + fmt::UpperExp {
+pub trait JavaFloatString: Float + fmt::Display + fmt::UpperExp {
     /// `Float.MIN_VALUE` / `Double.MIN_VALUE` as Java spells it.
     const MIN_SUBNORMAL: &'static str;
     /// Plain notation covers `[0.001, 10^7)`; anything outside it is scientific.
     const PLAIN_LOWER: Self;
     const PLAIN_UPPER: Self;
 
-    fn abs(self) -> Self;
-    fn is_zero(self) -> bool;
-    fn is_whole(self) -> bool;
-    fn is_finite(self) -> bool;
-    fn is_nan(self) -> bool;
-    fn is_sign_negative(self) -> bool;
-    /// The value whose magnitude is one ULP above zero, the one Java does not render shortest.
+    /// The value one ULP above zero, the one Java does not render shortest. `Float::min_positive_value`
+    /// is the smallest *normal*, so this has no `num` equivalent.
     fn is_smallest_subnormal(self) -> bool;
 }
 
-macro_rules! impl_java_float_string {
-    ($type:ty, $min_subnormal:expr) => {
-        impl JavaFloatString for $type {
-            const MIN_SUBNORMAL: &'static str = $min_subnormal;
-            const PLAIN_LOWER: Self = 0.001;
-            const PLAIN_UPPER: Self = 10000000.0;
+impl JavaFloatString for f32 {
+    const MIN_SUBNORMAL: &'static str = "1.4E-45";
+    const PLAIN_LOWER: Self = 0.001;
+    const PLAIN_UPPER: Self = 10000000.0;
 
-            fn abs(self) -> Self {
-                <$type>::abs(self)
-            }
-            fn is_zero(self) -> bool {
-                self == 0.0
-            }
-            fn is_whole(self) -> bool {
-                self.fract() == 0.0
-            }
-            fn is_finite(self) -> bool {
-                <$type>::is_finite(self)
-            }
-            fn is_nan(self) -> bool {
-                <$type>::is_nan(self)
-            }
-            fn is_sign_negative(self) -> bool {
-                <$type>::is_sign_negative(self)
-            }
-            fn is_smallest_subnormal(self) -> bool {
-                <$type>::abs(self).to_bits() == 1
-            }
-        }
-    };
+    fn is_smallest_subnormal(self) -> bool {
+        self.abs().to_bits() == 1
+    }
 }
 
-impl_java_float_string!(f32, "1.4E-45");
-impl_java_float_string!(f64, "4.9E-324");
+impl JavaFloatString for f64 {
+    const MIN_SUBNORMAL: &'static str = "4.9E-324";
+    const PLAIN_LOWER: Self = 0.001;
+    const PLAIN_UPPER: Self = 10000000.0;
+
+    fn is_smallest_subnormal(self) -> bool {
+        self.abs().to_bits() == 1
+    }
+}
 
 /// Writes `value` as Java's `Float.toString` / `Double.toString` renders it.
 ///
@@ -200,6 +181,7 @@ impl_java_float_string!(f64, "4.9E-324");
 /// point. Otherwise the value is a mantissa followed by `E` and an exponent, the mantissa having
 /// an optional leading minus sign followed by one digit to the left of the decimal point and the
 /// minimal number of digits greater than zero to the right.
+/// Source: <https://docs.databricks.com/en/sql/language-manual/functions/cast.html>
 ///
 /// Rust's own `Display` and `UpperExp` give the same digits but drop a whole coefficient's
 /// fractional zero (`1` for `1.0`) and never switch to an exponent, so `Double.MAX_VALUE` would
@@ -218,7 +200,7 @@ pub fn write_java_float_string<T: JavaFloatString, W: fmt::Write>(
     let abs = value.abs();
     if (T::PLAIN_LOWER..T::PLAIN_UPPER).contains(&abs) || abs.is_zero() {
         write!(out, "{value}")?;
-        if value.is_whole() {
+        if value.fract().is_zero() {
             // Java always renders a fractional digit; Rust omits it.
             out.write_str(".0")?;
         }
@@ -242,20 +224,21 @@ pub fn write_java_float_string<T: JavaFloatString, W: fmt::Write>(
         // into a stack buffer rather than into `out`, which may not be rewindable.
         let mut scratch = ExponentBuf::default();
         write!(scratch, "{value:E}")?;
-        match scratch.as_str().split_once('E') {
+        let text = scratch.as_str();
+        match text.split_once('E') {
             Some((coefficient, exponent)) if !coefficient.contains('.') => {
                 // Java keeps the fractional digit Rust drops from a whole coefficient.
                 out.write_str(coefficient)?;
                 out.write_str(".0E")?;
                 out.write_str(exponent)
             }
-            _ => out.write_str(scratch.as_str()),
+            _ => out.write_str(text),
         }
     }
 }
 
-/// Scratch space for one `{:E}` rendering. The longest a float produces is
-/// `-2.2250738585072014E-308`, 24 bytes.
+/// Scratch space for one `{:E}` rendering, sized past the longest a float can produce
+/// (`-2.2250738585072014E-308`).
 #[derive(Default)]
 struct ExponentBuf {
     bytes: [u8; 32],

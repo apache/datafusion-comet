@@ -1108,10 +1108,8 @@ class CometIcebergWriteActionSuite
   }
 
   // iceberg-java renders a `float` or `double` partition value with `Float.toString` /
-  // `Double.toString`, which keeps a fractional digit on a whole value and switches to scientific
-  // notation outside [1e-3, 1e7). Rust's `Display` does neither, so iceberg-rust's renderer spelled
-  // `Double.MAX_VALUE` as 309 digits: past the 255-byte limit on one path component, which failed
-  // the write with `File name too long` (apache/datafusion-comet#5836).
+  // `Double.toString`. Rust's `Display` spelled `Double.MAX_VALUE` as 309 digits instead, past the
+  // 255-byte limit on one path component (apache/datafusion-comet#5836).
   test("native acceleration: float and double partition paths match iceberg-java") {
     assumeNativeAcceleration()
     withIcebergCatalog { warehouseDir =>
@@ -1136,10 +1134,12 @@ class CometIcebergWriteActionSuite
 
       val nativeDirs = partitionDirs(warehouseDir, "float_path_native")
       assert(nativeDirs == partitionDirs(warehouseDir, "float_path_jvm"), s"native: $nativeDirs")
-      assert(nativeDirs.contains("f=1.0/d=1.0"), s"native: $nativeDirs")
-      assert(nativeDirs.contains("f=-0.5/d=1.7976931348623157E308"), s"native: $nativeDirs")
-      assert(nativeDirs.contains("f=3.4028235E38/d=4.9E-324"), s"native: $nativeDirs")
-      assert(nativeDirs.contains("f=0.001/d=1.0E20"), s"native: $nativeDirs")
+      assert(
+        nativeDirs == Set(
+          "f=1.0/d=1.0",
+          "f=-0.5/d=1.7976931348623157E308",
+          "f=3.4028235E38/d=4.9E-324",
+          "f=0.001/d=1.0E20"))
     }
   }
 
