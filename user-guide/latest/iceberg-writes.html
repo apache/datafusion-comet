@@ -1051,6 +1051,13 @@ independent size estimates, so nothing bounds how far apart the two writers’ r
 they may cross the target several grid steps apart, and the resulting files can differ in row
 count by an arbitrary number of 1000-row blocks. Do not rely on file-layout parity between the
 two writers; rely only on each file rolling on its own 1000-row boundary.</p></li>
+<li><p>A fanout write lists a task’s data files in file-path order, where iceberg-java lists them in
+its own <code class="docutils literal notranslate"><span class="pre">StructLikeMap</span></code> iteration order. Both are stable across runs, and neither is a
+documented ordering, but the manifest entry order becomes the scan-task order and so the row
+order of an unordered <code class="docutils literal notranslate"><span class="pre">SELECT</span> <span class="pre">*</span></code>. Only the sorted order is reproducible on the native path:
+iceberg-rust’s <code class="docutils literal notranslate"><span class="pre">FanoutWriter</span></code> closes its per-partition writers out of a <code class="docutils literal notranslate"><span class="pre">HashMap</span></code>, which under
+Rust’s per-process <code class="docutils literal notranslate"><span class="pre">RandomState</span></code> would otherwise give a different order on every run. Clustered
+and unpartitioned writes append in creation order on both paths and are unaffected.</p></li>
 <li><p>Compressed page bytes are implementation-defined: the codec and any explicit level are
 translated, but parquet-rs and parquet-mr embed different encoder implementations and
 defaults (zstd default levels, LZ4 framing), so byte-identical output is not achievable even

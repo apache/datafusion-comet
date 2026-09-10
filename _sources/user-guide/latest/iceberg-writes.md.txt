@@ -271,6 +271,13 @@ a data file but not what any reader computes from it:
   they may cross the target several grid steps apart, and the resulting files can differ in row
   count by an arbitrary number of 1000-row blocks. Do not rely on file-layout parity between the
   two writers; rely only on each file rolling on its own 1000-row boundary.
+- A fanout write lists a task's data files in file-path order, where iceberg-java lists them in
+  its own `StructLikeMap` iteration order. Both are stable across runs, and neither is a
+  documented ordering, but the manifest entry order becomes the scan-task order and so the row
+  order of an unordered `SELECT *`. Only the sorted order is reproducible on the native path:
+  iceberg-rust's `FanoutWriter` closes its per-partition writers out of a `HashMap`, which under
+  Rust's per-process `RandomState` would otherwise give a different order on every run. Clustered
+  and unpartitioned writes append in creation order on both paths and are unaffected.
 - Compressed page bytes are implementation-defined: the codec and any explicit level are
   translated, but parquet-rs and parquet-mr embed different encoder implementations and
   defaults (zstd default levels, LZ4 framing), so byte-identical output is not achievable even
