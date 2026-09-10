@@ -4376,11 +4376,15 @@ fn parse_file_scan_tasks_from_common(
                 // constraint -- see there).
                 file_path: del.file_path.clone(),
                 file_type,
-                // Comet forwards Parquet position/equality delete files and carries no
-                // deletion-vector (Puffin) metadata, so the format is always Parquet. This keeps
-                // iceberg-rust on the regular delete-file read path rather than the DV path,
-                // consistent with the unset content_offset/content_size_in_bytes below.
-                file_format: iceberg::spec::DataFileFormat::Parquet,
+                // Derived rather than serialized: iceberg-rust dispatches a PositionDeletes entry
+                // to the Puffin deletion-vector reader on this field alone, so it must say Puffin
+                // for a DV. content_offset is set by the JVM serde only for deletion vectors, and
+                // the DV reader requires it, so its presence is exactly the DV discriminant.
+                file_format: if del.content_offset.is_some() {
+                    iceberg::spec::DataFileFormat::Puffin
+                } else {
+                    iceberg::spec::DataFileFormat::Parquet
+                },
                 // Not serialized; filled in by IcebergScanExec::fill_delete_file_sizes.
                 file_size_in_bytes: 0,
                 partition_spec_id: del.partition_spec_id,
@@ -4389,12 +4393,15 @@ fn parse_file_scan_tasks_from_common(
                 } else {
                     Some(del.equality_ids.clone())
                 },
-                // Deletion-vector metadata is not part of Comet's delete-file serde, so these
-                // are left unset. iceberg-rust only requires them when reading a Puffin DV blob.
-                referenced_data_file: None,
-                content_offset: None,
-                content_size_in_bytes: None,
-                record_count: None,
+                // Deletion-vector coordinates, set only for V3 deletion vectors and left unset for
+                // Parquet delete files. referenced_data_file names the data file the vector applies
+                // to; the other two locate the deletion-vector-v1 blob in its Puffin file.
+                referenced_data_file: del.referenced_data_file.clone(),
+                content_offset: del.content_offset,
+                content_size_in_bytes: del.content_size_in_bytes,
+                // Required for deletion vectors: iceberg-rust checks it against the number of
+                // positions decoded from the blob and errors if it is absent.
+                record_count: del.record_count.map(|c| c as u64),
                 // Plaintext StandardKeyMetadata forwarded verbatim from the JVM; decoded by
                 // iceberg-rust with no KMS unwrap. None for unencrypted delete files.
                 key_metadata: del.key_metadata.clone().map(Vec::into_boxed_slice),
