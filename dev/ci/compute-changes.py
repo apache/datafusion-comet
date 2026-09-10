@@ -55,6 +55,7 @@ FILTERS = {
         ".github/workflows/pr_build_linux.yml",
         ".github/actions/setup-builder/**",
         ".github/actions/java-test/**",
+        ".github/actions/maven-bootstrap/**",
         ".github/actions/rust-test/**",
         ".github/actions/upload-artifact-retry/**",
         ".github/actions/download-artifact-retry/**",

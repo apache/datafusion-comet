@@ -103,6 +103,8 @@ ROUTING_CASES = [
     # to nothing at all and merges having been exercised by no consumer.
     ([".github/actions/upload-artifact-retry/action.yaml"], BUILD_JOBS),
     ([".github/actions/download-artifact-retry/action.yaml"], BUILD_JOBS),
+    # The Maven bootstrap composite is called only from pr_build_linux.yml.
+    ([".github/actions/maven-bootstrap/action.yaml"], {"build_linux"}),
     # Spot checks that the additions above did not widen unrelated routes.
     (["docs/source/user-guide/overview.md"], {"docs"}),
     (["native/core/benches/parquet_read.rs"], {"benchmark"}),

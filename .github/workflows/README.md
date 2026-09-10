@@ -280,9 +280,18 @@ before any test has started. Once `Required Checks` is a required context
 which is why plain network flakes are worth retrying rather than re-running
 the whole pipeline by hand.
 
-**Maven wrapper bootstrap.** `./.github/actions/java-test` retries
-`./mvnw --version` with exponential backoff, so a failed download of the Maven
-distribution does not surface as a test failure.
+**Maven wrapper bootstrap.** `./mvnw` downloads the Maven distribution itself on
+a cold runner, and a blip from `repo.maven.apache.org` fails the job before
+anything is compiled. `./.github/actions/maven-bootstrap` caches that
+distribution under `~/.m2/wrapper/dists` (keyed on
+`.mvn/wrapper/maven-wrapper.properties`, not `pom.xml`) and retries
+`./mvnw --version` four times with exponential backoff. It retries only the
+bootstrap, never compilation or test execution.
+
+Any job whose first Maven use is a bare `./mvnw` needs this step before it.
+`./.github/actions/java-test` carries its own inline copy rather than calling
+the composite, because a local action invoking another local action is
+deliberately avoided here (see the artifact-upload note above).
 
 ## Merge queue
 
