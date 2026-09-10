@@ -24,7 +24,10 @@ import org.apache.spark.sql.types.{ArrayType, DataType, DecimalType, IntegerType
 
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, isTimeType, scalarFunctionExprToProtoWithReturnType, serializeDataType, supportedDataType}
 
-object CometXxHash64 extends CometExpressionSerde[XxHash64] {
+// Native-unsupported, Spark-codegen-compatible cases (`DecimalType` precision > 18, including
+// nested, and `sha2` with a non-foldable `numBits`) stay in the Comet pipeline via
+// `CodegenDispatchFallback` on the four hash serdes below.
+object CometXxHash64 extends CometExpressionSerde[XxHash64] with CodegenDispatchFallback {
 
   override def getUnsupportedReasons(): Seq[String] = HashUtils.unsupportedReasons
 
@@ -46,7 +49,7 @@ object CometXxHash64 extends CometExpressionSerde[XxHash64] {
   }
 }
 
-object CometMurmur3Hash extends CometExpressionSerde[Murmur3Hash] {
+object CometMurmur3Hash extends CometExpressionSerde[Murmur3Hash] with CodegenDispatchFallback {
 
   override def getUnsupportedReasons(): Seq[String] = HashUtils.unsupportedReasons
 
@@ -72,7 +75,7 @@ object CometMurmur3Hash extends CometExpressionSerde[Murmur3Hash] {
   }
 }
 
-object CometSha2 extends CometExpressionSerde[Sha2] {
+object CometSha2 extends CometExpressionSerde[Sha2] with CodegenDispatchFallback {
 
   private val nonFoldableNumBitsReason =
     "The `numBits` argument must be a foldable literal value"
@@ -98,7 +101,7 @@ object CometSha2 extends CometExpressionSerde[Sha2] {
   }
 }
 
-object CometSha1 extends CometExpressionSerde[Sha1] {
+object CometSha1 extends CometExpressionSerde[Sha1] with CodegenDispatchFallback {
 
   override def getUnsupportedReasons(): Seq[String] = HashUtils.unsupportedReasons
 

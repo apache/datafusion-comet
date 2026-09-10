@@ -26,14 +26,19 @@ import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.types.{IntegerType, StructField, StructType}
 
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, ParquetGenerator, SchemaGenOptions}
+import org.apache.comet.udf.codegen.CometScalaUDFCodegen
 
 /**
- * Test suite for Spark murmur3 hash function compatibility between Spark and Comet.
+ * Test suite for Spark hash function compatibility between Spark and Comet.
  *
- * These tests verify that Comet's native implementation of murmur3 hash produces identical
- * results to Spark's implementation for all supported data types.
+ * Native kernels are asserted for supported input shapes. Cases the native path declines
+ * (`DecimalType` precision > 18, including nested, and `sha2` with a non-foldable `numBits`) must
+ * stay in the Comet pipeline via the JVM codegen dispatcher.
  */
-class CometHashExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
+class CometHashExpressionSuite
+    extends CometTestBase
+    with AdaptiveSparkPlanHelper
+    with CometCodegenAssertions {
 
   test("hash - boolean") {
     withTable("t") {
@@ -134,7 +139,7 @@ class CometHashExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
       withTable("t") {
         sql(s"CREATE TABLE t(c DECIMAL($precision, $scale)) USING parquet")
         sql("INSERT INTO t VALUES (1.23), (-1.23), (0.0), (null)")
-        checkSparkAnswerAndOperator("SELECT c, hash(c) FROM t ORDER BY c")
+        assertNativeHash("SELECT c, hash(c), xxhash64(c) FROM t ORDER BY c")
       }
     }
   }
@@ -144,37 +149,94 @@ class CometHashExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
       withTable("t") {
         sql(s"CREATE TABLE t(c DECIMAL($precision, $scale)) USING parquet")
         sql("INSERT INTO t VALUES (1.23), (-1.23), (0.0), (null)")
-        // Large decimals may fall back to Spark, so just check the answer
-        checkSparkAnswer("SELECT c, hash(c) FROM t ORDER BY c")
+        assertCodegenRan {
+          checkSparkAnswerAndOperator("SELECT c, hash(c), xxhash64(c) FROM t ORDER BY c")
+        }
       }
     }
   }
 
-  test("hash - array of decimal (precision > 18) falls back to Spark") {
+  test("hash - array of decimal (precision > 18) routes through the codegen dispatcher") {
     withTable("t") {
       sql("CREATE TABLE t(c ARRAY<DECIMAL(20, 2)>) USING parquet")
       sql("INSERT INTO t VALUES (array(1.23, 2.34)), (null)")
-      // Should fall back to Spark due to nested high-precision decimal
-      checkSparkAnswerAndFallbackReason("SELECT c, hash(c) FROM t", "precision > 18")
+      assertCodegenRan {
+        checkSparkAnswerAndOperator("SELECT c, hash(c), xxhash64(c) FROM t")
+      }
     }
   }
 
-  test("hash - struct with decimal (precision > 18) falls back to Spark") {
+  test("hash - struct with decimal (precision > 18) routes through the codegen dispatcher") {
     withTable("t") {
       sql("CREATE TABLE t(c STRUCT<a: INT, b: DECIMAL(20, 2)>) USING parquet")
       sql("INSERT INTO t VALUES (named_struct('a', 1, 'b', 1.23)), (null)")
-      // Should fall back to Spark due to nested high-precision decimal
-      checkSparkAnswerAndFallbackReason("SELECT c, hash(c) FROM t", "precision > 18")
+      assertCodegenRan {
+        checkSparkAnswerAndOperator("SELECT c, hash(c), xxhash64(c) FROM t")
+      }
     }
   }
 
-  test("hash - map with decimal (precision > 18) value falls back to Spark") {
+  test("hash - map with decimal (precision > 18) value routes through the codegen dispatcher") {
     withSQLConf("spark.sql.legacy.allowHashOnMapType" -> "true") {
       withTable("t") {
         sql("CREATE TABLE t(c MAP<STRING, DECIMAL(20, 2)>) USING parquet")
         sql("INSERT INTO t VALUES (map('a', 1.23)), (null)")
-        // Should fall back to Spark due to nested high-precision decimal
-        checkSparkAnswerAndFallbackReason("SELECT c, hash(c) FROM t", "precision > 18")
+        assertCodegenRan {
+          checkSparkAnswerAndOperator("SELECT c, hash(c), xxhash64(c) FROM t")
+        }
+      }
+    }
+  }
+
+  test("hash - wide decimal falls back when codegen dispatcher is disabled") {
+    withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
+      withTable("t") {
+        sql("CREATE TABLE t(c DECIMAL(20, 2)) USING parquet")
+        sql("INSERT INTO t VALUES (1.23), (-1.23), (0.0), (null)")
+        checkSparkAnswerAndFallbackReasons(
+          "SELECT c, hash(c), xxhash64(c) FROM t ORDER BY c",
+          Set(
+            s"hash: ${CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key}=false",
+            s"xxhash64: ${CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key}=false"))
+      }
+    }
+  }
+
+  test("sha2 - non-foldable numBits routes through the codegen dispatcher") {
+    withTable("t") {
+      sql("CREATE TABLE t(payload STRING, num_bits INT) USING parquet")
+      sql("""INSERT INTO t VALUES
+            ('hello', 0),
+            ('hello', 224),
+            ('hello', 256),
+            ('hello', 384),
+            ('hello', 512),
+            ('hello', 128),
+            ('hello', -1),
+            (NULL, 256),
+            ('hello', NULL)""")
+      assertCodegenRan {
+        checkSparkAnswerAndOperator("SELECT sha2(payload, num_bits) FROM t")
+      }
+    }
+  }
+
+  test("sha2 - literal numBits stays native") {
+    withTable("t") {
+      sql("CREATE TABLE t(payload STRING) USING parquet")
+      sql("INSERT INTO t VALUES ('hello'), (''), (NULL)")
+      assertNativeHash("SELECT sha2(payload, 256) FROM t")
+    }
+  }
+
+  test("sha2 - non-foldable numBits falls back when codegen dispatcher is disabled") {
+    withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
+      withTable("t") {
+        sql("CREATE TABLE t(payload STRING, num_bits INT) USING parquet")
+        sql("INSERT INTO t VALUES ('hello', 256), (NULL, 256), ('hello', NULL)")
+        checkSparkAnswerAndFallbackReason(
+          "SELECT sha2(payload, num_bits) FROM t",
+          s"sha2: ${CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key}=false")
       }
     }
   }
@@ -542,5 +604,13 @@ class CometHashExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
         checkSparkAnswer(s"select $name, hash($name) from t1 order by $name")
       }
     }
+  }
+
+  private def assertNativeHash(query: String): Unit = {
+    CometScalaUDFCodegen.resetStats()
+    checkSparkAnswerAndOperator(query)
+    assert(
+      CometScalaUDFCodegen.stats().totalLookups == 0,
+      s"expected native hash execution for $query, got ${CometScalaUDFCodegen.stats()}")
   }
 }
