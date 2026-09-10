@@ -576,6 +576,19 @@ mod tests {
     }
 
     #[test]
+    fn min_by_sign_bit_nan_is_not_smallest() {
+        // The mirror of the case above: because every NaN is the *largest* value, a sign-bit-set
+        // NaN loses to any finite ordering in `min_by` and must not be selected. Without the
+        // canonicalization arrow's raw-bit encoding places it below -Infinity, which would make it
+        // the minimum and return "a".
+        let mut acc = min_by_acc(DataType::Utf8, DataType::Float64);
+        let values: ArrayRef = Arc::new(StringArray::from(vec!["a", "b"]));
+        let ordering: ArrayRef = Arc::new(Float64Array::from(vec![-f64::NAN, 2.0]));
+        acc.update_batch(&[values, ordering]).unwrap();
+        assert_eq!(acc.evaluate().unwrap(), ScalarValue::from("b"));
+    }
+
+    #[test]
     fn max_by_ties_signed_zeros_and_keeps_last_row() {
         // Spark compares the ordering with `SQLOrderingUtil.compareDoubles`, which ties
         // `-0.0 == 0.0`, and its update keeps the *new* row on a tie. So both orders below must
@@ -655,6 +668,31 @@ mod tests {
                 "max_by over f32 ordering {ordering:?}"
             );
         }
+    }
+
+    #[test]
+    fn float32_max_by_sign_bit_nan_is_largest() {
+        // `compareFloats` routes through `floatToIntBits` just as `compareDoubles` routes through
+        // `doubleToLongBits`, so a sign-bit-set NaN is the same value as a positive one and is the
+        // largest ordering for Float32 too. Without the canonicalization arrow ranks `-NaN` below
+        // -Infinity, so this would return "c".
+        let mut acc = max_by_acc(DataType::Utf8, DataType::Float32);
+        let values: ArrayRef = Arc::new(StringArray::from(vec!["a", "b", "c"]));
+        let ordering: ArrayRef = Arc::new(Float32Array::from(vec![1.0, -f32::NAN, 2.0]));
+        acc.update_batch(&[values, ordering]).unwrap();
+        assert_eq!(acc.evaluate().unwrap(), ScalarValue::from("b"));
+    }
+
+    #[test]
+    fn float32_min_by_sign_bit_nan_is_not_smallest() {
+        // Kept separate from the `max_by` case above rather than asserted alongside it: a failure
+        // of the first assertion would stop the test before the second ever ran, which is how a
+        // half-vacuous test hides.
+        let mut acc = min_by_acc(DataType::Utf8, DataType::Float32);
+        let values: ArrayRef = Arc::new(StringArray::from(vec!["a", "b"]));
+        let ordering: ArrayRef = Arc::new(Float32Array::from(vec![-f32::NAN, 2.0]));
+        acc.update_batch(&[values, ordering]).unwrap();
+        assert_eq!(acc.evaluate().unwrap(), ScalarValue::from("b"));
     }
 
     #[test]
