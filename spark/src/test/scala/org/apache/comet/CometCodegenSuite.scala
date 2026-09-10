@@ -422,13 +422,21 @@ class CometCodegenSuite
 
     // Promotion rebuilds Hypot as well as the Alias above it. Unlike the original Add, the
     // dispatched copy is not reachable from the original tree, so only the coverage lift can
-    // bring its name back to the projection owner.
+    // bring its names back to the projection owner.
+    //
+    // Every expression in the rebuilt subtree is named, not just the dispatched root: the whole
+    // subtree was bound into the one kernel, so all of it ran in the JVM. `checkoverflow` is the
+    // wrapper promotion added around the decimal `Add`, which is what makes the lifted set
+    // evidence that the promoted copy, rather than the original tree, was the one recorded.
     val proto = QueryPlanSerde.exprToProto(projection, Seq(decimal)).get
     assert(proto.hasJvmScalarUdf)
     assert(proto.getJvmScalarUdf.getClassName === classOf[CometScalaUDFCodegen].getName)
     assert(dispatched.getTagValue(CometExplainInfo.DISPATCHED_SELF).isEmpty)
     assert(dispatched.getTagValue(CometExplainInfo.CODEGEN_DISPATCH_EXPRS).isEmpty)
-    assert(projection.getTagValue(CometExplainInfo.CODEGEN_DISPATCH_EXPRS).contains(Set("hypot")))
+    assert(
+      projection
+        .getTagValue(CometExplainInfo.CODEGEN_DISPATCH_EXPRS)
+        .contains(Set("hypot", "cast", "checkoverflow", "add")))
   }
 
   test("tags copied onto the shared TrueLiteral do not leak into unrelated plans") {
