@@ -18,8 +18,7 @@
 //! Matched map inputs from CometShuffleBenchmark (PR #5788).
 
 use arrow::array::{
-    Array, ArrayRef, Int32Array, Int32Builder, MapArray, MapBuilder, MapFieldNames, StringBuilder,
-    StructArray,
+    Array, ArrayRef, Int32Array, Int32Builder, MapArray, MapBuilder, StringBuilder, StructArray,
 };
 use arrow::datatypes::Field;
 use criterion::{BenchmarkId, Criterion, Throughput};
@@ -28,6 +27,40 @@ use datafusion_comet_spark_expr::{murmur3::create_murmur3_hashes, spark_map_sort
 use std::{hint::black_box, sync::Arc};
 
 pub const ROWS: usize = 8192;
+
+#[derive(Clone, Copy)]
+// Each benchmark executable registers only its own subset of stages.
+#[allow(dead_code)]
+pub enum Stage {
+    HashOnly,
+    NormalizeOnly,
+    NormalizeHash,
+}
+
+impl Stage {
+    fn name(self) -> &'static str {
+        match self {
+            Self::HashOnly => "hash_only",
+            Self::NormalizeOnly => "normalize_only",
+            Self::NormalizeHash => "normalize_hash",
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Shape {
+    Map,
+    StructMapInt,
+}
+
+impl Shape {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Map => "map",
+            Self::StructMapInt => "struct_map_int",
+        }
+    }
+}
 
 // Scala Long arithmetic wraps; pmod is applied to the signed result of mix64.
 fn c1(row: usize) -> i32 {
@@ -39,18 +72,14 @@ fn c1(row: usize) -> i32 {
 
 fn maps(max_entries: usize, reversed: bool) -> ArrayRef {
     let mut builder = MapBuilder::new(
-        Some(MapFieldNames {
-            entry: "entries".into(),
-            key: "key".into(),
-            value: "value".into(),
-        }),
+        Some(crate::common::map_field_names()),
         StringBuilder::new(),
         Int32Builder::new(),
     );
     for row in 0..ROWS {
         let value = c1(row);
-        let count = if max_entries == 1 {
-            1
+        let count = if max_entries <= 1 {
+            max_entries
         } else {
             2 + value as usize % (max_entries - 1)
         };
@@ -98,16 +127,15 @@ fn hashes(array: &ArrayRef) -> Vec<u32> {
 }
 
 /// Shared registration keeps every stage's data and correctness checks identical.
-/// `stage` is one of hash_only, normalize_only, normalize_hash.
 /// Input construction and checks are untimed. Hash storage is allocated once; resetting it
 /// to seed 42 is timed. Normalization output allocation/drop, and struct reconstruction in
 /// normalize_hash, are timed. normalize_only measures mapsort itself (no struct wrapper).
-pub fn bench_maps(c: &mut Criterion, stage: &str) {
-    assert!(["hash_only", "normalize_only", "normalize_hash"].contains(&stage));
+pub fn bench_maps(c: &mut Criterion, stage: Stage) {
     let ints: ArrayRef = Arc::new(Int32Array::from_iter_values((0..ROWS).map(c1)));
-    let mut group = c.benchmark_group(format!("matched_maps/{stage}"));
+    let mut group = c.benchmark_group(format!("matched_maps/{}", stage.name()));
     group.throughput(Throughput::Elements(ROWS as u64));
-    for max_entries in [1, 10, 50] {
+    // Zero entries means ROWS non-null empty maps, not an empty batch.
+    for max_entries in [0, 1, 10, 50] {
         let forward = maps(max_entries, false);
         let reversed = maps(max_entries, true);
         let normalized = normalize(&[ColumnarValue::Array(Arc::clone(&forward))]);
@@ -129,8 +157,8 @@ pub fn bench_maps(c: &mut Criterion, stage: &str) {
         assert_eq!(expected.len(), ROWS);
         for (row, offsets) in expected.value_offsets().windows(2).enumerate() {
             let base = c1(row);
-            let count = if max_entries == 1 {
-                1
+            let count = if max_entries <= 1 {
+                max_entries
             } else {
                 2 + base as usize % (max_entries - 1)
             };
@@ -151,11 +179,17 @@ pub fn bench_maps(c: &mut Criterion, stage: &str) {
                 }
             }
         }
-        assert_eq!(hashes(&normalized), hashes(&normalized_reverse));
-        assert_eq!(
-            hashes(&wrap(Arc::clone(&normalized), &ints)),
-            hashes(&wrap(normalized_reverse, &ints))
-        );
+        // This fixed fixture demonstrates why normalization is needed. Do not require
+        // every row to differ: Murmur3 collisions are possible for arbitrary inputs.
+        if max_entries > 1 {
+            assert_ne!(hashes(&forward), hashes(&reversed));
+            assert_ne!(
+                hashes(&wrap(Arc::clone(&forward), &ints)),
+                hashes(&wrap(Arc::clone(&reversed), &ints))
+            );
+        } else {
+            assert_eq!(forward.to_data(), reversed.to_data());
+        }
         let mut field_hashes = vec![42; ROWS];
         create_murmur3_hashes(
             &[Arc::clone(&normalized), Arc::clone(&ints)],
@@ -163,50 +197,58 @@ pub fn bench_maps(c: &mut Criterion, stage: &str) {
         )
         .unwrap();
         assert_eq!(field_hashes, hashes(&wrap(Arc::clone(&normalized), &ints)));
-        eprintln!(
-            "validated {stage}: max_entries={max_entries}, rows={ROWS}, entries={}",
-            expected.entries().len()
-        );
         for (order, raw) in [("forward", forward), ("reversed", reversed)] {
             let args = [ColumnarValue::Array(raw)];
-            for shape in ["map", "struct_map_int"] {
-                // mapsort is the same operation for either enclosing shape; measure once.
-                if stage == "normalize_only" && shape != "map" {
+            for shape in [Shape::Map, Shape::StructMapInt] {
+                // mapsort is identical for either enclosing shape; measure it once.
+                if matches!((stage, shape), (Stage::NormalizeOnly, Shape::StructMapInt)) {
                     continue;
                 }
-                let input = if shape == "map" {
-                    Arc::clone(&normalized)
-                } else {
-                    wrap(Arc::clone(&normalized), &ints)
-                };
-                let mut buffer = vec![42; ROWS];
                 group.bench_function(
-                    BenchmarkId::new(shape, format!("{max_entries}/{order}")),
-                    |b| {
-                        b.iter(|| {
-                            if stage == "normalize_only" {
-                                black_box(normalize(black_box(&args)));
-                            } else {
+                    BenchmarkId::new(shape.name(), format!("{max_entries}/{order}")),
+                    |b| match stage {
+                        Stage::NormalizeOnly => b.iter(|| {
+                            black_box(normalize(black_box(&args)));
+                        }),
+                        Stage::HashOnly => {
+                            // Both order labels intentionally hash the same pre-normalized
+                            // bytes. They are repeated-measurement controls, not a test of
+                            // raw hash order independence.
+                            let input = match shape {
+                                Shape::Map => Arc::clone(&normalized),
+                                Shape::StructMapInt => wrap(Arc::clone(&normalized), &ints),
+                            };
+                            let mut buffer = vec![42; ROWS];
+                            b.iter(|| {
                                 buffer.fill(42);
-                                if stage == "hash_only" {
-                                    create_murmur3_hashes(
-                                        std::slice::from_ref(black_box(&input)),
-                                        &mut buffer,
-                                    )
-                                    .unwrap();
-                                } else {
+                                create_murmur3_hashes(
+                                    std::slice::from_ref(black_box(&input)),
+                                    &mut buffer,
+                                )
+                                .unwrap();
+                                black_box(&buffer);
+                            });
+                        }
+                        Stage::NormalizeHash => {
+                            let mut buffer = vec![42; ROWS];
+                            // Dispatch outside timing, including whether a struct is rebuilt.
+                            match shape {
+                                Shape::Map => b.iter(|| {
+                                    buffer.fill(42);
                                     let map = normalize(black_box(&args));
-                                    let key = if shape == "map" {
-                                        map
-                                    } else {
-                                        wrap(map, &ints)
-                                    };
+                                    create_murmur3_hashes(std::slice::from_ref(&map), &mut buffer)
+                                        .unwrap();
+                                    black_box(&buffer);
+                                }),
+                                Shape::StructMapInt => b.iter(|| {
+                                    buffer.fill(42);
+                                    let key = wrap(normalize(black_box(&args)), &ints);
                                     create_murmur3_hashes(std::slice::from_ref(&key), &mut buffer)
                                         .unwrap();
-                                }
-                                black_box(&buffer);
+                                    black_box(&buffer);
+                                }),
                             }
-                        });
+                        }
                     },
                 );
             }

@@ -28,7 +28,7 @@
 //! to that macro shows up here.
 
 use arrow::array::builder::{Int32Builder, ListBuilder, MapBuilder, StringBuilder, StructBuilder};
-use arrow::array::{ArrayRef, Int32Array, ListArray, MapFieldNames, StringArray, StructArray};
+use arrow::array::{ArrayRef, Int32Array, ListArray, StringArray, StructArray};
 use arrow::buffer::OffsetBuffer;
 use arrow::datatypes::{DataType, Field, Fields};
 use criterion::{criterion_group, criterion_main, Criterion};
@@ -36,8 +36,9 @@ use datafusion_comet_spark_expr::murmur3::create_murmur3_hashes;
 use std::hint::black_box;
 use std::sync::Arc;
 
+mod common;
 #[path = "common/matched_maps.rs"]
-mod matched_maps_data;
+mod matched_maps;
 
 const NUM_ROWS: usize = 8192;
 
@@ -135,11 +136,7 @@ fn skewed_list_of_struct(num_rows: usize, long_len: usize) -> ArrayRef {
 /// `map<utf8, int32>`: keys and values are hashed entry by entry.
 fn maps(num_rows: usize, entries: usize) -> ArrayRef {
     let mut mb = MapBuilder::new(
-        Some(MapFieldNames {
-            entry: "entries".into(),
-            key: "key".into(),
-            value: "value".into(),
-        }),
+        Some(common::map_field_names()),
         StringBuilder::new(),
         Int32Builder::new(),
     );
@@ -205,11 +202,7 @@ fn list_of_list(num_rows: usize, outer: usize, inner: usize) -> ArrayRef {
 /// cover, so the value array is hashed recursively instead.
 fn map_of_struct(num_rows: usize, entries: usize) -> ArrayRef {
     let mut mb = MapBuilder::new(
-        Some(MapFieldNames {
-            entry: "entries".into(),
-            key: "key".into(),
-            value: "value".into(),
-        }),
+        Some(common::map_field_names()),
         StringBuilder::new(),
         struct_builder(),
     );
@@ -271,11 +264,11 @@ fn bench(c: &mut Criterion) {
     group.finish();
 }
 
-fn matched_maps(c: &mut Criterion) {
-    matched_maps_data::bench_maps(c, "hash_only");
-    matched_maps_data::bench_maps(c, "normalize_hash");
+fn bench_matched_maps(c: &mut Criterion) {
+    matched_maps::bench_maps(c, matched_maps::Stage::HashOnly);
+    matched_maps::bench_maps(c, matched_maps::Stage::NormalizeHash);
     c.bench_function("matched_maps/hash_buffer_seed_reset", |b| {
-        let mut hashes = vec![42u32; matched_maps_data::ROWS];
+        let mut hashes = vec![42u32; matched_maps::ROWS];
         b.iter(|| {
             hashes.fill(42);
             black_box(&hashes);
@@ -283,5 +276,5 @@ fn matched_maps(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, bench, matched_maps);
+criterion_group!(benches, bench, bench_matched_maps);
 criterion_main!(benches);
