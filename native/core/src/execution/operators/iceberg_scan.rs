@@ -136,8 +136,12 @@ impl IcebergScanExec {
         // Build FileIO (and the S3 credential bridge) once here rather than per `execute`. In the
         // ordered path `execute` is called once per file, so rebuilding it there would repeat the
         // JNI/reflection credential-bridge construction for every file in the partition.
-        let file_io =
-            load_file_io(&catalog_properties, &metadata_location, &catalog_name, AccessMode::Read)?;
+        let file_io = load_file_io(
+            &catalog_properties,
+            &metadata_location,
+            &catalog_name,
+            AccessMode::Read,
+        )?;
 
         Ok(Self {
             metadata_location,

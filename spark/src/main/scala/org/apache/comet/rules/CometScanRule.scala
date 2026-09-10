@@ -1045,12 +1045,9 @@ case class CometScanRule(session: SparkSession)
         // Bind the reported ordering to proto now, against the same output the gate used, so the
         // executor-side serde writes it directly. None means the binding failed -- the gate below
         // then keeps the scan on Spark instead of converting and hard-failing at task start.
+        // (serializeReportedOrdering handles the empty case, returning Some(Nil).)
         val reportedOrderingProto: Option[Seq[Expr]] =
-          if (reportedOrdering.isEmpty) {
-            Some(Nil)
-          } else {
-            CometIcebergNativeScan.serializeReportedOrdering(reportedOrdering, scanExec.output)
-          }
+          CometIcebergNativeScan.serializeReportedOrdering(reportedOrdering, scanExec.output)
         val orderingHonored: Boolean = {
           // Convert when Iceberg reports nothing (plain unordered read) or when we can both honour
           // AND serialize the order it reports. Refuse otherwise: Spark has already dropped the
