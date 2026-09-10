@@ -23,7 +23,7 @@ import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.aggregate.Sum
 
 import org.apache.comet.expressions.CometEvalMode
-import org.apache.comet.serde.{CometExpressionSerde, CometStringDecode}
+import org.apache.comet.serde.{CometAggregateExpressionSerde, CometExpressionSerde, CometStringDecode}
 import org.apache.comet.serde.ExprOuterClass.{BinaryOutputStyle, Expr}
 
 /**
@@ -43,6 +43,8 @@ trait CometExprShim {
   def sparkVersionSpecificMiscExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
     Map.empty
   def sparkVersionSpecificMapExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
+    Map.empty
+  def sparkVersionSpecificAggregates: Map[Class[_], CometAggregateExpressionSerde[_]] =
     Map.empty
 
   def sparkVersionSpecificExprToProtoInternal(

@@ -3524,4 +3524,155 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("hll_sketch_agg and hll_sketch_estimate (incompatible, opt-in)") {
+    assume(isSpark40Plus)
+    // HLL is approximate: Comet's Rust DataSketches estimator differs slightly from
+    // Spark's after a merge, so these functions are Incompatible. Opt in, assert the
+    // query runs natively (no fallback), and that the estimate is within HLL error of
+    // the TRUE distinct count (700). Do NOT compare bit-exactly to Spark.
+    withSQLConf(
+      "spark.comet.expression.HllSketchAgg.allowIncompatible" -> "true",
+      "spark.comet.expression.HllSketchEstimate.allowIncompatible" -> "true") {
+      withParquetTable((0 until 1000).map(i => (i % 700, i)), "tbl") {
+        def checkEstimate(query: String): Unit = {
+          val df = sql(query)
+          checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
+          val est = df.collect().head.getLong(0)
+          assert(
+            math.abs(est - 700).toDouble / 700 <= 0.05,
+            s"estimate $est not within 5% of the true distinct count 700 for: $query")
+        }
+        checkEstimate("SELECT hll_sketch_estimate(hll_sketch_agg(_1)) FROM tbl")
+        checkEstimate("SELECT hll_sketch_estimate(hll_sketch_agg(_1, 14)) FROM tbl")
+        checkEstimate("SELECT hll_sketch_estimate(hll_sketch_agg(cast(_1 as string))) FROM tbl")
+      }
+    }
+  }
+
+  test("hll_union_agg and hll_union (incompatible, opt-in)") {
+    assume(isSpark40Plus)
+    withSQLConf(
+      "spark.comet.expression.HllSketchAgg.allowIncompatible" -> "true",
+      "spark.comet.expression.HllSketchEstimate.allowIncompatible" -> "true",
+      "spark.comet.expression.HllUnionAgg.allowIncompatible" -> "true",
+      "spark.comet.expression.HllUnion.allowIncompatible" -> "true") {
+      withParquetTable((0 until 1000).map(i => (i % 3, i)), "tbl") {
+        // hll_union_agg: union the per-group sketches -> ~1000 distinct.
+        val aggDf = sql(
+          "SELECT hll_sketch_estimate(hll_union_agg(s)) FROM " +
+            "(SELECT _1 AS g, hll_sketch_agg(_2) AS s FROM tbl GROUP BY _1)")
+        checkCometOperators(stripAQEPlan(aggDf.queryExecution.executedPlan))
+        val aggEst = aggDf.collect().head.getLong(0)
+        assert(math.abs(aggEst - 1000).toDouble / 1000 <= 0.05, s"union_agg estimate $aggEst")
+
+        // hll_union: union two disjoint group sketches -> ~667 distinct.
+        val unionDf = sql(
+          "SELECT hll_sketch_estimate(hll_union(a.s, b.s)) FROM " +
+            "(SELECT hll_sketch_agg(_2) AS s FROM tbl WHERE _1 = 0) a, " +
+            "(SELECT hll_sketch_agg(_2) AS s FROM tbl WHERE _1 = 1) b")
+        checkCometOperators(stripAQEPlan(unionDf.queryExecution.executedPlan))
+        val unionEst = unionDf.collect().head.getLong(0)
+        assert(math.abs(unionEst - 667).toDouble / 667 <= 0.05, s"union estimate $unionEst")
+      }
+    }
+  }
+
+  test("hll_union_agg rejects different lgConfigK when not allowed") {
+    assume(isSpark40Plus)
+    withTempPath { dir =>
+      val sketchPath = dir.getCanonicalPath
+      // Materialize one lgConfigK=10 and one lgConfigK=12 sketch into Parquet, written by Spark
+      // (the HllSketchAgg opt-in is deliberately absent here), so the query under test is a plain
+      // scan plus aggregate. Building the two sketches inline with UNION ALL instead is not
+      // version-stable: on Spark 4.2 MergeSubplans folds the two non-grouping aggregates into one
+      // CTE projecting a struct with duplicate field names, which Comet does not accelerate, so
+      // hll_union_agg falls back and the native check under test never runs.
+      withParquetTable((0 until 100).map(i => Tuple1(i)), "tbl") {
+        sql("SELECT hll_sketch_agg(_1, 10) AS s FROM tbl")
+          .union(sql("SELECT hll_sketch_agg(_1, 12) AS s FROM tbl"))
+          .write
+          .parquet(sketchPath)
+      }
+      withSQLConf("spark.comet.expression.HllUnionAgg.allowIncompatible" -> "true") {
+        // Unioning the two sketches (allowDifferentLgConfigK defaults false) must throw in BOTH
+        // Spark and Comet.
+        val df = spark.read.parquet(sketchPath).selectExpr("hll_union_agg(s)")
+        checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
+        val (sparkErr, cometErr) = checkSparkAnswerMaybeThrows(df)
+        assert(sparkErr.isDefined, "expected Spark to throw on different lgConfigK")
+        assert(cometErr.isDefined, "expected Comet to throw on different lgConfigK")
+        // Both arms raising is not enough: if Comet had fallen back for the whole plan, the
+        // second run would raise Spark's exception too and this test would pass without the
+        // native check ever running. The two messages differ - Spark raises
+        // HLL_UNION_DIFFERENT_LG_K - so asserting on Comet's own wording pins the native path.
+        assert(
+          cometErr.get.getMessage.contains("to enable unions of different lgConfigK"),
+          s"expected Comet's native lgConfigK error, got: ${cometErr.get.getMessage}")
+      }
+    }
+  }
+
+  test("hll_union with a NULL allowDifferentLgConfigK returns NULL") {
+    assume(isSpark40Plus)
+    // HllUnion is a TernaryExpression evaluated through nullSafeEval, so a NULL in *any* of the
+    // three arguments - the allowDifferentLgConfigK flag included - makes the whole call NULL.
+    // Returning a sketch would be a categorically wrong answer rather than an approximation,
+    // which is not something the Incompatible opt-in covers.
+    //
+    // The serde only accepts a foldable third argument, and Spark marks HllUnion
+    // `nullIntolerant`, so with the default optimizer NullPropagation rewrites a foldable NULL
+    // flag to a NULL literal before Comet ever sees the expression. Excluding that rule is what
+    // makes the native kernel responsible for the NULL, which is the behaviour under test; a
+    // user who excludes NullPropagation must still get Spark's answer.
+    //
+    // (HllUnionAgg needs no equivalent guard: its `convert` falls back when `right.eval()` is
+    // not a Boolean, and Spark's `null.asInstanceOf[Boolean]` coerces to false, so the two agree
+    // whichever way the flag arrives.)
+    withSQLConf(
+      "spark.sql.optimizer.excludedRules" ->
+        "org.apache.spark.sql.catalyst.optimizer.NullPropagation",
+      "spark.comet.expression.HllSketchAgg.allowIncompatible" -> "true",
+      "spark.comet.expression.HllSketchEstimate.allowIncompatible" -> "true",
+      "spark.comet.expression.HllUnion.allowIncompatible" -> "true") {
+      withParquetTable((0 until 300).map(i => (i % 2, i)), "tbl") {
+        val query =
+          "SELECT hll_sketch_estimate(hll_union(a.s, b.s, cast(null as boolean))) FROM " +
+            "(SELECT hll_sketch_agg(_2) AS s FROM tbl WHERE _1 = 0) a, " +
+            "(SELECT hll_sketch_agg(_2) AS s FROM tbl WHERE _1 = 1) b"
+        val df = sql(query)
+        val plan = stripAQEPlan(df.queryExecution.executedPlan)
+        // Without these the test would pass on a plan where hll_union was folded away or fell
+        // back to Spark, neither of which exercises the native null check.
+        checkCometOperators(plan)
+        assert(
+          plan.toString().contains("hll_union"),
+          s"expected hll_union to survive into the native plan, got:\n$plan")
+        assert(
+          df.collect().head.isNullAt(0),
+          "a NULL allowDifferentLgConfigK must make hll_union return NULL")
+        checkSparkAnswer(query)
+      }
+    }
+  }
+
+  test("hll_sketch_agg over all-null input estimates to 0, not NULL") {
+    assume(isSpark40Plus)
+    // Spark's HllSketchAgg/HllSketchEstimate are declared non-nullable: an empty or
+    // all-null group still produces a serialized empty sketch, and hll_sketch_estimate
+    // reads that as 0, never NULL. Guard against regressing to Binary(None) here.
+    withSQLConf(
+      "spark.comet.expression.HllSketchAgg.allowIncompatible" -> "true",
+      "spark.comet.expression.HllSketchEstimate.allowIncompatible" -> "true") {
+      withParquetTable((0 until 100).map(_ => Tuple1(null.asInstanceOf[Integer])), "tbl") {
+        val df = sql("SELECT hll_sketch_estimate(hll_sketch_agg(_1)) FROM tbl")
+        checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
+        val row = df.collect().head
+        assert(!row.isNullAt(0), "expected a non-null estimate for an all-null group")
+        assert(
+          row.getLong(0) == 0,
+          s"expected estimate 0 for an all-null group, got ${row.getLong(0)}")
+      }
+    }
+  }
+
 }

@@ -149,9 +149,9 @@ use datafusion_comet_proto::{
 use datafusion_comet_spark_expr::{
     jvm_udf::JvmScalarUdfExpr, ApproxPercentile, ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow,
     Correlation, Covariance, CreateNamedStruct, DecimalRescaleCheckOverflow, GetArrayStructFields,
-    GetStructField, HllPlusPlus, IfExpr, ListExtract, NormalizeNaNAndZero, Regr, RegrType,
-    SparkCastOptions, Stddev, SumDecimal, ToJson, UnboundColumn, Variance, WideDecimalBinaryExpr,
-    WideDecimalOp,
+    GetStructField, HllPlusPlus, HllSketchAgg, HllUnionAgg, IfExpr, ListExtract,
+    NormalizeNaNAndZero, Regr, RegrType, SparkCastOptions, Stddev, SumDecimal, ToJson,
+    UnboundColumn, Variance, WideDecimalBinaryExpr, WideDecimalOp,
 };
 use itertools::Itertools;
 use jni::objects::{Global, JObject};
@@ -3169,6 +3169,11 @@ impl PhysicalPlanner {
                 ));
                 Self::create_aggr_func_expr("bloom_filter_agg", schema, vec![child], func)
             }
+            AggExprStruct::HllSketchAgg(expr) => {
+                let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
+                let func = AggregateUDF::new_from_impl(HllSketchAgg::new(expr.lg_config_k));
+                Self::create_aggr_func_expr("hll_sketch_agg", schema, vec![child], func)
+            }
             AggExprStruct::CollectSet(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
                 let child = Self::coerce_collect_child_nullability(child, &schema)?;
@@ -3185,6 +3190,12 @@ impl PhysicalPlanner {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
                 let func = AggregateUDF::new_from_impl(HllPlusPlus::new(expr.precision));
                 Self::create_aggr_func_expr("approx_count_distinct", schema, vec![child], func)
+            }
+            AggExprStruct::HllUnionAgg(expr) => {
+                let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
+                let func =
+                    AggregateUDF::new_from_impl(HllUnionAgg::new(expr.allow_different_lg_config_k));
+                Self::create_aggr_func_expr("hll_union_agg", schema, vec![child], func)
             }
         }
     }

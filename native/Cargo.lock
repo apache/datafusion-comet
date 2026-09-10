@@ -2126,6 +2126,7 @@ dependencies = [
  "datafusion-comet-common",
  "datafusion-comet-jni-bridge",
  "datafusion-spark",
+ "datasketches",
  "futures",
  "jni 0.22.4",
  "num",
@@ -2730,6 +2731,12 @@ dependencies = [
  "regex",
  "sqlparser",
 ]
+
+[[package]]
+name = "datasketches"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "46c4cf71a36b46dcfc00e5014c0c20ccad2b1b6a008304d7d57d2749b2d41b3d"
 
 [[package]]
 name = "debugid"
