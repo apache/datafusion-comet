@@ -1374,12 +1374,12 @@ mod tests {
         for (input, expected_bucket, expected_path) in [
             (
                 "blob://test_bucket/comet/spark-warehouse/part-00000.snappy.parquet",
-                "s3://test_bucket",
+                "test_bucket",
                 "/comet/spark-warehouse/part-00000.snappy.parquet",
             ),
             (
                 "blob:///mybucket/warehouse/data/part-0.snappy.parquet",
-                "s3://mybucket",
+                "mybucket",
                 "warehouse/data/part-0.snappy.parquet",
             ),
         ] {
@@ -1391,7 +1391,11 @@ mod tests {
             .unwrap_or_else(|e| panic!("{input} should normalize to s3://: {e}"));
             assert_eq!(
                 object_store_url,
-                ObjectStoreUrl::parse(expected_bucket).unwrap()
+                ObjectStoreUrl::parse(format!(
+                    "s3+comet-{:016x}-native://{expected_bucket}",
+                    hash_object_store_configs(&configs),
+                ))
+                .unwrap()
             );
             assert_eq!(path, Path::from(expected_path));
         }
@@ -1435,7 +1439,11 @@ mod tests {
             .unwrap_or_else(|e| panic!("{input} must build an S3 store, not libhdfs: {e}"));
             assert_eq!(
                 object_store_url,
-                ObjectStoreUrl::parse("s3://test_bucket").unwrap()
+                ObjectStoreUrl::parse(format!(
+                    "s3+comet-{:016x}-native://test_bucket",
+                    hash_object_store_configs(&configs),
+                ))
+                .unwrap()
             );
             assert_eq!(path, Path::from("/comet/part-00000.snappy.parquet"));
         }
