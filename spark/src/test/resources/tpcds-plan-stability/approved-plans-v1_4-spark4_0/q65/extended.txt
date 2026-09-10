@@ -32,9 +32,9 @@ TakeOrderedAndProject
       :                 +- CometNativeScan parquet spark_catalog.default.item
       +- BroadcastExchange
          +- Filter
-            +-  HashAggregate [COMET: Grouped decimal AVG in ANSI mode requires Spark's lazy group evaluation]
+            +-  HashAggregate [COMET: HashAggregateExec is not fully compatible with Spark (Grouped decimal AVG in ANSI mode requires Spark's lazy group evaluation). To enable it anyway, set spark.comet.operator.HashAggregateExec.allowIncompatible=true. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/latest/compatibility/index.html).]
                +- Exchange
-                  +-  HashAggregate [COMET: Grouped decimal AVG in ANSI mode requires Spark's lazy group evaluation]
+                  +-  HashAggregate [COMET: HashAggregateExec is not fully compatible with Spark (Grouped decimal AVG in ANSI mode requires Spark's lazy group evaluation). To enable it anyway, set spark.comet.operator.HashAggregateExec.allowIncompatible=true. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/latest/compatibility/index.html).]
                      +- CometColumnarToRow
                         +- CometHashAggregate
                            +- CometExchange
