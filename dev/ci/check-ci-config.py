@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 
-# Guards three CI invariants that are silent when broken:
+# Guards four CI invariants that are silent when broken:
 #
 #   1. Change-filter routing. dev/ci/compute-changes.py decides which heavy
 #      jobs run. A file that a job depends on but that no filter lists makes
@@ -28,7 +28,14 @@
 #      expected sets are transcribed from the `if:` expressions ci.yml carried
 #      before the policy moved, so a regression here is a behaviour change.
 #
-#   3. Artifact-name uniqueness. Artifact names are scoped to the *run*, not
+#   3. Required-check coverage. `Required Checks` in ci.yml is the job that
+#      `.asf.yaml` can name in `required_status_checks` for main. A heavy job
+#      missing from its `needs:` can fail without blocking the merge, and a
+#      rename on either side of the ci.yml/.asf.yaml pair turns the required
+#      context into one that never reports, which blocks *every* merge to main
+#      until INFRA removes it by hand.
+#
+#   4. Artifact-name uniqueness. Artifact names are scoped to the *run*, not
 #      to the calling workflow, and ci.yml calls the Spark SQL and Iceberg
 #      reusable workflows several times in one run. Two producers sharing a
 #      name make `download-artifact` pick by highest artifact ID rather than
@@ -43,6 +50,16 @@ import sys
 from pathlib import Path
 
 WORKFLOWS = Path(".github/workflows")
+ASF_YAML = Path(".asf.yaml")
+
+# The ci.yml job that aggregates every other job's result.
+AGGREGATOR_JOB = "required_checks"
+
+# Jobs that legitimately stay out of the aggregator's `needs:`. `docs` deploys
+# to asf-site on push to main; it gates nothing and is never part of a merge
+# decision, so folding it in would only turn a failed site deploy into a red
+# `Required Checks` on main.
+AGGREGATOR_EXEMPT = {AGGREGATOR_JOB, "docs"}
 
 # Changed-file list -> the set of outputs compute-changes.py must report true.
 # Every other output must be false. Keep one case per shared build input so a
@@ -259,10 +276,120 @@ def check_artifact_names():
     return not failures
 
 
+def ci_jobs_and_aggregator():
+    """Return (all job ids in ci.yml, aggregator `needs:` ids, aggregator display name).
+
+    Parsed line by line rather than with PyYAML, which is not installed on the
+    preflight runner.
+    """
+    lines = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8").splitlines()
+    job_key = re.compile(r"^  ([a-z0-9_]+):\s*$")
+    needs_item = re.compile(r"^      - ([a-z0-9_]+)\s*$")
+    name_key = re.compile(r"^    name:\s*(\S.*?)\s*$")
+
+    jobs, needs, display_name = [], [], None
+    in_jobs = False
+    current = None
+    in_needs_list = False
+    for line in lines:
+        if line.startswith("jobs:"):
+            in_jobs = True
+            continue
+        if not in_jobs:
+            continue
+        match = job_key.match(line)
+        if match:
+            current = match.group(1)
+            jobs.append(current)
+            in_needs_list = False
+            continue
+        if current != AGGREGATOR_JOB:
+            continue
+        if line.strip() == "needs:":
+            in_needs_list = True
+            continue
+        match = name_key.match(line)
+        if match:
+            display_name = match.group(1)
+        match = needs_item.match(line)
+        if in_needs_list and match:
+            needs.append(match.group(1))
+        elif in_needs_list and line.strip() and not line.startswith("      "):
+            in_needs_list = False
+    return jobs, needs, display_name
+
+
+def asf_required_contexts():
+    """Return the required_status_checks contexts .asf.yaml declares for main."""
+    lines = ASF_YAML.read_text(encoding="utf-8").splitlines()
+    context_item = re.compile(r'^\s+- "?(.+?)"?\s*$')
+    contexts = []
+    collecting = False
+    for line in lines:
+        if line.strip() == "contexts:":
+            collecting = True
+            continue
+        if not collecting:
+            continue
+        if line.strip().startswith("#"):
+            continue
+        match = context_item.match(line)
+        if match:
+            contexts.append(match.group(1))
+        else:
+            collecting = False
+    return contexts
+
+
+def check_required_checks():
+    jobs, needs, display_name = ci_jobs_and_aggregator()
+    failures = []
+
+    if AGGREGATOR_JOB not in jobs:
+        failures.append(
+            f"ci.yml has no `{AGGREGATOR_JOB}` job; it is the only context "
+            f"`.asf.yaml` requires for main"
+        )
+    else:
+        missing = [j for j in jobs if j not in AGGREGATOR_EXEMPT and j not in needs]
+        if missing:
+            failures.append(
+                f"ci.yml jobs missing from `{AGGREGATOR_JOB}.needs`: "
+                f"{', '.join(missing)}. A job outside the aggregator can fail "
+                f"without blocking the merge queue; add it, or add it to "
+                f"AGGREGATOR_EXEMPT here with a reason"
+            )
+        stale = [n for n in needs if n not in jobs]
+        if stale:
+            failures.append(
+                f"`{AGGREGATOR_JOB}.needs` names jobs that no longer exist in "
+                f"ci.yml: {', '.join(stale)}"
+            )
+        if display_name is None:
+            failures.append(f"the `{AGGREGATOR_JOB}` job in ci.yml has no `name:`")
+        else:
+            # An empty list means main does not require any status check yet,
+            # which is a valid state: there is nothing to keep in sync. Once a
+            # context is declared, it has to be one this job actually reports.
+            contexts = asf_required_contexts()
+            if contexts and display_name not in contexts:
+                failures.append(
+                    f"`{AGGREGATOR_JOB}` publishes the check name "
+                    f"'{display_name}', but .asf.yaml requires {contexts} "
+                    f"for main. A required context that never reports blocks every "
+                    f"merge, including the one that would fix .asf.yaml"
+                )
+
+    for failure in failures:
+        print(f"required checks: {failure}")
+    return not failures
+
+
 if __name__ == "__main__":
     ok = check_change_filters()
     ok = check_event_policy() and ok
     ok = check_artifact_names() and ok
+    ok = check_required_checks() and ok
     if not ok:
         sys.exit(1)
     print("CI config checks passed")

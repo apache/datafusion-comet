@@ -42,6 +42,15 @@ is a `workflow_call` reusable invoked from the umbrella.
   spark_4_1                                                     iceberg_1_10 run-iceberg-tests
   iceberg_1_11
 
+        |                                   |                                   |
+        +-----------------------------------+-----------------------------------+
+                                            v
+                                +-----------------------+
+                                |    required_checks    |  ubuntu-slim
+                                |  one flat name that   |
+                                |  is safe to require   |
+                                +-----------------------+
+
   reusable workflows invoked via `uses:`:
     pr_build_linux.yml         spark_sql_test_reusable.yml
     pr_build_macos.yml         iceberg_spark_test_reusable.yml
@@ -67,6 +76,7 @@ is a `workflow_call` reusable invoked from the umbrella.
 | `iceberg_1_8`        | push, **or** PR with `run-iceberg-tests` label      | Iceberg sources                     |
 | `iceberg_1_9`        | push, **or** PR with `run-iceberg-tests` label      | Iceberg sources                     |
 | `iceberg_1_10`       | push, **or** PR with `run-iceberg-tests` label      | Iceberg sources                     |
+| `required_checks`    | always, after every job above except `docs`         | none (always runs)                  |
 
 A heavy job appears in the PR's checks list as a `skipped` entry whenever
 its path filter or event criteria don't match. Skipped checks count as
@@ -209,17 +219,29 @@ distribution does not surface as a test failure.
 
 ## Branch protection
 
-Required-check names changed when these workflows were consolidated. The
-umbrella exposes per-job names like `CI / pr_build_linux / Lint`,
-`CI / spark_3_5 / linux-test (...)`, etc. Update repository branch
-protection rules to point at the new names; the old standalone workflow
-names (`Spark SQL Tests (Spark 3.5)`, `PR Build (Linux)`, ...) no longer
-exist as top-level workflows.
+`.asf.yaml` declares no `required_status_checks` for `main` today, only
+`required_approving_review_count: 1`.
 
-`.asf.yaml` currently declares no `required_status_checks` for `main`, only
-`required_approving_review_count: 1`. Anything added there must be a name that
-never legitimately reports `skipped`, because GitHub counts a skipped check as
-passing. The bare caller-job names (`PR Build (Linux)`, `Spark SQL Tests
-(Spark 3.5)`, ...) are not such names: a reusable workflow that actually runs
-publishes only its child jobs, so the bare name shows up solely when the caller
-was skipped.
+Adding one is not as simple as naming a job, because a caller of a reusable
+workflow publishes a _different check name_ depending on whether it ran:
+
+| Caller state     | Check runs published                                     |
+| ---------------- | -------------------------------------------------------- |
+| skipped by `if:` | one run named exactly `PR Build (Linux)`, `skipped`      |
+| ran              | only `PR Build (Linux) / Spark 4.1, JDK 17 [exec]`, etc. |
+
+No name is reported in both cases. Requiring the bare name would block every
+code change; requiring a nested name would block every docs-only change. Both
+hang waiting for a check that never arrives rather than failing, and a required
+context that never reports also blocks the merge that would fix `.asf.yaml` —
+recovering from that needs an INFRA Jira ticket.
+
+The `required_checks` job at the bottom of `ci.yml` exists to be the one name
+that is safe to require. It is flat, so it reports on every event; it runs
+`if: always()` and treats `skipped` as a pass, so it only goes red when an
+upstream job reports `failure` or `cancelled`.
+
+`dev/ci/check-ci-config.py` enforces that every `ci.yml` job except `docs`
+appears in `required_checks.needs`, and — once `.asf.yaml` does declare a
+required context — that the job's `name:` still matches it. Both sides of that
+pair are silent when broken and expensive to recover from.
