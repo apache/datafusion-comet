@@ -1068,13 +1068,20 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
             // result through the JVM codegen dispatcher (Spark's own `doGenCode` inside the Comet
             // pipeline) so the projection stays native while still matching Spark. Everything else
             // falls back to Spark. Falling back is also the result when the dispatcher cannot
-            // handle the expression.
-            val dispatched = dispatchIfFallback(handler, expr, inputs, binding).map {
-              case (h, proto) =>
-                val key = h.nativeOptInConfigKeyOverride
-                  .getOrElse(CometConf.getExprAllowIncompatConfigKey(exprConfName))
-                withInfo(expr, NativeOptIn.message(exprConfName, key))
-                proto
+            // handle the expression, or when the serde enrolls only its `Unsupported` cases
+            // (`dispatchesIncompatible`).
+            val dispatchesIncompatible = handler match {
+              case h: CodegenDispatchFallback => h.dispatchesIncompatible
+              case _ => false
+            }
+            val dispatchable =
+              if (dispatchesIncompatible) dispatchIfFallback(handler, expr, inputs, binding)
+              else None
+            val dispatched = dispatchable.map { case (h, proto) =>
+              val key = h.nativeOptInConfigKeyOverride
+                .getOrElse(CometConf.getExprAllowIncompatConfigKey(exprConfName))
+              withInfo(expr, NativeOptIn.message(exprConfName, key))
+              proto
             }
             dispatched.orElse {
               val optionalNotes = notes.map(str => s" ($str)").getOrElse("")

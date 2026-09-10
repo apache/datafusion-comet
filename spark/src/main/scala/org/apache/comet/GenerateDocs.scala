@@ -77,7 +77,13 @@ object GenerateDocs {
 
   /** Build the documentation notes for a single expression serde. */
   private def exprNotes(cls: Class[_], serde: CometExpressionSerde[_]): ExprNotes = {
-    val optIn = serde.isInstanceOf[NativeOptInAvailable]
+    // A `CodegenDispatchFallback` serde that enrolls only its `Unsupported` cases leaves its
+    // `Incompatible` cases falling back to Spark, so they are documented as such.
+    val optIn = serde match {
+      case d: CodegenDispatchFallback => d.dispatchesIncompatible
+      case _: NativeOptInAvailable => true
+      case _ => false
+    }
     val key = serde match {
       case n: NativeOptInAvailable =>
         n.nativeOptInConfigKeyOverride.getOrElse(CometConf.getExprAllowIncompatConfigKey(cls))
