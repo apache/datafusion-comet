@@ -188,6 +188,14 @@ mod tests {
     use arrow::datatypes::{Field, Int32Type};
 
     fn build_list(rows: Vec<Option<Vec<Option<i32>>>>) -> Arc<ListArray> {
+        let field = Arc::new(Field::new("item", DataType::Int32, true));
+        build_list_with_field(field, rows)
+    }
+
+    fn build_list_with_field(
+        field: FieldRef,
+        rows: Vec<Option<Vec<Option<i32>>>>,
+    ) -> Arc<ListArray> {
         let mut offsets = vec![0i32];
         let mut values: Vec<Option<i32>> = Vec::new();
         let mut nulls = NullBufferBuilder::new(rows.len());
@@ -202,7 +210,6 @@ mod tests {
             offsets.push(values.len() as i32);
         }
         let values = Arc::new(Int32Array::from(values)) as ArrayRef;
-        let field = Arc::new(Field::new("item", DataType::Int32, true));
         Arc::new(ListArray::new(
             field,
             OffsetBuffer::new(offsets.into()),
@@ -370,5 +377,17 @@ mod tests {
         let start = Int64Array::from(vec![Some(1)]);
         let length = Int64Array::from(vec![Some(-1)]);
         assert!(slice_list::<i32>(list.as_ref(), &start, &length).is_err());
+    }
+
+    #[test]
+    fn preserves_non_nullable_element_field() {
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert("spark.element".to_string(), "non-null".to_string());
+        let field = Arc::new(Field::new("element", DataType::Int32, false).with_metadata(metadata));
+        let list = build_list_with_field(field, vec![Some(vec![Some(1), Some(2), Some(3)])]);
+        let start = Int64Array::from(vec![Some(1)]);
+        let length = Int64Array::from(vec![Some(2)]);
+        let result = slice_list::<i32>(list.as_ref(), &start, &length).unwrap();
+        assert_eq!(result.data_type(), list.data_type());
     }
 }
