@@ -29,6 +29,7 @@ use arrow::datatypes::{
     Float64Type, Int16Type, Int32Type, Int64Type, Int8Type,
 };
 use num::{cast::AsPrimitive, ToPrimitive, Zero};
+use std::fmt::{self, Write};
 use std::sync::Arc;
 
 /// Check if DataFusion cast from integer types is Spark compatible
@@ -136,95 +137,176 @@ macro_rules! cast_float_to_timestamp_impl {
     }};
 }
 
-macro_rules! cast_float_to_string {
-    ($from:expr, $eval_mode:expr, $type:ty, $output_type:ty, $offset_type:ty, $min_value:expr) => {{
+/// A float width that Java renders through `Float.toString` / `Double.toString`.
+///
+/// The two differ only in the literal text of the smallest subnormal, which Java's algorithm
+/// spells with more digits than a shortest-round-trip formatter produces.
+pub trait JavaFloatString: Copy + PartialOrd + fmt::Display + fmt::UpperExp {
+    /// `Float.MIN_VALUE` / `Double.MIN_VALUE` as Java spells it.
+    const MIN_SUBNORMAL: &'static str;
+    /// Plain notation covers `[0.001, 10^7)`; anything outside it is scientific.
+    const PLAIN_LOWER: Self;
+    const PLAIN_UPPER: Self;
 
-        fn cast<OffsetSize>(
-            from: &dyn Array,
-            _eval_mode: EvalMode,
-        ) -> SparkResult<ArrayRef>
-        where
-            OffsetSize: OffsetSizeTrait, {
-                use std::fmt::Write;
+    fn abs(self) -> Self;
+    fn is_zero(self) -> bool;
+    fn is_whole(self) -> bool;
+    fn is_finite(self) -> bool;
+    fn is_nan(self) -> bool;
+    fn is_sign_negative(self) -> bool;
+    /// The value whose magnitude is one ULP above zero, the one Java does not render shortest.
+    fn is_smallest_subnormal(self) -> bool;
+}
 
-                let array = from.as_any().downcast_ref::<$output_type>().unwrap();
+macro_rules! impl_java_float_string {
+    ($type:ty, $min_subnormal:expr) => {
+        impl JavaFloatString for $type {
+            const MIN_SUBNORMAL: &'static str = $min_subnormal;
+            const PLAIN_LOWER: Self = 0.001;
+            const PLAIN_UPPER: Self = 10000000.0;
 
-                // If the absolute number is less than 10,000,000 and greater or equal than 0.001, the
-                // result is expressed without scientific notation with at least one digit on either side of
-                // the decimal point. Otherwise, Spark uses a mantissa followed by E and an
-                // exponent. The mantissa has an optional leading minus sign followed by one digit to the
-                // left of the decimal point, and the minimal number of digits greater than zero to the
-                // right. The exponent has and optional leading minus sign.
-                // source: https://docs.databricks.com/en/sql/language-manual/functions/cast.html
-
-                const LOWER_SCIENTIFIC_BOUND: $type = 0.001;
-                const UPPER_SCIENTIFIC_BOUND: $type = 10000000.0;
-
-                // Values are formatted straight into the builder, so no intermediate String
-                // is allocated per row. Capacity hint matches arrow-rs's own AVERAGE_STRING_LENGTH
-                // (16 bytes / value) so typical fractional and scientific outputs like
-                // "1234.5678" or "-1.4E-45" do not force a mid-loop grow.
-                let mut builder = GenericStringBuilder::<OffsetSize>::with_capacity(
-                    array.len(),
-                    array.len() * 16,
-                );
-                // Reused across rows by the scientific-notation path, which has to inspect
-                // the formatted text before emitting it.
-                let mut scratch = String::with_capacity(32);
-
-                for value in array.iter() {
-                    let Some(value) = value else {
-                        builder.append_null();
-                        continue;
-                    };
-                    let abs = value.abs();
-                    if (LOWER_SCIENTIFIC_BOUND..UPPER_SCIENTIFIC_BOUND).contains(&abs)
-                        || abs == 0.0
-                    {
-                        let _ = write!(builder, "{value}");
-                        if value.fract() == 0.0 {
-                            // Spark always renders a fractional digit; Rust omits it.
-                            let _ = builder.write_str(".0");
-                        }
-                        builder.append_value("");
-                    } else if !value.is_finite() {
-                        // NaN and the infinities are excluded by the range check above.
-                        builder.append_value(if value.is_nan() {
-                            "NaN"
-                        } else if value.is_sign_positive() {
-                            "Infinity"
-                        } else {
-                            "-Infinity"
-                        });
-                    } else if abs.to_bits() == 1 {
-                        // Java's Double.toString / Float.toString are not shortest-roundtrip
-                        // and render the smallest subnormals with more digits than Rust does.
-                        builder.append_value(if value.is_sign_negative() {
-                            concat!("-", $min_value)
-                        } else {
-                            $min_value
-                        });
-                    } else {
-                        scratch.clear();
-                        let _ = write!(scratch, "{value:E}");
-                        match scratch.split_once('E') {
-                            Some((coefficient, exponent)) if !coefficient.contains('.') => {
-                                // Spark keeps the fractional digit Rust drops from a whole
-                                // coefficient.
-                                let _ = builder.write_str(coefficient);
-                                let _ = builder.write_str(".0E");
-                                builder.append_value(exponent);
-                            }
-                            _ => builder.append_value(&scratch),
-                        }
-                    }
-                }
-
-                Ok(Arc::new(builder.finish()))
+            fn abs(self) -> Self {
+                <$type>::abs(self)
             }
+            fn is_zero(self) -> bool {
+                self == 0.0
+            }
+            fn is_whole(self) -> bool {
+                self.fract() == 0.0
+            }
+            fn is_finite(self) -> bool {
+                <$type>::is_finite(self)
+            }
+            fn is_nan(self) -> bool {
+                <$type>::is_nan(self)
+            }
+            fn is_sign_negative(self) -> bool {
+                <$type>::is_sign_negative(self)
+            }
+            fn is_smallest_subnormal(self) -> bool {
+                <$type>::abs(self).to_bits() == 1
+            }
+        }
+    };
+}
 
-        cast::<$offset_type>($from, $eval_mode)
-    }};
+impl_java_float_string!(f32, "1.4E-45");
+impl_java_float_string!(f64, "4.9E-324");
+
+/// Writes `value` as Java's `Float.toString` / `Double.toString` renders it.
+///
+/// If the absolute value is less than 10,000,000 and greater or equal than 0.001, the result is
+/// expressed without scientific notation with at least one digit on either side of the decimal
+/// point. Otherwise the value is a mantissa followed by `E` and an exponent, the mantissa having
+/// an optional leading minus sign followed by one digit to the left of the decimal point and the
+/// minimal number of digits greater than zero to the right.
+///
+/// Rust's own `Display` and `UpperExp` give the same digits but drop a whole coefficient's
+/// fractional zero (`1` for `1.0`) and never switch to an exponent, so `Double.MAX_VALUE` would
+/// render as 309 digits. Both matter beyond cosmetics: Spark spells a `cast(double as string)`
+/// this way, and iceberg-java spells a float or double partition directory this way, where the
+/// unabbreviated form overruns the filesystem's limit on one path component.
+///
+/// This is the pre-JDK-19 `Double.toString`, which is not shortest-round-trip for every value.
+/// Only the smallest subnormal, by far the most visible case, is corrected for here.
+///
+/// Errors only if `out` does; writing into a `String` or an arrow string builder cannot fail.
+pub fn write_java_float_string<T: JavaFloatString, W: fmt::Write>(
+    value: T,
+    out: &mut W,
+) -> fmt::Result {
+    let abs = value.abs();
+    if (T::PLAIN_LOWER..T::PLAIN_UPPER).contains(&abs) || abs.is_zero() {
+        write!(out, "{value}")?;
+        if value.is_whole() {
+            // Java always renders a fractional digit; Rust omits it.
+            out.write_str(".0")?;
+        }
+        Ok(())
+    } else if !value.is_finite() {
+        // NaN and the infinities are excluded by the range check above.
+        out.write_str(if value.is_nan() {
+            "NaN"
+        } else if value.is_sign_negative() {
+            "-Infinity"
+        } else {
+            "Infinity"
+        })
+    } else if value.is_smallest_subnormal() {
+        if value.is_sign_negative() {
+            out.write_str("-")?;
+        }
+        out.write_str(T::MIN_SUBNORMAL)
+    } else {
+        // The coefficient has to be inspected before any of it is emitted, so it is formatted
+        // into a stack buffer rather than into `out`, which may not be rewindable.
+        let mut scratch = ExponentBuf::default();
+        write!(scratch, "{value:E}")?;
+        match scratch.as_str().split_once('E') {
+            Some((coefficient, exponent)) if !coefficient.contains('.') => {
+                // Java keeps the fractional digit Rust drops from a whole coefficient.
+                out.write_str(coefficient)?;
+                out.write_str(".0E")?;
+                out.write_str(exponent)
+            }
+            _ => out.write_str(scratch.as_str()),
+        }
+    }
+}
+
+/// Scratch space for one `{:E}` rendering. The longest a float produces is
+/// `-2.2250738585072014E-308`, 24 bytes.
+#[derive(Default)]
+struct ExponentBuf {
+    bytes: [u8; 32],
+    len: usize,
+}
+
+impl ExponentBuf {
+    fn as_str(&self) -> &str {
+        // Only `{:E}` output, which is ASCII, is ever written.
+        std::str::from_utf8(&self.bytes[..self.len]).expect("ascii float text")
+    }
+}
+
+impl fmt::Write for ExponentBuf {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        let end = self.len + s.len();
+        // Unreachable for `{:E}` of an f32 or f64; returning an error rather than panicking keeps
+        // a future caller's mistake out of the JNI boundary.
+        let target = self.bytes.get_mut(self.len..end).ok_or(fmt::Error)?;
+        target.copy_from_slice(s.as_bytes());
+        self.len = end;
+        Ok(())
+    }
+}
+
+/// Casts a float array to strings the way Spark's `cast(float as string)` does, which is Java's
+/// `Float.toString` / `Double.toString`.
+fn spark_cast_float_to_utf8<T, OffsetSize>(from: &dyn Array) -> SparkResult<ArrayRef>
+where
+    T: ArrowPrimitiveType,
+    T::Native: JavaFloatString,
+    OffsetSize: OffsetSizeTrait,
+{
+    let array = from.as_primitive::<T>();
+    // Values are formatted straight into the builder, so no intermediate String is allocated per
+    // row. Capacity hint matches arrow-rs's own AVERAGE_STRING_LENGTH (16 bytes / value) so
+    // typical fractional and scientific outputs like "1234.5678" or "-1.4E-45" do not force a
+    // mid-loop grow.
+    let mut builder =
+        GenericStringBuilder::<OffsetSize>::with_capacity(array.len(), array.len() * 16);
+    for value in array.iter() {
+        match value {
+            None => builder.append_null(),
+            Some(value) => {
+                // Infallible for a string builder; the signature is generic over the sink.
+                let _ = write_java_float_string(value, &mut builder);
+                builder.append_value("");
+            }
+        }
+    }
+    Ok(Arc::new(builder.finish()))
 }
 
 // eval mode is not needed since all ints can be implemented in binary format
@@ -731,7 +813,7 @@ pub(crate) fn spark_cast_float64_to_utf8<OffsetSize>(
 where
     OffsetSize: OffsetSizeTrait,
 {
-    cast_float_to_string!(from, _eval_mode, f64, Float64Array, OffsetSize, "4.9E-324")
+    spark_cast_float_to_utf8::<Float64Type, OffsetSize>(from)
 }
 
 pub(crate) fn spark_cast_float32_to_utf8<OffsetSize>(
@@ -741,7 +823,7 @@ pub(crate) fn spark_cast_float32_to_utf8<OffsetSize>(
 where
     OffsetSize: OffsetSizeTrait,
 {
-    cast_float_to_string!(from, _eval_mode, f32, Float32Array, OffsetSize, "1.4E-45")
+    spark_cast_float_to_utf8::<Float32Type, OffsetSize>(from)
 }
 
 fn cast_int_to_decimal128_internal<T>(

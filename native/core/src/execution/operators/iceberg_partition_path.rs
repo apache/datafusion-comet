@@ -27,6 +27,7 @@ use std::sync::Arc;
 
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
+use datafusion_comet_spark_expr::{write_java_float_string, JavaFloatString};
 use iceberg::spec::{
     Literal, PartitionKey, PartitionSpec, PrimitiveLiteral, PrimitiveType, SchemaRef, StructType,
     Transform, Type,
@@ -150,17 +151,18 @@ const NULL: &str = "null";
 /// | `timestamp`        | `1969-12-31T23:59:58.5`       | `1969-12-31 23:59:58.500`        |
 /// | `timestamptz`      | `1969-12-31T23:59:58.5+00:00` | panics for a negative value with a sub-second part; otherwise `1969-12-31 23:59:58.500 UTC` |
 /// | `binary` / `fixed` | base64                        | uppercase hex                    |
+/// | `float` / `double` | `1.0`, `1.0E20`               | `1`, `100000000000000000000`     |
 ///
 /// The nanosecond timestamp types get the same treatment for the same reason. They are V3-only, so
 /// `CometIcebergNativeWrite`'s format-version gate keeps them out of a native write today; the arms
 /// exist so a future V3 write does not reintroduce the panic.
 ///
-/// Known remaining divergence, deliberately left delegating: `float` and `double`. Java renders
-/// them with `Float.toString`/`Double.toString` (always a fractional digit, `E` notation outside
-/// `[1e-3, 1e7)`), Rust with its own shortest representation, so `1.0` becomes `1` and `1.0E20`
-/// becomes `100000000000000000000`. Porting Java's algorithm is a much larger piece of work than a
-/// partition directory name warrants -- Comet's `cast(float as string)` needs the same port -- and
-/// unlike `timestamptz` it does not panic. Iceberg deprecated float/double partitioning in 1.3.
+/// `float` and `double` go through `write_java_float_string`, the same rendering Comet's
+/// `cast(float as string)` uses, because Java spells both with `Float.toString`/`Double.toString`.
+/// Rust's `Display` never switches to an exponent, so delegating rendered `Double.MAX_VALUE` as 309
+/// digits, overrunning the 255-byte limit on a single path component and failing the write with
+/// `File name too long` (apache/datafusion-comet#5836). Iceberg deprecated float and double
+/// partitioning in 1.3, so this is for tables that already have such a field.
 fn human_string(transform: &Transform, field_type: &Type, value: Option<&Literal>) -> String {
     // Java returns "null" for a null partition value regardless of transform or type, which also
     // covers every `void` field: `void` produces no value, so this is the only arm it reaches.
@@ -188,8 +190,22 @@ fn human_string(transform: &Transform, field_type: &Type, value: Option<&Literal
             Some(PrimitiveType::Binary | PrimitiveType::Fixed(_)),
             PrimitiveLiteral::Binary(bytes),
         ) => BASE64.encode(bytes),
+        (Some(PrimitiveType::Float), PrimitiveLiteral::Float(value)) => java_float_string(**value),
+        (Some(PrimitiveType::Double), PrimitiveLiteral::Double(value)) => {
+            java_float_string(**value)
+        }
         _ => transform.to_human_string(field_type, value),
     }
+}
+
+/// `Float.toString` / `Double.toString` of one partition value, as an owned `String` for
+/// `human_string`'s signature. Writing a partition path happens once per data file, so the
+/// allocation is not on any hot path.
+fn java_float_string<T: JavaFloatString>(value: T) -> String {
+    let mut out = String::new();
+    // Writing into a `String` cannot fail.
+    let _ = write_java_float_string(value, &mut out);
+    out
 }
 
 /// Renders a sub-second count since the Unix epoch the way iceberg-java's
@@ -386,6 +402,63 @@ mod tests {
         assert_eq!(civil_from_days(-719_468), (0, 3, 1));
         assert_eq!(civil_from_days(-719_528), (0, 1, 1));
         assert_eq!(civil_from_days(-719_529), (-1, 12, 31));
+    }
+
+    fn double(value: f64) -> String {
+        human_string(
+            &Transform::Identity,
+            &Type::Primitive(PrimitiveType::Double),
+            Some(&Literal::Primitive(PrimitiveLiteral::Double(value.into()))),
+        )
+    }
+
+    fn float(value: f32) -> String {
+        human_string(
+            &Transform::Identity,
+            &Type::Primitive(PrimitiveType::Float),
+            Some(&Literal::Primitive(PrimitiveLiteral::Float(value.into()))),
+        )
+    }
+
+    // Expectations produced by `Double.toString` / `Float.toString` on the JDK: plain notation
+    // inside [1e-3, 1e7) with at least one digit either side of the point, scientific notation
+    // outside it. Rust's own `Display` never uses an exponent, so `Double.MAX_VALUE` came out as
+    // 309 digits -- past a filesystem's 255-byte limit on one path component, which failed the
+    // write outright (apache/datafusion-comet#5836).
+    #[test]
+    fn renders_doubles_like_java_double_to_string() {
+        assert_eq!(double(1.0), "1.0");
+        assert_eq!(double(-0.5), "-0.5");
+        assert_eq!(double(0.0), "0.0");
+        assert_eq!(double(-0.0), "-0.0");
+        assert_eq!(double(123.456), "123.456");
+        // Boundaries of the plain-notation window, which is closed below and open above.
+        assert_eq!(double(0.001), "0.001");
+        assert_eq!(double(9.99e-4), "9.99E-4");
+        assert_eq!(double(9_999_999.0), "9999999.0");
+        assert_eq!(double(1.0e7), "1.0E7");
+        assert_eq!(double(1.0e20), "1.0E20");
+        assert_eq!(double(f64::MAX), "1.7976931348623157E308");
+        assert_eq!(double(-f64::MAX), "-1.7976931348623157E308");
+        assert_eq!(double(f64::MIN_POSITIVE), "2.2250738585072014E-308");
+        assert_eq!(double(f64::from_bits(1)), "4.9E-324");
+        assert_eq!(double(f64::NAN), "NaN");
+        assert_eq!(double(f64::INFINITY), "Infinity");
+        assert_eq!(double(f64::NEG_INFINITY), "-Infinity");
+    }
+
+    #[test]
+    fn renders_floats_like_java_float_to_string() {
+        assert_eq!(float(1.0), "1.0");
+        assert_eq!(float(-0.5), "-0.5");
+        assert_eq!(float(0.1), "0.1");
+        assert_eq!(float(0.001), "0.001");
+        assert_eq!(float(9_999_999.0), "9999999.0");
+        assert_eq!(float(1.0e7), "1.0E7");
+        assert_eq!(float(f32::MAX), "3.4028235E38");
+        assert_eq!(float(f32::from_bits(1)), "1.4E-45");
+        assert_eq!(float(f32::NAN), "NaN");
+        assert_eq!(float(f32::INFINITY), "Infinity");
     }
 
     // Java base64-encodes binary and fixed partition values; iceberg-rust hex-encodes them.
