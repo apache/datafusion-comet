@@ -138,9 +138,22 @@ private[codegen] object CometBatchKernelCodegenOutput extends CometTypeShim {
     override def getField: Field = exportField
   }
 
+  /**
+   * The superclass constructor builds a `NullableStructWriter` over `getField.getChildren`, and
+   * that writer has no arm for a Null child (`UnsupportedOperationException: Unknown type: NULL`
+   * for a `struct<..., x: null>` output). So the superclass is given a childless copy of the
+   * field, `getField` answers with it until construction completes (`constructed` is still the
+   * JVM default `false` while the superclass constructor runs, since this class's own fields are
+   * initialized afterwards), and the children come from `initializeChildrenFromFields` in
+   * [[allocateOutput]], the same way a struct nested under a list gets them.
+   */
   private final class RenamedStructVector(exportField: Field, allocator: BufferAllocator)
-      extends StructVector(exportField, allocator, null) {
-    override def getField: Field = exportField
+      extends StructVector(
+        new Field(exportField.getName, exportField.getFieldType, null),
+        allocator,
+        null) {
+    private val constructed: Boolean = true
+    override def getField: Field = if (constructed) exportField else super.getField
   }
 
   /**

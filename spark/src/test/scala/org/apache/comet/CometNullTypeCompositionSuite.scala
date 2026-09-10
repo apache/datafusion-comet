@@ -19,11 +19,12 @@
 
 package org.apache.comet
 
+import scala.collection.mutable
 import scala.collection.mutable.ArrayBuffer
 import scala.util.{Failure, Success, Try}
 
 import org.apache.spark.sql.CometTestBase
-import org.apache.spark.sql.catalyst.expressions.{Expression, JsonToStructs, RuntimeReplaceable, Sequence, StringToMap}
+import org.apache.spark.sql.catalyst.expressions.{ArrayExcept, ArrayIntersect, ArrayRepeat, ArraysZip, ArrayUnion, CaseWhen, Coalesce, CreateArray, Expression, If, JsonToStructs, MapFromArrays, RuntimeReplaceable, Sequence, StringToMap}
 import org.apache.spark.sql.catalyst.expressions.aggregate._
 import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
 import org.apache.spark.sql.comet.CometProjectExec
@@ -31,7 +32,7 @@ import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.NullType
 
-import org.apache.comet.serde.{QueryPlanSerde, SupportLevel}
+import org.apache.comet.serde.{CodegenDispatchFallback, CometExpressionSerde, Compatible, QueryPlanSerde, SupportLevel, Unsupported}
 
 /**
  * Cross-product sweep of the `NullType` shapes the JVM codegen dispatcher admits against the
@@ -382,18 +383,17 @@ class CometNullTypeCompositionSuite extends CometTestBase with AdaptiveSparkPlan
     Seq(defaultProfile, smallBatchProfile, allowIncompatibleProfile)
 
   /**
-   * Profiles for the sweeps that put a value through an operator. Chosen so every pair of
-   * settings below appears together at least once: JVM shuffle through the bypass writer
-   * (partition count under `spark.shuffle.sort.bypassMergeThreshold`) and through the sort-based
-   * writer (above it, one whole partition per native call), with and without forced spills,
-   * native shuffle, AQE on and off, native columnar-to-row on and off, and batch sizes of two.
+   * Profiles for the sweeps that put a value through an operator. Each shuffle path appears once:
+   * JVM shuffle through the bypass writer (partition count under
+   * `spark.shuffle.sort.bypassMergeThreshold`), through the sort-based writer (above it, one
+   * whole partition per native call) with and without forced spills, and native shuffle. Across
+   * them AQE, native columnar-to-row and the two-row batch size each take both values, and every
+   * pair of those settings appears together at least once except native columnar-to-row off with
+   * AQE off, whose two mechanisms do not interact. Five profiles rather than one per setting,
+   * because each one runs the whole operator and nesting sweeps.
    */
   private val physicalProfiles = Seq(
     defaultProfile,
-    Profile(
-      "default-native-c2r",
-      16,
-      Seq(CometConf.COMET_NATIVE_COLUMNAR_TO_ROW_ENABLED.key -> "true")),
     smallBatchProfile.copy(confs = smallBatchProfile.confs ++ Seq(
       CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false")),
@@ -406,7 +406,7 @@ class CometNullTypeCompositionSuite extends CometTestBase with AdaptiveSparkPlan
         CometConf.COMET_SHUFFLE_JVM_BATCH_SIZE.key -> "2",
         CometConf.COMET_SHUFFLE_JVM_SPILL_THRESHOLD.key -> "100000",
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
-        CometConf.COMET_NATIVE_COLUMNAR_TO_ROW_ENABLED.key -> "false")),
+        CometConf.COMET_NATIVE_COLUMNAR_TO_ROW_ENABLED.key -> "true")),
     Profile(
       "jvm-sort-writer-spills",
       900,
@@ -465,44 +465,61 @@ class CometNullTypeCompositionSuite extends CometTestBase with AdaptiveSparkPlan
   // ANSI is a dimension of the consumer sweeps because it changes which serdes wrap their child
   // in a null guard and which kernels raise on out-of-range access; the operators below carry
   // no ANSI semantics of their own.
-  for (ansi <- Seq(false, true); profile <- kernelProfiles) {
-    val tag = s"(ansi=$ansi ${profile.name})"
-    test(s"NullType producers survive every consumer that Spark accepts $tag") {
-      sweep(
-        "consumer",
-        cases().map { case (producer, expr) => (producer, s"SELECT $expr FROM t") },
-        comparedFloor = 120,
-        nativeFloor = 100,
-        ansi = ansi,
-        profile = profile)
+  // Each consumer sweep runs under the kernel profiles that can change its outcome and no
+  // others, since every (ansi, profile) pair is a full pass over the producer x consumer product.
+  for (ansi <- Seq(false, true)) {
+    def tag(profile: Profile): String = s"(ansi=$ansi ${profile.name})"
+
+    // The plain sweep is the one that exercises every kernel, so it takes every kernel profile.
+    for (profile <- kernelProfiles) {
+      test(s"NullType producers survive every consumer that Spark accepts ${tag(profile)}") {
+        sweep(
+          "consumer",
+          cases().map { case (producer, expr) => (producer, s"SELECT $expr FROM t") },
+          comparedFloor = 120,
+          nativeFloor = 100,
+          ansi = ansi,
+          profile = profile)
+      }
     }
 
     // The plain producers are non-nullable, so this is the only sweep where a serde's null guard
     // runs natively over a NullType-bearing column that is NULL on some rows and takes its ELSE
-    // branch; the non-deterministic sweep below makes the same serdes fall back instead.
-    test(s"nullable deterministic NullType producers survive every consumer $tag") {
-      sweep(
-        "nullable",
-        cases(nullableDeterministic).map { case (producer, expr) =>
-          (producer, s"SELECT $expr FROM t")
-        },
-        comparedFloor = 140,
-        nativeFloor = 110,
-        ansi = ansi,
-        profile = profile)
+    // branch; the non-deterministic sweep below makes the same serdes leave the kernel instead.
+    // The guard is per row, so batching changes nothing here; which kernel sits under the guard
+    // does, so the allow-incompatible profile stays.
+    for (profile <- Seq(defaultProfile, allowIncompatibleProfile)) {
+      test(s"nullable deterministic NullType producers survive every consumer ${tag(profile)}") {
+        sweep(
+          "nullable",
+          cases(nullableDeterministic).map { case (producer, expr) =>
+            (producer, s"SELECT $expr FROM t")
+          },
+          comparedFloor = 140,
+          nativeFloor = 110,
+          ansi = ansi,
+          profile = profile)
+      }
     }
 
-    test(s"stateful NullType producers survive guards filtered by a sibling $tag") {
-      sweep(
-        "cross-input",
-        crossInputCases.map { case (producer, expr) => (producer, s"SELECT $expr FROM t") },
-        comparedFloor = 100,
-        nativeFloor = 60,
-        ansi = ansi,
-        profile = profile)
+    // A stateful producer only diverges where a batch boundary falls inside it, so this sweep
+    // takes the two-row batches as well as the default; the kernel choice never sees the state.
+    for (profile <- Seq(defaultProfile, smallBatchProfile)) {
+      test(s"stateful NullType producers survive guards filtered by a sibling ${tag(profile)}") {
+        sweep(
+          "cross-input",
+          crossInputCases.map { case (producer, expr) => (producer, s"SELECT $expr FROM t") },
+          comparedFloor = 100,
+          nativeFloor = 60,
+          ansi = ansi,
+          profile = profile)
+      }
     }
 
-    test(s"nullable non-deterministic NullType producers survive every consumer $tag") {
+    // A non-deterministic child makes every guarding serde decline its native kernel, so neither
+    // batching nor the kernel choice reaches the producer; ANSI still decides which serdes guard.
+    test(
+      s"nullable non-deterministic NullType producers survive every consumer ${tag(defaultProfile)}") {
       sweep(
         "non-deterministic",
         cases(nullableNondeterministic).map { case (producer, expr) =>
@@ -511,7 +528,90 @@ class CometNullTypeCompositionSuite extends CometTestBase with AdaptiveSparkPlan
         comparedFloor = 140,
         nativeFloor = 110,
         ansi = ansi,
-        profile = profile)
+        profile = defaultProfile)
+    }
+  }
+
+  /**
+   * The gates the producers above trip. Each must publish its reason for the compatibility guide
+   * (`getUnsupportedReasons` is what `GenerateDocs` reads; the runtime note can add detail after
+   * it), and the ones whose whole shape Spark's own `doGenCode` can evaluate must enroll in the
+   * JVM codegen dispatcher so the projection stays in the Comet pipeline instead of falling back.
+   * Every query here is a shape from this suite's sweeps or the SQL file tests.
+   */
+  test("NullType gates enroll in the JVM codegen dispatcher and publish their reasons") {
+    val nullArray = "transform(array(id), x -> NULL)"
+    val nullScalar = "aggregate(array(id), NULL, (acc, x) -> NULL)"
+    val dispatched: Seq[(String, Class[_ <: Expression])] = Seq(
+      "array_repeat(map_entries(map(id, NULL)), 2)" -> classOf[ArrayRepeat],
+      // Beside a typed side Spark's coercion casts the NullType one away, so both sides are NullType.
+      s"array_union($nullArray, array())" -> classOf[ArrayUnion],
+      s"array($nullScalar)" -> classOf[CreateArray],
+      s"IF(id > 2, $nullScalar, NULL)" -> classOf[If],
+      s"CASE WHEN id > 2 THEN $nullScalar END" -> classOf[CaseWhen],
+      s"coalesce($nullScalar, $nullScalar)" -> classOf[Coalesce],
+      "coalesce(IF(monotonically_increasing_id() % 2 = 0, id, NULL), id)" -> classOf[Coalesce])
+    // Declined for a reason the dispatcher shares (a NullType input it cannot read, a kernel
+    // that only runs when the user opts in) or on a serde outside this PR's enrollment; these
+    // only have to publish their reason.
+    val documentedOnly: Seq[(String, Class[_ <: Expression])] = Seq(
+      s"array_intersect($nullArray, array())" -> classOf[ArrayIntersect],
+      "array_except(array(named_struct('a', id)), array(named_struct('a', id)))" ->
+        classOf[ArrayExcept],
+      "arrays_zip(array(monotonically_increasing_id()), array(id))" -> classOf[ArraysZip],
+      "map_from_arrays(array(id), array(1))" -> classOf[MapFromArrays])
+    // Shapes a gate must leave on the native kernel: the gate's plan-time proxy would match, but
+    // the native producer is known to be safe.
+    val nativeShapes: Seq[(String, Class[_ <: Expression])] = Seq(
+      // Native make_array emits a nullable item whatever Spark's containsNull says.
+      "array_repeat(array(id), 2)" -> classOf[ArrayRepeat])
+
+    withTempView("t") {
+      spark.range(0, 8).createOrReplaceTempView("t")
+      def serdeAndNode(
+          expr: String,
+          cls: Class[_ <: Expression]): (CometExpressionSerde[Expression], Expression) = {
+        val query = s"SELECT $expr AS c FROM t"
+        val node = spark
+          .sql(query)
+          .queryExecution
+          .analyzed
+          .flatMap(_.expressions)
+          .flatMap(_.collect { case e if e.getClass == cls => e })
+          .headOption
+          .getOrElse(fail(s"$query has no ${cls.getSimpleName} in its analyzed plan"))
+        (QueryPlanSerde.exprSerdeMap(cls).asInstanceOf[CometExpressionSerde[Expression]], node)
+      }
+      for ((expr, cls) <- dispatched ++ documentedOnly) {
+        val (serde, node) = serdeAndNode(expr, cls)
+        val reason = serde.getSupportLevel(node) match {
+          case Unsupported(Some(reason)) => reason
+          case other =>
+            fail(s"${cls.getSimpleName} reports $other for $expr, expected Unsupported")
+        }
+        assert(
+          serde.getUnsupportedReasons().exists(reason.startsWith),
+          s"${cls.getSimpleName}'s reason for $expr is not in getUnsupportedReasons: $reason")
+      }
+      for ((expr, cls) <- nativeShapes) {
+        val (serde, node) = serdeAndNode(expr, cls)
+        assert(
+          serde.getSupportLevel(node).isInstanceOf[Compatible],
+          s"${cls.getSimpleName} must keep $expr on the native kernel")
+      }
+      for ((expr, cls) <- dispatched ++ nativeShapes) {
+        val query = s"SELECT $expr AS c FROM t"
+        assert(
+          QueryPlanSerde.exprSerdeMap(cls).isInstanceOf[CodegenDispatchFallback],
+          s"${cls.getSimpleName} must mix in CodegenDispatchFallback")
+        val (sparkRows, _) = rowsOf(query, cometEnabled = false, ansi = false, defaultProfile)
+        val (cometRows, nativeProject) =
+          rowsOf(query, cometEnabled = true, ansi = false, defaultProfile)
+        assert(
+          cometRows == sparkRows,
+          s"$query: comet ${preview(cometRows)}, spark ${preview(sparkRows)}")
+        assert(nativeProject, s"$query left the Comet pipeline instead of dispatching")
+      }
     }
   }
 
@@ -645,6 +745,13 @@ class CometNullTypeCompositionSuite extends CometTestBase with AdaptiveSparkPlan
    * `nativeFloor` fails one where Comet fell back almost everywhere, since falling back is a pass
    * and such a sweep would prove nothing about the native kernels.
    */
+  /**
+   * Spark's answer to a query depends on the ANSI flag and the row count but on no Comet setting,
+   * so profiles that share both reuse it rather than run the reference side once per profile.
+   * `None` records a query Spark rejects.
+   */
+  private val sparkRowsCache = mutable.HashMap.empty[(String, Boolean, Int), Option[Seq[String]]]
+
   private def sweep(
       name: String,
       queries: Seq[(String, String)],
@@ -665,10 +772,13 @@ class CometNullTypeCompositionSuite extends CometTestBase with AdaptiveSparkPlan
         var skipped = 0
 
         for ((label, query) <- queries) {
-          Try(rowsOf(query, cometEnabled = false, ansi, profile)).toOption match {
+          val sparkRows = sparkRowsCache.getOrElseUpdate(
+            (query, ansi, profile.rows),
+            Try(rowsOf(query, cometEnabled = false, ansi, profile)).toOption.map(_._1))
+          sparkRows match {
             case None =>
               skipped += 1
-            case Some((sparkRows, _)) =>
+            case Some(sparkRows) =>
               compared += 1
               Try(rowsOf(query, cometEnabled = true, ansi, profile)) match {
                 case Failure(e) =>
