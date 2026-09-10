@@ -869,6 +869,27 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       inputs: Seq[Attribute],
       binding: Boolean = true): Option[Expr] = {
 
+    // Some ArrayJoin shapes need the enclosing Spark operator, including when a parent would
+    // otherwise hide them inside codegen dispatch. Inspect independent roots once, before decimal
+    // promotion or recursive serialization. A worklist avoids rebuilding or recursing through
+    // deep expression trees.
+    var remaining = expr :: Nil
+    while (remaining.nonEmpty) {
+      val node = remaining.head
+      remaining = remaining.tail
+      node match {
+        case join: ArrayJoin =>
+          CometArrayJoin.operatorFallbackReason(join) match {
+            case Some(reason) =>
+              withFallbackReason(expr, reason)
+              return None
+            case None =>
+          }
+        case _ =>
+      }
+      node.children.reverseIterator.foreach(child => remaining = child :: remaining)
+    }
+
     val newExpr = DecimalPrecision.promote(expr)
     val result = exprToProtoInternal(newExpr, inputs, binding)
     if (!(newExpr eq expr)) {
