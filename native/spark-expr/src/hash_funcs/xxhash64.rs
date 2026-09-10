@@ -208,6 +208,72 @@ mod tests {
         assert_eq!(from_dict, from_decoded);
     }
 
+    /// The struct branch is shared with murmur3 through `create_hashes_internal!`, so the parent
+    /// null mask has to reach xxhash64's children too. See #4432 for the same problem in
+    /// `GetStructField`.
+    #[test]
+    fn test_null_struct_ignores_hidden_child_values() {
+        use arrow::array::StructArray;
+        use arrow::buffer::NullBuffer;
+        use arrow::datatypes::{DataType, Field, Fields};
+
+        let fields: Fields = vec![Arc::new(Field::new("a", DataType::Int32, true))].into();
+        let nulls = NullBuffer::from(vec![true, false]);
+        let hidden: ArrayRef = Arc::new(StructArray::new(
+            fields.clone(),
+            vec![Arc::new(Int32Array::from(vec![Some(1), Some(999)])) as ArrayRef],
+            Some(nulls.clone()),
+        ));
+        let plain: ArrayRef = Arc::new(StructArray::new(
+            fields,
+            vec![Arc::new(Int32Array::from(vec![Some(1), None])) as ArrayRef],
+            Some(nulls),
+        ));
+
+        let mut a = vec![42u64; 2];
+        create_xxhash64_hashes(&[hidden], &mut a).unwrap();
+        let mut b = vec![42u64; 2];
+        create_xxhash64_hashes(&[plain], &mut b).unwrap();
+        assert_eq!(a, b, "a null struct must hash the same either way");
+        assert_eq!(a[1], 42, "a null struct must leave the seed untouched");
+    }
+
+    /// Companion to the murmur3 case: the struct branch is shared through the macro, so the
+    /// per-element route needs covering here too.
+    #[test]
+    fn test_null_struct_element_of_list_ignores_hidden_child_values() {
+        use arrow::array::{ListArray, StructArray};
+        use arrow::buffer::{NullBuffer, OffsetBuffer};
+        use arrow::datatypes::{DataType, Field, Fields};
+
+        let fields: Fields = vec![Arc::new(Field::new("a", DataType::Int32, true))].into();
+        let element_nulls = NullBuffer::from(vec![true, false, true]);
+        let with_hidden: ArrayRef = Arc::new(StructArray::new(
+            fields.clone(),
+            vec![Arc::new(Int32Array::from(vec![Some(1), Some(999), Some(3)])) as ArrayRef],
+            Some(element_nulls.clone()),
+        ));
+        let without_hidden: ArrayRef = Arc::new(StructArray::new(
+            fields,
+            vec![Arc::new(Int32Array::from(vec![Some(1), None, Some(3)])) as ArrayRef],
+            Some(element_nulls),
+        ));
+        let as_list = |elements: ArrayRef| -> ArrayRef {
+            Arc::new(ListArray::new(
+                Arc::new(Field::new("item", elements.data_type().clone(), true)),
+                OffsetBuffer::new(vec![0i32, 3].into()),
+                elements,
+                None,
+            ))
+        };
+
+        let mut from_hidden = vec![42u64; 1];
+        create_xxhash64_hashes(&[as_list(with_hidden)], &mut from_hidden).unwrap();
+        let mut from_null = vec![42u64; 1];
+        create_xxhash64_hashes(&[as_list(without_hidden)], &mut from_null).unwrap();
+        assert_eq!(from_hidden, from_null);
+    }
+
     #[test]
     fn test_i8() {
         test_xxhash64_hash::<i8, Int8Array>(
