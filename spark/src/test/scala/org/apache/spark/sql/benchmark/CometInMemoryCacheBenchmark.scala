@@ -19,12 +19,19 @@
 
 package org.apache.spark.sql.benchmark
 
+import java.nio.charset.StandardCharsets
+
 import org.apache.spark.SparkConf
 import org.apache.spark.benchmark.Benchmark
 import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.catalyst.expressions.AttributeReference
 import org.apache.spark.sql.comet.CometInMemoryTableScanExec
+import org.apache.spark.sql.comet.execution.arrow.ArrowCachedBatchSerializer
 import org.apache.spark.sql.execution.columnar.InMemoryTableScanExec
+import org.apache.spark.sql.execution.vectorized.OnHeapColumnVector
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.types.{DataType, LongType, StringType}
+import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 
 import org.apache.comet.{CometConf, CometSparkSessionExtensions}
 
@@ -63,6 +70,8 @@ object CometInMemoryCacheBenchmark extends CometBenchmarkBase {
     Seq("id", "sc", "deep", "wide", "tail", "d"),
     nestedNumRows)
 
+  @volatile private var statsResult: (Array[Any], Array[Any], Array[Int]) = _
+
   override def getSparkSession: SparkSession = {
     val conf = new SparkConf()
       .setAppName("CometInMemoryCacheBenchmark")
@@ -93,6 +102,10 @@ object CometInMemoryCacheBenchmark extends CometBenchmarkBase {
   }
 
   override def runCometBenchmark(args: Array[String]): Unit = {
+    runStatsBenchmark()
+    // Run just the JVM statistics loop without constructing or scanning a cached relation.
+    if (args.contains("--stats-only")) return
+
     withTempTable(sourceTable, cacheTable, nestedSourceTable, nestedCacheTable) {
       // Every column nullable, in both relations, so that `count(c)` genuinely reads c. Spark's
       // NullPropagation rewrites a count over a non-nullable column to `count(1)`, which then
@@ -212,6 +225,40 @@ object CometInMemoryCacheBenchmark extends CometBenchmarkBase {
           s"FROM $nestedCacheTable",
         scanned = 6)
     }
+  }
+
+  private def runStatsBenchmark(): Unit = {
+    val batchSize = 10000
+    val types: Seq[DataType] = Seq.fill(3)(LongType) ++ Seq.fill(3)(StringType)
+    val attrs = types.zipWithIndex.map { case (dt, i) => AttributeReference(s"c$i", dt)() }
+    val columns = types.map(dt => new OnHeapColumnVector(batchSize, dt))
+    val batch = new ColumnarBatch(columns.map(c => c: ColumnVector).toArray, batchSize)
+    try {
+      var r = 0
+      while (r < batchSize) {
+        columns(0).putLong(r, r.toLong)
+        columns(1).putLong(r, r % 1000)
+        columns(2).putLong(r, r + 1)
+        columns(3).putByteArray(r, s"str_a_${r % 100000}".getBytes(StandardCharsets.UTF_8))
+        columns(4).putByteArray(r, s"str_b_${r % 7919}".getBytes(StandardCharsets.UTF_8))
+        columns(5).putByteArray(r, s"str_c_$r".getBytes(StandardCharsets.UTF_8))
+        r += 1
+      }
+      val serializer = new ArrowCachedBatchSerializer
+      // Resolved outside the timed loop because that is where the serializer resolves it: once
+      // per partition, not once per batch.
+      val orderings = serializer.boundsOrderings(attrs)
+      val benchmark = new Benchmark("in-memory cache statistics", numRows, output = output)
+      // One case measures this collector across commits; Spark's default cache has its own collector.
+      benchmark.addCase("Comet statistics collector") { _ =>
+        var i = 0
+        while (i < numRows / batchSize) {
+          statsResult = serializer.gatherColumnStats(batch, attrs, orderings)
+          i += 1
+        }
+      }
+      benchmark.run()
+    } finally batch.close()
   }
 
   private def runCacheBenchmark(

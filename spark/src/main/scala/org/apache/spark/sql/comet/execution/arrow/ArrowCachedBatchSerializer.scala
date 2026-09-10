@@ -19,6 +19,8 @@
 
 package org.apache.spark.sql.comet.execution.arrow
 
+import java.lang.{Boolean => JBoolean, Byte => JByte, Double => JDouble, Float => JFloat, Integer => JInteger, Long => JLong, Short => JShort}
+
 import scala.collection.JavaConverters._
 
 import org.apache.spark.TaskContext
@@ -84,10 +86,15 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
    * for collated strings, where it resolves to the collation's comparator rather than byte order,
    * and it is why this needs no per-Spark-version shim: the collation awareness comes from Spark.
    *
+   * Only the string path in gatherColumnStats consults this. Every other type it records bounds
+   * for has a fixed comparison that a specialized loop can inline without boxing, and which
+   * already agrees with the interpreted ordering for that type; a string's does not, because the
+   * collation is part of the type.
+   *
    * Resolved once per partition rather than per row -- `getInterpretedOrdering` walks the type
    * and, for a collated string, looks the collation up by id.
    */
-  private def boundsOrderings(attrs: Seq[Attribute]): Array[Ordering[Any]] =
+  private[sql] def boundsOrderings(attrs: Seq[Attribute]): Array[Ordering[Any]] =
     attrs.map { attr =>
       if (tracksBounds(attr.dataType)) TypeUtils.getInterpretedOrdering(attr.dataType) else null
     }.toArray
@@ -95,40 +102,221 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
   // Bounds and null counts per column, gathered before the batch is serialized: serializing
   // clears the batch's vectors, and the per-column byte sizes that complete the statistics row
   // are only known afterwards. See statsRow.
-  private def gatherColumnStats(
+  private[sql] def gatherColumnStats(
       batch: ColumnarBatch,
       attrs: Seq[Attribute],
       orderings: Array[Ordering[Any]]): (Array[Any], Array[Any], Array[Int]) = {
     val numCols = attrs.length
     val lower = new Array[Any](numCols)
     val upper = new Array[Any](numCols)
-    val nulls = Array.fill[Int](numCols)(0)
+    val nulls = new Array[Int](numCols)
     val numRows = batch.numRows()
 
     var c = 0
     while (c < numCols) {
-      val dt = attrs(c).dataType
       val col = batch.column(c)
-      val ordering = orderings(c)
-      var r = 0
-      while (r < numRows) {
-        if (col.isNullAt(r)) {
-          nulls(c) += 1
-        } else if (ordering != null) {
-          val value = readValue(col, dt, r)
-          if (lower(c) == null || ordering.compare(value, lower(c)) < 0) {
-            lower(c) = value
+      val (min, max, nullCount) = attrs(c).dataType match {
+        case BooleanType => gatherBooleanStats(col, numRows)
+        case ByteType => gatherByteStats(col, numRows)
+        case ShortType => gatherShortStats(col, numRows)
+        case IntegerType | DateType => gatherIntStats(col, numRows)
+        case LongType | TimestampType | TimestampNTZType => gatherLongStats(col, numRows)
+        case FloatType => gatherFloatStats(col, numRows)
+        case DoubleType => gatherDoubleStats(col, numRows)
+        case d: DecimalType => gatherDecimalStats(col, numRows, d)
+        // Every StringType, collated ones included, and compared with the ordering resolved for
+        // that column rather than with byte order. See boundsOrderings.
+        case _: StringType => gatherStringStats(col, numRows, orderings(c))
+        case other =>
+          assert(!tracksBounds(other), s"Missing cache bounds implementation for $other")
+          var nullCount = 0
+          var r = 0
+          while (r < numRows) {
+            if (col.isNullAt(r)) nullCount += 1
+            r += 1
           }
-          if (upper(c) == null || ordering.compare(value, upper(c)) > 0) {
-            upper(c) = value
-          }
-        }
-        r += 1
+          (null, null, nullCount)
       }
+      if (nullCount < numRows) {
+        lower(c) = min
+        upper(c) = max
+      }
+      nulls(c) = nullCount
       c += 1
     }
 
     (lower, upper, nulls)
+  }
+
+  // Keep each loop specialized and box only its final bounds. r == nullCount identifies
+  // the first non-null value, including when a column starts with nulls.
+  private def gatherBooleanStats(col: ColumnVector, numRows: Int): (Boolean, Boolean, Int) = {
+    var min = false
+    var max = false
+    var nullCount = 0
+    var r = 0
+    while (r < numRows) {
+      if (col.isNullAt(r)) {
+        nullCount += 1
+      } else {
+        val value = col.getBoolean(r)
+        if (r == nullCount || JBoolean.compare(value, min) < 0) min = value
+        if (r == nullCount || JBoolean.compare(value, max) > 0) max = value
+      }
+      r += 1
+    }
+    (min, max, nullCount)
+  }
+
+  private def gatherByteStats(col: ColumnVector, numRows: Int): (Byte, Byte, Int) = {
+    var min = 0.toByte
+    var max = 0.toByte
+    var nullCount = 0
+    var r = 0
+    while (r < numRows) {
+      if (col.isNullAt(r)) {
+        nullCount += 1
+      } else {
+        val value = col.getByte(r)
+        if (r == nullCount || JByte.compare(value, min) < 0) min = value
+        if (r == nullCount || JByte.compare(value, max) > 0) max = value
+      }
+      r += 1
+    }
+    (min, max, nullCount)
+  }
+
+  private def gatherShortStats(col: ColumnVector, numRows: Int): (Short, Short, Int) = {
+    var min = 0.toShort
+    var max = 0.toShort
+    var nullCount = 0
+    var r = 0
+    while (r < numRows) {
+      if (col.isNullAt(r)) {
+        nullCount += 1
+      } else {
+        val value = col.getShort(r)
+        if (r == nullCount || JShort.compare(value, min) < 0) min = value
+        if (r == nullCount || JShort.compare(value, max) > 0) max = value
+      }
+      r += 1
+    }
+    (min, max, nullCount)
+  }
+
+  private def gatherIntStats(col: ColumnVector, numRows: Int): (Int, Int, Int) = {
+    var min = 0
+    var max = 0
+    var nullCount = 0
+    var r = 0
+    while (r < numRows) {
+      if (col.isNullAt(r)) {
+        nullCount += 1
+      } else {
+        val value = col.getInt(r)
+        if (r == nullCount || JInteger.compare(value, min) < 0) min = value
+        if (r == nullCount || JInteger.compare(value, max) > 0) max = value
+      }
+      r += 1
+    }
+    (min, max, nullCount)
+  }
+
+  private def gatherLongStats(col: ColumnVector, numRows: Int): (Long, Long, Int) = {
+    var min = 0L
+    var max = 0L
+    var nullCount = 0
+    var r = 0
+    while (r < numRows) {
+      if (col.isNullAt(r)) {
+        nullCount += 1
+      } else {
+        val value = col.getLong(r)
+        if (r == nullCount || JLong.compare(value, min) < 0) min = value
+        if (r == nullCount || JLong.compare(value, max) > 0) max = value
+      }
+      r += 1
+    }
+    (min, max, nullCount)
+  }
+
+  private def gatherFloatStats(col: ColumnVector, numRows: Int): (Float, Float, Int) = {
+    var min = 0.0f
+    var max = 0.0f
+    var nullCount = 0
+    var r = 0
+    while (r < numRows) {
+      if (col.isNullAt(r)) {
+        nullCount += 1
+      } else {
+        val value = col.getFloat(r)
+        if (r == nullCount || JFloat.compare(value, min) < 0) min = value
+        if (r == nullCount || JFloat.compare(value, max) > 0) max = value
+      }
+      r += 1
+    }
+    (min, max, nullCount)
+  }
+
+  private def gatherDoubleStats(col: ColumnVector, numRows: Int): (Double, Double, Int) = {
+    var min = 0.0d
+    var max = 0.0d
+    var nullCount = 0
+    var r = 0
+    while (r < numRows) {
+      if (col.isNullAt(r)) {
+        nullCount += 1
+      } else {
+        val value = col.getDouble(r)
+        if (r == nullCount || JDouble.compare(value, min) < 0) min = value
+        if (r == nullCount || JDouble.compare(value, max) > 0) max = value
+      }
+      r += 1
+    }
+    (min, max, nullCount)
+  }
+
+  private def gatherDecimalStats(
+      col: ColumnVector,
+      numRows: Int,
+      dt: DecimalType): (Decimal, Decimal, Int) = {
+    var min: Decimal = null
+    var max: Decimal = null
+    var nullCount = 0
+    var r = 0
+    while (r < numRows) {
+      if (col.isNullAt(r)) {
+        nullCount += 1
+      } else {
+        val value = col.getDecimal(r, dt.precision, dt.scale)
+        if (r == nullCount || value.compare(min) < 0) min = value
+        if (r == nullCount || value.compare(max) > 0) max = value
+      }
+      r += 1
+    }
+    (min, max, nullCount)
+  }
+
+  private def gatherStringStats(
+      col: ColumnVector,
+      numRows: Int,
+      ordering: Ordering[Any]): (UTF8String, UTF8String, Int) = {
+    var min: UTF8String = null
+    var max: UTF8String = null
+    var nullCount = 0
+    var r = 0
+    while (r < numRows) {
+      if (col.isNullAt(r)) {
+        nullCount += 1
+      } else {
+        val value = col.getUTF8String(r)
+        // Borrow the value for comparison, but retain owned copies of the bounds.
+        if (r == nullCount || ordering.compare(value, min) < 0) min = value.copy()
+        if (r == nullCount || ordering.compare(value, max) > 0) max = value.copy()
+      }
+      r += 1
+    }
+    (min, max, nullCount)
   }
 
   // Build the statistics row expected by SimpleMetricsCachedBatchSerializer.
@@ -173,21 +361,6 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
         _: DecimalType | _: StringType | DateType | TimestampType | TimestampNTZType =>
       true
     case _ => false
-  }
-
-  // Read a non-null value from a ColumnVector using Spark's internal value type
-  // for the corresponding DataType.
-  private def readValue(col: ColumnVector, dt: DataType, rowId: Int): Any = dt match {
-    case BooleanType => col.getBoolean(rowId)
-    case ByteType => col.getByte(rowId)
-    case ShortType => col.getShort(rowId)
-    case IntegerType | DateType => col.getInt(rowId)
-    case LongType | TimestampType | TimestampNTZType => col.getLong(rowId)
-    case FloatType => col.getFloat(rowId)
-    case DoubleType => col.getDouble(rowId)
-    case d: DecimalType => col.getDecimal(rowId, d.precision, d.scale)
-    case _: StringType => col.getUTF8String(rowId).copy()
-    case _ => null
   }
 
   // Compute Spark-compatible cache stats before serializing each batch to Arrow.
