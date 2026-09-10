@@ -829,6 +829,13 @@ under the License.
 <li><p>This function is not deterministic. Results may not match Spark.</p></li>
 </ul>
 </section>
+<section id="mode">
+<h2>Mode<a class="headerlink" href="#mode" title="Link to this heading">#</a></h2>
+<p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">Mode</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Mode.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
+<ul class="simple">
+<li><p>mode breaks ties non-deterministically in Spark (the result depends on JVM hash-map iteration order); Comet returns the smallest of the tied values instead (https://github.com/apache/datafusion-comet/issues/3970)</p></li>
+</ul>
+</section>
 <section id="percentile">
 <h2>Percentile<a class="headerlink" href="#percentile" title="Link to this heading">#</a></h2>
 <p>The following cases are not supported by Comet and always fall back to Spark, regardless of any <code class="docutils literal notranslate"><span class="pre">allowIncompatible</span></code> setting:</p>
@@ -896,6 +903,7 @@ under the License.
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#first">First</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#hyperloglogplusplus">HyperLogLogPlusPlus</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#last">Last</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#mode">Mode</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#percentile">Percentile</a></li>
 </ul>
   </nav></div>

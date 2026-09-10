@@ -61,6 +61,12 @@ The following differences from Spark are always present and do not require any a
 
 - This function is not deterministic. Results may not match Spark.
 
+## Mode
+
+The following incompatibilities cause `Mode` to fall back to Spark by default. Set `spark.comet.expression.Mode.allowIncompatible=true` to enable Comet acceleration despite these differences.
+
+- mode breaks ties non-deterministically in Spark (the result depends on JVM hash-map iteration order); Comet returns the smallest of the tied values instead (https://github.com/apache/datafusion-comet/issues/3970)
+
 ## Percentile
 
 The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
