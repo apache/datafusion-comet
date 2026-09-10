@@ -43,6 +43,7 @@ FILTERS = {
         ".github/actions/setup-builder/**",
         ".github/actions/java-test/**",
         ".github/actions/rust-test/**",
+        ".github/actions/upload-artifact-retry/**",
         "!**.md",
         "!native/core/benches/**",
         "!native/spark-expr/benches/**",
@@ -65,6 +66,7 @@ FILTERS = {
         ".github/workflows/pr_build_macos.yml",
         ".github/actions/setup-macos-builder/**",
         ".github/actions/java-test/**",
+        ".github/actions/upload-artifact-retry/**",
         "!**.md",
         "!native/core/benches/**",
         "!native/spark-expr/benches/**",
@@ -110,6 +112,9 @@ FILTERS = {
         ".github/workflows/spark_sql_test_reusable.yml",
         ".github/actions/setup-builder/**",
         ".github/actions/setup-spark-builder/**",
+        ".github/actions/upload-artifact-retry/**",
+        ".mvn/**",
+        "mvnw",
     ],
     "spark_3_5": [
         "native/**/src/**",
@@ -132,6 +137,9 @@ FILTERS = {
         ".github/workflows/spark_sql_test_reusable.yml",
         ".github/actions/setup-builder/**",
         ".github/actions/setup-spark-builder/**",
+        ".github/actions/upload-artifact-retry/**",
+        ".mvn/**",
+        "mvnw",
     ],
     "spark_4_0": [
         "native/**/src/**",
@@ -154,6 +162,9 @@ FILTERS = {
         ".github/workflows/spark_sql_test_reusable.yml",
         ".github/actions/setup-builder/**",
         ".github/actions/setup-spark-builder/**",
+        ".github/actions/upload-artifact-retry/**",
+        ".mvn/**",
+        "mvnw",
     ],
     "spark_4_1": [
         "native/**/src/**",
@@ -176,6 +187,9 @@ FILTERS = {
         ".github/workflows/spark_sql_test_reusable.yml",
         ".github/actions/setup-builder/**",
         ".github/actions/setup-spark-builder/**",
+        ".github/actions/upload-artifact-retry/**",
+        ".mvn/**",
+        "mvnw",
     ],
     "iceberg_1_8": [
         "native/**/src/**",
@@ -193,6 +207,9 @@ FILTERS = {
         ".github/workflows/iceberg_spark_test_reusable.yml",
         ".github/actions/setup-builder/**",
         ".github/actions/setup-iceberg-builder/**",
+        ".github/actions/upload-artifact-retry/**",
+        ".mvn/**",
+        "mvnw",
     ],
     "iceberg_1_9": [
         "native/**/src/**",
@@ -210,6 +227,9 @@ FILTERS = {
         ".github/workflows/iceberg_spark_test_reusable.yml",
         ".github/actions/setup-builder/**",
         ".github/actions/setup-iceberg-builder/**",
+        ".github/actions/upload-artifact-retry/**",
+        ".mvn/**",
+        "mvnw",
     ],
     "iceberg_1_10": [
         "native/**/src/**",
@@ -227,6 +247,9 @@ FILTERS = {
         ".github/workflows/iceberg_spark_test_reusable.yml",
         ".github/actions/setup-builder/**",
         ".github/actions/setup-iceberg-builder/**",
+        ".github/actions/upload-artifact-retry/**",
+        ".mvn/**",
+        "mvnw",
     ],
     "iceberg_1_11": [
         "native/**/src/**",
@@ -244,6 +267,9 @@ FILTERS = {
         ".github/workflows/iceberg_spark_test_reusable.yml",
         ".github/actions/setup-builder/**",
         ".github/actions/setup-iceberg-builder/**",
+        ".github/actions/upload-artifact-retry/**",
+        ".mvn/**",
+        "mvnw",
     ],
 }
 
