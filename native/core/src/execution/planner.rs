@@ -468,7 +468,7 @@ impl PhysicalPlanner {
             // object-store key we hand DataFusion is stripped of the bucket prefix. Skipping this
             // would leave `bucket/key` as the object key, and path-style S3 GETs would double the
             // bucket (`<endpoint>/bucket/bucket/key`).
-            let url = normalize_object_store_url(&file.file_path, object_store_options)?;
+            let url = normalize_object_store_url(&file.file_path, object_store_options)?.url;
             let path = Path::from_url_path(url.path()).map_err(|e| GeneralError(e.to_string()))?;
             partitioned_file.object_meta.location = path;
 

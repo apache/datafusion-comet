@@ -49,7 +49,9 @@ use std::{fmt::Debug, hash::Hash, sync::Arc};
 use url::Url;
 
 use super::objectstore;
-use super::objectstore::s3_blob_fs_support::normalize_object_store_url;
+use super::objectstore::s3_blob_fs_support::{
+    normalize_object_store_url, NormalizedObjectStoreUrl,
+};
 
 // This file originates from cast.rs. While developing native scan support and implementing
 // SparkSchemaAdapter we observed that Spark's type conversion logic on Parquet reads does not
@@ -665,8 +667,13 @@ pub(crate) fn prepare_object_store_with_configs(
     url: String,
     object_store_configs: &HashMap<String, String>,
 ) -> Result<(ObjectStoreUrl, Path), ExecutionError> {
-    let url = normalize_object_store_url(url.as_str(), object_store_configs)?;
-    let is_hdfs_scheme = is_hdfs_scheme(&url, object_store_configs);
+    // `is_hdfs` comes back from normalization because it must be decided on the URL as written.
+    // Re-deriving it from the normalized URL would let an `s3a`/alias rewrite land on an `s3`
+    // entry in `fs.comet.libhdfs.schemes` and route an S3 read through libhdfs.
+    let NormalizedObjectStoreUrl {
+        url,
+        is_hdfs: is_hdfs_scheme,
+    } = normalize_object_store_url(url.as_str(), object_store_configs)?;
     let scheme = url.scheme();
     let url_key = format!(
         "{}://{}",
@@ -1143,5 +1150,62 @@ mod tests {
             );
             assert_eq!(path, Path::from(expected_path));
         }
+    }
+
+    #[cfg(not(feature = "hdfs-opendal"))]
+    #[test]
+    #[cfg_attr(miri, ignore)] // AWS credential providers and object_store call foreign functions
+    fn test_prepare_object_store_keeps_s3a_off_libhdfs_when_only_s3_is_listed() {
+        // `fs.comet.libhdfs.schemes=s3` routes `s3://` through libhdfs and says nothing about
+        // `s3a` or the opted-in aliases. Both normalize onto `s3://`, so deciding libhdfs from the
+        // normalized URL would hand these scans to `create_hdfs_object_store` -- which in this
+        // build is the "not enabled" stub, and in a default build would point libhdfs at a name
+        // node of `s3://bucket`. The JVM gate classifies them as object_store-native and admits
+        // them, so this dispatch is what keeps native in lockstep with the planner.
+        use crate::parquet::parquet_support::prepare_object_store_with_configs;
+        let mut configs: HashMap<String, String> = HashMap::new();
+        configs.insert("fs.comet.libhdfs.schemes".to_string(), "s3".to_string());
+        configs.insert(
+            "fs.comet.s3Compliant.schemes".to_string(),
+            "blob".to_string(),
+        );
+        configs.insert(
+            "fs.s3a.aws.credentials.provider".to_string(),
+            "org.apache.hadoop.fs.s3a.AnonymousAWSCredentialsProvider".to_string(),
+        );
+        configs.insert(
+            "fs.s3a.endpoint.region".to_string(),
+            "us-east-1".to_string(),
+        );
+
+        for input in [
+            "s3a://test_bucket/comet/part-00000.snappy.parquet",
+            "blob://test_bucket/comet/part-00000.snappy.parquet",
+        ] {
+            let (object_store_url, path) = prepare_object_store_with_configs(
+                Arc::new(RuntimeEnv::default()),
+                input.to_string(),
+                &configs,
+            )
+            .unwrap_or_else(|e| panic!("{input} must build an S3 store, not libhdfs: {e}"));
+            assert_eq!(
+                object_store_url,
+                ObjectStoreUrl::parse("s3://test_bucket").unwrap()
+            );
+            assert_eq!(path, Path::from("/comet/part-00000.snappy.parquet"));
+        }
+
+        // Listing `s3a` is the supported way to route it through libhdfs, and still does.
+        configs.insert("fs.comet.libhdfs.schemes".to_string(), "s3a".to_string());
+        let err = prepare_object_store_with_configs(
+            Arc::new(RuntimeEnv::default()),
+            "s3a://test_bucket/comet/part-00000.snappy.parquet".to_string(),
+            &configs,
+        )
+        .expect_err("an explicitly listed s3a must reach the libhdfs backend");
+        assert!(
+            err.to_string().contains("Hdfs support is not enabled"),
+            "unexpected error: {err}"
+        );
     }
 }
