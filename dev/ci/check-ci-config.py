@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 
-# Guards five CI invariants that are silent when broken:
+# Guards CI invariants that are silent when broken:
 #
 #   1. Change-filter routing. dev/ci/compute-changes.py decides which heavy
 #      jobs run. A file that a job depends on but that no filter lists makes
@@ -47,6 +47,9 @@
 #      in a job that skipped the checkout cannot be loaded at all. Jobs that
 #      run only under an input or a label can carry that for a long time
 #      before anyone runs them.
+#
+#   6. Independent Linux checks. Lint, compile-only checks and debug Rust
+#      tests must remain runnable without waiting for the native CI build.
 #
 # Run from the repository root: python3 dev/ci/check-ci-config.py
 
@@ -103,6 +106,8 @@ ROUTING_CASES = [
     ([".github/actions/download-artifact-retry/action.yaml"], BUILD_JOBS),
     # Editing the shared Linux producer must exercise every Linux consumer.
     ([".github/workflows/build_linux_native.yml"], BUILD_JOBS - {"build_macos"}),
+    # The independent lint/compile/Rust workflow belongs only to Linux CI.
+    ([".github/workflows/pr_build_linux_checks.yml"], {"build_linux"}),
     # Spot checks that the additions above did not widen unrelated routes.
     (["docs/source/user-guide/overview.md"], {"docs"}),
     (["native/core/benches/parquet_read.rs"], {"benchmark"}),
@@ -227,6 +232,14 @@ SHARED_NATIVE_CONSUMERS = {
     "pr_build_linux.yml",
     "spark_sql_test_reusable.yml",
     "iceberg_spark_test_reusable.yml",
+}
+
+
+LINUX_CHECKS_WORKFLOW = "pr_build_linux_checks.yml"
+LINUX_CHECKS_JOB = "pr_build_linux_checks"
+INDEPENDENT_LINUX_JOBS = {
+    "lint", "scalafix-syntactic", "lint-java", "build-spark-4-1",
+    "celeborn-reflection-compatibility", "linux-test-rust",
 }
 
 
@@ -433,6 +446,55 @@ def shared_native_failures(workflows, jobs, artifacts):
     return failures
 
 
+def linux_checks_failures(workflows, jobs):
+    """Keep lint, compile-only and debug Rust checks independent of native CI."""
+    failures = []
+    body = jobs.get(LINUX_CHECKS_JOB, ("", ""))[1]
+    fields = block_mapping(body, 4)
+    expected_uses = f"./.github/workflows/{LINUX_CHECKS_WORKFLOW}"
+    if scalar(fields.get("uses", ("", ""))[0]) != expected_uses:
+        failures.append(f"ci.yml: {LINUX_CHECKS_JOB} must call {expected_uses}")
+    if dependencies(body) != {"changes"}:
+        failures.append(f"ci.yml: {LINUX_CHECKS_JOB} must need only changes, independently of native CI")
+
+    def condition(job):
+        value, body = block_mapping(job, 4).get("if", ("", ""))
+        text = body if value in {"|", ">"} else value
+        return " ".join(line.strip() for line in text.splitlines()
+                        if line.strip() and not line.lstrip().startswith("#"))
+
+    if condition(body) != condition(jobs.get("pr_build_linux", ("", ""))[1]):
+        failures.append(f"ci.yml: {LINUX_CHECKS_JOB} must use the Linux test selection condition")
+
+    checks = workflows / LINUX_CHECKS_WORKFLOW
+    if not checks.exists():
+        failures.append(f"{checks}: independent Linux checks workflow is missing")
+        return failures
+    text = checks.read_text(encoding="utf-8")
+    check_jobs = block_mapping(block_mapping(text, 0).get("jobs", ("", ""))[1], 2)
+    missing = INDEPENDENT_LINUX_JOBS - check_jobs.keys()
+    if missing:
+        failures.append(f"{checks}: independent jobs are missing: {', '.join(sorted(missing))}")
+    events = block_mapping(text, 0).get("on", ("", ""))[1]
+    workflow_call = block_mapping(events, 2).get("workflow_call", ("", ""))[1]
+    inputs = block_mapping(block_mapping(workflow_call, 4).get("inputs", ("", ""))[1], 6)
+    if SHARED_NATIVE_INPUT in inputs or any(
+            kind == "download" and (inputs.get("name", "").startswith("native-lib")
+                                    or inputs.get("path", "").startswith("native/target"))
+            for kind, inputs in artifact_steps(checks)):
+        failures.append(f"{checks}: independent Linux checks must not consume the shared native artifact")
+
+    consumers = workflows / "pr_build_linux.yml"
+    if consumers.exists():
+        consumer_jobs = block_mapping(
+            block_mapping(consumers.read_text(encoding="utf-8"), 0).get("jobs", ("", ""))[1], 2)
+        misplaced = INDEPENDENT_LINUX_JOBS & consumer_jobs.keys()
+        if misplaced:
+            failures.append(f"{consumers}: independent jobs must stay in {LINUX_CHECKS_WORKFLOW}: "
+                            f"{', '.join(sorted(misplaced))}")
+    return failures
+
+
 def artifact_failures(workflows):
     ci = (workflows / "ci.yml").read_text(encoding="utf-8")
     jobs = block_mapping(block_mapping(ci, 0).get("jobs", ("", ""))[1], 2)
@@ -442,6 +504,7 @@ def artifact_failures(workflows):
 
     artifacts = {path.name: artifact_names(path) for path in sorted(workflows.glob("*.y*ml"))}
     failures = shared_native_failures(workflows, jobs, artifacts)
+    failures.extend(linux_checks_failures(workflows, jobs))
     shared_wiring_valid = not failures
     for filename, (uploads, downloads) in artifacts.items():
         path = workflows / filename

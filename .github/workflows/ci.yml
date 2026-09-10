@@ -226,6 +226,13 @@ jobs:
   # can actually test it.
   # ---------------------------------------------------------------------------
 
+  # Independent checks start immediately after change selection.
+  pr_build_linux_checks:
+    name: PR Checks (Linux)
+    needs: changes
+    if: needs.changes.outputs.build_linux == 'true'
+    uses: ./.github/workflows/pr_build_linux_checks.yml
+
   # Build once when any native-library consumer is selected. Each output
   # already includes the path, event, and label policy from compute-changes.py.
   build_linux_native:
@@ -416,6 +423,8 @@ jobs:
     needs:
       - preflight
       - changes
+      - pr_build_linux_checks
+      - build_linux_native
       - pr_build_linux
       - pr_build_macos
       - pr_benchmark_check

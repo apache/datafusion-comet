@@ -54,6 +54,7 @@ FILTERS = {
         "dev/ci/**",
         ".github/workflows/ci.yml",
         ".github/workflows/pr_build_linux.yml",
+        ".github/workflows/pr_build_linux_checks.yml",
         ".github/actions/setup-builder/**",
         ".github/actions/java-test/**",
         ".github/actions/rust-test/**",

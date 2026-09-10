@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 
-"""Exercise the native producer and consumer conditions from the real workflow.
+"""Exercise native-build and independent-check conditions from the real workflow.
 
 Only the small expression subset used by these conditions is translated. This
 keeps the tests dependency-free like check-ci-config.py; actionlint separately
@@ -42,12 +42,13 @@ CONSUMERS = {
 }
 DEFAULT = {"pr_build_linux", "spark_3_5", "spark_4_1", "iceberg_1_11"}
 OPT_IN = ("run-spark-3.4-tests", "run-spark-4.0-tests", "run-iceberg-tests")
+LINUX_CHECKS = "pr_build_linux_checks"
 
 
 def conditions():
     workflow = (ROOT / ".github/workflows/ci.yml").read_text()
     expressions = {}
-    for job in ["build_linux_native", *CONSUMERS]:
+    for job in ["build_linux_native", LINUX_CHECKS, *CONSUMERS]:
         block = re.search(
             r"^  " + job + r":\n.*?(?=^  [a-z][a-z_0-9]*:\n|\Z)",
             workflow,
@@ -107,6 +108,7 @@ class NativeBuildSelectionTest(unittest.TestCase):
         selected = self.evaluate(flags, **event)
         self.assertEqual({name for name in CONSUMERS if selected[name]}, expected)
         self.assertEqual(selected["build_linux_native"], bool(expected))
+        self.assertEqual(selected[LINUX_CHECKS], "pr_build_linux" in expected)
 
     def test_native_change_uses_default_pr_coverage(self):
         self.assert_selection(["native/core/src/lib.rs"], DEFAULT)
@@ -150,6 +152,11 @@ class NativeBuildSelectionTest(unittest.TestCase):
     def test_producer_change_exercises_all_default_linux_consumers(self):
         self.assert_selection([".github/workflows/build_linux_native.yml"], DEFAULT)
 
+    def test_independent_checks_change_selects_linux_checks_and_tests(self):
+        self.assert_selection(
+            [".github/workflows/pr_build_linux_checks.yml"], {"pr_build_linux"}
+        )
+
     def test_producer_condition_matches_all_consumer_combinations(self):
         keys = list(CONSUMERS.values())
         label_sets = [
@@ -169,6 +176,9 @@ class NativeBuildSelectionTest(unittest.TestCase):
                     selected["build_linux_native"],
                     any(selected[name] for name in CONSUMERS),
                     (flags, event),
+                )
+                self.assertEqual(
+                    selected[LINUX_CHECKS], selected["pr_build_linux"], (flags, event)
                 )
 
 

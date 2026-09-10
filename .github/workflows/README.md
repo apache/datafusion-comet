@@ -43,8 +43,8 @@ pull_request | merge_group | push to main | workflow_dispatch
                        |
        +---------------+--------------------+
        |                                    |
-  macOS / docs /                       build_linux_native
-  benchmark (if selected)              (if any consumer is selected)
+  Linux checks / macOS /               build_linux_native
+  docs / benchmark (if selected)              (if any consumer is selected)
                                             |
                            +----------------+----------------+
                            |                |                |
@@ -56,25 +56,31 @@ Every job above reports to required_checks (except the docs deployment).
 
 `build_linux_native.yml` builds the default Linux `libcomet.so` once per run
 with JDK 17, the Cargo `ci` profile, and the existing x86-64-v3/bfd flags.
-Every selected Linux, Spark SQL, and Iceberg caller waits for that producer
+Every selected Linux test, Spark SQL, and Iceberg caller waits for that producer
 and receives `native-lib-linux` through its required `native-library-artifact`
 input. Consumers keep their own Spark/JDK versions and download the library
 into `native/target/release/`, where Maven expects it. Spark still pre-compiles
 and shares its JVM test classes separately for each Spark/JDK version.
 
-The producer's condition is the union of those callers' existing path and
-event/label conditions. A Spark-patch-only change therefore gets a native
+The producer's condition is the union of those callers' `changes` outputs,
+which already include the path and event/label policy in `compute-changes.py`. A Spark-patch-only change therefore gets a native
 build when its Spark caller is selected, even if the Linux build is not.
 Documentation-only changes, benchmark-only changes, and unrelated label
 events do not start an unused native build. The event-selection regression
 test checks that the producer and its consumers stay in agreement.
 
-The Linux reusable workflow, including its lint and Rust debug-test jobs,
-now starts after the shared native build. Rust formatting also runs in the
-producer before compilation so formatting failures still stop that build
-early. Rust debug tests, macOS, and feature-specific workflows continue to
-build their own binaries. The shared producer is the only writer of the
-Linux CI-profile Cargo cache, and only writes on `main`.
+Linux lint, compile-only checks, Celeborn compatibility tests, and Rust debug
+tests run in `pr_build_linux_checks.yml` as soon as change selection completes.
+They run alongside the native producer and still report results if it fails.
+Only the JVM/TPC test consumers in `pr_build_linux.yml` wait for the shared
+artifact. Both Linux callers use the same path and event selection. Regression
+checks preserve this separation and prevent independent checks from acquiring
+a native-build dependency.
+
+Rust formatting runs before native compilation and before the independent
+Linux build/test jobs. Rust debug tests, macOS, and feature-specific workflows
+continue to build their own binaries. The shared producer is the only writer
+of the Linux CI-profile Cargo cache, and only writes on `main`.
 
 ## What runs when
 
@@ -83,6 +89,7 @@ Linux CI-profile Cargo cache, and only writes on `main`.
 | `preflight`          | every PR / merge group / push / dispatch / label  | none (always runs)                  |
 | `changes`            | every PR / merge group / push / dispatch / label  | runs `dev/ci/compute-changes.py`    |
 | `build_linux_native` | any selected Linux/Spark/Iceberg consumer | caller conditions in `ci.yml` |
+| `pr_build_linux_checks` | PR, merge group or push to main, paths matched | `dev/ci/compute-changes.py` |
 | `pr_build_linux`     | PR, merge group or push to main, paths matched    | `dev/ci/compute-changes.py`         |
 | `pr_build_macos`     | merge group, **or** PR with `run-macos-tests`     | `dev/ci/compute-changes.py`         |
 | `pr_benchmark_check` | merge group, **or** PR with `run-benchmark-check` | benchmark sources only              |
@@ -157,6 +164,7 @@ umbrella doesn't watch, or operate independently of the rest of CI:
 | File                              | Called from `ci.yml` job(s)                                  |
 | --------------------------------- | ------------------------------------------------------------ |
 | `build_linux_native.yml`          | `build_linux_native`                                         |
+| `pr_build_linux_checks.yml`       | `pr_build_linux_checks`                                      |
 | `pr_build_linux.yml`              | `pr_build_linux`                                             |
 | `pr_build_macos.yml`              | `pr_build_macos`                                             |
 | `pr_benchmark_check.yml`          | `pr_benchmark_check`                                         |
