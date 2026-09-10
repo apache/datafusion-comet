@@ -150,7 +150,7 @@ use datafusion_comet_proto::{
 use datafusion_comet_spark_expr::{
     jvm_udf::JvmScalarUdfExpr, ApproxPercentile, ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow,
     Correlation, Covariance, CreateNamedStruct, DecimalRescaleCheckOverflow, GetArrayStructFields,
-    GetStructField, HllPlusPlus, IfExpr, ListExtract, NormalizeNaNAndZero, Regr, RegrType,
+    GetStructField, HllPlusPlus, IfExpr, ListExtract, Mode, NormalizeNaNAndZero, Regr, RegrType,
     SparkCastOptions, Stddev, SumDecimal, ToJson, UnboundColumn, Variance, WideDecimalBinaryExpr,
     WideDecimalOp,
 };
@@ -3236,6 +3236,13 @@ impl PhysicalPlanner {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
                 let func = AggregateUDF::new_from_impl(HllPlusPlus::new(expr.precision));
                 Self::create_aggr_func_expr("approx_count_distinct", schema, vec![child], func)
+            }
+            AggExprStruct::Mode(expr) => {
+                let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
+                let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
+                let func =
+                    AggregateUDF::new_from_impl(Mode::new(datatype, expr.normalize_neg_zero));
+                Self::create_aggr_func_expr("mode", schema, vec![child], func)
             }
         }
     }
