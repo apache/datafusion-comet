@@ -32,7 +32,7 @@ import org.apache.spark.sql.catalyst.expressions.{And, AttributeReference, IsNot
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight}
 import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometBroadcastNestedLoopJoinExec, CometFilterExec, CometHashJoinExec, CometNativeScanExec, CometSortMergeJoinExec, CometUnionExec}
 import org.apache.spark.sql.execution.SparkPlan
-import org.apache.spark.sql.execution.adaptive.AQEShuffleReadExec
+import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec}
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, IntegerType, MetadataBuilder, StructField, StructType}
@@ -57,7 +57,7 @@ class CometJoinSuite extends CometTestBase {
       "MERGE" -> classOf[CometSortMergeJoinExec],
       "BROADCAST" -> classOf[CometBroadcastHashJoinExec]);
     adaptive <- Seq(false, true)) {
-    test(s"#5824 join identity preserves exchange reuse: $hint, AQE=$adaptive") {
+    test(s"join identity preserves exchange reuse: $hint, AQE=$adaptive") {
       withSQLConf(
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
         SQLConf.EXCHANGE_REUSE_ENABLED.key -> "true",
@@ -92,15 +92,12 @@ class CometJoinSuite extends CometTestBase {
             assert(nativeJoin(semi).semanticHash() == nativeJoin(same).semanticHash())
             val (_, reusedPlan) =
               checkSparkAnswerAndOperator(semi.unionAll(same), classOf[ReusedExchangeExec])
-            val reusedJoins = collect(reusedPlan) {
-              case reused: ReusedExchangeExec if collect(reused.child) {
-                    case join if joinClass.isInstance(join) => join
-                  }.nonEmpty =>
-                reused
+            if (adaptive) {
+              assert(reusedPlan.isInstanceOf[AdaptiveSparkPlanExec])
             }
-            assert(
-              reusedJoins.nonEmpty,
-              s"Expected equivalent post-join exchange reuse:\n$reusedPlan")
+            assertExchangeReuseOver(reusedPlan, "Expected equivalent post-join exchange reuse") {
+              case join if joinClass.isInstance(join) => join
+            }
           }
         }
       }
@@ -108,7 +105,7 @@ class CometJoinSuite extends CometTestBase {
   }
 
   for (adaptive <- Seq(false, true)) {
-    test(s"#5824 null-aware anti join identity preserves exchange reuse: AQE=$adaptive") {
+    test(s"null-aware anti join identity preserves exchange reuse: AQE=$adaptive") {
       withSQLConf(
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
         SQLConf.EXCHANGE_REUSE_ENABLED.key -> "true",
@@ -134,15 +131,12 @@ class CometJoinSuite extends CometTestBase {
             assert(nativeJoin(nullAware).semanticHash() == nativeJoin(same).semanticHash())
             val (_, reusedPlan) =
               checkSparkAnswerAndOperator(nullAware.unionAll(same), classOf[ReusedExchangeExec])
-            val reusedJoins = collect(reusedPlan) {
-              case reused: ReusedExchangeExec if collect(reused.child) {
-                    case join: CometBroadcastHashJoinExec => join
-                  }.nonEmpty =>
-                reused
+            if (adaptive) {
+              assert(reusedPlan.isInstanceOf[AdaptiveSparkPlanExec])
             }
-            assert(
-              reusedJoins.nonEmpty,
-              s"Expected equivalent null-aware join reuse:\n$reusedPlan")
+            assertExchangeReuseOver(reusedPlan, "Expected equivalent null-aware join reuse") {
+              case join: CometBroadcastHashJoinExec => join
+            }
           }
         }
       }

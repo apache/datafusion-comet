@@ -1352,15 +1352,9 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             assert(reusedPlan.isInstanceOf[AdaptiveSparkPlanExec])
           }
           // Adaptive-aware traversal must find reuse above Final, not just a shared Partial stage.
-          val reusedFinalAggregates = collect(reusedPlan) {
-            case reused: ReusedExchangeExec if collect(reused.child) {
-                  case agg: CometHashAggregateExec if agg.modes.contains(Final) => agg
-                }.nonEmpty =>
-              reused
+          assertExchangeReuseOver(reusedPlan, "Expected equivalent aggregate reuse") {
+            case agg: CometHashAggregateExec if agg.modes.contains(Final) => agg
           }
-          assert(
-            reusedFinalAggregates.nonEmpty,
-            s"Expected equivalent aggregate reuse:\n$reusedPlan")
         }
       }
     }

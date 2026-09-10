@@ -21,6 +21,7 @@ package org.apache.comet.exec
 
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.comet.CometExplodeExec
+import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanExec
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.SQLConf
@@ -34,8 +35,7 @@ class CometGenerateExecSuite extends CometTestBase {
   for (generator <- Seq("explode", "posexplode");
     input <- Seq("s.arr", "slice(s.arr, 1, 10)");
     adaptive <- Seq(false, true)) {
-    test(
-      s"#5824 generator identity preserves exchange reuse: $generator($input), AQE=$adaptive") {
+    test(s"generator identity preserves exchange reuse: $generator($input), AQE=$adaptive") {
       withSQLConf(
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
         SQLConf.EXCHANGE_REUSE_ENABLED.key -> "true",
@@ -85,15 +85,12 @@ class CometGenerateExecSuite extends CometTestBase {
               nativeGenerator(ordinary).semanticHash() == nativeGenerator(same).semanticHash())
             val (_, reusedPlan) =
               checkSparkAnswerAndOperator(ordinary.unionAll(same), classOf[ReusedExchangeExec])
-            val reusedGenerators = collect(reusedPlan) {
-              case reused: ReusedExchangeExec if collect(reused.child) {
-                    case generate: CometExplodeExec => generate
-                  }.nonEmpty =>
-                reused
+            if (adaptive) {
+              assert(reusedPlan.isInstanceOf[AdaptiveSparkPlanExec])
             }
-            assert(
-              reusedGenerators.nonEmpty,
-              s"Expected equivalent post-generator reuse:\n$reusedPlan")
+            assertExchangeReuseOver(reusedPlan, "Expected equivalent post-generator reuse") {
+              case generate: CometExplodeExec => generate
+            }
           }
         }
       }

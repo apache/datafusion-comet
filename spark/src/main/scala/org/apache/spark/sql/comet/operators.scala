@@ -1524,7 +1524,8 @@ case class CometExplodeExec(
   override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan =
     this.copy(child = newChild)
 
-  override def stringArgs: Iterator[Any] = Iterator(generator, generatorOutput, output, child)
+  override def stringArgs: Iterator[Any] =
+    Iterator(generator, generatorOutput, outer, output, child)
 
   override def equals(obj: Any): Boolean = {
     obj match {
@@ -1541,7 +1542,7 @@ case class CometExplodeExec(
   }
 
   override def hashCode(): Int =
-    Objects.hashCode(output, generator, generatorOutput, Boolean.box(outer), child)
+    Objects.hashCode(output, generator, generatorOutput, outer: java.lang.Boolean, child)
 
   override lazy val metrics: Map[String, SQLMetric] =
     CometMetricNode.baselineMetrics(sparkContext) ++
@@ -2385,7 +2386,10 @@ object CometBroadcastHashJoinExec extends CometOperatorSerde[HashJoin] with Come
       op.joinType,
       op.condition,
       op.buildSide,
-      nativeOp.getHashJoin.getNullAwareAntiJoin,
+      op match {
+        case bhj: BroadcastHashJoinExec => bhj.isNullAwareAntiJoin
+        case _ => false
+      },
       op.left,
       op.right,
       SerializedPlan(None))
@@ -2627,7 +2631,7 @@ case class CometBroadcastHashJoinExec(
       joinType,
       condition,
       buildSide,
-      Boolean.box(isNullAwareAntiJoin),
+      isNullAwareAntiJoin: java.lang.Boolean,
       left,
       right)
 
