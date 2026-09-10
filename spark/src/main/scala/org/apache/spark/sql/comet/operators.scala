@@ -1501,6 +1501,7 @@ object CometExplodeExec extends CometOperatorSerde[GenerateExec] {
       op.output,
       op.generator,
       op.generatorOutput,
+      op.outer,
       op.child,
       SerializedPlan(None))
   }
@@ -1512,6 +1513,7 @@ case class CometExplodeExec(
     override val output: Seq[Attribute],
     generator: Generator,
     generatorOutput: Seq[Attribute],
+    outer: Boolean,
     child: SparkPlan,
     override val serializedPlanOpt: SerializedPlan)
     extends CometUnaryExec {
@@ -1530,6 +1532,7 @@ case class CometExplodeExec(
         this.output == other.output &&
         this.generator == other.generator &&
         this.generatorOutput == other.generatorOutput &&
+        this.outer == other.outer &&
         this.child == other.child &&
         this.serializedPlanOpt == other.serializedPlanOpt
       case _ =>
@@ -1537,7 +1540,8 @@ case class CometExplodeExec(
     }
   }
 
-  override def hashCode(): Int = Objects.hashCode(output, generator, generatorOutput, child)
+  override def hashCode(): Int =
+    Objects.hashCode(output, generator, generatorOutput, Boolean.box(outer), child)
 
   override lazy val metrics: Map[String, SQLMetric] =
     CometMetricNode.baselineMetrics(sparkContext) ++
@@ -2381,6 +2385,7 @@ object CometBroadcastHashJoinExec extends CometOperatorSerde[HashJoin] with Come
       op.joinType,
       op.condition,
       op.buildSide,
+      nativeOp.getHashJoin.getNullAwareAntiJoin,
       op.left,
       op.right,
       SerializedPlan(None))
@@ -2453,6 +2458,7 @@ case class CometHashJoinExec(
         this.output == other.output &&
         this.leftKeys == other.leftKeys &&
         this.rightKeys == other.rightKeys &&
+        this.joinType == other.joinType &&
         this.condition == other.condition &&
         this.buildSide == other.buildSide &&
         this.left == other.left &&
@@ -2464,7 +2470,7 @@ case class CometHashJoinExec(
   }
 
   override def hashCode(): Int =
-    Objects.hashCode(output, leftKeys, rightKeys, condition, buildSide, left, right)
+    Objects.hashCode(output, leftKeys, rightKeys, joinType, condition, buildSide, left, right)
 
   override lazy val metrics: Map[String, SQLMetric] = {
     val joinMetrics = CometMetricNode.joinMetrics(sparkContext)
@@ -2486,6 +2492,7 @@ case class CometBroadcastHashJoinExec(
     joinType: JoinType,
     condition: Option[Expression],
     buildSide: BuildSide,
+    isNullAwareAntiJoin: Boolean,
     override val left: SparkPlan,
     override val right: SparkPlan,
     override val serializedPlanOpt: SerializedPlan)
@@ -2600,8 +2607,10 @@ case class CometBroadcastHashJoinExec(
         this.output == other.output &&
         this.leftKeys == other.leftKeys &&
         this.rightKeys == other.rightKeys &&
+        this.joinType == other.joinType &&
         this.condition == other.condition &&
         this.buildSide == other.buildSide &&
+        this.isNullAwareAntiJoin == other.isNullAwareAntiJoin &&
         this.left == other.left &&
         this.right == other.right &&
         this.serializedPlanOpt == other.serializedPlanOpt
@@ -2611,7 +2620,16 @@ case class CometBroadcastHashJoinExec(
   }
 
   override def hashCode(): Int =
-    Objects.hashCode(output, leftKeys, rightKeys, condition, buildSide, left, right)
+    Objects.hashCode(
+      output,
+      leftKeys,
+      rightKeys,
+      joinType,
+      condition,
+      buildSide,
+      Boolean.box(isNullAwareAntiJoin),
+      left,
+      right)
 
   override lazy val metrics: Map[String, SQLMetric] = {
     val joinMetrics = CometMetricNode.joinMetrics(sparkContext)
@@ -2792,6 +2810,7 @@ case class CometSortMergeJoinExec(
         this.output == other.output &&
         this.leftKeys == other.leftKeys &&
         this.rightKeys == other.rightKeys &&
+        this.joinType == other.joinType &&
         this.condition == other.condition &&
         this.left == other.left &&
         this.right == other.right &&
@@ -2802,7 +2821,7 @@ case class CometSortMergeJoinExec(
   }
 
   override def hashCode(): Int =
-    Objects.hashCode(output, leftKeys, rightKeys, condition, left, right)
+    Objects.hashCode(output, leftKeys, rightKeys, joinType, condition, left, right)
 
   override lazy val metrics: Map[String, SQLMetric] =
     CometMetricNode.sortMergeJoinMetrics(sparkContext)
