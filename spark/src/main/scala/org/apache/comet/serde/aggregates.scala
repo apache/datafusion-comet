@@ -22,16 +22,16 @@ package org.apache.comet.serde
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Expression, Literal}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, ApproximatePercentile, Average, BitAndAgg, BitOrAgg, BitXorAgg, BloomFilterAggregate, CentralMomentAgg, CollectList, CollectSet, Corr, Count, Covariance, CovPopulation, CovSample, First, HyperLogLogPlusPlus, Last, Max, Min, Percentile, RegrIntercept, RegrR2, RegrReplacement, RegrSlope, RegrSXY, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, ApproximatePercentile, Average, BitAndAgg, BitOrAgg, BitXorAgg, BloomFilterAggregate, CentralMomentAgg, CollectList, CollectSet, Corr, Count, Covariance, CovPopulation, CovSample, First, HyperLogLogPlusPlus, Last, Max, Min, Mode, Percentile, RegrIntercept, RegrR2, RegrReplacement, RegrSlope, RegrSXY, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
 import org.apache.spark.sql.catalyst.util.ArrayData
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{BinaryType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, NumericType, ShortType, StringType, TimestampNTZType, TimestampType}
 
 import org.apache.comet.CometConf.COMET_EXEC_STRICT_FLOATING_POINT
-import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark41Plus, withFallbackReason}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark41Plus, isSpark42Plus, withFallbackReason}
 import org.apache.comet.expressions.CometEvalMode
 import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProto, serializeDataType}
-import org.apache.comet.shims.{CometCollectShim, CometEvalModeUtil}
+import org.apache.comet.shims.{CometCollectShim, CometEvalModeUtil, CometTypeShim}
 
 object CometMin extends CometAggregateExpressionSerde[Min] {
 
@@ -1111,6 +1111,78 @@ object CometApproxCountDistinct extends CometAggregateExpressionSerde[HyperLogLo
           .setHllpp(builder)
           .build())
     } else {
+      None
+    }
+  }
+}
+
+object CometMode extends CometAggregateExpressionSerde[Mode] with CometTypeShim {
+
+  private val tieBreakReason =
+    "mode breaks ties non-deterministically in Spark (the result depends on JVM hash-map" +
+      " iteration order); Comet returns the smallest of the tied values instead" +
+      " (https://github.com/apache/datafusion-comet/issues/3970)"
+
+  override def getIncompatibleReasons(): Seq[String] = Seq(tieBreakReason)
+
+  private def isSupportedType(dt: DataType): Boolean = dt match {
+    case BooleanType => true
+    case ByteType | ShortType | IntegerType | LongType => true
+    case FloatType | DoubleType => true
+    case _: DecimalType => true
+    case DateType | TimestampType | TimestampNTZType => true
+    case StringType => true
+    case _ => false
+  }
+
+  override def getSupportLevel(expr: Mode): SupportLevel = {
+    if (modeHasUnsupportedOrdering(expr)) {
+      // `mode(col, deterministic)` and `mode() WITHIN GROUP (ORDER BY col)` carry deterministic
+      // ordered tie-breaking that Comet does not implement yet (Spark 4.0+ only).
+      // TODO the ASC form (`reverseOpt = Some(false)`) returns the smallest tied value, which is
+      // exactly Comet's tie-break, so it could be served natively as `Compatible`.
+      // https://github.com/apache/datafusion-comet/issues/3970
+      Unsupported(
+        Some("mode with a deterministic flag or WITHIN GROUP ordering is not supported"))
+    } else if (hasNonDefaultStringCollation(expr.child.dataType)) {
+      // Native counting is not collation-aware, so non-UTF8_BINARY collations would group keys
+      // differently from Spark.
+      Unsupported(
+        Some(
+          "mode does not support non-UTF8_BINARY collations " +
+            "(https://github.com/apache/datafusion-comet/issues/2190)"))
+    } else if (!isSupportedType(expr.child.dataType)) {
+      Unsupported(Some(s"mode does not support input type ${expr.child.dataType}"))
+    } else {
+      Incompatible(Some(tieBreakReason))
+    }
+  }
+
+  override def convert(
+      aggExpr: AggregateExpression,
+      expr: Mode,
+      inputs: Seq[Attribute],
+      binding: Boolean,
+      conf: SQLConf): Option[ExprOuterClass.AggExpr] = {
+    val child = expr.child
+    val childExpr = exprToProto(child, inputs, binding)
+    val dataType = serializeDataType(child.dataType)
+
+    if (childExpr.isDefined && dataType.isDefined) {
+      val builder = ExprOuterClass.Mode.newBuilder()
+      builder.setChild(childExpr.get)
+      builder.setDatatype(dataType.get)
+      // Spark 4.2.0 (SPARK-57329) normalizes `-0.0` to `0.0` before keying the frequency map;
+      // earlier versions key the raw boxed value, where `java.lang.Double.equals` keeps `-0.0`
+      // and `0.0` apart. The native side has to match whichever Spark we are running against.
+      builder.setNormalizeNegZero(isSpark42Plus)
+      Some(
+        ExprOuterClass.AggExpr
+          .newBuilder()
+          .setMode(builder)
+          .build())
+    } else {
+      withFallbackReason(aggExpr, "Child expression or data type not supported")
       None
     }
   }

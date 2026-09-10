@@ -163,6 +163,7 @@ message AggExpr {
     HllPlusPlus hllpp = 20;
     CollectList collectList = 21;
     Regr regr = 22;
+    Mode mode = 23;
   }
 
   // Optional filter expression for SQL FILTER (WHERE ...) clause.
@@ -350,6 +351,15 @@ message HllPlusPlus {
   Expr child = 1;
   // Number of addressing bits, computed from relativeSD to match Spark.
   int32 precision = 2;
+}
+
+message Mode {
+  Expr child = 1;
+  DataType datatype = 2;
+  // Whether `-0.0` should be folded into `0.0` before it is used as a frequency-map key.
+  // Spark only started doing this in 4.2.0 (SPARK-57329), so this tracks the Spark version
+  // Comet is running against. See `Mode` in the spark-expr crate for the full rationale.
+  bool normalize_neg_zero = 3;
 }
 
 enum EvalMode {
