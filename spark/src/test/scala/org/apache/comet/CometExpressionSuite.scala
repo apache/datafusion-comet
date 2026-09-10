@@ -135,6 +135,23 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("named_struct with duplicate field names") {
+    withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
+      Seq(true, false).foreach { dictionaryEnabled =>
+        withTempDir { dir =>
+          val path = new Path(dir.toURI.toString, "test.parquet")
+          makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
+          withParquetTable(path.toString, "tbl") {
+            checkSparkAnswerAndOperator("SELECT named_struct('a', _1, 'a', _2) FROM tbl")
+            checkSparkAnswerAndOperator("SELECT named_struct('a', _1, 'a', 2) FROM tbl")
+            checkSparkAnswerAndOperator(
+              "SELECT named_struct('a', named_struct('b', _1, 'b', _2)) FROM tbl")
+          }
+        }
+      }
+    }
+  }
+
   test("GetStructField: non-nullable field of a nullable struct (Delta action-frame shape)") {
     // Repro for the under-declared `GetStructField` nullability that crashed Comet's native
     // execution with "Column '...' is declared as non-nullable but contains null values".

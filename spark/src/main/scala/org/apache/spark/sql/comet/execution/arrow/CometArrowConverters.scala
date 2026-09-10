@@ -66,7 +66,7 @@ object CometArrowConverters extends Logging {
       override def hasNext: Boolean = rowIter.hasNext
 
       override def next(): ColumnarBatch = {
-        val root = VectorSchemaRoot.create(arrowSchema, allocator)
+        val root = NativeUtil.createVectorSchemaRootForExport(arrowSchema, allocator)
         // Same ownership rule as columnarBatchToArrowBatch: the caller only owns the batch that
         // rootAsBatch returns, so a throw from writing a row has to release the root here.
         closingRootOnFailure(root) {
@@ -96,7 +96,7 @@ object CometArrowConverters extends Logging {
       arrowSchema: Schema,
       allocator: BufferAllocator): ColumnarBatch = {
     val numRows = batch.numRows()
-    val root = VectorSchemaRoot.create(arrowSchema, allocator)
+    val root = NativeUtil.createVectorSchemaRootForExport(arrowSchema, allocator)
     // The caller only owns the returned batch, so anything that throws before `rootAsBatch` wraps
     // the root has to release it here or the allocation leaks.
     closingRootOnFailure(root) {

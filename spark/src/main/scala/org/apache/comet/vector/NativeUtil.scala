@@ -382,7 +382,8 @@ object NativeUtil {
   /**
    * Build a C Stream root whose physical and advertised schemas use the same duplicate-safe field
    * names. Arrow's C Data exporter reconstructs nested vectors from the advertised schema and
-   * otherwise collapses duplicate struct children before loading the record batch.
+   * otherwise collapses duplicate struct children before loading the record batch. Native
+   * consumers must restore logical child names positionally from their declared schema.
    */
   def createVectorSchemaRootForExport(
       schema: Schema,
@@ -398,7 +399,7 @@ object NativeUtil {
         vectors.add(runtimeField.createVector(allocator).asInstanceOf[FieldVector])
         ordinal += 1
       }
-      new VectorSchemaRoot(new Schema(runtimeFields), vectors, 0)
+      new VectorSchemaRoot(new Schema(runtimeFields, schema.getCustomMetadata), vectors, 0)
     } catch {
       case failure: Throwable =>
         AutoCloseables.close(failure, vectors)
@@ -425,6 +426,7 @@ object NativeUtil {
         // cache lower-cases field names. Build the direct children positionally instead so case-
         // distinct names such as `a` and `A` remain separate physical vectors.
         vector.initializeChildrenFromFields(runtimeField.getChildren)
+        vector.publishExportField()
         vector
       case _ => exportField.createVector(allocator).asInstanceOf[FieldVector]
     }
@@ -511,12 +513,13 @@ object NativeUtil {
         null,
         AbstractStructVector.ConflictPolicy.CONFLICT_ERROR,
         true) {
-    override def getField: Field = {
-      // StructVector's writer calls getField during construction. Keep the superclass's in-progress
-      // field visible until every positional child exists, then publish the original metadata. The
-      // child count avoids a separate construction-state flag.
-      if (size() == exportField.getChildren.size()) exportField else super.getField
-    }
+    private var exportFieldPublished = false
+
+    /** Call after `initializeChildrenFromFields` completes. */
+    def publishExportField(): Unit = exportFieldPublished = true
+
+    override def getField: Field =
+      if (exportFieldPublished) exportField else super.getField
   }
 
   def rootAsBatch(arrowRoot: VectorSchemaRoot): ColumnarBatch = {

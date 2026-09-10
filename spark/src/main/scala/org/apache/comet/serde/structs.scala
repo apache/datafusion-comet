@@ -32,12 +32,7 @@ import org.apache.comet.DataTypeSupport
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, serializeDataType}
 
 object CometCreateNamedStruct
-    extends CometExpressionSerde[CreateNamedStruct]
-    with CodegenDispatchFallback {
-
-  override def getUnsupportedReasons(): Seq[String] = Seq(
-    "Unsupported CreateNamedStruct arguments are routed through the JVM codegen dispatcher " +
-      "(Spark's own `doGenCode`).")
+    extends CometExpressionSerde[CreateNamedStruct] {
 
   override def convert(
       expr: CreateNamedStruct,
