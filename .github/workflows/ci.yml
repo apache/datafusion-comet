@@ -230,6 +230,8 @@ jobs:
   pr_build_linux_checks:
     name: PR Checks (Linux)
     needs: changes
+    permissions:
+      contents: read
     if: needs.changes.outputs.build_linux == 'true'
     uses: ./.github/workflows/pr_build_linux_checks.yml
 
@@ -238,6 +240,8 @@ jobs:
   build_linux_native:
     name: Shared Linux Native Library
     needs: changes
+    permissions:
+      contents: read
     if: |
       needs.changes.outputs.build_linux == 'true' ||
       needs.changes.outputs.spark_3_4 == 'true' ||

@@ -23,6 +23,9 @@ name: PR Checks (Linux)
 on:
   workflow_call:
 
+permissions:
+  contents: read
+
 env:
   RUST_VERSION: stable
   RUST_BACKTRACE: 1
