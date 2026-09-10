@@ -15,9 +15,10 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- CSV structured-text functions (from_csv, schema_of_csv). These have no native (rust)
--- implementation; they extend Spark's CodegenFallback and stay native via the codegen
--- dispatcher.
+-- CSV structured-text functions. `from_csv` and `schema_of_csv` have no native (rust)
+-- implementation and stay native via the codegen dispatcher. `to_csv` has a native path that is
+-- opt-in via allowIncompatible; by default Spark's own generated code runs through the JVM
+-- codegen dispatcher so the projection stays in Comet.
 
 statement
 CREATE TABLE test_csv(s STRING) USING parquet
@@ -32,3 +33,24 @@ SELECT from_csv(s, 'a INT, b STRING') FROM test_csv
 -- literal argument
 query
 SELECT schema_of_csv('1,abc')
+
+statement
+CREATE TABLE test_to_csv(id INT, name STRING) USING parquet
+
+statement
+INSERT INTO test_to_csv VALUES (1, 'abc'), (2, NULL), (NULL, 'def'), (NULL, NULL)
+
+query
+SELECT to_csv(named_struct('id', id, 'name', name)) FROM test_to_csv
+
+query
+SELECT to_csv(named_struct('id', id, 'name', name), map('sep', ';')) FROM test_to_csv
+
+statement
+CREATE TABLE test_to_csv_nested(id INT, items ARRAY<INT>) USING parquet
+
+statement
+INSERT INTO test_to_csv_nested VALUES (1, array(1, 2)), (2, array()), (3, NULL)
+
+query
+SELECT to_csv(named_struct('id', id, 'items', items)) FROM test_to_csv_nested

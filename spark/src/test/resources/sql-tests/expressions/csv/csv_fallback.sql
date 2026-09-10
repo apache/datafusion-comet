@@ -15,7 +15,8 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- With the codegen dispatcher disabled, from_csv has no native path and falls back to Spark.
+-- With the codegen dispatcher disabled, from_csv and to_csv have no in-pipeline path and fall
+-- back to Spark.
 
 -- Config: spark.comet.exec.scalaUDF.codegen.enabled=false
 
@@ -27,3 +28,12 @@ INSERT INTO test_csv_fallback VALUES ('1,abc'), ('2,def'), (''), (NULL)
 
 query expect_fallback(spark.comet.exec.scalaUDF.codegen.enabled)
 SELECT from_csv(s, 'a INT, b STRING') FROM test_csv_fallback
+
+statement
+CREATE TABLE test_to_csv_fallback(id INT, name STRING) USING parquet
+
+statement
+INSERT INTO test_to_csv_fallback VALUES (1, 'abc'), (2, NULL)
+
+query expect_fallback(spark.comet.exec.scalaUDF.codegen.enabled)
+SELECT to_csv(named_struct('id', id, 'name', name)) FROM test_to_csv_fallback

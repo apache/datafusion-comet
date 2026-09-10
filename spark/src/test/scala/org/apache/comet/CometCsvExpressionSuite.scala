@@ -30,8 +30,12 @@ import org.apache.spark.sql.functions._
 import org.apache.spark.sql.types.StringType
 
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator, SchemaGenOptions}
+import org.apache.comet.udf.codegen.CometScalaUDFCodegen
 
-class CometCsvExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
+class CometCsvExpressionSuite
+    extends CometTestBase
+    with AdaptiveSparkPlanHelper
+    with CometCodegenAssertions {
 
   test("to_csv - default options") {
     withTempDir { dir =>
@@ -190,6 +194,68 @@ class CometCsvExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper
             to_csv(
               struct(col("col"), lit(1), lit("test"), lit(null).cast(StringType)),
               Map("delimiter" -> ",", "quoteAll" -> "true").asJava)))
+      }
+    }
+  }
+
+  test("to_csv routes through the codegen dispatcher by default (issue #5578)") {
+    // Without allowIncompatible, getSupportLevel is Incompatible and CodegenDispatchFallback
+    // runs Spark's own StructsToCsv.doGenCode inside the Comet pipeline. assertCodegenRan pins
+    // that the dispatcher is what kept the projection native.
+    val data: Seq[(Option[Int], Option[String])] =
+      Seq((Some(1), Some("alice")), (Some(2), None), (None, Some("bob")), (None, None))
+    withParquetTable(data, "tbl") {
+      assertCodegenRan {
+        checkSparkAnswerAndOperator("SELECT to_csv(named_struct('id', _1, 'name', _2)) FROM tbl")
+        checkSparkAnswerAndOperator(
+          "SELECT to_csv(named_struct('id', _1, 'name', _2), map('sep', ';')) FROM tbl")
+      }
+    }
+  }
+
+  test("to_csv with nested array field routes through the codegen dispatcher (issue #5578)") {
+    // Nested array/map/struct fields are Unsupported on the native path. The dispatcher still
+    // compiles them: arrays are in CometBatchKernelCodegen.isSupportedDataType.
+    withTable("t") {
+      sql("CREATE TABLE t(id INT, items ARRAY<INT>) USING parquet")
+      sql("INSERT INTO t VALUES (1, array(1, 2, 3)), (2, array()), (3, NULL)")
+      assertCodegenRan {
+        checkSparkAnswerAndOperator(
+          "SELECT to_csv(named_struct('id', id, 'items', items)) FROM t")
+      }
+    }
+  }
+
+  test("to_csv NULL struct routes through the codegen dispatcher (issue #5578)") {
+    withTable("t") {
+      sql("CREATE TABLE t(s STRUCT<id:INT, name:STRING>) USING parquet")
+      sql(
+        "INSERT INTO t VALUES (named_struct('id', 1, 'name', 'alice')), " +
+          "(named_struct('id', CAST(NULL AS INT), 'name', 'bob')), (NULL)")
+      assertCodegenRan {
+        checkSparkAnswerAndOperator("SELECT to_csv(s) FROM t")
+      }
+    }
+  }
+
+  test("to_csv falls back to Spark when the codegen dispatcher is disabled (issue #5578)") {
+    withParquetTable(Seq((1, "alice"), (2, "bob")), "tbl") {
+      withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
+        checkSparkAnswerAndFallbackReason(
+          "SELECT to_csv(named_struct('id', _1, 'name', _2)) FROM tbl",
+          CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key)
+      }
+    }
+  }
+
+  test("to_csv keeps the native path when allowIncompatible is enabled (issue #5578)") {
+    withParquetTable(Seq((1, "alice"), (2, "bob")), "tbl") {
+      withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[StructsToCsv]) -> "true") {
+        CometScalaUDFCodegen.resetStats()
+        checkSparkAnswerAndOperator("SELECT to_csv(named_struct('id', _1, 'name', _2)) FROM tbl")
+        assert(
+          CometScalaUDFCodegen.stats().totalLookups == 0,
+          "expected native to_csv, not codegen dispatch")
       }
     }
   }

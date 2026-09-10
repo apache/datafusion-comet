@@ -239,7 +239,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | --- | --- | --- | --- |
 | `from_csv` | ✅ | Codegen dispatch |  |
 | `schema_of_csv` | ✅ | Codegen dispatch |  |
-| `to_csv` | ✅ | Native |  |
+| `to_csv` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default; the native path is opt-in via allowIncompatible |
 
 ---
 

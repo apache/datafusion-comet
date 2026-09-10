@@ -258,7 +258,14 @@ object CometJsonToStructs extends CometCodegenDispatch[JsonToStructs] with Nativ
   }
 }
 
-object CometStructsToCsv extends CometExpressionSerde[StructsToCsv] {
+/**
+ * `to_csv` has a native implementation that is not Spark-compatible by default
+ * (https://github.com/apache/datafusion-comet/issues/3232). `CodegenDispatchFallback` keeps it in
+ * the Comet pipeline by running Spark's own `StructsToCsv.doGenCode` in the JVM codegen
+ * dispatcher. Set `spark.comet.expression.StructsToCsv.allowIncompatible=true` to opt into the
+ * native path. Nested array/map/struct fields have no native path and always use the dispatcher.
+ */
+object CometStructsToCsv extends CometExpressionSerde[StructsToCsv] with CodegenDispatchFallback {
 
   private val incompatibleDataTypes = Seq(DateType, TimestampType, TimestampNTZType, BinaryType)
 
