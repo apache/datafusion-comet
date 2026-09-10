@@ -212,8 +212,11 @@ mod tests {
                         list.data_type().clone(),
                         list_nullable,
                     )]));
-                    let batch =
-                        RecordBatch::try_new(Arc::clone(&schema), vec![list.clone()]).unwrap();
+                    let batch = RecordBatch::try_new(
+                        Arc::clone(&schema),
+                        vec![Arc::<GenericListArray<O>>::clone(&list)],
+                    )
+                    .unwrap();
                     let expr = GetArrayStructFields::new(Arc::new(Column::new("l", 0)), 0);
                     assert_eq!(expr.nullable(&schema).unwrap(), list_nullable);
                     let result = expr.evaluate(&batch).unwrap().into_array(4).unwrap();
