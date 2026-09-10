@@ -634,6 +634,15 @@ multiple configurations. Do not add <code class="docutils literal notranslate"><
 </pre></div>
 </div>
 </section>
+<section id="maxsparkversion">
+<h4><code class="docutils literal notranslate"><span class="pre">MaxSparkVersion</span></code><a class="headerlink" href="#maxsparkversion" title="Link to this heading">#</a></h4>
+<p>Skips the file when running on a Spark version newer than the specified version (inclusive of
+that version). Use it together with <code class="docutils literal notranslate"><span class="pre">MinSparkVersion</span></code> in a paired fixture when a behavior
+changed between versions and each range needs its own expected output or error class.</p>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="c1">-- MaxSparkVersion: 3.5</span>
+</pre></div>
+</div>
+</section>
 </section>
 <section id="statements">
 <h3>Statements<a class="headerlink" href="#statements" title="Link to this heading">#</a></h3>
@@ -972,6 +981,7 @@ file and config combination, and executes them using <code class="docutils liter
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#config"><code class="docutils literal notranslate"><span class="pre">Config</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#configmatrix"><code class="docutils literal notranslate"><span class="pre">ConfigMatrix</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#minsparkversion"><code class="docutils literal notranslate"><span class="pre">MinSparkVersion</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#maxsparkversion"><code class="docutils literal notranslate"><span class="pre">MaxSparkVersion</span></code></a></li>
 </ul>
 </li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#statements">Statements</a></li>
