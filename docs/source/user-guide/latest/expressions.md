@@ -239,7 +239,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | --- | --- | --- | --- |
 | `from_csv` | ✅ | Codegen dispatch |  |
 | `schema_of_csv` | ✅ | Codegen dispatch |  |
-| `to_csv` | ✅ | Native |  |
+| `to_csv` | ✅ | Hybrid | Codegen dispatch by default; the native path is opt-in via allowIncompatible |
 
 ---
 
@@ -610,7 +610,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `to_char` | ✅ | Codegen dispatch |  |
 | `to_number` | ✅ | Codegen dispatch |  |
 | `to_varchar` | ✅ | Codegen dispatch |  |
-| `translate` | ✅ | Native | DataFusion's `translate` iterates over Unicode graphemes (Spark uses code points) and substitutes U+0000 instead of treating it as a deletion sentinel, so the native path is opt-in via allowIncompatible |
+| `translate` | ✅ | Hybrid | Codegen dispatch by default: DataFusion's `translate` iterates over Unicode graphemes (Spark uses code points) and substitutes U+0000 instead of treating it as a deletion sentinel, so the native path is opt-in via allowIncompatible |
 | `trim` | ✅ | Native |  |
 | `try_to_binary` | ✅ | — | Runs natively (rewrites to `try_eval(to_binary(...))`) |
 | `try_to_number` | ✅ | Codegen dispatch | Routed through the JVM codegen dispatcher |
