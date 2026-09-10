@@ -40,11 +40,14 @@ SELECT arr[0], arr[2] FROM ansi_array_oob
 -- ============================================================================
 
 -- index beyond array length should throw (0-based indexing)
-query expect_error(INVALID_ARRAY_INDEX)
+query expect_error([INVALID_ARRAY_INDEX])
+SELECT arr[3] FROM ansi_array_oob
+
+query expect_error([INVALID_ARRAY_INDEX])
 SELECT arr[10] FROM ansi_array_oob
 
 -- Use a column index so SimplifyExtractValueOps cannot replace the lookup with NULL.
-query expect_error(INVALID_ARRAY_INDEX)
+query expect_error([INVALID_ARRAY_INDEX])
 SELECT array(1, 2, 3)[positive_idx] FROM ansi_array_oob
 
 -- ============================================================================
@@ -52,9 +55,9 @@ SELECT array(1, 2, 3)[positive_idx] FROM ansi_array_oob
 -- ============================================================================
 
 -- negative index should throw
-query expect_error(INVALID_ARRAY_INDEX)
+query expect_error([INVALID_ARRAY_INDEX])
 SELECT arr[-1] FROM ansi_array_oob
 
 -- literal array with a negative column index
-query expect_error(INVALID_ARRAY_INDEX)
+query expect_error([INVALID_ARRAY_INDEX])
 SELECT array(1, 2, 3)[negative_idx] FROM ansi_array_oob

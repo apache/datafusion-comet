@@ -36,18 +36,25 @@ query
 SELECT element_at(arr, 1), element_at(arr, 3), element_at(arr, -1), element_at(arr, -3)
 FROM ansi_element_at_oob
 
+-- A NULL index returns NULL even in ANSI mode.
+query
+SELECT element_at(arr, CAST(NULL AS INT)) FROM ansi_element_at_oob
+
 -- ============================================================================
 -- element_at index out of bounds (positive index)
 -- Spark and Comet throw INVALID_ARRAY_INDEX_IN_ELEMENT_AT in ANSI mode.
 -- ============================================================================
 
 -- index beyond array length should throw (1-based indexing)
-query expect_error(INVALID_ARRAY_INDEX_IN_ELEMENT_AT)
+query expect_error([INVALID_ARRAY_INDEX_IN_ELEMENT_AT])
+SELECT element_at(arr, 4) FROM ansi_element_at_oob
+
+query expect_error([INVALID_ARRAY_INDEX_IN_ELEMENT_AT])
 SELECT element_at(arr, 10) FROM ansi_element_at_oob
 
 -- literal array with out of bounds access
-query expect_error(INVALID_ARRAY_INDEX_IN_ELEMENT_AT)
-SELECT element_at(array(1, 2, 3), 5)
+query expect_error([INVALID_ARRAY_INDEX_IN_ELEMENT_AT])
+SELECT element_at(array(1, 2, 3), 5) FROM ansi_element_at_oob
 
 -- ============================================================================
 -- element_at with index 0 (invalid)
@@ -55,24 +62,27 @@ SELECT element_at(array(1, 2, 3), 5)
 -- ============================================================================
 
 -- index 0 is not valid for element_at (1-based indexing)
-query expect_error(INVALID_INDEX_OF_ZERO)
+query expect_error([INVALID_INDEX_OF_ZERO])
 SELECT element_at(arr, 0) FROM ansi_element_at_oob
 
 -- literal with index 0
-query expect_error(INVALID_INDEX_OF_ZERO)
-SELECT element_at(array(1, 2, 3), 0)
+query expect_error([INVALID_INDEX_OF_ZERO])
+SELECT element_at(array(1, 2, 3), 0) FROM ansi_element_at_oob
 
 -- ============================================================================
 -- element_at index out of bounds (negative index beyond array)
 -- ============================================================================
 
 -- negative index beyond array size should throw
-query expect_error(INVALID_ARRAY_INDEX_IN_ELEMENT_AT)
+query expect_error([INVALID_ARRAY_INDEX_IN_ELEMENT_AT])
+SELECT element_at(arr, -4) FROM ansi_element_at_oob
+
+query expect_error([INVALID_ARRAY_INDEX_IN_ELEMENT_AT])
 SELECT element_at(arr, -10) FROM ansi_element_at_oob
 
 -- literal with negative out of bounds
-query expect_error(INVALID_ARRAY_INDEX_IN_ELEMENT_AT)
-SELECT element_at(array(1, 2, 3), -5)
+query expect_error([INVALID_ARRAY_INDEX_IN_ELEMENT_AT])
+SELECT element_at(array(1, 2, 3), -5) FROM ansi_element_at_oob
 
 -- ============================================================================
 -- ANSI short-circuit over a NULL array
