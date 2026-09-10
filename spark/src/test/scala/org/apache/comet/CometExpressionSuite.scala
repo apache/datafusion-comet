@@ -3604,16 +3604,25 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("hll_union_agg rejects different lgConfigK when not allowed") {
     assume(isSpark40Plus)
-    withSQLConf(
-      "spark.comet.expression.HllSketchAgg.allowIncompatible" -> "true",
-      "spark.comet.expression.HllUnionAgg.allowIncompatible" -> "true") {
+    withTempPath { dir =>
+      val sketchPath = dir.getCanonicalPath
+      // Materialize one lgConfigK=10 and one lgConfigK=12 sketch into Parquet, written by Spark
+      // (the HllSketchAgg opt-in is deliberately absent here), so the query under test is a plain
+      // scan plus aggregate. Building the two sketches inline with UNION ALL instead is not
+      // version-stable: on Spark 4.2 MergeSubplans folds the two non-grouping aggregates into one
+      // CTE projecting a struct with duplicate field names, which Comet does not accelerate, so
+      // hll_union_agg falls back and the native check under test never runs.
       withParquetTable((0 until 100).map(i => Tuple1(i)), "tbl") {
-        // A lgConfigK=10 sketch unioned with a lgConfigK=12 sketch (allowDifferentLgConfigK
-        // defaults false) must throw in BOTH Spark and Comet.
-        val df = sql(
-          "SELECT hll_union_agg(s) FROM (" +
-            "  SELECT hll_sketch_agg(_1, 10) AS s FROM tbl UNION ALL" +
-            "  SELECT hll_sketch_agg(_1, 12) AS s FROM tbl)")
+        sql("SELECT hll_sketch_agg(_1, 10) AS s FROM tbl")
+          .union(sql("SELECT hll_sketch_agg(_1, 12) AS s FROM tbl"))
+          .write
+          .parquet(sketchPath)
+      }
+      withSQLConf("spark.comet.expression.HllUnionAgg.allowIncompatible" -> "true") {
+        // Unioning the two sketches (allowDifferentLgConfigK defaults false) must throw in BOTH
+        // Spark and Comet.
+        val df = spark.read.parquet(sketchPath).selectExpr("hll_union_agg(s)")
+        checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
         val (sparkErr, cometErr) = checkSparkAnswerMaybeThrows(df)
         assert(sparkErr.isDefined, "expected Spark to throw on different lgConfigK")
         assert(cometErr.isDefined, "expected Comet to throw on different lgConfigK")
