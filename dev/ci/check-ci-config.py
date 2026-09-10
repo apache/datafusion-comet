@@ -91,23 +91,33 @@ ROUTING_CASES = [
 ]
 
 # Event policy. Each case is (event, expected set of jobs allowed to run),
-# where "allowed" ignores path filters. Transcribed from the `if:` expressions
-# ci.yml carried before POLICY moved into compute-changes.py, so these pin the
-# pre-refactor behaviour rather than restating the new code.
-PR_TIER = {"build_linux", "build_macos", "benchmark", "spark_3_5", "spark_4_1", "iceberg_1_11"}
+# where "allowed" ignores path filters. Written out longhand rather than
+# derived from POLICY, so that a change to the routing has to be stated twice
+# and cannot be made by accident.
+PR_TIER = {"build_linux", "build_macos", "benchmark", "spark_4_1", "iceberg_1_11"}
+SPARK_OPT_IN = {"spark_3_4", "spark_3_5", "spark_4_0"}
 ICEBERG_OPT_IN = {"iceberg_1_8", "iceberg_1_9", "iceberg_1_10"}
-ALL_JOBS = PR_TIER | ICEBERG_OPT_IN | {"docs", "spark_3_4", "spark_4_0"}
+QUEUE_TIER = PR_TIER | SPARK_OPT_IN | ICEBERG_OPT_IN
+ALL_JOBS = QUEUE_TIER | {"docs"}
 
 POLICY_CASES = [
     # A manual run may exercise anything.
     ({"name": "workflow_dispatch"}, ALL_JOBS),
-    # Push to main runs every job, docs included: it is the only event that
-    # may deploy the site.
-    ({"name": "push"}, ALL_JOBS),
+    # The merge queue is the authoritative gate: everything except the site
+    # deploy, which can only run once the commit is actually on main.
+    ({"name": "merge_group"}, QUEUE_TIER),
+    # Push to main is now the site deploy and nothing else. If any test job
+    # shows up here, every merge is paying for CI twice.
+    ({"name": "push"}, {"docs"}),
     # A plain pull request: the PR tier only. docs must never run here, and the
     # opt-in suites stay off without their label.
     ({"name": "pull_request", "action": "opened", "labels": []}, PR_TIER),
     ({"name": "pull_request", "action": "synchronize", "labels": []}, PR_TIER),
+    # Spark 3.5 moved behind the queue; its label is the escape hatch.
+    (
+        {"name": "pull_request", "action": "synchronize", "labels": ["run-spark-3.5-tests"]},
+        PR_TIER | {"spark_3_5"},
+    ),
     # An opt-in label present on a pushed commit adds just that suite.
     (
         {"name": "pull_request", "action": "synchronize", "labels": ["run-spark-3.4-tests"]},

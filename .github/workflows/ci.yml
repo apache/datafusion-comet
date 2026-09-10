@@ -17,7 +17,21 @@
 
 # Top-level CI orchestrator: runs cheap preflight checks first, then fans out
 # to the long-running test/build workflows only if preflight passed and the
-# PR/push touched files relevant to that workflow.
+# change touched files relevant to that workflow.
+#
+# Merging goes through GitHub's merge queue (see `rulesets` in `.asf.yaml`), so
+# there are two tiers:
+#
+#   pull_request  fast feedback. Build + Spark 4.1 + Iceberg 1.11.
+#   merge_group   the authoritative gate. Everything the PR tier runs, plus
+#                 Spark 3.4/3.5/4.0 and Iceberg 1.8/1.9/1.10, evaluated
+#                 against the merge result rather than the PR head.
+#
+# Which tier a job sits in is POLICY in dev/ci/compute-changes.py, not an
+# expression here. Heavy jobs deliberately have no `push` tier: the queue
+# already tested the exact commit that lands, so re-running the pipeline on
+# push to main would double the cost of every merge. `docs` is the exception,
+# since it deploys to asf-site and must run after the commit is on main.
 
 name: CI
 
@@ -33,6 +47,7 @@ concurrency:
 on:
   pull_request:
     types: [opened, synchronize, reopened, labeled]
+  merge_group:
   push:
     branches:
       - main
@@ -163,6 +178,8 @@ jobs:
           PR_LABELS:    ${{ toJSON(github.event.pull_request.labels.*.name) }}
           PR_BASE_SHA:  ${{ github.event.pull_request.base.sha }}
           PR_HEAD_SHA:  ${{ github.event.pull_request.head.sha }}
+          MQ_BASE_SHA:  ${{ github.event.merge_group.base_sha }}
+          MQ_HEAD_SHA:  ${{ github.event.merge_group.head_sha }}
           PUSH_BEFORE:  ${{ github.event.before }}
           PUSH_AFTER:   ${{ github.sha }}
         run: |
@@ -175,6 +192,10 @@ jobs:
             :
           elif [[ "$EVENT_NAME" == "pull_request" ]]; then
             git diff --name-only "$PR_BASE_SHA"..."$PR_HEAD_SHA" > changed_files.txt
+          elif [[ "$EVENT_NAME" == "merge_group" ]]; then
+            # The queue branch is built on top of base_sha, so this covers every
+            # entry batched into this merge group, not just the newest one.
+            git diff --name-only "$MQ_BASE_SHA"..."$MQ_HEAD_SHA" > changed_files.txt
           else
             # push to main; first push to a branch has all-zero before sha
             if [[ "$PUSH_BEFORE" =~ ^0+$ ]]; then
@@ -322,12 +343,9 @@ jobs:
       java: 17
 
   # ---------------------------------------------------------------------------
-  # required_checks: one flat job that aggregates every other job's result, so
-  # that `main` has a single name it can safely require.
-  #
-  # Nothing requires it yet. It is landing first, on its own, so that we can
-  # watch it report on real pull requests before `.asf.yaml` names it in
-  # `required_status_checks` for `main`.
+  # required_checks: the single context listed in `required_status_checks` for
+  # `main` in `.asf.yaml`, and therefore the only thing the merge queue waits
+  # on.
   #
   # None of the jobs above can be required directly, because the name a caller
   # of a reusable workflow publishes depends on whether it ran:

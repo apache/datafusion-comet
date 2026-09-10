@@ -301,6 +301,7 @@ FILTERS = {
 # Which events may run each job, independent of the path filters above.
 #
 #   "pr"              every pull request
+#   "queue"           the merge queue, i.e. a merge_group event
 #   "push"            push to main
 #   "label:<name>"    a pull request carrying that label
 #
@@ -308,21 +309,30 @@ FILTERS = {
 # "label:" are mutually exclusive -- a job is either unconditional on pull
 # requests or opt-in, never both -- and check-ci-config.py rejects a job that
 # lists both rather than letting the label quietly win.
+#
+# Almost everything is "queue": the merge queue is the authoritative gate, and
+# it tests the merge result rather than the PR head. "push" is reserved for
+# work that can only happen once a commit is on main. Adding "push" back to a
+# test job would make every merge run it twice, once in the queue and once
+# after, which is the thing the queue was adopted to avoid.
 POLICY = {
-    "build_linux": ["pr", "push"],
-    "build_macos": ["pr", "push"],
-    "benchmark": ["pr", "push"],
-    # docs deploys to asf-site, so it must not run from a pull request.
+    "build_linux": ["pr", "queue"],
+    "build_macos": ["pr", "queue"],
+    "benchmark": ["pr", "queue"],
+    # docs deploys to asf-site, so it must not run from a pull request or from
+    # the queue's throwaway branch.
     "docs": ["push"],
-    "spark_3_4": ["push", "label:run-spark-3.4-tests"],
-    "spark_3_5": ["pr", "push"],
-    "spark_4_0": ["push", "label:run-spark-4.0-tests"],
-    "spark_4_1": ["pr", "push"],
-    "iceberg_1_8": ["push", "label:run-iceberg-tests"],
-    "iceberg_1_9": ["push", "label:run-iceberg-tests"],
-    "iceberg_1_10": ["push", "label:run-iceberg-tests"],
+    "spark_3_4": ["queue", "label:run-spark-3.4-tests"],
+    "spark_3_5": ["queue", "label:run-spark-3.5-tests"],
+    "spark_4_0": ["queue", "label:run-spark-4.0-tests"],
+    # Spark 4.1 is the default build profile, so it is the cheapest early
+    # warning that a change is wrong and stays in the PR tier.
+    "spark_4_1": ["pr", "queue"],
+    "iceberg_1_8": ["queue", "label:run-iceberg-tests"],
+    "iceberg_1_9": ["queue", "label:run-iceberg-tests"],
+    "iceberg_1_10": ["queue", "label:run-iceberg-tests"],
     # Iceberg 1.11 is our only Spark 4.1 Iceberg coverage, so it is not opt-in.
-    "iceberg_1_11": ["pr", "push"],
+    "iceberg_1_11": ["pr", "queue"],
 }
 
 
@@ -344,6 +354,8 @@ def event_allows(job, event):
         return True
     if name == "push":
         return "push" in tiers
+    if name == "merge_group":
+        return "queue" in tiers
     if name != "pull_request":
         return False
 
