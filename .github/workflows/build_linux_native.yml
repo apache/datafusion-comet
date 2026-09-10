@@ -22,6 +22,9 @@ name: Build Linux Native Library
 on:
   workflow_call:
 
+permissions:
+  contents: read
+
 env:
   RUST_VERSION: stable
   RUST_BACKTRACE: 1
