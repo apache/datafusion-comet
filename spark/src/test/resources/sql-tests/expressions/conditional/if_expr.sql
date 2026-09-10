@@ -31,8 +31,9 @@ SELECT IF(a > 0, 'positive', 'non-positive') FROM test_if
 query
 SELECT IF(true, 1, 2), IF(false, 1, 2), IF(NULL, 1, 2)
 
--- A NullType result stays in Spark: native CASE merges the rows of its branches through Arrow's
--- merge_n, which cannot build a NullArray with a validity bitmap. Spark folds `IF(c, NULL, NULL)`
--- itself, so the branch has to be a non-foldable NullType expression.
-query expect_fallback(native CASE cannot merge NullType branches)
+-- A NullType result cannot run natively (native CASE merges the rows of its branches through
+-- Arrow's merge_n, which cannot build a NullArray with a validity bitmap), so the JVM codegen
+-- dispatcher runs it inside the Comet pipeline. Spark folds `IF(c, NULL, NULL)` itself, so the
+-- branch has to be a non-foldable NullType expression.
+query
 SELECT IF(cond, aggregate(array(a), NULL, (acc, x) -> NULL), NULL) FROM test_if

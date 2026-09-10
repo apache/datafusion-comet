@@ -162,6 +162,8 @@ object CometMapFromArrays extends CometExpressionSerde[MapFromArrays] {
   private val scalarSideReason: String =
     "native map takes the first row of a scalar list where the other argument is per-row"
 
+  override def getUnsupportedReasons(): Seq[String] = Seq(scalarSideReason, NullGuard.reason)
+
   override def getSupportLevel(expr: MapFromArrays): SupportLevel = {
     if (MapKeyDedupPolicySupport.isLastWin) {
       Incompatible(Some(MapKeyDedupPolicySupport.incompatibleReason))

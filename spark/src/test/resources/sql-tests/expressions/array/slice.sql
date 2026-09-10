@@ -284,7 +284,7 @@ query
 SELECT slice(filter(array(), x -> true), 1, 1) FROM test_slice
 
 -- map_entries produces a list whose NullType-bearing struct item is declared non-nullable;
--- native spark_array_slice keeps that item where a nullable one is promised, so the
--- composition stays in Spark.
-query expect_fallback(native spark_array_slice keeps a non-nullable list item where a nullable one is promised)
+-- native spark_array_slice keeps that item, and since the serde no longer serializes a return
+-- type (the output field comes from the input's), the two agree and it runs natively.
+query
 SELECT slice(map_entries(map(coalesce(start_idx, 0), NULL)), 1, 1) FROM test_slice

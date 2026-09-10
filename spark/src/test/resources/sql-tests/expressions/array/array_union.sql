@@ -47,8 +47,9 @@ query
 SELECT a, b, array_union(a, b) FROM test_union_nulls
 
 -- empty array combinations
--- Both sides are Null-typed empty arrays, which the NullType-element gate keeps in Spark.
-query expect_fallback(native array_union drops the entries of a NullType-element array)
+-- Both sides are Null-typed empty arrays; the NullType-element gate hands them to the JVM
+-- codegen dispatcher, which keeps the projection in the Comet pipeline.
+query
 SELECT array_union(array(), array()) FROM test_union_nulls
 
 query
@@ -57,7 +58,7 @@ SELECT array_union(array(), array(1, 2)) FROM test_union_nulls
 query
 SELECT array_union(array(1, 2), array()) FROM test_union_nulls
 
-query expect_fallback(native array_union drops the entries of a NullType-element array)
+query
 SELECT array_union(array(), array(NULL)) FROM test_union_nulls
 
 -- both-NULL arrays
@@ -249,9 +250,9 @@ query
 SELECT array_union(CASE WHEN a IS NOT NULL THEN a ELSE array(0) END, b) FROM test_array_union
 
 -- DataFusion's set-op kernel treats a Null element type as "return distinct(other side)" and
--- drops the NULL entries the Null-typed list actually holds, so NullType-element unions stay
--- in Spark.
-query expect_fallback(native array_union drops the entries of a NullType-element array)
+-- drops the NULL entries the Null-typed list actually holds, so NullType-element unions run
+-- through the JVM codegen dispatcher instead of the kernel.
+query
 SELECT array_union(transform(a, x -> NULL), array()) FROM test_array_union
 
 -- The set-op kernel asserts identical element types, nested nullability included, and the two

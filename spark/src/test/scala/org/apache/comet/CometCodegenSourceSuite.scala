@@ -394,6 +394,30 @@ class CometCodegenSourceSuite extends AnyFunSuite {
         .getContainsNull)
   }
 
+  test("top-level struct output with a NullType field allocates") {
+    // `StructVector`'s constructor builds a `NullableStructWriter` over the field's children,
+    // which throws `Unknown type: NULL` for a Null child; the children must be added after
+    // construction. Reachable from the JVM codegen dispatcher through e.g.
+    // `coalesce(named_struct('i', monotonically_increasing_id(), 'n', NULL), ...)`.
+    val dataType = StructType(
+      Seq(
+        StructField("i", LongType, nullable = false),
+        StructField("n", NullType),
+        StructField("l", ArrayType(IntegerType))))
+    val field = CometBatchKernelCodegen.toFfiArrowField("out", dataType, nullable = true)
+    val vector = CometBatchKernelCodegen.allocateOutput(field, 4, 0)
+    try {
+      val struct = vector.asInstanceOf[org.apache.arrow.vector.complex.StructVector]
+      assert(struct.getChild("n").isInstanceOf[org.apache.arrow.vector.NullVector])
+      assert(struct.getChildrenFromFields.size == 3)
+      // The export names survive: the list child is labelled `item`, not Arrow Java's `$data$`.
+      assert(struct.getField == field)
+      assert(struct.getField.getChildren.get(2).getChildren.get(0).getName == "item")
+    } finally {
+      vector.close()
+    }
+  }
+
   test("nested NullType output casts the child vector and writes setNull into it") {
     // A scalar NullType output cannot distinguish `emitWrite`'s NullType branch from
     // `defaultBody`'s own `ev.isNull -> output.setNull(i)` short-circuit, which emits the same

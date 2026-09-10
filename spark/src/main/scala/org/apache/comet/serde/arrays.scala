@@ -220,6 +220,8 @@ object CometArrayIntersect
   private val nullElementReason: String =
     "native array_intersect returns the other side's entries for a NullType-element array"
 
+  override def getUnsupportedReasons(): Seq[String] = Seq(nullElementReason)
+
   override def getSupportLevel(expr: ArrayIntersect): SupportLevel = {
     // The native array_intersect dedups by raw bytes, which is wrong under non-default collations.
     // That is Incompatible rather than Unsupported because there is something real to opt into: a
@@ -328,7 +330,13 @@ object CometArrayExcept
 
   private val incompatReason = "Null handling and ordering may differ from Spark"
 
+  private val elementTypeReason =
+    "native array_except supports only boolean, integral, floating-point, decimal, date, " +
+      "timestamp and string elements, or arrays of those"
+
   override def getIncompatibleReasons(): Seq[String] = Seq(incompatReason)
+
+  override def getUnsupportedReasons(): Seq[String] = Seq(elementTypeReason)
 
   override def getSupportLevel(expr: ArrayExcept): SupportLevel = {
     // Surface the native element-type restriction in EXPLAIN. Unsupported rather than
@@ -339,7 +347,7 @@ object CometArrayExcept
     // handling differences below remain a genuine opt-in.
     expr.children.map(_.dataType).find(dt => !isTypeSupported(dt)) match {
       case Some(dt) =>
-        Unsupported(Some(s"native array_except does not support element type $dt"))
+        Unsupported(Some(s"$elementTypeReason ($dt)"))
       case None => Incompatible(Some(incompatReason))
     }
   }
@@ -502,25 +510,6 @@ object CometArrayInsert extends CometExpressionSerde[ArrayInsert] with ArraysBas
 }
 
 object CometSlice extends CometExpressionSerde[Slice] {
-
-  override def getSupportLevel(expr: Slice): SupportLevel = {
-    expr.x.dataType match {
-      // Native spark_array_slice rebuilds the sliced list around the input's actual child,
-      // whose non-NullType item keeps Spark's containsNull, while `convert` promises a
-      // nullable item; for containsNull = false the two disagree and the native plan is
-      // rejected (e.g. slice(map_entries(map(k, NULL)), 1, 1)). A bare NullType item is
-      // declared nullable at the FFI boundary (Utils.declaredChildNullability) and slices fine.
-      case ArrayType(elementType, false)
-          if elementType != NullType &&
-            SupportLevel.containsType(elementType, classOf[NullType]) =>
-        Unsupported(
-          Some(
-            "native spark_array_slice keeps a non-nullable list item where a nullable " +
-              "one is promised"))
-      case _ => Compatible()
-    }
-  }
-
   override def convert(
       expr: Slice,
       inputs: Seq[Attribute],
@@ -577,11 +566,18 @@ private[serde] object NullElementSetOp {
     })
 }
 
-object CometArrayUnion extends CometExpressionSerde[ArrayUnion] {
+object CometArrayUnion extends CometExpressionSerde[ArrayUnion] with CodegenDispatchFallback {
 
+  private val nullElementReason =
+    "native array_union drops the entries of a NullType-element array"
+
+  override def getUnsupportedReasons(): Seq[String] = Seq(nullElementReason)
+
+  // A NullType-element side runs through the JVM codegen dispatcher (`CodegenDispatchFallback`)
+  // rather than the kernel that drops its entries; see `NullElementSetOp`.
   override def getSupportLevel(expr: ArrayUnion): SupportLevel = {
     if (NullElementSetOp.hasNullElementSide(expr)) {
-      Unsupported(Some("native array_union drops the entries of a NullType-element array"))
+      Unsupported(Some(nullElementReason))
     } else {
       Compatible()
     }
@@ -601,7 +597,14 @@ object CometArrayUnion extends CometExpressionSerde[ArrayUnion] {
   }
 }
 
-object CometCreateArray extends CometExpressionSerde[CreateArray] with ArraysBase {
+object CometCreateArray
+    extends CometExpressionSerde[CreateArray]
+    with ArraysBase
+    with CodegenDispatchFallback {
+
+  private val nullTypeBatchReason = "native make_array builds a single row from a NullType batch"
+
+  override def getUnsupportedReasons(): Seq[String] = Seq(nullTypeBatchReason)
 
   override def getSupportLevel(expr: CreateArray): SupportLevel = {
     // DataFusion's make_array funnels an argument list that is entirely Null-typed into
@@ -611,9 +614,10 @@ object CometCreateArray extends CometExpressionSerde[CreateArray] with ArraysBas
     // `aggregate(arr, NULL, (acc, x) -> NULL)` admitted by the JVM codegen dispatcher) therefore
     // fails the scalar-function row-count check for batches with more than one row. All-literal
     // NULL arguments arrive as scalars and broadcast correctly, and empty `array()` never reaches
-    // make_array (`convert` emits a literal).
+    // make_array (`convert` emits a literal). `CodegenDispatchFallback` keeps the non-scalar
+    // case in the Comet pipeline through the JVM codegen dispatcher.
     if (expr.children.exists(c => c.dataType == NullType && !c.foldable)) {
-      Unsupported(Some("native make_array builds a single row from a NullType batch"))
+      Unsupported(Some(nullTypeBatchReason))
     } else {
       Compatible()
     }
@@ -658,18 +662,33 @@ object CometCreateArray extends CometExpressionSerde[CreateArray] with ArraysBas
   }
 }
 
-object CometArrayRepeat extends CometExpressionSerde[ArrayRepeat] {
+object CometArrayRepeat extends CometExpressionSerde[ArrayRepeat] with CodegenDispatchFallback {
+
+  private val nonNullableItemReason =
+    "native array_repeat rebuilds a non-nullable list item as nullable"
+
+  override def getUnsupportedReasons(): Seq[String] = Seq(nonNullableItemReason)
 
   override def getSupportLevel(expr: ArrayRepeat): SupportLevel = {
-    expr.left.dataType match {
-      // DataFusion's list repeat rebuilds the repeated list's item field as nullable. Comet
-      // declares a non-NullType item with Spark's containsNull, so for containsNull = false
-      // the planned and produced types disagree and the native plan is rejected. A NullType
-      // item is declared nullable on the FFI boundary (Utils.declaredChildNullability) and
-      // matches the rebuild, so plain array<null> stays native.
-      case ArrayType(elementType, false) if elementType != NullType =>
-        Unsupported(Some("native array_repeat rebuilds a non-nullable list item as nullable"))
-      case _ => Compatible()
+    expr.left match {
+      // Native `make_array` always emits a nullable item, whatever Spark's containsNull says, so
+      // `array(c)` over a non-nullable `c` repeats natively.
+      case _: CreateArray => Compatible()
+      case left =>
+        left.dataType match {
+          // DataFusion's list repeat rebuilds the repeated list's item field as nullable, and
+          // fails when the input's item is not ("ListArray expected data type List(non-null
+          // Struct(..)) got List(Struct(..))"). A non-NullType item reaches native with Spark's
+          // containsNull (`map_entries` makes a non-nullable entry struct; the JVM codegen
+          // dispatcher declares its list items with Spark's flag), so containsNull = false is
+          // the plan-time proxy for that input. `CodegenDispatchFallback` runs those through
+          // the dispatcher instead. A NullType item is declared nullable on the FFI boundary
+          // (Utils.declaredChildNullability) and matches the rebuild, so plain array<null>
+          // stays native.
+          case ArrayType(elementType, false) if elementType != NullType =>
+            Unsupported(Some(nonNullableItemReason))
+          case _ => Compatible()
+        }
     }
   }
 
@@ -990,7 +1009,8 @@ object CometArrayPosition extends CometExpressionSerde[ArrayPosition] with Array
 object CometArraysZip extends CometExpressionSerde[ArraysZip] {
 
   override def getUnsupportedReasons(): Seq[String] = Seq(
-    "Not all input data types are supported; falls back to Spark for unsupported types")
+    "Not all input data types are supported; falls back to Spark for unsupported types",
+    NullGuard.reason)
 
   private def isTypeSupported(dt: DataType): Boolean = {
     import DataTypes._

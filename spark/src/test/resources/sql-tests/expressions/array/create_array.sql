@@ -142,6 +142,7 @@ query
 SELECT CAST(array() AS ARRAY<ARRAY<INT>>)
 
 -- A non-foldable all-NullType argument (built by the JVM codegen dispatcher) would make native
--- make_array collapse the whole batch into a single list row, so it stays in Spark.
-query expect_fallback(native make_array builds a single row from a NullType batch)
+-- make_array collapse the whole batch into a single list row, so the whole expression runs
+-- through the dispatcher instead.
+query
 SELECT array(aggregate(arr, NULL, (acc, x) -> NULL)) FROM test_create_array_complex
