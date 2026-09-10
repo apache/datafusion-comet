@@ -126,6 +126,94 @@ class CometMapExpressionSuite extends CometTestBase {
     }
   }
 
+  for (codegenEnabled <- Seq("false", "true")) {
+    test(s"map_from_arrays short-circuits null keys (codegen=$codegenEnabled)") {
+      withSQLConf(
+        SQLConf.ANSI_ENABLED.key -> "true",
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> codegenEnabled) {
+        withTable("map_null_keys") {
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            // Keep null and non-null keys in one batch. Only the null-key row divides by zero.
+            spark
+              .range(0, 3, 1, 1)
+              .selectExpr("CAST(id AS INT) AS k")
+              .write
+              .format("parquet")
+              .saveAsTable("map_null_keys")
+          }
+          val query = """SELECT map_from_arrays(
+                        |  CASE WHEN k = 0 THEN CAST(NULL AS ARRAY<INT>) ELSE array(1) END,
+                        |  array(1 / k))
+                        |FROM map_null_keys""".stripMargin
+          val plan = sql(query).queryExecution.executedPlan
+          assert(new ExtendedExplainInfo().getNativeExpressions(plan).contains("map_from_arrays"))
+          checkSparkAnswerAndOperator(sql(query))
+        }
+      }
+    }
+
+    test(s"map_from_arrays rejects unequal batched row lengths (codegen=$codegenEnabled)") {
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> codegenEnabled) {
+        withTable("map_unequal_lengths") {
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            // Each operand has four flattened elements, but row lengths are [1, 3] and [2, 2].
+            spark
+              .range(0, 2, 1, 1)
+              .selectExpr("CAST(id AS INT) AS k")
+              .write
+              .format("parquet")
+              .saveAsTable("map_unequal_lengths")
+          }
+          val uneven = "CASE WHEN k = 0 THEN array(1) ELSE array(2, 3, 4) END"
+          for ((keys, values) <- Seq(
+              (uneven, "array(k, k + 10)"),
+              (uneven, "array(10, 20)"),
+              ("array(10, 20)", uneven))) {
+            val query = s"SELECT map_from_arrays($keys, $values) FROM map_unequal_lengths"
+            val plan = sql(query).queryExecution.executedPlan
+            assert(
+              new ExtendedExplainInfo().getNativeExpressions(plan).contains("map_from_arrays"))
+            val (sparkError, cometError) = checkSparkAnswerMaybeThrows(sql(query))
+            assert(sparkError.exists(_.getMessage.contains("same length")))
+            assert(cometError.exists(_.getMessage.contains("same length")))
+          }
+        }
+      }
+    }
+
+    test(s"map_from_arrays broadcasts scalar operands (codegen=$codegenEnabled)") {
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> codegenEnabled) {
+        withTable("map_mixed_inputs") {
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            spark
+              .range(0, 3, 1, 1)
+              .selectExpr("CAST(id AS INT) AS k")
+              .write
+              .format("parquet")
+              .saveAsTable("map_mixed_inputs")
+          }
+          val query = """SELECT
+                        |  map_from_arrays(array(10, 20), array(k, CAST(NULL AS INT))),
+                        |  map_from_arrays(array(k, k + 10), array(100, 200)),
+                        |  map_from_arrays(
+                        |    CASE WHEN k = 0 THEN CAST(NULL AS ARRAY<INT>) ELSE array(k) END,
+                        |    array(100)),
+                        |  map_from_arrays(array(100),
+                        |    CASE WHEN k = 0 THEN CAST(NULL AS ARRAY<INT>) ELSE array(k) END)
+                        |FROM map_mixed_inputs""".stripMargin
+          val plan = sql(query).queryExecution.executedPlan
+          assert(new ExtendedExplainInfo().getNativeExpressions(plan).contains("map_from_arrays"))
+          checkSparkAnswerAndOperator(sql(query))
+        }
+      }
+    }
+  }
+
   test("size with map input") {
     withTempDir { dir =>
       withTempView("t1") {
