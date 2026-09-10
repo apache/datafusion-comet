@@ -47,7 +47,7 @@ class GenerateDocsSuite extends AnyFunSuite {
          |
          |The following cases use Comet's native implementation by default:
          |
-         |- A `UTF8_BINARY` literal pattern admitted by the plan-time compatibility analyzer is evaluated natively by default.
+         |- A `UTF8_BINARY` literal pattern admitted by the [plan-time compatibility analyzer](../../regex.md#when-the-rust-engine-is-safe) is evaluated natively by default.
          |
          |For applicable cases that are not selected for native execution automatically, `RLike` is evaluated in the JVM using Spark's own code-generated implementation (run inside the Comet pipeline) by default. Set `$configKey=true` to explicitly select Comet's native implementation, which has the following differences from Spark:
          |
@@ -57,6 +57,9 @@ class GenerateDocsSuite extends AnyFunSuite {
     assert(markdown == expected)
     assert(!markdown.contains("By default, `RLike` is evaluated in the JVM"))
     assert(!markdown.contains("differences from Spark are always present"))
+    assert(
+      markdown.contains(
+        "[plan-time compatibility analyzer](../../regex.md#when-the-rust-engine-is-safe)"))
   }
 
   test("ordinary native opt-in expression output is unchanged") {

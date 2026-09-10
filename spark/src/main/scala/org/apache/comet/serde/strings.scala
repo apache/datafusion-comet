@@ -407,7 +407,8 @@ object CometRLike
 
   override def getCompatibleNotes(): Seq[String] =
     Seq(
-      "A `UTF8_BINARY` literal pattern admitted by the plan-time compatibility analyzer is " +
+      "A `UTF8_BINARY` literal pattern admitted by the " +
+        "[plan-time compatibility analyzer](../../regex.md#when-the-rust-engine-is-safe) is " +
         "evaluated natively by default.")
 
   override def getIncompatibleReasons(): Seq[String] =
