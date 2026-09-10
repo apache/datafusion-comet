@@ -15,12 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Shuffle read benchmarks.
-//!
-//! Every shuffle block is a self-contained Arrow IPC stream, so the reader parses the schema
-//! flatbuffer once per block. These benchmarks measure what that costs relative to decoding the
-//! block, across the shapes that make the per-block share largest: wide schemas and few rows per
-//! block, which is what high partition counts and repeated spilling produce.
+//! Shuffle read benchmarks: the per-block schema parse measured against a full block decode,
+//! across column counts and rows per block.
 
 use arrow::array::{Int64Array, RecordBatch, StringArray};
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
@@ -33,12 +29,10 @@ use std::hint::black_box;
 use std::io::Cursor;
 use std::sync::Arc;
 
-/// Comet prefixes each block with an 8-byte compressed length and an 8-byte field count.
-/// `read_ipc_compressed` expects the bytes after that header.
+/// 8-byte compressed length plus 8-byte field count; `read_ipc_compressed` expects what follows.
 const BLOCK_HEADER_LEN: usize = 16;
 
-/// Half `Int64`, half `Utf8`, which keeps the schema flatbuffer representative of a real shuffle
-/// rather than one repeated field type.
+/// Alternating `Int64` and `Utf8`.
 fn schema_of(num_columns: usize) -> SchemaRef {
     Arc::new(Schema::new(
         (0..num_columns)
@@ -91,8 +85,7 @@ fn encode_block(batch: &RecordBatch, codec: CompressionCodec) -> Vec<u8> {
 fn criterion_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("shuffle_reader");
 
-    // Rows per block shrink as partition count rises, so the narrow cases stand in for wide
-    // shuffles. Column counts bracket a typical projection and a wide one.
+    // rows per block shrink as partition count rises, so the small cases stand in for wide shuffles
     for num_columns in [5usize, 50] {
         for num_rows in [64usize, 512, 8192] {
             let batch = batch_of(num_columns, num_rows);
@@ -100,16 +93,14 @@ fn criterion_benchmark(c: &mut Criterion) {
 
             let id = format!("{num_columns}col_{num_rows}row");
 
-            // Full decode of one block: schema parse plus record batch decode.
+            // full decode: schema parse plus record batch
             group.bench_with_input(
                 BenchmarkId::new("decode_block", &id),
                 &uncompressed,
                 |b, block| b.iter(|| black_box(read_ipc_compressed(black_box(block)).unwrap())),
             );
 
-            // Schema parse alone. `StreamReader::try_new` reads and parses the schema message and
-            // stops before the record batch, so this is the portion a cached schema would remove.
-            // The 4-byte codec tag that `read_ipc_compressed` strips is skipped here as well.
+            // schema parse alone: `try_new` stops before the record batch. Skips the codec tag.
             group.bench_with_input(
                 BenchmarkId::new("parse_schema_only", &id),
                 &uncompressed,
