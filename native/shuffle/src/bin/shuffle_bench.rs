@@ -479,8 +479,7 @@ async fn execute_shuffle_write(
         .await
         .expect("Failed to create physical plan");
 
-    // The header schema is read separately, straight from the file, so a scan that widens types
-    // is invisible in the output. Check the schema that actually reaches the writer instead.
+    // The header schema is read straight from the file, so check what reaches the writer.
     reject_view_types(&parquet_plan.schema());
 
     let input: Arc<dyn ExecutionPlan> = if parquet_plan
@@ -647,15 +646,8 @@ fn parse_hash_columns(s: &str) -> Vec<usize> {
         .collect()
 }
 
-/// Fails the run if the schema reaching the shuffle writer carries Arrow view types.
-///
-/// Comet's serde maps Spark `String` to `Utf8` and its planner casts UDF results back from
-/// `Utf8View`/`BinaryView`, so view arrays do not reach the shuffle writer in production. They
-/// are also the input this writer handles worst: a batch at or above `batch_size` rows bypasses
-/// the `BatchCoalescer`, and an interleaved view array is then serialized carrying the backing
-/// data buffers of every input batch it drew rows from, inflating the written bytes by orders of
-/// magnitude. Numbers measured on that shape describe nothing Comet runs, so refuse the run
-/// rather than report them.
+/// Fails the run if the schema reaching the shuffle writer carries Arrow view types, which
+/// Comet does not produce and this writer serializes with every backing buffer attached.
 fn reject_view_types(schema: &Schema) {
     fn find_view(data_type: &DataType) -> Option<&DataType> {
         match data_type {
@@ -700,9 +692,7 @@ fn describe_schema(schema: &arrow::datatypes::Schema) -> String {
             | DataType::UInt64 => "int",
             DataType::Float16 | DataType::Float32 | DataType::Float64 => "float",
             DataType::Utf8 | DataType::LargeUtf8 => "string",
-            // Named rather than folded into "string"/"binary" (or left to fall through to
-            // "other") so that a schema carrying view types is visible in the header instead of
-            // being reported as the plain variant the run is supposed to be measuring.
+            // named, not folded into "string"/"binary", so a view schema is visible in the header
             DataType::Utf8View => "stringview",
             DataType::BinaryView => "binaryview",
             DataType::Boolean => "bool",
