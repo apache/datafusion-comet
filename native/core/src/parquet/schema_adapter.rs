@@ -208,15 +208,16 @@ fn shadowed_by_later_duplicate(schema: &SchemaRef) -> Vec<bool> {
 ///
 /// The remap only changes top-level field NAMES so that `DefaultPhysicalExprAdapter`'s
 /// exact-name lookup hits. Indices, types, nullability, and metadata stay as in the file.
-/// Returns the rewritten schema and a `logical_name -> original_physical_name` map used
-/// downstream to restore the original physical names before stream consumption.
+/// Returns the rewritten schema, a `logical_name -> original_physical_name` map used
+/// downstream to restore the original physical names before stream consumption, and the
+/// duplicate-id ambiguity per logical field name (see `RootIdAmbiguities`).
 fn remap_physical_schema(
     logical_schema: &SchemaRef,
     physical_schema: &SchemaRef,
     case_sensitive: bool,
     use_field_id: bool,
     ignore_missing_field_id: bool,
-) -> DataFusionResult<(SchemaRef, HashMap<String, String>)> {
+) -> DataFusionResult<(SchemaRef, HashMap<String, String>, RootIdAmbiguities)> {
     let should_match_by_id = use_field_id && schema_has_field_ids(logical_schema);
 
     if should_match_by_id && !ignore_missing_field_id && !schema_has_field_ids(physical_schema) {
@@ -229,9 +230,12 @@ fn remap_physical_schema(
 
     // Index every physical field id once. Spark's `matchIdField` raises
     // `_LEGACY_ERROR_TEMP_2094` "Found duplicate field(s)" when an ID-bearing logical field
-    // resolves to more than one physical field; the matched names are only gathered then.
+    // resolves to more than one physical field, but its `clipParquetSchema` only sees the
+    // requested columns while this sees the whole logical schema. The ambiguity is kept per
+    // logical field for `rewrite` to raise on reference; the matched names are gathered then.
+    let mut root_id_ambiguities = RootIdAmbiguities::new();
+    let mut id_matches: HashMap<i32, FieldMatch> = HashMap::new();
     if should_match_by_id {
-        let mut id_matches: HashMap<i32, FieldMatch> = HashMap::new();
         for (i, pf) in physical_schema.fields().iter().enumerate() {
             if let Some(id) = parse_field_id(pf) {
                 record_field_match(&mut id_matches, id, i);
@@ -240,20 +244,28 @@ fn remap_physical_schema(
         for lf in logical_schema.fields() {
             if let Some(id) = parse_field_id(lf) {
                 if id_matches.get(&id).is_some_and(|m| m.ambiguous) {
-                    return Err(spark_error(SparkError::DuplicateFieldByFieldId {
-                        required_id: id,
-                        matched_fields: field_names_with_id(physical_schema.fields(), id),
-                    }));
+                    root_id_ambiguities.insert(
+                        lf.name().clone(),
+                        SparkError::DuplicateFieldByFieldId {
+                            required_id: id,
+                            matched_fields: field_names_with_id(physical_schema.fields(), id),
+                        },
+                    );
                 }
             }
         }
     }
 
-    // Pre-build id -> first matching logical field for the per-physical rename pass below.
+    // Pre-build id -> first matching logical field for the per-physical rename pass below. An
+    // ambiguous id is left out so its physical fields fall through to the shield below, which
+    // fake-names them, and the logical field they collide on reads as missing.
     let id_to_logical: HashMap<i32, &FieldRef> = if should_match_by_id {
         let mut map = HashMap::new();
         for lf in logical_schema.fields() {
             if let Some(id) = parse_field_id(lf) {
+                if id_matches.get(&id).is_some_and(|m| m.ambiguous) {
+                    continue;
+                }
                 map.entry(id).or_insert(lf);
             }
         }
@@ -399,7 +411,11 @@ fn remap_physical_schema(
         })
         .collect();
 
-    Ok((Arc::new(Schema::new(remapped_fields)), name_map))
+    Ok((
+        Arc::new(Schema::new(remapped_fields)),
+        name_map,
+        root_id_ambiguities,
+    ))
 }
 
 /// Format an Arrow `DataType` as Spark's catalog string (e.g. `Int64` -> `bigint`),
@@ -937,42 +953,47 @@ impl PhysicalExprAdapterFactory for SparkPhysicalExprAdapterFactory {
         // the same last-wins `toMap` used for nested groups.
         let needs_remap =
             !case_sensitive || should_match_by_id || has_duplicate_names(&physical_file_schema);
-        let (adapted_physical_schema, logical_to_physical_names, original_physical_dup_check) =
-            if needs_remap {
-                let (remapped, logical_to_physical) = remap_physical_schema(
-                    &logical_file_schema,
-                    &physical_file_schema,
-                    case_sensitive,
-                    self.parquet_options.use_field_id,
-                    self.parquet_options.ignore_missing_field_id,
-                )?;
-                // Build the folded-name -> original-physical-field-indices map once for per-column
-                // duplicate detection, paired with the original schema so the rare error path can
-                // resolve the colliding names. Only meaningful in case-insensitive mode; it mirrors
-                // the `folded_to_indices` map the nested convert builds in `parquet_support`, so
-                // both paths detect ambiguity the same way instead of drifting.
-                let original_physical_dup_check = if !case_sensitive {
-                    let folded = fold_schema_names(&physical_file_schema, false);
-                    let mut map: HashMap<String, Vec<usize>> = HashMap::new();
-                    for (i, folded_name) in folded.into_iter().enumerate() {
-                        map.entry(folded_name).or_default().push(i);
-                    }
-                    Some((Arc::clone(&physical_file_schema), map))
-                } else {
-                    None
-                };
-                (
-                    remapped,
-                    if logical_to_physical.is_empty() {
-                        None
-                    } else {
-                        Some(logical_to_physical)
-                    },
-                    original_physical_dup_check,
-                )
+        let (
+            adapted_physical_schema,
+            logical_to_physical_names,
+            original_physical_dup_check,
+            root_id_ambiguities,
+        ) = if needs_remap {
+            let (remapped, logical_to_physical, root_id_ambiguities) = remap_physical_schema(
+                &logical_file_schema,
+                &physical_file_schema,
+                case_sensitive,
+                self.parquet_options.use_field_id,
+                self.parquet_options.ignore_missing_field_id,
+            )?;
+            // Build the folded-name -> original-physical-field-indices map once for per-column
+            // duplicate detection, paired with the original schema so the rare error path can
+            // resolve the colliding names. Only meaningful in case-insensitive mode; it mirrors
+            // the `folded_to_indices` map the nested convert builds in `parquet_support`, so
+            // both paths detect ambiguity the same way instead of drifting.
+            let original_physical_dup_check = if !case_sensitive {
+                let folded = fold_schema_names(&physical_file_schema, false);
+                let mut map: HashMap<String, Vec<usize>> = HashMap::new();
+                for (i, folded_name) in folded.into_iter().enumerate() {
+                    map.entry(folded_name).or_default().push(i);
+                }
+                Some((Arc::clone(&physical_file_schema), map))
             } else {
-                (Arc::clone(&physical_file_schema), None, None)
+                None
             };
+            (
+                remapped,
+                if logical_to_physical.is_empty() {
+                    None
+                } else {
+                    Some(logical_to_physical)
+                },
+                original_physical_dup_check,
+                (!root_id_ambiguities.is_empty()).then_some(root_id_ambiguities),
+            )
+        } else {
+            (Arc::clone(&physical_file_schema), None, None, None)
+        };
 
         // Fold both schemas once here so the per-column rewrite paths reuse them instead of
         // re-folding on every `rewrite` call. Case-sensitive mode folds to identity.
@@ -1026,6 +1047,7 @@ impl PhysicalExprAdapterFactory for SparkPhysicalExprAdapterFactory {
             logical_folded,
             physical_folded,
             nested_mappings,
+            root_id_ambiguities,
         }))
     }
 }
@@ -1033,6 +1055,10 @@ impl PhysicalExprAdapterFactory for SparkPhysicalExprAdapterFactory {
 /// Per logical field name, the mapping of its nested type against its physical counterpart,
 /// or the ambiguity Spark reports for it. Only fields whose type holds a struct are listed.
 type NestedMappings = HashMap<String, Result<Arc<FieldMapping>, SparkError>>;
+
+/// Per logical field name, the `_LEGACY_ERROR_TEMP_2094` ambiguity of a root field whose id
+/// matches more than one physical root field. Only ambiguous fields are listed.
+type RootIdAmbiguities = HashMap<String, SparkError>;
 
 fn type_holds_struct(data_type: &DataType) -> bool {
     match data_type {
@@ -1140,13 +1166,19 @@ struct SparkPhysicalExprAdapter {
     /// Nested field mappings resolved once in `create` (see `resolve_nested_mappings`),
     /// handed to every `CometCastColumnExpr` built here. `None` for schemas without structs.
     nested_mappings: Option<NestedMappings>,
+    /// Root fields whose id matches more than one physical field (see `remap_physical_schema`),
+    /// raised from `rewrite` when a read references them. `None` when no root id is ambiguous.
+    root_id_ambiguities: Option<RootIdAmbiguities>,
 }
 
 impl PhysicalExprAdapter for SparkPhysicalExprAdapter {
     fn rewrite(&self, expr: Arc<dyn PhysicalExpr>) -> DataFusionResult<Arc<dyn PhysicalExpr>> {
         // Only the columns this expression references are checked, as Spark validates only
         // the fields a read requests. Referenced names are collected once for both checks.
-        if self.original_physical_dup_check.is_some() || self.nested_mappings.is_some() {
+        if self.original_physical_dup_check.is_some()
+            || self.nested_mappings.is_some()
+            || self.root_id_ambiguities.is_some()
+        {
             let col_names = referenced_column_names(&expr);
 
             // In case-insensitive mode, a referenced column with more than one
@@ -1170,6 +1202,16 @@ impl PhysicalExprAdapter for SparkPhysicalExprAdapter {
                         check_column_duplicate(name, folded, folded_to_indices, orig_physical)
                     {
                         return Err(spark_error(err));
+                    }
+                }
+            }
+
+            // A referenced root column whose id matched more than one physical field is the
+            // ambiguity Spark raises while clipping the requested schema.
+            if let Some(ambiguities) = &self.root_id_ambiguities {
+                for name in &col_names {
+                    if let Some(err) = ambiguities.get(name.as_str()) {
+                        return Err(spark_error(err.clone()));
                     }
                 }
             }
@@ -3287,6 +3329,49 @@ mod test {
         Ok(())
     }
 
+    /// A duplicate root id is Spark's `_LEGACY_ERROR_TEMP_2094`, but `clipParquetSchema` only
+    /// sees the requested columns, so a read that never references the colliding logical field
+    /// succeeds. The adapter is handed the full logical schema, so `create` must keep working
+    /// and the error must surface from `rewrite` for the referenced column only.
+    #[test]
+    fn root_duplicate_id_raised_only_for_referenced_columns() -> Result<(), DataFusionError> {
+        use datafusion::physical_expr::expressions::Column;
+        let schema = Arc::new(Schema::new(vec![
+            field_with_id("a", 20),
+            field_with_id("x", 1),
+            field_with_id("y", 1),
+        ]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(Int64Array::from(vec![7, 8])),
+                Arc::new(Int64Array::from(vec![1, 2])),
+                Arc::new(Int64Array::from(vec![3, 4])),
+            ],
+        )?;
+
+        let mut opts = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        opts.case_sensitive = true;
+        opts.use_field_id = true;
+        let adapter = SparkPhysicalExprAdapterFactory::new(opts, None)
+            .create(Arc::clone(&schema), Arc::clone(&schema))?;
+
+        let rewritten = adapter.rewrite(Arc::new(Column::new("a", 0)))?;
+        let values = rewritten.evaluate(&batch)?.into_array(batch.num_rows())?;
+        let values = values.as_any().downcast_ref::<Int64Array>().unwrap();
+        assert_eq!(values.values(), &[7, 8]);
+
+        let err = adapter
+            .rewrite(Arc::new(Column::new("x", 1)))
+            .expect_err("requested id 1 matches two file columns and must error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("_LEGACY_ERROR_TEMP_2094") && msg.contains("id=1"),
+            "expected duplicate field id error, got: {msg}"
+        );
+        Ok(())
+    }
+
     /// Scan-level companion to `duplicate_root_names_bind_to_the_last_column`: a file whose
     /// root holds two `d` columns reads the later one for a requested `d`.
     #[tokio::test]
@@ -3344,7 +3429,7 @@ mod test {
     fn remap_physical_schema_case_insensitive_renames_to_logical() {
         let logical = Arc::new(Schema::new(vec![Field::new("Name", DataType::Int32, true)]));
         let physical = Arc::new(Schema::new(vec![Field::new("NAME", DataType::Int32, true)]));
-        let (remapped, name_map) =
+        let (remapped, name_map, _) =
             super::remap_physical_schema(&logical, &physical, false, false, false).unwrap();
         assert_eq!(remapped.field(0).name(), "Name");
         assert_eq!(name_map.get("Name").map(String::as_str), Some("NAME"));
@@ -3361,7 +3446,7 @@ mod test {
             Field::new("foo", DataType::Int32, true).with_metadata(id_meta("99"))
         ]));
         let physical = Arc::new(Schema::new(vec![Field::new("FOO", DataType::Int32, true)]));
-        let (remapped, _name_map) =
+        let (remapped, _name_map, _) =
             super::remap_physical_schema(&logical, &physical, false, true, true).unwrap();
         assert!(
             remapped
@@ -3389,7 +3474,7 @@ mod test {
         let physical = Arc::new(Schema::new(vec![
             Field::new("a", DataType::Int32, true).with_metadata(id_meta("9"))
         ]));
-        let (remapped, _name_map) =
+        let (remapped, _name_map, _) =
             super::remap_physical_schema(&logical, &physical, true, true, false).unwrap();
         assert_eq!(remapped.field(0).name(), "a");
     }

@@ -1642,6 +1642,33 @@ mod tests {
         assert_eq!(a.value(0), 7);
     }
 
+    /// The table schema holds a trailing `z` the file lacks, so the opener runs the expression
+    /// adapter over the full `data_schema`. Spark answers this query because clipping only sees
+    /// the requested `a`, so the duplicate id 1 on the unrequested `x` and `y` must not fail it.
+    #[tokio::test]
+    async fn unrequested_duplicate_root_field_ids_read_through_adapter() {
+        let batch = duplicate_root_id_batch();
+        let mut fields: Vec<Arc<Field>> = batch.schema().fields().iter().cloned().collect();
+        fields.push(Arc::new(field_with_id("z", 30)));
+        let data_schema = Arc::new(Schema::new(fields));
+        let batches = scan_bare_file_projected(
+            &batch,
+            column_schema(&batch, 0),
+            Some(data_schema),
+            Some(vec![0]),
+            true,
+            true,
+        )
+        .await
+        .unwrap();
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0].num_columns(), 1);
+        let a = batches[0]
+            .column(0)
+            .as_primitive::<arrow::datatypes::Int64Type>();
+        assert_eq!(a.value(0), 7);
+    }
+
     /// Spark's `clipParquetGroupFields` raises `_LEGACY_ERROR_TEMP_2094` when a requested id
     /// matches two root columns, so the factory must reject the file when the opener skips the
     /// adapter.
