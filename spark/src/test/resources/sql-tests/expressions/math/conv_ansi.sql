@@ -15,17 +15,23 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Routes elt through the codegen dispatcher so behavior matches Spark exactly.
+-- Config: spark.sql.ansi.enabled=true
+
+-- conv executes Spark's generated code inside Comet's codegen dispatcher.
+statement
+CREATE TABLE test_conv_ansi(id int, s string) USING parquet
 
 statement
-CREATE TABLE test_elt(n int) USING parquet
+INSERT INTO test_conv_ansi VALUES
+ (1, 'FF'), (2, 'FFFFFFFFFFFFFFFF'), (3, NULL), (4, 'FFFFFFFFFFFFFFFFF')
 
-statement
-INSERT INTO test_elt VALUES (1), (2), (0), (-1), (3), (NULL)
-
+-- Valid input, the unsigned 64-bit boundary and NULL must execute inside Comet.
 query
-SELECT n, elt(n, 'a', 'b') FROM test_elt
+SELECT id, conv(s, 16, 10), conv(s, 16, -10) FROM test_conv_ansi WHERE id < 4
 
--- literal arguments
-query
-SELECT elt(1, 'scala', 'java'), elt(2, 'scala', 'java'), elt(2, 'a', 'b', 'c')
+-- One more hex digit exceeds the unsigned 64-bit range.
+query expect_error(ARITHMETIC_OVERFLOW)
+SELECT conv(s, 16, 10) FROM test_conv_ansi WHERE id = 4
+
+query expect_error(ARITHMETIC_OVERFLOW)
+SELECT conv('FFFFFFFFFFFFFFFFF', 16, 10)
