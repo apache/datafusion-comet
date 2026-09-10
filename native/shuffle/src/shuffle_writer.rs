@@ -49,16 +49,11 @@ use std::{
 };
 
 /// One-shot slot carrying a local shuffle task's partition offsets out of the writer.
-///
-/// The writer knows every offset by the time it finishes, and the only consumer is whoever is
-/// driving the plan, so the offsets are handed over in memory instead of being serialized to a
-/// temporary index file and read back. `set` is called exactly once, from `finish_all`.
 #[derive(Debug, Default)]
 pub struct PartitionOffsets(OnceLock<Vec<i64>>);
 
 impl PartitionOffsets {
-    /// Publishes the finished task's offsets. Returns an error if called more than once, which
-    /// would mean two writers shared one slot and a reader could observe either one's offsets.
+    /// Publishes the finished task's offsets. Errors if called more than once.
     pub fn set(&self, offsets: Vec<i64>) -> Result<()> {
         self.0.set(offsets).map_err(|_| {
             DataFusionError::Execution(
@@ -81,9 +76,7 @@ pub enum ShuffleWriterDestination {
     Local {
         /// Path of the local shuffle data file.
         output_data_file: String,
-        /// Receives the partition offsets once the writer finishes, so the caller can read them
-        /// in memory rather than through a temporary index file. Shared with the plan that owns
-        /// this destination, and set exactly once per task.
+        /// One offset per partition written, plus a trailing total.
         partition_offsets: Arc<PartitionOffsets>,
     },
     /// Pushes complete encoded partition blocks to a task-owned callback.
@@ -138,9 +131,8 @@ pub struct ShuffleWriterExec {
 }
 
 impl ShuffleWriterExec {
-    /// Creates a shuffle writer that writes partition data to a local file and publishes its
-    /// partition offsets in memory, through a fresh [`PartitionOffsets`] slot that
-    /// [`Self::partition_offsets`] hands back to the caller.
+    /// Creates a shuffle writer that writes partition data to a local file and exposes its
+    /// partition offsets.
     #[allow(clippy::too_many_arguments)]
     pub fn try_new(
         input: Arc<dyn ExecutionPlan>,
@@ -165,8 +157,8 @@ impl ShuffleWriterExec {
         )
     }
 
-    /// The slot carrying this task's partition offsets, for a local destination. `None` for a
-    /// remote destination, where the pusher reports partition lengths instead.
+    /// Returns this task's partition offsets, for a local destination. `None` for a remote
+    /// destination, where the pusher reports partition lengths instead.
     pub fn partition_offsets(&self) -> Option<&Arc<PartitionOffsets>> {
         match &self.destination {
             ShuffleWriterDestination::Local {
@@ -1657,7 +1649,7 @@ mod test {
             .unwrap();
         assert!(data.is_empty(), "Data file should be empty with zero rows");
 
-        // Published offsets should be all zero
+        // partition offsets should be all zero
         let offsets = exec
             .partition_offsets()
             .expect("local destination publishes offsets")

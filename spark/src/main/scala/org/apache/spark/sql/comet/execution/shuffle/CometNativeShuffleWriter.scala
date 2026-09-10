@@ -241,13 +241,6 @@ class CometNativeShuffleWriter[K, V](
         val output = localOutput.get
         val tempDataFilePath = Paths.get(output.dataFile)
 
-        // The writer emits one offset per partition it actually wrote plus a trailing total, so
-        // lengths are successive differences and their count comes from the offsets themselves.
-        // It is not `effectivePartitionCount`: `isSinglePartitioning` serializes a range
-        // partitioning whose sampled bounds are empty as SinglePartition, so native writes one
-        // partition while the declared output partitioning still reports more. Sizing this from
-        // the offsets keeps the behaviour the index file gave, which was also sized by what the
-        // writer produced.
         require(
           partitionOffsets != null && partitionOffsets.length >= 1,
           "Native shuffle returned no partition offsets")
@@ -300,7 +293,7 @@ class CometNativeShuffleWriter[K, V](
             .build())
       case None =>
         // Keep the legacy path for older native libraries while newer libraries use the
-        // destination. Partition offsets come back over JNI, so no index path travels in the plan.
+        // destination. Partition offsets come back over JNI.
         shuffleWriterBuilder.setOutputDataFile(dataFile)
         shuffleWriterBuilder.setPartitionWriter(
           OperatorOuterClass.PartitionWriter

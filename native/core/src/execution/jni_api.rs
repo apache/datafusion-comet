@@ -1157,13 +1157,8 @@ fn get_execution_context<'a>(id: i64) -> &'a mut ExecutionContext {
 
 /// Returns the partition offsets published by a finished native shuffle write.
 ///
-/// The writer knows every offset by the time its plan completes, and the only consumer is the
-/// Spark task driving that plan, so the offsets are handed back in memory rather than serialized
-/// to a temporary index file and read back. Call after the plan has been fully drained; the
-/// offsets are not published until the writer finishes.
-///
 /// The returned array holds `num_output_partitions + 1` offsets, the last being the total data
-/// file length, so partition lengths are successive differences.
+/// file length.
 #[no_mangle]
 pub extern "system" fn Java_org_apache_comet_Native_getShufflePartitionOffsets(
     e: EnvUnowned,
