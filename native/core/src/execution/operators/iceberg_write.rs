@@ -516,7 +516,25 @@ impl InnerWriter {
                         w.write(key, rest).await.map_err(iceberg_err)?;
                     }
                 }
-                w.close().await.map_err(iceberg_err)
+                let mut data_files = w.close().await.map_err(iceberg_err)?;
+                // `FanoutWriter` holds its per-partition writers in a `HashMap` and `close`
+                // iterates it directly, so the order it returns follows Rust's per-process
+                // `RandomState` and differs on every run. That order becomes the manifest entry
+                // order, then the scan-task order, then the row order of an unordered
+                // `SELECT *` -- which Iceberg's own
+                // `TestMetadataTablesWithPartitionEvolution.testPartitionColumnNamedPartition`
+                // compares positionally against what iceberg-java wrote
+                // (apache/datafusion-comet#5776).
+                //
+                // Sorting by path is what makes the task's output reproducible. It cannot be
+                // creation order instead: `RecordBatchPartitionSplitter` splits a batch through a
+                // map as well, so which partition is written first -- and therefore which file
+                // name counter it gets -- is itself unstable. Path order sorts by partition
+                // directory, then by that counter within a partition, and needs nothing from the
+                // write order. The clustered and unpartitioned writers append in creation order
+                // and are already deterministic, so only this arm sorts.
+                data_files.sort_unstable_by(|a, b| a.file_path().cmp(b.file_path()));
+                Ok(data_files)
             }
             InnerWriter::Clustered(mut w, live) => {
                 if let Some((key, mut pacer)) = live {
@@ -1576,6 +1594,53 @@ mod tests {
             assert_eq!(data_files.len(), 2);
             let total: u64 = data_files.iter().map(|f| f.record_count()).sum();
             assert_eq!(total, 4);
+        }
+
+        /// A fanout task's data files must come back in a deterministic order.
+        ///
+        /// iceberg-rust's `FanoutWriter` keeps its per-partition writers in a `HashMap` and
+        /// `close` iterates it directly, so the `DataFile` order it returns follows Rust's
+        /// per-process `RandomState` -- a different order on every run. That order becomes the
+        /// manifest entry order, which becomes the scan-task order, which becomes the row order
+        /// of an unordered `SELECT *`. Iceberg's own
+        /// `TestMetadataTablesWithPartitionEvolution.testPartitionColumnNamedPartition` compares
+        /// such a `SELECT *` positionally against what iceberg-java wrote, and fails when the
+        /// two disagree. See https://github.com/apache/datafusion-comet/issues/5776.
+        ///
+        /// Eight partitions rather than two: a random permutation matching sorted order by luck
+        /// is 1 in 8!.
+        #[tokio::test]
+        async fn fanout_write_returns_data_files_in_a_deterministic_order() {
+            let temp_dir = TempDir::new().unwrap();
+            let data_location = format!("file://{}", temp_dir.path().display());
+            let schema = iceberg_user_schema();
+            let spec = identity_region_spec(&schema);
+            let common = common(
+                data_location,
+                serde_json::to_string(&spec).unwrap(),
+                serde_json::to_string(&schema).unwrap(),
+                ProtoIcebergWriterMode::IcebergWriterFanout,
+            );
+
+            let regions = ["r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7"];
+            let data_files = run(
+                common,
+                schema,
+                spec,
+                ProtoIcebergWriterMode::IcebergWriterFanout,
+                vec![batch(&[0, 1, 2, 3, 4, 5, 6, 7], &regions)],
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(data_files.len(), regions.len());
+            let paths: Vec<&str> = data_files.iter().map(|f| f.file_path()).collect();
+            let mut sorted = paths.clone();
+            sorted.sort_unstable();
+            assert_eq!(
+                paths, sorted,
+                "fanout data files are not in file-path order"
+            );
         }
 
         #[tokio::test]
