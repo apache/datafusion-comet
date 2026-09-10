@@ -695,6 +695,31 @@ given string.</p>
 </pre></div>
 </div>
 </section>
+<section id="query-expect-dispatch-names-query-expect-native-names">
+<h4><code class="docutils literal notranslate"><span class="pre">query</span> <span class="pre">expect_dispatch(&lt;names&gt;)</span></code> / <code class="docutils literal notranslate"><span class="pre">query</span> <span class="pre">expect_native(&lt;names&gt;)</span></code><a class="headerlink" href="#query-expect-dispatch-names-query-expect-native-names" title="Link to this heading">#</a></h4>
+<p>Checks results and coverage like a plain <code class="docutils literal notranslate"><span class="pre">query</span></code>, and additionally asserts how Comet evaluated
+the named expressions.</p>
+<p>Comet runs an expression either natively (a DataFusion expression) or through the JVM codegen
+dispatcher (Spark’s own <code class="docutils literal notranslate"><span class="pre">doGenCode</span></code> compiled into an Arrow batch kernel). Both produce
+Spark-matching results, so a plain <code class="docutils literal notranslate"><span class="pre">query</span></code> cannot tell them apart. Use these modes on fixtures
+where the mechanism is the point of the test, typically an expression whose support depends on
+its argument type.</p>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="c1">-- BinaryType has no native path and must route through the dispatcher</span>
+<span class="n">query</span><span class="w"> </span><span class="n">expect_dispatch</span><span class="p">(</span><span class="k">bit_length</span><span class="p">)</span>
+<span class="k">SELECT</span><span class="w"> </span><span class="k">bit_length</span><span class="p">(</span><span class="n">b</span><span class="p">)</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">test_bit_length_binary</span>
+
+<span class="c1">-- StringType must stay on the native path</span>
+<span class="n">query</span><span class="w"> </span><span class="n">expect_native</span><span class="p">(</span><span class="k">bit_length</span><span class="p">)</span>
+<span class="k">SELECT</span><span class="w"> </span><span class="k">bit_length</span><span class="p">(</span><span class="n">s</span><span class="p">)</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">test_bit_length</span>
+</pre></div>
+</div>
+<p>Names are comma-separated. A name is the expression’s <code class="docutils literal notranslate"><span class="pre">prettyName</span></code> lowercased (<code class="docutils literal notranslate"><span class="pre">bit_length</span></code>,
+<code class="docutils literal notranslate"><span class="pre">octet_length</span></code>, <code class="docutils literal notranslate"><span class="pre">rlike</span></code>), which is not always the SQL alias used to invoke it. Naming an
+expression asserts both that it ran through the expected mechanism and that it did not run
+through the other one.</p>
+<p>A query carries one mode, so a query mixing a native and a dispatched expression has to be split
+into two queries, one per mode.</p>
+</section>
 <section id="query-ignore-reason">
 <h4><code class="docutils literal notranslate"><span class="pre">query</span> <span class="pre">ignore(&lt;reason&gt;)</span></code><a class="headerlink" href="#query-ignore-reason" title="Link to this heading">#</a></h4>
 <p>Skips the query entirely. Use this for queries that hit known bugs. The reason should be a
@@ -741,7 +766,12 @@ directives speculatively.</p></li>
 <code class="docutils literal notranslate"><span class="pre">NULL</span></code>, boundary values, and negative numbers.</p></li>
 <li><p>Add <code class="docutils literal notranslate"><span class="pre">query</span></code> blocks for each expression or behavior to test. Use the default <code class="docutils literal notranslate"><span class="pre">query</span></code> mode
 when you expect Comet to run the expression natively. Use <code class="docutils literal notranslate"><span class="pre">query</span> <span class="pre">spark_answer_only</span></code> when
-native execution is not yet expected.</p></li>
+native execution is not yet expected.</p>
+<p>If the expression’s serde routes some input types to a native DataFusion expression and
+others through the JVM codegen dispatcher, use <code class="docutils literal notranslate"><span class="pre">expect_native(...)</span></code> and <code class="docutils literal notranslate"><span class="pre">expect_dispatch(...)</span></code>
+for those queries. A plain <code class="docutils literal notranslate"><span class="pre">query</span></code> cannot tell the two mechanisms apart, so the split is
+otherwise untested.</p>
+</li>
 <li><p>Run the tests to verify:</p>
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>./mvnw<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">"org.apache.comet.CometSqlFileTestSuite"</span><span class="w"> </span>-Dtest<span class="o">=</span>none
 </pre></div>
@@ -750,6 +780,16 @@ native execution is not yet expected.</p></li>
 </ol>
 <section id="tips-for-writing-thorough-tests">
 <h3>Tips for writing thorough tests<a class="headerlink" href="#tips-for-writing-thorough-tests" title="Link to this heading">#</a></h3>
+<section id="pin-the-mechanism-where-the-serde-chooses-one">
+<h4>Pin the mechanism where the serde chooses one<a class="headerlink" href="#pin-the-mechanism-where-the-serde-chooses-one" title="Link to this heading">#</a></h4>
+<p>Reach for <code class="docutils literal notranslate"><span class="pre">expect_native(...)</span></code> / <code class="docutils literal notranslate"><span class="pre">expect_dispatch(...)</span></code> whenever the fixture’s own comments
+explain which path an input takes. That comment is a claim about behavior, and these modes are
+what turn it into a test. Expressions worth annotating are the ones whose support level depends
+on argument type or on a config: <code class="docutils literal notranslate"><span class="pre">round</span></code> (float and double dispatch, decimal and integral stay
+native), <code class="docutils literal notranslate"><span class="pre">lower</span></code> / <code class="docutils literal notranslate"><span class="pre">upper</span></code> (dispatch by default), and anything mixing in <code class="docutils literal notranslate"><span class="pre">CodegenDispatchFallback</span></code>.</p>
+<p>A query carries a single mode, so a query that mixes both mechanisms has to be split. That split
+is usually worth doing on its own: it forces you to say which argument takes which path.</p>
+</section>
 <section id="cover-all-combinations-of-literal-and-column-arguments">
 <h4>Cover all combinations of literal and column arguments<a class="headerlink" href="#cover-all-combinations-of-literal-and-column-arguments" title="Link to this heading">#</a></h4>
 <p>Comet often uses different code paths for literal values versus column references. Tests
@@ -940,6 +980,7 @@ file and config combination, and executes them using <code class="docutils liter
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#query-spark-answer-only"><code class="docutils literal notranslate"><span class="pre">query</span> <span class="pre">spark_answer_only</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#query-tolerance-value"><code class="docutils literal notranslate"><span class="pre">query</span> <span class="pre">tolerance=&lt;value&gt;</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#query-expect-fallback-reason"><code class="docutils literal notranslate"><span class="pre">query</span> <span class="pre">expect_fallback(&lt;reason&gt;)</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#query-expect-dispatch-names-query-expect-native-names"><code class="docutils literal notranslate"><span class="pre">query</span> <span class="pre">expect_dispatch(&lt;names&gt;)</span></code> / <code class="docutils literal notranslate"><span class="pre">query</span> <span class="pre">expect_native(&lt;names&gt;)</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#query-ignore-reason"><code class="docutils literal notranslate"><span class="pre">query</span> <span class="pre">ignore(&lt;reason&gt;)</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#query-expect-error-pattern"><code class="docutils literal notranslate"><span class="pre">query</span> <span class="pre">expect_error(&lt;pattern&gt;)</span></code></a></li>
 </ul>
@@ -948,6 +989,7 @@ file and config combination, and executes them using <code class="docutils liter
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#adding-a-new-test">Adding a new test</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#tips-for-writing-thorough-tests">Tips for writing thorough tests</a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#pin-the-mechanism-where-the-serde-chooses-one">Pin the mechanism where the serde chooses one</a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#cover-all-combinations-of-literal-and-column-arguments">Cover all combinations of literal and column arguments</a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#cover-edge-cases">Cover edge cases</a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#one-file-per-expression">One file per expression</a></li>

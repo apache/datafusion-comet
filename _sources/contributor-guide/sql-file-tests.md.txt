@@ -192,6 +192,35 @@ query expect_fallback(unsupported expression)
 SELECT unsupported_func(v) FROM test_table
 ```
 
+#### `query expect_dispatch(<names>)` / `query expect_native(<names>)`
+
+Checks results and coverage like a plain `query`, and additionally asserts how Comet evaluated
+the named expressions.
+
+Comet runs an expression either natively (a DataFusion expression) or through the JVM codegen
+dispatcher (Spark's own `doGenCode` compiled into an Arrow batch kernel). Both produce
+Spark-matching results, so a plain `query` cannot tell them apart. Use these modes on fixtures
+where the mechanism is the point of the test, typically an expression whose support depends on
+its argument type.
+
+```sql
+-- BinaryType has no native path and must route through the dispatcher
+query expect_dispatch(bit_length)
+SELECT bit_length(b) FROM test_bit_length_binary
+
+-- StringType must stay on the native path
+query expect_native(bit_length)
+SELECT bit_length(s) FROM test_bit_length
+```
+
+Names are comma-separated. A name is the expression's `prettyName` lowercased (`bit_length`,
+`octet_length`, `rlike`), which is not always the SQL alias used to invoke it. Naming an
+expression asserts both that it ran through the expected mechanism and that it did not run
+through the other one.
+
+A query carries one mode, so a query mixing a native and a dispatched expression has to be split
+into two queries, one per mode.
+
 #### `query ignore(<reason>)`
 
 Skips the query entirely. Use this for queries that hit known bugs. The reason should be a
@@ -243,6 +272,11 @@ SELECT array(1, 2, 3)[10]
    when you expect Comet to run the expression natively. Use `query spark_answer_only` when
    native execution is not yet expected.
 
+   If the expression's serde routes some input types to a native DataFusion expression and
+   others through the JVM codegen dispatcher, use `expect_native(...)` and `expect_dispatch(...)`
+   for those queries. A plain `query` cannot tell the two mechanisms apart, so the split is
+   otherwise untested.
+
 6. Run the tests to verify:
 
    ```shell
@@ -250,6 +284,17 @@ SELECT array(1, 2, 3)[10]
    ```
 
 ### Tips for writing thorough tests
+
+#### Pin the mechanism where the serde chooses one
+
+Reach for `expect_native(...)` / `expect_dispatch(...)` whenever the fixture's own comments
+explain which path an input takes. That comment is a claim about behavior, and these modes are
+what turn it into a test. Expressions worth annotating are the ones whose support level depends
+on argument type or on a config: `round` (float and double dispatch, decimal and integral stay
+native), `lower` / `upper` (dispatch by default), and anything mixing in `CodegenDispatchFallback`.
+
+A query carries a single mode, so a query that mixes both mechanisms has to be split. That split
+is usually worth doing on its own: it forces you to say which argument takes which path.
 
 #### Cover all combinations of literal and column arguments
 
