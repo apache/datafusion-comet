@@ -105,6 +105,28 @@ run against Spark 3.5.9 with Java 17; Iceberg 1.11.0 runs against Spark 4.1.3 wi
 (1.8, 1.9, 1.10) run only on pushes to main, or on a pull request labeled `run-iceberg-tests`. All caller
 workflows delegate to `iceberg_spark_test_reusable.yml`, which holds the build and test job logic.
 
+The core Spark test target runs in four independent workers. The workflow passes
+`dev/ci/iceberg-test-shards.gradle` as a Gradle init script: one worker runs the long
+`TestStructuredStreamingRead` family, and the others hash the remaining class names into three
+buckets. New tests are assigned automatically. Nested classes and all parameterized cases stay
+with their enclosing class; Gradle's existing includes, exclusions, and JUnit configuration are
+unchanged. The extensions and shaded-runtime targets remain unsharded.
+
+The matrix and partition count come from the same definition in `dev/ci/check-iceberg-shards.py`;
+adding another matrix dimension does not change the partition count. Each worker records its
+unsharded candidate set with only the Comet shard predicate disabled, then restores the predicate
+before recording its selected set and executing tests. Both inventories and the JUnit XML reports
+are uploaded. A dependent coverage job requires all shard indices, matching unsharded inventories,
+and selected sets whose disjoint union equals that inventory. It downloads only artifacts for the
+same Iceberg/Spark/Scala/JDK configuration in the current workflow run and uses the latest available
+attempt per shard, so rerunning only failed jobs can reuse earlier successful shards' inventories.
+
+These candidate inventories include classes that JUnit may not execute, so the runtime job also
+runs `dev/ci/check-iceberg-shards.py`, a small Gradle/JUnit fixture that checks the four shards'
+combined candidate classes and executed test cases equal an unsharded run exactly once. It also
+checks nested, parameterized, inherited, and dynamically generated tests, existing exclusions,
+and failure propagation. The fixture does not compile Spark or Iceberg.
+
 Apply the `run-iceberg-tests` label to a pull request whenever it touches reflection code
 (`org.apache.comet.iceberg.IcebergReflection`) or other logic whose behavior can differ across Iceberg
 versions, since Iceberg 1.11 alone will not catch a regression that only affects 1.8, 1.9, or 1.10.
