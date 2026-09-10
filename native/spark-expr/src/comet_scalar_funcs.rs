@@ -322,7 +322,8 @@ fn all_scalar_functions() -> Vec<Arc<ScalarUDF>> {
         Arc::new(ScalarUDF::new_from_impl(SparkMakeDate::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkMakeTime::default())),
         // Overrides datafusion-functions-nested' `map_extract` with a vectorized lookup that
-        // returns the value itself rather than a one-element list (#5795).
+        // returns the value itself rather than a one-element list (#5795). It carries the same
+        // `element_at` alias so both registry entries the override replaces point here.
         Arc::new(ScalarUDF::new_from_impl(SparkMapExtract::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkNextDay::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkSecondsToTimestamp::default())),

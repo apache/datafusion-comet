@@ -465,12 +465,21 @@ class CometMapExpressionSuite extends CometTestBase {
   // MapArray's original entry offsets, so the visible entries start part way into the keys child --
   // the same trap `mapsort` hit below. Reading the mask from index 0 would answer every row with
   // some other row's entries.
-  test("element_at on a sliced map reads the visible entries") {
-    withParquetTable(
-      (0 until 20).map(i => (i, Map(s"a${i % 5}" -> i, "shared" -> (i * 10)))),
-      "t") {
+  //
+  // `_2[k]` is the load-bearing form here. `element_at` on a nullable operand is wrapped in
+  // `CASE WHEN _2 IS NOT NULL` under ANSI, and DataFusion's CaseExpr evaluates the THEN branch
+  // through `filter_record_batch`, which compacts the entries child and resets the first offset to
+  // 0 as soon as any row is NULL -- so an `element_at`-only test would quietly stop slicing.
+  // `GetMapValue` has no such guard, so the sliced map reaches the kernel on every Spark version
+  // and in both ANSI modes. The NULL rows are here to keep that distinction honest.
+  test("map lookup on a sliced map reads the visible entries") {
+    val rows = (0 until 20).map { i =>
+      val map = if (i % 7 == 3) null else Map(s"a${i % 5}" -> i, "shared" -> (i * 10))
+      (i, map)
+    }
+    withParquetTable(rows, "t") {
       checkSparkAnswerAndOperator(
-        "SELECT _1, element_at(_2, 'a3'), element_at(_2, 'shared') " +
+        "SELECT _1, _2['a3'], _2['shared'], element_at(_2, 'a3') " +
           "FROM (SELECT * FROM t ORDER BY _1 LIMIT 15 OFFSET 5)")
     }
   }

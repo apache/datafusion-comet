@@ -20,6 +20,13 @@
 //! Each shape is run against both Comet's `SparkMapExtract` and the
 //! `datafusion-functions-nested` `map_extract` it overrides, so the gap that motivated
 //! <https://github.com/apache/datafusion-comet/issues/5795> stays visible.
+//!
+//! Read the ratio as a measurement of the pinned DataFusion 55.0.0, not as a permanent gap.
+//! DataFusion main has since rewritten `general_map_extract_inner` around a single
+//! `make_comparator` over the batch, so the per-comparison `ArrayRef` slicing that dominates the
+//! baseline here is specific to the version Comet ships today, and the baseline arm will get much
+//! faster at the next DataFusion bump. What survives that bump is the rest of the case for this
+//! kernel: one `eq` plus one `take`, and the `ListExtract` unwrapping pass this removes.
 
 use arrow::array::builder::{MapBuilder, StringBuilder};
 use arrow::array::{ArrayRef, MapFieldNames, StringArray};
