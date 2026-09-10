@@ -44,10 +44,12 @@
 
 ## map_from_arrays
 
-- Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
-- Spark 3.5.8 (audited 2026-05-27): baseline. `MapFromArrays(left, right) extends BinaryExpression with NullIntolerant`; Spark uses `ArrayBasedMapBuilder` to detect duplicate keys (subject to `spark.sql.mapKeyDedupPolicy`) and rejects null keys with `RuntimeException("Cannot use null as map key")`. Comet `CometMapFromArrays` wraps the inputs in `CaseWhen(IsNotNull(left) AND IsNotNull(right), map(left, right), null)` so NULL-array inputs return NULL rather than triggering the previously reported native crash ([#3327](https://github.com/apache/datafusion-comet/issues/3327)).
-- Spark 4.0.1 (audited 2026-05-27): semantics unchanged; `NullIntolerant` trait replaced by `nullIntolerant: Boolean`.
-- Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
+- Spark 3.4.3 (audited 2026-09-11): baseline. `MapFromArrays(left, right)` accepts two arrays and returns a `MapType` whose key and value types come from the corresponding array element types. Both interpreted evaluation and generated code copy the arrays and call `ArrayBasedMapBuilder.from`. A NULL input array returns NULL. A NULL key element raises `NULL_MAP_KEY`, unequal array lengths raise an error, duplicate keys raise `DUPLICATED_MAP_KEY` under the default `EXCEPTION` policy, and `LAST_WIN` keeps the last value at the key's first insertion position.
+- Spark 3.5.8 (audited 2026-09-11): runtime behavior and generated code are unchanged. Adds `stateful = true` because the expression reuses a mutable `ArrayBasedMapBuilder`.
+- Spark 4.0.1 (audited 2026-09-11): replaces the `NullIntolerant` trait with `nullIntolerant = true`. `ArrayBasedMapBuilder` adds floating-point key normalization and collation-aware string-key equality. `spark.sql.legacy.disableMapKeyNormalization=true` restores distinct `-0.0` and `+0.0` keys. `VariantType` is also rejected as a map key. The expression's interpreted and generated paths remain unchanged.
+- Spark 4.1.1 (audited 2026-09-11): adds the `MAP_FROM_ARRAYS` tree pattern and changes `spark.sql.mapKeyDedupPolicy` from an internal string config to an enum config. Runtime behavior and generated code are unchanged.
+- Comet runs the default `EXCEPTION` configuration natively and guards NULL-array inputs before native map construction ([#3327](https://github.com/apache/datafusion-comet/issues/3327)). Under `LAST_WIN`, `CodegenDispatchFallback` routes `MapFromArrays` through Spark's generated code inside the Comet pipeline by default. Setting `spark.comet.expression.MapFromArrays.allowIncompatible=true` opts into the divergent native path; if the dispatcher is disabled instead, the enclosing operator falls back to Spark.
+- Known limitation: the native path still does not reject a NULL element inside the keys array ([#4680](https://github.com/apache/datafusion-comet/issues/4680)). The `LAST_WIN` dispatcher path happens to reject it through Spark's builder, but this does not resolve the default native-path divergence.
 
 ## map_from_entries
 

@@ -15,12 +15,14 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Verifies that `map_from_arrays` falls back to Spark when `spark.sql.mapKeyDedupPolicy` is set
--- to `LAST_WIN`. Spark's ArrayBasedMapBuilder keeps the last occurrence of each duplicate key;
--- Comet's native `map` scalar has no LAST_WIN path, so it must fall back. The default `EXCEPTION`
--- mode agrees with Comet and is covered by `map_from_arrays.sql`.
+-- Verifies that `map_from_arrays` routes through the JVM codegen dispatcher when
+-- `spark.sql.mapKeyDedupPolicy` is set to `LAST_WIN`. Spark's ArrayBasedMapBuilder keeps the last
+-- occurrence of each duplicate key; Comet's native `map` scalar has no LAST_WIN path, so the
+-- dispatcher runs Spark's generated code inside the Comet pipeline. The default `EXCEPTION` mode
+-- agrees with Comet's native implementation and is covered by `map_from_arrays.sql`.
 
 -- Config: spark.sql.mapKeyDedupPolicy=LAST_WIN
+-- Config: spark.comet.exec.scalaUDF.codegen.enabled=true
 
 statement
 CREATE TABLE test_map_from_arrays_dedup(k array<string>, v array<int>) USING parquet
@@ -31,11 +33,11 @@ INSERT INTO test_map_from_arrays_dedup VALUES
   (array('a', 'a', 'b'), array(1, 2, 3)),
   (array('x', 'x'), array(10, 20))
 
--- literal duplicate keys under LAST_WIN: Spark keeps the last value; Comet must fall back.
-query expect_fallback(mapKeyDedupPolicy)
+-- literal duplicate keys under LAST_WIN: Spark's generated code keeps the last value.
+query expect_dispatch(map_from_arrays)
 SELECT map_from_arrays(array('a', 'a', 'b'), array(1, 2, 3))
 
--- column input falls back the same way; the incompat branch is triggered by the SQLConf value,
+-- column input dispatches the same way; the incompat branch is triggered by the SQLConf value,
 -- not per-row content.
-query expect_fallback(mapKeyDedupPolicy)
+query expect_dispatch(map_from_arrays)
 SELECT map_from_arrays(k, v) FROM test_map_from_arrays_dedup
