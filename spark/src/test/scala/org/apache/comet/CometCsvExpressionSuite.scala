@@ -29,6 +29,7 @@ import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.types.StringType
 
+import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator, SchemaGenOptions}
 import org.apache.comet.udf.codegen.CometScalaUDFCodegen
 
@@ -214,8 +215,13 @@ class CometCsvExpressionSuite
   }
 
   test("to_csv with nested array field routes through the codegen dispatcher (issue #5578)") {
-    // Nested array/map/struct fields are Unsupported on the native path. The dispatcher still
-    // compiles them: arrays are in CometBatchKernelCodegen.isSupportedDataType.
+    // Spark 3.4/3.5 stringify nested arrays via Object.toString(), so Spark's ColumnarArray
+    // and the dispatcher's InputArray cannot match. SPARK-47497 (Spark 4.0) prints pretty
+    // strings. Nested array/map/struct fields are Unsupported on the native path; the
+    // dispatcher still compiles them: arrays are in CometBatchKernelCodegen.isSupportedDataType.
+    assume(
+      isSpark40Plus,
+      "to_csv pretty-prints nested arrays starting in Spark 4.0 (SPARK-47497)")
     withTable("t") {
       sql("CREATE TABLE t(id INT, items ARRAY<INT>) USING parquet")
       sql("INSERT INTO t VALUES (1, array(1, 2, 3)), (2, array()), (3, NULL)")

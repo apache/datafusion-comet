@@ -45,12 +45,3 @@ SELECT to_csv(named_struct('id', id, 'name', name)) FROM test_to_csv
 
 query
 SELECT to_csv(named_struct('id', id, 'name', name), map('sep', ';')) FROM test_to_csv
-
-statement
-CREATE TABLE test_to_csv_nested(id INT, items ARRAY<INT>) USING parquet
-
-statement
-INSERT INTO test_to_csv_nested VALUES (1, array(1, 2)), (2, array()), (3, NULL)
-
-query
-SELECT to_csv(named_struct('id', id, 'items', items)) FROM test_to_csv_nested
