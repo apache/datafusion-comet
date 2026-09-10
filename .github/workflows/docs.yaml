@@ -26,7 +26,7 @@ jobs:
   build-docs:
     name: Build docs
     if: ${{ startsWith(github.repository, 'apache/') }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout docs sources
         uses: actions/checkout@v7

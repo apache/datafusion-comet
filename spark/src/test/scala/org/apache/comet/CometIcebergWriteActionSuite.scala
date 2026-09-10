@@ -1331,7 +1331,7 @@ class CometIcebergWriteActionSuite
     }
   }
 
-  test("native acceleration: target-file-size rolls one task across multiple files") {
+  test("native acceleration: target-file-size rolls on iceberg-java's 1000-row cadence") {
     assumeNativeAcceleration()
     withIcebergCatalog { warehouseDir =>
       createTable(
@@ -1339,22 +1339,22 @@ class CometIcebergWriteActionSuite
         "native_roll",
         partitionSpec = "",
         properties = Some("'write.target-file-size-bytes'='1'"))
-      val values = (1 to 300).map(i => s"($i, 'r', $i.0)").mkString(", ")
-      // One upstream slice + small Comet batches: the rolling writer checks the target size
-      // per batch, so three batches against a 1-byte target must roll into multiple files.
-      withSQLConf(
-        "spark.sql.leafNodeDefaultParallelism" -> "1",
-        CometConf.COMET_BATCH_SIZE.key -> "100") {
-        assertNativeWriteEngages("native_roll", 1 to 300) {
-          spark.sql(s"INSERT INTO cat.db.native_roll VALUES $values")
+      // One upstream slice and a batch big enough to hold every row: with a 1-byte target this
+      // only rolls if the writer re-checks the target size inside the batch, every 1000 rows, the
+      // way iceberg-java's RollingFileWriter does. Iceberg's own
+      // TestSparkDataWrite.testUnpartitionedCreateWithTargetFileSizeViaTableProperties makes the
+      // same 4 x 1000 assertion against the JVM writer.
+      withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "8192") {
+        assertNativeWriteEngages("native_roll", 1 to 4000) {
+          coalesceInsert("native_roll", (1 to 4000).map(i => (i, "r", i.toDouble)))
         }
       }
       val fileRows = spark
         .sql("SELECT record_count FROM cat.db.native_roll.data_files")
         .collect()
         .map(_.getLong(0))
-      assert(fileRows.length >= 2, s"expected a multi-file roll, got ${fileRows.length} file(s)")
-      assert(fileRows.sum == 300L, s"rows across rolled files must sum to 300, got $fileRows")
+        .toSeq
+      assert(fileRows == Seq(1000L, 1000L, 1000L, 1000L), s"unexpected file sizes: $fileRows")
     }
   }
 
@@ -1601,15 +1601,18 @@ class CometIcebergWriteActionSuite
     }
   }
 
-  // A one-byte target file size makes the rolling writer finalize a file per batch, and a two-row
-  // Comet batch size means the task has handed several batches to the writer before the UDF
-  // throws on id 7. iceberg-java's writer abort deletes such files; the native path must too.
+  // A one-byte target file size makes the rolling writer finalize a file at every roll point, and
+  // the writer's roll points sit on a 1000-row grid, so the source has to be thousands of rows for
+  // the failing task to have finalized anything. A 1000-row Comet batch size hands the writer one
+  // grid step per batch, so several files are already finalized when the UDF throws on id 7000 --
+  // whatever the source's own partitioning is. iceberg-java's writer abort deletes such files; the
+  // native path must too.
   test("native acceleration: a failed task deletes the data files it already finalized") {
     assumeNativeAcceleration()
     withIcebergCatalog { warehouseDir =>
       val session = spark
       import session.implicits._
-      (1 to 10)
+      (1 to 10000)
         .map(i => (i, s"r$i", i.toDouble))
         .toDF("id", "region", "amount")
         .coalesce(1)
@@ -1617,12 +1620,12 @@ class CometIcebergWriteActionSuite
       spark.udf.register(
         "boom_on_seven_cleanup",
         (id: Int) => {
-          if (id == 7) throw new RuntimeException("boom")
+          if (id == 7000) throw new RuntimeException("boom")
           id
         })
       val rollingProps = Some("'write.target-file-size-bytes'='1'")
 
-      withNativeEnabled(withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "2") {
+      withNativeEnabled(withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "1000") {
         // Control: the same source and settings without the failure roll into several files, so
         // the failing run below really does have finalized files to clean up.
         createTable(
