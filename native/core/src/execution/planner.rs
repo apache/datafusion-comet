@@ -4356,72 +4356,87 @@ fn parse_file_scan_tasks_from_common(
     // Flat pool of unique delete files. A delete file applies to many data files under Iceberg's
     // default partition delete granularity, so DeleteFileList entries reference this pool by index
     // rather than embedding copies.
-    let delete_file_pool: Vec<iceberg::scan::FileScanTaskDeleteFile> =
-        proto_common
-            .delete_file_pool
-            .iter()
-            .map(|del| {
-                let file_type = match del.content_type.as_str() {
-                    "POSITION_DELETES" => iceberg::spec::DataContentType::PositionDeletes,
-                    "EQUALITY_DELETES" => iceberg::spec::DataContentType::EqualityDeletes,
-                    other => {
-                        return Err(GeneralError(format!(
-                            "Invalid delete content type '{}'",
-                            other
-                        )))
-                    }
-                };
+    let delete_file_pool: Vec<iceberg::scan::FileScanTaskDeleteFile> = proto_common
+        .delete_file_pool
+        .iter()
+        .map(|del| {
+            let file_type = match del.content_type.as_str() {
+                "POSITION_DELETES" => iceberg::spec::DataContentType::PositionDeletes,
+                "EQUALITY_DELETES" => iceberg::spec::DataContentType::EqualityDeletes,
+                other => {
+                    return Err(GeneralError(format!(
+                        "Invalid delete content type '{}'",
+                        other
+                    )))
+                }
+            };
 
-                // Puffin selects iceberg-rust's deletion-vector reader; Parquet the ordinary
-                // delete-file reader. Only the formats iceberg-rust can read reach here, because
-                // CometScanRule falls back to Spark for any other delete format.
-                let file_format = match del.file_format.as_str() {
-                    "PARQUET" => iceberg::spec::DataFileFormat::Parquet,
-                    "PUFFIN" => iceberg::spec::DataFileFormat::Puffin,
-                    other => {
-                        return Err(GeneralError(format!(
-                            "Invalid delete file format '{}'",
-                            other
-                        )))
-                    }
-                };
+            // Puffin selects iceberg-rust's deletion-vector reader; Parquet the ordinary
+            // delete-file reader. Only the formats iceberg-rust can read reach here, because
+            // CometScanRule falls back to Spark for any other delete format.
+            let file_format = match del.file_format.as_str() {
+                "PARQUET" => iceberg::spec::DataFileFormat::Parquet,
+                "PUFFIN" => iceberg::spec::DataFileFormat::Puffin,
+                other => {
+                    return Err(GeneralError(format!(
+                        "Invalid delete file format '{}'",
+                        other
+                    )))
+                }
+            };
 
-                Ok(iceberg::scan::FileScanTaskDeleteFile {
-                    // Passed RAW, like `data_file_path` below (same exact-string delete-matching
-                    // constraint -- see there).
-                    file_path: del.file_path.clone(),
-                    file_type,
-                    file_format,
-                    // Not serialized; filled in by IcebergScanExec::fill_delete_file_sizes.
-                    file_size_in_bytes: 0,
-                    partition_spec_id: del.partition_spec_id,
-                    equality_ids: if del.equality_ids.is_empty() {
-                        None
-                    } else {
-                        Some(del.equality_ids.clone())
-                    },
-                    // Deletion-vector coordinates, set only for V3 deletion vectors and left unset for
-                    // Parquet delete files. referenced_data_file names the data file the vector applies
-                    // to; the other two locate the deletion-vector-v1 blob in its Puffin file.
-                    referenced_data_file: del.referenced_data_file.clone(),
-                    content_offset: del.content_offset,
-                    content_size_in_bytes: del.content_size_in_bytes,
-                    // Required for deletion vectors: iceberg-rust checks it against the number of
-                    // positions decoded from the blob and errors if it is absent.
-                    record_count: del.record_count.map(u64::try_from).transpose().map_err(
-                        |_| {
-                            GeneralError(format!(
-                                "Delete file '{}' has a negative record count",
-                                del.file_path
-                            ))
-                        },
-                    )?,
-                    // Plaintext StandardKeyMetadata forwarded verbatim from the JVM; decoded by
-                    // iceberg-rust with no KMS unwrap. None for unencrypted delete files.
-                    key_metadata: del.key_metadata.clone().map(Vec::into_boxed_slice),
-                })
+            let file_path = proto_common
+                .delete_file_path_pool
+                .get(del.file_path_idx as usize)
+                .ok_or_else(|| {
+                    GeneralError(format!(
+                        "Invalid file_path_idx: {} (pool size: {})",
+                        del.file_path_idx,
+                        proto_common.delete_file_path_pool.len()
+                    ))
+                })?
+                .clone();
+
+            // Required for deletion vectors: iceberg-rust checks it against the number of
+            // positions decoded from the blob and errors if it is absent.
+            let record_count = del
+                .record_count
+                .map(u64::try_from)
+                .transpose()
+                .map_err(|_| {
+                    GeneralError(format!(
+                        "Delete file '{}' has a negative record count",
+                        file_path
+                    ))
+                })?;
+
+            Ok(iceberg::scan::FileScanTaskDeleteFile {
+                // Passed RAW, like `data_file_path` below (same exact-string delete-matching
+                // constraint -- see there).
+                file_path,
+                file_type,
+                file_format,
+                // Not serialized; filled in by IcebergScanExec::fill_delete_file_sizes.
+                file_size_in_bytes: 0,
+                partition_spec_id: del.partition_spec_id,
+                equality_ids: if del.equality_ids.is_empty() {
+                    None
+                } else {
+                    Some(del.equality_ids.clone())
+                },
+                // Deletion-vector coordinates, set only for V3 deletion vectors and left unset for
+                // Parquet delete files. referenced_data_file names the data file the vector applies
+                // to; the other two locate the deletion-vector-v1 blob in its Puffin file.
+                referenced_data_file: del.referenced_data_file.clone(),
+                content_offset: del.content_offset,
+                content_size_in_bytes: del.content_size_in_bytes,
+                record_count,
+                // Plaintext StandardKeyMetadata forwarded verbatim from the JVM; decoded by
+                // iceberg-rust with no KMS unwrap. None for unencrypted delete files.
+                key_metadata: del.key_metadata.clone().map(Vec::into_boxed_slice),
             })
-            .collect::<Result<Vec<_>, ExecutionError>>()?;
+        })
+        .collect::<Result<Vec<_>, ExecutionError>>()?;
 
     let delete_files_cache: Vec<Vec<iceberg::scan::FileScanTaskDeleteFile>> = proto_common
         .delete_files_pool
