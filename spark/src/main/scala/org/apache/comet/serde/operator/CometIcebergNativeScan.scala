@@ -289,7 +289,8 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       task: Any,
       contentFileClass: Class[_],
       fileScanTaskClass: Class[_],
-      deleteFileClass: Class[_]): Seq[OperatorOuterClass.IcebergDeleteFile] = {
+      deleteFileClass: Class[_],
+      internPath: String => Int): Seq[OperatorOuterClass.IcebergDeleteFile] = {
     try {
       // keyMetadata() is declared on ContentFile; present across all supported Iceberg versions.
       val keyMetadataMethod = IcebergReflection.getMethod(contentFileClass, "keyMetadata")
@@ -307,7 +308,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                 "ContentFile -- cannot extract delete file path from FileScanTask"))
 
         val deleteBuilder = OperatorOuterClass.IcebergDeleteFile.newBuilder()
-        deleteBuilder.setFilePath(deletePath)
+        deleteBuilder.setFilePathIdx(internPath(deletePath))
 
         val contentType =
           try {
@@ -937,6 +938,17 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     val deleteFileToPoolIndex = mutable.HashMap[OperatorOuterClass.IcebergDeleteFile, Int]()
     val deleteFilesToPoolIndex =
       mutable.HashMap[Seq[Int], Int]()
+    // Delete-file paths are interned separately from the delete files themselves: every deletion
+    // vector in a commit lives in one Puffin file, so one path is shared by as many pool entries
+    // as there are data files.
+    val deleteFilePathToPoolIndex = mutable.HashMap[String, Int]()
+    def internDeleteFilePath(path: String): Int =
+      deleteFilePathToPoolIndex.getOrElseUpdate(
+        path, {
+          val idx = deleteFilePathToPoolIndex.size
+          commonBuilder.addDeleteFilePathPool(path)
+          idx
+        })
     val residualToPoolIndex = mutable.HashMap[OperatorOuterClass.IcebergPredicate, Int]()
     // Field-id mappings are read out of an Iceberg schema by reflection, one lookup per column, so
     // memoize them. Keyed like schemaToPoolIndex above: a task schema that Iceberg materializes
@@ -1148,7 +1160,8 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                     task,
                     contentFileClass,
                     fileScanTaskClass,
-                    deleteFileClass)
+                    deleteFileClass,
+                    internDeleteFilePath)
                 if (deleteFilesList.nonEmpty) {
                   // Intern each delete file into the flat pool, then dedup this task's set as the
                   // resulting list of pool indices.
@@ -1248,6 +1261,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       partitionDataToPoolIndex.size,
       deleteFileToPoolIndex.size,
       deleteFilesToPoolIndex.size,
+      deleteFilePathToPoolIndex.size,
       residualToPoolIndex.size)
 
     val avgDedup = if (totalTasks == 0) {
@@ -1265,7 +1279,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     // Per-pool byte sizes to diagnose an oversized common message. Sizes sum as Long because a
     // single pool at or past protobuf's 2 GiB message limit overflows the int getSerializedSize,
     // and the logging runs before toByteArray so the breakdown survives even if that allocation
-    // fails. String pools carry JSON, whose serialized size is its UTF-8 length.
+    // fails. String pools carry JSON or file paths, whose serialized size is the UTF-8 length.
     def sumSizes(sizes: Iterator[Int]): Long = sizes.map(_.toLong).sum
     def sumStrBytes(strings: mutable.Buffer[String]): Long =
       strings.iterator.map(_.getBytes(UTF_8).length.toLong).sum
@@ -1300,6 +1314,10 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
         "delete_file",
         commonBuilder.getDeleteFilePoolCount,
         sumSizes(commonBuilder.getDeleteFilePoolList.asScala.iterator.map(_.getSerializedSize))),
+      (
+        "delete_file_path",
+        commonBuilder.getDeleteFilePathPoolCount,
+        sumStrBytes(commonBuilder.getDeleteFilePathPoolList.asScala)),
       (
         "delete_files_set",
         commonBuilder.getDeleteFilesPoolCount,

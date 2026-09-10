@@ -717,8 +717,7 @@ class CometIcebergNativeSuite
         val commonBytes = scans.head.commonData
         val common = OperatorOuterClass.IcebergScanCommon.parseFrom(commonBytes)
 
-        val distinctPaths =
-          common.getDeleteFilePoolList.asScala.map(_.getFilePath).toSeq
+        val distinctPaths = common.getDeleteFilePathPoolList.asScala.toSeq
         val totalReferences =
           common.getDeleteFilesPoolList.asScala.map(_.getDeleteFileIndicesCount).sum
 
