@@ -292,19 +292,25 @@ Rulesets API payload, which is how a `merge_queue` rule gets set without an
 INFRA ticket.
 
 When a PR is queued, GitHub builds a temporary `gh-readonly-queue/main/...`
-branch containing the PR's commits on top of the current `main` (batched with
-up to four other queued PRs) and fires a `merge_group` event. `ci.yml` runs
+branch containing the PR's commits on top of the current `main` and of every
+entry ahead of it in the queue, then fires a `merge_group` event. `ci.yml` runs
 against that branch and the entry merges when `Required Checks` is green. That
 is what makes the queue tier meaningful: it tests the merge result, not the PR
 head, so a semantic conflict between two PRs that each pass in isolation is
 caught before either lands.
 
-The `merge_queue` rule parameters in `.asf.yaml` are the tuning dials.
-`max_entries_to_merge: 5` is what keeps cost down. Once the queue backs up,
-one pipeline validates up to five PRs. `max_entries_to_build: 2` caps how many
-groups are in flight, and `check_response_timeout_minutes: 300` has to stay
-comfortably above the slowest observed pipeline plus ASF runner scheduling
-delay, or healthy entries get evicted.
+The `merge_queue` rule parameters in `.asf.yaml` are the tuning dials, and
+`max_entries_to_build: 2` is the one that matters. Every entry gets its own
+`merge_group` build — [merge limits do not combine
+builds](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/managing-a-merge-queue) —
+so this caps how many pipelines are in flight, and with them how fast the queue
+drains: roughly 19 merges a day at the ~2.5h pipeline we see today.
+`max_entries_to_merge: 5` only says how many already-green entries land in one
+merge operation, and saves no CI at all. The saving in this design comes from
+the PR tier being small, not from batching inside the queue.
+`check_response_timeout_minutes: 300` has to stay comfortably above the slowest
+observed pipeline plus ASF runner scheduling delay, or healthy entries get
+evicted.
 
 A flaky test in the queue tier blocks everyone's merges, not just one PR. That
 raises the bar on flakiness relative to when these suites only ran post-merge.
