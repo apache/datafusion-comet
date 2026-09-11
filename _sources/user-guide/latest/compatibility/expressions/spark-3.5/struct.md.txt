@@ -35,11 +35,11 @@ By default, `JsonToStructs` is evaluated in the JVM using Spark's own code-gener
 
 ## StructsToCsv
 
-The following incompatibilities cause `StructsToCsv` to fall back to Spark by default. Set `spark.comet.expression.StructsToCsv.allowIncompatible=true` to enable Comet acceleration despite these differences.
+By default, `StructsToCsv` is evaluated in the JVM using Spark's own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set `spark.comet.expression.StructsToCsv.allowIncompatible=true` to opt into Comet's native implementation instead, which has the following differences from Spark:
 
 - Date, Timestamp, TimestampNTZ, and Binary data types may produce different results (https://github.com/apache/datafusion-comet/issues/3232)
 
-The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
+The following cases have no native implementation and always run in the JVM using Spark's code-generated implementation (inside the Comet pipeline):
 
 - Complex types (arrays, maps, structs) in the schema are not supported
 

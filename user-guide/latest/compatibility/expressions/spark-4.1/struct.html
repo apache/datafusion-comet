@@ -799,11 +799,11 @@ under the License.
 </section>
 <section id="structstocsv">
 <h2>StructsToCsv<a class="headerlink" href="#structstocsv" title="Link to this heading">#</a></h2>
-<p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">StructsToCsv</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.StructsToCsv.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
+<p>By default, <code class="docutils literal notranslate"><span class="pre">StructsToCsv</span></code> is evaluated in the JVM using Spark’s own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.StructsToCsv.allowIncompatible=true</span></code> to opt into Comet’s native implementation instead, which has the following differences from Spark:</p>
 <ul class="simple">
 <li><p>Date, Timestamp, TimestampNTZ, and Binary data types may produce different results (https://github.com/apache/datafusion-comet/issues/3232)</p></li>
 </ul>
-<p>The following cases are not supported by Comet and always fall back to Spark, regardless of any <code class="docutils literal notranslate"><span class="pre">allowIncompatible</span></code> setting:</p>
+<p>The following cases have no native implementation and always run in the JVM using Spark’s code-generated implementation (inside the Comet pipeline):</p>
 <ul class="simple">
 <li><p>Complex types (arrays, maps, structs) in the schema are not supported</p></li>
 </ul>

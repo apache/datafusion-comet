@@ -166,7 +166,7 @@ By default, `StringSplit` is evaluated in the JVM using Spark's own code-generat
 
 ## StringTranslate
 
-The following incompatibilities cause `StringTranslate` to fall back to Spark by default. Set `spark.comet.expression.StringTranslate.allowIncompatible=true` to enable Comet acceleration despite these differences.
+By default, `StringTranslate` is evaluated in the JVM using Spark's own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set `spark.comet.expression.StringTranslate.allowIncompatible=true` to opt into Comet's native implementation instead, which has the following differences from Spark:
 
 - DataFusion's translate iterates over Unicode graphemes (Spark uses code points) and substitutes U+0000 instead of treating it as a deletion sentinel
 

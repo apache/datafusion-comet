@@ -950,7 +950,7 @@ under the License.
 </section>
 <section id="stringtranslate">
 <h2>StringTranslate<a class="headerlink" href="#stringtranslate" title="Link to this heading">#</a></h2>
-<p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">StringTranslate</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.StringTranslate.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
+<p>By default, <code class="docutils literal notranslate"><span class="pre">StringTranslate</span></code> is evaluated in the JVM using Spark’s own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.StringTranslate.allowIncompatible=true</span></code> to opt into Comet’s native implementation instead, which has the following differences from Spark:</p>
 <ul class="simple">
 <li><p>DataFusion’s translate iterates over Unicode graphemes (Spark uses code points) and substitutes U+0000 instead of treating it as a deletion sentinel</p></li>
 </ul>

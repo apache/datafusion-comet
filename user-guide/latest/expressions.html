@@ -1534,8 +1534,8 @@ expressions. The following function families are <strong>not currently planned</
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">to_csv</span></code></p></td>
 <td><p>✅</p></td>
-<td><p>Native</p></td>
-<td><p></p></td>
+<td><p>Hybrid</p></td>
+<td><p>Codegen dispatch by default; the native path is opt-in via allowIncompatible</p></td>
 </tr>
 </tbody>
 </table>
@@ -3182,8 +3182,8 @@ expressions. The following function families are <strong>not currently planned</
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">translate</span></code></p></td>
 <td><p>✅</p></td>
-<td><p>Native</p></td>
-<td><p>DataFusion’s <code class="docutils literal notranslate"><span class="pre">translate</span></code> iterates over Unicode graphemes (Spark uses code points) and substitutes U+0000 instead of treating it as a deletion sentinel, so the native path is opt-in via allowIncompatible</p></td>
+<td><p>Hybrid</p></td>
+<td><p>Codegen dispatch by default: DataFusion’s <code class="docutils literal notranslate"><span class="pre">translate</span></code> iterates over Unicode graphemes (Spark uses code points) and substitutes U+0000 instead of treating it as a deletion sentinel, so the native path is opt-in via allowIncompatible</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">trim</span></code></p></td>
 <td><p>✅</p></td>
