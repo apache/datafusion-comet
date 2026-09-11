@@ -15,19 +15,17 @@
 # specific language governing permissions and limitations
 # under the License.
 
-"""Exercise native-build and independent-check conditions from the real workflow.
+"""Exercise shared native-build selection through the routing script and CLI.
 
-The routing script owns event policy; the workflow only reads its boolean
-outputs. Only that small expression subset is translated here, keeping these
-tests dependency-free. actionlint separately checks GitHub's expression syntax
-and workflow dependency graph.
+Consumer outputs already include path and event policy. The native producer
+must be their union, including for manual dispatch. check-ci-config.py checks
+the workflow's output wiring; actionlint validates its syntax and dependencies.
 """
 
 import importlib.util
 import itertools
 import json
 import os
-import re
 import subprocess
 import sys
 import tempfile
@@ -49,61 +47,31 @@ CONSUMERS = {
 }
 DEFAULT = {"pr_build_linux", "spark_3_5", "spark_4_1", "iceberg_1_11"}
 OPT_IN = ("run-spark-3.4-tests", "run-spark-4.0-tests", "run-iceberg-tests")
-LINUX_CHECKS = "pr_build_linux_checks"
-
-
-def conditions():
-    workflow = (ROOT / ".github/workflows/ci.yml").read_text()
-    expressions = {}
-    for job in ["build_linux_native", LINUX_CHECKS, *CONSUMERS]:
-        block = re.search(
-            r"^  " + job + r":\n.*?(?=^  [a-z][a-z_0-9]*:\n|\Z)",
-            workflow,
-            re.M | re.S,
-        ).group()
-        match = re.search(
-            r"^    if:[ \t]*(?:\|[ \t]*\n(?P<block>(?:^      .*\n?)+)|(?P<inline>[^\n]+))",
-            block,
-            re.M,
-        )
-        expression = " ".join((match.group("block") or match.group("inline")).split())
-        # Event policy belongs in compute-changes.py. Reject a caller that
-        # silently reintroduces an independent github.event condition.
-        remaining = re.sub(
-            r"needs\.changes\.outputs\.[a-z_0-9]+|==|'true'|\|\||[()\s]",
-            "",
-            expression,
-        )
-        if remaining:
-            raise ValueError(f"{job}: unsupported routing condition: {expression}")
-        expression = re.sub(
-            r"needs\.changes\.outputs\.([a-z_0-9]+)",
-            lambda match: f"changes[{match.group(1)!r}]",
-            expression,
-        )
-        expression = expression.replace("||", " or ")
-        expressions[job] = compile(expression, str(ROOT / ".github/workflows/ci.yml"), "eval")
-    return expressions
 
 
 class NativeBuildSelectionTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.expressions = conditions()
+        """Load one routing module for this suite; import errors fail setup.
+
+        Store it on the test class. Individual policy/filter patches restore
+        this module's dictionaries when their context exits, including failure.
+        """
         spec = importlib.util.spec_from_file_location(
             "compute_changes", ROOT / "dev/ci/compute-changes.py"
         )
         cls.filters = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(cls.filters)
 
-    def evaluate(self, flags):
-        context = {"changes": {key: str(value).lower() for key, value in flags.items()}}
-        return {
-            name: eval(expression, {"__builtins__": {}}, context)
-            for name, expression in self.expressions.items()
-        }
-
     def cli_outputs(self, files, event):
+        """Return validated boolean outputs from one real CLI invocation.
+
+        Pass repository-relative `files` through a temporary text file and the
+        event fields through a child-only environment. Neither input nor the
+        parent environment changes. The temporary file closes on success or
+        failure; a failed process raises, and malformed or missing outputs fail
+        assertions rather than being interpreted as a skipped native build.
+        """
         env = {
             **os.environ,
             "EVENT_NAME": event["name"],
@@ -125,26 +93,33 @@ class NativeBuildSelectionTest(unittest.TestCase):
         for line in result.stdout.splitlines():
             key, value = line.split("=", 1)
             self.assertIn(value, ("true", "false"))
+            self.assertNotIn(key, flags)
             flags[key] = value == "true"
-        self.assertEqual(set(flags), set(self.filters.FILTERS))
+        self.assertEqual(set(flags), set(self.filters.FILTERS) | {"build_linux_native"})
         return flags
 
     def assert_selected(self, flags, expected):
-        selected = self.evaluate(flags)
-        self.assertEqual({name for name in CONSUMERS if selected[name]}, expected)
-        self.assertEqual(selected["build_linux_native"], bool(expected))
-        self.assertEqual(selected[LINUX_CHECKS], "pr_build_linux" in expected)
+        """Assert consumer job IDs and producer selection without mutating inputs.
+
+        `flags` is the complete output-to-bool mapping; `expected` contains CI
+        consumer job IDs, whose output keys are pinned in CONSUMERS. Return
+        None on success; any missing key or selection mismatch fails the test.
+        """
+        self.assertEqual({job for job, key in CONSUMERS.items() if flags[key]}, expected)
+        self.assertEqual(flags["build_linux_native"], bool(expected))
 
     def assert_selection(
         self, files, expected, event="pull_request", action="synchronize", labels=(), label=""
     ):
+        """Check compute() for changed paths, event fields, and expected job IDs.
+
+        Build a fresh event mapping from the supplied values and assert the
+        complete native selection. No caller input changes; return None or
+        propagate the computation/assertion failure. CLI behavior is exercised
+        separately so both entry points cover manual dispatch's empty input.
+        """
         event = {"name": event, "action": action, "labels": labels, "label": label}
-        # Manual dispatch bypasses path filtering in the script's CLI. Exercise
-        # the actual entry point so an empty changed-file list still runs all jobs.
-        if event["name"] == "workflow_dispatch":
-            flags = self.cli_outputs(files, event)
-        else:
-            flags = self.filters.compute(files, event)
+        flags = self.filters.compute(files, event)
         self.assert_selected(flags, expected)
 
     def test_native_change_uses_default_pr_coverage(self):
@@ -182,9 +157,42 @@ class NativeBuildSelectionTest(unittest.TestCase):
             action="labeled", labels=OPT_IN, label="run-iceberg-tests",
         )
 
-    def test_main_and_manual_runs_include_legacy_consumers(self):
+    def test_main_runs_include_legacy_consumers(self):
+        """Pin the current main-push policy until the merge-queue policy lands."""
         self.assert_selection(["native/core/src/lib.rs"], set(CONSUMERS), event="push")
+
+    def test_manual_runs_include_legacy_consumers_without_changed_files(self):
+        """Assert empty-input dispatch selects every consumer in compute and CLI."""
         self.assert_selection([], set(CONSUMERS), event="workflow_dispatch")
+        flags = self.cli_outputs([], {"name": "workflow_dispatch"})
+        self.assert_selected(flags, set(CONSUMERS))
+        self.assertTrue(all(flags.values()))
+
+    def test_empty_changes_and_unsupported_events_skip_native(self):
+        """Assert ordinary empty diffs and unsupported events select no consumers."""
+        self.assert_selection([], set())
+        self.assert_selection(["native/core/src/lib.rs"], set(), event="schedule")
+
+    def test_nonconsumer_outputs_do_not_select_native(self):
+        """Select each unrelated route alone and ensure it cannot start native CI.
+
+        Temporarily give every filter a distinct synthetic path to separate
+        macOS from its normally overlapping Linux inputs. The patch restores
+        the real filters on exit, including when an assertion fails.
+        """
+        filters = {key: [key] for key in self.filters.FILTERS}
+        with mock.patch.dict(self.filters.FILTERS, filters, clear=True):
+            for key in ("build_macos", "benchmark", "docs"):
+                with self.subTest(key=key):
+                    flags = self.filters.compute([key], {"name": "push"})
+                    self.assertEqual({name for name, selected in flags.items() if selected}, {key})
+
+    def test_cli_emits_native_output_for_selected_and_skipped_runs(self):
+        """Assert real CLI output includes the producer on both true and false paths."""
+        event = {"name": "pull_request", "action": "synchronize", "labels": []}
+        for files, expected in ((["native/core/src/lib.rs"], DEFAULT), ([], set())):
+            with self.subTest(files=files):
+                self.assert_selected(self.cli_outputs(files, event), expected)
 
     def test_producer_change_exercises_all_default_linux_consumers(self):
         self.assert_selection([".github/workflows/build_linux_native.yml"], DEFAULT)
@@ -222,7 +230,15 @@ class NativeBuildSelectionTest(unittest.TestCase):
                 labels=("run-linux-tests",), label="run-linux-tests",
             )
 
-    def test_producer_condition_matches_all_consumer_combinations(self):
+    def test_producer_output_matches_all_consumer_combinations(self):
+        """Exhaust all 512 consumer path masks across event and label combinations.
+
+        Synthetic one-path filters exercise compute() without relying on real
+        paths overlapping particular consumers. Unrelated routes also match,
+        guarding against accidentally including them in the native union. Only
+        FILTERS is patched, and it is restored on success or assertion failure;
+        the actual event policy and native-output computation always execute.
+        """
         keys = list(CONSUMERS.values())
         label_sets = [
             tuple(label for label, selected in zip(OPT_IN, mask) if selected)
@@ -237,27 +253,21 @@ class NativeBuildSelectionTest(unittest.TestCase):
                     "name": "pull_request", "action": "labeled",
                     "labels": labels, "label": label,
                 })
-        for mask in itertools.product((False, True), repeat=len(keys)):
-            raw_flags = dict(zip(keys, mask))
-            for event in events:
-                # The flags consumed by ci.yml already include the policy.
-                # Exhaust the raw path combinations through that same policy,
-                # including the CLI's manual-dispatch override.
-                flags = {
-                    key: event["name"] == "workflow_dispatch" or (
-                        raw_flags[key] and self.filters.event_allows(key, event)
-                    )
-                    for key in keys
-                }
-                selected = self.evaluate(flags)
-                for consumer, key in CONSUMERS.items():
-                    self.assertEqual(selected[consumer], flags[key], (raw_flags, event, consumer))
-                self.assertEqual(
-                    selected["build_linux_native"],
-                    any(flags.values()),
-                    (raw_flags, event),
-                )
-                self.assertEqual(selected[LINUX_CHECKS], flags["build_linux"], (raw_flags, event))
+        filters = {key: [key] for key in self.filters.FILTERS}
+        unrelated = sorted(set(filters) - set(keys))
+        with mock.patch.dict(self.filters.FILTERS, filters, clear=True):
+            for mask in itertools.product((False, True), repeat=len(keys)):
+                raw_flags = dict(zip(keys, mask))
+                files = [key for key, selected in raw_flags.items() if selected] + unrelated
+                for event in events:
+                    flags = self.filters.compute(files, event)
+                    expected = {
+                        job for job, key in CONSUMERS.items()
+                        if event["name"] == "workflow_dispatch" or (
+                            raw_flags[key] and self.filters.event_allows(key, event)
+                        )
+                    }
+                    self.assert_selected(flags, expected)
 
 
 if __name__ == "__main__":

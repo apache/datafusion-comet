@@ -51,6 +51,58 @@ class SharedNativeArtifactTest(unittest.TestCase):
     def test_real_workflows_have_valid_shared_artifacts(self):
         self.assertEqual(CHECK.artifact_failures(self.workflows), [])
 
+    def test_native_gates_cannot_bypass_selected_outputs(self):
+        """Reject an inverted gate for each producer/consumer in a temporary copy.
+
+        Each mutation starts from the original workflow and must report the
+        changed job. The source tree is untouched and the fixture is restored.
+        """
+        path = self.workflows / "ci.yml"
+        original = path.read_text(encoding="utf-8")
+        consumers = CHECK.load_filters().NATIVE_CONSUMERS
+        for output in (CHECK.SHARED_NATIVE_JOB, *consumers):
+            job_id = "pr_build_linux" if output == "build_linux" else output
+            with self.subTest(job=job_id):
+                start = original.index(f"\n  {job_id}:\n")
+                body = original[start:].replace(
+                    f"needs.changes.outputs.{output} == 'true'",
+                    f"needs.changes.outputs.{output} == 'false'", 1)
+                path.write_text(original[:start] + body, encoding="utf-8")
+                self.assert_rejected(f"{job_id} must select only changes.outputs.{output}")
+        path.write_text(original, encoding="utf-8")
+
+    def test_native_outputs_must_be_exported_without_remapping(self):
+        """Reject missing and remapped output exports in temporary workflows.
+
+        Every producer/consumer output is checked independently, covering the
+        case where Python selects a producer that the workflow never starts.
+        Only the fixture is mutated and it is restored after all assertions.
+        """
+        path = self.workflows / "ci.yml"
+        original = path.read_text(encoding="utf-8")
+        consumers = CHECK.load_filters().NATIVE_CONSUMERS
+        for output in (CHECK.SHARED_NATIVE_JOB, *consumers):
+            expression = f"${{{{ steps.compute.outputs.{output} }}}}"
+            self.assertIn(expression, original)
+            for replacement in ("", "${{ steps.compute.outputs.docs }}"):
+                with self.subTest(output=output, replacement=replacement):
+                    path.write_text(original.replace(expression, replacement, 1), encoding="utf-8")
+                    self.assert_rejected(f"changes must export steps.compute.outputs.{output}")
+        path.write_text(original, encoding="utf-8")
+
+    def test_new_native_consumer_must_join_selector(self):
+        """Reject an extra consumer absent from Python's producer union.
+
+        Append a caller to the temporary workflow only. The fixture directory
+        is removed by tear-down; no repository file is changed.
+        """
+        path = self.workflows / "ci.yml"
+        with path.open("a", encoding="utf-8") as stream:
+            stream.write("\n  spark_future:\n    needs: [changes, build_linux_native]\n"
+                         "    uses: ./.github/workflows/spark_sql_test_reusable.yml\n"
+                         "    with:\n      native-library-artifact: native-lib-linux\n")
+        self.assert_rejected("native consumer calls must match NATIVE_CONSUMERS")
+
     def test_missing_shared_producer_is_rejected(self):
         (self.workflows / CHECK.SHARED_NATIVE_WORKFLOW).unlink()
         self.assert_rejected("shared native producer is missing")
