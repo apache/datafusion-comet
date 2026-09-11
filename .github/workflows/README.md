@@ -149,8 +149,9 @@ input. Consumers keep their own Spark/JDK versions and download the library
 into `native/target/release/`, where Maven expects it. Spark still pre-compiles
 and shares its JVM test classes separately for each Spark/JDK version.
 
-The producer's condition is the union of those callers' `changes` outputs,
-which already include the path and event/label policy in `compute-changes.py`. A Spark-patch-only change therefore gets a native
+`compute-changes.py` derives `build_linux_native` as the union of the selected
+consumer outputs, after applying path and event/label policy. The workflow
+reads that single output. A Spark-patch-only change therefore gets a native
 build when its Spark caller is selected, even if the Linux build is not.
 Documentation-only changes, benchmark-only changes, and unrelated label
 events do not start an unused native build. The event-selection regression
