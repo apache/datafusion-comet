@@ -21,11 +21,14 @@ package org.apache.comet
 
 import scala.util.Random
 
+import org.scalatest.exceptions.TestFailedException
+
 import org.apache.arrow.vector._
 import org.apache.spark.{SparkConf, SparkEnv, TaskContext}
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.api.java.UDF1
-import org.apache.spark.sql.catalyst.expressions.{BoundReference, CreateArray, CreateMap, CreateNamedStruct, Expression, Literal, MapConcat}
+import org.apache.spark.sql.catalyst.expressions.{Add, Alias, AttributeReference, BoundReference, Cast, CreateArray, CreateMap, CreateNamedStruct, Expression, Hypot, Literal, MapConcat}
+import org.apache.spark.sql.catalyst.expressions.objects.Invoke
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
@@ -34,6 +37,7 @@ import org.apache.spark.unsafe.types.UTF8String
 import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
 import org.apache.comet.codegen.CometBatchKernelCodegen
 import org.apache.comet.codegen.CometBatchKernelCodegen.ArrowColumnSpec
+import org.apache.comet.serde.{CometScalaUDF, QueryPlanSerde}
 import org.apache.comet.udf.codegen.CometScalaUDFCodegen
 import org.apache.comet.vector.CometVector
 
@@ -189,7 +193,7 @@ class CometCodegenSuite
           s"expected a [COMET-INFO: segment, got:\n$explain")
         // Names appear alphabetically via `.distinct.sorted` in rollUpInfoMessages.
         assert(
-          explain.contains("JVM codegen dispatcher: hypot, nanvl"),
+          dispatchedNames(explain).containsSlice(Seq("hypot", "nanvl")),
           s"expected combined codegen-dispatch info, got:\n$explain")
       }
 
@@ -207,6 +211,149 @@ class CometCodegenSuite
           !explain.contains("JVM codegen dispatcher"),
           s"expected NO codegen-dispatch info with the flag off, got:\n$explain")
       }
+    }
+  }
+
+  test("checkSparkAnswerAndImpl pins the mechanism and fails when the claim is wrong") {
+    // The assertion helper is only worth having if it fails. `abs` lowers to a native DataFusion
+    // expression and `hypot` is a `CometCodegenDispatch`, so this query exercises both buckets at
+    // once and each wrong claim below must be rejected.
+    withTable("t") {
+      sql("CREATE TABLE t (a DOUBLE, b DOUBLE) USING parquet")
+      sql("INSERT INTO t VALUES (3.0, 4.0)")
+      val query = "SELECT abs(a), hypot(a, b) FROM t"
+
+      checkSparkAnswerAndImpl(sql(query), native = Seq("abs"), dispatched = Seq("hypot"))
+
+      // Claiming the wrong mechanism fails, in both directions.
+      intercept[TestFailedException] {
+        checkSparkAnswerAndImpl(sql(query), native = Seq("hypot"))
+      }
+      intercept[TestFailedException] {
+        checkSparkAnswerAndImpl(sql(query), dispatched = Seq("abs"))
+      }
+      // So does naming an expression the query does not contain, which is what a typo in a
+      // fixture looks like.
+      intercept[TestFailedException] {
+        checkSparkAnswerAndImpl(sql(query), native = Seq("no_such_expression"))
+      }
+      intercept[TestFailedException] {
+        checkSparkAnswerAndImpl(sql(query), dispatched = Seq("no_such_expression"))
+      }
+    }
+  }
+
+  test("an expression nested inside a dispatched subtree is classified as dispatched") {
+    // The whole of `hypot(abs(b), c)` is bound and closure-serialized into one JVM kernel, so the
+    // inner `abs` ran in the JVM even though the `abs(a)` next to it ran natively. Naming only
+    // the dispatched root would let `native = Seq("abs")` pass here while an `abs` was running in
+    // the kernel, which is the one claim this helper exists to make trustworthy.
+    withTable("t") {
+      sql("CREATE TABLE t (a DOUBLE, b DOUBLE, c DOUBLE) USING parquet")
+      sql("INSERT INTO t VALUES (3.0, 4.0, 5.0)")
+      val query = "SELECT abs(a), hypot(abs(b), c) FROM t"
+
+      // `abs` is genuinely on both sides of the fence, so neither claim about it alone holds.
+      intercept[TestFailedException] {
+        checkSparkAnswerAndImpl(sql(query), native = Seq("abs"))
+      }
+      intercept[TestFailedException] {
+        checkSparkAnswerAndImpl(sql(query), dispatched = Seq("abs"))
+      }
+      // `hypot` is unambiguous, and the same query still classifies it correctly.
+      checkSparkAnswerAndImpl(sql(query), dispatched = Seq("hypot"))
+    }
+  }
+
+  /**
+   * The expression names listed in the `[COMET-INFO: JVM codegen dispatcher: ...]` segment.
+   *
+   * Matching the whole segment rather than a `contains` on `"JVM codegen dispatcher: <name>"`,
+   * because the segment lists every dispatched expression in the operator sorted by name -
+   * including expressions nested inside a dispatched subtree - so a substring match pinned to one
+   * name breaks as soon as a query dispatches a second one.
+   */
+  private def dispatchedNames(explain: String): Seq[String] =
+    "JVM codegen dispatcher: ([^\\]]*)".r
+      .findFirstMatchIn(explain)
+      .map(_.group(1).split(",").map(_.trim).filter(_.nonEmpty).toSeq)
+      .getOrElse(Seq.empty)
+
+  private def withSequenceTable(f: => Unit): Unit = {
+    withTable("t") {
+      // `stp` carries a sign-correct step so `sequence(a, b, stp)` is legal on both rows:
+      // ascending (1, 5, 1) and descending (9, 2, -1). A single literal step would raise
+      // `Illegal sequence boundaries` on the mismatched row inside Spark's reference run.
+      sql("CREATE TABLE t (a INT, b INT, stp INT, d DATE) USING parquet")
+      sql("INSERT INTO t VALUES (1, 5, 1, DATE'2024-01-01'), (9, 2, -1, DATE'2024-03-01')")
+      withSQLConf(
+        CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true",
+        CometConf.COMET_EXPLAIN_CODEGEN_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_PROJECT_ENABLED.key -> "true",
+        CometConf.COMET_EXTENDED_EXPLAIN_FORMAT.key ->
+          CometConf.COMET_EXTENDED_EXPLAIN_FORMAT_VERBOSE)(f)
+    }
+  }
+
+  test("sequence with leaf integral args runs natively") {
+    // Integral sequence with column-reference/literal args lowers to the native spark_sequence
+    // kernel; no codegen-dispatch marker should appear. The three-argument form uses the `stp`
+    // column so both the ascending and descending rows have a sign-correct step (all args
+    // stay leaves, so the native path is exercised).
+    withSequenceTable {
+      val df = sql("SELECT sequence(a, b), sequence(a, b, stp) FROM t")
+      checkSparkAnswerAndOperator(df)
+      val explain =
+        new ExtendedExplainInfo().generateExtendedInfo(df.queryExecution.executedPlan)
+      assert(
+        !explain.contains("JVM codegen dispatcher"),
+        s"expected integral sequence with leaf args to run natively, got:\n$explain")
+    }
+  }
+
+  test("sequence with zero-arg UDF stop routes through the dispatcher") {
+    // A zero-argument Scala UDF has empty `children` but still fires on evaluation. The gate
+    // must reject it (rather than treating it as a safe leaf) so DataFusion does not call it
+    // over the whole batch on rows Spark's per-row null short-circuit would have skipped.
+    spark.udf.register("comet_seq_stopper", () => 10)
+    withSequenceTable {
+      val df = sql("SELECT sequence(a, comet_seq_stopper()) FROM t")
+      checkSparkAnswerAndOperator(df)
+      val explain =
+        new ExtendedExplainInfo().generateExtendedInfo(df.queryExecution.executedPlan)
+      assert(
+        dispatchedNames(explain).contains("sequence"),
+        s"expected zero-arg-UDF sequence to route through the dispatcher, got:\n$explain")
+    }
+  }
+
+  test("sequence with non-leaf integral args routes through the dispatcher") {
+    // A non-leaf argument (e.g. a `CASE WHEN` step) would be evaluated over the whole batch by
+    // DataFusion before the outer kernel runs, breaking Spark's per-row null short-circuit.
+    // `CometSequence` reports `Unsupported` for these shapes and hands them to the JVM codegen
+    // dispatcher.
+    withSequenceTable {
+      val df = sql("SELECT sequence(a, b, CASE WHEN a <= b THEN 2 ELSE -2 END) FROM t")
+      checkSparkAnswerAndOperator(df)
+      val explain =
+        new ExtendedExplainInfo().generateExtendedInfo(df.queryExecution.executedPlan)
+      assert(
+        dispatchedNames(explain).contains("sequence"),
+        s"expected composed-arg sequence to route through the dispatcher, got:\n$explain")
+    }
+  }
+
+  test("sequence with date element type routes through the dispatcher") {
+    // Date/timestamp sequences step through timezone/DST/legacy-calendar arithmetic
+    // (issue #5349), so `CometSequence` keeps them on the JVM codegen dispatcher.
+    withSequenceTable {
+      val df = sql("SELECT sequence(d, DATE'2024-06-01', INTERVAL 1 MONTH) FROM t")
+      checkSparkAnswerAndOperator(df)
+      val explain =
+        new ExtendedExplainInfo().generateExtendedInfo(df.queryExecution.executedPlan)
+      assert(
+        dispatchedNames(explain).contains("sequence"),
+        s"expected date sequence to route through the dispatcher, got:\n$explain")
     }
   }
 
@@ -268,6 +415,30 @@ class CometCodegenSuite
     }
   }
 
+  test("codegen dispatch coverage survives the decimal promotion rewrite") {
+    val decimal = AttributeReference("amount", DecimalType(10, 2), nullable = false)()
+    val dispatched = Hypot(Cast(Add(decimal, decimal), DoubleType), Literal(4.0d))
+    val projection = Alias(dispatched, "value")()
+
+    // Promotion rebuilds Hypot as well as the Alias above it. Unlike the original Add, the
+    // dispatched copy is not reachable from the original tree, so only the coverage lift can
+    // bring its names back to the projection owner.
+    //
+    // Every expression in the rebuilt subtree is named, not just the dispatched root: the whole
+    // subtree was bound into the one kernel, so all of it ran in the JVM. `checkoverflow` is the
+    // wrapper promotion added around the decimal `Add`, which is what makes the lifted set
+    // evidence that the promoted copy, rather than the original tree, was the one recorded.
+    val proto = QueryPlanSerde.exprToProto(projection, Seq(decimal)).get
+    assert(proto.hasJvmScalarUdf)
+    assert(proto.getJvmScalarUdf.getClassName === classOf[CometScalaUDFCodegen].getName)
+    assert(dispatched.getTagValue(CometExplainInfo.DISPATCHED_SELF).isEmpty)
+    assert(dispatched.getTagValue(CometExplainInfo.CODEGEN_DISPATCH_EXPRS).isEmpty)
+    assert(
+      projection
+        .getTagValue(CometExplainInfo.CODEGEN_DISPATCH_EXPRS)
+        .contains(Set("hypot", "cast", "checkoverflow", "add")))
+  }
+
   test("tags copied onto the shared TrueLiteral do not leak into unrelated plans") {
     // Catalyst copies a rewritten node's tags onto its replacement, so a tagged expression that an
     // earlier query rewrote into `Literal.TrueLiteral` brands that process-wide singleton for the
@@ -278,7 +449,20 @@ class CometCodegenSuite
     val planted = Literal.TrueLiteral
     planted.setTagValue(CometExplainInfo.EXTENSION_INFO, Set("PLANTED_INFO"))
     planted.setTagValue(CometExplainInfo.NATIVE_EXPRS, Set("plantedexpr"))
+    planted.setTagValue(CometExplainInfo.CODEGEN_DISPATCH_EXPRS, Set("planteddispatch"))
     try {
+      // Decimal promotion rebuilds this projection. Its coverage lift must not copy the
+      // singleton's stale tags onto the Alias, which is a legitimate coverage owner.
+      val decimal = AttributeReference("amount", DecimalType(10, 2), nullable = false)()
+      val projection = Alias(
+        CreateNamedStruct(Seq(Literal("flag"), planted, Literal("sum"), Add(decimal, decimal))),
+        "value")()
+      assert(QueryPlanSerde.exprToProto(projection, Seq(decimal)).isDefined)
+      val native = projection.getTagValue(CometExplainInfo.NATIVE_EXPRS).getOrElse(Set.empty)
+      assert(native.contains("checkoverflow"), s"expected lifted decimal coverage, got: $native")
+      assert(!native.contains("plantedexpr"))
+      assert(projection.getTagValue(CometExplainInfo.CODEGEN_DISPATCH_EXPRS).isEmpty)
+
       withSQLConf(
         CometConf.COMET_EXTENDED_EXPLAIN_FORMAT.key ->
           CometConf.COMET_EXTENDED_EXPLAIN_FORMAT_VERBOSE,
@@ -301,6 +485,7 @@ class CometCodegenSuite
 
           val info = new ExtendedExplainInfo()
           assert(!info.getNativeExpressions(plan).contains("plantedexpr"))
+          assert(!info.getCodegenDispatchExpressions(plan).contains("planteddispatch"))
           val explain = info.generateExtendedInfo(plan)
           assert(!explain.contains("PLANTED_INFO"), s"tag leaked into:\n$explain")
         }
@@ -308,6 +493,7 @@ class CometCodegenSuite
     } finally {
       planted.unsetTagValue(CometExplainInfo.EXTENSION_INFO)
       planted.unsetTagValue(CometExplainInfo.NATIVE_EXPRS)
+      planted.unsetTagValue(CometExplainInfo.CODEGEN_DISPATCH_EXPRS)
     }
   }
 
@@ -1786,6 +1972,83 @@ class CometCodegenSuite
         }
       }
     }
+  }
+
+  test("dispatch falls back cleanly when the bound tree cannot be closure-serialized (#5573)") {
+    val attr = AttributeReference("s", StringType)()
+    val expr = Invoke(
+      Literal(
+        new CometCodegenSuite.NotSerializableTarget,
+        ObjectType(classOf[CometCodegenSuite.NotSerializableTarget])),
+      "twice",
+      StringType,
+      Seq(attr))
+    // `canHandle` greenlights this tree -- string in, string out, nothing unevaluable -- so the
+    // closure serializer is the step that refuses it. Every other failure mode in
+    // `emitJvmCodegenDispatch` already degraded to a Spark fallback; without the guard this one
+    // throws during planning instead, which is a much worse outcome.
+    assert(CometScalaUDF.emitJvmCodegenDispatch(expr, Seq(attr), binding = true).isEmpty)
+    val reasons = expr.getTagValue(CometExplainInfo.FALLBACK_REASONS).getOrElse(Set.empty)
+    assert(
+      reasons.exists(_.contains("could not be closure-serialized")),
+      s"unexpected fallback reasons: $reasons")
+  }
+
+  test(
+    "unrecognized StaticInvoke routes through the dispatcher instead of falling back (#5575)") {
+    withTable("t") {
+      sql("CREATE TABLE t (b BINARY) USING parquet")
+      sql("INSERT INTO t VALUES (unhex('CAFE')), (unhex('')), (NULL)")
+      // `lpad` on binary input lowers to `StaticInvoke(ByteArray, "lpad", ...)` on every supported
+      // Spark version, and is not in `CometStaticInvoke`'s allowlist. It has no native path, so
+      // before #5575 it failed the whole projection back to Spark.
+      val query = "SELECT lpad(b, 8, unhex('FF')) FROM t"
+      assertCodegenRan {
+        checkSparkAnswerAndOperator(sql(query))
+      }
+      // With the dispatcher off there is nowhere left to run it, so the operator falls back and
+      // says why.
+      withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
+        checkSparkAnswerAndFallbackReason(
+          query,
+          "expression has no native path so the plan falls back to Spark")
+      }
+    }
+  }
+
+  test("Invoke routes through the codegen dispatcher (#5575)") {
+    val target = Literal(
+      new CometCodegenSuite.SerializableTarget,
+      ObjectType(classOf[CometCodegenSuite.SerializableTarget]))
+    // `Invoke` has no serde of its own beyond the catch-all, so this also pins the registration:
+    // reaching a `JvmScalarUdf` proto means `QueryPlanSerde` resolved `CometInvoke`.
+    val attr = AttributeReference("s", StringType)()
+    val proto =
+      QueryPlanSerde.exprToProto(Invoke(target, "twice", StringType, Seq(attr)), Seq(attr))
+    assert(proto.exists(_.hasJvmScalarUdf), s"expected a codegen-dispatch proto, got $proto")
+    // ...and the emitted method call compiles and evaluates.
+    val folded =
+      Invoke(target, "twice", StringType, Seq(Literal(UTF8String.fromString("ab"), StringType)))
+    assert(runKernel(folded, 1)(_.getUTF8String(0).toString) === "abab")
+  }
+}
+
+/**
+ * Targets for the `Invoke` tests. Declared inside the companion object so they are static nested
+ * classes with no reference to the enclosing suite -- otherwise closure-serializing a tree that
+ * holds one would drag the whole suite in and the serialization outcome would say nothing about
+ * the target itself.
+ */
+object CometCodegenSuite {
+
+  /** Public and `Serializable`, so the dispatcher accepts a tree holding an instance. */
+  class SerializableTarget extends Serializable {
+    def twice(s: UTF8String): UTF8String = UTF8String.fromString(s.toString + s.toString)
+  }
+
+  /** Deliberately not `Serializable`, to make the closure serializer refuse the bound tree. */
+  class NotSerializableTarget {
+    def twice(s: UTF8String): UTF8String = UTF8String.fromString(s.toString + s.toString)
   }
 }
 

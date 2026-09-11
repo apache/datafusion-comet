@@ -27,4 +27,6 @@ class CelebornShuffleHandle[K, V, C](
     shuffleId: Int,
     dependency: ShuffleDependency[K, V, C],
     val stageRerunEnabled: Boolean = true)
-    extends BaseShuffleHandle[K, V, C](shuffleId, dependency)
+    extends BaseShuffleHandle[K, V, C](shuffleId, dependency) {
+  val numMappers: Int = dependency.rdd.getNumPartitions
+}

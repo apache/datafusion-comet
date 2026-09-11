@@ -29,12 +29,12 @@ import org.apache.parquet.hadoop.api.WriteSupport
 import org.apache.parquet.hadoop.api.WriteSupport.WriteContext
 import org.apache.parquet.io.api.RecordConsumer
 import org.apache.parquet.schema.MessageTypeParser
-import org.apache.spark.sql.{CometTestBase, Row}
+import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.comet.CometNativeScanExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.{array, col}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{IntegerType, LongType, NullType, StringType, StructType}
+import org.apache.spark.sql.types._
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
@@ -134,34 +134,37 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
     }
   }
 
-  test("native reader duplicate nested struct fields in case-insensitive mode (non-ASCII)") {
-    withTempPath { path =>
-      // Sibling struct fields that fold to the same name; the nested convert must raise the same
-      // duplicate-field error Spark raises, not panic or resolve arbitrarily.
-      withSQLConf(SQLConf.CASE_SENSITIVE.key -> "true") {
-        spark
-          .range(3)
-          .selectExpr("named_struct('CAFÉ', id, 'café', id) as s")
-          .write
-          .mode("overwrite")
-          .parquet(path.toString)
-      }
-      val readSchema =
-        new StructType().add("s", new StructType().add("Café", LongType, nullable = true))
-      withSQLConf(SQLConf.CASE_SENSITIVE.key -> "false") {
-        val df = spark.read.schema(readSchema).parquet(path.toString)
-        // Confirm Comet's native scan (its nested Struct convert) raises this, not a Spark
-        // fallback that emits the same "duplicate field" substring for the same input.
-        assert(
-          find(df.queryExecution.executedPlan)(_.isInstanceOf[CometNativeScanExec]).isDefined,
-          "expected a CometNativeScanExec so the duplicate error is raised by Comet")
-        val e = intercept[Exception] {
-          df.collect()
+  for (requestedName <- Seq("Café", "café")) {
+    test(s"native reader duplicate nested struct fields: $requestedName (case-insensitive)") {
+      withTempPath { path =>
+        // Sibling struct fields that fold to the same name; the nested convert must raise the same
+        // duplicate-field error Spark raises, not panic or resolve arbitrarily.
+        withSQLConf(SQLConf.CASE_SENSITIVE.key -> "true") {
+          spark
+            .range(3)
+            .selectExpr("named_struct('CAFÉ', id, 'café', id) as s")
+            .write
+            .mode("overwrite")
+            .parquet(path.toString)
         }
-        assert(
-          e.getMessage.contains("duplicate field") ||
-            (e.getCause != null && e.getCause.getMessage.contains("duplicate field")),
-          s"Expected duplicate field error, got: ${e.getMessage}")
+        val readSchema =
+          new StructType()
+            .add("s", new StructType().add(requestedName, LongType, nullable = true))
+        withSQLConf(SQLConf.CASE_SENSITIVE.key -> "false") {
+          val df = spark.read.schema(readSchema).parquet(path.toString)
+          // Confirm Comet's native scan (its nested Struct convert) raises this, not a Spark
+          // fallback that emits the same "duplicate field" substring for the same input.
+          assert(
+            find(df.queryExecution.executedPlan)(_.isInstanceOf[CometNativeScanExec]).isDefined,
+            "expected a CometNativeScanExec so the duplicate error is raised by Comet")
+          val e = intercept[Exception] {
+            df.collect()
+          }
+          assert(
+            e.getMessage.contains("duplicate field") ||
+              (e.getCause != null && e.getCause.getMessage.contains("duplicate field")),
+            s"Expected duplicate field error, got: ${e.getMessage}")
+        }
       }
     }
   }
@@ -936,6 +939,7 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
     class Builder extends ParquetWriter.Builder[RecordConsumer => Unit, Builder](new Path(path)) {
       override def getWriteSupport(conf: Configuration): WriteSupport[RecordConsumer => Unit] =
         writeSupport
+
       override def self(): Builder = this
     }
     val writer = new Builder().build()
@@ -1136,6 +1140,82 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
             "Expected the explicit pruning=false override to disable row-group statistics " +
               s"pruning, got pruned=$pruned matched=$matched of $numRowGroups total")
         }
+      }
+    }
+  }
+
+  /** Runs `df` and returns the summed `bytes_scanned` metric across its native scans. */
+  private def bytesScanned(df: DataFrame): Long = {
+    val (_, cometPlan) = checkSparkAnswerAndOperator(df)
+    val scans = cometPlan.collect { case n: CometNativeScanExec => n }
+    assert(scans.nonEmpty, "Expected a CometNativeScanExec")
+    scans.map(_.metrics("bytes_scanned").value).sum
+  }
+
+  test("issue #4859: native scan honors pruned nested ReadSchema for array<struct>") {
+    // Regression repro: the native scan pushes only a top-level projection vector into
+    // DataFusion, so a plain Column("events") ref yields ProjectionMask::roots and the
+    // whole nested column (all leaves) is read even though Spark's pruned ReadSchema asks
+    // for a single leaf. Selecting only the small `id` leaf must scan far fewer bytes than
+    // also selecting the large `payload` leaf; before the fix they are ~equal.
+    withTempPath { path =>
+      withSQLConf(
+        SQLConf.LEAF_NODE_DEFAULT_PARALLELISM.key -> "1",
+        SQLConf.NESTED_SCHEMA_PRUNING_ENABLED.key -> "true") {
+        // events: array<struct<id: bigint, payload: string>>. `payload` is a distinct,
+        // high-entropy uuid per row so it dominates the on-disk column size and resists
+        // compression; `id` is a sequential long that compresses to almost nothing.
+        spark
+          .range(0, 20000)
+          .selectExpr("array(named_struct('id', id, 'payload', uuid())) as events")
+          .repartition(1)
+          .write
+          .mode("overwrite")
+          .parquet(path.toString)
+
+        val idOnly =
+          bytesScanned(spark.read.parquet(path.toString).selectExpr("events.id"))
+        val idAndPayload =
+          bytesScanned(
+            spark.read.parquet(path.toString).selectExpr("events.id", "events.payload"))
+
+        assert(
+          idOnly < idAndPayload / 2,
+          "native scan read the whole nested column despite pruned ReadSchema " +
+            s"(bytes_scanned: events.id=$idOnly, events.id+payload=$idAndPayload)")
+      }
+    }
+  }
+
+  test("issue #4859: leaf pruning through array<struct<struct>> drops siblings at each level") {
+    withTempPath { path =>
+      withSQLConf(
+        SQLConf.LEAF_NODE_DEFAULT_PARALLELISM.key -> "1",
+        SQLConf.NESTED_SCHEMA_PRUNING_ENABLED.key -> "true") {
+        // events: array<struct<id, inner: struct<a, blob>>>. `blob` is the dominant
+        // high-entropy leaf. Selecting events.inner.a must prune both the top-level
+        // sibling `id` and the inner sibling `blob`.
+        spark
+          .range(0, 20000)
+          .selectExpr(
+            "array(named_struct('id', id, 'inner', named_struct('a', id, 'blob', uuid()))) as events")
+          .repartition(1)
+          .write
+          .mode("overwrite")
+          .parquet(path.toString)
+
+        val aOnly =
+          bytesScanned(spark.read.parquet(path.toString).selectExpr("events.inner.a"))
+        val aAndBlob =
+          bytesScanned(
+            spark.read
+              .parquet(path.toString)
+              .selectExpr("events.inner.a", "events.inner.blob"))
+
+        assert(
+          aOnly < aAndBlob / 2,
+          "native scan read unrequested nested leaves through array<struct<struct>> " +
+            s"(bytes_scanned: events.inner.a=$aOnly, events.inner.a+blob=$aAndBlob)")
       }
     }
   }

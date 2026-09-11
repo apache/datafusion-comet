@@ -31,16 +31,18 @@ import org.scalatest.Tag
 
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
-import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Expression, Literal}
+import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.catalyst.expressions.{ApplyFunctionExpression, AttributeReference, Expression, Literal}
 import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
 import org.apache.spark.sql.comet.{CometIcebergWriteExec, CometSortExec}
 import org.apache.spark.sql.comet.execution.shuffle.{CometNativeShuffle, CometShuffleExchangeExec}
+import org.apache.spark.sql.connector.catalog.functions.ScalarFunction
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.execution.exchange.ShuffleExchangeExec
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
-import org.apache.comet.serde.{CometExpressionSerde, CometIcebergBucket, CometIcebergTruncate, CometStaticInvoke, Compatible, SupportLevel, Unsupported}
+import org.apache.comet.serde.{CometApplyFunctionExpression, CometExpressionSerde, CometIcebergBucket, CometIcebergSystemFunctions, CometIcebergTruncate, CometStaticInvoke, Compatible, SupportLevel, Unsupported}
 
 /**
  * Native support for Iceberg's system functions (`bucket`, `truncate`, `years`, `months`, `days`,
@@ -140,6 +142,12 @@ class CometIcebergSystemFunctionSuite
       // Spark nulls only on materialization and a `Decimal128(p, s)` array cannot represent at
       // all; the expression stays with Spark rather than null early. `bucket` on the same columns
       // is unaffected and is covered by the bucket test above.
+      //
+      // This is also why `CometStaticInvoke` routes only *unrecognized* functions through the
+      // codegen dispatcher instead of mixing in `CodegenDispatchFallback` (see #5572): the
+      // dispatcher writes into the same Arrow `Decimal128(p, s)` vector, so rescuing this
+      // `Unsupported` produces the out-of-range value where Spark produces a null. Measured: the
+      // rescued plan returns `-100000000000000.0000` for a row Spark nulls.
       decimalColumns.foreach { column =>
         checkSparkAnswerAndFallbackReason(
           s"SELECT $catalog.system.truncate(10, $column) FROM $source",
@@ -277,7 +285,7 @@ class CometIcebergSystemFunctionSuite
     val float = AttributeReference("f", FloatType)()
     val date = AttributeReference("d", DateType)()
     def level(
-        serde: CometExpressionSerde[StaticInvoke],
+        serde: CometExpressionSerde[_ >: StaticInvoke <: Expression],
         cls: Class[_],
         args: Expression*): SupportLevel =
       serde.getSupportLevel(StaticInvoke(cls, IntegerType, "invoke", args, propagateNull = false))
@@ -329,20 +337,88 @@ class CometIcebergSystemFunctionSuite
         Unsupported(Some(CometIcebergTruncate.DecimalNote)))
   }
 
-  test("fallback reason for an unlisted static invoke names the declaring class") {
-    val expr = StaticInvoke(
-      classOf[java.lang.Math],
-      IntegerType,
-      "abs",
-      Seq(AttributeReference("v", IntegerType)()),
-      propagateNull = false)
-    assert(CometStaticInvoke.convert(expr, Seq.empty, binding = false).isEmpty)
-    val reasons = expr.getTagValue(CometExplainInfo.FALLBACK_REASONS).getOrElse(Set.empty)
+  test("ApplyFunctionExpression reaches the same handlers as StaticInvoke") {
+    // Spark's `V2ExpressionUtils.resolveScalarFunction` wraps a DSv2 catalog scalar function as
+    // `ApplyFunctionExpression` when the implementation class does not expose a static `invoke`
+    // magic method. Iceberg's per-type functions carry the same class as their identity on both
+    // paths, so a single set of handlers keyed by class name must cover both.
+    val value = AttributeReference("v", IntegerType)()
+    val bucketIntCls =
+      Class.forName("org.apache.iceberg.spark.functions.BucketFunction$BucketInt")
+    // Iceberg's per-type implementations take the bound input type; there is no no-arg
+    // constructor on any of the runtimes these profiles build against.
+    val bucketInt = bucketIntCls
+      .getDeclaredConstructor(classOf[DataType])
+      .newInstance(IntegerType)
+      .asInstanceOf[ScalarFunction[_]]
+    val expr = ApplyFunctionExpression(bucketInt, Seq(Literal(4), value))
+    assert(CometApplyFunctionExpression.getSupportLevel(expr) == Compatible())
+
+    // Support level alone would still leave the arguments and result type unread: the wrapper
+    // carries them on `children` / `dataType` rather than the `arguments` / `dataType` the
+    // StaticInvoke path uses, so assert the serialized call to cover that extraction.
+    val proto = CometApplyFunctionExpression.convert(expr, Seq(value), binding = true)
     assert(
-      reasons.exists(r =>
-        r.contains("Static invoke expression: abs is not supported") &&
-          r.contains("java.lang.Math")),
-      s"unexpected fallback reasons: $reasons")
+      proto.exists(_.getScalarFunc.getFunc == "iceberg_bucket"),
+      s"expected a native iceberg_bucket call, got $proto")
+
+    // The same argument-shape checks that gate the StaticInvoke path have to gate this one, or a
+    // zero-bucket call would land natively and diverge from Iceberg's own ArithmeticException.
+    val zeroBuckets = ApplyFunctionExpression(bucketInt, Seq(Literal(0), value))
+    assert(CometApplyFunctionExpression.getSupportLevel(zeroBuckets).isInstanceOf[Unsupported])
+
+    // A V2 catalog function Comet has no handler for has to stay on Spark rather than reaching
+    // the Iceberg handlers by argument shape alone: `ApplyFunctionExpression` is the generic DSv2
+    // lowering, so most expressions arriving here belong to some other catalog entirely.
+    val unlisted = ApplyFunctionExpression(new UnlistedScalarFunction, Seq(Literal(4), value))
+    assert(CometApplyFunctionExpression.getSupportLevel(unlisted).isInstanceOf[Unsupported])
+    assert(CometApplyFunctionExpression.convert(unlisted, Seq(value), binding = true).isEmpty)
+  }
+
+  test("Iceberg handler map is keyed by Iceberg implementation class names") {
+    // The map is keyed by class name because Iceberg is not on Comet's compile classpath, so a
+    // rename on Iceberg's side would silently drop the native path rather than fail to compile.
+    // These names are the ones both lowerings carry as their identity.
+    val expected = Seq(
+      "org.apache.iceberg.spark.functions.BucketFunction$BucketInt" -> CometIcebergBucket,
+      "org.apache.iceberg.spark.functions.BucketFunction$BucketLong" -> CometIcebergBucket,
+      "org.apache.iceberg.spark.functions.TruncateFunction$TruncateInt" -> CometIcebergTruncate,
+      "org.apache.iceberg.spark.functions.TruncateFunction$TruncateString" -> CometIcebergTruncate)
+    expected.foreach { case (className, expectedHandler) =>
+      assert(
+        CometIcebergSystemFunctions.handlers.get(className).contains(expectedHandler),
+        s"missing handler for $className")
+    }
+  }
+
+  test("an unlisted static invoke routes through the codegen dispatcher") {
+    val attr = AttributeReference("v", IntegerType)()
+    val expr =
+      StaticInvoke(classOf[java.lang.Math], IntegerType, "abs", Seq(attr), propagateNull = false)
+    // Nothing in the allowlist matches, so the dispatcher takes it: `StaticInvoke.doGenCode` emits
+    // a static method call, and both the argument and the result are types the kernel handles.
+    val proto = CometStaticInvoke.convert(expr, Seq(attr), binding = true)
+    assert(
+      proto.exists(_.hasJvmScalarUdf),
+      s"expected a codegen-dispatch proto for an unlisted static invoke, got $proto")
+
+    // When the dispatcher is off there is nowhere left to run it, and the fallback reason has to
+    // name both the function and the declaring class -- every Iceberg system function is named
+    // `invoke`, so the function name alone is ambiguous.
+    withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
+      val fresh =
+        StaticInvoke(
+          classOf[java.lang.Math],
+          IntegerType,
+          "abs",
+          Seq(attr),
+          propagateNull = false)
+      assert(CometStaticInvoke.convert(fresh, Seq(attr), binding = true).isEmpty)
+      val reasons = fresh.getTagValue(CometExplainInfo.FALLBACK_REASONS).getOrElse(Set.empty)
+      assert(
+        reasons.exists(r => r.contains("abs") && r.contains("java.lang.Math")),
+        s"unexpected fallback reasons: $reasons")
+    }
   }
 
   /** Runs `f` with the Iceberg catalog registered and the source parquet table in scope. */
@@ -458,4 +534,18 @@ class CometIcebergSystemFunctionSuite
       spark.sparkContext.parallelize(randomRows ++ boundaryRows, 3),
       sourceSchema)
   }
+}
+
+/**
+ * A DataSourceV2 catalog scalar function with no static `invoke` magic method, so Spark's
+ * `V2ExpressionUtils.resolveScalarFunction` would lower a call to it as
+ * `ApplyFunctionExpression`. Stands in for the third-party catalogs that share that lowering with
+ * Iceberg but have no native handler in Comet.
+ */
+private class UnlistedScalarFunction extends ScalarFunction[Integer] {
+  override def inputTypes(): Array[DataType] = Array(IntegerType, IntegerType)
+  override def resultType(): DataType = IntegerType
+  override def name(): String = "unlisted"
+  override def canonicalName(): String = "test.unlisted"
+  override def produceResult(input: InternalRow): Integer = input.getInt(0)
 }

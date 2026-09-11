@@ -28,7 +28,7 @@ import scala.jdk.CollectionConverters._
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.aggregate._
-import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
+import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
 import org.apache.spark.sql.catalyst.expressions.xml.{XPathBoolean, XPathDouble, XPathFloat, XPathInt, XPathList, XPathLong, XPathShort, XPathString}
 import org.apache.spark.sql.comet.DecimalPrecision
 import org.apache.spark.sql.execution.{ScalarSubquery, SparkPlan}
@@ -153,7 +153,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[Signum] -> CometScalarFunction("signum"),
       classOf[Sin] -> CometScalarFunction("sin"),
       classOf[Sinh] -> CometScalarFunction("sinh"),
-      classOf[Sqrt] -> CometScalarFunction("sqrt"),
+      classOf[Sqrt] -> CometSqrt,
       classOf[Subtract] -> CometSubtract,
       classOf[Tan] -> CometScalarFunction("tan"),
       classOf[Tanh] -> CometScalarFunction("tanh"),
@@ -361,10 +361,12 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     // when `++` is applied directly to a `Map(...)` literal.
     val base: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
       classOf[Alias] -> CometAlias,
+      classOf[ApplyFunctionExpression] -> CometApplyFunctionExpression,
       classOf[AttributeReference] -> CometAttributeReference,
       classOf[BloomFilterMightContain] -> CometBloomFilterMightContain,
       classOf[CheckOverflow] -> CometCheckOverflow,
       classOf[Coalesce] -> CometCoalesce,
+      classOf[Invoke] -> CometInvoke,
       classOf[KnownFloatingPointNormalized] -> CometKnownFloatingPointNormalized,
       classOf[KnownNotNull] -> CometKnownNotNull,
       classOf[KnownNullable] -> CometKnownNullable,
@@ -412,7 +414,10 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     classOf[First] -> CometFirst,
     classOf[Last] -> CometLast,
     classOf[Max] -> CometMax,
+    classOf[MaxBy] -> CometMaxBy,
     classOf[Min] -> CometMin,
+    classOf[MinBy] -> CometMinBy,
+    classOf[Mode] -> CometMode,
     classOf[Percentile] -> CometPercentile,
     classOf[RegrIntercept] -> CometRegrIntercept,
     classOf[RegrR2] -> CometRegrR2,
@@ -739,6 +744,10 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     }
   }
 
+  /**
+   * This method does not promote the aggregate tree. Its arguments and filters are independent
+   * roots and must be serialized through [[exprToProto]] to receive decimal promotion.
+   */
   def aggExprToProto(
       aggExpr: AggregateExpression,
       inputs: Seq[Attribute],
@@ -843,7 +852,9 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
    * expression.
    *
    * This method performs a transformation on the plan to handle decimal promotion and then calls
-   * into the recursive method [[exprToProtoInternal]].
+   * into the recursive method [[exprToProtoInternal]]. Use this entry point for independent roots
+   * (including aggregate arguments and filters) and synthesized trees needing decimal promotion.
+   * Serdes must use [[exprToProtoInternal]] for children of the already-promoted tree.
    *
    * @param expr
    *   The input expression
@@ -877,14 +888,10 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
   }
 
   private def liftCoverageTags(from: Expression, to: Expression): Unit = {
-    val native = mutable.Set.empty[String]
-    val dispatched = mutable.Set.empty[String]
-    from.foreach { e =>
-      e.getTagValue(CometExplainInfo.NATIVE_EXPRS).foreach(native ++= _)
-      e.getTagValue(CometExplainInfo.CODEGEN_DISPATCH_EXPRS).foreach(dispatched ++= _)
+    val exprs = from.collect { case e: Expression => e }
+    Seq(CometExplainInfo.NATIVE_EXPRS, CometExplainInfo.CODEGEN_DISPATCH_EXPRS).foreach { tag =>
+      appendTagValues(to, tag, CometExplainInfo.collectExprTagValues(exprs, tag))
     }
-    appendTagValues(to, CometExplainInfo.NATIVE_EXPRS, native.toSet)
-    appendTagValues(to, CometExplainInfo.CODEGEN_DISPATCH_EXPRS, dispatched.toSet)
   }
 
   /**
@@ -911,6 +918,11 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
   /**
    * Convert a Spark expression to a protocol-buffer representation of a native Comet/DataFusion
    * expression.
+   *
+   * The caller owns decimal promotion: this method serializes children of an already-promoted
+   * root without traversing them again. Literals and wrappers that introduce no decimal
+   * arithmetic can also use this path. Newly synthesized arithmetic must enter through
+   * [[exprToProto]].
    *
    * @param expr
    *   The input expression
@@ -1035,6 +1047,11 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
    * Nodes that carry no computation of their own. They are excluded from the expression coverage
    * stats in extended explain because they appear in nearly every expression tree and would swamp
    * the names a user actually cares about.
+   *
+   * `CometExplainInfo.isNeverTagged` must be this set minus `Alias`: the read-side filter retains
+   * aliases because [[liftCoverageTags]] uses them to hold names from rewritten children. Keep
+   * both sets in sync. This coverage invariant does not exclude structural nodes from carrying
+   * `FALLBACK_REASONS`.
    */
   private def isStructuralExpr(expr: Expression): Boolean = expr match {
     case _: Attribute | _: BoundReference | _: Literal | _: Alias => true
@@ -1062,7 +1079,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       binding: Boolean,
       f: (ExprOuterClass.Expr.Builder, ExprOuterClass.UnaryExpr) => ExprOuterClass.Expr.Builder)
       : Option[ExprOuterClass.Expr] = {
-    val childExpr = exprToProtoInternal(child, inputs, binding) // TODO review
+    val childExpr = exprToProtoInternal(child, inputs, binding)
     if (childExpr.isDefined) {
       // create the generic UnaryExpr message
       val inner = ExprOuterClass.UnaryExpr
