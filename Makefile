@@ -56,6 +56,11 @@ clean:
 bench:
 	cd native && RUSTFLAGS="-Ctarget-cpu=native" cargo bench $(FEATURES_ARG) $(filter-out $@,$(MAKECMDGOALS))
 format:
+	@if command -v prettier >/dev/null 2>&1; then \
+		prettier -w "**/*.md"; \
+	else \
+		echo "prettier not found, skipping markdown formatting (npm i -g prettier)"; \
+	fi
 	cd native && cargo fmt
 	./mvnw compile test-compile scalafix:scalafix -Psemanticdb $(PROFILES)
 	./mvnw spotless:apply $(PROFILES)

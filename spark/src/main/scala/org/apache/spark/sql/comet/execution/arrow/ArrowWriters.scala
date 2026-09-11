@@ -19,6 +19,8 @@
 
 package org.apache.spark.sql.comet.execution.arrow
 
+import java.nio.ByteOrder
+
 import scala.jdk.CollectionConverters._
 
 import org.apache.arrow.memory.BufferAllocator
@@ -28,9 +30,10 @@ import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.SpecializedGetters
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.errors.QueryExecutionErrors
-import org.apache.spark.sql.execution.vectorized.ConstantColumnVector
+import org.apache.spark.sql.execution.vectorized.{ConstantColumnVector, OffHeapColumnVector, OnHeapColumnVector}
 import org.apache.spark.sql.types._
-import org.apache.spark.sql.vectorized.ColumnarArray
+import org.apache.spark.sql.vectorized.{ColumnarArray, ColumnarBatch, ColumnVector}
+import org.apache.spark.unsafe.Platform
 
 /**
  * This file is mostly copied from Spark SQL's
@@ -162,6 +165,15 @@ class ArrowWriter(val root: VectorSchemaRoot, fields: Array[ArrowFieldWriter]) {
     count = input.numElements()
   }
 
+  def writeColumns(input: ColumnarBatch, startRow: Int, numRows: Int): Unit = {
+    var columnIndex = 0
+    while (columnIndex < input.numCols()) {
+      fields(columnIndex).writeColumnSlice(input.column(columnIndex), startRow, numRows)
+      columnIndex += 1
+    }
+    count = numRows
+  }
+
   def finish(): Unit = {
     root.setRowCount(count)
     fields.foreach(_.finish())
@@ -222,6 +234,15 @@ private[arrow] abstract class ArrowFieldWriter {
     }
   }
 
+  def writeColumnSlice(input: ColumnVector, startRow: Int, numRows: Int): Unit = {
+    val slice = new ColumnarArray(input, startRow, numRows)
+    if (input.hasNull) {
+      writeCol(slice)
+    } else {
+      writeColNoNull(slice)
+    }
+  }
+
   def finish(): Unit = {
     valueVector.setValueCount(count)
   }
@@ -237,6 +258,60 @@ private[arrow] abstract class FixedWidthArrowFieldWriter extends ArrowFieldWrite
   override def valueVector: BaseFixedWidthVector
 
   protected def setValueUnsafe(input: SpecializedGetters, ordinal: Int): Unit
+
+  private def ensureCapacity(inputNumElements: Int): Unit = {
+    while (valueVector.getValueCapacity < inputNumElements) {
+      valueVector.reAlloc()
+    }
+  }
+
+  private def tryBulkCopyNoNull(input: ColumnVector, startRow: Int, numRows: Int): Boolean = {
+    // Spark's bulk getters allocate and fill a temporary array before the copy into Arrow. Keep
+    // slices below 32 on the scalar path to avoid the observed tiny-slice regression.
+    if (count != 0 || numRows < 32 || ByteOrder.nativeOrder() != ByteOrder.LITTLE_ENDIAN) {
+      return false
+    }
+
+    val supportedInput = input match {
+      case vector: OnHeapColumnVector => !vector.hasDictionary
+      case vector: OffHeapColumnVector => !vector.hasDictionary
+      case _ => false
+    }
+    if (!supportedInput) {
+      return false
+    }
+
+    // Spark has no stable direct access to on-heap backing arrays. Its public bulk getters are
+    // the portable path for both on-heap and off-heap vectors.
+    val (sourceArray, sourceOffset): (AnyRef, Long) = valueVector match {
+      case _: TinyIntVector =>
+        (input.getBytes(startRow, numRows), Platform.BYTE_ARRAY_OFFSET.toLong)
+      case _: SmallIntVector =>
+        (input.getShorts(startRow, numRows), Platform.SHORT_ARRAY_OFFSET.toLong)
+      case _: IntVector | _: DateDayVector | _: IntervalYearVector =>
+        (input.getInts(startRow, numRows), Platform.INT_ARRAY_OFFSET.toLong)
+      case _: BigIntVector | _: TimeStampMicroTZVector | _: TimeStampMicroVector |
+          _: DurationVector =>
+        (input.getLongs(startRow, numRows), Platform.LONG_ARRAY_OFFSET.toLong)
+      case _: Float4Vector =>
+        (input.getFloats(startRow, numRows), Platform.FLOAT_ARRAY_OFFSET.toLong)
+      case _: Float8Vector =>
+        (input.getDoubles(startRow, numRows), Platform.DOUBLE_ARRAY_OFFSET.toLong)
+      case _ => return false
+    }
+
+    ensureCapacity(numRows)
+    Platform.copyMemory(
+      sourceArray,
+      sourceOffset,
+      null,
+      valueVector.getDataBufferAddress,
+      numRows.toLong * valueVector.getTypeWidth)
+    valueVector.getValidityBuffer
+      .setOne(0L, BitVectorHelper.getValidityBufferSize(numRows).toLong)
+    count = numRows
+    true
+  }
 
   override def setNull(): Unit = {
     valueVector.setNull(count)
@@ -255,11 +330,15 @@ private[arrow] abstract class FixedWidthArrowFieldWriter extends ArrowFieldWrite
     count += 1
   }
 
+  override def writeColumnSlice(input: ColumnVector, startRow: Int, numRows: Int): Unit = {
+    if (input.hasNull || !tryBulkCopyNoNull(input, startRow, numRows)) {
+      super.writeColumnSlice(input, startRow, numRows)
+    }
+  }
+
   override def writeCol(input: ColumnarArray): Unit = {
     val inputNumElements = input.numElements()
-    while (valueVector.getValueCapacity < inputNumElements) {
-      valueVector.reAlloc()
-    }
+    ensureCapacity(inputNumElements)
     while (count < inputNumElements) {
       if (input.isNullAt(count)) {
         setNullUnsafe()
@@ -272,9 +351,7 @@ private[arrow] abstract class FixedWidthArrowFieldWriter extends ArrowFieldWrite
 
   override def writeColNoNull(input: ColumnarArray): Unit = {
     val inputNumElements = input.numElements()
-    while (valueVector.getValueCapacity < inputNumElements) {
-      valueVector.reAlloc()
-    }
+    ensureCapacity(inputNumElements)
     while (count < inputNumElements) {
       setValueUnsafe(input, count)
       count += 1

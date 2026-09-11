@@ -21,5 +21,45 @@ CREATE TABLE test_map_entries(m map<string, int>) USING parquet
 statement
 INSERT INTO test_map_entries VALUES (map('a', 1, 'b', 2)), (map()), (NULL)
 
-query spark_answer_only
+query
 SELECT map_entries(m) FROM test_map_entries
+
+-- `MapType(_, _, valueContainsNull = false)`, which every `map(...)` over non-null values
+-- produces. DataFusion's `map_entries` declares the entry `value` field nullable but reuses the
+-- input map's entries array, so the planner widens the argument before the call.
+query
+SELECT map_entries(map(1, 2, 3, 4))
+
+query
+SELECT map_entries(map('a', array(1, 2)))
+
+-- A map nested in a map value keeps `valueContainsNull = false` through the extract.
+query
+SELECT map_entries(element_at(map(1, map(1, 2)), 1))
+
+-- The `map_entries` argument is widened so its entry `value` field is nullable, but ONLY that outer
+-- field: the nested `map(1, 2)` value must keep `valueContainsNull = false`. Extracting it with
+-- `[0].value` and pairing it with the `map(2, coalesce(id, 0))` sibling would otherwise hit
+-- `make_array` with unequal map types (one widened to `valueContainsNull = true`) and panic.
+statement
+CREATE TABLE test_map_entries_nested(id int) USING parquet
+
+statement
+INSERT INTO test_map_entries_nested VALUES (1), (2), (3)
+
+query
+SELECT array(
+  map_entries(map(1, IF(id = 1, map(1, 2), NULL)))[0].value,
+  map(2, coalesce(id, 0))) AS a
+FROM test_map_entries_nested
+
+-- `map_entries` declares its entry `value` field nullable, so the extracted entry struct has a
+-- nullable `value` while the sibling `named_struct('key', 1, 'value', id IS NOT NULL)` has a
+-- non-nullable one. The two struct children differ only in that field's nullability, so
+-- `CometCreateArray` casts each to the merged struct type before `make_array` and this runs
+-- natively rather than panicking on the struct-field mismatch.
+query
+SELECT array(
+  map_entries(element_at(map(1, map(1, true)), id))[0],
+  named_struct('key', 1, 'value', id IS NOT NULL)) AS a
+FROM test_map_entries_nested

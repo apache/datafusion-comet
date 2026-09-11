@@ -66,9 +66,10 @@
 
 ## concat_ws
 
-- Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
-- Spark 3.5.8 (audited 2026-05-27): baseline. `Seq[Expression] -> StringType`; NULL separator yields NULL, NULL element values are skipped, children can be `StringType` or `ArrayType(StringType)`. Comet serde rewrites a NULL-literal separator to a NULL of the result type and bails out on all-foldable inputs so Spark's `ConstantFolding` handles them; otherwise delegates to DataFusion `concat_ws`.
-- Spark 4.0.1 (audited 2026-05-27): `inputTypes` widened to `StringTypeWithCollation` / `AbstractArrayType`; `dataType` becomes `children.head.dataType` (collation-derived). Semantics unchanged for `UTF8_BINARY`. Non-default collations not honoured by Comet ([#4496](https://github.com/apache/datafusion-comet/issues/4496)).
+- Spark 3.4.3 (audited 2026-09-06): identical to 3.5.8.
+- Spark 3.5.8 (audited 2026-09-06): accepts ordered mixtures of strings and string arrays, skips null arguments and array elements, and returns NULL for a NULL separator. Comet retains DataFusion's string kernel and uses DataFusion Spark's `SparkConcatWs` for arrays and separator-only inputs, with native column coverage for multiple arrays, empty arrays, nulls, empty strings, Unicode, and varying separators. The existing all-foldable codegen fallback remains. A native adapter evaluates runtime scalars once and returns a scalar for broadcasting, including non-foldable scalar subqueries.
+- Spark 4.0.1 (audited 2026-09-06): collation-aware input and result types; concatenation still uses `UTF8String.concatWs` without collation-dependent comparisons.
+- Spark 4.1.1 (audited 2026-09-06): same concatenation and null semantics as 4.0.1.
 
 ## contains
 
@@ -137,7 +138,7 @@
 - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
 - Spark 3.5.8 (audited 2026-05-27): baseline. `StringLPad(str, len, pad) -> StringType`; `len <= 0` returns the empty string, empty `pad` returns `str` unchanged, NULL inputs propagate. Comet serde requires `str` to be a column and `pad` to be a literal; otherwise falls back.
 - Spark 4.0.1 (audited 2026-05-27): `NullIntolerant` trait replaced by `override def nullIntolerant: Boolean = true`; `inputTypes` widened to `StringTypeWithCollation(supportsTrimCollation = true)`. Semantics unchanged for `UTF8_BINARY`. Non-default collations not honoured by Comet ([#4496](https://github.com/apache/datafusion-comet/issues/4496)).
-- Known limitation: `lpad(<binary>, ...)` is rewritten by Spark to `BinaryPad / StaticInvoke(ByteArray.lpad)` before serde runs and always falls back to Spark.
+- `lpad(<binary>, ...)` is rewritten by Spark to `BinaryPad / StaticInvoke(ByteArray.lpad)` before serde runs. There is no native path, so `CometStaticInvoke` routes it through the JVM codegen dispatcher and the projection stays in the Comet pipeline; it falls back to Spark only when the dispatcher is disabled.
 
 ## ltrim
 
@@ -182,7 +183,7 @@
 - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
 - Spark 3.5.8 (audited 2026-05-27): baseline. `StringRPad(str, len, pad) -> StringType`; same edge-case behaviour as `lpad` (negative len, empty pad, NULL propagation). Comet serde requires column `str` and literal `pad`.
 - Spark 4.0.1 (audited 2026-05-27): same evolution as `lpad`; default-pad literal type tightened; semantics unchanged for `UTF8_BINARY`. Non-default collations not honoured by Comet ([#4496](https://github.com/apache/datafusion-comet/issues/4496)).
-- Known limitation: same `BinaryPad / StaticInvoke` rewrite as `lpad` causes `rpad(<binary>, ...)` to fall back.
+- Same `BinaryPad / StaticInvoke` rewrite as `lpad`, so `rpad(<binary>, ...)` also runs through the codegen dispatcher rather than falling back.
 
 ## rtrim
 
@@ -244,6 +245,14 @@
 - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
 - Spark 3.5.8 (audited 2026-05-27): registry alias of `Upper`. Same support as `upper`.
 - Spark 4.0.1 (audited 2026-05-27): unchanged alias of `Upper`.
+
+## unbase64
+
+- Spark 3.4.3 (audited 2026-08-24): identical to 3.5.8.
+- Spark 3.5.8 (audited 2026-08-24): baseline. `doGenCode` emits `java.util.Base64.getMimeDecoder().decode(child.toString())`. The MIME decoder skips every byte outside the base64 alphabet, so CRLF-wrapped output from Spark's own `base64` round-trips cleanly; four terminal-shape errors surface as `IllegalArgumentException`. `failOnError = true` is set only when the node is constructed from `to_binary('base64')` / `try_to_binary`, which use a stricter RFC 4648 validator.
+- Spark 4.0.1 (audited 2026-08-24): `NullIntolerant` becomes `override def nullIntolerant: Boolean = true`; `inputTypes` widens to `StringTypeWithCollation(supportsTrimCollation = true)`. Behaviour is byte-level and collation-independent, so no divergence for `UTF8_BINARY` and no shim is needed.
+- Spark 4.1.1 (audited 2026-08-24): adds `contextIndependentFoldable`; no behavioural change on the decode path.
+- Comet native implementation (`spark_unbase64`, `native/spark-expr/src/string_funcs/unbase64.rs`) ports the JDK MIME decoder rules: 256-entry decode LUT, a reused per-batch scratch `Vec<u8>` copied into a preallocated `BinaryBuilder`, all four error messages reproduced verbatim. `CometUnBase64` handles `failOnError = false` natively; `failOnError = true` (reachable from `to_binary('base64')` / `try_to_binary`) requires strict RFC 4648 validation and is not yet implemented natively, so those cases stay on the JVM codegen dispatcher via `CodegenDispatchFallback`.
 
 ## upper
 
