@@ -46,6 +46,7 @@
 //! Filed upstream as apache/datafusion#23978. Revert this once the opener merges its deferred
 //! page-index load back into `FileMetadataCache` instead of bypassing it.
 
+use arrow::datatypes::{DataType, FieldRef, Schema};
 use async_trait::async_trait;
 use bytes::Bytes;
 use datafusion::common::Result as DFResult;
@@ -69,10 +70,14 @@ use object_store::{
 };
 use parquet::arrow::arrow_reader::ArrowReaderOptions;
 use parquet::arrow::async_reader::AsyncFileReader;
-use parquet::errors::ParquetError;
+use parquet::arrow::{encode_arrow_schema, parquet_to_arrow_schema, ARROW_SCHEMA_META_KEY};
+use parquet::basic::{ConvertedType, LogicalType};
+use parquet::errors::{ParquetError, Result as ParquetResult};
+use parquet::file::metadata::{FileMetaData, KeyValue, ParquetMetaDataBuilder};
 use parquet::file::metadata::{
     FooterTail, PageIndexPolicy, ParquetMetaData, ParquetMetaDataReader,
 };
+use parquet::schema::types::{ColumnDescPtr, SchemaDescriptor};
 use std::fmt::{Debug, Display, Formatter};
 use std::ops::Range;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -154,6 +159,10 @@ pub struct EagerPageIndexReaderFactory {
     store: Arc<dyn ObjectStore>,
     metadata_cache: Arc<FileMetadataCache>,
     scan_io_metrics: Arc<ScanIoMetrics>,
+    // Arrow schema hints and ENUM inference can change Spark's Variant interpretation.
+    // Enable the footer workaround only for scans that project Variant.
+    // https://github.com/apache/datafusion-comet/issues/5477
+    spark_variant_schema: bool,
 }
 
 impl EagerPageIndexReaderFactory {
@@ -181,7 +190,13 @@ impl EagerPageIndexReaderFactory {
             store,
             metadata_cache,
             scan_io_metrics,
+            spark_variant_schema: false,
         }
+    }
+
+    pub fn with_spark_variant_schema(mut self, enabled: bool) -> Self {
+        self.spark_variant_schema = enabled;
+        self
     }
 }
 
@@ -209,6 +224,7 @@ impl ParquetFileReaderFactory for EagerPageIndexReaderFactory {
             partitioned_file,
             metadata_cache: Arc::clone(&self.metadata_cache),
             metadata_size_hint,
+            spark_variant_schema: self.spark_variant_schema,
         }))
     }
 }
@@ -223,6 +239,137 @@ struct EagerPageIndexReader {
     partitioned_file: PartitionedFile,
     metadata_cache: Arc<FileMetadataCache>,
     metadata_size_hint: Option<usize>,
+    spark_variant_schema: bool,
+}
+
+// Arrow infers ENUM as Binary, losing the distinction from raw binary that Spark needs.
+// Inspect the Parquet annotation so Variant reconstruction can retain ENUM as a string.
+// https://github.com/apache/datafusion-comet/issues/5477
+fn is_enum_column(column: &ColumnDescPtr) -> bool {
+    matches!(column.logical_type_ref(), Some(LogicalType::Enum))
+        || column.converted_type() == ConvertedType::ENUM
+}
+
+fn spark_enum_field(
+    field: &FieldRef,
+    columns: &[ColumnDescPtr],
+    column_index: &mut usize,
+) -> ParquetResult<FieldRef> {
+    let rewrite =
+        |field: &FieldRef, data_type| Arc::new(field.as_ref().clone().with_data_type(data_type));
+    let data_type = match field.data_type() {
+        DataType::Struct(fields) => DataType::Struct(
+            fields
+                .iter()
+                .map(|field| spark_enum_field(field, columns, column_index))
+                .collect::<ParquetResult<Vec<_>>>()?
+                .into(),
+        ),
+        DataType::List(child) => DataType::List(spark_enum_field(child, columns, column_index)?),
+        DataType::LargeList(child) => {
+            DataType::LargeList(spark_enum_field(child, columns, column_index)?)
+        }
+        DataType::FixedSizeList(child, size) => {
+            DataType::FixedSizeList(spark_enum_field(child, columns, column_index)?, *size)
+        }
+        DataType::ListView(child) => {
+            DataType::ListView(spark_enum_field(child, columns, column_index)?)
+        }
+        DataType::LargeListView(child) => {
+            DataType::LargeListView(spark_enum_field(child, columns, column_index)?)
+        }
+        DataType::Map(child, sorted) => {
+            DataType::Map(spark_enum_field(child, columns, column_index)?, *sorted)
+        }
+        _ => {
+            let column = columns.get(*column_index).ok_or_else(|| {
+                ParquetError::General(
+                    "Arrow schema contains more leaves than the Parquet schema".to_string(),
+                )
+            })?;
+            *column_index += 1;
+            if is_enum_column(column) {
+                DataType::Utf8
+            } else {
+                return Ok(Arc::clone(field));
+            }
+        }
+    };
+    Ok(rewrite(field, data_type))
+}
+
+/// Arrow maps Parquet ENUM to Binary, while Spark reads it as String. Supply a schema hint
+/// that changes only ENUM leaves so Variant reconstruction preserves Spark's interpretation.
+/// https://github.com/apache/datafusion-comet/issues/5477
+fn spark_enum_schema(schema: &SchemaDescriptor) -> ParquetResult<Option<Schema>> {
+    let columns = schema.columns();
+    if !columns.iter().any(is_enum_column) {
+        return Ok(None);
+    }
+
+    let arrow_schema = parquet_to_arrow_schema(schema, None)?;
+    let mut column_index = 0;
+    let fields = arrow_schema
+        .fields()
+        .iter()
+        .map(|field| spark_enum_field(field, columns, &mut column_index))
+        .collect::<ParquetResult<Vec<_>>>()?;
+    if column_index != columns.len() {
+        return Err(ParquetError::General(
+            "Parquet schema contains more leaves than the Arrow schema".to_string(),
+        ));
+    }
+    Ok(Some(Schema::new_with_metadata(
+        fields,
+        arrow_schema.metadata().clone(),
+    )))
+}
+
+/// Arrow restores advisory `ARROW:schema` types that can differ from Spark's physical Parquet
+/// interpretation. Replace that hint with physical inference and the ENUM string mapping.
+/// Rebuild only the returned metadata; the shared cache retains the original footer.
+/// https://github.com/apache/datafusion-comet/issues/5477
+fn with_spark_arrow_schema(metadata: Arc<ParquetMetaData>) -> ParquetResult<Arc<ParquetMetaData>> {
+    let file = metadata.file_metadata();
+    let has_arrow_schema = file.key_value_metadata().is_some_and(|key_values| {
+        key_values
+            .iter()
+            .any(|key_value| key_value.key == ARROW_SCHEMA_META_KEY)
+    });
+    let enum_schema = spark_enum_schema(file.schema_descr())?;
+    if !has_arrow_schema && enum_schema.is_none() {
+        return Ok(metadata);
+    }
+
+    let mut key_values = file
+        .key_value_metadata()
+        .into_iter()
+        .flatten()
+        .filter(|key_value| key_value.key != ARROW_SCHEMA_META_KEY)
+        .cloned()
+        .collect::<Vec<_>>();
+    if let Some(schema) = enum_schema {
+        key_values.push(KeyValue {
+            key: ARROW_SCHEMA_META_KEY.to_string(),
+            value: Some(encode_arrow_schema(&schema)),
+        });
+    }
+
+    let file = FileMetaData::new(
+        file.version(),
+        file.num_rows(),
+        file.created_by().map(str::to_owned),
+        Some(key_values),
+        file.schema_descr_ptr(),
+        file.column_orders().cloned(),
+    );
+    Ok(Arc::new(
+        ParquetMetaDataBuilder::new(file)
+            .set_row_groups(metadata.row_groups().to_vec())
+            .set_column_index(metadata.column_index().cloned())
+            .set_offset_index(metadata.offset_index().cloned())
+            .build(),
+    ))
 }
 
 impl AsyncFileReader for EagerPageIndexReader {
@@ -291,11 +438,17 @@ impl AsyncFileReader for EagerPageIndexReader {
         let store = Arc::clone(&self.store);
         let metadata_size_hint = self.metadata_size_hint;
         let scan_io_metrics = Arc::clone(&self.scan_io_metrics);
+        let spark_variant_schema = self.spark_variant_schema;
         async move {
             let file_decryption_properties = options
                 .and_then(|o| o.file_decryption_properties())
                 .map(Arc::clone);
             let cache_enabled = file_decryption_properties.is_none();
+            if spark_variant_schema && file_decryption_properties.is_some() {
+                return Err(ParquetError::General(
+                    "Projected Variant with Parquet encryption requires Spark fallback".to_string(),
+                ));
+            }
             let page_index_policy = if file_decryption_properties.is_none() {
                 Some(PageIndexPolicy::Optional)
             } else {
@@ -344,7 +497,12 @@ impl AsyncFileReader for EagerPageIndexReader {
                 metadata_store.record_valid_footer();
             }
 
-            metadata
+            let metadata = metadata?;
+            if spark_variant_schema {
+                with_spark_arrow_schema(metadata)
+            } else {
+                Ok(metadata)
+            }
         }
         .boxed()
     }
@@ -672,7 +830,16 @@ impl Drop for EagerPageIndexReader {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arrow::{array::Int32Array, record_batch::RecordBatch};
     use object_store::memory::InMemory;
+    use parquet::{
+        arrow::ArrowWriter,
+        file::{
+            properties::{EnabledStatistics, WriterProperties},
+            reader::FileReader,
+            serialized_reader::{ReadOptionsBuilder, SerializedFileReader},
+        },
+    };
 
     #[derive(Debug)]
     struct RecordingRangeStore {
@@ -823,5 +990,60 @@ mod tests {
                 .as_usize(),
             if remote { 6 } else { 0 }
         );
+    }
+
+    #[test]
+    fn variant_policy_preserves_footer_metadata_and_indexes() {
+        let schema = Arc::new(Schema::new_with_metadata(
+            vec![arrow::datatypes::Field::new("id", DataType::Int32, false)],
+            [("application".to_string(), "keep".to_string())].into(),
+        ));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let props = WriterProperties::builder()
+            .set_key_value_metadata(Some(vec![KeyValue::new(
+                "application".to_string(),
+                "keep".to_string(),
+            )]))
+            .set_statistics_enabled(EnabledStatistics::Page)
+            .set_data_page_row_count_limit(1)
+            .build();
+        let mut writer = ArrowWriter::try_new(file.reopen().unwrap(), schema, Some(props)).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+        let reader = SerializedFileReader::new_with_options(
+            file.reopen().unwrap(),
+            ReadOptionsBuilder::new().with_page_index().build(),
+        )
+        .unwrap();
+        let original = Arc::new(reader.metadata().clone());
+        let rewritten = with_spark_arrow_schema(Arc::clone(&original)).unwrap();
+        assert!(original.column_index().is_some());
+        assert!(original.offset_index().is_some());
+        assert_eq!(rewritten.column_index(), original.column_index());
+        assert_eq!(rewritten.offset_index(), original.offset_index());
+        assert_eq!(rewritten.row_groups(), original.row_groups());
+        assert_eq!(
+            rewritten.file_metadata().column_orders(),
+            original.file_metadata().column_orders()
+        );
+        assert!(original
+            .file_metadata()
+            .key_value_metadata()
+            .unwrap()
+            .iter()
+            .any(|entry| entry.key == ARROW_SCHEMA_META_KEY));
+        assert_eq!(
+            rewritten.file_metadata().key_value_metadata().unwrap(),
+            &vec![KeyValue::new("application".to_string(), "keep".to_string())]
+        );
+        assert!(Arc::ptr_eq(
+            &rewritten,
+            &with_spark_arrow_schema(Arc::clone(&rewritten)).unwrap()
+        ));
     }
 }

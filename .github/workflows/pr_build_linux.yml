@@ -63,9 +63,28 @@ jobs:
         with:
           jvm: temurin:21
 
+      # Split the network from the lint. `cs launch` resolves and downloads the
+      # scalafix artifacts from Maven Central, which resets connections now and
+      # then, so the warm-up retries a no-op `--version` run. The real check then
+      # runs `--mode offline` against the populated cache: no network, and a
+      # nonzero exit can only mean a lint violation, never a download failure.
+      - name: Fetch scalafix
+        run: |
+          for attempt in 1 2 3; do
+            if cs launch scalafix:0.14.6 -- --version; then
+              break
+            fi
+            if [ "$attempt" = 3 ]; then
+              echo "::error::scalafix download failed after 3 attempts."
+              exit 1
+            fi
+            echo "::warning::scalafix download failed (attempt $attempt of 3); retrying in $((attempt * 15))s."
+            sleep $((attempt * 15))
+          done
+
       - name: Run syntactic scalafix check (no compile)
         run: |
-          cs launch scalafix:0.14.6 -- \
+          cs launch --mode offline scalafix:0.14.6 -- \
             --check \
             --syntactic \
             --config .scalafix-syntactic.conf \
