@@ -42,6 +42,15 @@ is a `workflow_call` reusable invoked from the umbrella.
   spark_4_1                                                     iceberg_1_10 run-iceberg-tests
   iceberg_1_11
 
+        |                                   |                                   |
+        +-----------------------------------+-----------------------------------+
+                                            v
+                                +-----------------------+
+                                |    required_checks    |  ubuntu-slim
+                                |  one flat name that   |
+                                |  is safe to require   |
+                                +-----------------------+
+
   reusable workflows invoked via `uses:`:
     pr_build_linux.yml         spark_sql_test_reusable.yml
     pr_build_macos.yml         iceberg_spark_test_reusable.yml
@@ -67,6 +76,7 @@ is a `workflow_call` reusable invoked from the umbrella.
 | `iceberg_1_8`        | push, **or** PR with `run-iceberg-tests` label      | Iceberg sources                     |
 | `iceberg_1_9`        | push, **or** PR with `run-iceberg-tests` label      | Iceberg sources                     |
 | `iceberg_1_10`       | push, **or** PR with `run-iceberg-tests` label      | Iceberg sources                     |
+| `required_checks`    | always, after every job above except `docs`         | none (always runs)                  |
 
 A heavy job appears in the PR's checks list as a `skipped` entry whenever
 its path filter or event criteria don't match. Skipped checks count as
@@ -93,6 +103,14 @@ Two rules keep those runs from corrupting the PR's status:
 - On a `labeled` event, `POLICY` reports false for every job the new label does
   not gate. Without that, applying a single label re-ran the entire heavy
   pipeline at a commit that had already been tested.
+- On a `labeled` event, `required_checks` publishes its verdict as
+  `Required Checks (label run)`, not `Required Checks`. Because the PR tier is
+  skipped on that event, the label run's aggregate says nothing about the
+  commit's applicable suites, and GitHub keeps only the most recent check run
+  per name per commit. Under the real name, a `dependencies` label landing a
+  minute after a push would mark the commit green while the commit run was
+  still going. Skipping the job would not help either, since a skipped check
+  run still carries the name and still counts as passing.
 
 `run-spark-4.1-tests` gates nothing: `spark_4_1` already runs on every PR.
 
@@ -198,10 +216,26 @@ though the content already uploaded. Its client only retries
 built-in step retry. Use `./.github/actions/upload-artifact-retry` instead for
 any artifact a later job consumes: same inputs and outputs, three attempts,
 15s then 45s backoff. Attempts 2 and 3 force `overwrite: true`, so the name
-must belong to exactly one producer in the run (see above). The diagnostic
-uploads inside `./.github/actions/java-test` stay on the plain action, since a
-local action calling another local action is untested here and those run only
-on already-failing jobs.
+must belong to exactly one producer in the run (see above). The uploads inside
+`./.github/actions/java-test` stay on the plain action, since a local action
+calling another local action is untested here. Its two failure-only uploads run
+on jobs that are already red. Its test-report upload also runs on green jobs
+and is `continue-on-error: true`: nothing downstream consumes the reports, and
+a `FinalizeArtifact` 403 must not turn a passing test run into a red check.
+
+**Tool downloads.** `Lint Scala (syntactic)` splits the coursier download from
+the lint: a `Fetch scalafix` step retries a no-op `cs launch ... -- --version`
+three times, and the check itself then runs `cs launch --mode offline` against
+the populated cache, so a nonzero exit there can only be a lint violation.
+`preflight` retries the actionlint download the same way, and fetches the
+installer to a file rather than piping it into `bash` so a truncated download
+cannot run a partial script.
+
+Every one of these steps runs after the test verdict is already known, or
+before any test has started. Once `Required Checks` is a required context
+(see below), a red job from any of them evicts the PR from the merge queue,
+which is why plain network flakes are worth retrying rather than re-running
+the whole pipeline by hand.
 
 **Maven wrapper bootstrap.** `./.github/actions/java-test` retries
 `./mvnw --version` with exponential backoff, so a failed download of the Maven
@@ -209,17 +243,32 @@ distribution does not surface as a test failure.
 
 ## Branch protection
 
-Required-check names changed when these workflows were consolidated. The
-umbrella exposes per-job names like `CI / pr_build_linux / Lint`,
-`CI / spark_3_5 / linux-test (...)`, etc. Update repository branch
-protection rules to point at the new names; the old standalone workflow
-names (`Spark SQL Tests (Spark 3.5)`, `PR Build (Linux)`, ...) no longer
-exist as top-level workflows.
+`.asf.yaml` declares no `required_status_checks` for `main` today, only
+`required_approving_review_count: 1`.
 
-`.asf.yaml` currently declares no `required_status_checks` for `main`, only
-`required_approving_review_count: 1`. Anything added there must be a name that
-never legitimately reports `skipped`, because GitHub counts a skipped check as
-passing. The bare caller-job names (`PR Build (Linux)`, `Spark SQL Tests
-(Spark 3.5)`, ...) are not such names: a reusable workflow that actually runs
-publishes only its child jobs, so the bare name shows up solely when the caller
-was skipped.
+Adding one is not as simple as naming a job, because a caller of a reusable
+workflow publishes a _different check name_ depending on whether it ran:
+
+| Caller state     | Check runs published                                     |
+| ---------------- | -------------------------------------------------------- |
+| skipped by `if:` | one run named exactly `PR Build (Linux)`, `skipped`      |
+| ran              | only `PR Build (Linux) / Spark 4.1, JDK 17 [exec]`, etc. |
+
+No name is reported in both cases. Requiring the bare name would block every
+code change; requiring a nested name would block every docs-only change. Both
+hang waiting for a check that never arrives rather than failing, and a required
+context that never reports also blocks the merge that would fix `.asf.yaml`.
+Recovering from that needs an INFRA Jira ticket.
+
+The `required_checks` job at the bottom of `ci.yml` exists to be the one name
+that is safe to require. It is flat, so it reports on every event; it runs
+`if: always()` and treats `skipped` as a pass, so it only goes red when an
+upstream job reports `failure` or `cancelled`.
+
+`dev/ci/check-ci-config.py` enforces that every `ci.yml` job except `docs`
+appears in `required_checks.needs`, and that the job's `name:` is the
+expression that routes `labeled` runs to a separate name (see "Label events"
+above). Once `.asf.yaml` does declare a required context for `main`, it also
+enforces that the commit-run name still matches it and that the label-run name
+is never the one required. All of that is silent when broken and expensive to
+recover from.
