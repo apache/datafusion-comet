@@ -254,29 +254,16 @@ fn remap_physical_schema(
     let logical_folded = fold_schema_names(logical_schema, case_sensitive);
     let physical_folded = fold_schema_names(physical_schema, case_sensitive);
 
-    // Folded names of ID-bearing logical fields whose ID is not present in the file. Any physical
-    // field that shares one of these names must be renamed to something the
-    // `DefaultPhysicalExprAdapter` cannot name-match, otherwise the read would silently fall
-    // through to a name match. Spark's `matchIdField` solves the same problem with
-    // `generateFakeColumnName` (see `ParquetReadSupport.scala`).
-    let unmatched_id_logical_folded: HashSet<String> = if should_match_by_id {
-        logical_schema
-            .fields()
-            .iter()
-            .enumerate()
-            .filter_map(|(j, lf)| {
-                parse_field_id(lf).and_then(|id| {
-                    if id_to_phys_names.contains_key(&id) {
-                        None
-                    } else {
-                        Some(logical_folded[j].clone())
-                    }
-                })
-            })
-            .collect()
-    } else {
-        HashSet::new()
-    };
+    // All ID-bearing targets resolve by ID, even when a different file column has the
+    // requested name. Hide that shadowing column after giving its own ID match precedence.
+    let id_logical_folded: HashSet<&String> = logical_schema
+        .fields()
+        .iter()
+        .zip(&logical_folded)
+        .filter(|(field, _)| should_match_by_id && parse_field_id(field).is_some())
+        .map(|(_, name)| name)
+        .collect();
+    let mut occupied_names = HashSet::new();
     let mut fake_counter: usize = 0;
 
     let mut name_map: HashMap<String, String> = HashMap::new();
@@ -305,13 +292,19 @@ fn remap_physical_schema(
                 }
             }
 
-            // Block accidental name match for ID-bearing logical fields whose ID is missing
-            // from the file. Mirrors Spark's `generateFakeColumnName` in `matchIdField`.
-            if should_match_by_id
-                && unmatched_id_logical_folded.contains(&physical_folded[phys_idx])
-            {
-                fake_counter += 1;
-                let fake_name = format!("__comet_unmatched_field_id_{}", fake_counter);
+            // Block accidental name matches for ID-bearing targets, whether their ID was
+            // missing or resolved to a different physical column.
+            if should_match_by_id && id_logical_folded.contains(&physical_folded[phys_idx]) {
+                if fake_counter == 0 {
+                    occupied_names.extend(logical_folded.iter().chain(&physical_folded).cloned());
+                }
+                let fake_name = loop {
+                    fake_counter += 1;
+                    let name = format!("__comet_unmatched_field_id_{}", fake_counter);
+                    if occupied_names.insert(name.clone()) {
+                        break name;
+                    }
+                };
                 return Arc::new(
                     Field::new(fake_name, field.data_type().clone(), field.is_nullable())
                         .with_metadata(field.metadata().clone()),
@@ -2167,6 +2160,40 @@ mod test {
             .has_valid_extension_type::<VariantType>());
     }
 
+    #[test]
+    fn variant_field_id_wins_over_a_shadowing_name() {
+        let storage = DataType::Struct(Fields::from(vec![
+            Field::new("value", DataType::Binary, false),
+            Field::new("metadata", DataType::Binary, false),
+        ]));
+        for case_sensitive in [true, false] {
+            let logical = Arc::new(Schema::new(vec![Field::new("v", storage.clone(), true)
+                .with_metadata(id_meta("1"))
+                .with_extension_type(VariantType)]));
+            let physical = Arc::new(Schema::new(vec![
+                Field::new(
+                    if case_sensitive { "v" } else { "V" },
+                    DataType::Binary,
+                    true,
+                )
+                .with_metadata(id_meta("2")),
+                Field::new("other", storage.clone(), true).with_metadata(id_meta("1")),
+                Field::new("__comet_unmatched_field_id_1", DataType::Binary, true),
+            ]));
+            let mut options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+            options.case_sensitive = case_sensitive;
+            options.use_field_id = true;
+            let adapter = SparkPhysicalExprAdapterFactory::new(options, None)
+                .create(logical, Arc::clone(&physical))
+                .unwrap();
+            let rewritten = adapter.rewrite(Arc::new(Column::new("v", 0))).unwrap();
+            let cast = rewritten.downcast_ref::<CometCastColumnExpr>().unwrap();
+            let column = cast.children()[0].downcast_ref::<Column>().unwrap();
+            assert_eq!(column.name(), "other");
+            assert_eq!(column.index(), 1);
+        }
+    }
+
     /// #4859 investigation: for a pure structural narrowing of a nested column (dropping
     /// unrequested struct fields, no leaf-type promotion, no tz relabeling, no field-id
     /// matching, case-sensitive), does Comet's `CometCastColumnExpr` (via
@@ -2371,6 +2398,43 @@ mod test {
         let physical = struct_type(vec![("ID", DataType::Int64)]);
         let target = struct_type(vec![("id", DataType::Int64)]);
         assert!(!is_pure_structural_narrowing(&physical, &target, &opts));
+    }
+
+    #[test]
+    fn structural_narrowing_requires_unambiguous_exact_match() -> Result<(), DataFusionError> {
+        use crate::parquet::cast_column::CometCastColumnExpr;
+        use datafusion::physical_expr::expressions::CastExpr;
+
+        // #5707: an exact match must not hide a second case-insensitive match.
+        for (upper, lower) in [("ID", "id"), ("CAFÉ", "café")] {
+            let physical = struct_type(vec![(upper, DataType::Int64), (lower, DataType::Int64)]);
+            let target = struct_type(vec![(lower, DataType::Int64)]);
+            for (physical, target) in [
+                (physical.clone(), target.clone()),
+                (
+                    struct_type(vec![("inner", physical.clone())]),
+                    struct_type(vec![("inner", target.clone())]),
+                ),
+                (list_type(physical), list_type(target)),
+            ] {
+                for case_sensitive in [false, true] {
+                    let mut opts = default_options();
+                    opts.case_sensitive = case_sensitive;
+                    assert_eq!(
+                        is_pure_structural_narrowing(&physical, &target, &opts),
+                        case_sensitive,
+                        "{physical:?} -> {target:?}, case_sensitive={case_sensitive}"
+                    );
+                    let rewritten = rewrite_events_column(physical.clone(), target.clone(), opts)?;
+                    if case_sensitive {
+                        assert!(rewritten.downcast_ref::<CastExpr>().is_some());
+                    } else {
+                        assert!(rewritten.downcast_ref::<CometCastColumnExpr>().is_some());
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     /// A target field with no name match at all must be denied: DataFusion's
