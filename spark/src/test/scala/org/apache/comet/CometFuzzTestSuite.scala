@@ -175,10 +175,21 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
         case "jvm" =>
           1
         case "native" =>
-          // native shuffle does not support complex types as partitioning keys
+          // Nested hash partitioning keys are off by default, so native shuffle falls back here.
           0
       }
       assert(cometShuffleExchanges.length == expectedNumCometShuffles)
+
+      // With the config enabled these keys do run through native shuffle. This is the widest
+      // nested-type coverage in the repo, so it is worth asserting that they are admitted rather
+      // than only that they fall back.
+      withSQLConf(CometConf.COMET_SHUFFLE_NATIVE_HASH_PARTITIONING_NESTED_ENABLED.key -> "true") {
+        val enabledDf = spark.sql(sql)
+        enabledDf.collect()
+        val enabledPlan =
+          enabledDf.queryExecution.executedPlan.asInstanceOf[AdaptiveSparkPlanExec].executedPlan
+        assert(collectCometShuffleExchanges(enabledPlan).length == 1)
+      }
     }
   }
 

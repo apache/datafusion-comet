@@ -16,14 +16,15 @@
 // under the License.
 
 use crate::execution::operators::ExecutionError;
+use crate::parquet::name_fold::fold_names;
 use arrow::array::{FixedSizeBinaryArray, ListArray, MapArray, StringArray};
 use arrow::buffer::NullBuffer;
 use arrow::compute::can_cast_types;
 use arrow::datatypes::{FieldRef, Fields};
 use arrow::{
     array::{
-        cast::AsArray, new_null_array, types::TimestampMicrosecondType, Array, ArrayRef,
-        StructArray,
+        cast::AsArray, new_null_array, types::TimestampMicrosecondType,
+        types::TimestampMillisecondType, Array, ArrayRef, ArrowNativeTypeOp, StructArray,
     },
     compute::{cast_with_options, CastOptions},
     datatypes::{DataType, TimeUnit},
@@ -34,10 +35,11 @@ use datafusion::error::DataFusionError;
 use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::physical_plan::ColumnarValue;
+use datafusion_comet_common::SparkError;
 use datafusion_comet_spark_expr::EvalMode;
 use log::debug;
 use object_store::path::Path;
-use object_store::{parse_url, ObjectStore};
+use object_store::{parse_url, ObjectStore, ObjectStoreScheme};
 use parquet::arrow::PARQUET_FIELD_ID_META_KEY;
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -47,6 +49,9 @@ use std::{fmt::Debug, hash::Hash, sync::Arc};
 use url::Url;
 
 use super::objectstore;
+use super::objectstore::s3_blob_fs_support::{
+    normalize_object_store_url, NormalizedObjectStoreUrl,
+};
 
 // This file originates from cast.rs. While developing native scan support and implementing
 // SparkSchemaAdapter we observed that Spark's type conversion logic on Parquet reads does not
@@ -99,6 +104,12 @@ pub struct SparkParquetOptions {
     /// (Spark 3.x, SPARK-36182). Mirrors Comet's per-Spark-version constant
     /// in ShimCometConf.
     pub allow_timestamp_ltz_to_ntz: bool,
+    /// When true (the default), a TIMESTAMP_MILLIS field that overflows during
+    /// the millis->micros upscale raises an error, matching Spark's checked
+    /// `millisToMicros`. Filtered scans set this to false and retain the safe cast
+    /// (overflow -> NULL), because Spark may discard values through pruning paths that
+    /// DataFusion cannot fully mirror before conversion.
+    pub checked_timestamp_overflow: bool,
 }
 
 impl SparkParquetOptions {
@@ -115,6 +126,7 @@ impl SparkParquetOptions {
             ignore_missing_field_id: false,
             allow_type_promotion: false,
             allow_timestamp_ltz_to_ntz: false,
+            checked_timestamp_overflow: true,
         }
     }
 
@@ -131,6 +143,7 @@ impl SparkParquetOptions {
             ignore_missing_field_id: false,
             allow_type_promotion: false,
             allow_timestamp_ltz_to_ntz: false,
+            checked_timestamp_overflow: true,
         }
     }
 }
@@ -168,8 +181,27 @@ fn parquet_convert_array(
     to_type: &DataType,
     parquet_options: &SparkParquetOptions,
 ) -> DataFusionResult<ArrayRef> {
+    parquet_convert_array_impl(array, to_type, parquet_options, None)
+}
+
+fn parquet_convert_array_impl(
+    array: ArrayRef,
+    to_type: &DataType,
+    parquet_options: &SparkParquetOptions,
+    parent_nulls: Option<&NullBuffer>,
+) -> DataFusionResult<ArrayRef> {
     use DataType::*;
     let from_type = array.data_type();
+    // Only checked millis-to-micros casts consume ancestor visibility. In particular,
+    // unchanged array/map siblings must not expand a mask over their backing values.
+    let checked_timestamp_overflow = parquet_options.checked_timestamp_overflow
+        && has_timestamp_unit(from_type, TimeUnit::Millisecond)
+        && has_timestamp_unit(to_type, TimeUnit::Microsecond);
+    let visible = if checked_timestamp_overflow {
+        NullBuffer::union(array.nulls(), parent_nulls)
+    } else {
+        None
+    };
 
     // Try Comet specific handlers first, then arrow-rs cast if supported,
     // return uncasted data otherwise
@@ -179,13 +211,21 @@ fn parquet_convert_array(
             from_type,
             to_type,
             parquet_options,
+            visible.as_ref(),
         )?),
         (List(_), List(to_inner_type)) => {
             let list_arr: &ListArray = array.as_list();
-            let cast_field = parquet_convert_array(
+            let child_visibility = if checked_timestamp_overflow {
+                repeated_visibility(
+                    list_arr.value_offsets(), list_arr.values().len(), visible.as_ref())
+            } else {
+                None
+            };
+            let cast_field = parquet_convert_array_impl(
                 Arc::clone(list_arr.values()),
                 to_inner_type.data_type(),
                 parquet_options,
+                child_visibility.as_ref(),
             )?;
 
             Ok(Arc::new(ListArray::new(
@@ -194,6 +234,29 @@ fn parquet_convert_array(
                 cast_field,
                 list_arr.nulls().cloned(),
             )))
+        }
+        (
+            Timestamp(TimeUnit::Millisecond, _),
+            Timestamp(TimeUnit::Microsecond, target_tz),
+        ) if checked_timestamp_overflow => {
+            // Spark's Parquet reader calls the checked `millisToMicros` conversion for both
+            // direct and dictionary values, independent of CAST evaluation mode:
+            // https://github.com/apache/spark/blob/v4.2.0/sql/core/src/main/java/org/apache/spark/sql/execution/datasources/parquet/ParquetVectorUpdaterFactory.java#L817-L833
+            // `millisToMicros` uses `Math.multiplyExact`:
+            // https://github.com/apache/spark/blob/v4.2.0/sql/api/src/main/scala/org/apache/spark/sql/catalyst/util/SparkDateTimeUtils.scala#L103-L108
+            //
+            // Filtered scans retain safe conversion until DataFusion can mirror Spark's
+            // pruning paths, including nested predicates.
+            let millis = array.as_primitive::<TimestampMillisecondType>();
+            // Ignore values hidden by null ancestors or by sliced list/map offsets.
+            // Restore the original child validity: required fields must remain non-null.
+            let micros = arrow::array::TimestampMillisecondArray::new(
+                millis.values().clone(), visible)
+                .try_unary::<_, TimestampMicrosecondType, _>(|value| value.mul_checked(1_000))?;
+            let micros = arrow::array::TimestampMicrosecondArray::new(
+                micros.values().clone(), millis.nulls().cloned())
+                .with_timezone_opt(target_tz.clone());
+            Ok(Arc::new(micros))
         }
         (Timestamp(TimeUnit::Microsecond, None), Timestamp(TimeUnit::Microsecond, Some(tz))) => {
             Ok(Arc::new(
@@ -204,7 +267,7 @@ fn parquet_convert_array(
             ))
         }
         (Map(_, ordered_from), Map(_, ordered_to)) if ordered_from == ordered_to =>
-            parquet_convert_map_to_map(array.as_map(), to_type, parquet_options, *ordered_to)
+            parquet_convert_map_to_map(array.as_map(), to_type, parquet_options, *ordered_to, visible.as_ref(), checked_timestamp_overflow)
             ,
         // Iceberg stores UUIDs as 16-byte fixed binary but Spark expects string representation.
         // Arrow doesn't support casting FixedSizeBinary to Utf8, so we handle it manually.
@@ -236,6 +299,39 @@ fn parquet_convert_array(
     }
 }
 
+// Struct fields are matched by name/field ID later. This type-only check is conservative
+// until that matching occurs; each selected child is checked again before conversion.
+fn has_timestamp_unit(data_type: &DataType, unit: TimeUnit) -> bool {
+    match data_type {
+        DataType::Timestamp(timestamp_unit, _) => *timestamp_unit == unit,
+        DataType::Struct(fields) => fields
+            .iter()
+            .any(|field| has_timestamp_unit(field.data_type(), unit)),
+        DataType::List(field) | DataType::Map(field, _) => {
+            has_timestamp_unit(field.data_type(), unit)
+        }
+        _ => false,
+    }
+}
+
+// List/map values can include entries outside a slice or beneath a null parent.
+fn repeated_visibility(
+    offsets: &[i32],
+    len: usize,
+    nulls: Option<&NullBuffer>,
+) -> Option<NullBuffer> {
+    if nulls.is_none() && offsets[0] == 0 && *offsets.last().unwrap() as usize == len {
+        return None;
+    }
+    let mut valid = vec![false; len];
+    for (row, range) in offsets.windows(2).enumerate() {
+        if nulls.is_none_or(|nulls| nulls.is_valid(row)) {
+            valid[range[0] as usize..range[1] as usize].fill(true);
+        }
+    }
+    Some(NullBuffer::from(valid))
+}
+
 /// Read the Parquet field id stored under arrow-rs's `PARQUET_FIELD_ID_META_KEY`.
 fn field_id(field: &arrow::datatypes::Field) -> Option<i32> {
     field
@@ -251,6 +347,7 @@ fn parquet_convert_struct_to_struct(
     from_type: &DataType,
     to_type: &DataType,
     parquet_options: &SparkParquetOptions,
+    parent_nulls: Option<&NullBuffer>,
 ) -> DataFusionResult<ArrayRef> {
     match (from_type, to_type) {
         (DataType::Struct(from_fields), DataType::Struct(to_fields)) => {
@@ -274,36 +371,63 @@ fn parquet_convert_struct_to_struct(
                 HashMap::new()
             };
 
-            let normalize_name = |name: &str| -> String {
-                if parquet_options.case_sensitive {
-                    name.to_string()
-                } else {
-                    name.to_lowercase()
-                }
-            };
-            let mut field_name_to_index_map = HashMap::new();
-            for (i, field) in from_fields.iter().enumerate() {
-                field_name_to_index_map.insert(normalize_name(field.name()), i);
+            // Fold the file (`from`) and requested (`to`) field names once via the JVM's
+            // `toLowerCase(Locale.ROOT)` (the same fold the top-level schema adapter uses), so
+            // nested case-insensitive matching is byte-for-byte consistent with the top level.
+            let mut all_names: Vec<&str> = Vec::with_capacity(from_fields.len() + to_fields.len());
+            all_names.extend(from_fields.iter().map(|f| f.name().as_str()));
+            all_names.extend(to_fields.iter().map(|f| f.name().as_str()));
+            let all_folded = fold_names(&all_names, parquet_options.case_sensitive);
+            let (from_folded, to_folded) = all_folded.split_at(from_fields.len());
+
+            // Group file field indices by folded name so a case-insensitive collision is detected
+            // (Spark's `caseInsensitiveParquetFieldMap`) rather than silently overwritten.
+            let mut folded_to_indices: HashMap<&str, Vec<usize>> = HashMap::new();
+            for (i, folded) in from_folded.iter().enumerate() {
+                folded_to_indices
+                    .entry(folded.as_str())
+                    .or_default()
+                    .push(i);
             }
-            assert_eq!(field_name_to_index_map.len(), from_fields.len());
 
             let mut field_overlap = false;
             let mut cast_fields: Vec<ArrayRef> = Vec::with_capacity(to_fields.len());
-            for to_field in to_fields.iter() {
+            for (to_pos, to_field) in to_fields.iter().enumerate() {
                 let from_index = match (should_match_by_id, field_id(to_field)) {
                     // Spark treats a missing ID match as a missing column rather than
                     // falling back to name match.
                     (true, Some(id)) => from_id_to_index.get(&id).copied(),
-                    _ => field_name_to_index_map
-                        .get(&normalize_name(to_field.name()))
-                        .copied(),
+                    _ => match folded_to_indices.get(to_folded[to_pos].as_str()) {
+                        // Mirror Spark's `foundDuplicateFieldInCaseInsensitiveModeError`: a
+                        // requested field matching more than one file field is ambiguous. Gated on
+                        // case-insensitive mode to match the top-level check (which only runs when
+                        // `!case_sensitive`): when case-sensitive the fold is identity, so a
+                        // collision means byte-identical sibling names, and raising an error whose
+                        // message says "in case-insensitive mode" would be wrong. Fall through to
+                        // the first match in that case.
+                        Some(indices) if indices.len() > 1 && !parquet_options.case_sensitive => {
+                            let matched: Vec<&str> = indices
+                                .iter()
+                                .map(|&i| from_fields[i].name().as_str())
+                                .collect();
+                            return Err(DataFusionError::External(Box::new(
+                                SparkError::duplicate_field_case_insensitive(
+                                    to_field.name(),
+                                    &matched,
+                                ),
+                            )));
+                        }
+                        Some(indices) => Some(indices[0]),
+                        None => None,
+                    },
                 };
 
                 if let Some(from_index) = from_index {
-                    cast_fields.push(parquet_convert_array(
+                    cast_fields.push(parquet_convert_array_impl(
                         Arc::clone(array.column(from_index)),
                         to_field.data_type(),
                         parquet_options,
+                        parent_nulls,
                     )?);
                     field_overlap = true;
                 } else {
@@ -341,6 +465,8 @@ fn parquet_convert_map_to_map(
     to_data_type: &DataType,
     parquet_options: &SparkParquetOptions,
     to_ordered: bool,
+    parent_nulls: Option<&NullBuffer>,
+    checked_timestamp_overflow: bool,
 ) -> Result<ArrayRef, DataFusionError> {
     match to_data_type {
         DataType::Map(entries_field, _) => {
@@ -351,15 +477,22 @@ fn parquet_convert_map_to_map(
                 "map is missing value field".to_string(),
             ))?;
 
-            let key_array = parquet_convert_array(
+            let child_visibility = if checked_timestamp_overflow {
+                repeated_visibility(from.value_offsets(), from.keys().len(), parent_nulls)
+            } else {
+                None
+            };
+            let key_array = parquet_convert_array_impl(
                 Arc::clone(from.keys()),
                 key_field.data_type(),
                 parquet_options,
+                child_visibility.as_ref(),
             )?;
-            let value_array = parquet_convert_array(
+            let value_array = parquet_convert_array_impl(
                 Arc::clone(from.values()),
                 value_field.data_type(),
                 parquet_options,
+                child_visibility.as_ref(),
             )?;
 
             Ok(Arc::new(MapArray::new(
@@ -398,14 +531,21 @@ fn value_field(entries_field: &FieldRef) -> Option<FieldRef> {
     }
 }
 
+/// True if `scheme` appears in a Comet comma-separated scheme-list config, compared trimmed and
+/// case-insensitively. Shared by every such config (`fs.comet.libhdfs.schemes`,
+/// `fs.comet.s3Compliant.schemes`) so native parses them exactly like the JVM's
+/// `NativeConfig.parseSchemeSet`, which feeds the planner's fallback gate.
+pub(crate) fn scheme_in_list(list: &str, scheme: &str) -> bool {
+    list.split(',')
+        .any(|s| s.trim().eq_ignore_ascii_case(scheme))
+}
+
 pub fn is_hdfs_scheme(url: &Url, object_store_configs: &HashMap<String, String>) -> bool {
     const COMET_LIBHDFS_SCHEMES_KEY: &str = "fs.comet.libhdfs.schemes";
     let scheme = url.scheme();
-    if let Some(libhdfs_schemes) = object_store_configs.get(COMET_LIBHDFS_SCHEMES_KEY) {
-        use itertools::Itertools;
-        libhdfs_schemes.split(",").contains(scheme)
-    } else {
-        scheme == "hdfs"
+    match object_store_configs.get(COMET_LIBHDFS_SCHEMES_KEY) {
+        Some(libhdfs_schemes) => scheme_in_list(libhdfs_schemes, scheme),
+        None => scheme == "hdfs",
     }
 }
 
@@ -469,16 +609,24 @@ fn create_hdfs_object_store(
     })
 }
 
-type ObjectStoreCache = RwLock<HashMap<(String, u64), Arc<dyn ObjectStore>>>;
+/// Cache identity: `(scheme://host:port, config_hash, hdfs_backend)`.
+/// Native `s3a` is normalized to `s3`; Hadoop-selected schemes keep their spelling.
+/// The hash covers the object-store configuration. The boolean is `true` for the
+/// Hadoop backend (including custom schemes routed through Hadoop), `false` for native.
+type ObjectStoreCacheKey = (String, u64, bool);
+type ObjectStoreCache = RwLock<HashMap<ObjectStoreCacheKey, Arc<dyn ObjectStore>>>;
 
-/// Process-wide cache of object stores, keyed by `(scheme://host:port, config_hash)`.
+/// Process-wide cache keyed by `(physical_scheme://host:port, config_hash, hdfs_backend)`.
+/// Backend identity is separate from the normalized URL: a configuration can route `s3`
+/// through Hadoop while native `s3a` is normalized to the same `s3` scheme.
 ///
 /// ## Why static / process lifetime?
 ///
-/// Comet's JNI architecture calls `initRecordBatchReader` once per Parquet file, and each
-/// call constructs a fresh `RuntimeEnv`.  There is therefore no executor-scoped Rust object
-/// with a lifetime longer than a single file read that could own this cache.  The executor
-/// process itself is the natural scope for HTTP connection-pool reuse, so process lifetime
+/// Comet's JNI architecture builds a fresh `SessionContext`/`RuntimeEnv` per native plan
+/// (`Java_org_apache_comet_Native_createPlan`, once per Spark task).  There is therefore no
+/// executor-scoped Rust object with a lifetime longer than a single task's plan that could
+/// own this cache.  The executor process itself is the natural scope for HTTP
+/// connection-pool reuse, so process lifetime
 /// (i.e. `static`) is the appropriate choice here.  In the standard Spark-on-Kubernetes
 /// deployment model each executor process is dedicated to a single Spark application, so
 /// process lifetime and application lifetime are equivalent; the cache is reclaimed when
@@ -486,7 +634,7 @@ type ObjectStoreCache = RwLock<HashMap<(String, u64), Arc<dyn ObjectStore>>>;
 ///
 /// ## Unbounded size
 ///
-/// Cache entries are indexed by `(scheme://host:port, hash-of-configs)`.  A typical Spark
+/// Cache entries include the physical URL, configuration hash and backend. A typical Spark
 /// job accesses a small, fixed set of buckets with a stable configuration, so the number of
 /// distinct keys is O(buckets × credential-configs) and remains small throughout the job.
 /// Entries are cheap relative to the cost of creating a new object store (new HTTP
@@ -519,23 +667,57 @@ fn hash_object_store_configs(configs: &HashMap<String, String>) -> u64 {
     hasher.finish()
 }
 
-/// Parses the url, registers the object store with configurations, and returns a tuple of the object store url
-/// and object store path
+/// The selected backend, independent of the URL used to register it in DataFusion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ObjectStoreBackend {
+    Local,
+    Remote,
+    Other,
+}
+
+/// Classifies a normalized URL using the same parser as backend construction. `is_hdfs` records
+/// the configured libhdfs routing decision, which takes precedence over cloud-like schemes.
+/// This does not create a store or perform I/O; unsupported native URLs return a parsing error.
+fn object_store_backend(url: &Url, is_hdfs: bool) -> Result<ObjectStoreBackend, ExecutionError> {
+    if is_hdfs {
+        // Custom libhdfs schemes may look like cloud URLs but retain their own range-read API.
+        return Ok(ObjectStoreBackend::Other);
+    }
+    let (scheme, _) =
+        ObjectStoreScheme::parse(url).map_err(|e| ExecutionError::GeneralError(e.to_string()))?;
+    Ok(match scheme {
+        ObjectStoreScheme::Local => ObjectStoreBackend::Local,
+        ObjectStoreScheme::AmazonS3
+        | ObjectStoreScheme::GoogleCloudStorage
+        | ObjectStoreScheme::MicrosoftAzure
+        | ObjectStoreScheme::Http => ObjectStoreBackend::Remote,
+        // Memory and future backends are not implicitly classified as remote network traffic.
+        _ => ObjectStoreBackend::Other,
+    })
+}
+
+/// Normalizes the owned URL using the borrowed configuration, selects and registers the backend
+/// in `runtime_env`, and returns its registry URL, object path, and I/O classification. Stores are
+/// reused from the process-wide cache when their normalized physical URL, configuration, and
+/// selected backend match. URL, configuration, and store-construction failures propagate to the
+/// caller. Callers must use the returned backend classification rather than infer it from an
+/// original alias or the synthetic registration scheme.
 pub(crate) fn prepare_object_store_with_configs(
     runtime_env: Arc<RuntimeEnv>,
     url: String,
     object_store_configs: &HashMap<String, String>,
-) -> Result<(ObjectStoreUrl, Path), ExecutionError> {
-    let mut url = Url::parse(url.as_str())
-        .map_err(|e| ExecutionError::GeneralError(format!("Error parsing URL {url}: {e}")))?;
-    let is_hdfs_scheme = is_hdfs_scheme(&url, object_store_configs);
-    let mut scheme = url.scheme();
-    if !is_hdfs_scheme && scheme == "s3a" {
-        scheme = "s3";
-        url.set_scheme("s3").map_err(|_| {
-            ExecutionError::GeneralError("Could not convert scheme from s3a to s3".to_string())
-        })?;
-    }
+) -> Result<(ObjectStoreUrl, Path, ObjectStoreBackend), ExecutionError> {
+    // `is_hdfs` comes back from normalization because it must be decided on the URL as written.
+    // Re-deriving it from the normalized URL would let an `s3a`/alias rewrite land on an `s3`
+    // entry in `fs.comet.libhdfs.schemes` and route an S3 read through libhdfs.
+    let NormalizedObjectStoreUrl {
+        url,
+        is_hdfs: is_hdfs_scheme,
+    } = normalize_object_store_url(url.as_str(), object_store_configs)?;
+    // Configured S3 aliases must be normalized before the object-store parser classifies them.
+    // HDFS routing still wins, including when its configured schemes resemble remote stores.
+    let backend = object_store_backend(&url, is_hdfs_scheme)?;
+    let scheme = url.scheme();
     let url_key = format!(
         "{}://{}",
         scheme,
@@ -543,7 +725,7 @@ pub(crate) fn prepare_object_store_with_configs(
     );
 
     let config_hash = hash_object_store_configs(object_store_configs);
-    let cache_key = (url_key.clone(), config_hash);
+    let cache_key = (url_key.clone(), config_hash, is_hdfs_scheme);
 
     // Check the cache first to reuse existing object store instances.
     // This enables HTTP connection pooling and avoids redundant DNS lookups.
@@ -581,28 +763,395 @@ pub(crate) fn prepare_object_store_with_configs(
             (store, path)
         };
 
-    let object_store_url = ObjectStoreUrl::parse(url_key.clone())?;
-    runtime_env.register_object_store(&url, object_store);
-    Ok((object_store_url, object_store_path))
+    // A RuntimeEnv can plan multiple scans with different backends or credentials
+    // for the same bucket. Use the same identity as the cache, even for the first
+    // registration, so neither later registration nor planning order changes the
+    // store used by an existing scan. Native s3/s3a share the normalized s3 scheme;
+    // a Hadoop-selected scheme retains its physical spelling.
+    //
+    // Native LocalFileSystem ignores these Hadoop options and keeps file:// for
+    // compatibility. An explicitly Hadoop-routed file scheme is still isolated.
+    let object_store_url = if scheme == "file" && !is_hdfs_scheme {
+        ObjectStoreUrl::parse(url_key)?
+    } else {
+        let backend = if is_hdfs_scheme { "hdfs" } else { "native" };
+        // DataFusion keys stores only by scheme and authority, so put configuration
+        // and backend identity in the scheme while preserving the physical authority.
+        // `+comet-` marks our internal registration suffix; encryption lookup strips
+        // the complete suffix to recover the physical URI.
+        ObjectStoreUrl::parse(format!(
+            "{scheme}+comet-{config_hash:016x}-{backend}://{}",
+            &url[url::Position::BeforeHost..url::Position::AfterPort],
+        ))?
+    };
+    runtime_env.register_object_store(object_store_url.as_ref(), object_store);
+    Ok((object_store_url, object_store_path, backend))
 }
 
 #[cfg(test)]
 mod tests {
-    #[cfg(not(feature = "hdfs-opendal"))]
+    /// Checks parser-backed I/O labels without constructing stores, including libhdfs overrides
+    /// and rejection of unknown native schemes. Configured S3 aliases follow URL normalization.
+    #[test]
+    fn classifies_the_selected_backend_using_object_store_parser() {
+        use super::{
+            is_hdfs_scheme, normalize_object_store_url, object_store_backend, ObjectStoreBackend,
+        };
+        let configs = std::collections::HashMap::from([(
+            "fs.comet.libhdfs.schemes".to_string(),
+            "s3,abfs".to_string(),
+        )]);
+        for address in [
+            "s3://bucket/path",
+            "s3a://bucket/path",
+            "gs://bucket/path",
+            "az://container/path",
+            "adl://container/path",
+            "azure://container/path",
+            "abfs://container/path",
+            "abfss://container/path",
+            "http://example.com/path",
+            "https://example.com/path",
+            "https://account.blob.core.windows.net/container/path",
+        ] {
+            let url = url::Url::parse(address).unwrap();
+            assert_eq!(
+                object_store_backend(&url, false).unwrap(),
+                ObjectStoreBackend::Remote,
+                "{address}"
+            );
+            if is_hdfs_scheme(&url, &configs) {
+                assert_eq!(
+                    object_store_backend(&url, true).unwrap(),
+                    ObjectStoreBackend::Other
+                );
+            }
+        }
+        assert_eq!(
+            object_store_backend(&url::Url::parse("file:///tmp/a").unwrap(), false).unwrap(),
+            ObjectStoreBackend::Local
+        );
+        assert_eq!(
+            object_store_backend(&url::Url::parse("memory:///a").unwrap(), false).unwrap(),
+            ObjectStoreBackend::Other
+        );
+        // These spellings are not accepted native backends in pinned object_store 0.13.2.
+        for scheme in ["gcs", "wasb", "wasbs", "s3n"] {
+            let url = url::Url::parse(&format!("{scheme}://bucket/path")).unwrap();
+            assert!(object_store_backend(&url, false).is_err());
+            assert_eq!(
+                object_store_backend(&url, true).unwrap(),
+                ObjectStoreBackend::Other
+            );
+        }
+
+        // An alias selected for libhdfs must keep its original scheme and I/O classification,
+        // even when the same alias is also configured as S3-compatible.
+        let configs = std::collections::HashMap::from([
+            (
+                "fs.comet.s3Compliant.schemes".to_string(),
+                "blob".to_string(),
+            ),
+            ("fs.comet.libhdfs.schemes".to_string(), "blob".to_string()),
+        ]);
+        let normalized = normalize_object_store_url("blob://bucket/path", &configs).unwrap();
+        assert_eq!(normalized.url.scheme(), "blob");
+        assert_eq!(
+            object_store_backend(&normalized.url, normalized.is_hdfs).unwrap(),
+            ObjectStoreBackend::Other
+        );
+    }
+
+    /// Normalizes original URL spellings and classifies their carried routing decisions without
+    /// creating stores or performing I/O. Aliases remain remote unless explicitly routed to
+    /// libhdfs, even when normalization rewrites their scheme to a configured libhdfs scheme.
+    #[test]
+    fn classifies_s3_aliases_using_original_libhdfs_routing() {
+        use super::{normalize_object_store_url, object_store_backend, ObjectStoreBackend};
+
+        for (input, libhdfs_schemes, expected) in [
+            ("s3a://bucket/path", "s3", ObjectStoreBackend::Remote),
+            ("blob://bucket/path", "s3", ObjectStoreBackend::Remote),
+            ("s3://bucket/path", "s3", ObjectStoreBackend::Other),
+            ("s3a://bucket/path", "s3a", ObjectStoreBackend::Other),
+            ("blob://bucket/path", "blob", ObjectStoreBackend::Other),
+        ] {
+            let configs = std::collections::HashMap::from([
+                (
+                    "fs.comet.s3Compliant.schemes".to_string(),
+                    "blob".to_string(),
+                ),
+                (
+                    "fs.comet.libhdfs.schemes".to_string(),
+                    libhdfs_schemes.to_string(),
+                ),
+            ]);
+            let normalized = normalize_object_store_url(input, &configs).unwrap();
+            assert_eq!(
+                object_store_backend(&normalized.url, normalized.is_hdfs).unwrap(),
+                expected,
+                "{input} with libhdfs.schemes={libhdfs_schemes}"
+            );
+        }
+    }
+
+    use super::{
+        hash_object_store_configs, object_store_cache, prepare_object_store_with_configs,
+        ObjectStoreBackend,
+    };
+    use bytes::Bytes;
     use datafusion::execution::object_store::ObjectStoreUrl;
-    #[cfg(not(feature = "hdfs-opendal"))]
     use datafusion::execution::runtime_env::RuntimeEnv;
-    #[cfg(not(feature = "hdfs-opendal"))]
+    use object_store::memory::InMemory;
     use object_store::path::Path;
-    #[cfg(not(feature = "hdfs-opendal"))]
+    use object_store::{ObjectStore, ObjectStoreExt};
+    use std::collections::HashMap;
     use std::sync::Arc;
     #[cfg(not(feature = "hdfs-opendal"))]
     use url::Url;
 
     #[cfg(not(feature = "hdfs-opendal"))]
     use crate::execution::operators::ExecutionError;
-    #[cfg(not(feature = "hdfs-opendal"))]
-    use std::collections::HashMap;
+
+    struct StoreConfig {
+        input_scheme: &'static str,
+        physical_scheme: &'static str,
+        hdfs_backend: bool,
+        options: HashMap<String, String>,
+    }
+
+    /// Seeds two distinct in-memory stores under the expected cache identities for `cases`,
+    /// using a unique `bucket` to isolate concurrent tests. Checks registration, returned I/O
+    /// classification, and actual reads in both planning orders without cloud/Hadoop access.
+    /// Removes the seeded entries on success; assertion failures panic with test evidence.
+    async fn check_isolated_stores(bucket: &str, cases: [StoreConfig; 2]) {
+        let path = Path::from("directory/part one.parquet");
+        let stores: [Arc<dyn ObjectStore>; 2] =
+            [Arc::new(InMemory::new()), Arc::new(InMemory::new())];
+        let keys = cases.each_ref().map(|case| {
+            (
+                format!("{}://{bucket}", case.physical_scheme),
+                hash_object_store_configs(&case.options),
+                case.hdfs_backend,
+            )
+        });
+        for (index, store) in stores.iter().enumerate() {
+            store
+                .put(&path, Bytes::from(format!("store-{index}")).into())
+                .await
+                .unwrap();
+        }
+        {
+            let mut cache = object_store_cache().write().unwrap();
+            for (key, store) in keys.iter().zip(&stores) {
+                cache.insert(key.clone(), Arc::clone(store));
+            }
+        }
+
+        let mut previous_urls = None;
+        for order in [[0, 1], [1, 0]] {
+            let runtime = Arc::new(RuntimeEnv::default());
+            let mut prepared = [None, None];
+            for index in order {
+                let case = &cases[index];
+                prepared[index] = Some(
+                    prepare_object_store_with_configs(
+                        Arc::clone(&runtime),
+                        format!(
+                            "{}://{bucket}/directory/part%20one.parquet",
+                            case.input_scheme
+                        ),
+                        &case.options,
+                    )
+                    .unwrap(),
+                );
+            }
+            let prepared = prepared.map(Option::unwrap);
+            let urls = prepared.each_ref().map(|(url, _, _)| url.clone());
+            assert_ne!(urls[0], urls[1]);
+            if let Some(previous) = &previous_urls {
+                assert_eq!(
+                    &urls, previous,
+                    "registration must not depend on planning order"
+                );
+            }
+            previous_urls = Some(urls);
+            for (index, (url, actual_path, backend)) in prepared.iter().enumerate() {
+                assert_eq!(actual_path, &path);
+                // The label must follow the selected backend even when both original URLs
+                // normalize to s3 with identical configuration and reuse cached stores.
+                assert_eq!(
+                    *backend,
+                    if cases[index].hdfs_backend {
+                        ObjectStoreBackend::Other
+                    } else {
+                        ObjectStoreBackend::Remote
+                    },
+                );
+                let store = runtime.object_store(url).unwrap();
+                assert!(Arc::ptr_eq(&store, &stores[index]));
+                assert_eq!(
+                    store.get(actual_path).await.unwrap().bytes().await.unwrap(),
+                    Bytes::from(format!("store-{index}")),
+                );
+                assert!(url.as_str().starts_with(&format!(
+                    "{}+comet-{:016x}-{}://",
+                    cases[index].physical_scheme,
+                    keys[index].1,
+                    if cases[index].hdfs_backend {
+                        "hdfs"
+                    } else {
+                        "native"
+                    },
+                )));
+            }
+        }
+        let mut cache = object_store_cache().write().unwrap();
+        for key in keys {
+            cache.remove(&key);
+        }
+    }
+
+    /// Verifies that `s3a` stays Remote while explicitly Hadoop-routed `s3` stays Other
+    /// under the same options, with distinct cached contents in either planning order.
+    #[tokio::test]
+    async fn isolates_backends_even_when_s3_alias_and_configs_match() {
+        let options = HashMap::from([("fs.comet.libhdfs.schemes".into(), "s3".into())]);
+        check_isolated_stores(
+            "comet-isolation-backend-alias",
+            [
+                StoreConfig {
+                    input_scheme: "s3a",
+                    physical_scheme: "s3",
+                    hdfs_backend: false,
+                    options: options.clone(),
+                },
+                StoreConfig {
+                    input_scheme: "s3",
+                    physical_scheme: "s3",
+                    hdfs_backend: true,
+                    options,
+                },
+            ],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn isolates_native_stores_with_different_configurations() {
+        check_isolated_stores(
+            "comet-isolation-configurations",
+            ["first", "second"].map(|endpoint| StoreConfig {
+                input_scheme: "s3a",
+                physical_scheme: "s3",
+                hdfs_backend: false,
+                options: HashMap::from([("fs.s3a.endpoint".into(), endpoint.into())]),
+            }),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn preserves_custom_hadoop_scheme_when_routing_changes() {
+        check_isolated_stores(
+            "comet-isolation-custom-hadoop",
+            [
+                StoreConfig {
+                    input_scheme: "s3a",
+                    physical_scheme: "s3",
+                    hdfs_backend: false,
+                    options: HashMap::new(),
+                },
+                StoreConfig {
+                    input_scheme: "s3a",
+                    physical_scheme: "s3a",
+                    hdfs_backend: true,
+                    options: HashMap::from([("fs.comet.libhdfs.schemes".into(), "s3a".into())]),
+                },
+            ],
+        )
+        .await;
+    }
+
+    /// Checks native alias cache reuse in both planning orders, including the returned Remote
+    /// label. Seeds and removes one in-memory cache entry; no remote requests are performed.
+    #[test]
+    fn native_s3_aliases_share_cache_and_registration_identity() {
+        let options = HashMap::new();
+        let key = (
+            "s3://comet-isolation-native-aliases".to_string(),
+            hash_object_store_configs(&options),
+            false,
+        );
+        let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        object_store_cache()
+            .write()
+            .unwrap()
+            .insert(key.clone(), Arc::clone(&store));
+        let mut previous = None;
+        for schemes in [["s3", "s3a"], ["s3a", "s3"]] {
+            let runtime = Arc::new(RuntimeEnv::default());
+            for scheme in schemes {
+                let (url, _, backend) = prepare_object_store_with_configs(
+                    Arc::clone(&runtime),
+                    format!("{scheme}://comet-isolation-native-aliases/file.parquet"),
+                    &options,
+                )
+                .unwrap();
+                assert_eq!(backend, ObjectStoreBackend::Remote);
+                assert!(Arc::ptr_eq(&runtime.object_store(&url).unwrap(), &store));
+                assert!(url.as_str().starts_with("s3+comet-"));
+                if let Some(previous) = &previous {
+                    assert_eq!(&url, previous);
+                }
+                previous = Some(url);
+            }
+        }
+        object_store_cache().write().unwrap().remove(&key);
+    }
+
+    /// Checks that native file construction returns Local and cached Hadoop file routing returns
+    /// Other, with distinct registered stores. Removes its synthetic Hadoop cache entry on success.
+    #[test]
+    fn keeps_native_file_url_separate_from_explicit_hadoop_file_routing() {
+        let runtime = Arc::new(RuntimeEnv::default());
+        let options = HashMap::from([("fs.comet.libhdfs.schemes".into(), "file".into())]);
+        let key = (
+            "file://".to_string(),
+            hash_object_store_configs(&options),
+            true,
+        );
+        let hdfs_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        object_store_cache()
+            .write()
+            .unwrap()
+            .insert(key.clone(), Arc::clone(&hdfs_store));
+        let (hdfs_url, _, hdfs_backend) = prepare_object_store_with_configs(
+            Arc::clone(&runtime),
+            "file:///comet-isolation-file-routing.parquet".into(),
+            &options,
+        )
+        .unwrap();
+        let (native_url, _, native_backend) = prepare_object_store_with_configs(
+            Arc::clone(&runtime),
+            "file:///comet-isolation-file-routing.parquet".into(),
+            &HashMap::new(),
+        )
+        .unwrap();
+        assert_eq!(native_backend, ObjectStoreBackend::Local);
+        assert_eq!(hdfs_backend, ObjectStoreBackend::Other);
+        assert_eq!(native_url, ObjectStoreUrl::local_filesystem());
+        assert_ne!(native_url, hdfs_url);
+        assert!(Arc::ptr_eq(
+            &runtime.object_store(&hdfs_url).unwrap(),
+            &hdfs_store
+        ));
+        assert!(!Arc::ptr_eq(
+            &runtime.object_store(&native_url).unwrap(),
+            &hdfs_store
+        ));
+        object_store_cache().write().unwrap().remove(&key);
+    }
 
     /// Parses the url, registers the object store, and returns a tuple of the object store url and object store path
     #[cfg(not(feature = "hdfs-opendal"))]
@@ -612,6 +1161,7 @@ mod tests {
     ) -> Result<(ObjectStoreUrl, Path), ExecutionError> {
         use crate::parquet::parquet_support::prepare_object_store_with_configs;
         prepare_object_store_with_configs(runtime_env, url, &HashMap::new())
+            .map(|(url, path, _)| (url, path))
     }
 
     #[cfg(not(feature = "hdfs-opendal"))]
@@ -655,5 +1205,430 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn test_millis_to_micros_overflow_checked_in_nested_fields() {
+        use crate::parquet::parquet_support::{parquet_convert_array, SparkParquetOptions};
+        use arrow::array::{Array, ArrayRef, StructArray, TimestampMillisecondArray};
+        use arrow::datatypes::{DataType, Field, Fields, TimeUnit};
+        use datafusion_comet_spark_expr::EvalMode;
+        use std::sync::Arc;
+
+        let options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        let overflow_millis = 9_223_372_036_854_776_i64;
+        let millis: ArrayRef = Arc::new(TimestampMillisecondArray::from(vec![
+            Some(overflow_millis),
+            None,
+        ]));
+        let micros_type = DataType::Timestamp(TimeUnit::Microsecond, None);
+
+        // Top-level: checked, matching Spark's `millisToMicros` (`Math.multiplyExact`).
+        let err = parquet_convert_array(Arc::clone(&millis), &micros_type, &options)
+            .expect_err("top-level overflow must error");
+        assert!(
+            err.to_string().to_lowercase().contains("overflow"),
+            "unexpected error: {err}"
+        );
+
+        // Filtered scans disable checked conversion because Spark may prune values before
+        // conversion through paths DataFusion cannot fully mirror.
+        let mut unchecked_options = options.clone();
+        unchecked_options.checked_timestamp_overflow = false;
+        let converted =
+            parquet_convert_array(Arc::clone(&millis), &micros_type, &unchecked_options)
+                .expect("unchecked overflow must not error");
+        assert!(converted.is_null(0), "overflow must become NULL");
+        assert!(converted.is_null(1));
+
+        // Unfiltered nested reads must also report overflow.
+        let child_field = Arc::new(Field::new(
+            "ts",
+            DataType::Timestamp(TimeUnit::Millisecond, None),
+            true,
+        ));
+        let strukt: ArrayRef = Arc::new(StructArray::new(
+            Fields::from(vec![Arc::clone(&child_field)]),
+            vec![millis],
+            None,
+        ));
+        let target = DataType::Struct(Fields::from(vec![Arc::new(Field::new(
+            "ts",
+            micros_type.clone(),
+            true,
+        ))]));
+        assert!(parquet_convert_array(Arc::clone(&strukt), &target, &options).is_err());
+        let converted = parquet_convert_array(strukt, &target, &unchecked_options)
+            .expect("filtered nested overflow must not error");
+        let converted_child = Arc::clone(
+            converted
+                .as_any()
+                .downcast_ref::<StructArray>()
+                .unwrap()
+                .column(0),
+        );
+        assert_eq!(converted_child.data_type(), &micros_type);
+        assert!(converted_child.is_null(0), "overflow must become NULL");
+        assert!(converted_child.is_null(1));
+    }
+
+    #[test]
+    fn test_millis_to_micros_preserves_unchanged_siblings() {
+        use super::{parquet_convert_array, SparkParquetOptions};
+        use arrow::array::{
+            cast::AsArray, Array, ArrayRef, Int32Array, ListArray, MapArray, StructArray,
+            TimestampMicrosecondArray, TimestampMillisecondArray,
+        };
+        use arrow::buffer::{NullBuffer, OffsetBuffer};
+        use arrow::datatypes::{DataType, Field, TimeUnit};
+        use datafusion_comet_spark_expr::EvalMode;
+        use std::sync::Arc;
+
+        let values: ArrayRef = Arc::new(Int32Array::from_iter_values(0..16));
+        let offsets = OffsetBuffer::new(vec![0, 0, 16].into());
+        let nulls = NullBuffer::from(vec![false, true]);
+        let ints: ArrayRef = Arc::new(ListArray::new(
+            Arc::new(Field::new("item", DataType::Int32, false)),
+            offsets.clone(),
+            Arc::clone(&values),
+            Some(nulls.clone()),
+        ));
+        let entries = StructArray::new(
+            vec![
+                Arc::new(Field::new("key", DataType::Int32, false)),
+                Arc::new(Field::new("value", DataType::Int32, false)),
+            ]
+            .into(),
+            vec![Arc::clone(&values), Arc::clone(&values)],
+            None,
+        );
+        let map: ArrayRef = Arc::new(MapArray::new(
+            Arc::new(Field::new("entries", entries.data_type().clone(), false)),
+            offsets,
+            entries,
+            Some(nulls.clone()),
+            false,
+        ));
+        let input = StructArray::new(
+            vec![
+                Arc::new(Field::new(
+                    "ts",
+                    DataType::Timestamp(TimeUnit::Millisecond, None),
+                    true,
+                )),
+                Arc::new(Field::new("ints", ints.data_type().clone(), true)),
+                Arc::new(Field::new("map", map.data_type().clone(), true)),
+            ]
+            .into(),
+            vec![
+                Arc::new(TimestampMillisecondArray::from(vec![i64::MAX, 7])),
+                ints,
+                map,
+            ],
+            Some(nulls),
+        );
+        let mut target_fields = input.fields().to_vec();
+        target_fields[0] = Arc::new(Field::new(
+            "ts",
+            DataType::Timestamp(TimeUnit::Microsecond, None),
+            true,
+        ));
+        let target = DataType::Struct(target_fields.into());
+        let input: ArrayRef = Arc::new(input);
+        let options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        let output = parquet_convert_array(Arc::clone(&input), &target, &options).unwrap();
+        assert_eq!(output.data_type(), &target);
+        assert!(output.is_null(0));
+        let output = output.as_struct();
+        assert_eq!(
+            output
+                .column(0)
+                .as_any()
+                .downcast_ref::<TimestampMicrosecondArray>()
+                .unwrap()
+                .value(1),
+            7000
+        );
+        // Unchanged siblings keep their value buffers, offsets, and parent validity.
+        assert_eq!(
+            output.column(1).to_data(),
+            input.as_struct().column(1).to_data()
+        );
+        assert_eq!(
+            output.column(2).to_data(),
+            input.as_struct().column(2).to_data()
+        );
+        for child in [
+            output.column(1).as_list::<i32>().values(),
+            output.column(2).as_map().keys(),
+            output.column(2).as_map().values(),
+        ] {
+            assert_eq!(
+                child.to_data().buffers()[0].as_ptr(),
+                values.to_data().buffers()[0].as_ptr()
+            );
+        }
+    }
+
+    #[test]
+    fn test_millis_to_micros_nested_visibility() {
+        use super::{parquet_convert_array, SparkParquetOptions};
+        use arrow::array::{
+            Array, ArrayRef, ListArray, MapArray, StructArray, TimestampMicrosecondArray,
+            TimestampMillisecondArray,
+        };
+        use arrow::buffer::{NullBuffer, OffsetBuffer};
+        use arrow::datatypes::{DataType, Field, TimeUnit};
+        use datafusion_comet_spark_expr::EvalMode;
+        use std::sync::Arc;
+
+        for timezone in [None::<Arc<str>>, Some(Arc::from("UTC"))] {
+            for overflow in [i64::MAX, i64::MIN] {
+                let options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+                let millis: ArrayRef = Arc::new(
+                    TimestampMillisecondArray::from(vec![overflow, 7, overflow])
+                        .with_timezone_opt(timezone.clone()),
+                );
+                let field = Arc::new(Field::new("ts", millis.data_type().clone(), false));
+                let target_field = Arc::new(Field::new(
+                    "ts",
+                    DataType::Timestamp(TimeUnit::Microsecond, timezone.clone()),
+                    false,
+                ));
+                let validity = Some(NullBuffer::from(vec![false, true, false]));
+                let strukt: ArrayRef = Arc::new(StructArray::new(
+                    vec![Arc::clone(&field)].into(),
+                    vec![Arc::clone(&millis)],
+                    validity.clone(),
+                ));
+                let list: ArrayRef = Arc::new(ListArray::new(
+                    Arc::clone(&field),
+                    OffsetBuffer::new(vec![0, 1, 2, 3].into()),
+                    Arc::clone(&millis),
+                    validity.clone(),
+                ));
+                let entries = StructArray::new(
+                    vec![
+                        Arc::clone(&field),
+                        Arc::new(Field::new("value", millis.data_type().clone(), false)),
+                    ]
+                    .into(),
+                    vec![Arc::clone(&millis), Arc::clone(&millis)],
+                    None,
+                );
+                let map: ArrayRef = Arc::new(MapArray::new(
+                    Arc::new(Field::new("entries", entries.data_type().clone(), false)),
+                    OffsetBuffer::new(vec![0, 1, 2, 3].into()),
+                    entries,
+                    validity,
+                    false,
+                ));
+                let target_map = DataType::Map(
+                    Arc::new(Field::new(
+                        "entries",
+                        DataType::Struct(
+                            vec![
+                                Arc::clone(&target_field),
+                                Arc::new(Field::new(
+                                    "value",
+                                    target_field.data_type().clone(),
+                                    false,
+                                )),
+                            ]
+                            .into(),
+                        ),
+                        false,
+                    )),
+                    false,
+                );
+                for (array, target) in [
+                    (
+                        strukt,
+                        DataType::Struct(vec![Arc::clone(&target_field)].into()),
+                    ),
+                    (list, DataType::List(Arc::clone(&target_field))),
+                    (map, target_map),
+                ] {
+                    // Overflow beneath null parents is not a value Spark reads. Required
+                    // children remain non-null, and slicing must not expose hidden entries.
+                    for input in [Arc::clone(&array), array.slice(1, 1)] {
+                        let converted = parquet_convert_array(input, &target, &options).unwrap();
+                        let values = match converted.data_type() {
+                            DataType::Struct(_) => Arc::clone(
+                                converted
+                                    .as_any()
+                                    .downcast_ref::<StructArray>()
+                                    .unwrap()
+                                    .column(0),
+                            ),
+                            DataType::List(_) => converted
+                                .as_any()
+                                .downcast_ref::<ListArray>()
+                                .unwrap()
+                                .value(if converted.len() == 1 { 0 } else { 1 }),
+                            DataType::Map(_, _) => Arc::clone(
+                                converted
+                                    .as_any()
+                                    .downcast_ref::<MapArray>()
+                                    .unwrap()
+                                    .value(if converted.len() == 1 { 0 } else { 1 })
+                                    .column(0),
+                            ),
+                            _ => unreachable!(),
+                        };
+                        let values = values
+                            .as_any()
+                            .downcast_ref::<TimestampMicrosecondArray>()
+                            .unwrap();
+                        assert_eq!(values.value(if values.len() == 3 { 1 } else { 0 }), 7000);
+                        assert_eq!(values.null_count(), 0);
+                    }
+                    // Removing parent nulls makes the overflow visible and must fail.
+                    let visible = arrow::array::make_array(
+                        array.to_data().into_builder().nulls(None).build().unwrap(),
+                    );
+                    assert!(
+                        parquet_convert_array(Arc::clone(&visible), &target, &options).is_err()
+                    );
+                    // Propagate nullness through more than one level of nesting.
+                    let outer: ArrayRef = Arc::new(StructArray::new(
+                        vec![Arc::new(Field::new(
+                            "nested",
+                            visible.data_type().clone(),
+                            false,
+                        ))]
+                        .into(),
+                        vec![Arc::clone(&visible)],
+                        array.nulls().cloned(),
+                    ));
+                    let outer_target = DataType::Struct(
+                        vec![Arc::new(Field::new("nested", target.clone(), false))].into(),
+                    );
+                    parquet_convert_array(outer, &outer_target, &options).unwrap();
+                    // A slice of a non-null list/map also hides its backing prefix/suffix.
+                    parquet_convert_array(visible.slice(1, 1), &target, &options).unwrap();
+                }
+            }
+        }
+    }
+
+    /// Constructs S3 stores using anonymous credentials, without reading remote objects, and
+    /// checks that both alias URL forms return the normalized bucket, key, and remote I/O label.
+    #[cfg(not(feature = "hdfs-opendal"))]
+    #[test]
+    #[cfg_attr(miri, ignore)] // AWS credential providers and object_store call foreign functions
+    fn test_prepare_object_store_rewrites_blob_alias_to_s3() {
+        // `fs.comet.s3Compliant.schemes` opts `blob` in, so `prepare_object_store_with_configs`
+        // must rewrite the alias to `s3://`. Otherwise `ObjectStoreScheme::parse` rejects the URL
+        // and the native scan fails at runtime (`Unsupported filesystem schemes: blob`). Two forms
+        // must both land on `s3://bucket/key`: the canonical `blob://bucket/key`, and the empty-
+        // authority `blob:///bucket/key` (host=None), whose first path segment is promoted into the
+        // host because object_store 0.13 needs a `Some(host)` (a naive `s3:///bucket/key` fails).
+        use crate::parquet::parquet_support::prepare_object_store_with_configs;
+        let mut configs: HashMap<String, String> = HashMap::new();
+        configs.insert(
+            "fs.comet.s3Compliant.schemes".to_string(),
+            "blob".to_string(),
+        );
+        configs.insert(
+            "fs.s3a.aws.credentials.provider".to_string(),
+            "org.apache.hadoop.fs.s3a.AnonymousAWSCredentialsProvider".to_string(),
+        );
+        configs.insert(
+            "fs.s3a.endpoint.region".to_string(),
+            "us-east-1".to_string(),
+        );
+
+        for (input, expected_bucket, expected_path) in [
+            (
+                "blob://test_bucket/comet/spark-warehouse/part-00000.snappy.parquet",
+                "test_bucket",
+                "/comet/spark-warehouse/part-00000.snappy.parquet",
+            ),
+            (
+                "blob:///mybucket/warehouse/data/part-0.snappy.parquet",
+                "mybucket",
+                "warehouse/data/part-0.snappy.parquet",
+            ),
+        ] {
+            let (object_store_url, path, backend) = prepare_object_store_with_configs(
+                Arc::new(RuntimeEnv::default()),
+                input.to_string(),
+                &configs,
+            )
+            .unwrap_or_else(|e| panic!("{input} should normalize to s3://: {e}"));
+            assert_eq!(
+                object_store_url,
+                ObjectStoreUrl::parse(format!(
+                    "s3+comet-{:016x}-native://{expected_bucket}",
+                    hash_object_store_configs(&configs),
+                ))
+                .unwrap()
+            );
+            assert_eq!(path, Path::from(expected_path));
+            assert_eq!(backend, super::ObjectStoreBackend::Remote);
+        }
+    }
+
+    #[cfg(not(feature = "hdfs-opendal"))]
+    #[test]
+    #[cfg_attr(miri, ignore)] // AWS credential providers and object_store call foreign functions
+    fn test_prepare_object_store_keeps_s3a_off_libhdfs_when_only_s3_is_listed() {
+        // `fs.comet.libhdfs.schemes=s3` routes `s3://` through libhdfs and says nothing about
+        // `s3a` or the opted-in aliases. Both normalize onto `s3://`, so deciding libhdfs from the
+        // normalized URL would hand these scans to `create_hdfs_object_store` -- which in this
+        // build is the "not enabled" stub, and in a default build would point libhdfs at a name
+        // node of `s3://bucket`. The JVM gate classifies them as object_store-native and admits
+        // them, so this dispatch is what keeps native in lockstep with the planner.
+        use crate::parquet::parquet_support::prepare_object_store_with_configs;
+        let mut configs: HashMap<String, String> = HashMap::new();
+        configs.insert("fs.comet.libhdfs.schemes".to_string(), "s3".to_string());
+        configs.insert(
+            "fs.comet.s3Compliant.schemes".to_string(),
+            "blob".to_string(),
+        );
+        configs.insert(
+            "fs.s3a.aws.credentials.provider".to_string(),
+            "org.apache.hadoop.fs.s3a.AnonymousAWSCredentialsProvider".to_string(),
+        );
+        configs.insert(
+            "fs.s3a.endpoint.region".to_string(),
+            "us-east-1".to_string(),
+        );
+
+        for input in [
+            "s3a://test_bucket/comet/part-00000.snappy.parquet",
+            "blob://test_bucket/comet/part-00000.snappy.parquet",
+        ] {
+            let (object_store_url, path, backend) = prepare_object_store_with_configs(
+                Arc::new(RuntimeEnv::default()),
+                input.to_string(),
+                &configs,
+            )
+            .unwrap_or_else(|e| panic!("{input} must build an S3 store, not libhdfs: {e}"));
+            assert_eq!(
+                object_store_url,
+                ObjectStoreUrl::parse(format!(
+                    "s3+comet-{:016x}-native://test_bucket",
+                    hash_object_store_configs(&configs),
+                ))
+                .unwrap()
+            );
+            assert_eq!(path, Path::from("/comet/part-00000.snappy.parquet"));
+            assert_eq!(backend, super::ObjectStoreBackend::Remote);
+        }
+
+        // Listing `s3a` is the supported way to route it through libhdfs, and still does.
+        configs.insert("fs.comet.libhdfs.schemes".to_string(), "s3a".to_string());
+        let err = prepare_object_store_with_configs(
+            Arc::new(RuntimeEnv::default()),
+            "s3a://test_bucket/comet/part-00000.snappy.parquet".to_string(),
+            &configs,
+        )
+        .expect_err("an explicitly listed s3a must reach the libhdfs backend");
+        assert!(
+            err.to_string().contains("Hdfs support is not enabled"),
+            "unexpected error: {err}"
+        );
     }
 }

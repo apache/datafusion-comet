@@ -25,14 +25,15 @@ import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayExcept, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayRepeat}
 import org.apache.spark.sql.catalyst.expressions.{ArrayContains, ArrayRemove}
+import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Cast, CreateArray, ElementAt, Literal, MonotonicallyIncreasingID}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.ArrayType
+import org.apache.spark.sql.types.{ArrayType, StringType}
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
 import org.apache.comet.DataTypeSupport.isComplexType
-import org.apache.comet.serde.{CometArrayExcept, CometArrayRemove, CometArrayReverse, CometFlatten}
+import org.apache.comet.serde.{CometArrayExcept, CometArrayJoin, CometArrayRemove, CometArrayReverse, CometFlatten, Compatible, ExprOuterClass, Incompatible}
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator, SchemaGenOptions}
 
 class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
@@ -518,26 +519,96 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     }
   }
 
+  // No allowIncompatible opt-in: array_join runs natively by default now.
   test("array_join") {
-    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[ArrayJoin]) -> "true") {
-      Seq(true, false).foreach { dictionaryEnabled =>
-        withTempDir { dir =>
-          withTempView("t1") {
-            val path = new Path(dir.toURI.toString, "test.parquet")
-            makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled, 10000)
-            spark.read.parquet(path.toString).createOrReplaceTempView("t1")
-            checkSparkAnswerAndOperator(sql(
-              "SELECT array_join(array(cast(_1 as string), cast(_2 as string), cast(_6 as string)), ' @ ') from t1"))
-            checkSparkAnswerAndOperator(sql(
-              "SELECT array_join(array(cast(_1 as string), cast(_2 as string), cast(_6 as string)), ' @ ', ' +++ ') from t1"))
-            checkSparkAnswerAndOperator(sql(
-              "SELECT array_join(array('hello', 'world', cast(_2 as string)), ' ') from t1 where _2 is not null"))
-            checkSparkAnswerAndOperator(sql(
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withTempDir { dir =>
+        withTempView("t1") {
+          val path = new Path(dir.toURI.toString, "test.parquet")
+          makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled, 10000)
+          spark.read.parquet(path.toString).createOrReplaceTempView("t1")
+          checkSparkAnswerAndOperator(sql(
+            "SELECT array_join(array(cast(_1 as string), cast(_2 as string), cast(_6 as string)), ' @ ') from t1"))
+          checkSparkAnswerAndOperator(sql(
+            "SELECT array_join(array(cast(_1 as string), cast(_2 as string), cast(_6 as string)), ' @ ', ' +++ ') from t1"))
+          checkSparkAnswerAndOperator(sql(
+            "SELECT array_join(array('hello', 'world', cast(_2 as string)), ' ') from t1 where _2 is not null"))
+          checkSparkAnswerAndOperator(
+            sql(
               "SELECT array_join(array('hello', '-', 'world', cast(_2 as string)), ' ') from t1"))
-          }
+          // column delimiter and nullable column replacement: the guarded native shape
+          checkSparkAnswerAndOperator(
+            sql("SELECT array_join(array('a', cast(_2 as string), 'b'), _8, _8) from t1"))
+          // a literal NULL replacement folds to Literal(null, StringType), which is
+          // order-insensitive, so this takes the native path rather than the dispatcher. The
+          // sql-tests fixtures cannot reach this shape because they disable ConstantFolding.
+          checkSparkAnswerAndOperator(
+            sql("SELECT array_join(array('a', cast(_2 as string), 'b'), ',', NULL) from t1"))
         }
       }
     }
+  }
+
+  // Result assertions cannot tell native from the dispatcher: an Incompatible verdict runs
+  // Spark's own doGenCode and matches. Pin the verdict itself.
+  test("array_join support level pins the native path") {
+    val nullableArray = AttributeReference("arr", ArrayType(StringType), nullable = true)()
+    val nullableStr = AttributeReference("s", StringType, nullable = true)()
+    val delims = AttributeReference("delims", ArrayType(StringType), nullable = true)()
+
+    // literals and column reads stay native
+    Seq(
+      ArrayJoin(nullableArray, Literal(","), None),
+      ArrayJoin(nullableArray, Literal(","), Some(Literal("X"))),
+      ArrayJoin(nullableArray, nullableStr, Some(nullableStr)),
+      ArrayJoin(nullableArray, Literal(","), Some(Literal.create(null, StringType))),
+      // the array is unrestricted: it is evaluated on every path
+      ArrayJoin(ElementAt(delims, Literal(1)), Literal(","), None)).foreach { expr =>
+      assert(
+        CometArrayJoin.getSupportLevel(expr).isInstanceOf[Compatible],
+        s"expected Compatible for $expr")
+    }
+
+    // Anything that can throw or carry state goes to the dispatcher instead.
+    val throwingDelimiter = ElementAt(delims, Literal(0))
+    val foldableThrowingDelimiter = ElementAt(CreateArray(Seq(Literal(","))), Literal(0))
+    val nonDeterministicReplacement =
+      Cast(MonotonicallyIncreasingID(), StringType)
+    Seq(
+      ArrayJoin(nullableArray, throwingDelimiter, None),
+      ArrayJoin(nullableArray, throwingDelimiter, Some(nullableStr)),
+      ArrayJoin(nullableArray, foldableThrowingDelimiter, None),
+      ArrayJoin(nullableArray, Literal(","), Some(nonDeterministicReplacement))).foreach { expr =>
+      assert(
+        CometArrayJoin.getSupportLevel(expr).isInstanceOf[Incompatible],
+        s"expected Incompatible for $expr")
+    }
+  }
+
+  test("array_join guards only a nullable replacement") {
+    val nullableArray = AttributeReference("arr", ArrayType(StringType), nullable = true)()
+    val nullableStr = AttributeReference("s", StringType, nullable = true)()
+    val inputs = Seq(nullableArray, nullableStr)
+
+    def convert(expr: ArrayJoin): Option[ExprOuterClass.Expr] =
+      CometArrayJoin.convert(expr, inputs, binding = false)
+
+    // No replacement, or a non-nullable one: unchanged plan.
+    val noReplacement = convert(ArrayJoin(nullableArray, Literal(","), None))
+    assert(noReplacement.isDefined && !noReplacement.get.hasIf)
+    val literalReplacement = convert(ArrayJoin(nullableArray, Literal(","), Some(Literal("X"))))
+    assert(literalReplacement.isDefined && !literalReplacement.get.hasIf)
+
+    // A nullable replacement nullifies the row in Spark.
+    val guarded = convert(ArrayJoin(nullableArray, Literal(","), Some(nullableStr)))
+    assert(guarded.isDefined && guarded.get.hasIf)
+    val literalNull =
+      convert(ArrayJoin(nullableArray, Literal(","), Some(Literal.create(null, StringType))))
+    assert(literalNull.isDefined && literalNull.get.hasIf)
+
+    // A nullable delimiter needs none: array_to_string already returns null for it.
+    val nullableDelimiter = convert(ArrayJoin(nullableArray, nullableStr, None))
+    assert(nullableDelimiter.isDefined && !nullableDelimiter.get.hasIf)
   }
 
   test("arrays_overlap") {
@@ -1056,15 +1127,9 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
         sql("CREATE TABLE test_array_get_item(arr ARRAY<INT>) USING parquet")
         sql("INSERT INTO test_array_get_item VALUES (array(1, 2, 3))")
         // Try to access array with out-of-bounds index
-        val exception = intercept[Exception] {
-          sql("select arr[5] from test_array_get_item").collect()
-        }
+        val exception =
+          checkSparkError(sql("select arr[5] from test_array_get_item"), "INVALID_ARRAY_INDEX")
         val errorMessage = exception.getMessage
-        // Verify error message contains the expected error code
-        assert(
-          errorMessage.contains("INVALID_ARRAY_INDEX"),
-          s"Error message should contain array index error: $errorMessage")
-
         assert(errorMessage.contains("The index 5 is out of bounds. The array has 3 elements." +
           " Use the SQL function `get()` to tolerate accessing element at invalid index and return NULL instead."))
 
@@ -1085,15 +1150,10 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
         sql("CREATE TABLE test_element_at_invalid(arr ARRAY<INT>) USING parquet")
         sql("INSERT INTO test_element_at_invalid VALUES (array(1, 2, 3))")
         // Try to access array with out-of-bounds index using element_at
-        val exception = intercept[Exception] {
-          sql("select element_at(arr, 10) from test_element_at_invalid").collect()
-        }
+        val exception = checkSparkError(
+          sql("select element_at(arr, 10) from test_element_at_invalid"),
+          "INVALID_ARRAY_INDEX_IN_ELEMENT_AT")
         val errorMessage = exception.getMessage
-        // Verify error message contains the expected error code
-        assert(
-          errorMessage.contains("INVALID_ARRAY_INDEX_IN_ELEMENT_AT"),
-          s"Error message should contain array index error: $errorMessage")
-
         assert(errorMessage.contains("The index 10 is out of bounds. The array has 3 elements." +
           " Use `try_element_at` to tolerate accessing element at invalid index and return NULL instead"))
 
@@ -1114,15 +1174,10 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
         sql("CREATE TABLE test_element_at_zero(arr ARRAY<INT>) USING parquet")
         sql("INSERT INTO test_element_at_zero VALUES (array(1, 2, 3))")
         // Try to access array with zero index (invalid in Spark)
-        val exception = intercept[Exception] {
-          sql("select element_at(arr, 0) from test_element_at_zero").collect()
-        }
+        val exception = checkSparkError(
+          sql("select element_at(arr, 0) from test_element_at_zero"),
+          "INVALID_INDEX_OF_ZERO")
         val errorMessage = exception.getMessage
-        // Verify error message contains the expected error code
-        assert(
-          errorMessage.contains("INVALID_INDEX_OF_ZERO"),
-          s"Error message should contain zero index error: $errorMessage")
-
         assert(
           errorMessage.contains("The index 0 is invalid. An index shall be either < 0 or > 0" +
             " (the first element has index 1)"))
@@ -1134,42 +1189,272 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     }
   }
 
-  test("array of structs with nullability-divergent children") {
-    // Spark's type coercion compares element types with `sameType`, which ignores nullability,
-    // so two struct children that differ ONLY in a nested field's nullability get no unifying
-    // cast -- CreateArray keeps children of different StructTypes. DataFusion's make_array asserts
-    // strict element-type equality (down to nested nullability) and panics on the mismatch. Comet
-    // must decline this CreateArray so Spark's evaluator handles it.
-    withParquetTable((0 until 5).map(i => (i, i.toLong)), "tbl") {
-      val df = spark
-        .table("tbl")
-        .select(
-          array(
-            // ct is NOT NULL (literal)
-            struct(col("_1").as("id"), lit("a").as("ct")),
-            // ct is NULLABLE (when without otherwise) -- same type, different nullability
-            struct(col("_1").as("id"), when(col("_1") === 0, lit("b")).as("ct"))).as("arr"))
-      checkSparkAnswerAndFallbackReason(df, "CreateArray children have mismatched data types")
+  // The tests below deliberately live in this suite, not a `sql-tests` fixture: constant folding is
+  // enabled by default here, so each `map(...)` collapses to a MapType Literal and the outer
+  // `array(...)` reaches `CometCreateArray` with folded-Literal children, which `CometLiteral`
+  // rebuilds as an equivalent `CreateMap` of primitive literals -- the folded-literal expansion path
+  // under review. `CometSqlFileTestSuite` force-disables `ConstantFolding`, so an equivalent SQL
+  // fixture would only exercise the constructor path (which `create_array.sql` already covers).
+  test("array of folded map literals with array values (multirow)") {
+    withParquetTable((0 until 3).map(i => (i, i.toLong)), "tbl") {
+      checkSparkAnswerAndOperator(
+        "SELECT array(map(1, array(1, 2, 3)), map(2, array(4, 5, 6))) FROM tbl")
     }
   }
 
-  test("array of maps with nullability-divergent struct values") {
-    // Same nested-nullability divergence as the struct case, but wrapped in a MapType value so we
-    // exercise normalizeContainerNullability's MapType branch: the two map children share a surface
-    // type and differ only in a nested struct field's nullability, so they survive container
-    // (`MapType.valueContainsNull`) normalization as distinct types and CreateArray must still
-    // decline -- DataFusion's make_array would otherwise panic on the struct-field mismatch.
-    withParquetTable((0 until 5).map(i => (i, i.toLong)), "tbl") {
-      val df = spark
-        .table("tbl")
-        .select(
-          array(
-            // map value struct has ct NOT NULL (literal)
-            map(lit("k"), struct(col("_1").as("id"), lit("a").as("ct"))),
-            // map value struct has ct NULLABLE -- same type, different nested nullability
-            map(lit("k"), struct(col("_1").as("id"), when(col("_1") === 0, lit("b")).as("ct"))))
-            .as("arr"))
-      checkSparkAnswerAndFallbackReason(df, "CreateArray children have mismatched data types")
+  // A folded `map(1, array(1))` (value `ArrayType(IntegerType, containsNull = false)`) sits beside a
+  // dynamic `map(2, array(_1))` (value `ArrayType(IntegerType, true)`). Both maps still declare
+  // `valueContainsNull = false`, so only the nested array's `containsNull` differs. `CometCreateArray`
+  // casts each child to the nullability-merged element type (`cast_map_to_map` widens the nested
+  // array), so `make_array` sees identical Arrow types and this runs natively.
+  test(
+    "folded map with non-null nested array beside a dynamic map sibling runs natively (multirow)") {
+    withParquetTable((0 until 3).map(i => (i, i.toLong)), "tbl") {
+      checkSparkAnswerAndOperator(
+        "SELECT array(map(1, array(1)), map(2, array(_1))) AS a FROM tbl")
+    }
+  }
+
+  test("array of folded map literals (multirow)") {
+    withParquetTable((0 until 3).map(i => (i, i.toLong)), "tbl") {
+      checkSparkAnswerAndOperator("SELECT array(map(1, 10), map(2, 20)) FROM tbl")
+    }
+  }
+
+  // The folded `map(1, 2)` and the dynamic `map(2, coalesce(...))` both declare
+  // `MapType(IntegerType, IntegerType, valueContainsNull = false)`, so `CometCreateArray` admits
+  // the pair. Rebuilding the literal has to report that exact type: widening the rebuilt map's
+  // value to nullable would leave the sibling behind and `make_array` would panic, because
+  // DataFusion 54.1 cannot coerce a `MapType.valueContainsNull` mismatch away.
+  test("folded map literal keeps non-nullable values next to a dynamic map sibling (multirow)") {
+    withParquetTable((0 until 3).map(i => (i, i.toLong)), "tbl") {
+      checkSparkAnswerAndOperator(
+        "SELECT _1 AS id, array(map(1, 2), map(2, coalesce(_1, 0))) AS arr FROM tbl")
+    }
+  }
+
+  // The whole `array(...)` folds to one `ArrayType(MapType(IntegerType, IntegerType, true))`
+  // literal, so every rebuilt element must report the unified nullable value type.
+  test("folded array of maps with a NULL value (multirow)") {
+    withParquetTable((0 until 3).map(i => (i, i.toLong)), "tbl") {
+      checkSparkAnswerAndOperator(
+        "SELECT array(map(1, CAST(NULL AS INT)), map(2, 3)) AS arr FROM tbl")
+    }
+  }
+
+  // A NULL element sits next to a populated one inside a single folded
+  // `ArrayType(MapType(IntegerType, IntegerType, false), containsNull = true)` literal. The null
+  // slot serializes as a typed null literal carrying the declared map type, so the rebuilt sibling
+  // has to report that same type for `make_array` to accept the pair.
+  test("folded array mixing a map literal and a NULL element (multirow)") {
+    withParquetTable((0 until 3).map(i => (i, i.toLong)), "tbl") {
+      checkSparkAnswerAndOperator("SELECT array(map(1, 2), NULL) AS arr FROM tbl")
+      checkSparkAnswerAndOperator("SELECT array(NULL, map(1, 2)) AS arr FROM tbl")
+    }
+  }
+
+  // A map value that is itself a map or an array of maps is built by Spark's own generated code
+  // inside `CometCreateMap`, so it keeps its declared nullability all the way to the consumer.
+  test("folded map literals with nested map values (multirow)") {
+    withParquetTable((0 until 3).map(i => (i, i.toLong)), "tbl") {
+      checkSparkAnswerAndOperator("SELECT _1 AS id, map(1, map(1, 2)) AS m FROM tbl")
+      checkSparkAnswerAndOperator("SELECT _1 AS id, map(1, array(map(2, 3))) AS m FROM tbl")
+      checkSparkAnswerAndOperator(
+        "SELECT _1 AS id, map(1, named_struct('a', 1, 'b', 'x')) AS m FROM tbl")
+    }
+  }
+
+  // An empty container has no children to recover its element type from, so expansion rebuilds it
+  // from a childless `CreateArray` cast to the declared type (and `map_from_arrays` over two such
+  // arrays for a map). A NULL literal serializes as a typed null without expansion.
+  test("folded empty and NULL complex literals") {
+    withParquetTable((0 until 3).map(i => (i, i.toLong)), "tbl") {
+      checkSparkAnswerAndOperator("SELECT _1 AS id, CAST(map() AS MAP<INT,INT>) AS m FROM tbl")
+      checkSparkAnswerAndOperator(
+        "SELECT _1 AS id, CAST(array() AS ARRAY<MAP<INT,INT>>) AS a FROM tbl")
+      checkSparkAnswerAndOperator("SELECT _1 AS id, CAST(NULL AS MAP<INT,INT>) AS m FROM tbl")
+      checkSparkAnswerAndOperator(
+        "SELECT _1 AS id, CAST(NULL AS ARRAY<MAP<INT,INT>>) AS a FROM tbl")
+      // A complex value type has to survive the rebuild too: `typedLit(Map.empty[Int, List[Int]])`
+      // is already a Literal, and `map_extract` only type-checks if the rebuilt empty map keeps
+      // `MapType(IntegerType, ArrayType(IntegerType, false), true)`.
+      val emptyMapping = typedLit(Map.empty[Int, List[Int]])
+      checkSparkAnswerAndOperator(spark.table("tbl").select(emptyMapping(col("_1")).as("v")))
+    }
+  }
+
+  // https://github.com/apache/datafusion-comet/issues/5544: Arrow's IntervalMonthDayNano holds
+  // elapsed time in nanoseconds, so the dispatcher's `Math.multiplyExact(microseconds, 1000L)`
+  // overflows past about 292 years, where Spark accepts the value (#5279). Expansion has to
+  // decline the value, not just the type: the calendar-interval restriction in
+  // `mapKeyTypesExpandable` only covers map keys. The `array(map(...))` spelling also covers the
+  // outer `ArrayType` recursion of the value walk.
+  test("folded map value with an out-of-range calendar interval falls back (multirow)") {
+    withParquetTable((0 until 3).map(i => (i, i.toLong)), "tbl") {
+      Seq(
+        "array(map(1, make_interval(0, 0, 0, 0, 3000000, 0, 0)))" -> "ArrayType",
+        "map(1, make_interval(0, 0, 0, 0, 3000000, 0, 0))" -> "MapType",
+        "map(1, make_interval(0, 0, 0, 0, -3000000, 0, 0))" -> "MapType").foreach {
+        case (value, declaredType) =>
+          checkSparkAnswerAndFallbackReason(
+            s"SELECT _1 AS id, $value AS v FROM tbl",
+            s"Unsupported data type $declaredType")
+      }
+      // An interval inside the nanosecond range still runs natively.
+      checkSparkAnswerAndOperator(
+        "SELECT _1 AS id, array(map(1, make_interval(0, 0, 0, 0, 24, 0, 0))) AS a FROM tbl")
+    }
+  }
+
+  // https://github.com/apache/datafusion-comet/issues/5544: the dispatcher copies a UTF8String's
+  // raw bytes into a VarCharVector and the native bridge imports them through unchecked Arrow FFI,
+  // so malformed UTF-8 aborts the JVM on `hint::unreachable_unchecked` (X'FF') or silently
+  // mis-counts characters (the overlong X'C080'). Spark preserves the raw bytes, so normalizing
+  // them would not be equivalent either; expansion declines and Spark evaluates the projection.
+  test("folded map value with malformed UTF-8 falls back (multirow)") {
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "false") {
+      withParquetTable((1 until 4).map(i => (i, i.toLong)), "tbl") {
+        Seq(
+          "length(element_at(map(1, CAST(X'FF' AS STRING)), _1))" -> "MapType",
+          // Exercises the struct arm of the value walk.
+          "element_at(map(1, named_struct('s', CAST(X'FF' AS STRING))), _1)" -> "MapType")
+          .foreach { case (value, declaredType) =>
+            checkSparkAnswerAndFallbackReason(
+              s"SELECT _1 AS id, $value AS v FROM tbl",
+              s"Unsupported data type $declaredType")
+          }
+        // Well-formed multi-byte text is unaffected.
+        checkSparkAnswerAndOperator(
+          "SELECT _1 AS id, length(element_at(map(1, CAST(X'C3A9' AS STRING)), _1)) AS v FROM tbl")
+      }
+    }
+  }
+
+  // https://github.com/apache/datafusion-comet/issues/5544: the two paths that serialize a
+  // string literal directly, `convert`'s scalar `StringType` arm and `makeListLiteral`'s, both
+  // go through `UTF8String.toString`, which substitutes U+FFFD for malformed input where Spark
+  // keeps the raw bytes. Declining is the only option, because `string_val` and `string_values`
+  // are proto `string` fields that cannot carry those bytes at all. Comparing the answers calls
+  // the two sides equal, since both render as the replacement character, so the failing cases
+  // go through `hex`. Every expression here keeps a column child to stay out of ConstantFolding,
+  // which would otherwise fold the projection into one literal the encoder never sees.
+  test("string literal holding malformed UTF-8 falls back (multirow)") {
+    withParquetTable((1 until 4).map(i => (i, i.toLong)), "tbl") {
+      // The list-literal encoder: `array(...)` is all-literal, so it folds.
+      checkSparkAnswerAndFallbackReason(
+        "SELECT _1 AS id, hex(element_at(array(CAST(X'FF' AS STRING), 'b', 'c'), _1)) AS v " +
+          "FROM tbl",
+        "Unsupported literal value for data type ArrayType")
+      // The scalar arm, which has nothing to do with complex literals. The overlong form of
+      // U+0000 is the same hazard: Spark accepts it, Rust's `str::from_utf8` does not.
+      Seq("X'FF'", "X'C080'").foreach { bytes =>
+        checkSparkAnswerAndFallbackReason(
+          s"SELECT _1 AS id, hex(concat(CAST($bytes AS STRING), CAST(_1 AS STRING))) AS v " +
+            "FROM tbl",
+          "Unsupported literal value for data type StringType")
+      }
+      // Well-formed multi-byte text still serializes, on both paths.
+      checkSparkAnswerAndOperator(
+        "SELECT _1 AS id, length(concat(CAST(X'C3A9' AS STRING), CAST(_1 AS STRING))) AS v " +
+          "FROM tbl")
+      checkSparkAnswerAndOperator(
+        "SELECT _1 AS id, length(element_at(array(CAST(X'C3A9' AS STRING), 'b', 'c'), _1)) " +
+          "AS v FROM tbl")
+    }
+  }
+
+  // `CometLiteralSuite` pins the element-type gate against `makeListLiteral`'s arms exhaustively.
+  // This is the end-to-end half: an element type with no arm produces a fallback rather than the
+  // `MatchError` it used to raise mid-planning.
+  test("folded array literal whose element type the list encoder cannot carry falls back") {
+    withParquetTable((0 until 3).map(i => (i, i.toLong)), "tbl") {
+      checkSparkAnswerAndFallbackReason(
+        "SELECT _1 AS id, array(make_interval(1)) AS a FROM tbl",
+        "Unsupported data type ArrayType")
+    }
+  }
+
+  // https://github.com/apache/datafusion-comet/issues/5544: Arrow addresses a `StructVector`'s
+  // children by name, so the two `x` fields collapse into one child and the dispatcher's
+  // generated writer NPEs on the missing ordinal. `CometCreateNamedStruct` declines duplicates
+  // on the native path, but a struct that is only a map value is handed to the dispatcher whole
+  // and never reaches that check. The SQL fixture covers the unfolded spelling, and the harness
+  // excludes `ConstantFolding`, so the folded spelling the issue reports only runs here.
+  test("folded map value with duplicate struct field names falls back (multirow)") {
+    withParquetTable((0 until 3).map(i => (i, i.toLong)), "tbl") {
+      checkSparkAnswerAndFallbackReason(
+        "SELECT _1 AS id, map(1, named_struct('x', 10, 'x', 20)) AS v FROM tbl",
+        "Unsupported data type MapType")
+      // Names differing only in case are distinct children in Arrow, so the exact-name check
+      // leaves these on the native path.
+      checkSparkAnswerAndOperator(
+        "SELECT _1 AS id, map(1, named_struct('x', 10, 'X', 20)) AS v FROM tbl")
+    }
+  }
+
+  // A folded struct literal would reach native `CreateNamedStruct` with all-scalar children,
+  // which builds a 1-row `StructArray` regardless of batch size. `CometLiteral` excludes
+  // StructType from expansion so the projection falls back instead of truncating the result.
+  test("folded struct literal in multirow projection falls back") {
+    withParquetTable((0 until 3).map(i => (i, i.toLong)), "tbl") {
+      checkSparkAnswerAndFallbackReason(
+        "SELECT _1 AS id, named_struct('a', 1) AS s FROM tbl",
+        "Unsupported data type StructType")
+    }
+  }
+
+  // Folds to one ArrayType(StructType) Literal whose structs disagree on field nullability.
+  // `KnownNullable` is dropped on the wire, so expansion could not make the sibling struct
+  // arrays agree and `make_array` would panic. Excluding StructType keeps this on Spark.
+  test("folded array of structs with divergent field nullability falls back (multirow)") {
+    withParquetTable((0 until 3).map(i => (i, i.toLong)), "tbl") {
+      checkSparkAnswerAndFallbackReason(
+        "SELECT array(named_struct('a', CAST(NULL AS INT)), named_struct('a', 1)) AS arr FROM tbl",
+        "Unsupported data type ArrayType")
+    }
+  }
+
+  // `from_json` can fold to a MapData with duplicate keys. Rebuilding it as a `CreateMap` would
+  // run `ArrayBasedMapBuilder`, which throws under `MAP_KEY_DEDUP_POLICY=EXCEPTION` and silently
+  // drops the earlier entry under `LAST_WIN`, so `CometLiteral` declines expansion under either
+  // policy and Spark evaluates the projection.
+  test("folded map literal with duplicate keys falls back (multirow)") {
+    assume(isSpark35Plus)
+    withParquetTable((0 until 3).map(i => (i, i.toLong)), "tbl") {
+      Seq("EXCEPTION", "LAST_WIN").foreach { policy =>
+        withSQLConf(SQLConf.MAP_KEY_DEDUP_POLICY.key -> policy) {
+          checkSparkAnswerAndFallbackReason(
+            "SELECT _1 AS id, from_json('{\"a\":1,\"a\":2}', 'MAP<STRING,INT>') AS m FROM tbl",
+            "Unsupported data type MapType")
+        }
+      }
+    }
+  }
+
+  // Spark's map cast preserves both entries, so the folded value still holds duplicate keys after
+  // the key type becomes BinaryType. `Array[Byte]` has no value-based `equals`, so the duplicate
+  // check has to compare keys the way `ArrayBasedMapBuilder` does, through
+  // `TypeUtils.getInterpretedOrdering`.
+  test("folded map literal with duplicate binary keys falls back (multirow)") {
+    assume(isSpark35Plus)
+    withParquetTable((0 until 3).map(i => (i, i.toLong)), "tbl") {
+      Seq("EXCEPTION", "LAST_WIN").foreach { policy =>
+        withSQLConf(SQLConf.MAP_KEY_DEDUP_POLICY.key -> policy) {
+          checkSparkAnswerAndFallbackReason(
+            "SELECT _1 AS id, CAST(from_json('{\"a\":1,\"a\":2}', 'MAP<STRING,INT>') " +
+              "AS MAP<BINARY,INT>) AS m FROM tbl",
+            "Unsupported data type MapType")
+        }
+      }
+    }
+  }
+
+  // Distinct binary keys are fine: Arrow compares them by content, as Spark's ordering does.
+  test("folded map literal with distinct binary keys (multirow)") {
+    withParquetTable((1 until 4).map(i => (i, i.toLong)), "tbl") {
+      checkSparkAnswerAndOperator(
+        "SELECT _1 AS id, element_at(map(CAST('1' AS BINARY), 10, CAST('2' AS BINARY), 20), " +
+          "CAST(CAST(_1 AS STRING) AS BINARY)) AS v FROM tbl")
     }
   }
 
