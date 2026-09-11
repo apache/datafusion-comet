@@ -251,12 +251,21 @@ class SharedNativeArtifactTest(unittest.TestCase):
         self.assert_rejected("independent Linux checks must not consume the shared native artifact")
 
     def test_independent_checks_cannot_download_native_artifact(self):
+        """Reject direct and retried downloads of native artifacts by independent checks.
+
+        Each action is appended to a fresh copy of the temporary workflow. The
+        original fixture is restored after successful assertions and its whole
+        temporary directory is cleaned up even if a check fails.
+        """
         path = self.workflows / CHECK.LINUX_CHECKS_WORKFLOW
-        with path.open("a", encoding="utf-8") as stream:
-            stream.write("\n      - uses: actions/download-artifact@v8\n"
-                         "        with:\n          name: native-lib-linux\n"
-                         "          path: native/target/release/\n")
-        self.assert_rejected("independent Linux checks must not consume the shared native artifact")
+        original = path.read_text(encoding="utf-8")
+        for action in ("actions/download-artifact@v8", "./.github/actions/download-artifact-retry"):
+            with self.subTest(action=action):
+                path.write_text(original + f"\n      - uses: {action}\n"
+                                "        with:\n          name: native-lib-linux\n"
+                                "          path: native/target/release/\n", encoding="utf-8")
+                self.assert_rejected("independent Linux checks must not consume the shared native artifact")
+        path.write_text(original, encoding="utf-8")
 
 
 if __name__ == "__main__":
