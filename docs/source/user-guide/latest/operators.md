@@ -54,6 +54,7 @@ omitted from the tables below and may be reconsidered based on demand:
 | `FileSourceScanExec`    | ✅     | Parquet only. Some types and configurations fall back. See [Parquet Scan Compatibility](compatibility/scans.md).                                                                                             |
 | `BatchScanExec`         | ✅     | Parquet, Apache Iceberg Parquet, and CSV (native) scans. See [Parquet Scan Compatibility](compatibility/scans.md) and the [Iceberg Guide](iceberg.md).                                                       |
 | `LocalTableScanExec`    | ⚠️     | Disabled by default; there is no acceleration advantage and this operator is typically only used in test code. Can be opted into via config ([#4393](https://github.com/apache/datafusion-comet/pull/4393)). |
+| `EmptyRelationExec`     | ✅     | Spark 4.0 and later. See [Empty Relations](compatibility/operators.md#empty-relations) for native-input support and writer fallback.                                                                         |
 | `InMemoryTableScanExec` | 🔜     | Cached / in-memory table scans fall back today.                                                                                                                                                              |
 
 ## Projection and filtering

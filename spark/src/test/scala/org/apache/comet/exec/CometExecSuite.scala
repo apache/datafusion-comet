@@ -4098,6 +4098,22 @@ class CometExecSuite extends CometTestBase {
     assert(CometExecRule(spark).apply(unsupported).getClass == unsupported.getClass)
   }
 
+  test("EmptyRelationExec preserves the eliminated subtree in explain output") {
+    assume(isSpark40Plus, "EmptyRelationExec requires Spark 4.0+")
+    val attributes = Seq(AttributeReference("id", IntegerType, nullable = false)())
+    val eliminated = org.apache.spark.sql.catalyst.plans.logical
+      .Project(attributes, LocalRelation(attributes, Seq(InternalRow(1))))
+    val original = ShimCometEmptyRelation.create(eliminated).get
+    val converted = CometExecRule(spark).apply(original).asInstanceOf[CometEmptyRelationExec]
+
+    val explained = converted.treeString
+    assert(explained.contains("CometEmptyRelation"), explained)
+    assert(explained.contains("Project"), explained)
+    assert(explained.contains("LocalRelation"), explained)
+    assert(converted.children.isEmpty)
+    assert(converted.executeCollect().isEmpty)
+  }
+
   test("EmptyRelationExec supports global and grouped COUNT and SUM") {
     withSQLConf(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
