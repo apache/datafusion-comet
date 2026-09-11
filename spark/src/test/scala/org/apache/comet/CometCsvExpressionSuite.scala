@@ -47,24 +47,21 @@ class CometCsvExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper
           SchemaGenOptions(generateArray = false, generateStruct = false, generateMap = false),
           DataGenOptions(allowNull = true, generateNegativeZero = true))
       }
-      withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[StructsToCsv]) -> "true") {
-        val df = spark.read
-          .parquet(filename)
-          .select(
-            to_csv(
-              struct(
-                col("c0"),
-                col("c1"),
-                col("c2"),
-                col("c3"),
-                col("c4"),
-                col("c5"),
-                col("c7"),
-                col("c8"),
-                col("c9"),
-                col("c12"))))
-        checkSparkAnswerAndOperator(df)
-      }
+      // Every column in the fuzz schema except c13 Binary, with no allowIncompatible opt-in:
+      // to_csv now routes through the codegen dispatcher by default, so Spark's own converter runs
+      // and all field types match by construction. This previously ran under
+      // allowIncompatible=true and had to skip c6 Double, c10 Timestamp and c11 TimestampNTZ,
+      // which are types the native path cannot match Spark on (the latter two are #3232).
+      //
+      // c13 Binary stays out, and not because of a divergence: Spark's CSV converter renders
+      // BinaryType with Java's default Object.toString(), so a row comes out as
+      // "...,[B@731af74". That is an identity hash of the byte array instance, which differs
+      // between any two evaluations, so the value can never be asserted against a second run --
+      // by Comet or by Spark against itself.
+      val df = spark.read
+        .parquet(filename)
+        .select(to_csv(struct((0 to 12).map(i => col(s"c$i")): _*)))
+      checkSparkAnswerAndOperator(df)
     }
   }
 
