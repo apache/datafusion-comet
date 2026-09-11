@@ -414,9 +414,11 @@ message IcebergDeleteFile {
   // Equality field IDs (empty for positional deletes)
   repeated int32 equality_ids = 4;
 
-  // Deletion vector coordinates, set only for V3 deletion vectors. referenced_data_file is the
+  // Deletion vector coordinates, set only when file_format is PUFFIN. referenced_data_file is the
   // data file the vector applies to; content_offset and content_size_in_bytes locate the
-  // deletion-vector-v1 blob within its Puffin file.
+  // deletion-vector-v1 blob within its Puffin file. Iceberg also populates referencedDataFile on
+  // file-scoped Parquet position deletes, so file_format, not the presence of this field, is what
+  // identifies a deletion vector.
   optional string referenced_data_file = 5;
   optional int64 content_offset = 6;
   optional int64 content_size_in_bytes = 7;

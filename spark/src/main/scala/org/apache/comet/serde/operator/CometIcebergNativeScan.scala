@@ -330,13 +330,13 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
         // "PARQUET", or "PUFFIN" for a V3 deletion vector. iceberg-rust selects its
         // deletion-vector reader on this, and a wrong value reads a Puffin blob as Parquet, so an
         // undeterminable format is fatal: by serde time there is no fallback left.
-        deleteBuilder.setFileFormat(
-          IcebergReflection
-            .getFileFormat(contentFileClass, deleteFile)
-            .getOrElse(
-              throw new RuntimeException(
-                "ContentFile.format() is not declared on this Iceberg version -- cannot tell a " +
-                  "deletion vector from a Parquet delete file")))
+        val fileFormat = IcebergReflection
+          .getFileFormat(contentFileClass, deleteFile)
+          .getOrElse(
+            throw new RuntimeException(
+              "ContentFile.format() is not declared on this Iceberg version -- cannot tell a " +
+                "deletion vector from a Parquet delete file"))
+        deleteBuilder.setFileFormat(fileFormat)
 
         val specId =
           try {
@@ -358,14 +358,19 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
           case _: Exception =>
         }
 
-        // V3 deletion-vector coordinates: referencedDataFile names the data file the vector
-        // applies to, and the other two locate the deletion-vector-v1 blob in its Puffin file.
-        deletionVectorField(deleteFileClass, "referencedDataFile", deleteFile)
-          .foreach(p => deleteBuilder.setReferencedDataFile(p.asInstanceOf[String]))
-        deletionVectorField(deleteFileClass, "contentOffset", deleteFile)
-          .foreach(o => deleteBuilder.setContentOffset(o.asInstanceOf[java.lang.Long]))
-        deletionVectorField(deleteFileClass, "contentSizeInBytes", deleteFile)
-          .foreach(s => deleteBuilder.setContentSizeInBytes(s.asInstanceOf[java.lang.Long]))
+        // Gated on the format, not on the accessors returning a value: Iceberg also sets
+        // referencedDataFile on file-scoped Parquet position deletes, where iceberg-rust ignores
+        // it. Forwarding it there would serialize a data-file path per delete file that nothing
+        // reads, and would invite keying deletion-vector detection on the field instead of on
+        // fileFormat, which is the only discriminator.
+        if (fileFormat.equalsIgnoreCase(IcebergReflection.FileFormats.PUFFIN)) {
+          deletionVectorField(deleteFileClass, "referencedDataFile", deleteFile)
+            .foreach(p => deleteBuilder.setReferencedDataFile(p.asInstanceOf[String]))
+          deletionVectorField(deleteFileClass, "contentOffset", deleteFile)
+            .foreach(o => deleteBuilder.setContentOffset(o.asInstanceOf[java.lang.Long]))
+          deletionVectorField(deleteFileClass, "contentSizeInBytes", deleteFile)
+            .foreach(s => deleteBuilder.setContentSizeInBytes(s.asInstanceOf[java.lang.Long]))
+        }
 
         // recordCount is declared on ContentFile, so it is present on every supported Iceberg
         // version and a lookup failure is a real defect rather than an old-version absence.

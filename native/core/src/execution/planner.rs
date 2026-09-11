@@ -4449,9 +4449,11 @@ fn parse_file_scan_tasks_from_common(
                 } else {
                     Some(del.equality_ids.clone())
                 },
-                // Deletion-vector coordinates, set only for V3 deletion vectors and left unset for
-                // Parquet delete files. referenced_data_file names the data file the vector applies
-                // to; the other two locate the deletion-vector-v1 blob in its Puffin file.
+                // Deletion-vector coordinates, which the serde sets only when file_format is
+                // PUFFIN. referenced_data_file names the data file the vector applies to; the other
+                // two locate the deletion-vector-v1 blob in its Puffin file. file_format above is
+                // the discriminator, since Iceberg also populates referencedDataFile on
+                // file-scoped Parquet position deletes.
                 referenced_data_file: del.referenced_data_file.clone(),
                 content_offset: del.content_offset,
                 content_size_in_bytes: del.content_size_in_bytes,
