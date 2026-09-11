@@ -35,19 +35,56 @@ With `spark.comet.exec.join.dynamicFilter.enabled=true`, native broadcast and sh
 report these additional metric keys. See [Join Runtime Filters](tuning.md#join-runtime-filters) for
 eligibility and reader restrictions.
 
-| Metric                                   | Description                                                       |
-| ---------------------------------------- | ----------------------------------------------------------------- |
-| `dynamic_filter_rows_evaluated`          | Probe rows evaluated by the runtime filter.                       |
-| `dynamic_filter_rows_pruned`             | Probe rows rejected by that filter before the hash probe.         |
-| `dynamic_filter_rows_bypassed`           | Probe rows passed through while the runtime filter is inactive.   |
-| `dynamic_filter_eval_time`               | Time evaluating the runtime filter.                               |
-| `dynamic_filter_reader_filters_attached` | Executions that attach their runtime filter to a native reader.   |
-| `dynamic_filter_reader_filters_skipped`  | Executions whose probe input is ineligible for reader attachment. |
+| Metric                                 | Description                                                       |
+| -------------------------------------- | ----------------------------------------------------------------- |
+| `dynamic_filter_join_rows_evaluated`   | Probe rows evaluated by the runtime filter.                       |
+| `dynamic_filter_join_rows_pruned`      | Probe rows rejected by that filter before the hash probe.         |
+| `dynamic_filter_join_rows_bypassed`    | Probe rows passed through while the runtime filter is inactive.   |
+| `dynamic_filter_join_eval_time`        | Time evaluating the runtime filter.                               |
+| `dynamic_filter_join_filters_attached` | Executions that attach their runtime filter to a native reader.   |
+| `dynamic_filter_join_filters_skipped`  | Executions whose probe input is ineligible for reader attachment. |
 
 The row counters measure residual filtering of decoded probe batches. They exclude rows skipped
 by the reader. An attached filter does not guarantee that any row groups are pruned: compare the
 probe scan's `bytes_scanned` and `row_groups_pruned_statistics` with filtering disabled to assess
 reader savings. Existing join, scan, and intervening filter metrics retain their own meanings.
+
+### TopK
+
+With `spark.comet.exec.topK.dynamicFilter.enabled=true`, `CometLocalTopKExec` reports residual
+filtering and reader attachment counters. See [TopK Runtime Filters](tuning.md#topk-runtime-filters)
+for eligibility and reader restrictions.
+
+| Operator    | Metric                                 | Description                                                              |
+| ----------- | -------------------------------------- | ------------------------------------------------------------------------ |
+| Local TopK  | `dynamic_filter_topk_rows_evaluated`   | Decoded rows evaluated by Comet's residual TopK filter.                  |
+| Local TopK  | `dynamic_filter_topk_rows_pruned`      | Rows rejected by that filter before the TopK heap.                       |
+| Local TopK  | `dynamic_filter_topk_rows_bypassed`    | Decoded rows passed through while the TopK filter is inactive.           |
+| Local TopK  | `dynamic_filter_topk_eval_time`        | Time evaluating and applying Comet's residual TopK filter.               |
+| Local TopK  | `dynamic_filter_topk_filters_attached` | Executions that attach a TopK predicate to the reader.                   |
+| Local TopK  | `dynamic_filter_topk_filters_skipped`  | Executions whose input prevents reader attachment.                       |
+| Local TopK  | `output_rows`                          | Candidates emitted by local selection, before the final global TopK.     |
+| Native scan | `row_groups_pruned_dynamic_filter`     | Row groups skipped during scanning after a runtime predicate improves.   |
+| Native scan | `output_rows`                          | Rows emitted by the scan, before residual filtering and TopK selection.  |
+| Native scan | `bytes_scanned`                        | Bytes requested by the reader; separately fetched metadata is excluded.  |
+| Native scan | `pushdown_rows_pruned`                 | Rows rejected during decoding when row-level filter pushdown is enabled. |
+
+The TopK row counters measure Comet's explicit residual filtering of decoded batches before
+DataFusion's TopK heap. They exclude rows skipped by the reader and any additional filtering
+inside DataFusion's TopK implementation. For an eligible fused scan with filtering enabled,
+`dynamic_filter_topk_rows_evaluated + dynamic_filter_topk_rows_bypassed` equals the scan's
+`output_rows`; subtracting `dynamic_filter_topk_rows_pruned` gives the rows passed to DataFusion's TopK operator.
+`dynamic_filter_topk_eval_time` excludes reader filtering and DataFusion's internal filtering
+and heap maintenance. These counters remain zero when runtime filtering is disabled.
+
+The scan owns reader savings metrics; TopK output rows do not measure scan pruning. Row-level
+pruning counters exclude rows in skipped row groups. Filters attached to a reader may prune
+nothing. The residual filter also adds work, so compare scan bytes, scan output rows, residual
+filter counts and time, and query elapsed time with filtering disabled.
+Attachment is counted per execution; individual files can disable the reader predicate to
+preserve schema-conversion errors.
+`row_groups_pruned_statistics` counts initial statistics pruning separately from the live
+`row_groups_pruned_dynamic_filter` counter.
 
 ### Exchange
 

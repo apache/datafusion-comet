@@ -141,12 +141,13 @@ class RevertNativeForTransitionHeavyStagesSuite extends CometTestBase {
     }
   }
 
-  for (adaptive <- Seq(false, true)) {
-    test(s"transition reversion preserves local TopK: AQE=$adaptive") {
+  for (adaptive <- Seq(false, true); filtering <- Seq(false, true)) {
+    test(s"transition reversion preserves local TopK: AQE=$adaptive, filter=$filtering") {
       withSQLConf(
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
         SQLConf.LEAF_NODE_DEFAULT_PARALLELISM.key -> "1",
         CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_TOPK_DYNAMIC_FILTER_ENABLED.key -> filtering.toString,
         CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "true",
         CometConf.COMET_EXEC_TRANSITION_REVERT_MAX_TRANSITIONS.key -> "0") {
         withTempPath { path =>
