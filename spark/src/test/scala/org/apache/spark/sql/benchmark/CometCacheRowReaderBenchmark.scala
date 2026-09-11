@@ -34,8 +34,9 @@ import org.apache.comet.{CometConf, CometSparkSessionExtensions}
 /**
  * Compare Spark consumers of Comet and Spark caches (issue #5485).
  *
- * Arguments: [spark|comet|all] [rows] [iterations] [all|mixed|numeric]. Run one format per JVM in
- * alternating order on main and the patch. Cache creation and validation are outside timing.
+ * Arguments: [spark|comet|comet-row|all] [rows] [iterations] [all|mixed|numeric]. Run one format
+ * per JVM in alternating order on main and the patch. comet-row disables vectorized cache reading
+ * to isolate the row iterator. Cache creation and validation are outside timing.
  */
 object CometCacheRowReaderBenchmark extends BenchmarkBase {
   private val warmups = 5
@@ -46,13 +47,13 @@ object CometCacheRowReaderBenchmark extends BenchmarkBase {
     val rows = args.lift(1).map(_.toLong).getOrElse(5000000L)
     val iterations = args.lift(2).map(_.toInt).getOrElse(15)
     val schema = args.lift(3).getOrElse("all")
-    require(Set("all", "spark", "comet").contains(format))
+    require(Set("all", "spark", "comet", "comet-row").contains(format))
     require(Set("all", "mixed", "numeric").contains(schema))
     require(rows > 0 && iterations > 0)
 
     emit("CACHE_SAMPLE,format,schema,query,rows,iteration,elapsed_ns")
     val formats =
-      if (format == "all") Seq("spark", "comet") else Seq(format)
+      if (format == "all") Seq("spark", "comet", "comet-row") else Seq(format)
     val schemas = if (schema == "all") Seq("mixed", "numeric") else Seq(schema)
     formats.foreach { name =>
       CometInMemoryRelationHelper.clearSerializer()
@@ -75,7 +76,7 @@ object CometCacheRowReaderBenchmark extends BenchmarkBase {
         .config("spark.io.compression.codec", "lz4")
         .config(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key, "false")
         .config(SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key, "true")
-        .config(SQLConf.CACHE_VECTORIZED_READER_ENABLED.key, "false")
+        .config(SQLConf.CACHE_VECTORIZED_READER_ENABLED.key, (name != "comet-row").toString)
         .config(SQLConf.CODEGEN_FACTORY_MODE.key, "CODEGEN_ONLY")
         .config(CometConf.COMET_ENABLED.key, "false")
         .config(CometConf.COMET_EXEC_ENABLED.key, "false")
@@ -163,10 +164,13 @@ object CometCacheRowReaderBenchmark extends BenchmarkBase {
         assert(scans.size == 1, s"Expected one Spark cache scan:\n$plan")
         val scan = scans.head
         assert(scan.attributes.map(_.name).toSet == selected.toSet, s"Wrong projection:\n$plan")
-        assert(!scan.supportsColumnar, s"Expected the cache row reader:\n$plan")
-        assert(!plan.exists(_.isInstanceOf[ColumnarToRowExec]), s"Unexpected transition:\n$plan")
+        val columnar = plan.exists(_.isInstanceOf[ColumnarToRowExec])
+        if (format != "comet") {
+          assert(!columnar, s"Expected the cache row reader:\n$plan")
+        }
         assert(!plan.exists(_.getClass.getName.startsWith("org.apache.spark.sql.comet.")))
-        emit(s"CACHE_PLAN,$format,$schema,$name,columns=${selected.size}\n$plan")
+        val reader = if (columnar) "columnar" else "row"
+        emit(s"CACHE_PLAN,$format,$schema,$name,columns=${selected.size},reader=$reader\n$plan")
         runQuery(query, answer, format, schema, name, rows, iterations)
       }
     } finally cached.unpersist(blocking = true)
