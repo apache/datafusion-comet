@@ -230,7 +230,7 @@ class CometVariantProjectionSuite extends CometTestBase {
         withTempPath { output =>
           withTable("variant_copy") {
             sql(
-              s"CREATE TABLE variant_copy (id INT, v VARIANT) USING parquet " +
+              "CREATE TABLE variant_copy (id INT, v VARIANT) USING parquet " +
                 s"LOCATION '${output.getCanonicalPath}'")
             withSQLConf(
               CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
