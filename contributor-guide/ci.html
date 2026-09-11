@@ -29,7 +29,7 @@ under the License.
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Contributing to Apache DataFusion Comet &#8212; Apache DataFusion Comet  documentation</title>
+    <title>Continuous Integration &#8212; Apache DataFusion Comet  documentation</title>
   
   
   
@@ -63,13 +63,13 @@ under the License.
     <script src="../_static/documentation_options.js?v=5929fcd5"></script>
     <script src="../_static/doctools.js?v=9a2dae69"></script>
     <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
-    <script>DOCUMENTATION_OPTIONS.pagename = 'contributor-guide/contributing';</script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'contributor-guide/ci';</script>
     <script async="true" defer="true" src="https://buttons.github.io/buttons.js"></script>
     <script src="../_static/comet-ux.js?v=97577a30"></script>
     <link rel="index" title="Index" href="../genindex.html" />
     <link rel="search" title="Search" href="../search.html" />
-    <link rel="next" title="Comet Development Guide" href="development.html" />
-    <link rel="prev" title="Comet Contributor Guide" href="index.html" />
+    <link rel="next" title="Comet Debugging Guide" href="debugging.html" />
+    <link rel="prev" title="Running Iceberg Spark Tests" href="iceberg-spark-tests.html" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
@@ -391,8 +391,8 @@ under the License.
   <div class="bd-toc-item active">
     
       <p aria-level="2" class="caption" role="heading"><span class="caption-text">Getting Started</span></p>
-<ul class="current nav bd-sidenav">
-<li class="toctree-l1 current active"><a class="current reference internal" href="#">Getting Started</a></li>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="contributing.html">Getting Started</a></li>
 <li class="toctree-l1"><a class="reference internal" href="development.html">Development Guide</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Project Architecture</span></p>
@@ -412,11 +412,11 @@ under the License.
 <li class="toctree-l1"><a class="reference internal" href="adding_a_new_spark_version.html">Adding a New Spark Version</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Testing</span></p>
-<ul class="nav bd-sidenav">
+<ul class="current nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="sql-file-tests.html">Comet SQL Tests</a></li>
 <li class="toctree-l1"><a class="reference internal" href="spark-sql-tests.html">Spark SQL Tests</a></li>
 <li class="toctree-l1"><a class="reference internal" href="iceberg-spark-tests.html">Iceberg Spark Tests</a></li>
-<li class="toctree-l1"><a class="reference internal" href="ci.html">Continuous Integration</a></li>
+<li class="toctree-l1 current active"><a class="current reference internal" href="#">Continuous Integration</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Debugging and Performance</span></p>
 <ul class="nav bd-sidenav">
@@ -510,7 +510,7 @@ under the License.
     
     <li class="breadcrumb-item"><a href="index.html" class="nav-link">Comet Contributor Guide</a></li>
     
-    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Contributing to Apache DataFusion Comet</span></li>
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Continuous Integration</span></li>
   </ul>
 </nav>
 </div>
@@ -527,55 +527,222 @@ under the License.
 <div id="searchbox"></div>
                 <article class="bd-article">
                   
-  <!---
-  Licensed to the Apache Software Foundation (ASF) under one
-  or more contributor license agreements.  See the NOTICE file
-  distributed with this work for additional information
-  regarding copyright ownership.  The ASF licenses this file
-  to you under the Apache License, Version 2.0 (the
-  "License"); you may not use this file except in compliance
-  with the License.  You may obtain a copy of the License at
+  <!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
 
-    http://www.apache.org/licenses/LICENSE-2.0
+  http://www.apache.org/licenses/LICENSE-2.0
 
-  Unless required by applicable law or agreed to in writing,
-  software distributed under the License is distributed on an
-  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-  KIND, either express or implied.  See the License for the
-  specific language governing permissions and limitations
-  under the License.
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
 -->
-<section id="contributing-to-apache-datafusion-comet">
-<h1>Contributing to Apache DataFusion Comet<a class="headerlink" href="#contributing-to-apache-datafusion-comet" title="Link to this heading">#</a></h1>
-<p>We welcome contributions to Comet in many areas, and encourage new contributors to get involved.</p>
-<p>Here are some areas where you can help:</p>
+<section id="continuous-integration">
+<h1>Continuous Integration<a class="headerlink" href="#continuous-integration" title="Link to this heading">#</a></h1>
+<p>Comet runs CI through GitHub Actions, and merges to <code class="docutils literal notranslate"><span class="pre">main</span></code> go through GitHub’s merge queue. This
+page is the contributor’s view of both: what runs on a pull request, what runs later in the queue,
+how to opt a pull request into a queue-only suite, and what to do when a run fails. The
+mechanics behind the configuration are documented in
+<a class="reference external" href="https://github.com/apache/datafusion-comet/blob/main/.github/workflows/README.md">.github/workflows/README.md</a>.</p>
+<section id="two-tiers">
+<h2>Two tiers<a class="headerlink" href="#two-tiers" title="Link to this heading">#</a></h2>
+<p>A single umbrella workflow, <code class="docutils literal notranslate"><span class="pre">.github/workflows/ci.yml</span></code>, orchestrates everything. It runs cheap
+preflight checks first (license headers, Markdown formatting, workflow linting, the CI config
+checks), computes which heavy jobs the changed files are relevant to, and fans out to those jobs.
+Which jobs run also depends on the event:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Suite</p></th>
+<th class="head"><p>Pull request</p></th>
+<th class="head"><p>Merge queue</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Linux build, lint, and Comet test suites</p></td>
+<td><p>yes</p></td>
+<td><p>yes</p></td>
+</tr>
+<tr class="row-odd"><td><p>Spark SQL tests, Spark 4.1</p></td>
+<td><p>yes</p></td>
+<td><p>yes</p></td>
+</tr>
+<tr class="row-even"><td><p>Iceberg Spark SQL tests, Iceberg 1.11</p></td>
+<td><p>yes</p></td>
+<td><p>yes</p></td>
+</tr>
+<tr class="row-odd"><td><p>macOS build and Comet test suites</p></td>
+<td><p>with label</p></td>
+<td><p>yes</p></td>
+</tr>
+<tr class="row-even"><td><p>Benchmark compile and lint check</p></td>
+<td><p>with label</p></td>
+<td><p>yes</p></td>
+</tr>
+<tr class="row-odd"><td><p>Spark SQL tests, Spark 3.4 / 3.5 / 4.0</p></td>
+<td><p>with label</p></td>
+<td><p>yes</p></td>
+</tr>
+<tr class="row-even"><td><p>Iceberg Spark SQL tests, Iceberg 1.8 / 1.9 / 1.10</p></td>
+<td><p>with label</p></td>
+<td><p>yes</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>The <strong>PR tier</strong> is the fast feedback loop while a change is being iterated on. The <strong>queue
+tier</strong> is the authoritative gate: everything the PR tier runs plus the remaining suites, evaluated
+against the merge result rather than the pull request head. Nothing in the queue tier runs again
+on push to <code class="docutils literal notranslate"><span class="pre">main</span></code>, because the queue already tested the exact tree that landed. The one exception
+is the Linux build, which also runs on push so that the dependency caches on <code class="docutils literal notranslate"><span class="pre">main</span></code> stay fresh: a
+pull request can only restore caches saved on its own branch or on <code class="docutils literal notranslate"><span class="pre">main</span></code>, and the queue’s
+temporary branch takes its caches with it when it is deleted.</p>
+<p>Every job’s result feeds one flat job named <code class="docutils literal notranslate"><span class="pre">Required</span> <span class="pre">Checks</span></code>, and that is the only status check
+<code class="docutils literal notranslate"><span class="pre">main</span></code> requires. A job that is skipped because the change did not touch its inputs counts as a
+pass. A job that fails or is cancelled turns <code class="docutils literal notranslate"><span class="pre">Required</span> <span class="pre">Checks</span></code> red.</p>
+<p>Which tier a job belongs to is the <code class="docutils literal notranslate"><span class="pre">POLICY</span></code> table in <code class="docutils literal notranslate"><span class="pre">dev/ci/compute-changes.py</span></code>. Each job’s path
+filters are the <code class="docutils literal notranslate"><span class="pre">FILTERS</span></code> table in the same file, and <code class="docutils literal notranslate"><span class="pre">dev/ci/check-ci-config.py</span></code> holds the test
+cases that pin both down.</p>
+</section>
+<section id="opting-a-pull-request-into-a-queue-only-suite">
+<h2>Opting a pull request into a queue-only suite<a class="headerlink" href="#opting-a-pull-request-into-a-queue-only-suite" title="Link to this heading">#</a></h2>
+<p>Each queue-only suite has a label that runs it on a pull request:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Label</p></th>
+<th class="head"><p>Runs</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">run-macos-tests</span></code></p></td>
+<td><p>macOS build and Comet test suites</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">run-benchmark-check</span></code></p></td>
+<td><p>Benchmark compile and lint check</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">run-spark-3.4-tests</span></code></p></td>
+<td><p>Spark SQL tests against Spark 3.4</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">run-spark-3.5-tests</span></code></p></td>
+<td><p>Spark SQL tests against Spark 3.5</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">run-spark-4.0-tests</span></code></p></td>
+<td><p>Spark SQL tests against Spark 4.0</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">run-iceberg-tests</span></code></p></td>
+<td><p>Iceberg Spark SQL tests against Iceberg 1.8/1.9/1.10</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Apply a label from the pull request sidebar, or from the command line:</p>
+<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span>gh<span class="w"> </span>pr<span class="w"> </span>edit<span class="w"> </span>&lt;number&gt;<span class="w"> </span>--add-label<span class="w"> </span>run-spark-3.5-tests
+</pre></div>
+</div>
+<p>Applying a label starts a new run immediately at the pull request’s current commit. That run
+executes only the suite the label gates; the PR tier already ran at that commit and is not
+repeated. Its aggregate verdict is published as <code class="docutils literal notranslate"><span class="pre">Required</span> <span class="pre">Checks</span> <span class="pre">(label</span> <span class="pre">run)</span></code> rather than
+<code class="docutils literal notranslate"><span class="pre">Required</span> <span class="pre">Checks</span></code>, so it can be read alongside the commit run without replacing it.</p>
+<p>The label stays on the pull request, so every later push runs the suite as part of the normal PR
+run. Remove the label once it has served its purpose. To re-run the suite at the same commit,
+re-run the failed jobs from the Actions page, or remove and re-apply the label.</p>
+<p>Use a label when a change is likely to behave differently on a version or platform the PR tier
+does not cover. Some examples:</p>
 <ul class="simple">
-<li><p>Testing Comet with existing Spark jobs and reporting issues for any bugs or performance issues</p></li>
-<li><p>Contributing code to support Spark expressions, operators, and data types that are not currently supported</p></li>
-<li><p>Reviewing pull requests and helping to test new features for correctness and performance</p></li>
-<li><p>Improving documentation</p></li>
+<li><p>code under <code class="docutils literal notranslate"><span class="pre">spark/src/main/spark-3.4/</span></code>, <code class="docutils literal notranslate"><span class="pre">spark-3.5/</span></code>, <code class="docutils literal notranslate"><span class="pre">spark-4.0/</span></code> or the shared <code class="docutils literal notranslate"><span class="pre">spark-3.x/</span></code>
+directory, or any change to <code class="docutils literal notranslate"><span class="pre">CometExprShim</span></code> and friends</p></li>
+<li><p>a change to a Spark SQL diff under <code class="docutils literal notranslate"><span class="pre">dev/diffs/</span></code> for a version other than 4.1</p></li>
+<li><p>anything touching Iceberg reflection or the Iceberg diffs</p></li>
+<li><p>native code with platform-specific behavior, or a dependency bump that changes what is
+compiled on macOS</p></li>
+<li><p>a change to the benchmark sources under <code class="docutils literal notranslate"><span class="pre">spark/src/test/scala/org/apache/spark/sql/benchmark</span></code>
+or to <code class="docutils literal notranslate"><span class="pre">native/*/benches</span></code></p></li>
 </ul>
-<section id="finding-issues-to-work-on">
-<h2>Finding issues to work on<a class="headerlink" href="#finding-issues-to-work-on" title="Link to this heading">#</a></h2>
-<p>We maintain a list of good first issues in GitHub <a class="reference external" href="https://github.com/apache/datafusion-comet/issues?q=is%3Aopen+is%3Aissue+label%3A%22good+first+issue%22">here</a>. We also have a <a class="reference internal" href="roadmap.html"><span class="std std-doc">roadmap</span></a>.</p>
-<p>To assign yourself an issue, comment <code class="docutils literal notranslate"><span class="pre">take</span></code> on the issue. To unassign yourself, comment <code class="docutils literal notranslate"><span class="pre">untake</span></code>.</p>
+<p>Labels that gate nothing, such as <code class="docutils literal notranslate"><span class="pre">dependencies</span></code> or the type labels, also start a run. That run
+executes nothing and finishes in a minute. It is a consequence of GitHub firing the <code class="docutils literal notranslate"><span class="pre">labeled</span></code>
+event for every label; see the workflows README for why it is handled this way.</p>
 </section>
-<section id="reporting-issues">
-<h2>Reporting issues<a class="headerlink" href="#reporting-issues" title="Link to this heading">#</a></h2>
-<p>We use <a class="reference external" href="https://github.com/apache/datafusion-comet/issues">GitHub issues</a> for bug reports and feature requests.</p>
+<section id="merging-through-the-queue">
+<h2>Merging through the queue<a class="headerlink" href="#merging-through-the-queue" title="Link to this heading">#</a></h2>
+<p>Once a pull request is approved, a committer queues it with <strong>Merge when ready</strong> in the GitHub
+UI, or from the command line:</p>
+<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span>gh<span class="w"> </span>pr<span class="w"> </span>merge<span class="w"> </span>&lt;number&gt;<span class="w"> </span>--squash<span class="w"> </span>--auto
+</pre></div>
+</div>
+<p>The pull request’s own checks do not have to be finished, though it is polite not to queue a pull
+request whose PR tier is red.</p>
+<p>GitHub then builds a temporary branch named <code class="docutils literal notranslate"><span class="pre">gh-readonly-queue/main/...</span></code> containing the pull
+request’s commits squashed on top of the current <code class="docutils literal notranslate"><span class="pre">main</span></code>, batched with up to four other queued pull
+requests, and runs <code class="docutils literal notranslate"><span class="pre">ci.yml</span></code> against it with a <code class="docutils literal notranslate"><span class="pre">merge_group</span></code> event. When <code class="docutils literal notranslate"><span class="pre">Required</span> <span class="pre">Checks</span></code> on that
+branch is green, every pull request in the batch merges. If it is red, GitHub removes the pull
+request whose entry failed, rebuilds the remaining entries without it, and records the removal on
+the pull request’s timeline.</p>
+<p>The queue tests the merge result rather than the pull request head. That is the point of it: a
+semantic conflict between two pull requests that each pass in isolation is caught before either
+lands. It also means a pull request can be evicted for a failure it did not cause on its own,
+because <code class="docutils literal notranslate"><span class="pre">main</span></code> moved or because another entry in the batch broke the combined tree.</p>
 </section>
-<section id="asking-for-help">
-<h2>Asking for Help<a class="headerlink" href="#asking-for-help" title="Link to this heading">#</a></h2>
-<p>The Comet project uses the same Slack and Discord channels as the main Apache DataFusion project. See details at
-<a class="reference external" href="https://datafusion.apache.org/contributor-guide/communication.html">Apache DataFusion Communications</a>. There are dedicated Comet channels in both Slack and Discord.</p>
+<section id="when-a-queue-run-fails">
+<h2>When a queue run fails<a class="headerlink" href="#when-a-queue-run-fails" title="Link to this heading">#</a></h2>
+<p>A queue failure removes the pull request from the queue but does not otherwise change it. Work
+through these in order:</p>
+<ol class="arabic">
+<li><p><strong>Find the run.</strong> On the Actions page, filter by the <code class="docutils literal notranslate"><span class="pre">merge_group</span></code> event, or:</p>
+<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span>gh<span class="w"> </span>run<span class="w"> </span>list<span class="w"> </span>--event<span class="w"> </span>merge_group<span class="w"> </span>--limit<span class="w"> </span><span class="m">10</span>
+gh<span class="w"> </span>run<span class="w"> </span>view<span class="w"> </span>&lt;run-id&gt;<span class="w"> </span>--log-failed
+</pre></div>
+</div>
+<p>The pull request’s timeline links to the run as well.</p>
+</li>
+<li><p><strong>Decide whether it is infrastructure.</strong> A job that dies in under a minute on an artifact
+download, a Maven download, or a runner setup step is not a test failure. Re-run the failed
+jobs and, if it passes, re-queue. Comet already retries the common cases, so if the same step
+fails repeatedly, open an issue with the <code class="docutils literal notranslate"><span class="pre">area:ci</span></code> label.</p></li>
+<li><p><strong>Reproduce it on the pull request.</strong> Merge <code class="docutils literal notranslate"><span class="pre">main</span></code> into the branch so the pull request head
+matches what the queue tested, then apply the label for the suite that failed. If the labeled
+run passes, the failure came from the batch, not from this change, and re-queuing is the right
+next step. If it fails, fix it on the branch like any other CI failure.</p></li>
+<li><p><strong>Check for flakiness.</strong> A test that is flaky in the queue tier blocks everyone’s merges, not
+just one pull request. If a queue failure looks like a flake, do not just re-queue: file or
+update an issue naming the test, so it can be fixed or excluded.</p></li>
+</ol>
+<p>A pull request evicted from the queue has to be queued again by hand. Merge when ready is not
+re-armed automatically.</p>
 </section>
-<section id="regular-public-meetings">
-<h2>Regular public meetings<a class="headerlink" href="#regular-public-meetings" title="Link to this heading">#</a></h2>
-<p>The Comet contributors hold regular video calls where new and current contributors are welcome to ask questions and
-coordinate on issues that they are working on.</p>
-<p>The call is held weekly on Fridays from 10:30 AM to 11:00 AM PST (America/Los_Angeles). Join via the
-<a class="reference external" href="https://meet.google.com/nrz-otvr-kjj">Google Meet video call link</a>.</p>
-<p>See the <a class="reference external" href="https://docs.google.com/document/d/1NBpkIAuU7O9h8Br5CbFksDhX-L9TyO9wmGLPMe0Plc8/edit?usp=sharing">Apache DataFusion Comet community meeting</a> Google document for more information.</p>
+<section id="reproducing-a-suite-failure-locally">
+<h2>Reproducing a suite failure locally<a class="headerlink" href="#reproducing-a-suite-failure-locally" title="Link to this heading">#</a></h2>
+<p>The queue-only Spark SQL suites run Spark’s own test suite against Comet, with the version’s diff
+from <code class="docutils literal notranslate"><span class="pre">dev/diffs/</span></code> applied. See <a class="reference internal" href="spark-sql-tests.html"><span class="std std-doc">Spark SQL Tests</span></a> for how to run one locally,
+and <a class="reference internal" href="iceberg-spark-tests.html"><span class="std std-doc">Iceberg Spark Tests</span></a> for the Iceberg equivalents. For the Comet test
+suites that run on macOS, <code class="docutils literal notranslate"><span class="pre">make</span> <span class="pre">test-jvm</span></code> on a Mac runs the same suites the workflow does; the
+macOS job differs from Linux only in the platform.</p>
+</section>
+<section id="changing-ci-itself">
+<h2>Changing CI itself<a class="headerlink" href="#changing-ci-itself" title="Link to this heading">#</a></h2>
+<p>The umbrella workflow, the reusable workflows it calls, and the routing tables are checked by
+<code class="docutils literal notranslate"><span class="pre">dev/ci/check-ci-config.py</span></code>, which runs in preflight. It enforces that every job feeds
+<code class="docutils literal notranslate"><span class="pre">Required</span> <span class="pre">Checks</span></code>, that the required check name in <code class="docutils literal notranslate"><span class="pre">.asf.yaml</span></code> matches the job that publishes it,
+that artifact names are unique per producer, and that the routing policy matches its test cases.
+Run it locally before pushing a CI change:</p>
+<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span>python3<span class="w"> </span>dev/ci/check-ci-config.py
+actionlint<span class="w"> </span>--shellcheck<span class="o">=</span>off
+</pre></div>
+</div>
+<p>A new test suite has to be registered in the workflow files by hand; see
+<a class="reference internal" href="development.html#register-new-test-suites-in-ci"><span class="std std-ref">Register New Test Suites in CI</span></a>. A new job in
+<code class="docutils literal notranslate"><span class="pre">ci.yml</span></code> needs an entry in both <code class="docutils literal notranslate"><span class="pre">FILTERS</span></code> and <code class="docutils literal notranslate"><span class="pre">POLICY</span></code> in <code class="docutils literal notranslate"><span class="pre">dev/ci/compute-changes.py</span></code>, a case in
+<code class="docutils literal notranslate"><span class="pre">dev/ci/check-ci-config.py</span></code>, and a line in <code class="docutils literal notranslate"><span class="pre">required_checks.needs</span></code>. The check will tell you which
+of those is missing.</p>
+<p>Moving a suite between tiers is a one-line change to <code class="docutils literal notranslate"><span class="pre">POLICY</span></code> plus the matching test case, but it
+is a change to what every contributor sees on their pull requests, so raise it on the dev mailing
+list first.</p>
 </section>
 </section>
 
@@ -590,20 +757,20 @@ coordinate on issues that they are working on.</p>
                   
 <div class="prev-next-area">
     <a class="left-prev"
-       href="index.html"
+       href="iceberg-spark-tests.html"
        title="previous page">
       <i class="fa-solid fa-angle-left"></i>
       <div class="prev-next-info">
         <p class="prev-next-subtitle">previous</p>
-        <p class="prev-next-title">Comet Contributor Guide</p>
+        <p class="prev-next-title">Running Iceberg Spark Tests</p>
       </div>
     </a>
     <a class="right-next"
-       href="development.html"
+       href="debugging.html"
        title="next page">
       <div class="prev-next-info">
         <p class="prev-next-subtitle">next</p>
-        <p class="prev-next-title">Comet Development Guide</p>
+        <p class="prev-next-title">Comet Debugging Guide</p>
       </div>
       <i class="fa-solid fa-angle-right"></i>
     </a>
@@ -626,10 +793,12 @@ coordinate on issues that they are working on.</p>
   </div>
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#finding-issues-to-work-on">Finding issues to work on</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#reporting-issues">Reporting issues</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#asking-for-help">Asking for Help</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#regular-public-meetings">Regular public meetings</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#two-tiers">Two tiers</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#opting-a-pull-request-into-a-queue-only-suite">Opting a pull request into a queue-only suite</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#merging-through-the-queue">Merging through the queue</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#when-a-queue-run-fails">When a queue run fails</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#reproducing-a-suite-failure-locally">Reproducing a suite failure locally</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#changing-ci-itself">Changing CI itself</a></li>
 </ul>
   </nav></div>
 

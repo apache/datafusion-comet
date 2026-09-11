@@ -416,6 +416,7 @@ under the License.
 <li class="toctree-l1"><a class="reference internal" href="sql-file-tests.html">Comet SQL Tests</a></li>
 <li class="toctree-l1"><a class="reference internal" href="spark-sql-tests.html">Spark SQL Tests</a></li>
 <li class="toctree-l1"><a class="reference internal" href="iceberg-spark-tests.html">Iceberg Spark Tests</a></li>
+<li class="toctree-l1"><a class="reference internal" href="ci.html">Continuous Integration</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Debugging and Performance</span></p>
 <ul class="nav bd-sidenav">
@@ -1178,10 +1179,13 @@ appropriate group. For example, if you add a new expression test suite, add it t
 </tbody>
 </table>
 </div>
-<p><strong>Important:</strong> The suite lists in both workflow files must stay in sync. A separate CI check
-(<code class="docutils literal notranslate"><span class="pre">.github/workflows/pr_missing_suites.yml</span></code>) runs <code class="docutils literal notranslate"><span class="pre">dev/ci/check-suites.py</span></code> on every pull request.
-It scans for all <code class="docutils literal notranslate"><span class="pre">*Suite.scala</span></code> files in the repository and verifies that each one appears in both
-workflow files. If any suite is missing, this check will fail and block the PR.</p>
+<p><strong>Important:</strong> The suite lists in both workflow files must stay in sync. The <code class="docutils literal notranslate"><span class="pre">preflight</span></code> job in
+<code class="docutils literal notranslate"><span class="pre">.github/workflows/ci.yml</span></code> runs <code class="docutils literal notranslate"><span class="pre">dev/ci/check-suites.py</span></code> on every pull request. It scans for all
+<code class="docutils literal notranslate"><span class="pre">*Suite.scala</span></code> files in the repository and verifies that each one appears in both workflow files.
+If any suite is missing, this check will fail and block the PR.</p>
+<p>The macOS suites only run in the merge queue by default. See
+<a class="reference internal" href="ci.html"><span class="std std-doc">Continuous Integration</span></a> for the two tiers and the labels that opt a pull request into a
+queue-only suite.</p>
 </section>
 <section id="pre-pr-summary">
 <h3>Pre-PR Summary<a class="headerlink" href="#pre-pr-summary" title="Link to this heading">#</a></h3>
