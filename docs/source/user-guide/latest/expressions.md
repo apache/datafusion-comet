@@ -164,7 +164,7 @@ The tables below list every Spark built-in expression with its current status.
 | `array_repeat` | ✅ | Native |  |
 | `array_union` | ✅ | Native | NaN/signed-zero handling may differ ([details](compatibility/floating-point.md)) |
 | `arrays_overlap` | ✅ | Native |  |
-| `arrays_zip` | ✅ | Native |  |
+| `arrays_zip` | ✅ | Hybrid | Arrays of maps route through the JVM codegen dispatcher; scalar/array/struct elements run natively. NullType elements fall back to Spark |
 | `element_at` | ✅ | Native |  |
 | `flatten` | ✅ | Native | Binary/struct/map elements fall back |
 | `get` | ✅ | — |  |
