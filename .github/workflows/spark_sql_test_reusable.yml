@@ -62,16 +62,19 @@ jobs:
   build:
     name: Build JVM Test Classes
     runs-on: ubuntu-24.04
+    # Preserve the container workspace and Maven-cache paths used by the test
+    # jobs that reuse this Spark compilation and its Zinc incremental analysis.
+    # This job packages the downloaded native library and only needs Java setup.
     container:
       image: amd64/rust
     steps:
       - uses: actions/checkout@v7
 
-      - name: Setup Rust & Java toolchain
-        uses: ./.github/actions/setup-builder
+      - name: Setup Java toolchain
+        uses: actions/setup-java@v4
         with:
-          rust-version: ${{ env.RUST_VERSION }}
-          jdk-version: ${{ inputs.java }}
+          distribution: zulu
+          java-version: ${{ inputs.java }}
 
       - name: Download native library
         uses: actions/download-artifact@v8
