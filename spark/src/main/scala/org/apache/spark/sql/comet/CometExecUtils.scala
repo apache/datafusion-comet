@@ -69,29 +69,18 @@ object CometExecUtils {
     }
   }
 
-  /**
-   * Prepare Projection + TopK native plan for CometTakeOrderedAndProjectExec.
-   */
+  /** Wrap a native input plan in the requested output projection. */
   def getProjectionNativePlan(
       projectList: Seq[NamedExpression],
-      outputAttributes: Seq[Attribute],
-      sortOrder: Seq[SortOrder],
-      child: SparkPlan,
-      limit: Int,
-      offset: Int = 0): Option[Operator] = {
-    getTopKNativePlan(outputAttributes, sortOrder, child, limit, offset).flatMap { topK =>
-      val exprs = projectList.map(exprToProto(_, child.output))
-
-      if (exprs.forall(_.isDefined)) {
-        val projectBuilder = OperatorOuterClass.Projection.newBuilder()
-        projectBuilder.addAllProjectList(exprs.map(_.get).asJava)
-        val opBuilder = OperatorOuterClass.Operator
-          .newBuilder()
-          .addChildren(topK)
-        Some(opBuilder.setProjection(projectBuilder).build())
-      } else {
-        None
-      }
+      inputAttributes: Seq[Attribute],
+      input: Operator): Option[Operator] = {
+    val exprs = projectList.map(exprToProto(_, inputAttributes))
+    if (exprs.forall(_.isDefined)) {
+      val projection = OperatorOuterClass.Projection.newBuilder()
+      projection.addAllProjectList(exprs.map(_.get).asJava)
+      Some(Operator.newBuilder().addChildren(input).setProjection(projection).build())
+    } else {
+      None
     }
   }
 

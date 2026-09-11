@@ -239,6 +239,9 @@ case class CometExecRule(session: SparkSession)
           other
         } else {
           other match {
+            // Only the outer TopK owns Spark's original offset and projection. If a future
+            // fused input can contain a restored aggregate, remove its inserted local node.
+            case _: CometLocalTopKExec => children.head
             // A native ancestor embeds its old child in nativeOp. Replacing only its SparkPlan
             // child would leave the incompatible native partial in that serialized plan.
             case comet: CometExec =>
