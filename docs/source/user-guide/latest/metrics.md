@@ -49,6 +49,28 @@ by the reader. An attached filter does not guarantee that any row groups are pru
 probe scan's `bytes_scanned` and `row_groups_pruned_statistics` with filtering disabled to assess
 reader savings. Existing join, scan, and intervening filter metrics retain their own meanings.
 
+### TopK
+
+With `spark.comet.exec.topK.dynamicFilter.enabled=true`, `CometLocalTopKExec` reports reader
+attachment counters. See [TopK Runtime Filters](tuning.md#topk-runtime-filters) for eligibility
+and reader restrictions.
+
+| Operator    | Metric                                   | Description                                                              |
+| ----------- | ---------------------------------------- | ------------------------------------------------------------------------ |
+| Local TopK  | `dynamic_filter_reader_filters_attached` | Executions that attach a TopK predicate to the reader.                   |
+| Local TopK  | `dynamic_filter_reader_filters_skipped`  | Executions whose input prevents reader attachment.                       |
+| Local TopK  | `output_rows`                            | Candidates emitted by local selection, before the final global TopK.     |
+| Native scan | `row_groups_pruned_dynamic_filter`       | Row groups skipped during scanning after a runtime predicate improves.   |
+| Native scan | `output_rows`                            | Rows emitted by the scan, before local TopK selection.                   |
+| Native scan | `bytes_scanned`                          | Bytes requested by the reader; separately fetched metadata is excluded.  |
+| Native scan | `pushdown_rows_pruned`                   | Rows rejected during decoding when row-level filter pushdown is enabled. |
+
+The scan owns reader savings metrics; TopK output rows do not measure scan pruning. Row-level
+pruning counters exclude rows in skipped row groups. Filters attached to a reader may prune
+nothing, so compare scan bytes, scan output rows, and elapsed time with filtering disabled.
+`row_groups_pruned_statistics` counts initial statistics pruning separately from the live
+`row_groups_pruned_dynamic_filter` counter.
+
 ### Exchange
 
 Comet adds some additional metrics:

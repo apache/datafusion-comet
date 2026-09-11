@@ -180,6 +180,39 @@ Sorting on floating-point data types (or complex types containing floating-point
 Spark if the data contains both zero and negative zero. This is likely an edge case that is not of concern for many users
 and sorting on floating-point data can be enabled by setting `spark.comet.expression.SortOrder.allowIncompatible=true`.
 
+## TopK Runtime Filters
+
+Set `spark.comet.exec.topK.dynamicFilter.enabled=true` to try experimental reader filtering for
+`ORDER BY ... LIMIT` queries. It is disabled by default. Eligible local TopK operators have a
+positive candidate limit and one direct signed integer sort key (`TINYINT`, `SMALLINT`, `INT`, or
+`BIGINT`) directly above a native Parquet scan, with one native input partition per task.
+Ascending and descending orders and both null placements are supported. Already ordered inputs,
+other key types, computed or multiple keys, and separate projections, filters, or limits between
+TopK and the scan retain their existing path.
+
+Comet runs an eligible local TopK in the same native execution as its scan by default, even with
+runtime filtering disabled. Set `spark.comet.exec.topK.fusion.enabled=false` to retain the ordinary
+native TopK path; this also prevents TopK reader filter attachment. With reader filtering enabled,
+the TopK heap updates the reader predicate as its worst retained
+key improves. Each native execution starts with a fresh predicate; thresholds are never shared
+across tasks or sent back across Spark exchanges or JVM/Arrow boundaries. Each partition retains
+up to `LIMIT + OFFSET` candidates. A single input partition needs only the final offset and output
+projection; multiple partitions use a final global TopK after the shuffle.
+
+Scans whose projected columns contain timestamps, including inside structs, arrays, or maps, skip
+reader attachment to preserve errors from overflowing Parquet millisecond-to-microsecond
+conversions. The local TopK still runs normally.
+
+Small limits and files whose early row groups contain the best keys offer the most opportunity
+to skip later groups. Randomly distributed keys, large limits, or the best keys arriving last
+can yield little benefit. In DataFusion 55, live row-group pruning is also disabled when the
+reader carries a row selection, commonly produced by page-index pruning. Enabling page indexes
+alone does not determine whether a row selection is present. Row-level filtering is separately
+controlled by `spark.comet.parquet.rowFilterPushdown.enabled`.
+
+Compare the [TopK and scan metrics](metrics.md#topk) and elapsed time with runtime filtering
+disabled on the same data and query. Successful attachment alone does not establish I/O savings.
+
 ## Optimizing Joins
 
 Spark often chooses `SortMergeJoin` over `ShuffledHashJoin` for stability reasons. If the build-side of a
