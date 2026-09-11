@@ -149,7 +149,7 @@ use datafusion_comet_proto::{
 use datafusion_comet_spark_expr::{
     jvm_udf::JvmScalarUdfExpr, ApproxPercentile, ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow,
     Correlation, Covariance, CreateNamedStruct, DecimalRescaleCheckOverflow, GetArrayStructFields,
-    GetStructField, HllPlusPlus, IfExpr, ListExtract, MaxMinBy, NormalizeNaNAndZero, Regr,
+    GetStructField, HllPlusPlus, IfExpr, ListExtract, MaxMinBy, Mode, NormalizeNaNAndZero, Regr,
     RegrType, SparkCastOptions, Stddev, SumDecimal, ToJson, UnboundColumn, Variance,
     WideDecimalBinaryExpr, WideDecimalOp,
 };
@@ -468,7 +468,7 @@ impl PhysicalPlanner {
             // object-store key we hand DataFusion is stripped of the bucket prefix. Skipping this
             // would leave `bucket/key` as the object key, and path-style S3 GETs would double the
             // bucket (`<endpoint>/bucket/bucket/key`).
-            let url = normalize_object_store_url(&file.file_path, object_store_options)?;
+            let url = normalize_object_store_url(&file.file_path, object_store_options)?.url;
             let path = Path::from_url_path(url.path()).map_err(|e| GeneralError(e.to_string()))?;
             partitioned_file.object_meta.location = path;
 
@@ -3199,6 +3199,13 @@ impl PhysicalPlanner {
                     self.create_expr(expr.ordering.as_ref().unwrap(), Arc::clone(&schema))?;
                 let func = AggregateUDF::new_from_impl(MaxMinBy::new_min_by());
                 Self::create_aggr_func_expr("min_by", schema, vec![value, ordering], func)
+            }
+            AggExprStruct::Mode(expr) => {
+                let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
+                let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
+                let func =
+                    AggregateUDF::new_from_impl(Mode::new(datatype, expr.normalize_neg_zero));
+                Self::create_aggr_func_expr("mode", schema, vec![child], func)
             }
         }
     }

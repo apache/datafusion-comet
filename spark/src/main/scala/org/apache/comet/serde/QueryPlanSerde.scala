@@ -417,6 +417,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     classOf[MaxBy] -> CometMaxBy,
     classOf[Min] -> CometMin,
     classOf[MinBy] -> CometMinBy,
+    classOf[Mode] -> CometMode,
     classOf[Percentile] -> CometPercentile,
     classOf[RegrIntercept] -> CometRegrIntercept,
     classOf[RegrR2] -> CometRegrR2,
