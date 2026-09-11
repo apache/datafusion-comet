@@ -302,6 +302,7 @@ FILTERS = {
 #
 #   "pr"              every pull request
 #   "push"            push to main
+#   "queue"           merge_group/checks_requested
 #   "label:<name>"    a pull request carrying that label
 #
 # workflow_dispatch always runs everything, so it is not listed. "pr" and
@@ -309,20 +310,20 @@ FILTERS = {
 # requests or opt-in, never both -- and check-ci-config.py rejects a job that
 # lists both rather than letting the label quietly win.
 POLICY = {
-    "build_linux": ["pr", "push"],
-    "build_macos": ["pr", "push"],
-    "benchmark": ["pr", "push"],
+    "build_linux": ["pr", "push", "queue"],
+    "build_macos": ["pr", "push", "queue"],
+    "benchmark": ["pr", "push", "queue"],
     # docs deploys to asf-site, so it must not run from a pull request.
     "docs": ["push"],
-    "spark_3_4": ["push", "label:run-spark-3.4-tests"],
-    "spark_3_5": ["pr", "push"],
-    "spark_4_0": ["push", "label:run-spark-4.0-tests"],
-    "spark_4_1": ["pr", "push"],
-    "iceberg_1_8": ["push", "label:run-iceberg-tests"],
-    "iceberg_1_9": ["push", "label:run-iceberg-tests"],
-    "iceberg_1_10": ["push", "label:run-iceberg-tests"],
+    "spark_3_4": ["push", "queue", "label:run-spark-3.4-tests"],
+    "spark_3_5": ["pr", "push", "queue"],
+    "spark_4_0": ["push", "queue", "label:run-spark-4.0-tests"],
+    "spark_4_1": ["pr", "push", "queue"],
+    "iceberg_1_8": ["push", "queue", "label:run-iceberg-tests"],
+    "iceberg_1_9": ["push", "queue", "label:run-iceberg-tests"],
+    "iceberg_1_10": ["push", "queue", "label:run-iceberg-tests"],
     # Iceberg 1.11 is our only Spark 4.1 Iceberg coverage, so it is not opt-in.
-    "iceberg_1_11": ["pr", "push"],
+    "iceberg_1_11": ["pr", "push", "queue"],
 }
 
 
@@ -342,6 +343,8 @@ def event_allows(job, event):
 
     if name == "workflow_dispatch":
         return True
+    if name == "merge_group":
+        return event.get("action") == "checks_requested" and "queue" in tiers
     if name == "push":
         return "push" in tiers
     if name != "pull_request":

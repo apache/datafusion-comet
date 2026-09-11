@@ -27,7 +27,7 @@ name: CI
 # in their own subgroup so they never cancel the real commit run; opened and
 # synchronize both map to `commit` so a new push still supersedes its predecessor.
 concurrency:
-  group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}-${{ github.event.action == 'labeled' && github.event.label.name || 'commit' }}
+  group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}-${{ github.event_name }}-${{ github.event.action == 'labeled' && github.event.label.name || 'commit' }}
   cancel-in-progress: true
 
 on:
@@ -37,6 +37,8 @@ on:
     branches:
       - main
   workflow_dispatch:
+  merge_group:
+    types: [checks_requested]
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -98,6 +100,9 @@ jobs:
       - name: Check CI config invariants
         run: python3 dev/ci/check-ci-config.py
 
+      - name: Check CI gate and queue routing
+        run: python3 -m unittest discover -s dev/ci -p 'test_ci_*.py'
+
       - name: Install actionlint
         run: |
           curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash | bash
@@ -150,6 +155,8 @@ jobs:
           PR_HEAD_SHA:  ${{ github.event.pull_request.head.sha }}
           PUSH_BEFORE:  ${{ github.event.before }}
           PUSH_AFTER:   ${{ github.sha }}
+          QUEUE_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          QUEUE_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
         run: |
           set -euo pipefail
           : > changed_files.txt
@@ -160,13 +167,19 @@ jobs:
             :
           elif [[ "$EVENT_NAME" == "pull_request" ]]; then
             git diff --name-only "$PR_BASE_SHA"..."$PR_HEAD_SHA" > changed_files.txt
-          else
+          elif [[ "$EVENT_NAME" == "merge_group" ]]; then
+            # Include every queued change relative to the current base branch.
+            git diff --name-only "${QUEUE_BASE_SHA:?}".."${QUEUE_HEAD_SHA:?}" > changed_files.txt
+          elif [[ "$EVENT_NAME" == "push" ]]; then
             # push to main; first push to a branch has all-zero before sha
             if [[ "$PUSH_BEFORE" =~ ^0+$ ]]; then
               git ls-tree -r --name-only "$PUSH_AFTER" > changed_files.txt
             else
               git diff --name-only "$PUSH_BEFORE".."$PUSH_AFTER" > changed_files.txt
             fi
+          else
+            echo "Unsupported CI event: $EVENT_NAME" >&2
+            exit 1
           fi
           echo "Changed files:"
           cat changed_files.txt
@@ -296,7 +309,7 @@ jobs:
   iceberg_1_11:
     name: Iceberg Spark SQL Tests (Iceberg 1.11)
     needs: changes
-    # Runs on every PR: Iceberg 1.11 is our only Spark 4.1 Iceberg coverage.
+    # Runs on PRs, main, and the merge queue; this is our Spark 4.1 Iceberg coverage.
     if: needs.changes.outputs.iceberg_1_11 == 'true'
     uses: ./.github/workflows/iceberg_spark_test_reusable.yml
     with:
@@ -305,3 +318,31 @@ jobs:
       spark-short: '4.1'
       spark-full: '4.1.3'
       java: 17
+
+  ci-required:
+    # Label/manual runs must never overwrite the canonical PR/queue verdict.
+    name: ${{ (github.event.action == 'labeled' || github.event_name == 'workflow_dispatch') && 'CI Optional' || 'CI Required' }}
+    if: ${{ always() }}
+    needs:
+      - preflight
+      - changes
+      - pr_build_linux
+      - pr_build_macos
+      - pr_benchmark_check
+      - docs
+      - spark_3_4
+      - spark_3_5
+      - spark_4_0
+      - spark_4_1
+      - iceberg_1_8
+      - iceberg_1_9
+      - iceberg_1_10
+      - iceberg_1_11
+    runs-on: ubuntu-slim
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/check-ci-result
+        with:
+          needs-json: ${{ toJSON(needs) }}
