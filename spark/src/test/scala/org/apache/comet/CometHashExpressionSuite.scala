@@ -25,6 +25,7 @@ import org.apache.spark.sql.{CometTestBase, Row}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.types.{IntegerType, StructField, StructType}
 
+import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, ParquetGenerator, SchemaGenOptions}
 import org.apache.comet.udf.codegen.CometScalaUDFCodegen
 
@@ -33,7 +34,8 @@ import org.apache.comet.udf.codegen.CometScalaUDFCodegen
  *
  * Native kernels are asserted for supported input shapes. Cases the native path declines
  * (`DecimalType` precision > 18, including nested, and `sha2` with a non-foldable `numBits`) must
- * stay in the Comet pipeline via the JVM codegen dispatcher.
+ * stay in the Comet pipeline via the JVM codegen dispatcher. `TimeType` is out of scope for that
+ * enrollment and falls the projection back to Spark.
  */
 class CometHashExpressionSuite
     extends CometTestBase
@@ -144,35 +146,55 @@ class CometHashExpressionSuite
     }
   }
 
-  test("hash - decimal (precision > 18)") {
-    Seq((20, 2), (38, 10)).foreach { case (precision, scale) =>
-      withTable("t") {
-        sql(s"CREATE TABLE t(c DECIMAL($precision, $scale)) USING parquet")
-        sql("INSERT INTO t VALUES (1.23), (-1.23), (0.0), (null)")
-        assertCodegenRan {
-          checkSparkAnswerAndOperator("SELECT c, hash(c), xxhash64(c) FROM t ORDER BY c")
-        }
-      }
+  test("hash - decimal (precision 20, unscaled > 64-bit) routes through the codegen dispatcher") {
+    withTable("t") {
+      sql("CREATE TABLE t(c DECIMAL(20, 2)) USING parquet")
+      sql("""INSERT INTO t VALUES
+            (CAST('999999999999999999.99' AS DECIMAL(20, 2))),
+            (CAST('-999999999999999999.99' AS DECIMAL(20, 2))),
+            (0.0),
+            (null)""")
+      assertDispatchedHash("SELECT hash(c) FROM t")
+      assertDispatchedHash("SELECT xxhash64(c) FROM t")
+    }
+  }
+
+  test("hash - decimal (precision 38, unscaled > 64-bit) routes through the codegen dispatcher") {
+    withTable("t") {
+      sql("CREATE TABLE t(c DECIMAL(38, 10)) USING parquet")
+      sql("""INSERT INTO t VALUES
+            (CAST('9999999999999999999999999999.9999999999' AS DECIMAL(38, 10))),
+            (CAST('-9999999999999999999999999999.9999999999' AS DECIMAL(38, 10))),
+            (0.0),
+            (null)""")
+      assertDispatchedHash("SELECT hash(c) FROM t")
+      assertDispatchedHash("SELECT xxhash64(c) FROM t")
     }
   }
 
   test("hash - array of decimal (precision > 18) routes through the codegen dispatcher") {
     withTable("t") {
       sql("CREATE TABLE t(c ARRAY<DECIMAL(20, 2)>) USING parquet")
-      sql("INSERT INTO t VALUES (array(1.23, 2.34)), (null)")
-      assertCodegenRan {
-        checkSparkAnswerAndOperator("SELECT c, hash(c), xxhash64(c) FROM t")
-      }
+      sql("""INSERT INTO t VALUES
+            (array(
+              CAST('999999999999999999.99' AS DECIMAL(20, 2)),
+              CAST(NULL AS DECIMAL(20, 2)),
+              CAST('-999999999999999999.99' AS DECIMAL(20, 2)))),
+            (null)""")
+      assertDispatchedHash("SELECT hash(c) FROM t")
+      assertDispatchedHash("SELECT xxhash64(c) FROM t")
     }
   }
 
   test("hash - struct with decimal (precision > 18) routes through the codegen dispatcher") {
     withTable("t") {
       sql("CREATE TABLE t(c STRUCT<a: INT, b: DECIMAL(20, 2)>) USING parquet")
-      sql("INSERT INTO t VALUES (named_struct('a', 1, 'b', 1.23)), (null)")
-      assertCodegenRan {
-        checkSparkAnswerAndOperator("SELECT c, hash(c), xxhash64(c) FROM t")
-      }
+      sql("""INSERT INTO t VALUES
+            (named_struct('a', 1, 'b', CAST('999999999999999999.99' AS DECIMAL(20, 2)))),
+            (named_struct('a', 1, 'b', CAST(NULL AS DECIMAL(20, 2)))),
+            (null)""")
+      assertDispatchedHash("SELECT hash(c) FROM t")
+      assertDispatchedHash("SELECT xxhash64(c) FROM t")
     }
   }
 
@@ -180,10 +202,28 @@ class CometHashExpressionSuite
     withSQLConf("spark.sql.legacy.allowHashOnMapType" -> "true") {
       withTable("t") {
         sql("CREATE TABLE t(c MAP<STRING, DECIMAL(20, 2)>) USING parquet")
-        sql("INSERT INTO t VALUES (map('a', 1.23)), (null)")
-        assertCodegenRan {
-          checkSparkAnswerAndOperator("SELECT c, hash(c), xxhash64(c) FROM t")
-        }
+        sql("""INSERT INTO t VALUES
+              (map('a', CAST('999999999999999999.99' AS DECIMAL(20, 2)))),
+              (map('a', CAST(NULL AS DECIMAL(20, 2)))),
+              (null)""")
+        assertDispatchedHash("SELECT hash(c) FROM t")
+        assertDispatchedHash("SELECT xxhash64(c) FROM t")
+      }
+    }
+  }
+
+  test("hash - TimeType falls back to Spark") {
+    assume(isSpark41Plus, "TimeType requires Spark 4.1+")
+    withSQLConf("spark.sql.timeType.enabled" -> "true") {
+      withTable("t") {
+        sql("CREATE TABLE t(c STRING) USING parquet")
+        sql("INSERT INTO t VALUES ('12:34:56'), ('00:00:00'), (null)")
+        checkSparkAnswerAndFallbackReasons(
+          "SELECT hash(to_time(c)) FROM t",
+          Set("`TimeType` is not supported"))
+        checkSparkAnswerAndFallbackReasons(
+          "SELECT xxhash64(to_time(c)) FROM t",
+          Set("`TimeType` is not supported"))
       }
     }
   }
@@ -612,5 +652,11 @@ class CometHashExpressionSuite
     assert(
       CometScalaUDFCodegen.stats().totalLookups == 0,
       s"expected native hash execution for $query, got ${CometScalaUDFCodegen.stats()}")
+  }
+
+  private def assertDispatchedHash(query: String): Unit = {
+    assertCodegenRan {
+      checkSparkAnswerAndOperator(query)
+    }
   }
 }
