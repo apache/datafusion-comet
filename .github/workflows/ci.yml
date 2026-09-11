@@ -99,9 +99,24 @@ jobs:
         run: python3 dev/ci/check-ci-config.py
 
       - name: Install actionlint
+        # Pure network, and preflight gates every other job, so a single reset
+        # connection here would fail the whole run. Download to a file rather
+        # than pipe into bash so a failed download cannot run a partial script.
         run: |
-          curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash | bash
-          echo "$PWD" >> $GITHUB_PATH
+          for attempt in 1 2 3; do
+            if curl -sSfL --retry 3 --retry-all-errors -o download-actionlint.bash \
+                 https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash \
+               && bash download-actionlint.bash; then
+              break
+            fi
+            if [ "$attempt" = 3 ]; then
+              echo "::error::actionlint download failed after 3 attempts."
+              exit 1
+            fi
+            echo "::warning::actionlint download failed (attempt $attempt of 3); retrying in $((attempt * 10))s."
+            sleep $((attempt * 10))
+          done
+          echo "$PWD" >> "$GITHUB_PATH"
 
       - name: Lint GitHub Actions workflows
         run: actionlint -color --shellcheck=off
@@ -305,3 +320,71 @@ jobs:
       spark-short: '4.1'
       spark-full: '4.1.3'
       java: 17
+
+  # ---------------------------------------------------------------------------
+  # required_checks: one flat job that aggregates every other job's result, so
+  # that `main` has a single name it can safely require.
+  #
+  # Nothing requires it yet. It is landing first, on its own, so that we can
+  # watch it report on real pull requests before `.asf.yaml` names it in
+  # `required_status_checks` for `main`.
+  #
+  # None of the jobs above can be required directly, because the name a caller
+  # of a reusable workflow publishes depends on whether it ran:
+  #
+  #   skipped by `if:`  one check run named exactly `PR Build (Linux)`
+  #   actually ran      only `PR Build (Linux) / Spark 4.1, JDK 17 [exec]`,
+  #                     ... and no bare `PR Build (Linux)` at all
+  #
+  # So requiring the bare name would block every code change, and requiring a
+  # nested name would block every docs-only change. Both hang rather than fail,
+  # and a required context that never reports also locks `.asf.yaml` itself,
+  # which then needs an INFRA ticket to unwedge. Aggregating into one flat job,
+  # whose name is published on every event, avoids the whole class of problem.
+  #
+  # `if: always()` is what makes this work: without it the job inherits the
+  # default `success()` and is itself skipped the moment any dependency fails.
+  #
+  # The name is an expression because `ci.yml` also fires on `labeled`, and on
+  # that event POLICY deliberately skips the PR tier (it already ran at this
+  # commit). A label run's verdict therefore says nothing about the commit's
+  # applicable suites, yet GitHub keeps only the most recent check run per name
+  # per commit, so publishing it as `Required Checks` would let a `dependencies`
+  # label turn a still-running or red commit run green (issue #5007). Label
+  # runs publish under a name nothing requires instead. Skipping the job here
+  # would not help: a skipped check run still carries the name and still counts
+  # as passing. dev/ci/check-ci-config.py enforces both halves of this.
+  # ---------------------------------------------------------------------------
+  required_checks:
+    name: ${{ github.event.action == 'labeled' && 'Required Checks (label run)' || 'Required Checks' }}
+    if: always()
+    # Reads only the `needs` context, so it needs no token access at all.
+    permissions: {}
+    needs:
+      - preflight
+      - changes
+      - pr_build_linux
+      - pr_build_macos
+      - pr_benchmark_check
+      - spark_3_4
+      - spark_3_5
+      - spark_4_0
+      - spark_4_1
+      - iceberg_1_8
+      - iceberg_1_9
+      - iceberg_1_10
+      - iceberg_1_11
+    runs-on: ubuntu-slim
+    steps:
+      - name: Summarize upstream results
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: echo "$NEEDS"
+
+      # `skipped` is a pass: it means the change did not touch anything that
+      # job covers. Only `failure` and `cancelled` block the merge.
+      - name: Fail if any upstream job failed or was cancelled
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: |
+          echo "::error::One or more upstream jobs did not succeed. See the results above."
+          exit 1
