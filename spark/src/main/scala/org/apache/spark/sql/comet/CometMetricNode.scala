@@ -357,6 +357,8 @@ object CometMetricNode {
           "Number of row groups whose statistics were checked and matched (not pruned)"),
       "row_groups_pruned_statistics" ->
         SQLMetrics.createMetric(sc, "Number of row groups pruned by statistics"),
+      "row_groups_pruned_dynamic_filter" ->
+        SQLMetrics.createMetric(sc, "Number of row groups pruned by live runtime filters"),
       "limit_pruned_row_groups" ->
         SQLMetrics.createMetric(sc, "Number of row groups pruned due to limit pruning"),
       "limit_matched_row_groups" ->

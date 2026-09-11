@@ -752,6 +752,8 @@ message Sort {
   repeated spark.spark_expression.Expr sort_orders = 1;
   optional int32 fetch = 3;
   optional int32 skip = 4;
+  // Attach this TopK execution's live threshold to an eligible native reader.
+  bool dynamic_filter_enabled = 5;
 }
 
 message HashAggregate {

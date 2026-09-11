@@ -33,13 +33,9 @@ use datafusion::common::cast::as_boolean_array;
 use datafusion::common::config::ConfigOptions;
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{internal_err, JoinType, NullEquality, Result, ScalarValue, Statistics};
-use datafusion::datasource::physical_plan::ParquetSource;
-use datafusion::datasource::source::DataSourceExec;
 use datafusion::execution::TaskContext;
-use datafusion::logical_expr::{ColumnarValue, Operator};
-use datafusion::physical_expr::expressions::{
-    lit, BinaryExpr, Column, DynamicFilterPhysicalExpr, IsNotNullExpr,
-};
+use datafusion::logical_expr::ColumnarValue;
+use datafusion::physical_expr::expressions::{lit, Column, DynamicFilterPhysicalExpr};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::distribution_requirements::InputDistributionRequirements;
 use datafusion::physical_plan::execution_plan::CardinalityEffect;
@@ -53,7 +49,7 @@ use datafusion::physical_plan::{
 };
 use futures::StreamExt;
 
-use super::CometFilterExec;
+use super::parquet_reader_filter::try_attach_parquet_reader_filter;
 
 /// A task-local consumer of DataFusion's build-side runtime filter.
 #[derive(Debug)]
@@ -226,96 +222,6 @@ pub(crate) struct DynamicFilterJoinExec {
 struct RuntimeDynamicFilterJoin {
     join: HashJoinExec,
     reader_filter_attached: bool,
-}
-
-/// Recognize only direct-column null checks joined by AND, without evaluating
-/// or changing the predicate. Every accepted leaf is deterministic, infallible,
-/// and only discards rows, so reader pruning cannot suppress expression errors
-/// or alter stateful evaluation. All other expressions remain a boundary.
-fn is_direct_column_null_checks(predicate: &Arc<dyn PhysicalExpr>) -> bool {
-    if let Some(binary) = predicate.downcast_ref::<BinaryExpr>() {
-        return binary.op() == &Operator::And
-            && is_direct_column_null_checks(binary.left())
-            && is_direct_column_null_checks(binary.right());
-    }
-    predicate
-        .downcast_ref::<IsNotNullExpr>()
-        .is_some_and(|is_not_null| is_not_null.arg().is::<Column>())
-}
-
-fn try_attach_parquet_reader_filter(
-    input: &Arc<dyn ExecutionPlan>,
-    predicate: Arc<DynamicFilterPhysicalExpr>,
-    config: &ConfigOptions,
-) -> Result<Option<Arc<dyn ExecutionPlan>>> {
-    // Filtering before a fetch can change which rows are selected by its limit.
-    if input.fetch().is_some() {
-        log::debug!("Join dynamic filter reader pushdown skipped: probe has a fetch limit");
-        return Ok(None);
-    }
-    // Spark inserts IS NOT NULL residuals above equijoin inputs, including AND
-    // chains of inferred null checks. A reader predicate can cross those direct
-    // checks because both operations only discard rows. Keep every other filter
-    // as a boundary: reader pruning would change which rows reach stateful
-    // expressions and can suppress expression errors.
-    if let Some(filter) = input.downcast_ref::<CometFilterExec>() {
-        if filter.has_projection() {
-            log::debug!(
-                "Join dynamic filter reader pushdown skipped: probe FilterExec has a projection"
-            );
-            return Ok(None);
-        }
-        if !is_direct_column_null_checks(filter.predicate()) {
-            log::debug!(
-                "Join dynamic filter reader pushdown skipped: probe filter is not direct column IS NOT NULL checks"
-            );
-            return Ok(None);
-        }
-        let Some(reader) =
-            try_attach_parquet_reader_filter(filter.input(), Arc::clone(&predicate), config)?
-        else {
-            return Ok(None);
-        };
-        return match filter.with_execution_input(reader) {
-            Ok(updated) => Ok(Some(updated)),
-            Err(error) => {
-                log::debug!(
-                    "Join dynamic filter reader pushdown skipped: probe filter rebuild failed: {error}"
-                );
-                Ok(None)
-            }
-        };
-    }
-    let Some(scan) = input.downcast_ref::<DataSourceExec>() else {
-        log::debug!(
-            "Join dynamic filter reader pushdown skipped: probe root is {}",
-            input.name()
-        );
-        return Ok(None);
-    };
-    if scan.downcast_to_file_source::<ParquetSource>().is_none() {
-        log::debug!("Join dynamic filter reader pushdown skipped: probe is not Parquet");
-        return Ok(None);
-    }
-
-    let predicate: Arc<dyn PhysicalExpr> = predicate;
-    let propagation = match scan
-        .data_source()
-        .try_pushdown_filters(vec![predicate], config)
-    {
-        Ok(propagation) => propagation,
-        Err(error) => {
-            log::debug!(
-                "Join dynamic filter reader pushdown skipped: predicate remapping failed: {error}"
-            );
-            return Ok(None);
-        }
-    };
-    let Some(data_source) = propagation.updated_node else {
-        log::debug!("Join dynamic filter reader pushdown skipped: Parquet declined the predicate");
-        return Ok(None);
-    };
-    Ok(Some(Arc::new(scan.clone().with_data_source(data_source))))
 }
 
 impl DynamicFilterJoinExec {

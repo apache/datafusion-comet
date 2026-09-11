@@ -51,7 +51,13 @@ object CometLocalTopKExec {
         exprToProto(order, scan.output).map { sortOrder =>
           // Spark's physical limit already includes the offset. Each partition retains that
           // many candidates; only the final TopK applies the offset after the shuffle.
-          val sort = Sort.newBuilder().addSortOrders(sortOrder).setFetch(op.limit).setSkip(0)
+          val dynamicFilterEnabled = CometConf.COMET_EXEC_TOPK_DYNAMIC_FILTER_ENABLED.get(op.conf)
+          val sort = Sort
+            .newBuilder()
+            .addSortOrders(sortOrder)
+            .setFetch(op.limit)
+            .setSkip(0)
+            .setDynamicFilterEnabled(dynamicFilterEnabled)
           val nativeOp = Operator
             .newBuilder()
             .setPlanId(op.id)
@@ -64,6 +70,7 @@ object CometLocalTopKExec {
             scan.output,
             op.limit,
             op.sortOrder,
+            dynamicFilterEnabled,
             scan,
             SerializedPlan(None))
         }
@@ -79,6 +86,7 @@ case class CometLocalTopKExec(
     override val output: Seq[Attribute],
     limit: Int,
     sortOrder: Seq[SortOrder],
+    dynamicFilterEnabled: Boolean,
     child: SparkPlan,
     override val serializedPlanOpt: SerializedPlan)
     extends CometUnaryExec {
@@ -90,19 +98,26 @@ case class CometLocalTopKExec(
   override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan =
     copy(child = newChild)
 
-  override def stringArgs: Iterator[Any] = Iterator(limit, sortOrder, output, child)
+  override def stringArgs: Iterator[Any] =
+    Iterator(limit, sortOrder, dynamicFilterEnabled, output, child)
 
   override def equals(obj: Any): Boolean = obj match {
     case other: CometLocalTopKExec =>
       output == other.output && limit == other.limit && sortOrder == other.sortOrder &&
-      child == other.child && serializedPlanOpt == other.serializedPlanOpt
+      dynamicFilterEnabled == other.dynamicFilterEnabled && child == other.child &&
+      serializedPlanOpt == other.serializedPlanOpt
     case _ => false
   }
 
-  override def hashCode(): Int = Objects.hashCode(output, Int.box(limit), sortOrder, child)
+  override def hashCode(): Int =
+    Objects.hashCode(output, Int.box(limit), sortOrder, Boolean.box(dynamicFilterEnabled), child)
 
   override lazy val metrics: Map[String, SQLMetric] =
     CometMetricNode.baselineMetrics(sparkContext) ++ Map(
+      "dynamic_filter_reader_filters_attached" ->
+        SQLMetrics.createMetric(sparkContext, "TopK reader filters attached"),
+      "dynamic_filter_reader_filters_skipped" ->
+        SQLMetrics.createMetric(sparkContext, "TopK reader filters skipped"),
       "spill_count" -> SQLMetrics.createMetric(sparkContext, "number of spills"),
       "spilled_bytes" -> SQLMetrics.createSizeMetric(sparkContext, "total spilled bytes"))
 }
