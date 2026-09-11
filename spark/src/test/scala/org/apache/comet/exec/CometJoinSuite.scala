@@ -274,16 +274,16 @@ class CometJoinSuite extends CometTestBase {
                 assert(join.metrics("output_rows").value == 4L)
                 val probeRows = join.metrics("input_rows").value
                 if (enabled) {
-                  val evaluated = join.metrics("dynamic_filter_rows_evaluated").value
-                  val pruned = join.metrics("dynamic_filter_rows_pruned").value
-                  val bypassed = join.metrics("dynamic_filter_rows_bypassed").value
+                  val evaluated = join.metrics("dynamic_filter_join_rows_evaluated").value
+                  val pruned = join.metrics("dynamic_filter_join_rows_pruned").value
+                  val bypassed = join.metrics("dynamic_filter_join_rows_bypassed").value
                   assert(evaluated > 0L && pruned > 0L)
                   assert(probeRows + pruned == evaluated + bypassed)
                   assert(probeRows < unfilteredProbeRows)
                   assert(evaluated + bypassed <= unfilteredProbeRows)
-                  assert(join.metrics("dynamic_filter_eval_time").value > 0L)
+                  assert(join.metrics("dynamic_filter_join_eval_time").value > 0L)
                 } else {
-                  assert(!join.metrics.contains("dynamic_filter_rows_pruned"))
+                  assert(!join.metrics.contains("dynamic_filter_join_rows_pruned"))
                   unfilteredProbeRows = probeRows
                 }
               }
@@ -364,10 +364,8 @@ class CometJoinSuite extends CometTestBase {
                   val bytes = scanMetrics("bytes_scanned").value
                   assert(joins.head.metrics("output_rows").value == 1L)
                   if (enabled) {
-                    assert(
-                      joins.head.metrics("dynamic_filter_reader_filters_attached").value > 0L)
-                    assert(
-                      joins.head.metrics("dynamic_filter_reader_filters_skipped").value == 0L)
+                    assert(joins.head.metrics("dynamic_filter_join_filters_attached").value > 0L)
+                    assert(joins.head.metrics("dynamic_filter_join_filters_skipped").value == 0L)
                     assert(
                       probeFilters.head.metrics("output_rows").value > 0L,
                       "Execution-local reader attachment must preserve probe filter metrics")
@@ -453,10 +451,10 @@ class CometJoinSuite extends CometTestBase {
                 assert(probeScans.head.metrics("row_groups_pruned_statistics").value == 0L)
 
                 if (enabled) {
-                  assert(joins.head.metrics("dynamic_filter_reader_filters_attached").value == 0L)
-                  assert(joins.head.metrics("dynamic_filter_reader_filters_skipped").value == 1L)
-                  assert(joins.head.metrics("dynamic_filter_rows_evaluated").value == 1L)
-                  assert(joins.head.metrics("dynamic_filter_rows_pruned").value == 0L)
+                  assert(joins.head.metrics("dynamic_filter_join_filters_attached").value == 0L)
+                  assert(joins.head.metrics("dynamic_filter_join_filters_skipped").value == 1L)
+                  assert(joins.head.metrics("dynamic_filter_join_rows_evaluated").value == 1L)
+                  assert(joins.head.metrics("dynamic_filter_join_rows_pruned").value == 0L)
                 }
               }
             }
@@ -487,8 +485,8 @@ class CometJoinSuite extends CometTestBase {
             val joins = nativeHashJoins(plan)
             assert(joins.size == 1, s"Expected native hash join:\n$plan")
             if (build.size == 100) {
-              assert(joins.head.metrics("dynamic_filter_rows_evaluated").value > 0L)
-              assert(joins.head.metrics("dynamic_filter_rows_pruned").value == 0L)
+              assert(joins.head.metrics("dynamic_filter_join_rows_evaluated").value > 0L)
+              assert(joins.head.metrics("dynamic_filter_join_rows_pruned").value == 0L)
             }
           }
         }
@@ -520,8 +518,8 @@ class CometJoinSuite extends CometTestBase {
             val (_, plan) = checkSparkAnswerAndOperator(sql(query))
             val native = nativeHashJoins(plan)
             assert(native.size == 1, s"Expected native hash join:\n$plan")
-            assert(native.head.metrics("dynamic_filter_rows_evaluated").value == 0L)
-            assert(native.head.metrics("dynamic_filter_rows_pruned").value == 0L)
+            assert(native.head.metrics("dynamic_filter_join_rows_evaluated").value == 0L)
+            assert(native.head.metrics("dynamic_filter_join_rows_pruned").value == 0L)
           }
           // NOT IN must still observe build-side NULLs; never attach a filter here.
           withSQLConf(
@@ -533,7 +531,7 @@ class CometJoinSuite extends CometTestBase {
             val native = collect(plan) { case join: CometBroadcastHashJoinExec => join }
             assert(native.size == 1, s"Expected native null-aware anti join:\n$plan")
             assert(native.head.nativeOp.getHashJoin.getNullAwareAntiJoin)
-            assert(native.head.metrics("dynamic_filter_rows_evaluated").value == 0L)
+            assert(native.head.metrics("dynamic_filter_join_rows_evaluated").value == 0L)
           }
         }
       }
@@ -558,14 +556,14 @@ class CometJoinSuite extends CometTestBase {
           assert(join.buildSide == BuildRight)
           assert(join.nativeOp.getHashJoin.getDynamicFilterEnabled)
           assert(join.metrics("output_rows").value == 65536L)
-          assert(join.metrics("dynamic_filter_rows_evaluated").value > 0L)
-          assert(join.metrics("dynamic_filter_reader_filters_attached").value > 0L)
+          assert(join.metrics("dynamic_filter_join_rows_evaluated").value > 0L)
+          assert(join.metrics("dynamic_filter_join_filters_attached").value > 0L)
           val probeScans = collect(plan) {
             case scan: CometNativeScanExec if scan.output.size == 1 => scan
           }
           assert(probeScans.size == 1, s"Expected one native byte probe scan:\n$plan")
           val probeRows = probeScans.head.metrics("output_rows").value
-          val residualPruned = join.metrics("dynamic_filter_rows_pruned").value
+          val residualPruned = join.metrics("dynamic_filter_join_rows_pruned").value
           assert(
             probeRows < 2L || residualPruned > 0L,
             "Expected the reader or residual filter to prune probe key 2, " +

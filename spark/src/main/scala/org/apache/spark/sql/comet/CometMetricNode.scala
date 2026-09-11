@@ -357,6 +357,8 @@ object CometMetricNode {
           "Number of row groups whose statistics were checked and matched (not pruned)"),
       "row_groups_pruned_statistics" ->
         SQLMetrics.createMetric(sc, "Number of row groups pruned by statistics"),
+      "row_groups_pruned_dynamic_filter" ->
+        SQLMetrics.createMetric(sc, "Number of row groups pruned by live runtime filters"),
       "limit_pruned_row_groups" ->
         SQLMetrics.createMetric(sc, "Number of row groups pruned due to limit pruning"),
       "limit_matched_row_groups" ->
@@ -455,17 +457,17 @@ object CometMetricNode {
   /** Join runtime filtering and reader attachment. These never replace join or scan metrics. */
   def joinDynamicFilterMetrics(sc: SparkContext): Map[String, SQLMetric] = {
     Map(
-      "dynamic_filter_rows_evaluated" ->
+      "dynamic_filter_join_rows_evaluated" ->
         SQLMetrics.createMetric(sc, "Probe rows evaluated by the join runtime filter"),
-      "dynamic_filter_rows_pruned" ->
+      "dynamic_filter_join_rows_pruned" ->
         SQLMetrics.createMetric(sc, "Probe rows rejected before the hash probe"),
-      "dynamic_filter_rows_bypassed" ->
+      "dynamic_filter_join_rows_bypassed" ->
         SQLMetrics.createMetric(sc, "Probe rows bypassing an inactive join runtime filter"),
-      "dynamic_filter_eval_time" ->
+      "dynamic_filter_join_eval_time" ->
         SQLMetrics.createNanoTimingMetric(sc, "Time evaluating the join runtime filter"),
-      "dynamic_filter_reader_filters_attached" ->
+      "dynamic_filter_join_filters_attached" ->
         SQLMetrics.createMetric(sc, "Join runtime filters attached to native readers"),
-      "dynamic_filter_reader_filters_skipped" ->
+      "dynamic_filter_join_filters_skipped" ->
         SQLMetrics.createMetric(sc, "Join runtime filters not eligible for native readers"))
   }
 
