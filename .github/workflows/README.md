@@ -22,14 +22,16 @@ ruleset in `.asf.yaml`. That splits CI into two tiers:
   against the PR head.
 
 Every queue-only job has a `run-*` label that opts a pull request into it
-early, listed in the diagram below.
+early, listed in the table below.
 
-Heavy jobs have no `push` tier. The queue already tested the exact tree that
+Most heavy jobs have no `push` tier. The queue already tested the exact tree that
 lands, so re-running them on push to main would double the cost of every
-merge. Two jobs are still on `push`: `docs`, because it deploys to `asf-site`
-and has to run after the commit is on main, and `pr_build_linux`, because of
-`actions/cache` scoping. A pull request can only restore caches saved on its
-own branch or on `main`, and the queue runs on a throwaway
+merge. Two routes are still on `push`: `docs`, because it deploys to `asf-site`
+and has to run after the commit is on main, and `build_linux`, because of
+`actions/cache` scoping. The Linux route selects `pr_build_linux_checks` and
+`pr_build_linux`, with the shared `build_linux_native` producer supplying the
+latter. Spark SQL and Iceberg consumers stay off on push. A pull request can
+only restore caches saved on its own branch or on `main`, and the queue runs on a throwaway
 `gh-readonly-queue/*` branch whose caches are deleted with it. Without a push
 run, a `Cargo.lock` or `pom.xml` change would leave the cargo-registry, Maven
 and TPC-H/TPC-DS caches on `main` stale until the next unrelated change.
@@ -68,7 +70,9 @@ reads that single output. A Spark-patch-only change therefore gets a native
 build when its Spark caller is selected, even if the Linux build is not.
 Documentation-only changes, benchmark-only changes, and unrelated label
 events do not start an unused native build. The event-selection regression
-test checks that the producer and its consumers stay in agreement.
+test checks that the producer and its consumers stay in agreement across PR,
+merge-group, push, and manual runs. A macOS-only or benchmark-only label run
+also skips this producer because neither job consumes the Linux artifact.
 
 Linux lint, compile-only checks, Celeborn compatibility tests, and Rust debug
 tests run in `pr_build_linux_checks.yml` as soon as change selection completes.
@@ -85,25 +89,25 @@ of the Linux CI-profile Cargo cache, and only writes on `main`.
 
 ## What runs when
 
-| Job in `ci.yml`      | Triggered by                                      | Routing rule                        |
-| -------------------- | ------------------------------------------------- | ----------------------------------- |
-| `preflight`          | every PR / merge group / push / dispatch / label  | none (always runs)                  |
-| `changes`            | every PR / merge group / push / dispatch / label  | runs `dev/ci/compute-changes.py`    |
-| `build_linux_native` | any selected Linux/Spark/Iceberg consumer | `dev/ci/compute-changes.py` |
-| `pr_build_linux_checks` | PR, merge group or push to main, paths matched | `dev/ci/compute-changes.py` |
-| `pr_build_linux`     | PR, merge group or push to main, paths matched    | `dev/ci/compute-changes.py`         |
-| `pr_build_macos`     | merge group, **or** PR with `run-macos-tests`     | `dev/ci/compute-changes.py`         |
-| `pr_benchmark_check` | merge group, **or** PR with `run-benchmark-check` | benchmark sources only              |
-| `docs`               | push to main, paths matched                       | `.asf.yaml`, `docs/**`, `docs.yaml` |
-| `spark_3_5`          | merge group, **or** PR with `run-spark-3.5-tests` | Spark 3.5 sources                   |
-| `spark_4_1`          | PR or merge group, paths matched                  | Spark 4.1 sources                   |
-| `spark_3_4`          | merge group, **or** PR with `run-spark-3.4-tests` | Spark 3.4 sources                   |
-| `spark_4_0`          | merge group, **or** PR with `run-spark-4.0-tests` | Spark 4.0 sources                   |
-| `iceberg_1_11`       | PR or merge group, paths matched                  | Iceberg sources                     |
-| `iceberg_1_8`        | merge group, **or** PR with `run-iceberg-tests`   | Iceberg sources                     |
-| `iceberg_1_9`        | merge group, **or** PR with `run-iceberg-tests`   | Iceberg sources                     |
-| `iceberg_1_10`       | merge group, **or** PR with `run-iceberg-tests`   | Iceberg sources                     |
-| `required_checks`    | always, after every job above except `docs`       | none (always runs)                  |
+| Job in `ci.yml`         | Triggered by                                      | Routing rule                        |
+| ----------------------- | ------------------------------------------------- | ----------------------------------- |
+| `preflight`             | every PR / merge group / push / dispatch / label  | none (always runs)                  |
+| `changes`               | every PR / merge group / push / dispatch / label  | runs `dev/ci/compute-changes.py`    |
+| `build_linux_native`    | any selected Linux/Spark/Iceberg consumer         | `dev/ci/compute-changes.py`         |
+| `pr_build_linux_checks` | PR, merge group or push to main, paths matched    | `dev/ci/compute-changes.py`         |
+| `pr_build_linux`        | PR, merge group or push to main, paths matched    | `dev/ci/compute-changes.py`         |
+| `pr_build_macos`        | merge group, **or** PR with `run-macos-tests`     | `dev/ci/compute-changes.py`         |
+| `pr_benchmark_check`    | merge group, **or** PR with `run-benchmark-check` | benchmark sources only              |
+| `docs`                  | push to main, paths matched                       | `.asf.yaml`, `docs/**`, `docs.yaml` |
+| `spark_3_5`             | merge group, **or** PR with `run-spark-3.5-tests` | Spark 3.5 sources                   |
+| `spark_4_1`             | PR or merge group, paths matched                  | Spark 4.1 sources                   |
+| `spark_3_4`             | merge group, **or** PR with `run-spark-3.4-tests` | Spark 3.4 sources                   |
+| `spark_4_0`             | merge group, **or** PR with `run-spark-4.0-tests` | Spark 4.0 sources                   |
+| `iceberg_1_11`          | PR or merge group, paths matched                  | Iceberg sources                     |
+| `iceberg_1_8`           | merge group, **or** PR with `run-iceberg-tests`   | Iceberg sources                     |
+| `iceberg_1_9`           | merge group, **or** PR with `run-iceberg-tests`   | Iceberg sources                     |
+| `iceberg_1_10`          | merge group, **or** PR with `run-iceberg-tests`   | Iceberg sources                     |
+| `required_checks`       | always, after every job above except `docs`       | none (always runs)                  |
 
 A heavy job appears in the PR's checks list as a `skipped` entry whenever
 its path filter or event criteria don't match. Skipped checks count as
@@ -113,12 +117,13 @@ safe to make a required check.
 ### Label events
 
 `ci.yml` also fires on `pull_request.types: [labeled]`, so applying
-`run-spark-3.4-tests`, `run-spark-4.0-tests` or `run-iceberg-tests` starts the
-job that label gates without needing a new push. GitHub cannot filter a
+`run-spark-3.4-tests`, `run-spark-3.5-tests`, `run-spark-4.0-tests`,
+`run-iceberg-tests`, `run-macos-tests`, or `run-benchmark-check` starts the
+jobs that label gates without needing a new push. GitHub cannot filter a
 `pull_request` trigger by label name, so **every** label added to a PR starts a
 run, including labels that gate nothing.
 
-Two rules keep those runs from corrupting the PR's status:
+Three rules keep those runs from corrupting the PR's status:
 
 - `preflight` and `changes` carry no event guard and run every time. A job held
   back by `if:` still publishes a check run under its own name with conclusion

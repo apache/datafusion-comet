@@ -289,6 +289,7 @@ jobs:
   spark_3_5:
     name: Spark SQL Tests (Spark 3.5)
     needs: [changes, build_linux_native]
+    # Queue-only by default; PRs need the `run-spark-3.5-tests` label.
     if: needs.changes.outputs.spark_3_5 == 'true'
     uses: ./.github/workflows/spark_sql_test_reusable.yml
     with:

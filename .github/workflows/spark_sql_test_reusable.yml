@@ -77,7 +77,7 @@ jobs:
           java-version: ${{ inputs.java }}
 
       - name: Download native library
-        uses: actions/download-artifact@v8
+        uses: ./.github/actions/download-artifact-retry
         with:
           name: ${{ inputs.native-library-artifact }}
           path: native/target/release/
