@@ -15,9 +15,13 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
+-- Config: spark.comet.exec.scalaUDF.codegen.enabled=true
+-- ConfigMatrix: spark.comet.expression.round.allowIncompatible=false,true
+
 -- Integral and non-negative-scale decimal inputs round natively. Float and double inputs have no
 -- native implementation (Spark rounds them through BigDecimal built from Double.toString), so they
--- route through the codegen dispatcher and must match Spark exactly.
+-- route through the codegen dispatcher and must match Spark exactly. Enabling allowIncompatible
+-- must not change either route.
 
 statement
 CREATE TABLE test_round(d double, f float, dec decimal(10,4), i int, l bigint) USING parquet
@@ -93,3 +97,17 @@ SELECT l, round(l, -19), round(l, -20) FROM test_round_long_overflow
 
 query
 SELECT round(5000000000000000000L, -19), round(-5000000000000000000L, -19)
+
+-- Disabling the dispatcher leaves supported types native and sends float/double inputs to Spark,
+-- even with allowIncompatible enabled.
+statement
+SET spark.comet.exec.scalaUDF.codegen.enabled=false
+
+query expect_native(round)
+SELECT round(dec, 2), round(i, -1), round(l, -1) FROM test_round
+
+query expect_fallback(round: spark.comet.exec.scalaUDF.codegen.enabled=false)
+SELECT round(d, 2) FROM test_round
+
+query expect_fallback(round: spark.comet.exec.scalaUDF.codegen.enabled=false)
+SELECT round(f, 2) FROM test_round
