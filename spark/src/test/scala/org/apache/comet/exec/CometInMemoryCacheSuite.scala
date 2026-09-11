@@ -24,14 +24,14 @@ import java.{util => ju}
 import org.apache.arrow.vector.types.pojo.ArrowType
 import org.apache.spark.CometDriverPlugin
 import org.apache.spark.SparkConf
-import org.apache.spark.sql.{CometTestBase, Row}
+import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.expressions.{And, Attribute, Expression, GreaterThanOrEqual, LessThan, Literal}
 import org.apache.spark.sql.columnar.{CachedBatch, SimpleMetricsCachedBatch}
 import org.apache.spark.sql.comet.{CometBroadcastHashJoinExec, CometInMemoryTableScanExec, CometSortExec, CometSortMergeJoinExec}
 import org.apache.spark.sql.comet.execution.arrow.CometCachedBatchHelper
 import org.apache.spark.sql.execution.SortExec
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, QueryStageExec, ShuffleQueryStageExec}
-import org.apache.spark.sql.execution.columnar.{CometInMemoryRelationHelper, InMemoryRelation}
+import org.apache.spark.sql.execution.columnar.{CometInMemoryRelationHelper, InMemoryRelation, InMemoryTableScanExec}
 import org.apache.spark.sql.execution.exchange.{Exchange, ReusedExchangeExec, ShuffleExchangeLike}
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.functions.max
@@ -292,6 +292,79 @@ class CometInMemoryCacheSuite extends CometTestBase {
       assert(plan.contains("CometSparkColumnarToColumnar"))
 
       spark.catalog.clearCache()
+    }
+  }
+
+  test("Spark row consumers of Comet cache preserve values across batches") {
+    Seq("CODEGEN_ONLY", "NO_CODEGEN").foreach { mode =>
+      withSQLConf(
+        CometConf.COMET_ENABLED.key -> "false",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.CACHE_VECTORIZED_READER_ENABLED.key -> "false",
+        SQLConf.COLUMN_BATCH_SIZE.key -> "7",
+        SQLConf.CODEGEN_FACTORY_MODE.key -> mode,
+        SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> (mode == "CODEGEN_ONLY").toString,
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+        SQLConf.SHUFFLE_PARTITIONS.key -> "2") {
+        val scalars = Seq(
+          "boolean",
+          "tinyint",
+          "smallint",
+          "int",
+          "bigint",
+          "float",
+          "double",
+          "decimal(10,2)",
+          "decimal(38,2)",
+          "date",
+          "timestamp",
+          "timestamp_ntz").zipWithIndex.map { case (dt, i) =>
+          val value = dt match {
+            case "date" | "timestamp" | "timestamp_ntz" =>
+              s"cast(date_add(DATE '2000-01-01', cast(id AS INT)) AS $dt)"
+            case _ => s"cast(id AS $dt)"
+          }
+          s"if(id % 3 = 0, null, $value) AS c$i"
+        }
+        val source = spark
+          .range(0, 41, 1, 2)
+          .selectExpr((Seq("id AS key") ++ scalars ++ Seq(
+            "if(id % 3 = 0, null, repeat(concat('字', id), cast(id + 1 AS INT))) AS s",
+            "if(id % 3 = 0, null, cast(concat('binary', id) AS BINARY)) AS b",
+            "if(id % 3 = 0, null, array(cast(id AS STRING), null)) AS a",
+            "if(id % 3 = 0, null, named_struct('x', id, 'a', array(cast(id AS STRING)))) AS st",
+            "if(id % 3 = 0, null, map('k', array(cast(id AS STRING), null))) AS m",
+            "null AS n")): _*)
+
+        def queries(df: DataFrame): Seq[DataFrame] = Seq(
+          df.select("*"),
+          df.selectExpr("s AS renamed", "key", "b", "a", "st", "m"),
+          df.orderBy($"s".desc, $"key"),
+          df.join(spark.range(41).toDF("join_key"), $"key" === $"join_key").select(df("*")),
+          df.selectExpr("count(*)"),
+          df.limit(1))
+
+        val expected = queries(source).map(_.collect().toSeq)
+        source.cache()
+        try {
+          assert(source.count() == 41)
+          val relation =
+            spark.sharedState.cacheManager.lookupCachedData(source).get.cachedRepresentation
+          val buffers = relation.cacheBuilder.cachedColumnBuffers.collect()
+          assert(buffers.length > 2)
+          assert(buffers.forall(_.getClass.getSimpleName == "CometCachedBatch"))
+          queries(source).zip(expected).foreach { case (df, answer) =>
+            val scans =
+              df.queryExecution.executedPlan.collect { case scan: InMemoryTableScanExec =>
+                scan
+              }
+            assert(
+              scans.nonEmpty && scans.forall(!_.supportsColumnar),
+              df.queryExecution.executedPlan.toString)
+            checkAnswer(df, answer)
+          }
+        } finally source.unpersist(blocking = true)
+      }
     }
   }
 
