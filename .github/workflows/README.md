@@ -6,13 +6,36 @@ workflows. This README is ignored by the runner.
 ## Pipeline overview
 
 A single umbrella workflow (`ci.yml`) orchestrates everything that runs on
-pull requests and pushes to `main`. The umbrella runs cheap **preflight**
+pull requests and in the merge queue. The umbrella runs cheap **preflight**
 checks first, computes which heavy jobs are relevant to the change, and only
 then fans out to the long-running test/build workflows. Each long workflow
 is a `workflow_call` reusable invoked from the umbrella.
 
+Merging goes through GitHub's merge queue, configured by the `Merge Queue`
+ruleset in `.asf.yaml`. That splits CI into two tiers:
+
+- **PR tier** (`pr`): fast feedback while a change is being iterated on.
+  The Linux build, Spark 4.1 and Iceberg 1.11.
+- **Queue tier** (`queue`): the authoritative gate. Everything the PR tier
+  runs, plus the macOS build, the benchmark compile check, Spark 3.4/3.5/4.0
+  and Iceberg 1.8/1.9/1.10, evaluated against the merge result rather than
+  against the PR head.
+
+Every queue-only job has a `run-*` label that opts a pull request into it
+early, listed in the diagram below.
+
+Heavy jobs have no `push` tier. The queue already tested the exact tree that
+lands, so re-running them on push to main would double the cost of every
+merge. Two jobs are still on `push`: `docs`, because it deploys to `asf-site`
+and has to run after the commit is on main, and `pr_build_linux`, because of
+`actions/cache` scoping. A pull request can only restore caches saved on its
+own branch or on `main`, and the queue runs on a throwaway
+`gh-readonly-queue/*` branch whose caches are deleted with it. Without a push
+run, a `Cargo.lock` or `pom.xml` change would leave the cargo-registry, Maven
+and TPC-H/TPC-DS caches on `main` stale until the next unrelated change.
+
 ```
-                        pull_request | push to main | workflow_dispatch
+                pull_request | merge_group | push to main | workflow_dispatch
                                             |
                                             v
                                 +-----------------------+
@@ -33,14 +56,16 @@ is a `workflow_call` reusable invoked from the umbrella.
         +-----------------------------------+-----------------------------------+
         |                                   |                                   |
         v                                   v                                   v
-  every PR + push                     push to main only         PR with label, or push
-  ---------------                     -----------------         ----------------------
-  pr_build_linux                      docs                      spark_3_4    run-spark-3.4-tests
-  pr_build_macos                                                spark_4_0    run-spark-4.0-tests
-  pr_benchmark_check                                            iceberg_1_8  run-iceberg-tests
-  spark_3_5                                                     iceberg_1_9  run-iceberg-tests
-  spark_4_1                                                     iceberg_1_10 run-iceberg-tests
-  iceberg_1_11
+  PR + queue tier                     push to main only         queue tier, or PR with label
+  ---------------                     -----------------         ---------------------------
+  pr_build_linux (+ push, for cache)  docs                      pr_build_macos      run-macos-tests
+  spark_4_1                                                     pr_benchmark_check  run-benchmark-check
+  iceberg_1_11                                                  spark_3_4           run-spark-3.4-tests
+                                                                spark_3_5           run-spark-3.5-tests
+                                                                spark_4_0           run-spark-4.0-tests
+                                                                iceberg_1_8         run-iceberg-tests
+                                                                iceberg_1_9         run-iceberg-tests
+                                                                iceberg_1_10        run-iceberg-tests
 
         |                                   |                                   |
         +-----------------------------------+-----------------------------------+
@@ -60,23 +85,23 @@ is a `workflow_call` reusable invoked from the umbrella.
 
 ## What runs when
 
-| Job in `ci.yml`      | Triggered by                                        | Routing rule                        |
-| -------------------- | --------------------------------------------------- | ----------------------------------- |
-| `preflight`          | every PR / push to main / dispatch / PR label added | none (always runs)                  |
-| `changes`            | every PR / push to main / dispatch / PR label added | runs `dev/ci/compute-changes.py`    |
-| `pr_build_linux`     | PR or push, paths matched                           | `dev/ci/compute-changes.py`         |
-| `pr_build_macos`     | PR or push, paths matched                           | `dev/ci/compute-changes.py`         |
-| `pr_benchmark_check` | PR or push, paths matched                           | benchmark sources only              |
-| `docs`               | push to main, paths matched                         | `.asf.yaml`, `docs/**`, `docs.yaml` |
-| `spark_3_5`          | PR or push, paths matched                           | Spark 3.5 sources                   |
-| `spark_4_1`          | PR or push, paths matched                           | Spark 4.1 sources                   |
-| `spark_3_4`          | push, **or** PR with `run-spark-3.4-tests` label    | Spark 3.4 sources                   |
-| `spark_4_0`          | push, **or** PR with `run-spark-4.0-tests` label    | Spark 4.0 sources                   |
-| `iceberg_1_11`       | PR or push, paths matched                           | Iceberg sources                     |
-| `iceberg_1_8`        | push, **or** PR with `run-iceberg-tests` label      | Iceberg sources                     |
-| `iceberg_1_9`        | push, **or** PR with `run-iceberg-tests` label      | Iceberg sources                     |
-| `iceberg_1_10`       | push, **or** PR with `run-iceberg-tests` label      | Iceberg sources                     |
-| `required_checks`    | always, after every job above except `docs`         | none (always runs)                  |
+| Job in `ci.yml`      | Triggered by                                      | Routing rule                        |
+| -------------------- | ------------------------------------------------- | ----------------------------------- |
+| `preflight`          | every PR / merge group / push / dispatch / label  | none (always runs)                  |
+| `changes`            | every PR / merge group / push / dispatch / label  | runs `dev/ci/compute-changes.py`    |
+| `pr_build_linux`     | PR, merge group or push to main, paths matched    | `dev/ci/compute-changes.py`         |
+| `pr_build_macos`     | merge group, **or** PR with `run-macos-tests`     | `dev/ci/compute-changes.py`         |
+| `pr_benchmark_check` | merge group, **or** PR with `run-benchmark-check` | benchmark sources only              |
+| `docs`               | push to main, paths matched                       | `.asf.yaml`, `docs/**`, `docs.yaml` |
+| `spark_3_5`          | merge group, **or** PR with `run-spark-3.5-tests` | Spark 3.5 sources                   |
+| `spark_4_1`          | PR or merge group, paths matched                  | Spark 4.1 sources                   |
+| `spark_3_4`          | merge group, **or** PR with `run-spark-3.4-tests` | Spark 3.4 sources                   |
+| `spark_4_0`          | merge group, **or** PR with `run-spark-4.0-tests` | Spark 4.0 sources                   |
+| `iceberg_1_11`       | PR or merge group, paths matched                  | Iceberg sources                     |
+| `iceberg_1_8`        | merge group, **or** PR with `run-iceberg-tests`   | Iceberg sources                     |
+| `iceberg_1_9`        | merge group, **or** PR with `run-iceberg-tests`   | Iceberg sources                     |
+| `iceberg_1_10`       | merge group, **or** PR with `run-iceberg-tests`   | Iceberg sources                     |
+| `required_checks`    | always, after every job above except `docs`       | none (always runs)                  |
 
 A heavy job appears in the PR's checks list as a `skipped` entry whenever
 its path filter or event criteria don't match. Skipped checks count as
@@ -113,6 +138,10 @@ Two rules keep those runs from corrupting the PR's status:
   run still carries the name and still counts as passing.
 
 `run-spark-4.1-tests` gates nothing: `spark_4_1` already runs on every PR.
+
+The opt-in labels have to exist in repository settings before they can be
+applied; `contains()` on a label nobody can add is simply always false, which
+makes the escape hatch look like it silently does nothing.
 
 ## Standalone workflows (not under the umbrella)
 
@@ -155,9 +184,11 @@ in `dev/ci/compute-changes.py`:
   dorny/picomatch (`**` spans path segments, `*` stays within one, a leading
   `!` excludes).
 - **`POLICY`** — which events may run it. `"pr"` for every pull request,
-  `"push"` for push to main, `"label:<name>"` for opt-in on a labelled pull
-  request. `"pr"` and `"label:"` are mutually exclusive. `workflow_dispatch`
-  always runs everything.
+  `"queue"` for the merge queue, `"push"` for push to main, `"label:<name>"`
+  for opt-in on a labelled pull request. `"pr"` and `"label:"` are mutually
+  exclusive. `workflow_dispatch` always runs everything.
+
+Moving a suite between the PR and queue tiers is a one-word edit to `POLICY`.
 
 So adding a suite, moving sources, or changing when something runs is an edit
 to one of those two tables, not to ten `${{ }}` expressions. Keeping the policy
@@ -223,6 +254,18 @@ on jobs that are already red. Its test-report upload also runs on green jobs
 and is `continue-on-error: true`: nothing downstream consumes the reports, and
 a `FinalizeArtifact` 403 must not turn a passing test run into a red check.
 
+**Artifact download.** `actions/download-artifact` has the same narrow retry
+list, so a `ListArtifacts` answered `(403) Forbidden: Error from intermediary`
+fails the job before a byte is fetched, most often the first step of a test
+shard that then never runs. `./.github/actions/download-artifact-retry` wraps
+it the same way: three attempts, 15s then 45s backoff, same inputs and
+`download-path` output. A retry has nothing to undo, since a failed attempt
+leaves at most a partial extraction that the next one overwrites. The
+`merge-fallback-logs` job stays on the plain action because it skips checkout,
+which a local action needs; `dev/ci/check-ci-config.py` enforces that pairing
+for every `uses: ./.github/actions/...` in a workflow, and treats both
+spellings as a download when pairing consumers with producers.
+
 **Tool downloads.** `Lint Scala (syntactic)` splits the coursier download from
 the lint: a `Fetch scalafix` step retries a no-op `cs launch ... -- --version`
 three times, and the check itself then runs `cs launch --mode offline` against
@@ -241,34 +284,73 @@ the whole pipeline by hand.
 `./mvnw --version` with exponential backoff, so a failed download of the Maven
 distribution does not surface as a test failure.
 
+## Merge queue
+
+`.asf.yaml` declares a `Merge Queue` ruleset for the default branch, so `main`
+is only writable through the queue. `.asf.yaml` rulesets accept a raw GitHub
+Rulesets API payload, which is how a `merge_queue` rule gets set without an
+INFRA ticket.
+
+When a PR is queued, GitHub builds a temporary `gh-readonly-queue/main/...`
+branch containing the PR's commits on top of the current `main` and of every
+entry ahead of it in the queue, then fires a `merge_group` event. `ci.yml` runs
+against that branch and the entry merges when `Required Checks` is green. That
+is what makes the queue tier meaningful: it tests the merge result, not the PR
+head, so a semantic conflict between two PRs that each pass in isolation is
+caught before either lands.
+
+The `merge_queue` rule parameters in `.asf.yaml` are the tuning dials, and
+`max_entries_to_build: 2` is the one that matters. Every entry gets its own
+`merge_group` build — [merge limits do not combine
+builds](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/managing-a-merge-queue) —
+so this caps how many pipelines are in flight, and with them how fast the queue
+drains: roughly 19 merges a day at the ~2.5h pipeline we see today.
+`max_entries_to_merge: 5` only says how many already-green entries land in one
+merge operation, and saves no CI at all. The saving in this design comes from
+the PR tier being small, not from batching inside the queue.
+`check_response_timeout_minutes: 300` has to stay comfortably above the slowest
+observed pipeline plus ASF runner scheduling delay, or healthy entries get
+evicted.
+
+A flaky test in the queue tier blocks everyone's merges, not just one PR. That
+raises the bar on flakiness relative to when these suites only ran post-merge.
+
 ## Branch protection
 
-`.asf.yaml` declares no `required_status_checks` for `main` today, only
-`required_approving_review_count: 1`.
+`main` is protected by two things that GitHub evaluates together, applying the
+most restrictive result:
 
-Adding one is not as simple as naming a job, because a caller of a reusable
-workflow publishes a _different check name_ depending on whether it ran:
+- classic branch protection, from `github.protected_branches.main` in
+  `.asf.yaml`: one approving review, and `Required Checks` as the sole
+  required status check;
+- the `Merge Queue` ruleset, from `github.rulesets` in the same file.
+
+Release branches (`branch-N.M`) keep plain branch protection with no queue.
+Merge queue rules do not accept wildcard ref patterns, so the ruleset targets
+`~DEFAULT_BRANCH` only.
+
+`apache/root` (ASF Infra, team id `118420`) is a bypass actor on the ruleset,
+so a wedged queue can always be recovered without a Jira ticket.
+
+`Required Checks` is the one context `main` requires, because a caller of a
+reusable workflow publishes a _different check name_ depending on whether it
+ran:
 
 | Caller state     | Check runs published                                     |
 | ---------------- | -------------------------------------------------------- |
 | skipped by `if:` | one run named exactly `PR Build (Linux)`, `skipped`      |
 | ran              | only `PR Build (Linux) / Spark 4.1, JDK 17 [exec]`, etc. |
 
-No name is reported in both cases. Requiring the bare name would block every
-code change; requiring a nested name would block every docs-only change. Both
-hang waiting for a check that never arrives rather than failing, and a required
-context that never reports also blocks the merge that would fix `.asf.yaml`.
-Recovering from that needs an INFRA Jira ticket.
+No name is reported in both cases, so neither can be required directly.
+`required_checks` is flat, reports on every event, runs `if: always()` and
+treats `skipped` as a pass, so it only goes red on `failure` or `cancelled`.
 
-The `required_checks` job at the bottom of `ci.yml` exists to be the one name
-that is safe to require. It is flat, so it reports on every event; it runs
-`if: always()` and treats `skipped` as a pass, so it only goes red when an
-upstream job reports `failure` or `cancelled`.
-
+Editing `required_status_checks` deserves care. A context that never reports
+blocks every merge to `main`, including the merge that would revert the
+mistake, and only INFRA can remove a required check by hand at that point.
 `dev/ci/check-ci-config.py` enforces that every `ci.yml` job except `docs`
-appears in `required_checks.needs`, and that the job's `name:` is the
-expression that routes `labeled` runs to a separate name (see "Label events"
-above). Once `.asf.yaml` does declare a required context for `main`, it also
-enforces that the commit-run name still matches it and that the label-run name
-is never the one required. All of that is silent when broken and expensive to
-recover from.
+appears in `required_checks.needs`, that the job's `name:` is the expression
+that routes `labeled` runs to a separate name (see "Label events" above), that
+the commit-run name matches the context `.asf.yaml` requires for `main`, and
+that the label-run name is never the one required. All of that is silent when
+broken. What it cannot catch is a job that is configured never to run.
