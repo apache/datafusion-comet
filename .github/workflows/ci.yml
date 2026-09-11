@@ -344,9 +344,19 @@ jobs:
   #
   # `if: always()` is what makes this work: without it the job inherits the
   # default `success()` and is itself skipped the moment any dependency fails.
+  #
+  # The name is an expression because `ci.yml` also fires on `labeled`, and on
+  # that event POLICY deliberately skips the PR tier (it already ran at this
+  # commit). A label run's verdict therefore says nothing about the commit's
+  # applicable suites, yet GitHub keeps only the most recent check run per name
+  # per commit, so publishing it as `Required Checks` would let a `dependencies`
+  # label turn a still-running or red commit run green (issue #5007). Label
+  # runs publish under a name nothing requires instead. Skipping the job here
+  # would not help: a skipped check run still carries the name and still counts
+  # as passing. dev/ci/check-ci-config.py enforces both halves of this.
   # ---------------------------------------------------------------------------
   required_checks:
-    name: Required Checks
+    name: ${{ github.event.action == 'labeled' && 'Required Checks (label run)' || 'Required Checks' }}
     if: always()
     # Reads only the `needs` context, so it needs no token access at all.
     permissions: {}

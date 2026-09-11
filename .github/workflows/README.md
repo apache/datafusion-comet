@@ -103,6 +103,14 @@ Two rules keep those runs from corrupting the PR's status:
 - On a `labeled` event, `POLICY` reports false for every job the new label does
   not gate. Without that, applying a single label re-ran the entire heavy
   pipeline at a commit that had already been tested.
+- On a `labeled` event, `required_checks` publishes its verdict as
+  `Required Checks (label run)`, not `Required Checks`. Because the PR tier is
+  skipped on that event, the label run's aggregate says nothing about the
+  commit's applicable suites, and GitHub keeps only the most recent check run
+  per name per commit. Under the real name, a `dependencies` label landing a
+  minute after a push would mark the commit green while the commit run was
+  still going. Skipping the job would not help either, since a skipped check
+  run still carries the name and still counts as passing.
 
 `run-spark-4.1-tests` gates nothing: `spark_4_1` already runs on every PR.
 
@@ -258,6 +266,9 @@ that is safe to require. It is flat, so it reports on every event; it runs
 upstream job reports `failure` or `cancelled`.
 
 `dev/ci/check-ci-config.py` enforces that every `ci.yml` job except `docs`
-appears in `required_checks.needs`. Once `.asf.yaml` does declare a required
-context for `main`, it also enforces that the job's `name:` still matches it.
-Both sides of that pair are silent when broken and expensive to recover from.
+appears in `required_checks.needs`, and that the job's `name:` is the
+expression that routes `labeled` runs to a separate name (see "Label events"
+above). Once `.asf.yaml` does declare a required context for `main`, it also
+enforces that the commit-run name still matches it and that the label-run name
+is never the one required. All of that is silent when broken and expensive to
+recover from.

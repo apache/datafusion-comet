@@ -33,7 +33,10 @@
 #      missing from its `needs:` can fail without blocking the merge, and a
 #      rename on either side of the ci.yml/.asf.yaml pair turns the required
 #      context into one that never reports, which blocks *every* merge to main
-#      until INFRA removes it by hand.
+#      until INFRA removes it by hand. The job's name must also route `labeled`
+#      runs, which skip the PR tier by design, to a name nothing requires:
+#      GitHub keeps the most recent check run per name per commit, so a label
+#      run publishing the required name would overwrite the real verdict.
 #
 #   4. Artifact-name uniqueness. Artifact names are scoped to the *run*, not
 #      to the calling workflow, and ci.yml calls the Spark SQL and Iceberg
@@ -54,6 +57,13 @@ ASF_YAML = Path(".asf.yaml")
 
 # The ci.yml job that aggregates every other job's result.
 AGGREGATOR_JOB = "required_checks"
+
+# The aggregator's `name:` has to be this expression shape: label runs publish
+# the first literal, every other event the second. See the comment on the job.
+AGGREGATOR_NAME_EXPR = re.compile(
+    r"^\$\{\{\s*github\.event\.action\s*==\s*'labeled'\s*&&\s*"
+    r"'([^']+)'\s*\|\|\s*'([^']+)'\s*\}\}$"
+)
 
 # Jobs that legitimately stay out of the aggregator's `needs:`. `docs` deploys
 # to asf-site on push to main; it gates nothing and is never part of a merge
@@ -368,6 +378,19 @@ def asf_required_contexts():
     return contexts
 
 
+def aggregator_check_names(raw_name):
+    """Split the aggregator's `name:` into (required name, label-run name).
+
+    Returns (None, None) when the value is not the expected expression, which
+    includes a plain literal: a literal name is published on `labeled` runs too,
+    and that is the failure mode the expression exists to prevent.
+    """
+    match = AGGREGATOR_NAME_EXPR.match(raw_name)
+    if not match:
+        return None, None
+    return match.group(2), match.group(1)
+
+
 def check_required_checks():
     jobs, needs, display_name = ci_jobs_and_aggregator()
     failures = []
@@ -395,17 +418,42 @@ def check_required_checks():
         if display_name is None:
             failures.append(f"the `{AGGREGATOR_JOB}` job in ci.yml has no `name:`")
         else:
-            # An empty list means main does not require any status check yet,
-            # which is a valid state: there is nothing to keep in sync. Once a
-            # context is declared, it has to be one this job actually reports.
-            contexts = asf_required_contexts()
-            if contexts and display_name not in contexts:
+            required_name, label_run_name = aggregator_check_names(display_name)
+            if required_name is None:
                 failures.append(
-                    f"`{AGGREGATOR_JOB}` publishes the check name "
-                    f"'{display_name}', but .asf.yaml requires {contexts} "
-                    f"for main. A required context that never reports blocks every "
-                    f"merge, including the one that would fix .asf.yaml"
+                    f"`{AGGREGATOR_JOB}.name` is {display_name!r}; it must be the "
+                    f"expression `${{{{ github.event.action == 'labeled' && "
+                    f"'<label-run name>' || '<required name>' }}}}`. A label run "
+                    f"skips the PR tier by design, and GitHub keeps only the most "
+                    f"recent check run per name, so publishing the required name "
+                    f"from a label run would overwrite the commit run's verdict"
                 )
+            elif label_run_name == required_name:
+                failures.append(
+                    f"`{AGGREGATOR_JOB}.name` publishes '{required_name}' on "
+                    f"label runs too; the `labeled` branch of the expression must "
+                    f"be a different name"
+                )
+            else:
+                # An empty list means main does not require any status check
+                # yet, which is a valid state: there is nothing to keep in sync.
+                # Once a context is declared, it has to be the one this job
+                # reports on commit runs, and never the label-run name.
+                contexts = asf_required_contexts()
+                if contexts and required_name not in contexts:
+                    failures.append(
+                        f"`{AGGREGATOR_JOB}` publishes the check name "
+                        f"'{required_name}', but .asf.yaml requires {contexts} "
+                        f"for main. A required context that never reports blocks every "
+                        f"merge, including the one that would fix .asf.yaml"
+                    )
+                if label_run_name in contexts:
+                    failures.append(
+                        f".asf.yaml requires '{label_run_name}', which is the name "
+                        f"`{AGGREGATOR_JOB}` publishes only on label runs. Those runs "
+                        f"skip the PR tier, so requiring it would let a label mark an "
+                        f"untested commit green"
+                    )
 
     for failure in failures:
         print(f"required checks: {failure}")
