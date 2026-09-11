@@ -64,7 +64,9 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
           case _: ParquetFileFormat =>
             // AQE can replace the write input with a zero-partition empty relation. Keep
             // Spark's writer, which creates an empty task to preserve the output file schema.
-            // The native writer only maps existing partitions and cannot do that yet.
+            // The native writer only maps existing partitions; see #5303. This guard is
+            // conservative: an empty relation below an exchange can have nonzero partitions
+            // at the write input. Revisit the guard when native empty-file handling is fixed.
             if (hasEmptyRelationInput(op.child)) {
               return Unsupported(Some(
                 "Parquet writes with empty-relation inputs require Spark's empty-file handling"))

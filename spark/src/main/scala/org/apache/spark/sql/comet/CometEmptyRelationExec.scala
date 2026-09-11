@@ -25,6 +25,7 @@ import org.apache.arrow.memory.BufferAllocator
 import org.apache.arrow.vector.ipc.ArrowReader
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.expressions.Attribute
+import org.apache.spark.sql.catalyst.plans.QueryPlan
 import org.apache.spark.sql.comet.execution.arrow.CometNativeArrowSource
 import org.apache.spark.sql.execution.{LeafExecNode, SparkPlan}
 
@@ -41,6 +42,9 @@ case class CometEmptyRelationExec(originalPlan: SparkPlan, override val output: 
     extends CometExec
     with LeafExecNode
     with CometNativeArrowSource {
+
+  // Render Spark's preserved logical subtree without adding an executable child.
+  override def innerChildren: Seq[QueryPlan[_]] = Seq(originalPlan)
 
   override protected def mapToReaders[T: ClassTag](
       consume: (String, BufferAllocator => ArrowReader) => Iterator[T]): RDD[T] =
