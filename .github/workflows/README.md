@@ -208,10 +208,26 @@ though the content already uploaded. Its client only retries
 built-in step retry. Use `./.github/actions/upload-artifact-retry` instead for
 any artifact a later job consumes: same inputs and outputs, three attempts,
 15s then 45s backoff. Attempts 2 and 3 force `overwrite: true`, so the name
-must belong to exactly one producer in the run (see above). The diagnostic
-uploads inside `./.github/actions/java-test` stay on the plain action, since a
-local action calling another local action is untested here and those run only
-on already-failing jobs.
+must belong to exactly one producer in the run (see above). The uploads inside
+`./.github/actions/java-test` stay on the plain action, since a local action
+calling another local action is untested here. Its two failure-only uploads run
+on jobs that are already red. Its test-report upload also runs on green jobs
+and is `continue-on-error: true`: nothing downstream consumes the reports, and
+a `FinalizeArtifact` 403 must not turn a passing test run into a red check.
+
+**Tool downloads.** `Lint Scala (syntactic)` splits the coursier download from
+the lint: a `Fetch scalafix` step retries a no-op `cs launch ... -- --version`
+three times, and the check itself then runs `cs launch --mode offline` against
+the populated cache, so a nonzero exit there can only be a lint violation.
+`preflight` retries the actionlint download the same way, and fetches the
+installer to a file rather than piping it into `bash` so a truncated download
+cannot run a partial script.
+
+Every one of these steps runs after the test verdict is already known, or
+before any test has started. Once `Required Checks` is a required context
+(see below), a red job from any of them evicts the PR from the merge queue,
+which is why plain network flakes are worth retrying rather than re-running
+the whole pipeline by hand.
 
 **Maven wrapper bootstrap.** `./.github/actions/java-test` retries
 `./mvnw --version` with exponential backoff, so a failed download of the Maven

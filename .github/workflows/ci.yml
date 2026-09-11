@@ -99,9 +99,24 @@ jobs:
         run: python3 dev/ci/check-ci-config.py
 
       - name: Install actionlint
+        # Pure network, and preflight gates every other job, so a single reset
+        # connection here would fail the whole run. Download to a file rather
+        # than pipe into bash so a failed download cannot run a partial script.
         run: |
-          curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash | bash
-          echo "$PWD" >> $GITHUB_PATH
+          for attempt in 1 2 3; do
+            if curl -sSfL --retry 3 --retry-all-errors -o download-actionlint.bash \
+                 https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash \
+               && bash download-actionlint.bash; then
+              break
+            fi
+            if [ "$attempt" = 3 ]; then
+              echo "::error::actionlint download failed after 3 attempts."
+              exit 1
+            fi
+            echo "::warning::actionlint download failed (attempt $attempt of 3); retrying in $((attempt * 10))s."
+            sleep $((attempt * 10))
+          done
+          echo "$PWD" >> "$GITHUB_PATH"
 
       - name: Lint GitHub Actions workflows
         run: actionlint -color --shellcheck=off

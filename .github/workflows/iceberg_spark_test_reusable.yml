@@ -162,7 +162,9 @@ jobs:
             -Pquick=true -x javadoc
       - name: Upload Iceberg shard inventory and test reports
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v7
+        # iceberg-spark-shard-coverage downloads the inventory, so a flaky
+        # upload here fails that job too. Retry rather than fail on the first 403.
+        uses: ./.github/actions/upload-artifact-retry
         with:
           name: iceberg-spark-${{ inputs.iceberg-full }}-spark-${{ inputs.spark-full }}-scala-${{ inputs.scala }}-jdk${{ inputs.java }}-shard-${{ matrix.shard }}-attempt-${{ github.run_attempt }}
           path: |
