@@ -117,9 +117,10 @@ POLICY_CASES = [
     # The merge queue is the authoritative gate: everything except the site
     # deploy, which can only run once the commit is actually on main.
     ({"name": "merge_group"}, QUEUE_TIER),
-    # Push to main is now the site deploy and nothing else. If any test job
-    # shows up here, every merge is paying for CI twice.
-    ({"name": "push"}, {"docs"}),
+    # Push to main is the site deploy plus the Linux build, which is there to
+    # refresh main's actions/cache entries (see POLICY). Any other test job
+    # showing up here means every merge is paying for it twice.
+    ({"name": "push"}, {"docs", "build_linux"}),
     # A plain pull request: the PR tier only. docs must never run here, and the
     # opt-in suites stay off without their label.
     ({"name": "pull_request", "action": "opened", "labels": []}, PR_TIER),

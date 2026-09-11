@@ -31,8 +31,10 @@
 # Which tier a job sits in is POLICY in dev/ci/compute-changes.py, not an
 # expression here. Heavy jobs deliberately have no `push` tier: the queue
 # already tested the exact commit that lands, so re-running the pipeline on
-# push to main would double the cost of every merge. `docs` is the exception,
-# since it deploys to asf-site and must run after the commit is on main.
+# push to main would double the cost of every merge. Two exceptions: `docs`
+# deploys to asf-site and must run after the commit is on main, and the Linux
+# build runs on push so that main's actions/cache entries stay fresh (caches
+# saved on the queue's throwaway branch are deleted with it).
 
 name: CI
 

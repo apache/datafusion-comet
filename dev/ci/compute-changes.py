@@ -316,7 +316,15 @@ FILTERS = {
 # test job would make every merge run it twice, once in the queue and once
 # after, which is the thing the queue was adopted to avoid.
 POLICY = {
-    "build_linux": ["pr", "queue"],
+    # The one test job that also runs on push to main, and only because of
+    # actions/cache scoping: a pull request can restore caches saved on its
+    # own branch or on main, and nowhere else. The queue runs on a throwaway
+    # gh-readonly-queue/* branch, so whatever it saves is deleted with that
+    # branch. Without a push run, a Cargo.lock or pom.xml change would leave
+    # main's cargo-registry, Maven and TPC-H/TPC-DS caches stale forever, and
+    # every later pull request would pay the delta on top of the restore-keys
+    # prefix match.
+    "build_linux": ["pr", "queue", "push"],
     # macOS runners are the scarcest capacity we have, and the Linux build
     # already covers rustfmt and the Rust/JVM compile on every PR. The label
     # is for a change that touches platform-specific code.

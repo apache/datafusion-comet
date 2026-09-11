@@ -26,8 +26,13 @@ early, listed in the diagram below.
 
 Heavy jobs have no `push` tier. The queue already tested the exact tree that
 lands, so re-running them on push to main would double the cost of every
-merge. `docs` is the only job still on `push`, because it deploys to
-`asf-site` and has to run after the commit is on main.
+merge. Two jobs are still on `push`: `docs`, because it deploys to `asf-site`
+and has to run after the commit is on main, and `pr_build_linux`, because of
+`actions/cache` scoping. A pull request can only restore caches saved on its
+own branch or on `main`, and the queue runs on a throwaway
+`gh-readonly-queue/*` branch whose caches are deleted with it. Without a push
+run, a `Cargo.lock` or `pom.xml` change would leave the cargo-registry, Maven
+and TPC-H/TPC-DS caches on `main` stale until the next unrelated change.
 
 ```
                 pull_request | merge_group | push to main | workflow_dispatch
@@ -53,7 +58,7 @@ merge. `docs` is the only job still on `push`, because it deploys to
         v                                   v                                   v
   PR + queue tier                     push to main only         queue tier, or PR with label
   ---------------                     -----------------         ---------------------------
-  pr_build_linux                      docs                      pr_build_macos      run-macos-tests
+  pr_build_linux (+ push, for cache)  docs                      pr_build_macos      run-macos-tests
   spark_4_1                                                     pr_benchmark_check  run-benchmark-check
   iceberg_1_11                                                  spark_3_4           run-spark-3.4-tests
                                                                 spark_3_5           run-spark-3.5-tests
@@ -84,7 +89,7 @@ merge. `docs` is the only job still on `push`, because it deploys to
 | -------------------- | ------------------------------------------------- | ----------------------------------- |
 | `preflight`          | every PR / merge group / push / dispatch / label  | none (always runs)                  |
 | `changes`            | every PR / merge group / push / dispatch / label  | runs `dev/ci/compute-changes.py`    |
-| `pr_build_linux`     | PR or merge group, paths matched                  | `dev/ci/compute-changes.py`         |
+| `pr_build_linux`     | PR, merge group or push to main, paths matched    | `dev/ci/compute-changes.py`         |
 | `pr_build_macos`     | merge group, **or** PR with `run-macos-tests`     | `dev/ci/compute-changes.py`         |
 | `pr_benchmark_check` | merge group, **or** PR with `run-benchmark-check` | benchmark sources only              |
 | `docs`               | push to main, paths matched                       | `.asf.yaml`, `docs/**`, `docs.yaml` |
