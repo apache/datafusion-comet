@@ -29,6 +29,27 @@ import org.apache.spark.sql.execution.columnar.InMemoryTableScanExec
 
 /**
  * Lets Spark's generated consumers read cached Arrow vectors without an intermediate UnsafeRow.
+ *
+ * Data flows upward. Spark's InputAdapter/whole-stage wrappers and an optional AQE cache stage
+ * are omitted:
+ * {{{
+ *   Before                              After
+ *   +------------------------+          +------------------------+
+ *   | Spark codegen consumer |          | Spark codegen consumer |
+ *   +------------------------+          +------------------------+
+ *               ^                                   ^
+ *               | UnsafeRow                         | column values
+ *   +------------------------+          +------------------------+
+ *   | InMemoryTableScanExec  |          | ColumnarToRowExec      |
+ *   | row iterator           |          | fused with consumer    |
+ *   +------------------------+          +------------------------+
+ *                                                   ^
+ *                                                   | ColumnarBatch
+ *                                       +------------------------+
+ *                                       | InMemoryTableScanExec  |
+ *                                       | Arrow vectors          |
+ *                                       +------------------------+
+ * }}}
  */
 object CometCacheColumnarRule extends Rule[SparkPlan] {
   override def apply(plan: SparkPlan): SparkPlan = {
