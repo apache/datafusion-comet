@@ -109,12 +109,12 @@ The tables below list every Spark built-in expression with its current status.
 | `last_value` | ✅ | Native |  |
 | `listagg` | 🔜 | — | String aggregation |
 | `max` | ✅ | Native |  |
-| `max_by` | 🔜 | — | [#3841](https://github.com/apache/datafusion-comet/issues/3841) |
+| `max_by` | ✅ | Native | Value and ordering must be fixed-length types |
 | `mean` | ✅ | Native |  |
 | `median` | ✅ | — | Rewrites to `percentile(col, 0.5)` and runs natively for supported percentile inputs |
 | `min` | ✅ | Native |  |
-| `min_by` | 🔜 | — | [#3841](https://github.com/apache/datafusion-comet/issues/3841) |
-| `mode` | 🔜 | — | [#3970](https://github.com/apache/datafusion-comet/issues/3970) |
+| `min_by` | ✅ | Native | Value and ordering must be fixed-length types |
+| `mode` | ✅ | Native | `mode(col)` only; Spark breaks ties non-deterministically, so Comet returns the smallest tied value and falls back by default, opt-in via allowIncompatible ([#3970](https://github.com/apache/datafusion-comet/issues/3970)) |
 | `percentile` | ✅ | Native | Single literal percentage on numeric input runs natively; array of percentages and a frequency argument fall back to Spark |
 | `percentile_cont` | ✅ | — | Spark 4.0+ `WITHIN GROUP (ORDER BY ...)`; ascending only runs natively, `DESC` falls back to Spark |
 | `percentile_disc` | 🔜 | — | Percentile aggregate |
@@ -239,7 +239,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | --- | --- | --- | --- |
 | `from_csv` | ✅ | Codegen dispatch |  |
 | `schema_of_csv` | ✅ | Codegen dispatch |  |
-| `to_csv` | ✅ | Native |  |
+| `to_csv` | ✅ | Hybrid | Codegen dispatch by default; the native path is opt-in via allowIncompatible |
 
 ---
 
@@ -610,7 +610,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `to_char` | ✅ | Codegen dispatch |  |
 | `to_number` | ✅ | Codegen dispatch |  |
 | `to_varchar` | ✅ | Codegen dispatch |  |
-| `translate` | ✅ | Native | DataFusion's `translate` iterates over Unicode graphemes (Spark uses code points) and substitutes U+0000 instead of treating it as a deletion sentinel, so the native path is opt-in via allowIncompatible |
+| `translate` | ✅ | Hybrid | Codegen dispatch by default: DataFusion's `translate` iterates over Unicode graphemes (Spark uses code points) and substitutes U+0000 instead of treating it as a deletion sentinel, so the native path is opt-in via allowIncompatible |
 | `trim` | ✅ | Native |  |
 | `try_to_binary` | ✅ | — | Runs natively (rewrites to `try_eval(to_binary(...))`) |
 | `try_to_number` | ✅ | Codegen dispatch | Routed through the JVM codegen dispatcher |
