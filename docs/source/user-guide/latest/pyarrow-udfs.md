@@ -215,6 +215,9 @@ on the unoptimized path.
   compares their estimated decoded size with `spark.sql.execution.arrow.maxBytesPerBatch`.
   When either threshold requires splitting, every column is sliced at the same row boundaries.
   Temporary slices and decoded dictionary vectors are released after each synchronous write.
+  Comet returns control to Spark after each slice so Spark can drain its Python transport buffer;
+  small slices may share that buffer until Spark reaches its buffering threshold. The source
+  batch remains alive until its last slice has been written.
 - The byte estimate covers only the logical buffers of decoded dictionary columns: values,
   offsets, and validity bits. It excludes plain columns and is a soft limit: the row that crosses
   the threshold stays in the batch, and a single oversized row remains intact. A separate guard

@@ -126,6 +126,11 @@ private[python] trait CometArrowPythonRunnerBase
       private val allocator =
         CometArrowAllocator.newChildAllocator(s"stdout writer for $pythonExec", 0, Long.MaxValue)
       private var currentGroup: Iterator[ColumnarBatch] = _
+      // Upstream owns this batch. Even hasNext may close it and reuse its native buffers, so
+      // leave the upstream iterators untouched until all ranges have been serialized.
+      private var currentBatch: ColumnarBatch = _
+      private var currentColumns: Seq[CometDecodedVector] = Seq.empty
+      private var remainingRanges: Iterator[(Int, Int)] = Iterator.empty
       private var arrowWriter: ArrowStreamWriter = _
       private var writeRoot: VectorSchemaRoot = _
       private var streamFields: Seq[Field] = _
@@ -135,6 +140,12 @@ private[python] trait CometArrowPythonRunnerBase
       private lazy val inputStructType = schema.head.dataType.asInstanceOf[StructType]
 
       context.addTaskCompletionListener[Unit] { _ =>
+        // Slices and decoded vectors are scoped to each synchronous write. Drop borrowed source
+        // references on completion/cancellation; the upstream task listener owns their cleanup.
+        currentBatch = null
+        currentColumns = Seq.empty
+        remainingRanges = Iterator.empty
+        currentGroup = null
         if (writeRoot != null) {
           writeRoot.close()
         }
@@ -160,36 +171,58 @@ private[python] trait CometArrowPythonRunnerBase
         arrowWriter.start()
       }
 
+      /**
+       * Append one row-aligned Arrow slice to Spark's borrowed transport stream and return true,
+       * or finish the IPC stream and return false when all groups are exhausted. Spark can drain
+       * its direct buffer only between these calls; serializing every range in one call would
+       * accumulate the whole decoded source batch outside the Arrow allocator. Small slices may
+       * still share a transport buffer until Spark reaches its own buffering threshold.
+       *
+       * Keep the source batch borrowed across calls without probing either upstream iterator.
+       * Each call releases its temporary slices/decoded vectors even if serialization fails;
+       * failures propagate and abort the stream. Upstream retains ownership of source cleanup.
+       */
       override def writeNextInputToStream(dataOut: DataOutputStream): Boolean = {
-        while (currentGroup == null || !currentGroup.hasNext) {
-          if (!inputIterator.hasNext) {
-            if (arrowWriter == null) {
-              // No input batch was ever produced (e.g. an upstream filter removed every row).
-              // Still emit a valid, empty Arrow IPC stream so the Python worker's
-              // ArrowStreamReader reads a schema and then sees zero batches, instead of failing
-              // on an absent stream ("Invalid IPC stream: negative continuation token"). There is
-              // no sample batch, so derive the schema from the Spark input schema. The timezone is
-              // irrelevant here because no rows are exchanged.
-              val childFields = inputStructType.fields.toSeq.map(f =>
-                Utils.toArrowField(f.name, f.dataType, nullable = true, "UTC"))
-              startWriter(childFields, dataOut)
+        if (currentBatch == null) {
+          while (currentGroup == null || !currentGroup.hasNext) {
+            if (!inputIterator.hasNext) {
+              if (arrowWriter == null) {
+                // No input batch was ever produced (e.g. an upstream filter removed every row).
+                // Still emit a valid, empty Arrow IPC stream so the Python worker's
+                // ArrowStreamReader reads a schema and then sees zero batches, instead of failing
+                // on an absent stream ("Invalid IPC stream: negative continuation token"). There
+                // is no sample batch, so derive the schema from the Spark input schema. The
+                // timezone is irrelevant here because no rows are exchanged.
+                val childFields = inputStructType.fields.toSeq.map(f =>
+                  Utils.toArrowField(f.name, f.dataType, nullable = true, "UTC"))
+                startWriter(childFields, dataOut)
+              }
+              arrowWriter.end()
+              return false
             }
-            arrowWriter.end()
-            return false
+            currentGroup = inputIterator.next()
           }
-          currentGroup = inputIterator.next()
+
+          currentBatch = currentGroup.next()
+          currentColumns = (0 until currentBatch.numCols()).map { i =>
+            currentBatch.column(i).asInstanceOf[CometDecodedVector]
+          }
+          remainingRanges = CometArrowPythonRunnerBase
+            .inputBatchRanges(
+              currentColumns,
+              currentBatch.numRows(),
+              arrowMaxRecordsPerBatch,
+              arrowMaxBytesPerBatch)
+            .iterator
         }
 
-        val cometBatch = currentGroup.next()
         val startData = dataOut.size()
-        val columns = (0 until cometBatch.numCols()).map { i =>
-          cometBatch.column(i).asInstanceOf[CometDecodedVector]
-        }
-        CometArrowPythonRunnerBase.foreachInputBatch(
-          columns,
-          cometBatch.numRows(),
-          arrowMaxRecordsPerBatch,
-          arrowMaxBytesPerBatch,
+        val (offset, length) = remainingRanges.next()
+        CometArrowPythonRunnerBase.withInputBatchRange(
+          currentColumns,
+          currentBatch.numRows(),
+          offset,
+          length,
           allocator) { (sourceVectors, numRows) =>
           val batchFields = sourceVectors.map(_.getField)
 
@@ -226,6 +259,10 @@ private[python] trait CometArrowPythonRunnerBase
             allocator)
         }
 
+        if (!remainingRanges.hasNext) {
+          currentBatch = null
+          currentColumns = Seq.empty
+        }
         pythonMetrics("pythonDataSent") += dataOut.size() - startData
         true
       }
@@ -559,7 +596,12 @@ private[python] object CometArrowPythonRunnerBase {
     ranges.result()
   }
 
-  /** Materialize and visit each safely sized, row-aligned input range synchronously. */
+  /**
+   * Materialize and visit every row-aligned range synchronously. The caller owns `columns` and
+   * `allocator`; each callback borrows its vectors only until it returns. Slicing, decoding and
+   * callback failures propagate after temporary cleanup. This helper does not yield between
+   * ranges; the Python writer must use [[withInputBatchRange]] once per transport write call.
+   */
   private[python] def foreachInputBatch(
       columns: Seq[CometDecodedVector],
       numRows: Int,
@@ -567,18 +609,37 @@ private[python] object CometArrowPythonRunnerBase {
       maxBytesPerBatch: Long,
       allocator: BufferAllocator)(body: (Seq[FieldVector], Int) => Unit): Unit = {
     inputBatchRanges(columns, numRows, maxRecordsPerBatch, maxBytesPerBatch).foreach {
-      case (0, length) if length == numRows =>
-        withMaterializedInputVectors(columns, allocator)(body(_, length))
       case (offset, length) =>
-        val slices = new ArrayList[CometDecodedVector]()
-        try {
-          columns.foreach { column =>
-            slices.add(column.slice(offset, length).asInstanceOf[CometDecodedVector])
-          }
-          withMaterializedInputVectors(slices.asScala.toSeq, allocator)(body(_, length))
-        } finally {
-          slices.asScala.reverseIterator.foreach(_.close())
+        withInputBatchRange(columns, numRows, offset, length, allocator)(body)
+    }
+  }
+
+  /**
+   * Supply logical vectors for one `(offset, length)` range previously returned by
+   * [[inputBatchRanges]], with `numRows` equal to the source batch's row count. `columns` and
+   * their dictionaries remain borrowed and must stay alive throughout the call. Whole-batch
+   * ranges avoid slicing; other ranges create row-aligned aliases. The callback must neither
+   * retain nor close its vectors. Close temporary slices and decoded vectors before returning,
+   * including on failure, without closing or changing the source. Errors propagate to the caller.
+   */
+  private[python] def withInputBatchRange(
+      columns: Seq[CometDecodedVector],
+      numRows: Int,
+      offset: Int,
+      length: Int,
+      allocator: BufferAllocator)(body: (Seq[FieldVector], Int) => Unit): Unit = {
+    if (offset == 0 && length == numRows) {
+      withMaterializedInputVectors(columns, allocator)(body(_, length))
+    } else {
+      val slices = new ArrayList[CometDecodedVector]()
+      try {
+        columns.foreach { column =>
+          slices.add(column.slice(offset, length).asInstanceOf[CometDecodedVector])
         }
+        withMaterializedInputVectors(slices.asScala.toSeq, allocator)(body(_, length))
+      } finally {
+        slices.asScala.reverseIterator.foreach(_.close())
+      }
     }
   }
 

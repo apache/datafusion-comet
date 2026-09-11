@@ -19,7 +19,7 @@
 
 package org.apache.spark.sql.execution.python
 
-import java.io.{ByteArrayInputStream, ByteArrayOutputStream, IOException}
+import java.io.{ByteArrayInputStream, ByteArrayOutputStream, DataOutputStream, IOException}
 import java.nio.ByteBuffer
 import java.nio.channels.{Channels, WritableByteChannel}
 import java.nio.charset.StandardCharsets
@@ -40,11 +40,94 @@ import org.apache.arrow.vector.dictionary.{Dictionary, DictionaryProvider}
 import org.apache.arrow.vector.ipc.{ArrowStreamReader, ArrowStreamWriter, WriteChannel}
 import org.apache.arrow.vector.types.TimeUnit
 import org.apache.arrow.vector.types.pojo.{ArrowType, DictionaryEncoding, Field, FieldType, Schema}
+import org.apache.spark.{SparkConf, SparkEnv, TaskContext, TaskContextImpl}
+import org.apache.spark.api.python.{BasePythonRunner, ChainedPythonFunctions, PythonEvalType, SimplePythonFunction}
+import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.execution.python.CometArrowPythonRunnerBase.{foreachInputBatch, hasCompatibleSchema, inputBatchRanges, serializeBatch, withMaterializedInputVectors}
+import org.apache.spark.sql.types.{StringType, StructField, StructType}
+import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
+import org.apache.spark.util.DirectByteBufferOutputStream
 
+import org.apache.comet.CometArrowAllocator
 import org.apache.comet.vector.{CometDecodedVector, CometDictionary, CometDictionaryVector, CometPlainVector, CometStructVector}
 
 class CometArrowPythonRunnerSuite extends AnyFunSuite with Matchers {
+
+  /**
+   * Expose the production input writer without opening a worker socket. The fixture borrows its
+   * input batches; the task context owns the writer allocator and must be completed after use.
+   * The BasePythonRunner constructor is common to all supported Spark 4.x versions.
+   */
+  private class InputWriterRunner(functions: Seq[ChainedPythonFunctions])
+      extends BasePythonRunner[Iterator[ColumnarBatch], ColumnarBatch](
+        functions,
+        PythonEvalType.SQL_MAP_ARROW_ITER_UDF,
+        Array(Array(0)),
+        None,
+        Map.empty)
+      with CometArrowPythonRunnerBase {
+    override protected val workerConf: Map[String, String] = Map.empty
+    override protected val pythonMetrics: Map[String, SQLMetric] =
+      Map("pythonDataSent" -> new SQLMetric("size", 0L))
+    override protected val schema: StructType = StructType(
+      Seq(StructField("struct", StructType(Seq(StructField("text", StringType))))))
+    override protected val arrowMaxRecordsPerBatch: Int = 1
+    override protected val arrowMaxBytesPerBatch: Long = Long.MaxValue
+
+    /** Command serialization is unused because this fixture never opens a Python worker. */
+    override protected def writeUDF(dataOut: DataOutputStream): Unit = ()
+
+    /** Create a production writer borrowing the input, with cleanup owned by the given task. */
+    def inputWriter(input: Iterator[Iterator[ColumnarBatch]], context: TaskContext): Writer =
+      newWriter(SparkEnv.get, null, input, 0, context)
+
+    /** Return the accumulated IPC byte metric without changing writer state. */
+    def bytesSent: Long = pythonMetrics("pythonDataSent").value
+
+    /** Return Spark's byte threshold for filling the transport buffer between socket writes. */
+    def transportBufferSize: Int = bufferSize
+  }
+
+  /**
+   * Install a configuration-only Spark environment, run a writer test, and complete its task even
+   * on failure. No Spark services or worker processes are created. Restore the caller's
+   * environment after allocator cleanup; source batches remain owned by the caller throughout.
+   */
+  private def withInputWriterRunner(body: (InputWriterRunner, TaskContextImpl) => Unit): Unit = {
+    val previousEnv = SparkEnv.get
+    val env = new SparkEnv(
+      "python-writer-test",
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      new SparkConf(false))
+    val context = TaskContext.empty()
+    SparkEnv.set(env)
+    try {
+      val function = SimplePythonFunction(
+        Seq.empty[Byte],
+        new java.util.HashMap[String, String](),
+        new java.util.ArrayList[String](),
+        "python",
+        "3",
+        java.util.Collections.emptyList(),
+        null)
+      body(new InputWriterRunner(Seq(ChainedPythonFunctions(Seq(function)))), context)
+    } finally {
+      try {
+        context.markTaskCompleted(None)
+      } finally {
+        SparkEnv.set(previousEnv)
+      }
+    }
+  }
 
   private def withWriter(
       childFields: Seq[Field],
@@ -262,6 +345,194 @@ class CometArrowPythonRunnerSuite extends AnyFunSuite with Matchers {
       start += length
     }
     ranges.toSeq
+  }
+
+  Seq((64 * 1024, 256), (16, 600)).foreach { case (valueBytes, firstRows) =>
+    test(
+      s"input writer bounds Spark transport buffering for $valueBytes-byte dictionary values") {
+      val firstValue = "a" * valueBytes
+      val secondValue = "b" * valueBytes
+      val secondRows = 3
+      val first = dictionaryInput(Seq(firstValue), Seq.fill(firstRows)(Some(0)))
+      val second = dictionaryInput(Seq(secondValue), Seq.fill(secondRows)(Some(0)))
+      val transport = new DirectByteBufferOutputStream()
+      val wireBytes = new ByteArrayOutputStream()
+      try {
+        withInputWriterRunner { (runner, context) =>
+          var emittedBatches = 0
+
+          /**
+           * Borrow one source until all its expected writer calls finish. Checking hasNext after
+           * delivery models an upstream iterator that can close/reuse the current batch there.
+           */
+          def guardedSource(
+              input: DictionaryInput,
+              rows: Int,
+              expectedCalls: Int): Iterator[ColumnarBatch] = new Iterator[ColumnarBatch] {
+            private var delivered = false
+
+            /** Report availability, rejecting source advancement while a slice is pending. */
+            override def hasNext: Boolean = {
+              if (delivered) {
+                emittedBatches shouldBe expectedCalls
+              }
+              !delivered
+            }
+
+            /** Return the borrowed batch once; the fixture retains ownership of its vectors. */
+            override def next(): ColumnarBatch = {
+              assert(!delivered)
+              delivered = true
+              new ColumnarBatch(Array[ColumnVector](input.column), rows)
+            }
+          }
+
+          val input = Iterator(
+            Iterator.empty,
+            guardedSource(first, firstRows, firstRows),
+            Iterator.empty,
+            guardedSource(second, secondRows, firstRows + secondRows),
+            Iterator.empty)
+          val writer = runner.inputWriter(input, context)
+          val sourceBytes = Seq(first, second).map(_.allocator.getAllocatedMemory)
+          val sourceBuffers = Seq(first, second).flatMap { source =>
+            Seq(source.indices.getValueVector.getDataBuffer, source.values.getDataBuffer)
+          }
+          val sourceRefs = sourceBuffers.map(_.refCnt())
+          val writerBytes = CometArrowAllocator.getAllocatedMemory
+          var hasInput = true
+          var peakPending = 0
+          var maxCallsPerDrain = 0
+          var countedBytes = 0L
+          while (hasInput) {
+            // Spark fills this direct buffer until its byte threshold, then drains to the socket.
+            // Reset only after capturing every pending byte; small slices may share one drain.
+            transport.reset()
+            val dataOut = new DataOutputStream(transport)
+            val callsBeforeDrain = emittedBatches
+            while (transport.size() < runner.transportBufferSize && hasInput) {
+              val bytesBeforeCall = transport.size()
+              hasInput = writer.writeNextInputToStream(dataOut)
+              if (hasInput) {
+                emittedBatches += 1
+                countedBytes += transport.size() - bytesBeforeCall
+              }
+              CometArrowAllocator.getAllocatedMemory shouldBe writerBytes
+              Seq(first, second).map(_.allocator.getAllocatedMemory) shouldBe sourceBytes
+              sourceBuffers.map(_.refCnt()) shouldBe sourceRefs
+            }
+            peakPending = math.max(peakPending, transport.size())
+            maxCallsPerDrain = math.max(maxCallsPerDrain, emittedBatches - callsBeforeDrain)
+            // One call may cross Spark's soft threshold by one row plus Arrow IPC metadata.
+            transport.size() should be <= (runner.transportBufferSize + valueBytes + 1024)
+            val pending = transport.toByteBuffer
+            val bytes = new Array[Byte](pending.remaining())
+            pending.get(bytes)
+            wireBytes.write(bytes)
+          }
+          emittedBatches shouldBe firstRows + secondRows
+          runner.bytesSent shouldBe countedBytes
+          peakPending.toLong should be < (firstRows.toLong * (valueBytes + 128L))
+          if (valueBytes < runner.transportBufferSize) {
+            maxCallsPerDrain should be > 1
+          }
+          withReader(wireBytes.toByteArray) { reader =>
+            val root = reader.getVectorSchemaRoot
+            var rowsRead = 0
+            while (reader.loadNextBatch()) {
+              root.getRowCount shouldBe 1
+              val struct = root.getVector(0).asInstanceOf[StructVector]
+              val text = struct.getChild("text").asInstanceOf[VarCharVector]
+              val expected = if (rowsRead < firstRows) firstValue else secondValue
+              text.getObject(0).toString shouldBe expected
+              rowsRead += 1
+            }
+            rowsRead shouldBe firstRows + secondRows
+          }
+        }
+      } finally {
+        transport.close()
+        second.close()
+        first.close()
+      }
+    }
+  }
+
+  Seq(false, true).foreach { failWrite =>
+    val interruption = if (failWrite) "serialization failure" else "task interruption"
+    test(s"input writer releases temporaries with pending slices after $interruption") {
+      val value = "x" * (64 * 1024)
+      val input = dictionaryInput(Seq(value), Seq.fill(8)(Some(0)))
+      val expectedFailure = new IOException("injected transport failure")
+      var rejectWrites = false
+      val transport = new DirectByteBufferOutputStream() {
+
+        /**
+         * Fail an enabled IPC write before mutating the direct buffer; otherwise copy normally.
+         */
+        override def write(bytes: Array[Byte], offset: Int, length: Int): Unit = {
+          if (rejectWrites) {
+            throw expectedFailure
+          }
+          super.write(bytes, offset, length)
+        }
+      }
+      try {
+        withInputWriterRunner { (runner, context) =>
+          var delivered = false
+          val source = new Iterator[ColumnarBatch] {
+
+            /**
+             * Reject any upstream access after delivery while the test's ranges remain pending.
+             */
+            override def hasNext: Boolean = {
+              assert(!delivered, "the source must stay borrowed while slices remain")
+              true
+            }
+
+            /** Return a borrowed eight-row source whose remaining slices outlive this test. */
+            override def next(): ColumnarBatch = {
+              assert(!delivered)
+              delivered = true
+              new ColumnarBatch(Array[ColumnVector](input.column), 8)
+            }
+          }
+          val initialChildren = CometArrowAllocator.getChildAllocators.asScala.toSet
+          val writer = runner.inputWriter(Iterator(source), context)
+          val childAllocator =
+            (CometArrowAllocator.getChildAllocators.asScala.toSet -- initialChildren).head
+          val sourceBytes = input.allocator.getAllocatedMemory
+          val sourceBuffers =
+            Seq(input.indices.getValueVector.getDataBuffer, input.values.getDataBuffer)
+          val sourceRefs = sourceBuffers.map(_.refCnt())
+          val dataOut = new DataOutputStream(transport)
+          writer.writeNextInputToStream(dataOut) shouldBe true
+          childAllocator.getAllocatedMemory shouldBe 0L
+          childAllocator.getPeakMemoryAllocation should be < (8L * value.length)
+          if (failWrite) {
+            transport.reset()
+            rejectWrites = true
+            val failure = intercept[IOException] {
+              writer.writeNextInputToStream(new DataOutputStream(transport))
+            }
+            (failure eq expectedFailure) shouldBe true
+          }
+          childAllocator.getAllocatedMemory shouldBe 0L
+          input.allocator.getAllocatedMemory shouldBe sourceBytes
+          sourceBuffers.map(_.refCnt()) shouldBe sourceRefs
+          context.markInterrupted("stop with pending Python input slices")
+          context.markTaskCompleted(if (failWrite) Some(expectedFailure) else None)
+          CometArrowAllocator.getChildAllocators.asScala.toSet shouldBe initialChildren
+          // Task cleanup must release only writer-owned resources, including on a failed write.
+          input.allocator.getAllocatedMemory shouldBe sourceBytes
+          sourceBuffers.map(_.refCnt()) shouldBe sourceRefs
+          input.column.getUTF8String(7).toString shouldBe value
+        }
+      } finally {
+        transport.close()
+        input.close()
+      }
+    }
   }
 
   test("input schema compatibility preserves physical types and nested layouts") {
