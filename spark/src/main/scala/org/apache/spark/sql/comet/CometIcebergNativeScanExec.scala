@@ -119,9 +119,25 @@ case class CometIcebergNativeScanExec(
   // Only accessed during execution, not planning
   def numPartitions: Int = perPartitionData.length
 
+  // Spark's EnsureRequirements runs before Comet converts this scan, so it already eliminates a
+  // redundant shuffle based on the vanilla BatchScanExec's KeyGroupedPartitioning (storage-
+  // partitioned join) while the leaf is still a BatchScanExec. This node therefore does not need
+  // to re-report partitioning: UnknownPartitioning is enough, and it keeps the whole SPJ
+  // negotiation (including commonPartitionValues push-down under AQE) on BatchScanExec, which is
+  // the only node Spark can push into.
   override lazy val outputPartitioning: Partitioning = UnknownPartitioning(numPartitions)
 
-  override lazy val outputOrdering: Seq[SortOrder] = Nil
+  // Report the Iceberg-reported ordering (gated to what the native per-partition merge honours) so
+  // Spark elides redundant sorts above the scan. The gate ran once in CometScanRule and stashed the
+  // result on nativeIcebergScanMetadata, so this and the proto serialization advertise the exact
+  // same order. Nil on canonicalized instances (originalPlan / metadata nulled) -- they are never
+  // executed and their ordering is irrelevant to equality.
+  override lazy val outputOrdering: Seq[SortOrder] =
+    if (originalPlan == null || nativeIcebergScanMetadata == null) {
+      Nil
+    } else {
+      nativeIcebergScanMetadata.reportedOrdering
+    }
 
   /**
    * Maps Iceberg V2 custom metric types to standard Spark metric types for better UI formatting.

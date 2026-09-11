@@ -57,6 +57,19 @@ config `spark.comet.scan.icebergNative.dataFileConcurrencyLimit`. This value def
 maintain test behavior on Iceberg Java tests without `ORDER BY` clauses, but we suggest increasing it to
 values between 2 and 8 based on your workload.
 
+When a table is sorted and Iceberg reports its sort order (which requires Iceberg's
+`spark.sql.iceberg.planning.preserve-data-ordering`), Comet reads each partition's already-sorted
+files as separate streams and merges them, so Spark can drop redundant sorts above the scan. Two
+configs tune this:
+
+- `spark.comet.scan.icebergNative.sortMerge.enabled` (default `true`) turns the streaming merge on
+  or off. When off, the scan stays native and still honors the reported order, but via a single
+  unordered read plus a spillable sort rather than the k-way merge.
+- `spark.comet.scan.icebergNative.sortMerge.maxFilesPerPartition` (default `64`) caps how many
+  files in one partition Comet will merge. A merge opens one reader per file at once, so above this
+  many files Comet reads the partition unordered and sorts it with a spillable sort instead, which
+  bounds concurrently-open readers. Both paths produce sorted output.
+
 ### Supported features
 
 The native Iceberg reader supports the following features:
@@ -177,6 +190,12 @@ The following scenarios will fall back to the JVM Iceberg reader:
 - Scans with residual filters using `truncate`, `bucket`, `year`, `month`, `day`, or `hour`
   transform functions (partition pruning still works, but row-level filtering of these
   transforms falls back)
+- Sorted tables where the sort key is a transform (e.g. `bucket`, `truncate`) rather than a plain
+  column: Comet reports only identity sort keys today, so the scan falls back to Spark to preserve
+  the reported ordering
+- Sorted tables whose sort key is a `UUID` column: Iceberg sorts UUID by its own byte comparator
+  while Spark maps UUID to a string, so the two orders can disagree; Comet declines the ordering
+  and falls back to Spark
 
 ### Iceberg UDFs
 
