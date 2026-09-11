@@ -85,6 +85,8 @@ serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 typetag = "0.2"
 uuid = "1.23.3"
+libloading = "0.8"
+comet-udf-sdk = { path = "../comet-udf-sdk" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 procfs = "0.18.0"
@@ -100,6 +102,7 @@ lazy_static = "1.4"
 assertables = "10"
 hex = "0.4.3"
 datafusion-functions-nested = { version = "55.0.0" }
+comet-test-udfs = { path = "../comet-test-udfs" }
 
 [features]
 backtrace = ["datafusion/backtrace"]

@@ -1,0 +1,519 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+package org.apache.comet
+
+import java.io.File
+import java.util.Locale
+
+import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.functions.expr
+import org.apache.spark.sql.types._
+
+import org.apache.comet.udf.{CometNativeUDF, CometNativeUdfAbiException, CometNativeUdfLoadException}
+
+/**
+ * End-to-end integration suite: register a native UDF, run a Spark query, verify the result.
+ *
+ * Requires the `comet-test-udfs` cdylib, which is found automatically under `native/target` and
+ * can be overridden with `-Dcomet.test.udfs.lib=<path>`.
+ *
+ * Note that these tests are self-guarding on native execution: `CometNativeUDF.register` installs
+ * a catalog stub that throws if Spark ever evaluates the UDF itself, so a silent fallback to
+ * Spark fails the test rather than passing.
+ *
+ * To run locally:
+ * {{{
+ *   cargo build -p comet-test-udfs --manifest-path native/Cargo.toml
+ *   ./mvnw test -Dsuites="org.apache.comet.CometNativeUdfSuite" -Dtest=none
+ * }}}
+ */
+class CometNativeUdfSuite extends CometTestBase {
+
+  private lazy val libPath: String = {
+    val overridden = Option(System.getProperty("comet.test.udfs.lib"))
+      // An undefined Maven property reaches the forked JVM as the literal "null", and an
+      // unsubstituted one as "${comet.test.udfs.lib}". Neither is a path.
+      .map(_.trim)
+      .filter(p => p.nonEmpty && p != "null" && !p.startsWith("$"))
+
+    overridden.orElse(CometNativeUdfSuite.discoverBuiltLibrary()).getOrElse {
+      if (sys.env.contains("CI")) {
+        // In CI the cdylib is staged alongside libcomet, so its absence means the native build or
+        // the artifact upload changed, not that someone forgot a flag. Fail rather than skip.
+        fail(
+          s"${CometNativeUdfSuite.libraryFileName} was not found under native/target. CI stages it " +
+            "next to libcomet, so a missing library means the native build or the artifact " +
+            "upload has changed.")
+      } else {
+        cancel(s"${CometNativeUdfSuite.libraryFileName} not built; run " +
+          "`cargo build -p comet-test-udfs --manifest-path native/Cargo.toml` to run this suite")
+      }
+    }
+  }
+
+  test("add_one_c returns id + 1 for a range") {
+    CometNativeUDF.register(spark, "add_one_c", libPath, Seq(LongType), LongType)
+    val df = spark.range(0, 5).selectExpr("add_one_c(id) AS y")
+    val out = df.collect().map(_.getLong(0)).sorted.toSeq
+    assert(out == Seq(1L, 2L, 3L, 4L, 5L))
+  }
+
+  test("panic inside UDF invoke surfaces as a query error, not a crash") {
+    CometNativeUDF.register(spark, "panics_on_invoke", libPath, Seq(LongType), LongType)
+    val e = intercept[Exception] {
+      spark.range(0, 5).selectExpr("panics_on_invoke(id) AS y").collect()
+    }
+    assert(
+      stackTraceContains(e, "deliberate panic from user UDF code"),
+      s"panic message not propagated: $e")
+  }
+
+  test("panic inside UDF return_field surfaces as a query error, not a crash") {
+    CometNativeUDF.register(spark, "panics_on_return_field", libPath, Seq(LongType), LongType)
+    val e = intercept[Exception] {
+      spark.range(0, 5).selectExpr("panics_on_return_field(id) AS y").collect()
+    }
+    assert(
+      stackTraceContains(e, "deliberate panic from user return_field"),
+      s"panic message not propagated: $e")
+  }
+
+  /** True if `needle` appears anywhere in the exception's cause chain. */
+  private def stackTraceContains(e: Throwable, needle: String): Boolean = {
+    Iterator
+      .iterate(e)(_.getCause)
+      .takeWhile(_ != null)
+      .exists(t => Option(t.getMessage).exists(_.contains(needle)))
+  }
+
+  // Known limitation, tracked in https://github.com/apache/datafusion-comet/issues/5295: the serde
+  // recognizes a native UDF by name alone, so the Rust library answers this call and the assertion
+  // below fails with `ArraySeq(0, 1, 2) did not equal List(0, 10, 20)`. Enable this test with the
+  // fix.
+  ignore("an ordinary Scala UDF is not answered by a native UDF of the same name") {
+    CometNativeUDF.register(spark, "echo_c", libPath, Seq(LongType), LongType)
+    // Claim the same name with an ordinary Scala UDF.
+    spark.udf.register("echo_c", (x: Long) => x * 10)
+    val viaScala =
+      spark.range(0, 3).selectExpr("echo_c(id) AS y").collect().map(_.getLong(0)).toSeq
+    assert(viaScala == Seq(0L, 10L, 20L), "the Scala UDF's call was answered by the native UDF")
+
+    // Re-registering takes the name back, and the native UDF still runs natively (the stub throws if
+    // Spark evaluates it, so a wrong answer here would be a failure rather than a silent fallback).
+    CometNativeUDF.register(spark, "echo_c", libPath, Seq(LongType), LongType)
+    val viaRust =
+      spark.range(0, 3).selectExpr("echo_c(id) AS y").collect().map(_.getLong(0)).toSeq
+    assert(viaRust == Seq(0L, 1L, 2L))
+  }
+
+  test("concurrent registrations of different UDFs are all usable") {
+    val failures = new java.util.concurrent.ConcurrentLinkedQueue[Throwable]()
+    val cases: Seq[(String, DataType)] =
+      Seq(("add_one_c", LongType), ("echo_c", LongType), ("stringify_c", StringType))
+    val threads = cases.map { case (name, returnType) =>
+      new Thread(() => {
+        try {
+          CometNativeUDF.register(spark, name, libPath, Seq(LongType), returnType)
+        } catch {
+          case t: Throwable => failures.add(t)
+        }
+      })
+    }
+    threads.foreach(_.start())
+    threads.foreach(_.join())
+    assert(failures.isEmpty, s"registration failed: ${failures.peek()}")
+
+    // All three registrations survived the race intact: each name resolves, plans as a native call,
+    // and produces its own library's answer rather than another's.
+    val row = spark
+      .range(0, 3)
+      .selectExpr("add_one_c(id) AS a", "echo_c(id) AS b", "stringify_c(id) AS c")
+      .collect()
+    assert(row.map(_.getLong(0)).toSeq == Seq(1L, 2L, 3L))
+    assert(row.map(_.getLong(1)).toSeq == Seq(0L, 1L, 2L))
+    assert(row.forall(r => Option(r.getString(2)).exists(_.nonEmpty)))
+  }
+
+  test("a missing library is reported as a load failure") {
+    val e = intercept[CometNativeUdfLoadException] {
+      CometNativeUDF.register(spark, "add_one_c", "/no/such/library.so", Seq(LongType), LongType)
+    }
+    assert(e.getMessage.contains("/no/such/library.so"))
+  }
+
+  test("a load failure under a path containing ABI is not reported as an ABI mismatch") {
+    // Every native loader message interpolates the library path, so classification has to key on
+    // the message's own wording rather than on a fragment a path can contain.
+    intercept[CometNativeUdfLoadException] {
+      CometNativeUDF.register(
+        spark,
+        "add_one_c",
+        "/no/such/ABI/library.so",
+        Seq(LongType),
+        LongType)
+    }
+  }
+
+  test("a library that is not a UDF library is reported as an ABI failure") {
+    val notAUdfLibrary = CometNativeUdfSuite
+      .siblingCometLibrary(libPath)
+      .getOrElse(
+        cancel(s"${CometNativeUdfSuite.cometLibraryFileName} not found next to $libPath"))
+    val e = intercept[CometNativeUdfAbiException] {
+      CometNativeUDF.register(spark, "add_one_c", notAUdfLibrary, Seq(LongType), LongType)
+    }
+    assert(e.getMessage.contains("missing required symbol"), s"unexpected message: $e")
+  }
+
+  test("a name the library does not export is reported as a missing element") {
+    val e = intercept[java.util.NoSuchElementException] {
+      CometNativeUDF.register(spark, "no_such_udf_c", libPath, Seq(LongType), LongType)
+    }
+    assert(e.getMessage.contains("no_such_udf_c"), s"unexpected message: $e")
+  }
+
+  /**
+   * One case per supported Spark type: the type itself, and a SQL expression producing a value of
+   * that type from the `id` column of `spark.range`.
+   *
+   * The declared type is asserted against the frame's real schema before it is registered, so a
+   * case whose expression does not produce the type it claims fails loudly rather than testing
+   * the wrong thing.
+   */
+  private val typeCases: Seq[(DataType, String)] = Seq(
+    (BooleanType, "id % 2 = 0"),
+    (ByteType, "cast(id as byte)"),
+    (ShortType, "cast(id as short)"),
+    (IntegerType, "cast(id as int)"),
+    (LongType, "id"),
+    (FloatType, "cast(id as float) + 0.5f"),
+    (DoubleType, "cast(id as double) + 0.5"),
+    (StringType, "concat('s', cast(id as string))"),
+    (BinaryType, "cast(concat('b', cast(id as string)) as binary)"),
+    (DateType, "date_add(date'2024-01-01', cast(id as int))"),
+    (TimestampType, "cast(date_add(date'2024-01-01', cast(id as int)) as timestamp)"),
+    (TimestampNTZType, "cast(timestamp_ntz'2024-01-01 12:00:00' as timestamp_ntz)"),
+    // The outer cast pins the result to decimal(10,2): Spark widens the precision of the addition
+    // itself to decimal(11,2), which would not match the type registered below.
+    (DecimalType(10, 2), "cast(cast(id as decimal(10,2)) + 0.25 as decimal(10,2))"),
+    // Complex types. `containsNull` / `valueContainsNull` / field nullability are part of the type
+    // and must match what the expression actually produces, hence the explicit constructors.
+    (ArrayType(IntegerType, containsNull = false), "array(cast(id as int), cast(id + 1 as int))"),
+    (ArrayType(StringType, containsNull = false), "array(concat('s', cast(id as string)))"),
+    (
+      MapType(StringType, IntegerType, valueContainsNull = false),
+      "map('k', cast(id as int), 'j', cast(id + 1 as int))"),
+    (
+      StructType(
+        Seq(
+          StructField("a", IntegerType, nullable = false),
+          StructField("b", StringType, nullable = false))),
+      "named_struct('a', cast(id as int), 'b', concat('s', cast(id as string)))"),
+    // One level of nesting, to check the FFI carries child arrays rather than just top-level ones.
+    (
+      ArrayType(
+        StructType(Seq(StructField("a", IntegerType, nullable = false))),
+        containsNull = false),
+      "array(named_struct('a', cast(id as int)))"),
+    (
+      StructType(
+        Seq(StructField("xs", ArrayType(IntegerType, containsNull = false), nullable = false))),
+      "named_struct('xs', array(cast(id as int), cast(id + 1 as int)))"))
+
+  /**
+   * A 4-row frame with a single column `c` of the given type, where the last row is null so every
+   * case also covers null handling across the FFI boundary.
+   */
+  private def typedFrame(valueExpr: String) =
+    spark.range(0, 4).selectExpr(s"case when id = 3 then null else $valueExpr end as c")
+
+  /** Normalize for comparison: byte arrays do not compare by value as `Any`. */
+  private def normalize(v: Any): Any = v match {
+    case b: Array[Byte] => b.toSeq
+    case other => other
+  }
+
+  for ((dataType, valueExpr) <- typeCases) {
+    test(s"echo_c round-trips ${dataType.simpleString} including nulls") {
+      val df = typedFrame(valueExpr)
+      assert(
+        df.schema.head.dataType == dataType,
+        s"test expression produced ${df.schema.head.dataType}, not $dataType")
+      CometNativeUDF.register(spark, "echo_c", libPath, Seq(dataType), dataType)
+      val expected = df.collect().map(r => normalize(r.get(0))).toSeq
+      val actual = df.selectExpr("echo_c(c) AS y").collect().map(r => normalize(r.get(0))).toSeq
+      assert(actual == expected, s"round trip changed values for ${dataType.simpleString}")
+      assert(expected.last == null, "expected a null in the last row")
+    }
+
+    test(s"stringify_c reads ${dataType.simpleString} values") {
+      CometNativeUDF.register(spark, "stringify_c", libPath, Seq(dataType), StringType)
+      val df = typedFrame(valueExpr)
+      val inputs = df.collect().map(r => normalize(r.get(0))).toSeq
+      val rendered = df.selectExpr("stringify_c(c) AS y").collect().map(r => r.get(0)).toSeq
+
+      assert(rendered.length == inputs.length)
+      // The UDF must decode each value, so a non-null input yields a non-empty rendering and a
+      // null input stays null. The exact text is arrow's formatting, not Spark's, so it is not
+      // asserted here.
+      inputs.zip(rendered).foreach { case (in, out) =>
+        if (in == null) {
+          assert(out == null, s"null input rendered as $out for ${dataType.simpleString}")
+        } else {
+          assert(out != null, s"non-null input $in rendered as null")
+          assert(
+            out.asInstanceOf[String].nonEmpty,
+            s"non-null input $in rendered empty for ${dataType.simpleString}")
+        }
+      }
+    }
+  }
+
+  test("one kernel computes its return type on demand and serves many types") {
+    // echo_c has no fixed return type of its own: its return_field derives one from the argument
+    // types on every call. The type declared to `register` is what Spark plans against, so it is
+    // per-registration rather than per-kernel, and the same kernel serves a different type after
+    // re-registering.
+    CometNativeUDF.register(spark, "echo_c", libPath, Seq(LongType), LongType)
+    assert(
+      spark.range(0, 3).selectExpr("echo_c(id) AS y").collect().map(_.getLong(0)).toSeq ==
+        Seq(0L, 1L, 2L))
+
+    CometNativeUDF.register(spark, "echo_c", libPath, Seq(StringType), StringType)
+    val strings = spark
+      .range(0, 3)
+      .selectExpr("echo_c(concat('s', cast(id as string))) AS y")
+      .collect()
+      .map(_.getString(0))
+      .toSeq
+    assert(strings == Seq("s0", "s1", "s2"))
+
+    val arrayType = ArrayType(IntegerType, containsNull = false)
+    CometNativeUDF.register(spark, "echo_c", libPath, Seq(arrayType), arrayType)
+    val arrays = spark
+      .range(0, 2)
+      .selectExpr("echo_c(array(cast(id as int), cast(id + 1 as int))) AS y")
+      .collect()
+      .map(_.getSeq[Int](0))
+      .toSeq
+    assert(arrays == Seq(Seq(0, 1), Seq(1, 2)))
+  }
+
+  test("a declared return type that disagrees with the UDF names both types") {
+    // echo_c returns its argument's type, so declaring a different return type is a mismatch.
+    CometNativeUDF.register(spark, "echo_c", libPath, Seq(LongType), StringType)
+    val e = intercept[Exception] {
+      spark.range(0, 4).selectExpr("echo_c(id) AS y").collect()
+    }
+    assert(stackTraceContains(e, "was registered as returning"), s"unhelpful error: $e")
+    assert(stackTraceContains(e, "CometNativeUDF.register"), s"error lacks guidance: $e")
+  }
+
+  test("echo_c rejects a call whose argument count it does not accept") {
+    CometNativeUDF.register(spark, "echo_c", libPath, Seq(LongType), LongType)
+    // The catalog stub is arity-1, so a 2-arg call is rejected during analysis.
+    intercept[Exception] {
+      spark.range(0, 2).selectExpr("echo_c(id, id) AS y").collect()
+    }
+  }
+
+  // A native UDF has to be recognized wherever `CometScalaUDF.convert` can be reached, not just in
+  // a projection. Filters, join conditions, grouping keys and window partitioning each route
+  // through a different Comet operator, and a regression in any one of them would show up only as
+  // a fallback to Spark. That is what the catalog stub catches: if Spark evaluates the UDF itself
+  // the stub throws, so each of these tests fails rather than quietly passing on the JVM path.
+
+  test("a native UDF in a filter predicate is evaluated natively") {
+    CometNativeUDF.register(spark, "add_one_c", libPath, Seq(LongType), LongType)
+    val df = spark.range(0, 10).filter("add_one_c(id) > 3").select("id")
+    assert(df.collect().map(_.getLong(0)).sorted.toSeq == (3L to 9L).toSeq)
+  }
+
+  test("a native UDF in a join condition is evaluated natively") {
+    CometNativeUDF.register(spark, "add_one_c", libPath, Seq(LongType), LongType)
+    withTempView("l", "r") {
+      spark.range(0, 5).createOrReplaceTempView("l")
+      spark.range(0, 5).createOrReplaceTempView("r")
+      val rows = spark
+        .sql("SELECT l.id AS l, r.id AS r FROM l JOIN r ON add_one_c(l.id) = r.id")
+        .collect()
+        .map(row => (row.getLong(0), row.getLong(1)))
+        .sorted
+        .toSeq
+      assert(rows == Seq((0L, 1L), (1L, 2L), (2L, 3L), (3L, 4L)))
+    }
+  }
+
+  test("a native UDF in a grouping key is evaluated natively") {
+    CometNativeUDF.register(spark, "add_one_c", libPath, Seq(LongType), LongType)
+    val rows = spark
+      .range(0, 6)
+      .selectExpr("id % 3 AS k")
+      .groupBy(expr("add_one_c(k)").as("g"))
+      .count()
+      .collect()
+      .map(row => (row.getLong(0), row.getLong(1)))
+      .sorted
+      .toSeq
+    assert(rows == Seq((1L, 2L), (2L, 2L), (3L, 2L)))
+  }
+
+  test("a native UDF in a window PARTITION BY is evaluated natively") {
+    CometNativeUDF.register(spark, "add_one_c", libPath, Seq(LongType), LongType)
+    withTempView("w") {
+      spark.range(0, 6).selectExpr("id", "id % 3 AS k").createOrReplaceTempView("w")
+      val rows = spark
+        .sql("SELECT id, row_number() OVER (PARTITION BY add_one_c(k) ORDER BY id) AS rn FROM w")
+        .collect()
+        .map(row => (row.getLong(0), row.getInt(1)))
+        .sorted
+        .toSeq
+      // Rows 0..5 fall into partitions k = 0,1,2,0,1,2, so each partition holds two rows and the
+      // lower id of the pair is numbered first.
+      assert(rows == Seq((0L, 1), (1L, 1), (2L, 1), (3L, 2), (4L, 2), (5L, 2)))
+    }
+  }
+
+  test("a TimestampType UDF must tag its output as UTC") {
+    // Comet maps Spark's TimestampType to Timestamp(Microsecond, Some("UTC")) and TimestampNTZType
+    // to Timestamp(Microsecond, None), so the timezone tag is the whole difference between the two
+    // and is compared exactly. `echo_c` cannot show this, since it inherits the tag from the array
+    // Comet handed it.
+    CometNativeUDF.register(spark, "make_ts_utc_c", libPath, Seq(LongType), TimestampType)
+    val tagged = spark
+      .range(0, 3)
+      .selectExpr("make_ts_utc_c(id * 1000000) AS t")
+      .collect()
+      .map(_.getTimestamp(0).getTime)
+      .toSeq
+    assert(tagged == Seq(0L, 1000L, 2000L))
+
+    CometNativeUDF.register(spark, "make_ts_naive_c", libPath, Seq(LongType), TimestampNTZType)
+    val naive = spark
+      .range(0, 3)
+      .selectExpr("make_ts_naive_c(id * 1000000) AS t")
+      .collect()
+      .map(_.get(0))
+      .toSeq
+    assert(naive.forall(_ != null))
+  }
+
+  test("an untagged timestamp declared as TimestampType names both types") {
+    CometNativeUDF.register(spark, "make_ts_naive_c", libPath, Seq(LongType), TimestampType)
+    val e = intercept[Exception] {
+      spark.range(0, 3).selectExpr("make_ts_naive_c(id) AS t").collect()
+    }
+    assert(stackTraceContains(e, "was registered as returning"), s"unhelpful error: $e")
+    // The message has to say which axis differs, or the user has to read Comet's source to find
+    // out that a missing timezone is what rejected their UDF.
+    assert(stackTraceContains(e, "timezone"), s"error does not name the timezone: $e")
+  }
+
+  test("a map built with arrow-rs's default field names is accepted") {
+    // MapBuilder::new(None, ..) names a map's children `entries` / `keys` / `values`, while Comet's
+    // own Spark conversion emits `entries` / `key` / `value`. Those names are positional in the
+    // Arrow format, so the two spellings have to be interchangeable rather than a plan-time
+    // rejection over a spelling.
+    val mapType = MapType(StringType, IntegerType, valueContainsNull = true)
+    CometNativeUDF.register(spark, "make_map_c", libPath, Seq(LongType), mapType)
+    val maps = spark
+      .range(0, 3)
+      .selectExpr("make_map_c(id) AS m")
+      .collect()
+      .map(_.getMap[String, Int](0))
+      .toSeq
+    assert(maps == Seq(Map("k" -> 0), Map("k" -> 1), Map("k" -> 2)))
+  }
+
+  test("registering a nondeterministic UDF is refused") {
+    // Comet plans every native UDF as immutable, so accepting this would let the optimizer
+    // constant-fold or CSE a call the caller told us was not safe to reuse. Refuse at
+    // registration rather than silently ignore the flag.
+    val e = intercept[IllegalArgumentException] {
+      CometNativeUDF.register(
+        spark,
+        "echo_c",
+        libPath,
+        Seq(LongType),
+        LongType,
+        deterministic = false)
+    }
+    assert(e.getMessage.contains("deterministic = false is not supported"), s"unclear: $e")
+
+    // The check runs before any library work, so it fires on a path that does not exist
+    // rather than reporting a load failure first.
+    val early = intercept[IllegalArgumentException] {
+      CometNativeUDF.register(
+        spark,
+        "echo_c",
+        "/no/such/library.so",
+        Seq(LongType),
+        LongType,
+        deterministic = false)
+    }
+    assert(
+      early.getMessage.contains("deterministic = false is not supported"),
+      s"unclear: $early")
+  }
+}
+
+object CometNativeUdfSuite {
+
+  private val isMac: Boolean =
+    System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("mac")
+
+  /** Platform file name of the test cdylib built by the `comet-test-udfs` crate. */
+  val libraryFileName: String =
+    if (isMac) "libcomet_test_udfs.dylib" else "libcomet_test_udfs.so"
+
+  /** Platform file name of Comet's own native library. */
+  val cometLibraryFileName: String = if (isMac) "libcomet.dylib" else "libcomet.so"
+
+  /**
+   * Comet's own native library, which sits in the same directory as the test cdylib in both a
+   * local build and a CI run. It opens like any other shared library but exports none of the UDF
+   * ABI symbols, which makes it a convenient stand-in for "a library that is not a Comet UDF
+   * library".
+   */
+  def siblingCometLibrary(testUdfLibrary: String): Option[String] =
+    Option(new File(testUdfLibrary).getAbsoluteFile.getParentFile)
+      .map(new File(_, cometLibraryFileName))
+      .filter(_.isFile)
+      .map(_.getAbsolutePath)
+
+  /**
+   * Locate the test cdylib under `native/target`.
+   *
+   * The working directory differs between a reactor build and a single-module run, so walk up a
+   * few levels looking for the `native/target` tree. `release` is where CI stages the downloaded
+   * artifact, `ci` and `debug` cover local builds.
+   */
+  def discoverBuiltLibrary(): Option[String] = {
+    val roots = Iterator
+      .iterate(new File(".").getCanonicalFile)(_.getParentFile)
+      .takeWhile(_ != null)
+      .take(4)
+    val candidates = for {
+      root <- roots
+      profile <- Seq("release", "ci", "debug")
+    } yield new File(root, s"native/target/$profile/$libraryFileName")
+    candidates.find(_.isFile).map(_.getAbsolutePath)
+  }
+}

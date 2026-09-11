@@ -258,7 +258,11 @@ jobs:
         uses: ./.github/actions/upload-artifact-retry
         with:
           name: native-lib-linux
-          path: native/target/ci/libcomet.so
+          # libcomet_test_udfs is the cdylib CometNativeUdfSuite loads; it is built by the same
+          # cargo invocation and the suite finds it next to libcomet.
+          path: |
+            native/target/ci/libcomet.so
+            native/target/ci/libcomet_test_udfs.so
           retention-days: 1
 
       - name: Save Cargo cache
@@ -477,6 +481,7 @@ jobs:
               org.apache.comet.CometStringDecodeSuite
               org.apache.comet.CometWidthBucketSuite
               org.apache.comet.CometUuidExpressionSuite
+              org.apache.comet.CometNativeUdfSuite
               org.apache.comet.serde.CometScalarFunctionSuite
               org.apache.comet.serde.CometLiteralSuite
               org.apache.comet.CometFallbackInvarianceSuite
