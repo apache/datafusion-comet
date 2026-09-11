@@ -101,14 +101,16 @@ query
 SELECT id, element_at(CASE WHEN id <> 2 THEN array(1) END, 1) AS v
 FROM ansi_element_at_null
 
--- A nondeterministic operand is declined outright. Neither native shape reproduces Spark: the
+-- A nondeterministic operand has no native shape that reproduces Spark: the
 -- `CASE WHEN <array> IS NOT NULL` guard serializes the operand twice, so a stateful operand's two
 -- copies drift, and the unguarded lookup evaluates the index over the whole batch, raising
--- DIVIDE_BY_ZERO at id = 2 on the very row whose array is NULL. `rand(7L) < 2` is always true, so
+-- DIVIDE_BY_ZERO at id = 2 on the very row whose array is NULL. The serde declines it and the
+-- lookup runs through the JVM codegen dispatcher, where Spark's own `ElementAt.doGenCode`
+-- evaluates the operand once and short-circuits the index. `rand(7L) < 2` is always true, so
 -- both operands are NULL on every row and Spark returns NULL without evaluating either index.
 -- The non-ANSI spelling stays native and is covered in element_at.sql.
 -- https://github.com/apache/datafusion-comet/issues/5544
-query expect_fallback(nullable nondeterministic array or map operand)
+query expect_dispatch(element_at)
 SELECT id,
        element_at(IF(monotonically_increasing_id() % 2 = 0, CAST(NULL AS ARRAY<INT>), array(1)), 1) AS v1,
        element_at(IF(rand(7L) < 2, CAST(NULL AS ARRAY<INT>), array(1)), 1 + (id % (id - 2))) AS v2

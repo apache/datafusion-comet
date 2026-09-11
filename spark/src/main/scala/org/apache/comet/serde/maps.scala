@@ -29,7 +29,8 @@ import org.apache.comet.shims.CometTypeShim
 
 /**
  * Shared gate for the native map kernels that compare a lookup key against a map's stored keys
- * (`map_extract`, reached from both `GetMapValue` and `ElementAt`).
+ * (`map_extract`, reached from both `GetMapValue` and `ElementAt`). Both consumers mix in
+ * `CodegenDispatchFallback`, so a declined key type runs through Spark's own `doGenCode`.
  */
 private[serde] object MapKeySupport {
 
@@ -45,6 +46,8 @@ private[serde] object MapKeySupport {
     "Comet's native `map_extract` casts the lookup key to the map's exact Arrow key type, which " +
       "cannot reproduce Spark's equality for a complex key type (for example a `NULL` inside the " +
       "lookup key aborts the cast against a non-nullable nested component)."
+
+  val reasons: Seq[String] = Seq(floatingPointReason, collationReason, complexKeyReason)
 
   /**
    * The `SupportLevel` for a map-consuming expression whose stored-key type is `keyType`. Spark
@@ -114,7 +117,9 @@ object CometMapValues extends CometExpressionSerde[MapValues] {
   }
 }
 
-object CometMapExtract extends CometExpressionSerde[GetMapValue] {
+object CometMapExtract extends CometExpressionSerde[GetMapValue] with CodegenDispatchFallback {
+
+  override def getUnsupportedReasons(): Seq[String] = MapKeySupport.reasons
 
   override def getSupportLevel(expr: GetMapValue): SupportLevel = expr.child.dataType match {
     case MapType(keyType, _, _) => MapKeySupport.keySupport(keyType)
@@ -151,19 +156,26 @@ private object MapKeyDedupPolicySupport {
       .equalsIgnoreCase(SQLConf.MapKeyDedupPolicy.LAST_WIN.toString)
 }
 
-object CometMapFromArrays extends CometExpressionSerde[MapFromArrays] {
+object CometMapFromArrays
+    extends CometExpressionSerde[MapFromArrays]
+    with CodegenDispatchFallback {
 
   override def getIncompatibleReasons(): Seq[String] =
     Seq(MapKeyDedupPolicySupport.incompatibleReason)
+
+  override def getUnsupportedReasons(): Seq[String] =
+    Seq(NullGuardSupport.nondeterministicReason)
 
   override def getCompatibleNotes(): Seq[String] =
     Seq(MapKeyDedupPolicySupport.nullKeyReason)
 
   override def getSupportLevel(expr: MapFromArrays): SupportLevel = {
-    if (MapKeyDedupPolicySupport.isLastWin) {
-      Incompatible(Some(MapKeyDedupPolicySupport.incompatibleReason))
-    } else {
-      Compatible(None)
+    NullGuardSupport.nondeterministicChild(expr.children).getOrElse {
+      if (MapKeyDedupPolicySupport.isLastWin) {
+        Incompatible(Some(MapKeyDedupPolicySupport.incompatibleReason))
+      } else {
+        Compatible(None)
+      }
     }
   }
 
