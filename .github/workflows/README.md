@@ -51,7 +51,7 @@ is a `workflow_call` reusable invoked from the umbrella.
 
 ## What runs when
 
-| Job in `ci.yml`      | Triggered by                                        | Path filter source                  |
+| Job in `ci.yml`      | Triggered by                                        | Routing rule                        |
 | -------------------- | --------------------------------------------------- | ----------------------------------- |
 | `preflight`          | every PR / push to main / dispatch / PR label added | none (always runs)                  |
 | `changes`            | every PR / push to main / dispatch / PR label added | runs `dev/ci/compute-changes.py`    |
@@ -90,9 +90,9 @@ Two rules keep those runs from corrupting the PR's status:
   `preflight` on the label name used to let any unrelated label overwrite the
   commit run's real `Preflight` verdict with `skipped`, see
   [#5007](https://github.com/apache/datafusion-comet/issues/5007).
-- Every heavy job excludes `labeled` events unless the label just added is the
-  one that gates it. Without that, applying a single label re-ran the entire
-  heavy pipeline at a commit that had already been tested.
+- On a `labeled` event, `POLICY` reports false for every job the new label does
+  not gate. Without that, applying a single label re-ran the entire heavy
+  pipeline at a commit that had already been tested.
 
 `run-spark-4.1-tests` gates nothing: `spark_4_1` already runs on every PR.
 
@@ -122,13 +122,30 @@ umbrella doesn't watch, or operate independently of the rest of CI:
 | `spark_sql_test_reusable.yml`     | `spark_3_4`, `spark_3_5`, `spark_4_0`, `spark_4_1`           |
 | `iceberg_spark_test_reusable.yml` | `iceberg_1_8`, `iceberg_1_9`, `iceberg_1_10`, `iceberg_1_11` |
 
-## Modifying path filters
+## Changing what runs when
 
-Each long workflow's "what files trigger me" rules live in the `FILTERS`
-dict at the top of `dev/ci/compute-changes.py`. The `changes` job in
-`ci.yml` invokes that script and the gate `if:` on each long job consumes
-`needs.changes.outputs.<name>`. When adding a new test suite or moving
-sources, update the relevant filter entry there.
+Every heavy job in `ci.yml` is gated on exactly one thing:
+
+```yaml
+if: needs.changes.outputs.spark_3_5 == 'true'
+```
+
+That single boolean folds together two separate decisions, both of which live
+in `dev/ci/compute-changes.py`:
+
+- **`FILTERS`** — which files the job covers. Pattern semantics match
+  dorny/picomatch (`**` spans path segments, `*` stays within one, a leading
+  `!` excludes).
+- **`POLICY`** — which events may run it. `"pr"` for every pull request,
+  `"push"` for push to main, `"label:<name>"` for opt-in on a labelled pull
+  request. `"pr"` and `"label:"` are mutually exclusive. `workflow_dispatch`
+  always runs everything.
+
+So adding a suite, moving sources, or changing when something runs is an edit
+to one of those two tables, not to ten `${{ }}` expressions. Keeping the policy
+in Python is also what makes it testable: GitHub expressions cannot be
+exercised outside a real workflow run, whereas `POLICY_CASES` in
+`dev/ci/check-ci-config.py` pins the expected job set for each event shape.
 
 A file that a job reads but that no filter lists is silent: the job skips,
 and the edit merges with only `preflight` having looked at it. The shared
