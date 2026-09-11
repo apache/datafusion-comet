@@ -829,6 +829,28 @@ under the License.
 <li><p>This function is not deterministic. Results may not match Spark.</p></li>
 </ul>
 </section>
+<section id="maxby">
+<h2>MaxBy<a class="headerlink" href="#maxby" title="Link to this heading">#</a></h2>
+<p>The following differences from Spark are always present and do not require any additional configuration:</p>
+<ul class="simple">
+<li><p>This function is non-deterministic when multiple rows share the maximum ordering value. Results may differ from Spark in that case.</p></li>
+</ul>
+<p>The following cases are not supported by Comet and always fall back to Spark, regardless of any <code class="docutils literal notranslate"><span class="pre">allowIncompatible</span></code> setting:</p>
+<ul class="simple">
+<li><p>The value and ordering must both be fixed-length types (boolean, integral, floating-point, decimal, date, or timestamp). A variable-length or nested type such as string, binary, or struct falls back to Spark.</p></li>
+</ul>
+</section>
+<section id="minby">
+<h2>MinBy<a class="headerlink" href="#minby" title="Link to this heading">#</a></h2>
+<p>The following differences from Spark are always present and do not require any additional configuration:</p>
+<ul class="simple">
+<li><p>This function is non-deterministic when multiple rows share the minimum ordering value. Results may differ from Spark in that case.</p></li>
+</ul>
+<p>The following cases are not supported by Comet and always fall back to Spark, regardless of any <code class="docutils literal notranslate"><span class="pre">allowIncompatible</span></code> setting:</p>
+<ul class="simple">
+<li><p>The value and ordering must both be fixed-length types (boolean, integral, floating-point, decimal, date, or timestamp). A variable-length or nested type such as string, binary, or struct falls back to Spark.</p></li>
+</ul>
+</section>
 <section id="mode">
 <h2>Mode<a class="headerlink" href="#mode" title="Link to this heading">#</a></h2>
 <p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">Mode</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Mode.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
@@ -903,6 +925,8 @@ under the License.
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#first">First</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#hyperloglogplusplus">HyperLogLogPlusPlus</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#last">Last</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#maxby">MaxBy</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#minby">MinBy</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#mode">Mode</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#percentile">Percentile</a></li>
 </ul>

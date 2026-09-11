@@ -61,6 +61,26 @@ The following differences from Spark are always present and do not require any a
 
 - This function is not deterministic. Results may not match Spark.
 
+## MaxBy
+
+The following differences from Spark are always present and do not require any additional configuration:
+
+- This function is non-deterministic when multiple rows share the maximum ordering value. Results may differ from Spark in that case.
+
+The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
+
+- The value and ordering must both be fixed-length types (boolean, integral, floating-point, decimal, date, or timestamp). A variable-length or nested type such as string, binary, or struct falls back to Spark.
+
+## MinBy
+
+The following differences from Spark are always present and do not require any additional configuration:
+
+- This function is non-deterministic when multiple rows share the minimum ordering value. Results may differ from Spark in that case.
+
+The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
+
+- The value and ordering must both be fixed-length types (boolean, integral, floating-point, decimal, date, or timestamp). A variable-length or nested type such as string, binary, or struct falls back to Spark.
+
 ## Mode
 
 The following incompatibilities cause `Mode` to fall back to Spark by default. Set `spark.comet.expression.Mode.allowIncompatible=true` to enable Comet acceleration despite these differences.
