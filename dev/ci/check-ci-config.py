@@ -283,8 +283,11 @@ def ci_jobs_and_aggregator():
     preflight runner.
     """
     lines = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8").splitlines()
-    job_key = re.compile(r"^  ([a-z0-9_]+):\s*$")
-    needs_item = re.compile(r"^      - ([a-z0-9_]+)\s*$")
+    # GitHub job ids may contain letters, digits, `-` and `_`. Matching only
+    # snake_case would let a `spark-4-2:` job escape the coverage check with no
+    # error at all, which is the silent failure this checker exists to catch.
+    job_key = re.compile(r"^  ([A-Za-z0-9_-]+):\s*$")
+    needs_item = re.compile(r"^      - ([A-Za-z0-9_-]+)\s*$")
     name_key = re.compile(r"^    name:\s*(\S.*?)\s*$")
 
     jobs, needs, display_name = [], [], None
@@ -320,18 +323,42 @@ def ci_jobs_and_aggregator():
 
 
 def asf_required_contexts():
-    """Return the required_status_checks contexts .asf.yaml declares for main."""
+    """Return the required_status_checks contexts .asf.yaml declares for main.
+
+    Scoped to the `main:` entry under `protected_branches:`. Release branches
+    (`branch-0.x`) have their own entries, and a context one of those requires
+    says nothing about what `main` requires.
+    """
     lines = ASF_YAML.read_text(encoding="utf-8").splitlines()
+    branch_key = re.compile(r"^    ([^\s:#][^:]*):\s*$")
     context_item = re.compile(r'^\s+- "?(.+?)"?\s*$')
     contexts = []
+    in_protected = False
+    in_main = False
     collecting = False
     for line in lines:
-        if line.strip() == "contexts:":
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            continue
+        if stripped == "protected_branches:":
+            in_protected = True
+            continue
+        if not in_protected:
+            continue
+        # A new top-level or `github:`-level key ends the protected_branches map.
+        if stripped and not line.startswith("    "):
+            break
+        match = branch_key.match(line)
+        if match:
+            in_main = match.group(1) == "main"
+            collecting = False
+            continue
+        if not in_main:
+            continue
+        if stripped == "contexts:":
             collecting = True
             continue
         if not collecting:
-            continue
-        if line.strip().startswith("#"):
             continue
         match = context_item.match(line)
         if match:

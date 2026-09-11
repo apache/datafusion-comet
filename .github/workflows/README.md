@@ -233,8 +233,8 @@ workflow publishes a _different check name_ depending on whether it ran:
 No name is reported in both cases. Requiring the bare name would block every
 code change; requiring a nested name would block every docs-only change. Both
 hang waiting for a check that never arrives rather than failing, and a required
-context that never reports also blocks the merge that would fix `.asf.yaml` —
-recovering from that needs an INFRA Jira ticket.
+context that never reports also blocks the merge that would fix `.asf.yaml`.
+Recovering from that needs an INFRA Jira ticket.
 
 The `required_checks` job at the bottom of `ci.yml` exists to be the one name
 that is safe to require. It is flat, so it reports on every event; it runs
@@ -242,6 +242,6 @@ that is safe to require. It is flat, so it reports on every event; it runs
 upstream job reports `failure` or `cancelled`.
 
 `dev/ci/check-ci-config.py` enforces that every `ci.yml` job except `docs`
-appears in `required_checks.needs`, and — once `.asf.yaml` does declare a
-required context — that the job's `name:` still matches it. Both sides of that
-pair are silent when broken and expensive to recover from.
+appears in `required_checks.needs`. Once `.asf.yaml` does declare a required
+context for `main`, it also enforces that the job's `name:` still matches it.
+Both sides of that pair are silent when broken and expensive to recover from.
