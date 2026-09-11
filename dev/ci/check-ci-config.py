@@ -93,8 +93,11 @@ ROUTING_CASES = [
     ([".mvn/maven.config"], BUILD_JOBS),
     ([".mvn/wrapper/maven-wrapper.properties"], BUILD_JOBS),
     (["mvnw"], BUILD_JOBS),
-    # The upload wrapper is used by every producer of a shared artifact.
+    # The artifact wrappers are used by every producer and consumer of a
+    # shared artifact. Without these, an edit confined to one of them routes
+    # to nothing at all and merges having been exercised by no consumer.
     ([".github/actions/upload-artifact-retry/action.yaml"], BUILD_JOBS),
+    ([".github/actions/download-artifact-retry/action.yaml"], BUILD_JOBS),
     # Spot checks that the additions above did not widen unrelated routes.
     (["docs/source/user-guide/overview.md"], {"docs"}),
     (["native/core/benches/parquet_read.rs"], {"benchmark"}),
