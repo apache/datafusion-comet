@@ -181,3 +181,28 @@ SELECT get_json_object('{"data":"café résumé naïve"}', '$.data')
 -- unicode in wildcard results
 query
 SELECT get_json_object('[{"名":"Alice"},{"名":"太郎"}]', '$[*].名')
+
+-- double wildcard flattens one array level (mirrors Spark's own JSON suite)
+query
+SELECT get_json_object('{"b":[[1,2,{"c":"y"}],[3,4],[5,6]]}', '$.b[*][*]')
+
+-- double wildcard applies the remaining path to the outer elements, not their children
+query
+SELECT get_json_object('{"b":[[1,2,{"c":"y"}],[3,4],[5,6]]}', '$.b[*][*].c')
+
+-- double wildcard over objects in the outer array
+query
+SELECT get_json_object('[{"b":1},{"b":2}]', '$[*][*].b')
+
+-- single match under double wildcard stays wrapped in an array
+query
+SELECT get_json_object('[[5]]', '$[*][*]')
+
+-- double wildcard over an empty inner array matches nothing
+query
+SELECT get_json_object('[[]]', '$[*][*]')
+
+-- duplicate key with double wildcard: the first occurrence misses (its outer
+-- element is an array with no field b) and the second occurrence is null
+query
+SELECT get_json_object('{"a":[[{"b":1}]],"a":null}', '$.a[*][*].b')
