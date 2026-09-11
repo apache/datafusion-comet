@@ -249,6 +249,17 @@ on jobs that are already red. Its test-report upload also runs on green jobs
 and is `continue-on-error: true`: nothing downstream consumes the reports, and
 a `FinalizeArtifact` 403 must not turn a passing test run into a red check.
 
+**Artifact download.** `actions/download-artifact` has the same narrow retry
+list, so a `ListArtifacts` answered `(403) Forbidden: Error from intermediary`
+fails the job before a byte is fetched, most often the first step of a test
+shard that then never runs. `./.github/actions/download-artifact-retry` wraps
+it the same way: three attempts, 15s then 45s backoff, same inputs and
+`download-path` output. A retry has nothing to undo, since a failed attempt
+leaves at most a partial extraction that the next one overwrites. The
+`merge-fallback-logs` job stays on the plain action because it skips checkout,
+which a local action needs. `dev/ci/check-ci-config.py` treats both spellings
+as a download when pairing consumers with producers.
+
 **Tool downloads.** `Lint Scala (syntactic)` splits the coursier download from
 the lint: a `Fetch scalafix` step retries a no-op `cs launch ... -- --version`
 three times, and the check itself then runs `cs launch --mode offline` against

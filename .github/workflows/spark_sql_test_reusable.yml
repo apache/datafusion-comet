@@ -196,12 +196,12 @@ jobs:
           rust-version: ${{env.RUST_VERSION}}
           jdk-version: ${{ inputs.java }}
       - name: Download native library
-        uses: actions/download-artifact@v8
+        uses: ./.github/actions/download-artifact-retry
         with:
           name: native-lib-spark-${{ inputs.spark-full }}-jdk${{ inputs.java }}
           path: native/target/release/
       - name: Download JVM compile artifact
-        uses: actions/download-artifact@v8
+        uses: ./.github/actions/download-artifact-retry
         with:
           name: jvm-compiled-spark-${{ inputs.spark-full }}-jdk${{ inputs.java }}
       - name: Extract apache-spark/ (sources + compiled output)
@@ -285,7 +285,9 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Download fallback log artifacts
-        uses: actions/download-artifact@v8
+        # Not wrapped in download-artifact-retry: that local action needs a
+        # checkout, which this job deliberately skips.
+        uses: ./.github/actions/download-artifact-retry
         with:
           path: fallback-logs/
       - name: Merge fallback logs

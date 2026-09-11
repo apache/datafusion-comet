@@ -198,7 +198,7 @@ POLICY_CASES = [
 
 # `uses:` values that publish an artifact, and the one that consumes it.
 UPLOAD_USES = re.compile(r"uses:\s*(\./\.github/actions/upload-artifact-retry|actions/upload-artifact@)")
-DOWNLOAD_USES = re.compile(r"uses:\s*actions/download-artifact@")
+DOWNLOAD_USES = re.compile(r"uses:\s*(\./\.github/actions/download-artifact-retry|actions/download-artifact@)")
 # The artifact name is the first `name:` key of the step's `with:` block. A
 # following step starts with `- `, which distinguishes it from a `with:` key.
 WITH_NAME = re.compile(r"^\s+name:\s*(\S.*?)\s*$")
