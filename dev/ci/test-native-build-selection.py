@@ -45,8 +45,10 @@ CONSUMERS = {
     "iceberg_1_10": "iceberg_1_10",
     "iceberg_1_11": "iceberg_1_11",
 }
-DEFAULT = {"pr_build_linux", "spark_3_5", "spark_4_1", "iceberg_1_11"}
-OPT_IN = ("run-spark-3.4-tests", "run-spark-4.0-tests", "run-iceberg-tests")
+DEFAULT = {"pr_build_linux", "spark_4_1", "iceberg_1_11"}
+OPT_IN = (
+    "run-spark-3.4-tests", "run-spark-3.5-tests", "run-spark-4.0-tests", "run-iceberg-tests"
+)
 
 
 class NativeBuildSelectionTest(unittest.TestCase):
@@ -131,13 +133,25 @@ class NativeBuildSelectionTest(unittest.TestCase):
                 self.assert_selection([path], set())
 
     def test_spark_patch_does_not_require_linux_test_workflow(self):
-        self.assert_selection(["dev/diffs/3.5.9.diff"], {"spark_3_5"})
+        """Assert a default-tier Spark patch selects native without Linux tests."""
+        self.assert_selection(["dev/diffs/4.1.3.diff"], {"spark_4_1"})
 
     def test_legacy_patch_needs_opt_in(self):
-        self.assert_selection(["dev/diffs/3.4.3.diff"], set())
-        self.assert_selection(
-            ["dev/diffs/3.4.3.diff"], {"spark_3_4"}, labels=("run-spark-3.4-tests",)
-        )
+        """Assert queue-tier Spark patches need their label on ordinary PR runs.
+
+        Each repository-relative patch path is tested with and without its
+        matching label. Inputs and routing tables stay unchanged; a mismatch
+        in either the consumer or producer selection fails the assertion.
+        """
+        for version, job, label in (
+            ("3.4.3", "spark_3_4", "run-spark-3.4-tests"),
+            ("3.5.9", "spark_3_5", "run-spark-3.5-tests"),
+            ("4.0.4", "spark_4_0", "run-spark-4.0-tests"),
+        ):
+            with self.subTest(version=version):
+                files = [f"dev/diffs/{version}.diff"]
+                self.assert_selection(files, set())
+                self.assert_selection(files, {job}, labels=(label,))
 
     def test_unrelated_label_does_not_duplicate_existing_runs(self):
         self.assert_selection(
@@ -146,10 +160,42 @@ class NativeBuildSelectionTest(unittest.TestCase):
         )
 
     def test_new_spark_label_runs_only_selected_version(self):
-        self.assert_selection(
-            ["native/core/src/lib.rs"], {"spark_3_4"}, action="labeled",
-            labels=OPT_IN, label="run-spark-3.4-tests",
-        )
+        """Assert each new Spark label selects only its consumer and native build.
+
+        Use a shared native source path with every opt-in label present, so
+        the event's newly added label must narrow the selection. No fixtures
+        are mutated; incorrect selection fails through assert_selection().
+        """
+        for job, label in (
+            ("spark_3_4", "run-spark-3.4-tests"),
+            ("spark_3_5", "run-spark-3.5-tests"),
+            ("spark_4_0", "run-spark-4.0-tests"),
+        ):
+            with self.subTest(label=label):
+                self.assert_selection(
+                    ["native/core/src/lib.rs"], {job}, action="labeled",
+                    labels=OPT_IN, label=label,
+                )
+
+    def test_nonconsumer_labels_do_not_build_native(self):
+        """Assert macOS and benchmark label runs select no shared native build.
+
+        Both real routes match the changed paths, and all consumer opt-ins are
+        present. Check that the newly labeled route runs while every native
+        consumer stays off. No input or routing configuration is changed.
+        """
+        for label, key in (
+            ("run-macos-tests", "build_macos"),
+            ("run-benchmark-check", "benchmark"),
+        ):
+            with self.subTest(label=label):
+                flags = self.filters.compute(
+                    ["native/core/src/lib.rs", "native/core/benches/parquet_read.rs"],
+                    {"name": "pull_request", "action": "labeled",
+                     "labels": (*OPT_IN, label), "label": label},
+                )
+                self.assertTrue(flags[key])
+                self.assert_selected(flags, set())
 
     def test_new_iceberg_label_runs_only_opt_in_versions(self):
         self.assert_selection(
@@ -157,9 +203,27 @@ class NativeBuildSelectionTest(unittest.TestCase):
             action="labeled", labels=OPT_IN, label="run-iceberg-tests",
         )
 
-    def test_main_runs_include_legacy_consumers(self):
-        """Pin the current main-push policy until the merge-queue policy lands."""
-        self.assert_selection(["native/core/src/lib.rs"], set(CONSUMERS), event="push")
+    def test_merge_queue_runs_include_legacy_consumers(self):
+        """Assert the queue selects all native consumers in compute() and CLI.
+
+        A native source edit matches every consumer without opt-in labels.
+        Check both entry points; the CLI's temporary inputs are cleaned up
+        by cli_outputs(), and neither check changes the routing policy.
+        """
+        files = ["native/core/src/lib.rs"]
+        self.assert_selection(files, set(CONSUMERS), event="merge_group")
+        self.assert_selected(self.cli_outputs(files, {"name": "merge_group"}), set(CONSUMERS))
+
+    def test_main_runs_only_linux_consumers_to_refresh_caches(self):
+        """Assert push selects the Linux consumer and native build in both APIs.
+
+        Main's cache refresh needs the shared producer, while queue-only test
+        consumers stay off. The native source path and event are read-only;
+        cli_outputs() owns and cleans up its temporary changed-files input.
+        """
+        files = ["native/core/src/lib.rs"]
+        self.assert_selection(files, {"pr_build_linux"}, event="push")
+        self.assert_selected(self.cli_outputs(files, {"name": "push"}), {"pr_build_linux"})
 
     def test_manual_runs_include_legacy_consumers_without_changed_files(self):
         """Assert empty-input dispatch selects every consumer in compute and CLI."""
@@ -177,14 +241,17 @@ class NativeBuildSelectionTest(unittest.TestCase):
         """Select each unrelated route alone and ensure it cannot start native CI.
 
         Temporarily give every filter a distinct synthetic path to separate
-        macOS from its normally overlapping Linux inputs. The patch restores
-        the real filters on exit, including when an assertion fails.
+        macOS from its normally overlapping Linux inputs. Use each route's
+        permitted event so the assertion checks an active unrelated job. The
+        patch restores the real filters on exit, including assertion failure.
         """
         filters = {key: [key] for key in self.filters.FILTERS}
         with mock.patch.dict(self.filters.FILTERS, filters, clear=True):
-            for key in ("build_macos", "benchmark", "docs"):
+            for key, event in (
+                ("build_macos", "merge_group"), ("benchmark", "merge_group"), ("docs", "push")
+            ):
                 with self.subTest(key=key):
-                    flags = self.filters.compute([key], {"name": "push"})
+                    flags = self.filters.compute([key], {"name": event})
                     self.assertEqual({name for name, selected in flags.items() if selected}, {key})
 
     def test_cli_emits_native_output_for_selected_and_skipped_runs(self):
@@ -203,7 +270,14 @@ class NativeBuildSelectionTest(unittest.TestCase):
         )
 
     def test_label_event_cli_uses_only_the_new_gating_label(self):
+        """Assert the CLI derives native selection from the new label only.
+
+        Exercise Spark 3.5's queue opt-in, Iceberg's grouped opt-in, and an
+        unrelated label. cli_outputs() isolates and cleans up the child
+        environment and temporary file; routing tables remain unchanged.
+        """
         for label, expected in (
+            ("run-spark-3.5-tests", {"spark_3_5"}),
             ("run-iceberg-tests", {"iceberg_1_8", "iceberg_1_9", "iceberg_1_10"}),
             ("dependencies", set()),
         ):
@@ -238,13 +312,18 @@ class NativeBuildSelectionTest(unittest.TestCase):
         guarding against accidentally including them in the native union. Only
         FILTERS is patched, and it is restored on success or assertion failure;
         the actual event policy and native-output computation always execute.
+        Include every subset of native opt-in labels and the merge queue,
+        cache-refresh push, manual dispatch, and unsupported schedule events.
         """
         keys = list(CONSUMERS.values())
         label_sets = [
             tuple(label for label, selected in zip(OPT_IN, mask) if selected)
             for mask in itertools.product((False, True), repeat=len(OPT_IN))
         ]
-        events = [{"name": "push"}, {"name": "workflow_dispatch"}, {"name": "schedule"}]
+        events = [
+            {"name": "merge_group"}, {"name": "push"},
+            {"name": "workflow_dispatch"}, {"name": "schedule"},
+        ]
         for labels in label_sets:
             for action in ("opened", "synchronize", "reopened"):
                 events.append({"name": "pull_request", "action": action, "labels": labels})

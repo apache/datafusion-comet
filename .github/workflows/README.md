@@ -22,7 +22,7 @@ ruleset in `.asf.yaml`. That splits CI into two tiers:
   against the merge result rather than against the PR head.
 
 Every queue-only job has a `run-*` label that opts a pull request into it
-early, listed in the diagram below.
+early, listed in the table below.
 
 `spark_3_4` is in neither tier. Spark 3.4 is deprecated, so its Spark SQL
 suite no longer gates a merge; it runs only when a pull request carries
@@ -34,12 +34,14 @@ required one, so a red 3.4 there changes nothing. It is the next push with
 the label still applied that runs 3.4 under `Required Checks`, and with the
 queue run gone that push is the only thing that makes a 3.4 failure blocking.
 
-Heavy jobs have no `push` tier. The queue already tested the exact tree that
+Most heavy jobs have no `push` tier. The queue already tested the exact tree that
 lands, so re-running them on push to main would double the cost of every
-merge. Two jobs are still on `push`: `docs`, because it deploys to `asf-site`
-and has to run after the commit is on main, and `pr_build_linux`, because of
-`actions/cache` scoping. A pull request can only restore caches saved on its
-own branch or on `main`, and the queue runs on a throwaway
+merge. Two routes are still on `push`: `docs`, because it deploys to `asf-site`
+and has to run after the commit is on main, and `build_linux`, because of
+`actions/cache` scoping. The Linux route selects `pr_build_linux_checks` and
+`pr_build_linux`, with the shared `build_linux_native` producer supplying the
+latter. Spark SQL and Iceberg consumers stay off on push. A pull request can
+only restore caches saved on its own branch or on `main`, and the queue runs on a throwaway
 `gh-readonly-queue/*` branch whose caches are deleted with it. Without a push
 run, a `Cargo.lock` or `pom.xml` change would leave the cargo-registry, Maven
 and TPC-H/TPC-DS caches on `main` stale until the next unrelated change.
@@ -78,7 +80,9 @@ reads that single output. A Spark-patch-only change therefore gets a native
 build when its Spark caller is selected, even if the Linux build is not.
 Documentation-only changes, benchmark-only changes, and unrelated label
 events do not start an unused native build. The event-selection regression
-test checks that the producer and its consumers stay in agreement.
+test checks that the producer and its consumers stay in agreement across PR,
+merge-group, push, and manual runs. A macOS-only or benchmark-only label run
+also skips this producer because neither job consumes the Linux artifact.
 
 Linux lint, compile-only checks, Celeborn compatibility tests, and Rust debug
 tests run in `pr_build_linux_checks.yml` as soon as change selection completes.
@@ -123,12 +127,13 @@ safe to make a required check.
 ### Label events
 
 `ci.yml` also fires on `pull_request.types: [labeled]`, so applying
-`run-spark-3.4-tests`, `run-spark-4.0-tests` or `run-iceberg-tests` starts the
-job that label gates without needing a new push. GitHub cannot filter a
+`run-spark-3.4-tests`, `run-spark-3.5-tests`, `run-spark-4.0-tests`,
+`run-iceberg-tests`, `run-macos-tests`, or `run-benchmark-check` starts the
+jobs that label gates without needing a new push. GitHub cannot filter a
 `pull_request` trigger by label name, so **every** label added to a PR starts a
 run, including labels that gate nothing.
 
-Two rules keep those runs from corrupting the PR's status:
+Three rules keep those runs from corrupting the PR's status:
 
 - `preflight` and `changes` carry no event guard and run every time. A job held
   back by `if:` still publishes a check run under its own name with conclusion
