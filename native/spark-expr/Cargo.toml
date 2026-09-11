@@ -164,6 +164,10 @@ name = "bloom_filter_agg"
 harness = false
 
 [[bench]]
+name = "collect"
+harness = false
+
+[[bench]]
 name = "padding"
 harness = false
 

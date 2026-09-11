@@ -6,13 +6,36 @@ workflows. This README is ignored by the runner.
 ## Pipeline overview
 
 A single umbrella workflow (`ci.yml`) orchestrates everything that runs on
-pull requests and pushes to `main`. The umbrella runs cheap **preflight**
+pull requests and in the merge queue. The umbrella runs cheap **preflight**
 checks first, computes which heavy jobs are relevant to the change, and only
 then fans out to the long-running test/build workflows. Each long workflow
 is a `workflow_call` reusable invoked from the umbrella.
 
+Merging goes through GitHub's merge queue, configured by the `Merge Queue`
+ruleset in `.asf.yaml`. That splits CI into two tiers:
+
+- **PR tier** (`pr`): fast feedback while a change is being iterated on.
+  The Linux build, Spark 4.1 and Iceberg 1.11.
+- **Queue tier** (`queue`): the authoritative gate. Everything the PR tier
+  runs, plus the macOS build, the benchmark compile check, Spark 3.4/3.5/4.0
+  and Iceberg 1.8/1.9/1.10, evaluated against the merge result rather than
+  against the PR head.
+
+Every queue-only job has a `run-*` label that opts a pull request into it
+early, listed in the diagram below.
+
+Heavy jobs have no `push` tier. The queue already tested the exact tree that
+lands, so re-running them on push to main would double the cost of every
+merge. Two jobs are still on `push`: `docs`, because it deploys to `asf-site`
+and has to run after the commit is on main, and `pr_build_linux`, because of
+`actions/cache` scoping. A pull request can only restore caches saved on its
+own branch or on `main`, and the queue runs on a throwaway
+`gh-readonly-queue/*` branch whose caches are deleted with it. Without a push
+run, a `Cargo.lock` or `pom.xml` change would leave the cargo-registry, Maven
+and TPC-H/TPC-DS caches on `main` stale until the next unrelated change.
+
 ```
-                        pull_request | push to main | workflow_dispatch
+                pull_request | merge_group | push to main | workflow_dispatch
                                             |
                                             v
                                 +-----------------------+
@@ -33,14 +56,25 @@ is a `workflow_call` reusable invoked from the umbrella.
         +-----------------------------------+-----------------------------------+
         |                                   |                                   |
         v                                   v                                   v
-  every PR + push                     push to main only         PR with label, or push
-  ---------------                     -----------------         ----------------------
-  pr_build_linux                      docs                      spark_3_4    run-spark-3.4-tests
-  pr_build_macos                                                spark_4_0    run-spark-4.0-tests
-  pr_benchmark_check                                            iceberg_1_8  run-iceberg-tests
-  spark_3_5                                                     iceberg_1_9  run-iceberg-tests
-  spark_4_1                                                     iceberg_1_10 run-iceberg-tests
-  iceberg_1_11
+  PR + queue tier                     push to main only         queue tier, or PR with label
+  ---------------                     -----------------         ---------------------------
+  pr_build_linux (+ push, for cache)  docs                      pr_build_macos      run-macos-tests
+  spark_4_1                                                     pr_benchmark_check  run-benchmark-check
+  iceberg_1_11                                                  spark_3_4           run-spark-3.4-tests
+                                                                spark_3_5           run-spark-3.5-tests
+                                                                spark_4_0           run-spark-4.0-tests
+                                                                iceberg_1_8         run-iceberg-tests
+                                                                iceberg_1_9         run-iceberg-tests
+                                                                iceberg_1_10        run-iceberg-tests
+
+        |                                   |                                   |
+        +-----------------------------------+-----------------------------------+
+                                            v
+                                +-----------------------+
+                                |    required_checks    |  ubuntu-slim
+                                |  one flat name that   |
+                                |  is safe to require   |
+                                +-----------------------+
 
   reusable workflows invoked via `uses:`:
     pr_build_linux.yml         spark_sql_test_reusable.yml
@@ -51,22 +85,23 @@ is a `workflow_call` reusable invoked from the umbrella.
 
 ## What runs when
 
-| Job in `ci.yml`      | Triggered by                                        | Path filter source                  |
-| -------------------- | --------------------------------------------------- | ----------------------------------- |
-| `preflight`          | every PR / push to main / dispatch / PR label added | none (always runs)                  |
-| `changes`            | every PR / push to main / dispatch / PR label added | runs `dev/ci/compute-changes.py`    |
-| `pr_build_linux`     | PR or push, paths matched                           | `dev/ci/compute-changes.py`         |
-| `pr_build_macos`     | PR or push, paths matched                           | `dev/ci/compute-changes.py`         |
-| `pr_benchmark_check` | PR or push, paths matched                           | benchmark sources only              |
-| `docs`               | push to main, paths matched                         | `.asf.yaml`, `docs/**`, `docs.yaml` |
-| `spark_3_5`          | PR or push, paths matched                           | Spark 3.5 sources                   |
-| `spark_4_1`          | PR or push, paths matched                           | Spark 4.1 sources                   |
-| `spark_3_4`          | push, **or** PR with `run-spark-3.4-tests` label    | Spark 3.4 sources                   |
-| `spark_4_0`          | push, **or** PR with `run-spark-4.0-tests` label    | Spark 4.0 sources                   |
-| `iceberg_1_11`       | PR or push, paths matched                           | Iceberg sources                     |
-| `iceberg_1_8`        | push, **or** PR with `run-iceberg-tests` label      | Iceberg sources                     |
-| `iceberg_1_9`        | push, **or** PR with `run-iceberg-tests` label      | Iceberg sources                     |
-| `iceberg_1_10`       | push, **or** PR with `run-iceberg-tests` label      | Iceberg sources                     |
+| Job in `ci.yml`      | Triggered by                                      | Routing rule                        |
+| -------------------- | ------------------------------------------------- | ----------------------------------- |
+| `preflight`          | every PR / merge group / push / dispatch / label  | none (always runs)                  |
+| `changes`            | every PR / merge group / push / dispatch / label  | runs `dev/ci/compute-changes.py`    |
+| `pr_build_linux`     | PR, merge group or push to main, paths matched    | `dev/ci/compute-changes.py`         |
+| `pr_build_macos`     | merge group, **or** PR with `run-macos-tests`     | `dev/ci/compute-changes.py`         |
+| `pr_benchmark_check` | merge group, **or** PR with `run-benchmark-check` | benchmark sources only              |
+| `docs`               | push to main, paths matched                       | `.asf.yaml`, `docs/**`, `docs.yaml` |
+| `spark_3_5`          | merge group, **or** PR with `run-spark-3.5-tests` | Spark 3.5 sources                   |
+| `spark_4_1`          | PR or merge group, paths matched                  | Spark 4.1 sources                   |
+| `spark_3_4`          | merge group, **or** PR with `run-spark-3.4-tests` | Spark 3.4 sources                   |
+| `spark_4_0`          | merge group, **or** PR with `run-spark-4.0-tests` | Spark 4.0 sources                   |
+| `iceberg_1_11`       | PR or merge group, paths matched                  | Iceberg sources                     |
+| `iceberg_1_8`        | merge group, **or** PR with `run-iceberg-tests`   | Iceberg sources                     |
+| `iceberg_1_9`        | merge group, **or** PR with `run-iceberg-tests`   | Iceberg sources                     |
+| `iceberg_1_10`       | merge group, **or** PR with `run-iceberg-tests`   | Iceberg sources                     |
+| `required_checks`    | always, after every job above except `docs`       | none (always runs)                  |
 
 A heavy job appears in the PR's checks list as a `skipped` entry whenever
 its path filter or event criteria don't match. Skipped checks count as
@@ -90,11 +125,23 @@ Two rules keep those runs from corrupting the PR's status:
   `preflight` on the label name used to let any unrelated label overwrite the
   commit run's real `Preflight` verdict with `skipped`, see
   [#5007](https://github.com/apache/datafusion-comet/issues/5007).
-- Every heavy job excludes `labeled` events unless the label just added is the
-  one that gates it. Without that, applying a single label re-ran the entire
-  heavy pipeline at a commit that had already been tested.
+- On a `labeled` event, `POLICY` reports false for every job the new label does
+  not gate. Without that, applying a single label re-ran the entire heavy
+  pipeline at a commit that had already been tested.
+- On a `labeled` event, `required_checks` publishes its verdict as
+  `Required Checks (label run)`, not `Required Checks`. Because the PR tier is
+  skipped on that event, the label run's aggregate says nothing about the
+  commit's applicable suites, and GitHub keeps only the most recent check run
+  per name per commit. Under the real name, a `dependencies` label landing a
+  minute after a push would mark the commit green while the commit run was
+  still going. Skipping the job would not help either, since a skipped check
+  run still carries the name and still counts as passing.
 
 `run-spark-4.1-tests` gates nothing: `spark_4_1` already runs on every PR.
+
+The opt-in labels have to exist in repository settings before they can be
+applied; `contains()` on a label nobody can add is simply always false, which
+makes the escape hatch look like it silently does nothing.
 
 ## Standalone workflows (not under the umbrella)
 
@@ -122,27 +169,188 @@ umbrella doesn't watch, or operate independently of the rest of CI:
 | `spark_sql_test_reusable.yml`     | `spark_3_4`, `spark_3_5`, `spark_4_0`, `spark_4_1`           |
 | `iceberg_spark_test_reusable.yml` | `iceberg_1_8`, `iceberg_1_9`, `iceberg_1_10`, `iceberg_1_11` |
 
-## Modifying path filters
+## Changing what runs when
 
-Each long workflow's "what files trigger me" rules live in the `FILTERS`
-dict at the top of `dev/ci/compute-changes.py`. The `changes` job in
-`ci.yml` invokes that script and the gate `if:` on each long job consumes
-`needs.changes.outputs.<name>`. When adding a new test suite or moving
-sources, update the relevant filter entry there.
+Every heavy job in `ci.yml` is gated on exactly one thing:
+
+```yaml
+if: needs.changes.outputs.spark_3_5 == 'true'
+```
+
+That single boolean folds together two separate decisions, both of which live
+in `dev/ci/compute-changes.py`:
+
+- **`FILTERS`** — which files the job covers. Pattern semantics match
+  dorny/picomatch (`**` spans path segments, `*` stays within one, a leading
+  `!` excludes).
+- **`POLICY`** — which events may run it. `"pr"` for every pull request,
+  `"queue"` for the merge queue, `"push"` for push to main, `"label:<name>"`
+  for opt-in on a labelled pull request. `"pr"` and `"label:"` are mutually
+  exclusive. `workflow_dispatch` always runs everything.
+
+Moving a suite between the PR and queue tiers is a one-word edit to `POLICY`.
+
+So adding a suite, moving sources, or changing when something runs is an edit
+to one of those two tables, not to ten `${{ }}` expressions. Keeping the policy
+in Python is also what makes it testable: GitHub expressions cannot be
+exercised outside a real workflow run, whereas `POLICY_CASES` in
+`dev/ci/check-ci-config.py` pins the expected job set for each event shape.
+
+A file that a job reads but that no filter lists is silent: the job skips,
+and the edit merges with only `preflight` having looked at it. The shared
+build inputs (`mvnw`, `.mvn/**`, the local composite actions) are pinned by
+a routing table in `dev/ci/check-ci-config.py`, which `preflight` runs.
+
+## Artifact names must be unique per producer
+
+Artifact names are scoped to the workflow **run**, not to the calling
+workflow. `ci.yml` calls `spark_sql_test_reusable.yml` once per Spark
+version and `iceberg_spark_test_reusable.yml` once per Iceberg version, all
+inside the same run, so an unqualified name like `native-lib-linux` would be
+claimed by several producers at once. That breaks two things:
+
+- `download-artifact` resolves a name to the highest matching artifact ID.
+  Nothing ties it to the producer the consumer declared in `needs`.
+- `upload-artifact` with `overwrite: true` deletes the newest record with
+  that name before uploading, which can be a sibling's finished artifact.
+  The retry wrapper below forces `overwrite` on attempts 2 and 3.
+
+So every artifact published by a reusable workflow that `ci.yml` calls more
+than once carries its version inputs, e.g.
+`native-lib-spark-4.1.3-jdk17`. `dev/ci/check-ci-config.py` enforces this,
+and also that every `download-artifact` name is produced by an upload in the
+same workflow.
+
+## Retrying flaky network operations
+
+**Maven.** `.mvn/maven.config` tunes the Maven Resolver HTTP transport: six
+retries instead of three, `408/429/500/502/503/504` retryable instead of only
+`429/503`, a 30s connect timeout and a 10 minute socket read timeout. The
+wrapper pins `maven.multiModuleProjectDirectory` to the directory holding
+`.mvn`, so one file covers every `mvnw` invocation in CI (including
+`cd spark && ../mvnw ...`) with no per-workflow wiring.
+
+The Wagon transport (`-Dmaven.resolver.transport=wagon`, `maven.wagon.http.*`)
+was evaluated and rejected: it is deprecated in Resolver 1.9 and removed in
+Maven 4, its retry knobs mirror the native transport's, and its
+service-unavailable retry strategy defaults to `none`, so adopting it would
+first have to buy back the `429/503` retry we already get. The one thing it
+can still do that the native transport cannot is shrink HttpClient's
+non-retryable exception list (`retryHandler.class=default` plus
+`retryHandler.nonRetryableClasses=...`), the only way to retry a connect or
+read timeout. We size those timeouts not to fire instead.
+
+**Artifact upload.** `actions/upload-artifact` fails the job when
+`FinalizeArtifact` returns `(403) Forbidden: Error from intermediary`, even
+though the content already uploaded. Its client only retries
+`429/500/502/503/504`, exposes no input to widen that, and Actions has no
+built-in step retry. Use `./.github/actions/upload-artifact-retry` instead for
+any artifact a later job consumes: same inputs and outputs, three attempts,
+15s then 45s backoff. Attempts 2 and 3 force `overwrite: true`, so the name
+must belong to exactly one producer in the run (see above). The uploads inside
+`./.github/actions/java-test` stay on the plain action, since a local action
+calling another local action is untested here. Its two failure-only uploads run
+on jobs that are already red. Its test-report upload also runs on green jobs
+and is `continue-on-error: true`: nothing downstream consumes the reports, and
+a `FinalizeArtifact` 403 must not turn a passing test run into a red check.
+
+**Artifact download.** `actions/download-artifact` has the same narrow retry
+list, so a `ListArtifacts` answered `(403) Forbidden: Error from intermediary`
+fails the job before a byte is fetched, most often the first step of a test
+shard that then never runs. `./.github/actions/download-artifact-retry` wraps
+it the same way: three attempts, 15s then 45s backoff, same inputs and
+`download-path` output. A retry has nothing to undo, since a failed attempt
+leaves at most a partial extraction that the next one overwrites. The
+`merge-fallback-logs` job stays on the plain action because it skips checkout,
+which a local action needs; `dev/ci/check-ci-config.py` enforces that pairing
+for every `uses: ./.github/actions/...` in a workflow, and treats both
+spellings as a download when pairing consumers with producers.
+
+**Tool downloads.** `Lint Scala (syntactic)` splits the coursier download from
+the lint: a `Fetch scalafix` step retries a no-op `cs launch ... -- --version`
+three times, and the check itself then runs `cs launch --mode offline` against
+the populated cache, so a nonzero exit there can only be a lint violation.
+`preflight` retries the actionlint download the same way, and fetches the
+installer to a file rather than piping it into `bash` so a truncated download
+cannot run a partial script.
+
+Every one of these steps runs after the test verdict is already known, or
+before any test has started. Once `Required Checks` is a required context
+(see below), a red job from any of them evicts the PR from the merge queue,
+which is why plain network flakes are worth retrying rather than re-running
+the whole pipeline by hand.
+
+**Maven wrapper bootstrap.** `./.github/actions/java-test` retries
+`./mvnw --version` with exponential backoff, so a failed download of the Maven
+distribution does not surface as a test failure.
+
+## Merge queue
+
+`.asf.yaml` declares a `Merge Queue` ruleset for the default branch, so `main`
+is only writable through the queue. `.asf.yaml` rulesets accept a raw GitHub
+Rulesets API payload, which is how a `merge_queue` rule gets set without an
+INFRA ticket.
+
+When a PR is queued, GitHub builds a temporary `gh-readonly-queue/main/...`
+branch containing the PR's commits on top of the current `main` and of every
+entry ahead of it in the queue, then fires a `merge_group` event. `ci.yml` runs
+against that branch and the entry merges when `Required Checks` is green. That
+is what makes the queue tier meaningful: it tests the merge result, not the PR
+head, so a semantic conflict between two PRs that each pass in isolation is
+caught before either lands.
+
+The `merge_queue` rule parameters in `.asf.yaml` are the tuning dials, and
+`max_entries_to_build: 2` is the one that matters. Every entry gets its own
+`merge_group` build — [merge limits do not combine
+builds](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/managing-a-merge-queue) —
+so this caps how many pipelines are in flight, and with them how fast the queue
+drains: roughly 19 merges a day at the ~2.5h pipeline we see today.
+`max_entries_to_merge: 5` only says how many already-green entries land in one
+merge operation, and saves no CI at all. The saving in this design comes from
+the PR tier being small, not from batching inside the queue.
+`check_response_timeout_minutes: 300` has to stay comfortably above the slowest
+observed pipeline plus ASF runner scheduling delay, or healthy entries get
+evicted.
+
+A flaky test in the queue tier blocks everyone's merges, not just one PR. That
+raises the bar on flakiness relative to when these suites only ran post-merge.
 
 ## Branch protection
 
-Required-check names changed when these workflows were consolidated. The
-umbrella exposes per-job names like `CI / pr_build_linux / Lint`,
-`CI / spark_3_5 / linux-test (...)`, etc. Update repository branch
-protection rules to point at the new names; the old standalone workflow
-names (`Spark SQL Tests (Spark 3.5)`, `PR Build (Linux)`, ...) no longer
-exist as top-level workflows.
+`main` is protected by two things that GitHub evaluates together, applying the
+most restrictive result:
 
-`.asf.yaml` currently declares no `required_status_checks` for `main`, only
-`required_approving_review_count: 1`. Anything added there must be a name that
-never legitimately reports `skipped`, because GitHub counts a skipped check as
-passing. The bare caller-job names (`PR Build (Linux)`, `Spark SQL Tests
-(Spark 3.5)`, ...) are not such names: a reusable workflow that actually runs
-publishes only its child jobs, so the bare name shows up solely when the caller
-was skipped.
+- classic branch protection, from `github.protected_branches.main` in
+  `.asf.yaml`: one approving review, and `Required Checks` as the sole
+  required status check;
+- the `Merge Queue` ruleset, from `github.rulesets` in the same file.
+
+Release branches (`branch-N.M`) keep plain branch protection with no queue.
+Merge queue rules do not accept wildcard ref patterns, so the ruleset targets
+`~DEFAULT_BRANCH` only.
+
+`apache/root` (ASF Infra, team id `118420`) is a bypass actor on the ruleset,
+so a wedged queue can always be recovered without a Jira ticket.
+
+`Required Checks` is the one context `main` requires, because a caller of a
+reusable workflow publishes a _different check name_ depending on whether it
+ran:
+
+| Caller state     | Check runs published                                     |
+| ---------------- | -------------------------------------------------------- |
+| skipped by `if:` | one run named exactly `PR Build (Linux)`, `skipped`      |
+| ran              | only `PR Build (Linux) / Spark 4.1, JDK 17 [exec]`, etc. |
+
+No name is reported in both cases, so neither can be required directly.
+`required_checks` is flat, reports on every event, runs `if: always()` and
+treats `skipped` as a pass, so it only goes red on `failure` or `cancelled`.
+
+Editing `required_status_checks` deserves care. A context that never reports
+blocks every merge to `main`, including the merge that would revert the
+mistake, and only INFRA can remove a required check by hand at that point.
+`dev/ci/check-ci-config.py` enforces that every `ci.yml` job except `docs`
+appears in `required_checks.needs`, that the job's `name:` is the expression
+that routes `labeled` runs to a separate name (see "Label events" above), that
+the commit-run name matches the context `.asf.yaml` requires for `main`, and
+that the label-run name is never the one required. All of that is silent when
+broken. What it cannot catch is a job that is configured never to run.
