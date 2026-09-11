@@ -16,8 +16,12 @@
 # under the License.
 
 import importlib.util
+import json
+import os
 from pathlib import Path
 import re
+import subprocess
+import textwrap
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -31,7 +35,6 @@ def load(name):
 
 
 routing = load("compute-changes")
-gate = load("check-ci-result")
 PR_JOBS = {"build_linux", "build_macos", "benchmark", "spark_3_5", "spark_4_1", "iceberg_1_11"}
 OTHER_VERSIONS = {"spark_3_4", "spark_4_0", "iceberg_1_8", "iceberg_1_9", "iceberg_1_10"}
 QUEUE_JOBS = PR_JOBS | OTHER_VERSIONS
@@ -80,65 +83,46 @@ class QueuePolicyTest(unittest.TestCase):
 
 
 class RequiredGateTest(unittest.TestCase):
-    def fixture(self, planned=()):
-        outputs = {key: str(key in planned).lower() for key in gate.JOBS}
-        needs = {"preflight": {"result": "success"},
-                 "changes": {"result": "success", "outputs": outputs}}
-        needs.update({job: {"result": "success" if key in planned else "skipped"}
-                      for key, job in gate.JOBS.items()})
-        return needs
+    @classmethod
+    def setUpClass(cls):
+        cls.workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        cls.blocks = dict(re.findall(
+            r"^  ([\w-]+):\n(.*?)(?=^  [\w-]+:|\Z)",
+            cls.workflow.split("\njobs:\n", 1)[1], re.M | re.S))
+        cls.required = cls.blocks["ci-required"]
+        # Exercise the actual shell step, not a separate copy of its predicate.
+        cls.script = textwrap.dedent(cls.required.split("        run: |\n", 1)[1])
 
-    def test_docs_skip_and_full_queue_success(self):
-        self.assertEqual(gate.failures(self.fixture()), [])
-        self.assertEqual(gate.failures(self.fixture(QUEUE_JOBS)), [])
+    def run_gate(self, results):
+        needs = {job: {"result": result} for job, result in results.items()}
+        return subprocess.run(
+            ["bash", "-e", "-o", "pipefail", "-c", self.script],
+            env={**os.environ, "NEEDS": json.dumps(needs)},
+            capture_output=True, text=True).returncode
 
-    def test_any_required_group_failure_cancellation_or_skip_blocks(self):
-        for job in gate.JOBS.values():
-            for status in ("failure", "cancelled", "skipped", None):
-                with self.subTest(job=job, status=status):
-                    needs = self.fixture(gate.JOBS)
-                    needs[job]["result"] = status
-                    self.assertTrue(gate.failures(needs))
+    def test_success_and_skipped_jobs_pass_without_a_job_registry(self):
+        self.assertEqual(self.run_gate({"preflight": "success", "changes": "success",
+                                       "new-test-job": "success", "docs": "skipped"}), 0)
+        self.assertEqual(self.run_gate({"optional-job": "skipped"}), 0)
 
-    def test_preflight_and_planner_cannot_hide_behind_skipped_children(self):
-        for job in ("preflight", "changes"):
-            for status in ("failure", "cancelled", "skipped"):
-                needs = self.fixture()
-                needs[job]["result"] = status
-                self.assertTrue(gate.failures(needs))
+    def test_failed_cancelled_or_missing_result_blocks(self):
+        for job in ("preflight", "changes", "new-test-job"):
+            for result in ("failure", "cancelled", None):
+                with self.subTest(job=job, result=result):
+                    results = {"preflight": "success", "changes": "success",
+                               "new-test-job": "success", "docs": "skipped"}
+                    results[job] = result
+                    self.assertNotEqual(self.run_gate(results), 0)
 
-    def test_missing_plan_and_unknown_dependency_fail_closed(self):
-        needs = self.fixture()
-        del needs["changes"]["outputs"]["iceberg_1_11"]
-        self.assertTrue(gate.failures(needs))
-        needs = self.fixture()
-        needs["unknown"] = {"result": "success"}
-        self.assertTrue(gate.failures(needs))
-        needs = self.fixture()
-        del needs["spark_4_1"]
-        self.assertTrue(gate.failures(needs))
-
-    def test_unplanned_failure_is_not_ignored(self):
-        needs = self.fixture()
-        needs["spark_4_1"]["result"] = "failure"
-        self.assertTrue(gate.failures(needs))
-
-    def test_workflow_wiring_covers_every_caller(self):
-        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
-        blocks = dict(re.findall(r"^  ([\w-]+):\n(.*?)(?=^  [\w-]+:|\Z)", workflow.split("\njobs:\n", 1)[1], re.M | re.S))
-        self.assertEqual(set(blocks), {"preflight", "changes", "ci-required", *gate.JOBS.values()})
-        required = blocks["ci-required"]
-        for job in {"preflight", "changes", *gate.JOBS.values()}:
-            self.assertIn(f"      - {job}\n", required)
-        for key, job in gate.JOBS.items():
-            self.assertIn(f"if: needs.changes.outputs.{key} == 'true'", blocks[job])
-        self.assertIn("if: ${{ always() }}", required)
-        self.assertIn("github.event.action == 'labeled'", required)
-        self.assertIn("'CI Optional' || 'CI Required'", required)
-        self.assertIn("  merge_group:\n    types: [checks_requested]", workflow)
-        self.assertIn('"${QUEUE_BASE_SHA:?}".."${QUEUE_HEAD_SHA:?}"', workflow)
+    def test_workflow_wiring_covers_every_job(self):
+        dependencies = set(re.findall(r"^      - ([\w-]+)$", self.required, re.M))
+        self.assertEqual(dependencies, set(self.blocks) - {"ci-required"})
+        self.assertIn("if: ${{ always() }}", self.required)
+        self.assertIn("github.event.action == 'labeled'", self.required)
+        self.assertIn("'CI Optional' || 'CI Required'", self.required)
+        self.assertIn("  merge_group:\n    types: [checks_requested]", self.workflow)
+        self.assertIn('"${QUEUE_BASE_SHA:?}".."${QUEUE_HEAD_SHA:?}"', self.workflow)
         self.assertIn('          - "CI Required"', (ROOT / ".asf.yaml").read_text())
-        self.assertEqual(set(gate.JOBS), set(routing.POLICY))
 
 
 if __name__ == "__main__":

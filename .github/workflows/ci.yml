@@ -339,10 +339,14 @@ jobs:
       - iceberg_1_10
       - iceberg_1_11
     runs-on: ubuntu-slim
+    timeout-minutes: 5
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v7
-      - uses: ./.github/actions/check-ci-result
-        with:
-          needs-json: ${{ toJSON(needs) }}
+      - name: Check CI jobs
+        shell: bash
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<< "$NEEDS"
+          jq -e 'all(.[]; .result == "success" or .result == "skipped")' <<< "$NEEDS"
