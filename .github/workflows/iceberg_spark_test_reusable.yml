@@ -139,7 +139,7 @@ jobs:
           rust-version: ${{ env.RUST_VERSION }}
           jdk-version: ${{ inputs.java }}
       - name: Download native library
-        uses: actions/download-artifact@v8
+        uses: ./.github/actions/download-artifact-retry
         with:
           name: native-lib-iceberg-${{ inputs.iceberg-full }}-spark-${{ inputs.spark-full }}-jdk${{ inputs.java }}
           path: native/target/release/
@@ -162,7 +162,9 @@ jobs:
             -Pquick=true -x javadoc
       - name: Upload Iceberg shard inventory and test reports
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v7
+        # iceberg-spark-shard-coverage downloads the inventory, so a flaky
+        # upload here fails that job too. Retry rather than fail on the first 403.
+        uses: ./.github/actions/upload-artifact-retry
         with:
           name: iceberg-spark-${{ inputs.iceberg-full }}-spark-${{ inputs.spark-full }}-scala-${{ inputs.scala }}-jdk${{ inputs.java }}-shard-${{ matrix.shard }}-attempt-${{ github.run_attempt }}
           path: |
@@ -178,7 +180,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Download Iceberg shard inventories
-        uses: actions/download-artifact@v8
+        uses: ./.github/actions/download-artifact-retry
         with:
           # Download all attempts: a failed-job rerun retains earlier successful
           # shards. The checker selects the latest inventory for each index.
@@ -205,7 +207,7 @@ jobs:
           rust-version: ${{ env.RUST_VERSION }}
           jdk-version: ${{ inputs.java }}
       - name: Download native library
-        uses: actions/download-artifact@v8
+        uses: ./.github/actions/download-artifact-retry
         with:
           name: native-lib-iceberg-${{ inputs.iceberg-full }}-spark-${{ inputs.spark-full }}-jdk${{ inputs.java }}
           path: native/target/release/
@@ -240,7 +242,7 @@ jobs:
           rust-version: ${{ env.RUST_VERSION }}
           jdk-version: ${{ inputs.java }}
       - name: Download native library
-        uses: actions/download-artifact@v8
+        uses: ./.github/actions/download-artifact-retry
         with:
           name: native-lib-iceberg-${{ inputs.iceberg-full }}-spark-${{ inputs.spark-full }}-jdk${{ inputs.java }}
           path: native/target/release/
