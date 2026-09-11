@@ -825,7 +825,14 @@ abstract class CometNativeExec extends CometExec {
       commonByKey = commonByKey,
       perPartitionByKey = perPartitionByKey,
       shuffleScanIndices = shuffleScanIndices,
-      hasScanInput = sparkPlans.exists(_.isInstanceOf[CometNativeScanExec]))
+      // A leaf Comet scan (`CometNativeScanExec`, `CometIcebergNativeScanExec`) can
+      // contribute `bytes_scanned` / `output_rows` to Spark's task-level input metrics,
+      // which drive the Input column on the UI's Stages and Executors tabs.
+      // Matching on `CometLeafExec` rather than `CometNativeScanExec` keeps every scan
+      // reported once the scan is fused into a larger native block, where only the block
+      // root's `compute` runs. `reportScanInputMetrics` self-filters on the `bytes_scanned`
+      // metric, so leaves that don't track it are a no-op.
+      hasScanInput = sparkPlans.exists(_.isInstanceOf[CometLeafExec]))
   }
 
   /**
