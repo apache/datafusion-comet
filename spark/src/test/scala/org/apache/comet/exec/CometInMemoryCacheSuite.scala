@@ -36,6 +36,7 @@ import org.apache.spark.sql.execution.exchange.{Exchange, ReusedExchangeExec, Sh
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.functions.max
 import org.apache.spark.sql.internal.{SQLConf, StaticSQLConf}
+import org.apache.spark.sql.types._
 import org.apache.spark.storage.StorageLevel
 
 import org.apache.comet.{CometArrowAllocator, CometConf}
@@ -480,6 +481,156 @@ class CometInMemoryCacheSuite extends CometTestBase {
       assert(plan.contains("CometHashAggregate"))
 
       spark.catalog.clearCache()
+    }
+  }
+
+  test("Comet in-memory cache statistics preserve typed bounds and null counts") {
+    withSQLConf(
+      CometConf.COMET_ENABLED.key -> "false",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+      val types = Seq(
+        "boolean",
+        "tinyint",
+        "smallint",
+        "int",
+        "bigint",
+        "float",
+        "double",
+        "decimal(10,2)",
+        "decimal(38,2)",
+        "string",
+        "date",
+        "timestamp",
+        "timestamp_ntz",
+        "binary")
+      val expressions = types.zipWithIndex.map { case (dt, i) =>
+        val value = dt match {
+          case "date" => "date_add(DATE '2000-01-01', cast(v AS INT))"
+          case "timestamp" | "timestamp_ntz" =>
+            s"cast(date_add(DATE '2000-01-01', cast(v AS INT)) AS $dt)"
+          case "string" | "binary" => s"cast(concat('字', cast(v AS STRING)) AS $dt)"
+          case _ => s"cast(v AS $dt)"
+        }
+        s"$value AS c$i"
+      }
+      // Leading nulls, updates in both directions, duplicate values, all-null and single-value
+      // columns exercise initialization as well as the primitive and reference bounds loops.
+      Seq("(NULL), (2), (-3), (0), (1), (2), (NULL)", "(NULL), (NULL)", "(NULL), (1)").foreach {
+        values =>
+          val df = spark
+            .sql(s"SELECT ${expressions.mkString(", ")} FROM VALUES $values AS t(v)")
+            .coalesce(1)
+          // Compute the reference through Spark before caching, using its internal value types.
+          df.createOrReplaceTempView("typed_stats_input")
+          val expected = spark
+            .sql(
+              s"SELECT ${types.indices.flatMap(i => Seq(s"min(c$i)", s"max(c$i)")).mkString(", ")} " +
+                "FROM typed_stats_input")
+            .queryExecution
+            .toRdd
+            .map(_.copy())
+            .collect()
+            .head
+          val expectedNulls = df.filter("c0 IS NULL").count().toInt
+          val expectedRows = df.count().toInt
+          def checkStats(view: String): Unit = {
+            val relation = spark.sharedState.cacheManager.lookupCachedData(spark.table(view)).get
+            val batches = relation.cachedRepresentation.cacheBuilder.cachedColumnBuffers.collect()
+            assert(batches.length == 1)
+            val stats = batches.head.asInstanceOf[SimpleMetricsCachedBatch].stats
+            df.schema.fields.zipWithIndex.foreach { case (field, i) =>
+              if (field.dataType == BinaryType) {
+                assert(stats.isNullAt(i * 5) && stats.isNullAt(i * 5 + 1))
+              } else {
+                assert(stats.get(i * 5, field.dataType) == expected.get(i * 2, field.dataType))
+                assert(
+                  stats.get(i * 5 + 1, field.dataType) ==
+                    expected.get(i * 2 + 1, field.dataType))
+              }
+              assert(stats.getInt(i * 5 + 2) == expectedNulls)
+              assert(stats.getInt(i * 5 + 3) == expectedRows)
+            }
+          }
+
+          df.cache()
+          try {
+            df.count()
+            checkStats("typed_stats_input")
+          } finally {
+            df.unpersist(blocking = true)
+            spark.catalog.dropTempView("typed_stats_input")
+          }
+
+          withSparkColumnarCache("typed_stats_columnar")(path => df.write.parquet(path)) {
+            val relation = spark.sharedState.cacheManager
+              .lookupCachedData(spark.table("typed_stats_columnar"))
+              .get
+              .cachedRepresentation
+            assert(relation.cacheBuilder.cachedPlan.supportsColumnar)
+            checkStats("typed_stats_columnar")
+          }
+      }
+    }
+  }
+
+  test("Comet in-memory cache statistics preserve numeric extremes and floating-point ordering") {
+    withSQLConf(
+      CometConf.COMET_ENABLED.key -> "false",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+      val df = spark
+        .sql("""
+        SELECT
+          CAST(if(id = 0, -128, 127) AS TINYINT) AS b,
+          CAST(if(id = 0, -32768, 32767) AS SMALLINT) AS s,
+          CAST(if(id = 0, -2147483648, 2147483647) AS INT) AS i,
+          if(id = 0, -9223372036854775808L, 9223372036854775807L) AS l,
+          CAST(v AS FLOAT) AS f,
+          CAST(v AS DOUBLE) AS d,
+          CAST(if(id = 0, '0.0', '-0.0') AS FLOAT) AS fz,
+          CAST(if(id = 0, '0.0', '-0.0') AS DOUBLE) AS dz
+        FROM VALUES (0, '0.0'), (1, '-0.0'), (2, '-Infinity'), (3, 'Infinity'), (4, 'NaN')
+        AS t(id, v)
+      """)
+        .coalesce(1)
+
+      def checkStats(view: String): Unit = {
+        val relation = spark.sharedState.cacheManager.lookupCachedData(spark.table(view)).get
+        val batches = relation.cachedRepresentation.cacheBuilder.cachedColumnBuffers.collect()
+        assert(batches.length == 1)
+        val stats = batches.head.asInstanceOf[SimpleMetricsCachedBatch].stats
+        assert(stats.getByte(0) == Byte.MinValue && stats.getByte(1) == Byte.MaxValue)
+        assert(stats.getShort(5) == Short.MinValue && stats.getShort(6) == Short.MaxValue)
+        assert(stats.getInt(10) == Int.MinValue && stats.getInt(11) == Int.MaxValue)
+        assert(stats.getLong(15) == Long.MinValue && stats.getLong(16) == Long.MaxValue)
+        assert(stats.getFloat(20) == Float.NegativeInfinity && stats.getFloat(21).isNaN)
+        assert(stats.getDouble(25) == Double.NegativeInfinity && stats.getDouble(26).isNaN)
+        // Spark aggregates consider signed zeros equal; the cache stores Java's total ordering.
+        assert(
+          java.lang.Float.floatToRawIntBits(stats.getFloat(30)) ==
+            java.lang.Float.floatToRawIntBits(-0.0f))
+        assert(java.lang.Float.floatToRawIntBits(stats.getFloat(31)) == 0)
+        assert(
+          java.lang.Double.doubleToRawLongBits(stats.getDouble(35)) ==
+            java.lang.Double.doubleToRawLongBits(-0.0d))
+        assert(java.lang.Double.doubleToRawLongBits(stats.getDouble(36)) == 0L)
+        (0 until 8).foreach { c =>
+          assert(stats.getInt(c * 5 + 2) == 0)
+          assert(stats.getInt(c * 5 + 3) == 5)
+        }
+      }
+
+      df.createOrReplaceTempView("extreme_stats_input")
+      df.cache()
+      try {
+        df.count()
+        checkStats("extreme_stats_input")
+      } finally {
+        df.unpersist(blocking = true)
+        spark.catalog.dropTempView("extreme_stats_input")
+      }
+      withSparkColumnarCache("extreme_stats_columnar")(path => df.write.parquet(path)) {
+        checkStats("extreme_stats_columnar")
+      }
     }
   }
 

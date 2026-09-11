@@ -54,13 +54,18 @@ jobs:
 
   # Build the native library AND pre-compile Spark sources + Test classes in a
   # single runner, then publish two artifacts the matrix consumes:
-  #   - native-lib-linux:                    libcomet.so (~50 MB)
+  #   - native-lib-spark-<full>-jdk<N>:      libcomet.so (~50 MB)
   #   - jvm-compiled-spark-<full>-jdk<N>:    apache-spark.tar.gz (sources +
   #                                          target/ + Zinc state, ~500 MB-1 GB)
   # Combining them avoids a second runner cold-start and an extra inter-job
   # artifact round-trip for the native lib, since the JVM build already
   # depends on it (the Comet Maven install bundles libcomet.so into the
   # Comet JAR before SBT resolves Spark's classpath).
+  #
+  # Both names carry the Spark/JDK version because ci.yml calls this workflow
+  # once per Spark version inside a single run, and artifact names are scoped
+  # to the run, not to the calling workflow. See "Artifact names must be unique
+  # per producer" in .github/workflows/README.md.
   build:
     name: Build Native + JVM Test Classes
     runs-on: ubuntu-24.04
@@ -104,9 +109,9 @@ jobs:
           key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs') }}
 
       - name: Upload native library
-        uses: actions/upload-artifact@v7
+        uses: ./.github/actions/upload-artifact-retry
         with:
-          name: native-lib-linux
+          name: native-lib-spark-${{ inputs.spark-full }}-jdk${{ inputs.java }}
           path: native/target/ci/libcomet.so
           retention-days: 1
 
@@ -156,11 +161,14 @@ jobs:
             apache-spark
 
       - name: Upload JVM compile artifact
-        uses: actions/upload-artifact@v7
+        uses: ./.github/actions/upload-artifact-retry
         with:
           name: jvm-compiled-spark-${{ inputs.spark-full }}-jdk${{ inputs.java }}
           path: apache-spark.tar.gz
           retention-days: 1
+          # Already gzipped: re-deflating ~1 GB at level 6 costs minutes for no
+          # size win, and a shorter upload is a smaller window for the flake.
+          compression-level: 0
 
   spark-sql-test:
     needs: build
@@ -188,12 +196,12 @@ jobs:
           rust-version: ${{env.RUST_VERSION}}
           jdk-version: ${{ inputs.java }}
       - name: Download native library
-        uses: actions/download-artifact@v8
+        uses: ./.github/actions/download-artifact-retry
         with:
-          name: native-lib-linux
+          name: native-lib-spark-${{ inputs.spark-full }}-jdk${{ inputs.java }}
           path: native/target/release/
       - name: Download JVM compile artifact
-        uses: actions/download-artifact@v8
+        uses: ./.github/actions/download-artifact-retry
         with:
           name: jvm-compiled-spark-${{ inputs.spark-full }}-jdk${{ inputs.java }}
       - name: Extract apache-spark/ (sources + compiled output)
@@ -265,7 +273,7 @@ jobs:
           DEDICATED_JVM_SBT_TESTS: ${{ inputs.spark-short == '4.0' && 'org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormatV1Suite,org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormatV2Suite,org.apache.spark.sql.execution.datasources.orc.OrcSourceV1Suite,org.apache.spark.sql.execution.datasources.orc.OrcSourceV2Suite' || '' }}
       - name: Upload fallback log
         if: ${{ inputs.collect-fallback-logs }}
-        uses: actions/upload-artifact@v7
+        uses: ./.github/actions/upload-artifact-retry
         with:
           name: fallback-log-spark-sql-${{ matrix.module.name }}-spark-${{ inputs.spark-full }}-jdk${{ inputs.java }}
           path: "**/fallback.log"
@@ -277,6 +285,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Download fallback log artifacts
+        # Not wrapped in download-artifact-retry: that local action needs a
+        # checkout, which this job deliberately skips.
         uses: actions/download-artifact@v8
         with:
           path: fallback-logs/
@@ -284,6 +294,8 @@ jobs:
         run: |
           find ./fallback-logs/ -type f -name "fallback.log" -print0 | xargs -0 cat | sort -u > all_fallback.log
       - name: Upload merged fallback log
+        # Not wrapped in upload-artifact-retry: that local action needs a
+        # checkout, which this job deliberately skips.
         uses: actions/upload-artifact@v7
         with:
           name: all-fallback-log-spark-${{ inputs.spark-full }}-jdk${{ inputs.java }}

@@ -30,8 +30,8 @@ import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.internal.Logging
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSet, Expression, ExpressionSet, Generator, NamedExpression, SortOrder}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode, CollectList, CollectSet, Final, First, Last, Partial, PartialMerge, Percentile}
+import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSeq, AttributeSet, Expression, ExpressionSet, Generator, NamedExpression, SortOrder}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode, CollectList, CollectSet, Final, Mode, Partial, PartialMerge, Percentile}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
 import org.apache.spark.sql.catalyst.plans._
 import org.apache.spark.sql.catalyst.plans.physical._
@@ -44,7 +44,7 @@ import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregat
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, HashJoin, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
-import org.apache.spark.sql.types.{ArrayType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, TimestampNTZType, TimestampType}
+import org.apache.spark.sql.types.{ArrayType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, StructField, StructType, TimestampNTZType, TimestampType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.SerializableConfiguration
 import org.apache.spark.util.io.ChunkedByteBuffer
@@ -1770,25 +1770,6 @@ trait CometBaseAggregate {
         }
       }
 
-      // FIRST/LAST are order-dependent: in PartialMerge mode, DataFusion's hash
-      // table may process rows in a different order than Spark's. CollectSet is
-      // handled separately (floating-point compat in CometCollectSet; streaming
-      // in ShimCometStreaming.isStreamingPlan).
-      // https://github.com/apache/datafusion-comet/issues/4131
-      if (hasPartialMerge) {
-        val unsupportedAggs = aggregateExpressions.filter { a =>
-          a.mode == PartialMerge && (a.aggregateFunction.isInstanceOf[First] ||
-            a.aggregateFunction.isInstanceOf[Last])
-        }
-        if (unsupportedAggs.nonEmpty) {
-          withFallbackReason(
-            aggregate,
-            "PartialMerge not supported for aggregates: " +
-              unsupportedAggs.map(_.aggregateFunction.prettyName).mkString(", "))
-          return None
-        }
-      }
-
       // Per-expression binding: Partial expressions bind to child output,
       // PartialMerge/Final expressions do not (native planner handles their input).
       val output = child.output
@@ -1925,6 +1906,19 @@ trait CometBaseAggregate {
           // Comet casts the child to double, so the native state is ArrayType(DoubleType).
           val nativeStateType = ArrayType(DoubleType, containsNull = true)
           output(bufferIdx) = output(bufferIdx).withDataType(nativeStateType)
+        case m: Mode =>
+          // Comet's native mode accumulator keeps a frequency map encoded as parallel arrays
+          // (see ModeAccumulator in native/spark-expr): a struct of the distinct values and their
+          // counts.
+          val elementType = m.child.dataType
+          val nativeStateType = StructType(
+            Seq(
+              StructField(
+                "values",
+                ArrayType(elementType, containsNull = true),
+                nullable = false),
+              StructField("counts", ArrayType(LongType, containsNull = true), nullable = false)))
+          output(bufferIdx) = output(bufferIdx).withDataType(nativeStateType)
         case _ =>
       }
       bufferIdx += bufferAttrs.length
@@ -1993,6 +1987,7 @@ object CometHashAggregateExec
       op.output,
       op.groupingExpressions,
       op.aggregateExpressions,
+      op.aggregateAttributes,
       op.resultExpressions,
       op.child.output,
       op.child,
@@ -2043,6 +2038,7 @@ object CometObjectHashAggregateExec
       adjustOutputForNativeState(op),
       op.groupingExpressions,
       op.aggregateExpressions,
+      op.aggregateAttributes,
       op.resultExpressions,
       op.child.output,
       op.child,
@@ -2056,6 +2052,7 @@ case class CometHashAggregateExec(
     override val output: Seq[Attribute],
     groupingExpressions: Seq[NamedExpression],
     aggregateExpressions: Seq[AggregateExpression],
+    aggregateAttributes: Seq[Attribute],
     resultExpressions: Seq[NamedExpression],
     input: Seq[Attribute],
     child: SparkPlan,
@@ -2068,7 +2065,15 @@ case class CometHashAggregateExec(
   // modes is empty too.
   val modes: Seq[AggregateMode] = aggregateExpressions.map(_.mode).distinct
 
-  override def producedAttributes: AttributeSet = outputSet ++ AttributeSet(resultExpressions)
+  // Match Spark's aggregate canonicalization, including the original result attributes that
+  // rewritten DISTINCT aggregate expressions do not necessarily retain in their resultIds.
+  override lazy val allAttributes: AttributeSeq =
+    child.output ++ aggregateExpressions.flatMap(_.aggregateFunction.aggBufferAttributes) ++
+      aggregateAttributes ++
+      aggregateExpressions.flatMap(_.aggregateFunction.inputAggBufferAttributes)
+
+  override def producedAttributes: AttributeSet =
+    outputSet ++ AttributeSet(resultExpressions) ++ AttributeSet(aggregateAttributes)
 
   override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan =
     this.copy(child = newChild)
@@ -2091,6 +2096,8 @@ case class CometHashAggregateExec(
         this.output == other.output &&
         this.groupingExpressions == other.groupingExpressions &&
         this.aggregateExpressions == other.aggregateExpressions &&
+        this.aggregateAttributes == other.aggregateAttributes &&
+        this.resultExpressions == other.resultExpressions &&
         this.input == other.input &&
         this.modes == other.modes &&
         this.child == other.child &&
@@ -2101,7 +2108,15 @@ case class CometHashAggregateExec(
   }
 
   override def hashCode(): Int =
-    Objects.hashCode(output, groupingExpressions, aggregateExpressions, input, modes, child)
+    Objects.hashCode(
+      output,
+      groupingExpressions,
+      aggregateExpressions,
+      aggregateAttributes,
+      resultExpressions,
+      input,
+      modes,
+      child)
 
   override lazy val metrics: Map[String, SQLMetric] = {
     val baseline = CometMetricNode.baselineMetrics(sparkContext)
