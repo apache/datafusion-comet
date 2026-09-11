@@ -42,6 +42,7 @@ import org.apache.spark.sql.comet.execution.arrow.{ArrowReaderIterator, Constant
 import org.apache.spark.sql.execution.vectorized.ConstantColumnVector
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.ColumnarBatch
+import org.apache.spark.unsafe.Platform
 import org.apache.spark.util.io.{ChunkedByteBuffer, ChunkedByteBufferOutputStream}
 
 import org.apache.comet.Constants.COMET_CONF_DIR_ENV
@@ -284,30 +285,82 @@ object Utils extends CometTypeShim with Logging {
    * [[serializeBatches]] writes one stream covering every column, so a reader has to inflate all
    * of them before it can project. Comet's in-memory cache stores columns separately instead, so
    * a scan decodes only the ones it selected. Each stream is self-contained, including its schema
-   * and any dictionaries the column needs.
+   * and any dictionaries the column needs. Returns the streams and flags identifying long columns
+   * stored as deltas. Their readers restore the original values after Arrow decoding, before
+   * exposing the vectors to consumers.
    *
    * The row count is not recoverable from the result when `batch` has no columns, so callers keep
    * it alongside. As with [[serializeBatches]], the batch's vectors are cleared once written.
    */
-  def serializeBatchColumns(batch: ColumnarBatch): Array[ChunkedByteBuffer] = {
+  def serializeBatchColumns(batch: ColumnarBatch): (Array[ChunkedByteBuffer], Array[Boolean]) = {
     val codec = CompressionCodec.createCodec(SparkEnv.get.conf)
 
     // Each column is written with the provider it was decoded with, not the batch's first one:
     // columns decoded from separate streams have independent dictionary ID namespaces.
-    getBatchFieldVectorsWithProviders(batch).map { case (fieldVector, providerOpt) =>
-      val provider = providerOpt.getOrElse(new CDataDictionaryProvider)
-      val cbbos = new ChunkedByteBufferOutputStream(1024 * 1024, ByteBuffer.allocate)
-      val out = new DataOutputStream(codec.compressedOutputStream(cbbos))
+    getBatchFieldVectorsWithProviders(batch)
+      .map { case (fieldVector, providerOpt) =>
+        val provider = providerOpt.getOrElse(new CDataDictionaryProvider)
+        def writeColumn(vector: FieldVector): ChunkedByteBuffer = {
+          val cbbos = new ChunkedByteBufferOutputStream(1024 * 1024, ByteBuffer.allocate)
+          val out = new DataOutputStream(codec.compressedOutputStream(cbbos))
+          val root = new VectorSchemaRoot(Seq(vector).asJava)
+          val writer = new ArrowStreamWriter(root, provider, Channels.newChannel(out))
+          writer.start()
+          writer.writeBatch()
+          root.clear()
+          writer.close()
+          cbbos.toChunkedByteBuffer
+        }
 
-      val root = new VectorSchemaRoot(Seq(fieldVector).asJava)
-      val writer = new ArrowStreamWriter(root, provider, Channels.newChannel(out))
-      writer.start()
-      writer.writeBatch()
-      root.clear()
-      writer.close()
+        fieldVector match {
+          case longs: BigIntVector
+              if longs.getField.getDictionary == null && longs.getValueCount > 0 =>
+            // Copy before writing: a column may be borrowed from a cache scan, and writeColumn
+            // clears its input. The validity bits and logical schema stay unchanged.
+            val deltas = new BigIntVector(longs.getField, longs.getAllocator)
+            try {
+              val count = longs.getValueCount
+              deltas.allocateNew(count)
+              deltas.setValueCount(count)
+              deltas.getValidityBuffer.setBytes(
+                0,
+                longs.getValidityBuffer,
+                0,
+                BitVectorHelper.getValidityBufferSize(count))
+              val source = longs.getDataBuffer.memoryAddress()
+              val target = deltas.getDataBuffer.memoryAddress()
+              var previous = 0L
+              var i = 0
+              while (i < count) {
+                val value = Platform.getLong(null, source + i * 8L)
+                Platform.putLong(null, target + i * 8L, value - previous)
+                previous = value
+                i += 1
+              }
+              val plain = writeColumn(longs)
+              val encoded = writeColumn(deltas)
+              // Irregular values can get larger and slower after delta encoding. Require a
+              // substantial size reduction to pay for reconstructing the values on each read.
+              if (encoded.size < plain.size * 3 / 4) (encoded, true) else (plain, false)
+            } finally deltas.close()
+          case _ => (writeColumn(fieldVector), false)
+        }
+      }
+      .toArray
+      .unzip
+  }
 
-      cbbos.toChunkedByteBuffer
-    }.toArray
+  private[sql] def decodeDeltaLongs(vector: ValueVector): Unit = {
+    require(vector.isInstanceOf[BigIntVector], "Delta-encoded cache column must contain longs")
+    val address = vector.getDataBuffer.memoryAddress()
+    var previous = 0L
+    var i = 0
+    while (i < vector.getValueCount) {
+      val value = Platform.getLong(null, address + i * 8L) + previous
+      Platform.putLong(null, address + i * 8L, value)
+      previous = value
+      i += 1
+    }
   }
 
   /**
@@ -337,12 +390,19 @@ object Utils extends CometTypeShim with Logging {
    *   an iterator of ColumnarBatch
    */
   def decodeBatches(bytes: ChunkedByteBuffer, source: String): Iterator[ColumnarBatch] = {
+    if (bytes.size == 0) Iterator.empty
+    else decodeBatches(bytes, source, CompressionCodec.createCodec(SparkEnv.get.conf))
+  }
+
+  def decodeBatches(
+      bytes: ChunkedByteBuffer,
+      source: String,
+      codec: CompressionCodec): Iterator[ColumnarBatch] = {
     if (bytes.size == 0) {
       return Iterator.empty
     }
 
     // use Spark's compression codec (LZ4 by default) and not Comet's compression
-    val codec = CompressionCodec.createCodec(SparkEnv.get.conf)
     val cbbis = bytes.toInputStream()
     val ins = new DataInputStream(codec.compressedInputStream(cbbis))
     // batches are in Arrow IPC format

@@ -34,19 +34,20 @@ import org.apache.comet.{CometConf, CometSparkSessionExtensions}
 /**
  * Compare Spark consumers of Comet and Spark caches (issue #5485).
  *
- * Arguments: [spark|comet|comet-row|all] [rows] [iterations] [all|mixed|numeric]. Run one format
- * per JVM in alternating order on main and the patch. comet-row disables vectorized cache reading
- * to isolate the row iterator. Cache creation and validation are outside timing.
+ * Arguments: [spark|comet|comet-row|all] [rows] [iterations] [all|mixed|numeric] [codec]. Run one
+ * format per JVM in alternating order on main and the patch. comet-row disables vectorized cache
+ * reading to isolate the row iterator. Cache creation and validation are outside timing.
  */
 object CometCacheRowReaderBenchmark extends BenchmarkBase {
   private val warmups = 5
 
   override def runBenchmarkSuite(args: Array[String]): Unit = {
-    require(args.length <= 4, "Expected format, rows, iterations, schema")
+    require(args.length <= 5, "Expected format, rows, iterations, schema, compression codec")
     val format = args.headOption.getOrElse("all")
     val rows = args.lift(1).map(_.toLong).getOrElse(5000000L)
     val iterations = args.lift(2).map(_.toInt).getOrElse(15)
     val schema = args.lift(3).getOrElse("all")
+    val codec = args.lift(4).getOrElse("lz4")
     require(Set("all", "spark", "comet", "comet-row").contains(format))
     require(Set("all", "mixed", "numeric").contains(schema))
     require(rows > 0 && iterations > 0)
@@ -73,7 +74,7 @@ object CometCacheRowReaderBenchmark extends BenchmarkBase {
         .config("spark.sql.shuffle.partitions", "1")
         .config("spark.sql.inMemoryColumnarStorage.batchSize", "10000")
         .config("spark.sql.inMemoryColumnarStorage.compressed", "true")
-        .config("spark.io.compression.codec", "lz4")
+        .config("spark.io.compression.codec", codec)
         .config(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key, "false")
         .config(SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key, "true")
         .config(SQLConf.CACHE_VECTORIZED_READER_ENABLED.key, (name != "comet-row").toString)
@@ -84,7 +85,9 @@ object CometCacheRowReaderBenchmark extends BenchmarkBase {
         .getOrCreate()
       spark.sparkContext.setLogLevel("WARN")
       try {
-        emit(s"CACHE_ENV,$name,Spark=${spark.version},Java=${System.getProperty("java.version")}")
+        emit(
+          s"CACHE_ENV,$name,Spark=${spark.version}," +
+            s"Java=${System.getProperty("java.version")},codec=$codec")
         schemas.foreach(runSchema(spark, name, _, rows, iterations, serializer))
       } finally {
         spark.stop()
@@ -131,7 +134,9 @@ object CometCacheRowReaderBenchmark extends BenchmarkBase {
     }
     val cached = source.persist(StorageLevel.MEMORY_ONLY)
     try {
+      val buildStart = System.nanoTime()
       assert(cached.count() == rows)
+      emit(s"CACHE_BUILD,$format,$schema,$rows,${System.nanoTime() - buildStart}")
       val relation = cached.queryExecution.withCachedData.collectFirst {
         case relation: InMemoryRelation => relation
       }.get

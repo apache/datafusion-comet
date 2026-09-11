@@ -1675,6 +1675,64 @@ class CometInMemoryCacheSuite extends CometTestBase {
     }
   }
 
+  test("Comet in-memory cache preserves delta-encoded longs across every reader") {
+    val random = new java.util.Random(5485)
+    val rows = (0 until 4096).map { i =>
+      // Cross the signed-long boundary; delta reconstruction must preserve wrapping arithmetic.
+      val value = Long.MaxValue - 2048 + i
+      Row(value, if (i % 7 == 0) null else value, random.nextLong(), s"value_${i % 11}")
+    }
+    val schema = new StructType()
+      .add("seq", LongType, nullable = false)
+      .add("nullable", LongType, nullable = true)
+      .add("random", LongType, nullable = false)
+      .add("text", StringType, nullable = false)
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true",
+      "spark.comet.sparkToColumnar.enabled" -> "true") {
+      spark.catalog.clearCache()
+      val cached = spark.createDataFrame(spark.sparkContext.parallelize(rows, 2), schema).cache()
+      try {
+        assert(cached.count() == rows.length)
+        val relation =
+          spark.sharedState.cacheManager.lookupCachedData(cached).get.cachedRepresentation
+        val batches = relation.cacheBuilder.cachedColumnBuffers.collect()
+        assert(batches.forall(b => CometCachedBatchHelper.columnsAreDeltaEncoded(b)(0)))
+        assert(batches.forall(b => !CometCachedBatchHelper.columnsAreDeltaEncoded(b)(2)))
+
+        val expected =
+          rows.map(r => Row(r.getLong(2), r.getLong(0), r.get(1), r.getLong(0), r.get(3)))
+        for ((native, vectorized) <- Seq((true, true), (false, true), (false, false))) {
+          withSQLConf(
+            CometConf.COMET_EXEC_ENABLED.key -> native.toString,
+            CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> native.toString,
+            SQLConf.CACHE_VECTORIZED_READER_ENABLED.key -> vectorized.toString) {
+            val projected =
+              cached.selectExpr("random", "seq", "nullable", "seq AS repeated", "text")
+            checkAnswer(projected, expected)
+            val plan = projected.queryExecution.executedPlan
+            if (native) assert(plan.exists(_.isInstanceOf[CometInMemoryTableScanExec]))
+            else {
+              assert(plan.exists(_.isInstanceOf[InMemoryTableScanExec]))
+              assert(plan.exists(_.isInstanceOf[ColumnarToRowExec]) == vectorized)
+            }
+          }
+        }
+
+        // Re-caching decoded vectors must neither encode them twice nor change the original cache.
+        withSQLConf(
+          CometConf.COMET_EXEC_ENABLED.key -> "false",
+          CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "false") {
+          val recached = cached.union(cached).cache()
+          try checkAnswer(recached, rows ++ rows)
+          finally recached.unpersist()
+          checkAnswer(cached, rows)
+        }
+      } finally cached.unpersist()
+    }
+  }
+
   test("Comet in-memory cache releases opened readers when a later column fails to decode") {
     // A cached batch is several independent Arrow streams and decodeBatches opens each eagerly.
     // If a later column throws, the readers already opened are unreachable: the task-completion
