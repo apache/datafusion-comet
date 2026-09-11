@@ -108,12 +108,26 @@ PR_TIER = {"build_linux", "build_macos", "benchmark", "spark_3_5", "spark_4_1", 
 ICEBERG_OPT_IN = {"iceberg_1_8", "iceberg_1_9", "iceberg_1_10"}
 ALL_JOBS = PR_TIER | ICEBERG_OPT_IN | {"docs", "spark_3_4", "spark_4_0"}
 
+# A group can combine changes from multiple PRs. Path filtering still applies,
+# even though the queue permits all supported Spark and Iceberg versions.
+QUEUE_ROUTING_CASES = [
+    (["pom.xml", "native/core/benches/parquet_read.rs", "docs/source/index.md"], ALL_JOBS - {"docs"}),
+    ([".mvn/maven.config"], BUILD_JOBS),
+    (["native/core/benches/parquet_read.rs"], {"benchmark"}),
+    (["docs/source/index.md"], set()),
+    ([], set()),
+]
+
 POLICY_CASES = [
     # A manual run may exercise anything.
     ({"name": "workflow_dispatch"}, ALL_JOBS),
     # Push to main runs every job, docs included: it is the only event that
     # may deploy the site.
     ({"name": "push"}, ALL_JOBS),
+    # A queue group runs every applicable suite, including PR opt-in versions,
+    # but must never deploy the site from its temporary branch.
+    ({"name": "merge_group", "action": "checks_requested"}, ALL_JOBS - {"docs"}),
+    ({"name": "merge_group", "action": "destroyed"}, set()),
     # A plain pull request: the PR tier only. docs must never run here, and the
     # opt-in suites stay off without their label.
     ({"name": "pull_request", "action": "opened", "labels": []}, PR_TIER),
@@ -202,6 +216,13 @@ def check_change_filters():
 def check_event_policy():
     module = load_filters()
     failures = []
+    for files, expected in QUEUE_ROUTING_CASES:
+        outputs = module.compute(files, {"name": "merge_group", "action": "checks_requested"})
+        actual = {job for job, enabled in outputs.items() if enabled}
+        if actual != expected:
+            failures.append(
+                f"merge_group files={files}: expected {sorted(expected)}, got {sorted(actual)}"
+            )
     for event, expected in POLICY_CASES:
         actual = {job for job in module.POLICY if module.event_allows(job, event)}
         if actual != expected:

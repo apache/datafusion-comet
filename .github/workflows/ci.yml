@@ -26,13 +26,16 @@ name: CI
 # opened/synchronize run. Keying the group on the label name keeps labeled runs
 # in their own subgroup so they never cancel the real commit run; opened and
 # synchronize both map to `commit` so a new push still supersedes its predecessor.
+# Event names also isolate queue validation from push and manual runs.
 concurrency:
-  group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}-${{ github.event.action == 'labeled' && github.event.label.name || 'commit' }}
+  group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}-${{ github.event_name }}-${{ github.event.action == 'labeled' && github.event.label.name || 'commit' }}
   cancel-in-progress: true
 
 on:
   pull_request:
     types: [opened, synchronize, reopened, labeled]
+  merge_group:
+    types: [checks_requested]
   push:
     branches:
       - main
@@ -149,8 +152,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          # Need both branches' history so we can diff base..head for PRs and
-          # before..after for pushes.
+          # Need history for PR, push, and merge-group base/head diffs.
           fetch-depth: 0
 
       - name: Compute outputs
@@ -165,6 +167,8 @@ jobs:
           PR_HEAD_SHA:  ${{ github.event.pull_request.head.sha }}
           PUSH_BEFORE:  ${{ github.event.before }}
           PUSH_AFTER:   ${{ github.sha }}
+          QUEUE_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          QUEUE_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
         run: |
           set -euo pipefail
           : > changed_files.txt
@@ -175,13 +179,19 @@ jobs:
             :
           elif [[ "$EVENT_NAME" == "pull_request" ]]; then
             git diff --name-only "$PR_BASE_SHA"..."$PR_HEAD_SHA" > changed_files.txt
-          else
+          elif [[ "$EVENT_NAME" == "merge_group" ]]; then
+            # Include every PR in the group, relative to its base snapshot.
+            git diff --name-only "${QUEUE_BASE_SHA:?}".."${QUEUE_HEAD_SHA:?}" > changed_files.txt
+          elif [[ "$EVENT_NAME" == "push" ]]; then
             # push to main; first push to a branch has all-zero before sha
             if [[ "$PUSH_BEFORE" =~ ^0+$ ]]; then
               git ls-tree -r --name-only "$PUSH_AFTER" > changed_files.txt
             else
               git diff --name-only "$PUSH_BEFORE".."$PUSH_AFTER" > changed_files.txt
             fi
+          else
+            echo "::error::Unsupported CI event: $EVENT_NAME"
+            exit 1
           fi
           echo "Changed files:"
           cat changed_files.txt
@@ -325,9 +335,7 @@ jobs:
   # required_checks: one flat job that aggregates every other job's result, so
   # that `main` has a single name it can safely require.
   #
-  # Nothing requires it yet. It is landing first, on its own, so that we can
-  # watch it report on real pull requests before `.asf.yaml` names it in
-  # `required_status_checks` for `main`.
+  # `.asf.yaml` requires this context on both pull requests and merge groups.
   #
   # None of the jobs above can be required directly, because the name a caller
   # of a reusable workflow publishes depends on whether it ran:

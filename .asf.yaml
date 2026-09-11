@@ -46,6 +46,10 @@ github:
     main:
       required_pull_request_reviews:
         required_approving_review_count: 1
+      required_status_checks:
+        strict: false
+        contexts:
+          - "Required Checks"
     branch-0.1:
       required_pull_request_reviews:
         required_approving_review_count: 1
@@ -99,6 +103,27 @@ github:
         required_approving_review_count: 1
   pull_requests:
     allow_update_branch: true
+  # Queue settings use the raw GitHub Rulesets API syntax. Reviews and the
+  # required CI context remain in protected_branches above.
+  rulesets:
+    - name: "Merge Queue"
+      target: branch
+      enforcement: active
+      conditions:
+        ref_name:
+          include:
+            - "refs/heads/main"
+          exclude: []
+      rules:
+        - type: merge_queue
+          parameters:
+            merge_method: SQUASH
+            max_entries_to_build: 2
+            min_entries_to_merge: 1
+            max_entries_to_merge: 1
+            min_entries_to_merge_wait_minutes: 0
+            grouping_strategy: ALLGREEN
+            check_response_timeout_minutes: 240
 # publishes the content of the `asf-site` branch to
 # https://datafusion.apache.org/comet/
 publish:
