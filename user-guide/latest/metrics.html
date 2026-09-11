@@ -949,12 +949,74 @@ logged for each native plan (and there is one plan per task, so this is very ver
 </table>
 </div>
 </section>
+<section id="native-parquet-scans">
+<h3>Native Parquet scans<a class="headerlink" href="#native-parquet-scans" title="Link to this heading">#</a></h3>
+<p>Native Parquet scans expose these counters in the Spark SQL metric map as well as native
+execution metrics. Counters accumulate per scan operator; they do not instrument individual rows.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Metric</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">scan_io_data_bytes</span></code></p></td>
+<td><p>Bytes returned to the Parquet reader for projected data-page ranges.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">scan_io_metadata_bytes</span></code></p></td>
+<td><p>Bytes returned for footer prefetches, page indexes, and Bloom filters. A footer prefetch can also contain unused data bytes.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">scan_io_footer_reads</span></code></p></td>
+<td><p>Storage reads of complete serialized footer payloads, counted once per metadata open. Plaintext payloads must decode successfully; encrypted payloads are counted before key retrieval/decryption, even if those later fail.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">scan_io_footer_bytes</span></code></p></td>
+<td><p>Serialized footer payload bytes, excluding the final eight-byte trailer. These bytes are already included in <code class="docutils literal notranslate"><span class="pre">scan_io_metadata_bytes</span></code>.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">scan_io_object_store_get_calls</span></code></p></td>
+<td><p>Nonempty GET operations at the native remote <code class="docutils literal notranslate"><span class="pre">ObjectStore</span></code> API, after range coalescing. Does not count transport retries or HEAD requests.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">scan_io_object_store_get_requested_bytes</span></code></p></td>
+<td><p>Requested coalesced range bytes at that API. A failed or partly consumed request can contribute requested bytes without the same number of response bytes.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">scan_io_object_store_response_bytes_read</span></code></p></td>
+<td><p>Response bytes actually consumed at that API, including bytes fetched between coalesced ranges. Not HTTP wire bytes.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">scan_io_metadata_cache_hits</span></code></p></td>
+<td><p>Successful, cache-eligible metadata opens requiring no storage reads.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">scan_io_metadata_cache_misses</span></code></p></td>
+<td><p>Successful, cache-eligible metadata opens requiring storage reads. Failed opens and encrypted opens, which bypass this shared cache, increment neither cache counter.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Reader-level and object-store bytes are two views of the same reads; do not add them together.
+Likewise, footer bytes are a subset of metadata bytes, not a third reader-level category. A warm
+metadata-cache hit contributes no new metadata or footer I/O. A valid plaintext footer followed by
+a page-index failure still contributes footer bytes; an invalid plaintext footer does not.</p>
+<p>Remote counters follow the backend selected during object-store construction, including native
+S3 (<code class="docutils literal notranslate"><span class="pre">s3</span></code>/<code class="docutils literal notranslate"><span class="pre">s3a</span></code>), GCS (<code class="docutils literal notranslate"><span class="pre">gs</span></code>), Azure (<code class="docutils literal notranslate"><span class="pre">az</span></code>, <code class="docutils literal notranslate"><span class="pre">adl</span></code>, <code class="docutils literal notranslate"><span class="pre">azure</span></code>, <code class="docutils literal notranslate"><span class="pre">abfs</span></code>, <code class="docutils literal notranslate"><span class="pre">abfss</span></code>), and HTTP(S) stores.
+Configured S3-compatible aliases are normalized before this classification.
+Local files, in-memory stores, and HDFS/custom backends (including cloud-looking schemes selected
+through <code class="docutils literal notranslate"><span class="pre">fs.comet.libhdfs.schemes</span></code>) retain reader-level counters but have zero remote counters.
+The native cloud wrapper observes default range coalescing; custom <code class="docutils literal notranslate"><span class="pre">get_ranges</span></code> implementations
+require an explicit accounting contract before being composed with that wrapper.</p>
+<p>For data-bearing scans, comparing remote response bytes with reader data bytes can reveal
+coalescing and metadata overhead. For a metadata-only scan, data bytes are zero: report the
+metadata and remote totals instead of dividing by zero. Cancellation can leave late asynchronous
+work outside the final metric snapshot; these counters are not a guarantee of complete network
+traffic accounting after cancellation.</p>
+</section>
 </section>
 <section id="task-level-input-metrics-on-spark-4-1">
 <h2>Task-Level Input Metrics on Spark 4.1+<a class="headerlink" href="#task-level-input-metrics-on-spark-4-1" title="Link to this heading">#</a></h2>
-<p>Comet’s native scans set <code class="docutils literal notranslate"><span class="pre">inputMetrics.bytesRead</span></code> to the actual file IO performed by the
-DataFusion parquet reader (<code class="docutils literal notranslate"><span class="pre">bytes_scanned</span></code>). This is the truthful number you would see at the
-filesystem layer.</p>
+<p>Comet’s native scans populate <code class="docutils literal notranslate"><span class="pre">inputMetrics.bytesRead</span></code> from the existing <code class="docutils literal notranslate"><span class="pre">bytes_scanned</span></code>
+counter. It counts requested data/Bloom-filter ranges through the Parquet reader’s byte-read
+methods, not all filesystem I/O. Footer and page-index reads through metadata loading bypass
+this counter, and range coalescing can fetch more bytes than the logical ranges request. The
+additional scan I/O metrics above expose those differences without changing <code class="docutils literal notranslate"><span class="pre">bytes_scanned</span></code>.
+The native <code class="docutils literal notranslate"><span class="pre">scan_efficiency_ratio</span></code> still uses <code class="docutils literal notranslate"><span class="pre">bytes_scanned</span></code> as its numerator and has the same
+blind spots; it is not the remote read-amplification ratio described above.</p>
 <p>Spark 4.1 changed its own parquet reader to pre-open the <code class="docutils literal notranslate"><span class="pre">SeekableInputStream</span></code> and read the file
 footer outside the <code class="docutils literal notranslate"><span class="pre">FileScanRDD.compute()</span></code> thread. Spark’s <code class="docutils literal notranslate"><span class="pre">inputMetrics.bytesRead</span></code> is updated
 from a Hadoop FileSystem thread-local byte counter that only captures reads on the
@@ -968,7 +1030,8 @@ does not affect query plans, partitioning, or correctness. Records read (<code c
 unaffected and remains exactly equal between Comet and Spark.</p>
 <p>If you compare Comet’s <code class="docutils literal notranslate"><span class="pre">bytesRead</span></code> against vanilla Spark’s on Spark 4.1+ (via the Spark UI or
 the REST API), expect Comet’s number to be substantially larger for small files, and closer to
-Spark’s for large files. Comet’s value reflects what the storage layer actually delivered.</p>
+Spark’s for large files in that workload. Neither metric should be interpreted as complete
+filesystem or network traffic accounting.</p>
 </section>
 </section>
 
@@ -1028,6 +1091,7 @@ Spark’s for large files. Comet’s value reflects what the storage layer actua
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#native-metrics">Native Metrics</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#scanexec">ScanExec</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#shufflewriterexec">ShuffleWriterExec</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#native-parquet-scans">Native Parquet scans</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#task-level-input-metrics-on-spark-4-1">Task-Level Input Metrics on Spark 4.1+</a></li>
