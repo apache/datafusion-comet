@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 
-# Guards four CI invariants that are silent when broken:
+# Guards five CI invariants that are silent when broken:
 #
 #   1. Change-filter routing. dev/ci/compute-changes.py decides which heavy
 #      jobs run. A file that a job depends on but that no filter lists makes
@@ -44,6 +44,11 @@
 #      name make `download-artifact` pick by highest artifact ID rather than
 #      by `needs`, and make the forced `overwrite` on an upload retry delete
 #      a sibling's finished artifact.
+#
+#   5. Local actions resolve from the workspace, so a `uses: ./.github/...`
+#      in a job that skipped the checkout cannot be loaded at all. Jobs that
+#      run only under an input or a label can carry that for a long time
+#      before anyone runs them.
 #
 # Run from the repository root: python3 dev/ci/check-ci-config.py
 
@@ -93,31 +98,65 @@ ROUTING_CASES = [
     ([".mvn/maven.config"], BUILD_JOBS),
     ([".mvn/wrapper/maven-wrapper.properties"], BUILD_JOBS),
     (["mvnw"], BUILD_JOBS),
-    # The upload wrapper is used by every producer of a shared artifact.
+    # The artifact wrappers are used by every producer and consumer of a
+    # shared artifact. Without these, an edit confined to one of them routes
+    # to nothing at all and merges having been exercised by no consumer.
     ([".github/actions/upload-artifact-retry/action.yaml"], BUILD_JOBS),
+    ([".github/actions/download-artifact-retry/action.yaml"], BUILD_JOBS),
     # Spot checks that the additions above did not widen unrelated routes.
     (["docs/source/user-guide/overview.md"], {"docs"}),
     (["native/core/benches/parquet_read.rs"], {"benchmark"}),
 ]
 
 # Event policy. Each case is (event, expected set of jobs allowed to run),
-# where "allowed" ignores path filters. Transcribed from the `if:` expressions
-# ci.yml carried before POLICY moved into compute-changes.py, so these pin the
-# pre-refactor behaviour rather than restating the new code.
-PR_TIER = {"build_linux", "build_macos", "benchmark", "spark_3_5", "spark_4_1", "iceberg_1_11"}
+# where "allowed" ignores path filters. Written out longhand rather than
+# derived from POLICY, so that a change to the routing has to be stated twice
+# and cannot be made by accident.
+PR_TIER = {"build_linux", "spark_4_1", "iceberg_1_11"}
+SPARK_OPT_IN = {"spark_3_4", "spark_3_5", "spark_4_0"}
 ICEBERG_OPT_IN = {"iceberg_1_8", "iceberg_1_9", "iceberg_1_10"}
-ALL_JOBS = PR_TIER | ICEBERG_OPT_IN | {"docs", "spark_3_4", "spark_4_0"}
+BUILD_OPT_IN = {"build_macos", "benchmark"}
+QUEUE_TIER = PR_TIER | SPARK_OPT_IN | ICEBERG_OPT_IN | BUILD_OPT_IN
+ALL_JOBS = QUEUE_TIER | {"docs"}
 
 POLICY_CASES = [
     # A manual run may exercise anything.
     ({"name": "workflow_dispatch"}, ALL_JOBS),
-    # Push to main runs every job, docs included: it is the only event that
-    # may deploy the site.
-    ({"name": "push"}, ALL_JOBS),
+    # The merge queue is the authoritative gate: everything except the site
+    # deploy, which can only run once the commit is actually on main.
+    ({"name": "merge_group"}, QUEUE_TIER),
+    # Push to main is the site deploy plus the Linux build, which is there to
+    # refresh main's actions/cache entries (see POLICY). Any other test job
+    # showing up here means every merge is paying for it twice.
+    ({"name": "push"}, {"docs", "build_linux"}),
     # A plain pull request: the PR tier only. docs must never run here, and the
     # opt-in suites stay off without their label.
     ({"name": "pull_request", "action": "opened", "labels": []}, PR_TIER),
     ({"name": "pull_request", "action": "synchronize", "labels": []}, PR_TIER),
+    # Spark 3.5 moved behind the queue; its label is the escape hatch.
+    (
+        {"name": "pull_request", "action": "synchronize", "labels": ["run-spark-3.5-tests"]},
+        PR_TIER | {"spark_3_5"},
+    ),
+    # So did the macOS build and the benchmark compile check, each with its
+    # own label. Neither label pulls in the other.
+    (
+        {"name": "pull_request", "action": "synchronize", "labels": ["run-macos-tests"]},
+        PR_TIER | {"build_macos"},
+    ),
+    (
+        {"name": "pull_request", "action": "synchronize", "labels": ["run-benchmark-check"]},
+        PR_TIER | {"benchmark"},
+    ),
+    (
+        {
+            "name": "pull_request",
+            "action": "labeled",
+            "label": "run-macos-tests",
+            "labels": ["run-macos-tests"],
+        },
+        {"build_macos"},
+    ),
     # An opt-in label present on a pushed commit adds just that suite.
     (
         {"name": "pull_request", "action": "synchronize", "labels": ["run-spark-3.4-tests"]},
@@ -168,11 +207,19 @@ POLICY_CASES = [
 
 # `uses:` values that publish an artifact, and the one that consumes it.
 UPLOAD_USES = re.compile(r"uses:\s*(\./\.github/actions/upload-artifact-retry|actions/upload-artifact@)")
-DOWNLOAD_USES = re.compile(r"uses:\s*actions/download-artifact@")
+DOWNLOAD_USES = re.compile(r"uses:\s*(\./\.github/actions/download-artifact-retry|actions/download-artifact@)")
 # The artifact name is the first `name:` key of the step's `with:` block. A
 # following step starts with `- `, which distinguishes it from a `with:` key.
 WITH_NAME = re.compile(r"^\s+name:\s*(\S.*?)\s*$")
 NEW_STEP = re.compile(r"^\s*-\s")
+
+# A job id in a workflow file, and the two `uses:` shapes the checkout guard
+# below cares about. `./.github/workflows/` is deliberately not matched: that
+# is a reusable-workflow call, which resolves from the repository rather than
+# from the runner's workspace and so needs no checkout.
+JOB_KEY = re.compile(r"^  ([A-Za-z0-9_-]+):\s*$")
+LOCAL_ACTION_USES = re.compile(r"uses:\s*(\./\.github/actions/\S+)")
+CHECKOUT_USES = re.compile(r"uses:\s*actions/checkout@")
 
 
 def load_filters():
@@ -283,6 +330,41 @@ def check_artifact_names():
                 )
     for failure in failures:
         print(f"artifact name: {failure}")
+    return not failures
+
+
+def check_local_actions_have_checkout():
+    """Every `uses: ./.github/actions/...` needs a checkout earlier in its job.
+
+    A local action is loaded from the runner's workspace, not from the
+    repository, so a job that has not checked out simply cannot find it. The
+    failure is at step level and only on the jobs that skipped the checkout,
+    which is easy to miss when those jobs are conditional.
+    """
+    failures = []
+    for path in sorted(WORKFLOWS.glob("*.y*ml")):
+        job = None
+        checked_out = False
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.lstrip().startswith("#"):
+                continue
+            match = JOB_KEY.match(line)
+            if match:
+                job = match.group(1)
+                checked_out = False
+                continue
+            if CHECKOUT_USES.search(line):
+                checked_out = True
+                continue
+            match = LOCAL_ACTION_USES.search(line)
+            if match and not checked_out:
+                failures.append(
+                    f"{path}: job `{job}` uses the local action {match.group(1)} "
+                    f"with no preceding actions/checkout. Add the checkout, or "
+                    f"call the underlying published action directly"
+                )
+    for failure in failures:
+        print(f"local action: {failure}")
     return not failures
 
 
@@ -464,6 +546,7 @@ if __name__ == "__main__":
     ok = check_change_filters()
     ok = check_event_policy() and ok
     ok = check_artifact_names() and ok
+    ok = check_local_actions_have_checkout() and ok
     ok = check_required_checks() and ok
     if not ok:
         sys.exit(1)
