@@ -174,11 +174,13 @@ umbrella doesn't watch, or operate independently of the rest of CI:
 
 ## Changing what runs when
 
-Every heavy job in `ci.yml` is gated on exactly one thing:
+Consumer jobs in `ci.yml` use a single routing output, for example:
 
 ```yaml
 if: needs.changes.outputs.spark_3_5 == 'true'
 ```
+
+The shared native producer runs when any of its consumers' outputs is true.
 
 That single boolean folds together two separate decisions, both of which live
 in `dev/ci/compute-changes.py`:
