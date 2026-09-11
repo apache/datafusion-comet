@@ -44,7 +44,7 @@ pull_request | merge_group | push to main | workflow_dispatch
        +---------------+--------------------+
        |                                    |
   Linux checks / macOS /               build_linux_native
-  docs / benchmark (if selected)              (if any consumer is selected)
+  docs / benchmark (if selected)       (if any consumer is selected)
                                             |
                            +----------------+----------------+
                            |                |                |
@@ -62,8 +62,9 @@ input. Consumers keep their own Spark/JDK versions and download the library
 into `native/target/release/`, where Maven expects it. Spark still pre-compiles
 and shares its JVM test classes separately for each Spark/JDK version.
 
-The producer's condition is the union of those callers' `changes` outputs,
-which already include the path and event/label policy in `compute-changes.py`. A Spark-patch-only change therefore gets a native
+`compute-changes.py` derives `build_linux_native` as the union of the selected
+consumer outputs, after applying path and event/label policy. The workflow
+reads that single output. A Spark-patch-only change therefore gets a native
 build when its Spark caller is selected, even if the Linux build is not.
 Documentation-only changes, benchmark-only changes, and unrelated label
 events do not start an unused native build. The event-selection regression
@@ -88,7 +89,7 @@ of the Linux CI-profile Cargo cache, and only writes on `main`.
 | -------------------- | ------------------------------------------------- | ----------------------------------- |
 | `preflight`          | every PR / merge group / push / dispatch / label  | none (always runs)                  |
 | `changes`            | every PR / merge group / push / dispatch / label  | runs `dev/ci/compute-changes.py`    |
-| `build_linux_native` | any selected Linux/Spark/Iceberg consumer | caller conditions in `ci.yml` |
+| `build_linux_native` | any selected Linux/Spark/Iceberg consumer | `dev/ci/compute-changes.py` |
 | `pr_build_linux_checks` | PR, merge group or push to main, paths matched | `dev/ci/compute-changes.py` |
 | `pr_build_linux`     | PR, merge group or push to main, paths matched    | `dev/ci/compute-changes.py`         |
 | `pr_build_macos`     | merge group, **or** PR with `run-macos-tests`     | `dev/ci/compute-changes.py`         |

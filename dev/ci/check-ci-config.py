@@ -495,7 +495,44 @@ def linux_checks_failures(workflows, jobs):
     return failures
 
 
+def native_selection_failures(jobs):
+    """Return errors when workflow gates diverge from the Python selector.
+
+    `jobs` is the ci.yml job mapping returned by block_mapping, with each value
+    holding an inline scalar and indented body. Read the selector's consumer
+    keys and require a matching caller, direct output export, and simple gate
+    for each one, plus the producer. This checks wiring without evaluating YAML
+    expressions. Inputs and files are not mutated; import/read errors propagate.
+    """
+    consumers = {"pr_build_linux" if key == "build_linux" else key: key
+                 for key in load_filters().NATIVE_CONSUMERS}
+    actual_consumers = {
+        job_id for job_id, (_, body) in jobs.items()
+        if scalar(block_mapping(body, 4).get("uses", ("", ""))[0])
+        .removeprefix("./.github/workflows/") in SHARED_NATIVE_CONSUMERS
+    }
+    failures = []
+    if actual_consumers != consumers.keys():
+        failures.append("ci.yml: native consumer calls must match NATIVE_CONSUMERS "
+                        "in compute-changes.py")
+    changes = block_mapping(jobs.get("changes", ("", ""))[1], 4)
+    outputs = block_mapping(changes.get("outputs", ("", ""))[1], 6)
+    for job_id, output in {SHARED_NATIVE_JOB: SHARED_NATIVE_JOB, **consumers}.items():
+        fields = block_mapping(jobs.get(job_id, ("", ""))[1], 4)
+        if fields.get("if", ("", ""))[0] != f"needs.changes.outputs.{output} == 'true'":
+            failures.append(f"ci.yml: {job_id} must select only changes.outputs.{output}")
+        if outputs.get(output, ("", ""))[0] != f"${{{{ steps.compute.outputs.{output} }}}}":
+            failures.append(f"ci.yml: changes must export steps.compute.outputs.{output}")
+    return failures
+
+
 def artifact_failures(workflows):
+    """Read workflow files and return artifact, routing, and independence errors.
+
+    `workflows` is a directory Path containing ci.yml and the reusable workflows.
+    Files and parsed mappings are read only. An empty list means all invariants
+    passed; file-read and selector-import errors propagate to the caller.
+    """
     ci = (workflows / "ci.yml").read_text(encoding="utf-8")
     jobs = block_mapping(block_mapping(ci, 0).get("jobs", ("", ""))[1], 2)
     call_counts = {}
@@ -505,6 +542,7 @@ def artifact_failures(workflows):
     artifacts = {path.name: artifact_names(path) for path in sorted(workflows.glob("*.y*ml"))}
     failures = shared_native_failures(workflows, jobs, artifacts)
     failures.extend(linux_checks_failures(workflows, jobs))
+    failures.extend(native_selection_failures(jobs))
     shared_wiring_valid = not failures
     for filename, (uploads, downloads) in artifacts.items():
         path = workflows / filename

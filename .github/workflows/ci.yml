@@ -155,6 +155,7 @@ jobs:
     needs: preflight
     runs-on: ubuntu-slim
     outputs:
+      build_linux_native: ${{ steps.compute.outputs.build_linux_native }}
       build_linux:  ${{ steps.compute.outputs.build_linux }}
       build_macos:  ${{ steps.compute.outputs.build_macos }}
       benchmark:    ${{ steps.compute.outputs.benchmark }}
@@ -235,23 +236,13 @@ jobs:
     if: needs.changes.outputs.build_linux == 'true'
     uses: ./.github/workflows/pr_build_linux_checks.yml
 
-  # Build once when any native-library consumer is selected. Each output
-  # already includes the path, event, and label policy from compute-changes.py.
+  # compute-changes.py derives this output from the selected native consumers.
   build_linux_native:
     name: Shared Linux Native Library
     needs: changes
     permissions:
       contents: read
-    if: |
-      needs.changes.outputs.build_linux == 'true' ||
-      needs.changes.outputs.spark_3_4 == 'true' ||
-      needs.changes.outputs.spark_3_5 == 'true' ||
-      needs.changes.outputs.spark_4_0 == 'true' ||
-      needs.changes.outputs.spark_4_1 == 'true' ||
-      needs.changes.outputs.iceberg_1_8 == 'true' ||
-      needs.changes.outputs.iceberg_1_9 == 'true' ||
-      needs.changes.outputs.iceberg_1_10 == 'true' ||
-      needs.changes.outputs.iceberg_1_11 == 'true'
+    if: needs.changes.outputs.build_linux_native == 'true'
     uses: ./.github/workflows/build_linux_native.yml
 
   pr_build_linux:
