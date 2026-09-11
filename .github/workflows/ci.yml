@@ -17,7 +17,24 @@
 
 # Top-level CI orchestrator: runs cheap preflight checks first, then fans out
 # to the long-running test/build workflows only if preflight passed and the
-# PR/push touched files relevant to that workflow.
+# change touched files relevant to that workflow.
+#
+# Merging goes through GitHub's merge queue (see `rulesets` in `.asf.yaml`), so
+# there are two tiers:
+#
+#   pull_request  fast feedback. Linux build + Spark 4.1 + Iceberg 1.11.
+#   merge_group   the authoritative gate. Everything the PR tier runs, plus
+#                 the macOS build, the benchmark compile check, Spark
+#                 3.4/3.5/4.0 and Iceberg 1.8/1.9/1.10, evaluated against
+#                 the merge result rather than the PR head.
+#
+# Which tier a job sits in is POLICY in dev/ci/compute-changes.py, not an
+# expression here. Heavy jobs deliberately have no `push` tier: the queue
+# already tested the exact commit that lands, so re-running the pipeline on
+# push to main would double the cost of every merge. Two exceptions: `docs`
+# deploys to asf-site and must run after the commit is on main, and the Linux
+# build runs on push so that main's actions/cache entries stay fresh (caches
+# saved on the queue's throwaway branch are deleted with it).
 
 name: CI
 
@@ -33,6 +50,7 @@ concurrency:
 on:
   pull_request:
     types: [opened, synchronize, reopened, labeled]
+  merge_group:
   push:
     branches:
       - main
@@ -99,9 +117,24 @@ jobs:
         run: python3 dev/ci/check-ci-config.py
 
       - name: Install actionlint
+        # Pure network, and preflight gates every other job, so a single reset
+        # connection here would fail the whole run. Download to a file rather
+        # than pipe into bash so a failed download cannot run a partial script.
         run: |
-          curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash | bash
-          echo "$PWD" >> $GITHUB_PATH
+          for attempt in 1 2 3; do
+            if curl -sSfL --retry 3 --retry-all-errors -o download-actionlint.bash \
+                 https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash \
+               && bash download-actionlint.bash; then
+              break
+            fi
+            if [ "$attempt" = 3 ]; then
+              echo "::error::actionlint download failed after 3 attempts."
+              exit 1
+            fi
+            echo "::warning::actionlint download failed (attempt $attempt of 3); retrying in $((attempt * 10))s."
+            sleep $((attempt * 10))
+          done
+          echo "$PWD" >> "$GITHUB_PATH"
 
       - name: Lint GitHub Actions workflows
         run: actionlint -color --shellcheck=off
@@ -148,6 +181,8 @@ jobs:
           PR_LABELS:    ${{ toJSON(github.event.pull_request.labels.*.name) }}
           PR_BASE_SHA:  ${{ github.event.pull_request.base.sha }}
           PR_HEAD_SHA:  ${{ github.event.pull_request.head.sha }}
+          MQ_BASE_SHA:  ${{ github.event.merge_group.base_sha }}
+          MQ_HEAD_SHA:  ${{ github.event.merge_group.head_sha }}
           PUSH_BEFORE:  ${{ github.event.before }}
           PUSH_AFTER:   ${{ github.sha }}
         run: |
@@ -160,6 +195,10 @@ jobs:
             :
           elif [[ "$EVENT_NAME" == "pull_request" ]]; then
             git diff --name-only "$PR_BASE_SHA"..."$PR_HEAD_SHA" > changed_files.txt
+          elif [[ "$EVENT_NAME" == "merge_group" ]]; then
+            # The queue branch is built on top of base_sha, so this covers every
+            # entry batched into this merge group, not just the newest one.
+            git diff --name-only "$MQ_BASE_SHA"..."$MQ_HEAD_SHA" > changed_files.txt
           else
             # push to main; first push to a branch has all-zero before sha
             if [[ "$PUSH_BEFORE" =~ ^0+$ ]]; then
@@ -193,12 +232,14 @@ jobs:
   pr_build_macos:
     name: PR Build (macOS)
     needs: changes
+    # Queue-only by default; PRs need the `run-macos-tests` label.
     if: needs.changes.outputs.build_macos == 'true'
     uses: ./.github/workflows/pr_build_macos.yml
 
   pr_benchmark_check:
     name: PR Benchmark Check
     needs: changes
+    # Queue-only by default; PRs need the `run-benchmark-check` label.
     if: needs.changes.outputs.benchmark == 'true'
     uses: ./.github/workflows/pr_benchmark_check.yml
 
@@ -212,7 +253,7 @@ jobs:
   spark_3_4:
     name: Spark SQL Tests (Spark 3.4)
     needs: changes
-    # Main-only by default; PRs need the `run-spark-3.4-tests` label.
+    # Queue-only by default; PRs need the `run-spark-3.4-tests` label.
     if: needs.changes.outputs.spark_3_4 == 'true'
     uses: ./.github/workflows/spark_sql_test_reusable.yml
     with:
@@ -223,6 +264,7 @@ jobs:
   spark_3_5:
     name: Spark SQL Tests (Spark 3.5)
     needs: changes
+    # Queue-only by default; PRs need the `run-spark-3.5-tests` label.
     if: needs.changes.outputs.spark_3_5 == 'true'
     uses: ./.github/workflows/spark_sql_test_reusable.yml
     with:
@@ -233,7 +275,7 @@ jobs:
   spark_4_0:
     name: Spark SQL Tests (Spark 4.0)
     needs: changes
-    # Main-only by default; PRs need the `run-spark-4.0-tests` label. Swapped
+    # Queue-only by default; PRs need the `run-spark-4.0-tests` label. Swapped
     # with spark_4_1 on the `oom` branch to validate the memory caps against
     # Spark 4.1 by default.
     if: needs.changes.outputs.spark_4_0 == 'true'
@@ -256,7 +298,7 @@ jobs:
   iceberg_1_8:
     name: Iceberg Spark SQL Tests (Iceberg 1.8)
     needs: changes
-    # Main-only by default; PRs need the `run-iceberg-tests` label.
+    # Queue-only by default; PRs need the `run-iceberg-tests` label.
     if: needs.changes.outputs.iceberg_1_8 == 'true'
     uses: ./.github/workflows/iceberg_spark_test_reusable.yml
     with:
@@ -269,7 +311,7 @@ jobs:
   iceberg_1_9:
     name: Iceberg Spark SQL Tests (Iceberg 1.9)
     needs: changes
-    # Main-only by default; PRs need the `run-iceberg-tests` label.
+    # Queue-only by default; PRs need the `run-iceberg-tests` label.
     if: needs.changes.outputs.iceberg_1_9 == 'true'
     uses: ./.github/workflows/iceberg_spark_test_reusable.yml
     with:
@@ -282,7 +324,7 @@ jobs:
   iceberg_1_10:
     name: Iceberg Spark SQL Tests (Iceberg 1.10)
     needs: changes
-    # Main-only by default; PRs need the `run-iceberg-tests` label. Iceberg 1.11
+    # Queue-only by default; PRs need the `run-iceberg-tests` label. Iceberg 1.11
     # (Spark 4.1) is the PR-gated Iceberg job; 1.10 covers the Spark 3.5 path.
     if: needs.changes.outputs.iceberg_1_10 == 'true'
     uses: ./.github/workflows/iceberg_spark_test_reusable.yml
@@ -305,3 +347,68 @@ jobs:
       spark-short: '4.1'
       spark-full: '4.1.3'
       java: 17
+
+  # ---------------------------------------------------------------------------
+  # required_checks: the single context listed in `required_status_checks` for
+  # `main` in `.asf.yaml`, and therefore the only thing the merge queue waits
+  # on.
+  #
+  # None of the jobs above can be required directly, because the name a caller
+  # of a reusable workflow publishes depends on whether it ran:
+  #
+  #   skipped by `if:`  one check run named exactly `PR Build (Linux)`
+  #   actually ran      only `PR Build (Linux) / Spark 4.1, JDK 17 [exec]`,
+  #                     ... and no bare `PR Build (Linux)` at all
+  #
+  # So requiring the bare name would block every code change, and requiring a
+  # nested name would block every docs-only change. Both hang rather than fail,
+  # and a required context that never reports also locks `.asf.yaml` itself,
+  # which then needs an INFRA ticket to unwedge. Aggregating into one flat job,
+  # whose name is published on every event, avoids the whole class of problem.
+  #
+  # `if: always()` is what makes this work: without it the job inherits the
+  # default `success()` and is itself skipped the moment any dependency fails.
+  #
+  # The name is an expression because `ci.yml` also fires on `labeled`, and on
+  # that event POLICY deliberately skips the PR tier (it already ran at this
+  # commit). A label run's verdict therefore says nothing about the commit's
+  # applicable suites, yet GitHub keeps only the most recent check run per name
+  # per commit, so publishing it as `Required Checks` would let a `dependencies`
+  # label turn a still-running or red commit run green (issue #5007). Label
+  # runs publish under a name nothing requires instead. Skipping the job here
+  # would not help: a skipped check run still carries the name and still counts
+  # as passing. dev/ci/check-ci-config.py enforces both halves of this.
+  # ---------------------------------------------------------------------------
+  required_checks:
+    name: ${{ github.event.action == 'labeled' && 'Required Checks (label run)' || 'Required Checks' }}
+    if: always()
+    # Reads only the `needs` context, so it needs no token access at all.
+    permissions: {}
+    needs:
+      - preflight
+      - changes
+      - pr_build_linux
+      - pr_build_macos
+      - pr_benchmark_check
+      - spark_3_4
+      - spark_3_5
+      - spark_4_0
+      - spark_4_1
+      - iceberg_1_8
+      - iceberg_1_9
+      - iceberg_1_10
+      - iceberg_1_11
+    runs-on: ubuntu-slim
+    steps:
+      - name: Summarize upstream results
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: echo "$NEEDS"
+
+      # `skipped` is a pass: it means the change did not touch anything that
+      # job covers. Only `failure` and `cancelled` block the merge.
+      - name: Fail if any upstream job failed or was cancelled
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: |
+          echo "::error::One or more upstream jobs did not succeed. See the results above."
+          exit 1
