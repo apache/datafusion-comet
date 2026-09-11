@@ -330,18 +330,25 @@ object Utils extends CometTypeShim with Logging {
               val source = longs.getDataBuffer.memoryAddress()
               val target = deltas.getDataBuffer.memoryAddress()
               var previous = 0L
+              var smallDeltas = 0
               var i = 0
               while (i < count) {
                 val value = Platform.getLong(null, source + i * 8L)
-                Platform.putLong(null, target + i * 8L, value - previous)
+                val delta = value - previous
+                Platform.putLong(null, target + i * 8L, delta)
+                if (delta == delta.toInt.toLong) smallDeltas += 1
                 previous = value
                 i += 1
               }
               val plain = writeColumn(longs)
-              val encoded = writeColumn(deltas)
-              // Irregular values can get larger and slower after delta encoding. Require a
-              // substantial size reduction to pay for reconstructing the values on each read.
-              if (encoded.size < plain.size * 3 / 4) (encoded, true) else (plain, false)
+              // ponytail: this cheap filter skips full-width random longs; the size comparison
+              // below still rejects poorly compressing deltas from narrower distributions.
+              if (smallDeltas.toLong * 2 < count) (plain, false)
+              else {
+                val encoded = writeColumn(deltas)
+                // Require a substantial size reduction to pay for reconstructing each read.
+                if (encoded.size < plain.size * 3 / 4) (encoded, true) else (plain, false)
+              }
             } finally deltas.close()
           case _ => (writeColumn(fieldVector), false)
         }
