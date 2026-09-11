@@ -333,6 +333,8 @@ jobs:
   required_checks:
     name: Required Checks
     if: always()
+    # Reads only the `needs` context, so it needs no token access at all.
+    permissions: {}
     needs:
       - preflight
       - changes
