@@ -119,6 +119,7 @@ jobs:
           - name: "scans"
             value: |
               org.apache.comet.parquet.CometParquetWriterSuite
+              org.apache.comet.parquet.CometEmptyRelationParquetWriterSuite
               org.apache.comet.parquet.ParquetReadV1Suite
               org.apache.comet.parquet.ParquetReadV2Suite
               org.apache.comet.parquet.ParquetReadFromFakeHadoopFsSuite
@@ -168,6 +169,7 @@ jobs:
               org.apache.comet.exec.CometAggregateSuite
               org.apache.comet.exec.CometExec3_4PlusSuite
               org.apache.comet.exec.CometExecSuite
+              org.apache.comet.exec.CometEmptyRelationExecSuite
               org.apache.comet.exec.CometInMemoryCacheSuite
               org.apache.comet.exec.CometInMemoryCacheKryoSuite
               org.apache.comet.exec.CometGenerateExecSuite
@@ -192,6 +194,7 @@ jobs:
               org.apache.comet.rules.CometScanContribSuite
               org.apache.comet.rules.CometScanSchemeFallbackSuite
               org.apache.comet.rules.CometExecRuleSuite
+              org.apache.comet.rules.CometEmptyRelationExecRuleSuite
               org.apache.comet.rules.RevertNativeForTransitionHeavyStagesSuite
               org.apache.spark.sql.CometTPCDSQuerySuite
               org.apache.spark.sql.CometTPCDSQueryTestSuite

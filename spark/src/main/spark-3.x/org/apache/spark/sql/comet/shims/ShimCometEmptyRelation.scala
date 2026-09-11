@@ -19,13 +19,10 @@
 
 package org.apache.spark.sql.comet.shims
 
-import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
 import org.apache.spark.sql.execution.SparkPlan
 
 /** EmptyRelationExec is available starting in Spark 4.0. */
 object ShimCometEmptyRelation {
 
   def emptyRelationClass: Option[Class[_ <: SparkPlan]] = None
-
-  def create(logical: LogicalPlan): Option[SparkPlan] = None
 }
