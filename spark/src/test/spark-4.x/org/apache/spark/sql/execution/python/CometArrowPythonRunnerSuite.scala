@@ -27,21 +27,22 @@ import java.nio.file.{Files, Paths}
 
 import scala.collection.mutable.ArrayBuffer
 import scala.jdk.CollectionConverters._
+import scala.util.Random
 
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
 
 import org.apache.arrow.c.{ArrowArray, ArrowSchema, Data}
 import org.apache.arrow.memory.{BufferAllocator, RootAllocator}
-import org.apache.arrow.vector.{FieldVector, IntVector, NullVector, VarBinaryVector, VarCharVector, VectorSchemaRoot}
+import org.apache.arrow.vector.{BigIntVector, FieldVector, IntVector, NullVector, VarBinaryVector, VarCharVector, VectorSchemaRoot}
 import org.apache.arrow.vector.complex.{ListVector, MapVector, StructVector}
 import org.apache.arrow.vector.dictionary.{Dictionary, DictionaryProvider}
 import org.apache.arrow.vector.ipc.{ArrowStreamReader, ArrowStreamWriter, WriteChannel}
 import org.apache.arrow.vector.types.TimeUnit
 import org.apache.arrow.vector.types.pojo.{ArrowType, DictionaryEncoding, Field, FieldType, Schema}
-import org.apache.spark.sql.execution.python.CometArrowPythonRunnerBase.{foreachInputBatch, hasCompatibleSchema, serializeBatch, withMaterializedInputVectors}
+import org.apache.spark.sql.execution.python.CometArrowPythonRunnerBase.{foreachInputBatch, hasCompatibleSchema, inputBatchRanges, serializeBatch, withMaterializedInputVectors}
 
-import org.apache.comet.vector.{CometDecodedVector, CometDictionary, CometDictionaryVector, CometPlainVector}
+import org.apache.comet.vector.{CometDecodedVector, CometDictionary, CometDictionaryVector, CometPlainVector, CometStructVector}
 
 class CometArrowPythonRunnerSuite extends AnyFunSuite with Matchers {
 
@@ -127,6 +128,140 @@ class CometArrowPythonRunnerSuite extends AnyFunSuite with Matchers {
         new CometDictionary(new CometPlainVector(values)),
         provider))
     LargeDictionaryInput(columns, values, indices, expected, allocator)
+  }
+
+  /** Borrow an allocated index vector and count scalar reads without changing its values. */
+  private class CountingIndices(vector: IntVector) extends CometPlainVector(vector) {
+    var reads: Int = 0
+
+    /** Return the index at the zero-based row and increment the observable read count. */
+    override def getInt(row: Int): Int = {
+      reads += 1
+      super.getInt(row)
+    }
+  }
+
+  /** Own one dictionary column and its allocator; callers must close the fixture after use. */
+  private case class DictionaryInput(
+      column: CometDictionaryVector,
+      values: VarCharVector,
+      indices: CountingIndices,
+      allocator: BufferAllocator)
+      extends AutoCloseable {
+
+    /** Release the index and dictionary buffers before closing their owning allocator. */
+    override def close(): Unit = {
+      column.close()
+      allocator.close()
+    }
+  }
+
+  /**
+   * Allocate an owned UTF-8 dictionary with nullable row indices. Optional reported byte lengths
+   * install synthetic offsets beyond the real payload, allowing range tests to read large lengths
+   * without allocating data. These fixtures must never be decoded or serialized; closing still
+   * releases the actual owned buffers normally. Reported lengths must match the dictionary size,
+   * be nonnegative, and sum to at most Int.MaxValue. The caller owns the returned fixture.
+   */
+  private def dictionaryInput(
+      dictionaryValues: Seq[String],
+      rowIndices: Seq[Option[Int]],
+      reportedLengths: Option[Seq[Int]] = None): DictionaryInput = {
+    val allocator = new RootAllocator(Long.MaxValue)
+    val values = new VarCharVector("text", allocator)
+    val intType = new ArrowType.Int(32, true)
+    val encoding = new DictionaryEncoding(31L, false, intType)
+    val indices = new IntVector("text", new FieldType(true, intType, encoding), allocator)
+    val dictionary = new Dictionary(values, encoding)
+    val provider = new DictionaryProvider {
+
+      /** Return the fixture's borrowed dictionary, rejecting any unexpected dictionary ID. */
+      override def lookup(id: Long): Dictionary = {
+        require(id == encoding.getId)
+        dictionary
+      }
+
+      /** Return the single dictionary ID without transferring ownership of its buffers. */
+      override def getDictionaryIds: java.util.Set[java.lang.Long] =
+        Set(java.lang.Long.valueOf(encoding.getId)).asJava
+    }
+    try {
+      values.allocateNew()
+      dictionaryValues.zipWithIndex.foreach { case (value, index) =>
+        values.setSafe(index, value.getBytes(StandardCharsets.UTF_8))
+      }
+      values.setValueCount(dictionaryValues.size)
+      reportedLengths.foreach { lengths =>
+        require(lengths.size == dictionaryValues.size)
+        require(lengths.forall(_ >= 0))
+        require(lengths.map(_.toLong).sum <= Int.MaxValue.toLong)
+        // Planning reads offsets and validity only. Leave real payload capacity and ownership
+        // untouched, and never pass this deliberately synthetic layout to decoding or IPC.
+        var offset = 0
+        values.getOffsetBuffer.setInt(0L, offset)
+        lengths.zipWithIndex.foreach { case (length, index) =>
+          offset += length
+          values.getOffsetBuffer.setInt((index + 1L) * 4L, offset)
+        }
+      }
+      indices.allocateNew(math.max(1, rowIndices.size))
+      rowIndices.zipWithIndex.foreach { case (value, row) =>
+        value match {
+          case Some(index) => indices.setSafe(row, index)
+          case None => indices.setNull(row)
+        }
+      }
+      indices.setValueCount(rowIndices.size)
+      val countedIndices = new CountingIndices(indices)
+      DictionaryInput(
+        new CometDictionaryVector(
+          countedIndices,
+          new CometDictionary(new CometPlainVector(values)),
+          provider),
+        values,
+        countedIndices,
+        allocator)
+    } catch {
+      case error: Throwable =>
+        indices.close()
+        values.close()
+        allocator.close()
+        throw error
+    }
+  }
+
+  /**
+   * Model Spark's soft byte limit from logical UTF-8 payload lengths (None means a null row).
+   * Each returned range is contiguous and nonempty, except the single range for empty input. This
+   * independent oracle includes offsets and validity bytes and checks the soft limit before
+   * adding the next row; all randomized payloads are far below Arrow's hard ceiling.
+   */
+  private def expectedDictionaryRanges(
+      payloadLengths: Seq[Option[Int]],
+      maxRecords: Int,
+      maxBytes: Long): Seq[(Int, Int)] = {
+    if (payloadLengths.isEmpty) {
+      return Seq(0 -> 0)
+    }
+    val ranges = ArrayBuffer.empty[(Int, Int)]
+    val recordLimit = if (maxRecords > 0) maxRecords else Int.MaxValue
+    val byteLimit = if (maxBytes > 0) maxBytes else Long.MaxValue
+    var start = 0
+    while (start < payloadLengths.size) {
+      var length = 0
+      var bytes = 4L
+      while (start + length < payloadLengths.size && length < recordLimit &&
+        (length == 0 || bytes < byteLimit)) {
+        bytes += payloadLengths(start + length).getOrElse(0).toLong + 4L
+        if (length % 8 == 0) {
+          bytes += 1L
+        }
+        length += 1
+      }
+      ranges += start -> length
+      start += length
+    }
+    ranges.toSeq
   }
 
   test("input schema compatibility preserves physical types and nested layouts") {
@@ -625,6 +760,277 @@ class CometArrowPythonRunnerSuite extends AnyFunSuite with Matchers {
       input.values.getObject(1).toString shouldBe input.expected(1)
     } finally {
       failWrites = false
+      writerAllocator.close()
+      input.close()
+    }
+  }
+
+  test("dictionary slices keep plain nullable and nested columns aligned through IPC") {
+    val input = largeDictionaryInput()
+    val number = new BigIntVector("number", input.allocator)
+    val plainText = new VarCharVector("plain_text", input.allocator)
+    val details = StructVector.empty("details", input.allocator)
+    val writerAllocator = new RootAllocator(Long.MaxValue)
+    val output = new ByteArrayOutputStream()
+    try {
+      number.allocateNew(10)
+      plainText.allocateNew()
+      val structWriter = details.getWriter
+      (0 until 10).foreach { row =>
+        if (row % 3 == 0) number.setNull(row) else number.setSafe(row, 100L + row)
+        plainText.setSafe(row, s"plain-$row".getBytes(StandardCharsets.UTF_8))
+        structWriter.setPosition(row)
+        structWriter.start()
+        if (row == 7) structWriter.bigInt("child").writeNull()
+        else structWriter.bigInt("child").writeBigInt(1000L + row)
+        structWriter.end()
+      }
+      number.setValueCount(10)
+      plainText.setValueCount(10)
+      structWriter.setValueCount(10)
+      val plainColumns = Seq[CometDecodedVector](
+        new CometPlainVector(number),
+        new CometPlainVector(plainText),
+        new CometStructVector(details, null))
+      val fields =
+        Seq(input.values.getField, number.getField, plainText.getField, details.getField)
+      val sourceBuffers = Seq[FieldVector](
+        input.values,
+        input.indices,
+        number,
+        plainText,
+        details,
+        details.getChild("child")).flatMap(_.getFieldBuffers.asScala)
+      val sourceRefs = sourceBuffers.map(_.refCnt())
+      val sourceBytes = input.allocator.getAllocatedMemory
+
+      withWriter(fields, writerAllocator, Channels.newChannel(output)) { channel =>
+        foreachInputBatch(
+          input.columns ++ plainColumns,
+          10,
+          maxRecordsPerBatch = 3,
+          maxBytesPerBatch = Int.MaxValue.toLong,
+          allocator = writerAllocator) { (vectors, numRows) =>
+          serializeBatch(new WriteChannel(channel), vectors, numRows, writerAllocator)
+        }
+      }
+
+      val batchSizes = ArrayBuffer.empty[Int]
+      var offset = 0
+      withReader(output.toByteArray) { reader =>
+        while (reader.loadNextBatch()) {
+          val root = reader.getVectorSchemaRoot
+          val result = root.getVector(0).asInstanceOf[StructVector]
+          val resultNumber = result.getChild("number").asInstanceOf[BigIntVector]
+          val resultDetails = result.getChild("details").asInstanceOf[StructVector]
+          val resultChild = resultDetails.getChild("child").asInstanceOf[BigIntVector]
+          batchSizes += root.getRowCount
+          (0 until root.getRowCount).foreach { row =>
+            val sourceRow = offset + row
+            result.getChild("text").getObject(row).toString shouldBe input.expected(sourceRow)
+            resultNumber.isNull(row) shouldBe (sourceRow % 3 == 0)
+            if (sourceRow % 3 != 0) resultNumber.get(row) shouldBe 100L + sourceRow
+            result.getChild("plain_text").getObject(row).toString shouldBe s"plain-$sourceRow"
+            resultDetails.isNull(row) shouldBe false
+            resultChild.isNull(row) shouldBe (sourceRow == 7)
+            if (sourceRow != 7) resultChild.get(row) shouldBe 1000L + sourceRow
+          }
+          offset += root.getRowCount
+        }
+      }
+      batchSizes.toSeq shouldBe Seq(3, 3, 3, 1)
+      offset shouldBe 10
+      writerAllocator.getAllocatedMemory shouldBe 0L
+      input.allocator.getAllocatedMemory shouldBe sourceBytes
+      sourceBuffers.map(_.refCnt()) shouldBe sourceRefs
+      number.get(8) shouldBe 108L
+      details.getChild("child").asInstanceOf[BigIntVector].get(9) shouldBe 1009L
+    } finally {
+      details.close()
+      plainText.close()
+      number.close()
+      writerAllocator.close()
+      input.close()
+    }
+  }
+
+  for (numRows <- Seq(0, 10)) {
+    test(s"dictionary IPC preserves $numRows all-null rows without reading dictionary indices") {
+      val input = dictionaryInput(Seq("unused"), Seq.fill(numRows)(None))
+      val writerAllocator = new RootAllocator(Long.MaxValue)
+      val output = new ByteArrayOutputStream()
+      try {
+        val sizes = ArrayBuffer.empty[Int]
+        withWriter(Seq(input.values.getField), writerAllocator, Channels.newChannel(output)) {
+          channel =>
+            foreachInputBatch(
+              Seq(input.column),
+              numRows,
+              maxRecordsPerBatch = 3,
+              maxBytesPerBatch = 0,
+              allocator = writerAllocator) { (vectors, length) =>
+              serializeBatch(new WriteChannel(channel), vectors, length, writerAllocator)
+            }
+        }
+        withReader(output.toByteArray) { reader =>
+          while (reader.loadNextBatch()) {
+            val root = reader.getVectorSchemaRoot
+            val text = root.getVector(0).asInstanceOf[StructVector].getChild("text")
+            sizes += root.getRowCount
+            text.getField.getDictionary shouldBe null
+            text.getField.getType shouldBe ArrowType.Utf8.INSTANCE
+            text.getNullCount shouldBe root.getRowCount
+          }
+        }
+        sizes.toSeq shouldBe (if (numRows == 0) Seq(0) else Seq(3, 3, 3, 1))
+        input.indices.reads shouldBe 0
+        writerAllocator.getAllocatedMemory shouldBe 0L
+      } finally {
+        writerAllocator.close()
+        input.close()
+      }
+    }
+  }
+
+  test("non-positive dictionary limits disable only their corresponding soft limit") {
+    val input = dictionaryInput(Seq("abcd"), Seq.fill(10)(Some(0)))
+    try {
+      for (records <- Seq(0, -1); bytes <- Seq(0L, -1L)) {
+        inputBatchRanges(Seq(input.column), 10, records, bytes) shouldBe Seq(0 -> 10)
+      }
+      for (records <- Seq(0, -1)) {
+        inputBatchRanges(Seq(input.column), 10, records, 20L) shouldBe
+          Seq(0 -> 2, 2 -> 2, 4 -> 2, 6 -> 2, 8 -> 2)
+      }
+      for (bytes <- Seq(0L, -1L)) {
+        inputBatchRanges(Seq(input.column), 10, 3, bytes) shouldBe
+          Seq(0 -> 3, 3 -> 3, 6 -> 3, 9 -> 1)
+      }
+    } finally {
+      input.close()
+    }
+  }
+
+  test("randomized dictionary ranges match the soft-limit oracle and cover every input row") {
+    val random = new Random(5560L)
+    (0 until 100).foreach { trial =>
+      val dictionaryValues = Seq.fill(1 + random.nextInt(8)) {
+        "λ" * random.nextInt(40)
+      }
+      val rowIndices = Seq.fill(random.nextInt(80)) {
+        if (random.nextInt(4) == 0) None else Some(random.nextInt(dictionaryValues.size))
+      }
+      val maxRecords = Seq(0, -1, 1, 3, 8, 17, 100)(random.nextInt(7))
+      val maxBytes = Seq(0L, -1L, 1L, 4L, 9L, 64L, 257L, 10000L)(random.nextInt(8))
+      val lengths = rowIndices.map(
+        _.map(index => dictionaryValues(index).getBytes(StandardCharsets.UTF_8).length))
+      val input = dictionaryInput(dictionaryValues, rowIndices)
+      try {
+        val ranges = inputBatchRanges(Seq(input.column), rowIndices.size, maxRecords, maxBytes)
+        withClue(s"trial=$trial, records=$maxRecords, bytes=$maxBytes, lengths=$lengths: ") {
+          ranges shouldBe expectedDictionaryRanges(lengths, maxRecords, maxBytes)
+          ranges.flatMap { case (offset, length) => offset until offset + length } shouldBe
+            rowIndices.indices
+          if (rowIndices.nonEmpty) {
+            ranges.foreach { case (_, length) =>
+              length should be > 0
+              if (maxRecords > 0) length should be <= maxRecords
+            }
+          }
+        }
+      } finally {
+        input.close()
+      }
+    }
+  }
+
+  test("a conservative dictionary bound accepts small batches without reading row indices") {
+    val input = dictionaryInput(Seq("", "λ", "longest"), Seq.fill(100)(Some(2)))
+    try {
+      inputBatchRanges(Seq(input.column), 100, 100, 4096L) shouldBe Seq(0 -> 100)
+      input.indices.reads shouldBe 0
+
+      val ranges = inputBatchRanges(Seq(input.column), 100, 3, 4096L)
+      ranges.map(_._2) shouldBe (Seq.fill(33)(3) :+ 1)
+      input.indices.reads shouldBe 100
+    } finally {
+      input.close()
+    }
+  }
+
+  test("plain and zero-column inputs obey record limits without estimating decoded bytes") {
+    val allocator = new RootAllocator(Long.MaxValue)
+    val values = new BigIntVector("number", allocator)
+    try {
+      values.allocateNew(10)
+      (0 until 10).foreach(row => values.setSafe(row, row.toLong))
+      values.setValueCount(10)
+      val column = new CometPlainVector(values)
+      for (columns <- Seq(Seq(column), Seq.empty[CometDecodedVector])) {
+        inputBatchRanges(columns, 10, 3, 1L) shouldBe
+          Seq(0 -> 3, 3 -> 3, 6 -> 3, 9 -> 1)
+        inputBatchRanges(columns, 10, 0, 1L) shouldBe Seq(0 -> 10)
+        inputBatchRanges(columns, 0, 3, 1L) shouldBe Seq(0 -> 0)
+      }
+    } finally {
+      values.close()
+      allocator.close()
+    }
+  }
+
+  test("the hard Arrow ceiling splits gigabyte values with soft limits raised or disabled") {
+    val input = dictionaryInput(
+      Seq("x"),
+      Seq.fill(3)(Some(0)),
+      reportedLengths = Some(Seq(1100 * 1024 * 1024)))
+    try {
+      val sourceBytes = input.allocator.getAllocatedMemory
+      sourceBytes should be < 1024L * 1024L
+      for (byteLimit <- Seq(0L, -1L, Int.MaxValue.toLong, Long.MaxValue)) {
+        inputBatchRanges(Seq(input.column), 3, 0, byteLimit) shouldBe
+          Seq(0 -> 1, 1 -> 1, 2 -> 1)
+      }
+      input.allocator.getAllocatedMemory shouldBe sourceBytes
+    } finally {
+      input.close()
+    }
+  }
+
+  test("nested dictionaries fail with their full column path before materializing input") {
+    val input = dictionaryInput(Seq("value"), Seq(Some(0)))
+    val writerAllocator = new RootAllocator(Long.MaxValue)
+    val outer = StructVector.empty("outer", input.allocator)
+    try {
+      val inner = outer.addOrGet(
+        "inner",
+        input.column.getValueVector.getField.getFieldType,
+        classOf[IntVector])
+      outer.allocateNew()
+      inner.setSafe(0, 0)
+      outer.setIndexDefined(0)
+      outer.setValueCount(1)
+      val nested = new CometStructVector(outer, input.column.getDictionaryProvider)
+      val sourceBuffers = Seq[FieldVector](
+        input.values,
+        input.column.getValueVector.asInstanceOf[FieldVector],
+        outer,
+        inner).flatMap(_.getFieldBuffers.asScala)
+      val sourceRefs = sourceBuffers.map(_.refCnt())
+      val sourceBytes = input.allocator.getAllocatedMemory
+      var entered = false
+      val error = intercept[IllegalArgumentException] {
+        withMaterializedInputVectors(Seq(input.column, nested), writerAllocator) { _ =>
+          entered = true
+        }
+      }
+      error.getMessage should include("outer.inner")
+      entered shouldBe false
+      writerAllocator.getAllocatedMemory shouldBe 0L
+      input.allocator.getAllocatedMemory shouldBe sourceBytes
+      sourceBuffers.map(_.refCnt()) shouldBe sourceRefs
+      input.values.getObject(0).toString shouldBe "value"
+    } finally {
+      outer.close()
       writerAllocator.close()
       input.close()
     }

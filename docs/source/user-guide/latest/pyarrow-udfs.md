@@ -210,12 +210,25 @@ on the unoptimized path.
   requested by the configuration. `EliminateRedundantTransitions` therefore skips the rewrite
   and vanilla Spark handles the operation. Comet can read `large_string` and `large_binary`
   columns returned by a Python worker; that output support does not widen the input vectors.
-- Comet writes input Arrow IPC record batches directly from existing plain vector buffers. The
-  only additional Arrow buffer for plain inputs is the validity bitmap for the non-null struct
-  that wraps the input columns. Before decoding dictionary-encoded shuffle columns, Comet uses
-  Spark's Arrow record threshold and the decoded dictionary size against Spark's byte threshold to
-  split the compact batch. Each temporary logical slice is released after its synchronous write.
-  Plain-only inputs continue to preserve their upstream Comet batch boundaries. Writing the IPC
+- Comet applies `spark.sql.execution.arrow.maxRecordsPerBatch` to every input batch, including
+  batches with only plain columns. Before decoding dictionary-encoded shuffle columns, Comet also
+  compares their estimated decoded size with `spark.sql.execution.arrow.maxBytesPerBatch`.
+  When either threshold requires splitting, every column is sliced at the same row boundaries.
+  Temporary slices and decoded dictionary vectors are released after each synchronous write.
+- The byte estimate covers only the logical buffers of decoded dictionary columns: values,
+  offsets, and validity bits. It excludes plain columns and is a soft limit: the row that crosses
+  the threshold stays in the batch, and a single oversized row remains intact. A separate guard
+  prevents combining rows whose estimated decoded dictionary size exceeds Arrow's signed 32-bit
+  limit (2 GiB minus 1 byte). This guard cannot split an individually oversized row and does not
+  guarantee that Arrow allocations stay below that limit. Arrow rounds buffer capacities up, so
+  an allocation can approach twice its logical size; existing input buffers and other overhead
+  also consume memory. `maxBytesPerBatch` is therefore not a ceiling on actual memory use.
+- Dictionary-encoded values nested inside a struct, list, or map are not supported on the
+  optimized input path. Comet rejects them with an error naming the field path. Comet's current
+  shuffle does not produce these nested dictionaries.
+- Comet writes input Arrow IPC record batches directly from plain vector buffers. For an unsplit
+  plain batch, the only additional Arrow buffer is the validity bitmap for the non-null struct
+  that wraps the input columns. Slicing may allocate offset or validity buffers. Writing the IPC
   bytes to the Python worker's pipe still requires one copy; that copy is inherent to Spark's
   process-based Python transport. Borrowed buffers are not transferred between Arrow allocators or
   given new ownership.

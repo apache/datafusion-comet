@@ -20,6 +20,7 @@
 package org.apache.spark.sql.comet.execution.arrow
 
 import java.nio.ByteOrder
+import java.nio.charset.StandardCharsets
 
 import scala.jdk.CollectionConverters._
 
@@ -27,8 +28,10 @@ import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
 
 import org.apache.arrow.memory.{AllocationListener, RootAllocator}
-import org.apache.arrow.vector.{BaseFixedWidthVector, BaseValueVector, BigIntVector, BitVector, DecimalVector, IntervalMonthDayNanoVector, IntVector, VectorSchemaRoot}
-import org.apache.arrow.vector.types.pojo.{ArrowType, Field, FieldType, Schema}
+import org.apache.arrow.vector.{BaseFixedWidthVector, BaseValueVector, BigIntVector, BitVector, DecimalVector, IntervalMonthDayNanoVector, IntVector, VarCharVector, VectorSchemaRoot}
+import org.apache.arrow.vector.dictionary.{Dictionary => ArrowDictionary}
+import org.apache.arrow.vector.dictionary.DictionaryProvider.MapDictionaryProvider
+import org.apache.arrow.vector.types.pojo.{ArrowType, DictionaryEncoding, Field, FieldType, Schema}
 import org.apache.spark.sql.catalyst.expressions.{GenericInternalRow, SpecializedGetters}
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.vectorized.{Dictionary, OffHeapColumnVector, OnHeapColumnVector}
@@ -36,7 +39,7 @@ import org.apache.spark.sql.types.{BooleanType, ByteType, CalendarIntervalType, 
 import org.apache.spark.sql.vectorized.{ColumnarArray, ColumnarBatch, ColumnVector}
 import org.apache.spark.unsafe.types.CalendarInterval
 
-import org.apache.comet.vector.{CometPlainVector, CometVector}
+import org.apache.comet.vector.{CometDictionary, CometDictionaryVector, CometPlainVector, CometVector}
 
 /**
  * Direct tests for [[CometArrowStream.reconcileStreamSchema]]. The end-to-end regression that
@@ -407,6 +410,102 @@ class CometArrowStreamSuite extends AnyFunSuite with Matchers {
       CometArrowStream.reconcileStreamSchema("test", expected, Iterator.empty)
     returned shouldBe expected
     iter.hasNext shouldBe false
+  }
+
+  test("dictionary stream schema and reader preserve logical values after closing the source") {
+    val rootAllocator = new RootAllocator(Long.MaxValue)
+    val sourceAllocator = rootAllocator.newChildAllocator("source", 0L, Long.MaxValue)
+    val readerAllocator = rootAllocator.newChildAllocator("reader", 0L, Long.MaxValue)
+    val indexType = new ArrowType.Int(32, true)
+    val encoding = new DictionaryEncoding(31L, false, indexType)
+    val values = new VarCharVector("dictionary_values", sourceAllocator)
+    val indices =
+      new IntVector("compact_text", new FieldType(true, indexType, encoding), sourceAllocator)
+    val plain = new BigIntVector("plain_id", sourceAllocator)
+    var sourceClosed = false
+    var sourceBatch: ColumnarBatch = null
+    var reader: ColumnarBatchArrowReader = null
+    try {
+      values.allocateNew()
+      values.setSafe(0, "alpha".getBytes(StandardCharsets.UTF_8))
+      values.setSafe(1, "λ".getBytes(StandardCharsets.UTF_8))
+      values.setValueCount(2)
+      indices.allocateNew(4)
+      indices.set(0, 0)
+      indices.setNull(1)
+      indices.set(2, 1)
+      indices.set(3, 0)
+      indices.setValueCount(4)
+      plain.allocateNew(4)
+      (0 until 4).foreach(row => plain.set(row, 10L + row))
+      plain.setNull(2)
+      plain.setValueCount(4)
+
+      val dictionary = new CometDictionaryVector(
+        new CometPlainVector(indices),
+        new CometDictionary(new CometPlainVector(values)),
+        new MapDictionaryProvider(new ArrowDictionary(values, encoding)))
+      sourceBatch =
+        new ColumnarBatch(Array[ColumnVector](dictionary, new CometPlainVector(plain)), 4) {
+
+          /**
+           * Record source ownership release, then close its indices, dictionary and plain vector.
+           */
+          override def close(): Unit = {
+            sourceClosed = true
+            super.close()
+          }
+        }
+      val expected =
+        expectedSchema("text" -> ArrowType.Utf8.INSTANCE, "id" -> new ArrowType.Int(64, true))
+      val (schema, input) = CometArrowStream.reconcileStreamSchema(
+        "dictionary-test",
+        expected,
+        Iterator.single(sourceBatch))
+      schema shouldBe expected
+      schema.getFields.get(0).getDictionary shouldBe null
+      sourceClosed shouldBe false
+
+      reader = new ColumnarBatchArrowReader(readerAllocator, schema, input)
+      reader.loadNextBatch() shouldBe true
+      sourceClosed shouldBe true
+      indices.getValueCount shouldBe 0
+      values.getValueCount shouldBe 0
+      plain.getValueCount shouldBe 0
+
+      // The stable reader root owns references to decoded and plain buffers after source close.
+      val root = reader.getVectorSchemaRoot
+      root.getSchema shouldBe expected
+      root.getRowCount shouldBe 4
+      val text = root.getVector("text").asInstanceOf[VarCharVector]
+      text.getObject(0).toString shouldBe "alpha"
+      text.isNull(1) shouldBe true
+      text.getObject(2).toString shouldBe "λ"
+      text.getObject(3).toString shouldBe "alpha"
+      val ids = root.getVector("id").asInstanceOf[BigIntVector]
+      ids.get(0) shouldBe 10L
+      ids.get(1) shouldBe 11L
+      ids.isNull(2) shouldBe true
+      ids.get(3) shouldBe 13L
+      reader.loadNextBatch() shouldBe false
+      reader.close()
+      reader = null
+      readerAllocator.getAllocatedMemory shouldBe 0L
+      sourceAllocator.getAllocatedMemory shouldBe 0L
+      rootAllocator.getAllocatedMemory shouldBe 0L
+    } finally {
+      if (reader != null) reader.close()
+      if (sourceBatch != null) {
+        if (!sourceClosed) sourceBatch.close()
+      } else {
+        plain.close()
+        indices.close()
+        values.close()
+      }
+      readerAllocator.close()
+      sourceAllocator.close()
+      rootAllocator.close()
+    }
   }
 
   test("reconcileStreamSchema returns expected schema when types match") {

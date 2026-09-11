@@ -597,11 +597,10 @@ object CometConf extends ShimCometConf {
     .category(CATEGORY_SHUFFLE)
     .doc(
       "The ratio of total values to distinct values in a string or binary column to decide " +
-        "whether to " +
-        "prefer dictionary encoding when shuffling the column. If the ratio is higher than " +
-        "this config, dictionary encoding will be used when shuffling the column. This config " +
-        "is effective if it is higher than 1.0. Note that this " +
-        "config is only used when `spark.comet.shuffle.mode` is `jvm`.")
+        "whether to prefer dictionary encoding when shuffling the column. If the ratio is " +
+        "higher than this config, dictionary encoding will be used when shuffling the column. " +
+        "This config is effective if it is higher than 1.0. Note that this config is only " +
+        "used when `spark.comet.shuffle.mode` is `jvm`.")
     .doubleConf
     .createWithDefault(10.0)
 
