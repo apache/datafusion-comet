@@ -24,6 +24,7 @@ import java.nio.charset.{CharacterCodingException, CodingErrorAction, StandardCh
 
 import scala.annotation.nowarn
 
+import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.catalyst.expressions.aggregate.Mode
 import org.apache.spark.sql.types.{DataType, StructType}
 import org.apache.spark.unsafe.types.UTF8String
@@ -54,6 +55,9 @@ trait CometTypeShim {
 
   @nowarn // Spark 4 feature; VariantType doesn't exist in Spark 3.x.
   def variantType: Option[DataType] = None
+
+  @nowarn // Spark 4 feature; VariantType does not exist in Spark 3.x.
+  def variantDefaultExpression(value: Any): Option[Expression] = None
 
   @nowarn // Spark 4.1 feature; TimeType doesn't exist in Spark 3.x.
   def isTimeType(dt: DataType): Boolean = false
