@@ -30,6 +30,22 @@ pub(crate) enum MemoryPoolType {
     Unbounded,
 }
 
+#[cfg(feature = "oom-guard")]
+impl MemoryPoolType {
+    /// True when this pool's `reserved()` reflects a single task's usage, so a per-task
+    /// fair-share comparison is meaningful (false for process-wide pools). The non-shared
+    /// per-task pools (`Greedy`/`FairSpill`) return true but keep no task registry, so the
+    /// fair-share divisor falls back to `executor_cores` rather than the active-task count.
+    pub(crate) fn has_per_task_budget(&self) -> bool {
+        !matches!(
+            self,
+            MemoryPoolType::GreedyGlobal
+                | MemoryPoolType::FairSpillGlobal
+                | MemoryPoolType::Unbounded
+        )
+    }
+}
+
 pub(crate) struct MemoryPoolConfig {
     pub(crate) pool_type: MemoryPoolType,
     pub(crate) pool_size: usize,
@@ -46,19 +62,26 @@ impl MemoryPoolConfig {
 
 pub(crate) fn parse_memory_pool_config(
     off_heap_mode: bool,
-    memory_pool_type: String,
+    memory_pool_type: &str,
     memory_limit: i64,
     memory_limit_per_task: i64,
 ) -> CometResult<MemoryPoolConfig> {
     let pool_size = memory_limit as usize;
     let memory_pool_config = if off_heap_mode {
-        match memory_pool_type.as_str() {
+        match memory_pool_type {
             "fair_unified" => MemoryPoolConfig::new(MemoryPoolType::FairUnified, pool_size),
             "greedy_unified" => {
                 // the `unified` memory pool interacts with Spark's memory pool to allocate
                 // memory therefore does not need a size to be explicitly set. The pool size
                 // shared with Spark is set by `spark.memory.offHeap.size`.
                 MemoryPoolConfig::new(MemoryPoolType::GreedyUnified, 0)
+            }
+            "unbounded" => {
+                // No accounting of its own. In off-heap mode this is what
+                // `spark.comet.exec.memoryGuard.enabled` forces, so the real-usage gate
+                // wrapped around it is the only thing rejecting growth, instead of
+                // delegating per-task accounting to Spark's TaskMemoryManager.
+                MemoryPoolConfig::new(MemoryPoolType::Unbounded, 0)
             }
             _ => {
                 return Err(CometError::Config(format!(
@@ -69,7 +92,7 @@ pub(crate) fn parse_memory_pool_config(
     } else {
         // Use the memory pool from DF
         let pool_size_per_task = memory_limit_per_task as usize;
-        match memory_pool_type.as_str() {
+        match memory_pool_type {
             "fair_spill_task_shared" => {
                 MemoryPoolConfig::new(MemoryPoolType::FairSpillTaskShared, pool_size_per_task)
             }
