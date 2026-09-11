@@ -109,11 +109,11 @@ The tables below list every Spark built-in expression with its current status.
 | `last_value` | ✅ | Native |  |
 | `listagg` | 🔜 | — | String aggregation |
 | `max` | ✅ | Native |  |
-| `max_by` | 🔜 | — | [#3841](https://github.com/apache/datafusion-comet/issues/3841) |
+| `max_by` | ✅ | Native | Value and ordering must be fixed-length types |
 | `mean` | ✅ | Native |  |
 | `median` | ✅ | — | Rewrites to `percentile(col, 0.5)` and runs natively for supported percentile inputs |
 | `min` | ✅ | Native |  |
-| `min_by` | 🔜 | — | [#3841](https://github.com/apache/datafusion-comet/issues/3841) |
+| `min_by` | ✅ | Native | Value and ordering must be fixed-length types |
 | `mode` | ✅ | Native | `mode(col)` only; Spark breaks ties non-deterministically, so Comet returns the smallest tied value and falls back by default, opt-in via allowIncompatible ([#3970](https://github.com/apache/datafusion-comet/issues/3970)) |
 | `percentile` | ✅ | Native | Single literal percentage on numeric input runs natively; array of percentages and a frequency argument fall back to Spark |
 | `percentile_cont` | ✅ | — | Spark 4.0+ `WITHIN GROUP (ORDER BY ...)`; ascending only runs natively, `DESC` falls back to Spark |
