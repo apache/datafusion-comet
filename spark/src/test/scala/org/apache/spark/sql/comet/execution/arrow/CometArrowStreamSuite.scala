@@ -39,7 +39,7 @@ import org.apache.spark.sql.types.{BooleanType, ByteType, CalendarIntervalType, 
 import org.apache.spark.sql.vectorized.{ColumnarArray, ColumnarBatch, ColumnVector}
 import org.apache.spark.unsafe.types.CalendarInterval
 
-import org.apache.comet.vector.{CometDictionary, CometDictionaryVector, CometPlainVector, CometVector}
+import org.apache.comet.vector.{CometPlainVector, CometVector}
 
 /**
  * Direct tests for [[CometArrowStream.reconcileStreamSchema]]. The end-to-end regression that
@@ -413,6 +413,8 @@ class CometArrowStreamSuite extends AnyFunSuite with Matchers {
   }
 
   test("dictionary stream schema and reader preserve logical values after closing the source") {
+    import org.apache.comet.vector.{CometDictionary, CometDictionaryVector}
+
     val rootAllocator = new RootAllocator(Long.MaxValue)
     val sourceAllocator = rootAllocator.newChildAllocator("source", 0L, Long.MaxValue)
     val readerAllocator = rootAllocator.newChildAllocator("reader", 0L, Long.MaxValue)
