@@ -15,10 +15,14 @@ Merging goes through GitHub's merge queue, configured by the `Merge Queue`
 ruleset in `.asf.yaml`. That splits CI into two tiers:
 
 - **PR tier** (`pr`): fast feedback while a change is being iterated on.
-  Build, benchmark, Spark 4.1 and Iceberg 1.11.
+  The Linux build, Spark 4.1 and Iceberg 1.11.
 - **Queue tier** (`queue`): the authoritative gate. Everything the PR tier
-  runs, plus Spark 3.4/3.5/4.0 and Iceberg 1.8/1.9/1.10, evaluated against the
-  merge result rather than against the PR head.
+  runs, plus the macOS build, the benchmark compile check, Spark 3.4/3.5/4.0
+  and Iceberg 1.8/1.9/1.10, evaluated against the merge result rather than
+  against the PR head.
+
+Every queue-only job has a `run-*` label that opts a pull request into it
+early, listed in the diagram below.
 
 Heavy jobs have no `push` tier. The queue already tested the exact tree that
 lands, so re-running them on push to main would double the cost of every
@@ -49,21 +53,14 @@ merge. `docs` is the only job still on `push`, because it deploys to
         v                                   v                                   v
   PR + queue tier                     push to main only         queue tier, or PR with label
   ---------------                     -----------------         ---------------------------
-  pr_build_linux                      docs                      spark_3_4    run-spark-3.4-tests
-  pr_build_macos                                                spark_3_5    run-spark-3.5-tests
-  pr_benchmark_check                                            spark_4_0    run-spark-4.0-tests
-  spark_4_1                                                     iceberg_1_8  run-iceberg-tests
-  iceberg_1_11                                                  iceberg_1_9  run-iceberg-tests
-                                                                iceberg_1_10 run-iceberg-tests
-
-        |                                   |                                   |
-        +-----------------------------------+-----------------------------------+
-                                            v
-                                +-----------------------+
-                                |    required_checks    |  ubuntu-slim
-                                |  one flat name that   |
-                                |  is safe to require   |
-                                +-----------------------+
+  pr_build_linux                      docs                      pr_build_macos      run-macos-tests
+  spark_4_1                                                     pr_benchmark_check  run-benchmark-check
+  iceberg_1_11                                                  spark_3_4           run-spark-3.4-tests
+                                                                spark_3_5           run-spark-3.5-tests
+                                                                spark_4_0           run-spark-4.0-tests
+                                                                iceberg_1_8         run-iceberg-tests
+                                                                iceberg_1_9         run-iceberg-tests
+                                                                iceberg_1_10        run-iceberg-tests
 
         |                                   |                                   |
         +-----------------------------------+-----------------------------------+
@@ -88,8 +85,8 @@ merge. `docs` is the only job still on `push`, because it deploys to
 | `preflight`          | every PR / merge group / push / dispatch / label  | none (always runs)                  |
 | `changes`            | every PR / merge group / push / dispatch / label  | runs `dev/ci/compute-changes.py`    |
 | `pr_build_linux`     | PR or merge group, paths matched                  | `dev/ci/compute-changes.py`         |
-| `pr_build_macos`     | PR or merge group, paths matched                  | `dev/ci/compute-changes.py`         |
-| `pr_benchmark_check` | PR or merge group, paths matched                  | benchmark sources only              |
+| `pr_build_macos`     | merge group, **or** PR with `run-macos-tests`     | `dev/ci/compute-changes.py`         |
+| `pr_benchmark_check` | merge group, **or** PR with `run-benchmark-check` | benchmark sources only              |
 | `docs`               | push to main, paths matched                       | `.asf.yaml`, `docs/**`, `docs.yaml` |
 | `spark_3_5`          | merge group, **or** PR with `run-spark-3.5-tests` | Spark 3.5 sources                   |
 | `spark_4_1`          | PR or merge group, paths matched                  | Spark 4.1 sources                   |

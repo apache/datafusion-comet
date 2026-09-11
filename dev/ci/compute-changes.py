@@ -317,8 +317,13 @@ FILTERS = {
 # after, which is the thing the queue was adopted to avoid.
 POLICY = {
     "build_linux": ["pr", "queue"],
-    "build_macos": ["pr", "queue"],
-    "benchmark": ["pr", "queue"],
+    # macOS runners are the scarcest capacity we have, and the Linux build
+    # already covers rustfmt and the Rust/JVM compile on every PR. The label
+    # is for a change that touches platform-specific code.
+    "build_macos": ["queue", "label:run-macos-tests"],
+    # Benchmark sources are compiled and linted, never run, so a break there
+    # cannot affect a PR's correctness verdict; the queue catches it.
+    "benchmark": ["queue", "label:run-benchmark-check"],
     # docs deploys to asf-site, so it must not run from a pull request or from
     # the queue's throwaway branch.
     "docs": ["push"],

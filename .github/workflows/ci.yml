@@ -22,10 +22,11 @@
 # Merging goes through GitHub's merge queue (see `rulesets` in `.asf.yaml`), so
 # there are two tiers:
 #
-#   pull_request  fast feedback. Build + Spark 4.1 + Iceberg 1.11.
+#   pull_request  fast feedback. Linux build + Spark 4.1 + Iceberg 1.11.
 #   merge_group   the authoritative gate. Everything the PR tier runs, plus
-#                 Spark 3.4/3.5/4.0 and Iceberg 1.8/1.9/1.10, evaluated
-#                 against the merge result rather than the PR head.
+#                 the macOS build, the benchmark compile check, Spark
+#                 3.4/3.5/4.0 and Iceberg 1.8/1.9/1.10, evaluated against
+#                 the merge result rather than the PR head.
 #
 # Which tier a job sits in is POLICY in dev/ci/compute-changes.py, not an
 # expression here. Heavy jobs deliberately have no `push` tier: the queue
@@ -229,12 +230,14 @@ jobs:
   pr_build_macos:
     name: PR Build (macOS)
     needs: changes
+    # Queue-only by default; PRs need the `run-macos-tests` label.
     if: needs.changes.outputs.build_macos == 'true'
     uses: ./.github/workflows/pr_build_macos.yml
 
   pr_benchmark_check:
     name: PR Benchmark Check
     needs: changes
+    # Queue-only by default; PRs need the `run-benchmark-check` label.
     if: needs.changes.outputs.benchmark == 'true'
     uses: ./.github/workflows/pr_benchmark_check.yml
 
@@ -248,7 +251,7 @@ jobs:
   spark_3_4:
     name: Spark SQL Tests (Spark 3.4)
     needs: changes
-    # Main-only by default; PRs need the `run-spark-3.4-tests` label.
+    # Queue-only by default; PRs need the `run-spark-3.4-tests` label.
     if: needs.changes.outputs.spark_3_4 == 'true'
     uses: ./.github/workflows/spark_sql_test_reusable.yml
     with:
@@ -259,6 +262,7 @@ jobs:
   spark_3_5:
     name: Spark SQL Tests (Spark 3.5)
     needs: changes
+    # Queue-only by default; PRs need the `run-spark-3.5-tests` label.
     if: needs.changes.outputs.spark_3_5 == 'true'
     uses: ./.github/workflows/spark_sql_test_reusable.yml
     with:
@@ -269,7 +273,7 @@ jobs:
   spark_4_0:
     name: Spark SQL Tests (Spark 4.0)
     needs: changes
-    # Main-only by default; PRs need the `run-spark-4.0-tests` label. Swapped
+    # Queue-only by default; PRs need the `run-spark-4.0-tests` label. Swapped
     # with spark_4_1 on the `oom` branch to validate the memory caps against
     # Spark 4.1 by default.
     if: needs.changes.outputs.spark_4_0 == 'true'
@@ -292,7 +296,7 @@ jobs:
   iceberg_1_8:
     name: Iceberg Spark SQL Tests (Iceberg 1.8)
     needs: changes
-    # Main-only by default; PRs need the `run-iceberg-tests` label.
+    # Queue-only by default; PRs need the `run-iceberg-tests` label.
     if: needs.changes.outputs.iceberg_1_8 == 'true'
     uses: ./.github/workflows/iceberg_spark_test_reusable.yml
     with:
@@ -305,7 +309,7 @@ jobs:
   iceberg_1_9:
     name: Iceberg Spark SQL Tests (Iceberg 1.9)
     needs: changes
-    # Main-only by default; PRs need the `run-iceberg-tests` label.
+    # Queue-only by default; PRs need the `run-iceberg-tests` label.
     if: needs.changes.outputs.iceberg_1_9 == 'true'
     uses: ./.github/workflows/iceberg_spark_test_reusable.yml
     with:
@@ -318,7 +322,7 @@ jobs:
   iceberg_1_10:
     name: Iceberg Spark SQL Tests (Iceberg 1.10)
     needs: changes
-    # Main-only by default; PRs need the `run-iceberg-tests` label. Iceberg 1.11
+    # Queue-only by default; PRs need the `run-iceberg-tests` label. Iceberg 1.11
     # (Spark 4.1) is the PR-gated Iceberg job; 1.10 covers the Spark 3.5 path.
     if: needs.changes.outputs.iceberg_1_10 == 'true'
     uses: ./.github/workflows/iceberg_spark_test_reusable.yml

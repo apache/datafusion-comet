@@ -104,10 +104,11 @@ ROUTING_CASES = [
 # where "allowed" ignores path filters. Written out longhand rather than
 # derived from POLICY, so that a change to the routing has to be stated twice
 # and cannot be made by accident.
-PR_TIER = {"build_linux", "build_macos", "benchmark", "spark_4_1", "iceberg_1_11"}
+PR_TIER = {"build_linux", "spark_4_1", "iceberg_1_11"}
 SPARK_OPT_IN = {"spark_3_4", "spark_3_5", "spark_4_0"}
 ICEBERG_OPT_IN = {"iceberg_1_8", "iceberg_1_9", "iceberg_1_10"}
-QUEUE_TIER = PR_TIER | SPARK_OPT_IN | ICEBERG_OPT_IN
+BUILD_OPT_IN = {"build_macos", "benchmark"}
+QUEUE_TIER = PR_TIER | SPARK_OPT_IN | ICEBERG_OPT_IN | BUILD_OPT_IN
 ALL_JOBS = QUEUE_TIER | {"docs"}
 
 POLICY_CASES = [
@@ -127,6 +128,25 @@ POLICY_CASES = [
     (
         {"name": "pull_request", "action": "synchronize", "labels": ["run-spark-3.5-tests"]},
         PR_TIER | {"spark_3_5"},
+    ),
+    # So did the macOS build and the benchmark compile check, each with its
+    # own label. Neither label pulls in the other.
+    (
+        {"name": "pull_request", "action": "synchronize", "labels": ["run-macos-tests"]},
+        PR_TIER | {"build_macos"},
+    ),
+    (
+        {"name": "pull_request", "action": "synchronize", "labels": ["run-benchmark-check"]},
+        PR_TIER | {"benchmark"},
+    ),
+    (
+        {
+            "name": "pull_request",
+            "action": "labeled",
+            "label": "run-macos-tests",
+            "labels": ["run-macos-tests"],
+        },
+        {"build_macos"},
     ),
     # An opt-in label present on a pushed commit adds just that suite.
     (
