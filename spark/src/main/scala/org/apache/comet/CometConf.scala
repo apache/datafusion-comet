@@ -129,7 +129,7 @@ object CometConf extends ShimCometConf {
           "into Comet's two-operator shape: a file writer exec (inside AQE) and a committer " +
           "(outside AQE).")
       .booleanConf
-      .createWithDefault(false)
+      .createWithDefault(true)
 
   val COMET_ICEBERG_NATIVE_WRITE_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.iceberg.write.enabled")
@@ -137,9 +137,9 @@ object CometConf extends ShimCometConf {
       .doc(
         "Whether to delegate the executor-side Parquet write to Comet's native (iceberg-rust) " +
           "writer when the table's properties allow it. Requires " +
-          "`spark.comet.write.iceberg.splitOperator.enabled = true`. Off by default.")
+          "`spark.comet.write.iceberg.splitOperator.enabled = true`.")
       .booleanConf
-      .createWithDefault(false)
+      .createWithDefault(true)
 
   val COMET_ICEBERG_DATA_FILE_CONCURRENCY_LIMIT: ConfigEntry[Int] =
     conf("spark.comet.scan.icebergNative.dataFileConcurrencyLimit")
