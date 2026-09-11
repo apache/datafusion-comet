@@ -90,10 +90,9 @@ use datafusion::{
 };
 use datafusion_comet_spark_expr::{
     create_comet_physical_fun, create_comet_physical_fun_with_eval_mode, BinaryOutputStyle,
-    BloomFilterAgg, BloomFilterMightContain, CsvWriteOptions, EvalMode, SparkArraysZipFunc,
-    SparkBloomFilterVersion, SparkPercentile, SumInteger, ToCsv,
+    BloomFilterAgg, BloomFilterMightContain, CometCollectList, CometCollectSet, CsvWriteOptions,
+    EvalMode, SparkArraysZipFunc, SparkBloomFilterVersion, SparkPercentile, SumInteger, ToCsv,
 };
-use datafusion_spark::function::aggregate::collect::{SparkCollectList, SparkCollectSet};
 use iceberg::expr::Bind;
 
 use crate::execution::operators::ExecutionError::GeneralError;
@@ -149,9 +148,9 @@ use datafusion_comet_proto::{
 use datafusion_comet_spark_expr::{
     jvm_udf::JvmScalarUdfExpr, ApproxPercentile, ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow,
     Correlation, Covariance, CreateNamedStruct, DecimalRescaleCheckOverflow, GetArrayStructFields,
-    GetStructField, HllPlusPlus, IfExpr, ListExtract, NormalizeNaNAndZero, Regr, RegrType,
-    SparkCastOptions, Stddev, SumDecimal, ToJson, UnboundColumn, Variance, WideDecimalBinaryExpr,
-    WideDecimalOp,
+    GetStructField, HllPlusPlus, IfExpr, ListExtract, MaxMinBy, Mode, NormalizeNaNAndZero, Regr,
+    RegrType, SparkCastOptions, Stddev, SumDecimal, ToJson, UnboundColumn, Variance,
+    WideDecimalBinaryExpr, WideDecimalOp,
 };
 use itertools::Itertools;
 use jni::objects::{Global, JObject};
@@ -468,7 +467,7 @@ impl PhysicalPlanner {
             // object-store key we hand DataFusion is stripped of the bucket prefix. Skipping this
             // would leave `bucket/key` as the object key, and path-style S3 GETs would double the
             // bucket (`<endpoint>/bucket/bucket/key`).
-            let url = normalize_object_store_url(&file.file_path, object_store_options)?;
+            let url = normalize_object_store_url(&file.file_path, object_store_options)?.url;
             let path = Path::from_url_path(url.path()).map_err(|e| GeneralError(e.to_string()))?;
             partitioned_file.object_meta.location = path;
 
@@ -1710,11 +1709,12 @@ impl PhysicalPlanner {
                     .iter()
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect();
-                let (object_store_url, _) = prepare_object_store_with_configs(
-                    self.session_ctx.runtime_env(),
-                    one_file,
-                    &object_store_options,
-                )?;
+                let (object_store_url, _, object_store_backend) =
+                    prepare_object_store_with_configs(
+                        self.session_ctx.runtime_env(),
+                        one_file,
+                        &object_store_options,
+                    )?;
 
                 // Get files for this partition
                 let files = self.get_partitioned_files(partition_files, &object_store_options)?;
@@ -1725,6 +1725,7 @@ impl PhysicalPlanner {
                     Some(data_schema),
                     Some(partition_schema),
                     object_store_url,
+                    object_store_backend,
                     file_groups,
                     Some(projection_vector),
                     if common.has_data_filters || !common.data_filters.is_empty() {
@@ -1766,7 +1767,7 @@ impl PhysicalPlanner {
                     .and_then(|f| f.partitioned_file.first())
                     .map(|f| f.file_path.clone())
                     .ok_or(GeneralError("Failed to locate file".to_string()))?;
-                let (object_store_url, _) = prepare_object_store_with_configs(
+                let (object_store_url, _, _) = prepare_object_store_with_configs(
                     self.session_ctx.runtime_env(),
                     one_file,
                     &object_store_options,
@@ -3172,19 +3173,40 @@ impl PhysicalPlanner {
             AggExprStruct::CollectSet(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
                 let child = Self::coerce_collect_child_nullability(child, &schema)?;
-                let func = AggregateUDF::new_from_impl(SparkCollectSet::new());
+                let func = AggregateUDF::new_from_impl(CometCollectSet::new());
                 Self::create_aggr_func_expr("collect_set", schema, vec![child], func)
             }
             AggExprStruct::CollectList(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
                 let child = Self::coerce_collect_child_nullability(child, &schema)?;
-                let func = AggregateUDF::new_from_impl(SparkCollectList::new());
+                let func = AggregateUDF::new_from_impl(CometCollectList::new());
                 Self::create_aggr_func_expr("collect_list", schema, vec![child], func)
             }
             AggExprStruct::Hllpp(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
                 let func = AggregateUDF::new_from_impl(HllPlusPlus::new(expr.precision));
                 Self::create_aggr_func_expr("approx_count_distinct", schema, vec![child], func)
+            }
+            AggExprStruct::MaxBy(expr) => {
+                let value = self.create_expr(expr.value.as_ref().unwrap(), Arc::clone(&schema))?;
+                let ordering =
+                    self.create_expr(expr.ordering.as_ref().unwrap(), Arc::clone(&schema))?;
+                let func = AggregateUDF::new_from_impl(MaxMinBy::new_max_by());
+                Self::create_aggr_func_expr("max_by", schema, vec![value, ordering], func)
+            }
+            AggExprStruct::MinBy(expr) => {
+                let value = self.create_expr(expr.value.as_ref().unwrap(), Arc::clone(&schema))?;
+                let ordering =
+                    self.create_expr(expr.ordering.as_ref().unwrap(), Arc::clone(&schema))?;
+                let func = AggregateUDF::new_from_impl(MaxMinBy::new_min_by());
+                Self::create_aggr_func_expr("min_by", schema, vec![value, ordering], func)
+            }
+            AggExprStruct::Mode(expr) => {
+                let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
+                let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
+                let func =
+                    AggregateUDF::new_from_impl(Mode::new(datatype, expr.normalize_neg_zero));
+                Self::create_aggr_func_expr("mode", schema, vec![child], func)
             }
         }
     }
@@ -3817,6 +3839,9 @@ impl PhysicalPlanner {
     /// grouped `AggregateExec` fails validating its own output batch ("column types must match
     /// schema types") — `RecordBatch::try_new` compares with `DataType::equals_datatype`, which
     /// does compare nested nullability.
+    ///
+    /// The grouped path normalizes its own inputs, so this only still matters for the ungrouped
+    /// `Accumulator` (a global aggregate, or a window frame).
     ///
     /// Casting unconditionally (rather than only when the declared type has a non-nullable
     /// nested field) makes this a normalization barrier: the accumulator is guaranteed to see
@@ -5059,8 +5084,8 @@ mod tests {
         FileGroup, FileScanConfigBuilder, FileSource, ParquetSource,
     };
     use datafusion::error::DataFusionError;
-    use datafusion::logical_expr::AggregateUDF;
     use datafusion::logical_expr::ScalarUDF;
+    use datafusion::logical_expr::{AggregateUDF, EmitTo};
     use datafusion::physical_expr::expressions::Column;
     use datafusion::physical_expr::{LexOrdering, PhysicalExpr, PhysicalSortExpr};
     use datafusion::physical_plan::sorts::sort::SortExec;
@@ -5068,8 +5093,8 @@ mod tests {
     use datafusion::physical_plan::ExecutionPlan;
     use datafusion::prelude::SessionConfig;
     use datafusion::{assert_batches_eq, physical_plan::common::collect, prelude::SessionContext};
+    use datafusion_comet_spark_expr::{CometCollectList, CometCollectSet};
     use datafusion_physical_expr_adapter::PhysicalExprAdapterFactory;
-    use datafusion_spark::function::aggregate::collect::{SparkCollectList, SparkCollectSet};
     use parquet::variant::VariantType;
     use tempfile::TempDir;
     use tokio::sync::mpsc;
@@ -7262,15 +7287,16 @@ mod tests {
     }
 
     /// Builds `func` over `child` against `plan_schema`, feeds it a batch built from
-    /// `batch_schema`, and returns (type declared by `state_fields()`, type of the emitted
-    /// state array). This is the pair `RecordBatch::try_new` compares inside
+    /// `batch_schema`, and returns (type declared by `state_fields()`, type of the state the
+    /// ungrouped `Accumulator` emits, type of the state the `GroupsAccumulator` emits). The
+    /// declared type is compared against the emitted one by `RecordBatch::try_new` inside
     /// `GroupedHashAggregateStream::emit`.
     fn collect_agg_declared_vs_produced(
         child: &Arc<dyn PhysicalExpr>,
         plan_schema: &SchemaRef,
         batch_schema: &SchemaRef,
         func: AggregateUDF,
-    ) -> (DataType, DataType) {
+    ) -> (DataType, DataType, DataType) {
         let agg = PhysicalPlanner::create_aggr_func_expr(
             "collect",
             Arc::clone(plan_schema),
@@ -7289,8 +7315,14 @@ mod tests {
             .into_array(batch.num_rows())
             .unwrap();
         let mut acc = agg.create_accumulator().unwrap();
-        acc.update_batch(&[arg]).unwrap();
-        (declared, acc.state().unwrap()[0].data_type())
+        acc.update_batch(&[Arc::clone(&arg)]).unwrap();
+        let produced = acc.state().unwrap()[0].data_type();
+
+        let mut groups = agg.create_groups_accumulator().unwrap();
+        groups.update_batch(&[arg], &[0, 0], None, 1).unwrap();
+        let grouped = groups.state(EmitTo::All).unwrap()[0].data_type().clone();
+
+        (declared, produced, grouped)
     }
 
     /// `collect_list` / `collect_set` derive their accumulator state type from the declared
@@ -7303,6 +7335,10 @@ mod tests {
     /// rebuilds its state list honouring `data_type`. `collect_list` still rebuilds from the
     /// runtime array and drifts, so the coercion remains necessary. This test pins that
     /// `collect_list` still drifts without the coercion, and that the coercion normalizes both.
+    ///
+    /// The grouped path never drifts: `CollectListGroupsAccumulator` /
+    /// `CollectSetGroupsAccumulator` normalize every array they take in to the declared element
+    /// type, so their state matches the declaration with or without the coercion.
     #[test]
     fn test_collect_agg_absorbs_nested_nullability_drift() {
         let plan_schema = collect_agg_schema(collect_agg_struct_type(true));
@@ -7313,13 +7349,13 @@ mod tests {
                 .unwrap();
 
         for func in [
-            AggregateUDF::new_from_impl(SparkCollectSet::new()),
-            AggregateUDF::new_from_impl(SparkCollectList::new()),
+            AggregateUDF::new_from_impl(CometCollectSet::new()),
+            AggregateUDF::new_from_impl(CometCollectList::new()),
         ] {
             // Without the coercion, collect_list still drifts (declared nullable leaves vs
             // produced non-null ones). collect_set no longer drifts after DataFusion 55's new_list
             // fix, so only assert the drift for the func that still exhibits it.
-            let (declared, produced) =
+            let (declared, produced, grouped) =
                 collect_agg_declared_vs_produced(&raw, &plan_schema, &batch_schema, func.clone());
             if func.name() == "collect_list" {
                 assert!(
@@ -7328,14 +7364,23 @@ mod tests {
                     func.name()
                 );
             }
+            assert!(
+                declared.equals_datatype(&grouped),
+                "grouped state drifted for {}: declared {declared}, produced {grouped}",
+                func.name()
+            );
 
             // With the coercion, the argument is normalized to the declared type before it
             // reaches the accumulator, so both funcs emit a state matching the declared type.
-            let (declared, produced) =
+            let (declared, produced, grouped) =
                 collect_agg_declared_vs_produced(&coerced, &plan_schema, &batch_schema, func);
             assert!(
                 declared.equals_datatype(&produced),
                 "declared {declared} != produced {produced}"
+            );
+            assert!(
+                declared.equals_datatype(&grouped),
+                "declared {declared} != grouped {grouped}"
             );
         }
     }
