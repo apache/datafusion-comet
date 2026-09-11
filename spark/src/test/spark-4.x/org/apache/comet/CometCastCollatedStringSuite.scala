@@ -46,9 +46,18 @@ import org.apache.comet.serde.{Compatible, Unsupported}
  * `CometCast` mixes in `CodegenDispatchFallback`, so `QueryPlanSerde.exprToProtoInternal` offers
  * the expression to the JVM codegen dispatcher first, which runs Spark's own `doGenCode` inside
  * the Comet pipeline. `spark.comet.exec.scalaUDF.codegen.enabled` defaults to true and
- * `CometBatchKernelCodegen` admits `ResolvedCollation`, so under default config a collated cast
- * usually stays inside Comet. `Unsupported` means there is no native path. The end-to-end tests
- * at the bottom cover both settings of that config.
+ * `CometBatchKernelCodegen.isSupportedDataType` admits every `StringType` regardless of
+ * collation, so under default config a collated cast usually stays inside Comet. That route is
+ * result-correct, because the kernel evaluates Spark's own generated code and the `collationId`
+ * rides along on the expression. `Unsupported` means there is no native path. The end-to-end
+ * tests at the bottom run both settings of that config on both the scalar and the struct case.
+ *
+ * These are Scala tests rather than `CometSqlFileTestSuite` fixtures because most of the file
+ * asserts on `CometCast.isSupported` over type pairs no SQL can construct, such as
+ * `ArrayType(NullType) -> ArrayType(STRING COLLATE UTF8_LCASE)`. The end-to-end tests stay here
+ * with them because `--Config` is file scoped, so the query that has to assert a fallback reason
+ * with the dispatcher off and the query that has to assert native execution with it on could not
+ * share a fixture file.
  *
  * This lives under `spark-4.x`, shared by every 4.x profile, rather than `spark-4.1+`, because
  * collation is a Spark 4.0 feature and `StringType(collationName)` already resolves there.
@@ -187,7 +196,7 @@ class CometCastCollatedStringSuite extends CometTestBase {
 
   // ---- end to end -----------------------------------------------------------------
   //
-  // The matrix above only exercises `isSupported`. These two run a query and pin down what the
+  // The matrix above only exercises `isSupported`. These three run a query and pin down what the
   // planner actually does with the answer, which is what #4489 asked for. A plain-string Parquet
   // column with `COLLATE` applied on top reaches the cast as a collated child, the same shape
   // the datetime tests in `CometCollationSuite` rely on. The cast child has to be a column
@@ -197,8 +206,11 @@ class CometCastCollatedStringSuite extends CometTestBase {
   private def withCollatedTable(f: => Unit): Unit =
     withParquetTable(Seq(("123", 1), ("456", 2)), "collated_cast_tbl")(f)
 
-  private val castFromCollatedReason =
-    "Cast from StringType(UTF8_LCASE) to IntegerType is not supported"
+  // Read from production rather than retyped, so the two cannot drift apart. The guard is the
+  // only thing that produces this reason: without it `StringType(UTF8_LCASE) -> IntegerType`
+  // exits through `isSupported`'s `case _` catch-all and reports the generic
+  // `Cast from ... to ... is not supported` template instead.
+  private val collationReason = CometCast.nonDefaultCollationReason
 
   // A scalar identity pair such as `lcase -> lcase` cannot be reached from SQL. Spark's
   // `SimplifyCasts` drops a cast whose child already carries the target type, so
@@ -214,7 +226,7 @@ class CometCastCollatedStringSuite extends CometTestBase {
       withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
         checkSparkAnswerAndFallbackReason(
           "SELECT CAST(_1 COLLATE utf8_lcase AS INT) FROM collated_cast_tbl",
-          castFromCollatedReason)
+          collationReason)
       }
     }
   }
@@ -229,19 +241,29 @@ class CometCastCollatedStringSuite extends CometTestBase {
   }
 
   test("cast of a struct carrying a collated field has no native path end to end") {
-    // The two tests above hold on either side of the guard, because that pair already reached the
-    // `case _` catch-all. This one is the guard's own case. The sibling field changes type so the
-    // cast survives `SimplifyCasts`, and on the old code the field zip answered `Compatible`,
-    // since the collated field matched the identity shortcut, so the struct went native with the
-    // collation dropped. Only the target half of the reason is asserted, because the source field
-    // names come from `struct(...)` and are not worth pinning down across Spark versions.
+    // A pair the guard changed the answer for, not just the reason string. The sibling field
+    // changes type so the cast survives `SimplifyCasts`, and on the old code the field zip
+    // answered `Compatible`, since the collated field matched the identity shortcut, so the
+    // struct went native with the collation dropped.
     withCollatedTable {
       withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
         checkSparkAnswerAndFallbackReason(
           "SELECT CAST(struct(_2 AS a, _1 COLLATE utf8_lcase AS s) AS " +
             "STRUCT<a: STRING, s: STRING COLLATE UTF8_LCASE>) FROM collated_cast_tbl",
-          "to StructType(StructField(a,StringType,true)," +
-            "StructField(s,StringType(UTF8_LCASE),true)) is not supported")
+          collationReason)
+      }
+    }
+  }
+
+  test("cast of a struct carrying a collated field routes through the codegen dispatcher") {
+    // The struct is the one case the guard redirects rather than merely relabels, so it needs the
+    // dispatcher-on half too. `isSupportedDataType` recurses into the fields and accepts them, so
+    // the cast stays in the Comet pipeline and the kernel runs Spark's own `Cast.doGenCode`.
+    withCollatedTable {
+      withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true") {
+        checkSparkAnswerAndOperator(
+          "SELECT CAST(struct(_2 AS a, _1 COLLATE utf8_lcase AS s) AS " +
+            "STRUCT<a: STRING, s: STRING COLLATE UTF8_LCASE>) FROM collated_cast_tbl")
       }
     }
   }
