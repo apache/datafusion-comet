@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 
-# Guards four CI invariants that are silent when broken:
+# Guards five CI invariants that are silent when broken:
 #
 #   1. Change-filter routing. dev/ci/compute-changes.py decides which heavy
 #      jobs run. A file that a job depends on but that no filter lists makes
@@ -44,6 +44,11 @@
 #      name make `download-artifact` pick by highest artifact ID rather than
 #      by `needs`, and make the forced `overwrite` on an upload retry delete
 #      a sibling's finished artifact.
+#
+#   5. Local actions resolve from the workspace, so a `uses: ./.github/...`
+#      in a job that skipped the checkout cannot be loaded at all. Jobs that
+#      run only under an input or a label can carry that for a long time
+#      before anyone runs them.
 #
 # Run from the repository root: python3 dev/ci/check-ci-config.py
 
@@ -208,6 +213,14 @@ DOWNLOAD_USES = re.compile(r"uses:\s*(\./\.github/actions/download-artifact-retr
 WITH_NAME = re.compile(r"^\s+name:\s*(\S.*?)\s*$")
 NEW_STEP = re.compile(r"^\s*-\s")
 
+# A job id in a workflow file, and the two `uses:` shapes the checkout guard
+# below cares about. `./.github/workflows/` is deliberately not matched: that
+# is a reusable-workflow call, which resolves from the repository rather than
+# from the runner's workspace and so needs no checkout.
+JOB_KEY = re.compile(r"^  ([A-Za-z0-9_-]+):\s*$")
+LOCAL_ACTION_USES = re.compile(r"uses:\s*(\./\.github/actions/\S+)")
+CHECKOUT_USES = re.compile(r"uses:\s*actions/checkout@")
+
 
 def load_filters():
     spec = importlib.util.spec_from_file_location("compute_changes", "dev/ci/compute-changes.py")
@@ -317,6 +330,41 @@ def check_artifact_names():
                 )
     for failure in failures:
         print(f"artifact name: {failure}")
+    return not failures
+
+
+def check_local_actions_have_checkout():
+    """Every `uses: ./.github/actions/...` needs a checkout earlier in its job.
+
+    A local action is loaded from the runner's workspace, not from the
+    repository, so a job that has not checked out simply cannot find it. The
+    failure is at step level and only on the jobs that skipped the checkout,
+    which is easy to miss when those jobs are conditional.
+    """
+    failures = []
+    for path in sorted(WORKFLOWS.glob("*.y*ml")):
+        job = None
+        checked_out = False
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.lstrip().startswith("#"):
+                continue
+            match = JOB_KEY.match(line)
+            if match:
+                job = match.group(1)
+                checked_out = False
+                continue
+            if CHECKOUT_USES.search(line):
+                checked_out = True
+                continue
+            match = LOCAL_ACTION_USES.search(line)
+            if match and not checked_out:
+                failures.append(
+                    f"{path}: job `{job}` uses the local action {match.group(1)} "
+                    f"with no preceding actions/checkout. Add the checkout, or "
+                    f"call the underlying published action directly"
+                )
+    for failure in failures:
+        print(f"local action: {failure}")
     return not failures
 
 
@@ -498,6 +546,7 @@ if __name__ == "__main__":
     ok = check_change_filters()
     ok = check_event_policy() and ok
     ok = check_artifact_names() and ok
+    ok = check_local_actions_have_checkout() and ok
     ok = check_required_checks() and ok
     if not ok:
         sys.exit(1)

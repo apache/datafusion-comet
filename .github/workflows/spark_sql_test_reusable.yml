@@ -287,7 +287,7 @@ jobs:
       - name: Download fallback log artifacts
         # Not wrapped in download-artifact-retry: that local action needs a
         # checkout, which this job deliberately skips.
-        uses: ./.github/actions/download-artifact-retry
+        uses: actions/download-artifact@v8
         with:
           path: fallback-logs/
       - name: Merge fallback logs

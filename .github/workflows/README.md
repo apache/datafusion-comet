@@ -262,8 +262,9 @@ it the same way: three attempts, 15s then 45s backoff, same inputs and
 `download-path` output. A retry has nothing to undo, since a failed attempt
 leaves at most a partial extraction that the next one overwrites. The
 `merge-fallback-logs` job stays on the plain action because it skips checkout,
-which a local action needs. `dev/ci/check-ci-config.py` treats both spellings
-as a download when pairing consumers with producers.
+which a local action needs; `dev/ci/check-ci-config.py` enforces that pairing
+for every `uses: ./.github/actions/...` in a workflow, and treats both
+spellings as a download when pairing consumers with producers.
 
 **Tool downloads.** `Lint Scala (syntactic)` splits the coursier download from
 the lint: a `Fetch scalafix` step retries a no-op `cs launch ... -- --version`
