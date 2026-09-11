@@ -25,7 +25,7 @@ import org.apache.spark.benchmark.Benchmark
 import org.apache.spark.sql.{DataFrame, Row}
 import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
-import org.apache.spark.sql.execution.ProjectExec
+import org.apache.spark.sql.execution.{ProjectExec, SparkPlan, SQLExecution}
 import org.apache.spark.sql.execution.exchange.ShuffleExchangeExec
 import org.apache.spark.sql.functions.{col, spark_partition_id}
 import org.apache.spark.sql.internal.SQLConf
@@ -52,6 +52,12 @@ import org.apache.comet.udf.codegen.CometScalaUDFCodegen
  * aggregate, `mapSortProjection` asks Spark's grouping optimizer to construct its real
  * `Project(MapSort(m))`, then executes that logical Project on its own. This avoids importing the
  * Spark-4.x-only `MapSort` class and keeps this common benchmark source compilable on Spark 3.x.
+ *
+ * Physical planning happens in [[prepareQuery]]. The SparkPlan it returns is the plan
+ * [[assertRoute]] inspects and the plan the timer executes. Do not use
+ * `DatasetToBenchmark.noop()` here: on Spark 4.x it calls `df.write.format("noop").save()`, which
+ * builds a fresh noop-write `QueryExecution` from the logical plan. That would mix write planning
+ * into the timed region and disconnect route validation from the action being measured.
  *
  * To run this benchmark:
  * {{{
@@ -226,16 +232,8 @@ object CometMapSortBenchmark extends CometBenchmarkBase {
         dispatch = false,
         shuffle = false,
         mapSortProjection().queryExecution.logical)
-      assertRoute(
-        shape,
-        "projection",
-        dispatch = true,
-        stripAQEPlan(dispatcher.queryExecution.executedPlan))
-      assertRoute(
-        shape,
-        "projection",
-        dispatch = false,
-        stripAQEPlan(fallback.queryExecution.executedPlan))
+      assertRoute(shape, "projection", dispatch = true, dispatcher.plan)
+      assertRoute(shape, "projection", dispatch = false, fallback.plan)
       runBenchmark(s"MapSort projection -- ${shape.description}") {
         val benchmark = new Benchmark(
           s"MapSort projection -- ${shape.description}",
@@ -260,16 +258,8 @@ object CometMapSortBenchmark extends CometBenchmarkBase {
         dispatch = false,
         shuffle = true,
         shuffleQuery().queryExecution.logical)
-      assertRoute(
-        shape,
-        "shuffle",
-        dispatch = true,
-        stripAQEPlan(dispatcher.queryExecution.executedPlan))
-      assertRoute(
-        shape,
-        "shuffle",
-        dispatch = false,
-        stripAQEPlan(fallback.queryExecution.executedPlan))
+      assertRoute(shape, "shuffle", dispatch = true, dispatcher.plan)
+      assertRoute(shape, "shuffle", dispatch = false, fallback.plan)
       runBenchmark(s"MapSort native shuffle -- ${shape.description}") {
         val benchmark = new Benchmark(
           s"MapSort native shuffle -- ${shape.description}",
@@ -471,41 +461,166 @@ object CometMapSortBenchmark extends CometBenchmarkBase {
   private def oneLine(value: String): String =
     value.split("\\n").iterator.map(_.trim).mkString(" | ")
 
-  /** Materializes physical planning outside Benchmark's timed closure. */
+  /**
+   * A physical plan that has already been planned and route-validated, plus a consumer that
+   * executes that exact `SparkPlan` (or a fresh shuffle copy of it) without building another
+   * `QueryExecution`.
+   */
+  private case class PreparedQuery(plan: SparkPlan, consume: SparkPlan => Unit)
+
+  /**
+   * Forces physical planning outside the benchmark timer and returns that SparkPlan. The timed
+   * path must consume this plan (see [[executePreparedQuery]]) rather than calling
+   * `DatasetToBenchmark.noop()`, which on Spark 4.x creates a separate noop-write
+   * `QueryExecution`.
+   */
   private def prepareQuery(
       shape: Shape,
       dispatch: Boolean,
       shuffle: Boolean,
-      logicalPlan: LogicalPlan): DataFrame = {
-    var prepared: DataFrame = null
+      logicalPlan: LogicalPlan): PreparedQuery = {
+    var prepared: PreparedQuery = null
     withSQLConf(configs(shape, dispatch, shuffle): _*) {
-      prepared = dataFrameOfRows(logicalPlan)
-      prepared.queryExecution.executedPlan
+      val df = dataFrameOfRows(logicalPlan)
+      val plan = stripAQEPlan(df.queryExecution.executedPlan)
+      val queryExecution = df.queryExecution
+      prepared = PreparedQuery(
+        plan,
+        consume = runnable => {
+          // Metrics / job grouping only. The body executes `runnable`, not a newly planned query.
+          SQLExecution.withNewExecutionId(queryExecution, Some("CometMapSortBenchmark")) {
+            consumePlan(runnable)
+          }
+        })
     }
     prepared
   }
 
-  private def runPreparedQuery(
+  /**
+   * Executes and fully consumes an already-prepared physical plan. Does not construct a
+   * `QueryExecution`.
+   */
+  private def executePreparedQuery(
       shape: Shape,
       dispatch: Boolean,
       shuffle: Boolean,
-      df: DataFrame): Unit =
+      prepared: PreparedQuery,
+      plan: SparkPlan): Unit =
     withSQLConf(configs(shape, dispatch, shuffle): _*) {
-      df.noop()
+      prepared.consume(plan)
     }
+
+  /**
+   * Consumes every partition of `plan` on the executors. Columnar plans stay columnar so the
+   * timer does not add a conversion that is absent from the validated tree. Row plans iterate
+   * every InternalRow. Closest in-repo precedent: `CometDatetimeExpressionBenchmark` drains
+   * `queryExecution.toRdd` with `foreachPartition` so Spark cannot skip execution.
+   */
+  private def consumePlan(plan: SparkPlan): Unit = {
+    if (plan.supportsColumnar) {
+      plan.executeColumnar().foreachPartition { batches =>
+        var rows = 0L
+        while (batches.hasNext) {
+          rows += batches.next().numRows()
+        }
+        if (rows < 0L) {
+          throw new IllegalStateException("columnar consume underflow")
+        }
+      }
+    } else {
+      plan.execute().foreachPartition { rows =>
+        var n = 0L
+        while (rows.hasNext) {
+          rows.next()
+          n += 1L
+        }
+        if (n < 0L) {
+          throw new IllegalStateException("row consume underflow")
+        }
+      }
+    }
+  }
+
+  /**
+   * `ShuffleExchangeExec` and `CometShuffleExchangeExec` cache their shuffle RDD /
+   * `ShuffleDependency`. Executing one instance twice would reuse shuffle files. Copying only
+   * those exchange nodes (children shared) yields a new shuffle id without repeating physical
+   * planning.
+   *
+   * `transformUp` / `withNewChildren` cannot be used here: both drop a `copy()` that `fastEquals`
+   * the original, and `CometShuffleExchangeExec.equals` compares partitioning and children, so
+   * the parent would keep the cached instance. Rebuild parents with `makeCopy` instead. A full
+   * `SparkPlan.clone()` is avoided because Comet native nodes can drop `@transient` scan state in
+   * `makeCopy`.
+   */
+  private def withFreshShuffle(plan: SparkPlan): SparkPlan = {
+    def replaceExchanges(p: SparkPlan): SparkPlan = p match {
+      case comet: CometShuffleExchangeExec => comet.copy()
+      case sparkShuffle: ShuffleExchangeExec => sparkShuffle.copy()
+      case other =>
+        val oldChildren = other.children
+        val newChildren = oldChildren.map(replaceExchanges)
+        if (newChildren.corresponds(oldChildren)(_ eq _)) {
+          other
+        } else {
+          replaceChildrenByIdentity(other, oldChildren, newChildren)
+        }
+    }
+
+    val copied = replaceExchanges(plan)
+    val originalExchanges = plan.collect {
+      case s: CometShuffleExchangeExec => s
+      case s: ShuffleExchangeExec => s
+    }
+    val copiedExchanges = copied.collect {
+      case s: CometShuffleExchangeExec => s
+      case s: ShuffleExchangeExec => s
+    }
+    assert(
+      originalExchanges.nonEmpty &&
+        originalExchanges.length == copiedExchanges.length &&
+        originalExchanges.zip(copiedExchanges).forall { case (left, right) => !(left eq right) },
+      s"expected a fresh shuffle exchange instance:\n${plan.treeString}")
+    copied
+  }
+
+  /** Replaces children by reference equality so an equal-but-new exchange is not discarded. */
+  private def replaceChildrenByIdentity(
+      plan: SparkPlan,
+      oldChildren: Seq[SparkPlan],
+      newChildren: Seq[SparkPlan]): SparkPlan = {
+    var idx = 0
+    val newArgs = plan.productIterator.map {
+      case child: SparkPlan if idx < oldChildren.length && (child eq oldChildren(idx)) =>
+        val replacement = newChildren(idx)
+        idx += 1
+        replacement
+      case other => other.asInstanceOf[AnyRef]
+    }.toArray
+    assert(
+      idx == oldChildren.length,
+      s"could not rebuild children for ${plan.nodeName}:\n${plan.treeString}")
+    plan.makeCopy(newArgs).asInstanceOf[SparkPlan]
+  }
 
   private def addMatchedCases(
       benchmark: Benchmark,
       shape: Shape,
       shuffle: Boolean,
-      fallback: DataFrame,
-      dispatcher: DataFrame): Unit = {
-    def addFallback(): Unit = benchmark.addCase(FallbackCaseName) { _ =>
-      runPreparedQuery(shape, dispatch = false, shuffle = shuffle, df = fallback)
+      fallback: PreparedQuery,
+      dispatcher: PreparedQuery): Unit = {
+    def addArm(name: String, dispatch: Boolean, prepared: PreparedQuery): Unit = {
+      // Copy shuffle exchanges before startTiming so query planning stays outside the
+      // measured region while every sample still performs a fresh shuffle.
+      benchmark.addTimerCase(name) { timer =>
+        val runnable = if (shuffle) withFreshShuffle(prepared.plan) else prepared.plan
+        timer.startTiming()
+        executePreparedQuery(shape, dispatch, shuffle, prepared, runnable)
+        timer.stopTiming()
+      }
     }
-    def addDispatcher(): Unit = benchmark.addCase(DispatcherCaseName) { _ =>
-      runPreparedQuery(shape, dispatch = true, shuffle = shuffle, df = dispatcher)
-    }
+    def addFallback(): Unit = addArm(FallbackCaseName, dispatch = false, fallback)
+    def addDispatcher(): Unit = addArm(DispatcherCaseName, dispatch = true, dispatcher)
 
     CaseOrder match {
       case "fallback-first" =>
@@ -558,20 +673,27 @@ object CometMapSortBenchmark extends CometBenchmarkBase {
       val logicalPlan =
         if (shuffle) shuffleQuery().queryExecution.logical
         else mapSortProjection().queryExecution.logical
-      val df = prepareQuery(shape, dispatch, shuffle, logicalPlan)
+      val prepared = prepareQuery(shape, dispatch, shuffle, logicalPlan)
+      // Inspect the plan that will be timed. Do not execute it here: that would warm the
+      // codegen dispatcher before the first-action sample.
+      assertRoute(shape, workload, dispatch, prepared.plan)
       CometScalaUDFCodegen.resetStats()
       val elapsed =
-        timeMillis(runPreparedQuery(shape, dispatch = dispatch, shuffle = shuffle, df = df))
-      val plan = stripAQEPlan(df.queryExecution.executedPlan)
+        timeMillis(
+          executePreparedQuery(
+            shape,
+            dispatch = dispatch,
+            shuffle = shuffle,
+            prepared = prepared,
+            plan = prepared.plan))
       val stats = CometScalaUDFCodegen.stats()
-      assertRoute(shape, workload, dispatch, plan)
       val repetition = sys.props.getOrElse(RepetitionProperty, "<unset>")
       emit(
         f"MAPSORT_FIRST_ACTION shape=${shape.name} route=$route workload=$workload " +
           f"repetition=$repetition rows=$FirstActionRows elapsed_ms=$elapsed%.1f " +
           s"dispatcher_compile_count=${stats.compileCount} " +
           s"dispatcher_cache_hit_count=${stats.cacheHitCount}")
-      emit(s"  executed plan: ${oneLine(plan.treeString)}")
+      emit(s"  executed plan: ${oneLine(prepared.plan.treeString)}")
       emit(
         "This is first-action latency from one process. Dispatcher counters are routing/cache " +
           "observations, not a measurement of Java compiler time.")
