@@ -65,6 +65,15 @@ merge. `docs` is the only job still on `push`, because it deploys to
                                 |  is safe to require   |
                                 +-----------------------+
 
+        |                                   |                                   |
+        +-----------------------------------+-----------------------------------+
+                                            v
+                                +-----------------------+
+                                |    required_checks    |  ubuntu-slim
+                                |  one flat name that   |
+                                |  is safe to require   |
+                                +-----------------------+
+
   reusable workflows invoked via `uses:`:
     pr_build_linux.yml         spark_sql_test_reusable.yml
     pr_build_macos.yml         iceberg_spark_test_reusable.yml
@@ -117,6 +126,14 @@ Two rules keep those runs from corrupting the PR's status:
 - On a `labeled` event, `POLICY` reports false for every job the new label does
   not gate. Without that, applying a single label re-ran the entire heavy
   pipeline at a commit that had already been tested.
+- On a `labeled` event, `required_checks` publishes its verdict as
+  `Required Checks (label run)`, not `Required Checks`. Because the PR tier is
+  skipped on that event, the label run's aggregate says nothing about the
+  commit's applicable suites, and GitHub keeps only the most recent check run
+  per name per commit. Under the real name, a `dependencies` label landing a
+  minute after a push would mark the commit green while the commit run was
+  still going. Skipping the job would not help either, since a skipped check
+  run still carries the name and still counts as passing.
 
 `run-spark-4.1-tests` gates nothing: `spark_4_1` already runs on every PR.
 
@@ -312,6 +329,8 @@ Editing `required_status_checks` deserves care. A context that never reports
 blocks every merge to `main`, including the merge that would revert the
 mistake, and only INFRA can remove a required check by hand at that point.
 `dev/ci/check-ci-config.py` enforces that every `ci.yml` job except `docs`
-appears in `required_checks.needs`, and that the job's `name:` matches the
-context `.asf.yaml` requires for `main`. Both sides of that pair are silent
-when broken. What it cannot catch is a job that is configured never to run.
+appears in `required_checks.needs`, that the job's `name:` is the expression
+that routes `labeled` runs to a separate name (see "Label events" above), that
+the commit-run name matches the context `.asf.yaml` requires for `main`, and
+that the label-run name is never the one required. All of that is silent when
+broken. What it cannot catch is a job that is configured never to run.
