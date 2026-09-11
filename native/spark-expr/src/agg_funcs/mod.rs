@@ -18,6 +18,7 @@
 mod approx_percentile;
 mod avg;
 mod avg_decimal;
+mod collect;
 mod correlation;
 mod covariance;
 mod hll_plus_plus;
@@ -36,6 +37,7 @@ mod welford;
 pub use approx_percentile::ApproxPercentile;
 pub use avg::Avg;
 pub use avg_decimal::AvgDecimal;
+pub use collect::{CometCollectList, CometCollectSet};
 pub use correlation::Correlation;
 pub use covariance::Covariance;
 pub use hll_plus_plus::{hllpp_precision, HllPlusPlus};
