@@ -107,27 +107,12 @@ pub fn spark_split(args: &[ColumnarValue]) -> DataFusionResult<ColumnarValue> {
             let mut str_values = BufferBuilder::<u8>::new(s.len());
             str_offsets.append(0);
 
-            let mut scratch = Vec::new();
             if is_regex_literal(pattern_str) {
                 let mut chars = pattern_str.chars();
                 if let (Some(ch), None) = (chars.next(), chars.next()) {
-                    push_split_char(
-                        s,
-                        ch,
-                        limit,
-                        &mut str_offsets,
-                        &mut str_values,
-                        &mut scratch,
-                    );
+                    push_split_char(s, ch, limit, &mut str_offsets, &mut str_values);
                 } else {
-                    push_split_literal(
-                        s,
-                        pattern_str,
-                        limit,
-                        &mut str_offsets,
-                        &mut str_values,
-                        &mut scratch,
-                    );
+                    push_split_literal(s, pattern_str, limit, &mut str_offsets, &mut str_values);
                 }
             } else {
                 let regex = Regex::new(pattern_str).map_err(|e| {
@@ -136,14 +121,7 @@ pub fn spark_split(args: &[ColumnarValue]) -> DataFusionResult<ColumnarValue> {
                         pattern_str, e
                     ))
                 })?;
-                push_split_parts(
-                    s,
-                    &regex,
-                    limit,
-                    &mut str_offsets,
-                    &mut str_values,
-                    &mut scratch,
-                );
+                push_split_parts(s, &regex, limit, &mut str_offsets, &mut str_values);
             }
 
             let item_offsets_buffer = OffsetBuffer::new(str_offsets.finish().into());
@@ -272,13 +250,12 @@ fn is_regex_literal(pattern: &str) -> bool {
 }
 
 #[inline]
-fn push_split_literal<'a, O: OffsetSizeTrait>(
-    string: &'a str,
+fn push_split_literal<O: OffsetSizeTrait>(
+    string: &str,
     delimiter: &str,
     limit: i32,
     offsets: &mut BufferBuilder<O>,
     values: &mut BufferBuilder<u8>,
-    scratch: &mut Vec<&'a str>,
 ) {
     if limit > 0 {
         let cap = (limit - 1) as usize;
@@ -299,13 +276,12 @@ fn push_split_literal<'a, O: OffsetSizeTrait>(
 }
 
 #[inline]
-fn push_split_char<'a, O: OffsetSizeTrait>(
-    string: &'a str,
+fn push_split_char<O: OffsetSizeTrait>(
+    string: &str,
     delimiter: char,
     limit: i32,
     offsets: &mut BufferBuilder<O>,
     values: &mut BufferBuilder<u8>,
-    scratch: &mut Vec<&'a str>,
 ) {
     if limit > 0 {
         let cap = (limit - 1) as usize;
@@ -319,7 +295,6 @@ fn push_split_char<'a, O: OffsetSizeTrait>(
         }
         append_str(&string[last_end..], offsets, values);
     } else {
-        // limit < 0
         for p in string.split(delimiter) {
             append_str(p, offsets, values);
         }
@@ -341,7 +316,6 @@ fn split_generic_literal<O: OffsetSizeTrait>(
     let mut str_values = BufferBuilder::<u8>::new(bytes_capacity);
     str_offsets.append(O::usize_as(0));
 
-    let mut scratch = Vec::new();
     list_offsets.push(O::usize_as(0));
 
     let mut chars = pattern.chars();
@@ -354,14 +328,7 @@ fn split_generic_literal<O: OffsetSizeTrait>(
         for i in 0..len {
             if !string_array.is_null(i) {
                 let s = string_array.value(i);
-                push_split_char(
-                    s,
-                    ch,
-                    limit,
-                    &mut str_offsets,
-                    &mut str_values,
-                    &mut scratch,
-                );
+                push_split_char(s, ch, limit, &mut str_offsets, &mut str_values);
             }
             list_offsets.push(O::usize_as(str_offsets.len() - 1));
         }
@@ -369,14 +336,7 @@ fn split_generic_literal<O: OffsetSizeTrait>(
         for i in 0..len {
             if !string_array.is_null(i) {
                 let s = string_array.value(i);
-                push_split_literal(
-                    s,
-                    pattern,
-                    limit,
-                    &mut str_offsets,
-                    &mut str_values,
-                    &mut scratch,
-                );
+                push_split_literal(s, pattern, limit, &mut str_offsets, &mut str_values);
             }
             list_offsets.push(O::usize_as(str_offsets.len() - 1));
         }
@@ -552,20 +512,12 @@ fn split_generic<O: OffsetSizeTrait>(
     let mut str_values = BufferBuilder::<u8>::new(bytes_capacity);
     str_offsets.append(O::usize_as(0));
 
-    let mut scratch = Vec::new();
     list_offsets.push(O::usize_as(0));
 
     for i in 0..len {
         if !string_array.is_null(i) {
             let s = string_array.value(i);
-            push_split_parts(
-                s,
-                regex,
-                limit,
-                &mut str_offsets,
-                &mut str_values,
-                &mut scratch,
-            );
+            push_split_parts(s, regex, limit, &mut str_offsets, &mut str_values);
         }
         list_offsets.push(O::usize_as(str_offsets.len() - 1));
     }
@@ -737,13 +689,12 @@ fn append_str<O: OffsetSizeTrait>(
 }
 
 #[inline]
-fn push_split_parts<'a, O: OffsetSizeTrait>(
-    string: &'a str,
+fn push_split_parts<O: OffsetSizeTrait>(
+    string: &str,
     regex: &Regex,
     limit: i32,
     offsets: &mut BufferBuilder<O>,
     values: &mut BufferBuilder<u8>,
-    scratch: &mut Vec<&'a str>,
 ) {
     if limit > 0 {
         let mut last_end = 0;
@@ -1286,10 +1237,9 @@ mod tests {
                 let mut lit_val = BufferBuilder::<u8>::new(64);
                 let mut rx_off = BufferBuilder::<i32>::new(16);
                 let mut rx_val = BufferBuilder::<u8>::new(64);
-                let mut scratch: Vec<&str> = Vec::new();
 
-                push_split_literal(s, ",", limit, &mut lit_off, &mut lit_val, &mut scratch);
-                push_split_parts(s, &regex, limit, &mut rx_off, &mut rx_val, &mut scratch);
+                push_split_literal(s, ",", limit, &mut lit_off, &mut lit_val);
+                push_split_parts(s, &regex, limit, &mut rx_off, &mut rx_val);
 
                 // Same input must produce byte-identical Arrow buffers.
                 assert_eq!(lit_off.finish().as_slice(), rx_off.finish().as_slice());
