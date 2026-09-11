@@ -34,7 +34,8 @@ import org.apache.spark.sql.catalyst.plans.physical.RangePartitioning
 import org.apache.spark.sql.comet.CometHashAggregateExec
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution.SQLExecution
-import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AdaptiveSparkPlanHelper}
+import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.functions.{avg, col, count_distinct, expr, sum}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
@@ -182,6 +183,29 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         .agg(collect_list("f")),
       include,
       classOf[LocalTableScanExec])
+  }
+
+  test("grouped collect_list/collect_set over nulls, duplicates and several batches") {
+    // Grouped collect_list/collect_set are served by a native GroupsAccumulator rather than one
+    // boxed accumulator per group, so the group's identity travels with each row instead of being
+    // implied by which accumulator was called. This covers the cases where that bookkeeping shows:
+    // a group whose every input is NULL (Spark returns an empty array, not NULL), repeated values
+    // (collect_list keeps every copy, collect_set one), and enough rows that a group is fed by
+    // several batches and, after the exchange, by several partial states.
+    withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "128") {
+      val data = (0 until 2000).map { i =>
+        val group = i % 37
+        (group, if (group == 5) None else Some(i % 11))
+      }
+      withParquetTable(data, "tbl") {
+        checkSparkAnswerAndOperator(sql("""
+          SELECT _1,
+                 sort_array(collect_list(_2)),
+                 sort_array(collect_set(_2)),
+                 size(collect_list(_2))
+          FROM tbl GROUP BY _1"""))
+      }
+    }
   }
 
   test("collect_list/collect_set combined with distinct aggregate falls back safely") {
@@ -1300,6 +1324,66 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             "SELECT _2, MIN(_1) + java_method('java.lang.Math', 'random') " +
               "FROM tbl GROUP BY _2")
           assert(getNumCometHashAggregate(df) == 1)
+        }
+      }
+    }
+  }
+
+  Seq(
+    ("COUNT(*)", 2L, false),
+    ("COUNT(DISTINCT _2)", 2L, false),
+    ("COUNT(DISTINCT _2) + SUM(_2)", 7L, false),
+    ("CAST(SIZE(COLLECT_SET(_2)) AS BIGINT)", 2L, false),
+    ("COUNT(*)", 2L, true)).foreach { case (function, expected, adaptive) =>
+    test(
+      "aggregate canonicalization preserves result expressions and equivalent reuse: " +
+        s"$function, AQE=$adaptive") {
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+        SQLConf.EXCHANGE_REUSE_ENABLED.key -> "true",
+        SQLConf.SHUFFLE_PARTITIONS.key -> "2",
+        CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+        CometConf.COMET_SHUFFLE_MODE.key -> "native") {
+        withParquetTable(Seq((0, 2), (0, 3)), "tbl") {
+          // Build independent branches with an exchange above Final and the requested output alias.
+          def aggregate(result: String, alias: String = "c"): DataFrame =
+            sql(s"SELECT $result AS $alias, _1 FROM tbl GROUP BY _1")
+              .repartition(2, col(alias), col("_1"))
+
+          // Traverse adaptive/query-stage wrappers and fail if the native Final fell back to Spark.
+          def finalAggregate(df: DataFrame): CometHashAggregateExec =
+            collectFirst(df.queryExecution.executedPlan) {
+              case agg: CometHashAggregateExec if agg.modes.contains(Final) => agg
+            }.getOrElse(fail("Expected a native final aggregate"))
+
+          val plus = aggregate(s"($function) + 1")
+          val minus = aggregate(s"($function) - 1")
+          // The shuffles above the final aggregates must not reuse each other: doing so
+          // would return the first projection twice, even without an existence join.
+          checkSparkAnswerAndOperator(plus.unionAll(minus), classOf[ReusedExchangeExec])
+          checkAnswer(plus.unionAll(minus), Seq(Row(expected + 1L, 0), Row(expected - 1L, 0)))
+          assert(!finalAggregate(plus).sameResult(finalAggregate(minus)))
+
+          // Comparing result expressions must still normalize aggregate-result attributes.
+          // Fresh expression IDs and a different output alias do not change the computation.
+          val same = aggregate(s"($function) + 1", "renamed")
+          assert(finalAggregate(plus).sameResult(finalAggregate(same)))
+          assert(finalAggregate(plus).semanticHash() == finalAggregate(same).semanticHash())
+          val (_, reusedPlan) =
+            checkSparkAnswerAndOperator(plus.unionAll(same), classOf[ReusedExchangeExec])
+          if (adaptive) {
+            assert(reusedPlan.isInstanceOf[AdaptiveSparkPlanExec])
+          }
+          // Adaptive-aware traversal must find reuse above Final, not just a shared Partial stage.
+          val reusedFinalAggregates = collect(reusedPlan) {
+            case reused: ReusedExchangeExec if collect(reused.child) {
+                  case agg: CometHashAggregateExec if agg.modes.contains(Final) => agg
+                }.nonEmpty =>
+              reused
+          }
+          assert(
+            reusedFinalAggregates.nonEmpty,
+            s"Expected equivalent aggregate reuse:\n$reusedPlan")
         }
       }
     }
