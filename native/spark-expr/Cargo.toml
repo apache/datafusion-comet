@@ -164,6 +164,10 @@ name = "bloom_filter_agg"
 harness = false
 
 [[bench]]
+name = "collect"
+harness = false
+
+[[bench]]
 name = "padding"
 harness = false
 
@@ -213,6 +217,10 @@ harness = false
 
 [[bench]]
 name = "map_sort"
+harness = false
+
+[[bench]]
+name = "map_extract"
 harness = false
 
 [[bench]]

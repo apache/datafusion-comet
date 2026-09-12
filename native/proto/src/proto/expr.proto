@@ -164,6 +164,8 @@ message AggExpr {
     CollectList collectList = 21;
     Regr regr = 22;
     Mode mode = 23;
+    MaxBy maxBy = 24;
+    MinBy minBy = 25;
   }
 
   // Optional filter expression for SQL FILTER (WHERE ...) clause.
@@ -351,6 +353,20 @@ message HllPlusPlus {
   Expr child = 1;
   // Number of addressing bits, computed from relativeSD to match Spark.
   int32 precision = 2;
+}
+
+message MaxBy {
+  // The value returned by the aggregate (associated with the maximum ordering).
+  Expr value = 1;
+  // The ordering expression whose maximum selects the returned value.
+  Expr ordering = 2;
+}
+
+message MinBy {
+  // The value returned by the aggregate (associated with the minimum ordering).
+  Expr value = 1;
+  // The ordering expression whose minimum selects the returned value.
+  Expr ordering = 2;
 }
 
 message Mode {
