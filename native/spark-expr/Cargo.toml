@@ -220,6 +220,10 @@ name = "map_sort"
 harness = false
 
 [[bench]]
+name = "map_extract"
+harness = false
+
+[[bench]]
 name = "to_time"
 harness = false
 
