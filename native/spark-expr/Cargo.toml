@@ -92,6 +92,10 @@ name = "aggregate"
 harness = false
 
 [[bench]]
+name = "approx_percentile"
+harness = false
+
+[[bench]]
 name = "date_diff"
 harness = false
 
