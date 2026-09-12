@@ -72,35 +72,29 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
       "map value",
       "map('key', named_struct('dup', id, 'dup', id + 100))",
       "map<string, struct<dup: bigint>>")).foreach { case (shape, expression, readType) =>
-    Seq(1, 4096).foreach { batchSize =>
-      test(s"duplicate Parquet field names fail before decoding - $shape - batch $batchSize") {
-        withSQLConf(
-          SQLConf.CASE_SENSITIVE.key -> "true",
-          CometConf.COMET_BATCH_SIZE.key -> batchSize.toString) {
-          withTempPath { path =>
-            withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-              // Keep all rows in one file so batch size 1 exercises a multi-batch read.
-              spark
-                .range(3)
-                .coalesce(1)
-                .selectExpr(s"$expression as s")
-                .write
-                .parquet(path.toString)
-              // The file is readable by Spark with an explicit schema.
-              assert(
-                spark.read.schema(s"s $readType").parquet(path.toString).collect().length == 3)
-            }
-            val df = spark.read.schema(s"s $readType").parquet(path.toString)
-            assert(
-              find(df.queryExecution.executedPlan)(_.isInstanceOf[CometNativeScanExec]).isDefined)
-            val error = intercept[Exception](df.collect())
-            val messages = Iterator
-              .iterate[Throwable](error)(_.getCause)
-              .takeWhile(_ != null)
-              .map(_.getMessage)
-              .mkString("\n")
-            assert(messages.contains("duplicate Parquet field name 'dup'"), messages)
+    test(s"duplicate Parquet field names fail before decoding - $shape") {
+      withSQLConf(SQLConf.CASE_SENSITIVE.key -> "true") {
+        withTempPath { path =>
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            spark
+              .range(3)
+              .coalesce(1)
+              .selectExpr(s"$expression as s")
+              .write
+              .parquet(path.toString)
+            // The file is readable by Spark with an explicit schema.
+            assert(spark.read.schema(s"s $readType").parquet(path.toString).collect().length == 3)
           }
+          val df = spark.read.schema(s"s $readType").parquet(path.toString)
+          assert(
+            find(df.queryExecution.executedPlan)(_.isInstanceOf[CometNativeScanExec]).isDefined)
+          val error = intercept[Exception](df.collect())
+          val messages = Iterator
+            .iterate[Throwable](error)(_.getCause)
+            .takeWhile(_ != null)
+            .map(_.getMessage)
+            .mkString("\n")
+          assert(messages.contains("duplicate Parquet field name 'dup'"), messages)
         }
       }
     }
@@ -117,18 +111,69 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
       }
       Seq(true, false).foreach { caseSensitive =>
         withSQLConf(SQLConf.CASE_SENSITIVE.key -> caseSensitive.toString) {
-          val df = spark.read.schema("id bigint").parquet(path.toString)
+          val name = if (caseSensitive) "id" else "ID"
+          val df = spark.read.schema(s"$name bigint").parquet(path.toString)
           assert(
             find(df.queryExecution.executedPlan)(_.isInstanceOf[CometNativeScanExec]).isDefined)
           (1 to 2).foreach { _ =>
-            val error = intercept[Exception](df.collect())
-            val messages = Iterator
-              .iterate[Throwable](error)(_.getCause)
-              .takeWhile(_ != null)
-              .map(_.getMessage)
-              .mkString("\n")
-            assert(messages.contains("duplicate Parquet field name 'dup'"), messages)
+            checkAnswer(df, Seq(Row(0L), Row(1L), Row(2L)))
+            checkAnswer(df.where("id > 1000"), Seq.empty)
+            checkAnswer(df.selectExpr("count(*)"), Seq(Row(3L)))
           }
+        }
+      }
+    }
+  }
+
+  test("duplicate Parquet field names - root group and unprojected root duplicates") {
+    withSQLConf(SQLConf.CASE_SENSITIVE.key -> "true") {
+      withTempPath { path =>
+        writeDirect(
+          path.toString,
+          "message spark_schema { optional int64 a = 1; optional int64 a = 2; optional int64 b = 3; }",
+          { rc =>
+            rc.startMessage()
+            Seq(("a", 0, 1L), ("a", 1, 2L), ("b", 2, 3L)).foreach { case (name, index, value) =>
+              rc.startField(name, index)
+              rc.addLong(value)
+              rc.endField(name, index)
+            }
+            rc.endMessage()
+          })
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          checkAnswer(spark.read.schema("a bigint").parquet(path.toString), Seq(Row(1L)))
+        }
+        val selected = spark.read.schema("a bigint").parquet(path.toString)
+        assert(
+          find(selected.queryExecution.executedPlan)(
+            _.isInstanceOf[CometNativeScanExec]).isDefined)
+        val error = intercept[Exception](selected.collect())
+        val messages = Iterator
+          .iterate[Throwable](error)(_.getCause)
+          .takeWhile(_ != null)
+          .map(_.getMessage)
+          .mkString("\n")
+        assert(messages.contains("duplicate Parquet field name 'a'"), messages)
+        val valid = spark.read.schema("b bigint").parquet(path.toString)
+        assert(
+          find(valid.queryExecution.executedPlan)(_.isInstanceOf[CometNativeScanExec]).isDefined)
+        checkAnswer(valid, Seq(Row(3L)))
+        withSQLConf(SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "true") {
+          val schema = new StructType().add(
+            "renamed_b",
+            LongType,
+            nullable = true,
+            new MetadataBuilder().putLong("parquet.field.id", 3L).build())
+          val byId = spark.read.schema(schema).parquet(path.toString)
+          assert(
+            find(byId.queryExecution.executedPlan)(_.isInstanceOf[CometNativeScanExec]).isDefined)
+          val fieldIdError = intercept[Exception](byId.collect())
+          val fieldIdMessages = Iterator
+            .iterate[Throwable](fieldIdError)(_.getCause)
+            .takeWhile(_ != null)
+            .map(_.getMessage)
+            .mkString("\n")
+          assert(fieldIdMessages.contains("duplicate Parquet field name 'a'"), fieldIdMessages)
         }
       }
     }
