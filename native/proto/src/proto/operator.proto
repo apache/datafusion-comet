@@ -187,6 +187,12 @@ message NativeScan {
 
   // Single partition's file list (injected at execution time)
   SparkFilePartition file_partition = 2;
+
+  // Hash half of the key under which this scan's planning data is stored and looked up at
+  // execution time; the other half is common.source. Derived once on the driver
+  // (CometNativeScanExec) so executors rebuild the key instead of hashing the common per task.
+  // JVM-consumed only; the native side ignores it.
+  optional int32 source_key_hash = 3;
 }
 
 message CsvScan {

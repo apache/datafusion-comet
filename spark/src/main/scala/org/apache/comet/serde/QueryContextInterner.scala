@@ -38,9 +38,9 @@ import org.apache.comet.serde.OperatorOuterClass.Operator
  *
  * This rewrites the tree so each distinct text appears once, in `Operator.sql_text_pool` on the
  * root operator, with each `QueryContext` referring to it by `sql_text_idx`. The plan bytes are
- * shipped in the stage's task binary, re-parsed and re-serialized per task by
- * `CometExecRDD.compute` whenever the plan contains a native scan, and decoded per task by the
- * native planner, so the saving is paid back on every task.
+ * shipped in the stage's task binary, re-serialized per task by `CometExecRDD.compute` whenever
+ * the plan contains a native scan, and decoded per task by the native planner, so the saving is
+ * paid back on every task.
  *
  * The walk is descriptor-driven rather than a hand-written recursion over `Expr`'s ~75-way
  * `oneof`: a `QueryContext` can sit on any `Expr` or `AggExpr` at any nesting depth, and a
