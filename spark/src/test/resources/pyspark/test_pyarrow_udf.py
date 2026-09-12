@@ -1091,6 +1091,89 @@ def test_map_in_arrow_map_type(spark, tmp_path, accelerated):
     assert out == expected
 
 
+def test_map_in_arrow_null_typed_map_children(spark, tmp_path, accelerated):
+    """
+    `transform_values(map(), ...)` yields MapType(NullType, LongType) and `map(id, NULL)`
+    yields MapType(LongType, NullType); the accelerated runner repairs the NullType map key
+    (see CometArrowPythonRunnerBase) before building its destination struct.
+
+    pyarrow refuses to *declare* a non-nullable null-typed field (`A null type field may not
+    be non-nullable`), so the NullType-key map can only ever be a UDF input, never part of the
+    return schema; the UDF drops it and returns the NullType-value map unchanged.
+    """
+    src = str(tmp_path / "src.parquet")
+    spark.range(0, 20, 1, 2).write.parquet(src)
+    df = spark.read.parquet(src).selectExpr(
+        "id",
+        "transform_values(map(), (k, v) -> id) AS null_key",
+        "map(id, NULL) AS null_value",
+    )
+    schema_out = T.StructType(
+        [
+            T.StructField("id", T.LongType()),
+            T.StructField("null_value", T.MapType(T.LongType(), T.NullType())),
+        ]
+    )
+
+    def drop_null_key(iterator):
+        for batch in iterator:
+            null_key_type = batch.schema.field("null_key").type
+            assert pa.types.is_map(null_key_type)
+            assert pa.types.is_null(null_key_type.key_type)
+            yield batch.select(["id", "null_value"])
+
+    result_df = df.mapInArrow(drop_null_key, schema_out)
+    _assert_plan_matches_mode(_executed_plan(result_df), accelerated)
+
+    out = sorted((r["id"], r["null_value"]) for r in result_df.collect())
+    assert out == [(i, {i: None}) for i in range(20)]
+
+
+def test_map_in_arrow_null_typed_list_and_struct_children(spark, tmp_path, accelerated):
+    """
+    `transform(array(id), x -> NULL)` yields ArrayType(NullType) and `named_struct('a', id, 'b',
+    NULL)` yields a struct with a NullType field. Both reach the runner as Comet vectors with a
+    NullVector child (no buffers, every slot null), so the destination struct root and the IPC
+    schema must describe a null-typed child pyarrow can read. Unlike the NullType map key these
+    can also be returned: pyarrow accepts a *nullable* null-typed field, and Comet declares a
+    NullType child nullable whatever Spark's containsNull / field nullability says.
+    """
+    src = str(tmp_path / "src.parquet")
+    spark.range(0, 20, 1, 2).write.parquet(src)
+    df = spark.read.parquet(src).selectExpr(
+        "id",
+        "transform(array(id), x -> NULL) AS null_list",
+        "named_struct('a', id, 'b', NULL) AS null_struct",
+    )
+    schema_out = T.StructType(
+        [
+            T.StructField("id", T.LongType()),
+            T.StructField("null_list", T.ArrayType(T.NullType())),
+            T.StructField(
+                "null_struct",
+                T.StructType(
+                    [T.StructField("a", T.LongType()), T.StructField("b", T.NullType())]
+                ),
+            ),
+        ]
+    )
+
+    def check_and_pass(iterator):
+        for batch in iterator:
+            assert pa.types.is_null(batch.schema.field("null_list").type.value_type)
+            assert pa.types.is_null(batch.schema.field("null_struct").type.field("b").type)
+            yield batch
+
+    result_df = df.mapInArrow(check_and_pass, schema_out)
+    _assert_plan_matches_mode(_executed_plan(result_df), accelerated)
+
+    out = sorted(
+        (r["id"], r["null_list"], (r["null_struct"]["a"], r["null_struct"]["b"]))
+        for r in result_df.collect()
+    )
+    assert out == [(i, [None], (i, None)) for i in range(20)]
+
+
 def test_map_in_arrow_deeply_nested(spark, tmp_path, accelerated):
     """
     Exercises direct source-vector serialization at depth > 1, in every nesting combination:

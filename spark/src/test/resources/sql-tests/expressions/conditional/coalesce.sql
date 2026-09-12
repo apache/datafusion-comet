@@ -33,3 +33,16 @@ SELECT coalesce(a, 99) FROM test_coalesce
 -- literal arguments
 query
 SELECT coalesce(NULL, NULL, 99), coalesce(1, NULL, 99), coalesce(NULL)
+
+-- The serde guards every argument but the last with CASE WHEN arg IS NOT NULL THEN arg, and the
+-- two copies of a non-deterministic argument advance their state independently: the THEN copy
+-- can answer NULL for a row the guard selected, in a column declared non-nullable. The JVM
+-- codegen dispatcher evaluates Spark's own code once per row, so it runs there instead.
+query
+SELECT coalesce(IF(monotonically_increasing_id() % 2 = 0, a, NULL), b, 0) FROM test_coalesce
+
+-- A NullType result cannot run natively (the serde builds a native CASE, which merges the rows
+-- of its branches through Arrow's merge_n and cannot build a NullArray with a validity bitmap),
+-- so the JVM codegen dispatcher runs it inside the Comet pipeline.
+query
+SELECT coalesce(aggregate(array(a), NULL, (acc, x) -> NULL), aggregate(array(b), NULL, (acc, x) -> NULL)) FROM test_coalesce

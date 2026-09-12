@@ -138,9 +138,22 @@ private[codegen] object CometBatchKernelCodegenOutput extends CometTypeShim {
     override def getField: Field = exportField
   }
 
+  /**
+   * The superclass constructor builds a `NullableStructWriter` over `getField.getChildren`, and
+   * that writer has no arm for a Null child (`UnsupportedOperationException: Unknown type: NULL`
+   * for a `struct<..., x: null>` output). So the superclass is given a childless copy of the
+   * field, `getField` answers with it until construction completes (`constructed` is still the
+   * JVM default `false` while the superclass constructor runs, since this class's own fields are
+   * initialized afterwards), and the children come from `initializeChildrenFromFields` in
+   * [[allocateOutput]], the same way a struct nested under a list gets them.
+   */
   private final class RenamedStructVector(exportField: Field, allocator: BufferAllocator)
-      extends StructVector(exportField, allocator, null) {
-    override def getField: Field = exportField
+      extends StructVector(
+        new Field(exportField.getName, exportField.getFieldType, null),
+        allocator,
+        null) {
+    private val constructed: Boolean = true
+    override def getField: Field = if (constructed) exportField else super.getField
   }
 
   /**
@@ -179,6 +192,7 @@ private[codegen] object CometBatchKernelCodegenOutput extends CometTypeShim {
     case _: ArrayType => classOf[ListVector].getName
     case _: StructType => classOf[StructVector].getName
     case _: MapType => classOf[MapVector].getName
+    case NullType => classOf[NullVector].getName
     case other =>
       throw new UnsupportedOperationException(
         s"CometBatchKernelCodegen.outputVectorClass: unsupported output type $other")
@@ -209,6 +223,11 @@ private[codegen] object CometBatchKernelCodegenOutput extends CometTypeShim {
       dataType: DataType,
       ctx: CodegenContext,
       nested: Boolean = false): OutputEmit = dataType match {
+    case NullType =>
+      // A NullType value is null by definition: nothing to read from `source`, and `NullVector`
+      // has no data buffer. `setNull` is a no-op; the all-null semantics come from
+      // `CometScalaUDFCodegen.evaluate`'s post-`process` `setValueCount`.
+      OutputEmit("", s"$targetVec.setNull($idx);")
     case BooleanType =>
       val set = if (nested) "setSafe" else "set"
       OutputEmit("", s"$targetVec.$set($idx, $source ? 1 : 0);")
@@ -407,6 +426,10 @@ private[codegen] object CometBatchKernelCodegenOutput extends CometTypeShim {
    */
   private def emitSpecializedGetterExpr(target: String, idx: String, elemType: DataType): String =
     elemType match {
+      // Computed eagerly for every child, then dropped by [[emitWrite]]'s NullType branch, which
+      // emits `setNull` instead. Dead in the generated Java but not here: without this case an
+      // `array<null>` / `struct<.., null>` output throws instead of dispatching.
+      case NullType => "null"
       case BooleanType => s"$target.getBoolean($idx)"
       case ByteType => s"$target.getByte($idx)"
       case ShortType => s"$target.getShort($idx)"

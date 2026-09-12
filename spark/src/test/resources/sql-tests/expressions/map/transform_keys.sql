@@ -38,3 +38,7 @@ SELECT transform_keys(m, (k, v) -> concat(k, suffix)) FROM test_transform_keys
 -- all literals
 query
 SELECT transform_keys(map('a', 1, 'b', 2), (k, v) -> upper(k))
+
+-- an untyped value leaves the value type as NullType
+query
+SELECT transform_keys(map('a', NULL), (k, v) -> k)

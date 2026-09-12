@@ -59,3 +59,18 @@ SELECT map_from_arrays(array('a'), NULL)
 
 query
 SELECT map_from_arrays(NULL, NULL)
+
+-- empty arrays produce MapType(NullType, NullType)
+query
+SELECT map_from_arrays(array(), array())
+
+-- The serde's null guard serializes both inputs twice, and a non-deterministic input would
+-- advance differently in each copy, so it falls back.
+query expect_fallback(non-deterministic child under a null guard is evaluated on different rows than Spark's)
+SELECT map_from_arrays(IF(monotonically_increasing_id() % 2 = 0, k, NULL), v) FROM test_map_from_arrays
+
+-- A literal array beside a per-row one: DataFusion's map kernel reads the scalar list through its
+-- first row only and fails the length check, so the shape stays in Spark. Independent of NullType
+-- (the typed literal fails the same way); found while probing the NullType flavour.
+query expect_fallback(native map takes the first row of a scalar list where the other argument is per-row)
+SELECT map_from_arrays(array(coalesce(k[0], 'x')), array(1)), map_from_arrays(array(coalesce(k[0], 'x')), array(NULL)) FROM test_map_from_arrays

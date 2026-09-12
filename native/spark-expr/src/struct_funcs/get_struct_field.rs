@@ -99,9 +99,17 @@ impl PhysicalExpr for GetStructField {
                     self.ordinal,
                 )?))
             }
-            ColumnarValue::Scalar(ScalarValue::Struct(struct_array)) => Ok(ColumnarValue::Array(
-                child_with_parent_nulls(&struct_array, self.ordinal)?,
-            )),
+            // A scalar struct (a NULL branch of CASE, a scalar subquery) holds one row, so its
+            // field is a scalar too. Returning the projected one-row array instead makes the
+            // consumer believe it has a full column: a CASE result builder then slices row
+            // ranges out of it and panics ("range end index 2 out of range for slice of length
+            // 1").
+            ColumnarValue::Scalar(ScalarValue::Struct(struct_array)) => {
+                let projected = child_with_parent_nulls(&struct_array, self.ordinal)?;
+                Ok(ColumnarValue::Scalar(ScalarValue::try_from_array(
+                    &projected, 0,
+                )?))
+            }
             value => Err(DataFusionError::Execution(format!(
                 "Expected a struct array, got {value:?}"
             ))),
@@ -136,16 +144,58 @@ impl Display for GetStructField {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{ArrayRef, Int64Array};
+    use arrow::array::{ArrayRef, Int64Array, NullArray};
     use arrow::buffer::NullBuffer;
     use arrow::datatypes::Fields;
-    use datafusion::physical_expr::expressions::Column;
+    use datafusion::physical_expr::expressions::{Column, Literal};
 
     // A field of a NULL struct must be NULL (Spark semantics) even when the child buffer holds a
     // non-null value at that row -- Arrow stores child validity independently of the parent
     // struct's null mask, so a logically-null struct column read from parquet can still carry a
     // populated child buffer. Without propagating the parent null mask, `isnotnull(struct.field)`
     // wrongly evaluates TRUE for a null struct.
+    // A scalar struct input yields a scalar field, so a consumer that broadcasts it over the batch
+    // (a CASE branch, a projection beside a column) sees one value per row rather than a one-row
+    // array. A null struct scalar yields a null scalar, for a typed field and a Null-typed one.
+    #[test]
+    fn field_of_scalar_struct_is_scalar() {
+        let fields: Fields = Fields::from(vec![
+            Field::new("a", DataType::Int64, true),
+            Field::new("n", DataType::Null, true),
+        ]);
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(Int64Array::from(vec![0_i64, 1, 2, 3]))],
+        )
+        .unwrap();
+
+        let present = ScalarValue::Struct(Arc::new(StructArray::new(
+            fields.clone(),
+            vec![
+                Arc::new(Int64Array::from(vec![7_i64])),
+                Arc::new(NullArray::new(1)),
+            ],
+            None,
+        )));
+        let absent = ScalarValue::Struct(Arc::new(StructArray::new_null(fields, 1)));
+
+        for (scalar, ordinal, expected) in [
+            (present.clone(), 0, ScalarValue::Int64(Some(7))),
+            (present, 1, ScalarValue::Null),
+            (absent.clone(), 0, ScalarValue::Int64(None)),
+            (absent, 1, ScalarValue::Null),
+        ] {
+            let expr = GetStructField::new(Arc::new(Literal::new(scalar)), ordinal);
+            match expr.evaluate(&batch).unwrap() {
+                ColumnarValue::Scalar(value) => assert_eq!(value, expected),
+                ColumnarValue::Array(array) => {
+                    panic!("expected a scalar for ordinal {ordinal}, got array {array:?}")
+                }
+            }
+        }
+    }
+
     #[test]
     fn field_of_null_struct_is_null() {
         // Child is non-null at every row; the struct itself is null at rows 1 and 3.

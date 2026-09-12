@@ -96,10 +96,55 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
     checkShuffleAnswer(shuffled, 1)
   }
 
+  test("columnar shuffle spanning several native writer batches with NullType columns") {
+    // The sort-based writer (`CometUnsafeShuffleWriter`, chosen once the partition count exceeds
+    // `spark.shuffle.sort.bypassMergeThreshold`) hands a whole destination partition to
+    // `process_sorted_row_partition`, which cuts it into `spark.comet.shuffle.jvm.batchSize`
+    // batches while reusing its builders. A `NullBuilder` keeps its length across `finish`, so
+    // every Null-bearing shape used to fail or miscount from the second batch on. The bypass
+    // writer never sends more than one batch per call, hence the partition count here, and the
+    // spill threshold is lifted so the writer sees several rows per partition.
+    withSQLConf(
+      CometConf.COMET_SHUFFLE_JVM_BATCH_SIZE.key -> "2",
+      CometConf.COMET_SHUFFLE_JVM_SPILL_THRESHOLD.key -> "100000",
+      CometConf.COMET_SHUFFLE_CONVERT_FROM_SPARK_PLAN_ENABLED.key -> "false") {
+      withParquetTable((0L until 2000L).map(Tuple1(_)), "tbl") {
+        val producers = Seq(
+          "named_struct('v', _1, 'n', NULL)",
+          "named_struct('s', named_struct('v', _1, 'n', NULL))",
+          "array(named_struct('v', _1, 'n', NULL))",
+          "element_at(transform(array(_1), x -> named_struct('v', x, 'n', NULL)), 1)",
+          "NULL",
+          "map(_1, NULL)",
+          "transform(array(_1), x -> NULL)")
+        producers.foreach { producer =>
+          val df = sql(s"SELECT /*+ REPARTITION(300) */ _1, $producer AS c FROM tbl")
+          checkShuffleAnswer(df, 1)
+        }
+      }
+    }
+  }
+
   test("columnar shuffle with Map[_, NullType] column") {
     val df = sql("SELECT id, map(id, null) AS m FROM VALUES (1), (2), (3) AS t(id)")
     val shuffled = df.repartition(2, $"id")
     checkShuffleAnswer(shuffled, 1)
+  }
+
+  test("columnar shuffle with Map[NullType, _] column") {
+    // map() leaves a NullType key, which Arrow requires to be non-nullable in the IPC schema;
+    // transform_values keeps a second copy non-foldable so it is built by the child rather than
+    // constant-folded into a literal. `map()` is MapType(NullType, NullType) only while the
+    // legacy flag is off.
+    withSQLConf(SQLConf.LEGACY_CREATE_EMPTY_COLLECTION_USING_STRING_TYPE.key -> "false") {
+      val df = sql(
+        "SELECT id, map() AS m1, transform_values(map(), (k, v) -> id) AS m2 " +
+          "FROM VALUES (1), (2), (3) AS t(id)")
+      assert(df.schema("m1").dataType.asInstanceOf[MapType].keyType === NullType)
+      assert(df.schema("m2").dataType.asInstanceOf[MapType].keyType === NullType)
+      val shuffled = df.repartition(2, $"id")
+      checkShuffleAnswer(shuffled, 1)
+    }
   }
 
   test("columnar shuffle on nested struct including nulls") {

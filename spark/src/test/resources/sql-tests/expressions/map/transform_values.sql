@@ -42,3 +42,7 @@ SELECT transform_values(m, (k, v) -> v + delta) FROM test_transform_values
 -- all literals
 query
 SELECT transform_values(map('a', 1, 'b', 2), (k, v) -> v * 100)
+
+-- a lambda returning NULL leaves the value type as NullType
+query
+SELECT transform_values(map('a', NULL), (k, v) -> v)

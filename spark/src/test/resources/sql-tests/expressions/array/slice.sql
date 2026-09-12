@@ -277,3 +277,14 @@ INSERT INTO test_slice_map VALUES (1, 10), (2, NULL), (3, 30)
 
 query
 SELECT slice(array(map(k, v), map(k + 1, v)), 1, 1) FROM test_slice_map
+
+-- A NullType element built by the JVM codegen dispatcher (containsNull=false in Spark) reaches
+-- native declared nullable; the kernel's result must still match the planned type
+query
+SELECT slice(filter(array(), x -> true), 1, 1) FROM test_slice
+
+-- map_entries produces a list whose NullType-bearing struct item is declared non-nullable;
+-- native spark_array_slice keeps that item, and since the serde no longer serializes a return
+-- type (the output field comes from the input's), the two agree and it runs natively.
+query
+SELECT slice(map_entries(map(coalesce(start_idx, 0), NULL)), 1, 1) FROM test_slice
