@@ -24,7 +24,8 @@ import scala.reflect.ClassTag
 
 import org.apache.spark.{Partition, SparkContext, TaskContext}
 import org.apache.spark.rdd.RDD
-import org.apache.spark.sql.catalyst.expressions.{Attribute, NamedExpression, SortOrder}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, NamedExpression, SortOrder}
+import org.apache.spark.sql.catalyst.optimizer.NormalizeFloatingNumbers
 import org.apache.spark.sql.comet.execution.arrow.CometArrowStream
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.SparkPlan
@@ -35,6 +36,18 @@ import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde.{exprToProto, serializeDataType}
 
 object CometExecUtils {
+
+  /**
+   * Expose Spark's package-private recursive floating-point normalizer to Comet serde.
+   *
+   * Compatibility note: `NormalizeFloatingNumbers.normalize` is `private[sql]` with no stability
+   * guarantee. It has existed with this signature in every Spark version Comet supports (3.4
+   * through 4.2). Because this is a direct compile-time reference (not reflection), any rename or
+   * signature change in a future Spark version fails the build for that profile loudly; if that
+   * happens, shim this method per Spark version like other `Shim*` classes.
+   */
+  def normalizeFloatingNumbers(expr: Expression): Expression =
+    NormalizeFloatingNumbers.normalize(expr)
 
   /**
    * Create an empty RDD with the given number of partitions.
