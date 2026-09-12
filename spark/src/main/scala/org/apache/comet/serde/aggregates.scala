@@ -35,7 +35,10 @@ import org.apache.comet.shims.{CometCollectShim, CometEvalModeUtil, CometTypeShi
 
 object CometMin extends CometAggregateExpressionSerde[Min] {
 
-  override def supportsMixedPartialFinal(fn: Min): Boolean = true
+  override def supportsSparkPartialToNativeFinal(fn: Min): Boolean = true
+
+  // Native MIN emits one typed null for empty/all-null input; Spark's least merge ignores it.
+  override def supportsNativePartialToSparkFinal(fn: Min): Boolean = true
 
   override def getSupportLevel(expr: Min): SupportLevel =
     AggSerde.minMaxSupportLevel(expr.dataType)
@@ -71,7 +74,10 @@ object CometMin extends CometAggregateExpressionSerde[Min] {
 
 object CometMax extends CometAggregateExpressionSerde[Max] {
 
-  override def supportsMixedPartialFinal(fn: Max): Boolean = true
+  override def supportsSparkPartialToNativeFinal(fn: Max): Boolean = true
+
+  // Native MAX emits one typed null for empty/all-null input; Spark's greatest merge ignores it.
+  override def supportsNativePartialToSparkFinal(fn: Max): Boolean = true
 
   override def getSupportLevel(expr: Max): SupportLevel =
     AggSerde.minMaxSupportLevel(expr.dataType)
@@ -189,6 +195,10 @@ object CometMinBy extends CometMaxMinBy[MinBy] {
 }
 
 object CometCount extends CometAggregateExpressionSerde[Count] {
+  // Both buffers are a single non-null Long. The AQE/count-bug restrictions documented on the
+  // reverse direction concern a Comet Final; retaining Spark's Final preserves those rewrites.
+  override def supportsNativePartialToSparkFinal(fn: Count): Boolean = true
+
   override def convert(
       aggExpr: AggregateExpression,
       expr: Count,
@@ -212,7 +222,12 @@ object CometCount extends CometAggregateExpressionSerde[Count] {
 
 object CometAverage extends CometAggregateExpressionSerde[Average] {
 
-  override def supportsMixedPartialFinal(fn: Average): Boolean =
+  // A never-updated non-decimal native AVG partial emits (null, 0), but Spark's merge needs
+  // (0.0, 0). Keep this direction disabled until #5420 repairs the emitted state, including
+  // aggregate nodes that also contain a buffer-compatible function such as COUNT.
+  override def supportsNativePartialToSparkFinal(fn: Average): Boolean = false
+
+  override def supportsSparkPartialToNativeFinal(fn: Average): Boolean =
     // Non-decimal AVG has a (sum: double, count: long) buffer matching Spark. Decimal AVG is
     // deferred (overflow nulls count differently) and stays unsafe for mixed execution.
     !fn.child.dataType.isInstanceOf[DecimalType]
@@ -272,7 +287,13 @@ object CometAverage extends CometAggregateExpressionSerde[Average] {
 
 object CometSum extends CometAggregateExpressionSerde[Sum] {
 
-  override def supportsMixedPartialFinal(fn: Sum): Boolean =
+  // Non-decimal, non-TRY SUM emits one nullable sum, including null for empty/all-null input;
+  // Spark's coalesce-based merge accepts it. Decimal and TRY state remain excluded.
+  override def supportsNativePartialToSparkFinal(fn: Sum): Boolean =
+    !fn.child.dataType.isInstanceOf[DecimalType] &&
+      CometEvalModeUtil.fromSparkEvalMode(CometEvalModeUtil.sumEvalMode(fn)) != CometEvalMode.TRY
+
+  override def supportsSparkPartialToNativeFinal(fn: Sum): Boolean =
     // Decimal SUM is excluded: overflow detection (ANSI throw / Legacy null) does not survive a
     // Spark-partial / Comet-final split, so the required ArithmeticException is never raised.
     // TRY-mode integer SUM carries a Comet-internal has_all_nulls column that Spark cannot read.
@@ -389,7 +410,10 @@ object CometLast extends CometAggregateExpressionSerde[Last] {
 }
 
 object CometBitAndAgg extends CometAggregateExpressionSerde[BitAndAgg] {
-  override def supportsMixedPartialFinal(fn: BitAndAgg): Boolean = true
+  override def supportsSparkPartialToNativeFinal(fn: BitAndAgg): Boolean = true
+
+  // The single native buffer is null for empty/all-null input; Spark's merge skips nulls.
+  override def supportsNativePartialToSparkFinal(fn: BitAndAgg): Boolean = true
 
   override def getSupportLevel(expr: BitAndAgg): SupportLevel =
     if (AggSerde.bitwiseAggTypeSupported(expr.dataType)) {
@@ -427,7 +451,10 @@ object CometBitAndAgg extends CometAggregateExpressionSerde[BitAndAgg] {
 }
 
 object CometBitOrAgg extends CometAggregateExpressionSerde[BitOrAgg] {
-  override def supportsMixedPartialFinal(fn: BitOrAgg): Boolean = true
+  override def supportsSparkPartialToNativeFinal(fn: BitOrAgg): Boolean = true
+
+  // The single native buffer is null for empty/all-null input; Spark's merge skips nulls.
+  override def supportsNativePartialToSparkFinal(fn: BitOrAgg): Boolean = true
 
   override def getSupportLevel(expr: BitOrAgg): SupportLevel =
     if (AggSerde.bitwiseAggTypeSupported(expr.dataType)) {
@@ -465,7 +492,10 @@ object CometBitOrAgg extends CometAggregateExpressionSerde[BitOrAgg] {
 }
 
 object CometBitXOrAgg extends CometAggregateExpressionSerde[BitXorAgg] {
-  override def supportsMixedPartialFinal(fn: BitXorAgg): Boolean = true
+  override def supportsSparkPartialToNativeFinal(fn: BitXorAgg): Boolean = true
+
+  // The single native buffer is null for empty/all-null input; Spark's merge skips nulls.
+  override def supportsNativePartialToSparkFinal(fn: BitXorAgg): Boolean = true
 
   override def getSupportLevel(expr: BitXorAgg): SupportLevel =
     if (AggSerde.bitwiseAggTypeSupported(expr.dataType)) {
@@ -973,7 +1003,11 @@ object CometRegrReplacement
 
 object CometBloomFilterAggregate extends CometAggregateExpressionSerde[BloomFilterAggregate] {
 
-  override def supportsMixedPartialFinal(fn: BloomFilterAggregate): Boolean = true
+  override def supportsSparkPartialToNativeFinal(fn: BloomFilterAggregate): Boolean = true
+
+  // Native state is Spark's serialized filter, non-null even for empty/all-null input; only
+  // the final result may be null, so Spark's deserialize always receives a valid filter.
+  override def supportsNativePartialToSparkFinal(fn: BloomFilterAggregate): Boolean = true
 
   override def getSupportLevel(expr: BloomFilterAggregate): SupportLevel =
     expr.child.dataType match {
@@ -1142,7 +1176,10 @@ object CometApproxCountDistinct extends CometAggregateExpressionSerde[HyperLogLo
   // The register buffer uses Spark's identical packed-`Long` layout (`numWords` `Long` columns),
   // matching Spark's `aggBufferSchema`, so a Comet partial and Spark final (or the reverse) can
   // be mixed in one plan.
-  override def supportsMixedPartialFinal(fn: HyperLogLogPlusPlus): Boolean = true
+  override def supportsSparkPartialToNativeFinal(fn: HyperLogLogPlusPlus): Boolean = true
+
+  // Native empty/all-null state contains non-null zero Long words, matching Spark's registers.
+  override def supportsNativePartialToSparkFinal(fn: HyperLogLogPlusPlus): Boolean = true
 
   // Types that Comet's native `xxhash64` hashes identically to Spark's `XxHash64Function`.
   // `StringType` here is the default UTF8_BINARY collation; a collated `StringType(collationId)`

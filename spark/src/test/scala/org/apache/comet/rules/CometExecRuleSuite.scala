@@ -21,20 +21,24 @@ package org.apache.comet.rules
 
 import scala.util.Random
 
+import org.apache.logging.log4j.Level
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.FunctionIdentifier
 import org.apache.spark.sql.catalyst.expressions.{Expression, ExpressionInfo}
-import org.apache.spark.sql.catalyst.expressions.aggregate.BloomFilterAggregate
+import org.apache.spark.sql.catalyst.expressions.aggregate.{BloomFilterAggregate, Final, Partial, PartialMerge}
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution._
-import org.apache.spark.sql.execution.adaptive.QueryStageExec
+import org.apache.spark.sql.execution.adaptive.{AQEShuffleReadExec, QueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{HashAggregateExec, ObjectHashAggregateExec}
-import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ShuffleExchangeExec}
+import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
 
-import org.apache.comet.{CometConf, CometExplainInfo}
+import org.apache.comet.{CometConf, CometExplainInfo, ExtendedExplainInfo}
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark42Plus}
+import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
+import org.apache.comet.serde.QueryPlanSerde
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
 /**
@@ -233,8 +237,7 @@ class CometExecRuleSuite extends CometTestBase {
     }
   }
 
-  // Regression test for https://github.com/apache/datafusion-comet/issues/1389
-  test("CometExecRule should not allow Comet partial and Spark final hash aggregate") {
+  test("CometExecRule should allow COUNT Comet partial and Spark final hash aggregate") {
     withTempView("test_data") {
       createTestDataFrame.createOrReplaceTempView("test_data")
 
@@ -250,11 +253,10 @@ class CometExecRuleSuite extends CometTestBase {
         CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
         val transformedPlan = applyCometExecRule(sparkPlan)
 
-        // COUNT is intentionally excluded from mixed execution (AQE / count-bug reasons), so if
-        // the final aggregate cannot be converted to Comet, neither should the partial.
-        assert(
-          countOperators(transformedPlan, classOf[HashAggregateExec]) == originalHashAggCount)
-        assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 0)
+        // COUNT's buffer is compatible in this direction. Keeping the Final in Spark also keeps
+        // the AQE/count-bug rewrites that prevent the reverse direction from being admitted.
+        assert(countOperators(transformedPlan, classOf[HashAggregateExec]) == 1)
+        assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 1)
       }
     }
   }
@@ -275,8 +277,8 @@ class CometExecRuleSuite extends CometTestBase {
         CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
         val transformedPlan = applyCometExecRule(sparkPlan)
 
-        // COUNT blocks mixed execution, so if the partial cannot be converted, neither should
-        // the final.
+        // COUNT still blocks Spark Partial to Comet Final, independently of the safe reverse
+        // direction, so if the partial cannot be converted, neither should the final.
         assert(
           countOperators(transformedPlan, classOf[HashAggregateExec]) == originalHashAggCount)
         assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 0)
@@ -363,7 +365,7 @@ class CometExecRuleSuite extends CometTestBase {
     }
   }
 
-  test("CometExecRule should allow AVG mixed Comet partial and Spark final") {
+  test("CometExecRule should not allow AVG Comet partial and Spark final before buffer repair") {
     withTempView("test_data") {
       createTestDataFrame.createOrReplaceTempView("test_data")
       val sparkPlan =
@@ -373,8 +375,9 @@ class CometExecRuleSuite extends CometTestBase {
         CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.key -> "false",
         CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
         val transformedPlan = applyCometExecRule(sparkPlan)
-        assert(countOperators(transformedPlan, classOf[HashAggregateExec]) == 1) // final
-        assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 1) // partial
+        // Matching field types do not make native AVG's empty (null, 0) state safe for Spark.
+        assert(countOperators(transformedPlan, classOf[HashAggregateExec]) == 2)
+        assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 0)
       }
     }
   }
@@ -417,6 +420,287 @@ class CometExecRuleSuite extends CometTestBase {
         // mixed execution is unsafe and the partial must also fall back to Spark.
         assert(countOperators(transformedPlan, classOf[HashAggregateExec]) == 2)
         assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 0)
+      }
+    }
+  }
+
+  for (distinct <- Seq(false, true)) {
+    test(
+      s"unsafe aggregate buffers fall back when native shuffle is ineligible (distinct=$distinct)") {
+      withTempView("test_data") {
+        createTestDataFrame.createOrReplaceTempView("test_data")
+        val aggregates = "AVG(CAST(id AS DECIMAL(20, 2)))" +
+          (if (distinct) ", COUNT(DISTINCT name)" else "")
+
+        for (fallback <- Seq("disabled hash partitioning", "prior shuffle fallback", "none")) {
+          withSQLConf(
+            CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+            CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+            CometConf.COMET_SHUFFLE_MODE.key -> "native",
+            CometConf.COMET_SHUFFLE_NATIVE_HASH_PARTITIONING_ENABLED.key ->
+              (fallback != "disabled hash partitioning").toString) {
+            val sparkPlan =
+              createSparkPlan(spark, s"SELECT $aggregates FROM test_data GROUP BY (id % 3)")
+            val aggregateCount = countOperators(sparkPlan, classOf[HashAggregateExec])
+            assert(aggregateCount == (if (distinct) 4 else 2))
+            if (fallback == "prior shuffle fallback") {
+              foreach(sparkPlan) {
+                case shuffle: ShuffleExchangeExec =>
+                  withFallbackReason(shuffle, "prior shuffle fallback")
+                case _ =>
+              }
+            }
+            val transformed = applyCometExecRule(sparkPlan)
+
+            // Shuffle is enabled, but a native-only shuffle can still fall back. The distinct
+            // rewrite also has intermediate PartialMerge and mixed Partial/PartialMerge stages.
+            val nativeExpected = fallback == "none"
+            for (plan <- Seq(transformed, applyCometExecRule(transformed))) {
+              assert(
+                countOperators(plan, classOf[CometHashAggregateExec]) ==
+                  (if (nativeExpected) aggregateCount else 0))
+              assert(
+                countOperators(plan, classOf[HashAggregateExec]) ==
+                  (if (nativeExpected) 0 else aggregateCount))
+            }
+            // AQE reapplies the rule to an exchange without its Final aggregate. The tagged
+            // Partial must remain in Spark in that stage-only pass too.
+            transformed.collect { case shuffle: ShuffleExchangeExec => shuffle }.foreach {
+              shuffle =>
+                val stage = applyCometExecRule(shuffle)
+                assert(countOperators(stage, classOf[CometHashAggregateExec]) == 0)
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // Inspect fresh, unmaterialized global/grouped one-DISTINCT plans across shuffle modes and
+  // refusal states. Each case checks both initial conversion and re-entry without running Spark
+  // jobs. Native-only fallback must repair the whole chain; selective auto/JVM fallback pins the
+  // narrower grouped-AVG boundary that this Final-only pass does not repair. Scoped configuration
+  // and temporary-view helpers restore session state, and assertion failures identify the plan.
+  for (grouped <- Seq(false, true)) {
+    test(s"nondecimal AVG distinct stages follow actual shuffle conversion (grouped=$grouped)") {
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        // Comet's real rule phase precedes whole-stage wrappers. Apply the rule to the same
+        // phase here so codegen wrappers do not create artificial non-native children.
+        SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false",
+        SQLConf.SHUFFLE_PARTITIONS.key -> "4",
+        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+        CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+        CometConf.COMET_SHUFFLE_CONVERT_FROM_SPARK_PLAN_ENABLED.key -> "true",
+        CometConf.COMET_ENABLE_PARTIAL_HASH_AGGREGATE.key -> "true",
+        CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.key -> "true") {
+        withTempView("test_data") {
+          createTestDataFrame.createOrReplaceTempView("test_data")
+          val groupBy = if (grouped) " GROUP BY (id % 3)" else ""
+          val query = s"SELECT AVG(id), SUM(DISTINCT id) FROM test_data$groupBy"
+          val expectedModes =
+            Seq(Seq(Final), Seq(PartialMerge, Partial), Seq(PartialMerge), Seq(Partial))
+
+          for {
+            shuffleMode <- Seq("native", "auto", "jvm")
+            fallback <- Seq("none", "lower-only sticky", "disabled hash partitioning")
+          } {
+            withSQLConf(
+              CometConf.COMET_SHUFFLE_MODE.key -> shuffleMode,
+              CometConf.COMET_SHUFFLE_NATIVE_HASH_PARTITIONING_ENABLED.key ->
+                (fallback != "disabled hash partitioning").toString) {
+              val input = createSparkPlan(spark, query)
+              assert(input.collect { case agg: HashAggregateExec =>
+                agg.aggregateExpressions.map(_.mode).distinct
+              } == expectedModes)
+
+              if (fallback == "lower-only sticky") {
+                val lower = input.collect {
+                  case exchange: ShuffleExchangeExec
+                      if exchange.child.isInstanceOf[HashAggregateExec] &&
+                        exchange.child
+                          .asInstanceOf[HashAggregateExec]
+                          .aggregateExpressions
+                          .map(_.mode)
+                          .distinct == Seq(Partial) =>
+                    exchange
+                }
+                assert(lower.size == 1)
+                // Simulate one prior refusal without tagging the upper exchange. This isolates
+                // native execution restarting above Spark merge stages; it does not claim an
+                // ordinary SQL query currently causes this selective refusal by itself.
+                withFallbackReason(lower.head, "test lower-only prior shuffle fallback")
+              }
+
+              val allSpark = shuffleMode == "native" && fallback != "none"
+              val split = shuffleMode != "native" && fallback == "lower-only sticky"
+              val expectedNative =
+                if (allSpark) Seq(false, false, false, false)
+                else if (split) Seq(true, false, false, true)
+                else Seq(true, true, true, true)
+              val transformed = applyCometExecRule(input)
+              for (plan <- Seq(transformed, applyCometExecRule(transformed))) {
+                withClue(s"shuffle=$shuffleMode fallback=$fallback\n${plan.treeString}") {
+                  val stages = plan.collect {
+                    case agg: CometHashAggregateExec => (true, agg.modes)
+                    case agg: HashAggregateExec =>
+                      (false, agg.aggregateExpressions.map(_.mode).distinct)
+                  }
+                  assert(stages.map(_._1) == expectedNative)
+                  assert(stages.map(_._2) == expectedModes)
+                  assert(plan.collect { case project: CometProjectExec => project }.nonEmpty)
+
+                  if (allSpark) {
+                    val partial = plan.collectFirst {
+                      case agg: HashAggregateExec
+                          if agg.aggregateExpressions.map(_.mode).distinct == Seq(Partial) =>
+                        agg
+                    }.get
+                    assert(partial.getTagValue(CometExecRule.COMET_UNSAFE_PARTIAL).isDefined)
+                  } else if (split) {
+                    val partial = plan.collectFirst {
+                      case agg: CometHashAggregateExec if agg.modes == Seq(Partial) => agg
+                    }.get
+                    val merge = plan.collectFirst {
+                      case agg: HashAggregateExec
+                          if agg.aggregateExpressions.map(_.mode).distinct == Seq(PartialMerge) =>
+                        agg
+                    }.get
+                    val nativeFinal = plan.collectFirst {
+                      case agg: CometHashAggregateExec if agg.modes == Seq(Final) => agg
+                    }.get
+                    val lower = merge.child.asInstanceOf[ShuffleExchangeExec]
+                    assert(lower.child eq partial)
+                    assert(
+                      lower
+                        .getTagValue(CometExplainInfo.FALLBACK_REASONS)
+                        .exists(_.contains("test lower-only prior shuffle fallback")))
+                    assert(partial.getTagValue(CometExecRule.COMET_UNSAFE_PARTIAL).isEmpty)
+                    assert(
+                      !QueryPlanSerde.allAggsSupportNativePartialToSparkFinal(
+                        partial.aggregateExpressions))
+                    assert(
+                      QueryPlanSerde
+                        .aggsNotSupportingSparkPartialToNativeFinal(
+                          nativeFinal.aggregateExpressions)
+                        .isEmpty)
+                    // Even the global query's bottom Partial groups by the DISTINCT key.
+                    // Grouped AVG exports non-null sum/count states: (0.0, 0) for all-null
+                    // groups, and no row for an empty partition. This is not the ungrouped,
+                    // never-updated AVG (null, 0) producer.
+                    assert(partial.groupingExpressions.size == (if (grouped) 2 else 1))
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("unrepaired aggregate buffers warn without rewriting stages or unrelated producers") {
+    // Synthetic wrappers exercise traversal drift, not a claim that Spark currently plans these
+    // unsafe boundaries. The diagnostic must see through passthrough wrappers but stop at an
+    // already-Spark producer or a completed inner aggregate, and must never rewrite stage data.
+    withSQLConf(
+      "spark.sql.adaptive.enabled" -> "false",
+      "spark.sql.codegen.wholeStage" -> "false",
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_MODE.key -> "native") {
+      withTempView("test_data") {
+        createTestDataFrame.createOrReplaceTempView("test_data")
+        val plan = applyCometExecRule(
+          createSparkPlan(spark, "SELECT AVG(id) FROM test_data GROUP BY (id % 3)"))
+        val partial = plan.collectFirst {
+          case agg: CometHashAggregateExec if agg.modes == Seq(Partial) => agg
+        }.get
+        val nativeFinal = plan.collectFirst {
+          case agg: CometHashAggregateExec if agg.modes == Seq(Final) => agg
+        }.get
+        val sparkFinal = nativeFinal.originalPlan.asInstanceOf[HashAggregateExec]
+        val sparkPartial = partial.originalPlan.asInstanceOf[HashAggregateExec]
+        val exchange = ShuffleExchangeExec(
+          org.apache.spark.sql.catalyst.plans.physical.SinglePartition,
+          partial)
+        val stage = ShuffleQueryStageExec(0, exchange, exchange.canonicalized)
+        val read = AQEShuffleReadExec(stage, Seq(CoalescedPartitionSpec(0, 1)))
+        val rule = CometExecRule(spark)
+        val warning = "Comet could not restore a native intermediate buffer producer"
+
+        for {
+          (child, shouldWarn) <- Seq(
+            InputAdapter(partial) -> true,
+            stage -> true,
+            read -> true,
+            ReusedExchangeExec(exchange.output, exchange) -> true,
+            InputAdapter(
+              sparkPartial.copy(
+                aggregateExpressions =
+                  sparkPartial.aggregateExpressions.map(_.copy(mode = PartialMerge)),
+                child = partial)) -> true,
+            InputAdapter(partial.copy(aggregateExpressions = Seq.empty, child = partial)) -> true,
+            InputAdapter(sparkPartial.copy(child = nativeFinal)) -> false,
+            InputAdapter(sparkPartial.copy(child = nativeFinal).toSortAggregate) -> false,
+            InputAdapter(nativeFinal) -> false,
+            UnionExec(Seq(partial, partial)) -> false,
+            ProjectExec(Seq.empty, partial) -> false)
+          logFallback <- Seq("false", "true")
+        } {
+          withSQLConf(CometConf.COMET_EXPLAIN_FALLBACK_LOG_ENABLED.key -> logFallback) {
+            val consumer = sparkFinal.copy(child = child)
+            val appender = new LogAppender("unrepaired aggregate buffers")
+            withLogAppender(appender, Seq("org.apache.comet"), Some(Level.WARN)) {
+              assert(rule.revertUnsafePartialAggregates(consumer) eq consumer)
+              assert(rule.revertUnsafePartialAggregates(consumer) eq consumer)
+            }
+            assert(consumer.child eq child)
+            val warnings =
+              appender.loggingEvents.count(_.getMessage.getFormattedMessage.contains(warning))
+            assert(warnings == (if (shouldWarn) 1 else 0), s"$child: $warnings")
+            assert(
+              new ExtendedExplainInfo()
+                .getFallbackReasons(consumer)
+                .exists(_.contains(warning)) == shouldWarn)
+          }
+        }
+        assert(stage.plan eq exchange)
+        assert(exchange.child eq partial)
+      }
+    }
+  }
+
+  test("restored partial records its reason even when its current child is not native") {
+    // A later rule pass can see stripped native inputs. Restore a synthetic Partial in that
+    // shape and check the explanation without relying on its serde being called again.
+    withSQLConf(
+      "spark.sql.adaptive.enabled" -> "false",
+      "spark.sql.codegen.wholeStage" -> "false",
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_MODE.key -> "native") {
+      withTempView("test_data") {
+        createTestDataFrame.createOrReplaceTempView("test_data")
+        val plan = applyCometExecRule(
+          createSparkPlan(spark, "SELECT AVG(id) FROM test_data GROUP BY (id % 3)"))
+        val partial = plan.collectFirst {
+          case agg: CometHashAggregateExec if agg.modes == Seq(Partial) => agg
+        }.get
+        val sparkFinal = plan.collectFirst {
+          case agg: CometHashAggregateExec if agg.modes == Seq(Final) =>
+            agg.originalPlan.asInstanceOf[HashAggregateExec]
+        }.get
+        val nonNativeChild = InputAdapter(partial.child)
+        val restored = CometExecRule(spark).revertUnsafePartialAggregates(
+          sparkFinal.copy(child = partial.copy(child = nonNativeChild)))
+        val sparkPartial = restored.children.head
+        assert(sparkPartial.isInstanceOf[HashAggregateExec])
+        // Re-entry can rebuild native scan wrappers below the adapter, but the adapter itself
+        // must still prevent the Partial's serde from supplying the missing explanation.
+        assert(sparkPartial.children.head.isInstanceOf[InputAdapter])
+        assert(sparkPartial.children.head.output == nonNativeChild.output)
+        val reason = sparkPartial.getTagValue(CometExecRule.COMET_UNSAFE_PARTIAL).get
+        assert(sparkPartial.getTagValue(CometExplainInfo.FALLBACK_REASONS).get.contains(reason))
+        assert(new ExtendedExplainInfo().getFallbackReasons(sparkPartial).contains(reason))
       }
     }
   }
