@@ -249,6 +249,35 @@ class IcebergWriteProtoTranslationSuite extends AnyFunSuite {
     assert(explicit.getBloomFilterMaxBytes == 64L * 1024L * 1024L)
   }
 
+  test("Bloom sizing arithmetic stays aligned with the native writer") {
+    import CometIcebergNativeWrite.{bloomFilterSizesRepresentable, MinBloomFilterBytes, parquetMrBloomFilterBytes}
+
+    val kibibyte = 1024
+    val mebibyte = kibibyte * kibibyte
+    val twiceMinimum = 2 * MinBloomFilterBytes
+    // Keep this table in sync with BLOOM_FILTER_SIZING_CASES in iceberg_write.rs. These fixed
+    // expectations make JVM planning and native task sizing fail independently if either drifts.
+    val cases = Seq(
+      (None, 0.01d, mebibyte, mebibyte),
+      (Some(1L), 0.01d, mebibyte, MinBloomFilterBytes),
+      (Some(1000L), 0.01d, mebibyte, 2 * kibibyte),
+      (Some(1000L), 0.005d, mebibyte, 2 * kibibyte),
+      (Some(1000000L), 0.0001d, twiceMinimum, twiceMinimum),
+      (Some(100000000L), 0.01d, 4 * kibibyte, 4 * kibibyte))
+
+    cases.foreach { case (ndv, fpp, maxBytes, expectedBytes) =>
+      assert(
+        parquetMrBloomFilterBytes(ndv, fpp, maxBytes) == expectedBytes,
+        s"ndv=$ndv fpp=$fpp maxBytes=$maxBytes")
+      assert(
+        bloomFilterSizesRepresentable(maxBytes, fpp),
+        s"ndv=$ndv fpp=$fpp maxBytes=$maxBytes")
+    }
+    assert(
+      !bloomFilterSizesRepresentable(mebibyte, java.lang.Double.MIN_NORMAL),
+      "the gate must reject a target for which native synthetic-NDV sizing fails")
+  }
+
   test("size properties are parsed with Java Integer.parseInt semantics") {
     // No trimming and no values past Int.MaxValue -- exactly what iceberg-java's
     // PropertyUtil.propertyAsInt would do. The eligibility gate declines these values
