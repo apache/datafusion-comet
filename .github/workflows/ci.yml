@@ -25,8 +25,11 @@
 #   pull_request  fast feedback. Linux build + Spark 4.1 + Iceberg 1.11.
 #   merge_group   the authoritative gate. Everything the PR tier runs, plus
 #                 the macOS build, the benchmark compile check, Spark
-#                 3.4/3.5/4.0 and Iceberg 1.8/1.9/1.10, evaluated against
+#                 3.5/4.0 and Iceberg 1.8/1.9/1.10, evaluated against
 #                 the merge result rather than the PR head.
+#
+# Spark 3.4 is deprecated and sits outside both tiers: it runs only when a
+# pull request carries `run-spark-3.4-tests`, or from a manual dispatch.
 #
 # Which tier a job sits in is POLICY in dev/ci/compute-changes.py, not an
 # expression here. Heavy jobs deliberately have no `push` tier: the queue
@@ -253,7 +256,10 @@ jobs:
   spark_3_4:
     name: Spark SQL Tests (Spark 3.4)
     needs: changes
-    # Queue-only by default; PRs need the `run-spark-3.4-tests` label.
+    # Spark 3.4 is deprecated, so this is the one test job the merge queue does
+    # not run: it needs the `run-spark-3.4-tests` label on a pull request, or a
+    # manual workflow_dispatch. It stays in `required_checks.needs` so that a
+    # labelled run still gates the pull request it was asked for.
     if: needs.changes.outputs.spark_3_4 == 'true'
     uses: ./.github/workflows/spark_sql_test_reusable.yml
     with:

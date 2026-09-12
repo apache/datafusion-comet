@@ -113,17 +113,23 @@ ROUTING_CASES = [
 # derived from POLICY, so that a change to the routing has to be stated twice
 # and cannot be made by accident.
 PR_TIER = {"build_linux", "spark_4_1", "iceberg_1_11"}
-SPARK_OPT_IN = {"spark_3_4", "spark_3_5", "spark_4_0"}
+SPARK_OPT_IN = {"spark_3_5", "spark_4_0"}
+# Spark 3.4 is deprecated and sits outside the queue tier entirely: a label on
+# a pull request, or a workflow_dispatch, and nothing else. Keeping it in its
+# own set is what makes the `merge_group` case below assert its absence rather
+# than quietly accept it coming back.
+SPARK_DEPRECATED = {"spark_3_4"}
 ICEBERG_OPT_IN = {"iceberg_1_8", "iceberg_1_9", "iceberg_1_10"}
 BUILD_OPT_IN = {"build_macos", "benchmark"}
 QUEUE_TIER = PR_TIER | SPARK_OPT_IN | ICEBERG_OPT_IN | BUILD_OPT_IN
-ALL_JOBS = QUEUE_TIER | {"docs"}
+ALL_JOBS = QUEUE_TIER | SPARK_DEPRECATED | {"docs"}
 
 POLICY_CASES = [
     # A manual run may exercise anything.
     ({"name": "workflow_dispatch"}, ALL_JOBS),
     # The merge queue is the authoritative gate: everything except the site
-    # deploy, which can only run once the commit is actually on main.
+    # deploy, which can only run once the commit is actually on main, and the
+    # deprecated Spark 3.4 suite, which no longer gates a merge.
     ({"name": "merge_group"}, QUEUE_TIER),
     # Push to main is the site deploy plus the Linux build, which is there to
     # refresh main's actions/cache entries (see POLICY). Any other test job
@@ -157,10 +163,22 @@ POLICY_CASES = [
         },
         {"build_macos"},
     ),
-    # An opt-in label present on a pushed commit adds just that suite.
+    # An opt-in label present on a pushed commit adds just that suite. For the
+    # deprecated Spark 3.4 suite the label is the *only* way it ever runs on a
+    # pull request or the queue, so this case and the `labeled` one below are
+    # what keep it reachable at all.
     (
         {"name": "pull_request", "action": "synchronize", "labels": ["run-spark-3.4-tests"]},
         PR_TIER | {"spark_3_4"},
+    ),
+    (
+        {
+            "name": "pull_request",
+            "action": "labeled",
+            "label": "run-spark-3.4-tests",
+            "labels": ["run-spark-3.4-tests"],
+        },
+        {"spark_3_4"},
     ),
     (
         {"name": "pull_request", "action": "synchronize", "labels": ["run-iceberg-tests"]},

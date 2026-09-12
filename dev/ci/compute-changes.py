@@ -345,7 +345,11 @@ POLICY = {
     # docs deploys to asf-site, so it must not run from a pull request or from
     # the queue's throwaway branch.
     "docs": ["push"],
-    "spark_3_4": ["queue", "label:run-spark-3.4-tests"],
+    # Spark 3.4 is deprecated, so it is the one test job outside the queue
+    # tier: a failure there no longer blocks a merge. It stays runnable on
+    # demand -- the label on a pull request, or a workflow_dispatch -- so
+    # anyone who wants to check a change against 3.4 still can.
+    "spark_3_4": ["label:run-spark-3.4-tests"],
     "spark_3_5": ["queue", "label:run-spark-3.5-tests"],
     "spark_4_0": ["queue", "label:run-spark-4.0-tests"],
     # Spark 4.1 is the default build profile, so it is the cheapest early
