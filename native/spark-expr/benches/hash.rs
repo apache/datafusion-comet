@@ -13,7 +13,7 @@
 // "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
-// under the License.use arrow::array::{ArrayRef, BooleanBuilder, Int32Builder, RecordBatch, StringBuilder};
+// under the License.
 
 //! Benchmarks for the Spark-compatible hash kernels, which back the `hash` and `xxhash64`
 //! expressions and, since #5567, native shuffle hash partitioning.
@@ -34,6 +34,10 @@ use std::hint::black_box;
 #[path = "common/hash_shapes.rs"]
 mod hash_shapes;
 use hash_shapes::*;
+
+mod common;
+#[path = "common/matched_maps.rs"]
+mod matched_maps;
 
 fn bench(c: &mut Criterion) {
     let cases: Vec<(&str, ArrayRef)> = vec![
@@ -108,5 +112,17 @@ fn bench(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench);
+fn bench_matched_maps(c: &mut Criterion) {
+    matched_maps::bench_maps(c, matched_maps::Stage::HashOnly);
+    matched_maps::bench_maps(c, matched_maps::Stage::NormalizeHash);
+    c.bench_function("matched_maps/hash_buffer_seed_reset", |b| {
+        let mut hashes = vec![42u32; matched_maps::ROWS];
+        b.iter(|| {
+            hashes.fill(42);
+            black_box(&hashes);
+        });
+    });
+}
+
+criterion_group!(benches, bench, bench_matched_maps);
 criterion_main!(benches);
