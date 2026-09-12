@@ -108,6 +108,9 @@ FILTERS = {
     ],
     "spark_3_4": [
         "native/**/src/**",
+        # The vendored Hadoop C in native/hdfs-sys/ is compiled into libcomet but
+        # lives outside any src/ directory, so it needs its own entry.
+        "native/hdfs-sys/**",
         "native/**/Cargo.toml",
         "native/Cargo.lock",
         "common/src/main/**",
@@ -134,6 +137,9 @@ FILTERS = {
     ],
     "spark_3_5": [
         "native/**/src/**",
+        # The vendored Hadoop C in native/hdfs-sys/ is compiled into libcomet but
+        # lives outside any src/ directory, so it needs its own entry.
+        "native/hdfs-sys/**",
         "native/**/Cargo.toml",
         "native/Cargo.lock",
         "common/src/main/**",
@@ -160,6 +166,9 @@ FILTERS = {
     ],
     "spark_4_0": [
         "native/**/src/**",
+        # The vendored Hadoop C in native/hdfs-sys/ is compiled into libcomet but
+        # lives outside any src/ directory, so it needs its own entry.
+        "native/hdfs-sys/**",
         "native/**/Cargo.toml",
         "native/Cargo.lock",
         "common/src/main/**",
@@ -186,6 +195,9 @@ FILTERS = {
     ],
     "spark_4_1": [
         "native/**/src/**",
+        # The vendored Hadoop C in native/hdfs-sys/ is compiled into libcomet but
+        # lives outside any src/ directory, so it needs its own entry.
+        "native/hdfs-sys/**",
         "native/**/Cargo.toml",
         "native/Cargo.lock",
         "common/src/main/**",
@@ -212,6 +224,9 @@ FILTERS = {
     ],
     "iceberg_1_8": [
         "native/**/src/**",
+        # The vendored Hadoop C in native/hdfs-sys/ is compiled into libcomet but
+        # lives outside any src/ directory, so it needs its own entry.
+        "native/hdfs-sys/**",
         "native/**/Cargo.toml",
         "native/Cargo.lock",
         "common/src/main/**",
@@ -236,6 +251,9 @@ FILTERS = {
     ],
     "iceberg_1_9": [
         "native/**/src/**",
+        # The vendored Hadoop C in native/hdfs-sys/ is compiled into libcomet but
+        # lives outside any src/ directory, so it needs its own entry.
+        "native/hdfs-sys/**",
         "native/**/Cargo.toml",
         "native/Cargo.lock",
         "common/src/main/**",
@@ -260,6 +278,9 @@ FILTERS = {
     ],
     "iceberg_1_10": [
         "native/**/src/**",
+        # The vendored Hadoop C in native/hdfs-sys/ is compiled into libcomet but
+        # lives outside any src/ directory, so it needs its own entry.
+        "native/hdfs-sys/**",
         "native/**/Cargo.toml",
         "native/Cargo.lock",
         "common/src/main/**",
@@ -284,6 +305,9 @@ FILTERS = {
     ],
     "iceberg_1_11": [
         "native/**/src/**",
+        # The vendored Hadoop C in native/hdfs-sys/ is compiled into libcomet but
+        # lives outside any src/ directory, so it needs its own entry.
+        "native/hdfs-sys/**",
         "native/**/Cargo.toml",
         "native/Cargo.lock",
         "common/src/main/**",
