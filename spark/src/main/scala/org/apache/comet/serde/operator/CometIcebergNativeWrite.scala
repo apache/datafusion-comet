@@ -314,9 +314,10 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
   }
 
   /**
-   * parquet-rs 58.x represents Bloom filters as a power-of-two number of bytes. parquet-mr
-   * accepts arbitrary caps and, when one binds, serializes that exact length. Keep those writes
-   * on the classic path instead of silently changing the number of usable Bloom blocks.
+   * parquet-rs 59.3.0 initially represents Bloom filters as a power-of-two number of bytes and
+   * may fold that allocation after values are inserted. parquet-mr accepts arbitrary caps and,
+   * when one binds, serializes that exact length. Keep those writes on the classic path instead
+   * of silently changing the number of usable Bloom blocks.
    */
   private val requireNativeSupportedBloomFilterProperties: TriggerRule = ctx => {
     val properties = interpretedBloomFilterProperties(ctx.properties)

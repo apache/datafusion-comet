@@ -706,7 +706,7 @@ const ICEBERG_DEFAULT_BLOOM_FILTER_MAX_BYTES: usize = 1024 * 1024;
 /// `fpp = (1 - exp(-k * ndv / bits))^k` for `bits`, with the Parquet SBBF's `k = 8` probes.
 ///
 /// See the Apache Arrow Rust `parquet` implementation and its cited paper:
-/// https://github.com/apache/arrow-rs/blob/58.4.0/parquet/src/bloom_filter/mod.rs#L369-L376
+/// https://github.com/apache/arrow-rs/blob/59.3.0/parquet/src/bloom_filter/mod.rs#L363-L376
 /// http://algo2.iti.kit.edu/documents/cacheefficientbloomfilters-jea.pdf
 fn bloom_filter_fpp_denominator(fpp: f64) -> f64 {
     -(1.0 - fpp.powf(1.0 / BLOOM_FILTER_HASH_PROBES)).ln()
@@ -743,10 +743,13 @@ fn parquet_mr_bloom_filter_bytes(ndv: Option<u64>, fpp: f64, max_bytes: usize) -
     allocated.min(max_bytes)
 }
 
-/// Mirror the NDV/FPP sizing and power-of-two allocation used by the Apache Arrow Rust `parquet`
-/// crate. Its source derives the formula from the standard Bloom-filter false-positive equation
-/// with eight hash probes and links the underlying cache-efficient Bloom-filter paper:
-/// https://github.com/apache/arrow-rs/blob/58.4.0/parquet/src/bloom_filter/mod.rs#L363-L395
+/// Mirror the initial NDV/FPP sizing and power-of-two allocation used by version 59.3.0 of the
+/// Apache Arrow Rust `parquet` crate. Its source derives the formula from the standard
+/// Bloom-filter false-positive equation with eight hash probes and links the underlying
+/// cache-efficient Bloom-filter paper. After values are inserted, the 59.3.0 writer folds a
+/// sparse allocation to the smallest power-of-two size that maintains the target FPP:
+/// https://github.com/apache/arrow-rs/blob/59.3.0/parquet/src/bloom_filter/mod.rs#L363-L395
+/// https://github.com/apache/arrow-rs/blob/59.3.0/parquet/src/bloom_filter/mod.rs#L618-L623
 fn parquet_rs_bloom_filter_bytes(ndv: u64, fpp: f64) -> usize {
     let num_bits =
         (BLOOM_FILTER_HASH_PROBES * ndv as f64 / bloom_filter_fpp_denominator(fpp)) as usize;
@@ -755,7 +758,8 @@ fn parquet_rs_bloom_filter_bytes(ndv: u64, fpp: f64) -> usize {
         .next_power_of_two()
 }
 
-/// Encode an exact power-of-two allocation using parquet-rs 58.x's public NDV/FPP setters.
+/// Encode an exact initial power-of-two allocation using parquet-rs 59.3.0's public max-NDV/FPP
+/// setters. The writer may subsequently fold that allocation based on the values inserted.
 ///
 /// A target `B > 32` is selected by every raw byte count in `(B/2, B]`. Aim at `3B/4`, far from
 /// either floating-point boundary, and verify using the exact parquet-rs sizing expression. The
