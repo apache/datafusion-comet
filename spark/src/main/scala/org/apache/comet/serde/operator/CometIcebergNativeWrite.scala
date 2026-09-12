@@ -289,8 +289,8 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
   // scalastyle:off line.size.limit
   // https://github.com/apache/parquet-java/blob/78a8d3230eb4769db93de5f2f2e18363c04cae81/parquet-column/src/main/java/org/apache/parquet/column/values/bloomfilter/BlockSplitBloomFilter.java#L40-L50
   // scalastyle:on line.size.limit
-  private val MinBloomFilterBytes = 32
-  private val MaxBloomFilterBytes = 128 * 1024 * 1024
+  private[operator] val MinBloomFilterBytes = 32
+  private[operator] val MaxBloomFilterBytes = 128 * 1024 * 1024
   private val BloomFilterHashProbes = 8
   private val MaxNonOverflowingBloomFilterNdv = Long.MaxValue / BloomFilterHashProbes
 
@@ -407,7 +407,7 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
   // aiming at 3B/4, in the interior of parquet-rs's (B/2, B] round-up interval. Requiring every
   // power-of-two through the configured cap is conservative and keeps pathological-but-valid
   // floating-point FPPs on the JVM path rather than discovering them after task launch.
-  private def bloomFilterSizesRepresentable(maxBytes: Int, fpp: Double): Boolean = {
+  private[operator] def bloomFilterSizesRepresentable(maxBytes: Int, fpp: Double): Boolean = {
     val denominator =
       -Math.log(1.0d - Math.pow(fpp, 1.0d / BloomFilterHashProbes.toDouble))
     if (!java.lang.Double.isFinite(denominator) || denominator <= 0.0d) return false
@@ -428,7 +428,7 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
   }
 
   /** The uncapped byte count parquet-mr passes to its explicit-NDV constructor path. */
-  private def parquetMrRequestedBloomFilterBytes(ndv: Long, fpp: Double): Int = {
+  private[operator] def parquetMrRequestedBloomFilterBytes(ndv: Long, fpp: Double): Int = {
     // Keep the long multiplication before floating-point conversion to match parquet-mr:
     // scalastyle:off line.size.limit
     // https://github.com/apache/parquet-java/blob/78a8d3230eb4769db93de5f2f2e18363c04cae81/parquet-column/src/main/java/org/apache/parquet/column/values/bloomfilter/BlockSplitBloomFilter.java#L277-L301
@@ -441,6 +441,21 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
     val bitsPerBlock = MinBloomFilterBytes << 3
     bits = (bits + bitsPerBlock - 1) & ~bitsPerBlock
     Math.max(bits, bitsPerBlock) / 8
+  }
+
+  /** The power-of-two byte allocation Comet asks parquet-rs to make for parquet-mr parity. */
+  private[operator] def parquetMrBloomFilterBytes(
+      ndv: Option[Long],
+      fpp: Double,
+      maxBytes: Int): Int = {
+    ndv match {
+      case None => maxBytes
+      case Some(value) =>
+        val requested = parquetMrRequestedBloomFilterBytes(value, fpp)
+        val bounded = Math.max(MinBloomFilterBytes, Math.min(MaxBloomFilterBytes, requested))
+        val allocated = java.lang.Integer.highestOneBit(bounded - 1) << 1
+        Math.min(allocated, maxBytes)
+    }
   }
 
   private val requireOnlyVettedParquetWriteProperties: TriggerRule = ctx =>

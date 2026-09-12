@@ -859,6 +859,17 @@ mod tests {
     use super::*;
     use datafusion_comet_proto::spark_operator::CompressionCodec as ProtoCodec;
 
+    // Keep this table in sync with the cases in IcebergWriteProtoTranslationSuite. These fixed
+    // expectations make JVM planning and native task sizing fail independently if either drifts.
+    const BLOOM_FILTER_SIZING_CASES: &[(Option<u64>, f64, usize, usize)] = &[
+        (None, 0.01, 1024 * 1024, 1024 * 1024),
+        (Some(1), 0.01, 1024 * 1024, 32),
+        (Some(1_000), 0.01, 1024 * 1024, 2 * 1024),
+        (Some(1_000), 0.005, 1024 * 1024, 2 * 1024),
+        (Some(1_000_000), 0.0001, 64, 64),
+        (Some(100_000_000), 0.01, 4 * 1024, 4 * 1024),
+    ];
+
     fn base_settings() -> IcebergParquetWriteSettings {
         IcebergParquetWriteSettings {
             compression: ProtoCodec::Zstd as i32,
@@ -990,6 +1001,23 @@ mod tests {
     }
 
     #[test]
+    fn bloom_sizing_arithmetic_stays_aligned_with_jvm_planning() {
+        for &(ndv, fpp, max_bytes, expected_bytes) in BLOOM_FILTER_SIZING_CASES {
+            assert_eq!(
+                parquet_mr_bloom_filter_bytes(ndv, fpp, max_bytes),
+                expected_bytes,
+                "ndv={ndv:?} fpp={fpp} max_bytes={max_bytes}"
+            );
+            let synthetic_ndv = synthetic_ndv_for_bloom_filter_bytes(expected_bytes, fpp).unwrap();
+            assert_eq!(
+                parquet_rs_bloom_filter_bytes(synthetic_ndv, fpp),
+                expected_bytes,
+                "ndv={ndv:?} fpp={fpp} max_bytes={max_bytes}"
+            );
+        }
+    }
+
+    #[test]
     fn synthetic_ndv_hits_every_supported_size_away_from_float_boundaries() {
         for fpp in [0.0001, ICEBERG_DEFAULT_BLOOM_FILTER_FPP, 0.05, 0.5, 0.99] {
             let mut bytes = BLOOM_FILTER_MIN_BYTES;
@@ -1050,6 +1078,28 @@ mod tests {
         )
         .unwrap_err();
         assert!(format!("{err}").contains("cannot represent"));
+    }
+
+    #[test]
+    fn binary_search_finds_representable_ndv_when_inverse_candidate_misses() {
+        const FPP_WITH_ROUNDING_SENSITIVE_INVERSE: f64 = f64::from_bits(0x3c6e_f871_5805_0dee);
+        const TARGET_BYTES: usize = 256;
+
+        let denominator = bloom_filter_fpp_denominator(FPP_WITH_ROUNDING_SENSITIVE_INVERSE);
+        let inverse_candidate =
+            ((TARGET_BYTES as f64 * 3.0 / 4.0 * denominator).round() as u64).max(1);
+        assert_ne!(
+            parquet_rs_bloom_filter_bytes(inverse_candidate, FPP_WITH_ROUNDING_SENSITIVE_INVERSE),
+            TARGET_BYTES
+        );
+
+        let searched =
+            synthetic_ndv_for_bloom_filter_bytes(TARGET_BYTES, FPP_WITH_ROUNDING_SENSITIVE_INVERSE)
+                .unwrap();
+        assert_eq!(
+            parquet_rs_bloom_filter_bytes(searched, FPP_WITH_ROUNDING_SENSITIVE_INVERSE),
+            TARGET_BYTES
+        );
     }
 
     #[test]
