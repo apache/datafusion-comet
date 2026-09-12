@@ -25,14 +25,15 @@ import org.scalatest.Tag
 import org.apache.hadoop.fs.Path
 import org.apache.parquet.hadoop.ParquetFileReader
 import org.apache.parquet.hadoop.util.HadoopInputFile
-import org.apache.spark.sql.{CometTestBase, Row}
+import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.analysis.UnresolvedRelation
 import org.apache.spark.sql.catalyst.expressions.{And, AttributeReference, IsNotNull}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight}
 import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometBroadcastNestedLoopJoinExec, CometFilterExec, CometHashJoinExec, CometNativeScanExec, CometSortMergeJoinExec, CometUnionExec}
 import org.apache.spark.sql.execution.SparkPlan
-import org.apache.spark.sql.execution.adaptive.AQEShuffleReadExec
+import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec}
+import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, IntegerType, MetadataBuilder, StructField, StructType}
 
@@ -47,6 +48,97 @@ class CometJoinSuite extends CometTestBase {
     super.test(testName, testTags: _*) {
       withSQLConf(CometConf.COMET_SHUFFLE_ENABLED.key -> "true") {
         testFun
+      }
+    }
+  }
+
+  for ((hint, joinClass) <- Seq(
+      "SHUFFLE_HASH" -> classOf[CometHashJoinExec],
+      "MERGE" -> classOf[CometSortMergeJoinExec],
+      "BROADCAST" -> classOf[CometBroadcastHashJoinExec]);
+    adaptive <- Seq(false, true)) {
+    test(s"join identity preserves exchange reuse: $hint, AQE=$adaptive") {
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+        SQLConf.EXCHANGE_REUSE_ENABLED.key -> "true",
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+        SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+        SQLConf.SHUFFLE_PARTITIONS.key -> "2",
+        CometConf.COMET_EXEC_SORT_MERGE_JOIN_ENABLED.key -> "true",
+        CometConf.COMET_SHUFFLE_MODE.key -> "native") {
+        withParquetTable(Seq((0, 10), (1, 11), (2, 12)), "l") {
+          withParquetTable(Seq((0, 100), (1, 101)), "r") {
+            def branch(joinType: String): DataFrame =
+              sql(s"""SELECT /*+ $hint(r) */ l._1, l._2 FROM l
+                     |$joinType JOIN r ON l._1 = r._1
+                     |WHERE l._1 IS NOT NULL""".stripMargin)
+                .repartition(2, $"_2")
+
+            def nativeJoin(df: DataFrame): SparkPlan =
+              collectFirst(df.queryExecution.executedPlan) {
+                case join if joinClass.isInstance(join) => join
+              }.getOrElse(fail(s"Expected native $hint join"))
+
+            val semi = branch("LEFT SEMI")
+            val anti = branch("LEFT ANTI")
+            // The explicit null check defeats InferFiltersFromConstraints masking this bug.
+            // Shuffle on the payload: a join-key shuffle can be optimized away.
+            checkSparkAnswerAndOperator(semi.unionAll(anti), classOf[ReusedExchangeExec])
+            checkAnswer(semi.unionAll(anti), Seq(Row(0, 10), Row(1, 11), Row(2, 12)))
+            assert(!nativeJoin(semi).sameResult(nativeJoin(anti)))
+
+            val same = branch("LEFT SEMI")
+            assert(nativeJoin(semi).sameResult(nativeJoin(same)))
+            assert(nativeJoin(semi).semanticHash() == nativeJoin(same).semanticHash())
+            val (_, reusedPlan) =
+              checkSparkAnswerAndOperator(semi.unionAll(same), classOf[ReusedExchangeExec])
+            if (adaptive) {
+              assert(reusedPlan.isInstanceOf[AdaptiveSparkPlanExec])
+            }
+            assertExchangeReuseOver(reusedPlan, "Expected equivalent post-join exchange reuse") {
+              case join if joinClass.isInstance(join) => join
+            }
+          }
+        }
+      }
+    }
+  }
+
+  for (adaptive <- Seq(false, true)) {
+    test(s"null-aware anti join identity preserves exchange reuse: AQE=$adaptive") {
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+        SQLConf.EXCHANGE_REUSE_ENABLED.key -> "true",
+        SQLConf.SHUFFLE_PARTITIONS.key -> "2",
+        CometConf.COMET_SHUFFLE_MODE.key -> "native") {
+        withParquetTable(Seq((Some(0), 10), (Some(1), 11), (None, 12)), "l") {
+          withParquetTable(Seq(Tuple1(0)), "r") {
+            def branch(predicate: String): DataFrame =
+              sql(s"SELECT l._1, l._2 FROM l WHERE $predicate").repartition(2, $"_2")
+            val anti = branch(
+              "NOT EXISTS (SELECT /*+ BROADCAST(r) */ 1 FROM r " +
+                "WHERE r._1 = l._1 AND r._1 IS NOT NULL)")
+            val nullAware = branch("l._1 NOT IN (SELECT r._1 FROM r WHERE r._1 IS NOT NULL)")
+            checkSparkAnswerAndOperator(anti.unionAll(nullAware), classOf[ReusedExchangeExec])
+            checkAnswer(anti.unionAll(nullAware), Seq(Row(1, 11), Row(1, 11), Row(null, 12)))
+            def nativeJoin(df: DataFrame): CometBroadcastHashJoinExec =
+              collectFirst(df.queryExecution.executedPlan) {
+                case join: CometBroadcastHashJoinExec => join
+              }.getOrElse(fail("Expected native broadcast hash join"))
+            assert(!nativeJoin(anti).sameResult(nativeJoin(nullAware)))
+            val same = branch("l._1 NOT IN (SELECT r._1 FROM r WHERE r._1 IS NOT NULL)")
+            assert(nativeJoin(nullAware).sameResult(nativeJoin(same)))
+            assert(nativeJoin(nullAware).semanticHash() == nativeJoin(same).semanticHash())
+            val (_, reusedPlan) =
+              checkSparkAnswerAndOperator(nullAware.unionAll(same), classOf[ReusedExchangeExec])
+            if (adaptive) {
+              assert(reusedPlan.isInstanceOf[AdaptiveSparkPlanExec])
+            }
+            assertExchangeReuseOver(reusedPlan, "Expected equivalent null-aware join reuse") {
+              case join: CometBroadcastHashJoinExec => join
+            }
+          }
+        }
       }
     }
   }
