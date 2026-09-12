@@ -20,8 +20,13 @@
 package org.apache.spark.sql.comet.shims
 
 import org.apache.spark.sql.connector.read.streaming.SparkDataStream
-import org.apache.spark.sql.execution.StreamSourceAwareSparkPlan
+import org.apache.spark.sql.execution.{SparkPlan, StreamSourceAwareSparkPlan}
 
 trait ShimStreamSourceAwareSparkPlan extends StreamSourceAwareSparkPlan {
-  override def getStream: Option[SparkDataStream] = None
+  protected def streamSourcePlan: SparkPlan = null
+
+  override def getStream: Option[SparkDataStream] = streamSourcePlan match {
+    case source: StreamSourceAwareSparkPlan => source.getStream
+    case _ => None
+  }
 }

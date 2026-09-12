@@ -50,6 +50,113 @@ $SPARK_HOME/bin/spark-shell \
 
 Catalog configuration is standard Iceberg-on-Spark and independent of Comet. The native reader has been tested with Hadoop, Hive, and REST catalogs. The example above uses a Hadoop catalog. For the full catalog configuration reference, see Iceberg's [Spark catalog configuration](https://iceberg.apache.org/docs/latest/spark-configuration/#catalogs).
 
+### Micro-batch streaming reads
+
+On Spark 4.x, native Iceberg micro-batch source reads can be enabled experimentally with
+`spark.comet.scan.icebergNative.streaming.enabled=true`. Native scans and native execution must
+also be enabled. Spark 3.x retains its Spark reader because its streaming progress reporter does
+not support a replacement source node.
+
+```python
+spark.conf.set("spark.comet.scan.icebergNative.streaming.enabled", "true")
+# Allow the foreachBatch DataFrame's RDDScan to enter native batch operators.
+spark.conf.set("spark.comet.sparkToColumnar.enabled", "true")
+
+query = (
+    spark.readStream
+    .option("streaming-max-files-per-micro-batch", "1000")
+    .table("catalog.db.events")
+    .writeStream
+    .option("checkpointLocation", "/checkpoints/iceberg-events")
+    .trigger(availableNow=True)
+    .foreachBatch(process_batch)
+    .start()
+)
+query.awaitTermination()
+```
+
+Comet reads the file tasks that Iceberg planned for each batch's start and end offsets. Spark
+continues to manage admission limits, checkpoints, and sink commits. Existing
+Iceberg scan compatibility checks also apply to streaming. Unsupported sources retain their Spark
+reader; continuous processing is not accelerated.
+
+Trigger support follows the installed Iceberg runtime. Iceberg 1.10 falls back from `AvailableNow`
+to a single batch, ignoring its file admission limit. Iceberg 1.11 supports `AvailableNow` with
+admission limits.
+
+Inside `foreachBatch`, use `batch_df.sparkSession` for reference-table reads and temporary views.
+Enable `spark.comet.sparkToColumnar.enabled` with `RDDScan` in its supported operator list (the
+default) so the callback's DataFrame can feed native operators. These batch queries can use Comet's
+existing native joins, aggregations, and Iceberg reference scans.
+An Iceberg output table can be appended with `violations.writeTo("catalog.db.violations").append()`.
+Spark can retry a callback, so writes still need an idempotency strategy using the batch ID.
+Use a new checkpoint when migrating a source from Delta to Iceberg.
+
+#### Streaming execution and state
+
+Enable `spark.comet.exec.streaming.enabled=true` to use native operators in Spark 4.x
+micro-batches. Supported streaming aggregates perform partial aggregation, merge restored state,
+and compute results in Comet. Spark's state store retains its checkpoint format, commit protocol,
+watermark tracking, and state eviction. The boundary converts Spark state rows to Arrow batches.
+A stateful `foreachBatch` callback must consume the complete batch so Spark can commit every
+state partition; returning after only `head()` or another partial action is insufficient.
+
+Only aggregates with compatible state buffers can use this path. Counts, ordinary numeric sums,
+non-decimal averages, and supported min/max expressions are eligible. Aggregates with incompatible
+buffers, such as `collect_set`, retain Spark execution. Stream-stream joins, streaming
+deduplication, session-window state, and arbitrary user-defined state functions also retain Spark
+execution. This option does not provide a native replacement for every Spark stateful operator.
+
+#### Append streams and change data capture
+
+The native source accelerates Iceberg's standard `readStream` path. It reads append snapshots
+and does not generate change types or update/delete images. Overwrite and delete snapshots fail
+by default. Iceberg's `streaming-skip-overwrite-snapshots` and `streaming-skip-delete-snapshots`
+options ignore those snapshots; they do not turn the append reader into a change data feed.
+See Iceberg's [streaming reads](https://iceberg.apache.org/docs/latest/spark-structured-streaming/#streaming-reads).
+
+For an integrity pipeline that consumes an append-only event table, the producer must supply
+operation types and images. Polaris and Lakekeeper provide the REST catalog without changing
+these source semantics.
+
+### Batch change data capture
+
+Enable `spark.comet.scan.icebergNative.changelog.enabled=true`, together with the native Iceberg
+reader and native execution, to accelerate Iceberg's `.changes` table and
+[`create_changelog_view`](https://iceberg.apache.org/docs/latest/spark-procedures/#create_changelog_view).
+This experimental path reads the added and removed data-file tasks planned by Iceberg. It uses
+the existing native reader and performs carry-over removal, update-image pairing, or net-change
+calculation in Rust. The procedure and temporary-view registration remain in Spark.
+
+```sql
+CALL catalog.system.create_changelog_view(
+  table => 'db.profiles',
+  changelog_view => 'profile_changes',
+  options => map('start-snapshot-id', '123', 'end-snapshot-id', '456'),
+  identifier_columns => array('tenant', 'id'),
+  compute_updates => true
+);
+SELECT * FROM profile_changes
+WHERE _change_type IN ('INSERT', 'UPDATE_AFTER');
+```
+
+Replace the example snapshot IDs with retained snapshots of the source table. The start bound is
+exclusive and the end bound inclusive; timestamp bounds follow the installed Iceberg runtime.
+The procedure always removes unchanged rows carried over by copy-on-write rewrites. Explicit
+`identifier_columns` enable update images by default. With `compute_updates=true`, omitted
+identifier columns come from the table schema. `net_changes=true` cancels matching inserts and
+deletes across the range; Iceberg rejects combining net changes with update images.
+
+Results preserve `_change_type`, `_change_ordinal`, and `_commit_snapshot_id`. Binary values and
+nested floating-point values retain Iceberg's JVM iterator because their external-row equality
+semantics differ from Arrow value equality. Unknown procedure closure layouts also retain the
+JVM iterator. The normal native-reader format and type restrictions still apply.
+
+This is a bounded batch API. It does not supply streaming offsets, checkpoint persistence, or an
+exactly-once sink for a polling CDC job. In Iceberg 1.11, changelog planning rejects snapshots with
+delete manifests, so merge-on-read changes involving delete files are unsupported before Comet
+executes the scan. Snapshot history and removed data files must remain available for the range.
+
 ### Tuning
 
 Comet’s native Iceberg reader supports fetching multiple files in parallel to hide I/O latency with the

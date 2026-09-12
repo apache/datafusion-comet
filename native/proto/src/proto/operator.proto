@@ -68,6 +68,7 @@ message Operator {
     Sample sample = 118;
     WindowGroupLimit window_group_limit = 119;
     IcebergWrite iceberg_write = 120;
+    IcebergChangelog iceberg_changelog = 121;
     // Extension point for optional, out-of-tree contrib scans (Delta, Lance, ...). The concrete
     // scan message (e.g. `DeltaScan`) is packed into this envelope on the JVM side and dispatched
     // by `type_url` on the native side. Using a single permanent field -- rather than a new oneof
@@ -395,6 +396,14 @@ message IcebergFileScanTask {
   optional uint32 partition_data_idx = 20;
   optional uint32 delete_files_idx = 21;
   optional uint32 residual_idx = 22;
+  // Constants for rows from a changed data file, planned by Iceberg's changelog scan.
+  optional IcebergChange change = 23;
+}
+
+message IcebergChange {
+  string change_type = 1;
+  int32 change_ordinal = 2;
+  int64 commit_snapshot_id = 3;
 }
 
 // Iceberg delete file for MOR tables (positional or equality deletes)
@@ -1032,4 +1041,15 @@ enum RankLikeFunction {
   RowNumber = 0;
   Rank = 1;
   DenseRank = 2;
+}
+
+// Transform the sorted rows produced by Iceberg create_changelog_view.
+message IcebergChangelog {
+  // 0: remove carryovers, 1: compute update images, 2: net changes.
+  uint32 mode = 1;
+  repeated uint32 identifier_indices = 2;
+  repeated uint32 output_indices = 3;
+  uint32 change_type_index = 4;
+  uint32 change_ordinal_index = 5;
+  uint32 commit_snapshot_id_index = 6;
 }

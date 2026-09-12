@@ -35,10 +35,10 @@ import org.apache.spark.sql.catalyst.expressions.{Attribute, DynamicPruningExpre
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.util.{sideBySide, ArrayBasedMapData, GenericArrayData, MetadataColumnHelper}
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
-import org.apache.spark.sql.comet.{CometBatchScanExec, CometScanExec}
+import org.apache.spark.sql.comet.{CometBatchScanExec, CometIcebergNativeScanExec, CometScanExec}
 import org.apache.spark.sql.execution.{FileSourceScanExec, InSubqueryExec, SparkPlan, SubqueryAdaptiveBroadcastExec}
 import org.apache.spark.sql.execution.datasources.HadoopFsRelation
-import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
+import org.apache.spark.sql.execution.datasources.v2.{BatchScanExec, DataSourceV2ScanExecBase}
 import org.apache.spark.sql.execution.datasources.v2.csv.CSVScan
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
@@ -77,10 +77,16 @@ case class CometScanRule(session: SparkSession)
   private def _apply(plan: SparkPlan): SparkPlan = {
     if (!isCometLoaded(conf)) return plan
 
-    // Comet does not support structured streaming. The parallel guard in
-    // CometExecRule only stops operator wrapping, so without this check we
-    // would still rewrite scans to CometScanExec in a streaming plan.
-    if (ShimCometStreaming.isStreamingPlan(plan)) return plan
+    // Only the Iceberg micro-batch source can be replaced in a streaming plan. Spark retains
+    // the streaming operators, offset planning, checkpointing, and sink commit protocol.
+    if (ShimCometStreaming.isStreamingPlan(plan)) {
+      return if (COMET_NATIVE_SCAN_ENABLED.get(conf) && COMET_ICEBERG_STREAMING_ENABLED.get(
+          conf)) {
+        ShimCometStreaming.transformIcebergScans(plan, scan => transformV2Scan(scan))
+      } else {
+        plan
+      }
+    }
 
     def isSupportedScanNode(plan: SparkPlan): Boolean = plan match {
       case _: FileSourceScanExec => true
@@ -356,13 +362,17 @@ case class CometScanRule(session: SparkSession)
     Some(CometScanExec(scanExec, session))
   }
 
-  private def transformV2Scan(scanExec: BatchScanExec): SparkPlan = {
+  private def transformV2Scan(scanExec: DataSourceV2ScanExecBase): SparkPlan = {
+    val batchScan = scanExec match {
+      case batch: BatchScanExec => Some(batch)
+      case _ => None
+    }
 
     // Give any optional, out-of-tree scan contrib (e.g. Lance) first crack at this V2 scan. On a
     // default build no contrib is registered, so this returns None and we proceed with Comet's
     // built-in V2 handling below. A registered contrib either claims the scan or declines via its
     // own `withFallbackReason` fallback message.
-    CometScanContrib.tryTransformV2(scanExec) match {
+    batchScan.flatMap(CometScanContrib.tryTransformV2) match {
       case Some(handled) => return handled
       case None => // proceed with vanilla logic
     }
@@ -371,7 +381,7 @@ case class CometScanRule(session: SparkSession)
     // a contrib's own table could legitimately end with. Running the check here -- after the
     // contrib hook has declined -- means a contrib that owns such a table still gets to claim it,
     // while the fallback for a genuine Iceberg metadata table is unchanged.
-    if (isIcebergMetadataTable(scanExec)) {
+    if (batchScan.exists(isIcebergMetadataTable)) {
       return withFallbackReason(scanExec, "Iceberg Metadata tables are not supported")
     }
 
@@ -382,7 +392,7 @@ case class CometScanRule(session: SparkSession)
     // both regress that per-path support and decline a contrib's scan before it was offered.
 
     scanExec.scan match {
-      case scan: CSVScan if COMET_CSV_V2_NATIVE_ENABLED.get() =>
+      case scan: CSVScan if batchScan.isDefined && COMET_CSV_V2_NATIVE_ENABLED.get() =>
         if (scanExec.output.exists(_.isMetadataCol)) {
           return withFallbackReason(
             scanExec,
@@ -423,7 +433,7 @@ case class CometScanRule(session: SparkSession)
           && !isInferSchemaEnabled && isSingleCharacterDelimiter) {
           CometBatchScanExec(
             scanExec.clone().asInstanceOf[BatchScanExec],
-            runtimeFilters = scanExec.runtimeFilters)
+            runtimeFilters = batchScan.get.runtimeFilters)
         } else {
           withFallbackReasons(scanExec, fallbackReasons.toSet)
         }
@@ -432,6 +442,7 @@ case class CometScanRule(session: SparkSession)
       // RewriteDataFiles (and similar maintenance actions) where the planner has already
       // staged FileScanTasks via ScanTaskSetManager.
       case _ if IcebergReflection.isIcebergScanClass(scanExec.scan.getClass.getName) =>
+        val runtimeFilters = batchScan.map(_.runtimeFilters).getOrElse(Seq.empty)
         val fallbackReasons = new ListBuffer[String]()
 
         // Native Iceberg scan requires both configs to be enabled
@@ -447,9 +458,15 @@ case class CometScanRule(session: SparkSession)
           return withFallbackReasons(scanExec, fallbackReasons.toSet)
         }
 
+        val changelog = IcebergReflection.isChangelogScan(scanExec.scan)
+        if (changelog && !CometConf.COMET_ICEBERG_CHANGELOG_ENABLED.get()) {
+          return withFallbackReason(scanExec, "Native Iceberg changelog scans are disabled")
+        }
+
         // Check for unsupported metadata columns in Iceberg scans
         val unsupportedMetadataCols = scanExec.output.filter(_.isMetadataCol).filterNot { attr =>
-          CometIcebergNativeScan.MetadataFieldIds.keySet.contains(attr.name)
+          CometIcebergNativeScan.MetadataFieldIds.keySet.contains(attr.name) ||
+          (changelog && CometIcebergNativeScan.ChangeFieldIds.contains(attr.name))
         }
         if (unsupportedMetadataCols.nonEmpty) {
           fallbackReasons += "Unsupported Iceberg metadata columns: " +
@@ -488,7 +505,7 @@ case class CometScanRule(session: SparkSession)
         // handed to `extract` below so the reflective accessor runs once per scan.
         val (icebergTasks, taskValidation) =
           try {
-            IcebergReflection.getTasks(scanExec.scan) match {
+            ShimCometStreaming.icebergTasks(scanExec) match {
               case Some(tasks) =>
                 (tasks, CometScanRule.validateIcebergFileScanTasks(tasks, s3CompliantSchemes))
               case None =>
@@ -987,7 +1004,7 @@ case class CometScanRule(session: SparkSession)
         // Check that all DPP subqueries use InSubqueryExec which we know how to handle.
         // Future Spark versions might introduce new subquery types we haven't tested.
         val dppSubqueriesSupported = {
-          val unsupportedSubqueries = scanExec.runtimeFilters.collect {
+          val unsupportedSubqueries = runtimeFilters.collect {
             case DynamicPruningExpression(e) if !e.isInstanceOf[InSubqueryExec] =>
               e.getClass.getSimpleName
           }
@@ -996,7 +1013,7 @@ case class CometScanRule(session: SparkSession)
           // as a preparatory refactor for future features (Null Safe Equality DPP, multiple
           // equality predicates). Currently indices always has one element, but future Spark
           // versions might use multiple indices.
-          val multiIndexDpp = scanExec.runtimeFilters.exists {
+          val multiIndexDpp = runtimeFilters.exists {
             case DynamicPruningExpression(e: InSubqueryExec) =>
               e.plan match {
                 case sab: SubqueryAdaptiveBroadcastExec =>
@@ -1027,10 +1044,26 @@ case class CometScanRule(session: SparkSession)
           metadataSchemeSupported && partitionTypesSupported && unifiedPartitionTypeSupported &&
           complexTypePredicatesSupported && transformFunctionsSupported &&
           deleteFileTypesSupported && dppSubqueriesSupported) {
-          CometBatchScanExec(
-            scanExec.clone().asInstanceOf[BatchScanExec],
-            runtimeFilters = scanExec.runtimeFilters,
-            nativeIcebergScanMetadata = Some(metadata))
+          scanExec match {
+            case batch: BatchScanExec =>
+              CometBatchScanExec(
+                batch.clone().asInstanceOf[BatchScanExec],
+                runtimeFilters = runtimeFilters,
+                nativeIcebergScanMetadata = Some(metadata))
+            case _ =>
+              val nativeOp = CometIcebergNativeScan.placeholder(
+                scanExec,
+                metadata,
+                org.apache.comet.serde.OperatorOuterClass.Operator
+                  .newBuilder()
+                  .setPlanId(scanExec.id))
+              CometIcebergNativeScanExec(
+                nativeOp,
+                scanExec,
+                session,
+                metadata.metadataLocation,
+                metadata).convertBlock()
+          }
         } else {
           withFallbackReasons(scanExec, fallbackReasons.toSet)
         }
@@ -1299,7 +1332,6 @@ object CometScanRule extends Logging {
     val formatMethod = IcebergReflection.getMethod(contentFileClass, "format")
     val pathMethod = IcebergReflection.getMethod(contentFileClass, "path")
     val residualMethod = IcebergReflection.getMethod(contentScanTaskClass, "residual")
-    val deletesMethod = IcebergReflection.getMethod(fileScanTaskClass, "deletes")
     val termMethod = IcebergReflection.getMethod(unboundPredicateClass, "term")
 
     var allParquet = true
@@ -1348,8 +1380,13 @@ object CometScanRule extends Logging {
 
       inspectLocation(pathMethod.invoke(dataFile).toString)
 
+      if (!fileScanTaskClass.isInstance(task)) {
+        val deletes = IcebergReflection.getDeleteFilesFromTask(task, fileScanTaskClass)
+        require(deletes.isEmpty, "Native changelog scans do not support delete files")
+      }
+
       // Residual transform check (short-circuit if already found unsupported)
-      if (nonIdentityTransform.isEmpty && fileScanTaskClass.isInstance(task)) {
+      if (nonIdentityTransform.isEmpty) {
         try {
           val residual = residualMethod.invoke(task)
           if (unboundPredicateClass.isInstance(residual)) {
@@ -1370,7 +1407,7 @@ object CometScanRule extends Logging {
       // Collect delete files and check their schemes
       if (fileScanTaskClass.isInstance(task)) {
         try {
-          val deletes = deletesMethod.invoke(task).asInstanceOf[java.util.List[_]]
+          val deletes = IcebergReflection.getDeleteFilesFromTask(task, fileScanTaskClass)
           deleteFiles.addAll(deletes)
 
           deletes.asScala.foreach { deleteFile =>
