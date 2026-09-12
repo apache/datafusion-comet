@@ -2214,8 +2214,31 @@ class CometIcebergNativeSuite
     }
   }
 
+  test("complex type null residuals are not serialized") {
+    import org.apache.spark.sql.types.{ArrayType, IntegerType, MapType, StructType}
+    import org.apache.comet.serde.operator.CometIcebergNativeScan
+    import org.apache.spark.sql.catalyst.expressions.AttributeReference
+    for (dataType <- Seq(
+        ArrayType(IntegerType),
+        MapType(StringType, IntegerType),
+        new StructType().add("value", IntegerType));
+      predicate <- Seq(Expressions.isNull("value"), Expressions.notNull("value"))) {
+      assert(
+        CometIcebergNativeScan
+          .icebergExprToProto(predicate, Seq(AttributeReference("value", dataType)()), Set.empty)
+          .isEmpty)
+    }
+    assert(
+      CometIcebergNativeScan
+        .icebergExprToProto(
+          Expressions.notNull("value"),
+          Seq(AttributeReference("value", IntegerType)()),
+          Set.empty)
+        .nonEmpty)
+  }
+
   // Complex type filter tests
-  test("complex type filter - struct column IS NULL") {
+  test("complex type filter - struct column IS NULL and IS NOT NULL") {
     assume(icebergAvailable, "Iceberg not available in classpath")
 
     withTempIcebergDir { warehouseDir =>
@@ -2240,12 +2263,14 @@ class CometIcebergNativeSuite
           VALUES
             (1, 'Alice', struct('NYC', 10001)),
             (2, 'Bob', struct('LA', 90001)),
-            (3, 'Charlie', NULL)
+            (3, 'Charlie', NULL),
+            (4, 'Dana', struct(CAST(NULL AS STRING), CAST(NULL AS INT)))
         """)
 
-        checkIcebergNativeScanFallback(
-          "SELECT * FROM test_cat.db.struct_filter_test WHERE address IS NULL ORDER BY id",
-          "iceberg-rust does not support IS NULL on struct type columns")
+        checkIcebergNativeScan(
+          "SELECT * FROM test_cat.db.struct_filter_test WHERE address IS NULL ORDER BY id")
+        checkIcebergNativeScan(
+          "SELECT * FROM test_cat.db.struct_filter_test WHERE address IS NOT NULL ORDER BY id")
 
         spark.sql("DROP TABLE test_cat.db.struct_filter_test")
       }
@@ -2318,9 +2343,9 @@ class CometIcebergNativeSuite
             (3, 'Charlie', named_struct('city', 'NYC', 'zip', 10001))
         """)
 
-        checkIcebergNativeScanFallback(
-          "SELECT * FROM test_cat.db.struct_value_filter_test WHERE address = named_struct('city', 'NYC', 'zip', 10001) ORDER BY id",
-          "Iceberg Java does not push down whole-struct equality filters")
+        // Spark retains the whole-struct equality filter above the native scan.
+        checkIcebergNativeScan(
+          "SELECT * FROM test_cat.db.struct_value_filter_test WHERE address = named_struct('city', 'NYC', 'zip', 10001) ORDER BY id")
 
         spark.sql("DROP TABLE test_cat.db.struct_value_filter_test")
       }

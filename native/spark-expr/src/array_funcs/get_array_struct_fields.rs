@@ -159,12 +159,12 @@ fn get_array_struct_fields<O: OffsetSizeTrait>(
     // parent's was dropped.
     let data = child_with_parent_nulls(values, ordinal)?;
 
-    let array = GenericListArray::new(
+    let array = GenericListArray::try_new(
         field,
         list_array.offsets().clone(),
         data,
         list_array.nulls().cloned(),
-    );
+    )?;
 
     Ok(ColumnarValue::Array(Arc::new(array)))
 }
@@ -245,6 +245,27 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn mismatched_output_field_returns_error() {
+        let values = Arc::new(StructArray::new(
+            vec![Arc::new(Field::new("a", DataType::Int32, false))].into(),
+            vec![Arc::new(Int32Array::from(vec![1]))],
+            None,
+        ));
+        let list = GenericListArray::<i32>::new(
+            Arc::new(Field::new("element", values.data_type().clone(), false)),
+            OffsetBuffer::from_lengths([1]),
+            values,
+            None,
+        );
+        assert!(get_array_struct_fields(
+            &list,
+            0,
+            Arc::new(Field::new("element", DataType::Int64, false)),
+        )
+        .is_err());
     }
 
     #[test]

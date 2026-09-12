@@ -830,58 +830,6 @@ case class CometScanRule(session: SparkSession)
             true
           }
 
-        // Get filter expressions for complex predicates check
-        val filterExpressionsOpt = IcebergReflection.getFilterExpressions(scanExec.scan)
-
-        // Retain the conservative fallback for direct struct-column null checks. List/map
-        // null checks can scan natively: the native planner skips residuals it cannot bind,
-        // while Iceberg's retained post-scan filter enforces row-level correctness.
-        val complexTypePredicatesSupported = filterExpressionsOpt
-          .map { filters =>
-            // Empty filters can't trigger accessor issues
-            if (filters.isEmpty) {
-              true
-            } else {
-              val readSchema = scanExec.scan.readSchema()
-
-              // A struct inside a list/map does not make the container null check a struct check.
-              val structColumns = readSchema
-                .filter(field => field.dataType.isInstanceOf[StructType])
-                .map(_.name)
-                .toSet
-
-              // Detect IS NULL/NOT NULL on struct columns (pattern: is_null(ref(name="col")))
-              // Nested field filters use different patterns and don't trigger this issue
-              val hasStructNullCheck = filters.asScala.exists { expr =>
-                val exprStr = expr.toString
-                val isNullCheck = exprStr.contains("is_null") || exprStr.contains("not_null")
-                if (isNullCheck) {
-                  structColumns.exists { colName =>
-                    exprStr.contains(s"""ref(name="$colName")""")
-                  }
-                } else {
-                  false
-                }
-              }
-
-              if (hasStructNullCheck) {
-                fallbackReasons += "IS NULL / IS NOT NULL predicates on struct type columns " +
-                  "require Spark scan fallback"
-                false
-              } else {
-                true
-              }
-            }
-          }
-          .getOrElse {
-            // Fall back to Spark if reflection fails - cannot verify safety
-            val msg =
-              "Iceberg reflection failure: Could not check for complex type predicates"
-            logError(msg)
-            fallbackReasons += msg
-            false
-          }
-
         // Check for unsupported transform functions in residual expressions
         // iceberg-rust can only handle identity transforms in residuals; all other transforms
         // (truncate, bucket, year, month, day, hour) must fall back to Spark
@@ -1021,7 +969,7 @@ case class CometScanRule(session: SparkSession)
           defaultValuesSupported && schemaTypesSupported && encryptionKeyLengthSupported &&
           taskValidation.allParquet && allSupportedFilesystems && allLocationsOpenable &&
           metadataSchemeSupported && partitionTypesSupported && unifiedPartitionTypeSupported &&
-          complexTypePredicatesSupported && transformFunctionsSupported &&
+          transformFunctionsSupported &&
           deleteFileTypesSupported && dppSubqueriesSupported) {
           CometBatchScanExec(
             scanExec.clone().asInstanceOf[BatchScanExec],
