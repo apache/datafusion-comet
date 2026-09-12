@@ -960,7 +960,9 @@ class CometIcebergWriteActionSuite
       assertNativeWriteEngages("bloom_low_ndv_native", 0 until 4096) {
         insert("bloom_low_ndv_native")
       }
-      insert("bloom_low_ndv_jvm")
+      withSQLConf(CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key -> "false") {
+        insert("bloom_low_ndv_jvm")
+      }
 
       val native = parquetBloomFilterBytes("bloom_low_ndv_native", "id")
       val jvm = parquetBloomFilterBytes("bloom_low_ndv_jvm", "id")
@@ -968,6 +970,42 @@ class CometIcebergWriteActionSuite
       assert(native.zip(jvm).forall { case (left, right) =>
         java.util.Arrays.equals(left, right)
       })
+    }
+  }
+
+  test("explicit NDV allocation folds to observed cardinality") {
+    assumeNativeAcceleration()
+    assumeIcebergBloomShapeProperties()
+    withIcebergCatalog { warehouseDir =>
+      val configuredNdv = 1000000L
+      val insertedIds = 0 until 2
+      val properties = Some(
+        "'write.parquet.bloom-filter-enabled.column.id'='true', " +
+          s"'write.parquet.bloom-filter-ndv.column.id'='$configuredNdv'")
+      createTable(warehouseDir, "bloom_explicit_ndv_fold_native", partitionSpec = "", properties)
+      createTable(warehouseDir, "bloom_explicit_ndv_fold_jvm", partitionSpec = "", properties)
+
+      def insert(table: String): Unit = spark.sql(
+        s"INSERT INTO cat.db.$table " +
+          s"SELECT CAST(id AS INT), 'region', CAST(id AS DOUBLE) " +
+          s"FROM range(${insertedIds.start}, ${insertedIds.end}, 1, 1)")
+
+      assertNativeWriteEngages("bloom_explicit_ndv_fold_native", insertedIds) {
+        insert("bloom_explicit_ndv_fold_native")
+      }
+      withSQLConf(CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key -> "false") {
+        insert("bloom_explicit_ndv_fold_jvm")
+      }
+
+      val native = parquetBloomFilterBytes("bloom_explicit_ndv_fold_native", "id")
+      val jvm = parquetBloomFilterBytes("bloom_explicit_ndv_fold_jvm", "id")
+      assert(native.nonEmpty && native.size == jvm.size)
+      assert(
+        native.zip(jvm).forall { case (nativeBytes, jvmBytes) =>
+          nativeBytes.length < jvmBytes.length
+        },
+        "expected parquet-rs to fold the explicit-NDV allocation after observing two values")
+      assertParquetBloomContainsInts("bloom_explicit_ndv_fold_native", "id", insertedIds)
     }
   }
 
