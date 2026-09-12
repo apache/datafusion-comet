@@ -34,7 +34,7 @@ import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf._
 import org.apache.comet.iceberg.IcebergWriteStrategy
-import org.apache.comet.rules.{CometExecRule, CometPlanAdaptiveDynamicPruningFilters, CometReuseSubquery, CometScanRule, CometSpark34AqeDppFallbackRule, EliminateRedundantTransitions, RevertNativeForTransitionHeavyStages}
+import org.apache.comet.rules.{CometCacheColumnarRule, CometExecRule, CometPlanAdaptiveDynamicPruningFilters, CometReuseSubquery, CometScanRule, CometSpark34AqeDppFallbackRule, EliminateRedundantTransitions, RevertNativeForTransitionHeavyStages}
 import org.apache.comet.shims.ShimCometSparkSessionExtensions
 
 /**
@@ -54,7 +54,7 @@ import org.apache.comet.shims.ShimCometSparkSessionExtensions
  *           CometSubqueryBroadcastExec for exchange reuse with Comet broadcasts
  *      b. insertTransitions:        ColumnarToRow/RowToColumnar added
  *      c. postColumnarTransitions:  RevertNativeForTransitionHeavyStages,
- *                                   EliminateRedundantTransitions
+ *                                   EliminateRedundantTransitions, CometCacheColumnarRule
  *   5. ReuseExchangeAndSubquery     -- Spark deduplicates subqueries (sees Comet nodes)
  * }}}
  *
@@ -78,7 +78,7 @@ import org.apache.comet.shims.ShimCometSparkSessionExtensions
  *        a. preColumnarTransitions: CometScanRule, CometExecRule (no-ops, already converted)
  *        b. insertTransitions
  *        c. postColumnarTransitions: RevertNativeForTransitionHeavyStages,
- *                                    EliminateRedundantTransitions
+ *                                    EliminateRedundantTransitions, CometCacheColumnarRule
  * }}}
  *
  * On Spark 3.4, injectQueryStageOptimizerRule is unavailable. CometExecRule does not wrap SABs,
@@ -113,7 +113,10 @@ class CometSparkSessionExtensions
 
     override def postColumnarTransitions: Rule[SparkPlan] = {
       val rules =
-        Seq(RevertNativeForTransitionHeavyStages(session), EliminateRedundantTransitions(session))
+        Seq(
+          RevertNativeForTransitionHeavyStages(session),
+          EliminateRedundantTransitions(session),
+          CometCacheColumnarRule)
       plan => rules.foldLeft(plan) { case (p, rule) => rule(p) }
     }
   }

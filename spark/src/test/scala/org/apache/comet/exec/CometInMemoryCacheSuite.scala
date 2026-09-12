@@ -24,14 +24,14 @@ import java.{util => ju}
 import org.apache.arrow.vector.types.pojo.ArrowType
 import org.apache.spark.CometDriverPlugin
 import org.apache.spark.SparkConf
-import org.apache.spark.sql.{CometTestBase, Row}
+import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.expressions.{And, Attribute, Expression, GreaterThanOrEqual, LessThan, Literal}
 import org.apache.spark.sql.columnar.{CachedBatch, SimpleMetricsCachedBatch}
 import org.apache.spark.sql.comet.{CometBroadcastHashJoinExec, CometInMemoryTableScanExec, CometSortExec, CometSortMergeJoinExec}
 import org.apache.spark.sql.comet.execution.arrow.CometCachedBatchHelper
-import org.apache.spark.sql.execution.SortExec
+import org.apache.spark.sql.execution.{ColumnarToRowExec, RowToColumnarExec, SortExec}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, QueryStageExec, ShuffleQueryStageExec}
-import org.apache.spark.sql.execution.columnar.{CometInMemoryRelationHelper, InMemoryRelation}
+import org.apache.spark.sql.execution.columnar.{CometInMemoryRelationHelper, InMemoryRelation, InMemoryTableScanExec}
 import org.apache.spark.sql.execution.exchange.{Exchange, ReusedExchangeExec, ShuffleExchangeLike}
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.functions.max
@@ -41,6 +41,7 @@ import org.apache.spark.storage.StorageLevel
 
 import org.apache.comet.{CometArrowAllocator, CometConf}
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
+import org.apache.comet.rules.CometCacheColumnarRule
 import org.apache.comet.vector.CometVector
 
 class CometInMemoryCacheSuite extends CometTestBase {
@@ -292,6 +293,149 @@ class CometInMemoryCacheSuite extends CometTestBase {
       assert(plan.contains("CometSparkColumnarToColumnar"))
 
       spark.catalog.clearCache()
+    }
+  }
+
+  test("Spark row consumers of Comet cache preserve values across batches") {
+    for {
+      mode <- Seq("CODEGEN_ONLY", "NO_CODEGEN")
+      vectorized <- Seq(false, true)
+    } {
+      withSQLConf(
+        CometConf.COMET_ENABLED.key -> "false",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.CACHE_VECTORIZED_READER_ENABLED.key -> vectorized.toString,
+        SQLConf.COLUMN_BATCH_SIZE.key -> "7",
+        SQLConf.CODEGEN_FACTORY_MODE.key -> mode,
+        SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> (mode == "CODEGEN_ONLY").toString,
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+        SQLConf.SHUFFLE_PARTITIONS.key -> "2") {
+        val scalars = Seq(
+          "boolean",
+          "tinyint",
+          "smallint",
+          "int",
+          "bigint",
+          "float",
+          "double",
+          "decimal(10,2)",
+          "decimal(38,2)",
+          "date",
+          "timestamp",
+          "timestamp_ntz").zipWithIndex.map { case (dt, i) =>
+          val value = dt match {
+            case "date" | "timestamp" | "timestamp_ntz" =>
+              s"cast(date_add(DATE '2000-01-01', cast(id AS INT)) AS $dt)"
+            case _ => s"cast(id AS $dt)"
+          }
+          s"if(id % 3 = 0, null, $value) AS c$i"
+        }
+        val source = spark
+          .range(0, 41, 1, 2)
+          .selectExpr((Seq("id AS key") ++ scalars ++ Seq(
+            "if(id % 3 = 0, null, repeat(concat('字', id), cast(id + 1 AS INT))) AS s",
+            "if(id % 3 = 0, null, cast(concat('binary', id) AS BINARY)) AS b",
+            "if(id % 3 = 0, null, array(cast(id AS STRING), null)) AS a",
+            "if(id % 3 = 0, null, named_struct('x', id, 'a', array(cast(id AS STRING)))) AS st",
+            "if(id % 3 = 0, null, map('k', array(cast(id AS STRING), null))) AS m",
+            "null AS n")): _*)
+
+        def queries(df: DataFrame): Seq[DataFrame] = Seq(
+          df.select("*"),
+          df.selectExpr("s AS renamed", "key", "b", "a", "st", "m"),
+          df.orderBy($"s".desc, $"key"),
+          df.join(spark.range(41).toDF("join_key"), $"key" === $"join_key").select(df("*")),
+          df.selectExpr("count(*)"),
+          df.limit(1))
+
+        val expected = queries(source).map(_.collect().toSeq)
+        source.cache()
+        try {
+          assert(source.count() == 41)
+          val relation =
+            spark.sharedState.cacheManager.lookupCachedData(source).get.cachedRepresentation
+          val buffers = relation.cacheBuilder.cachedColumnBuffers.collect()
+          assert(buffers.length > 2)
+          assert(buffers.forall(_.getClass.getSimpleName == "CometCachedBatch"))
+          queries(source).zip(expected).foreach { case (df, answer) =>
+            val scans =
+              df.queryExecution.executedPlan.collect { case scan: InMemoryTableScanExec =>
+                scan
+              }
+            assert(
+              scans.nonEmpty && scans.forall(_.supportsColumnar == vectorized),
+              df.queryExecution.executedPlan.toString)
+            if (!vectorized || mode == "NO_CODEGEN") {
+              assert(
+                !df.queryExecution.executedPlan.exists(_.isInstanceOf[ColumnarToRowExec]),
+                df.queryExecution.executedPlan.toString)
+            }
+            checkAnswer(df, answer)
+          }
+        } finally source.unpersist(blocking = true)
+      }
+    }
+  }
+
+  test("Spark generated consumers read cold and warm Comet caches columnarly") {
+    for {
+      adaptive <- Seq(false, true)
+      cometEnabled <- Seq(false, true)
+    } {
+      withSQLConf(
+        CometConf.COMET_ENABLED.key -> cometEnabled.toString,
+        CometConf.COMET_EXEC_ENABLED.key -> "false",
+        CometConf.COMET_SHUFFLE_ENABLED.key -> "false",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+        SQLConf.CACHE_VECTORIZED_READER_ENABLED.key -> "true",
+        SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "true",
+        SQLConf.COLUMN_BATCH_SIZE.key -> "7",
+        SQLConf.SHUFFLE_PARTITIONS.key -> "2") {
+        val source = spark
+          .range(0, 41, 1, 2)
+          .selectExpr("id AS key", "if(id % 3 = 0, null, concat('字', id)) AS s")
+        def query = source
+          .filter("key >= 7")
+          .selectExpr("sum(key)", "sum(length(s))", "count(*)")
+        val expected = query.collect().toSeq
+        source.cache()
+        try {
+          val builder = spark.sharedState.cacheManager
+            .lookupCachedData(source)
+            .get
+            .cachedRepresentation
+            .cacheBuilder
+          Seq(true, false).foreach { cold =>
+            val df = query
+            val plan = df.queryExecution.executedPlan
+            // Planning must not materialize the cache or replace AQE's cache-stage metadata.
+            assert(builder.isCachedColumnBuffersLoaded != cold, plan.toString)
+            checkAnswer(df, expected)
+            assert(builder.isCachedColumnBuffersLoaded)
+            val transitions = collect(plan) {
+              case c: ColumnarToRowExec if collect(c.child) { case s: InMemoryTableScanExec =>
+                    s
+                  }.nonEmpty =>
+                c
+            }
+            assert(transitions.size == 1, plan.toString)
+            assert(collect(plan) { case s: CometInMemoryTableScanExec => s }.isEmpty)
+            if (adaptive && isSpark35Plus) {
+              assert(collect(plan) {
+                case s: QueryStageExec
+                    if s.getClass.getSimpleName == "TableCacheQueryStageExec" =>
+                  s
+              }.size == 1)
+            }
+            val scan = collect(plan) { case s: InMemoryTableScanExec => s }.head
+            // A cache scan can also be the root of a columnar request or already have a
+            // transition. Applying the rule again must preserve those input/output contracts.
+            Seq(scan, ColumnarToRowExec(scan), RowToColumnarExec(scan)).foreach { boundary =>
+              assert(CometCacheColumnarRule(boundary).fastEquals(boundary))
+            }
+          }
+        } finally source.unpersist(blocking = true)
+      }
     }
   }
 

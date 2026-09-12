@@ -21,13 +21,12 @@ package org.apache.spark.sql.comet.execution.arrow
 
 import java.lang.{Boolean => JBoolean, Byte => JByte, Double => JDouble, Float => JFloat, Integer => JInteger, Long => JLong, Short => JShort}
 
-import scala.collection.JavaConverters._
 import scala.util.control.NonFatal
 
 import org.apache.spark.TaskContext
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, GenericInternalRow, IsNotNull, IsNull, UnsafeProjection}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, GenericInternalRow, IsNotNull, IsNull}
 import org.apache.spark.sql.catalyst.util.TypeUtils
 import org.apache.spark.sql.columnar.{CachedBatch, SimpleMetricsCachedBatch, SimpleMetricsCachedBatchSerializer}
 import org.apache.spark.sql.comet.util.Utils
@@ -646,11 +645,7 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
 
     convertCachedBatchToColumnarBatch(input, cacheAttributes, selectedAttributes, conf)
       .mapPartitions { batches =>
-        val toUnsafe = UnsafeProjection.create(selectedAttributes, selectedAttributes)
-
-        batches.flatMap { batch =>
-          batch.rowIterator().asScala.map(row => toUnsafe(row).copy())
-        }
+        new CachedBatchRowIterator(selectedAttributes).createObject(batches)
       }
   }
 }
