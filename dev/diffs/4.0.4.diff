@@ -378,7 +378,7 @@ index 0f42502f1d9..e9ff802141f 100644
  
        withTempView("t0", "t1", "t2") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala
-index 9db406ff12f..b3d55394d25 100644
+index 9db406ff12f..e59a931c06a 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala
 @@ -29,8 +29,9 @@ import org.apache.spark.sql.catalyst.util.AUTO_GENERATED_ALIAS
@@ -403,7 +403,17 @@ index 9db406ff12f..b3d55394d25 100644
          }
  
          // test case for ObjectHashAggregate and SortAggregate
-@@ -850,12 +853,12 @@ class DataFrameAggregateSuite extends QueryTest
+@@ -800,7 +803,8 @@ class DataFrameAggregateSuite extends QueryTest
+         val objHashAggOrSortAggPlan =
+           stripAQEPlan(objHashAggOrSortAggDF.queryExecution.executedPlan)
+         if (useObjectHashAgg) {
+-          assert(objHashAggOrSortAggPlan.isInstanceOf[ObjectHashAggregateExec])
++          assert(objHashAggOrSortAggPlan.isInstanceOf[ObjectHashAggregateExec] ||
++            objHashAggOrSortAggPlan.isInstanceOf[CometHashAggregateExec])
+         } else {
+           assert(objHashAggOrSortAggPlan.isInstanceOf[SortAggregateExec])
+         }
+@@ -850,12 +854,12 @@ class DataFrameAggregateSuite extends QueryTest
        assert(sortAggPlans.isEmpty)
  
        val objHashAggPlans = collect(aggPlan) {
