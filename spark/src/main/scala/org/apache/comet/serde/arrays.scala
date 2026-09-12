@@ -28,7 +28,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
+import org.apache.comet.CometSparkSessionExtensions.{isSpark42Plus, withFallbackReason}
 import org.apache.comet.DataTypeSupport.{deepNullable, isComplexType}
 import org.apache.comet.serde.QueryPlanSerde._
 import org.apache.comet.shims.{CometExprShim, CometTypeShim}
@@ -374,15 +374,55 @@ object CometArrayJoin
    * Spark skips ArrayJoin's later arguments once an earlier one is null, and `eval` and
    * `doGenCode` disagree on that order, while DataFusion evaluates every argument up front. A
    * literal or column read cannot throw, carry state or have a side effect, so ordering cannot be
-   * observed for it; anything else goes to the codegen dispatcher. `foldable` is not usable here:
-   * ConstantFolding leaves a throwing foldable expression unfolded in a conditional branch.
+   * observed for it; anything else is not admitted natively by default. `foldable` is not usable
+   * here: ConstantFolding leaves a throwing foldable expression unfolded in a conditional branch.
    */
   private def orderInsensitive(expr: Expression): Boolean = expr match {
     case _: Literal | _: Attribute | _: BoundReference => true
     case _ => false
   }
 
-  override def getIncompatibleReasons(): Seq[String] = Seq(collationReason, eagerEvalReason)
+  private val nullableReplacementReason =
+    "array_join with a nullable non-literal replacement requires the surrounding Spark " +
+      "operator before Spark 4.2 (https://issues.apache.org/jira/browse/SPARK-57200)"
+
+  private val repeatedReplacementReason =
+    "array_join with a compound nullable replacement requires Spark execution to avoid " +
+      "evaluating the replacement more than once"
+
+  private def hasNullableNonLiteralReplacement(expr: ArrayJoin): Boolean =
+    expr.nullReplacement.exists {
+      case _: Literal => false
+      case replacement => replacement.nullable
+    }
+
+  private def hasCompoundNullableReplacement(expr: ArrayJoin): Boolean =
+    expr.nullReplacement.exists(replacement =>
+      replacement.nullable && !orderInsensitive(replacement))
+
+  // Check before a parent can dispatch the whole subtree. Isolated codegen cannot reproduce
+  // nullability inferred by the enclosing project/filter, or Spark's interpreted evaluation order.
+  private[serde] def operatorFallbackReason(expr: ArrayJoin): Option[String] = {
+    if (SQLConf.get.getConf(SQLConf.CODEGEN_FACTORY_MODE).toString == "NO_CODEGEN") {
+      Some(
+        "array_join requires Spark interpreted evaluation when " +
+          "spark.sql.codegen.factoryMode=NO_CODEGEN")
+    } else if (hasCompoundNullableReplacement(expr)) {
+      // The null guard serializes the replacement twice. Dispatching it in isolation is also
+      // unsafe: a native parent can serialize that dispatched expression more than once.
+      Some(repeatedReplacementReason)
+    } else if (!isSpark42Plus && hasNullableNonLiteralReplacement(expr) &&
+      !CometConf.isExprAllowIncompat(getExprConfigName(expr))) {
+      Some(nullableReplacementReason)
+    } else {
+      None
+    }
+  }
+
+  override def getIncompatibleReasons(): Seq[String] =
+    Seq(collationReason, eagerEvalReason, nullableReplacementReason)
+
+  override def getUnsupportedReasons(): Seq[String] = Seq(repeatedReplacementReason)
 
   override def getSupportLevel(expr: ArrayJoin): SupportLevel = {
     // Spark 4.0 widens ArrayJoin's input to StringTypeWithCollation. Concatenation itself is
@@ -390,10 +430,14 @@ object CometArrayJoin
     // collation metadata is dropped (Comet columns are UTF8_BINARY). Report Incompatible rather
     // than Unsupported so the JVM codegen dispatcher (Spark's own doGenCode) keeps collated
     // array_join native and matching Spark, consistent with CometReverse's #2190 handling.
-    if (hasNonDefaultStringCollation(expr.array.dataType)) {
+    if (hasCompoundNullableReplacement(expr)) {
+      Unsupported(Some(repeatedReplacementReason))
+    } else if (hasNonDefaultStringCollation(expr.array.dataType)) {
       Incompatible(Some(collationReason))
     } else if (!(expr.delimiter +: expr.nullReplacement.toSeq).forall(orderInsensitive)) {
       Incompatible(Some(eagerEvalReason))
+    } else if (!isSpark42Plus && hasNullableNonLiteralReplacement(expr)) {
+      Incompatible(Some(nullableReplacementReason))
     } else {
       Compatible()
     }
