@@ -1,5 +1,5 @@
 diff --git a/pom.xml b/pom.xml
-index d3544881af1..ff963395ec3 100644
+index d3544881af1..32d0589450b 100644
 --- a/pom.xml
 +++ b/pom.xml
 @@ -148,6 +148,8 @@
@@ -2236,20 +2236,6 @@ index 104b4e416cd..835aaa18e39 100644
  
          case _ =>
            throw new AnalysisException("Can not match ParquetTable in the query.")
-diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
-index 8670d95c65e..b624c3811dd 100644
---- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
-+++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
-@@ -1335,7 +1335,8 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession
-     }
-   }
- 
--  test("SPARK-40128 read DELTA_LENGTH_BYTE_ARRAY encoded strings") {
-+  test("SPARK-40128 read DELTA_LENGTH_BYTE_ARRAY encoded strings",
-+      IgnoreComet("Comet doesn't support DELTA encoding yet")) {
-     withAllParquetReaders {
-       checkAnswer(
-         // "fruit" column in this file is encoded using DELTA_LENGTH_BYTE_ARRAY.
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala
 index 29cb224c878..62e3ab96004 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala

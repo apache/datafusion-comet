@@ -23,7 +23,7 @@ import scala.collection.mutable.ListBuffer
 
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.{Divide, DoubleLiteral, EqualNullSafe, EqualTo, Expression, FloatLiteral, GreaterThan, GreaterThanOrEqual, KnownFloatingPointNormalized, LessThan, LessThanOrEqual, NamedExpression, Remainder}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateMode, Final, First, Last, Partial, PartialMerge}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateMode, Final, Partial, PartialMerge}
 import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.trees.TreeNodeTag
@@ -57,7 +57,7 @@ import org.apache.comet.CometSparkSessionExtensions._
 import org.apache.comet.rules.CometExecRule.allExecs
 import org.apache.comet.serde._
 import org.apache.comet.serde.operator._
-import org.apache.comet.shims.{ShimCometStreaming, ShimCometWindowGroupLimit, ShimSubqueryBroadcast}
+import org.apache.comet.shims.{CometTypeShim, ShimCometStreaming, ShimCometWindowGroupLimit, ShimSubqueryBroadcast}
 
 object CometExecRule {
 
@@ -127,6 +127,7 @@ object CometExecRule {
  */
 case class CometExecRule(session: SparkSession)
     extends Rule[SparkPlan]
+    with CometTypeShim
     with ShimSubqueryBroadcast {
 
   private lazy val showTransformations = CometConf.COMET_EXPLAIN_TRANSFORMATIONS.get()
@@ -834,15 +835,23 @@ case class CometExecRule(session: SparkSession)
       handler: CometOperatorSerde[_]): Option[SparkPlan] = {
     val serde = handler.asInstanceOf[CometOperatorSerde[SparkPlan]]
     if (isOperatorEnabled(serde, op)) {
+      // Get the actual data-producing children (unwrap WriteFilesExec).
+      val dataProducingChildren = op.children.flatMap {
+        case writeFiles: WriteFilesExec => Seq(writeFiles.child)
+        case other => Seq(other)
+      }
+      if ((op.output ++ dataProducingChildren.flatMap(_.output)).exists(attr =>
+          containsVariantType(attr.dataType))) {
+        withFallbackReason(
+          op,
+          "Native operators do not support schemas containing type VariantType")
+        return None
+      }
+
       // For operators that require native children (like writes), check if all data-producing
       // children are CometNativeExec. This prevents runtime failures when the native operator
       // expects Arrow arrays but receives non-Arrow data (e.g., OnHeapColumnVector).
       if (serde.requiresNativeChildren && op.children.nonEmpty) {
-        // Get the actual data-producing children (unwrap WriteFilesExec).
-        val dataProducingChildren = op.children.flatMap {
-          case writeFiles: WriteFilesExec => Seq(writeFiles.child)
-          case other => Seq(other)
-        }
         if (!dataProducingChildren.forall(_.isInstanceOf[CometNativeExec])) {
           withFallbackReason(
             op,
@@ -1078,11 +1087,6 @@ case class CometExecRule(session: SparkSession)
         if (consumesBuffers &&
           !QueryPlanSerde.allAggsSupportMixedExecution(agg.aggregateExpressions) &&
           !canAggregateBeConverted(agg, consumerMode)) {
-          // This pass deliberately records the consumer diagnostic. Once the Partial is tagged
-          // below, the consumer can be skipped because its child is no longer native and may not
-          // reach doConvert, which normally records the same reason.
-          unsupportedPartialMergeFallbackReason(agg).foreach(reason =>
-            withFallbackReason(agg, reason))
           findPartialAggInPlan(agg.child).foreach { partial =>
             // Only tag if the Partial would otherwise have been converted. If the Partial itself
             // cannot be converted (e.g. an incompatible input type or a map-typed grouping key),
@@ -1180,11 +1184,6 @@ case class CometExecRule(session: SparkSession)
       expectedMode == PartialMerge && modes.toSet == Set(Partial, PartialMerge)
     if (!mixedPartialMerge && modes != Seq(expectedMode)) return false
 
-    // FIRST/LAST cannot merge native partial states in a distinct-aggregate rewrite. Predict
-    // this refusal before an earlier exchange materializes incompatible buffers for other
-    // functions in the same aggregate (for example percentile). Mirror doConvert's restriction.
-    if (unsupportedPartialMergeFallbackReason(agg).nonEmpty) return false
-
     // Only Partial binds input attributes; Final and PartialMerge consume intermediate buffers.
     // Mixed distinct-aggregate stages need the same per-expression binding as doConvert.
     if (!aggregateExpressions.forall { e =>
@@ -1202,21 +1201,6 @@ case class CometExecRule(session: SparkSession)
       agg.resultExpressions.forall(e => QueryPlanSerde.exprToProto(e, attributes).isDefined)
     } else {
       true
-    }
-  }
-
-  private def unsupportedPartialMergeFallbackReason(agg: BaseAggregateExec): Option[String] = {
-    val unsupportedMerges = agg.aggregateExpressions.filter { expression =>
-      expression.mode == PartialMerge &&
-      (expression.aggregateFunction.isInstanceOf[First] ||
-        expression.aggregateFunction.isInstanceOf[Last])
-    }
-    if (unsupportedMerges.nonEmpty) {
-      Some(
-        "PartialMerge not supported for aggregates: " +
-          unsupportedMerges.map(_.aggregateFunction.prettyName).mkString(", "))
-    } else {
-      None
     }
   }
 

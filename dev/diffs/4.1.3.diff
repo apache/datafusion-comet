@@ -39,7 +39,7 @@ index 6df8bc85b51..dabb75e2b75 100644
        withSpark(sc) { sc =>
          TestUtils.waitUntilExecutorsUp(sc, 2, 60000)
 diff --git a/pom.xml b/pom.xml
-index 370bfa4397f..8447b5c375e 100644
+index 370bfa4397f..54ded05544c 100644
 --- a/pom.xml
 +++ b/pom.xml
 @@ -152,6 +152,8 @@
@@ -199,18 +199,6 @@ index 96dddafd82a..efedbbb3c0e 100644
  
  -- Test tables
  CREATE table  explain_temp1 (key int, val int) USING PARQUET;
-diff --git a/sql/core/src/test/resources/sql-tests/inputs/having-and-order-by-recursive-type-name-resolution.sql b/sql/core/src/test/resources/sql-tests/inputs/having-and-order-by-recursive-type-name-resolution.sql
-index 1f53ca359fe..0f572f7c6ce 100644
---- a/sql/core/src/test/resources/sql-tests/inputs/having-and-order-by-recursive-type-name-resolution.sql
-+++ b/sql/core/src/test/resources/sql-tests/inputs/having-and-order-by-recursive-type-name-resolution.sql
-@@ -1,3 +1,7 @@
-+-- TODO(https://github.com/apache/datafusion-comet/issues/4123)
-+-- Comet native sort lacks row-format support for Struct(Map(...)) sort keys
-+--SET spark.comet.enabled = false
-+
- -- This test file contains queries that test recursive types name resolution in ORDER BY and HAVING clauses.
- 
- -- Alias type: String, Table column type: Struct
 diff --git a/sql/core/src/test/resources/sql-tests/inputs/hll.sql b/sql/core/src/test/resources/sql-tests/inputs/hll.sql
 index 35128da97fd..25b873ae859 100644
 --- a/sql/core/src/test/resources/sql-tests/inputs/hll.sql
@@ -1523,21 +1511,6 @@ index 8a0e2c29653..d276a51cbc6 100644
          }
        }
      }
-diff --git a/sql/core/src/test/scala/org/apache/spark/sql/VariantShreddingSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/VariantShreddingSuite.scala
-index fee375db10a..8c2c24e2c5f 100644
---- a/sql/core/src/test/scala/org/apache/spark/sql/VariantShreddingSuite.scala
-+++ b/sql/core/src/test/scala/org/apache/spark/sql/VariantShreddingSuite.scala
-@@ -33,7 +33,9 @@ import org.apache.spark.sql.types._
- import org.apache.spark.types.variant._
- import org.apache.spark.unsafe.types.{UTF8String, VariantVal}
- 
--class VariantShreddingSuite extends QueryTest with SharedSparkSession with ParquetTest {
-+class VariantShreddingSuite extends QueryTest with SharedSparkSession with ParquetTest
-+    // TODO enable tests once https://github.com/apache/datafusion-comet/issues/2209 is fixed
-+    with IgnoreCometSuite {
-   def parseJson(s: String): VariantVal = {
-     val v = VariantBuilder.parseJson(s, false)
-     new VariantVal(v.getValue, v.getMetadata)
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/collation/CollationSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/collation/CollationSuite.scala
 index 8f7a68bcbe6..88dbe1793c9 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/collation/CollationSuite.scala
@@ -3062,7 +3035,7 @@ index 6b73cc8618d..e67aaeff9df 100644
          case _ => assert(false, "Can not match ParquetTable in the query.")
        }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
-index 6ba790deddf..34b2f424c8f 100644
+index 6ba790deddf..486056c1c75 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
 @@ -40,6 +40,7 @@ import org.apache.parquet.schema.{MessageType, MessageTypeParser}
@@ -3083,16 +3056,6 @@ index 6ba790deddf..34b2f424c8f 100644
      val data = Seq(
        Tuple1((null, null)),
        Tuple1((null, null)),
-@@ -1585,7 +1587,8 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession
-     }
-   }
- 
--  test("SPARK-40128 read DELTA_LENGTH_BYTE_ARRAY encoded strings") {
-+  test("SPARK-40128 read DELTA_LENGTH_BYTE_ARRAY encoded strings",
-+      IgnoreComet("Comet doesn't support DELTA encoding yet")) {
-     withAllParquetReaders {
-       checkAnswer(
-         // "fruit" column in this file is encoded using DELTA_LENGTH_BYTE_ARRAY.
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala
 index 97aad5b30ea..77de969b80b 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala
@@ -3246,30 +3209,10 @@ index 56076175d60..a3d47b24634 100644
        val e = testSchemaMismatch(dir.getCanonicalPath, vectorizedReaderEnabled = true)
        assert(e.getCause.isInstanceOf[SchemaColumnConvertNotSupportedException])
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetTypeWideningSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetTypeWideningSuite.scala
-index 09ed6955a51..236a4e99824 100644
+index 09ed6955a51..52d998aab46 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetTypeWideningSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetTypeWideningSuite.scala
-@@ -65,7 +65,9 @@ class ParquetTypeWideningSuite
-     withClue(
-       s"with dictionary encoding '$dictionaryEnabled' with timestamp rebase mode " +
-         s"'$timestampRebaseMode''") {
--      withAllParquetWriters {
-+      // TODO: Comet cannot read DELTA_BINARY_PACKED created by V2 writer
-+      // https://github.com/apache/datafusion-comet/issues/574
-+      // withAllParquetWriters {
-         withTempDir { dir =>
-           val expected =
-             writeParquetFiles(dir, values, fromType, dictionaryEnabled, timestampRebaseMode)
-@@ -86,7 +88,7 @@ class ParquetTypeWideningSuite
-             }
-           }
-         }
--      }
-+      // }
-     }
-   }
- 
-@@ -190,7 +192,8 @@ class ParquetTypeWideningSuite
+@@ -190,7 +190,8 @@ class ParquetTypeWideningSuite
        (Seq("1", "2", Short.MinValue.toString), ShortType, DoubleType),
        (Seq("1", "2", Int.MinValue.toString), IntegerType, DoubleType),
        (Seq("1.23", "10.34"), FloatType, DoubleType),
@@ -3280,7 +3223,7 @@ index 09ed6955a51..236a4e99824 100644
    }
    test(s"parquet widening conversion $fromType -> $toType") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetVariantShreddingSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetVariantShreddingSuite.scala
-index 1cc6d3afbee..8275727fbb4 100644
+index 1cc6d3afbee..1ca791bc0cc 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetVariantShreddingSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetVariantShreddingSuite.scala
 @@ -29,7 +29,7 @@ import org.apache.parquet.schema.{LogicalTypeAnnotation, PrimitiveType, Type}
@@ -3288,21 +3231,20 @@ index 1cc6d3afbee..8275727fbb4 100644
  
  import org.apache.spark.SparkException
 -import org.apache.spark.sql.{AnalysisException, QueryTest, Row}
-+import org.apache.spark.sql.{AnalysisException, IgnoreCometSuite, QueryTest, Row}
++import org.apache.spark.sql.{AnalysisException, IgnoreComet, QueryTest, Row}
  import org.apache.spark.sql.internal.SQLConf
  import org.apache.spark.sql.internal.SQLConf.ParquetOutputTimestampType
  import org.apache.spark.sql.test.SharedSparkSession
-@@ -38,7 +38,9 @@ import org.apache.spark.unsafe.types.VariantVal
- /**
-  * Test shredding Variant values in the Parquet reader/writer.
-  */
--class ParquetVariantShreddingSuite extends QueryTest with ParquetTest with SharedSparkSession {
-+class ParquetVariantShreddingSuite extends QueryTest with ParquetTest with SharedSparkSession
-+    // TODO enable tests once https://github.com/apache/datafusion-comet/issues/2209 is fixed
-+    with IgnoreCometSuite {
+@@ -230,7 +230,8 @@ class ParquetVariantShreddingSuite extends QueryTest with ParquetTest with Share
+     }
+   }
  
-   private def testWithTempDir(name: String)(block: File => Unit): Unit = test(name) {
-     withTempDir { dir =>
+-  test("variant logical type annotation - ignore variant annotation") {
++  test("variant logical type annotation - ignore variant annotation",
++    IgnoreComet("https://github.com/apache/datafusion-comet/issues/5741")) {
+     Seq(true, false).foreach { ignoreVariantAnnotation =>
+       withSQLConf(SQLConf.PARQUET_ANNOTATE_VARIANT_LOGICAL_TYPE.key -> "true",
+         SQLConf.PARQUET_IGNORE_VARIANT_ANNOTATION.key -> ignoreVariantAnnotation.toString,
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/debug/DebuggingSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/debug/DebuggingSuite.scala
 index b8f3ea3c6f3..bbd44221288 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/debug/DebuggingSuite.scala

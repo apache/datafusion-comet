@@ -73,11 +73,12 @@ class CometCollationSuite extends CometTestBase {
   //
   // Comet's native datetime functions use string arguments (format patterns, timezones,
   // day-of-week) as raw bytes, so non-default collations on those arguments must not reach
-  // the native path silently. Expressions without a codegen-dispatcher fallback (next_day,
-  // unix_timestamp) fall back to Spark entirely. Expressions with CodegenDispatchFallback
-  // (trunc, date_trunc, date_format, from_unixtime, make_timestamp, to_unix_timestamp,
-  // convert_timezone) fall back to Spark when COMET_SCALA_UDF_CODEGEN_ENABLED is false
-  // or route through Spark codegen inside the Comet pipeline when it is true.
+  // the native path silently. `unix_timestamp` has no codegen-dispatcher fallback and falls
+  // back to Spark entirely. Expressions with CodegenDispatchFallback
+  // (next_day, trunc, date_trunc, date_format, from_unixtime, make_timestamp,
+  // to_unix_timestamp, convert_timezone) fall back to Spark when
+  // COMET_SCALA_UDF_CODEGEN_ENABLED is false or route through Spark codegen inside the Comet
+  // pipeline when it is true.
 
   private def withDatetimeCollationTable(f: => Unit): Unit = {
     withParquetTable(
@@ -175,6 +176,23 @@ class CometCollationSuite extends CometTestBase {
       "date_format does not support non-UTF8_BINARY collations")
   }
 
+  test("next_day uses native path with collated dayOfWeek when allowIncompatible is enabled") {
+    // With allowIncompatible the collated case takes the native kernel instead of the dispatcher.
+    // That kernel reads dayOfWeek as raw bytes, which matches Spark because
+    // DateTimeUtils.getDayOfWeekFromString upper-cases with Locale.ROOT and matches a fixed
+    // literal set, taking no collation. This test is what pins that claim, since every other
+    // collated next_day test exercises the dispatcher rather than the native kernel.
+    withDatetimeCollationTable {
+      withSQLConf(
+        CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false",
+        "spark.comet.expression.NextDay.allowIncompatible" -> "true") {
+        checkSparkAnswerAndOperator(
+          "SELECT next_day(CAST(_1 AS DATE), 'MON' COLLATE utf8_lcase) " +
+            "FROM datetime_collation_tbl")
+      }
+    }
+  }
+
   test("date_format uses native path with collated format when allowIncompatible is enabled") {
     withDatetimeCollationTable {
       withSQLConf(
@@ -202,6 +220,14 @@ class CometCollationSuite extends CometTestBase {
     checkDatetimeDispatcher(
       "SELECT date_format(CAST(_2 AS TIMESTAMP), _6 COLLATE utf8_lcase) " +
         "FROM datetime_collation_tbl")
+  }
+
+  test("next_day routes collated dayOfWeek through codegen dispatcher (issue #5591)") {
+    // Dispatching is both the compatible answer and the faster one: over 1M rows a collated
+    // next_day measured 70ms dispatched against 89ms for Spark. Answer coverage lives in
+    // sql-tests/expressions/datetime/next_day_collation.sql.
+    checkDatetimeDispatcher(
+      "SELECT next_day(CAST(_1 AS DATE), _5 COLLATE utf8_lcase) FROM datetime_collation_tbl")
   }
 
   test("datetime expressions still run with default UTF8_BINARY collation (issue #4646)") {
