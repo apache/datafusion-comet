@@ -176,7 +176,8 @@ pub(crate) fn init_datasource_exec(
     // `store_sales`), the page index is re-fetched, uncached, on every open (comet#3978).
     // `EagerPageIndexReaderFactory` forces the page index to load on the first fetch and be
     // cached with the footer, at the cost of losing the skip's benefit when it would have
-    // applied. Filed upstream as apache/datafusion#23978; revert this once that's fixed.
+    // applied. Filed upstream as apache/datafusion#23978; when replacing this factory, preserve
+    // its duplicate-field validation (#5783).
     //
     // Preserve bytes_scanned's existing requested data/Bloom-filter range accounting. Footer
     // and page-index reads through get_metadata bypass it, and coalescing may fetch extra bytes.
@@ -193,7 +194,8 @@ pub(crate) fn init_datasource_exec(
             scan_io_source,
             parquet_source.metrics(),
         )
-        .with_spark_variant_schema(projects_variant),
+        .with_spark_variant_schema(projects_variant)
+        .with_required_schema(&required_schema, case_sensitive, use_field_id),
     );
     parquet_source = parquet_source.with_parquet_file_reader_factory(reader_factory);
 

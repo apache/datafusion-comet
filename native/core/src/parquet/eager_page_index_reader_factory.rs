@@ -44,9 +44,11 @@
 //! the caller's requested policy, unchanged from stock behavior.
 //!
 //! Filed upstream as apache/datafusion#23978. Revert this once the opener merges its deferred
-//! page-index load back into `FileMetadataCache` instead of bypassing it.
+//! page-index load back into `FileMetadataCache` instead of bypassing it. Preserve the
+//! duplicate-field validation when replacing this factory.
 
-use arrow::datatypes::{DataType, FieldRef, Schema};
+use crate::parquet::name_fold::{fold_name, fold_schema_names};
+use arrow::datatypes::{DataType, FieldRef, Schema, SchemaRef};
 use async_trait::async_trait;
 use bytes::Bytes;
 use datafusion::common::Result as DFResult;
@@ -77,7 +79,8 @@ use parquet::file::metadata::{FileMetaData, KeyValue, ParquetMetaDataBuilder};
 use parquet::file::metadata::{
     FooterTail, PageIndexPolicy, ParquetMetaData, ParquetMetaDataReader,
 };
-use parquet::schema::types::{ColumnDescPtr, SchemaDescriptor};
+use parquet::schema::types::{ColumnDescPtr, SchemaDescriptor, Type};
+use std::collections::HashSet;
 use std::fmt::{Debug, Display, Formatter};
 use std::ops::Range;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -163,6 +166,8 @@ pub struct EagerPageIndexReaderFactory {
     // Enable the footer workaround only for scans that project Variant.
     // https://github.com/apache/datafusion-comet/issues/5477
     spark_variant_schema: bool,
+    projected_fields: Option<Arc<HashSet<String>>>,
+    case_sensitive: bool,
 }
 
 impl EagerPageIndexReaderFactory {
@@ -191,7 +196,27 @@ impl EagerPageIndexReaderFactory {
             metadata_cache,
             scan_io_metrics,
             spark_variant_schema: false,
+            projected_fields: None,
+            case_sensitive: true,
         }
+    }
+
+    pub(crate) fn with_required_schema(
+        mut self,
+        schema: &SchemaRef,
+        case_sensitive: bool,
+        use_field_id: bool,
+    ) -> Self {
+        // Field-ID projections can rename columns, so names cannot safely restrict the walk.
+        self.projected_fields = (!use_field_id).then(|| {
+            Arc::new(
+                fold_schema_names(schema, case_sensitive)
+                    .into_iter()
+                    .collect(),
+            )
+        });
+        self.case_sensitive = case_sensitive;
+        self
     }
 
     pub fn with_spark_variant_schema(mut self, enabled: bool) -> Self {
@@ -225,6 +250,8 @@ impl ParquetFileReaderFactory for EagerPageIndexReaderFactory {
             metadata_cache: Arc::clone(&self.metadata_cache),
             metadata_size_hint,
             spark_variant_schema: self.spark_variant_schema,
+            projected_fields: self.projected_fields.clone(),
+            case_sensitive: self.case_sensitive,
         }))
     }
 }
@@ -240,6 +267,8 @@ struct EagerPageIndexReader {
     metadata_cache: Arc<FileMetadataCache>,
     metadata_size_hint: Option<usize>,
     spark_variant_schema: bool,
+    projected_fields: Option<Arc<HashSet<String>>>,
+    case_sensitive: bool,
 }
 
 // Arrow infers ENUM as Binary, losing the distinction from raw binary that Spark needs.
@@ -372,6 +401,36 @@ fn with_spark_arrow_schema(metadata: Arc<ParquetMetaData>) -> ParquetResult<Arc<
     ))
 }
 
+// Duplicate sibling names can make the decoder combine distinct leaves into one column,
+// multiplying rows before schema adaptation can reject or resolve the duplicate (#5783).
+// Only selected top-level subtrees can reach the decoder. Recurse fully within each selected
+// subtree because nested projection does not safely separate duplicate leaves (#5884).
+fn validate_field_names(
+    schema: &Type,
+    projected_fields: Option<&HashSet<String>>,
+    case_sensitive: bool,
+) -> parquet::errors::Result<()> {
+    if let Type::GroupType { fields, .. } = schema {
+        let mut names = HashSet::with_capacity(fields.len());
+        for field in fields {
+            if projected_fields.is_some_and(|projected| {
+                !projected.contains(&fold_name(field.name(), case_sensitive))
+            }) {
+                continue;
+            }
+            if !names.insert(field.name()) {
+                return Err(ParquetError::General(format!(
+                    "Comet native scan does not support duplicate Parquet field name '{}' in group '{}'",
+                    field.name(),
+                    schema.name()
+                )));
+            }
+            validate_field_names(field, None, case_sensitive)?;
+        }
+    }
+    Ok(())
+}
+
 impl AsyncFileReader for EagerPageIndexReader {
     /// Reads a metadata range, counting its requested size before I/O and its returned
     /// bytes only on success. The returned future borrows this reader; store errors retain
@@ -439,6 +498,8 @@ impl AsyncFileReader for EagerPageIndexReader {
         let metadata_size_hint = self.metadata_size_hint;
         let scan_io_metrics = Arc::clone(&self.scan_io_metrics);
         let spark_variant_schema = self.spark_variant_schema;
+        let projected_fields = self.projected_fields.clone();
+        let case_sensitive = self.case_sensitive;
         async move {
             let file_decryption_properties = options
                 .and_then(|o| o.file_decryption_properties())
@@ -498,6 +559,12 @@ impl AsyncFileReader for EagerPageIndexReader {
             }
 
             let metadata = metadata?;
+            // Validate cache hits too, before Arrow constructs a decoder for any projection.
+            validate_field_names(
+                metadata.file_metadata().schema_descr().root_schema(),
+                projected_fields.as_deref(),
+                case_sensitive,
+            )?;
             if spark_variant_schema {
                 with_spark_arrow_schema(metadata)
             } else {
@@ -840,6 +907,83 @@ mod tests {
             serialized_reader::{ReadOptionsBuilder, SerializedFileReader},
         },
     };
+
+    #[test]
+    fn projected_fields_skip_unselected_roots() {
+        let schema = parquet::schema::parser::parse_message_type(
+            "message root { optional int64 a; optional int64 a; optional int64 b; }",
+        )
+        .unwrap();
+        let selected = HashSet::from(["b".to_string()]);
+        validate_field_names(&schema, Some(&selected), true).unwrap();
+        validate_field_names(&schema, Some(&HashSet::new()), true).unwrap();
+        let selected = HashSet::from(["a".to_string()]);
+        assert!(validate_field_names(&schema, Some(&selected), true).is_err());
+    }
+
+    #[test]
+    fn projected_fields_match_case_insensitively_and_recurse_fully() {
+        let schema = parquet::schema::parser::parse_message_type(
+            "message root { optional group Selected {
+                optional int64 valid; optional int64 dup; optional int64 dup;
+            } optional int64 unrelated; }",
+        )
+        .unwrap();
+        let selected = HashSet::from(["selected".to_string()]);
+        assert!(validate_field_names(&schema, Some(&selected), false).is_err());
+        let selected = HashSet::from(["unrelated".to_string()]);
+        validate_field_names(&schema, Some(&selected), false).unwrap();
+    }
+
+    #[test]
+    fn duplicate_names_in_list_element_are_rejected() {
+        let schema = parquet::schema::parser::parse_message_type(
+            "message root { optional group a (LIST) { repeated group list {
+                optional group element { optional int64 dup; optional int64 dup; }
+            } } }",
+        )
+        .unwrap();
+        assert!(validate_field_names(&schema, None, true)
+            .unwrap_err()
+            .to_string()
+            .contains("group 'element'"));
+    }
+
+    #[test]
+    fn duplicate_names_in_map_key_value_are_rejected() {
+        let schema = parquet::schema::parser::parse_message_type(
+            "message root { optional group a (MAP) { repeated group key_value {
+                required binary key (UTF8); optional int64 value; optional int64 value;
+            } } }",
+        )
+        .unwrap();
+        assert!(validate_field_names(&schema, None, true)
+            .unwrap_err()
+            .to_string()
+            .contains("group 'key_value'"));
+    }
+
+    #[test]
+    fn repeated_names_in_separate_groups_are_valid() {
+        let schema = parquet::schema::parser::parse_message_type(
+            "message root { optional group a { optional int64 same; }
+                optional group b { optional int64 same; } }",
+        )
+        .unwrap();
+        validate_field_names(&schema, None, true).unwrap();
+    }
+
+    #[test]
+    fn duplicate_root_names_are_rejected() {
+        let schema = parquet::schema::parser::parse_message_type(
+            "message root { optional int64 a; optional int64 a; optional int64 b; }",
+        )
+        .unwrap();
+        assert!(validate_field_names(&schema, None, true)
+            .unwrap_err()
+            .to_string()
+            .contains("group 'root'"));
+    }
 
     #[derive(Debug)]
     struct RecordingRangeStore {
