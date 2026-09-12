@@ -840,6 +840,7 @@ Spark (no AES-192-GCM in the underlying crypto).</p></li>
 <li><p>Positional deletes</p></li>
 <li><p>Equality deletes</p></li>
 <li><p>Mixed delete types</p></li>
+<li><p>Deletion vectors (v3)</p></li>
 </ul>
 <p><strong>Filter pushdown:</strong></p>
 <ul class="simple">
@@ -916,7 +917,7 @@ configure Spark to use a REST catalog with Comet’s native Iceberg scan:</p>
 <li><p>v3 tables with columns that declare an initial default value</p></li>
 <li><p>v3 column types the native reader cannot read (<code class="docutils literal notranslate"><span class="pre">variant</span></code>, <code class="docutils literal notranslate"><span class="pre">geometry</span></code>, <code class="docutils literal notranslate"><span class="pre">geography</span></code>, <code class="docutils literal notranslate"><span class="pre">unknown</span></code>)</p></li>
 <li><p>Encrypted tables with 192-bit data keys (no AES-192-GCM in the underlying crypto)</p></li>
-<li><p>Deletion vectors (v3 Puffin deletes); positional and equality deletes in Parquet are supported</p></li>
+<li><p>Delete files in a format other than Parquet or Puffin (Avro or ORC positional/equality deletes)</p></li>
 <li><p>Iceberg writes (reads are accelerated, writes use Spark)</p></li>
 <li><p>Tables backed by Avro or ORC data files (only Parquet is accelerated)</p></li>
 <li><p>Tables partitioned on <code class="docutils literal notranslate"><span class="pre">BINARY</span></code> or <code class="docutils literal notranslate"><span class="pre">DECIMAL</span></code> (with precision &gt;28) columns</p></li>
