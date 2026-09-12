@@ -279,45 +279,12 @@ object Utils extends CometTypeShim with Logging {
   }
 
   /**
-   * Serializes each column of `batch` into its own compressed Arrow IPC stream, in column order.
-   *
-   * [[serializeBatches]] writes one stream covering every column, so a reader has to inflate all
-   * of them before it can project. Comet's in-memory cache stores columns separately instead, so
-   * a scan decodes only the ones it selected. Each stream is self-contained, including its schema
-   * and any dictionaries the column needs.
-   *
-   * The row count is not recoverable from the result when `batch` has no columns, so callers keep
-   * it alongside. As with [[serializeBatches]], the batch's vectors are cleared once written.
-   */
-  def serializeBatchColumns(batch: ColumnarBatch): Array[ChunkedByteBuffer] = {
-    val codec = CompressionCodec.createCodec(SparkEnv.get.conf)
-
-    // Each column is written with the provider it was decoded with, not the batch's first one:
-    // columns decoded from separate streams have independent dictionary ID namespaces.
-    getBatchFieldVectorsWithProviders(batch).map { case (fieldVector, providerOpt) =>
-      val provider = providerOpt.getOrElse(new CDataDictionaryProvider)
-      val cbbos = new ChunkedByteBufferOutputStream(1024 * 1024, ByteBuffer.allocate)
-      val out = new DataOutputStream(codec.compressedOutputStream(cbbos))
-
-      val root = new VectorSchemaRoot(Seq(fieldVector).asJava)
-      val writer = new ArrowStreamWriter(root, provider, Channels.newChannel(out))
-      writer.start()
-      writer.writeBatch()
-      root.clear()
-      writer.close()
-
-      cbbos.toChunkedByteBuffer
-    }.toArray
-  }
-
-  /**
-   * The classes that carry the output of [[serializeBatches]] and [[serializeBatchColumns]] out
-   * of Comet, for Kryo registration by [[org.apache.comet.CometKryoRegistrator]].
+   * The classes that carry the output of [[serializeBatches]] out of Comet, for Kryo registration
+   * by [[org.apache.comet.CometKryoRegistrator]].
    *
    * Spark registers `ChunkedByteBuffer` itself but not an array of them, and
    * `CometBroadcastExchangeExec` broadcasts exactly that array, so a native broadcast fails under
-   * `spark.kryo.registrationRequired=true` whichever Comet features are enabled. Comet's cache
-   * format stores one buffer per column and so needs the same registrations.
+   * `spark.kryo.registrationRequired=true` whichever Comet features are enabled.
    */
   def arrowBytesKryoClasses: Seq[Class[_]] = Seq(
     classOf[ChunkedByteBuffer],
@@ -499,12 +466,12 @@ object Utils extends CometTypeShim with Logging {
   /**
    * The dictionaries every dictionary-encoded column of `columns` refers to, as one provider.
    *
-   * Columns of a batch need not share a provider. Comet's cache decodes each column from its own
-   * Arrow stream, so a dictionary-backed column arrives carrying the provider its reader built,
-   * and a batch that reaches [[serializeBatches]] -- a native broadcast of a cache scan, say --
-   * can hold several. Writing the whole batch emits one schema covering every column and resolves
-   * each column's dictionary ID against the single provider the writer was given, so handing it
-   * any one column's provider fails with "Could not find dictionary with ID n" for the others.
+   * Columns of a batch need not share a provider. A batch assembled from several upstream readers
+   * -- a shuffle reader's output, or a broadcast that coalesces many blocks -- carries a
+   * dictionary-backed column with whichever provider its own reader built, so one batch can hold
+   * several. Writing the whole batch emits one schema covering every column and resolves each
+   * column's dictionary ID against the single provider the writer was given, so handing it any
+   * one column's provider fails with "Could not find dictionary with ID n" for the others.
    */
   private def combineDictionaryProviders(
       columns: Seq[(FieldVector, Option[DictionaryProvider])]): Option[DictionaryProvider] = {
@@ -514,12 +481,7 @@ object Utils extends CometTypeShim with Logging {
       val encoding = vector.getField.getDictionary
       if (encoding != null) {
         val id = encoding.getId
-        val dictionary = providerOpt.map(_.lookup(id)).orNull
-        if (dictionary == null) {
-          throw new SparkException(
-            s"Column ${vector.getField.getName} is dictionary encoded with ID $id, but no " +
-              "dictionary with that ID was provided")
-        }
+        val dictionary = lookupDictionary(vector, providerOpt)
         dictionaries.get(id) match {
           // Every provider seen here descends from one upstream reader, which numbers the
           // dictionaries it hands out, so two columns sharing an ID share the dictionary itself.
@@ -538,12 +500,31 @@ object Utils extends CometTypeShim with Logging {
   }
 
   /**
+   * The dictionary a dictionary-encoded column refers to, or a failure naming the column.
+   *
+   * Shared with the cache serializer, which decodes dictionary-encoded columns rather than
+   * folding their providers together, so that both report a missing dictionary the same way.
+   */
+  def lookupDictionary(
+      vector: FieldVector,
+      providerOpt: Option[DictionaryProvider]): Dictionary = {
+    val id = vector.getField.getDictionary.getId
+    val dictionary = providerOpt.map(_.lookup(id)).orNull
+    if (dictionary == null) {
+      throw new SparkException(
+        s"Column ${vector.getField.getName} is dictionary encoded with ID $id, but no " +
+          "dictionary with that ID was provided")
+    }
+    dictionary
+  }
+
+  /**
    * Field vectors of `batch` paired with the dictionary provider each column was decoded with.
    *
    * [[getBatchFieldVectors]] folds these into one provider covering the whole batch, which is
-   * what a single stream over every column needs. Comet's cache decodes each column from its own
-   * stream and writes it back the same way, so it keeps the pairing instead: each column is
-   * written with the provider it was decoded with.
+   * what a single stream over every column needs. Comet's cache serializer keeps the pairing
+   * instead: its payload has no schema message to describe a dictionary encoding, so it decodes
+   * each such column against the provider that column arrived with.
    */
   def getBatchFieldVectorsWithProviders(
       batch: ColumnarBatch): Seq[(FieldVector, Option[DictionaryProvider])] = {

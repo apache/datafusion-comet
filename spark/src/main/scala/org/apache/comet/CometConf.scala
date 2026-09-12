@@ -261,22 +261,49 @@ object CometConf extends ShimCometConf {
   val COMET_EXEC_IN_MEMORY_CACHE_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.inMemoryCache.enabled")
       .category(CATEGORY_EXEC)
-      .doc(
-        "Whether to enable Comet native execution for in-memory cached tables. Its value at " +
-          "startup also decides whether CometDriverPlugin installs Comet's cache serializer, " +
-          "which stores cached data in Arrow format. Because spark.sql.cache.serializer is a " +
-          "static config, the cached format is fixed for the application, and disabling this " +
-          "at runtime only sends cached scans back to Spark's execution path. Relations whose " +
-          "schema Comet's Arrow writer does not support are always cached in Spark's default " +
-          "format. Each cached column is stored as its own compressed Arrow IPC stream, so a " +
-          "scan decodes only the columns it projected. Reads that feed Spark operators rather " +
-          "than Comet ones still pay a row conversion the default format avoids, and can be " +
-          "slower than Spark's cache. With spark.kryo.registrationRequired=true, also set " +
-          "spark.kryo.registrator=org.apache.comet.CometKryoRegistrator before creating the " +
-          "SparkContext, otherwise caching fails as soon as a block is serialized, including " +
-          "the disk half of the default MEMORY_AND_DISK storage level.")
+      .doc("Whether to enable Comet native execution for in-memory cached tables. Its value at " +
+        "startup also decides whether CometDriverPlugin installs Comet's cache serializer, " +
+        "which stores cached data in Arrow format. Because spark.sql.cache.serializer is a " +
+        "static config, the cached format is fixed for the application, and disabling this " +
+        "at runtime only sends cached scans back to Spark's execution path. Relations whose " +
+        "schema Comet's Arrow writer does not support are always cached in Spark's default " +
+        "format. Each cached batch is stored as one Arrow IPC record batch with per-buffer " +
+        "zstd compression, and a scan copies out only the buffers of the columns it projected, " +
+        "so the unselected ones are never decompressed. Reads that feed Spark operators rather " +
+        "than Comet ones still pay a row conversion the default format avoids, and can be " +
+        "slower than Spark's cache. With spark.kryo.registrationRequired=true, also set " +
+        "spark.kryo.registrator=org.apache.comet.CometKryoRegistrator before creating the " +
+        "SparkContext, otherwise caching fails as soon as a block is serialized, including " +
+        "the disk half of the default MEMORY_AND_DISK storage level.")
       .booleanConf
       .createWithDefault(false)
+
+  val COMET_EXEC_IN_MEMORY_CACHE_COMPRESSION_CODEC: ConfigEntry[String] =
+    conf("spark.comet.exec.inMemoryCache.compression.codec")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "The Arrow IPC compression codec used when Comet's cache serializer writes cached " +
+          "data. Unlike spark.io.compression.codec, this compresses each Arrow buffer " +
+          "separately rather than the batch as a whole, which is what lets a projected scan " +
+          "decompress only the columns it selected. Set to none to store cached batches " +
+          "uncompressed, which is both slower to write and larger than zstd because the extra " +
+          "bytes cost more to move and store than compressing them costs. Only affects newly " +
+          "cached data; the codec a batch was written with is recorded in the batch itself and " +
+          "is what the read path uses. Arrow's lz4 is deliberately not offered: it is a " +
+          "pure-Java implementation, unrelated to the JNI-accelerated lz4 behind " +
+          "spark.io.compression.codec, and is orders of magnitude slower to write than zstd " +
+          "while also producing larger output.")
+      .stringConf
+      .checkValues(Set("none", "zstd"))
+      .createWithDefault("zstd")
+
+  val COMET_EXEC_IN_MEMORY_CACHE_COMPRESSION_ZSTD_LEVEL: ConfigEntry[Int] =
+    conf("spark.comet.exec.inMemoryCache.compression.zstd.level")
+      .category(CATEGORY_EXEC)
+      .doc("The compression level to use when Comet's cache serializer compresses cached data " +
+        "with zstd. Ignored for other codecs.")
+      .intConf
+      .createWithDefault(1)
 
   val COMET_NATIVE_COLUMNAR_TO_ROW_ENABLED: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.columnarToRow.native.enabled")
