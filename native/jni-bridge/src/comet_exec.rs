@@ -46,6 +46,8 @@ pub struct CometExec<'a> {
     pub method_get_string_ret: ReturnType,
     pub method_get_binary: JStaticMethodID,
     pub method_get_binary_ret: ReturnType,
+    pub method_get_struct: JStaticMethodID,
+    pub method_get_struct_ret: ReturnType,
     pub method_is_null: JStaticMethodID,
     pub method_is_null_ret: ReturnType,
 }
@@ -117,6 +119,12 @@ impl<'a> CometExec<'a> {
                 jni::jni_sig!("(JJ)[B"),
             )?,
             method_get_binary_ret: ReturnType::Array,
+            method_get_struct: env.get_static_method_id(
+                JNIString::new(Self::JVM_CLASS),
+                jni::jni_str!("getStruct"),
+                jni::jni_sig!("(JJ)[B"),
+            )?,
+            method_get_struct_ret: ReturnType::Array,
             method_is_null: env.get_static_method_id(
                 JNIString::new(Self::JVM_CLASS),
                 jni::jni_str!("isNull"),
