@@ -21,6 +21,7 @@ use std::hash::{Hash, Hasher};
 
 use crate::execution::planner::PhysicalPlanner;
 use crate::parquet::parquet_exec::init_datasource_exec;
+use crate::parquet::parquet_support::ObjectStoreBackend;
 use arrow::array::{ArrayRef, BooleanArray, Int32Array, Int64Array, Int8Array, RecordBatch};
 use arrow::compute::cast;
 use arrow::datatypes::{Field, Schema};
@@ -683,6 +684,7 @@ fn parquet_probe(
         Some(file_schema),
         None,
         ObjectStoreUrl::local_filesystem(),
+        ObjectStoreBackend::Local,
         vec![vec![PartitionedFile::from_path(
             file.path().to_string_lossy().into_owned(),
         )
@@ -839,6 +841,7 @@ async fn reader_filter_crosses_null_check_conjunction_and_retains_residual() {
             Some(Arc::clone(&file_schema)),
             None,
             ObjectStoreUrl::local_filesystem(),
+            ObjectStoreBackend::Local,
             vec![vec![PartitionedFile::from_path(
                 file.path().to_string_lossy().into_owned(),
             )
