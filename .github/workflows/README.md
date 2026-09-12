@@ -62,6 +62,7 @@ and TPC-H/TPC-DS caches on `main` stale until the next unrelated change.
   spark_4_1                                                     pr_benchmark_check  run-benchmark-check
   iceberg_1_11                                                  spark_3_4           run-spark-3.4-tests
                                                                 spark_3_5           run-spark-3.5-tests
+                                                                delta_contrib       run-delta-tests
                                                                 spark_4_0           run-spark-4.0-tests
                                                                 iceberg_1_8         run-iceberg-tests
                                                                 iceberg_1_9         run-iceberg-tests
@@ -94,6 +95,7 @@ and TPC-H/TPC-DS caches on `main` stale until the next unrelated change.
 | `pr_benchmark_check` | merge group, **or** PR with `run-benchmark-check` | benchmark sources only              |
 | `docs`               | push to main, paths matched                       | `.asf.yaml`, `docs/**`, `docs.yaml` |
 | `spark_3_5`          | merge group, **or** PR with `run-spark-3.5-tests` | Spark 3.5 sources                   |
+| `delta_contrib`      | merge group, **or** PR with `run-delta-tests`     | Delta contrib and native sources    |
 | `spark_4_1`          | PR or merge group, paths matched                  | Spark 4.1 sources                   |
 | `spark_3_4`          | merge group, **or** PR with `run-spark-3.4-tests` | Spark 3.4 sources                   |
 | `spark_4_0`          | merge group, **or** PR with `run-spark-4.0-tests` | Spark 4.0 sources                   |

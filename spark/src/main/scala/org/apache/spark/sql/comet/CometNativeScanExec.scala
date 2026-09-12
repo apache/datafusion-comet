@@ -19,7 +19,6 @@
 
 package org.apache.spark.sql.comet
 
-import org.apache.spark.{Partition, TaskContext}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst._
@@ -275,16 +274,8 @@ case class CometNativeScanExec(
       Seq.empty,
       broadcastedHadoopConfForEncryption,
       encryptedFilePaths,
-      perPartitionFilePaths = perPartitionFilePaths) {
-      override def compute(split: Partition, context: TaskContext): Iterator[ColumnarBatch] = {
-        val res = super.compute(split, context)
-
-        // Report scan input metrics after the iterator is fully consumed.
-        Option(context).foreach(nativeMetrics.reportScanInputMetrics)
-
-        res
-      }
-    }
+      perPartitionFilePaths = perPartitionFilePaths,
+      reportScanInputMetrics = true)
   }
 
   override def doCanonicalize(): CometNativeScanExec = {

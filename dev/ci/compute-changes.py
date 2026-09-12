@@ -306,6 +306,23 @@ FILTERS = {
         ".mvn/**",
         "mvnw",
     ],
+    "delta": [
+        "contrib/delta/**",
+        "contrib/delta-spark/**",
+        "native/**/src/**",
+        "native/**/Cargo.toml",
+        "native/Cargo.lock",
+        "common/src/main/**",
+        "common/pom.xml",
+        "spark/src/main/**",
+        "!spark/src/main/scala/org/apache/comet/GenerateDocs.scala",
+        "spark/pom.xml",
+        "pom.xml",
+        "rust-toolchain.toml",
+        ".github/workflows/ci.yml",
+        ".github/workflows/delta_contrib_test.yml",
+        ".github/actions/setup-builder/**",
+    ],
 }
 
 # Which events may run each job, independent of the path filters above.
@@ -356,6 +373,9 @@ POLICY = {
     "iceberg_1_10": ["queue", "label:run-iceberg-tests"],
     # Iceberg 1.11 is our only Spark 4.1 Iceberg coverage, so it is not opt-in.
     "iceberg_1_11": ["pr", "queue"],
+    # The Delta contrib suite runs against Spark 3.5, so it sits in the same
+    # tier as spark_3_5: the queue by default, a label on a pull request.
+    "delta": ["queue", "label:run-delta-tests"],
 }
 
 

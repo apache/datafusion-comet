@@ -116,7 +116,8 @@ PR_TIER = {"build_linux", "spark_4_1", "iceberg_1_11"}
 SPARK_OPT_IN = {"spark_3_4", "spark_3_5", "spark_4_0"}
 ICEBERG_OPT_IN = {"iceberg_1_8", "iceberg_1_9", "iceberg_1_10"}
 BUILD_OPT_IN = {"build_macos", "benchmark"}
-QUEUE_TIER = PR_TIER | SPARK_OPT_IN | ICEBERG_OPT_IN | BUILD_OPT_IN
+DELTA_OPT_IN = {"delta"}
+QUEUE_TIER = PR_TIER | SPARK_OPT_IN | ICEBERG_OPT_IN | BUILD_OPT_IN | DELTA_OPT_IN
 ALL_JOBS = QUEUE_TIER | {"docs"}
 
 POLICY_CASES = [
@@ -137,6 +138,21 @@ POLICY_CASES = [
     (
         {"name": "pull_request", "action": "synchronize", "labels": ["run-spark-3.5-tests"]},
         PR_TIER | {"spark_3_5"},
+    ),
+    # The Delta contrib suite sits in the same tier as Spark 3.5, with its own
+    # label as the escape hatch.
+    (
+        {"name": "pull_request", "action": "synchronize", "labels": ["run-delta-tests"]},
+        PR_TIER | DELTA_OPT_IN,
+    ),
+    (
+        {
+            "name": "pull_request",
+            "action": "labeled",
+            "label": "run-delta-tests",
+            "labels": ["run-delta-tests"],
+        },
+        DELTA_OPT_IN,
     ),
     # So did the macOS build and the benchmark compile check, each with its
     # own label. Neither label pulls in the other.
