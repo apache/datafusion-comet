@@ -45,6 +45,32 @@ Spark `PartialMerge`, or mixed-mode aggregate disables skipping in that plan. Mu
 still fully deduplicate, and non-native-shuffle plans retain ordinary aggregation.
 The DataFusion testing configuration override does not bypass these safety checks.
 
+DataFusion 55 defaults to probing after 100,000 input rows per partial aggregation
+partition and skipping when the number of groups divided by input rows exceeds `0.8`.
+To experiment with these thresholds, enable `spark.comet.exec.respectDataFusionConfigs`,
+a development and testing option that defaults to `false`. For example, the following
+SQL settings pass through the default threshold values, which you can adjust:
+
+```sql
+SET spark.comet.exec.respectDataFusionConfigs=true;
+SET spark.comet.datafusion.execution.skip_partial_aggregation_probe_rows_threshold=100000;
+SET spark.comet.datafusion.execution.skip_partial_aggregation_probe_ratio_threshold=0.8;
+```
+
+A lower row threshold allows an earlier decision; a lower ratio threshold makes
+skipping more likely. Skipping can increase the number of partial states emitted
+and the amount of shuffle data, so measure the effect on your workload.
+
+To disable skipping, keep `spark.comet.exec.respectDataFusionConfigs=true` and set
+the ratio threshold above the maximum possible groups/input-rows ratio:
+
+```sql
+SET spark.comet.datafusion.execution.skip_partial_aggregation_probe_ratio_threshold=1.1;
+```
+
+These settings only tune eligible plans. Unsupported accumulators and modes remain
+disabled even when configuration overrides are enabled.
+
 ## Memory Tuning
 
 It is necessary to specify how much memory Comet can use in addition to memory already allocated to Spark. In some
