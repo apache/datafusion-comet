@@ -1174,6 +1174,14 @@ case class CometExecRule(session: SparkSession)
    * Restore only the feeding aggregate/exchange chain; keep native work below its Partial. If a
    * remaining native buffer producer cannot be restored, warn and annotate the Spark Final; do
    * not rewrite materialized stages or assume unknown operators can safely be reconstructed.
+   *
+   * In native-only shuffle mode, a failed lower exchange in a one-distinct chain leaves its
+   * PartialMerge consumers in Spark. Their Spark output also prevents the upper exchange from
+   * becoming native, so the Final remains Spark and triggers this repair, including with
+   * SUM(DISTINCT). In auto/jvm mode an upper columnar shuffle can instead bridge Spark merge
+   * buffers into a compatible native Final; this Final-only trigger does not inspect that
+   * separate boundary. The nondecimal AVG distinct-stage tests pin both paths without treating a
+   * grouped AVG producer as the scalar AVG whose untouched state is (null, 0).
    */
   private[rules] def revertUnsafePartialAggregates(plan: SparkPlan): SparkPlan = {
     def revertChain(node: SparkPlan): Option[SparkPlan] = node match {
