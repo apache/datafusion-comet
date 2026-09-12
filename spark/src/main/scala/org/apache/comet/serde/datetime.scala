@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import java.util.Locale
 
-import org.apache.spark.sql.catalyst.expressions.{AddMonths, Attribute, Cast, ConvertTimezone, DateAdd, DateDiff, DateFormatClass, DateFromUnixDate, DateSub, DayOfMonth, DayOfWeek, DayOfYear, Days, Expression, FromUTCTimestamp, GetDateField, GetTimestamp, Hour, Hours, LastDay, Literal, MakeDate, MakeDTInterval, MakeInterval, MakeTimestamp, MakeYMInterval, MicrosToTimestamp, MillisToTimestamp, Minute, Month, MonthsBetween, MultiplyDTInterval, NextDay, PreciseTimestampConversion, Quarter, Second, SecondsToTimestamp, TimestampAdd, TimestampDiff, ToUnixTimestamp, ToUTCTimestamp, TruncDate, TruncTimestamp, UnixDate, UnixMicros, UnixMillis, UnixSeconds, UnixTimestamp, WeekDay, WeekOfYear, Year}
+import org.apache.spark.sql.catalyst.expressions.{AddMonths, Attribute, Cast, ConvertTimezone, DateAdd, DateAddInterval, DateAddYMInterval, DateDiff, DateFormatClass, DateFromUnixDate, DateSub, DayOfMonth, DayOfWeek, DayOfYear, Days, Expression, FromUTCTimestamp, GetDateField, GetTimestamp, Hour, Hours, LastDay, Literal, MakeDate, MakeDTInterval, MakeInterval, MakeTimestamp, MakeYMInterval, MicrosToTimestamp, MillisToTimestamp, Minute, Month, MonthsBetween, MultiplyDTInterval, NextDay, PreciseTimestampConversion, Quarter, Second, SecondsToTimestamp, SubtractDates, SubtractTimestamps, TimestampAdd, TimestampAddYMInterval, TimestampDiff, ToUnixTimestamp, ToUTCTimestamp, TruncDate, TruncTimestamp, UnixDate, UnixMicros, UnixMillis, UnixSeconds, UnixTimestamp, WeekDay, WeekOfYear, Year}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{CalendarIntervalType, DataType, DateType, DoubleType, FloatType, IntegerType, LongType, StringType, TimestampNTZType, TimestampType}
 import org.apache.spark.unsafe.types.UTF8String
@@ -996,6 +996,37 @@ object CometMultiplyDTInterval extends CometCodegenDispatch[MultiplyDTInterval]
 object CometTimestampAdd extends CometCodegenDispatch[TimestampAdd]
 
 object CometTimestampDiff extends CometCodegenDispatch[TimestampDiff]
+
+// Date and timestamp interval arithmetic. `timestamp + day-time or calendar interval` resolves
+// to `TimeAdd` on Spark 3.4 through 4.0 and to `TimestampAddInterval` on 4.1+, so that serde
+// lives in the version shims.
+object CometDateAddInterval extends CometCodegenDispatch[DateAddInterval]
+
+object CometDateAddYMInterval extends CometCodegenDispatch[DateAddYMInterval]
+
+object CometTimestampAddYMInterval extends CometCodegenDispatch[TimestampAddYMInterval]
+
+object CometSubtractDates extends CometCodegenDispatch[SubtractDates]
+
+object CometSubtractTimestamps extends CometCodegenDispatch[SubtractTimestamps] {
+  private val legacyIntervalReason =
+    "In legacy interval mode (`spark.sql.legacy.interval.enabled=true`) the result is a" +
+      " `CalendarIntervalType`, and the JVM codegen dispatcher's calendar-interval output" +
+      " cannot carry a span past about 292 years (see" +
+      " https://github.com/apache/datafusion-comet/issues/5279), so the expression falls" +
+      " back to Spark"
+
+  override def getUnsupportedReasons(): Seq[String] = Seq(legacyIntervalReason)
+
+  // Same `Math.multiplyExact(microseconds, 1000L)` limit `CometMakeInterval` documents as a
+  // compatible note. That one only overflows on extreme arguments; `ts - ts` produces an
+  // arbitrary span from ordinary data, and legacy mode is off by default, so decline it.
+  // Remove this branch once #5279 carries CalendarInterval across the boundary losslessly.
+  override def getSupportLevel(expr: SubtractTimestamps): SupportLevel = expr.dataType match {
+    case CalendarIntervalType => Unsupported(Some(legacyIntervalReason))
+    case _ => Compatible()
+  }
+}
 
 /**
  * Spark's internal `PreciseTimestampConversion` reinterprets a value between the timestamp types

@@ -415,8 +415,8 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | --- | --- | --- | --- |
 | `%` | ✅ | Native |  |
 | `*` | ✅ | Native | DayTime interval multiplication routes through the JVM codegen dispatcher; YearMonth and Calendar interval multiplication fall back |
-| `+` | ✅ | Native |  |
-| `-` | ✅ | Native |  |
+| `+` | ✅ | Native | Adding a calendar, year-month or day-time interval to a date or timestamp routes through the JVM codegen dispatcher |
+| `-` | ✅ | Native | `date - date`, `timestamp - timestamp` and subtracting an interval from a date or timestamp route through the JVM codegen dispatcher; `timestamp - timestamp` falls back to Spark in legacy interval mode (`spark.sql.legacy.interval.enabled=true`) because its calendar-interval result can exceed what the dispatcher output can carry |
 | `/` | ✅ | Native |  |
 | `abs` | ✅ | Hybrid | Interval types route through the JVM codegen dispatcher; numeric types run natively |
 | `acos` | ✅ | Native |  |
