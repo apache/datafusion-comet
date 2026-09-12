@@ -797,7 +797,7 @@ fn synthetic_ndv_for_bloom_filter_bytes(target_bytes: usize, fpp: f64) -> DFResu
 }
 
 fn validate_bloom_filter_inputs(fpp: f64, bytes: usize) -> DFResult<()> {
-    if !fpp.is_finite() || !(0.0..1.0).contains(&fpp) {
+    if !fpp.is_finite() || !(fpp > 0.0 && fpp < 1.0) {
         return Err(DataFusionError::Internal(format!(
             "Bloom filter FPP must be finite and strictly between 0 and 1, got {fpp}"
         )));
@@ -1050,6 +1050,13 @@ mod tests {
         )
         .unwrap_err();
         assert!(format!("{err}").contains("cannot represent"));
+    }
+
+    #[test]
+    fn rejects_zero_bloom_filter_fpp() {
+        let err =
+            validate_bloom_filter_inputs(0.0, ICEBERG_DEFAULT_BLOOM_FILTER_MAX_BYTES).unwrap_err();
+        assert!(format!("{err}").contains("strictly between 0 and 1"));
     }
 
     #[test]
