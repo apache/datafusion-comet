@@ -15,8 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::array::{make_array, Array, GenericListArray, OffsetSizeTrait, StructArray};
-use arrow::buffer::NullBuffer;
+use arrow::array::{Array, GenericListArray, OffsetSizeTrait, StructArray};
 use arrow::datatypes::{DataType, FieldRef, Schema};
 use arrow::record_batch::RecordBatch;
 use datafusion::common::{
@@ -25,6 +24,7 @@ use datafusion::common::{
 };
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::physical_expr::PhysicalExpr;
+use datafusion_comet_common::child_with_parent_nulls;
 use std::hash::Hash;
 use std::{
     fmt::{Debug, Display, Formatter},
@@ -143,26 +143,14 @@ fn get_array_struct_fields<O: OffsetSizeTrait>(
         .expect("A StructType is expected");
 
     let field = Arc::clone(&values.fields()[ordinal]);
-    // Get struct column by ordinal
-    let extracted_column = values.column(ordinal);
-
-    let data = if values.null_count() == extracted_column.null_count() {
-        Arc::clone(extracted_column)
-    } else {
-        // In some cases the column obtained from struct by ordinal doesn't
-        // represent all nulls that imposed by parent values.
-        // This maybe caused by a low level reader bug and needs more investigation.
-        // For this specific case we patch the null buffer for the column by merging nulls buffers
-        // from parent and column
-        let merged_nulls = NullBuffer::union(values.nulls(), extracted_column.nulls());
-        make_array(
-            extracted_column
-                .into_data()
-                .into_builder()
-                .nulls(merged_nulls)
-                .build()?,
-        )
-    };
+    // A field of a null struct is null, and Arrow keeps the children's validity independent of the
+    // parent's, so the parent's nulls have to be unioned in. See
+    // `datafusion_comet_common::struct_nulls`.
+    //
+    // This previously skipped the union when the parent and child null counts matched, which is not
+    // the same question: equal counts can still sit at different rows, and then a null of the
+    // parent's was dropped.
+    let data = child_with_parent_nulls(values, ordinal)?;
 
     let array = GenericListArray::new(
         field,

@@ -30,6 +30,26 @@ import java.io.IOException;
 @FunctionalInterface
 public interface ShufflePartitionPusher {
 
+  /** Reserves an upper bound before a native worker starts encoding a shuffle frame. */
+  default void reservePartitionData(int maxLength) throws IOException {}
+
+  /**
+   * Acknowledges that native encoding buffers and JNI local references have been released, on both
+   * success and failure. Implementations may retain admission until asynchronous pushes also
+   * finish.
+   */
+  default void releasePartitionDataReservation() {}
+
+  /** Returns the largest encoding reservation this callback can admit before allocating buffers. */
+  default int maxReservationBytes() {
+    return Integer.MAX_VALUE;
+  }
+
+  /** Returns the largest complete frame that this callback can safely accept. */
+  default int maxFrameBytes() {
+    return Integer.MAX_VALUE - 8;
+  }
+
   /** Pushes one complete, length-prefixed Arrow IPC block for the given output partition. */
   void pushPartitionData(int partitionId, byte[] data, int length) throws IOException;
 }
