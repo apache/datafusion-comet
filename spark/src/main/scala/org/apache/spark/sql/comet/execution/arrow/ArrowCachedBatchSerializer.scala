@@ -21,13 +21,13 @@ package org.apache.spark.sql.comet.execution.arrow
 
 import java.lang.{Boolean => JBoolean, Byte => JByte, Double => JDouble, Float => JFloat, Integer => JInteger, Long => JLong, Short => JShort}
 
-import scala.collection.JavaConverters._
 import scala.util.control.NonFatal
 
-import org.apache.spark.TaskContext
+import org.apache.spark.{SparkEnv, TaskContext}
+import org.apache.spark.io.CompressionCodec
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, GenericInternalRow, IsNotNull, IsNull, UnsafeProjection}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, GenericInternalRow, IsNotNull, IsNull}
 import org.apache.spark.sql.catalyst.util.TypeUtils
 import org.apache.spark.sql.columnar.{CachedBatch, SimpleMetricsCachedBatch, SimpleMetricsCachedBatchSerializer}
 import org.apache.spark.sql.comet.util.Utils
@@ -40,6 +40,7 @@ import org.apache.spark.unsafe.types.UTF8String
 import org.apache.spark.util.io.ChunkedByteBuffer
 
 import org.apache.comet.CometArrowAllocator
+import org.apache.comet.vector.CometVector
 
 /**
  * Cached batch format used when Comet writes Spark in-memory cache data.
@@ -48,13 +49,16 @@ import org.apache.comet.CometArrowAllocator
  * by `Utils.serializeBatchColumns`. Storing columns separately is what lets a scan decode only
  * the ones it projected; a single stream covering the whole batch would have to be inflated in
  * full before any projection could be applied. The cache manager still owns storage and eviction;
- * this class only changes the cached payload.
+ * this class only changes the cached payload. `deltaEncoded` marks numeric streams whose values
+ * need a prefix sum after decoding; the validity bits and logical schema remain the same as the
+ * source column.
  */
 private case class CometCachedBatch(
     override val numRows: Int,
     override val sizeInBytes: Long,
     override val stats: InternalRow,
-    columns: Array[ChunkedByteBuffer])
+    columns: Array[ChunkedByteBuffer],
+    deltaEncoded: Array[Boolean])
     extends SimpleMetricsCachedBatch
 
 /**
@@ -352,7 +356,7 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
       val (lower, upper, nulls) = gatherColumnStats(batch, attrs)
       val numRows = batch.numRows()
 
-      val columns = if (Utils.isArrowBacked(batch)) {
+      val (columns, deltaEncoded) = if (Utils.isArrowBacked(batch)) {
         Utils.serializeBatchColumns(batch)
       } else {
         val arrowBatch =
@@ -366,7 +370,8 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
         numRows = numRows,
         sizeInBytes = columnSizes.sum,
         stats = statsRow(lower, upper, nulls, numRows, columnSizes),
-        columns = columns)
+        columns = columns,
+        deltaEncoded = deltaEncoded)
     }
   }
 
@@ -464,6 +469,8 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
     val indices = selectedIndices(cacheAttributes, selectedAttributes)
 
     input.mapPartitions { it =>
+      // Codec factories are reusable; each selected column still gets its own input stream.
+      lazy val codec = CompressionCodec.createCodec(SparkEnv.get.conf)
       // A ColumnReaders closes its readers (releasing the vectors they are holding) only when the
       // batch it produced has been consumed. A consumer that stops early -- LIMIT, take(), or a
       // cancelled task -- leaves the readers for the batch in flight open, so close them on task
@@ -490,7 +497,11 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
             // Nothing to decode: the row count is the whole answer, and it is already here.
             Iterator.single(new ColumnarBatch(Array.empty[ColumnVector], cb.numRows))
           } else {
-            val readers = new ColumnReaders(indices.map(i => cb.columns(i)), cb.numRows)
+            val readers = new ColumnReaders(
+              indices.map(i => cb.columns(i)),
+              indices.map(i => cb.deltaEncoded(i)),
+              cb.numRows,
+              codec)
             current = readers
             readers.batches
           }
@@ -508,7 +519,11 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
   // decoded vectors stay owned by their readers: closing them releases the batch, which is why
   // this yields a single-element iterator that closes on exhaustion, matching what
   // ArrowReaderIterator did when the payload was one stream.
-  private class ColumnReaders(buffers: Array[ChunkedByteBuffer], numRows: Int) {
+  private class ColumnReaders(
+      buffers: Array[ChunkedByteBuffer],
+      deltaEncoded: Array[Boolean],
+      numRows: Int,
+      codec: CompressionCodec) {
     // decodeBatches opens a reader and eagerly decodes its first batch, so it allocates. If a
     // later column throws, the readers already opened here are unreachable: the task-completion
     // listener cannot release them because `current` is only assigned once this constructor
@@ -518,7 +533,7 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
       var i = 0
       try {
         while (i < buffers.length) {
-          opened(i) = Utils.decodeBatches(buffers(i), "CometCache")
+          opened(i) = Utils.decodeBatches(buffers(i), "CometCache", codec)
           i += 1
         }
       } catch {
@@ -570,7 +585,11 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
           throw new IllegalStateException(
             s"Cached column stream $i decoded ${decoded.numRows()} rows, expected $numRows")
         }
-        columns(i) = decoded.column(0)
+        val column = decoded.column(0)
+        if (deltaEncoded(i)) {
+          Utils.decodeDeltaLongs(column.asInstanceOf[CometVector].getValueVector)
+        }
+        columns(i) = column
         i += 1
       }
       new ColumnarBatch(columns, numRows)
@@ -646,11 +665,7 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
 
     convertCachedBatchToColumnarBatch(input, cacheAttributes, selectedAttributes, conf)
       .mapPartitions { batches =>
-        val toUnsafe = UnsafeProjection.create(selectedAttributes, selectedAttributes)
-
-        batches.flatMap { batch =>
-          batch.rowIterator().asScala.map(row => toUnsafe(row).copy())
-        }
+        new CachedBatchRowIterator(selectedAttributes).createObject(batches)
       }
   }
 }
