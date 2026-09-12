@@ -39,8 +39,6 @@ import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   import testImplicits._
 
-  val ARITHMETIC_OVERFLOW_EXCEPTION_MSG =
-    """[ARITHMETIC_OVERFLOW] integer overflow. If necessary set "spark.sql.ansi.enabled" to "false" to bypass this error"""
   val DIVIDE_BY_ZERO_EXCEPTION_MSG =
     """Division by zero. Use `try_divide` to tolerate divisor being 0 and return NULL instead"""
 
@@ -2944,12 +2942,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                               |  from tbl
                               |  """.stripMargin)
 
-        checkSparkAnswerMaybeThrows(res) match {
-          case (Some(sparkExc), Some(cometExc)) =>
-            assert(cometExc.getMessage.contains(ARITHMETIC_OVERFLOW_EXCEPTION_MSG))
-            assert(sparkExc.getMessage.contains("overflow"))
-          case _ => fail("Exception should be thrown")
-        }
+        checkSparkError(res, "ARITHMETIC_OVERFLOW")
       }
     }
   }
@@ -2964,12 +2957,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                               |  _1 - _2
                               |  from tbl
                               |  """.stripMargin)
-        checkSparkAnswerMaybeThrows(res) match {
-          case (Some(sparkExc), Some(cometExc)) =>
-            assert(cometExc.getMessage.contains(ARITHMETIC_OVERFLOW_EXCEPTION_MSG))
-            assert(sparkExc.getMessage.contains("overflow"))
-          case _ => fail("Exception should be thrown")
-        }
+        checkSparkError(res, "ARITHMETIC_OVERFLOW")
       }
     }
   }
@@ -2985,12 +2973,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                               |  from tbl
                               |  """.stripMargin)
 
-        checkSparkAnswerMaybeThrows(res) match {
-          case (Some(sparkExc), Some(cometExc)) =>
-            assert(cometExc.getMessage.contains(ARITHMETIC_OVERFLOW_EXCEPTION_MSG))
-            assert(sparkExc.getMessage.contains("overflow"))
-          case _ => fail("Exception should be thrown")
-        }
+        checkSparkError(res, "ARITHMETIC_OVERFLOW")
       }
     }
   }
@@ -3005,12 +2988,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                               |  from tbl
                               |  """.stripMargin)
 
-        checkSparkAnswerMaybeThrows(res) match {
-          case (Some(sparkExc), Some(cometExc)) =>
-            assert(cometExc.getMessage.contains(DIVIDE_BY_ZERO_EXCEPTION_MSG))
-            assert(sparkExc.getMessage.contains("Division by zero"))
-          case _ => fail("Exception should be thrown")
-        }
+        checkSparkError(res, "DIVIDE_BY_ZERO")
       }
     }
   }
@@ -3025,12 +3003,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                               |  from tbl
                               |  """.stripMargin)
 
-        checkSparkAnswerMaybeThrows(res) match {
-          case (Some(sparkExc), Some(cometExc)) =>
-            assert(cometExc.getMessage.contains(DIVIDE_BY_ZERO_EXCEPTION_MSG))
-            assert(sparkExc.getMessage.contains("Division by zero"))
-          case _ => fail("Exception should be thrown")
-        }
+        checkSparkError(res, "DIVIDE_BY_ZERO")
       }
     }
   }
@@ -3046,6 +3019,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                 |  from tbl
                 |  """.stripMargin)
 
+          // Integral divide still raises an unconverted Arrow error under ANSI.
+          // https://github.com/apache/datafusion-comet/issues/5072
           checkSparkAnswerMaybeThrows(res) match {
             case (Some(sparkException), Some(cometException)) =>
               assert(sparkException.getMessage.contains(DIVIDE_BY_ZERO_EXCEPTION_MSG))
@@ -3134,6 +3109,23 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                     "Spark exception: " + sparkException.getMessage)
             }
           }
+        }
+      }
+    }
+  }
+
+  test("round on negative-scale decimal") {
+    // Negative-scale decimals only exist with spark.sql.legacy.allowNegativeScaleOfDecimal=true
+    // and cannot be spelled in the SQL type syntax, so build the column with an explicit cast in
+    // the DataFrame API. There is no native round for them; CometRound reports the case as
+    // Unsupported and CodegenDispatchFallback routes it through the JVM codegen dispatcher, so it
+    // stays in the Comet pipeline and matches Spark exactly.
+    withSQLConf("spark.sql.legacy.allowNegativeScaleOfDecimal" -> "true") {
+      val data = Seq(12345.6789, -12345.6789, 0.0, 55555.0, -0.0).map(Tuple1.apply)
+      withParquetTable(data, "tbl") {
+        val df = spark.table("tbl").select(col("_1").cast(DecimalType(10, -2)).as("d"))
+        Seq(-3, -2, -1, 0, 2).foreach { scale =>
+          checkSparkAnswerAndOperator(df.select(round(col("d"), scale)))
         }
       }
     }
