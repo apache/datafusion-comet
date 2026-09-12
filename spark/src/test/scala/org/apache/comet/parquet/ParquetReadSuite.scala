@@ -40,6 +40,7 @@ import org.apache.parquet.io.api.Binary
 import org.apache.parquet.schema.MessageTypeParser
 import org.apache.spark.SparkException
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
+import org.apache.spark.sql.catalyst.optimizer.{ConvertToLocalRelation, OptimizeIn}
 import org.apache.spark.sql.catalyst.util.DateTimeUtils
 import org.apache.spark.sql.comet.{CometNativeScanExec, CometScanExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
@@ -50,6 +51,8 @@ import org.apache.spark.sql.types._
 import com.google.common.primitives.UnsignedLong
 
 import org.apache.comet.CometConf
+import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
+import org.apache.comet.vector.CometVector
 
 abstract class ParquetReadSuite extends CometTestBase {
   import testImplicits._
@@ -338,6 +341,242 @@ abstract class ParquetReadSuite extends CometTestBase {
                   .toLocalDateTime
                 Row(ts, ts, ts, ldt, ts, ldt)
             })
+        }
+      }
+    }
+  }
+
+  test("TIMESTAMP_MILLIS overflow fails in native scan") {
+    // Spark routes both TimestampType and TimestampNTZType through LongAsMicrosUpdater:
+    // https://github.com/apache/spark/blob/v4.2.0/sql/core/src/main/java/org/apache/spark/sql/execution/datasources/parquet/ParquetVectorUpdaterFactory.java#L140-L164
+    // The updater calls checked millisToMicros for direct and dictionary values:
+    // https://github.com/apache/spark/blob/v4.2.0/sql/core/src/main/java/org/apache/spark/sql/execution/datasources/parquet/ParquetVectorUpdaterFactory.java#L800-L833
+    // Matches Spark's positive and negative overflow cases:
+    // https://github.com/apache/spark/blob/v4.2.0/sql/core/src/test/resources/sql-tests/inputs/timestamp.sql#L74-L83
+    def isOverflow(error: Throwable): Boolean =
+      Iterator
+        .iterate(error)(_.getCause)
+        .takeWhile(_ != null)
+        .exists(cause => Option(cause.getMessage).exists(_.toLowerCase.contains("overflow")))
+
+    Seq(false, true).foreach { dictionaryEnabled =>
+      Seq(92233720368547758L, -92233720368547758L).foreach { millis =>
+        withTempDir { dir =>
+          val path = new Path(dir.toURI.toString, "part-r-0.parquet")
+          val schema = MessageTypeParser.parseMessageType("""
+            |message root {
+            |  optional int64 ts(TIMESTAMP_MILLIS);
+            |  optional int64 ts_ntz(TIMESTAMP(MILLIS,false));
+            |  optional group s {
+            |    optional int64 ts(TIMESTAMP_MILLIS);
+            |    optional int64 ts_ntz(TIMESTAMP(MILLIS,false));
+            |  }
+            |  optional group a (LIST) {
+            |    repeated group list {
+            |      optional int64 element(TIMESTAMP_MILLIS);
+            |    }
+            |  }
+            |  optional group m (MAP) {
+            |    repeated group key_value {
+            |      required int64 key(TIMESTAMP_MILLIS);
+            |      optional int64 value(TIMESTAMP(MILLIS,false));
+            |    }
+            |  }
+            |}
+            |""".stripMargin)
+          val writer = createParquetWriter(schema, path, dictionaryEnabled)
+          // A single row falls back to PLAIN even with dictionary encoding enabled, because
+          // a one-entry dictionary page is not smaller than the raw values. Write enough
+          // repeated rows for the writer to keep dictionary-encoded data pages.
+          (0 until 16).foreach { _ =>
+            val record = new SimpleGroup(schema)
+            record.add(0, millis)
+            record.add(1, millis)
+            val nested = record.addGroup(2)
+            nested.add(0, millis)
+            nested.add(1, millis)
+            record.addGroup(3).addGroup(0).add(0, millis)
+            val entry = record.addGroup(4).addGroup(0)
+            entry.add(0, millis)
+            entry.add(1, millis)
+            writer.write(record)
+          }
+          writer.close()
+
+          val footerReader = org.apache.parquet.hadoop.ParquetFileReader.open(
+            org.apache.parquet.hadoop.util.HadoopInputFile
+              .fromPath(path, spark.sessionState.newHadoopConf()))
+          try {
+            footerReader.getFooter.getBlocks.forEach { block =>
+              block.getColumns.forEach { column =>
+                assert(
+                  column.getEncodingStats.hasDictionaryEncodedPages == dictionaryEnabled,
+                  s"expected hasDictionaryEncodedPages=$dictionaryEnabled " +
+                    s"for column ${column.getPath}")
+              }
+            }
+          } finally {
+            footerReader.close()
+          }
+
+          Seq(false, true).foreach { ansiEnabled =>
+            withSQLConf(SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString) {
+              readParquetFile(path.toString) { df =>
+                Seq("ts", "ts_ntz", "s", "s.ts", "s.ts_ntz", "a", "m").foreach { column =>
+                  val selected = df.select(column)
+                  assert(collect(selected.queryExecution.executedPlan) {
+                    case _: CometNativeScanExec => true
+                  }.nonEmpty)
+
+                  val (sparkError, cometError) = checkSparkAnswerMaybeThrows(selected)
+                  assert(Seq(sparkError, cometError).forall(_.exists(isOverflow)))
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("filtered TIMESTAMP_MILLIS scans do not convert values Spark can skip") {
+    Seq(false, true).foreach { dictionaryEnabled =>
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "part-r-0.parquet")
+        val schema = MessageTypeParser.parseMessageType("""
+          |message root {
+          |  optional int32 id;
+          |  optional int64 ts(TIMESTAMP_MILLIS);
+          |  optional group s {
+          |    optional int64 ts(TIMESTAMP_MILLIS);
+          |  }
+          |}
+          |""".stripMargin)
+        val writer = createParquetWriter(schema, path, dictionaryEnabled)
+        (0 until 32).foreach { i =>
+          val record = new SimpleGroup(schema)
+          record.add(0, if (i % 2 == 0) 1 else 3)
+          // Milliseconds that overflow Long when converted to microseconds
+          record.add(1, 9223372036854776L)
+          record.addGroup(2).add(0, 9223372036854776L)
+          writer.write(record)
+        }
+        writer.close()
+
+        val footerReader = org.apache.parquet.hadoop.ParquetFileReader.open(
+          org.apache.parquet.hadoop.util.HadoopInputFile
+            .fromPath(path, spark.sessionState.newHadoopConf()))
+        try {
+          val idEncoding =
+            footerReader.getFooter.getBlocks.get(0).getColumns.get(0).getEncodingStats
+          assert(idEncoding.hasDictionaryEncodedPages == dictionaryEnabled)
+          assert(!dictionaryEnabled || !idEncoding.hasNonDictionaryEncodedPages)
+        } finally {
+          footerReader.close()
+        }
+
+        def timestampIn(size: Int): String =
+          (0 until size)
+            .map(i => f"timestamp'1970-01-01 00:00:$i%02d'")
+            .mkString("ts IN (", ", ", ")")
+
+        val predicates = Seq(
+          "ts < timestamp'1970-01-01 00:00:00'",
+          timestampIn(20),
+          timestampIn(21),
+          "ts <=> timestamp'1970-01-01 00:00:00'",
+          "s.ts < timestamp'1970-01-01 00:00:00'",
+          "id < 0") ++ (if (dictionaryEnabled) Seq("id = 2") else Seq.empty)
+        Seq(false, true).foreach { ansiEnabled =>
+          Seq(false, true).foreach { rowFilterPushdown =>
+            withSQLConf(
+              SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString,
+              CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED.key ->
+                rowFilterPushdown.toString) {
+              readParquetFile(path.toString) { df =>
+                predicates.foreach { predicate =>
+                  val filtered = df.where(predicate)
+                  assert(collect(filtered.queryExecution.executedPlan) {
+                    case _: CometNativeScanExec => true
+                  }.nonEmpty)
+                  checkSparkAnswer(filtered)
+                }
+
+                if (CometConf.COMET_SCHEMA_EVOLUTION_ENABLED) {
+                  val widenedSchema = StructType(
+                    Seq(
+                      StructField("id", LongType),
+                      StructField("ts", TimestampType),
+                      StructField("s", StructType(Seq(StructField("ts", TimestampType))))))
+                  readParquetFile(path.toString, Some(widenedSchema)) { widened =>
+                    checkSparkAnswer(widened.where("id < 0").select("ts"))
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        withSQLConf(
+          SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED.key -> "true",
+          "spark.comet.expression.IsNull.enabled" -> "false") {
+          readParquetFile(path.toString) { df =>
+            val filtered = df.where("id IS NULL").select("ts")
+            assert(collect(filtered.queryExecution.executedPlan) { case _: CometNativeScanExec =>
+              true
+            }.nonEmpty)
+            checkSparkAnswer(filtered)
+          }
+        }
+
+        if (isSpark40Plus && dictionaryEnabled) {
+          withTempView("timestamp_millis_lookup") {
+            Seq(2).toDF("k").createOrReplaceTempView("timestamp_millis_lookup")
+            withSQLConf("spark.comet.expression.EqualNullSafe.enabled" -> "false") {
+              readParquetFile(path.toString) { df =>
+                val filtered = df
+                  .where("id <=> (SELECT max(k) FROM timestamp_millis_lookup)")
+                  .select("ts")
+                assert(collect(filtered.queryExecution.executedPlan) {
+                  case _: CometNativeScanExec => true
+                }.nonEmpty)
+                checkSparkAnswer(filtered)
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("filtered TIMESTAMP_MILLIS scan preserves empty NOT IN null semantics") {
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "part-r-0.parquet")
+      val schema = MessageTypeParser.parseMessageType("""
+        |message root {
+        |  optional int64 ts(TIMESTAMP_MILLIS);
+        |}
+        |""".stripMargin)
+      val writer = createParquetWriter(schema, path)
+      writer.write(new SimpleGroup(schema))
+      val epoch = new SimpleGroup(schema)
+      epoch.add(0, 0L)
+      writer.write(epoch)
+      writer.close()
+
+      Seq(false, true).foreach { rowFilterPushdown =>
+        withSQLConf(
+          SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+            Seq(ConvertToLocalRelation.ruleName, OptimizeIn.ruleName).mkString(","),
+          "spark.sql.legacy.nullInEmptyListBehavior" -> "false",
+          CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED.key -> rowFilterPushdown.toString) {
+          readParquetFile(path.toString) { df =>
+            val filtered = df.filter(!df("ts").isin())
+            assert(collect(filtered.queryExecution.executedPlan) { case _: CometNativeScanExec =>
+              true
+            }.nonEmpty)
+            checkSparkAnswer(filtered)
+          }
         }
       }
     }
@@ -1350,10 +1589,7 @@ abstract class ParquetReadSuite extends CometTestBase {
           }
           // Walk the cause chain: Comet's shim adds an extra SparkException
           // wrap on Spark 3.x compared to vanilla Spark.
-          val chain = Iterator
-            .iterate[Throwable](outer)(_.getCause)
-            .takeWhile(_ != null)
-            .toSeq
+          val chain = causeChain(outer)
           assert(
             chain.exists(_.isInstanceOf[
               org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException]),
@@ -1440,6 +1676,95 @@ abstract class ParquetReadSuite extends CometTestBase {
             assertThrows[SparkException](df.collect())
           }
         }
+      }
+    }
+  }
+
+  test("native scan rejects nested Parquet conversions Spark rejects") {
+    // Regression guard for #5671. Spark's vectorized reader runs
+    // `ParquetVectorUpdaterFactory.getUpdater` on every leaf column, nested or not, so the
+    // conversions the top-level rejection tests above cover must also be rejected inside
+    // structs, arrays and maps instead of being silently cast (NULLs, parsed strings) or
+    // crashing the native reader.
+    withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> "parquet") {
+      val cases = Seq(
+        // (written expression, read schema)
+        ("named_struct('x', cast(5000000000 as bigint))", "s struct<x:int>"),
+        ("named_struct('x', 1)", "s struct<x:string>"),
+        ("named_struct('d', cast('123456.78' as decimal(10,2)))", "s struct<d:decimal(5,2)>"),
+        ("named_struct('x', '12')", "s struct<x:int>"),
+        ("named_struct('x', 1)", "s struct<x:array<int>>"),
+        ("named_struct('x', array(1))", "s struct<x:int>"),
+        ("array(cast(5000000000 as bigint))", "s array<int>"),
+        ("map('k', cast(5000000000 as bigint))", "s map<string,int>"),
+        ("array(named_struct('x', cast(5000000000 as bigint)))", "s array<struct<x:int>>"))
+      cases.foreach { case (writeExpr, readSchema) =>
+        withTempPath { dir =>
+          val path = dir.getCanonicalPath
+          spark.sql(s"select $writeExpr as s").write.parquet(path)
+          withClue(s"$writeExpr read as $readSchema: ") {
+            withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+              intercept[SparkException] {
+                spark.read.schema(readSchema).parquet(path).collect()
+              }
+            }
+            val df = spark.read.schema(readSchema).parquet(path)
+            val plan = df.queryExecution.executedPlan
+            assert(
+              collect(plan) { case scan: CometNativeScanExec => scan }.nonEmpty,
+              s"Expected a native Comet scan before collecting:\n$plan")
+            val cometErr = intercept[SparkException](df.collect())
+            val chain = causeChain(cometErr)
+            assert(
+              chain.exists(
+                _.isInstanceOf[org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException]),
+              "expected SchemaColumnConvertNotSupportedException; chain was:\n" +
+                chain.map(t => s"  ${t.getClass.getName}: ${t.getMessage}").mkString("\n"))
+            if (readSchema == "s array<struct<x:int>>") {
+              assert(chain.exists(t =>
+                Option(t.getMessage).exists(_.contains("[s, list, element, x]"))))
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("nested schema evolution follows Spark's per-version widening rules") {
+    // Companion to "schema evolution": `INT32 -> bigint` inside a struct is gated by the same
+    // per-Spark-version constant as the top level (see ShimCometConf), and accepted nested
+    // conversions keep working now that nested leaves are validated (#5671).
+    withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> "parquet") {
+      withTempPath { dir =>
+        val path = dir.getCanonicalPath
+        spark
+          .sql("select named_struct('x', 1) as s union all select named_struct('x', 2)")
+          .write
+          .parquet(path)
+        val df = spark.read.schema("s struct<x:bigint, y:string>").parquet(path)
+        if (CometConf.COMET_SCHEMA_EVOLUTION_ENABLED) {
+          checkSparkAnswerAndOperator(df)
+        } else {
+          assertThrows[SparkException](df.collect())
+        }
+      }
+    }
+  }
+
+  test("nested TIMESTAMP_MILLIS columns read as timestamp") {
+    // Accepted nested conversion (TIMESTAMP_MILLIS -> TIMESTAMP_MICROS inside an array and a
+    // struct) must keep working now that nested leaves are validated (#5671).
+    withSQLConf(
+      SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+      SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> "TIMESTAMP_MILLIS") {
+      withTempPath { dir =>
+        val path = dir.getCanonicalPath
+        spark
+          .sql("select array(timestamp'2020-01-01 00:00:00.123') as a, " +
+            "named_struct('t', timestamp'2020-01-02 00:00:00.456') as s")
+          .write
+          .parquet(path)
+        checkSparkAnswerAndOperator(spark.read.parquet(path))
       }
     }
   }
@@ -1749,7 +2074,28 @@ abstract class ParquetReadSuite extends CometTestBase {
           .mode("overwrite")
           .parquet(dir.getCanonicalPath)
         val df = spark.read.schema(readSchema).parquet(dir.getCanonicalPath)
-        checkSparkAnswerAndOperator(df)
+        val (_, cometPlan) = checkSparkAnswerAndOperator(df)
+        val scan = collect(cometPlan) { case scan: CometNativeScanExec => scan }.head
+        val fieldIds = scan
+          .executeColumnar()
+          .mapPartitions { batches =>
+            batches.map { batch =>
+              try {
+                batch
+                  .column(0)
+                  .asInstanceOf[CometVector]
+                  .getValueVector
+                  .getField
+                  .getMetadata
+                  .get(CometParquetUtils.PARQUET_FIELD_ID_META_KEY)
+              } finally {
+                batch.close()
+              }
+            }
+          }
+          .collect()
+          .toSet
+        assert(fieldIds == Set("0"))
       }
     }
   }

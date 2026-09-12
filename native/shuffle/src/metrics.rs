@@ -33,7 +33,8 @@ pub(crate) struct ShufflePartitionerMetrics {
     /// Time encoding batches to IPC format
     pub(crate) encode_time: Time,
 
-    /// Time spent writing to disk. Maps to "shuffleWriteTime" in Spark SQL Metrics.
+    /// Time spent writing encoded data to its destination. Maps to "shuffleWriteTime" in Spark
+    /// SQL Metrics.
     pub(crate) write_time: Time,
 
     /// Number of input batches
@@ -45,7 +46,8 @@ pub(crate) struct ShufflePartitionerMetrics {
     /// total spilled bytes during the execution of the operator
     pub(crate) spilled_bytes: Count,
 
-    /// Total in-memory bytes released by spills before compression.
+    /// Cumulative input backing-buffer and partition-index capacity released by spills.
+    /// Shared input allocations are counted once per spill, not once per input batch.
     pub(crate) memory_spilled_bytes: Count,
 
     /// The original size of spilled data. Different to `spilled_bytes` because of compression.

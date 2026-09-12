@@ -31,6 +31,7 @@ import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
 
+import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.serde.{CometDateFormat, CometTruncDate, CometTruncTimestamp}
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
@@ -39,9 +40,6 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
   /** Timezones used to verify that TimestampNTZ operations are timezone-independent. */
   private val crossTimezones =
     Seq("UTC", "America/Los_Angeles", "Europe/London", "Asia/Tokyo")
-
-  private def causeChain(error: Throwable): Seq[Throwable] =
-    Iterator.iterate(error)(_.getCause).takeWhile(_ != null).toSeq
 
   private def deepestSparkThrowable(error: Throwable): SparkThrowable with Throwable =
     causeChain(error)
@@ -405,6 +403,28 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
       checkSparkAnswerAndFallbackReason(
         "SELECT ts_str, unix_timestamp(ts_str, 'yyyy-MM-dd HH:mm:ss') from string_tbl",
         "unix_timestamp does not support input type: StringType")
+    }
+  }
+
+  test("unix_timestamp - string input falls back even when a collated format opts into native") {
+    assume(isSpark40Plus, "string collation requires Spark 4.0+")
+    withTempView("string_tbl") {
+      val schema = StructType(Seq(StructField("ts_str", DataTypes.StringType, true)))
+      val data = Seq(Row("2020-01-01 00:00:00"), Row("2021-06-15 12:30:45"), Row(null))
+      spark
+        .createDataFrame(spark.sparkContext.parallelize(data), schema)
+        .createOrReplaceTempView("string_tbl")
+
+      // A collated format argument makes the expression `Incompatible`, which
+      // `allowIncompatible=true` waves straight through to `convert`. The input type has to be
+      // rejected ahead of that opt-in: the native kernel accepts only date/timestamp input, so
+      // serializing a string child raises an execution error instead of falling back to Spark.
+      withSQLConf(CometConf.getExprAllowIncompatConfigKey("UnixTimestamp") -> "true") {
+        checkSparkAnswerAndFallbackReason(
+          "SELECT ts_str, unix_timestamp(ts_str, 'yyyy-MM-dd HH:mm:ss' COLLATE UTF8_LCASE) " +
+            "from string_tbl order by ts_str",
+          "unix_timestamp does not support input type: StringType")
+      }
     }
   }
 
