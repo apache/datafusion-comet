@@ -31,7 +31,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSeq, AttributeSet, Expression, ExpressionSet, Generator, NamedExpression, SortOrder}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode, CollectList, CollectSet, Final, Mode, Partial, PartialMerge, Percentile}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode, CollectList, CollectSet, Count, Final, Mode, Partial, PartialMerge, Percentile}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
 import org.apache.spark.sql.catalyst.plans._
 import org.apache.spark.sql.catalyst.plans.physical._
@@ -1635,6 +1635,16 @@ trait CometBaseAggregate {
     val modes = aggregate.aggregateExpressions.map(_.mode).distinct
     val modeSet = modes.toSet
     val hasPartialMerge = modeSet.contains(PartialMerge)
+    // Streaming buffers are persisted by Spark and may be restored by a later Spark-only run.
+    // An all-native aggregate chain does not make an incompatible checkpoint format safe.
+    // Count has a compatible buffer; its mixed batch exclusion concerns AQE/subquery rewrites,
+    // neither of which applies to streaming aggregates.
+    if (aggregate.isStreaming &&
+      !QueryPlanSerde.allAggsSupportMixedExecution(
+        aggregate.aggregateExpressions.filterNot(_.aggregateFunction.isInstanceOf[Count]))) {
+      withFallbackReason(aggregate, "Streaming aggregate requires Spark-compatible state buffers")
+      return None
+    }
     // In distinct aggregates there can be a combination of modes.
     // We support {Partial, PartialMerge} mix; other combinations are rejected.
     val multiMode = modes.size > 1 && modeSet != Set(Partial, PartialMerge)

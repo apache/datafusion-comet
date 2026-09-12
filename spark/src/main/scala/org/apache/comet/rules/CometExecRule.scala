@@ -75,6 +75,7 @@ object CometExecRule {
   val nativeExecs: Map[Class[_ <: SparkPlan], CometOperatorSerde[_]] =
     Map[Class[_ <: SparkPlan], CometOperatorSerde[_]](
       classOf[ProjectExec] -> CometProjectExec,
+      classOf[IcebergChangelogExec] -> CometIcebergChangelogExec,
       classOf[FilterExec] -> CometFilterExec,
       classOf[LocalLimitExec] -> CometLocalLimitExec,
       classOf[GlobalLimitExec] -> CometGlobalLimitExec,
@@ -686,9 +687,10 @@ case class CometExecRule(session: SparkSession)
     // We shouldn't transform Spark query plan if Comet is not loaded.
     if (!isCometLoaded(conf)) return plan
 
-    // Comet does not support structured streaming. Fall back to Spark for any plan that
-    // belongs to a streaming query (detected via StreamSourceAwareSparkPlan.getStream).
-    if (ShimCometStreaming.isStreamingPlan(plan)) return plan
+    if (ShimCometStreaming.isStreamingPlan(plan) &&
+      !ShimCometStreaming.nativeExecutionEnabled(conf, plan)) {
+      return plan
+    }
 
     if (!CometConf.COMET_EXEC_ENABLED.get(conf)) {
       // Comet exec is disabled, but for Spark shuffle, we still can use Comet columnar shuffle
@@ -698,7 +700,7 @@ case class CometExecRule(session: SparkSession)
         plan
       }
     } else {
-      val normalizedPlan = normalizePlan(plan)
+      val normalizedPlan = normalizePlan(CometIcebergChangelogExec.rewrite(plan))
 
       val planWithJoinRewritten = if (CometConf.COMET_FORCE_SHJ.get()) {
         normalizedPlan.transformUp { case p =>
@@ -1027,6 +1029,12 @@ case class CometExecRule(session: SparkSession)
     val fallbackReasons = new ListBuffer[String]()
     if (CometSparkToColumnarExec.isSchemaSupported(op.schema, fallbackReasons)) {
       op match {
+        // Restore/save retain Spark's versioned state store and watermark/commit protocol.
+        // Convert their rows back to Arrow so the aggregate merging restored state runs natively.
+        case state
+            if ShimCometStreaming.isStateBoundary(state) &&
+              ShimCometStreaming.nativeExecutionEnabled(conf, state) =>
+          true
         // Convert Spark DS v1 scan to Arrow format
         case scan: FileSourceScanExec =>
           scan.relation.fileFormat match {

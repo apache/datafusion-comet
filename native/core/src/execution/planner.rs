@@ -33,8 +33,8 @@ mod delta_scan;
 use crate::execution::operators::init_csv_datasource_exec;
 use crate::execution::operators::AlignedArrowStreamReader;
 use crate::execution::operators::DynamicFilterJoinExec;
-use crate::execution::operators::IcebergScanExec;
 use crate::execution::operators::IcebergWriteExec;
+use crate::execution::operators::{IcebergChangelogExec, IcebergScanExec};
 use crate::execution::operators::{PartitionedRankLimitExec, WindowFnKind};
 use crate::execution::{
     expressions::list_empty_to_null::ListEmptyToNullExpr,
@@ -1821,6 +1821,40 @@ impl PhysicalPlanner {
                     Arc::new(SparkPlan::new(spark_plan.plan_id, Arc::new(scan), vec![])),
                 ))
             }
+            OpStruct::IcebergChangelog(changelog) => {
+                assert_eq!(children.len(), 1);
+                let (scans, shuffle_scans, child) =
+                    self.create_plan(&children[0], inputs, partition_count)?;
+                let input = Arc::clone(&child.native_plan);
+                let plan = IcebergChangelogExec::new(
+                    input,
+                    changelog.mode,
+                    [
+                        changelog.change_type_index as usize,
+                        changelog.change_ordinal_index as usize,
+                        changelog.commit_snapshot_id_index as usize,
+                    ],
+                    changelog
+                        .identifier_indices
+                        .iter()
+                        .map(|&i| i as usize)
+                        .collect(),
+                    changelog
+                        .output_indices
+                        .iter()
+                        .map(|&i| i as usize)
+                        .collect(),
+                )?;
+                Ok((
+                    scans,
+                    shuffle_scans,
+                    Arc::new(SparkPlan::new(
+                        spark_plan.plan_id,
+                        Arc::new(plan),
+                        vec![child],
+                    )),
+                ))
+            }
             OpStruct::IcebergScan(scan) => {
                 // Extract common data and single partition's file tasks
                 // Per-partition injection happens in Scala before sending to native
@@ -1852,6 +1886,25 @@ impl PhysicalPlanner {
                     tasks,
                     data_file_concurrency_limit,
                 )?;
+
+                let iceberg_scan = if scan
+                    .file_scan_tasks
+                    .iter()
+                    .any(|task| task.change.is_some())
+                {
+                    let changes = scan
+                        .file_scan_tasks
+                        .iter()
+                        .map(|task| {
+                            task.change.clone().ok_or_else(|| {
+                                GeneralError("Mixed Iceberg data and changelog tasks".into())
+                            })
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    iceberg_scan.with_changes(changes)?
+                } else {
+                    iceberg_scan
+                };
 
                 Ok((
                     vec![],

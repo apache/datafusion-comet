@@ -27,7 +27,9 @@ import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, SortOrder}
 import org.apache.spark.sql.catalyst.plans.QueryPlan
 import org.apache.spark.sql.catalyst.plans.physical.{Partitioning, UnknownPartitioning}
-import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
+import org.apache.spark.sql.comet.shims.ShimStreamSourceAwareSparkPlan
+import org.apache.spark.sql.execution.SparkPlan
+import org.apache.spark.sql.execution.datasources.v2.{BatchScanExec, DataSourceV2ScanExecBase}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.AccumulatorV2
@@ -37,14 +39,18 @@ import com.google.common.base.Objects
 import org.apache.comet.iceberg.CometIcebergNativeScanMetadata
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.operator.CometIcebergNativeScan
+import org.apache.comet.shims.ShimCometStreaming
 
 /**
  * Native Iceberg scan operator that delegates file reading to iceberg-rust.
  *
- * Replaces Spark's Iceberg BatchScanExec to bypass the DataSource V2 API and enable native
- * execution. Iceberg's catalog and planning run in Spark to produce FileScanTasks, which are
- * serialized to protobuf for the native side to execute using iceberg-rust's FileIO and
- * ArrowReader. This provides better performance than reading through Spark's abstraction layers.
+ * Replaces Spark's Iceberg batch or micro-batch scan to enable native file reading. Micro-batch
+ * scans retain their Spark stream identity and use its offset-bounded input partitions.
+ *
+ * Bypasses the DataSource V2 reader API for native execution. Iceberg's catalog and planning run
+ * in Spark to produce FileScanTasks, which are serialized to protobuf for the native side to
+ * execute using iceberg-rust's FileIO and ArrowReader. This provides better performance than
+ * reading through Spark's abstraction layers.
  *
  * Supports Dynamic Partition Pruning (DPP) via top-level `runtimeFilters` (mirroring Spark's
  * `BatchScanExec.runtimeFilters`). Because the field is a constructor parameter, Spark's standard
@@ -57,12 +63,15 @@ case class CometIcebergNativeScanExec(
     override val nativeOp: Operator,
     override val output: Seq[Attribute],
     runtimeFilters: Seq[Expression],
-    @transient override val originalPlan: BatchScanExec,
+    @transient override val originalPlan: DataSourceV2ScanExecBase,
     override val serializedPlanOpt: SerializedPlan,
     metadataLocation: String,
     scanHashCode: Int,
     @transient nativeIcebergScanMetadata: CometIcebergNativeScanMetadata)
-    extends CometLeafExec {
+    extends CometLeafExec
+    with ShimStreamSourceAwareSparkPlan {
+
+  override protected def streamSourcePlan: SparkPlan = originalPlan
 
   override val supportsColumnar: Boolean = true
 
@@ -99,12 +108,11 @@ case class CometIcebergNativeScanExec(
     // would re-translate the original (unresolved) InSubqueryExec and throw "no subquery
     // result". This makes the top-level runtimeFilters the single source of truth at
     // serialization time.
-    val effectiveOriginalPlan =
-      if (originalPlan.runtimeFilters != runtimeFilters) {
-        originalPlan.copy(runtimeFilters = runtimeFilters)
-      } else {
-        originalPlan
-      }
+    val effectiveOriginalPlan = originalPlan match {
+      case batch: BatchScanExec if batch.runtimeFilters != runtimeFilters =>
+        batch.copy(runtimeFilters = runtimeFilters)
+      case _ => originalPlan
+    }
     CometIcebergNativeScan.serializePartitions(
       effectiveOriginalPlan,
       output,
@@ -213,7 +221,15 @@ case class CometIcebergNativeScanExec(
     // Add num_splits as a runtime metric (incremented on the native side during execution)
     val numSplitsMetric = SQLMetrics.createMetric(sparkContext, "number of file splits processed")
 
-    baseMetrics ++ icebergPlanningMetrics + ("num_splits" -> numSplitsMetric)
+    // Spark's streaming progress reporter looks up this name on the source-aware scan. Share
+    // the native counter so repeated foreachBatch actions have Spark's usual input-row accounting.
+    val sourceMetrics =
+      if (originalPlan != null && ShimCometStreaming.isStreamingPlan(originalPlan)) {
+        Map("numOutputRows" -> baseMetrics("output_rows"))
+      } else {
+        Map.empty[String, SQLMetric]
+      }
+    baseMetrics ++ icebergPlanningMetrics ++ sourceMetrics + ("num_splits" -> numSplitsMetric)
   }
 
   /** Executes using CometExecRDD - planning data is computed lazily on first access. */
@@ -343,7 +359,7 @@ object CometIcebergNativeScanExec {
   /** Creates a CometIcebergNativeScanExec with deferred partition serialization. */
   def apply(
       nativeOp: Operator,
-      scanExec: BatchScanExec,
+      scanExec: DataSourceV2ScanExecBase,
       session: SparkSession,
       metadataLocation: String,
       nativeIcebergScanMetadata: CometIcebergNativeScanMetadata): CometIcebergNativeScanExec = {
@@ -351,13 +367,16 @@ object CometIcebergNativeScanExec {
     val exec = CometIcebergNativeScanExec(
       nativeOp,
       scanExec.output,
-      scanExec.runtimeFilters,
+      scanExec match {
+        case batch: BatchScanExec => batch.runtimeFilters
+        case _ => Nil
+      },
       scanExec,
       SerializedPlan(None),
       metadataLocation,
       // Capture Iceberg's scan hash now, while the transient scan is still available; it is
       // needed for equality after canonicalization nulls originalPlan (see #4774).
-      scanExec.scan.hashCode(),
+      ShimCometStreaming.icebergScanHash(scanExec),
       nativeIcebergScanMetadata)
 
     scanExec.logicalLink.foreach(exec.setLogicalLink)

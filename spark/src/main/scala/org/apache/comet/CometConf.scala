@@ -121,6 +121,33 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(true)
 
+  val COMET_ICEBERG_CHANGELOG_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.scan.icebergNative.changelog.enabled")
+      .category(CATEGORY_SCAN)
+      .doc("Enable experimental native Iceberg batch changelog scans and change processing.")
+      .booleanConf
+      .createWithDefault(false)
+
+  val COMET_ICEBERG_STREAMING_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.scan.icebergNative.streaming.enabled")
+      .category(CATEGORY_SCAN)
+      .doc(
+        "Whether to enable experimental native Iceberg micro-batch source reads on Spark 4.x. " +
+          "Requires native Iceberg scans and native execution. Spark manages streaming offsets, " +
+          "checkpoints, and commits. Does not support change data feed or continuous processing.")
+      .booleanConf
+      .createWithDefault(false)
+
+  val COMET_STREAMING_EXEC_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.exec.streaming.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Enable experimental native operators in Spark 4.x micro-batches, including " +
+          "streaming aggregates with Spark-compatible state buffers. Spark retains state " +
+          "persistence, watermarks, checkpoint recovery, and unsupported stateful operators.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.write.iceberg.splitOperator.enabled")
       .category(CATEGORY_TESTING)
