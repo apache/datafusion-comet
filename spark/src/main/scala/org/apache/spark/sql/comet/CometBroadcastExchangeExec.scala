@@ -107,7 +107,7 @@ case class CometBroadcastExchangeExec(
   private val timeout: Long = conf.broadcastTimeout
 
   @transient
-  private lazy val maxBroadcastRows = 512000000
+  private lazy val maxBroadcastRows = 512000000L
 
   private def getByteArrayRdd(plan: SparkPlan): RDD[(Long, ChunkedByteBuffer)] = {
     plan.executeColumnar().mapPartitionsInternal { iter =>
@@ -195,7 +195,7 @@ case class CometBroadcastExchangeExec(
 
   override protected def doPrepare(): Unit = {
     // Materialize the future.
-    relationFuture
+    val _ = relationFuture
   }
 
   override protected def doExecute(): RDD[InternalRow] = {

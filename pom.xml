@@ -859,29 +859,85 @@ under the License.
         </pluginManagement>
       </build>
     </profile>
+    <!--
+      Compile Scala with warnings promoted to errors. Not active by default; run it
+      explicitly, e.g. `./mvnw test-compile -Pspark-3.5 -Pstrict-warnings`.
+
+      This passes on the Scala 2.12 profiles. The 2.13 profiles (spark-4.0 and later)
+      still report warnings that 2.12 does not raise at all, dominated by
+      `-Xlint:nonlocal-return` (a `return` inside a closure, which the compiler
+      implements by throwing) and non-exhaustive matches. Clearing those means
+      restructuring control flow rather than annotating it, so they are left for a
+      follow-up rather than silenced here.
+
+      `args` is configured per execution rather than on the plugin, because main and
+      test sources warrant different flags (see `-Ywarn-value-discard` below). An
+      execution's `args` replaces the plugin-level list instead of appending to it, so
+      each list below is self-contained.
+
+      Two lints are deliberately absent from both lists:
+
+      `-Ywarn-unused:params` reports ~90-120 parameters per profile, and essentially
+      all of them are structurally unfixable rather than dead: `Native.scala` is 64
+      `@native` declarations whose parameters have no body to be used in, and the rest
+      are cross-version shims under `src/main/spark-3.x`, `spark-4.x` and friends that
+      take a parameter to satisfy the signature of the Spark version they shim. Nor can
+      those be annotated away one by one: the set differs between Scala 2.12 and 2.13
+      (`CometScanContrib.scala` warns under spark-3.5 but not spark-4.0, and vice versa
+      for `ShimSparkErrorConverter.scala`), so any `@nowarn` that silences one profile
+      is an unused annotation on the other, which `-Xlint:_` then reports via
+      `-Xlint:nowarn` and `-Xfatal-warnings` turns into a build failure.
+
+      `-Ywarn-value-discard` stays on for main sources, where a discarded result is
+      usually a dropped builder or a swallowed return, but is off for test sources.
+      Under it a ScalaTest suite reports ~1,250-1,450 warnings, and the two largest
+      groups are the idiom itself: an `assert(...)` in trailing position discards an
+      `org.scalatest.Assertion`, and `checkSparkAnswerAndOperator` discards the
+      `(SparkPlan, SparkPlan)` it returns at all but 30 of its ~1,300 call sites.
+    -->
     <profile>
-          <id>strict-warnings</id>
-          <build>
-              <plugins>
-                  <plugin>
-                      <groupId>net.alchim31.maven</groupId>
-                      <artifactId>scala-maven-plugin</artifactId>
-                      <configuration>
-                          <args>
-                              <arg>-deprecation</arg>
-                              <arg>-unchecked</arg>
-                              <arg>-feature</arg>
-                              <arg>-Xlint:_</arg>
-                              <arg>-Ywarn-dead-code</arg>
-                              <arg>-Ywarn-numeric-widen</arg>
-                              <arg>-Ywarn-value-discard</arg>
-                              <arg>-Ywarn-unused:imports,patvars,privates,locals,params,-implicits</arg>
-                              <arg>-Xfatal-warnings</arg>
-                          </args>
-                      </configuration>
-                  </plugin>
-              </plugins>
-          </build>
+      <id>strict-warnings</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>net.alchim31.maven</groupId>
+            <artifactId>scala-maven-plugin</artifactId>
+            <executions>
+              <execution>
+                <id>scala-compile-first</id>
+                <configuration>
+                  <args>
+                    <arg>-deprecation</arg>
+                    <arg>-unchecked</arg>
+                    <arg>-feature</arg>
+                    <arg>-Xlint:_</arg>
+                    <arg>-Ywarn-dead-code</arg>
+                    <arg>-Ywarn-numeric-widen</arg>
+                    <arg>-Ywarn-value-discard</arg>
+                    <arg>-Ywarn-unused:imports,patvars,privates,locals,-implicits</arg>
+                    <arg>-Xfatal-warnings</arg>
+                  </args>
+                </configuration>
+              </execution>
+              <execution>
+                <id>scala-test-compile-first</id>
+                <configuration>
+                  <args>
+                    <arg>-deprecation</arg>
+                    <arg>-unchecked</arg>
+                    <arg>-feature</arg>
+                    <arg>-Xlint:_</arg>
+                    <arg>-Ywarn-dead-code</arg>
+                    <arg>-Ywarn-numeric-widen</arg>
+                    <arg>-Ywarn-unused:imports,patvars,privates,locals,-implicits</arg>
+                    <arg>-Xfatal-warnings</arg>
+                  </args>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+        </plugins>
+      </build>
     </profile>
   </profiles>
 

@@ -357,7 +357,7 @@ class CometNativeColumnarToRowSuite extends CometTestBase with AdaptiveSparkPlan
         if (isNull) null else s"string_$i",
         if (isNull) null else new Date(baseDate.getTime + i * 24 * 60 * 60 * 1000L),
         if (isNull) null else new Timestamp(baseTs.getTime + i * 1000L),
-        if (isNull) null else BigDecimal(i * 100 + i, 2).bigDecimal)
+        if (isNull) null else BigDecimal((i * 100 + i).toLong, 2).bigDecimal)
     }
 
     val schema = StructType(

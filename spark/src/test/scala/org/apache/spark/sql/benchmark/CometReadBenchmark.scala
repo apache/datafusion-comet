@@ -77,7 +77,11 @@ class CometReadBaseBenchmark extends CometBenchmarkBase {
 
     val operators = 1024
     val creation =
-      new Benchmark("Scan I/O SQL metrics: creation", operators, minNumIters = 5, output = output)
+      new Benchmark(
+        "Scan I/O SQL metrics: creation",
+        operators.toLong,
+        minNumIters = 5,
+        output = output)
     creation.addCase("nine metrics per operator") { _ =>
       var count = 0
       while (count < operators) {
@@ -91,7 +95,7 @@ class CometReadBaseBenchmark extends CometBenchmarkBase {
     val driverMetrics = createMetrics()
     val updates = new Benchmark(
       "Scan I/O SQL metrics: task snapshots",
-      tasks,
+      tasks.toLong,
       minNumIters = 5,
       output = output)
     updates.addCase("copy, update and merge nine metrics") { _ =>
@@ -112,7 +116,7 @@ class CometReadBaseBenchmark extends CometBenchmarkBase {
     val partitions = spark.sparkContext.parallelize(0 until tasks, tasks)
     val jobs = new Benchmark(
       "Scan I/O SQL metrics: 10000-task Spark job",
-      tasks,
+      tasks.toLong,
       minNumIters = 3,
       output = output)
     val cases = if (reverseCases) Seq(9, 0) else Seq(0, 9)
@@ -131,7 +135,7 @@ class CometReadBaseBenchmark extends CometBenchmarkBase {
 
   def numericScanBenchmark(values: Int, dataType: DataType): Unit = {
     val sqlBenchmark =
-      new Benchmark(s"SQL Single ${dataType.sql} Column Scan", values, output = output)
+      new Benchmark(s"SQL Single ${dataType.sql} Column Scan", values.toLong, output = output)
 
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
@@ -150,7 +154,10 @@ class CometReadBaseBenchmark extends CometBenchmarkBase {
 
   def encryptedScanBenchmark(values: Int, dataType: DataType): Unit = {
     val sqlBenchmark =
-      new Benchmark(s"SQL Single ${dataType.sql} Encrypted Column Scan", values, output = output)
+      new Benchmark(
+        s"SQL Single ${dataType.sql} Encrypted Column Scan",
+        values.toLong,
+        output = output)
 
     val encoder = Base64.getEncoder
     val footerKey =
@@ -191,7 +198,7 @@ class CometReadBaseBenchmark extends CometBenchmarkBase {
   def decimalScanBenchmark(values: Int, precision: Int, scale: Int): Unit = {
     val sqlBenchmark = new Benchmark(
       s"SQL Single Decimal(precision: $precision, scale: $scale) Column Scan",
-      values,
+      values.toLong,
       output = output)
 
     withTempPath { dir =>
@@ -210,7 +217,7 @@ class CometReadBaseBenchmark extends CometBenchmarkBase {
 
   def readerBenchmark(values: Int, dataType: DataType): Unit = {
     val sqlBenchmark =
-      new Benchmark(s"Parquet reader benchmark for $dataType", values, output = output)
+      new Benchmark(s"Parquet reader benchmark for $dataType", values.toLong, output = output)
 
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
@@ -268,7 +275,10 @@ class CometReadBaseBenchmark extends CometBenchmarkBase {
   def numericFilterScanBenchmark(values: Int, fractionOfZeros: Double): Unit = {
     val percentageOfZeros = fractionOfZeros * 100
     val benchmark =
-      new Benchmark(s"Numeric Filter Scan ($percentageOfZeros% zeros)", values, output = output)
+      new Benchmark(
+        s"Numeric Filter Scan ($percentageOfZeros% zeros)",
+        values.toLong,
+        output = output)
 
     withTempPath { dir =>
       withTempTable("parquetV1Table", "parquetV2Table") {
@@ -286,7 +296,7 @@ class CometReadBaseBenchmark extends CometBenchmarkBase {
 
   def stringWithDictionaryScanBenchmark(values: Int): Unit = {
     val sqlBenchmark =
-      new Benchmark("String Scan with Dictionary Encoding", values, output = output)
+      new Benchmark("String Scan with Dictionary Encoding", values.toLong, output = output)
 
     withTempPath { dir =>
       withTempTable("parquetV1Table", "parquetV2Table") {
@@ -316,7 +326,10 @@ class CometReadBaseBenchmark extends CometBenchmarkBase {
   def stringWithNullsScanBenchmark(values: Int, fractionOfNulls: Double): Unit = {
     val percentageOfNulls = fractionOfNulls * 100
     val benchmark =
-      new Benchmark(s"String with Nulls Scan ($percentageOfNulls%)", values, output = output)
+      new Benchmark(
+        s"String with Nulls Scan ($percentageOfNulls%)",
+        values.toLong,
+        output = output)
 
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
@@ -337,7 +350,7 @@ class CometReadBaseBenchmark extends CometBenchmarkBase {
 
   def columnsBenchmark(values: Int, width: Int): Unit = {
     val benchmark =
-      new Benchmark(s"Single Column Scan from $width columns", values, output = output)
+      new Benchmark(s"Single Column Scan from $width columns", values.toLong, output = output)
 
     withTempPath { dir =>
       withTempTable("t1", "parquetV1Table") {
@@ -358,7 +371,7 @@ class CometReadBaseBenchmark extends CometBenchmarkBase {
     val benchmark =
       new Benchmark(
         s"Large String Filter Scan ($percentageOfZeros% zeros)",
-        values,
+        values.toLong,
         output = output)
 
     withTempPath { dir =>
@@ -380,7 +393,7 @@ class CometReadBaseBenchmark extends CometBenchmarkBase {
     val benchmark =
       new Benchmark(
         s"Sorted Lg Str Filter Scan ($percentageOfZeros% zeros)",
-        values,
+        values.toLong,
         output = output)
 
     withTempPath { dir =>

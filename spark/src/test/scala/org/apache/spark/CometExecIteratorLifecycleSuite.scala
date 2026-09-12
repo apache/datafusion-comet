@@ -93,10 +93,10 @@ class CometExecIteratorLifecycleSuite extends CometTestBase {
       // Unique synthetic task attempt ids keep each iteration's pool entry independent.
       val taskAttemptId = 4200000L + i
       withTaskContext(taskAttemptId) {
-        val manager = new CometTaskMemoryManager(i, taskAttemptId)
+        val manager = new CometTaskMemoryManager(i.toLong, taskAttemptId)
         val thrown = intercept[Throwable] {
           nativeLib.createPlan(
-            i,
+            i.toLong,
             Array.empty[Object],
             emptyPlan,
             badConfigs,

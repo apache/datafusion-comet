@@ -217,7 +217,7 @@ object CometAggregateExpressionBenchmark extends CometBenchmarkBase {
             approxCountDistinctAggregates ++ maxMinByAggregates
 
           allAggregates.foreach { config =>
-            runExpressionBenchmark(config.name, v, config.query, config.extraCometConfigs)
+            runExpressionBenchmark(config.name, v.toLong, config.query, config.extraCometConfigs)
           }
         }
       }

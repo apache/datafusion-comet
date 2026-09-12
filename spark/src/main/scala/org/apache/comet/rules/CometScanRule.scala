@@ -31,7 +31,7 @@ import scala.jdk.CollectionConverters._
 import org.apache.hadoop.conf.Configuration
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.catalyst.expressions.{Attribute, DynamicPruningExpression, Expression, GenericInternalRow, InputFileBlockLength, InputFileBlockStart, InputFileName, PlanExpression}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, DynamicPruningExpression, Expression, GenericInternalRow, InputFileBlockLength, InputFileBlockStart, InputFileName}
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.util.{sideBySide, ArrayBasedMapData, GenericArrayData, MetadataColumnHelper}
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
@@ -486,11 +486,17 @@ case class CometScanRule(session: SparkSession)
         // which bucket's per-bucket S3 settings the single native FileIO consumes (see
         // catalogProperties below), so this must run before we build them. The task list is
         // handed to `extract` below so the reflective accessor runs once per scan.
+        // The task list is cast to `java.util.List[AnyRef]` rather than left at the
+        // `java.util.List[_]` that `getTasks` returns: a wildcard element type makes this
+        // pair infer a top-level existential, which `-Xlint:existential` rejects. The list
+        // is erased at runtime, so the cast costs nothing.
         val (icebergTasks, taskValidation) =
           try {
             IcebergReflection.getTasks(scanExec.scan) match {
               case Some(tasks) =>
-                (tasks, CometScanRule.validateIcebergFileScanTasks(tasks, s3CompliantSchemes))
+                (
+                  tasks.asInstanceOf[java.util.List[AnyRef]],
+                  CometScanRule.validateIcebergFileScanTasks(tasks, s3CompliantSchemes))
               case None =>
                 fallbackReasons += "Iceberg reflection failure: Could not extract FileScanTasks"
                 return withFallbackReasons(scanExec, fallbackReasons.toSet)
@@ -1042,9 +1048,6 @@ case class CometScanRule(session: SparkSession)
             "Comet Scan only supports Parquet and Iceberg Parquet file formats")
     }
   }
-
-  private def isDynamicPruningFilter(e: Expression): Boolean =
-    e.exists(_.isInstanceOf[PlanExpression[_]])
 
   /**
    * Detects AQE DPP (SubqueryAdaptiveBroadcastExec), as opposed to non-AQE DPP.

@@ -911,7 +911,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       e.getTagValue(CometExplainInfo.FALLBACK_REASONS).foreach(reasons ++= _)
     }
     if (reasons.nonEmpty) {
-      withFallbackReasons(to, reasons.toSet)
+      val _ = withFallbackReasons(to, reasons.toSet)
     }
   }
 

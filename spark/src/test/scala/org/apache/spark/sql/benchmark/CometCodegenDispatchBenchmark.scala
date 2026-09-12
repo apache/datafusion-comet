@@ -294,7 +294,7 @@ object CometCodegenDispatchBenchmark extends CometBenchmarkBase {
 
   private def runSteadyState(c: DispatchCase, rows: Int): Unit = {
     runBenchmark(s"${c.name} -- $rows rows") {
-      val benchmark = new Benchmark(s"${c.name} -- $rows rows", rows, output = output)
+      val benchmark = new Benchmark(s"${c.name} -- $rows rows", rows.toLong, output = output)
       checkPlans(benchmark, c)
       // The dispatch-off arm goes first so the `Relative` column reads as the speedup this
       // change buys over the behaviour that shipped before it.
@@ -364,7 +364,7 @@ object CometCodegenDispatchBenchmark extends CometBenchmarkBase {
   private def withCorpus(rows: Int)(f: => Unit): Unit = {
     withTempPath { dir =>
       withTempTable(tbl, "parquetV1Table") {
-        spark.range(rows).createOrReplaceTempView(tbl)
+        spark.range(rows.toLong).createOrReplaceTempView(tbl)
         prepareTable(dir, spark.sql(corpusQuery))
         f
       }

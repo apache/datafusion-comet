@@ -102,7 +102,7 @@ case class IcebergCommitExec(
         }
         throw cause
     }
-    longMetric("numCommittedMessages").add(messages.length)
+    longMetric("numCommittedMessages").add(messages.length.toLong)
 
     try {
       messages.foreach(batchWrite.onDataWriterCommit)
@@ -132,7 +132,7 @@ case class IcebergCommitExec(
         .flatMap(IcebergReflection.getTableIO)
       io match {
         case Some(fileIO) =>
-          IcebergReflection.deleteFilesQuietly(
+          val _ = IcebergReflection.deleteFilesQuietly(
             fileIO,
             locations,
             s"job abort, ${completed.length} completed task(s)")

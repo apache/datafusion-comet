@@ -473,7 +473,7 @@ class CometJoinSuite extends CometTestBase {
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
       SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
       withParquetTable(
-        (0 until 100).map(i => (Some(i), i.toLong)) :+ (None, -1L),
+        (0 until 100).map(i => (Some(i), i.toLong)) :+ ((None, -1L)),
         "dynamic_probe") {
         for (build <- Seq(
             Seq((Some(10), 1L), (None, 2L), (Some(10), 3L), (Some(90), 4L)),

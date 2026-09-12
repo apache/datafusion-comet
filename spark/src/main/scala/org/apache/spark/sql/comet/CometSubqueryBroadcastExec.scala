@@ -128,7 +128,7 @@ case class CometSubqueryBroadcastExec(
 
         val beforeBuild = System.nanoTime()
         longMetric("collectTime") += (beforeBuild - beforeCollect) / 1000000
-        longMetric("numOutputRows") += rows.length
+        longMetric("numOutputRows") += rows.length.toLong
         val dataSize = rows.map(_.asInstanceOf[UnsafeRow].getSizeInBytes.toLong).sum
         longMetric("dataSize") += dataSize
         SQLMetrics.postDriverMetricUpdates(sparkContext, executionId, metrics.values.toSeq)
@@ -139,7 +139,7 @@ case class CometSubqueryBroadcastExec(
   }
 
   protected override def doPrepare(): Unit = {
-    relationFuture
+    val _ = relationFuture
   }
 
   protected override def doExecute(): RDD[InternalRow] = {

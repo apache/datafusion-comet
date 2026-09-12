@@ -108,13 +108,13 @@ class NativeConfigSuite extends AnyFunSuite with Matchers {
     }
   }
 
-  test("extractObjectStoreOptions - forwards the substituted value of a ${...} reference") {
+  test(s"extractObjectStoreOptions - forwards the substituted value of a $${...} reference") {
     // Hadoop's own consumers read values through Configuration#get, which expands a ${...}
     // reference against another conf entry. Forwarding the raw, unexpanded literal here would
     // give native a different credential than every Hadoop-side consumer sees.
     val hadoopConf = new Configuration()
     hadoopConf.set("my.custom.access.key", "expanded-access-key")
-    hadoopConf.set("fs.s3a.access.key", "${my.custom.access.key}")
+    hadoopConf.set("fs.s3a.access.key", s"$${my.custom.access.key}")
 
     val options =
       NativeConfig.extractObjectStoreOptions(hadoopConf, new URI("s3a://test-bucket/test-object"))
@@ -122,19 +122,19 @@ class NativeConfigSuite extends AnyFunSuite with Matchers {
   }
 
   test(
-    "extractObjectStoreOptions - a cyclic ${...} reference falls back to the raw value " +
+    s"extractObjectStoreOptions - a cyclic $${...} reference falls back to the raw value " +
       "instead of throwing") {
     // Configuration#get raises IllegalStateException once ${...} expansion recurses past
     // Hadoop's MAX_SUBST bound; a two-key mutual cycle triggers this on every call. Extraction
     // must still return a full options map rather than aborting for the whole object store.
     val hadoopConf = new Configuration()
-    hadoopConf.set("fs.s3a.access.key", "${fs.s3a.secret.key}")
-    hadoopConf.set("fs.s3a.secret.key", "${fs.s3a.access.key}")
+    hadoopConf.set("fs.s3a.access.key", s"$${fs.s3a.secret.key}")
+    hadoopConf.set("fs.s3a.secret.key", s"$${fs.s3a.access.key}")
 
     val options =
       NativeConfig.extractObjectStoreOptions(hadoopConf, new URI("s3a://test-bucket/test-object"))
-    assert(options("fs.s3a.access.key") == "${fs.s3a.secret.key}")
-    assert(options("fs.s3a.secret.key") == "${fs.s3a.access.key}")
+    assert(options("fs.s3a.access.key") == s"$${fs.s3a.secret.key}")
+    assert(options("fs.s3a.secret.key") == s"$${fs.s3a.access.key}")
   }
 
   test(

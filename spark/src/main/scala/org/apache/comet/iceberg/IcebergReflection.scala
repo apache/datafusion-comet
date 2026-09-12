@@ -465,7 +465,7 @@ object IcebergReflection extends Logging {
             groups.forEach { group =>
               val groupTasks =
                 groupTasksMethod.invoke(group).asInstanceOf[java.util.Collection[_ <: AnyRef]]
-              flat.addAll(groupTasks)
+              val _ = flat.addAll(groupTasks)
             }
             Some(flat)
           }
@@ -1688,13 +1688,19 @@ object IcebergReflection extends Logging {
   private def newDataManifestFile(inputFile: AnyRef, specId: Int): AnyRef = {
     val inputFileClass = loadClass(ClassNames.INPUT_FILE)
     val cls = loadClass(ClassNames.GENERIC_MANIFEST_FILE)
-    val (ctor, args): (java.lang.reflect.Constructor[_], Array[Object]) =
+    // `Constructor[AnyRef]` rather than `Constructor[_]`: the two `try`/`catch` branches
+    // would otherwise infer a top-level existential, which `-Xlint:existential` rejects.
+    val (ctor, args): (java.lang.reflect.Constructor[AnyRef], Array[Object]) =
       try {
-        val c = cls.getDeclaredConstructor(inputFileClass, classOf[Int], classOf[Long])
+        val c = cls
+          .getDeclaredConstructor(inputFileClass, classOf[Int], classOf[Long])
+          .asInstanceOf[java.lang.reflect.Constructor[AnyRef]]
         (c, Array[Object](inputFile, Integer.valueOf(specId), java.lang.Long.valueOf(0L)))
       } catch {
         case _: NoSuchMethodException =>
-          val c = cls.getDeclaredConstructor(inputFileClass, classOf[Int])
+          val c = cls
+            .getDeclaredConstructor(inputFileClass, classOf[Int])
+            .asInstanceOf[java.lang.reflect.Constructor[AnyRef]]
           (c, Array[Object](inputFile, Integer.valueOf(specId)))
       }
     ctor.setAccessible(true)
@@ -1730,10 +1736,11 @@ object IcebergReflection extends Logging {
       }
       result
     } finally {
-      try reader.getClass.getMethod("close").invoke(reader)
-      catch {
-        case e: Exception => logWarning(s"Failed to close ManifestReader: ${e.getMessage}")
-      }
+      val _ =
+        try reader.getClass.getMethod("close").invoke(reader)
+        catch {
+          case e: Exception => logWarning(s"Failed to close ManifestReader: ${e.getMessage}")
+        }
     }
   }
 

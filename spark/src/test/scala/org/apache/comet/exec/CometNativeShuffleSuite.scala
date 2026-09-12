@@ -428,7 +428,7 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test.parquet")
         makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 1000)
-        var allTypes: Seq[Int] = (1 to 20)
+        val allTypes: Seq[Int] = (1 to 20)
         allTypes.map(i => s"_$i").foreach { c =>
           withSQLConf("parquet.enable.dictionary" -> dictionaryEnabled.toString) {
             readParquetFile(path.toString) { df =>

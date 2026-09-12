@@ -72,7 +72,10 @@ class CometNativeShuffleWriter[K, V](
   private val OFFSET_LENGTH = 8
 
   var partitionLengths: Array[Long] = _
-  var mapStatus: MapStatus = _
+  // `private[shuffle]` rather than public: `MapStatus` is `private[spark]`, and a public
+  // var exposing it trips `-Xlint:inaccessible`. The shuffle package, which includes the
+  // tests that read it, is the only thing that ever touches this.
+  private[shuffle] var mapStatus: MapStatus = _
   private var stopped = false
   private lazy val effectivePartitionCount =
     remoteDestination.map(_.numPartitions).getOrElse(outputPartitioning.numPartitions)
@@ -118,7 +121,7 @@ class CometNativeShuffleWriter[K, V](
       val dataFile = resolver.getDataFile(shuffleId, mapId)
       val indexFile = resolver.getIndexFile(shuffleId, mapId)
       Some(
-        LocalShuffleOutput(
+        CometNativeShuffleWriter.LocalShuffleOutput(
           resolver,
           dataFile.getPath.replace(".data", ".data.tmp"),
           indexFile.getPath.replace(".index", ".index.tmp")))
@@ -479,14 +482,19 @@ class CometNativeShuffleWriter[K, V](
   }
 
   override def getPartitionLengths(): Array[Long] = partitionLengths
-
-  private final case class LocalShuffleOutput(
-      resolver: IndexShuffleBlockResolver,
-      dataFile: String,
-      indexFile: String)
 }
 
 private[shuffle] object CometNativeShuffleWriter {
+
+  /**
+   * Declared here rather than inside the class: as an inner case class every type test against it
+   * carries an outer reference that cannot be checked at run time, which `-Xlint` reports.
+   */
+  private[shuffle] final case class LocalShuffleOutput(
+      resolver: IndexShuffleBlockResolver,
+      dataFile: String,
+      indexFile: String)
+
   private[shuffle] def isSizeLimitFailure(failure: Throwable): Boolean = {
     var cause = failure
     val visited = new java.util.IdentityHashMap[Throwable, java.lang.Boolean]()

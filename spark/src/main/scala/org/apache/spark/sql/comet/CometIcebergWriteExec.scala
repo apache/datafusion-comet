@@ -373,7 +373,8 @@ object CometIcebergWriteExec {
     /** Take ownership of the locations the native writer reported. */
     def own(written: Seq[String]): Unit = locations = written
 
-    override def onTaskFailure(context: TaskContext, error: Throwable): Unit =
-      IcebergReflection.deleteFilesQuietly(io, locations, describeTask)
+    override def onTaskFailure(context: TaskContext, error: Throwable): Unit = {
+      val _ = IcebergReflection.deleteFilesQuietly(io, locations, describeTask)
+    }
   }
 }
