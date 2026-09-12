@@ -1032,21 +1032,24 @@ class CometIcebergWriteActionSuite
     }
   }
 
-  test("out-of-range bloom max uses the classic writer") {
+  test("out-of-range bloom max uses the classic writer when a bloom column is configured") {
     assumeNativeAcceleration()
+    assumeIcebergBloomShapeProperties()
     withIcebergCatalog { warehouseDir =>
-      // Leave Bloom filters disabled so the stock writer can demonstrate planning fallback
-      // without allocating a 128 MiB filter for the oversized case.
-      Seq("31", "134217729").zipWithIndex.foreach { case (max, index) =>
-        val table = s"bloom_range_fallback_$index"
-        createTable(
-          warehouseDir,
-          table,
-          partitionSpec = "",
-          properties = Some(s"'write.parquet.bloom-filter-max-bytes'='$max'"))
-        assertNativeWriteDoesNotEngage(table, Seq(index)) {
-          spark.sql(s"INSERT INTO cat.db.$table VALUES ($index, 'region', 1.0)")
-        }
+      // A tiny explicit NDV keeps the fallback writer's allocation small even for the oversized
+      // maximum. Without a configured Bloom column, the maximum is unused and stays native.
+      val enabledWithSmallNdv =
+        "'write.parquet.bloom-filter-enabled.column.id'='true', " +
+          "'write.parquet.bloom-filter-ndv.column.id'='1', "
+      val max = "134217729"
+      val table = "bloom_range_fallback"
+      createTable(
+        warehouseDir,
+        table,
+        partitionSpec = "",
+        properties = Some(enabledWithSmallNdv + s"'write.parquet.bloom-filter-max-bytes'='$max'"))
+      assertNativeWriteDoesNotEngage(table, Seq(1)) {
+        spark.sql(s"INSERT INTO cat.db.$table VALUES (1, 'region', 1.0)")
       }
     }
   }

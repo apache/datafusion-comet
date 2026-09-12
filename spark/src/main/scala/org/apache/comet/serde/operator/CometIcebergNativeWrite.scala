@@ -321,77 +321,85 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
    */
   private val requireNativeSupportedBloomFilterProperties: TriggerRule = ctx => {
     val properties = interpretedBloomFilterProperties(ctx.properties)
-    val maxRejection =
-      properties.get(PropertyKeys.ParquetBloomFilterMaxBytes).flatMap { raw =>
-        scala.util.Try(java.lang.Integer.parseInt(raw)).toOption match {
-          case None => Some(s"${PropertyKeys.ParquetBloomFilterMaxBytes}=$raw is not a Java int")
-          case Some(value)
+    val configuredMaxBytes = properties.get(PropertyKeys.ParquetBloomFilterMaxBytes).map { raw =>
+      raw -> scala.util.Try(java.lang.Integer.parseInt(raw)).toOption
+    }
+    val malformedMaxRejection = configuredMaxBytes.collect { case (raw, None) =>
+      s"${PropertyKeys.ParquetBloomFilterMaxBytes}=$raw is not a Java int"
+    }
+    // Iceberg visits every enabled-prefix entry and applies enabled, FPP, then NDV. With no such
+    // entry, a parseable maximum cannot affect the file and must not force an otherwise-compatible
+    // write onto the classic path. Keep rejecting malformed values because protobuf translation
+    // parses this property before native execution.
+    val configured = properties.iterator.collect {
+      case (key, _) if key.startsWith(PropertyKeys.BloomFilterColumnEnabledPrefix) =>
+        key.substring(PropertyKeys.BloomFilterColumnEnabledPrefix.length)
+    }.toSeq
+    if (configured.isEmpty) {
+      malformedMaxRejection
+    } else {
+      val maxRejection = malformedMaxRejection.orElse {
+        configuredMaxBytes.collect {
+          case (_, Some(value))
               if value < MinBloomFilterBytes || value > MaxBloomFilterBytes ||
                 (value & (value - 1)) != 0 =>
-            Some(
-              s"${PropertyKeys.ParquetBloomFilterMaxBytes}=$value must be a power of two " +
-                s"in [$MinBloomFilterBytes, $MaxBloomFilterBytes] for native writes")
-          case Some(_) => None
+            s"${PropertyKeys.ParquetBloomFilterMaxBytes}=$value must be a power of two " +
+              s"in [$MinBloomFilterBytes, $MaxBloomFilterBytes] for native writes"
         }
       }
 
-    maxRejection.orElse {
-      val maxBytes = properties
-        .get(PropertyKeys.ParquetBloomFilterMaxBytes)
-        .flatMap(raw => scala.util.Try(java.lang.Integer.parseInt(raw)).toOption)
-        .getOrElse(IcebergWriteProtoTranslation.Defaults.BloomFilterMaxBytes)
-      // Iceberg visits every enabled-prefix entry and applies enabled, FPP, then NDV. Validate
-      // the associated shape properties even for enabled=false; a valid NDV also re-enables the
-      // filter in parquet-mr.
-      val configured = properties.iterator.collect {
-        case (key, _) if key.startsWith(PropertyKeys.BloomFilterColumnEnabledPrefix) =>
-          key.substring(PropertyKeys.BloomFilterColumnEnabledPrefix.length)
-      }.toSeq
-      configured.iterator
-        .flatMap { column =>
-          val fppKey = PropertyKeys.ParquetBloomFilterColumnFppPrefix + column
-          val ndvKey = PropertyKeys.ParquetBloomFilterColumnNdvPrefix + column
-          val parsedFpp = properties.get(fppKey) match {
-            case Some(raw) => scala.util.Try(java.lang.Double.parseDouble(raw)).toOption
-            case None => Some(IcebergWriteProtoTranslation.Defaults.BloomFilterFpp)
-          }
-          val parsedNdv = properties
-            .get(ndvKey)
-            .flatMap(raw => scala.util.Try(java.lang.Long.parseLong(raw)).toOption)
-          val fppError = properties.get(fppKey).flatMap { raw =>
-            parsedFpp match {
-              case Some(value)
-                  if value > 0.0d && value < 1.0d && java.lang.Double.isFinite(value) &&
-                    bloomFilterSizesRepresentable(maxBytes, value) =>
-                None
-              case Some(value)
-                  if value > 0.0d && value < 1.0d && java.lang.Double.isFinite(value) =>
-                Some(s"$fppKey=$raw cannot represent the configured native Bloom sizes")
-              case _ => Some(s"$fppKey=$raw must be a finite double strictly between 0 and 1")
+      maxRejection.orElse {
+        val maxBytes = configuredMaxBytes
+          .flatMap(_._2)
+          .getOrElse(IcebergWriteProtoTranslation.Defaults.BloomFilterMaxBytes)
+        // Validate associated shape properties even for enabled=false; a valid NDV re-enables
+        // the filter in parquet-mr.
+        configured.iterator
+          .flatMap { column =>
+            val fppKey = PropertyKeys.ParquetBloomFilterColumnFppPrefix + column
+            val ndvKey = PropertyKeys.ParquetBloomFilterColumnNdvPrefix + column
+            val parsedFpp = properties.get(fppKey) match {
+              case Some(raw) => scala.util.Try(java.lang.Double.parseDouble(raw)).toOption
+              case None => Some(IcebergWriteProtoTranslation.Defaults.BloomFilterFpp)
             }
-          }
-          val ndvError = properties.get(ndvKey).flatMap { raw =>
-            parsedNdv match {
-              case Some(value) if value > 0L && value <= MaxNonOverflowingBloomFilterNdv => None
-              case Some(value) if value > MaxNonOverflowingBloomFilterNdv =>
-                Some(s"$ndvKey=$raw exceeds $MaxNonOverflowingBloomFilterNdv; " +
-                  "parquet-mr Bloom sizing may overflow")
-              case _ => Some(s"$ndvKey=$raw must be a positive Java long")
+            val parsedNdv = properties
+              .get(ndvKey)
+              .flatMap(raw => scala.util.Try(java.lang.Long.parseLong(raw)).toOption)
+            val fppError = properties.get(fppKey).flatMap { raw =>
+              parsedFpp match {
+                case Some(value)
+                    if value > 0.0d && value < 1.0d && java.lang.Double.isFinite(value) &&
+                      bloomFilterSizesRepresentable(maxBytes, value) =>
+                  None
+                case Some(value)
+                    if value > 0.0d && value < 1.0d && java.lang.Double.isFinite(value) =>
+                  Some(s"$fppKey=$raw cannot represent the configured native Bloom sizes")
+                case _ => Some(s"$fppKey=$raw must be a finite double strictly between 0 and 1")
+              }
             }
+            val ndvError = properties.get(ndvKey).flatMap { raw =>
+              parsedNdv match {
+                case Some(value) if value > 0L && value <= MaxNonOverflowingBloomFilterNdv => None
+                case Some(value) if value > MaxNonOverflowingBloomFilterNdv =>
+                  Some(s"$ndvKey=$raw exceeds $MaxNonOverflowingBloomFilterNdv; " +
+                    "parquet-mr Bloom sizing may overflow")
+                case _ => Some(s"$ndvKey=$raw must be a positive Java long")
+              }
+            }
+            val ignoredMinimumCapError = parsedNdv.collect {
+              case ndv
+                  if maxBytes == MinBloomFilterBytes && ndv > 0L &&
+                    ndv <= MaxNonOverflowingBloomFilterNdv &&
+                    parsedFpp.exists(
+                      parquetMrRequestedBloomFilterBytes(ndv, _) > MinBloomFilterBytes) =>
+                s"${PropertyKeys.ParquetBloomFilterMaxBytes}=$MinBloomFilterBytes is ignored by " +
+                  s"parquet-mr for $ndvKey=$ndv"
+            }
+            Seq(fppError, ndvError, ignoredMinimumCapError).flatten
           }
-          val ignoredMinimumCapError = parsedNdv.collect {
-            case ndv
-                if maxBytes == MinBloomFilterBytes && ndv > 0L &&
-                  ndv <= MaxNonOverflowingBloomFilterNdv &&
-                  parsedFpp.exists(
-                    parquetMrRequestedBloomFilterBytes(ndv, _) > MinBloomFilterBytes) =>
-              s"${PropertyKeys.ParquetBloomFilterMaxBytes}=$MinBloomFilterBytes is ignored by " +
-                s"parquet-mr for $ndvKey=$ndv"
-          }
-          Seq(fppError, ndvError, ignoredMinimumCapError).flatten
-        }
-        .toSeq
-        .headOption
+          .toSeq
+          .headOption
+      }
     }
   }
 

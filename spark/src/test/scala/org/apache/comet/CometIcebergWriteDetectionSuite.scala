@@ -280,11 +280,25 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
             dir,
             table,
             partitionSpec = "",
-            properties = Some(s"'write.parquet.bloom-filter-max-bytes'='$value'"))
+            properties = Some(
+              "'write.parquet.bloom-filter-enabled.column.id'='true', " +
+                s"'write.parquet.bloom-filter-max-bytes'='$value'"))
           assertUnsupportedContainsAllowingWriteFailure(
             table,
             "write.parquet.bloom-filter-max-bytes")
         }
+    }
+  }
+
+  test("unused bloom-filter max-bytes does not force fallback") {
+    withDetectionCatalog { dir =>
+      val nonPowerOfTwoMaxBytes = 100
+      createTable(
+        dir,
+        "unused_bloom_max",
+        partitionSpec = "",
+        properties = Some(s"'write.parquet.bloom-filter-max-bytes'='$nonPowerOfTwoMaxBytes'"))
+      assertSupportLevelIs[Compatible]("unused_bloom_max")
     }
   }
 
