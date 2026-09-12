@@ -17,6 +17,8 @@
 
 //! This includes utilities for hashing and murmur3 hashing.
 
+use arrow::array::Array;
+
 #[macro_export]
 macro_rules! hash_array {
     ($array_type: ident, $column: ident, $hashes: ident, $hash_method: ident) => {
@@ -509,6 +511,78 @@ macro_rules! hash_list_with_primitive_elements {
     };
 }
 
+/// Whether the batched gather is used for a list whose elements are `values`.
+///
+/// Batching replaces a per-element slice and dispatch with one `arrow::compute::take` per element
+/// position. That is a large win for a small flat struct, but `take` copies the selected payload,
+/// and how much it copies is not something this kernel can predict cheaply:
+///
+/// - A width-based estimate is diluted by short elements. Two rows of 1024 structs where only the
+///   first string is 8 MiB average out to about 16 KB per element while the gather copies 16 MiB.
+/// - A sliced list keeps its child's buffers. Slicing away the one row that held ten million ints
+///   leaves two cheap visible rows and a child that `take` still pre-sizes from, turning a 128-byte
+///   peak into 40 MB.
+/// - A dictionary child is shared rather than copied, so charging for its payload abandons batching
+///   on a shape that copies nothing.
+/// - A nested child recurses, and each level's gather stays live while the level below builds its
+///   own, so cost accumulates down the depth.
+///
+/// Rather than model all of that, this admits only the shape whose cost is easy to bound -- a struct
+/// of flat leaves -- and requires the child's *retained* buffers to fit a conservative limit, not an
+/// average per element, so a large buffer kept alive by a slice disqualifies the gather even when
+/// few rows are visible. Everything else keeps the previous per-element path.
+///
+/// The limit is an eligibility condition for the optimization, not a bound on the peak memory of a
+/// hash call: the index array, the row mapping and Arrow's own metadata are extra.
+pub fn gather_is_eligible(values: &dyn Array) -> bool {
+    use arrow::datatypes::DataType;
+
+    let DataType::Struct(fields) = values.data_type() else {
+        return false;
+    };
+    if !fields.iter().all(|f| is_flat_leaf(f.data_type())) {
+        return false;
+    }
+    // Retained size, not per element: a slice that hides a huge child must not qualify.
+    values.get_array_memory_size() <= GATHER_ELIGIBLE_CHILD_BYTES
+}
+
+/// Leaf types whose gather cost is proportional to the rows picked, with no shared or nested
+/// payload behind them. Deliberately conservative: a type absent here keeps the previous path, and
+/// adding one means measuring it.
+fn is_flat_leaf(data_type: &arrow::datatypes::DataType) -> bool {
+    use arrow::datatypes::DataType;
+
+    matches!(
+        data_type,
+        DataType::Boolean
+            | DataType::Int8
+            | DataType::Int16
+            | DataType::Int32
+            | DataType::Int64
+            | DataType::UInt8
+            | DataType::UInt16
+            | DataType::UInt32
+            | DataType::UInt64
+            | DataType::Float32
+            | DataType::Float64
+            | DataType::Date32
+            | DataType::Date64
+            | DataType::Timestamp(_, _)
+            | DataType::Decimal128(_, _)
+            | DataType::Utf8
+            | DataType::Binary
+    )
+}
+
+/// Ceiling on a gathered child's retained buffers for the batched path to be used.
+///
+/// Compared against the whole child rather than a per-pass estimate, which is what makes a large
+/// buffer held alive by a slice fail the check. It is not a per-pass bound: when every row holds one
+/// element, a single pass gathers nearly the whole child, so a shape just under the limit can gather
+/// close to it in one pass.
+pub const GATHER_ELIGIBLE_CHILD_BYTES: usize = 4 * 1024 * 1024;
+
 #[macro_export]
 macro_rules! hash_list_array {
     ($array_type:ident, $offset_type:ty, $column: ident, $hashes: ident, $recursive_hash_method: ident) => {
@@ -526,35 +600,178 @@ macro_rules! hash_list_array {
         let values = list_array.values();
         let offsets = list_array.offsets();
 
-        if list_array.null_count() == 0 {
-            // Fast path: no nulls, skip null checks
-            for (row_idx, hash) in $hashes.iter_mut().enumerate() {
-                let start = offsets[row_idx] as usize;
-                let end = offsets[row_idx + 1] as usize;
-                let len = end - start;
-                // Hash each element in sequence, chaining the hash values
-                for elem_idx in 0..len {
-                    let elem_array = values.slice(start + elem_idx, 1);
-                    let mut single_hash = [*hash];
-                    $recursive_hash_method(&[elem_array], &mut single_hash)?;
-                    *hash = single_hash[0];
-                }
-            }
+        // Spark chains the element hashes in order, so the elements of one row have to be hashed
+        // in sequence. What does not have to happen per element is the allocation and dispatch:
+        // slicing a one-element array and re-entering the hash dispatch for it costs an Arrow
+        // array plus a full type match every time, and for a struct element the dispatch also
+        // copies the field vector on every call.
+        //
+        // Instead, hash one element per row at a time in a single batched call, seeding each
+        // slot with the running hash of the row it belongs to. That is exactly what the
+        // per-element call did, so the result is bit-identical.
+        let total_elements = offsets[$hashes.len()] as usize - offsets[0] as usize;
+        if total_elements == 0 {
+            // Every list is empty or null; the seeds already hold the answer.
         } else {
-            // Slow path: array has nulls, check each row
-            for (row_idx, hash) in $hashes.iter_mut().enumerate() {
-                if !list_array.is_null(row_idx) {
-                    let start = offsets[row_idx] as usize;
-                    let end = offsets[row_idx + 1] as usize;
-                    let len = end - start;
-                    // Hash each element in sequence, chaining the hash values
-                    for elem_idx in 0..len {
-                        let elem_array = values.slice(start + elem_idx, 1);
-                        let mut single_hash = [*hash];
-                        $recursive_hash_method(&[elem_array], &mut single_hash)?;
-                        *hash = single_hash[0];
+            // Decide before any scheduling work. Eligibility depends only on the element type and
+            // the size of the child's retained buffers, not on which rows are active, so a shape
+            // that keeps the previous path allocates nothing new at all: no survivor scan, no
+            // sliced element view, no per-pass buffers.
+            // Batching needs several rows to batch across. One row, whether the whole column is one
+            // row or only one row is non-empty, has nothing to gather with, so take the per-element
+            // path before allocating a sliced element view, a survivor list or any per-pass buffer.
+            // Recursion makes this common rather than a corner case: a deep singleton list reaches a
+            // one-row batch at every level below the first.
+            let mut non_empty_rows = 0usize;
+            for row_idx in 0..$hashes.len() {
+                if !list_array.is_null(row_idx)
+                    && offsets[row_idx + 1] > offsets[row_idx]
+                {
+                    non_empty_rows += 1;
+                    if non_empty_rows > 1 {
+                        break;
                     }
                 }
+            }
+            if non_empty_rows <= 1
+                || !$crate::hash_funcs::utils::gather_is_eligible(values.as_ref())
+            {
+                for row_idx in 0..$hashes.len() {
+                    if list_array.is_null(row_idx) {
+                        continue;
+                    }
+                    let start = offsets[row_idx] as usize;
+                    let end = offsets[row_idx + 1] as usize;
+                    for elem_idx in start..end {
+                        let elem = values.slice(elem_idx, 1);
+                        let mut single = [$hashes[row_idx]];
+                        $recursive_hash_method(&[elem], &mut single)?;
+                        $hashes[row_idx] = single[0];
+                    }
+                }
+            } else {
+            let first_offset = offsets[0] as usize;
+            let elements = values.slice(first_offset, total_elements);
+
+            // Chaining means element k of a row can only be hashed once element k-1 is known, so
+            // batch by position: all the first elements together, then all the second, and so on.
+            // Rows are independent, so one pass per position is enough.
+            //
+            // Only rows that still have an element at the current position take part, and a row
+            // never becomes alive again once exhausted, so carry the surviving rows forward instead
+            // of rescanning all of them each pass. Rescanning would cost rows x longest-list, which
+            // for one long list among short ones is almost all wasted: 8192 rows with one list of
+            // 1024 scans 8.4M slots for 9215 elements. Carrying the survivors makes the scheduling
+            // work proportional to the elements actually hashed.
+            //
+            // Index the gather by the list's own offset width. A `LargeList` can hold more than
+            // `u32::MAX` elements, so narrowing the positions to `u32` would silently wrap and
+            // hash the wrong elements.
+            let mut active: Vec<usize> = Vec::with_capacity($hashes.len());
+            // The same pass records whether every row is non-null with the same length. When it
+            // is, no row ever drops out early, so the survivor bookkeeping is pure overhead and
+            // the rows can simply be walked directly.
+            let mut uniform_len: Option<usize> = None;
+            let mut all_same = true;
+            for row_idx in 0..$hashes.len() {
+                if list_array.is_null(row_idx) {
+                    all_same = false;
+                    continue;
+                }
+                let len = offsets[row_idx + 1] as usize - offsets[row_idx] as usize;
+                if len > 0 {
+                    active.push(row_idx);
+                }
+                match uniform_len {
+                    None => uniform_len = Some(len),
+                    Some(seen) if seen == len => {}
+                    Some(_) => all_same = false,
+                }
+            }
+            let uniform = all_same && uniform_len.unwrap_or(0) > 0;
+
+            // Only a batch that will actually gather needs this decision, and a single row always
+            // takes the direct path below, so skip the check for one row. Decided once for the
+            // column, never per pass.
+
+            // Allocated only for the batched path, after the decision above.
+            let mut positions: Vec<$offset_type> = Vec::with_capacity(active.len());
+            let mut rows_at_position: Vec<usize> = Vec::with_capacity(active.len());
+            let mut still_active: Vec<usize> = Vec::with_capacity(active.len());
+            let mut position_hashes = Vec::with_capacity(active.len());
+            let mut position = 0usize;
+            let uniform_passes = if uniform { uniform_len.unwrap_or(0) } else { 0 };
+            while (uniform && position < uniform_passes) || (!uniform && !active.is_empty()) {
+                // Batching pays only when a pass covers several rows. Once one row is left there is
+                // nothing to gather across: `take` would copy that row's remaining element payloads
+                // without saving a dispatch. That happens both for a batch that starts with a
+                // single non-empty row and, more often, for the tail after the shorter rows finish
+                // -- lengths [1, 1, 8] spend seven of eight passes on one row. Finish it by slicing,
+                // the way the previous implementation did throughout.
+                if active.len() == 1 {
+                    let row_idx = active[0];
+                    let start = offsets[row_idx] as usize;
+                    let end = offsets[row_idx + 1] as usize;
+                    for elem_idx in (start + position)..end {
+                        let elem = values.slice(elem_idx, 1);
+                        let mut single = [$hashes[row_idx]];
+                        $recursive_hash_method(&[elem], &mut single)?;
+                        $hashes[row_idx] = single[0];
+                    }
+                    // `break`, not `return`: this macro runs inside the caller's loop over
+                    // columns, so returning would skip every column after this one. Leaving
+                    // `active` as it is costs nothing, since nothing reads it after the loop.
+                    break;
+                }
+                positions.clear();
+                rows_at_position.clear();
+                if uniform {
+                    // Every row survives every pass, so skip the survivor bookkeeping.
+                    for row_idx in active.iter().copied() {
+                        let start = offsets[row_idx] as usize;
+                        positions.push((start + position - first_offset) as $offset_type);
+                        rows_at_position.push(row_idx);
+                    }
+                } else {
+                    still_active.clear();
+                    for row_idx in active.iter().copied() {
+                        let start = offsets[row_idx] as usize;
+                        let end = offsets[row_idx + 1] as usize;
+                        positions.push((start + position - first_offset) as $offset_type);
+                        rows_at_position.push(row_idx);
+                        // Alive for the next pass only if it has an element beyond this one.
+                        if start + position + 1 < end {
+                            still_active.push(row_idx);
+                        }
+                    }
+                    std::mem::swap(&mut active, &mut still_active);
+                }
+                position += 1;
+                // `take` accepts any integer index type, so index by the offset width: a
+                // `LargeList` can exceed `u32::MAX` elements.
+                let taken = if std::mem::size_of::<$offset_type>() > 4 {
+                    let indices = arrow::array::Int64Array::from_iter_values(
+                        positions.iter().map(|p| *p as i64),
+                    );
+                    arrow::compute::take(&elements, &indices, None)?
+                } else {
+                    let indices = arrow::array::Int32Array::from_iter_values(
+                        positions.iter().map(|p| *p as i32),
+                    );
+                    arrow::compute::take(&elements, &indices, None)?
+                };
+                // The hash width differs per algorithm (u32 for murmur3, u64 for xxhash64), so
+                // let the element type come from the buffer rather than naming it here. Reused
+                // across passes so the gather does not reallocate each time.
+                position_hashes.clear();
+                for row_idx in rows_at_position.iter() {
+                    position_hashes.push($hashes[*row_idx]);
+                }
+                $recursive_hash_method(&[taken], &mut position_hashes)?;
+                for (slot, row_idx) in rows_at_position.iter().enumerate() {
+                    $hashes[*row_idx] = position_hashes[slot];
+                }
+            }
             }
         }
     };
