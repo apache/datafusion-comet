@@ -442,6 +442,38 @@ class CometStringExpressionSuite extends CometTestBase with CometCodegenAssertio
     }
   }
 
+  test("length on binary input runs natively") {
+    // repeated values so the parquet writer can dictionary-encode the column
+    val data = (0 until 1000).map { i =>
+      val b: Array[Byte] = i % 5 match {
+        case 0 => "hello".getBytes("UTF-8")
+        case 1 => Array(0xc3.toByte, 0xa9.toByte)
+        case 2 => Array.empty[Byte]
+        case 3 => null
+        case 4 => Array(0x00.toByte, 0xff.toByte)
+      }
+      Tuple1(b)
+    }
+    Seq(true, false).foreach { dictionary =>
+      withParquetTable(data, "tbl", withDictionary = dictionary) {
+        checkSparkAnswerAndOperator(
+          "SELECT length(_1), char_length(_1), character_length(_1) FROM tbl")
+        checkSparkAnswerAndOperator("SELECT length(_1) FROM tbl WHERE length(_1) > 2")
+      }
+    }
+  }
+
+  test("length on dictionary-typed string and binary columns from an Arrow-written file") {
+    // The file's Arrow schema declares both columns as dictionary<int32, string|binary>,
+    // so the native reader hands length a dictionary array unless the scan unwraps it.
+    withTempView("dict") {
+      readResourceParquetFile("test-data/dictionary-string-binary.parquet").createTempView("dict")
+      checkSparkAnswerAndOperator(
+        "SELECT length(s), length(b), char_length(s), character_length(b), s, b FROM dict")
+      checkSparkAnswerAndOperator("SELECT length(b) + length(s) FROM dict WHERE length(b) > 0")
+    }
+  }
+
   // Simplified version of "filter pushdown - StringPredicate" that does not generate dictionaries
   test("string predicate filter") {
     Seq(false, true).foreach { pushdown =>

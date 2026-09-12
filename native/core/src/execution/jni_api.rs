@@ -68,6 +68,7 @@ use datafusion_spark::function::math::trigonometry::SparkSec;
 use datafusion_spark::function::math::width_bucket::SparkWidthBucket;
 use datafusion_spark::function::string::char::CharFunc;
 use datafusion_spark::function::string::concat::SparkConcat;
+use datafusion_spark::function::string::length::SparkLengthFunc;
 use datafusion_spark::function::string::luhn_check::SparkLuhnCheck;
 use datafusion_spark::function::string::space::SparkSpace;
 use datafusion_spark::function::string::substring::SparkSubstring;
@@ -775,6 +776,7 @@ fn register_datafusion_spark_function(session_ctx: &SessionContext) {
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBitShift::right_unsigned()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSoundex::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSubstring::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkLengthFunc::default()));
 }
 
 /// Prepares arrow arrays for output.
@@ -1589,7 +1591,11 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_columnarToRowClose(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arrow::datatypes::{DataType, Field};
     use datafusion::execution::memory_pool::{MemoryConsumer, UnboundedMemoryPool};
+    use datafusion::execution::FunctionRegistry;
+    use datafusion::logical_expr::type_coercion::functions::fields_with_udf;
+    use datafusion::logical_expr::ReturnFieldArgs;
 
     fn entry_count(thread_id: u64) -> usize {
         get_thread_memory_pools()
@@ -1649,5 +1655,35 @@ mod tests {
         drop(reservation);
         drop(pool);
         assert!(weak.upgrade().is_none());
+    }
+
+    #[test]
+    fn length_resolves_to_spark_length_for_string_and_binary() {
+        let ctx = SessionContext::new();
+        register_datafusion_spark_function(&ctx);
+        for name in ["length", "char_length", "character_length"] {
+            let udf = ctx.udf(name).unwrap();
+            for input in [
+                DataType::Utf8,
+                DataType::LargeUtf8,
+                DataType::Utf8View,
+                DataType::Binary,
+                DataType::LargeBinary,
+                DataType::BinaryView,
+            ] {
+                let arg = Arc::new(Field::new("arg0", input.clone(), true));
+                // The Spark signature accepts the type as-is, so no cast is injected.
+                let coerced = fields_with_udf(std::slice::from_ref(&arg), udf.as_ref())
+                    .unwrap_or_else(|e| panic!("{name}({input}) rejected: {e}"));
+                assert_eq!(coerced[0].data_type(), &input);
+                let ret = udf
+                    .return_field_from_args(ReturnFieldArgs {
+                        arg_fields: &[arg],
+                        scalar_arguments: &[None],
+                    })
+                    .unwrap();
+                assert_eq!(ret.data_type(), &DataType::Int32, "{name}({input})");
+            }
+        }
     }
 }
