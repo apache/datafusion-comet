@@ -70,6 +70,7 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim with Come
     case "TimeNanoVector" => classOf[TimeNanoVector]
     case "TimeStampMicroVector" => classOf[TimeStampMicroVector]
     case "TimeStampMicroTZVector" => classOf[TimeStampMicroTZVector]
+    case "TimeNanoVector" => classOf[TimeNanoVector]
     case "VarCharVector" => classOf[VarCharVector]
     case "VarBinaryVector" => classOf[VarBinaryVector]
     case "IntervalYearVector" => classOf[IntervalYearVector]

@@ -251,7 +251,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `convert_timezone` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default (handles all timezone forms); the native path is opt-in via allowIncompatible ([details](compatibility/expressions/datetime.md)) |
 | `curdate` | ✅ | — | Constant-folded to a literal (alias of `current_date`) |
 | `current_date` | ✅ | — | Constant-folded to a literal before Comet sees the plan |
-| `current_time` | 🔜 | — | Blocked on Spark 4.1 TIME type support ([#4288](https://github.com/apache/datafusion-comet/issues/4288)) |
+| `current_time` | ✅ | — | Constant-folded to a literal before Comet sees the plan (Spark 4.1+) |
 | `current_timestamp` | ✅ | — | Constant-folded to a literal before Comet sees the plan |
 | `current_timezone` | ✅ | — |  |
 | `date_add` | ✅ | Native | The 2-argument form is native; the `date_add(UNIT, n, ts)` form (Spark 3.5+) parses to `timestampadd` and runs through codegen dispatch |
@@ -278,7 +278,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `make_date` | ✅ | Native |  |
 | `make_dt_interval` | ✅ | Codegen dispatch |  |
 | `make_interval` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default; intervals outside Arrow's nanosecond range are tracked by [#5279](https://github.com/apache/datafusion-comet/issues/5279); the native path is opt-in via allowIncompatible ([details](compatibility/expressions/datetime.md)) |
-| `make_time` | 🔜 | — | Spark 4.1 TIME type; tracked by [#4288](https://github.com/apache/datafusion-comet/issues/4288) |
+| `make_time` | ✅ | Codegen dispatch | Spark 4.1+ |
 | `make_timestamp` | ✅ | Hybrid |  |
 | `make_timestamp_ltz` | ✅ | — | 2-arg TIME form falls back |
 | `make_timestamp_ntz` | ✅ | — | 2-arg TIME form falls back |
@@ -292,8 +292,8 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `quarter` | ✅ | Native |  |
 | `second` | ✅ | Native |  |
 | `session_window` | 🔜 | — | Batch session-window grouping falls back (`UpdatingSessionsExec` is not yet native); tracked by [#4785](https://github.com/apache/datafusion-comet/issues/4785) |
-| `time_diff` | 🔜 | — | Spark 4.1 TIME type; tracked by [#4288](https://github.com/apache/datafusion-comet/issues/4288) |
-| `time_trunc` | 🔜 | — | Spark 4.1 TIME type; tracked by [#4288](https://github.com/apache/datafusion-comet/issues/4288) |
+| `time_diff` | ✅ | Codegen dispatch | Spark 4.1+ |
+| `time_trunc` | ✅ | Codegen dispatch | Spark 4.1+ |
 | `timediff` | ✅ | — | Spark 4.0+ grammar alias that parses to `timestampdiff`; runs through codegen dispatch |
 | `timestamp_micros` | ✅ | Codegen dispatch |  |
 | `timestamp_millis` | ✅ | Codegen dispatch |  |
@@ -301,7 +301,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `timestampadd` | ✅ | — | Reached through the grammar rather than the function registry; runs through codegen dispatch |
 | `timestampdiff` | ✅ | — | Reached through the grammar rather than the function registry; runs through codegen dispatch |
 | `to_date` | ✅ | — | Rewrites to `Cast` (or `Cast(GetTimestamp)` with a format) before Comet sees the plan |
-| `to_time` | 🔜 | — | Spark 4.1 TIME type; tracked by [#4288](https://github.com/apache/datafusion-comet/issues/4288) |
+| `to_time` | ✅ | Codegen dispatch | Spark 4.1+; default-format form only (`to_time(str)`). A non-default `fmt` argument falls back to Spark. |
 | `to_timestamp` | ✅ | — | Rewrites to `Cast` (or `GetTimestamp` with a format) before Comet sees the plan |
 | `to_timestamp_ltz` | ✅ | — | Rewrites to `to_timestamp` (`TimestampType`) |
 | `to_timestamp_ntz` | ✅ | — | Rewrites to `to_timestamp` (`TimestampNTZType`) |
@@ -311,7 +311,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `try_make_interval` | ✅ | — | Rewrites to `MakeInterval`; same support as `make_interval` (Spark 4.0+) |
 | `try_make_timestamp` | ✅ | — |  |
 | `try_to_date` | ✅ | — | Rewrites to `Cast`/`GetTimestamp` before Comet sees the plan; same support as `to_date` |
-| `try_to_time` | 🔜 | — | Spark 4.1 TIME type; tracked by [#4288](https://github.com/apache/datafusion-comet/issues/4288) |
+| `try_to_time` | ✅ | Codegen dispatch | Spark 4.1+; default-format form only (`try_to_time(str)`). A non-default `fmt` argument falls back to Spark. |
 | `try_to_timestamp` | ✅ | — | Rewrites to `Cast`/`GetTimestamp` before Comet sees the plan; same support as `to_timestamp` |
 | `unix_date` | ✅ | Native |  |
 | `unix_micros` | ✅ | Codegen dispatch |  |
