@@ -1546,14 +1546,15 @@ mod test {
     use arrow::array::cast::AsArray;
     use arrow::array::UInt32Array;
     use arrow::array::{
-        Array, ArrayRef, BinaryArray, Date32Array, Decimal128Array, FixedSizeListArray,
-        Float32Array, Float64Array, Int32Array, Int64Array, LargeListArray, ListArray, MapArray,
-        StringArray, StructArray, TimestampMicrosecondArray, TimestampMillisecondArray,
+        Array, ArrayRef, BinaryArray, Date32Array, Decimal128Array, DictionaryArray,
+        FixedSizeListArray, Float32Array, Float64Array, Int32Array, Int64Array, LargeListArray,
+        ListArray, MapArray, StringArray, StructArray, TimestampMicrosecondArray,
+        TimestampMillisecondArray,
     };
     use arrow::buffer::OffsetBuffer;
     use arrow::datatypes::SchemaRef;
     use arrow::datatypes::{
-        DataType, Field, Fields, Int64Type, Schema, TimeUnit, TimestampMicrosecondType,
+        DataType, Field, Fields, Int32Type, Int64Type, Schema, TimeUnit, TimestampMicrosecondType,
     };
     use arrow::record_batch::RecordBatch;
     use datafusion::common::DataFusionError;
@@ -2178,6 +2179,43 @@ mod test {
         spark_parquet_options.allow_cast_unsigned_ints = true;
         let mut stream = scan_parquet(batch, required_schema, spark_parquet_options)?;
         stream.next().await.unwrap()
+    }
+
+    /// A file whose Arrow schema declares dictionary-typed string and binary columns reads
+    /// back as plain `Utf8` and `Binary` when the required schema asks for them, so scalar
+    /// functions downstream, `length` among them, never see a `Dictionary` array.
+    #[tokio::test]
+    async fn dictionary_columns_are_unwrapped_to_required_types() -> Result<(), DataFusionError> {
+        let strings: DictionaryArray<Int32Type> =
+            vec![Some("hello"), Some("\u{e9}"), None, Some("")]
+                .into_iter()
+                .collect();
+        let keys = Int32Array::from(vec![Some(0), Some(1), None, Some(0)]);
+        let values = BinaryArray::from(vec![&b"hello"[..], &[0xff, 0x00][..]]);
+        let binaries = DictionaryArray::<Int32Type>::try_new(keys, Arc::new(values))?;
+        let dictionary =
+            |value: DataType| DataType::Dictionary(Box::new(DataType::Int32), Box::new(value));
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("s", dictionary(DataType::Utf8), true),
+            Field::new("b", dictionary(DataType::Binary), true),
+        ]));
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(strings), Arc::new(binaries)])?;
+        let required_schema = Arc::new(Schema::new(vec![
+            Field::new("s", DataType::Utf8, true),
+            Field::new("b", DataType::Binary, true),
+        ]));
+
+        let read = roundtrip(&batch, required_schema).await?;
+
+        assert_eq!(read.column(0).data_type(), &DataType::Utf8);
+        assert_eq!(read.column(1).data_type(), &DataType::Binary);
+        let strings = read.column(0).as_string::<i32>();
+        assert_eq!(strings.value(1), "\u{e9}");
+        assert!(strings.is_null(2));
+        let binaries = read.column(1).as_binary::<i32>();
+        assert_eq!(binaries.value(1), &[0xff, 0x00]);
+        assert!(binaries.is_null(2));
+        Ok(())
     }
 
     /// Build a one-column batch `s: struct<field>` holding `values`, for the nested
