@@ -363,6 +363,30 @@ object CometMetricNode {
         SQLMetrics.createMetric(sc, "Number of row groups matched by limit pruning (not pruned)"),
       "bytes_scanned" ->
         SQLMetrics.createSizeMetric(sc, "Number of bytes scanned"),
+      "scan_io_data_bytes" ->
+        SQLMetrics.createSizeMetric(
+          sc,
+          "Projected Parquet data-page bytes returned to the reader"),
+      "scan_io_metadata_bytes" ->
+        SQLMetrics.createSizeMetric(
+          sc,
+          "Footer-prefetch, page-index, and Bloom-filter bytes returned to the reader"),
+      "scan_io_footer_reads" ->
+        SQLMetrics.createMetric(sc, "Number of Parquet footer payloads read from storage"),
+      "scan_io_footer_bytes" ->
+        SQLMetrics.createSizeMetric(sc, "Serialized Parquet footer payload bytes read"),
+      "scan_io_object_store_get_calls" ->
+        SQLMetrics.createMetric(sc, "ObjectStore GET operations after range coalescing"),
+      "scan_io_object_store_get_requested_bytes" ->
+        SQLMetrics.createSizeMetric(sc, "ObjectStore GET range bytes after range coalescing"),
+      "scan_io_object_store_response_bytes_read" ->
+        SQLMetrics.createSizeMetric(
+          sc,
+          "ObjectStore response bytes consumed after range coalescing"),
+      "scan_io_metadata_cache_hits" ->
+        SQLMetrics.createMetric(sc, "Metadata loads served without storage I/O"),
+      "scan_io_metadata_cache_misses" ->
+        SQLMetrics.createMetric(sc, "Metadata loads requiring storage I/O"),
       "pushdown_rows_pruned" ->
         SQLMetrics.createMetric(sc, "Rows filtered out by predicates pushed into parquet scan"),
       "pushdown_rows_matched" ->
@@ -426,6 +450,23 @@ object CometMetricNode {
       "output_batches" -> SQLMetrics.createMetric(sc, "Number of batches produced"),
       "output_rows" -> SQLMetrics.createMetric(sc, "Number of rows produced"),
       "join_time" -> SQLMetrics.createNanoTimingMetric(sc, "Total time for joining"))
+  }
+
+  /** Join runtime filtering and reader attachment. These never replace join or scan metrics. */
+  def joinDynamicFilterMetrics(sc: SparkContext): Map[String, SQLMetric] = {
+    Map(
+      "dynamic_filter_rows_evaluated" ->
+        SQLMetrics.createMetric(sc, "Probe rows evaluated by the join runtime filter"),
+      "dynamic_filter_rows_pruned" ->
+        SQLMetrics.createMetric(sc, "Probe rows rejected before the hash probe"),
+      "dynamic_filter_rows_bypassed" ->
+        SQLMetrics.createMetric(sc, "Probe rows bypassing an inactive join runtime filter"),
+      "dynamic_filter_eval_time" ->
+        SQLMetrics.createNanoTimingMetric(sc, "Time evaluating the join runtime filter"),
+      "dynamic_filter_reader_filters_attached" ->
+        SQLMetrics.createMetric(sc, "Join runtime filters attached to native readers"),
+      "dynamic_filter_reader_filters_skipped" ->
+        SQLMetrics.createMetric(sc, "Join runtime filters not eligible for native readers"))
   }
 
   /**

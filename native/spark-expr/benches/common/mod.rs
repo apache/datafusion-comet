@@ -15,14 +15,15 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Helpers shared by the cast-from-string benchmarks, pulled in with
+//! Helpers shared by expression benchmarks, pulled in with
 //! `#[path = "common/mod.rs"] mod common;`. This lives in a subdirectory so that Cargo's bench
 //! auto-discovery, which only looks at `benches/*.rs`, does not treat it as a bench target.
+//! This directory also holds standalone modules such as `matched_maps.rs`, included directly.
 #![allow(dead_code)]
 
 use arrow::array::{
-    builder::{BooleanBuilder, ListBuilder, StringBuilder},
-    ArrayRef, Float64Array, Int64Array, ListArray, RecordBatch, StringArray,
+    builder::StringBuilder, ArrayRef, BooleanBuilder, Date32Array, Float32Array, Float64Array,
+    Int32Array, Int64Array, ListArray, ListBuilder, RecordBatch, StringArray,
     TimestampMicrosecondArray,
 };
 use arrow::datatypes::{
@@ -60,8 +61,48 @@ pub fn f64_array(rows: usize, null_ratio: f64, value: impl Fn(usize) -> f64) -> 
     Arc::new(arr)
 }
 
+pub fn f32_array(rows: usize, null_ratio: f64, value: impl Fn(usize) -> f32) -> ArrayRef {
+    let arr: Float32Array = (0..rows)
+        .map(|i| {
+            if is_null(i, null_ratio) {
+                None
+            } else {
+                Some(value(i))
+            }
+        })
+        .collect();
+    Arc::new(arr)
+}
+
 pub fn i64_array(rows: usize, null_ratio: f64, value: impl Fn(usize) -> i64) -> ArrayRef {
     let arr: Int64Array = (0..rows)
+        .map(|i| {
+            if is_null(i, null_ratio) {
+                None
+            } else {
+                Some(value(i))
+            }
+        })
+        .collect();
+    Arc::new(arr)
+}
+
+pub fn i32_array(rows: usize, null_ratio: f64, value: impl Fn(usize) -> i32) -> ArrayRef {
+    let arr: Int32Array = (0..rows)
+        .map(|i| {
+            if is_null(i, null_ratio) {
+                None
+            } else {
+                Some(value(i))
+            }
+        })
+        .collect();
+    Arc::new(arr)
+}
+
+/// A `Date32` array (days since the Unix epoch) of `rows` rows, rows nulled per `null_ratio`.
+pub fn date32_array(rows: usize, null_ratio: f64, value: impl Fn(usize) -> i32) -> ArrayRef {
+    let arr: Date32Array = (0..rows)
         .map(|i| {
             if is_null(i, null_ratio) {
                 None
@@ -243,4 +284,13 @@ pub fn list_arrays(
             ScalarValue::Utf8(Some("k500".to_string())),
         ),
     ]
+}
+
+/// Field names shared by the hash and map-sort benchmark inputs.
+pub fn map_field_names() -> arrow::array::MapFieldNames {
+    arrow::array::MapFieldNames {
+        entry: "entries".into(),
+        key: "key".into(),
+        value: "value".into(),
+    }
 }

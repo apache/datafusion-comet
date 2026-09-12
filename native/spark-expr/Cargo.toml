@@ -60,6 +60,10 @@ name = "datafusion_comet_spark_expr"
 path = "src/lib.rs"
 
 [[bench]]
+name = "hash"
+harness = false
+
+[[bench]]
 name = "cast_from_string"
 harness = false
 
@@ -85,6 +89,46 @@ harness = false
 
 [[bench]]
 name = "aggregate"
+harness = false
+
+[[bench]]
+name = "date_diff"
+harness = false
+
+[[bench]]
+name = "date_from_unix_date"
+harness = false
+
+[[bench]]
+name = "day_month_name"
+harness = false
+
+[[bench]]
+name = "extract_date_part"
+harness = false
+
+[[bench]]
+name = "hours"
+harness = false
+
+[[bench]]
+name = "make_date"
+harness = false
+
+[[bench]]
+name = "make_time"
+harness = false
+
+[[bench]]
+name = "make_interval"
+harness = false
+
+[[bench]]
+name = "next_day"
+harness = false
+
+[[bench]]
+name = "seconds_to_timestamp"
 harness = false
 
 [[bench]]
@@ -117,6 +161,10 @@ harness = false
 
 [[bench]]
 name = "bloom_filter_agg"
+harness = false
+
+[[bench]]
+name = "collect"
 harness = false
 
 [[bench]]
@@ -169,6 +217,10 @@ harness = false
 
 [[bench]]
 name = "map_sort"
+harness = false
+
+[[bench]]
+name = "map_extract"
 harness = false
 
 [[bench]]
@@ -269,6 +321,14 @@ harness = false
 
 [[bench]]
 name = "abs"
+harness = false
+
+[[bench]]
+name = "murmur3"
+harness = false
+
+[[bench]]
+name = "xxhash64"
 harness = false
 
 [[bench]]
