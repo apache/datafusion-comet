@@ -62,21 +62,16 @@ mod tests {
     struct LegacyShuffleWriter {
         #[prost(string, tag = "3")]
         output_data_file: String,
-        #[prost(string, tag = "4")]
-        output_index_file: String,
     }
 
     fn local_shuffle_writer() -> ShuffleWriter {
         let output_data_file = "/tmp/shuffle.data".to_string();
-        let output_index_file = "/tmp/shuffle.index".to_string();
 
         ShuffleWriter {
             output_data_file: output_data_file.clone(),
-            output_index_file: output_index_file.clone(),
             partition_writer: Some(PartitionWriter {
                 writer: Some(partition_writer::Writer::Local(LocalPartitionWriter {
                     output_data_file,
-                    output_index_file,
                 })),
             }),
             ..Default::default()
@@ -89,14 +84,12 @@ mod tests {
         let decoded = ShuffleWriter::decode(encoded.as_slice()).unwrap();
 
         assert_eq!(decoded.output_data_file, "/tmp/shuffle.data");
-        assert_eq!(decoded.output_index_file, "/tmp/shuffle.index");
         let Some(partition_writer::Writer::Local(local)) =
             decoded.partition_writer.and_then(|writer| writer.writer)
         else {
             panic!("expected a local shuffle partition writer");
         };
         assert_eq!(local.output_data_file, "/tmp/shuffle.data");
-        assert_eq!(local.output_index_file, "/tmp/shuffle.index");
     }
 
     #[test]
@@ -121,19 +114,16 @@ mod tests {
         let decoded = LegacyShuffleWriter::decode(encoded.as_slice()).unwrap();
 
         assert_eq!(decoded.output_data_file, "/tmp/shuffle.data");
-        assert_eq!(decoded.output_index_file, "/tmp/shuffle.index");
     }
 
     #[test]
     fn new_shuffle_writer_decodes_legacy_plan_without_destination() {
         let legacy = LegacyShuffleWriter {
             output_data_file: "/tmp/legacy.data".to_string(),
-            output_index_file: "/tmp/legacy.index".to_string(),
         };
         let decoded = ShuffleWriter::decode(legacy.encode_to_vec().as_slice()).unwrap();
 
         assert_eq!(decoded.output_data_file, "/tmp/legacy.data");
-        assert_eq!(decoded.output_index_file, "/tmp/legacy.index");
         assert!(decoded.partition_writer.is_none());
     }
 }

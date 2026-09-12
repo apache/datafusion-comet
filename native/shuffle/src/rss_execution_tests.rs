@@ -16,8 +16,8 @@
 // under the License.
 
 use crate::{
-    read_ipc_compressed, CometPartitioning, CompressionCodec, ShuffleWriterDestination,
-    ShuffleWriterExec,
+    read_ipc_compressed, CometPartitioning, CompressionCodec, PartitionOffsets,
+    ShuffleWriterDestination, ShuffleWriterExec,
 };
 use arrow::array::{Array, Int32Array, RecordBatch, RecordBatchOptions};
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
@@ -422,18 +422,18 @@ fn rss_callback_survives_execution_plan_child_replacement() {
 }
 
 #[test]
-fn explicit_local_destination_preserves_data_and_index_files() {
+fn explicit_local_destination_writes_data_and_publishes_offsets() {
     let batch = int_batch(0, 8);
     let directory = tempfile::tempdir().unwrap();
     let data_file = directory.path().join("shuffle.data");
-    let index_file = directory.path().join("shuffle.index");
+    let offsets = Arc::new(PartitionOffsets::default());
     let execution = ShuffleWriterExec::try_new_with_destination(
         memory_input(vec![batch.clone()], batch.schema()),
         CometPartitioning::SinglePartition,
         CompressionCodec::None,
         ShuffleWriterDestination::Local {
             output_data_file: data_file.to_str().unwrap().to_string(),
-            output_index_file: index_file.to_str().unwrap().to_string(),
+            partition_offsets: Arc::clone(&offsets),
         },
         false,
         1024 * 1024,
@@ -442,7 +442,14 @@ fn explicit_local_destination_preserves_data_and_index_files() {
     .unwrap();
 
     run_execution(&execution).unwrap();
-    let frame = std::fs::read(data_file).unwrap();
+    let frame = std::fs::read(&data_file).unwrap();
     assert_eq!(decode_frame(&frame).num_rows(), 8);
-    assert_eq!(std::fs::read(index_file).unwrap().len(), 16);
+    // A single-partition writer publishes two offsets, the partition start and the total
+    // length, in memory rather than through an index file.
+    let published = offsets
+        .get()
+        .expect("writer published its partition offsets");
+    assert_eq!(published.len(), 2);
+    assert_eq!(published[0], 0);
+    assert_eq!(published[1] as usize, frame.len());
 }

@@ -209,10 +209,9 @@ class CometCelebornNativeShuffleWriterSuite extends CometTestBase {
               validations += 1
               true
             })
-          val plan = writer.buildUnifiedPlan("", "").getShuffleWriter
+          val plan = writer.buildUnifiedPlan("").getShuffleWriter
           assert(plan.getPartitionWriter.hasRss)
           assert(plan.getOutputDataFile.isEmpty)
-          assert(plan.getOutputIndexFile.isEmpty)
 
           writer.write(inputs)
           val status = writer.stop(success = true).get

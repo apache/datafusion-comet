@@ -344,18 +344,15 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
     assert(results.sameElements(Array((true, true, true, true))))
   }
 
-  test("native shuffle plan preserves local partition writer and legacy output paths") {
+  test("native shuffle plan preserves local partition writer and legacy output path") {
     val dataFile = "/tmp/comet-shuffle.data"
-    val indexFile = "/tmp/comet-shuffle.index"
     val localWriter = OperatorOuterClass.LocalPartitionWriter
       .newBuilder()
       .setOutputDataFile(dataFile)
-      .setOutputIndexFile(indexFile)
       .build()
     val writer = OperatorOuterClass.ShuffleWriter
       .newBuilder()
       .setOutputDataFile(dataFile)
-      .setOutputIndexFile(indexFile)
       .setPartitionWriter(
         OperatorOuterClass.PartitionWriter.newBuilder().setLocal(localWriter).build())
       .build()
@@ -366,16 +363,13 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
     assert(decoded.getPartitionWriter.hasLocal)
     assert(!decoded.getPartitionWriter.hasRss)
     assert(decoded.getPartitionWriter.getLocal.getOutputDataFile == dataFile)
-    assert(decoded.getPartitionWriter.getLocal.getOutputIndexFile == indexFile)
     assert(decoded.getOutputDataFile == dataFile)
-    assert(decoded.getOutputIndexFile == indexFile)
   }
 
   test("native shuffle plan preserves RSS partition writer and excludes local destination") {
     val localWriter = OperatorOuterClass.LocalPartitionWriter
       .newBuilder()
       .setOutputDataFile("/tmp/comet-shuffle.data")
-      .setOutputIndexFile("/tmp/comet-shuffle.index")
       .build()
     val partitionWriter = OperatorOuterClass.PartitionWriter
       .newBuilder()
@@ -393,23 +387,19 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
     assert(decoded.getPartitionWriter.hasRss)
     assert(!decoded.getPartitionWriter.hasLocal)
     assert(decoded.getOutputDataFile.isEmpty)
-    assert(decoded.getOutputIndexFile.isEmpty)
   }
 
   test("legacy native shuffle plans remain valid without a partition writer") {
     val dataFile = "/tmp/legacy-shuffle.data"
-    val indexFile = "/tmp/legacy-shuffle.index"
     val writer = OperatorOuterClass.ShuffleWriter
       .newBuilder()
       .setOutputDataFile(dataFile)
-      .setOutputIndexFile(indexFile)
       .build()
 
     val decoded = OperatorOuterClass.ShuffleWriter.parseFrom(writer.toByteArray)
 
     assert(!decoded.hasPartitionWriter)
     assert(decoded.getOutputDataFile == dataFile)
-    assert(decoded.getOutputIndexFile == indexFile)
   }
 
   // TODO: this test takes a long time to run, we should reduce the test time.

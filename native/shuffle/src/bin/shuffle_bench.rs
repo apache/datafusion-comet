@@ -126,7 +126,6 @@ fn main() {
     // Create output directory
     fs::create_dir_all(&args.output_dir).expect("Failed to create output directory");
     let data_file = args.output_dir.join("data.out");
-    let index_file = args.output_dir.join("index.out");
 
     let (schema, total_rows) = read_parquet_metadata(&args.input, args.limit);
 
@@ -189,7 +188,6 @@ fn main() {
                 &hash_col_indices,
                 &args,
                 data_file.to_str().unwrap(),
-                index_file.to_str().unwrap(),
             )
         };
         let data_size = fs::metadata(&data_file).map(|m| m.len()).unwrap_or(0);
@@ -253,7 +251,6 @@ fn main() {
     }
 
     let _ = fs::remove_file(&data_file);
-    let _ = fs::remove_file(&index_file);
 }
 
 fn print_shuffle_metrics(metrics: &MetricsSet, total_wall_time_secs: f64) {
@@ -398,7 +395,6 @@ fn run_shuffle_write(
     hash_col_indices: &[usize],
     args: &Args,
     data_file: &str,
-    index_file: &str,
 ) -> (f64, Option<MetricsSet>, Option<MetricsSet>) {
     let partitioning = build_partitioning(
         &args.partitioning,
@@ -420,7 +416,6 @@ fn run_shuffle_write(
             args.max_buffer_bytes,
             args.limit,
             data_file.to_string(),
-            index_file.to_string(),
         )
         .await
         .unwrap();
@@ -444,7 +439,6 @@ async fn execute_shuffle_write(
     max_buffer_bytes: Option<usize>,
     limit: usize,
     data_file: String,
-    index_file: String,
 ) -> datafusion::common::Result<(MetricsSet, MetricsSet)> {
     let config = SessionConfig::new().with_batch_size(batch_size);
     let mut runtime_builder = RuntimeEnvBuilder::new();
@@ -483,7 +477,6 @@ async fn execute_shuffle_write(
         partitioning,
         codec,
         data_file,
-        index_file,
         false,
         write_buffer_size,
         max_buffer_bytes,
@@ -537,7 +530,6 @@ fn run_concurrent_shuffle_writes(
             let task_dir = args.output_dir.join(format!("task_{task_id}"));
             fs::create_dir_all(&task_dir).expect("Failed to create task output directory");
             let data_file = task_dir.join("data.out").to_str().unwrap().to_string();
-            let index_file = task_dir.join("index.out").to_str().unwrap().to_string();
 
             let input_str = input_path.to_str().unwrap().to_string();
             let codec = codec.clone();
@@ -564,7 +556,6 @@ fn run_concurrent_shuffle_writes(
                     max_buffer_bytes,
                     limit,
                     data_file,
-                    index_file,
                 )
                 .await
                 .unwrap()
