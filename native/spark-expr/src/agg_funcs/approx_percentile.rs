@@ -22,7 +22,7 @@ use arrow::array::{
 };
 use arrow::datatypes::{DataType, Field, FieldRef};
 use datafusion::common::utils::SingleRowListArrayBuilder;
-use datafusion::common::{downcast_value, Result, ScalarValue};
+use datafusion::common::{downcast_value, not_impl_err, Result, ScalarValue};
 use datafusion::logical_expr::function::{AccumulatorArgs, StateFieldsArgs};
 use datafusion::logical_expr::Volatility::Immutable;
 use datafusion::logical_expr::{
@@ -381,7 +381,6 @@ impl GroupsAccumulator for ApproxPercentileGroupsAccumulator {
         &mut self,
         states: &[ArrayRef],
         group_indices: &[usize],
-        opt_filter: Option<&BooleanArray>,
         total_num_groups: usize,
     ) -> Result<()> {
         let digests = downcast_value!(&states[0], BinaryArray);
@@ -392,7 +391,7 @@ impl GroupsAccumulator for ApproxPercentileGroupsAccumulator {
             &mut self.summaries_heap_size,
         );
         for (row, &group_index) in group_indices.iter().enumerate() {
-            if !selected(opt_filter, row) || digests.is_null(row) {
+            if digests.is_null(row) {
                 continue;
             }
             let peer = QuantileSummaries::from_bytes(
@@ -440,6 +439,14 @@ impl GroupsAccumulator for ApproxPercentileGroupsAccumulator {
             })
             .collect::<Result<Vec<_>>>()?;
         ScalarValue::iter_to_array(results)
+    }
+
+    fn convert_to_state(
+        &self,
+        _values: &[ArrayRef],
+        _opt_filter: Option<&BooleanArray>,
+    ) -> Result<Vec<ArrayRef>> {
+        not_impl_err!("Input batch conversion to state not implemented")
     }
 
     fn size(&self) -> usize {
@@ -601,11 +608,10 @@ mod tests {
 
         let mut merged =
             ApproxPercentileGroupsAccumulator::new(vec![0.5], 10000, DataType::Float64, false);
-        merged.merge_batch(&left_state, &[0, 1], None, 2).unwrap();
-        let filter = BooleanArray::from(vec![Some(true), None]);
-        merged
-            .merge_batch(&right_state, &[0, 1], Some(&filter), 2)
-            .unwrap();
+        // `merge_batch` takes no filter: aggregate filters are applied in the partial phase,
+        // so every state row reaching a merge is already selected.
+        merged.merge_batch(&left_state, &[0, 1], 2).unwrap();
+        merged.merge_batch(&right_state, &[0, 1], 2).unwrap();
 
         assert!(merged.scratch.heap_size() > 0);
         assert_eq!(
@@ -619,8 +625,9 @@ mod tests {
 
         let result = merged.evaluate(EmitTo::All).unwrap();
         let result = result.as_any().downcast_ref::<Float64Array>().unwrap();
+        // group 0 merged 1..=200, group 1 merged 1001..=1200.
         assert!((90.0..=110.0).contains(&result.value(0)));
-        assert!((1040.0..=1060.0).contains(&result.value(1)));
+        assert!((1090.0..=1110.0).contains(&result.value(1)));
     }
 
     #[test]
