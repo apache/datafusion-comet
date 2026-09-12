@@ -125,6 +125,59 @@ class CometVariantProjectionSuite extends CometTestBase {
     }
   }
 
+  test("shredded Variant missing fields and redundant residuals match Spark") {
+    // The metadata dictionary may omit keys that only occur in typed_value.
+    withVariantFile("""
+      SELECT named_struct('metadata', X'010000', 'typed_value',
+        named_struct('a', named_struct('value', residual, 'typed_value', a),
+          'b', named_struct('typed_value', b))) AS v
+      FROM VALUES (CAST(NULL AS BINARY), CAST(NULL AS INT), CAST(NULL AS INT)),
+        (X'00', NULL, NULL), (NULL, 1, NULL), (NULL, NULL, 2),
+        (X'00', NULL, 2), (NULL, 3, 4) AS input(residual, a, b)
+      """) { path =>
+      checkNative(spark.read.schema("v VARIANT").parquet(path))
+    }
+    for (typed <- Seq(
+        "'typed scalar'",
+        "array(named_struct('typed_value', named_struct('inner', " +
+          "named_struct('typed_value', 7))))")) {
+      // Spark ignores the residual for a present scalar or array typed_value.
+      withVariantFile(s"""
+        SELECT named_struct('metadata', X'010000', 'value', X'FF',
+          'typed_value', $typed) AS v
+        """) { path =>
+        checkNative(spark.read.schema("v VARIANT").parquet(path))
+      }
+    }
+  }
+
+  test("malformed shredded Variant values report Spark's error class") {
+    for (typed <- Seq(
+        "CAST(NULL AS INT)",
+        "array(named_struct('typed_value', CAST(NULL AS INT)))",
+        "named_struct('a', CAST(NULL AS STRUCT<typed_value: INT>))")) {
+      withVariantFile(s"""
+        SELECT named_struct('metadata', X'010000', 'typed_value', $typed) AS v
+        """) { path =>
+        val df = spark.read.schema("v VARIANT").parquet(path)
+        assert(collect(df.queryExecution.executedPlan) { case scan: CometNativeScanExec =>
+          scan
+        }.nonEmpty)
+        val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
+        for (error <- Seq(sparkError, cometError)) {
+          val causes = Iterator.iterate(error.get)(_.getCause).takeWhile(_ != null).toSeq
+          assert(!causes.exists(_.isInstanceOf[CometNativeException]))
+          assert(
+            causes
+              .collect { case e: org.apache.spark.SparkThrowable =>
+                e.getErrorClass
+              }
+              .contains("MALFORMED_VARIANT"))
+        }
+      }
+    }
+  }
+
   test("missing Variant default preserves later default indexes and present nulls") {
     assume(Utils.variantType.isDefined, "VariantType requires Spark 4.0+")
     val schema = StructType(

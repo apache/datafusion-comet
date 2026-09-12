@@ -1208,6 +1208,20 @@ index e4b5e10f7c3..c6efde09c8a 100644
  
    protected val baseResourcePath = {
      // use the same way as `SQLQueryTestSuite` to get the resource path
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/ResolveDefaultColumnsSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/ResolveDefaultColumnsSuite.scala
+index cb9d0909554..084d6515e8b 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/ResolveDefaultColumnsSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/ResolveDefaultColumnsSuite.scala
+@@ -284,7 +284,8 @@ class ResolveDefaultColumnsSuite extends QueryTest with SharedSparkSession {
+     withTable("t") {
+       sql("CREATE TABLE t(v VARIANT DEFAULT parse_json('1')) USING PARQUET")
+       sql("INSERT INTO t VALUES(DEFAULT)")
+-      checkAnswer(sql("select v from t"), sql("select parse_json('1')").collect())
++      // Native unshredding may use a different integer width for the same Variant value.
++      assert(sql("select v from t").collect().map(_.get(0).toString).toSeq == Seq("1"))
+     }
+   }
+ 
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
 index 74cdee49e55..f7452c9abb7 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
@@ -1501,6 +1515,28 @@ index 8a0e2c29653..d276a51cbc6 100644
          }
        }
      }
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/VariantShreddingSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/VariantShreddingSuite.scala
+index fee375db10a..02a435c04e2 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/VariantShreddingSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/VariantShreddingSuite.scala
+@@ -94,7 +94,16 @@ class VariantShreddingSuite extends QueryTest with SharedSparkSession with Parqu
+     spark.read.schema("v variant").parquet(path.getAbsolutePath)
+ 
+   def checkExpr(path: File, expr: String, expected: Any*): Unit = withAllParquetReaders {
+-    checkAnswer(read(path).selectExpr(expr), expected.map(Row(_)))
++    val df = read(path).selectExpr(expr)
++    if (df.schema.fields.head.dataType == VariantType) {
++      // Native unshredding may use different integer widths and metadata dictionaries.
++      // Compare values after collection; the other assertions check typed extraction.
++      val actual = df.collect().toSeq.map(row => Row(Option(row.get(0)).map(_.toString).orNull))
++      val rendered = expected.map(value => Row(Option(value).map(_.toString).orNull))
++      QueryTest.sameRows(rendered, actual).foreach(fail(_))
++    } else {
++      checkAnswer(df, expected.map(Row(_)))
++    }
+   }
+ 
+   def checkException(path: File, expr: String, msg: String): Unit = withAllParquetReaders {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/collation/CollationSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/collation/CollationSuite.scala
 index 8f7a68bcbe6..88dbe1793c9 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/collation/CollationSuite.scala

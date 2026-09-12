@@ -21,6 +21,11 @@ use std::sync::Arc;
 
 #[derive(thiserror::Error, Debug, Clone)]
 pub enum SparkError {
+    #[error(
+        "[MALFORMED_VARIANT] Variant binary is malformed. Please check the data source is valid."
+    )]
+    MalformedVariant,
+
     // This list was generated from the Spark code. Many of the exceptions are not yet used by Comet
     #[error("[CAST_INVALID_INPUT] The value '{value}' of the type \"{from_type}\" cannot be cast to \"{to_type}\" \
         because it is malformed. Correct the value as per the syntax, or change its target type. \
@@ -301,6 +306,7 @@ impl SparkError {
     /// Get the error type name for JSON serialization
     pub(crate) fn error_type_name(&self) -> &'static str {
         match self {
+            SparkError::MalformedVariant => "MalformedVariant",
             SparkError::CastInvalidValue { .. } => "CastInvalidValue",
             SparkError::InvalidInputInCastToDatetime { .. } => "InvalidInputInCastToDatetime",
             SparkError::NumericValueOutOfRange { .. } => "NumericValueOutOfRange",
@@ -662,7 +668,8 @@ impl SparkError {
             | SparkError::InvalidIndexOfZero => "org/apache/spark/SparkArrayIndexOutOfBoundsException",
 
             // RuntimeException
-            SparkError::CannotParseDecimal
+            SparkError::MalformedVariant
+            | SparkError::CannotParseDecimal
             | SparkError::DuplicatedMapKey { .. }
             | SparkError::NullMapKey
             | SparkError::MapKeyValueDiffSizes
@@ -726,6 +733,7 @@ impl SparkError {
     /// Returns the Spark error class code for this error
     pub(crate) fn error_class(&self) -> Option<&'static str> {
         match self {
+            SparkError::MalformedVariant => Some("MALFORMED_VARIANT"),
             // Cast errors
             SparkError::CastInvalidValue { .. } => Some("CAST_INVALID_INPUT"),
             SparkError::InvalidInputInCastToDatetime { .. } => Some("CAST_INVALID_INPUT"),
