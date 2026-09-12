@@ -317,7 +317,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `unix_micros` | ✅ | Codegen dispatch |  |
 | `unix_millis` | ✅ | Codegen dispatch |  |
 | `unix_seconds` | ✅ | Codegen dispatch |  |
-| `unix_timestamp` | ✅ | Native |  |
+| `unix_timestamp` | ✅ | Hybrid | String parsing uses Spark's codegen and honors the time parser policy, ANSI mode, and session time zone. Compatible date and timestamp inputs use native execution. |
 | `weekday` | ✅ | Native |  |
 | `weekofyear` | ✅ | Native |  |
 | `window` | ✅ | — | Batch tumbling and sliding time-window grouping runs natively |

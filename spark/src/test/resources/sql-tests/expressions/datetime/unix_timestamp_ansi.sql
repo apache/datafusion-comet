@@ -15,25 +15,28 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- unix_timestamp() under LEGACY timeParserPolicy.
--- SimpleDateFormat is lenient: single-digit fields, out-of-range values, and trailing
--- characters all parse successfully.
--- Config: spark.sql.legacy.timeParserPolicy=LEGACY
--- Config: spark.sql.session.timeZone=UTC
+-- Config: spark.sql.ansi.enabled=true
+-- Config: spark.sql.legacy.timeParserPolicy=CORRECTED
+-- Config: spark.comet.exec.scalaUDF.codegen.enabled=true
 
 statement
-CREATE TABLE test_unix_ts_lenient(s string, fmt string) USING parquet
+CREATE TABLE test_unix_ts_ansi(s string, fmt string) USING parquet
 
 statement
-INSERT INTO test_unix_ts_lenient VALUES
-  ('2024-1-1', 'yyyy-MM-dd'),
-  ('2024-13-01', 'yyyy-MM-dd'),
-  ('2024-02-30', 'yyyy-MM-dd'),
-  ('2024-01-01garbage', 'yyyy-MM-dd'),
-  ('2024', 'yyyy-MM-dd')
+INSERT INTO test_unix_ts_ansi VALUES ('not a date', 'yyyy-MM-dd')
+
+query expect_error(could not be parsed)
+SELECT unix_timestamp(s, 'yyyy-MM-dd') FROM test_unix_ts_ansi
+
+query expect_error(could not be parsed)
+SELECT unix_timestamp(s, fmt) FROM test_unix_ts_ansi
+
+query expect_error(could not be parsed)
+SELECT unix_timestamp('2024-13-99', 'yyyy-MM-dd')
+
+-- Valid queries require Comet execution, so fallback cannot hide an error-path regression.
+query
+SELECT unix_timestamp('2024-06-15', 'yyyy-MM-dd'), unix_timestamp(CAST(NULL AS STRING))
 
 query
-SELECT s, unix_timestamp(s, 'yyyy-MM-dd') FROM test_unix_ts_lenient ORDER BY s
-
-query
-SELECT s, unix_timestamp(s, fmt) FROM test_unix_ts_lenient ORDER BY s
+SELECT unix_timestamp('2024-06-15', fmt) FROM test_unix_ts_ansi
