@@ -85,6 +85,43 @@ runs natively; it is controlled by `spark.comet.exec.windowGroupLimit.enabled` (
 - Signed-zero ordering (`-0.0` vs `+0.0`) diverges from Spark's `RankLimitIterator`; see
   [floating-point ordering](./floating-point.md#ordering-signed-zero-00-vs-00).
 
+## MERGE INTO (MergeRowsExec)
+
+Comet can run `MergeRowsExec` (Spark's row-level `MERGE INTO` dispatch operator) natively on
+Spark 3.5.x and Spark 4.0.x, but it is disabled by default. Enable it with
+`spark.comet.exec.mergeRows.enabled=true`.
+
+Spark 4.1+ intentionally falls back to Spark even when that flag is enabled. Starting in Spark
+4.1, the V2 existing-table writer locates the concrete Spark `MergeRowsExec`, builds a
+`MergeSummary` from its row-level metrics, and passes that summary to the summary-aware
+`BatchWrite.commit` overload. Replacing the node with `CometMergeRowsExec` would make summary
+discovery fail and silently switch the data source to the legacy summary-less commit overload.
+Comet will keep Spark 4.1+ `MERGE` on the JVM until it can preserve that writer contract end-to-end.
+
+**Undeclared physical output order can differ from Spark:** native execution is set-at-a-time. Within
+an input batch it emits rows grouped by the MERGE instruction that produced them, and it processes
+the MATCHED, NOT MATCHED, then NOT MATCHED BY SOURCE groups. Spark's row-at-a-time implementation
+emits rows in input order. This is not a MERGE row-value semantic difference: an unordered table
+scan has no row-order guarantee. Downstream V2 write planning still enforces every distribution or
+ordering requirement declared by the writer; only a writer that declares no ordering requirement
+can persist the same rows in a different physical sequence.
+
+**Failure precedence can differ from Spark on rare inputs:** Spark consumes joined rows one at a
+time. For each row it determines the MERGE group, validates cardinality when required, and walks
+that row's instruction list until the first clause fires. Comet intentionally vectorizes this work:
+it validates cardinality for the input batch, then evaluates each instruction over the remaining
+rows of the MATCHED, NOT MATCHED, and NOT MATCHED BY SOURCE groups. Successful deterministic row
+results preserve Spark semantics, including first-match-wins within a row, but the two evaluation
+orders are not identical when more than one row in the same Arrow batch would fail.
+
+For example, Spark may encounter an ANSI cast failure on an earlier input row before reaching a
+later row whose earlier MERGE clause divides by zero, while Comet can evaluate that earlier clause
+across the whole group and report `DIVIDE_BY_ZERO` first. The same ordering difference can occur
+between different MERGE groups, between the two projections of a `Split`, or between a cardinality
+violation and an unrelated clause-evaluation error. In these cases both engines reject the query,
+but the surfaced Spark error condition can differ. This limitation only applies to Spark versions
+where native `MergeRowsExec` is enabled.
+
 ## Round-Robin Partitioning
 
 Comet's native shuffle implementation of round-robin partitioning (`df.repartition(n)`) is not compatible with
