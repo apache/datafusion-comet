@@ -103,6 +103,9 @@ ROUTING_CASES = [
     # to nothing at all and merges having been exercised by no consumer.
     ([".github/actions/upload-artifact-retry/action.yaml"], BUILD_JOBS),
     ([".github/actions/download-artifact-retry/action.yaml"], BUILD_JOBS),
+    # Maven bootstrap runs inside setup-builder and setup-macos-builder, so it
+    # reaches every job that runs ./mvnw.
+    ([".github/actions/bootstrap-maven/action.yaml"], BUILD_JOBS),
     # Spot checks that the additions above did not widen unrelated routes.
     (["docs/source/user-guide/overview.md"], {"docs"}),
     (["native/core/benches/parquet_read.rs"], {"benchmark"}),
