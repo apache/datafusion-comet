@@ -258,7 +258,12 @@ object CometJsonToStructs extends CometCodegenDispatch[JsonToStructs] with Nativ
   }
 }
 
-object CometStructsToCsv extends CometExpressionSerde[StructsToCsv] {
+// Routes through the JVM codegen dispatcher by default: the `Unsupported` (complex field types)
+// and non-opted-in `Incompatible` (#3232 field types) results below are both handled by
+// `CodegenDispatchFallback`, which runs Spark's own `doGenCode` inside the Comet pipeline so the
+// projection stays native and bit-exact. The native ToCsv path remains available via
+// `allowIncompatible`, for the field types it can actually handle.
+object CometStructsToCsv extends CometExpressionSerde[StructsToCsv] with CodegenDispatchFallback {
 
   private val incompatibleDataTypes = Seq(DateType, TimestampType, TimestampNTZType, BinaryType)
 
