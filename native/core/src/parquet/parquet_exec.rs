@@ -194,7 +194,8 @@ pub(crate) fn init_datasource_exec(
             scan_io_source,
             parquet_source.metrics(),
         )
-        .with_spark_variant_schema(projects_variant),
+        .with_spark_variant_schema(projects_variant)
+        .with_required_schema(&required_schema, case_sensitive, use_field_id),
     );
     parquet_source = parquet_source.with_parquet_file_reader_factory(reader_factory);
 
