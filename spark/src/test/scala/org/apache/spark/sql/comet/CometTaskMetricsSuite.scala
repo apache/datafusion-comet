@@ -128,6 +128,87 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  // The unit tests below build their contexts with TaskContext.empty(), which always carries
+  // task attempt id 0, so they share one per-task registry entry. Each test must reach
+  // markTaskCompleted so the cleanup listener discards that entry before the next test claims.
+  test("scan input metrics add to the task once per accumulator and keep existing values") {
+    val nestedBytes = new SQLMetric("nestedBytes", -1L)
+    val nestedRows = new SQLMetric("nestedRows")
+    val nestedPruned = new SQLMetric("nestedPruned")
+    val siblingBytes = new SQLMetric("siblingBytes", -1L)
+    val siblingRows = new SQLMetric("siblingRows")
+    val nestedScan = CometMetricNode(
+      Map(
+        "bytes_scanned" -> nestedBytes,
+        "output_rows" -> nestedRows,
+        "pushdown_rows_pruned" -> nestedPruned))
+    // An operator above the scans contributes output_rows of its own, which is not input.
+    val outerRows = new SQLMetric("outerRows")
+    outerRows.set(99L)
+    val outerTree = CometMetricNode(
+      Map("output_rows" -> outerRows),
+      Seq(
+        nestedScan,
+        CometMetricNode(Map("bytes_scanned" -> siblingBytes, "output_rows" -> siblingRows))))
+
+    Seq(None, Some(new IllegalStateException("failed native stage"))).foreach { failure =>
+      val ctx = TaskContext.empty()
+      // A fallback Spark scan in the same task accumulated its own input before Comet reports.
+      ctx.taskMetrics.inputMetrics.incBytesRead(1000L)
+      ctx.taskMetrics.inputMetrics.incRecordsRead(3L)
+      // The outer block registers before its inputs, and the nested scan registers twice like
+      // a coalesced partition computed once per parent partition.
+      outerTree.reportScanInputMetrics(ctx)
+      nestedScan.reportScanInputMetrics(ctx)
+      nestedScan.reportScanInputMetrics(ctx)
+      // Registered last so it runs first, like native iterators publishing final metric values
+      // as they close at task completion.
+      ctx.addTaskCompletionListener[Unit] { _ =>
+        nestedBytes.set(100L)
+        nestedRows.set(10L)
+        nestedPruned.set(5L)
+        siblingBytes.set(50L)
+        siblingRows.set(7L)
+      }
+      ctx.markTaskCompleted(failure)
+
+      assert(ctx.taskMetrics.inputMetrics.bytesRead == 1150L)
+      assert(ctx.taskMetrics.inputMetrics.recordsRead == 25L)
+    }
+  }
+
+  test("scan input metrics registered before the iterator see its final values") {
+    val bytes = new SQLMetric("bytes", -1L)
+    val rows = new SQLMetric("rows")
+    val scan = CometMetricNode(Map("bytes_scanned" -> bytes, "output_rows" -> rows))
+
+    val ctx = TaskContext.empty()
+    scan.reportScanInputMetrics(ctx)
+    // The iterator's close publishes the final values at task completion, after a polling
+    // block with a JVM input has left them stale, and runs before the report registered ahead.
+    ctx.addTaskCompletionListener[Unit] { _ =>
+      bytes.set(64L)
+      rows.set(8L)
+    }
+    ctx.markTaskCompleted(None)
+
+    assert(ctx.taskMetrics.inputMetrics.bytesRead == 64L)
+    assert(ctx.taskMetrics.inputMetrics.recordsRead == 8L)
+  }
+
+  test("scan input metrics report nothing for scans that never ran") {
+    val scan = CometMetricNode(
+      Map("bytes_scanned" -> new SQLMetric("bytes", -1L), "output_rows" -> new SQLMetric("rows")))
+    val ctx = TaskContext.empty()
+    ctx.taskMetrics.inputMetrics.incBytesRead(42L)
+    scan.reportScanInputMetrics(ctx)
+    ctx.markTaskCompleted(None)
+
+    // An unset size metric keeps its -1 initial value and must not subtract from the task.
+    assert(ctx.taskMetrics.inputMetrics.bytesRead == 42L)
+    assert(ctx.taskMetrics.inputMetrics.recordsRead == 0L)
+  }
+
   test("native sort in a non-shuffle stage reports task-level disk spill metrics") {
     val expectedRecords = 20000L
     val compressibleValue = "non-shuffle-sort-spill-metrics-" * 8
@@ -1011,6 +1092,329 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       }
     }
   }
+
+  test("native scan left unconsumed by a limit still reports task input metrics") {
+    withTempPath { dir =>
+      spark
+        .createDataFrame((0 until 20000).map(i => (i, s"big_$i")))
+        .repartition(4)
+        .write
+        .parquet(dir.getAbsolutePath)
+      spark.read.parquet(dir.getAbsolutePath).createOrReplaceTempView("limit_big")
+      spark
+        .createDataFrame((0 until 100).map(i => (i * 7, s"local_$i")))
+        .createOrReplaceTempView("limit_local")
+
+      // The broadcast side is a JVM input to the join block, so native execution polls and only
+      // publishes scan metrics on the update interval. The limit stops pulling before the scan
+      // is exhausted, leaving the final publish to the iterator's completion-time close.
+      val query = "SELECT /*+ BROADCAST(limit_local) */ * FROM limit_big JOIN limit_local " +
+        "ON limit_big._1 = limit_local._1 LIMIT 3"
+      val localBroadcast = Seq(
+        CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true",
+        CometConf.COMET_SPARK_TO_ARROW_SUPPORTED_OPERATOR_LIST.key -> "LocalTableScan")
+
+      Seq("-1", CometConf.COMET_METRICS_UPDATE_INTERVAL.defaultValueString).foreach { interval =>
+        val confs = localBroadcast :+ (CometConf.COMET_METRICS_UPDATE_INTERVAL.key -> interval)
+        val (cometBytes, cometRecords, cometPlan) =
+          collectInputMetrics(query, (CometConf.COMET_ENABLED.key -> "true") +: confs: _*)
+
+        val join = find(cometPlan)(_.isInstanceOf[CometBroadcastHashJoinExec])
+        assert(
+          join.isDefined,
+          s"Expected CometBroadcastHashJoinExec in plan:\n${cometPlan.treeString}")
+        val streamedNativeScan = join.get.children.exists { child =>
+          find(child)(_.isInstanceOf[CometBroadcastExchangeExec]).isEmpty &&
+          find(child)(_.isInstanceOf[CometNativeScanExec]).isDefined
+        }
+        assert(
+          streamedNativeScan,
+          s"Expected a native scan on the streamed side of the join:\n${cometPlan.treeString}")
+
+        assert(cometBytes > 0, s"bytesRead should be > 0 at interval $interval, got $cometBytes")
+        assert(
+          cometRecords >= 3 && cometRecords <= 20000,
+          s"recordsRead should cover at least the limit at interval $interval, got $cometRecords")
+      }
+    }
+  }
+
+  test("task input metrics keep bytes read by a fallback Spark scan in the same task") {
+    withTempPath { parquetDir =>
+      withTempPath { jsonDir =>
+        spark
+          .createDataFrame((0 until 5000).map(i => (i, s"parquet_$i")))
+          .repartition(1)
+          .write
+          .parquet(parquetDir.getAbsolutePath)
+        spark
+          .createDataFrame((5000 until 10000).map(i => (i, s"json_$i")))
+          .repartition(1)
+          .write
+          .json(jsonDir.getAbsolutePath)
+        spark.read.parquet(parquetDir.getAbsolutePath).createOrReplaceTempView("mixed_parquet")
+        spark.read.json(jsonDir.getAbsolutePath).createOrReplaceTempView("mixed_json")
+        val convertJson = CometConf.COMET_CONVERT_FROM_JSON_ENABLED.key -> "true"
+
+        val nativeArm = "SELECT _1 FROM mixed_parquet"
+        val fallbackArm = "SELECT CAST(_1 AS INT) FROM mixed_json"
+        val nativeBytes = cometBytesRead(nativeArm, convertJson)
+        val fallbackBytes = cometBytesRead(fallbackArm, convertJson)
+        assert(nativeBytes > 0 && fallbackBytes > 0, s"sides: $nativeBytes, $fallbackBytes")
+
+        // Coalescing the union to one partition computes the native scan and the fallback JSON
+        // scan inside the same task, so Spark's own input metrics and Comet's must add up.
+        def coalescedUnion(first: String, second: String): String =
+          s"SELECT /*+ COALESCE(1) */ * FROM ($first UNION ALL $second)"
+
+        val nativeFirst = coalescedUnion(nativeArm, fallbackArm)
+        val (sparkBytes, sparkRecords, _) =
+          collectInputMetrics(nativeFirst, CometConf.COMET_ENABLED.key -> "false", convertJson)
+        val (cometBytes, cometRecords, cometPlan) =
+          collectInputMetrics(nativeFirst, CometConf.COMET_ENABLED.key -> "true", convertJson)
+        assert(
+          find(cometPlan)(_.isInstanceOf[CometNativeScanExec]).isDefined,
+          s"Expected CometNativeScanExec in plan:\n${cometPlan.treeString}")
+        assert(
+          find(cometPlan)(_.isInstanceOf[CometSparkToColumnarExec]).isDefined,
+          s"Expected CometSparkToColumnarExec in plan:\n${cometPlan.treeString}")
+        assert(sparkRecords > 0, s"Spark recordsRead should be > 0, got $sparkRecords")
+        assert(
+          cometRecords == sparkRecords,
+          s"recordsRead mismatch: comet=$cometRecords, spark=$sparkRecords")
+        assert(sparkBytes > 0, s"Spark bytesRead should be > 0, got $sparkBytes")
+        assert(
+          cometBytes >= nativeBytes + fallbackBytes,
+          s"bytesRead should cover both sides: comet=$cometBytes, " +
+            s"native=$nativeBytes, fallback=$fallbackBytes")
+
+        // With the fallback partition first, FileScanRDD registers its close listener before
+        // Comet's report, so it runs last and sets bytesRead to the bytes it snapshotted at
+        // construction plus its own reads, dropping the native side. Records still add up,
+        // since FileScanRDD increments those. This pins the current behaviour.
+        val fallbackFirst = coalescedUnion(fallbackArm, nativeArm)
+        val (_, sparkRecordsReversed, _) =
+          collectInputMetrics(fallbackFirst, CometConf.COMET_ENABLED.key -> "false", convertJson)
+        val (cometBytesReversed, cometRecordsReversed, _) =
+          collectInputMetrics(fallbackFirst, CometConf.COMET_ENABLED.key -> "true", convertJson)
+        assert(
+          cometRecordsReversed == sparkRecordsReversed,
+          s"recordsRead mismatch: comet=$cometRecordsReversed, spark=$sparkRecordsReversed")
+        assert(
+          cometBytesReversed >= fallbackBytes && cometBytesReversed < nativeBytes + fallbackBytes,
+          s"bytesRead with the fallback side first keeps only its own bytes today: " +
+            s"comet=$cometBytesReversed, native=$nativeBytes, fallback=$fallbackBytes")
+      }
+    }
+  }
+
+  test("native scan block left unconsumed by a limit still reports task input metrics") {
+    withTempPath { dir =>
+      spark
+        .createDataFrame((0 until 20000).map(i => (i, s"elem_$i")))
+        .repartition(4)
+        .write
+        .parquet(dir.getAbsolutePath)
+      spark.read.parquet(dir.getAbsolutePath).createOrReplaceTempView("scan_limit_tbl")
+
+      // The scan is its own native block here, so CometNativeScanExec registers the report.
+      val query = "SELECT * FROM scan_limit_tbl LIMIT 3"
+      Seq("-1", CometConf.COMET_METRICS_UPDATE_INTERVAL.defaultValueString).foreach { interval =>
+        val (cometBytes, cometRecords, cometPlan) = collectInputMetrics(
+          query,
+          CometConf.COMET_ENABLED.key -> "true",
+          CometConf.COMET_METRICS_UPDATE_INTERVAL.key -> interval)
+        assert(
+          find(cometPlan)(_.isInstanceOf[CometNativeScanExec]).isDefined,
+          s"Expected CometNativeScanExec in plan:\n${cometPlan.treeString}")
+        assert(cometBytes > 0, s"bytesRead should be > 0 at interval $interval, got $cometBytes")
+        assert(
+          cometRecords >= 3 && cometRecords <= 20000,
+          s"recordsRead should cover at least the limit at interval $interval, got $cometRecords")
+      }
+    }
+  }
+
+  test("coalesced union of two native scans reports task input metrics for both") {
+    withTempPath { dir1 =>
+      withTempPath { dir2 =>
+        spark
+          .createDataFrame((0 until 5000).map(i => (i, s"left_$i")))
+          .repartition(1)
+          .write
+          .parquet(dir1.getAbsolutePath)
+        spark
+          .createDataFrame((5000 until 10000).map(i => (i, s"right_$i")))
+          .repartition(1)
+          .write
+          .parquet(dir2.getAbsolutePath)
+        spark.read.parquet(dir1.getAbsolutePath).createOrReplaceTempView("co_union_left")
+        spark.read.parquet(dir2.getAbsolutePath).createOrReplaceTempView("co_union_right")
+
+        // Both scan blocks run inside one task and register their own report, so each block's
+        // bytes and rows must add up rather than the last report replacing the first.
+        val query = "SELECT /*+ COALESCE(1) */ * FROM (SELECT * FROM co_union_left " +
+          "UNION ALL SELECT * FROM co_union_right)"
+        val leftBytes = cometBytesRead("SELECT * FROM co_union_left")
+        val rightBytes = cometBytesRead("SELECT * FROM co_union_right")
+
+        val (sparkBytes, sparkRecords, _) =
+          collectInputMetrics(query, CometConf.COMET_ENABLED.key -> "false")
+        val (cometBytes, cometRecords, cometPlan) =
+          collectInputMetrics(query, CometConf.COMET_ENABLED.key -> "true")
+
+        val scanCount = collect(cometPlan) { case s: CometNativeScanExec => s }.size
+        assert(
+          scanCount == 2,
+          s"Expected 2 CometNativeScanExec in plan:\n${cometPlan.treeString}")
+        assert(
+          find(cometPlan)(_.isInstanceOf[CometCoalesceExec]).isDefined,
+          s"Expected CometCoalesceExec in plan:\n${cometPlan.treeString}")
+        assert(
+          cometRecords == sparkRecords,
+          s"recordsRead mismatch: comet=$cometRecords, spark=$sparkRecords")
+        assert(sparkBytes > 0, s"Spark bytesRead should be > 0, got $sparkBytes")
+        assertCometBytesReadInRange(cometBytes, sparkBytes)
+        assert(
+          cometBytes >= leftBytes + rightBytes,
+          s"bytesRead should cover both blocks: comet=$cometBytes, " +
+            s"left=$leftBytes, right=$rightBytes")
+      }
+    }
+  }
+
+  test("task input metrics keep rows read from a cached JVM input in the same task") {
+    withTempPath { dir =>
+      spark
+        .createDataFrame((0 until 5000).map(i => (i, s"parquet_$i")))
+        .repartition(1)
+        .write
+        .parquet(dir.getAbsolutePath)
+      spark.read.parquet(dir.getAbsolutePath).createOrReplaceTempView("cache_union_parquet")
+      val cached = spark.createDataFrame((5000 until 10000).map(i => (i, s"cached_$i"))).cache()
+      try {
+        cached.count()
+        cached.createOrReplaceTempView("cache_union_cached")
+
+        // Reading a cached block increments the task's input metrics on the JVM side, in the
+        // same task as the native scan once the union is coalesced.
+        val query = "SELECT /*+ COALESCE(1) */ * FROM (SELECT * FROM cache_union_parquet " +
+          "UNION ALL SELECT * FROM cache_union_cached)"
+        val parquetBytes = cometBytesRead("SELECT * FROM cache_union_parquet")
+        val cachedBytes = cometBytesRead("SELECT * FROM cache_union_cached")
+        assert(parquetBytes > 0 && cachedBytes > 0, s"sides: $parquetBytes, $cachedBytes")
+
+        val (_, sparkRecords, _) =
+          collectInputMetrics(query, CometConf.COMET_ENABLED.key -> "false")
+        val (cometBytes, cometRecords, cometPlan) =
+          collectInputMetrics(query, CometConf.COMET_ENABLED.key -> "true")
+
+        assert(
+          find(cometPlan)(_.isInstanceOf[CometNativeScanExec]).isDefined,
+          s"Expected CometNativeScanExec in plan:\n${cometPlan.treeString}")
+        // Spark counts a cached block as one record, so the baseline is the parquet rows plus
+        // the cached blocks rather than a row count.
+        assert(
+          sparkRecords > 5000,
+          s"Spark recordsRead should exceed the parquet rows, got $sparkRecords")
+        assert(
+          cometRecords == sparkRecords,
+          s"recordsRead mismatch: comet=$cometRecords, spark=$sparkRecords")
+        assert(
+          cometBytes >= parquetBytes + cachedBytes,
+          s"bytesRead should cover both sides: comet=$cometBytes, " +
+            s"parquet=$parquetBytes, cached=$cachedBytes")
+      } finally {
+        cached.unpersist()
+      }
+    }
+  }
+
+  test("failed native stage attempts still report task input metrics") {
+    val failureRow = 8192
+    withTempPath { path =>
+      spark
+        .createDataFrame((0 until failureRow + 1024).map(i => (i, if (i == failureRow) 0 else 1)))
+        .coalesce(1)
+        .write
+        .parquet(path.getAbsolutePath)
+
+      withParquetTable(path.getAbsolutePath, "failed_scan_tbl") {
+        val failedTaskMetrics = mutable.ArrayBuffer.empty[(Long, Long)]
+        val targetStageIds = mutable.HashSet.empty[Int]
+        val jobGroupId = s"failed-native-scan-input-metrics-${java.util.UUID.randomUUID()}"
+
+        val listener = new SparkListener {
+          override def onJobStart(jobStart: SparkListenerJobStart): Unit = {
+            val isTargetJob = Option(jobStart.properties)
+              .flatMap(props => Option(props.getProperty(SparkContext.SPARK_JOB_GROUP_ID)))
+              .contains(jobGroupId)
+            if (isTargetJob) {
+              targetStageIds.synchronized {
+                targetStageIds ++= jobStart.stageInfos.map(_.stageId)
+              }
+            }
+          }
+
+          override def onTaskEnd(taskEnd: SparkListenerTaskEnd): Unit = {
+            val isTargetStage = targetStageIds.synchronized {
+              targetStageIds.contains(taskEnd.stageId)
+            }
+            if (isTargetStage && taskEnd.reason != Success) {
+              val inputMetrics = taskEnd.taskMetrics.inputMetrics
+              failedTaskMetrics.synchronized {
+                failedTaskMetrics += ((inputMetrics.bytesRead, inputMetrics.recordsRead))
+              }
+            }
+          }
+        }
+        spark.sparkContext.addSparkListener(listener)
+
+        try {
+          spark.sparkContext.listenerBus.waitUntilEmpty()
+          withSQLConf(
+            CometConf.COMET_BATCH_SIZE.key -> "1024",
+            SQLConf.ANSI_ENABLED.key -> "true") {
+            // The scan reads several batches before the projection reaches the failing row.
+            val failing = sql("SELECT _1 / _2 AS quotient FROM failed_scan_tbl")
+            val plan = failing.queryExecution.executedPlan
+            assert(
+              collect(plan) { case scan: CometNativeScanExec => scan }.nonEmpty,
+              s"Expected a native scan below the failing projection:\n$plan")
+
+            spark.sparkContext.setJobGroup(jobGroupId, "failed native scan input metrics")
+            try {
+              val failure = intercept[Exception] {
+                failing.collect()
+              }
+              val messages = causeChain(failure).flatMap(error => Option(error.getMessage))
+              assert(
+                messages.exists(message =>
+                  message.contains("DIVIDE_BY_ZERO") || message.contains("Division by zero")),
+                s"Expected the late-row division failure, got:\n${messages.mkString("\n")}")
+            } finally {
+              spark.sparkContext.clearJobGroup()
+            }
+          }
+          spark.sparkContext.listenerBus.waitUntilEmpty()
+
+          val metrics = failedTaskMetrics.synchronized(failedTaskMetrics.toSeq)
+          assert(metrics.nonEmpty, "No failed task attempt was observed")
+          assert(
+            metrics.forall { case (bytesRead, recordsRead) =>
+              bytesRead > 0L && recordsRead > 0L
+            },
+            s"Failed attempts should report the bytes and rows scanned before failing: $metrics")
+        } finally {
+          spark.sparkContext.removeSparkListener(listener)
+        }
+      }
+    }
+  }
+
+  /** The task input bytes a query reports on its own with Comet enabled. */
+  private def cometBytesRead(query: String, confs: (String, String)*): Long =
+    collectInputMetrics(query, (CometConf.COMET_ENABLED.key -> "true") +: confs: _*)._1
 
   /**
    * Runs the given query with the given SQL config overrides and returns the aggregated

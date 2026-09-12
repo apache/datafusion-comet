@@ -626,11 +626,12 @@ abstract class CometNativeExec extends CometExec {
       ctx.encryptedFilePaths,
       ctx.shuffleScanIndices) {
       override def compute(split: Partition, context: TaskContext): Iterator[ColumnarBatch] = {
-        val res = super.compute(split, context)
+        // Register before super.compute creates the CometExecIterator, so this listener runs
+        // after the iterator's close has published the final scan metrics.
         if (ctx.hasScanInput) {
           Option(context).foreach(nativeMetrics.reportScanInputMetrics)
         }
-        res
+        super.compute(split, context)
       }
     }
   }

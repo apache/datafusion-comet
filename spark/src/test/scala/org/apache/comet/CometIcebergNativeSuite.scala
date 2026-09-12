@@ -3738,6 +3738,81 @@ class CometIcebergNativeSuite
     }
   }
 
+  test("Iceberg native scan left unconsumed by a limit still reports task input metrics") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        spark.sql("""
+          CREATE TABLE test_cat.db.task_metrics_limit_test (
+            id INT,
+            value DOUBLE
+          ) USING iceberg
+        """)
+        spark
+          .range(20000)
+          .selectExpr("CAST(id AS INT)", "CAST(id * 1.5 AS DOUBLE) as value")
+          .repartition(4)
+          .write
+          .format("iceberg")
+          .mode("append")
+          .saveAsTable("test_cat.db.task_metrics_limit_test")
+
+        val bytesReadValues = mutable.ArrayBuffer.empty[Long]
+        val recordsReadValues = mutable.ArrayBuffer.empty[Long]
+        val listener = new SparkListener {
+          override def onTaskEnd(taskEnd: SparkListenerTaskEnd): Unit = {
+            val im = taskEnd.taskMetrics.inputMetrics
+            bytesReadValues.synchronized {
+              bytesReadValues += im.bytesRead
+              recordsReadValues += im.recordsRead
+            }
+          }
+        }
+        spark.sparkContext.addSparkListener(listener)
+
+        try {
+          // The limit stops pulling before the scan is exhausted, so the final metric publish
+          // happens in the iterator's completion-time close.
+          val query = "SELECT * FROM test_cat.db.task_metrics_limit_test LIMIT 3"
+          Seq("-1", CometConf.COMET_METRICS_UPDATE_INTERVAL.defaultValueString).foreach {
+            interval =>
+              withSQLConf(CometConf.COMET_METRICS_UPDATE_INTERVAL.key -> interval) {
+                CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
+                bytesReadValues.clear()
+                recordsReadValues.clear()
+                val df = spark.sql(query)
+                assert(
+                  collectIcebergNativeScans(df.queryExecution.executedPlan).nonEmpty,
+                  "Expected CometIcebergNativeScanExec in plan")
+                df.collect()
+                CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
+
+                val cometBytes = bytesReadValues.sum
+                val cometRecords = recordsReadValues.sum
+                assert(
+                  cometBytes > 0,
+                  s"bytesRead should be > 0 at interval $interval, got $cometBytes")
+                assert(
+                  cometRecords >= 3 && cometRecords <= 20000,
+                  s"recordsRead should cover at least the limit at interval $interval, got $cometRecords")
+              }
+          }
+        } finally {
+          spark.sparkContext.removeSparkListener(listener)
+          spark.sql("DROP TABLE test_cat.db.task_metrics_limit_test")
+        }
+      }
+    }
+  }
+
   test("task-level inputMetrics.bytesRead is populated for Iceberg native scan") {
     assume(icebergAvailable, "Iceberg not available in classpath")
 
