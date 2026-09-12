@@ -163,6 +163,25 @@ Spark's behavior of using Java `BigDecimal.toString()` semantics, which produces
 notation (e.g. a value of 12300 stored as `Decimal(7,-2)` with unscaled value 123 is rendered
 as `"1.23E+4"`).
 
+## Decimal with Negative Scale to Integer, Floating Point, and Timestamp
+
+Casting a `DecimalType` with a negative scale to `ByteType`, `ShortType`, `IntegerType`,
+`LongType`, `FloatType`, `DoubleType`, or `TimestampType` has no native implementation, and
+neither does casting any of the integer types to a negative-scale `DecimalType`. Comet reports
+these as unsupported, which routes them through the JVM codegen dispatcher (Spark's own
+generated code) inside the Comet pipeline, so the results match Spark exactly.
+
+The native kernels are unusable here for two separate reasons. The integer and timestamp paths
+align scale by computing `10^|scale|` in fixed-point arithmetic, which overflows when the scale
+is negative. The floating-point paths divide by `10^scale`, which is not exactly representable
+for a negative scale, so the result silently diverges from Spark's exact
+`BigDecimal.doubleValue()` (a `Decimal(20,-5)` holding `1000000` comes back as
+`999999.9999999999`). See [#5013](https://github.com/apache/datafusion-comet/issues/5013).
+
+All other cast directions to and from negative-scale decimals run natively: `StringType` in
+both directions (subject to the config gate described above), `BooleanType`, and widening to
+another `DecimalType`.
+
 ## Legacy Mode
 
 <!--BEGIN:CAST_LEGACY_TABLE-->
