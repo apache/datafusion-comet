@@ -151,7 +151,9 @@ private object MapKeyDedupPolicySupport {
       .equalsIgnoreCase(SQLConf.MapKeyDedupPolicy.LAST_WIN.toString)
 }
 
-object CometMapFromArrays extends CometExpressionSerde[MapFromArrays] {
+object CometMapFromArrays
+    extends CometExpressionSerde[MapFromArrays]
+    with CodegenDispatchFallback {
 
   override def getIncompatibleReasons(): Seq[String] =
     Seq(MapKeyDedupPolicySupport.incompatibleReason)
