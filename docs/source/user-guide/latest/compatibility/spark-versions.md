@@ -31,7 +31,11 @@ of the versioning policy.
 Spark 3.4.3 is supported with Java 11/17 and Scala 2.12/2.13.
 
 ```{warning}
-Spark 3.4 support is deprecated as of the 1.0.0 release and will be removed in the 1.1.0 release.
+Spark 3.4 support is deprecated as of the 1.0.0 release and will be removed in a future release.
+Comet continues to build and publish Spark 3.4 binaries in the meantime, but Apache Spark's own
+SQL test suite is no longer run against Spark 3.4 on every change: it runs only when a contributor
+opts a pull request into it. Regressions specific to Spark 3.4 are therefore more likely to reach a
+release than on the other supported versions. We recommend moving to Spark 3.5 or later.
 ```
 
 ### Known Limitations
