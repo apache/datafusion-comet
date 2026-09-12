@@ -25,7 +25,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, CreateArray, CreateMap, Expression, KnownNullable, Literal, MapFromArrays}
 import org.apache.spark.sql.catalyst.util.{ArrayData, MapData, TypeUtils}
-import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, CalendarIntervalType, DataType, DateType, DayTimeIntervalType, Decimal, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, NullType, ShortType, StringType, StructType, TimestampNTZType, TimestampType}
+import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, CalendarIntervalType, DataType, DateType, DayTimeIntervalType, Decimal, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, NullType, ShortType, StringType, StructType, TimestampNTZType, TimestampType, YearMonthIntervalType}
 import org.apache.spark.unsafe.types.{CalendarInterval, UTF8String}
 
 import com.google.protobuf.ByteString
@@ -58,7 +58,7 @@ object CometLiteral extends CometExpressionSerde[Literal] with CometTypeShim wit
       Unsupported(Some(s"Unsupported literal value for data type ${expr.dataType}"))
     } else {
       expr.dataType match {
-        case _: DayTimeIntervalType => Compatible(None)
+        case _: YearMonthIntervalType | _: DayTimeIntervalType => Compatible(None)
         case dt => Unsupported(Some(s"Unsupported data type $dt"))
       }
     }
@@ -88,7 +88,8 @@ object CometLiteral extends CometExpressionSerde[Literal] with CometTypeShim wit
         case _: BooleanType => exprBuilder.setBoolVal(value.asInstanceOf[Boolean])
         case _: ByteType => exprBuilder.setByteVal(value.asInstanceOf[Byte])
         case _: ShortType => exprBuilder.setShortVal(value.asInstanceOf[Short])
-        case _: IntegerType | _: DateType => exprBuilder.setIntVal(value.asInstanceOf[Int])
+        case _: IntegerType | _: DateType | _: YearMonthIntervalType =>
+          exprBuilder.setIntVal(value.asInstanceOf[Int])
         case _: LongType | _: TimestampType | _: TimestampNTZType | _: DayTimeIntervalType =>
           exprBuilder.setLongVal(value.asInstanceOf[Long])
         case dt if isTimeType(dt) =>
