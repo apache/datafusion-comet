@@ -1,0 +1,78 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+name: Bootstrap Maven
+description: >-
+  Install the Maven distribution the wrapper points at, retrying the download
+  and caching the result, so a Maven Central hiccup does not fail a job before
+  it has built or tested anything.
+
+# The dependency caches cover ~/.m2/repository, but the wrapper installs Maven
+# itself under ~/.m2/wrapper/dists. On a fresh runner the first ./mvnw call
+# therefore still downloads apache-maven-*-bin.zip from Maven Central, and that
+# single request has failed with HTTP 403 and 429 often enough to matter.
+# Every job that runs ./mvnw (directly, via make, or via setup-spark-builder)
+# goes through setup-builder or setup-macos-builder, which end by calling this
+# action; ci.yml's preflight job calls it directly before the RAT check.
+#
+# Requires a checkout and a JDK on PATH. Runs from the repository root.
+
+runs:
+  using: "composite"
+  steps:
+    # Maven itself is stored outside the dependency repository. Keep its cache
+    # independent of pom.xml changes.
+    - name: Restore Maven distribution
+      id: maven-distribution
+      # Temporarily disabled on macOS to work around
+      # https://github.com/actions/runner-images/issues/13341; macOS still
+      # gets the retry below, just not the cache.
+      if: ${{ runner.os != 'macOS' }}
+      uses: actions/cache/restore@v5
+      with:
+        path: |
+          ~/.m2/wrapper/dists
+          /root/.m2/wrapper/dists
+        key: ${{ runner.os }}-${{ runner.arch }}-maven-wrapper-${{ hashFiles('.mvn/wrapper/maven-wrapper.properties') }}
+
+    # Retry only the wrapper download, never compilation or test execution.
+    # Delays use exponential backoff (10s, 20s, 40s) plus 0-4s of random jitter.
+    - name: Bootstrap Maven
+      shell: bash
+      run: |
+        for attempt in 1 2 3 4; do
+          if ./mvnw -B --version; then
+            break
+          fi
+          if [ "$attempt" -eq 4 ]; then
+            echo "::error::Maven bootstrap failed after $attempt attempts; nothing was built."
+            exit 1
+          fi
+          delay=$((10 * (1 << (attempt - 1)) + RANDOM % 5))
+          echo "::warning::Maven bootstrap attempt $attempt failed; retrying in ${delay}s."
+          sleep "$delay"
+        done
+
+    # Save a successful bootstrap even when the rest of the job fails.
+    - name: Save Maven distribution
+      if: ${{ runner.os != 'macOS' && steps.maven-distribution.outputs.cache-hit != 'true' }}
+      uses: actions/cache/save@v5
+      with:
+        path: |
+          ~/.m2/wrapper/dists
+          /root/.m2/wrapper/dists
+        key: ${{ steps.maven-distribution.outputs.cache-primary-key }}

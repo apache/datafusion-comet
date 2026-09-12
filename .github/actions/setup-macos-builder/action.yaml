@@ -78,3 +78,8 @@ runs:
         rustup toolchain install ${{inputs.rust-version}}
         rustup default ${{inputs.rust-version}}
         rustup component add rustfmt clippy
+
+    # Runs last so the JDK is on PATH. Retries the Maven distribution download
+    # and caches it; see .github/actions/bootstrap-maven/action.yaml.
+    - name: Bootstrap Maven
+      uses: ./.github/actions/bootstrap-maven
