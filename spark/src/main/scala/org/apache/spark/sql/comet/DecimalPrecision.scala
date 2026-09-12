@@ -40,6 +40,27 @@ import org.apache.spark.sql.types.DecimalType
  */
 object DecimalPrecision {
   def promote(expr: Expression): Expression = {
+    // `transformUp` walks the whole tree and calls `mapChildren` at every node, which allocates
+    // through `children.map` / `mapProductIterator` even when no case matches (the specialized
+    // `mapChildren` overrides do skip the node copy via `fastEquals`, so the cost is the traversal
+    // and its allocations, not a rebuild). The serde calls this once per expression it converts,
+    // so skip it when there is nothing to rewrite.
+    if (containsDecimalArithmetic(expr)) rewrite(expr) else expr
+  }
+
+  /**
+   * Whether [[promote]] could rewrite anything in this tree. Deliberately a superset of the rule:
+   * it ignores the operands, so any arithmetic node the rule handles that produces a decimal
+   * qualifies. Wrapping a child in `CheckOverflow` does not change that child's data type, so a
+   * tree without such a node cannot grow one part way through the rewrite.
+   */
+  private def containsDecimalArithmetic(expr: Expression): Boolean = expr.exists {
+    case e @ (_: Add | _: Subtract | _: Multiply | _: Divide | _: Remainder) =>
+      e.dataType.isInstanceOf[DecimalType]
+    case _ => false
+  }
+
+  private def rewrite(expr: Expression): Expression = {
     expr.transformUp {
       // Recursive exprToProto calls can re-promote every decimal binary operator below. Collapse
       // only equivalent wrappers so the shared promotion rule remains idempotent.
