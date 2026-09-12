@@ -136,9 +136,9 @@ class Native extends NativeBase {
    * @param file
    *   the file path to write to.
    * @param preferDictionaryRatio
-   *   the ratio of total values to distinct values in a string column that makes the writer to
-   *   prefer dictionary encoding. If it is larger than the specified ratio, dictionary encoding
-   *   will be used when writing columns of string type.
+   *   the ratio of total values to distinct values in a string or binary column that makes the
+   *   writer prefer dictionary encoding. If it is larger than the specified ratio, dictionary
+   *   encoding will be used when writing columns of either type.
    * @param batchSize
    *   the batch size on the native side to buffer outputs during the row to columnar conversion
    *   before writing them out to disk.

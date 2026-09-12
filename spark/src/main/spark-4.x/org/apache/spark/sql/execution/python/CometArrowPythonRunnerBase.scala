@@ -27,7 +27,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import scala.jdk.CollectionConverters._
 
 import org.apache.arrow.memory.{ArrowBuf, BufferAllocator}
-import org.apache.arrow.vector.{FieldVector, VectorSchemaRoot, VectorUnloader}
+import org.apache.arrow.vector.{BaseFixedWidthVector, BaseLargeVariableWidthVector, BaseVariableWidthVector, FieldVector, NullVector, VectorSchemaRoot, VectorUnloader}
 import org.apache.arrow.vector.complex.StructVector
 import org.apache.arrow.vector.ipc.{ArrowStreamReader, ArrowStreamWriter, WriteChannel}
 import org.apache.arrow.vector.ipc.message.{ArrowFieldNode, ArrowRecordBatch, MessageSerializer}
@@ -41,7 +41,7 @@ import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 
 import org.apache.comet.CometArrowAllocator
-import org.apache.comet.vector.{CometDecodedVector, CometVector}
+import org.apache.comet.vector.{CometDecodedVector, CometDictionaryVector, CometVector, CometVectorUtils}
 
 /**
  * Shared base for Comet's Arrow Python runners (Spark 4.0 / 4.1 / 4.2).
@@ -97,6 +97,10 @@ private[python] trait CometArrowPythonRunnerBase
    */
   protected def schema: StructType
 
+  /** Arrow input limits captured from the driver-side SQLConf. */
+  protected def arrowMaxRecordsPerBatch: Int
+  protected def arrowMaxBytesPerBatch: Long
+
   override val pythonExec: String =
     SQLConf.get.pysparkWorkerPythonExecutable.getOrElse(funcs.head.funcs.head.pythonExec)
 
@@ -122,6 +126,11 @@ private[python] trait CometArrowPythonRunnerBase
       private val allocator =
         CometArrowAllocator.newChildAllocator(s"stdout writer for $pythonExec", 0, Long.MaxValue)
       private var currentGroup: Iterator[ColumnarBatch] = _
+      // Upstream owns this batch. Even hasNext may close it and reuse its native buffers, so
+      // leave the upstream iterators untouched until all ranges have been serialized.
+      private var currentBatch: ColumnarBatch = _
+      private var currentColumns: Seq[CometDecodedVector] = Seq.empty
+      private var remainingRanges: Iterator[(Int, Int)] = Iterator.empty
       private var arrowWriter: ArrowStreamWriter = _
       private var writeRoot: VectorSchemaRoot = _
       private var streamFields: Seq[Field] = _
@@ -131,6 +140,12 @@ private[python] trait CometArrowPythonRunnerBase
       private lazy val inputStructType = schema.head.dataType.asInstanceOf[StructType]
 
       context.addTaskCompletionListener[Unit] { _ =>
+        // Slices and decoded vectors are scoped to each synchronous write. Drop borrowed source
+        // references on completion/cancellation; the upstream task listener owns their cleanup.
+        currentBatch = null
+        currentColumns = Seq.empty
+        remainingRanges = Iterator.empty
+        currentGroup = null
         if (writeRoot != null) {
           writeRoot.close()
         }
@@ -156,67 +171,98 @@ private[python] trait CometArrowPythonRunnerBase
         arrowWriter.start()
       }
 
+      /**
+       * Append one row-aligned Arrow slice to Spark's borrowed transport stream and return true,
+       * or finish the IPC stream and return false when all groups are exhausted. Spark can drain
+       * its direct buffer only between these calls; serializing every range in one call would
+       * accumulate the whole decoded source batch outside the Arrow allocator. Small slices may
+       * still share a transport buffer until Spark reaches its own buffering threshold.
+       *
+       * Keep the source batch borrowed across calls without probing either upstream iterator.
+       * Each call releases its temporary slices/decoded vectors even if serialization fails;
+       * failures propagate and abort the stream. Upstream retains ownership of source cleanup.
+       */
       override def writeNextInputToStream(dataOut: DataOutputStream): Boolean = {
-        while (currentGroup == null || !currentGroup.hasNext) {
-          if (!inputIterator.hasNext) {
-            if (arrowWriter == null) {
-              // No input batch was ever produced (e.g. an upstream filter removed every row).
-              // Still emit a valid, empty Arrow IPC stream so the Python worker's
-              // ArrowStreamReader reads a schema and then sees zero batches, instead of failing
-              // on an absent stream ("Invalid IPC stream: negative continuation token"). There is
-              // no sample batch, so derive the schema from the Spark input schema. The timezone is
-              // irrelevant here because no rows are exchanged.
-              val childFields = inputStructType.fields.toSeq.map(f =>
-                Utils.toArrowField(f.name, f.dataType, nullable = true, "UTC"))
-              startWriter(childFields, dataOut)
+        if (currentBatch == null) {
+          while (currentGroup == null || !currentGroup.hasNext) {
+            if (!inputIterator.hasNext) {
+              if (arrowWriter == null) {
+                // No input batch was ever produced (e.g. an upstream filter removed every row).
+                // Still emit a valid, empty Arrow IPC stream so the Python worker's
+                // ArrowStreamReader reads a schema and then sees zero batches, instead of failing
+                // on an absent stream ("Invalid IPC stream: negative continuation token"). There
+                // is no sample batch, so derive the schema from the Spark input schema. The
+                // timezone is irrelevant here because no rows are exchanged.
+                val childFields = inputStructType.fields.toSeq.map(f =>
+                  Utils.toArrowField(f.name, f.dataType, nullable = true, "UTC"))
+                startWriter(childFields, dataOut)
+              }
+              arrowWriter.end()
+              return false
             }
-            arrowWriter.end()
-            return false
+            currentGroup = inputIterator.next()
           }
-          currentGroup = inputIterator.next()
+
+          currentBatch = currentGroup.next()
+          currentColumns = (0 until currentBatch.numCols()).map { i =>
+            currentBatch.column(i).asInstanceOf[CometDecodedVector]
+          }
+          remainingRanges = CometArrowPythonRunnerBase
+            .inputBatchRanges(
+              currentColumns,
+              currentBatch.numRows(),
+              arrowMaxRecordsPerBatch,
+              arrowMaxBytesPerBatch)
+            .iterator
         }
 
-        val cometBatch = currentGroup.next()
         val startData = dataOut.size()
-        val sourceVectors = (0 until cometBatch.numCols()).map { i =>
-          cometBatch
-            .column(i)
-            .asInstanceOf[CometDecodedVector]
-            .getValueVector
-            .asInstanceOf[FieldVector]
-        }
-        val batchFields = sourceVectors.map(_.getField)
+        val (offset, length) = remainingRanges.next()
+        CometArrowPythonRunnerBase.withInputBatchRange(
+          currentColumns,
+          currentBatch.numRows(),
+          offset,
+          length,
+          allocator) { (sourceVectors, numRows) =>
+          val batchFields = sourceVectors.map(_.getField)
 
-        if (arrowWriter == null) {
-          // Build the schema-only struct root once from the first batch's child fields.
-          // mapInArrow/mapInPandas exchange the columns under a single non-nullable struct.
-          // Comet's FFI-imported vectors leave the Arrow Field name null, so restore the real
-          // column names from the input schema (the worker reads columns by name, and shaded
-          // Arrow rejects a null field name). Keep the field types and child structure as-is so
-          // the advertised schema matches the source buffers. Keeping the type as-is also means
-          // a TimestampType reaches the worker with Comet's UTC time zone
-          // rather than the session zone vanilla Spark would label it with; this is a documented
-          // limitation (see pyarrow-udfs.md), not a value difference, since the stored instant is
-          // identical.
-          val childNames = inputStructType.fieldNames
-          streamFields = batchFields.zipWithIndex.map { case (field, i) =>
-            renamed(field, childNames(i), forceNullable = true)
+          if (arrowWriter == null) {
+            // Build the schema-only struct root once from the first batch's child fields.
+            // mapInArrow/mapInPandas exchange the columns under a single non-nullable struct.
+            // Comet's FFI-imported vectors leave the Arrow Field name null, so restore the real
+            // column names from the input schema (the worker reads columns by name, and shaded
+            // Arrow rejects a null field name). Keep the field types and child structure as-is
+            // so the advertised schema matches the source buffers. Keeping the type as-is also
+            // means a TimestampType reaches the worker with Comet's UTC time zone rather than
+            // the session zone vanilla Spark would label it with; this is a documented
+            // limitation (see pyarrow-udfs.md), not a value difference, since the stored instant
+            // is identical.
+            val childNames = inputStructType.fieldNames
+            streamFields = batchFields.zipWithIndex.map { case (field, i) =>
+              renamed(field, childNames(i), forceNullable = true)
+            }
+            startWriter(streamFields, dataOut)
           }
-          startWriter(streamFields, dataOut)
+
+          // Union branches may differ in names, nullability, or descriptive metadata. Only
+          // differences that change how the advertised schema interprets the buffers are
+          // invalid.
+          require(
+            CometArrowPythonRunnerBase.hasCompatibleSchema(streamFields, batchFields),
+            s"Arrow input schema changed between batches: expected $streamFields, " +
+              s"got $batchFields")
+
+          CometArrowPythonRunnerBase.serializeBatch(
+            new WriteChannel(Channels.newChannel(dataOut)),
+            sourceVectors,
+            numRows,
+            allocator)
         }
 
-        // Union branches may differ in names, nullability, or descriptive metadata. Only
-        // differences that change how the advertised schema interprets the buffers are invalid.
-        require(
-          CometArrowPythonRunnerBase.hasCompatibleSchema(streamFields, batchFields),
-          s"Arrow input schema changed between batches: expected $streamFields, got $batchFields")
-
-        CometArrowPythonRunnerBase.serializeBatch(
-          new WriteChannel(Channels.newChannel(dataOut)),
-          sourceVectors,
-          cometBatch.numRows(),
-          allocator)
-
+        if (!remainingRanges.hasNext) {
+          currentBatch = null
+          currentColumns = Seq.empty
+        }
         pythonMetrics("pythonDataSent") += dataOut.size() - startData
         true
       }
@@ -337,6 +383,307 @@ private[python] trait CometArrowPythonRunnerBase
 }
 
 private[python] object CometArrowPythonRunnerBase {
+
+  // A regular Arrow variable-width data buffer uses signed 32-bit offsets. The Spark setting is
+  // already restricted to this range, but cap it here as a final guard for direct test callers.
+  private val MaxDecodedBatchBytes = Int.MaxValue.toLong
+
+  /** Borrow dictionary values for sizing; lookup errors identify the invalid source column. */
+  private def dictionaryVector(column: CometDictionaryVector): FieldVector =
+    column.getDictionary.getVector
+
+  /**
+   * Return the bytes needed for a decoded vector before its first row: the initial offset for
+   * variable-width values, or zero for other layouts. `values` is a borrowed dictionary vector;
+   * this helper reads its layout without allocating, mutating, or retaining any Arrow buffers.
+   */
+  private def initialDecodedBytes(values: FieldVector): Long =
+    values match {
+      case _: BaseVariableWidthVector => BaseVariableWidthVector.OFFSET_WIDTH
+      case _: BaseLargeVariableWidthVector => BaseLargeVariableWidthVector.OFFSET_WIDTH
+      case _ => 0L
+    }
+
+  /**
+   * Return the bitmap bytes added at decoded row positions 0, 8, 16, ... for borrowed `values`.
+   * Ordinary vectors add a validity byte; bit-packed fixed-width vectors also add a data byte.
+   * Null vectors need no buffers, and the conservative estimate for other layouts already
+   * includes their buffers. No buffers are allocated, retained, or changed.
+   */
+  private def decodedBitmapBytes(values: FieldVector): Long =
+    values match {
+      case _: BaseVariableWidthVector | _: BaseLargeVariableWidthVector => 1L
+      case vector: BaseFixedWidthVector => if (vector.getTypeWidth == 0) 2L else 1L
+      case _ => 0L
+    }
+
+  /**
+   * Return a conservative maximum decoded row size in bytes by scanning dictionary entries,
+   * without reading the input's row indices. `values` remains borrowed and unchanged. Each row is
+   * charged a full bitmap byte (two for bit-packed data), so multiplying by the row count
+   * overestimates packed bitmaps. Arrow value lengths and buffer sizes are signed 32-bit values;
+   * widening before adding offsets and validity keeps every single-column estimate in `Long`.
+   */
+  private def maximumDecodedValueBytes(values: FieldVector): Long = {
+    values match {
+      case vector: BaseVariableWidthVector =>
+        var maximum = 0L
+        var index = 0
+        while (index < vector.getValueCount) {
+          maximum = math.max(maximum, vector.getValueLength(index).toLong)
+          index += 1
+        }
+        maximum + BaseVariableWidthVector.OFFSET_WIDTH + 1L
+      case vector: BaseLargeVariableWidthVector =>
+        var maximum = 0L
+        var index = 0
+        while (index < vector.getValueCount) {
+          maximum = math.max(maximum, vector.getValueLength(index).toLong)
+          index += 1
+        }
+        maximum + BaseLargeVariableWidthVector.OFFSET_WIDTH + 1L
+      case vector: BaseFixedWidthVector =>
+        vector.getTypeWidth.toLong + decodedBitmapBytes(vector)
+      case _: NullVector => 0L
+      case vector =>
+        // Comet's JVM shuffle dictionary-encodes strings and binary values. For an unexpected
+        // layout, charge the complete dictionary for each selected value to favor small batches.
+        math.max(1L, vector.getBufferSize.toLong)
+    }
+  }
+
+  /**
+   * Return decoded bytes for source `row`, including a full bitmap-byte increment. Both `column`
+   * and its dictionary `values` are borrowed; `row` must address a valid input row.
+   * Variable-width values read its non-null index and selected length once, without copying
+   * payload. Callers subtract [[decodedBitmapBytes]] when the destination row shares an existing
+   * bitmap byte. Invalid indices propagate Arrow's lookup failure; no buffers are allocated or
+   * changed.
+   */
+  private def decodedValueBytes(
+      column: CometDictionaryVector,
+      values: FieldVector,
+      row: Int): Long = {
+    values match {
+      case vector: BaseVariableWidthVector =>
+        val valueBytes =
+          if (column.isNullAt(row)) 0L
+          else vector.getValueLength(column.indices.getInt(row)).toLong
+        valueBytes + BaseVariableWidthVector.OFFSET_WIDTH + 1L
+      case vector: BaseLargeVariableWidthVector =>
+        val valueBytes =
+          if (column.isNullAt(row)) 0L
+          else vector.getValueLength(column.indices.getInt(row)).toLong
+        valueBytes + BaseLargeVariableWidthVector.OFFSET_WIDTH + 1L
+      case vector: BaseFixedWidthVector =>
+        vector.getTypeWidth.toLong + decodedBitmapBytes(vector)
+      case _: NullVector => 0L
+      case vector => math.max(1L, vector.getBufferSize.toLong)
+    }
+  }
+
+  /**
+   * Return contiguous `(offset, length)` row ranges, enforcing the record limit for every input
+   * and bounding temporary dictionary decoding before allocation. `columns` must expose at least
+   * `numRows` rows with valid dictionary indices; columns and dictionaries are borrowed
+   * unchanged. Non-positive limits are disabled; the signed 32-bit Arrow allocation ceiling still
+   * applies. Negative row counts fail immediately, and invalid dictionaries propagate lookup
+   * failures.
+   *
+   * Only decoded dictionary buffers count toward the byte limit; plain vectors are already
+   * allocated. The row crossing Spark's configured soft byte limit remains in its current range,
+   * whereas a row crossing Arrow's hard limit starts the next range. One oversized row is allowed
+   * so planning always makes progress. The empty input returns `(0, 0)`. No Arrow buffers are
+   * allocated or retained, and all columns share each returned range to preserve row alignment.
+   */
+  private[python] def inputBatchRanges(
+      columns: Seq[CometDecodedVector],
+      numRows: Int,
+      maxRecordsPerBatch: Int,
+      maxBytesPerBatch: Long): Seq[(Int, Int)] = {
+    require(numRows >= 0, s"Input batch row count must be non-negative: $numRows")
+    if (numRows == 0) {
+      return Seq(0 -> 0)
+    }
+
+    val recordLimit =
+      if (maxRecordsPerBatch > 0) maxRecordsPerBatch else Int.MaxValue
+    val byteLimit =
+      if (maxBytesPerBatch > 0) math.min(maxBytesPerBatch, MaxDecodedBatchBytes)
+      else MaxDecodedBatchBytes
+    val dictionaryColumns = columns.collect { case column: CometDictionaryVector =>
+      column
+    }.toArray
+    val ranges = Seq.newBuilder[(Int, Int)]
+    if (dictionaryColumns.isEmpty) {
+      var start = 0
+      while (start < numRows) {
+        val length = math.min(recordLimit, numRows - start)
+        ranges += start -> length
+        start += length
+      }
+      return ranges.result()
+    }
+
+    // Parallel reference arrays avoid tuple creation and boxed fold accumulators in the row loop.
+    val dictionaryValues = new Array[FieldVector](dictionaryColumns.length)
+    var initialBytes = 0L
+    var bitmapBytes = 0L
+    var columnIndex = 0
+    while (columnIndex < dictionaryColumns.length) {
+      val values = dictionaryVector(dictionaryColumns(columnIndex))
+      dictionaryValues(columnIndex) = values
+      initialBytes += initialDecodedBytes(values)
+      bitmapBytes += decodedBitmapBytes(values)
+      columnIndex += 1
+    }
+
+    if (numRows <= recordLimit && initialBytes <= byteLimit) {
+      // The dictionary maximum is independent of its indices. If even that upper bound fits,
+      // send the whole batch without scanning rows; division avoids multiplying large estimates.
+      val maximumRowBytes = (byteLimit - initialBytes) / numRows
+      var rowUpperBound = 0L
+      columnIndex = 0
+      while (columnIndex < dictionaryValues.length && rowUpperBound <= maximumRowBytes) {
+        rowUpperBound += maximumDecodedValueBytes(dictionaryValues(columnIndex))
+        columnIndex += 1
+      }
+      if (rowUpperBound <= maximumRowBytes) {
+        return Seq(0 -> numRows)
+      }
+    }
+
+    var start = 0
+    var row = 0
+    var decodedBytes = initialBytes
+    while (row < numRows) {
+      val rowsInBatch = row - start
+      var rowBytes = 0L
+      columnIndex = 0
+      while (columnIndex < dictionaryColumns.length) {
+        rowBytes += decodedValueBytes(
+          dictionaryColumns(columnIndex),
+          dictionaryValues(columnIndex),
+          row)
+        columnIndex += 1
+      }
+      // Keep the selected value lengths above when a split moves this row to position zero.
+      // Only bitmap packing depends on the destination position, so adjust that cost in place.
+      val sharesBitmapByte = (rowsInBatch & 7) != 0
+      if (sharesBitmapByte) {
+        rowBytes -= bitmapBytes
+      }
+      // Spark admits the row crossing its soft byte limit. The preventive hard check remains
+      // separate: two individually valid, large rows must never form one overflowing decode.
+      // For example, at maxBytesPerBatch = Int.MaxValue, a second 1.1 GiB value passes the
+      // soft check but must start a new range to keep regular Arrow offsets representable.
+      val exceedsArrowLimit = rowBytes > MaxDecodedBatchBytes - decodedBytes
+      if (rowsInBatch > 0 &&
+        (rowsInBatch >= recordLimit || decodedBytes >= byteLimit || exceedsArrowLimit)) {
+        ranges += start -> rowsInBatch
+        start = row
+        decodedBytes = initialBytes
+        if (sharesBitmapByte) {
+          rowBytes += bitmapBytes
+        }
+      }
+      // Each column contributes at most an Int-sized value plus offsets/bitmap overhead. Even
+      // an Int-sized column count fits in Long; the hard check prevents adding two oversized rows.
+      decodedBytes += rowBytes
+      row += 1
+    }
+    ranges += start -> (numRows - start)
+    ranges.result()
+  }
+
+  /**
+   * Materialize and visit every row-aligned range synchronously. The caller owns `columns` and
+   * `allocator`; each callback borrows its vectors only until it returns. Slicing, decoding and
+   * callback failures propagate after temporary cleanup. This helper does not yield between
+   * ranges; the Python writer must use [[withInputBatchRange]] once per transport write call.
+   */
+  private[python] def foreachInputBatch(
+      columns: Seq[CometDecodedVector],
+      numRows: Int,
+      maxRecordsPerBatch: Int,
+      maxBytesPerBatch: Long,
+      allocator: BufferAllocator)(body: (Seq[FieldVector], Int) => Unit): Unit = {
+    inputBatchRanges(columns, numRows, maxRecordsPerBatch, maxBytesPerBatch).foreach {
+      case (offset, length) =>
+        withInputBatchRange(columns, numRows, offset, length, allocator)(body)
+    }
+  }
+
+  /**
+   * Supply logical vectors for one `(offset, length)` range previously returned by
+   * [[inputBatchRanges]], with `numRows` equal to the source batch's row count. `columns` and
+   * their dictionaries remain borrowed and must stay alive throughout the call. Whole-batch
+   * ranges avoid slicing; other ranges create row-aligned aliases. The callback must neither
+   * retain nor close its vectors. Close temporary slices and decoded vectors before returning,
+   * including on failure, without closing or changing the source. Errors propagate to the caller.
+   */
+  private[python] def withInputBatchRange(
+      columns: Seq[CometDecodedVector],
+      numRows: Int,
+      offset: Int,
+      length: Int,
+      allocator: BufferAllocator)(body: (Seq[FieldVector], Int) => Unit): Unit = {
+    if (offset == 0 && length == numRows) {
+      withMaterializedInputVectors(columns, allocator)(body(_, length))
+    } else {
+      val slices = new ArrayList[CometDecodedVector]()
+      try {
+        columns.foreach { column =>
+          slices.add(column.slice(offset, length).asInstanceOf[CometDecodedVector])
+        }
+        withMaterializedInputVectors(slices.asScala.toSeq, allocator)(body(_, length))
+      } finally {
+        slices.asScala.reverseIterator.foreach(_.close())
+      }
+    }
+  }
+
+  /**
+   * Supply logical Arrow vectors to the serializer for the duration of the body.
+   *
+   * Plain Comet vectors already expose their logical values and remain borrowed.
+   * Dictionary-backed shuffle columns expose only their integer indices through getValueVector,
+   * so materialize those columns first. The temporary decoded vectors own their buffers and are
+   * closed after the synchronous write, including schema and serialization failures. `columns`
+   * and `allocator` must remain alive for the call; `body` must not retain or close its vectors.
+   * Return `body`'s result without changing source vectors. Reject nested dictionary fields with
+   * a named path before allocating; lookup, decode and body failures propagate after temporary
+   * cleanup, with cleanup failures suppressed onto the original error.
+   */
+  private[python] def withMaterializedInputVectors[T](
+      columns: Seq[CometDecodedVector],
+      allocator: BufferAllocator)(body: Seq[FieldVector] => T): T = {
+    columns.zipWithIndex.foreach { case (column, index) =>
+      val field = column match {
+        case dictionary: CometDictionaryVector => dictionaryVector(dictionary).getField
+        case _ => column.getValueVector.getField
+      }
+      requirePlainChildren(field, Option(field.getName).getOrElse(s"_$index"))
+    }
+    CometVectorUtils.withDecodedVectors(columns, allocator)(body)
+  }
+
+  /**
+   * Inspect borrowed logical field metadata without touching buffers. Reject an encoded
+   * descendant with its dotted column path before Arrow creates a writer with no dictionary
+   * provider. Current JVM shuffle encodes only top-level strings/binary; this diagnoses future
+   * nested FFI inputs. Null FFI field names use positional placeholders. No fields or source
+   * vectors are mutated.
+   */
+  private def requirePlainChildren(field: Field, path: String): Unit = {
+    field.getChildren.asScala.zipWithIndex.foreach { case (child, index) =>
+      val childPath = s"$path.${Option(child.getName).getOrElse(s"_$index")}"
+      require(
+        child.getDictionary == null,
+        s"Comet Arrow Python input does not support nested dictionary column '$childPath'")
+      requirePlainChildren(child, childPath)
+    }
+  }
 
   // Extensions can change interpretation even when their underlying storage types match.
   private val extensionMetadataKeys = Seq(

@@ -20,6 +20,7 @@
 package org.apache.comet.vector;
 
 import org.apache.arrow.vector.IntVector;
+import org.apache.arrow.vector.dictionary.Dictionary;
 import org.apache.arrow.vector.dictionary.DictionaryProvider;
 import org.apache.arrow.vector.util.TransferPair;
 import org.apache.parquet.Preconditions;
@@ -67,6 +68,28 @@ public class CometDictionaryVector extends CometDecodedVector {
   @Override
   public DictionaryProvider getDictionaryProvider() {
     return this.provider;
+  }
+
+  /**
+   * Return the borrowed Arrow dictionary referenced by this column's indices.
+   *
+   * <p>The caller must keep this column alive and must not close or mutate the returned dictionary.
+   * This method neither allocates buffers nor transfers ownership. Missing encoding metadata or a
+   * missing provider entry is an invalid column and raises {@link IllegalStateException}, naming
+   * the column instead of failing later inside Arrow serialization.
+   */
+  public Dictionary getDictionary() {
+    String name = getValueVector().getName();
+    if (getValueVector().getField().getDictionary() == null || provider == null) {
+      throw new IllegalStateException(
+          "Missing dictionary metadata or provider for column '" + name + "'");
+    }
+    long id = getValueVector().getField().getDictionary().getId();
+    Dictionary dictionary = provider.lookup(id);
+    if (dictionary == null) {
+      throw new IllegalStateException("Missing dictionary " + id + " for column '" + name + "'");
+    }
+    return dictionary;
   }
 
   @Override

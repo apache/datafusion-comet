@@ -43,5 +43,7 @@ trait ShimCometMapInBatch extends Spark4xMapInBatchSupport {
       schema,
       runnerInputs.pythonRunnerConf,
       pythonMetrics,
-      runnerInputs.jobArtifactUUID).compute(batchIter, partitionId, context)
+      runnerInputs.jobArtifactUUID,
+      runnerInputs.arrowMaxRecordsPerBatch,
+      runnerInputs.arrowMaxBytesPerBatch).compute(batchIter, partitionId, context)
 }
