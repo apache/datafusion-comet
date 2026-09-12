@@ -536,19 +536,8 @@ fn throw_exception(env: &mut Env, error: &CometError, backtrace: Option<String>)
                     // raising INVALID_REGEXP_REPLACE). Re-throw the original throwable so callers
                     // see the exact Spark exception type rather than a wrapped CometNativeException.
                     env.throw(throwable)
-                } else if let Some(spark_error_with_ctx) = e.downcast_ref::<SparkErrorWithContext>()
-                {
-                    let json_message = spark_error_with_ctx.to_json();
-                    env.throw_new(
-                        jni::jni_str!("org/apache/comet/exceptions/CometQueryExecutionException"),
-                        JNIString::new(json_message),
-                    )
-                } else if let Some(spark_error) = e.downcast_ref::<SparkError>() {
-                    let json_message = spark_error.to_json();
-                    env.throw_new(
-                        jni::jni_str!("org/apache/comet/exceptions/CometQueryExecutionException"),
-                        JNIString::new(json_message),
-                    )
+                } else if let Some(json_message) = spark_error_json_in_chain(df_error) {
+                    throw_spark_error_json(env, json_message)
                 } else if let Some(spark_error) = try_classify_file_read_error(df_error) {
                     throw_spark_error_as_json(env, &spark_error)
                 } else {
@@ -573,7 +562,9 @@ fn throw_exception(env: &mut Env, error: &CometError, backtrace: Option<String>)
             // FAILED_READ_FILE / FileNotFound via the structured SparkError channel. Anything else
             // falls back to generic handling.
             CometError::DataFusion { msg: _, source } => {
-                if let Some(spark_error) = try_classify_file_read_error(source) {
+                if let Some(json_message) = spark_error_json_in_chain(source) {
+                    throw_spark_error_json(env, json_message)
+                } else if let Some(spark_error) = try_classify_file_read_error(source) {
                     throw_spark_error_as_json(env, &spark_error)
                 } else {
                     throw_generic_exception(env, error, backtrace)
@@ -597,6 +588,24 @@ fn typed_jvm_exception(error: &(dyn std::error::Error + 'static)) -> Option<Exce
             error.downcast_ref::<CometError>()
         {
             return Some(typed.to_exception());
+        }
+        cause = error.source();
+    }
+    None
+}
+
+/// The JSON payload of the first typed `SparkError` or `SparkErrorWithContext` in `error`'s cause
+/// chain. A `SparkError` raised inside the parquet reader, as the reader factory's field id check
+/// does, arrives as `DataFusionError::ParquetError(ParquetError::External(..))` and must keep its
+/// own JVM exception class rather than being relabelled a file-read failure.
+fn spark_error_json_in_chain(error: &(dyn std::error::Error + 'static)) -> Option<String> {
+    let mut cause = Some(error);
+    while let Some(error) = cause {
+        if let Some(spark_error) = error.downcast_ref::<SparkErrorWithContext>() {
+            return Some(spark_error.to_json());
+        }
+        if let Some(spark_error) = error.downcast_ref::<SparkError>() {
+            return Some(spark_error.to_json());
         }
         cause = error.source();
     }
@@ -636,10 +645,12 @@ fn throw_generic_exception(
 
 /// Throws a CometQueryExecutionException with JSON-encoded SparkError
 fn throw_spark_error_as_json(env: &mut Env, spark_error: &SparkError) -> jni::errors::Result<()> {
-    // Serialize error to JSON
-    let json_message = spark_error.to_json();
+    throw_spark_error_json(env, spark_error.to_json())
+}
 
-    // Throw CometQueryExecutionException with JSON message
+/// Throws a CometQueryExecutionException carrying `json_message`, the JSON form of a
+/// `SparkError` or `SparkErrorWithContext` that the JVM side decodes back into a Spark exception.
+fn throw_spark_error_json(env: &mut Env, json_message: String) -> jni::errors::Result<()> {
     env.throw_new(
         jni::jni_str!("org/apache/comet/exceptions/CometQueryExecutionException"),
         JNIString::new(json_message),
@@ -1368,6 +1379,75 @@ mod tests {
             SparkError::CannotReadFile { file_path, .. } => file_path,
             other => panic!("expected CannotReadFile, got {other:?}"),
         }
+    }
+
+    /// A `SparkError` the reader factory raises from its metadata fetch is wrapped by the parquet
+    /// reader and DataFusion's opener, yet must surface with its own Spark error class.
+    #[test]
+    fn spark_error_inside_parquet_error_keeps_its_class() {
+        let spark_error = SparkError::DuplicateFieldByFieldId {
+            required_id: 1,
+            matched_fields: "x, y".to_string(),
+        };
+        let expected = spark_error.to_json();
+        let e = DataFusionError::Context(
+            "opening file".to_string(),
+            Box::new(DataFusionError::ParquetError(Box::new(
+                parquet::errors::ParquetError::External(Box::new(spark_error)),
+            ))),
+        );
+        assert_eq!(spark_error_json_in_chain(&e), Some(expected));
+    }
+
+    #[test]
+    fn plain_parquet_error_has_no_spark_error_in_chain() {
+        let e = DataFusionError::ParquetError(Box::new(parquet::errors::ParquetError::General(
+            "corrupt footer".to_string(),
+        )));
+        assert_eq!(spark_error_json_in_chain(&e), None);
+    }
+
+    /// A `SparkError` two `External` hops down, with a `Context` between them, the way an
+    /// operator that boxes a wrapped DataFusion error re-raises it.
+    fn spark_error_behind_external_context() -> (SparkError, DataFusionError) {
+        let spark_error = SparkError::DuplicateFieldByFieldId {
+            required_id: 1,
+            matched_fields: "x, y".to_string(),
+        };
+        let wrapped = DataFusionError::External(Box::new(DataFusionError::Context(
+            "opening file".to_string(),
+            Box::new(DataFusionError::External(Box::new(spark_error.clone()))),
+        )));
+        (spark_error, wrapped)
+    }
+
+    #[test]
+    fn spark_error_behind_external_context_is_found_in_chain() {
+        let (spark_error, wrapped) = spark_error_behind_external_context();
+        assert_eq!(
+            spark_error_json_in_chain(&wrapped),
+            Some(spark_error.to_json())
+        );
+    }
+
+    /// The `External` arm of `throw_exception` must walk the whole cause chain, not just the
+    /// outermost boxed error, so the Spark error class survives the extra wrapper.
+    #[test]
+    #[cfg_attr(miri, ignore)] // miri cannot create a JVM.
+    fn spark_error_behind_external_context_keeps_its_class_across_jni() {
+        let (spark_error, wrapped) = spark_error_behind_external_context();
+        let expected = spark_error.to_json();
+        jvm()
+            .attach_current_thread(|env| -> jni::errors::Result<()> {
+                unwrap_or_throw_default::<()>(env, Err(CometError::from(wrapped)));
+                assert_pending_java_exception_detailed(
+                    env,
+                    Some("org/apache/comet/exceptions/CometQueryExecutionException"),
+                    Some(&expected),
+                );
+                Ok(())
+            })
+            .unwrap();
     }
 
     #[test]
