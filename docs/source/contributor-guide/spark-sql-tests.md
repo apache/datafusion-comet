@@ -168,9 +168,22 @@ git diff v3.5.6 > ../datafusion-comet/dev/diffs/3.5.6.diff
 
 ## Running Tests in CI
 
-The easiest way to run the tests is to create a PR against Comet and let CI run the tests. When working with a
-new Spark version, the `spark_sql_test.yaml` and `spark_sql_test_ansi.yaml` files will need updating with the
-new version.
+The easiest way to run the tests is to open a pull request against Comet and let CI run them. Spark
+4.1 runs on every pull request, and Spark 3.5 and 4.0 run in the merge queue or earlier with the
+`run-spark-3.5-tests` / `run-spark-4.0-tests` labels.
+
+Spark 3.4 is deprecated and is not run by the merge queue. It runs only when a pull request carries
+the `run-spark-3.4-tests` label, or when `ci.yml` is dispatched manually from the Actions page.
+Apply the label if your change touches `spark/src/main/spark-3.4/`, `dev/diffs/3.4.3.diff`, or
+shared code whose Spark 3.4 behavior you are unsure of:
+
+```shell
+gh pr edit <number> --add-label run-spark-3.4-tests
+```
+
+See [Continuous Integration](ci.md) for how the tiers and labels work. When bringing up a new Spark
+version, the version needs its own job in `.github/workflows/ci.yml` plus entries in `FILTERS` and
+`POLICY` in `dev/ci/compute-changes.py`.
 
 ## Adding support for a new Spark major or minor version
 
