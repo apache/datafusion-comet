@@ -614,7 +614,7 @@ object CometArrayReverse extends CometExpressionSerde[Reverse] with ArraysBase {
 
 }
 
-object CometElementAt extends CometExpressionSerde[ElementAt] {
+object CometElementAt extends CometExpressionSerde[ElementAt] with CodegenDispatchFallback {
 
   /**
    * Under ANSI, neither native shape reproduces Spark for a nullable nondeterministic operand.
@@ -623,13 +623,21 @@ object CometElementAt extends CometExpressionSerde[ElementAt] {
    * whole batch first, so a throwing index fires on rows whose operand is NULL. `convert`
    * reproduces the short-circuit with a `CASE WHEN <operand> IS NOT NULL` guard, but that guard
    * serializes the operand twice, which a stateful operand cannot survive: the two copies advance
-   * its state independently and silently move values and NULLs. Declining leaves the lookup on
-   * Spark. Lifting this needs a native lookup that evaluates the operand once and masks the index
-   * evaluation with the result, at which point the guard becomes unnecessary for every operand.
+   * its state independently and silently move values and NULLs. Declining the native route sends
+   * the whole expression through Spark's codegen dispatcher, preserving single evaluation and
+   * NULL short-circuiting. A native implementation would need to evaluate the operand once and
+   * mask the index evaluation with the result, at which point the guard becomes unnecessary for
+   * every operand.
    */
   private val eagerIndexReason: String =
     "ANSI mode with a nullable nondeterministic array or map operand: a native lookup evaluates " +
       "the index over the whole batch, where Spark skips it on the rows whose operand is NULL"
+
+  private val inputTypeReason = "Input must be an array or map"
+  private val argumentsReason = "unsupported arguments for ElementAt"
+
+  override def getUnsupportedReasons(): Seq[String] =
+    MapKeySupport.unsupportedReasons ++ Seq(eagerIndexReason, inputTypeReason, argumentsReason)
 
   /** True when `convert` has to wrap the lookup to reproduce Spark's NULL short-circuit. */
   private def needsNullGuard(expr: ElementAt): Boolean =
@@ -642,7 +650,7 @@ object CometElementAt extends CometExpressionSerde[ElementAt] {
       expr.left.dataType match {
         case _: ArrayType => Compatible()
         case MapType(keyType, _, _) => MapKeySupport.keySupport(keyType)
-        case _ => Unsupported(Some("Input must be an array or map"))
+        case _ => Unsupported(Some(inputTypeReason))
       }
     }
   }
@@ -678,7 +686,7 @@ object CometElementAt extends CometExpressionSerde[ElementAt] {
               .setListExtract(arrayExtractBuilder)
               .build())
         } else {
-          withFallbackReason(expr, "unsupported arguments for ElementAt")
+          withFallbackReason(expr, argumentsReason)
           None
         }
     }
