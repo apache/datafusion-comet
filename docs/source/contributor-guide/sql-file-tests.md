@@ -125,6 +125,16 @@ Skips the file when running on a Spark version older than the specified version.
 -- MinSparkVersion: 3.5
 ```
 
+#### `MaxSparkVersion`
+
+Skips the file when running on a Spark version newer than the specified version (inclusive of
+that version). Use it together with `MinSparkVersion` in a paired fixture when a behavior
+changed between versions and each range needs its own expected output or error class.
+
+```sql
+-- MaxSparkVersion: 3.5
+```
+
 ### Statements
 
 A `statement` block executes DDL or DML and does not check results. Use this for `CREATE TABLE`
