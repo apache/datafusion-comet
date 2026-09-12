@@ -197,19 +197,28 @@ object FuzzDataGenerator {
         val k = generateColumn(r, keyType, numRows, mapOptions)
         val v = generateColumn(r, valueType, numRows, mapOptions)
         k.zip(v).map(x => Map(x._1 -> x._2))
+      // A cast to `Long` here would unbox a null element to 0 instead of throwing, so match on
+      // the element.
       case DataTypes.BooleanType =>
-        generateColumn(r, DataTypes.LongType, numRows, options)
-          .map(_.asInstanceOf[Long].toShort)
-          .map(s => s % 2 == 0)
+        generateColumn(r, DataTypes.LongType, numRows, options).map {
+          case x: Long => x.toShort % 2 == 0
+          case null => null
+        }
       case DataTypes.ByteType =>
-        generateColumn(r, DataTypes.LongType, numRows, options)
-          .map(_.asInstanceOf[Long].toByte)
+        generateColumn(r, DataTypes.LongType, numRows, options).map {
+          case x: Long => x.toByte
+          case null => null
+        }
       case DataTypes.ShortType =>
-        generateColumn(r, DataTypes.LongType, numRows, options)
-          .map(_.asInstanceOf[Long].toShort)
+        generateColumn(r, DataTypes.LongType, numRows, options).map {
+          case x: Long => x.toShort
+          case null => null
+        }
       case DataTypes.IntegerType =>
-        generateColumn(r, DataTypes.LongType, numRows, options)
-          .map(_.asInstanceOf[Long].toInt)
+        generateColumn(r, DataTypes.LongType, numRows, options).map {
+          case x: Long => x.toInt
+          case null => null
+        }
       case DataTypes.LongType =>
         Range(0, numRows).map(_ => {
           r.nextInt(50) match {

@@ -31,8 +31,8 @@ use crate::{
     EvalMode, SparkArrayPositionFunc, SparkArraySlice, SparkArraysOverlap, SparkContains,
     SparkDateDiff, SparkDateFromUnixDate, SparkDateTrunc, SparkFlatten, SparkIcebergBucket,
     SparkIcebergTemporalTransform, SparkIcebergTruncate, SparkMakeDate, SparkMakeInterval,
-    SparkMakeTime, SparkMapFromArrays, SparkMapFromEntries, SparkNextDay, SparkSecondsToTimestamp,
-    SparkSizeFunc, SparkStrToMap,
+    SparkMakeTime, SparkMapExtract, SparkMapFromArrays, SparkMapFromEntries, SparkNextDay,
+    SparkSecondsToTimestamp, SparkSizeFunc, SparkStrToMap,
 };
 use arrow::datatypes::DataType;
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
@@ -322,6 +322,10 @@ fn all_scalar_functions() -> Vec<Arc<ScalarUDF>> {
         )),
         Arc::new(ScalarUDF::new_from_impl(SparkMakeDate::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkMakeTime::default())),
+        // Overrides datafusion-functions-nested' `map_extract` with a vectorized lookup that
+        // returns the value itself rather than a one-element list (#5795). It carries the same
+        // `element_at` alias so both registry entries the override replaces point here.
+        Arc::new(ScalarUDF::new_from_impl(SparkMapExtract::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkMapFromArrays::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkMapFromEntries::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkNextDay::default())),

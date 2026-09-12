@@ -598,6 +598,182 @@ class CometIcebergNativeSuite
     }
   }
 
+  // V3 tables store positional deletes as deletion vectors (Puffin blobs) instead of position
+  // delete files. This verifies Comet reads a V3 table's deletion vectors natively and applies
+  // them, matching Spark.
+  test("MOR V3 table with DELETION VECTORS - verify deletes are applied") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    // Format version 3 (and its deletion vectors) requires Iceberg 1.11+. Older Iceberg
+    // rejects `format-version=3` at table creation.
+    assume(icebergVersionAtLeast(1, 11), "Iceberg V3 tables require Iceberg 1.11+")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        spark.sql("""
+          CREATE TABLE test_cat.db.dv_delete_test (
+            id INT,
+            name STRING,
+            value DOUBLE
+          ) USING iceberg
+          TBLPROPERTIES (
+            'format-version' = '3',
+            'write.delete.mode' = 'merge-on-read',
+            'write.merge.mode' = 'merge-on-read'
+          )
+        """)
+
+        spark.sql("""
+          INSERT INTO test_cat.db.dv_delete_test
+          VALUES
+            (1, 'Alice', 10.5), (2, 'Bob', 20.3), (3, 'Charlie', 30.7),
+            (4, 'Diana', 15.2), (5, 'Eve', 25.8), (6, 'Frank', 35.0),
+            (7, 'Grace', 12.1), (8, 'Hank', 22.5)
+        """)
+
+        spark.sql("DELETE FROM test_cat.db.dv_delete_test WHERE id IN (2, 4, 6)")
+
+        // Confirm the delete produced a deletion vector (a Puffin delete file), not a parquet
+        // position-delete file or a copy-on-write rewrite, so this test actually exercises the
+        // deletion-vector read path.
+        val deleteFormats = spark
+          .sql("SELECT file_format FROM test_cat.db.dv_delete_test.files WHERE content = 1")
+          .collect()
+          .map(_.getString(0))
+          .toSet
+        assert(
+          deleteFormats.contains("PUFFIN"),
+          s"expected a deletion vector (PUFFIN delete file) but found: $deleteFormats")
+
+        checkIcebergNativeScan("SELECT * FROM test_cat.db.dv_delete_test ORDER BY id")
+
+        spark.sql("DROP TABLE test_cat.db.dv_delete_test")
+      }
+    }
+  }
+
+  // A DELETE writes one deletion vector per data file it touches, and Iceberg's DV writer packs
+  // every vector produced by one write task into a single Puffin file. Vectors that apply to
+  // different data files therefore share a delete-file path and differ only by their content
+  // offset, which is what makes the delete-file pool's identity key load-bearing: keyed on the
+  // path alone (as the pool was before deletion vectors), the second and later vectors dedup into
+  // the first and their data files come back with the deleted rows still in them. Keyed on the
+  // whole message they stay distinct, and the path they share is interned separately so it is
+  // still serialized once.
+  test("V3 deletion vectors sharing one Puffin file are interned but not collapsed") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    assume(icebergVersionAtLeast(1, 11), "Iceberg V3 tables require Iceberg 1.11+")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        // The DELETE's position-delta write is hash-distributed, so a single shuffle partition
+        // routes every data file's deletes to one write task and therefore into one Puffin file.
+        // Left to its own devices the write can land one Puffin file per data file, in which case
+        // no path is shared and the collapse this test guards against cannot happen at all.
+        SQLConf.SHUFFLE_PARTITIONS.key -> "1",
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        spark.sql("""
+          CREATE TABLE test_cat.db.dv_shared_puffin (id INT, name STRING)
+          USING iceberg
+          TBLPROPERTIES (
+            'format-version' = '3',
+            'write.delete.mode' = 'merge-on-read',
+            'write.merge.mode' = 'merge-on-read'
+          )
+        """)
+
+        // One INSERT per data file. The vectors must reference distinct data files, since that is
+        // what a collapse loses: the surviving vector is applied to its own data file only.
+        val dataFiles = 3
+        val rowsPerFile = 10
+        for (f <- 0 until dataFiles) {
+          val values =
+            (1 to rowsPerFile).map(i => s"(${f * 100 + i}, 'n${f * 100 + i}')").mkString(", ")
+          spark.sql(s"INSERT INTO test_cat.db.dv_shared_puffin VALUES $values")
+        }
+
+        // A single DELETE hitting one row in every data file: one vector per file, one Puffin file.
+        val deletedIds = (0 until dataFiles).map(f => f * 100 + 1)
+        spark.sql(
+          s"DELETE FROM test_cat.db.dv_shared_puffin WHERE id IN (${deletedIds.mkString(", ")})")
+
+        // Confirm the write actually produced the shared-Puffin layout before asserting anything
+        // about it, so a change in how Iceberg packs vectors fails here rather than turning the
+        // assertions below into a vacuous pass.
+        val deleteFiles = spark
+          .sql("SELECT file_format, file_path FROM test_cat.db.dv_shared_puffin.files " +
+            "WHERE content = 1")
+          .collect()
+          .map(r => (r.getString(0), r.getString(1)))
+          .toSeq
+        assert(
+          deleteFiles.length == dataFiles &&
+            deleteFiles.forall(_._1 == "PUFFIN") &&
+            deleteFiles.map(_._2).distinct.length == 1,
+          s"expected $dataFiles deletion vectors packed into one Puffin file, got: $deleteFiles")
+
+        // Correctness: a collapse leaves the other data files' deleted rows in the result, so this
+        // fails on row content before any of the serde assertions below are reached.
+        val (_, cometPlan) =
+          checkSparkAnswerAndOperator("SELECT * FROM test_cat.db.dv_shared_puffin ORDER BY id")
+        assertSingleNativeScan(cometPlan)
+
+        val commonBytes = collectIcebergNativeScans(cometPlan).head.commonData
+        val common = OperatorOuterClass.IcebergScanCommon.parseFrom(commonBytes)
+
+        val vectors = common.getDeleteFilePoolList.asScala.toSeq
+        assert(
+          vectors.length == dataFiles,
+          s"expected $dataFiles pooled deletion vectors, one per data file, but got " +
+            s"${vectors.length}: vectors sharing a Puffin path were deduplicated into one")
+        assert(
+          vectors.forall(_.getFileFormat == IcebergReflection.FileFormats.PUFFIN),
+          "expected every pooled delete file to be a deletion vector, got " +
+            s"${vectors.map(_.getFileFormat).distinct}")
+
+        // The coordinates that distinguish vectors sharing a path. Each names a different data
+        // file and a different blob within the Puffin file; record_count must be set because
+        // iceberg-rust rejects a vector whose declared cardinality is absent.
+        assert(
+          vectors.map(_.getReferencedDataFile).distinct.length == dataFiles,
+          "expected a distinct referenced data file per vector, got " +
+            s"${vectors.map(_.getReferencedDataFile)}")
+        assert(
+          vectors.map(_.getContentOffset).distinct.length == dataFiles,
+          s"expected a distinct content offset per vector, got ${vectors.map(_.getContentOffset)}")
+        assert(
+          vectors.forall(v => v.hasRecordCount && v.getRecordCount > 0),
+          s"expected every vector to carry a record count, got ${vectors.map(_.getRecordCount)}")
+
+        // All of them point at the one interned path, which is serialized exactly once however
+        // many vectors reference it.
+        val pathPool = common.getDeleteFilePathPoolList.asScala.toSeq
+        assert(
+          pathPool.length == 1 && vectors.map(_.getFilePathIdx).distinct == Seq(0),
+          s"expected one interned Puffin path referenced by every vector, got pool $pathPool " +
+            s"and indices ${vectors.map(_.getFilePathIdx)}")
+        assert(
+          countByteOccurrences(commonBytes, pathPool.head.getBytes(UTF_8)) == 1,
+          s"Puffin path ${pathPool.head} serialized more than once in IcebergScanCommon " +
+            s"(${commonBytes.length} bytes)")
+
+        spark.sql("DROP TABLE test_cat.db.dv_shared_puffin")
+      }
+    }
+  }
+
   // Under Iceberg's default partition delete granularity, one position-delete file applies to every
   // data file in the partition with a compatible sequence number (DeleteFileIndex.forDataFile).
   // Interleaving inserts and deletes staggers data-file sequence numbers, so each FileScanTask sees
@@ -657,8 +833,7 @@ class CometIcebergNativeSuite
         val commonBytes = scans.head.commonData
         val common = OperatorOuterClass.IcebergScanCommon.parseFrom(commonBytes)
 
-        val distinctPaths =
-          common.getDeleteFilePoolList.asScala.map(_.getFilePath).toSeq
+        val distinctPaths = common.getDeleteFilePathPoolList.asScala.toSeq
         val totalReferences =
           common.getDeleteFilesPoolList.asScala.map(_.getDeleteFileIndicesCount).sum
 
