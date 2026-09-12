@@ -786,6 +786,39 @@ and <code class="docutils literal notranslate"><span class="pre">COMET_MAX_BLOCK
 in some environments, such as Kubernetes, where the number of cores allocated to a pod will already be equal to the
 number of executor cores.</p>
 </section>
+<section id="adaptive-partial-aggregation">
+<h2>Adaptive Partial Aggregation<a class="headerlink" href="#adaptive-partial-aggregation" title="Link to this heading">#</a></h2>
+<p>For high-cardinality grouping, Comet can bypass partial hash aggregation when it is not
+reducing the number of rows enough. This currently applies only to fused native shuffle-writer
+plans whose partial aggregates are grouping-only or single-argument <code class="docutils literal notranslate"><span class="pre">COUNT</span></code>. Low-cardinality
+inputs continue to aggregate normally. The SQL metric <code class="docutils literal notranslate"><span class="pre">rows</span> <span class="pre">bypassing</span> <span class="pre">partial</span> <span class="pre">aggregation</span></code>
+shows whether skipping occurred.</p>
+<p>Eligibility is conservative for the whole fused native plan: any unsupported partial accumulator,
+Spark <code class="docutils literal notranslate"><span class="pre">PartialMerge</span></code>, or mixed-mode aggregate disables skipping in that plan. Multi-argument
+<code class="docutils literal notranslate"><span class="pre">COUNT</span></code> and other accumulators are not admitted. Distribution-required grouping-only stages
+still fully deduplicate, and non-native-shuffle plans retain ordinary aggregation.
+The DataFusion testing configuration override does not bypass these safety checks.</p>
+<p>DataFusion 55 defaults to probing after 100,000 input rows per partial aggregation
+partition and skipping when the number of groups divided by input rows exceeds <code class="docutils literal notranslate"><span class="pre">0.8</span></code>.
+To experiment with these thresholds, enable <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.respectDataFusionConfigs</span></code>,
+a development and testing option that defaults to <code class="docutils literal notranslate"><span class="pre">false</span></code>. For example, the following
+SQL settings pass through the default threshold values, which you can adjust:</p>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">SET</span><span class="w"> </span><span class="n">spark</span><span class="p">.</span><span class="n">comet</span><span class="p">.</span><span class="k">exec</span><span class="p">.</span><span class="n">respectDataFusionConfigs</span><span class="o">=</span><span class="k">true</span><span class="p">;</span>
+<span class="k">SET</span><span class="w"> </span><span class="n">spark</span><span class="p">.</span><span class="n">comet</span><span class="p">.</span><span class="n">datafusion</span><span class="p">.</span><span class="n">execution</span><span class="p">.</span><span class="n">skip_partial_aggregation_probe_rows_threshold</span><span class="o">=</span><span class="mi">100000</span><span class="p">;</span>
+<span class="k">SET</span><span class="w"> </span><span class="n">spark</span><span class="p">.</span><span class="n">comet</span><span class="p">.</span><span class="n">datafusion</span><span class="p">.</span><span class="n">execution</span><span class="p">.</span><span class="n">skip_partial_aggregation_probe_ratio_threshold</span><span class="o">=</span><span class="mi">0</span><span class="p">.</span><span class="mi">8</span><span class="p">;</span>
+</pre></div>
+</div>
+<p>A lower row threshold allows an earlier decision; a lower ratio threshold makes
+skipping more likely. Skipping can increase the number of partial states emitted
+and the amount of shuffle data, so measure the effect on your workload.</p>
+<p>To disable skipping, keep <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.respectDataFusionConfigs=true</span></code> and set
+the ratio threshold above the maximum possible groups/input-rows ratio:</p>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">SET</span><span class="w"> </span><span class="n">spark</span><span class="p">.</span><span class="n">comet</span><span class="p">.</span><span class="n">datafusion</span><span class="p">.</span><span class="n">execution</span><span class="p">.</span><span class="n">skip_partial_aggregation_probe_ratio_threshold</span><span class="o">=</span><span class="mi">1</span><span class="p">.</span><span class="mi">1</span><span class="p">;</span>
+</pre></div>
+</div>
+<p>These settings only tune eligible plans. Unsupported accumulators and modes remain
+disabled even when configuration overrides are enabled.</p>
+</section>
 <section id="memory-tuning">
 <h2>Memory Tuning<a class="headerlink" href="#memory-tuning" title="Link to this heading">#</a></h2>
 <p>It is necessary to specify how much memory Comet can use in addition to memory already allocated to Spark. In some
@@ -1160,6 +1193,7 @@ fallback to Spark works, see <a class="reference internal" href="understanding-c
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#configuring-tokio-runtime">Configuring Tokio Runtime</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#adaptive-partial-aggregation">Adaptive Partial Aggregation</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#memory-tuning">Memory Tuning</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#configuring-comet-memory">Configuring Comet Memory</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#determining-how-much-memory-to-allocate">Determining How Much Memory to Allocate</a></li>
