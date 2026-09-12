@@ -83,6 +83,8 @@ object CometUpper extends CometCaseConversionBase[Upper]("upper")
 object CometLower extends CometCaseConversionBase[Lower]("lower")
 
 object CometLength extends CometScalarFunction[Length]("length") {
+  // Benchmarked: the codegen dispatcher is slower than Spark fallback on BinaryType (see
+  // CometBinaryLengthBenchmark), so BinaryType stays on plain Spark fallback for now.
   override def getUnsupportedReasons(): Seq[String] = Seq("`BinaryType` input is not supported")
 
   override def getSupportLevel(expr: Length): SupportLevel = expr.child.dataType match {
@@ -92,6 +94,7 @@ object CometLength extends CometScalarFunction[Length]("length") {
 }
 
 object CometBitLength extends CometScalarFunction[BitLength]("bit_length") {
+  // See CometLength: benchmarked slower via the dispatcher, so BinaryType stays on Spark fallback.
   override def getUnsupportedReasons(): Seq[String] = Seq("`BinaryType` input is not supported")
 
   override def getSupportLevel(expr: BitLength): SupportLevel = expr.child.dataType match {
@@ -101,6 +104,7 @@ object CometBitLength extends CometScalarFunction[BitLength]("bit_length") {
 }
 
 object CometOctetLength extends CometScalarFunction[OctetLength]("octet_length") {
+  // See CometLength: benchmarked slower via the dispatcher, so BinaryType stays on Spark fallback.
   override def getUnsupportedReasons(): Seq[String] = Seq("`BinaryType` input is not supported")
 
   override def getSupportLevel(expr: OctetLength): SupportLevel = expr.child.dataType match {

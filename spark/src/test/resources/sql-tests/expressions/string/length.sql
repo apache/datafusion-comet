@@ -27,3 +27,16 @@ SELECT length(s), char_length(s) FROM test_length
 -- literal arguments
 query
 SELECT length('hello'), length(''), length(NULL)
+
+-- BinaryType input falls back to Spark; benchmarked slower via the codegen dispatcher.
+statement
+CREATE TABLE test_length_binary(b binary) USING parquet
+
+statement
+INSERT INTO test_length_binary VALUES (X'48656c6c6f'), (X''), (NULL), (X'FF')
+
+query expect_fallback(Length on BinaryType is not supported)
+SELECT length(b) FROM test_length_binary
+
+query expect_fallback(Length on BinaryType is not supported)
+SELECT length(X'48656c6c6f'), length(CAST(NULL AS BINARY))
