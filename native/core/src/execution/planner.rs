@@ -4385,16 +4385,51 @@ fn parse_file_scan_tasks_from_common(
                 }
             };
 
+            // Puffin selects iceberg-rust's deletion-vector reader; Parquet the ordinary
+            // delete-file reader. Only the formats iceberg-rust can read reach here, because
+            // CometScanRule falls back to Spark for any other delete format.
+            let file_format = match del.file_format.as_str() {
+                "PARQUET" => iceberg::spec::DataFileFormat::Parquet,
+                "PUFFIN" => iceberg::spec::DataFileFormat::Puffin,
+                other => {
+                    return Err(GeneralError(format!(
+                        "Invalid delete file format '{}'",
+                        other
+                    )))
+                }
+            };
+
+            let file_path = proto_common
+                .delete_file_path_pool
+                .get(del.file_path_idx as usize)
+                .ok_or_else(|| {
+                    GeneralError(format!(
+                        "Invalid file_path_idx: {} (pool size: {})",
+                        del.file_path_idx,
+                        proto_common.delete_file_path_pool.len()
+                    ))
+                })?
+                .clone();
+
+            // Required for deletion vectors: iceberg-rust checks it against the number of
+            // positions decoded from the blob and errors if it is absent.
+            let record_count = del
+                .record_count
+                .map(u64::try_from)
+                .transpose()
+                .map_err(|_| {
+                    GeneralError(format!(
+                        "Delete file '{}' has a negative record count",
+                        file_path
+                    ))
+                })?;
+
             Ok(iceberg::scan::FileScanTaskDeleteFile {
                 // Passed RAW, like `data_file_path` below (same exact-string delete-matching
                 // constraint -- see there).
-                file_path: del.file_path.clone(),
+                file_path,
                 file_type,
-                // Comet forwards Parquet position/equality delete files and carries no
-                // deletion-vector (Puffin) metadata, so the format is always Parquet. This keeps
-                // iceberg-rust on the regular delete-file read path rather than the DV path,
-                // consistent with the unset content_offset/content_size_in_bytes below.
-                file_format: iceberg::spec::DataFileFormat::Parquet,
+                file_format,
                 // Not serialized; filled in by IcebergScanExec::fill_delete_file_sizes.
                 file_size_in_bytes: 0,
                 partition_spec_id: del.partition_spec_id,
@@ -4403,12 +4438,15 @@ fn parse_file_scan_tasks_from_common(
                 } else {
                     Some(del.equality_ids.clone())
                 },
-                // Deletion-vector metadata is not part of Comet's delete-file serde, so these
-                // are left unset. iceberg-rust only requires them when reading a Puffin DV blob.
-                referenced_data_file: None,
-                content_offset: None,
-                content_size_in_bytes: None,
-                record_count: None,
+                // Deletion-vector coordinates, which the serde sets only when file_format is
+                // PUFFIN. referenced_data_file names the data file the vector applies to; the other
+                // two locate the deletion-vector-v1 blob in its Puffin file. file_format above is
+                // the discriminator, since Iceberg also populates referencedDataFile on
+                // file-scoped Parquet position deletes.
+                referenced_data_file: del.referenced_data_file.clone(),
+                content_offset: del.content_offset,
+                content_size_in_bytes: del.content_size_in_bytes,
+                record_count,
                 // Plaintext StandardKeyMetadata forwarded verbatim from the JVM; decoded by
                 // iceberg-rust with no KMS unwrap. None for unencrypted delete files.
                 key_metadata: del.key_metadata.clone().map(Vec::into_boxed_slice),
