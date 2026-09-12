@@ -396,6 +396,28 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_EXEC_TOPK_FUSION_ENABLED: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.topK.fusion.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Run an eligible local TopK in the same native execution as its Parquet scan. " +
+          "Supports one direct signed integer sort key. Disabling fusion retains the " +
+          "ordinary native TopK path and prevents TopK reader filter attachment.")
+      .booleanConf
+      .createWithDefault(true)
+
+  val COMET_EXEC_TOPK_DYNAMIC_FILTER_ENABLED: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.topK.dynamicFilter.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Experimental opt-in: use a local TopK heap's improving threshold to prune " +
+          "eligible native Parquet input. Supports one direct signed integer sort key. " +
+          "The threshold is local to each native execution and does not cross Spark " +
+          "exchanges or JVM/Arrow boundaries. Unsupported inputs retain ordinary TopK " +
+          "execution. See the tuning guide for reader pruning configuration limits.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_SCALA_UDF_CODEGEN_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.scalaUDF.codegen.enabled")
       .category(CATEGORY_EXEC)

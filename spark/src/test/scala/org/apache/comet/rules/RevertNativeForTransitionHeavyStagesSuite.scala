@@ -19,7 +19,7 @@
 
 package org.apache.comet.rules
 
-import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.{CometTestBase, Row}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial}
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
@@ -137,6 +137,49 @@ class RevertNativeForTransitionHeavyStagesSuite extends CometTestBase {
         assert(
           reverted.output.map(_.name) == cometPlan.output.map(_.name),
           "Output schema should be preserved after revert")
+      }
+    }
+  }
+
+  for (adaptive <- Seq(false, true); filtering <- Seq(false, true)) {
+    test(s"transition reversion preserves local TopK: AQE=$adaptive, filter=$filtering") {
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+        SQLConf.LEAF_NODE_DEFAULT_PARALLELISM.key -> "1",
+        CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_TOPK_DYNAMIC_FILTER_ENABLED.key -> filtering.toString,
+        CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_TRANSITION_REVERT_MAX_TRANSITIONS.key -> "0") {
+        withTempPath { path =>
+          spark
+            .range(0, 20, 1, 1)
+            .selectExpr("CAST(id AS INT) AS k", "id * 10 AS payload")
+            .write
+            .parquet(path.getCanonicalPath)
+          withParquetTable(path.getCanonicalPath, "topk_revert") {
+            for (offset <- Seq(2, 7, 0); projection <- Seq("k", "payload")) {
+              val query = s"SELECT $projection FROM topk_revert ORDER BY k LIMIT 5 OFFSET $offset"
+              withSQLConf(CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "false") {
+                val plan = sql(query).queryExecution.executedPlan
+                val local = collect(plan) { case topK: CometLocalTopKExec => topK }
+                assert(local.size == 1, s"Expected a fused TopK before reversion:\n$plan")
+                assert(local.head.child.isInstanceOf[CometNativeScanExec])
+              }
+              val df = sql(query)
+              val expected = (offset until offset + 5).map { key =>
+                if (projection == "k") Row(key) else Row(key * 10L)
+              }
+              withClue(query) {
+                assert(df.collect().toSeq == expected)
+              }
+              val plan = stripAQEPlan(df.queryExecution.executedPlan)
+              assert(countCometExecs(plan) == 0, s"Expected stage reversion:\n$plan")
+              assert(
+                collect(plan) { case topK: TakeOrderedAndProjectExec => topK }.size == 1,
+                s"Reversion must restore offset and projection exactly once:\n$plan")
+            }
+          }
+        }
       }
     }
   }
